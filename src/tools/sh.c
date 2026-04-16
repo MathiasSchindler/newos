@@ -6,12 +6,15 @@
 
 #if __STDC_HOSTED__
 #include <stdlib.h>
+#include <termios.h>
+#include <unistd.h>
 #endif
 
 #define SH_MAX_LINE 4096
 #define SH_MAX_COMMANDS 8
 #define SH_MAX_ARGS 64
 #define SH_MAX_JOBS 16
+#define SH_MAX_HISTORY 64
 #define SH_CAPTURE_CAPACITY 2048
 #define SH_ENTRY_CAPACITY 1024
 
@@ -46,12 +49,46 @@ typedef struct {
 
 static int shell_should_exit = 0;
 static int shell_exit_status = 0;
+static int shell_last_status = 0;
 static int shell_next_job_id = 1;
 static char shell_self_path[SH_MAX_LINE];
+static char shell_history[SH_MAX_HISTORY][SH_MAX_LINE];
+static int shell_history_count = 0;
 static ShJob shell_jobs[SH_MAX_JOBS];
 
 static int is_operator_char(char ch) {
     return ch == '|' || ch == '<' || ch == '>';
+}
+
+static int is_name_start_char(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
+}
+
+static int is_name_char(char ch) {
+    return is_name_start_char(ch) || (ch >= '0' && ch <= '9');
+}
+
+static void add_history_entry(const char *line) {
+    int index;
+
+    if (line == 0 || line[0] == '\0') {
+        return;
+    }
+
+    if (shell_history_count > 0 && rt_strcmp(shell_history[shell_history_count - 1], line) == 0) {
+        return;
+    }
+
+    if (shell_history_count < SH_MAX_HISTORY) {
+        rt_copy_string(shell_history[shell_history_count], sizeof(shell_history[0]), line);
+        shell_history_count += 1;
+        return;
+    }
+
+    for (index = 1; index < SH_MAX_HISTORY; ++index) {
+        rt_copy_string(shell_history[index - 1], sizeof(shell_history[0]), shell_history[index]);
+    }
+    rt_copy_string(shell_history[SH_MAX_HISTORY - 1], sizeof(shell_history[0]), line);
 }
 
 static void skip_spaces(char **cursor) {
@@ -262,6 +299,117 @@ static int expand_command_substitutions(char *line) {
                     }
                     result[out++] = captured[j++];
                 }
+            }
+            continue;
+        }
+
+        if (out + 1 >= sizeof(result)) {
+            return -1;
+        }
+        result[out++] = line[i++];
+    }
+
+    result[out] = '\0';
+    memcpy(line, result, out + 1);
+    return 0;
+}
+
+static int append_expanded_text(char *result, size_t *out, size_t result_size, const char *text) {
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        if (*out + 1 >= result_size) {
+            return -1;
+        }
+        result[(*out)++] = text[i++];
+    }
+
+    return 0;
+}
+
+static int expand_shell_parameters(char *line) {
+    char result[SH_MAX_LINE];
+    size_t out = 0;
+    size_t i = 0;
+
+    while (line[i] != '\0') {
+        if (line[i] == '\\' && line[i + 1] != '\0') {
+            if (out + 2 >= sizeof(result)) {
+                return -1;
+            }
+            result[out++] = line[i++];
+            result[out++] = line[i++];
+            continue;
+        }
+
+        if (line[i] == '\'') {
+            if (out + 1 >= sizeof(result)) {
+                return -1;
+            }
+            result[out++] = line[i++];
+            while (line[i] != '\0') {
+                if (out + 1 >= sizeof(result)) {
+                    return -1;
+                }
+                result[out++] = line[i];
+                if (line[i++] == '\'') {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if (line[i] == '$') {
+            char name[128];
+            char value[64];
+            size_t name_len = 0;
+            const char *replacement = "";
+
+            if (line[i + 1] == '?') {
+                rt_unsigned_to_string((unsigned long long)(shell_last_status < 0 ? 0 : shell_last_status), value, sizeof(value));
+                replacement = value;
+                i += 2;
+            } else if (line[i + 1] == '0') {
+                replacement = shell_self_path;
+                i += 2;
+            } else if (line[i + 1] == '{') {
+                i += 2;
+                while (line[i] != '\0' && line[i] != '}' && name_len + 1 < sizeof(name)) {
+                    name[name_len++] = line[i++];
+                }
+                if (line[i] != '}') {
+                    return -1;
+                }
+                name[name_len] = '\0';
+                i += 1;
+#if __STDC_HOSTED__
+                replacement = getenv(name);
+                if (replacement == 0) {
+                    replacement = "";
+                }
+#endif
+            } else if (is_name_start_char(line[i + 1])) {
+                i += 1;
+                while (is_name_char(line[i]) && name_len + 1 < sizeof(name)) {
+                    name[name_len++] = line[i++];
+                }
+                name[name_len] = '\0';
+#if __STDC_HOSTED__
+                replacement = getenv(name);
+                if (replacement == 0) {
+                    replacement = "";
+                }
+#endif
+            } else {
+                if (out + 1 >= sizeof(result)) {
+                    return -1;
+                }
+                result[out++] = line[i++];
+                continue;
+            }
+
+            if (append_expanded_text(result, &out, sizeof(result), replacement) != 0) {
+                return -1;
             }
             continue;
         }
@@ -648,6 +796,18 @@ static int builtin_jobs(void) {
     return 0;
 }
 
+static int builtin_history(void) {
+    int i;
+
+    for (i = 0; i < shell_history_count; ++i) {
+        rt_write_uint(1, (unsigned long long)(i + 1));
+        rt_write_cstr(1, "  ");
+        rt_write_line(1, shell_history[i]);
+    }
+
+    return 0;
+}
+
 static int builtin_fg(int argc, char **argv) {
     unsigned long long value = 0;
     ShJob *job;
@@ -783,6 +943,11 @@ static int try_run_builtin(const ShPipeline *pipeline, int *status_out) {
         return 1;
     }
 
+    if (rt_strcmp(cmd->argv[0], "history") == 0) {
+        *status_out = builtin_history();
+        return 1;
+    }
+
     if (rt_strcmp(cmd->argv[0], "fg") == 0) {
         *status_out = builtin_fg(cmd->argc, cmd->argv);
         return 1;
@@ -811,8 +976,8 @@ static int run_simple_command(char *segment, int background) {
     int empty = 0;
     int status = 0;
 
-    if (expand_command_substitutions(segment) != 0) {
-        rt_write_line(2, "sh: command substitution failed");
+    if (expand_command_substitutions(segment) != 0 || expand_shell_parameters(segment) != 0) {
+        rt_write_line(2, "sh: expansion failed");
         return 2;
     }
 
@@ -922,6 +1087,7 @@ static int run_line(char *line) {
 
         if (should_run) {
             last_status = run_simple_command(segment_start, next_mode == SH_NEXT_BACKGROUND);
+            shell_last_status = last_status;
             if (shell_should_exit) {
                 return last_status;
             }
@@ -939,10 +1105,196 @@ static int run_line(char *line) {
     return last_status;
 }
 
+#if __STDC_HOSTED__
+static int shell_is_interactive(int fd) {
+    return fd == 0 && isatty(fd);
+}
+
+static void refresh_input_line(const char *prompt, const char *line, size_t length, size_t cursor) {
+    size_t backspaces;
+
+    rt_write_char(1, '\r');
+    rt_write_cstr(1, prompt);
+    rt_write_all(1, line, length);
+    rt_write_cstr(1, "\033[K");
+
+    backspaces = length - cursor;
+    while (backspaces > 0) {
+        rt_write_char(1, '\b');
+        backspaces -= 1;
+    }
+}
+
+static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
+    struct termios saved;
+    struct termios raw;
+    size_t length = 0;
+    size_t cursor = 0;
+    int history_index = shell_history_count;
+    char saved_current[SH_MAX_LINE];
+    const char *prompt = "$ ";
+    int result = 0;
+
+    *eof_out = 0;
+    saved_current[0] = '\0';
+    line[0] = '\0';
+
+    if (tcgetattr(0, &saved) != 0) {
+        return -1;
+    }
+
+    raw = saved;
+    raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+
+    if (tcsetattr(0, TCSANOW, &raw) != 0) {
+        return -1;
+    }
+
+    refresh_input_line(prompt, line, length, cursor);
+
+    for (;;) {
+        char ch = '\0';
+        long bytes_read = platform_read(0, &ch, 1);
+
+        if (bytes_read <= 0) {
+            *eof_out = 1;
+            result = 0;
+            break;
+        }
+
+        if (ch == '\n' || ch == '\r') {
+            rt_write_char(1, '\n');
+            line[length] = '\0';
+            result = 0;
+            break;
+        }
+
+        if (ch == 4) {
+            if (length == 0) {
+                rt_write_char(1, '\n');
+                *eof_out = 1;
+                result = 0;
+                break;
+            }
+            continue;
+        }
+
+        if (ch == 127 || ch == 8) {
+            if (cursor > 0) {
+                memmove(line + cursor - 1, line + cursor, length - cursor + 1);
+                cursor -= 1;
+                length -= 1;
+                refresh_input_line(prompt, line, length, cursor);
+            }
+            continue;
+        }
+
+        if (ch == 27) {
+            char seq[2];
+
+            if (platform_read(0, &seq[0], 1) <= 0 || platform_read(0, &seq[1], 1) <= 0) {
+                continue;
+            }
+
+            if (seq[0] == '[' && seq[1] == 'A') {
+                if (history_index > 0) {
+                    if (history_index == shell_history_count) {
+                        rt_copy_string(saved_current, sizeof(saved_current), line);
+                    }
+                    history_index -= 1;
+                    rt_copy_string(line, line_size, shell_history[history_index]);
+                    length = rt_strlen(line);
+                    cursor = length;
+                    refresh_input_line(prompt, line, length, cursor);
+                }
+            } else if (seq[0] == '[' && seq[1] == 'B') {
+                if (history_index < shell_history_count) {
+                    history_index += 1;
+                    if (history_index == shell_history_count) {
+                        rt_copy_string(line, line_size, saved_current);
+                    } else {
+                        rt_copy_string(line, line_size, shell_history[history_index]);
+                    }
+                    length = rt_strlen(line);
+                    cursor = length;
+                    refresh_input_line(prompt, line, length, cursor);
+                }
+            } else if (seq[0] == '[' && seq[1] == 'C') {
+                if (cursor < length) {
+                    cursor += 1;
+                    refresh_input_line(prompt, line, length, cursor);
+                }
+            } else if (seq[0] == '[' && seq[1] == 'D') {
+                if (cursor > 0) {
+                    cursor -= 1;
+                    refresh_input_line(prompt, line, length, cursor);
+                }
+            }
+            continue;
+        }
+
+        if (ch >= 32 && ch <= 126) {
+            if (length + 1 >= line_size) {
+                result = 2;
+                break;
+            }
+
+            memmove(line + cursor + 1, line + cursor, length - cursor + 1);
+            line[cursor] = ch;
+            cursor += 1;
+            length += 1;
+            refresh_input_line(prompt, line, length, cursor);
+        }
+    }
+
+    tcsetattr(0, TCSANOW, &saved);
+    return result;
+}
+
+static int process_interactive_stream(void) {
+    char line[SH_MAX_LINE];
+    int last_status = 0;
+
+    for (;;) {
+        int eof = 0;
+        int read_status = read_interactive_line(line, sizeof(line), &eof);
+
+        if (read_status != 0) {
+            rt_write_line(2, "sh: interactive input failed");
+            return read_status;
+        }
+
+        if (eof) {
+            break;
+        }
+
+        if (line[0] == '\0') {
+            continue;
+        }
+
+        add_history_entry(line);
+        last_status = run_line(line);
+        if (shell_should_exit) {
+            return shell_exit_status;
+        }
+    }
+
+    return shell_should_exit ? shell_exit_status : last_status;
+}
+#endif
+
 static int process_stream(int fd) {
     char line[SH_MAX_LINE];
     size_t length = 0;
     int last_status = 0;
+
+#if __STDC_HOSTED__
+    if (shell_is_interactive(fd)) {
+        return process_interactive_stream();
+    }
+#endif
 
     for (;;) {
         char buffer[256];
@@ -967,6 +1319,9 @@ static int process_stream(int fd) {
 
             if (ch == '\n') {
                 line[length] = '\0';
+                if (line[0] != '\0') {
+                    add_history_entry(line);
+                }
                 last_status = run_line(line);
                 length = 0;
                 if (shell_should_exit) {
@@ -986,6 +1341,9 @@ static int process_stream(int fd) {
 
     if (length > 0) {
         line[length] = '\0';
+        if (line[0] != '\0') {
+            add_history_entry(line);
+        }
         last_status = run_line(line);
     }
 

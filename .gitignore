@@ -1,3 +1,4 @@
 build/
 plans/
 .DS_Store
+tests/tmp/

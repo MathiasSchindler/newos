@@ -14,6 +14,16 @@ The repository currently focuses on:
 - shared support code for strings, I/O, archives, and hashing
 - platform layers for hosted POSIX builds and freestanding Linux/AArch64 builds
 
+## Testing
+
+The repository now includes a structured smoke-test suite under [tests](tests).
+
+- the entry point is [tests/run_smoke_tests.sh](tests/run_smoke_tests.sh)
+- shared helpers live in [tests/lib](tests/lib)
+- grouped suites live in [tests/suites](tests/suites)
+
+You can run the suite with make test.
+
 ## License
 
 This project is released under CC-0.

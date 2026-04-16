@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+mkdir -p "$ROOT_DIR/tests/tmp"
+
+"$ROOT_DIR/tests/suites/core_tools.sh"
+"$ROOT_DIR/tests/suites/extended_tools.sh"
+"$ROOT_DIR/tests/suites/shell.sh"
+
+echo "ALL_TEST_SUITES_OK"
