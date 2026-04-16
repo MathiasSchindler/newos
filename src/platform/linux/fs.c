@@ -323,6 +323,14 @@ int platform_get_current_directory(char *buffer, size_t buffer_size) {
     return (result < 0) ? -1 : 0;
 }
 
+int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
+    if (path == 0 || entry_out == 0) {
+        return -1;
+    }
+
+    return fill_entry(path, path, entry_out);
+}
+
 void platform_free_entries(PlatformDirEntry *entries, size_t count) {
     (void)entries;
     (void)count;

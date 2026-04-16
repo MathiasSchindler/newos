@@ -5,7 +5,7 @@ FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -fno-stack-protector -fno-unw
 BUILD_DIR ?= build
 TARGET_BUILD_DIR ?= build/linux-aarch64
 TARGET_TRIPLE ?= aarch64-linux-none
-TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod uname touch gzip gunzip tar md5sum sha256sum sha512sum sleep wc head tail ps sort cut tr t grep ping id whoami find sed awk
+TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod uname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep wc head tail ps sort cut tr t grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 SHARED_SOURCES := \
 	src/shared/runtime/memory.c \

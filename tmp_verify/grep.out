@@ -1,0 +1,3 @@
+tmp_verify/grepdir/a.txt:Hello
+tmp_verify/grepdir/a.txt:HELLO
+tmp_verify/grepdir/nested/b.txt:hello nested

@@ -301,6 +301,15 @@ int platform_get_current_directory(char *buffer, size_t buffer_size) {
     return 0;
 }
 
+int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
+    if (path == NULL || entry_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return fill_entry(path, path, entry_out);
+}
+
 void platform_format_mode(unsigned int mode, char out[11]) {
     out[0] = S_ISDIR(mode) ? 'd' :
              S_ISLNK(mode) ? 'l' :

@@ -1,4 +1,5 @@
 #include "archive_util.h"
+#include "platform.h"
 
 unsigned int archive_crc32_update(unsigned int crc, const unsigned char *data, size_t length) {
     size_t i;
@@ -19,6 +20,57 @@ unsigned int archive_crc32_update(unsigned int crc, const unsigned char *data, s
     }
 
     return crc;
+}
+
+unsigned int archive_crc32_finish(unsigned int crc) {
+    return crc ^ 0xffffffffU;
+}
+
+int archive_read_exact(int fd, unsigned char *buffer, size_t count) {
+    size_t offset = 0;
+
+    while (offset < count) {
+        long bytes = platform_read(fd, buffer + offset, count - offset);
+        if (bytes <= 0) {
+            return -1;
+        }
+        offset += (size_t)bytes;
+    }
+
+    return 0;
+}
+
+unsigned int archive_read_u32_le(const unsigned char *bytes) {
+    return (unsigned int)bytes[0] |
+           ((unsigned int)bytes[1] << 8) |
+           ((unsigned int)bytes[2] << 16) |
+           ((unsigned int)bytes[3] << 24);
+}
+
+unsigned long long archive_read_u64_le(const unsigned char *bytes) {
+    unsigned long long value = 0;
+    size_t i;
+
+    for (i = 0; i < 8; ++i) {
+        value |= ((unsigned long long)bytes[i]) << (i * 8);
+    }
+
+    return value;
+}
+
+void archive_store_u32_le(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)(value & 0xffU);
+    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
+    bytes[2] = (unsigned char)((value >> 16) & 0xffU);
+    bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+}
+
+void archive_store_u64_le(unsigned char *bytes, unsigned long long value) {
+    size_t i;
+
+    for (i = 0; i < 8; ++i) {
+        bytes[i] = (unsigned char)((value >> (i * 8)) & 0xffU);
+    }
 }
 
 void archive_write_octal(char *field, size_t field_size, unsigned long long value) {

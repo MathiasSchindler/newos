@@ -5,6 +5,12 @@
 #define SORT_MAX_LINES 2048
 #define SORT_MAX_LINE_LENGTH 512
 
+typedef struct {
+    int numeric;
+    int reverse;
+    int unique;
+} SortOptions;
+
 static int store_line(char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH], size_t *count, const char *line, size_t len) {
     size_t copy_len = len;
 
@@ -57,14 +63,64 @@ static int collect_lines_from_fd(int fd, char lines[SORT_MAX_LINES][SORT_MAX_LIN
     return 0;
 }
 
-static void sort_lines(char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH], size_t count) {
+static long long parse_signed_number(const char *text, int *ok_out) {
+    long long value = 0;
+    long long sign = 1;
+    int saw_digit = 0;
+
+    while (*text == ' ' || *text == '\t') {
+        text += 1;
+    }
+
+    if (*text == '-') {
+        sign = -1;
+        text += 1;
+    } else if (*text == '+') {
+        text += 1;
+    }
+
+    while (*text >= '0' && *text <= '9') {
+        saw_digit = 1;
+        value = value * 10 + (long long)(*text - '0');
+        text += 1;
+    }
+
+    if (ok_out != 0) {
+        *ok_out = saw_digit;
+    }
+
+    return value * sign;
+}
+
+static int compare_lines(const char *left, const char *right, const SortOptions *options) {
+    int result = 0;
+
+    if (options->numeric) {
+        int left_ok = 0;
+        int right_ok = 0;
+        long long left_value = parse_signed_number(left, &left_ok);
+        long long right_value = parse_signed_number(right, &right_ok);
+
+        if (left_ok && right_ok && left_value != right_value) {
+            result = (left_value < right_value) ? -1 : 1;
+        }
+    }
+
+    if (result == 0) {
+        result = rt_strcmp(left, right);
+    }
+
+    return options->reverse ? -result : result;
+}
+
+static void sort_lines(char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH], size_t count, const SortOptions *options) {
     size_t i;
     size_t j;
     char tmp[SORT_MAX_LINE_LENGTH];
 
     for (i = 0; i < count; ++i) {
         for (j = i + 1; j < count; ++j) {
-            if (rt_strcmp(lines[j], lines[i]) < 0) {
+            if (compare_lines(lines[j], lines[i], options) < 0) {
                 memcpy(tmp, lines[i], sizeof(tmp));
                 memcpy(lines[i], lines[j], sizeof(tmp));
                 memcpy(lines[j], tmp, sizeof(tmp));
@@ -77,15 +133,39 @@ int main(int argc, char **argv) {
     char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH];
     size_t count = 0;
     int exit_code = 0;
+    int argi = 1;
     int i;
+    SortOptions options;
 
-    if (argc == 1) {
+    rt_memset(&options, 0, sizeof(options));
+
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        const char *flag = argv[argi] + 1;
+
+        while (*flag != '\0') {
+            if (*flag == 'n') {
+                options.numeric = 1;
+            } else if (*flag == 'r') {
+                options.reverse = 1;
+            } else if (*flag == 'u') {
+                options.unique = 1;
+            } else {
+                rt_write_line(2, "Usage: sort [-n] [-r] [-u] [file ...]");
+                return 1;
+            }
+            flag += 1;
+        }
+
+        argi += 1;
+    }
+
+    if (argi == argc) {
         if (collect_lines_from_fd(0, lines, &count) != 0) {
             rt_write_line(2, "sort: read error");
             return 1;
         }
     } else {
-        for (i = 1; i < argc; ++i) {
+        for (i = argi; i < argc; ++i) {
             int fd;
             int should_close;
 
@@ -106,8 +186,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    sort_lines(lines, count);
+    sort_lines(lines, count, &options);
     for (i = 0; i < (int)count; ++i) {
+        if (options.unique && i > 0 && rt_strcmp(lines[i], lines[i - 1]) == 0) {
+            continue;
+        }
         rt_write_line(1, lines[i]);
     }
 

@@ -1,24 +1,50 @@
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
+
+#define LS_ENTRY_CAPACITY 1024
+#define LS_PATH_CAPACITY 1024
+
+typedef enum {
+    LS_SORT_NAME,
+    LS_SORT_TIME,
+    LS_SORT_SIZE
+} LsSortMode;
 
 typedef struct {
     int show_all;
     int long_format;
+    int recursive;
+    LsSortMode sort_mode;
 } LsOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-a] [-l] [path ...]");
+    rt_write_line(2, " [-a] [-l] [-R] [-t] [-S] [path ...]");
 }
 
-static void sort_entries(PlatformDirEntry *entries, size_t count) {
+static int should_swap_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
+    if (options->sort_mode == LS_SORT_TIME) {
+        if (right->mtime != left->mtime) {
+            return right->mtime > left->mtime;
+        }
+    } else if (options->sort_mode == LS_SORT_SIZE) {
+        if (right->size != left->size) {
+            return right->size > left->size;
+        }
+    }
+
+    return rt_strcmp(right->name, left->name) < 0;
+}
+
+static void sort_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options) {
     size_t i;
     size_t j;
 
     for (i = 0; i < count; ++i) {
         for (j = i + 1; j < count; ++j) {
-            if (rt_strcmp(entries[j].name, entries[i].name) < 0) {
+            if (should_swap_entries(&entries[i], &entries[j], options)) {
                 PlatformDirEntry tmp = entries[i];
                 entries[i] = entries[j];
                 entries[j] = tmp;
@@ -70,7 +96,7 @@ static void print_long_entry(const PlatformDirEntry *entry) {
 static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options) {
     size_t i;
 
-    sort_entries(entries, count);
+    sort_entries(entries, count, options);
 
     for (i = 0; i < count; ++i) {
         if (options->long_format) {
@@ -82,11 +108,12 @@ static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptio
 }
 
 static int list_path(const char *path, const LsOptions *options, int print_header) {
-    PlatformDirEntry entries[1024];
+    PlatformDirEntry entries[LS_ENTRY_CAPACITY];
     size_t count = 0;
     int is_directory = 0;
+    int exit_code = 0;
 
-    if (platform_collect_entries(path, options->show_all, entries, 1024, &count, &is_directory) != 0) {
+    if (platform_collect_entries(path, options->show_all, entries, LS_ENTRY_CAPACITY, &count, &is_directory) != 0) {
         rt_write_cstr(2, "ls: cannot access ");
         rt_write_line(2, path);
         return 1;
@@ -98,8 +125,31 @@ static int list_path(const char *path, const LsOptions *options, int print_heade
     }
 
     print_entries(entries, count, options);
+
+    if (is_directory && options->recursive) {
+        size_t i;
+
+        for (i = 0; i < count; ++i) {
+            char child_path[LS_PATH_CAPACITY];
+
+            if (!entries[i].is_dir || rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
+                continue;
+            }
+
+            if (tool_join_path(path, entries[i].name, child_path, sizeof(child_path)) != 0) {
+                exit_code = 1;
+                continue;
+            }
+
+            rt_write_char(1, '\n');
+            if (list_path(child_path, options, 1) != 0) {
+                exit_code = 1;
+            }
+        }
+    }
+
     platform_free_entries(entries, count);
-    return 0;
+    return exit_code;
 }
 
 int main(int argc, char **argv) {
@@ -133,6 +183,15 @@ int main(int argc, char **argv) {
                 case 'l':
                     options.long_format = 1;
                     break;
+                case 'R':
+                    options.recursive = 1;
+                    break;
+                case 't':
+                    options.sort_mode = LS_SORT_TIME;
+                    break;
+                case 'S':
+                    options.sort_mode = LS_SORT_SIZE;
+                    break;
                 default:
                     print_usage(argv[0]);
                     return 1;
@@ -144,11 +203,11 @@ int main(int argc, char **argv) {
 
     path_count = argc - first_path_index;
     if (path_count <= 0) {
-        return list_path(".", &options, 0);
+        return list_path(".", &options, options.recursive);
     }
 
     for (i = first_path_index; i < argc; ++i) {
-        int print_header = (path_count > 1) ? 1 : 0;
+        int print_header = (path_count > 1 || options.recursive) ? 1 : 0;
         int result = list_path(argv[i], &options, print_header);
 
         if (result != 0) {

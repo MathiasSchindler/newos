@@ -4,56 +4,38 @@
 
 #define SED_PATTERN_CAPACITY 256
 #define SED_LINE_CAPACITY 8192
+#define SED_MAX_COMMANDS 64
+
+typedef enum {
+    SED_ADDRESS_NONE,
+    SED_ADDRESS_LINE,
+    SED_ADDRESS_PATTERN
+} SedAddressType;
 
 typedef struct {
+    SedAddressType type;
+    unsigned long long line_number;
+    char pattern[SED_PATTERN_CAPACITY];
+} SedAddress;
+
+typedef struct {
+    SedAddress start;
+    SedAddress end;
     char old_text[SED_PATTERN_CAPACITY];
     char new_text[SED_PATTERN_CAPACITY];
     int global;
+    int range_active;
 } SedCommand;
+
+typedef struct {
+    SedCommand commands[SED_MAX_COMMANDS];
+    size_t count;
+} SedProgram;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " 's/old/new/[g]' [file ...]");
-}
-
-static int parse_substitution(const char *expr, SedCommand *command) {
-    char delimiter;
-    size_t i = 2;
-    size_t old_len = 0;
-    size_t new_len = 0;
-
-    if (expr[0] != 's' || expr[1] == '\0') {
-        return -1;
-    }
-
-    delimiter = expr[1];
-    rt_memset(command, 0, sizeof(*command));
-
-    while (expr[i] != '\0' && expr[i] != delimiter && old_len + 1 < sizeof(command->old_text)) {
-        command->old_text[old_len++] = expr[i++];
-    }
-    if (expr[i] != delimiter) {
-        return -1;
-    }
-    command->old_text[old_len] = '\0';
-    i += 1;
-
-    while (expr[i] != '\0' && expr[i] != delimiter && new_len + 1 < sizeof(command->new_text)) {
-        command->new_text[new_len++] = expr[i++];
-    }
-    if (expr[i] != delimiter) {
-        return -1;
-    }
-    command->new_text[new_len] = '\0';
-    i += 1;
-
-    if (expr[i] == 'g') {
-        command->global = 1;
-        i += 1;
-    }
-
-    return expr[i] == '\0' ? 0 : -1;
+    rt_write_line(2, " [-f script] [expression] [file ...]");
 }
 
 static int starts_with_at(const char *text, size_t pos, const char *pattern) {
@@ -67,6 +49,235 @@ static int starts_with_at(const char *text, size_t pos, const char *pattern) {
     }
 
     return 1;
+}
+
+static void trim_whitespace(char *text) {
+    size_t start = 0;
+    size_t end = rt_strlen(text);
+
+    while (text[start] == ' ' || text[start] == '\t' || text[start] == '\r') {
+        start += 1;
+    }
+
+    while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r')) {
+        end -= 1;
+    }
+
+    if (start > 0) {
+        memmove(text, text + start, end - start);
+    }
+
+    text[end - start] = '\0';
+}
+
+static int line_contains(const char *text, const char *pattern) {
+    size_t i;
+
+    if (pattern[0] == '\0') {
+        return 1;
+    }
+
+    for (i = 0; text[i] != '\0'; ++i) {
+        if (starts_with_at(text, i, pattern)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_address(const char *expr, size_t *pos, SedAddress *address) {
+    size_t out_len = 0;
+
+    address->type = SED_ADDRESS_NONE;
+    address->line_number = 0;
+    address->pattern[0] = '\0';
+
+    if (expr[*pos] >= '0' && expr[*pos] <= '9') {
+        unsigned long long value = 0;
+
+        while (expr[*pos] >= '0' && expr[*pos] <= '9') {
+            value = value * 10ULL + (unsigned long long)(expr[*pos] - '0');
+            *pos += 1;
+        }
+
+        address->type = SED_ADDRESS_LINE;
+        address->line_number = value;
+        return 1;
+    }
+
+    if (expr[*pos] == '/') {
+        *pos += 1;
+        while (expr[*pos] != '\0' && expr[*pos] != '/' && out_len + 1 < sizeof(address->pattern)) {
+            address->pattern[out_len++] = expr[*pos];
+            *pos += 1;
+        }
+
+        if (expr[*pos] != '/') {
+            return -1;
+        }
+
+        address->pattern[out_len] = '\0';
+        address->type = SED_ADDRESS_PATTERN;
+        *pos += 1;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int parse_substitution_command(const char *expr, SedCommand *command) {
+    char delimiter;
+    size_t pos = 0;
+    size_t old_len = 0;
+    size_t new_len = 0;
+    int address_result;
+
+    rt_memset(command, 0, sizeof(*command));
+
+    address_result = parse_address(expr, &pos, &command->start);
+    if (address_result < 0) {
+        return -1;
+    }
+
+    if (expr[pos] == ',') {
+        pos += 1;
+        if (parse_address(expr, &pos, &command->end) <= 0) {
+            return -1;
+        }
+    }
+
+    if (expr[pos] != 's' || expr[pos + 1] == '\0') {
+        return -1;
+    }
+
+    delimiter = expr[pos + 1];
+    pos += 2;
+
+    while (expr[pos] != '\0' && expr[pos] != delimiter && old_len + 1 < sizeof(command->old_text)) {
+        command->old_text[old_len++] = expr[pos++];
+    }
+    if (expr[pos] != delimiter) {
+        return -1;
+    }
+    command->old_text[old_len] = '\0';
+    pos += 1;
+
+    while (expr[pos] != '\0' && expr[pos] != delimiter && new_len + 1 < sizeof(command->new_text)) {
+        command->new_text[new_len++] = expr[pos++];
+    }
+    if (expr[pos] != delimiter) {
+        return -1;
+    }
+    command->new_text[new_len] = '\0';
+    pos += 1;
+
+    if (expr[pos] == 'g') {
+        command->global = 1;
+        pos += 1;
+    }
+
+    while (expr[pos] == ' ' || expr[pos] == '\t') {
+        pos += 1;
+    }
+
+    return expr[pos] == '\0' ? 0 : -1;
+}
+
+static int add_command_expression(const char *expr, SedProgram *program) {
+    char buffer[512];
+
+    if (program->count >= SED_MAX_COMMANDS) {
+        return -1;
+    }
+
+    rt_copy_string(buffer, sizeof(buffer), expr);
+    trim_whitespace(buffer);
+
+    if (buffer[0] == '\0' || buffer[0] == '#') {
+        return 0;
+    }
+
+    if (parse_substitution_command(buffer, &program->commands[program->count]) != 0) {
+        return -1;
+    }
+
+    program->count += 1;
+    return 0;
+}
+
+static int load_program_text(const char *text, SedProgram *program) {
+    char current[512];
+    size_t current_len = 0;
+    size_t i;
+
+    for (i = 0;; ++i) {
+        char ch = text[i];
+
+        if (ch == ';' || ch == '\n' || ch == '\0') {
+            current[current_len] = '\0';
+            if (add_command_expression(current, program) != 0) {
+                return -1;
+            }
+            current_len = 0;
+
+            if (ch == '\0') {
+                break;
+            }
+        } else if (current_len + 1 < sizeof(current)) {
+            current[current_len++] = ch;
+        }
+    }
+
+    return 0;
+}
+
+static int load_script_file(const char *path, SedProgram *program) {
+    int fd;
+    int should_close;
+    char chunk[1024];
+    char line[512];
+    size_t line_len = 0;
+    long bytes_read;
+
+    if (tool_open_input(path, &fd, &should_close) != 0) {
+        return -1;
+    }
+
+    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
+        long i;
+
+        for (i = 0; i < bytes_read; ++i) {
+            char ch = chunk[i];
+
+            if (ch == '\n') {
+                line[line_len] = '\0';
+                if (load_program_text(line, program) != 0) {
+                    tool_close_input(fd, should_close);
+                    return -1;
+                }
+                line_len = 0;
+            } else if (line_len + 1 < sizeof(line)) {
+                line[line_len++] = ch;
+            }
+        }
+    }
+
+    if (bytes_read < 0) {
+        tool_close_input(fd, should_close);
+        return -1;
+    }
+
+    if (line_len > 0) {
+        line[line_len] = '\0';
+        if (load_program_text(line, program) != 0) {
+            tool_close_input(fd, should_close);
+            return -1;
+        }
+    }
+
+    tool_close_input(fd, should_close);
+    return 0;
 }
 
 static int apply_substitution(const SedCommand *command, const char *input, char *output, size_t output_size) {
@@ -105,12 +316,81 @@ static int apply_substitution(const SedCommand *command, const char *input, char
     return 0;
 }
 
-static int sed_stream(int fd, const SedCommand *command) {
+static int address_matches(const SedAddress *address, unsigned long long line_no, const char *line) {
+    if (address->type == SED_ADDRESS_NONE) {
+        return 1;
+    }
+    if (address->type == SED_ADDRESS_LINE) {
+        return address->line_number == line_no;
+    }
+    return line_contains(line, address->pattern);
+}
+
+static int command_applies(SedCommand *command, unsigned long long line_no, const char *line) {
+    if (command->end.type != SED_ADDRESS_NONE) {
+        if (command->range_active) {
+            int end_now = address_matches(&command->end, line_no, line);
+
+            if (end_now) {
+                command->range_active = 0;
+            }
+            return 1;
+        }
+
+        if (address_matches(&command->start, line_no, line)) {
+            if (!address_matches(&command->end, line_no, line)) {
+                command->range_active = 1;
+            }
+            return 1;
+        }
+
+        return 0;
+    }
+
+    return address_matches(&command->start, line_no, line);
+}
+
+static void reset_program_state(SedProgram *program) {
+    size_t i;
+
+    for (i = 0; i < program->count; ++i) {
+        program->commands[i].range_active = 0;
+    }
+}
+
+static int process_line(SedProgram *program, unsigned long long line_no, const char *input, char *output, size_t output_size) {
+    char current[SED_LINE_CAPACITY];
+    char scratch[SED_LINE_CAPACITY];
+    size_t i;
+
+    rt_copy_string(current, sizeof(current), input);
+
+    for (i = 0; i < program->count; ++i) {
+        if (command_applies(&program->commands[i], line_no, current)) {
+            if (apply_substitution(&program->commands[i], current, scratch, sizeof(scratch)) != 0) {
+                return -1;
+            }
+            rt_copy_string(current, sizeof(current), scratch);
+        }
+    }
+
+    if (rt_strlen(current) + 1 > output_size) {
+        return -1;
+    }
+
+    rt_copy_string(output, output_size, current);
+    return 0;
+}
+
+static int sed_stream(int fd, SedProgram *program) {
     char chunk[4096];
     char line[SED_LINE_CAPACITY];
     char out[SED_LINE_CAPACITY];
     size_t line_len = 0;
+    unsigned long long line_no = 1;
     long bytes_read;
+
+    reset_program_state(program);
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
         long i;
@@ -120,10 +400,11 @@ static int sed_stream(int fd, const SedCommand *command) {
 
             if (ch == '\n') {
                 line[line_len] = '\0';
-                if (apply_substitution(command, line, out, sizeof(out)) != 0 || rt_write_line(1, out) != 0) {
+                if (process_line(program, line_no, line, out, sizeof(out)) != 0 || rt_write_line(1, out) != 0) {
                     return -1;
                 }
                 line_len = 0;
+                line_no += 1;
             } else if (line_len + 1 < sizeof(line)) {
                 line[line_len++] = ch;
             }
@@ -136,7 +417,7 @@ static int sed_stream(int fd, const SedCommand *command) {
 
     if (line_len > 0) {
         line[line_len] = '\0';
-        if (apply_substitution(command, line, out, sizeof(out)) != 0 || rt_write_line(1, out) != 0) {
+        if (process_line(program, line_no, line, out, sizeof(out)) != 0 || rt_write_line(1, out) != 0) {
             return -1;
         }
     }
@@ -145,20 +426,45 @@ static int sed_stream(int fd, const SedCommand *command) {
 }
 
 int main(int argc, char **argv) {
-    SedCommand command;
+    SedProgram program;
+    int argi = 1;
     int i;
     int exit_code = 0;
 
-    if (argc < 2 || parse_substitution(argv[1], &command) != 0) {
-        print_usage(argv[0]);
-        return 1;
+    rt_memset(&program, 0, sizeof(program));
+
+    while (argi < argc && argv[argi][0] == '-') {
+        if (rt_strcmp(argv[argi], "-f") == 0 && argi + 1 < argc) {
+            if (load_script_file(argv[argi + 1], &program) != 0) {
+                rt_write_cstr(2, "sed: cannot load script ");
+                rt_write_line(2, argv[argi + 1]);
+                return 1;
+            }
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-e") == 0 && argi + 1 < argc) {
+            if (load_program_text(argv[argi + 1], &program) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            argi += 2;
+        } else {
+            break;
+        }
     }
 
-    if (argc == 2) {
-        return sed_stream(0, &command) == 0 ? 0 : 1;
+    if (program.count == 0) {
+        if (argi >= argc || load_program_text(argv[argi], &program) != 0) {
+            print_usage(argv[0]);
+            return 1;
+        }
+        argi += 1;
     }
 
-    for (i = 2; i < argc; ++i) {
+    if (argi == argc) {
+        return sed_stream(0, &program) == 0 ? 0 : 1;
+    }
+
+    for (i = argi; i < argc; ++i) {
         int fd;
         int should_close;
 
@@ -169,7 +475,7 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (sed_stream(fd, &command) != 0) {
+        if (sed_stream(fd, &program) != 0) {
             rt_write_cstr(2, "sed: read error on ");
             rt_write_line(2, argv[i]);
             exit_code = 1;

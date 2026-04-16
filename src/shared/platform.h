@@ -47,6 +47,7 @@ int platform_change_mode(const char *path, unsigned int mode);
 int platform_touch_path(const char *path);
 int platform_change_directory(const char *path);
 int platform_sleep_seconds(unsigned int seconds);
+long long platform_get_epoch_time(void);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_spawn_process(
     char *const argv[],
@@ -75,6 +76,7 @@ int platform_path_is_directory(const char *path, int *is_directory_out);
 
 int platform_stream_file_to_stdout(const char *path);
 int platform_get_current_directory(char *buffer, size_t buffer_size);
+int platform_get_path_info(const char *path, PlatformDirEntry *entry_out);
 
 void platform_free_entries(PlatformDirEntry *entries, size_t count);
 void platform_format_mode(unsigned int mode, char out[11]);
