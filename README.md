@@ -2,17 +2,24 @@
 
 newos is an experimental userland project for a Linux-ABI-compatible operating system.
 
-In broad terms, this repository is a growing collection of command-line tools, shared runtime code, and platform backends that are designed to build on host systems such as macOS while also targeting a freestanding Linux environment.
+In broad terms, this repository is a growing collection of command-line tools, shell support code, a self-hosting C compiler, shared runtime code, and platform backends that are designed to build on host systems such as macOS while also targeting a freestanding Linux environment.
 
-The project has been written with the help of a finetuned version of GPT 5.4, with an emphasis on portability, small utilities, and clear separation between tool logic and platform-specific code.
+The project has been written with the help of a finetuned version of GPT 5.4, with an emphasis on portability, small utilities, clear separation between tool logic and platform-specific code, and a freestanding-first design.
 
 ## Scope
 
 The repository currently focuses on:
 
-- small Unix-style command-line programs
-- shared support code for strings, I/O, archives, and hashing
+- a broad and growing Unix-style userland of command-line programs
+- shell support and shared support code for strings, I/O, archives, and hashing
+- the self-hosting C compiler ncc and its supporting infrastructure
 - platform layers for hosted POSIX builds and freestanding Linux/AArch64 builds
+
+## Current status
+
+The host-side build and smoke-test workflow are active and in regular use on macOS.
+
+The userland has expanded substantially, and the compiler is already capable of handling a large portion of the repository, though the newest additions still expose some remaining self-hosting gaps that are being closed incrementally.
 
 ## Testing
 

@@ -79,6 +79,13 @@ static int parse_primary_expression(CompilerParser *parser) {
         return 0;
     }
 
+    if (current_is_punct(parser, "(") && looks_like_compound_literal_after_lparen(parser)) {
+        if (advance(parser) != 0 || parse_type_name(parser) != 0 || expect_punct(parser, ")") != 0) {
+            return -1;
+        }
+        return parse_initializer(parser);
+    }
+
     if (current_is_punct(parser, "(")) {
         if (advance(parser) != 0 || parse_expression(parser) != 0 || expect_punct(parser, ")") != 0) {
             return -1;
@@ -186,7 +193,9 @@ static int parse_unary_expression(CompilerParser *parser) {
 }
 
 static int parse_cast_expression(CompilerParser *parser) {
-    if (current_is_punct(parser, "(") && looks_like_type_name_after_lparen(parser)) {
+    if (current_is_punct(parser, "(") &&
+        looks_like_type_name_after_lparen(parser) &&
+        !looks_like_compound_literal_after_lparen(parser)) {
         if (advance(parser) != 0 || parse_type_name(parser) != 0 || expect_punct(parser, ")") != 0) {
             return -1;
         }

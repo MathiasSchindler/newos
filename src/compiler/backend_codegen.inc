@@ -413,7 +413,10 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         return allocate_local(state, name, is_array, prefers_word_index);
     }
 
-    (void)kind;
+    if (names_equal(kind, "func")) {
+        return add_function_name(state, name);
+    }
+
     return 0;
 }
 

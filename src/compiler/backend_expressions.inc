@@ -49,9 +49,25 @@ static void expr_next(ExprParser *parser) {
             while (*cursor >= '0' && *cursor <= '9' && length + 1 < sizeof(parser->current.text)) {
                 parser->current.text[length++] = *cursor++;
             }
+            if (*cursor == '.') {
+                cursor += 1;
+                while (*cursor >= '0' && *cursor <= '9') {
+                    cursor += 1;
+                }
+            }
+            if (*cursor == 'e' || *cursor == 'E') {
+                cursor += 1;
+                if (*cursor == '+' || *cursor == '-') {
+                    cursor += 1;
+                }
+                while (*cursor >= '0' && *cursor <= '9') {
+                    cursor += 1;
+                }
+            }
         }
         parser->current.text[length] = '\0';
-        while (*cursor == 'u' || *cursor == 'U' || *cursor == 'l' || *cursor == 'L') {
+        while (*cursor == 'u' || *cursor == 'U' || *cursor == 'l' || *cursor == 'L' ||
+               *cursor == 'f' || *cursor == 'F') {
             cursor += 1;
         }
         (void)parse_signed_value(parser->current.text, &parser->current.number_value);
@@ -349,7 +365,8 @@ static int identifier_looks_like_type(const char *name) {
     }
     if (names_equal(name, "void") || names_equal(name, "char") || names_equal(name, "short") ||
         names_equal(name, "int") || names_equal(name, "long") || names_equal(name, "signed") ||
-        names_equal(name, "unsigned") || names_equal(name, "const") || names_equal(name, "volatile") ||
+        names_equal(name, "unsigned") || names_equal(name, "float") || names_equal(name, "double") ||
+        names_equal(name, "const") || names_equal(name, "volatile") ||
         names_equal(name, "struct") || names_equal(name, "union") || names_equal(name, "enum") ||
         names_equal(name, "size_t")) {
         return 1;
@@ -377,6 +394,56 @@ static int member_decays_to_address(const char *name) {
     return 0;
 }
 
+static int expr_looks_like_compound_literal(ExprParser *parser) {
+    ExprParser snapshot = *parser;
+    int saw_typeish = 0;
+    int saw_token = 0;
+    int nested_parens = 0;
+    int expect_tag_name = 0;
+
+    if (snapshot.current.kind != EXPR_TOKEN_PUNCT || !names_equal(snapshot.current.text, "(")) {
+        return 0;
+    }
+    expr_next(&snapshot);
+    while (snapshot.current.kind != EXPR_TOKEN_EOF) {
+        if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, ")")) {
+            if (nested_parens > 0) {
+                nested_parens -= 1;
+                saw_token = 1;
+                expr_next(&snapshot);
+                continue;
+            }
+            expr_next(&snapshot);
+            return saw_token && saw_typeish &&
+                   snapshot.current.kind == EXPR_TOKEN_PUNCT &&
+                   names_equal(snapshot.current.text, "{");
+        }
+        if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
+            if (identifier_looks_like_type(snapshot.current.text) || expect_tag_name) {
+                saw_typeish = 1;
+                expect_tag_name = names_equal(snapshot.current.text, "struct") ||
+                                  names_equal(snapshot.current.text, "union") ||
+                                  names_equal(snapshot.current.text, "enum");
+            } else {
+                return 0;
+            }
+            saw_token = 1;
+        } else if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "(")) {
+            nested_parens += 1;
+            saw_token = 1;
+        } else if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "*")) {
+            if (!saw_typeish) {
+                return 0;
+            }
+            saw_token = 1;
+        } else {
+            return 0;
+        }
+        expr_next(&snapshot);
+    }
+    return 0;
+}
+
 static int expr_looks_like_cast(ExprParser *parser) {
     ExprParser snapshot = *parser;
     int saw_typeish = 0;
@@ -395,6 +462,10 @@ static int expr_looks_like_cast(ExprParser *parser) {
                 saw_token = 1;
                 expr_next(&snapshot);
                 continue;
+            }
+            expr_next(&snapshot);
+            if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "{")) {
+                return 0;
             }
             return saw_token && saw_typeish;
         }
@@ -590,6 +661,19 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
         break;
     }
 
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && is_incdec_text(parser->current.text)) {
+        int delta;
+
+        if (!current_is_address) {
+            set_error(parser->state->backend, "unsupported expression syntax in backend");
+            return -1;
+        }
+
+        delta = names_equal(parser->current.text, "++") ? 1 : -1;
+        expr_next(parser);
+        return emit_address_incdec(parser->state, byte_sized, delta, 1);
+    }
+
     if (current_is_address && load_final_address) {
         return emit_load_from_address_register(parser->state, backend_is_aarch64(parser->state) ? "x0" : "%rax",
                                                byte_sized);
@@ -639,6 +723,80 @@ static int expr_parse_sizeof(ExprParser *parser) {
         expr_next(parser);
     }
     return emit_load_immediate(parser->state, size);
+}
+
+static int expr_parse_compound_literal(ExprParser *parser, int want_address, int *byte_sized_out) {
+    char temp_name[COMPILER_IR_NAME_CAPACITY];
+    char digits[32];
+    int byte_sized = 0;
+
+    if (expr_expect_punct(parser, "(") != 0) {
+        return -1;
+    }
+
+    while (parser->current.kind != EXPR_TOKEN_EOF) {
+        if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")")) {
+            break;
+        }
+        if (parser->current.kind == EXPR_TOKEN_IDENTIFIER && names_equal(parser->current.text, "char")) {
+            byte_sized = 1;
+        }
+        if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*")) {
+            byte_sized = 0;
+        }
+        expr_next(parser);
+    }
+
+    if (expr_expect_punct(parser, ")") != 0 || expr_expect_punct(parser, "{") != 0) {
+        return -1;
+    }
+
+    rt_copy_string(temp_name, sizeof(temp_name), "__compound");
+    rt_unsigned_to_string((unsigned long long)parser->state->label_counter, digits, sizeof(digits));
+    parser->state->label_counter += 1U;
+    rt_copy_string(temp_name + rt_strlen(temp_name), sizeof(temp_name) - rt_strlen(temp_name), digits);
+
+    if (allocate_local(parser->state, temp_name, 0, 0) != 0) {
+        return -1;
+    }
+
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "}")) {
+        if (emit_address_of_name(parser->state, temp_name) != 0 ||
+            emit_push_value(parser->state) != 0 ||
+            emit_load_immediate(parser->state, 0) != 0 ||
+            emit_pop_address_and_store(parser->state, byte_sized) != 0) {
+            return -1;
+        }
+    } else {
+        if (emit_address_of_name(parser->state, temp_name) != 0 ||
+            emit_push_value(parser->state) != 0 ||
+            expr_parse_assignment(parser) != 0 ||
+            emit_pop_address_and_store(parser->state, byte_sized) != 0) {
+            return -1;
+        }
+        while (expr_match_punct(parser, ",")) {
+            if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "}")) {
+                break;
+            }
+            if (expr_parse_assignment(parser) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    if (expr_expect_punct(parser, "}") != 0) {
+        return -1;
+    }
+
+    if (byte_sized_out != 0) {
+        *byte_sized_out = byte_sized;
+    }
+
+    if (want_address) {
+        return emit_address_of_name(parser->state, temp_name);
+    }
+
+    return 0;
 }
 
 static int expr_parse_primary(ExprParser *parser) {
@@ -717,7 +875,10 @@ static int expr_parse_primary(ExprParser *parser) {
                     }
                 }
             }
-            {
+            if (is_function_name(parser->state, name) ||
+                (find_local(parser->state, name) < 0 &&
+                 find_global(parser->state, name) < 0 &&
+                 find_constant(parser->state, name) < 0)) {
                 char line[96];
                 char symbol[COMPILER_IR_NAME_CAPACITY];
                 format_symbol_name(parser->state, name, symbol, sizeof(symbol));
@@ -725,6 +886,11 @@ static int expr_parse_primary(ExprParser *parser) {
                 rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
                 return emit_instruction(parser->state, line);
             }
+
+            if (emit_load_name_into_register(parser->state, name, backend_is_aarch64(parser->state) ? "x16" : "%r11") != 0) {
+                return -1;
+            }
+            return emit_instruction(parser->state, backend_is_aarch64(parser->state) ? "blr x16" : "call *%r11");
         }
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
@@ -754,6 +920,11 @@ static int expr_parse_primary(ExprParser *parser) {
                                            saw_structish_suffix ? 1 : (find_local(parser->state, name) >= 0 &&
                                                                        parser->state->locals[find_local(parser->state, name)].is_array),
                                            saw_structish_suffix ? 1 : 0);
+    }
+
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(") &&
+        expr_looks_like_compound_literal(parser)) {
+        return expr_parse_compound_literal(parser, 0, 0);
     }
 
     if (expr_match_punct(parser, "(")) {
@@ -1259,6 +1430,11 @@ static int expr_assignment_operator(ExprParser snapshot, char *op, size_t op_siz
 
 static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
     *byte_sized = 0;
+
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(") &&
+        expr_looks_like_compound_literal(parser)) {
+        return expr_parse_compound_literal(parser, 1, byte_sized);
+    }
 
     if (expr_match_punct(parser, "(")) {
         if (expr_parse_lvalue_address(parser, byte_sized) != 0 || expr_expect_punct(parser, ")") != 0) {

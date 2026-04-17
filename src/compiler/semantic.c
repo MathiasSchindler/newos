@@ -219,7 +219,9 @@ int compiler_semantic_use_identifier(CompilerSemantic *semantic, const char *nam
         return -1;
     }
 
-    if (as_function_call && semantic->symbols[index].kind != COMPILER_SYMBOL_FUNCTION) {
+    if (as_function_call &&
+        semantic->symbols[index].kind != COMPILER_SYMBOL_FUNCTION &&
+        semantic->symbols[index].kind != COMPILER_SYMBOL_OBJECT) {
         set_error(semantic, "called object is not a function");
         return -1;
     }

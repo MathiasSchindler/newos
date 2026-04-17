@@ -19,6 +19,13 @@ COMPILER_SOURCES := \
 	src/compiler/semantic.c \
 	src/compiler/source.c \
 	src/compiler/lexer.c
+COMPILER_IMPL_INCLUDES := \
+	src/compiler/backend_expressions.inc \
+	src/compiler/backend_codegen.inc \
+	src/compiler/parser_types.inc \
+	src/compiler/parser_expressions.inc \
+	src/compiler/parser_declarations.inc \
+	src/compiler/parser_statements.inc
 SHARED_SOURCES := \
 	src/shared/runtime/memory.c \
 	src/shared/runtime/string.c \
@@ -83,10 +90,10 @@ $(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/ru
 $(TARGET_BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/shell_shared.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) src/arch/aarch64/linux/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	$(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(SHELL_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
 
-$(BUILD_DIR)/ncc: src/tools/ncc.c $(COMPILER_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/compiler/backend.h src/compiler/compiler.h src/compiler/object_writer.h src/compiler/source.h src/compiler/lexer.h src/compiler/ir.h src/compiler/parser.h src/compiler/preprocessor.h src/compiler/semantic.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
+$(BUILD_DIR)/ncc: src/tools/ncc.c $(COMPILER_SOURCES) $(COMPILER_IMPL_INCLUDES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/compiler/backend.h src/compiler/compiler.h src/compiler/object_writer.h src/compiler/source.h src/compiler/lexer.h src/compiler/ir.h src/compiler/parser.h src/compiler/preprocessor.h src/compiler/semantic.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< $(COMPILER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/ncc: src/tools/ncc.c $(COMPILER_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/compiler/backend.h src/compiler/compiler.h src/compiler/object_writer.h src/compiler/source.h src/compiler/lexer.h src/compiler/ir.h src/compiler/parser.h src/compiler/preprocessor.h src/compiler/semantic.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) src/arch/aarch64/linux/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/ncc: src/tools/ncc.c $(COMPILER_SOURCES) $(COMPILER_IMPL_INCLUDES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/compiler/backend.h src/compiler/compiler.h src/compiler/object_writer.h src/compiler/source.h src/compiler/lexer.h src/compiler/ir.h src/compiler/parser.h src/compiler/preprocessor.h src/compiler/semantic.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) src/arch/aarch64/linux/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	$(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(COMPILER_SOURCES) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
 
 $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)

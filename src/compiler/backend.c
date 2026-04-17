@@ -178,6 +178,30 @@ static int starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
+static int name_looks_like_macro_constant(const char *name) {
+    size_t i = 0;
+    int saw_alpha = 0;
+
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+
+    while (name[i] != '\0') {
+        char ch = name[i];
+        if (ch >= 'a' && ch <= 'z') {
+            return 0;
+        }
+        if ((ch >= 'A' && ch <= 'Z') || ch == '_') {
+            saw_alpha = 1;
+        } else if (ch < '0' || ch > '9') {
+            return 0;
+        }
+        i += 1U;
+    }
+
+    return saw_alpha;
+}
+
 static const char *skip_spaces(const char *text) {
     while (*text == ' ' || *text == '\t') {
         text += 1;
@@ -505,18 +529,48 @@ static int emit_local_address(BackendState *state, int offset, const char *reg) 
     return emit_instruction(state, line);
 }
 
-static int emit_load_from_address_register(BackendState *state, const char *reg, int byte_value) {
+static int emit_load_from_address_into_register(BackendState *state, const char *address_reg, const char *dst_reg, int byte_value) {
     char line[64];
+
     if (backend_is_aarch64(state)) {
-        rt_copy_string(line, sizeof(line), byte_value ? "ldrb w0, [" : "ldr x0, [");
-        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+        rt_copy_string(line, sizeof(line), byte_value ? "ldrb " : "ldr ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), byte_value ? "w" : "x");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg + 1);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_reg);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
         return emit_instruction(state, line);
     }
 
     rt_copy_string(line, sizeof(line), byte_value ? "movzbq (" : "movq (");
-    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), %rax");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+    return emit_instruction(state, line);
+}
+
+static int emit_load_from_address_register(BackendState *state, const char *reg, int byte_value) {
+    return emit_load_from_address_into_register(state, reg, backend_is_aarch64(state) ? "x0" : "%rax", byte_value);
+}
+
+static int emit_move_value_register(BackendState *state, const char *dst_reg) {
+    char line[64];
+
+    if (backend_is_aarch64(state)) {
+        if (names_equal(dst_reg, "x0")) {
+            return 0;
+        }
+        rt_copy_string(line, sizeof(line), "mov ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", x0");
+        return emit_instruction(state, line);
+    }
+
+    if (names_equal(dst_reg, "%rax")) {
+        return 0;
+    }
+    rt_copy_string(line, sizeof(line), "movq %rax, ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
     return emit_instruction(state, line);
 }
 
@@ -671,6 +725,78 @@ static int emit_load_string_literal(BackendState *state, const char *text) {
     return emit_instruction(state, line);
 }
 
+static int emit_load_name_into_register(BackendState *state, const char *name, const char *dst_reg) {
+    int local_index = find_local(state, name);
+    int global_index = find_global(state, name);
+    int constant_index = find_constant(state, name);
+
+    if (local_index >= 0) {
+        const char *address_reg = backend_is_aarch64(state) ? "x9" : "%rax";
+        if (state->locals[local_index].is_array) {
+            return emit_local_address(state, state->locals[local_index].offset, dst_reg);
+        }
+        return emit_local_address(state, state->locals[local_index].offset, address_reg) == 0 &&
+               emit_load_from_address_into_register(state, address_reg, dst_reg, 0) == 0 ? 0 : -1;
+    }
+
+    if (global_index >= 0) {
+        char line[128];
+        char symbol[COMPILER_IR_NAME_CAPACITY];
+        if (state->globals[global_index].is_array) {
+            return emit_address_of_name(state, name) == 0 &&
+                   emit_move_value_register(state, dst_reg) == 0 ? 0 : -1;
+        }
+        format_symbol_name(state, name, symbol, sizeof(symbol));
+        if (backend_is_aarch64(state)) {
+            const char *base_reg = names_equal(dst_reg, "x9") ? "x10" : "x9";
+            rt_copy_string(line, sizeof(line), "adrp ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), base_reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
+                           backend_is_darwin(state) ? "@PAGE" : "");
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+            rt_copy_string(line, sizeof(line), "ldr ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), base_reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
+                           backend_is_darwin(state) ? symbol : ":lo12:");
+            if (!backend_is_darwin(state)) {
+                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
+            } else {
+                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "@PAGEOFF");
+            }
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
+            return emit_instruction(state, line);
+        }
+        rt_copy_string(line, sizeof(line), "movq ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), name);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rip), ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+        return emit_instruction(state, line);
+    }
+
+    if (constant_index >= 0) {
+        return emit_load_immediate_register(state, dst_reg, state->constants[constant_index].value);
+    }
+
+    if (is_function_name(state, name)) {
+        return emit_address_of_name(state, name) == 0 &&
+               emit_move_value_register(state, dst_reg) == 0 ? 0 : -1;
+    }
+
+    if (names_equal(name, "NULL") || names_equal(name, "errno") || name_looks_like_macro_constant(name)) {
+        return emit_load_immediate_register(state, dst_reg, 0);
+    }
+
+    set_error(state->backend, "unsupported value reference in backend");
+    return -1;
+}
+
 static int emit_load_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
@@ -724,7 +850,7 @@ static int emit_load_name(BackendState *state, const char *name) {
         return emit_address_of_name(state, name);
     }
 
-    if (names_equal(name, "NULL")) {
+    if (names_equal(name, "NULL") || names_equal(name, "errno") || name_looks_like_macro_constant(name)) {
         return backend_is_aarch64(state) ? emit_instruction(state, "mov x0, #0") :
                                            emit_instruction(state, "movq $0, %rax");
     }
@@ -773,6 +899,10 @@ static int emit_store_name(BackendState *state, const char *name) {
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), name);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rip)");
         return emit_instruction(state, line);
+    }
+
+    if (names_equal(name, "errno") || name_looks_like_macro_constant(name)) {
+        return 0;
     }
 
     set_error(state->backend, "unknown assignment target in backend");

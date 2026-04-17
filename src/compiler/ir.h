@@ -6,7 +6,7 @@
 #include "semantic.h"
 
 #define COMPILER_MAX_IR_LINES 8192
-#define COMPILER_IR_LINE_CAPACITY 512
+#define COMPILER_IR_LINE_CAPACITY 2048
 #define COMPILER_IR_NAME_CAPACITY 64
 
 typedef struct {

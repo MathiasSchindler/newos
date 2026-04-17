@@ -292,6 +292,8 @@ static int is_typedef_name(const CompilerParser *parser, const CompilerToken *to
 
 static int maybe_type_identifier(const CompilerParser *parser, int allow_unknown_identifiers) {
     CompilerToken next;
+    char name[COMPILER_TYPEDEF_NAME_CAPACITY];
+    size_t length;
 
     if (!current_is_identifier(parser)) {
         return 0;
@@ -303,6 +305,12 @@ static int maybe_type_identifier(const CompilerParser *parser, int allow_unknown
 
     if (!allow_unknown_identifiers) {
         return 0;
+    }
+
+    copy_token_text(&parser->current, name, sizeof(name));
+    length = rt_strlen(name);
+    if (length > 2 && name[length - 2] == '_' && name[length - 1] == 't') {
+        return 1;
     }
 
     if (peek_token(parser, &next) != 0) {

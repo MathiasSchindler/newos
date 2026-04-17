@@ -84,18 +84,81 @@ static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_
     return saw_any;
 }
 
+static int token_is_known_type_specifier(const CompilerParser *parser, const CompilerToken *token) {
+    if (token->kind == COMPILER_TOKEN_KEYWORD &&
+        (token_text_equals(token, "const") || token_text_equals(token, "volatile") ||
+         token_text_equals(token, "restrict") || token_text_equals(token, "void") ||
+         token_text_equals(token, "char") || token_text_equals(token, "short") ||
+         token_text_equals(token, "int") || token_text_equals(token, "long") ||
+         token_text_equals(token, "signed") || token_text_equals(token, "unsigned") ||
+         token_text_equals(token, "float") || token_text_equals(token, "double") ||
+         token_text_equals(token, "struct") || token_text_equals(token, "union") ||
+         token_text_equals(token, "enum"))) {
+        return 1;
+    }
+
+    if (token->kind == COMPILER_TOKEN_IDENTIFIER) {
+        size_t length = token->length;
+        if (is_typedef_name(parser, token)) {
+            return 1;
+        }
+        if (length > 2 && token->start[length - 2] == '_' && token->start[length - 1] == 't') {
+            return 1;
+        }
+        if (length > 0 && token->start[0] >= 'A' && token->start[0] <= 'Z') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static int looks_like_type_name_after_lparen(const CompilerParser *parser) {
-    CompilerParser snapshot = *parser;
+    CompilerToken next;
 
     if (!current_is_punct(parser, "(")) {
         return 0;
     }
 
-    if (advance(&snapshot) != 0) {
+    if (peek_token(parser, &next) != 0) {
         return 0;
     }
 
-    return token_starts_known_type_specifier(&snapshot);
+    return token_is_known_type_specifier(parser, &next);
+}
+
+static int looks_like_compound_literal_after_lparen(const CompilerParser *parser) {
+    CompilerLexer snapshot;
+    CompilerToken token;
+    int depth = 1;
+
+    if (!current_is_punct(parser, "(") || peek_token(parser, &token) != 0) {
+        return 0;
+    }
+
+    if (!token_is_known_type_specifier(parser, &token)) {
+        return 0;
+    }
+
+    snapshot = parser->lexer;
+    while (compiler_lexer_next(&snapshot, &token) == 0) {
+        if (token.kind == COMPILER_TOKEN_PUNCTUATOR) {
+            if (token_text_equals(&token, "(")) {
+                depth += 1;
+            } else if (token_text_equals(&token, ")")) {
+                depth -= 1;
+                if (depth == 0) {
+                    break;
+                }
+            }
+        }
+    }
+
+    if (depth != 0 || compiler_lexer_next(&snapshot, &token) != 0) {
+        return 0;
+    }
+
+    return token.kind == COMPILER_TOKEN_PUNCTUATOR && token_text_equals(&token, "{");
 }
 
 static int parse_type_name(CompilerParser *parser) {
