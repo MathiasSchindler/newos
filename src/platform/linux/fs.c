@@ -47,6 +47,22 @@ static int fill_entry(const char *display_name, const char *full_path, PlatformD
     return 0;
 }
 
+static unsigned int linux_permission_bits_from_mode(unsigned int mode, unsigned int read_bit, unsigned int write_bit, unsigned int exec_bit) {
+    unsigned int permissions = 0;
+
+    if ((mode & read_bit) != 0U) {
+        permissions |= PLATFORM_ACCESS_READ;
+    }
+    if ((mode & write_bit) != 0U) {
+        permissions |= PLATFORM_ACCESS_WRITE;
+    }
+    if ((mode & exec_bit) != 0U) {
+        permissions |= PLATFORM_ACCESS_EXECUTE;
+    }
+
+    return permissions;
+}
+
 static unsigned long long next_temp_path_id = 1;
 
 long platform_write(int fd, const void *buffer, size_t count) {
@@ -179,6 +195,57 @@ int platform_touch_path(const char *path) {
     times[1].tv_sec = 0;
     times[1].tv_nsec = (long)0x3fffffff;
     return linux_syscall4(LINUX_SYS_UTIMENSAT, LINUX_AT_FDCWD, (long)path, (long)times, 0) < 0 ? -1 : 0;
+}
+
+int platform_path_access(const char *path, int mode) {
+    struct linux_stat st;
+    PlatformIdentity identity;
+    unsigned int requested;
+    unsigned int granted;
+    long stat_result;
+
+    if (path == 0) {
+        return -1;
+    }
+
+    stat_result = linux_syscall4(
+        LINUX_SYS_NEWFSTATAT,
+        LINUX_AT_FDCWD,
+        (long)path,
+        (long)&st,
+        LINUX_AT_SYMLINK_NOFOLLOW
+    );
+    if (stat_result < 0) {
+        return -1;
+    }
+
+    requested = (unsigned int)mode & (PLATFORM_ACCESS_READ | PLATFORM_ACCESS_WRITE | PLATFORM_ACCESS_EXECUTE);
+    if (requested == 0U) {
+        return 0;
+    }
+
+    if (platform_get_identity(&identity) != 0) {
+        return -1;
+    }
+
+    if (identity.uid == 0U) {
+        if ((requested & PLATFORM_ACCESS_EXECUTE) != 0U &&
+            (st.st_mode & (LINUX_S_IXUSR | LINUX_S_IXGRP | LINUX_S_IXOTH)) == 0U &&
+            (st.st_mode & LINUX_S_IFMT) != LINUX_S_IFDIR) {
+            return -1;
+        }
+        return 0;
+    }
+
+    if (identity.uid == st.st_uid) {
+        granted = linux_permission_bits_from_mode(st.st_mode, LINUX_S_IRUSR, LINUX_S_IWUSR, LINUX_S_IXUSR);
+    } else if (identity.gid == st.st_gid) {
+        granted = linux_permission_bits_from_mode(st.st_mode, LINUX_S_IRGRP, LINUX_S_IWGRP, LINUX_S_IXGRP);
+    } else {
+        granted = linux_permission_bits_from_mode(st.st_mode, LINUX_S_IROTH, LINUX_S_IWOTH, LINUX_S_IXOTH);
+    }
+
+    return ((granted & requested) == requested) ? 0 : -1;
 }
 
 int platform_change_directory(const char *path) {

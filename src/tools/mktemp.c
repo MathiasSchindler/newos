@@ -6,10 +6,6 @@
 
 #define MKTEMP_PATH_CAPACITY 1024
 
-#if __STDC_HOSTED__
-#include <unistd.h>
-#endif
-
 static int contains_slash(const char *text) {
     while (text != 0 && *text != '\0') {
         if (*text == '/') {
@@ -151,6 +147,7 @@ int main(int argc, char **argv) {
     char candidate[MKTEMP_PATH_CAPACITY];
     int argi = 1;
     unsigned long long seed_base = (unsigned long long)platform_get_epoch_time();
+    int process_id = platform_get_process_id();
     int attempt;
 
     while (argi < argc) {
@@ -194,9 +191,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-#if __STDC_HOSTED__
-    seed_base ^= (unsigned long long)getpid();
-#endif
+    if (process_id > 0) {
+        seed_base ^= (unsigned long long)(unsigned int)process_id;
+    }
 
     for (attempt = 0; attempt < 256; ++attempt) {
         unsigned long long attempt_seed = seed_base + (unsigned long long)(attempt * 977U + 17U);

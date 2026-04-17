@@ -1101,11 +1101,9 @@ static int process_stream(int fd) {
     char line[SH_MAX_LINE];
     int last_status = 0;
 
-#if __STDC_HOSTED__
     if (sh_shell_is_interactive(fd)) {
         return sh_process_interactive_stream(run_line);
     }
-#endif
 
     for (;;) {
         int eof = 0;

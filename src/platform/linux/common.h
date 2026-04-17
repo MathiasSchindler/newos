@@ -16,8 +16,37 @@
 #define LINUX_O_TRUNC 01000
 #define LINUX_O_DIRECTORY 0200000
 
+#define LINUX_SIGHUP 1
+#define LINUX_SIGINT 2
+#define LINUX_SIGQUIT 3
+#define LINUX_SIGILL 4
+#define LINUX_SIGTRAP 5
+#define LINUX_SIGABRT 6
+#define LINUX_SIGBUS 7
+#define LINUX_SIGFPE 8
+#define LINUX_SIGKILL 9
+#define LINUX_SIGUSR1 10
+#define LINUX_SIGSEGV 11
+#define LINUX_SIGUSR2 12
+#define LINUX_SIGPIPE 13
+#define LINUX_SIGALRM 14
+#define LINUX_SIGTERM 15
 #define LINUX_SIGCHLD 17
+#define LINUX_SIGCONT 18
+#define LINUX_SIGSTOP 19
+#define LINUX_SIGTSTP 20
+#define LINUX_SIGTTIN 21
+#define LINUX_SIGTTOU 22
+
+#define LINUX_WNOHANG 1
+#define LINUX_TCGETS 0x5401
+#define LINUX_TCSETS 0x5402
 #define LINUX_TIOCGWINSZ 0x5413
+
+#define LINUX_ICANON 0x00000002U
+#define LINUX_ECHO 0x00000008U
+#define LINUX_VTIME 5
+#define LINUX_VMIN 6
 
 #define LINUX_S_IFMT   0170000U
 #define LINUX_S_IFIFO  0010000U
@@ -79,6 +108,15 @@ struct linux_winsize {
     unsigned short ws_col;
     unsigned short ws_xpixel;
     unsigned short ws_ypixel;
+};
+
+struct linux_termios {
+    unsigned int c_iflag;
+    unsigned int c_oflag;
+    unsigned int c_cflag;
+    unsigned int c_lflag;
+    unsigned char c_line;
+    unsigned char c_cc[19];
 };
 
 #define linux_copy_string rt_copy_string

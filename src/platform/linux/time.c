@@ -280,6 +280,7 @@ int platform_format_time(long long epoch_seconds, int use_local_time, const char
     size_t length = 0;
     const char *actual_format;
 
+    /* Freestanding builds do not expose timezone data yet, so local output stays UTC here. */
     (void)use_local_time;
 
     if (buffer == 0 || buffer_size == 0) {

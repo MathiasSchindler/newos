@@ -2,6 +2,8 @@
 #include "common.h"
 #include "syscall.h"
 
+_Static_assert(sizeof(struct linux_termios) <= PLATFORM_TERMINAL_STATE_CAPACITY, "PlatformTerminalState is too small");
+
 static int linux_path_has_slash(const char *path) {
     unsigned long i = 0;
 
@@ -24,6 +26,100 @@ static void linux_child_exit(int status) {
 static void linux_try_exec(const char *path, char *const argv[]) {
     char *const envp[] = { 0 };
     linux_syscall3(LINUX_SYS_EXECVE, (long)path, (long)argv, (long)envp);
+}
+
+typedef struct {
+    const char *name;
+    int value;
+} LinuxSignalEntry;
+
+static const LinuxSignalEntry LINUX_SIGNAL_TABLE[] = {
+    { "HUP", LINUX_SIGHUP },
+    { "INT", LINUX_SIGINT },
+    { "QUIT", LINUX_SIGQUIT },
+    { "ILL", LINUX_SIGILL },
+    { "TRAP", LINUX_SIGTRAP },
+    { "ABRT", LINUX_SIGABRT },
+    { "BUS", LINUX_SIGBUS },
+    { "FPE", LINUX_SIGFPE },
+    { "KILL", LINUX_SIGKILL },
+    { "USR1", LINUX_SIGUSR1 },
+    { "SEGV", LINUX_SIGSEGV },
+    { "USR2", LINUX_SIGUSR2 },
+    { "PIPE", LINUX_SIGPIPE },
+    { "ALRM", LINUX_SIGALRM },
+    { "TERM", LINUX_SIGTERM },
+    { "CHLD", LINUX_SIGCHLD },
+    { "CONT", LINUX_SIGCONT },
+    { "STOP", LINUX_SIGSTOP },
+    { "TSTP", LINUX_SIGTSTP },
+    { "TTIN", LINUX_SIGTTIN },
+    { "TTOU", LINUX_SIGTTOU },
+};
+
+static int linux_decode_wait_status(int status) {
+    if ((status & 0x7f) == 0) {
+        return (status >> 8) & 0xff;
+    }
+    return 128 + (status & 0x7f);
+}
+
+int platform_parse_signal_name(const char *text, int *signal_out) {
+    unsigned long long numeric = 0;
+    size_t i;
+
+    if (text == 0 || signal_out == 0 || text[0] == '\0') {
+        return -1;
+    }
+
+    if (rt_parse_uint(text, &numeric) == 0) {
+        *signal_out = (int)numeric;
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(LINUX_SIGNAL_TABLE) / sizeof(LINUX_SIGNAL_TABLE[0]); ++i) {
+        char prefixed[32];
+
+        if (rt_strcmp(text, LINUX_SIGNAL_TABLE[i].name) == 0) {
+            *signal_out = LINUX_SIGNAL_TABLE[i].value;
+            return 0;
+        }
+
+        prefixed[0] = 'S';
+        prefixed[1] = 'I';
+        prefixed[2] = 'G';
+        rt_copy_string(prefixed + 3, sizeof(prefixed) - 3, LINUX_SIGNAL_TABLE[i].name);
+        if (rt_strcmp(text, prefixed) == 0) {
+            *signal_out = LINUX_SIGNAL_TABLE[i].value;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+const char *platform_signal_name(int signal_number) {
+    size_t i;
+
+    for (i = 0; i < sizeof(LINUX_SIGNAL_TABLE) / sizeof(LINUX_SIGNAL_TABLE[0]); ++i) {
+        if (LINUX_SIGNAL_TABLE[i].value == signal_number) {
+            return LINUX_SIGNAL_TABLE[i].name;
+        }
+    }
+
+    return "UNKNOWN";
+}
+
+void platform_write_signal_list(int fd) {
+    size_t i;
+
+    for (i = 0; i < sizeof(LINUX_SIGNAL_TABLE) / sizeof(LINUX_SIGNAL_TABLE[0]); ++i) {
+        if (i > 0) {
+            (void)platform_write(fd, " ", 1U);
+        }
+        (void)platform_write(fd, LINUX_SIGNAL_TABLE[i].name, rt_strlen(LINUX_SIGNAL_TABLE[i].name));
+    }
+    (void)platform_write(fd, "\n", 1U);
 }
 
 const char *platform_getenv(const char *name) {
@@ -56,6 +152,45 @@ int platform_isatty(int fd) {
     struct linux_winsize winsize;
 
     return linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCGWINSZ, (long)&winsize) < 0 ? 0 : 1;
+}
+
+int platform_get_process_id(void) {
+    long pid = linux_syscall0(LINUX_SYS_GETPID);
+    return pid < 0 ? -1 : (int)pid;
+}
+
+int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
+    struct linux_termios saved;
+    struct linux_termios raw;
+
+    if (state_out == 0) {
+        return -1;
+    }
+
+    if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TCGETS, (long)&saved) < 0) {
+        return -1;
+    }
+
+    memset(state_out, 0, sizeof(*state_out));
+    memcpy(state_out->bytes, &saved, sizeof(saved));
+
+    raw = saved;
+    raw.c_lflag &= ~(LINUX_ICANON | LINUX_ECHO);
+    raw.c_cc[LINUX_VMIN] = 1;
+    raw.c_cc[LINUX_VTIME] = 0;
+
+    return linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TCSETS, (long)&raw) < 0 ? -1 : 0;
+}
+
+int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
+    struct linux_termios saved;
+
+    if (state == 0) {
+        return -1;
+    }
+
+    memcpy(&saved, state->bytes, sizeof(saved));
+    return linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TCSETS, (long)&saved) < 0 ? -1 : 0;
 }
 
 int platform_create_pipe(int pipe_fds[2]) {
@@ -163,12 +298,7 @@ int platform_wait_process(int pid, int *exit_status_out) {
         return -1;
     }
 
-    if ((status & 0x7f) == 0) {
-        *exit_status_out = (status >> 8) & 0xff;
-    } else {
-        *exit_status_out = 128 + (status & 0x7f);
-    }
-
+    *exit_status_out = linux_decode_wait_status(status);
     return 0;
 }
 
@@ -180,34 +310,46 @@ int platform_wait_process_timeout(
     int preserve_status,
     int *exit_status_out
 ) {
-    int status = 0;
+    unsigned int elapsed = 0;
+    unsigned int after_signal = 0;
     int timed_out = 0;
 
     if (exit_status_out == 0) {
         return -1;
     }
 
-    if (timeout_seconds > 0) {
-        if (platform_sleep_seconds(timeout_seconds) != 0) {
+    for (;;) {
+        int status = 0;
+        long waited = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, LINUX_WNOHANG, 0);
+
+        if (waited == pid) {
+            *exit_status_out = (timed_out && !preserve_status) ? 124 : linux_decode_wait_status(status);
+            return 0;
+        }
+
+        if (waited < 0) {
             return -1;
         }
-        (void)platform_send_signal(pid, signal_number);
-        timed_out = 1;
 
-        if (kill_after_seconds > 0) {
-            if (platform_sleep_seconds(kill_after_seconds) != 0) {
-                return -1;
-            }
-            (void)platform_send_signal(pid, 9);
+        if (!timed_out && elapsed >= timeout_seconds) {
+            (void)platform_send_signal(pid, signal_number);
+            timed_out = 1;
+            after_signal = 0;
+        } else if (timed_out && kill_after_seconds > 0 && after_signal >= kill_after_seconds) {
+            (void)platform_send_signal(pid, LINUX_SIGKILL);
+            kill_after_seconds = 0;
+        }
+
+        if (platform_sleep_seconds(1U) != 0) {
+            return -1;
+        }
+
+        if (!timed_out) {
+            elapsed += 1U;
+        } else {
+            after_signal += 1U;
         }
     }
-
-    if (platform_wait_process(pid, &status) != 0) {
-        return -1;
-    }
-
-    *exit_status_out = (timed_out && !preserve_status) ? 124 : status;
-    return 0;
 }
 
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out) {

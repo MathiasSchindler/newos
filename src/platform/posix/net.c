@@ -111,9 +111,9 @@ static int write_socket_all(int fd, const char *buffer, size_t count) {
 
 static int stream_fd_to_socket(int input_fd, int sock) {
     char buffer[4096];
-    ssize_t bytes_read;
+    long bytes_read;
 
-    while ((bytes_read = read(input_fd, buffer, sizeof(buffer))) > 0) {
+    while ((bytes_read = platform_read(input_fd, buffer, sizeof(buffer))) > 0) {
         if (write_socket_all(sock, buffer, (size_t)bytes_read) != 0) {
             return -1;
         }
@@ -210,15 +210,13 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
         return -1;
     }
 
-#if __STDC_HOSTED__
-    if (!isatty(0)) {
+    if (!platform_isatty(0)) {
         if (stream_fd_to_socket(0, sock) != 0) {
             close(sock);
             return -1;
         }
         (void)shutdown(sock, SHUT_WR);
     }
-#endif
 
     if (stream_socket_to_stdout(sock) != 0) {
         close(sock);
@@ -239,6 +237,7 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     unsigned int transmitted = 0;
     unsigned int received_count = 0;
     unsigned short identifier;
+    int process_id = platform_get_process_id();
     double min_ms = 0.0;
     double max_ms = 0.0;
     double total_ms = 0.0;
@@ -280,7 +279,7 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         (void)setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl_value, sizeof(ttl_value));
     }
 
-    identifier = (unsigned short)getpid();
+    identifier = (unsigned short)((process_id > 0) ? process_id : 0x1234);
 
     rt_write_cstr(1, "PING ");
     rt_write_cstr(1, host);

@@ -6,12 +6,17 @@
 #define PLATFORM_NAME_CAPACITY 256
 #define PLATFORM_OWNER_CAPACITY 32
 #define PLATFORM_GROUP_CAPACITY 32
+#define PLATFORM_TERMINAL_STATE_CAPACITY 128
 #define PLATFORM_PING_DEFAULT_COUNT 4U
 #define PLATFORM_PING_DEFAULT_INTERVAL_SECONDS 1U
 #define PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS 1U
 #define PLATFORM_PING_DEFAULT_PAYLOAD_SIZE 56U
 #define PLATFORM_PING_MAX_PAYLOAD_SIZE 1400U
 #define PLATFORM_PING_MAX_TTL 255U
+#define PLATFORM_ACCESS_EXISTS 0
+#define PLATFORM_ACCESS_EXECUTE 1
+#define PLATFORM_ACCESS_WRITE 2
+#define PLATFORM_ACCESS_READ 4
 
 typedef struct {
     char name[PLATFORM_NAME_CAPACITY];
@@ -74,6 +79,10 @@ typedef struct {
     unsigned int ttl;
 } PlatformPingOptions;
 
+typedef struct {
+    unsigned char bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
+} PlatformTerminalState;
+
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 int platform_open_read(const char *path);
@@ -89,6 +98,7 @@ int platform_create_symbolic_link(const char *target_path, const char *link_path
 int platform_change_mode(const char *path, unsigned int mode);
 int platform_change_owner(const char *path, unsigned int uid, unsigned int gid);
 int platform_touch_path(const char *path);
+int platform_path_access(const char *path, int mode);
 int platform_change_directory(const char *path);
 const char *platform_getenv(const char *name);
 const char *platform_getenv_entry(size_t index);
@@ -96,10 +106,16 @@ int platform_setenv(const char *name, const char *value, int overwrite);
 int platform_unsetenv(const char *name);
 int platform_clearenv(void);
 int platform_isatty(int fd);
+int platform_get_process_id(void);
+int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out);
+int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state);
 int platform_sleep_seconds(unsigned int seconds);
 long long platform_get_epoch_time(void);
 int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size);
 int platform_send_signal(int pid, int signal_number);
+int platform_parse_signal_name(const char *text, int *signal_out);
+const char *platform_signal_name(int signal_number);
+void platform_write_signal_list(int fd);
 int platform_get_hostname(char *buffer, size_t buffer_size);
 int platform_set_hostname(const char *name);
 int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);

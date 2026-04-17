@@ -4,15 +4,10 @@
 #include "platform.h"
 #include "runtime.h"
 
-#if __STDC_HOSTED__
-#include <termios.h>
-#endif
-
 int sh_shell_is_interactive(int fd) {
     return fd == 0 && platform_isatty(fd);
 }
 
-#if __STDC_HOSTED__
 static void refresh_input_line(const char *prompt, const char *line, size_t length, size_t cursor) {
     size_t backspaces;
 
@@ -29,8 +24,7 @@ static void refresh_input_line(const char *prompt, const char *line, size_t leng
 }
 
 static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
-    struct termios saved;
-    struct termios raw;
+    PlatformTerminalState saved;
     size_t length = 0;
     size_t cursor = 0;
     int history_index = shell_history_count;
@@ -42,16 +36,7 @@ static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
     saved_current[0] = '\0';
     line[0] = '\0';
 
-    if (tcgetattr(0, &saved) != 0) {
-        return -1;
-    }
-
-    raw = saved;
-    raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
-
-    if (tcsetattr(0, TCSANOW, &raw) != 0) {
+    if (platform_terminal_enable_raw_mode(0, &saved) != 0) {
         return -1;
     }
 
@@ -152,13 +137,11 @@ static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
         }
     }
 
-    tcsetattr(0, TCSANOW, &saved);
+    (void)platform_terminal_restore_mode(0, &saved);
     return result;
 }
-#endif
 
 int sh_process_interactive_stream(int (*run_line_fn)(char *line)) {
-#if __STDC_HOSTED__
     char line[SH_MAX_LINE];
     int last_status = 0;
 
@@ -192,8 +175,4 @@ int sh_process_interactive_stream(int (*run_line_fn)(char *line)) {
     }
 
     return shell_should_exit ? shell_exit_status : last_status;
-#else
-    (void)run_line_fn;
-    return 0;
-#endif
 }

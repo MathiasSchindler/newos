@@ -2,10 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#if __STDC_HOSTED__
-#include <signal.h>
-#endif
-
 int tool_open_input(const char *path, int *fd_out, int *should_close_out) {
     if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
         *fd_out = 0;
@@ -146,149 +142,16 @@ int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_
     return 0;
 }
 
-#if __STDC_HOSTED__
-typedef struct {
-    const char *name;
-    int value;
-} ToolSignalEntry;
-
-static const ToolSignalEntry TOOL_SIGNAL_TABLE[] = {
-#ifdef SIGHUP
-    { "HUP", SIGHUP },
-#endif
-#ifdef SIGINT
-    { "INT", SIGINT },
-#endif
-#ifdef SIGQUIT
-    { "QUIT", SIGQUIT },
-#endif
-#ifdef SIGILL
-    { "ILL", SIGILL },
-#endif
-#ifdef SIGTRAP
-    { "TRAP", SIGTRAP },
-#endif
-#ifdef SIGABRT
-    { "ABRT", SIGABRT },
-#endif
-#ifdef SIGBUS
-    { "BUS", SIGBUS },
-#endif
-#ifdef SIGFPE
-    { "FPE", SIGFPE },
-#endif
-#ifdef SIGKILL
-    { "KILL", SIGKILL },
-#endif
-#ifdef SIGUSR1
-    { "USR1", SIGUSR1 },
-#endif
-#ifdef SIGSEGV
-    { "SEGV", SIGSEGV },
-#endif
-#ifdef SIGUSR2
-    { "USR2", SIGUSR2 },
-#endif
-#ifdef SIGPIPE
-    { "PIPE", SIGPIPE },
-#endif
-#ifdef SIGALRM
-    { "ALRM", SIGALRM },
-#endif
-#ifdef SIGTERM
-    { "TERM", SIGTERM },
-#endif
-#ifdef SIGCHLD
-    { "CHLD", SIGCHLD },
-#endif
-#ifdef SIGCONT
-    { "CONT", SIGCONT },
-#endif
-#ifdef SIGSTOP
-    { "STOP", SIGSTOP },
-#endif
-#ifdef SIGTSTP
-    { "TSTP", SIGTSTP },
-#endif
-#ifdef SIGTTIN
-    { "TTIN", SIGTTIN },
-#endif
-#ifdef SIGTTOU
-    { "TTOU", SIGTTOU },
-#endif
-};
-#endif
-
 int tool_parse_signal_name(const char *text, int *signal_out) {
-    unsigned long long numeric = 0;
-    size_t i;
-
-    if (text == 0 || signal_out == 0 || text[0] == '\0') {
-        return -1;
-    }
-
-    if (rt_parse_uint(text, &numeric) == 0) {
-        *signal_out = (int)numeric;
-        return 0;
-    }
-
-#if __STDC_HOSTED__
-    if (rt_strcmp(text, "0") == 0) {
-        *signal_out = 0;
-        return 0;
-    }
-
-    for (i = 0; i < sizeof(TOOL_SIGNAL_TABLE) / sizeof(TOOL_SIGNAL_TABLE[0]); ++i) {
-        char prefixed[32];
-
-        if (rt_strcmp(text, TOOL_SIGNAL_TABLE[i].name) == 0) {
-            *signal_out = TOOL_SIGNAL_TABLE[i].value;
-            return 0;
-        }
-
-        prefixed[0] = 'S';
-        prefixed[1] = 'I';
-        prefixed[2] = 'G';
-        rt_copy_string(prefixed + 3, sizeof(prefixed) - 3, TOOL_SIGNAL_TABLE[i].name);
-        if (rt_strcmp(text, prefixed) == 0) {
-            *signal_out = TOOL_SIGNAL_TABLE[i].value;
-            return 0;
-        }
-    }
-#else
-    (void)i;
-#endif
-
-    return -1;
+    return platform_parse_signal_name(text, signal_out);
 }
 
 const char *tool_signal_name(int signal_number) {
-#if __STDC_HOSTED__
-    size_t i;
-    for (i = 0; i < sizeof(TOOL_SIGNAL_TABLE) / sizeof(TOOL_SIGNAL_TABLE[0]); ++i) {
-        if (TOOL_SIGNAL_TABLE[i].value == signal_number) {
-            return TOOL_SIGNAL_TABLE[i].name;
-        }
-    }
-#else
-    (void)signal_number;
-#endif
-    return "UNKNOWN";
+    return platform_signal_name(signal_number);
 }
 
 void tool_write_signal_list(int fd) {
-#if __STDC_HOSTED__
-    size_t i;
-    for (i = 0; i < sizeof(TOOL_SIGNAL_TABLE) / sizeof(TOOL_SIGNAL_TABLE[0]); ++i) {
-        if (i > 0) {
-            (void)rt_write_char(fd, ' ');
-        }
-        (void)rt_write_cstr(fd, TOOL_SIGNAL_TABLE[i].name);
-    }
-    (void)rt_write_char(fd, '\n');
-#else
-    (void)fd;
-#endif
+    platform_write_signal_list(fd);
 }
 
 const char *tool_base_name(const char *path) {

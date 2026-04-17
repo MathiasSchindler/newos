@@ -209,6 +209,149 @@ static void fill_load_average(char *buffer, size_t buffer_size) {
     }
 }
 
+static int posix_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    size_t length = *length_io;
+
+    if (length + 1U >= buffer_size) {
+        return -1;
+    }
+
+    buffer[length] = ch;
+    buffer[length + 1U] = '\0';
+    *length_io = length + 1U;
+    return 0;
+}
+
+static int posix_append_padded(char *buffer, size_t buffer_size, size_t *length_io, unsigned int value, unsigned int width) {
+    char digits[16];
+    unsigned int count = 0;
+
+    do {
+        digits[count++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    } while (value > 0U && count < sizeof(digits));
+
+    while (count < width) {
+        if (posix_append_char(buffer, buffer_size, length_io, '0') != 0) {
+            return -1;
+        }
+        width -= 1U;
+    }
+
+    while (count > 0U) {
+        count -= 1U;
+        if (posix_append_char(buffer, buffer_size, length_io, digits[count]) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int posix_append_year(char *buffer, size_t buffer_size, size_t *length_io, int year) {
+    unsigned int absolute_year;
+
+    if (year < 0) {
+        if (posix_append_char(buffer, buffer_size, length_io, '-') != 0) {
+            return -1;
+        }
+        absolute_year = (unsigned int)(-(year + 1)) + 1U;
+    } else {
+        absolute_year = (unsigned int)year;
+    }
+
+    return posix_append_padded(buffer, buffer_size, length_io, absolute_year, 4U);
+}
+
+static int posix_format_time_fallback(const struct tm *tm_ptr, const char *format, char *buffer, size_t buffer_size) {
+    size_t index = 0;
+    size_t length = 0;
+    int year = tm_ptr->tm_year + 1900;
+    unsigned int month = (unsigned int)(tm_ptr->tm_mon + 1);
+    unsigned int day = (unsigned int)tm_ptr->tm_mday;
+    unsigned int hour = (unsigned int)tm_ptr->tm_hour;
+    unsigned int minute = (unsigned int)tm_ptr->tm_min;
+    unsigned int second = (unsigned int)tm_ptr->tm_sec;
+
+    buffer[0] = '\0';
+    while (format[index] != '\0') {
+        if (format[index] != '%') {
+            if (posix_append_char(buffer, buffer_size, &length, format[index]) != 0) {
+                return -1;
+            }
+            index += 1U;
+            continue;
+        }
+
+        index += 1U;
+        if (format[index] == '\0') {
+            return -1;
+        }
+
+        switch (format[index]) {
+            case '%':
+                if (posix_append_char(buffer, buffer_size, &length, '%') != 0) {
+                    return -1;
+                }
+                break;
+            case 'Y':
+                if (posix_append_year(buffer, buffer_size, &length, year) != 0) {
+                    return -1;
+                }
+                break;
+            case 'm':
+                if (posix_append_padded(buffer, buffer_size, &length, month, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'd':
+                if (posix_append_padded(buffer, buffer_size, &length, day, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'H':
+                if (posix_append_padded(buffer, buffer_size, &length, hour, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'M':
+                if (posix_append_padded(buffer, buffer_size, &length, minute, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'S':
+                if (posix_append_padded(buffer, buffer_size, &length, second, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'F':
+                if (posix_append_year(buffer, buffer_size, &length, year) != 0 ||
+                    posix_append_char(buffer, buffer_size, &length, '-') != 0 ||
+                    posix_append_padded(buffer, buffer_size, &length, month, 2U) != 0 ||
+                    posix_append_char(buffer, buffer_size, &length, '-') != 0 ||
+                    posix_append_padded(buffer, buffer_size, &length, day, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'T':
+                if (posix_append_padded(buffer, buffer_size, &length, hour, 2U) != 0 ||
+                    posix_append_char(buffer, buffer_size, &length, ':') != 0 ||
+                    posix_append_padded(buffer, buffer_size, &length, minute, 2U) != 0 ||
+                    posix_append_char(buffer, buffer_size, &length, ':') != 0 ||
+                    posix_append_padded(buffer, buffer_size, &length, second, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            default:
+                return -1;
+        }
+
+        index += 1U;
+    }
+
+    return 0;
+}
+
 int platform_sleep_seconds(unsigned int seconds) {
     return sleep(seconds) == 0 ? 0 : -1;
 }
@@ -321,8 +464,7 @@ int platform_format_time(long long epoch_seconds, int use_local_time, const char
     }
 
     if (strftime(buffer, buffer_size, actual_format, tm_ptr) == 0) {
-        buffer[0] = '\0';
-        return -1;
+        return posix_format_time_fallback(tm_ptr, actual_format, buffer, buffer_size);
     }
 
     return 0;

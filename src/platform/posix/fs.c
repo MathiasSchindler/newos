@@ -162,6 +162,27 @@ int platform_touch_path(const char *path) {
     return utimes(path, NULL);
 }
 
+int platform_path_access(const char *path, int mode) {
+    int access_mode = F_OK;
+
+    if (path == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if ((mode & PLATFORM_ACCESS_READ) != 0) {
+        access_mode |= R_OK;
+    }
+    if ((mode & PLATFORM_ACCESS_WRITE) != 0) {
+        access_mode |= W_OK;
+    }
+    if ((mode & PLATFORM_ACCESS_EXECUTE) != 0) {
+        access_mode |= X_OK;
+    }
+
+    return access(path, access_mode);
+}
+
 int platform_change_directory(const char *path) {
     return chdir(path);
 }

@@ -4,10 +4,6 @@
 #include "platform.h"
 #include "runtime.h"
 
-#if __STDC_HOSTED__
-#include <unistd.h>
-#endif
-
 typedef struct {
     int argc;
     char **argv;
@@ -104,27 +100,15 @@ static int test_eval_unary(const char *op, const char *arg, int *result_out) {
         return 0;
     }
     if (rt_strcmp(op, "-r") == 0) {
-#if __STDC_HOSTED__
-        *result_out = (access(arg, R_OK) == 0);
-#else
-        *result_out = (test_path_info(arg, &entry) == 0);
-#endif
+        *result_out = (platform_path_access(arg, PLATFORM_ACCESS_READ) == 0);
         return 0;
     }
     if (rt_strcmp(op, "-w") == 0) {
-#if __STDC_HOSTED__
-        *result_out = (access(arg, W_OK) == 0);
-#else
-        *result_out = (test_path_info(arg, &entry) == 0);
-#endif
+        *result_out = (platform_path_access(arg, PLATFORM_ACCESS_WRITE) == 0);
         return 0;
     }
     if (rt_strcmp(op, "-x") == 0) {
-#if __STDC_HOSTED__
-        *result_out = (access(arg, X_OK) == 0);
-#else
-        *result_out = 0;
-#endif
+        *result_out = (platform_path_access(arg, PLATFORM_ACCESS_EXECUTE) == 0);
         return 0;
     }
 

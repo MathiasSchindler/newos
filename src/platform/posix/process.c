@@ -11,12 +11,146 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
 #include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
+
+typedef struct {
+    const char *name;
+    int value;
+} PosixSignalEntry;
+
+static const PosixSignalEntry POSIX_SIGNAL_TABLE[] = {
+#ifdef SIGHUP
+    { "HUP", SIGHUP },
+#endif
+#ifdef SIGINT
+    { "INT", SIGINT },
+#endif
+#ifdef SIGQUIT
+    { "QUIT", SIGQUIT },
+#endif
+#ifdef SIGILL
+    { "ILL", SIGILL },
+#endif
+#ifdef SIGTRAP
+    { "TRAP", SIGTRAP },
+#endif
+#ifdef SIGABRT
+    { "ABRT", SIGABRT },
+#endif
+#ifdef SIGBUS
+    { "BUS", SIGBUS },
+#endif
+#ifdef SIGFPE
+    { "FPE", SIGFPE },
+#endif
+#ifdef SIGKILL
+    { "KILL", SIGKILL },
+#endif
+#ifdef SIGUSR1
+    { "USR1", SIGUSR1 },
+#endif
+#ifdef SIGSEGV
+    { "SEGV", SIGSEGV },
+#endif
+#ifdef SIGUSR2
+    { "USR2", SIGUSR2 },
+#endif
+#ifdef SIGPIPE
+    { "PIPE", SIGPIPE },
+#endif
+#ifdef SIGALRM
+    { "ALRM", SIGALRM },
+#endif
+#ifdef SIGTERM
+    { "TERM", SIGTERM },
+#endif
+#ifdef SIGCHLD
+    { "CHLD", SIGCHLD },
+#endif
+#ifdef SIGCONT
+    { "CONT", SIGCONT },
+#endif
+#ifdef SIGSTOP
+    { "STOP", SIGSTOP },
+#endif
+#ifdef SIGTSTP
+    { "TSTP", SIGTSTP },
+#endif
+#ifdef SIGTTIN
+    { "TTIN", SIGTTIN },
+#endif
+#ifdef SIGTTOU
+    { "TTOU", SIGTTOU },
+#endif
+};
+
+int platform_parse_signal_name(const char *text, int *signal_out) {
+    unsigned long long numeric = 0;
+    size_t i;
+
+    if (text == NULL || signal_out == NULL || text[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (rt_parse_uint(text, &numeric) == 0) {
+        *signal_out = (int)numeric;
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(POSIX_SIGNAL_TABLE) / sizeof(POSIX_SIGNAL_TABLE[0]); ++i) {
+        char prefixed[32];
+
+        if (rt_strcmp(text, POSIX_SIGNAL_TABLE[i].name) == 0) {
+            *signal_out = POSIX_SIGNAL_TABLE[i].value;
+            return 0;
+        }
+
+        prefixed[0] = 'S';
+        prefixed[1] = 'I';
+        prefixed[2] = 'G';
+        rt_copy_string(prefixed + 3, sizeof(prefixed) - 3, POSIX_SIGNAL_TABLE[i].name);
+        if (rt_strcmp(text, prefixed) == 0) {
+            *signal_out = POSIX_SIGNAL_TABLE[i].value;
+            return 0;
+        }
+    }
+
+    errno = EINVAL;
+    return -1;
+}
+
+const char *platform_signal_name(int signal_number) {
+    size_t i;
+
+    for (i = 0; i < sizeof(POSIX_SIGNAL_TABLE) / sizeof(POSIX_SIGNAL_TABLE[0]); ++i) {
+        if (POSIX_SIGNAL_TABLE[i].value == signal_number) {
+            return POSIX_SIGNAL_TABLE[i].name;
+        }
+    }
+
+    return "UNKNOWN";
+}
+
+void platform_write_signal_list(int fd) {
+    size_t i;
+
+    for (i = 0; i < sizeof(POSIX_SIGNAL_TABLE) / sizeof(POSIX_SIGNAL_TABLE[0]); ++i) {
+        if (i > 0) {
+            (void)platform_write(fd, " ", 1U);
+        }
+        (void)platform_write(fd, POSIX_SIGNAL_TABLE[i].name, rt_strlen(POSIX_SIGNAL_TABLE[i].name));
+    }
+    (void)platform_write(fd, "\n", 1U);
+}
+
+_Static_assert(sizeof(struct termios) <= PLATFORM_TERMINAL_STATE_CAPACITY, "PlatformTerminalState is too small");
 
 const char *platform_getenv(const char *name) {
     if (name == NULL || name[0] == '\0') {
@@ -69,6 +203,46 @@ int platform_clearenv(void) {
 
 int platform_isatty(int fd) {
     return isatty(fd) ? 1 : 0;
+}
+
+int platform_get_process_id(void) {
+    return (int)getpid();
+}
+
+int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
+    struct termios saved;
+    struct termios raw;
+
+    if (state_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (tcgetattr(fd, &saved) != 0) {
+        return -1;
+    }
+
+    memset(state_out, 0, sizeof(*state_out));
+    memcpy(state_out->bytes, &saved, sizeof(saved));
+
+    raw = saved;
+    raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+
+    return tcsetattr(fd, TCSANOW, &raw);
+}
+
+int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
+    struct termios saved;
+
+    if (state == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memcpy(&saved, state->bytes, sizeof(saved));
+    return tcsetattr(fd, TCSANOW, &saved);
 }
 
 int platform_create_pipe(int pipe_fds[2]) {
