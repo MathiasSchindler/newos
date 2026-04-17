@@ -163,6 +163,13 @@ static const char *pick_link_output_path(const CompilerOptions *options, char *b
     return buffer;
 }
 
+static void append_link_arg(char **argv, size_t *count, size_t capacity, char *value) {
+    if (*count + 1U < capacity) {
+        argv[*count] = value;
+        *count += 1U;
+    }
+}
+
 static int write_temp_object(
     const CompilerOptions *options,
     const CompilerIr *ir,
@@ -213,10 +220,46 @@ static int write_temp_object(
 }
 
 static int link_executable_output(const CompilerOptions *options, const CompilerIr *ir) {
+    static char *const shared_sources[] = {
+        "src/shared/runtime/memory.c",
+        "src/shared/runtime/string.c",
+        "src/shared/runtime/parse.c",
+        "src/shared/runtime/io.c",
+        "src/shared/tool_util.c",
+        "src/shared/archive_util.c",
+        "src/shared/hash_util.c"
+    };
+    static char *const host_platform_sources[] = {
+        "src/platform/posix/fs.c",
+        "src/platform/posix/process.c",
+        "src/platform/posix/identity.c",
+        "src/platform/posix/net.c",
+        "src/platform/posix/time.c"
+    };
+    static char *const compiler_sources[] = {
+        "src/compiler/backend.c",
+        "src/compiler/driver.c",
+        "src/compiler/ir.c",
+        "src/compiler/object_writer.c",
+        "src/compiler/parser.c",
+        "src/compiler/preprocessor.c",
+        "src/compiler/semantic.c",
+        "src/compiler/source.c",
+        "src/compiler/lexer.c"
+    };
+    static char *const shell_sources[] = {
+        "src/shared/shell_parser.c",
+        "src/shared/shell_execution.c",
+        "src/shared/shell_builtins.c",
+        "src/shared/shell_interactive.c"
+    };
     char derived_output_path[COMPILER_PATH_CAPACITY];
     char object_path[COMPILER_PATH_CAPACITY];
     const char *output_path = pick_link_output_path(options, derived_output_path, sizeof(derived_output_path));
-    char *argv[8];
+    const char *input_name = tool_base_name(options->input_path);
+    char *argv[64];
+    size_t argc = 0;
+    size_t i;
     int pid = -1;
     int exit_status = 0;
 
@@ -224,24 +267,48 @@ static int link_executable_output(const CompilerOptions *options, const Compiler
         return 1;
     }
 
-    argv[0] = "clang";
-    argv[1] = "-target";
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "clang");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-target");
     switch (options->target) {
         case COMPILER_TARGET_MACOS_AARCH64:
-            argv[2] = "arm64-apple-darwin";
+            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "arm64-apple-darwin");
             break;
         case COMPILER_TARGET_LINUX_X86_64:
-            argv[2] = "x86_64-linux-gnu";
+            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "x86_64-linux-gnu");
             break;
         case COMPILER_TARGET_LINUX_AARCH64:
             (void)platform_remove_file(object_path);
             tool_write_error(options->program_name, "linking is not implemented yet for target ", target_name(options->target));
             return 1;
     }
-    argv[3] = object_path;
-    argv[4] = "-o";
-    argv[5] = (char *)output_path;
-    argv[6] = 0;
+
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-std=c11");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-O2");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/shared");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/compiler");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/posix");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/linux");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/arch/aarch64/linux");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), object_path);
+
+    for (i = 0; i < sizeof(shared_sources) / sizeof(shared_sources[0]); ++i) {
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), shared_sources[i]);
+    }
+    for (i = 0; i < sizeof(host_platform_sources) / sizeof(host_platform_sources[0]); ++i) {
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), host_platform_sources[i]);
+    }
+    if (text_equals(input_name, "sh.c")) {
+        for (i = 0; i < sizeof(shell_sources) / sizeof(shell_sources[0]); ++i) {
+            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), shell_sources[i]);
+        }
+    } else if (text_equals(input_name, "ncc.c")) {
+        for (i = 0; i < sizeof(compiler_sources) / sizeof(compiler_sources[0]); ++i) {
+            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), compiler_sources[i]);
+        }
+    }
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-o");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), (char *)output_path);
+    argv[argc] = 0;
 
     if (platform_spawn_process(argv, -1, -1, 0, 0, 0, &pid) != 0) {
         (void)platform_remove_file(object_path);

@@ -595,7 +595,7 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         int reg;
         int is_byte;
         const char *rest;
-        const char *operand = line + 6;
+        const char *operand = skip_spaces(line + (starts_with(line, "pushq ") ? 6 : 5));
 
         if (parse_register(operand, &reg, &is_byte, &rest) != 0 || *rest != '\0') {
             set_error(assembler->writer, "unsupported register push/pop form");

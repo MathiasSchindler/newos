@@ -6,6 +6,18 @@ static int names_equal(const char *lhs, const char *rhs) {
     return rt_strcmp(lhs, rhs) == 0;
 }
 
+static int types_are_compatible(const CompilerType *lhs, const CompilerType *rhs) {
+    if (lhs->base == COMPILER_BASE_UNKNOWN || rhs->base == COMPILER_BASE_UNKNOWN) {
+        return 1;
+    }
+
+    return lhs->base == rhs->base &&
+           lhs->pointer_depth == rhs->pointer_depth &&
+           lhs->is_function == rhs->is_function &&
+           lhs->is_array == rhs->is_array &&
+           lhs->is_unsigned == rhs->is_unsigned;
+}
+
 static int is_macro_like_name(const char *name) {
     size_t i = 0;
     int saw_alpha = 0;
@@ -119,6 +131,28 @@ int compiler_semantic_declare(
                 symbol->defined = 1;
             }
             symbol->type = *type;
+            return 0;
+        }
+
+        if (symbol->kind == COMPILER_SYMBOL_OBJECT && kind == COMPILER_SYMBOL_OBJECT) {
+            if (!types_are_compatible(&symbol->type, type)) {
+                set_error(semantic, "conflicting declaration in the same scope");
+                return -1;
+            }
+            if (semantic->scope_count > 1U && (symbol->defined || is_definition)) {
+                set_error(semantic, "duplicate declaration in the same scope");
+                return -1;
+            }
+            if (symbol->defined && is_definition) {
+                set_error(semantic, "duplicate declaration in the same scope");
+                return -1;
+            }
+            if (is_definition || symbol->type.base == COMPILER_BASE_UNKNOWN) {
+                symbol->type = *type;
+            }
+            if (is_definition) {
+                symbol->defined = 1;
+            }
             return 0;
         }
 

@@ -358,12 +358,15 @@ static int skip_balanced_group(CompilerParser *parser, const char *open_text, co
     return 0;
 }
 
-static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, CompilerType *type_out) {
+static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, int *is_extern_out, CompilerType *type_out) {
     int saw_any = 0;
     int saw_explicit_base = 0;
 
     if (is_typedef_out != 0) {
         *is_typedef_out = 0;
+    }
+    if (is_extern_out != 0) {
+        *is_extern_out = 0;
     }
     if (type_out != 0) {
         compiler_type_init(type_out);
@@ -374,6 +377,8 @@ static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_
 
         if (current_is_keyword(parser, "typedef") && is_typedef_out != 0) {
             *is_typedef_out = 1;
+        } else if (current_is_keyword(parser, "extern") && is_extern_out != 0) {
+            *is_extern_out = 1;
         } else if (type_out != 0) {
             if (current_is_keyword(parser, "void")) {
                 type_out->base = COMPILER_BASE_VOID;
@@ -456,7 +461,7 @@ static int parse_type_name(CompilerParser *parser) {
     CompilerDeclarator declarator;
 
     compiler_type_init(&type);
-    saw = parse_declaration_specifiers(parser, 0, &type);
+    saw = parse_declaration_specifiers(parser, 0, 0, &type);
 
     if (saw <= 0) {
         set_error(parser, "expected type name");
@@ -799,7 +804,7 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     CompilerDeclarator declarator;
 
     compiler_type_init(&type);
-    saw = parse_declaration_specifiers(parser, 0, &type);
+    saw = parse_declaration_specifiers(parser, 0, 0, &type);
 
     if (saw <= 0) {
         set_error(parser, "expected parameter declaration");
@@ -957,7 +962,7 @@ static int declare_symbol(
             declarator->name,
             declarator->is_function ? COMPILER_SYMBOL_FUNCTION : COMPILER_SYMBOL_OBJECT,
             &symbol_type,
-            is_definition || !declarator->is_function
+            is_definition
         ) != 0) {
         return semantic_error(parser);
     }
@@ -975,10 +980,11 @@ static int declare_symbol(
 static int parse_declaration_or_function(CompilerParser *parser, int allow_function_body, int emit_summary) {
     CompilerType declared_type;
     int is_typedef = 0;
+    int is_extern = 0;
     int saw;
 
     compiler_type_init(&declared_type);
-    saw = parse_declaration_specifiers(parser, &is_typedef, &declared_type);
+    saw = parse_declaration_specifiers(parser, &is_typedef, &is_extern, &declared_type);
 
     if (saw <= 0) {
         set_error(parser, "expected declaration");
@@ -991,6 +997,7 @@ static int parse_declaration_or_function(CompilerParser *parser, int allow_funct
 
     for (;;) {
         CompilerDeclarator declarator;
+        int is_definition;
 
         if (parse_declarator(parser, &declarator, 0) != 0) {
             return -1;
@@ -1024,7 +1031,8 @@ static int parse_declaration_or_function(CompilerParser *parser, int allow_funct
             return parse_compound_statement(parser);
         }
 
-        if (declare_symbol(parser, &declarator, &declared_type, is_typedef, 0, emit_summary) != 0) {
+        is_definition = declarator.is_function ? 0 : (!is_extern || current_is_punct(parser, "="));
+        if (declare_symbol(parser, &declarator, &declared_type, is_typedef, is_definition, emit_summary) != 0) {
             return -1;
         }
 
@@ -1173,6 +1181,7 @@ static int parse_statement(CompilerParser *parser) {
     }
 
     if (current_is_keyword(parser, "for")) {
+        int status = -1;
         char loop_label[COMPILER_IR_NAME_CAPACITY];
         char end_label[COMPILER_IR_NAME_CAPACITY];
         char init_text[COMPILER_IR_LINE_CAPACITY];
@@ -1183,72 +1192,79 @@ static int parse_statement(CompilerParser *parser) {
         if (advance(parser) != 0 || expect_punct(parser, "(") != 0) {
             return -1;
         }
+        if (compiler_semantic_enter_scope(&parser->semantic) != 0) {
+            return semantic_error(parser);
+        }
 
         if (!current_is_punct(parser, ";")) {
             if (looks_like_declaration(parser)) {
                 if (parse_declaration_or_function(parser, 0, 0) != 0) {
-                    return -1;
+                    goto for_cleanup;
                 }
             } else {
                 const char *init_end;
                 segment_start = parser->current.start;
                 if (parse_expression(parser) != 0) {
-                    return -1;
+                    goto for_cleanup;
                 }
                 init_end = parser->current.start;
                 if (expect_punct(parser, ";") != 0) {
-                    return -1;
+                    goto for_cleanup;
                 }
                 copy_normalized_span(segment_start, init_end, init_text, sizeof(init_text), "");
                 if (init_text[0] != '\0' && emit_ir_status(parser, compiler_ir_emit_eval(&parser->ir, init_text)) != 0) {
-                    return -1;
+                    goto for_cleanup;
                 }
             }
         } else if (advance(parser) != 0) {
-            return -1;
+            goto for_cleanup;
         }
 
         if (emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "for", loop_label, sizeof(loop_label))) != 0 ||
             emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "endfor", end_label, sizeof(end_label))) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, loop_label)) != 0) {
-            return -1;
+            goto for_cleanup;
         }
 
         if (!current_is_punct(parser, ";")) {
             segment_start = parser->current.start;
             if (parse_expression(parser) != 0) {
-                return -1;
+                goto for_cleanup;
             }
             copy_normalized_span(segment_start, parser->current.start, cond_text, sizeof(cond_text), "1");
         } else {
             rt_copy_string(cond_text, sizeof(cond_text), "1");
         }
         if (expect_punct(parser, ";") != 0) {
-            return -1;
+            goto for_cleanup;
         }
         if (emit_ir_status(parser, compiler_ir_emit_branch_zero(&parser->ir, cond_text, end_label)) != 0) {
-            return -1;
+            goto for_cleanup;
         }
 
         step_text[0] = '\0';
         if (!current_is_punct(parser, ")")) {
             segment_start = parser->current.start;
             if (parse_expression(parser) != 0) {
-                return -1;
+                goto for_cleanup;
             }
             copy_normalized_span(segment_start, parser->current.start, step_text, sizeof(step_text), "");
         }
         if (expect_punct(parser, ")") != 0 || parse_statement(parser) != 0) {
-            return -1;
+            goto for_cleanup;
         }
         if (step_text[0] != '\0' && emit_ir_status(parser, compiler_ir_emit_eval(&parser->ir, step_text)) != 0) {
-            return -1;
+            goto for_cleanup;
         }
         if (emit_ir_status(parser, compiler_ir_emit_jump(&parser->ir, loop_label)) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, end_label)) != 0) {
-            return -1;
+            goto for_cleanup;
         }
-        return 0;
+        status = 0;
+
+for_cleanup:
+        compiler_semantic_exit_scope(&parser->semantic);
+        return status;
     }
 
     if (current_is_keyword(parser, "switch")) {
@@ -1507,8 +1523,8 @@ void compiler_parser_init(CompilerParser *parser, const CompilerSource *source, 
 
     for (i = 0; i < sizeof(builtin_objects) / sizeof(builtin_objects[0]); ++i) {
         CompilerType type;
-        compiler_type_init(&type);
-        (void)compiler_semantic_declare(&parser->semantic, builtin_objects[i], COMPILER_SYMBOL_OBJECT, &type, 1);
+        rt_memset(&type, 0, sizeof(type));
+        (void)compiler_semantic_declare(&parser->semantic, builtin_objects[i], COMPILER_SYMBOL_OBJECT, &type, 0);
     }
 
     (void)advance(parser);

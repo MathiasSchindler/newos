@@ -83,6 +83,30 @@ assert_text_equals "$flow_status" "4" "compiler macOS linker did not preserve co
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/flow.o" > "$WORK_DIR/flow_obj_hex.out"
 assert_file_contains "$WORK_DIR/flow_obj_hex.out" '7f 45 4c 46' "compiler object writer did not handle control-flow object emission"
 
+cat > "$WORK_DIR/backend_expr.c" <<'EOF'
+int main(void) {
+    char buffer[16];
+    buffer[0] = "ok"[0];
+    buffer[1] = "ok"[1];
+    buffer[2] = '\0';
+    return buffer[1] == 'k' ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/backend_expr.c" -o "$WORK_DIR/backend_expr_macos.s"
+assert_file_contains "$WORK_DIR/backend_expr_macos.s" '^\.Lstr[0-9][0-9]*:$' "compiler backend missing string literal emission"
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/backend_expr.c" -o "$WORK_DIR/backend_expr_macos_bin"
+if "$WORK_DIR/backend_expr_macos_bin"; then
+    backend_expr_status=0
+else
+    backend_expr_status=$?
+fi
+assert_text_equals "$backend_expr_status" "0" "compiler backend did not preserve string/index expression semantics"
+
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/pwd.c" -o "$WORK_DIR/pwd_repo.s"
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/echo.c" -o "$WORK_DIR/echo_repo.s"
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/basename.c" -o "$WORK_DIR/basename_repo.s"
+
 cat > "$WORK_DIR/local.h" <<'EOF'
 #ifndef LOCAL_H
 #define LOCAL_H
@@ -113,6 +137,37 @@ case "$repo_ast" in
     *"function parse_signed_value"* ) ;;
     * ) fail "compiler parser did not accept repo source or missed function summary" ;;
 esac
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$ROOT_DIR/src/tools/env.c" > "$WORK_DIR/repo_env_ast.out"
+assert_file_contains "$WORK_DIR/repo_env_ast.out" '^function main$' "compiler parser did not accept env.c cleanly"
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$ROOT_DIR/src/tools/sh.c" > "$WORK_DIR/repo_sh_ast.out"
+assert_file_contains "$WORK_DIR/repo_sh_ast.out" '^function sh_execute_pipeline$' "compiler parser did not accept sh.c cleanly"
+
+cat > "$WORK_DIR/extern_redecl.c" <<'EOF'
+extern int shared_value;
+int shared_value;
+
+int main(void) {
+    extern int shared_value;
+    return shared_value;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/extern_redecl.c" > "$WORK_DIR/extern_redecl.out"
+assert_file_contains "$WORK_DIR/extern_redecl.out" '^function main$' "compiler rejected a compatible extern redeclaration"
+
+cat > "$WORK_DIR/for_scope.c" <<'EOF'
+int main(void) {
+    for (int i = 0; i < 2; i += 1) {
+    }
+    for (int i = 0; i < 2; i += 1) {
+    }
+    return 0;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/for_scope.c" > "$WORK_DIR/for_scope.out"
+assert_file_contains "$WORK_DIR/for_scope.out" '^function main$' "compiler did not keep for-loop declarations scoped to the loop"
 
 cat > "$WORK_DIR/invalid.c" <<'EOF'
 int main(void) {
