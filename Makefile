@@ -53,6 +53,8 @@ TARGET_PLATFORM_SOURCES := \
 	src/platform/linux/time.c
 TARGET_CRT := src/arch/aarch64/linux/crt0.S
 
+.DEFAULT_GOAL := all
+
 .PHONY: all host freestanding test benchmark clean
 
 test: host
