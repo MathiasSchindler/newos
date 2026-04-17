@@ -112,6 +112,19 @@ int compiler_ir_emit_function_end(CompilerIr *ir, const char *name) {
     return emit_line(ir, "endfunc ", name, 0, 0);
 }
 
+int compiler_ir_emit_constant(CompilerIr *ir, const char *name, long long value) {
+    char number_text[32];
+
+    if (value < 0) {
+        number_text[0] = '-';
+        rt_unsigned_to_string((unsigned long long)(-value), number_text + 1, sizeof(number_text) - 1);
+    } else {
+        rt_unsigned_to_string((unsigned long long)value, number_text, sizeof(number_text));
+    }
+
+    return emit_line(ir, "const ", name, " = ", number_text);
+}
+
 int compiler_ir_emit_decl(CompilerIr *ir, const char *storage, int is_function, const CompilerType *type, const char *name) {
     char prefix[128];
     char type_text[64];

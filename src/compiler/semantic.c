@@ -174,6 +174,26 @@ int compiler_semantic_declare(
     return 0;
 }
 
+int compiler_semantic_declare_constant(CompilerSemantic *semantic, const char *name, long long value) {
+    CompilerType type;
+    int index;
+
+    compiler_type_init(&type);
+    if (compiler_semantic_declare(semantic, name, COMPILER_SYMBOL_ENUM_CONSTANT, &type, 1) != 0) {
+        return -1;
+    }
+
+    index = find_symbol_in_current_scope(semantic, name);
+    if (index < 0) {
+        set_error(semantic, "failed to register constant");
+        return -1;
+    }
+
+    semantic->symbols[index].constant_value = value;
+    semantic->symbols[index].has_constant_value = 1;
+    return 0;
+}
+
 int compiler_semantic_use_identifier(CompilerSemantic *semantic, const char *name, int as_function_call) {
     int index;
     CompilerType implicit_type;
@@ -204,6 +224,22 @@ int compiler_semantic_use_identifier(CompilerSemantic *semantic, const char *nam
         return -1;
     }
 
+    return 0;
+}
+
+int compiler_semantic_lookup_constant(const CompilerSemantic *semantic, const char *name, long long *value_out) {
+    int index;
+
+    if (name == 0 || name[0] == '\0' || value_out == 0) {
+        return -1;
+    }
+
+    index = find_symbol(semantic, name);
+    if (index < 0 || !semantic->symbols[index].has_constant_value) {
+        return -1;
+    }
+
+    *value_out = semantic->symbols[index].constant_value;
     return 0;
 }
 

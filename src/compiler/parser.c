@@ -17,6 +17,8 @@ static int parse_statement(CompilerParser *parser);
 static int parse_compound_statement(CompilerParser *parser);
 static int parse_declaration_or_function(CompilerParser *parser, int allow_function_body, int emit_summary);
 static int parse_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int allow_abstract);
+static int parse_constant_expression(CompilerParser *parser, long long *value_out);
+static int parse_enum_specifier(CompilerParser *parser);
 
 static int token_text_equals(const CompilerToken *token, const char *text) {
     size_t i = 0;
@@ -404,6 +406,8 @@ static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_
         if (current_is_keyword(parser, "struct") ||
             current_is_keyword(parser, "union") ||
             current_is_keyword(parser, "enum")) {
+            int is_enum = current_is_keyword(parser, "enum");
+
             if (type_out != 0) {
                 if (current_is_keyword(parser, "struct")) {
                     type_out->base = COMPILER_BASE_STRUCT;
@@ -415,16 +419,22 @@ static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_
                 saw_explicit_base = 1;
             }
 
-            if (advance(parser) != 0) {
-                return -1;
-            }
+            if (is_enum) {
+                if (parse_enum_specifier(parser) != 0) {
+                    return -1;
+                }
+            } else {
+                if (advance(parser) != 0) {
+                    return -1;
+                }
 
-            if (current_is_identifier(parser) && advance(parser) != 0) {
-                return -1;
-            }
+                if (current_is_identifier(parser) && advance(parser) != 0) {
+                    return -1;
+                }
 
-            if (current_is_punct(parser, "{") && skip_balanced_group(parser, "{", "}") != 0) {
-                return -1;
+                if (current_is_punct(parser, "{") && skip_balanced_group(parser, "{", "}") != 0) {
+                    return -1;
+                }
             }
             continue;
         }
@@ -476,6 +486,340 @@ static int parse_type_name(CompilerParser *parser) {
     }
 
     return 0;
+}
+
+static int parse_number_token_value(const CompilerToken *token, long long *value_out) {
+    char text[64];
+    size_t length;
+    unsigned long long value = 0;
+
+    copy_token_text(token, text, sizeof(text));
+    length = rt_strlen(text);
+    while (length > 0 &&
+           (text[length - 1] == 'u' || text[length - 1] == 'U' ||
+            text[length - 1] == 'l' || text[length - 1] == 'L')) {
+        text[length - 1] = '\0';
+        length -= 1U;
+    }
+
+    if (rt_parse_uint(text, &value) != 0) {
+        return -1;
+    }
+
+    *value_out = (long long)value;
+    return 0;
+}
+
+static int parse_char_token_value(const CompilerToken *token, long long *value_out) {
+    const char *text = token->start;
+
+    if (token->length < 3 || text[0] != '\'') {
+        return -1;
+    }
+
+    if (text[1] == '\\' && token->length >= 4) {
+        char escaped = text[2];
+        if (escaped == 'n') {
+            *value_out = '\n';
+        } else if (escaped == 't') {
+            *value_out = '\t';
+        } else if (escaped == 'r') {
+            *value_out = '\r';
+        } else if (escaped == '0') {
+            *value_out = '\0';
+        } else {
+            *value_out = (unsigned char)escaped;
+        }
+        return 0;
+    }
+
+    *value_out = (unsigned char)text[1];
+    return 0;
+}
+
+static int apply_constant_binary_op(CompilerParser *parser, const char *op, long long lhs, long long rhs, long long *value_out) {
+    if (rt_strcmp(op, "*") == 0) {
+        *value_out = lhs * rhs;
+    } else if (rt_strcmp(op, "/") == 0) {
+        if (rhs == 0) {
+            set_error(parser, "division by zero in constant expression");
+            return -1;
+        }
+        *value_out = lhs / rhs;
+    } else if (rt_strcmp(op, "%") == 0) {
+        if (rhs == 0) {
+            set_error(parser, "division by zero in constant expression");
+            return -1;
+        }
+        *value_out = lhs % rhs;
+    } else if (rt_strcmp(op, "+") == 0) {
+        *value_out = lhs + rhs;
+    } else if (rt_strcmp(op, "-") == 0) {
+        *value_out = lhs - rhs;
+    } else if (rt_strcmp(op, "<<") == 0) {
+        *value_out = lhs << rhs;
+    } else if (rt_strcmp(op, ">>") == 0) {
+        *value_out = lhs >> rhs;
+    } else if (rt_strcmp(op, "<") == 0) {
+        *value_out = lhs < rhs;
+    } else if (rt_strcmp(op, ">") == 0) {
+        *value_out = lhs > rhs;
+    } else if (rt_strcmp(op, "<=") == 0) {
+        *value_out = lhs <= rhs;
+    } else if (rt_strcmp(op, ">=") == 0) {
+        *value_out = lhs >= rhs;
+    } else if (rt_strcmp(op, "==") == 0) {
+        *value_out = lhs == rhs;
+    } else if (rt_strcmp(op, "!=") == 0) {
+        *value_out = lhs != rhs;
+    } else if (rt_strcmp(op, "&") == 0) {
+        *value_out = lhs & rhs;
+    } else if (rt_strcmp(op, "^") == 0) {
+        *value_out = lhs ^ rhs;
+    } else if (rt_strcmp(op, "|") == 0) {
+        *value_out = lhs | rhs;
+    } else if (rt_strcmp(op, "&&") == 0) {
+        *value_out = (lhs && rhs) ? 1 : 0;
+    } else if (rt_strcmp(op, "||") == 0) {
+        *value_out = (lhs || rhs) ? 1 : 0;
+    } else {
+        set_error(parser, "unsupported constant expression operator");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int parse_constant_primary(CompilerParser *parser, long long *value_out) {
+    if (parser->current.kind == COMPILER_TOKEN_NUMBER) {
+        if (parse_number_token_value(&parser->current, value_out) != 0) {
+            set_error(parser, "invalid integer constant");
+            return -1;
+        }
+        return advance(parser);
+    }
+
+    if (parser->current.kind == COMPILER_TOKEN_CHAR) {
+        if (parse_char_token_value(&parser->current, value_out) != 0) {
+            set_error(parser, "invalid character constant");
+            return -1;
+        }
+        return advance(parser);
+    }
+
+    if (current_is_identifier(parser)) {
+        char name[COMPILER_TYPEDEF_NAME_CAPACITY];
+        copy_token_text(&parser->current, name, sizeof(name));
+        if (compiler_semantic_lookup_constant(&parser->semantic, name, value_out) != 0) {
+            set_error(parser, "expected integer constant expression");
+            return -1;
+        }
+        return advance(parser);
+    }
+
+    if (current_is_punct(parser, "(")) {
+        if (advance(parser) != 0 || parse_constant_expression(parser, value_out) != 0 || expect_punct(parser, ")") != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    set_error(parser, "expected integer constant expression");
+    return -1;
+}
+
+static int parse_constant_unary(CompilerParser *parser, long long *value_out) {
+    if (current_is_punct(parser, "+")) {
+        if (advance(parser) != 0) {
+            return -1;
+        }
+        return parse_constant_unary(parser, value_out);
+    }
+
+    if (current_is_punct(parser, "-") || current_is_punct(parser, "!") || current_is_punct(parser, "~")) {
+        char op[4];
+        copy_token_text(&parser->current, op, sizeof(op));
+        if (advance(parser) != 0 || parse_constant_unary(parser, value_out) != 0) {
+            return -1;
+        }
+        if (rt_strcmp(op, "-") == 0) {
+            *value_out = -*value_out;
+        } else if (rt_strcmp(op, "!") == 0) {
+            *value_out = !*value_out;
+        } else {
+            *value_out = ~*value_out;
+        }
+        return 0;
+    }
+
+    return parse_constant_primary(parser, value_out);
+}
+
+static int parse_constant_binary_chain(
+    CompilerParser *parser,
+    int (*subexpr)(CompilerParser *, long long *),
+    const char *const *ops,
+    size_t op_count,
+    long long *value_out
+) {
+    size_t i;
+    long long lhs;
+
+    if (subexpr(parser, &lhs) != 0) {
+        return -1;
+    }
+
+    for (;;) {
+        const char *matched = 0;
+
+        for (i = 0; i < op_count; ++i) {
+            if (current_is_punct(parser, ops[i])) {
+                matched = ops[i];
+                break;
+            }
+        }
+
+        if (matched == 0) {
+            break;
+        }
+
+        if (advance(parser) != 0) {
+            return -1;
+        }
+
+        {
+            long long rhs;
+            if (subexpr(parser, &rhs) != 0 || apply_constant_binary_op(parser, matched, lhs, rhs, &lhs) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    *value_out = lhs;
+    return 0;
+}
+
+static int parse_constant_multiplicative(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"*", "/", "%"};
+    return parse_constant_binary_chain(parser, parse_constant_unary, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_additive(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"+", "-"};
+    return parse_constant_binary_chain(parser, parse_constant_multiplicative, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_shift(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"<<", ">>"};
+    return parse_constant_binary_chain(parser, parse_constant_additive, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_relational(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"<", ">", "<=", ">="};
+    return parse_constant_binary_chain(parser, parse_constant_shift, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_equality(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"==", "!="};
+    return parse_constant_binary_chain(parser, parse_constant_relational, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_bitand(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"&"};
+    return parse_constant_binary_chain(parser, parse_constant_equality, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_bitxor(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"^"};
+    return parse_constant_binary_chain(parser, parse_constant_bitand, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_bitor(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"|"};
+    return parse_constant_binary_chain(parser, parse_constant_bitxor, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_logical_and(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"&&"};
+    return parse_constant_binary_chain(parser, parse_constant_bitor, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_logical_or(CompilerParser *parser, long long *value_out) {
+    static const char *const ops[] = {"||"};
+    return parse_constant_binary_chain(parser, parse_constant_logical_and, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+}
+
+static int parse_constant_expression(CompilerParser *parser, long long *value_out) {
+    if (parse_constant_logical_or(parser, value_out) != 0) {
+        return -1;
+    }
+
+    if (current_is_punct(parser, "?")) {
+        long long true_value;
+        long long false_value;
+
+        if (advance(parser) != 0 ||
+            parse_constant_expression(parser, &true_value) != 0 ||
+            expect_punct(parser, ":") != 0 ||
+            parse_constant_expression(parser, &false_value) != 0) {
+            return -1;
+        }
+        *value_out = *value_out ? true_value : false_value;
+    }
+
+    return 0;
+}
+
+static int parse_enum_specifier(CompilerParser *parser) {
+    long long next_value = 0;
+
+    if (advance(parser) != 0) {
+        return -1;
+    }
+
+    if (current_is_identifier(parser) && advance(parser) != 0) {
+        return -1;
+    }
+
+    if (!current_is_punct(parser, "{")) {
+        return 0;
+    }
+
+    if (advance(parser) != 0) {
+        return -1;
+    }
+
+    while (!current_is_punct(parser, "}") && parser->current.kind != COMPILER_TOKEN_EOF) {
+        char name[COMPILER_TYPEDEF_NAME_CAPACITY];
+        long long value = next_value;
+
+        if (expect_identifier(parser, name, sizeof(name), 0) != 0) {
+            return -1;
+        }
+
+        if (current_is_punct(parser, "=")) {
+            if (advance(parser) != 0 || parse_constant_expression(parser, &value) != 0) {
+                return -1;
+            }
+        }
+
+        if (compiler_semantic_declare_constant(&parser->semantic, name, value) != 0) {
+            return semantic_error(parser);
+        }
+        if (emit_ir_status(parser, compiler_ir_emit_constant(&parser->ir, name, value)) != 0) {
+            return -1;
+        }
+
+        next_value = value + 1;
+        if (!current_is_punct(parser, ",")) {
+            break;
+        }
+        if (advance(parser) != 0) {
+            return -1;
+        }
+    }
+
+    return expect_punct(parser, "}");
 }
 
 static int parse_initializer(CompilerParser *parser) {

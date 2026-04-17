@@ -40,6 +40,8 @@ typedef struct {
     CompilerType type;
     size_t scope_level;
     int defined;
+    long long constant_value;
+    int has_constant_value;
 } CompilerSymbol;
 
 typedef struct {
@@ -63,7 +65,9 @@ int compiler_semantic_declare(
     const CompilerType *type,
     int is_definition
 );
+int compiler_semantic_declare_constant(CompilerSemantic *semantic, const char *name, long long value);
 int compiler_semantic_use_identifier(CompilerSemantic *semantic, const char *name, int as_function_call);
+int compiler_semantic_lookup_constant(const CompilerSemantic *semantic, const char *name, long long *value_out);
 void compiler_semantic_begin_function(CompilerSemantic *semantic, const CompilerType *type);
 void compiler_semantic_end_function(CompilerSemantic *semantic);
 int compiler_semantic_check_return(CompilerSemantic *semantic, int has_value);
