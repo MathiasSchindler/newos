@@ -85,6 +85,10 @@ static int has_suffix(const char *text, const char *suffix) {
     return rt_strcmp(text + text_len - suffix_len, suffix) == 0;
 }
 
+static int is_dash_path(const char *path) {
+    return path != 0 && path[0] == '-' && path[1] == '\0';
+}
+
 static TarCompression detect_compression(const char *archive_name) {
     if (has_suffix(archive_name, ".tar.gz") || has_suffix(archive_name, ".tgz") || has_suffix(archive_name, ".gz")) {
         return TAR_COMPRESS_GZIP;
@@ -128,6 +132,26 @@ static int contains_slash(const char *text) {
         i += 1;
     }
     return 0;
+}
+
+static int path_is_absolute(const char *path) {
+    return path != 0 && path[0] == '/';
+}
+
+static int remember_archive_path(const char *path, char *buffer, size_t buffer_size) {
+    char cwd[TAR_PATH_CAPACITY];
+
+    if (path == 0) {
+        return -1;
+    }
+    if (is_dash_path(path) || path_is_absolute(path)) {
+        rt_copy_string(buffer, buffer_size, path);
+        return 0;
+    }
+    if (platform_get_current_directory(cwd, sizeof(cwd)) != 0) {
+        return -1;
+    }
+    return tool_join_path(cwd, path, buffer, buffer_size);
 }
 
 static void tar_copy_name(char *dst, size_t dst_size, const char *src) {
@@ -267,7 +291,7 @@ static int fill_header(TarHeader *header, const char *stored_name, const Platfor
     return 0;
 }
 
-static int archive_path(int archive_fd, const char *path, const char *stored_name) {
+static int archive_path(int archive_fd, const char *path, const char *stored_name, int verbose) {
     PlatformDirEntry entries[TAR_ENTRY_CAPACITY];
     size_t count = 0;
     int is_directory = 0;
@@ -297,6 +321,9 @@ static int archive_path(int archive_fd, const char *path, const char *stored_nam
         if (fill_header(&header, dir_name, &entries[0], '5') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
             return -1;
         }
+        if (verbose && rt_write_line(1, dir_name) != 0) {
+            return -1;
+        }
 
         for (i = 0; i < count; ++i) {
             char child_path[TAR_PATH_CAPACITY];
@@ -311,7 +338,7 @@ static int archive_path(int archive_fd, const char *path, const char *stored_nam
                 return -1;
             }
 
-            if (archive_path(archive_fd, child_path, child_name) != 0) {
+            if (archive_path(archive_fd, child_path, child_name, verbose) != 0) {
                 return -1;
             }
         }
@@ -325,6 +352,9 @@ static int archive_path(int archive_fd, const char *path, const char *stored_nam
         unsigned char buffer[4096];
 
         if (fill_header(&header, stored_name, &entries[0], '0') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
+            return -1;
+        }
+        if (verbose && rt_write_line(1, stored_name) != 0) {
             return -1;
         }
 
@@ -367,7 +397,7 @@ static int ensure_parent_dirs(char *path) {
     return 0;
 }
 
-static int extract_archive(int archive_fd, int list_only) {
+static int extract_archive(int archive_fd, int list_only, int verbose) {
     unsigned char block[TAR_BLOCK_SIZE];
 
     for (;;) {
@@ -389,10 +419,13 @@ static int extract_archive(int archive_fd, int list_only) {
         size = archive_parse_octal(header->size, sizeof(header->size));
         padding = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
 
-        if (list_only) {
+        if (list_only || verbose) {
             if (rt_write_line(1, path) != 0) {
                 return -1;
             }
+        }
+
+        if (list_only) {
             if (skip_exact(archive_fd, size + padding) != 0) {
                 return -1;
             }
@@ -489,17 +522,26 @@ int main(int argc, char **argv) {
     int create_mode = 0;
     int extract_mode = 0;
     int list_mode = 0;
+    int verbose_mode = 0;
     TarCompression compression = TAR_COMPRESS_NONE;
+    char archive_path_buffer[TAR_PATH_CAPACITY];
     const char *archive_path_name = 0;
+    const char *change_dir = 0;
     int path_start = argc;
     int i;
 
+    archive_path_buffer[0] = '\0';
+
     if (argc < 3) {
-        rt_write_line(2, "Usage: tar -cf archive.tar paths... | tar -xf archive.tar | tar -tf archive.tar");
+        rt_write_line(2, "Usage: tar [-v] [-C dir] -cf archive.tar paths... | tar [-v] [-C dir] -xf archive.tar | tar -tf archive.tar");
         return 1;
     }
 
     for (i = 1; i < argc; ++i) {
+        if (rt_strcmp(argv[i], "--help") == 0) {
+            rt_write_line(2, "Usage: tar [-v] [-C dir] -cf archive.tar paths... | tar [-v] [-C dir] -xf archive.tar | tar -tf archive.tar");
+            return 0;
+        }
         if (argv[i][0] != '-' || argv[i][1] == '\0') {
             path_start = i;
             break;
@@ -514,18 +556,31 @@ int main(int argc, char **argv) {
                     extract_mode = 1;
                 } else if (*opt == 't') {
                     list_mode = 1;
+                } else if (*opt == 'v') {
+                    verbose_mode = 1;
                 } else if (*opt == 'z') {
                     compression = TAR_COMPRESS_GZIP;
                 } else if (*opt == 'j') {
                     compression = TAR_COMPRESS_BZIP2;
                 } else if (*opt == 'J') {
                     compression = TAR_COMPRESS_XZ;
+                } else if (*opt == 'C') {
+                    if (i + 1 >= argc) {
+                        rt_write_line(2, "tar: directory required after -C");
+                        return 1;
+                    }
+                    change_dir = argv[++i];
+                    break;
                 } else if (*opt == 'f') {
                     if (i + 1 >= argc) {
                         rt_write_line(2, "tar: archive path required after -f");
                         return 1;
                     }
-                    archive_path_name = argv[++i];
+                    if (remember_archive_path(argv[++i], archive_path_buffer, sizeof(archive_path_buffer)) != 0) {
+                        rt_write_line(2, "tar: archive path too long");
+                        return 1;
+                    }
+                    archive_path_name = archive_path_buffer;
                     break;
                 }
                 opt += 1;
@@ -546,10 +601,16 @@ int main(int argc, char **argv) {
         char plain_archive_path[TAR_PATH_CAPACITY];
         const char *write_path = archive_path_name;
         int archive_fd;
+        int close_archive_fd = 1;
         unsigned char zeros[TAR_BLOCK_SIZE * 2];
 
         if (path_start >= argc) {
             rt_write_line(2, "tar: no input paths provided");
+            return 1;
+        }
+
+        if (is_dash_path(archive_path_name) && compression != TAR_COMPRESS_NONE) {
+            rt_write_line(2, "tar: compressed output to stdout is not supported yet");
             return 1;
         }
 
@@ -560,8 +621,21 @@ int main(int argc, char **argv) {
             write_path = plain_archive_path;
         }
 
-        archive_fd = platform_open_write(write_path, 0644U);
-        if (archive_fd < 0) {
+        if (is_dash_path(write_path)) {
+            archive_fd = 1;
+            close_archive_fd = 0;
+        } else {
+            archive_fd = platform_open_write(write_path, 0644U);
+            if (archive_fd < 0) {
+                return 1;
+            }
+        }
+
+        if (change_dir != 0 && platform_change_directory(change_dir) != 0) {
+            if (close_archive_fd) {
+                platform_close(archive_fd);
+            }
+            rt_write_line(2, "tar: cannot change directory");
             return 1;
         }
 
@@ -570,18 +644,24 @@ int main(int argc, char **argv) {
             if (rt_strcmp(argv[i], archive_path_name) == 0) {
                 continue;
             }
-            if (archive_path(archive_fd, argv[i], argv[i]) != 0) {
-                platform_close(archive_fd);
+            if (archive_path(archive_fd, argv[i], argv[i], verbose_mode) != 0) {
+                if (close_archive_fd) {
+                    platform_close(archive_fd);
+                }
                 return 1;
             }
         }
 
         if (rt_write_all(archive_fd, zeros, sizeof(zeros)) != 0) {
-            platform_close(archive_fd);
+            if (close_archive_fd) {
+                platform_close(archive_fd);
+            }
             return 1;
         }
 
-        platform_close(archive_fd);
+        if (close_archive_fd) {
+            platform_close(archive_fd);
+        }
 
         if (compression != TAR_COMPRESS_NONE) {
             return (compress_archive_file(argv[0], compression, write_path, archive_path_name) == 0) ? 0 : 1;
@@ -595,24 +675,47 @@ int main(int argc, char **argv) {
         char temp_plain_path[TAR_PATH_CAPACITY];
         const char *read_path = archive_path_name;
         int archive_fd;
+        int close_archive_fd = 1;
         int result;
 
         temp_copy_path[0] = '\0';
         temp_plain_path[0] = '\0';
 
+        if (is_dash_path(archive_path_name) && compression != TAR_COMPRESS_NONE) {
+            rt_write_line(2, "tar: compressed input from stdin is not supported yet");
+            return 1;
+        }
+
         if (prepare_archive_for_read(argv[0], compression, archive_path_name, temp_copy_path, sizeof(temp_copy_path), temp_plain_path, sizeof(temp_plain_path), &read_path) != 0) {
             return 1;
         }
 
-        archive_fd = platform_open_read(read_path);
+        if (is_dash_path(read_path)) {
+            archive_fd = 0;
+            close_archive_fd = 0;
+        } else {
+            archive_fd = platform_open_read(read_path);
+        }
         if (archive_fd < 0) {
             (void)platform_remove_file(temp_copy_path);
             (void)platform_remove_file(temp_plain_path);
             return 1;
         }
 
-        result = extract_archive(archive_fd, list_mode);
-        platform_close(archive_fd);
+        if (change_dir != 0 && platform_change_directory(change_dir) != 0) {
+            if (close_archive_fd) {
+                platform_close(archive_fd);
+            }
+            (void)platform_remove_file(temp_copy_path);
+            (void)platform_remove_file(temp_plain_path);
+            rt_write_line(2, "tar: cannot change directory");
+            return 1;
+        }
+
+        result = extract_archive(archive_fd, list_mode, verbose_mode);
+        if (close_archive_fd) {
+            platform_close(archive_fd);
+        }
         (void)platform_remove_file(temp_copy_path);
         (void)platform_remove_file(temp_plain_path);
         return (result == 0) ? 0 : 1;

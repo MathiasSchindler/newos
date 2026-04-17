@@ -58,6 +58,19 @@ static int starts_with_space(const char *text) {
     return text[0] == ' ' || text[0] == '\t';
 }
 
+static int starts_with_keyword(const char *text, const char *keyword) {
+    size_t i = 0;
+
+    while (keyword[i] != '\0') {
+        if (text[i] != keyword[i]) {
+            return 0;
+        }
+        i += 1U;
+    }
+
+    return text[i] == ' ' || text[i] == '\t';
+}
+
 static int append_text(char *buffer, size_t *used, size_t buffer_size, const char *text) {
     size_t len = rt_strlen(text);
 
@@ -128,6 +141,29 @@ static int set_variable(MakeProgram *program, const char *name, const char *valu
     rt_copy_string(variable->name, sizeof(variable->name), name);
     rt_copy_string(variable->value, sizeof(variable->value), value);
     return 0;
+}
+
+static int append_variable(MakeProgram *program, const char *name, const char *value) {
+    MakeVariable *variable = find_variable(program, name);
+    char combined[MAKE_VALUE_CAPACITY];
+    size_t used = 0;
+
+    if (variable == 0 || variable->value[0] == '\0') {
+        return set_variable(program, name, value);
+    }
+
+    combined[0] = '\0';
+    if (append_text(combined, &used, sizeof(combined), variable->value) != 0) {
+        return -1;
+    }
+    if (value[0] != '\0') {
+        if (append_char(combined, &used, sizeof(combined), ' ') != 0 ||
+            append_text(combined, &used, sizeof(combined), value) != 0) {
+            return -1;
+        }
+    }
+
+    return set_variable(program, name, combined);
 }
 
 static MakeRule *find_rule(MakeProgram *program, const char *target) {
@@ -287,13 +323,62 @@ static int add_dependency_tokens(MakeProgram *program, MakeRule *rule, char *dep
     return 0;
 }
 
-static int parse_makefile(MakeProgram *program, const char *path) {
+static void copy_parent_directory(const char *path, char *buffer, size_t buffer_size) {
+    size_t len = rt_strlen(path);
+    size_t i;
+
+    if (buffer_size == 0) {
+        return;
+    }
+
+    rt_copy_string(buffer, buffer_size, ".");
+    if (path == 0 || path[0] == '\0') {
+        return;
+    }
+
+    if (len + 1U > buffer_size) {
+        len = buffer_size - 1U;
+    }
+    memcpy(buffer, path, len);
+    buffer[len] = '\0';
+
+    for (i = len; i > 0; --i) {
+        if (buffer[i - 1] == '/') {
+            if (i == 1U) {
+                buffer[1] = '\0';
+            } else {
+                buffer[i - 1] = '\0';
+            }
+            return;
+        }
+    }
+
+    rt_copy_string(buffer, buffer_size, ".");
+}
+
+static int resolve_make_path(const char *base_path, const char *include_path, char *buffer, size_t buffer_size) {
+    char parent[MAKE_LINE_CAPACITY];
+
+    if (include_path[0] == '/') {
+        rt_copy_string(buffer, buffer_size, include_path);
+        return 0;
+    }
+
+    copy_parent_directory(base_path, parent, sizeof(parent));
+    return tool_join_path(parent, include_path, buffer, buffer_size);
+}
+
+static int parse_makefile_internal(MakeProgram *program, const char *path, int depth) {
     int fd;
     char chunk[512];
     char line[MAKE_LINE_CAPACITY];
     size_t line_len = 0;
     long bytes_read;
     MakeRule *current_rule = 0;
+
+    if (depth > 8) {
+        return -1;
+    }
 
     fd = platform_open_read(path);
     if (fd < 0) {
@@ -346,19 +431,89 @@ static int parse_makefile(MakeProgram *program, const char *path) {
                         j += 1U;
                     }
 
-                    if (equals != 0 && (colon == 0 || equals < colon)) {
+                    if (starts_with_keyword(content, "include") || starts_with_keyword(content, "-include")) {
+                        char expanded[MAKE_LINE_CAPACITY];
+                        char include_path[MAKE_LINE_CAPACITY];
+                        char *cursor;
+                        int optional = (content[0] == '-');
+                        char *include_text = content + (optional ? 8 : 7);
+
+                        if (expand_text(program, 0, trim_leading_whitespace(include_text), expanded, sizeof(expanded)) != 0) {
+                            platform_close(fd);
+                            return -1;
+                        }
+
+                        cursor = expanded;
+                        while (*cursor != '\0') {
+                            size_t include_len = 0;
+
+                            while (*cursor == ' ' || *cursor == '\t') {
+                                cursor += 1U;
+                            }
+                            if (*cursor == '\0') {
+                                break;
+                            }
+
+                            while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t' && include_len + 1U < sizeof(include_path)) {
+                                include_path[include_len++] = *cursor++;
+                            }
+                            include_path[include_len] = '\0';
+
+                            if (include_path[0] != '\0') {
+                                char resolved[MAKE_LINE_CAPACITY];
+                                if (resolve_make_path(path, include_path, resolved, sizeof(resolved)) != 0 ||
+                                    parse_makefile_internal(program, resolved, depth + 1) != 0) {
+                                    if (!optional) {
+                                        platform_close(fd);
+                                        return -1;
+                                    }
+                                }
+                            }
+                        }
+                    } else if (equals != 0 &&
+                               (colon == 0 || equals < colon ||
+                                (equals > content && (equals[-1] == ':' || equals[-1] == '+' || equals[-1] == '?')))) {
                         char name[MAKE_NAME_CAPACITY];
                         char value[MAKE_VALUE_CAPACITY];
+                        char expanded[MAKE_VALUE_CAPACITY];
+                        char assign_mode = '=';
+                        char *name_end = equals;
                         size_t name_len;
 
-                        *equals = '\0';
+                        if (equals > content && (equals[-1] == ':' || equals[-1] == '+' || equals[-1] == '?')) {
+                            assign_mode = equals[-1];
+                            name_end = equals - 1;
+                        }
+
+                        *name_end = '\0';
                         rt_copy_string(name, sizeof(name), trim_leading_whitespace(content));
                         trim_trailing_whitespace(name);
                         rt_copy_string(value, sizeof(value), trim_leading_whitespace(equals + 1));
                         name_len = rt_strlen(name);
-                        if (name_len > 0 && set_variable(program, name, value) != 0) {
-                            platform_close(fd);
-                            return -1;
+
+                        if (name_len > 0) {
+                            if (assign_mode == ':') {
+                                if (expand_text(program, 0, value, expanded, sizeof(expanded)) != 0 ||
+                                    set_variable(program, name, expanded) != 0) {
+                                    platform_close(fd);
+                                    return -1;
+                                }
+                            } else if (assign_mode == '?') {
+                                MakeVariable *existing = find_variable(program, name);
+                                if ((existing == 0 || existing->value[0] == '\0') &&
+                                    set_variable(program, name, value) != 0) {
+                                    platform_close(fd);
+                                    return -1;
+                                }
+                            } else if (assign_mode == '+') {
+                                if (append_variable(program, name, value) != 0) {
+                                    platform_close(fd);
+                                    return -1;
+                                }
+                            } else if (set_variable(program, name, value) != 0) {
+                                platform_close(fd);
+                                return -1;
+                            }
                         }
                     } else if (colon != 0) {
                         char target[MAKE_NAME_CAPACITY];
@@ -430,6 +585,10 @@ static int parse_makefile(MakeProgram *program, const char *path) {
 
     platform_close(fd);
     return bytes_read < 0 ? -1 : 0;
+}
+
+static int parse_makefile(MakeProgram *program, const char *path) {
+    return parse_makefile_internal(program, path, 0);
 }
 
 static int path_exists_and_mtime(const char *path, long long *mtime_out) {
@@ -559,8 +718,9 @@ static int build_target(MakeProgram *program, const char *target) {
 
 int main(int argc, char **argv) {
     MakeProgram program;
-    const char *makefile_path = "Makefile";
+    const char *makefile_path = 0;
     const char *targets[32];
+    char selected_makefile[MAKE_LINE_CAPACITY];
     size_t target_count = 0;
     int i;
 
@@ -608,6 +768,21 @@ int main(int argc, char **argv) {
                 targets[target_count++] = argv[i];
             }
         }
+    }
+
+    if (makefile_path == 0) {
+        long long mtime = 0;
+
+        if (path_exists_and_mtime("Makefile", &mtime)) {
+            rt_copy_string(selected_makefile, sizeof(selected_makefile), "Makefile");
+        } else if (path_exists_and_mtime("makefile", &mtime)) {
+            rt_copy_string(selected_makefile, sizeof(selected_makefile), "makefile");
+        } else if (path_exists_and_mtime("GNUmakefile", &mtime)) {
+            rt_copy_string(selected_makefile, sizeof(selected_makefile), "GNUmakefile");
+        } else {
+            rt_copy_string(selected_makefile, sizeof(selected_makefile), "Makefile");
+        }
+        makefile_path = selected_makefile;
     }
 
     if (parse_makefile(&program, makefile_path) != 0) {

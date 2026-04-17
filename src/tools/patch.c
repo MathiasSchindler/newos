@@ -30,23 +30,23 @@ static int starts_with(const char *text, const char *prefix) {
 
 static int load_patch_text(const char *path) {
     int fd;
+    int should_close = 0;
     size_t used = 0;
     long bytes_read;
 
-    fd = platform_open_read(path);
-    if (fd < 0) {
+    if (tool_open_input(path, &fd, &should_close) != 0) {
         return -1;
     }
 
     while ((bytes_read = platform_read(fd, patch_text + used, sizeof(patch_text) - used - 1U)) > 0) {
         used += (size_t)bytes_read;
         if (used + 1U >= sizeof(patch_text)) {
-            platform_close(fd);
+            tool_close_input(fd, should_close);
             return -1;
         }
     }
 
-    platform_close(fd);
+    tool_close_input(fd, should_close);
     if (bytes_read < 0) {
         return -1;
     }
@@ -237,6 +237,7 @@ static int parse_hunk_header(
     const char *line,
     unsigned long long *old_start,
     unsigned long long *old_count,
+    unsigned long long *new_start_out,
     unsigned long long *new_count
 ) {
     size_t pos = 0;
@@ -264,7 +265,7 @@ static int parse_hunk_header(
         return -1;
     }
 
-    (void)new_start;
+    *new_start_out = new_start;
     *new_count = parsed_new_count;
     return 0;
 }
@@ -368,14 +369,26 @@ static int apply_hunk(unsigned long long old_start, size_t hunk_count, size_t *f
 int main(int argc, char **argv) {
     const char *patch_path = "-";
     int strip_components = 0;
+    int reverse_mode = 0;
     size_t line_count = 0;
     size_t i = 0;
     int argi;
 
     for (argi = 1; argi < argc; ++argi) {
         if (rt_strcmp(argv[argi], "--help") == 0) {
-            tool_write_usage(tool_base_name(argv[0]), "[-pN] [patchfile]");
+            tool_write_usage(tool_base_name(argv[0]), "[-pN] [-R] [-i patchfile] [patchfile]");
             return 0;
+        } else if (rt_strcmp(argv[argi], "-R") == 0) {
+            reverse_mode = 1;
+        } else if (rt_strcmp(argv[argi], "-i") == 0 && argi + 1 < argc) {
+            patch_path = argv[++argi];
+        } else if (rt_strcmp(argv[argi], "-p") == 0 && argi + 1 < argc) {
+            unsigned long long value = 0;
+            if (rt_parse_uint(argv[++argi], &value) != 0) {
+                tool_write_error("patch", "invalid strip count", 0);
+                return 1;
+            }
+            strip_components = (int)value;
         } else if (argv[argi][0] == '-' && argv[argi][1] == 'p') {
             unsigned long long value = 0;
             if (rt_parse_uint(argv[argi] + 2, &value) != 0) {
@@ -426,13 +439,21 @@ int main(int argc, char **argv) {
         i += 1U;
 
         deleting_file = (rt_strcmp(new_path, "/dev/null") == 0);
-        if (deleting_file) {
+        if (reverse_mode) {
+            deleting_file = (rt_strcmp(old_path, "/dev/null") == 0);
+            if (deleting_file) {
+                rt_copy_string(target_path, sizeof(target_path), new_path);
+            } else {
+                rt_copy_string(target_path, sizeof(target_path), old_path);
+            }
+        } else if (deleting_file) {
             rt_copy_string(target_path, sizeof(target_path), old_path);
         } else {
             rt_copy_string(target_path, sizeof(target_path), new_path);
         }
 
-        if (rt_strcmp(old_path, "/dev/null") == 0) {
+        if ((!reverse_mode && rt_strcmp(old_path, "/dev/null") == 0) ||
+            (reverse_mode && rt_strcmp(new_path, "/dev/null") == 0)) {
             file_count = 0;
         } else if (load_target_file(target_path, &file_count) != 0) {
             tool_write_error("patch", "cannot open target ", target_path);
@@ -443,12 +464,14 @@ int main(int argc, char **argv) {
             if (starts_with(patch_lines[i], "@@ ")) {
                 unsigned long long old_start = 0;
                 unsigned long long old_count = 0;
+                unsigned long long new_start = 0;
                 unsigned long long new_count = 0;
                 size_t hunk_count = 0;
                 unsigned long long old_seen = 0;
                 unsigned long long new_seen = 0;
+                unsigned long long apply_start;
 
-                if (parse_hunk_header(patch_lines[i], &old_start, &old_count, &new_count) != 0) {
+                if (parse_hunk_header(patch_lines[i], &old_start, &old_count, &new_start, &new_count) != 0) {
                     tool_write_error("patch", "invalid hunk header", 0);
                     return 1;
                 }
@@ -468,6 +491,13 @@ int main(int argc, char **argv) {
                     if (hunk_count >= PATCH_MAX_HUNK_LINES) {
                         tool_write_error("patch", "hunk too large", 0);
                         return 1;
+                    }
+                    if (reverse_mode) {
+                        if (prefix == '+') {
+                            prefix = '-';
+                        } else if (prefix == '-') {
+                            prefix = '+';
+                        }
                     }
                     patch_hunk_kinds[hunk_count] = prefix;
                     copy_line(patch_hunk_lines[hunk_count], sizeof(patch_hunk_lines[0]), patch_lines[i] + 1);
@@ -489,7 +519,8 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                if (apply_hunk(old_start, hunk_count, &file_count) != 0) {
+                apply_start = reverse_mode ? new_start : old_start;
+                if (apply_hunk(apply_start, hunk_count, &file_count) != 0) {
                     tool_write_error("patch", "failed to apply hunk to ", target_path);
                     return 1;
                 }

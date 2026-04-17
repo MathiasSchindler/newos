@@ -1,5 +1,10 @@
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
+
+#if __STDC_HOSTED__
+#include <time.h>
+#endif
 
 static void write_padded(unsigned int value, unsigned int width) {
     char digits[16];
@@ -45,7 +50,17 @@ static void civil_from_days(long long z, int *year_out, unsigned int *month_out,
 }
 
 int main(int argc, char **argv) {
-    long long now;
+    int use_utc = 1;
+    const char *format = 0;
+    int argi;
+
+#if __STDC_HOSTED__
+    time_t now;
+    struct tm tm_value;
+    struct tm *tm_ptr;
+    char output[256];
+#endif
+    long long epoch_seconds;
     long long days;
     unsigned long long secs_of_day;
     unsigned int hour;
@@ -55,16 +70,48 @@ int main(int argc, char **argv) {
     unsigned int month;
     unsigned int day;
 
-    if (argc > 2 || (argc == 2 && rt_strcmp(argv[1], "-u") != 0)) {
-        rt_write_line(2, "Usage: date [-u]");
+    for (argi = 1; argi < argc; ++argi) {
+        if (rt_strcmp(argv[argi], "-u") == 0) {
+            use_utc = 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "-l") == 0) {
+            use_utc = 0;
+            continue;
+        }
+        if (argv[argi][0] == '+' && argv[argi][1] != '\0' && format == 0) {
+            format = argv[argi] + 1;
+            continue;
+        }
+        tool_write_usage(argv[0], "[-u|-l] [+FORMAT]");
         return 1;
     }
 
-    now = platform_get_epoch_time();
-    days = now / 86400LL;
-    secs_of_day = (unsigned long long)(now % 86400LL);
+#if __STDC_HOSTED__
+    now = (time_t)platform_get_epoch_time();
+    tm_ptr = use_utc ? gmtime_r(&now, &tm_value) : localtime_r(&now, &tm_value);
+    if (tm_ptr != 0) {
+        const char *actual_format = format != 0 ? format : "%Y-%m-%d %H:%M:%S";
+        if (strftime(output, sizeof(output), actual_format, tm_ptr) > 0) {
+            if (rt_write_cstr(1, output) != 0) {
+                return 1;
+            }
+            if (format == 0 && use_utc) {
+                return rt_write_line(1, " UTC") == 0 ? 0 : 1;
+            }
+            if (format == 0) {
+                return rt_write_char(1, '\n') == 0 ? 0 : 1;
+            }
+            return rt_write_char(1, '\n') == 0 ? 0 : 1;
+        }
+    }
+#endif
 
-    if (now < 0 && secs_of_day != 0ULL) {
+    epoch_seconds = platform_get_epoch_time();
+    days = epoch_seconds / 86400LL;
+    secs_of_day = (unsigned long long)(epoch_seconds % 86400LL);
+
+    if (epoch_seconds < 0 && secs_of_day != 0ULL) {
         days -= 1LL;
         secs_of_day += 86400ULL;
     }

@@ -1,11 +1,10 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
 
-#include <stdio.h>
-
-#define PSTREE_MAX_PROCESSES 8192
+#define PSTREE_MAX_PROCESSES 4096
 #define PSTREE_NAME_CAPACITY 256
 #define PSTREE_PREFIX_CAPACITY 512
 
@@ -13,10 +12,11 @@ typedef struct {
     int pid;
     int ppid;
     char name[PSTREE_NAME_CAPACITY];
+    char user[PSTREE_NAME_CAPACITY];
 } PstreeProcess;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[PID]");
+    tool_write_usage(program_name, "[-u] [PID]");
 }
 
 static void copy_name(char *dst, size_t dst_size, const char *src) {
@@ -39,33 +39,25 @@ static void sort_processes(PstreeProcess *entries, size_t count) {
 }
 
 static int collect_processes(PstreeProcess *entries, size_t capacity, size_t *count_out) {
-    FILE *pipe = popen("/bin/ps -axo pid=,ppid=,comm=", "r");
-    char line[512];
+    static PlatformProcessEntry platform_entries[PSTREE_MAX_PROCESSES];
     size_t count = 0;
+    size_t i;
 
-    if (pipe == 0) {
-        pipe = popen("ps -axo pid=,ppid=,comm=", "r");
-    }
-
-    if (pipe == 0) {
+    if (platform_list_processes(platform_entries, PSTREE_MAX_PROCESSES, &count) != 0) {
         return -1;
     }
 
-    while (fgets(line, sizeof(line), pipe) != 0 && count < capacity) {
-        int pid = 0;
-        int ppid = 0;
-        char name[PSTREE_NAME_CAPACITY];
-
-        name[0] = '\0';
-        if (sscanf(line, " %d %d %255[^\n]", &pid, &ppid, name) == 3 && pid > 0) {
-            entries[count].pid = pid;
-            entries[count].ppid = ppid;
-            copy_name(entries[count].name, sizeof(entries[count].name), name);
-            count += 1;
-        }
+    if (count > capacity) {
+        count = capacity;
     }
 
-    (void)pclose(pipe);
+    for (i = 0; i < count; ++i) {
+        entries[i].pid = platform_entries[i].pid;
+        entries[i].ppid = platform_entries[i].ppid;
+        copy_name(entries[i].name, sizeof(entries[i].name), platform_entries[i].name);
+        copy_name(entries[i].user, sizeof(entries[i].user), platform_entries[i].user);
+    }
+
     *count_out = count;
     return count == 0 ? -1 : 0;
 }
@@ -86,19 +78,24 @@ static int is_root_process(const PstreeProcess *entries, size_t count, size_t in
     return entries[index].ppid <= 1 || find_process_index(entries, count, entries[index].ppid) < 0;
 }
 
-static void write_process_line(const PstreeProcess *entry, const char *prefix, int is_last, int is_root) {
+static void write_process_line(const PstreeProcess *entry, const char *prefix, int is_last, int is_root, int show_user) {
     if (!is_root) {
         rt_write_cstr(1, prefix);
         rt_write_cstr(1, is_last ? "`- " : "|- ");
     }
 
     rt_write_cstr(1, entry->name);
+    if (show_user && entry->user[0] != '\0') {
+        rt_write_cstr(1, "{");
+        rt_write_cstr(1, entry->user);
+        rt_write_cstr(1, "}");
+    }
     rt_write_char(1, '(');
     rt_write_int(1, (long long)entry->pid);
     rt_write_line(1, ")");
 }
 
-static void render_tree(const PstreeProcess *entries, size_t count, int pid, const char *prefix, int is_last, int is_root) {
+static void render_tree(const PstreeProcess *entries, size_t count, int pid, const char *prefix, int is_last, int is_root, int show_user) {
     int index = find_process_index(entries, count, pid);
     char next_prefix[PSTREE_PREFIX_CAPACITY];
     size_t i;
@@ -109,7 +106,7 @@ static void render_tree(const PstreeProcess *entries, size_t count, int pid, con
         return;
     }
 
-    write_process_line(&entries[index], prefix, is_last, is_root);
+    write_process_line(&entries[index], prefix, is_last, is_root, show_user);
 
     for (i = 0; i < count; ++i) {
         if (entries[i].ppid == pid) {
@@ -120,35 +117,41 @@ static void render_tree(const PstreeProcess *entries, size_t count, int pid, con
     if (is_root) {
         next_prefix[0] = '\0';
     } else {
-        int written = snprintf(next_prefix, sizeof(next_prefix), "%s%s", prefix, is_last ? "   " : "|  ");
-        if (written < 0 || (size_t)written >= sizeof(next_prefix)) {
-            next_prefix[0] = '\0';
+        size_t prefix_len = rt_strlen(prefix);
+        rt_copy_string(next_prefix, sizeof(next_prefix), prefix);
+        if (prefix_len + 4 < sizeof(next_prefix)) {
+            rt_copy_string(next_prefix + prefix_len, sizeof(next_prefix) - prefix_len, is_last ? "   " : "|  ");
         }
     }
 
     for (i = 0; i < count; ++i) {
         if (entries[i].ppid == pid) {
             child_seen += 1;
-            render_tree(entries, count, entries[i].pid, next_prefix, child_seen == child_count, 0);
+            render_tree(entries, count, entries[i].pid, next_prefix, child_seen == child_count, 0, show_user);
         }
     }
 }
 
 int main(int argc, char **argv) {
-    PstreeProcess entries[PSTREE_MAX_PROCESSES];
+    static PstreeProcess entries[PSTREE_MAX_PROCESSES];
     size_t count = 0;
     unsigned long long root_pid = 0;
     size_t i;
     int printed = 0;
+    int show_user = 0;
 
-    if (argc > 2) {
+    if (argc > 3) {
         print_usage(argv[0]);
         return 1;
     }
 
-    if (argc == 2 && tool_parse_uint_arg(argv[1], &root_pid, "pstree", "pid") != 0) {
-        print_usage(argv[0]);
-        return 1;
+    for (i = 1; i < (size_t)argc; ++i) {
+        if (rt_strcmp(argv[i], "-u") == 0) {
+            show_user = 1;
+        } else if (tool_parse_uint_arg(argv[i], &root_pid, "pstree", "pid") != 0) {
+            print_usage(argv[0]);
+            return 1;
+        }
     }
 
     if (collect_processes(entries, PSTREE_MAX_PROCESSES, &count) != 0) {
@@ -160,10 +163,10 @@ int main(int argc, char **argv) {
 
     if (root_pid != 0) {
         if (find_process_index(entries, count, (int)root_pid) < 0) {
-            tool_write_error("pstree", "unknown pid ", argv[1]);
+            tool_write_error("pstree", "unknown pid ", argc > 1 ? argv[argc - 1] : "");
             return 1;
         }
-        render_tree(entries, count, (int)root_pid, "", 1, 1);
+        render_tree(entries, count, (int)root_pid, "", 1, 1, show_user);
         return 0;
     }
 
@@ -172,7 +175,7 @@ int main(int argc, char **argv) {
             if (printed) {
                 rt_write_char(1, '\n');
             }
-            render_tree(entries, count, entries[i].pid, "", 1, 1);
+            render_tree(entries, count, entries[i].pid, "", 1, 1, show_user);
             printed = 1;
         }
     }

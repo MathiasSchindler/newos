@@ -5,10 +5,6 @@
 #include "tool_util.h"
 #include "shell_shared.h"
 
-#if __STDC_HOSTED__
-#include <stdlib.h>
-#endif
-
 #define SH_MAX_POSITIONAL_ARGS 16
 #define SH_POSITIONAL_ARG_CAPACITY 256
 
@@ -261,14 +257,12 @@ int sh_resolve_shell_command_path(const char *name, char *buffer, size_t buffer_
         return 0;
     }
 
-#if __STDC_HOSTED__
     {
-        const char *host_path = getenv("PATH");
+        const char *host_path = platform_getenv("PATH");
         if (host_path != 0) {
             path_list = host_path;
         }
     }
-#endif
 
     return search_command_in_path_list(path_list, name, buffer, buffer_size);
 }
@@ -617,26 +611,22 @@ static int expand_shell_parameters(char *line) {
                     }
                     replacement = shell_get_positional_parameter(index);
                 }
-#if __STDC_HOSTED__
                 else {
-                    replacement = getenv(name);
+                    replacement = platform_getenv(name);
                     if (replacement == 0) {
                         replacement = "";
                     }
                 }
-#endif
             } else if (sh_is_name_start_char(line[i + 1])) {
                 i += 1;
                 while (sh_is_name_char(line[i]) && name_len + 1 < sizeof(name)) {
                     name[name_len++] = line[i++];
                 }
                 name[name_len] = '\0';
-#if __STDC_HOSTED__
-                replacement = getenv(name);
+                replacement = platform_getenv(name);
                 if (replacement == 0) {
                     replacement = "";
                 }
-#endif
             } else {
                 if (out + 1 >= sizeof(result)) {
                     return -1;

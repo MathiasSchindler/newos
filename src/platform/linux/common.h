@@ -17,6 +17,7 @@
 #define LINUX_O_DIRECTORY 0200000
 
 #define LINUX_SIGCHLD 17
+#define LINUX_TIOCGWINSZ 0x5413
 
 #define LINUX_S_IFMT   0170000U
 #define LINUX_S_IFIFO  0010000U
@@ -71,6 +72,13 @@ struct linux_dirent64 {
 struct linux_timespec {
     long tv_sec;
     long tv_nsec;
+};
+
+struct linux_winsize {
+    unsigned short ws_row;
+    unsigned short ws_col;
+    unsigned short ws_xpixel;
+    unsigned short ws_ypixel;
 };
 
 #define linux_copy_string rt_copy_string

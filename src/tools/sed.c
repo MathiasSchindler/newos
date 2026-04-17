@@ -7,6 +7,13 @@
 #define SED_MAX_COMMANDS 64
 
 typedef enum {
+    SED_COMMAND_SUBSTITUTE,
+    SED_COMMAND_DELETE,
+    SED_COMMAND_PRINT,
+    SED_COMMAND_QUIT
+} SedCommandKind;
+
+typedef enum {
     SED_ADDRESS_NONE,
     SED_ADDRESS_LINE,
     SED_ADDRESS_PATTERN
@@ -21,6 +28,7 @@ typedef struct {
 typedef struct {
     SedAddress start;
     SedAddress end;
+    SedCommandKind kind;
     char old_text[SED_PATTERN_CAPACITY];
     char new_text[SED_PATTERN_CAPACITY];
     int global;
@@ -30,12 +38,19 @@ typedef struct {
 typedef struct {
     SedCommand commands[SED_MAX_COMMANDS];
     size_t count;
+    int suppress_default_output;
 } SedProgram;
+
+typedef struct {
+    int deleted;
+    int quit;
+    unsigned int explicit_prints;
+} SedExecutionResult;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-f script] [expression] [file ...]");
+    rt_write_line(2, " [-n] [-f script] [expression] [file ...]");
 }
 
 static int starts_with_at(const char *text, size_t pos, const char *pattern) {
@@ -126,11 +141,8 @@ static int parse_address(const char *expr, size_t *pos, SedAddress *address) {
     return 0;
 }
 
-static int parse_substitution_command(const char *expr, SedCommand *command) {
-    char delimiter;
+static int parse_command_expression(const char *expr, SedCommand *command) {
     size_t pos = 0;
-    size_t old_len = 0;
-    size_t new_len = 0;
     int address_result;
 
     rt_memset(command, 0, sizeof(*command));
@@ -147,34 +159,47 @@ static int parse_substitution_command(const char *expr, SedCommand *command) {
         }
     }
 
-    if (expr[pos] != 's' || expr[pos + 1] == '\0') {
-        return -1;
-    }
+    if (expr[pos] == 's' && expr[pos + 1] != '\0') {
+        char delimiter = expr[pos + 1];
+        size_t old_len = 0;
+        size_t new_len = 0;
 
-    delimiter = expr[pos + 1];
-    pos += 2;
+        command->kind = SED_COMMAND_SUBSTITUTE;
+        pos += 2;
 
-    while (expr[pos] != '\0' && expr[pos] != delimiter && old_len + 1 < sizeof(command->old_text)) {
-        command->old_text[old_len++] = expr[pos++];
-    }
-    if (expr[pos] != delimiter) {
-        return -1;
-    }
-    command->old_text[old_len] = '\0';
-    pos += 1;
-
-    while (expr[pos] != '\0' && expr[pos] != delimiter && new_len + 1 < sizeof(command->new_text)) {
-        command->new_text[new_len++] = expr[pos++];
-    }
-    if (expr[pos] != delimiter) {
-        return -1;
-    }
-    command->new_text[new_len] = '\0';
-    pos += 1;
-
-    if (expr[pos] == 'g') {
-        command->global = 1;
+        while (expr[pos] != '\0' && expr[pos] != delimiter && old_len + 1 < sizeof(command->old_text)) {
+            command->old_text[old_len++] = expr[pos++];
+        }
+        if (expr[pos] != delimiter) {
+            return -1;
+        }
+        command->old_text[old_len] = '\0';
         pos += 1;
+
+        while (expr[pos] != '\0' && expr[pos] != delimiter && new_len + 1 < sizeof(command->new_text)) {
+            command->new_text[new_len++] = expr[pos++];
+        }
+        if (expr[pos] != delimiter) {
+            return -1;
+        }
+        command->new_text[new_len] = '\0';
+        pos += 1;
+
+        if (expr[pos] == 'g') {
+            command->global = 1;
+            pos += 1;
+        }
+    } else if (expr[pos] == 'd' && expr[pos + 1] == '\0') {
+        command->kind = SED_COMMAND_DELETE;
+        pos += 1;
+    } else if (expr[pos] == 'p' && expr[pos + 1] == '\0') {
+        command->kind = SED_COMMAND_PRINT;
+        pos += 1;
+    } else if (expr[pos] == 'q' && expr[pos + 1] == '\0') {
+        command->kind = SED_COMMAND_QUIT;
+        pos += 1;
+    } else {
+        return -1;
     }
 
     while (expr[pos] == ' ' || expr[pos] == '\t') {
@@ -198,7 +223,7 @@ static int add_command_expression(const char *expr, SedProgram *program) {
         return 0;
     }
 
-    if (parse_substitution_command(buffer, &program->commands[program->count]) != 0) {
+    if (parse_command_expression(buffer, &program->commands[program->count]) != 0) {
         return -1;
     }
 
@@ -358,19 +383,35 @@ static void reset_program_state(SedProgram *program) {
     }
 }
 
-static int process_line(SedProgram *program, unsigned long long line_no, const char *input, char *output, size_t output_size) {
+static int process_line(SedProgram *program,
+                        unsigned long long line_no,
+                        const char *input,
+                        char *output,
+                        size_t output_size,
+                        SedExecutionResult *result) {
     char current[SED_LINE_CAPACITY];
     char scratch[SED_LINE_CAPACITY];
     size_t i;
 
+    rt_memset(result, 0, sizeof(*result));
     rt_copy_string(current, sizeof(current), input);
 
     for (i = 0; i < program->count; ++i) {
         if (command_applies(&program->commands[i], line_no, current)) {
-            if (apply_substitution(&program->commands[i], current, scratch, sizeof(scratch)) != 0) {
-                return -1;
+            if (program->commands[i].kind == SED_COMMAND_SUBSTITUTE) {
+                if (apply_substitution(&program->commands[i], current, scratch, sizeof(scratch)) != 0) {
+                    return -1;
+                }
+                rt_copy_string(current, sizeof(current), scratch);
+            } else if (program->commands[i].kind == SED_COMMAND_DELETE) {
+                result->deleted = 1;
+                break;
+            } else if (program->commands[i].kind == SED_COMMAND_PRINT) {
+                result->explicit_prints += 1U;
+            } else if (program->commands[i].kind == SED_COMMAND_QUIT) {
+                result->quit = 1;
+                break;
             }
-            rt_copy_string(current, sizeof(current), scratch);
         }
     }
 
@@ -386,6 +427,7 @@ static int sed_stream(int fd, SedProgram *program) {
     char chunk[4096];
     char line[SED_LINE_CAPACITY];
     char out[SED_LINE_CAPACITY];
+    SedExecutionResult result;
     size_t line_len = 0;
     unsigned long long line_no = 1;
     long bytes_read;
@@ -400,11 +442,25 @@ static int sed_stream(int fd, SedProgram *program) {
 
             if (ch == '\n') {
                 line[line_len] = '\0';
-                if (process_line(program, line_no, line, out, sizeof(out)) != 0 || rt_write_line(1, out) != 0) {
+                if (process_line(program, line_no, line, out, sizeof(out), &result) != 0) {
                     return -1;
+                }
+                if (!result.deleted) {
+                    while (result.explicit_prints > 0) {
+                        if (rt_write_line(1, out) != 0) {
+                            return -1;
+                        }
+                        result.explicit_prints -= 1U;
+                    }
+                    if (!program->suppress_default_output && rt_write_line(1, out) != 0) {
+                        return -1;
+                    }
                 }
                 line_len = 0;
                 line_no += 1;
+                if (result.quit) {
+                    return 0;
+                }
             } else if (line_len + 1 < sizeof(line)) {
                 line[line_len++] = ch;
             }
@@ -417,8 +473,19 @@ static int sed_stream(int fd, SedProgram *program) {
 
     if (line_len > 0) {
         line[line_len] = '\0';
-        if (process_line(program, line_no, line, out, sizeof(out)) != 0 || rt_write_line(1, out) != 0) {
+        if (process_line(program, line_no, line, out, sizeof(out), &result) != 0) {
             return -1;
+        }
+        if (!result.deleted) {
+            while (result.explicit_prints > 0) {
+                if (rt_write_line(1, out) != 0) {
+                    return -1;
+                }
+                result.explicit_prints -= 1U;
+            }
+            if (!program->suppress_default_output && rt_write_line(1, out) != 0) {
+                return -1;
+            }
         }
     }
 
@@ -434,7 +501,10 @@ int main(int argc, char **argv) {
     rt_memset(&program, 0, sizeof(program));
 
     while (argi < argc && argv[argi][0] == '-') {
-        if (rt_strcmp(argv[argi], "-f") == 0 && argi + 1 < argc) {
+        if (rt_strcmp(argv[argi], "-n") == 0) {
+            program.suppress_default_output = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-f") == 0 && argi + 1 < argc) {
             if (load_script_file(argv[argi + 1], &program) != 0) {
                 rt_write_cstr(2, "sed: cannot load script ");
                 rt_write_line(2, argv[argi + 1]);

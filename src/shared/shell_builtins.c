@@ -3,10 +3,6 @@
 #include "shell_shared.h"
 #include "runtime.h"
 
-#if __STDC_HOSTED__
-#include <stdlib.h>
-#endif
-
 static int builtin_jobs(void) {
     int i;
 
@@ -107,7 +103,6 @@ static int builtin_exit_command(const ShCommand *cmd) {
 }
 
 static int builtin_export_command(const ShCommand *cmd) {
-#if __STDC_HOSTED__
     int i;
 
     for (i = 1; i < cmd->argc; ++i) {
@@ -120,27 +115,20 @@ static int builtin_export_command(const ShCommand *cmd) {
 
         if (*eq == '=') {
             *eq = '\0';
-            setenv(arg, eq + 1, 1);
+            (void)platform_setenv(arg, eq + 1, 1);
             *eq = '=';
         }
     }
-#else
-    (void)cmd;
-#endif
 
     return 0;
 }
 
 static int builtin_unset_command(const ShCommand *cmd) {
-#if __STDC_HOSTED__
     int i;
 
     for (i = 1; i < cmd->argc; ++i) {
-        unsetenv(cmd->argv[i]);
+        (void)platform_unsetenv(cmd->argv[i]);
     }
-#else
-    (void)cmd;
-#endif
 
     return 0;
 }

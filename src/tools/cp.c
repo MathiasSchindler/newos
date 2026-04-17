@@ -29,6 +29,24 @@ static int ensure_directory(const char *path) {
     return -1;
 }
 
+static int path_is_same_or_child(const char *path, const char *prefix) {
+    size_t i = 0;
+
+    if (prefix[0] == '/' && prefix[1] == '\0') {
+        return 1;
+    }
+
+    while (prefix[i] != '\0' && path[i] == prefix[i]) {
+        i += 1U;
+    }
+
+    if (prefix[i] != '\0') {
+        return 0;
+    }
+
+    return path[i] == '\0' || path[i] == '/';
+}
+
 static int resolve_copy_target(const char *source_path, const char *dest_path, int source_is_directory, char *buffer, size_t buffer_size) {
     int dest_is_directory = 0;
 
@@ -120,6 +138,12 @@ static int copy_one_path(const char *source_path, const char *dest_path, const C
         return 1;
     }
 
+    if (source_is_directory && path_is_same_or_child(target_path, source_path)) {
+        rt_write_cstr(2, "cp: cannot copy directory into itself: ");
+        rt_write_line(2, source_path);
+        return 1;
+    }
+
     if (copy_path_recursive(source_path, target_path) != 0) {
         rt_write_cstr(2, "cp: failed to copy ");
         rt_write_cstr(2, source_path);
@@ -141,6 +165,11 @@ int main(int argc, char **argv) {
     rt_memset(&options, 0, sizeof(options));
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        }
+
         const char *flag = argv[argi] + 1;
 
         while (*flag != '\0') {
@@ -154,33 +183,6 @@ int main(int argc, char **argv) {
         }
 
         argi += 1;
-    }
-
-    source_count = argc - argi - 1;
-    if (source_count < 1) {
-        print_usage(argv[0]);
-        return 1;
-    }
-
-    dest_path = argv[argc - 1];
-    if (source_count > 1) {
-        int dest_is_directory = 0;
-        int i;
-
-        if (platform_path_is_directory(dest_path, &dest_is_directory) != 0 || !dest_is_directory) {
-            rt_write_line(2, "cp: target for multiple sources must be an existing directory");
-            return 1;
-        }
-
-        for (i = argi; i < argc - 1; ++i) {
-            if (copy_one_path(argv[i], dest_path, &options) != 0) {
-                exit_code = 1;
-            }
-        }
-        return exit_code;
-    }
-
-    return copy_one_path(argv[argi], dest_path, &options) += 1;
     }
 
     source_count = argc - argi - 1;

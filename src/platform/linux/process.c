@@ -26,6 +26,38 @@ static void linux_try_exec(const char *path, char *const argv[]) {
     linux_syscall3(LINUX_SYS_EXECVE, (long)path, (long)argv, (long)envp);
 }
 
+const char *platform_getenv(const char *name) {
+    (void)name;
+    return 0;
+}
+
+const char *platform_getenv_entry(size_t index) {
+    (void)index;
+    return 0;
+}
+
+int platform_setenv(const char *name, const char *value, int overwrite) {
+    (void)name;
+    (void)value;
+    (void)overwrite;
+    return 0;
+}
+
+int platform_unsetenv(const char *name) {
+    (void)name;
+    return 0;
+}
+
+int platform_clearenv(void) {
+    return 0;
+}
+
+int platform_isatty(int fd) {
+    struct linux_winsize winsize;
+
+    return linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCGWINSZ, (long)&winsize) < 0 ? 0 : 1;
+}
+
 int platform_create_pipe(int pipe_fds[2]) {
     return linux_syscall2(LINUX_SYS_PIPE2, (long)pipe_fds, 0) < 0 ? -1 : 0;
 }
@@ -178,6 +210,11 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
                 long read_result;
 
                 entries_out[count].pid = linux_parse_pid_value(name);
+                entries_out[count].ppid = 0;
+                entries_out[count].uid = 0;
+                entries_out[count].rss_kb = 0;
+                linux_copy_string(entries_out[count].state, sizeof(entries_out[count].state), "?");
+                linux_copy_string(entries_out[count].user, sizeof(entries_out[count].user), "?");
                 linux_copy_string(entries_out[count].name, sizeof(entries_out[count].name), name);
 
                 if (linux_join_path("/proc", name, proc_dir, sizeof(proc_dir)) == 0 &&

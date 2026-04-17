@@ -51,39 +51,7 @@ static int parse_duration_seconds(const char *text, unsigned int *seconds_out) {
 }
 
 #if __STDC_HOSTED__
-static int parse_signal_value(const char *text, int *signal_out) {
-    unsigned long long value = 0;
-
-    if (text == 0 || signal_out == 0) {
-        return -1;
-    }
-
-    if (rt_parse_uint(text, &value) == 0) {
-        *signal_out = (int)value;
-        return 0;
-    }
-
-    if (rt_strcmp(text, "TERM") == 0 || rt_strcmp(text, "SIGTERM") == 0) {
-        *signal_out = SIGTERM;
-        return 0;
-    }
-    if (rt_strcmp(text, "KILL") == 0 || rt_strcmp(text, "SIGKILL") == 0) {
-        *signal_out = SIGKILL;
-        return 0;
-    }
-    if (rt_strcmp(text, "INT") == 0 || rt_strcmp(text, "SIGINT") == 0) {
-        *signal_out = SIGINT;
-        return 0;
-    }
-    if (rt_strcmp(text, "HUP") == 0 || rt_strcmp(text, "SIGHUP") == 0) {
-        *signal_out = SIGHUP;
-        return 0;
-    }
-
-    return -1;
-}
-
-static int wait_with_timeout(int pid, unsigned int timeout_seconds, unsigned int kill_after, int signal_number, int *status_out) {
+static int wait_with_timeout(int pid, unsigned int timeout_seconds, unsigned int kill_after, int signal_number, int preserve_status, int *status_out) {
     unsigned int elapsed = 0;
     unsigned int after_signal = 0;
     int timed_out = 0;
@@ -94,11 +62,11 @@ static int wait_with_timeout(int pid, unsigned int timeout_seconds, unsigned int
 
         if (waited == (pid_t)pid) {
             if (WIFEXITED(status)) {
-                *status_out = timed_out ? 124 : WEXITSTATUS(status);
+                *status_out = (timed_out && !preserve_status) ? 124 : WEXITSTATUS(status);
             } else if (WIFSIGNALED(status)) {
-                *status_out = timed_out ? 124 : (128 + WTERMSIG(status));
+                *status_out = (timed_out && !preserve_status) ? 124 : (128 + WTERMSIG(status));
             } else {
-                *status_out = timed_out ? 124 : 1;
+                *status_out = (timed_out && !preserve_status) ? 124 : 1;
             }
             return 0;
         }
@@ -130,13 +98,14 @@ static int wait_with_timeout(int pid, unsigned int timeout_seconds, unsigned int
 #endif
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-s SIGNAL] [-k SECONDS] SECONDS COMMAND [ARG ...]");
+    tool_write_usage(program_name, "[--preserve-status] [-s SIGNAL] [-k SECONDS] SECONDS COMMAND [ARG ...]");
 }
 
 int main(int argc, char **argv) {
     unsigned int timeout_seconds = 0;
     unsigned int kill_after = 0;
     int signal_number = 15;
+    int preserve_status = 0;
     int argi = 1;
     int pid;
     int status = 0;
@@ -146,13 +115,18 @@ int main(int argc, char **argv) {
             argi += 1;
             break;
         }
+        if (rt_strcmp(argv[argi], "--preserve-status") == 0) {
+            preserve_status = 1;
+            argi += 1;
+            continue;
+        }
         if (rt_strcmp(argv[argi], "-s") == 0) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 return 125;
             }
 #if __STDC_HOSTED__
-            if (parse_signal_value(argv[argi + 1], &signal_number) != 0) {
+            if (tool_parse_signal_name(argv[argi + 1], &signal_number) != 0) {
                 tool_write_error("timeout", "invalid signal: ", argv[argi + 1]);
                 return 125;
             }
@@ -183,7 +157,7 @@ int main(int argc, char **argv) {
     }
 
 #if __STDC_HOSTED__
-    if (wait_with_timeout(pid, timeout_seconds, kill_after, signal_number, &status) != 0) {
+    if (wait_with_timeout(pid, timeout_seconds, kill_after, signal_number, preserve_status, &status) != 0) {
         tool_write_error("timeout", "wait failed", 0);
         return 125;
     }
@@ -199,7 +173,7 @@ int main(int argc, char **argv) {
         if (platform_wait_process(pid, &status) != 0) {
             return 125;
         }
-        return 124;
+        return preserve_status ? status : 124;
     }
 
     if (platform_wait_process(pid, &status) != 0) {

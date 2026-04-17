@@ -6,6 +6,12 @@
 #define PLATFORM_NAME_CAPACITY 256
 #define PLATFORM_OWNER_CAPACITY 32
 #define PLATFORM_GROUP_CAPACITY 32
+#define PLATFORM_PING_DEFAULT_COUNT 4U
+#define PLATFORM_PING_DEFAULT_INTERVAL_SECONDS 1U
+#define PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS 1U
+#define PLATFORM_PING_DEFAULT_PAYLOAD_SIZE 56U
+#define PLATFORM_PING_MAX_PAYLOAD_SIZE 1400U
+#define PLATFORM_PING_MAX_TTL 255U
 
 typedef struct {
     char name[PLATFORM_NAME_CAPACITY];
@@ -22,6 +28,11 @@ typedef struct {
 
 typedef struct {
     int pid;
+    int ppid;
+    unsigned int uid;
+    unsigned long long rss_kb;
+    char state[16];
+    char user[PLATFORM_NAME_CAPACITY];
     char name[PLATFORM_NAME_CAPACITY];
 } PlatformProcessEntry;
 
@@ -31,6 +42,14 @@ typedef struct {
     char username[PLATFORM_NAME_CAPACITY];
     char groupname[PLATFORM_NAME_CAPACITY];
 } PlatformIdentity;
+
+typedef struct {
+    unsigned int count;
+    unsigned int interval_seconds;
+    unsigned int timeout_seconds;
+    unsigned int payload_size;
+    unsigned int ttl;
+} PlatformPingOptions;
 
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
@@ -48,6 +67,12 @@ int platform_change_mode(const char *path, unsigned int mode);
 int platform_change_owner(const char *path, unsigned int uid, unsigned int gid);
 int platform_touch_path(const char *path);
 int platform_change_directory(const char *path);
+const char *platform_getenv(const char *name);
+const char *platform_getenv_entry(size_t index);
+int platform_setenv(const char *name, const char *value, int overwrite);
+int platform_unsetenv(const char *name);
+int platform_clearenv(void);
+int platform_isatty(int fd);
 int platform_sleep_seconds(unsigned int seconds);
 long long platform_get_epoch_time(void);
 int platform_send_signal(int pid, int signal_number);
@@ -68,7 +93,7 @@ int platform_wait_process(int pid, int *exit_status_out);
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_get_identity(PlatformIdentity *identity_out);
 int platform_get_uname(char *sysname, size_t sysname_size, char *nodename, size_t nodename_size, char *release, size_t release_size, char *machine, size_t machine_size);
-int platform_ping_host(const char *host, unsigned int count);
+int platform_ping_host(const char *host, const PlatformPingOptions *options);
 
 int platform_collect_entries(
     const char *path,

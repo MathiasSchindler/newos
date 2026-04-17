@@ -1,12 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
-
-#if __STDC_HOSTED__
-#include <stdlib.h>
-extern char **environ;
-#endif
 
 static int write_with_separator(const char *text, int zero_terminated) {
     if (rt_write_cstr(1, text) != 0) {
@@ -42,21 +38,22 @@ int main(int argc, char **argv) {
     }
 
     if (argi >= argc) {
-#if __STDC_HOSTED__
-        char **current = environ;
-        while (current != 0 && *current != 0) {
-            if (write_with_separator(*current, zero_terminated) != 0) {
+        size_t index = 0;
+        for (;;) {
+            const char *current = platform_getenv_entry(index);
+            if (current == 0) {
+                break;
+            }
+            if (write_with_separator(current, zero_terminated) != 0) {
                 return 1;
             }
-            current += 1;
+            index += 1;
         }
-#endif
         return 0;
     }
 
     for (; argi < argc; ++argi) {
-#if __STDC_HOSTED__
-        const char *value = getenv(argv[argi]);
+        const char *value = platform_getenv(argv[argi]);
         if (value != 0) {
             if (write_with_separator(value, zero_terminated) != 0) {
                 return 1;
@@ -64,10 +61,6 @@ int main(int argc, char **argv) {
         } else {
             exit_code = 1;
         }
-#else
-        (void)zero_terminated;
-        exit_code = 1;
-#endif
     }
 
     return exit_code;

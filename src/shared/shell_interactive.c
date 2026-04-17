@@ -1,20 +1,15 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "shell_shared.h"
+#include "platform.h"
 #include "runtime.h"
 
 #if __STDC_HOSTED__
 #include <termios.h>
-#include <unistd.h>
 #endif
 
 int sh_shell_is_interactive(int fd) {
-#if __STDC_HOSTED__
-    return fd == 0 && isatty(fd);
-#else
-    (void)fd;
-    return 0;
-#endif
+    return fd == 0 && platform_isatty(fd);
 }
 
 #if __STDC_HOSTED__

@@ -1,10 +1,8 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
-
-#if __STDC_HOSTED__
-#include <stdlib.h>
-#endif
 
 #define WHICH_PATH_CAPACITY 1024
 
@@ -17,18 +15,16 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-a] COMMAND...");
 }
 
-static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-a] COMMAND...");
-}
-
 static int contains_slash(const char *text) {
     size_t i = 0;
+
     while (text[i] != '\0') {
         if (text[i] == '/') {
             return 1;
         }
-        i += 1;
+        i += 1U;
     }
+
     return 0;
 }
 
@@ -41,29 +37,24 @@ static void set_self_dir(const char *argv0, char *buffer, size_t buffer_size) {
     size_t len;
     size_t i;
 
-    if (argv0 == 0 || argv0[0] == '\0') {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    if (!contains_slash(argv0)) {
+    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0)) {
         rt_copy_string(buffer, buffer_size, ".");
         return;
     }
 
     len = rt_strlen(argv0);
-    if (len + 1 > buffer_size) {
+    if (len + 1U > buffer_size) {
         rt_copy_string(buffer, buffer_size, ".");
         return;
     }
 
-    memcpy(buffer, argv0, len + 1);
+    memcpy(buffer, argv0, len + 1U);
     for (i = len; i > 0; --i) {
-        if (buffer[i - 1] == '/') {
-            if (i == 1) {
+        if (buffer[i - 1U] == '/') {
+            if (i == 1U) {
                 buffer[1] = '\0';
             } else {
-                buffer[i - 1] = '\0';
+                buffer[i - 1U] = '\0';
             }
             return;
         }
@@ -80,17 +71,16 @@ static int search_in_list(const char *dirs, const char *name, char *buffer, size
         size_t length = 0;
 
         while (dirs[i] != '\0' && dirs[i] != ':') {
-            if (length + 1 < sizeof(dir)) {
+            if (length + 1U < sizeof(dir)) {
                 dir[length++] = dirs[i];
             }
-            i += 1;
+            i += 1U;
         }
 
         dir[length] = '\0';
         if (dirs[i] == ':') {
-            i += 1;
+            i += 1U;
         }
-
         if (dir[0] == '\0') {
             rt_copy_string(dir, sizeof(dir), ".");
         }
@@ -112,13 +102,15 @@ static int resolve_command(const SearchContext *ctx, const char *name, char *buf
         return -1;
     }
 
-    if (ctx->self_dir[0] != '\0' && tool_join_path(ctx->self_dir, name, buffer, buffer_size) == 0 && path_exists_as_file(buffer)) {
+    if (ctx->self_dir[0] != '\0' &&
+        tool_join_path(ctx->self_dir, name, buffer, buffer_size) == 0 &&
+        path_exists_as_file(buffer)) {
         return 0;
     }
 
-    if (search_in_list(ctx->path_env, name, buffer, buffer_size) == 0) {
-        return 0;
-    }
+    return search_in_list(ctx->path_env, name, buffer, buffer_size);
+}
+
 static int print_all_matches(const SearchContext *ctx, const char *name) {
     int found = 0;
     char path[WHICH_PATH_CAPACITY];
@@ -144,14 +136,14 @@ static int print_all_matches(const SearchContext *ctx, const char *name) {
         size_t length = 0;
 
         while (ctx->path_env[i] != '\0' && ctx->path_env[i] != ':') {
-            if (length + 1 < sizeof(dir)) {
+            if (length + 1U < sizeof(dir)) {
                 dir[length++] = ctx->path_env[i];
             }
-            i += 1;
+            i += 1U;
         }
         dir[length] = '\0';
         if (ctx->path_env[i] == ':') {
-            i += 1;
+            i += 1U;
         }
         if (dir[0] == '\0') {
             rt_copy_string(dir, sizeof(dir), ".");
@@ -173,11 +165,10 @@ int main(int argc, char **argv) {
     int argi = 1;
 
     set_self_dir((argc > 0) ? argv[0] : "which", ctx.self_dir, sizeof(ctx.self_dir));
-#if __STDC_HOSTED__
-    ctx.path_env = getenv("PATH");
-#else
-    ctx.path_env = "/bin:/usr/bin:/usr/local/bin";
-#endif
+    ctx.path_env = platform_getenv("PATH");
+    if (ctx.path_env == 0) {
+        ctx.path_env = "/bin:/usr/bin:/usr/local/bin";
+    }
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "--") == 0) {
@@ -205,78 +196,7 @@ int main(int argc, char **argv) {
             }
         } else {
             char path[WHICH_PATH_CAPACITY];
-            if (resolve_command(&ctx, argv[i], path, sizeof(path)) == 0) {
-                rt_write_line(1, path);
-            } else {
-                exit_code = 1;
-            }
 
-    while (ctx->path_env != 0 && ctx->path_env[i] != '\0') {
-        char dir[WHICH_PATH_CAPACITY];
-        size_t length = 0;
-
-        while (ctx->path_env[i] != '\0' && ctx->path_env[i] != ':') {
-            if (length + 1 < sizeof(dir)) {
-                dir[length++] = ctx->path_env[i];
-            }
-            i += 1;
-        }
-        dir[length] = '\0';
-        if (ctx->path_env[i] == ':') {
-            i += 1;
-        }
-        if (dir[0] == '\0') {
-            rt_copy_string(dir, sizeof(dir), ".");
-        }
-        if (tool_join_path(dir, name, path, sizeof(path)) == 0 && path_exists_as_file(path)) {
-            rt_write_line(1, path);
-            found = 1;
-        }
-    }
-
-    return found ? 0 : -1;
-}
-
-int main(int argc, char **argv) {
-    SearchContext ctx;
-    int i;
-    int exit_code = 0;
-    int print_all = 0;
-    int argi = 1;
-
-    set_self_dir((argc > 0) ? argv[0] : "which", ctx.self_dir, sizeof(ctx.self_dir));
-#if __STDC_HOSTED__
-    ctx.path_env = getenv("PATH");
-#else
-    ctx.path_env = "/bin:/usr/bin:/usr/local/bin";
-#endif
-
-    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
-        if (rt_strcmp(argv[argi], "--") == 0) {
-            argi += 1;
-            break;
-        }
-        if (rt_strcmp(argv[argi], "-a") == 0) {
-            print_all = 1;
-            argi += 1;
-            continue;
-        }
-        print_usage(argv[0]);
-        return 1;
-    }
-
-    if (argi >= argc) {
-        print_usage(argv[0]);
-        return 1;
-    }
-
-    for (i = argi; i < argc; ++i) {
-        if (print_all) {
-            if (print_all_matches(&ctx, argv[i]) != 0) {
-                exit_code = 1;
-            }
-        } else {
-            char path[WHICH_PATH_CAPACITY];
             if (resolve_command(&ctx, argv[i], path, sizeof(path)) == 0) {
                 rt_write_line(1, path);
             } else {

@@ -2,22 +2,55 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static void print_counts(unsigned long long lines, unsigned long long words, unsigned long long bytes, const char *name) {
-    rt_write_uint(1, lines);
-    rt_write_char(1, ' ');
-    rt_write_uint(1, words);
-    rt_write_char(1, ' ');
-    rt_write_uint(1, bytes);
+typedef struct {
+    int show_lines;
+    int show_words;
+    int show_bytes;
+    int explicit_selection;
+} WcOptions;
+
+static void print_counts(const WcOptions *options,
+                         unsigned long long lines,
+                         unsigned long long words,
+                         unsigned long long bytes,
+                         const char *name) {
+    int wrote_value = 0;
+
+    if (!options->explicit_selection || options->show_lines) {
+        rt_write_uint(1, lines);
+        wrote_value = 1;
+    }
+
+    if (!options->explicit_selection || options->show_words) {
+        if (wrote_value) {
+            rt_write_char(1, ' ');
+        }
+        rt_write_uint(1, words);
+        wrote_value = 1;
+    }
+
+    if (!options->explicit_selection || options->show_bytes) {
+        if (wrote_value) {
+            rt_write_char(1, ' ');
+        }
+        rt_write_uint(1, bytes);
+        wrote_value = 1;
+    }
 
     if (name != 0) {
-        rt_write_char(1, ' ');
+        if (wrote_value) {
+            rt_write_char(1, ' ');
+        }
         rt_write_cstr(1, name);
     }
 
     rt_write_char(1, '\n');
 }
 
-static int count_stream(int fd, unsigned long long *lines_out, unsigned long long *words_out, unsigned long long *bytes_out) {
+static int count_stream(int fd,
+                        unsigned long long *lines_out,
+                        unsigned long long *words_out,
+                        unsigned long long *bytes_out) {
     char buffer[4096];
     long bytes_read;
     int in_word = 0;
@@ -55,14 +88,51 @@ static int count_stream(int fd, unsigned long long *lines_out, unsigned long lon
     return 0;
 }
 
+static void print_usage(const char *program_name) {
+    tool_write_usage(program_name, "[-lwc] [file ...]");
+}
+
 int main(int argc, char **argv) {
+    WcOptions options;
+    int arg_index = 1;
+    int file_count;
     int i;
-    int file_count = argc - 1;
     unsigned long long total_lines = 0;
     unsigned long long total_words = 0;
     unsigned long long total_bytes = 0;
     int exit_code = 0;
 
+    rt_memset(&options, 0, sizeof(options));
+
+    while (arg_index < argc && argv[arg_index][0] == '-' && argv[arg_index][1] != '\0') {
+        const char *flag = argv[arg_index] + 1;
+
+        if (rt_strcmp(argv[arg_index], "--") == 0) {
+            arg_index += 1;
+            break;
+        }
+
+        while (*flag != '\0') {
+            if (*flag == 'l') {
+                options.show_lines = 1;
+                options.explicit_selection = 1;
+            } else if (*flag == 'w') {
+                options.show_words = 1;
+                options.explicit_selection = 1;
+            } else if (*flag == 'c') {
+                options.show_bytes = 1;
+                options.explicit_selection = 1;
+            } else {
+                print_usage(argv[0]);
+                return 1;
+            }
+            flag += 1;
+        }
+
+        arg_index += 1;
+    }
+
+    file_count = argc - arg_index;
     if (file_count <= 0) {
         unsigned long long lines;
         unsigned long long words;
@@ -73,11 +143,11 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        print_counts(lines, words, bytes, 0);
+        print_counts(&options, lines, words, bytes, 0);
         return 0;
     }
 
-    for (i = 1; i < argc; ++i) {
+    for (i = arg_index; i < argc; ++i) {
         int fd;
         int should_close;
         unsigned long long lines;
@@ -96,7 +166,7 @@ int main(int argc, char **argv) {
             rt_write_line(2, argv[i]);
             exit_code = 1;
         } else {
-            print_counts(lines, words, bytes, argv[i]);
+            print_counts(&options, lines, words, bytes, argv[i]);
             total_lines += lines;
             total_words += words;
             total_bytes += bytes;
@@ -106,7 +176,7 @@ int main(int argc, char **argv) {
     }
 
     if (file_count > 1) {
-        print_counts(total_lines, total_words, total_bytes, "total");
+        print_counts(&options, total_lines, total_words, total_bytes, "total");
     }
 
     return exit_code;

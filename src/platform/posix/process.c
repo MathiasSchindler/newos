@@ -6,10 +6,69 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
+
+const char *platform_getenv(const char *name) {
+    if (name == NULL || name[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    return getenv(name);
+}
+
+const char *platform_getenv_entry(size_t index) {
+    size_t current_index = 0;
+    char **current = environ;
+
+    while (current != NULL && *current != NULL) {
+        if (current_index == index) {
+            return *current;
+        }
+        current += 1;
+        current_index += 1;
+    }
+
+    return NULL;
+}
+
+int platform_setenv(const char *name, const char *value, int overwrite) {
+    if (name == NULL || name[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return setenv(name, value != NULL ? value : "", overwrite);
+}
+
+int platform_unsetenv(const char *name) {
+    if (name == NULL || name[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return unsetenv(name);
+}
+
+int platform_clearenv(void) {
+    static char *empty_environment[] = { NULL };
+
+    environ = empty_environment;
+    return 0;
+}
+
+int platform_isatty(int fd) {
+    return isatty(fd) ? 1 : 0;
+}
 
 int platform_create_pipe(int pipe_fds[2]) {
     return pipe(pipe_fds);
@@ -116,6 +175,73 @@ int platform_wait_process(int pid, int *exit_status_out) {
     return 0;
 }
 
+static void init_process_entry(PlatformProcessEntry *entry, int pid, const char *fallback_name) {
+    if (entry == NULL) {
+        return;
+    }
+
+    entry->pid = pid;
+    entry->ppid = 0;
+    entry->uid = 0;
+    entry->rss_kb = 0;
+    posix_copy_string(entry->state, sizeof(entry->state), "?");
+    posix_copy_string(entry->user, sizeof(entry->user), "?");
+    posix_copy_string(entry->name, sizeof(entry->name), fallback_name != NULL ? fallback_name : "?");
+}
+
+#ifndef __APPLE__
+static void fill_username(char *buffer, size_t buffer_size, unsigned int uid) {
+    struct passwd *pw = getpwuid((uid_t)uid);
+
+    if (pw != NULL && pw->pw_name != NULL && pw->pw_name[0] != '\0') {
+        posix_copy_string(buffer, buffer_size, pw->pw_name);
+    } else {
+        (void)snprintf(buffer, buffer_size, "%u", uid);
+    }
+}
+
+static void load_status_file(const char *status_path, PlatformProcessEntry *entry) {
+    FILE *fp = fopen(status_path, "r");
+    char line[512];
+
+    if (fp == NULL) {
+        return;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (strncmp(line, "Name:", 5) == 0) {
+            char name[PLATFORM_NAME_CAPACITY];
+            if (sscanf(line + 5, " %255s", name) == 1) {
+                posix_copy_string(entry->name, sizeof(entry->name), name);
+            }
+        } else if (strncmp(line, "State:", 6) == 0) {
+            char state[sizeof(entry->state)];
+            if (sscanf(line + 6, " %15s", state) == 1) {
+                posix_copy_string(entry->state, sizeof(entry->state), state);
+            }
+        } else if (strncmp(line, "PPid:", 5) == 0) {
+            int ppid = 0;
+            if (sscanf(line + 5, " %d", &ppid) == 1) {
+                entry->ppid = ppid;
+            }
+        } else if (strncmp(line, "Uid:", 4) == 0) {
+            unsigned int uid = 0;
+            if (sscanf(line + 4, " %u", &uid) == 1) {
+                entry->uid = uid;
+                fill_username(entry->user, sizeof(entry->user), uid);
+            }
+        } else if (strncmp(line, "VmRSS:", 6) == 0) {
+            unsigned long long rss = 0;
+            if (sscanf(line + 6, " %llu", &rss) == 1) {
+                entry->rss_kb = rss;
+            }
+        }
+    }
+
+    fclose(fp);
+}
+#endif
+
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out) {
     size_t count = 0;
 
@@ -125,10 +251,42 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
     }
 
 #ifdef __APPLE__
-    if (entry_capacity > 0) {
-        entries_out[0].pid = (int)getpid();
-        posix_copy_string(entries_out[0].name, sizeof(entries_out[0].name), "self");
-        count = 1;
+    {
+        FILE *pipe = popen("/bin/ps -axo pid=,ppid=,uid=,user=,state=,rss=,comm=", "r");
+        char line[1024];
+
+        if (pipe == NULL) {
+            pipe = popen("ps -axo pid=,ppid=,uid=,user=,state=,rss=,comm=", "r");
+        }
+        if (pipe == NULL) {
+            return -1;
+        }
+
+        while (fgets(line, sizeof(line), pipe) != NULL && count < entry_capacity) {
+            int pid = 0;
+            int ppid = 0;
+            unsigned int uid = 0;
+            unsigned long long rss = 0;
+            char user[PLATFORM_NAME_CAPACITY];
+            char state[16];
+            char name[PLATFORM_NAME_CAPACITY];
+
+            user[0] = '\0';
+            state[0] = '\0';
+            name[0] = '\0';
+
+            if (sscanf(line, " %d %d %u %255s %15s %llu %255[^\n]", &pid, &ppid, &uid, user, state, &rss, name) == 7 && pid > 0) {
+                init_process_entry(&entries_out[count], pid, name);
+                entries_out[count].ppid = ppid;
+                entries_out[count].uid = uid;
+                entries_out[count].rss_kb = rss;
+                posix_copy_string(entries_out[count].user, sizeof(entries_out[count].user), user);
+                posix_copy_string(entries_out[count].state, sizeof(entries_out[count].state), state);
+                count += 1;
+            }
+        }
+
+        (void)pclose(pipe);
     }
 #else
     {
@@ -141,30 +299,17 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
 
         while ((de = readdir(dir)) != NULL && count < entry_capacity) {
             char proc_dir[1024];
-            char comm_path[1024];
-            int fd;
-            ssize_t bytes_read;
+            char status_path[1024];
 
             if (!posix_is_digit_string(de->d_name)) {
                 continue;
             }
 
-            entries_out[count].pid = posix_parse_pid_value(de->d_name);
-            posix_copy_string(entries_out[count].name, sizeof(entries_out[count].name), de->d_name);
-
+            init_process_entry(&entries_out[count], posix_parse_pid_value(de->d_name), de->d_name);
             if (posix_join_path("/proc", de->d_name, proc_dir, sizeof(proc_dir)) == 0 &&
-                posix_join_path(proc_dir, "comm", comm_path, sizeof(comm_path)) == 0) {
-                fd = open(comm_path, O_RDONLY);
-                if (fd >= 0) {
-                    bytes_read = read(fd, entries_out[count].name, sizeof(entries_out[count].name) - 1);
-                    if (bytes_read > 0) {
-                        entries_out[count].name[bytes_read] = '\0';
-                        posix_trim_newline(entries_out[count].name);
-                    }
-                    close(fd);
-                }
+                posix_join_path(proc_dir, "status", status_path, sizeof(status_path)) == 0) {
+                load_status_file(status_path, &entries_out[count]);
             }
-
             count += 1;
         }
 

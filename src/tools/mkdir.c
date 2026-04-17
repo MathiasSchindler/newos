@@ -7,7 +7,7 @@
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-p] directory ...");
+    rt_write_line(2, " [-p] [-m mode] directory ...");
 }
 
 static int path_is_directory(const char *path) {
@@ -15,9 +15,32 @@ static int path_is_directory(const char *path) {
     return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
 }
 
-static int make_one_directory(const char *path, int create_parents) {
+static int parse_mode_arg(const char *text, unsigned int *mode_out) {
+    unsigned long long value = 0;
+    size_t i = 0;
+
+    if (text == 0 || text[0] == '\0') {
+        return -1;
+    }
+
+    while (text[i] != '\0') {
+        if (text[i] < '0' || text[i] > '7') {
+            return -1;
+        }
+        value = (value * 8ULL) + (unsigned long long)(text[i] - '0');
+        if (value > 07777U) {
+            return -1;
+        }
+        i += 1U;
+    }
+
+    *mode_out = (unsigned int)value;
+    return 0;
+}
+
+static int make_one_directory(const char *path, int create_parents, unsigned int mode) {
     if (!create_parents) {
-        return platform_make_directory(path, MKDIR_DEFAULT_MODE) == 0 ? 0 : -1;
+        return platform_make_directory(path, mode) == 0 ? 0 : -1;
     }
 
     {
@@ -35,7 +58,7 @@ static int make_one_directory(const char *path, int create_parents) {
             if (buffer[i] == '/') {
                 buffer[i] = '\0';
                 if (buffer[0] != '\0' && !path_is_directory(buffer)) {
-                    if (platform_make_directory(buffer, MKDIR_DEFAULT_MODE) != 0 && !path_is_directory(buffer)) {
+                    if (platform_make_directory(buffer, mode) != 0 && !path_is_directory(buffer)) {
                         return -1;
                     }
                 }
@@ -43,7 +66,7 @@ static int make_one_directory(const char *path, int create_parents) {
             }
         }
 
-        if (platform_make_directory(buffer, MKDIR_DEFAULT_MODE) != 0 && !path_is_directory(buffer)) {
+        if (platform_make_directory(buffer, mode) != 0 && !path_is_directory(buffer)) {
             return -1;
         }
     }
@@ -53,6 +76,7 @@ static int make_one_directory(const char *path, int create_parents) {
 
 int main(int argc, char **argv) {
     int create_parents = 0;
+    unsigned int mode = MKDIR_DEFAULT_MODE;
     int first_path_index = 1;
     int exit_code = 0;
     int i;
@@ -76,6 +100,16 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        if (rt_strcmp(arg, "-m") == 0 || (arg[0] == '-' && arg[1] == 'm' && arg[2] != '\0')) {
+            const char *mode_text = (rt_strcmp(arg, "-m") == 0) ? ((i + 1 < argc) ? argv[++i] : 0) : (arg + 2);
+            if (parse_mode_arg(mode_text, &mode) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            first_path_index = i + 1;
+            continue;
+        }
+
         print_usage(argv[0]);
         return 1;
     }
@@ -86,7 +120,7 @@ int main(int argc, char **argv) {
     }
 
     for (i = first_path_index; i < argc; ++i) {
-        if (make_one_directory(argv[i], create_parents) != 0) {
+        if (make_one_directory(argv[i], create_parents, mode) != 0) {
             rt_write_cstr(2, "mkdir: cannot create ");
             rt_write_line(2, argv[i]);
             exit_code = 1;

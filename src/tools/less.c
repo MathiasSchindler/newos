@@ -2,9 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#include <stdlib.h>
-#include <unistd.h>
-
 #define PAGER_BUFFER_SIZE 4096
 #define DEFAULT_PAGE_LINES 23
 
@@ -13,7 +10,7 @@ static void print_usage(const char *program_name) {
 }
 
 static unsigned int pager_page_lines(void) {
-    const char *text = getenv("LINES");
+    const char *text = platform_getenv("LINES");
     unsigned long long value = 0;
 
     if (text != 0 && rt_parse_uint(text, &value) == 0 && value > 1 && value < 1000) {
@@ -128,7 +125,7 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        interactive = (fd != 0 && isatty(0) != 0 && isatty(1) != 0);
+        interactive = (fd != 0 && platform_isatty(0) != 0 && platform_isatty(1) != 0);
 
         if (path_count > 1) {
             if (i > arg_index) {
