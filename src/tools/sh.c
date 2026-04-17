@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #endif
 
+#define SH_MAX_POSITIONAL_ARGS 16
+#define SH_POSITIONAL_ARG_CAPACITY 256
+
 static int run_line(char *line);
 
 int shell_should_exit = 0;
@@ -18,10 +21,11 @@ int shell_next_job_id = 1;
 char shell_self_path[SH_MAX_LINE];
 char shell_history[SH_MAX_HISTORY][SH_MAX_LINE];
 int shell_history_count = 0;
-int shell_next_heredoc_id = 1;
 ShJob shell_jobs[SH_MAX_JOBS];
 ShAlias shell_aliases[SH_MAX_ALIASES];
 ShFunction shell_functions[SH_MAX_FUNCTIONS];
+static int shell_positional_argc = 0;
+static char shell_positional_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY];
 
 int sh_is_name_start_char(char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
@@ -52,6 +56,36 @@ void sh_add_history_entry(const char *line) {
         rt_copy_string(shell_history[index - 1], sizeof(shell_history[0]), shell_history[index]);
     }
     rt_copy_string(shell_history[SH_MAX_HISTORY - 1], sizeof(shell_history[0]), line);
+}
+
+static const char *shell_get_positional_parameter(unsigned long long index) {
+    if (index == 0 || index > (unsigned long long)shell_positional_argc || index > SH_MAX_POSITIONAL_ARGS) {
+        return "";
+    }
+
+    return shell_positional_args[index - 1];
+}
+
+static void shell_set_positional_parameters(const ShCommand *cmd) {
+    int i;
+
+    shell_positional_argc = 0;
+    for (i = 1; i < cmd->argc && shell_positional_argc < SH_MAX_POSITIONAL_ARGS; ++i) {
+        rt_copy_string(shell_positional_args[shell_positional_argc], sizeof(shell_positional_args[0]), cmd->argv[i]);
+        shell_positional_argc += 1;
+    }
+}
+
+static void shell_restore_positional_parameters(int saved_argc, char saved_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY]) {
+    int i;
+
+    shell_positional_argc = saved_argc;
+    for (i = 0; i < saved_argc && i < SH_MAX_POSITIONAL_ARGS; ++i) {
+        rt_copy_string(shell_positional_args[i], sizeof(shell_positional_args[0]), saved_args[i]);
+    }
+    for (; i < SH_MAX_POSITIONAL_ARGS; ++i) {
+        shell_positional_args[i][0] = '\0';
+    }
 }
 
 static int path_exists_as_file(const char *path) {
@@ -271,24 +305,8 @@ int sh_read_line_from_fd(int fd, char *buffer, size_t buffer_size, int *eof_out)
     return 0;
 }
 
-static int build_heredoc_temp_path(char *buffer, size_t buffer_size) {
-    char id_text[32];
-    size_t prefix_len;
-    size_t i = 0;
-
-    rt_unsigned_to_string((unsigned long long)shell_next_heredoc_id++, id_text, sizeof(id_text));
-    rt_copy_string(buffer, buffer_size, "/tmp/newos-sh-heredoc-");
-    prefix_len = rt_strlen(buffer);
-
-    while (id_text[i] != '\0') {
-        if (prefix_len + i + 1 >= buffer_size) {
-            return -1;
-        }
-        buffer[prefix_len + i] = id_text[i];
-        i += 1;
-    }
-    buffer[prefix_len + i] = '\0';
-    return 0;
+static int create_heredoc_temp_file(char *buffer, size_t buffer_size) {
+    return platform_create_temp_file(buffer, buffer_size, SH_HEREDOC_PREFIX, 0600U);
 }
 
 void sh_skip_spaces(char **cursor) {
@@ -572,6 +590,13 @@ static int expand_shell_parameters(char *line) {
             } else if (line[i + 1] == '0') {
                 replacement = shell_self_path;
                 i += 2;
+            } else if (line[i + 1] == '#') {
+                rt_unsigned_to_string((unsigned long long)shell_positional_argc, value, sizeof(value));
+                replacement = value;
+                i += 2;
+            } else if (line[i + 1] >= '1' && line[i + 1] <= '9') {
+                replacement = shell_get_positional_parameter((unsigned long long)(line[i + 1] - '0'));
+                i += 2;
             } else if (line[i + 1] == '{') {
                 i += 2;
                 while (line[i] != '\0' && line[i] != '}' && name_len + 1 < sizeof(name)) {
@@ -582,10 +607,22 @@ static int expand_shell_parameters(char *line) {
                 }
                 name[name_len] = '\0';
                 i += 1;
+                if (rt_strcmp(name, "#") == 0) {
+                    rt_unsigned_to_string((unsigned long long)shell_positional_argc, value, sizeof(value));
+                    replacement = value;
+                } else if (rt_is_digit_string(name)) {
+                    unsigned long long index = 0;
+                    if (rt_parse_uint(name, &index) != 0) {
+                        return -1;
+                    }
+                    replacement = shell_get_positional_parameter(index);
+                }
 #if __STDC_HOSTED__
-                replacement = getenv(name);
-                if (replacement == 0) {
-                    replacement = "";
+                else {
+                    replacement = getenv(name);
+                    if (replacement == 0) {
+                        replacement = "";
+                    }
                 }
 #endif
             } else if (sh_is_name_start_char(line[i + 1])) {
@@ -830,11 +867,7 @@ int sh_prepare_heredoc_from_fd(int fd, char *line, size_t line_size) {
         int eof = 0;
         size_t out = 0;
 
-        if (build_heredoc_temp_path(temp_path, sizeof(temp_path)) != 0) {
-            return -1;
-        }
-
-        heredoc_fd = platform_open_write(temp_path, 0600U);
+        heredoc_fd = create_heredoc_temp_file(temp_path, sizeof(temp_path));
         if (heredoc_fd < 0) {
             return -1;
         }
@@ -843,6 +876,7 @@ int sh_prepare_heredoc_from_fd(int fd, char *line, size_t line_size) {
             char input_line[SH_MAX_LINE];
             if (sh_read_line_from_fd(fd, input_line, sizeof(input_line), &eof) != 0) {
                 platform_close(heredoc_fd);
+                (void)platform_remove_file(temp_path);
                 return -1;
             }
             if (rt_strcmp(input_line, delimiter) == 0) {
@@ -850,6 +884,7 @@ int sh_prepare_heredoc_from_fd(int fd, char *line, size_t line_size) {
             }
             if (rt_write_all(heredoc_fd, input_line, rt_strlen(input_line)) != 0 || rt_write_char(heredoc_fd, '\n') != 0) {
                 platform_close(heredoc_fd);
+                (void)platform_remove_file(temp_path);
                 return -1;
             }
             if (eof) {
@@ -860,6 +895,7 @@ int sh_prepare_heredoc_from_fd(int fd, char *line, size_t line_size) {
         platform_close(heredoc_fd);
 
         if (start >= sizeof(replacement)) {
+            (void)platform_remove_file(temp_path);
             return -1;
         }
         memcpy(replacement, line, start);
@@ -867,11 +903,13 @@ int sh_prepare_heredoc_from_fd(int fd, char *line, size_t line_size) {
         if (append_expanded_text(replacement, &out, sizeof(replacement), "< ") != 0 ||
             append_expanded_text(replacement, &out, sizeof(replacement), temp_path) != 0 ||
             append_expanded_text(replacement, &out, sizeof(replacement), line + end) != 0) {
+            (void)platform_remove_file(temp_path);
             return -1;
         }
         replacement[out] = '\0';
 
         if (rt_strlen(replacement) + 1 > line_size) {
+            (void)platform_remove_file(temp_path);
             return -1;
         }
         memcpy(line, replacement, rt_strlen(replacement) + 1);
@@ -886,17 +924,17 @@ static int run_simple_command(char *segment, int background) {
     int status = 0;
     int handled = 0;
 
-    if (expand_command_substitutions(segment) != 0 || expand_shell_parameters(segment) != 0) {
-        rt_write_line(2, "sh: expansion failed");
-        return 2;
-    }
-
     if (maybe_store_function_definition(segment, &handled) != 0) {
         rt_write_line(2, "sh: function definition failed");
         return 2;
     }
     if (handled) {
         return 0;
+    }
+
+    if (expand_command_substitutions(segment) != 0 || expand_shell_parameters(segment) != 0) {
+        rt_write_line(2, "sh: expansion failed");
+        return 2;
     }
 
     if (apply_alias_expansion(segment) != 0) {
@@ -917,9 +955,20 @@ static int run_simple_command(char *segment, int background) {
         const char *body = sh_lookup_shell_function(pipeline.commands[0].argv[0]);
         if (body != 0) {
             char body_copy[SH_MAX_LINE];
+            char saved_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY];
+            int saved_argc = shell_positional_argc;
+            int i;
+
+            for (i = 0; i < saved_argc && i < SH_MAX_POSITIONAL_ARGS; ++i) {
+                rt_copy_string(saved_args[i], sizeof(saved_args[0]), shell_positional_args[i]);
+            }
+
+            shell_set_positional_parameters(&pipeline.commands[0]);
             rt_copy_string(body_copy, sizeof(body_copy), body);
             sh_cleanup_pipeline_temp_inputs(&pipeline);
-            return run_line(body_copy);
+            status = run_line(body_copy);
+            shell_restore_positional_parameters(saved_argc, saved_args);
+            return status;
         }
     }
 
@@ -1013,6 +1062,7 @@ static int run_line(char *line) {
     while (*cursor != '\0') {
         char *segment_start;
         char *scan;
+        char segment_copy[SH_MAX_LINE];
         ShNextMode next_mode;
 
         sh_skip_spaces(&cursor);
@@ -1037,7 +1087,8 @@ static int run_line(char *line) {
         }
 
         if (should_run) {
-            last_status = run_simple_command(segment_start, next_mode == SH_NEXT_BACKGROUND);
+            rt_copy_string(segment_copy, sizeof(segment_copy), segment_start);
+            last_status = run_simple_command(segment_copy, next_mode == SH_NEXT_BACKGROUND);
             shell_last_status = last_status;
             if (shell_should_exit) {
                 return last_status;

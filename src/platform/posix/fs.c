@@ -9,6 +9,7 @@
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -77,6 +78,37 @@ int platform_open_write(const char *path, unsigned int mode) {
     }
 
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, (mode_t)mode);
+}
+
+int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
+    char templ[1024];
+    const char *base = (prefix != NULL && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
+    size_t base_len = strlen(base);
+    int fd;
+
+    if (path_buffer == NULL || buffer_size == 0 || base_len + 7 > sizeof(templ) || base_len + 7 > buffer_size) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memcpy(templ, base, base_len);
+    memcpy(templ + base_len, "XXXXXX", 7);
+
+    fd = mkstemp(templ);
+    if (fd < 0) {
+        return -1;
+    }
+
+    if (fchmod(fd, (mode_t)mode) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(templ);
+        errno = saved_errno;
+        return -1;
+    }
+
+    posix_copy_string(path_buffer, buffer_size, templ);
+    return fd;
 }
 
 int platform_close(int fd) {

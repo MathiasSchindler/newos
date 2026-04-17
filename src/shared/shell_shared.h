@@ -13,6 +13,7 @@
 #define SH_ENTRY_CAPACITY 1024
 #define SH_MAX_ALIASES 32
 #define SH_MAX_FUNCTIONS 32
+#define SH_HEREDOC_PREFIX "/tmp/newos-sh-heredoc-"
 
 typedef enum {
     SH_NEXT_ALWAYS = 0,
@@ -62,7 +63,6 @@ extern int shell_next_job_id;
 extern char shell_self_path[SH_MAX_LINE];
 extern char shell_history[SH_MAX_HISTORY][SH_MAX_LINE];
 extern int shell_history_count;
-extern int shell_next_heredoc_id;
 extern ShJob shell_jobs[SH_MAX_JOBS];
 extern ShAlias shell_aliases[SH_MAX_ALIASES];
 extern ShFunction shell_functions[SH_MAX_FUNCTIONS];

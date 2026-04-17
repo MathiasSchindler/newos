@@ -18,9 +18,9 @@ static int parse_word(char **cursor, char **word_out, int *no_expand_out) {
         } else if (*src == '\'') {
             src += 1;
             no_expand = 1;
+            saw_any = 1;
             while (*src != '\0' && *src != '\'') {
                 *dst++ = *src++;
-                saw_any = 1;
             }
             if (*src != '\'') {
                 return -1;
@@ -29,12 +29,12 @@ static int parse_word(char **cursor, char **word_out, int *no_expand_out) {
         } else if (*src == '"') {
             src += 1;
             no_expand = 1;
+            saw_any = 1;
             while (*src != '\0' && *src != '"') {
                 if (*src == '\\' && src[1] != '\0') {
                     src += 1;
                 }
                 *dst++ = *src++;
-                saw_any = 1;
             }
             if (*src != '"') {
                 return -1;
@@ -154,15 +154,18 @@ void sh_cleanup_pipeline_temp_inputs(const ShPipeline *pipeline) {
 
     for (i = 0; i < pipeline->count; ++i) {
         const char *path = pipeline->commands[i].input_path;
-        if (path != 0 && path[0] == '/' && rt_strcmp(path, "/tmp/newos-sh-heredoc-") != 0) {
-            const char *prefix = "/tmp/newos-sh-heredoc-";
-            size_t j = 0;
-            while (prefix[j] != '\0' && path[j] == prefix[j]) {
-                j += 1;
-            }
-            if (prefix[j] == '\0') {
-                (void)platform_remove_file(path);
-            }
+        const char *prefix = SH_HEREDOC_PREFIX;
+        size_t j = 0;
+
+        if (path == 0 || path[0] != '/') {
+            continue;
+        }
+
+        while (prefix[j] != '\0' && path[j] == prefix[j]) {
+            j += 1;
+        }
+        if (prefix[j] == '\0') {
+            (void)platform_remove_file(path);
         }
     }
 }

@@ -36,6 +36,7 @@ long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 int platform_open_read(const char *path);
 int platform_open_write(const char *path, unsigned int mode);
+int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode);
 int platform_close(int fd);
 int platform_make_directory(const char *path, unsigned int mode);
 int platform_remove_file(const char *path);

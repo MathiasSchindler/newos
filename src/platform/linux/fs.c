@@ -47,6 +47,8 @@ static int fill_entry(const char *display_name, const char *full_path, PlatformD
     return 0;
 }
 
+static unsigned long long next_temp_path_id = 1;
+
 long platform_write(int fd, const void *buffer, size_t count) {
     return linux_syscall3(LINUX_SYS_WRITE, fd, (long)buffer, (long)count);
 }
@@ -81,6 +83,46 @@ int platform_open_write(const char *path, unsigned int mode) {
         (long)mode
     );
     return fd < 0 ? -1 : (int)fd;
+}
+
+int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
+    const char *base = (prefix != 0 && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
+    unsigned long long seed = (unsigned long long)(platform_get_epoch_time() < 0 ? 0 : platform_get_epoch_time());
+    unsigned int attempt;
+
+    if (path_buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    for (attempt = 0; attempt < 32; ++attempt) {
+        char suffix[32];
+        size_t base_len = string_length(base);
+        size_t suffix_len;
+        long fd;
+
+        unsigned_to_string(seed + next_temp_path_id + (unsigned long long)attempt, suffix, sizeof(suffix));
+        suffix_len = string_length(suffix);
+        if (base_len + suffix_len + 1 > buffer_size) {
+            return -1;
+        }
+
+        copy_string(path_buffer, buffer_size, base);
+        copy_string(path_buffer + base_len, buffer_size - base_len, suffix);
+
+        fd = linux_syscall4(
+            LINUX_SYS_OPENAT,
+            LINUX_AT_FDCWD,
+            (long)path_buffer,
+            LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL | LINUX_O_TRUNC,
+            (long)mode
+        );
+        if (fd >= 0) {
+            next_temp_path_id += (unsigned long long)attempt + 1ULL;
+            return (int)fd;
+        }
+    }
+
+    return -1;
 }
 
 int platform_close(int fd) {

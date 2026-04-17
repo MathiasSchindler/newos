@@ -23,3 +23,13 @@ assert_file_contains "$WORK_DIR/features.out" '/ls$' "shell command -v failed"
 assert_file_contains "$WORK_DIR/features.out" '^alias-ok$' "shell alias failed"
 assert_file_contains "$WORK_DIR/features.out" '^func-ok$' "shell function failed"
 assert_file_contains "$WORK_DIR/features.out" '^heredoc-line$' "shell here-document failed"
+
+printf 'alias say="echo two words"\nsay\nshow() { echo "$1"; }\nshow "quoted text"\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/stability.out"
+assert_file_contains "$WORK_DIR/stability.out" '^two words$' "shell quoted alias expansion failed"
+assert_file_contains "$WORK_DIR/stability.out" '^quoted text$' "shell quoted function argument failed"
+
+before_docs=$(find /tmp -maxdepth 1 -name 'newos-sh-heredoc-*' 2>/dev/null | wc -l | tr -d ' ')
+printf 'cat <<EOF\ncleanup-check\nEOF\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/heredoc_cleanup.out"
+after_docs=$(find /tmp -maxdepth 1 -name 'newos-sh-heredoc-*' 2>/dev/null | wc -l | tr -d ' ')
+assert_file_contains "$WORK_DIR/heredoc_cleanup.out" '^cleanup-check$' "shell heredoc cleanup run failed"
+assert_text_equals "$after_docs" "$before_docs" "shell heredoc temp files leaked"
