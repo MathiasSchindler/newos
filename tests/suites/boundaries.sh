@@ -64,8 +64,6 @@ for rel in $hosted_guard_files; do
         src/shared/tool_util.c|\
         src/tools/date.c|\
         src/tools/env.c|\
-        src/tools/free.c|\
-        src/tools/groups.c|\
         src/tools/less.c|\
         src/tools/mktemp.c|\
         src/tools/more.c|\
@@ -73,10 +71,7 @@ for rel in $hosted_guard_files; do
         src/tools/sh.c|\
         src/tools/test_impl.h|\
         src/tools/timeout.c|\
-        src/tools/uptime.c|\
-        src/tools/users.c|\
-        src/tools/which.c|\
-        src/tools/who.c)
+        src/tools/which.c)
             ;;
         *)
             unexpected_hosted="${unexpected_hosted}${unexpected_hosted:+ }$rel"
@@ -96,11 +91,7 @@ while IFS= read -r hit; do
     case "$rel" in
         src/platform/*:*|\
         src/shared/shell_interactive.c:*|\
-        src/tools/free.c:*|\
-        src/tools/timeout.c:*|\
-        src/tools/uptime.c:*|\
-        src/tools/users.c:*|\
-        src/tools/who.c:*)
+        src/tools/timeout.c:*)
             ;;
         *)
             unexpected_headers="${unexpected_headers}${unexpected_headers:+; }$rel"

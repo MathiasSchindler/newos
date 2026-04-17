@@ -1,9 +1,213 @@
+#define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform.h"
+#include "runtime.h"
 
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <stdint.h>
+#include <sys/sysctl.h>
+#include <sys/time.h>
+#endif
+
+static int read_text_file(const char *path, char *buffer, size_t buffer_size) {
+    int fd;
+    size_t used = 0;
+
+    if (buffer == NULL || buffer_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        buffer[0] = '\0';
+        return -1;
+    }
+
+    while (used + 1U < buffer_size) {
+        long bytes_read = platform_read(fd, buffer + used, buffer_size - used - 1U);
+        if (bytes_read < 0) {
+            platform_close(fd);
+            buffer[0] = '\0';
+            return -1;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        used += (size_t)bytes_read;
+    }
+
+    buffer[used] = '\0';
+    platform_close(fd);
+    return 0;
+}
+
+static int parse_unsigned_prefix(const char *text, unsigned long long *value_out) {
+    unsigned long long value = 0;
+    size_t index = 0;
+
+    if (text == NULL || value_out == NULL || text[0] < '0' || text[0] > '9') {
+        return -1;
+    }
+
+    while (text[index] >= '0' && text[index] <= '9') {
+        value = (value * 10ULL) + (unsigned long long)(text[index] - '0');
+        index += 1U;
+    }
+
+    *value_out = value;
+    return 0;
+}
+
+static int match_field_name(const char *text, const char *field_name) {
+    size_t index = 0;
+
+    while (field_name[index] != '\0') {
+        if (text[index] != field_name[index]) {
+            return 0;
+        }
+        index += 1U;
+    }
+
+    return text[index] == ':';
+}
+
+static int parse_meminfo_field(const char *contents, const char *field_name, unsigned long long *value_out) {
+    const char *cursor = contents;
+
+    while (cursor != NULL && *cursor != '\0') {
+        if (match_field_name(cursor, field_name)) {
+            unsigned long long kibibytes = 0;
+
+            cursor += rt_strlen(field_name) + 1U;
+            while (*cursor == ' ' || *cursor == '\t') {
+                cursor += 1;
+            }
+
+            if (parse_unsigned_prefix(cursor, &kibibytes) != 0) {
+                return -1;
+            }
+
+            *value_out = kibibytes * 1024ULL;
+            return 0;
+        }
+
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor += 1;
+        }
+        if (*cursor == '\n') {
+            cursor += 1;
+        }
+    }
+
+    return -1;
+}
+
+static void set_default_load_average(char *buffer, size_t buffer_size) {
+    rt_copy_string(buffer, buffer_size, "0.00 0.00 0.00");
+}
+
+static int read_loadavg_text(char *buffer, size_t buffer_size) {
+    char contents[128];
+    size_t index = 0;
+    size_t length = 0;
+    int fields = 0;
+
+    if (buffer == NULL || buffer_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (read_text_file("/proc/loadavg", contents, sizeof(contents)) != 0) {
+        return -1;
+    }
+
+    buffer[0] = '\0';
+    while (contents[index] != '\0' && fields < 3) {
+        while (rt_is_space(contents[index])) {
+            index += 1U;
+        }
+        if (contents[index] == '\0') {
+            break;
+        }
+        if (fields > 0 && length + 1U < buffer_size) {
+            buffer[length++] = ' ';
+        }
+        while (contents[index] != '\0' && !rt_is_space(contents[index])) {
+            if (length + 1U < buffer_size) {
+                buffer[length++] = contents[index];
+            }
+            index += 1U;
+        }
+        fields += 1;
+    }
+    buffer[length < buffer_size ? length : buffer_size - 1U] = '\0';
+
+    return fields == 3 ? 0 : -1;
+}
+
+static int fill_uptime_seconds(unsigned long long *seconds_out) {
+    char uptime_text[128];
+
+    if (seconds_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (read_text_file("/proc/uptime", uptime_text, sizeof(uptime_text)) == 0 &&
+        parse_unsigned_prefix(uptime_text, seconds_out) == 0) {
+        return 0;
+    }
+
+#if defined(__APPLE__)
+    {
+        struct timeval boot_time;
+        size_t size = sizeof(boot_time);
+        int mib[2] = { CTL_KERN, KERN_BOOTTIME };
+        time_t now = time(NULL);
+
+        if (sysctl(mib, 2, &boot_time, &size, 0, 0) == 0 && now >= boot_time.tv_sec) {
+            *seconds_out = (unsigned long long)(now - boot_time.tv_sec);
+            return 0;
+        }
+    }
+#endif
+
+#if defined(CLOCK_BOOTTIME)
+    {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
+            *seconds_out = (unsigned long long)ts.tv_sec;
+            return 0;
+        }
+    }
+#endif
+
+    return -1;
+}
+
+static void fill_load_average(char *buffer, size_t buffer_size) {
+    set_default_load_average(buffer, buffer_size);
+
+    if (read_loadavg_text(buffer, buffer_size) == 0) {
+        return;
+    }
+
+    {
+        double values[3];
+        if (getloadavg(values, 3) == 3) {
+            (void)snprintf(buffer, buffer_size, "%.2f %.2f %.2f", values[0], values[1], values[2]);
+        }
+    }
+}
 
 int platform_sleep_seconds(unsigned int seconds) {
     return sleep(seconds) == 0 ? 0 : -1;
@@ -12,4 +216,114 @@ int platform_sleep_seconds(unsigned int seconds) {
 long long platform_get_epoch_time(void) {
     time_t now = time(NULL);
     return (now == (time_t)-1) ? 0 : (long long)now;
+}
+
+int platform_get_memory_info(PlatformMemoryInfo *info_out) {
+    char meminfo[4096];
+
+    if (info_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (read_text_file("/proc/meminfo", meminfo, sizeof(meminfo)) == 0 &&
+        parse_meminfo_field(meminfo, "MemTotal", &info_out->total_bytes) == 0 &&
+        parse_meminfo_field(meminfo, "MemFree", &info_out->free_bytes) == 0) {
+        if (parse_meminfo_field(meminfo, "MemAvailable", &info_out->available_bytes) != 0) {
+            info_out->available_bytes = info_out->free_bytes;
+        }
+        return 0;
+    }
+
+#if defined(__APPLE__)
+    {
+        uint64_t total_memory = 0;
+        size_t total_size = sizeof(total_memory);
+        mach_port_t host = mach_host_self();
+        vm_statistics64_data_t vm_stats;
+        mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+        vm_size_t page_size = 0;
+
+        if (sysctlbyname("hw.memsize", &total_memory, &total_size, 0, 0) != 0) {
+            return -1;
+        }
+
+        if (host_page_size(host, &page_size) != KERN_SUCCESS) {
+            return -1;
+        }
+
+        if (host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&vm_stats, &count) != KERN_SUCCESS) {
+            return -1;
+        }
+
+        info_out->total_bytes = (unsigned long long)total_memory;
+        info_out->free_bytes = (unsigned long long)(vm_stats.free_count + vm_stats.inactive_count + vm_stats.speculative_count) *
+                               (unsigned long long)page_size;
+        info_out->available_bytes = info_out->free_bytes;
+        return 0;
+    }
+#elif defined(_SC_PHYS_PAGES)
+    {
+        long page_size = sysconf(_SC_PAGESIZE);
+        long phys_pages = sysconf(_SC_PHYS_PAGES);
+        long avail_pages = -1;
+
+#if defined(_SC_AVPHYS_PAGES)
+        avail_pages = sysconf(_SC_AVPHYS_PAGES);
+#endif
+
+        if (page_size <= 0 || phys_pages <= 0) {
+            return -1;
+        }
+
+        if (avail_pages < 0) {
+            avail_pages = phys_pages / 2;
+        }
+
+        info_out->total_bytes = (unsigned long long)page_size * (unsigned long long)phys_pages;
+        info_out->free_bytes = (unsigned long long)page_size * (unsigned long long)avail_pages;
+        info_out->available_bytes = info_out->free_bytes;
+        return 0;
+    }
+#else
+    return -1;
+#endif
+}
+
+int platform_get_uptime_info(PlatformUptimeInfo *info_out) {
+    if (info_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    info_out->uptime_seconds = 0;
+    fill_load_average(info_out->load_average, sizeof(info_out->load_average));
+
+    return fill_uptime_seconds(&info_out->uptime_seconds);
+}
+
+int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size) {
+    time_t when;
+    struct tm tm_value;
+    struct tm *tm_ptr;
+    const char *actual_format;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+
+    actual_format = (format != NULL && format[0] != '\0') ? format : "%Y-%m-%d %H:%M:%S";
+    when = (time_t)epoch_seconds;
+    tm_ptr = use_local_time ? localtime_r(&when, &tm_value) : gmtime_r(&when, &tm_value);
+    if (tm_ptr == NULL) {
+        buffer[0] = '\0';
+        return -1;
+    }
+
+    if (strftime(buffer, buffer_size, actual_format, tm_ptr) == 0) {
+        buffer[0] = '\0';
+        return -1;
+    }
+
+    return 0;
 }

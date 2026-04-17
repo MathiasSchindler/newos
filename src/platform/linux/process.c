@@ -172,6 +172,44 @@ int platform_wait_process(int pid, int *exit_status_out) {
     return 0;
 }
 
+int platform_wait_process_timeout(
+    int pid,
+    unsigned int timeout_seconds,
+    unsigned int kill_after_seconds,
+    int signal_number,
+    int preserve_status,
+    int *exit_status_out
+) {
+    int status = 0;
+    int timed_out = 0;
+
+    if (exit_status_out == 0) {
+        return -1;
+    }
+
+    if (timeout_seconds > 0) {
+        if (platform_sleep_seconds(timeout_seconds) != 0) {
+            return -1;
+        }
+        (void)platform_send_signal(pid, signal_number);
+        timed_out = 1;
+
+        if (kill_after_seconds > 0) {
+            if (platform_sleep_seconds(kill_after_seconds) != 0) {
+                return -1;
+            }
+            (void)platform_send_signal(pid, 9);
+        }
+    }
+
+    if (platform_wait_process(pid, &status) != 0) {
+        return -1;
+    }
+
+    *exit_status_out = (timed_out && !preserve_status) ? 124 : status;
+    return 0;
+}
+
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out) {
     long fd;
     size_t count = 0;

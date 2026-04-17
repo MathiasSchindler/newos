@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -152,6 +153,33 @@ int platform_send_signal(int pid, int signal_number) {
     return kill((pid_t)pid, signal_number);
 }
 
+static int decode_wait_status(int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
+}
+
+static int sleep_uninterrupted(unsigned int seconds) {
+    struct timespec req;
+    struct timespec rem;
+
+    req.tv_sec = (time_t)seconds;
+    req.tv_nsec = 0;
+
+    while (nanosleep(&req, &rem) != 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+        req = rem;
+    }
+
+    return 0;
+}
+
 int platform_wait_process(int pid, int *exit_status_out) {
     int status;
 
@@ -164,15 +192,63 @@ int platform_wait_process(int pid, int *exit_status_out) {
         return -1;
     }
 
-    if (WIFEXITED(status)) {
-        *exit_status_out = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        *exit_status_out = 128 + WTERMSIG(status);
-    } else {
-        *exit_status_out = 1;
-    }
+    *exit_status_out = decode_wait_status(status);
 
     return 0;
+}
+
+int platform_wait_process_timeout(
+    int pid,
+    unsigned int timeout_seconds,
+    unsigned int kill_after_seconds,
+    int signal_number,
+    int preserve_status,
+    int *exit_status_out
+) {
+    unsigned int elapsed = 0;
+    unsigned int after_signal = 0;
+    int timed_out = 0;
+
+    if (exit_status_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (;;) {
+        int status = 0;
+        pid_t waited = waitpid((pid_t)pid, &status, WNOHANG);
+
+        if (waited == (pid_t)pid) {
+            *exit_status_out = (timed_out && !preserve_status) ? 124 : decode_wait_status(status);
+            return 0;
+        }
+
+        if (waited < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+
+        if (!timed_out && elapsed >= timeout_seconds) {
+            (void)platform_send_signal(pid, signal_number);
+            timed_out = 1;
+            after_signal = 0;
+        } else if (timed_out && kill_after_seconds > 0 && after_signal >= kill_after_seconds) {
+            (void)platform_send_signal(pid, SIGKILL);
+            kill_after_seconds = 0;
+        }
+
+        if (sleep_uninterrupted(1U) != 0) {
+            return -1;
+        }
+
+        if (!timed_out) {
+            elapsed += 1;
+        } else {
+            after_signal += 1;
+        }
+    }
 }
 
 static void init_process_entry(PlatformProcessEntry *entry, int pid, const char *fallback_name) {

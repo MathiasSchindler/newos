@@ -2,10 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#if __STDC_HOSTED__
-#include <time.h>
-#endif
-
 static void write_padded(unsigned int value, unsigned int width) {
     char digits[16];
     unsigned int i = 0;
@@ -52,14 +48,9 @@ static void civil_from_days(long long z, int *year_out, unsigned int *month_out,
 int main(int argc, char **argv) {
     int use_utc = 1;
     const char *format = 0;
+    const char *actual_format = "%Y-%m-%d %H:%M:%S";
     int argi;
-
-#if __STDC_HOSTED__
-    time_t now;
-    struct tm tm_value;
-    struct tm *tm_ptr;
     char output[256];
-#endif
     long long epoch_seconds;
     long long days;
     unsigned long long secs_of_day;
@@ -87,27 +78,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-#if __STDC_HOSTED__
-    now = (time_t)platform_get_epoch_time();
-    tm_ptr = use_utc ? gmtime_r(&now, &tm_value) : localtime_r(&now, &tm_value);
-    if (tm_ptr != 0) {
-        const char *actual_format = format != 0 ? format : "%Y-%m-%d %H:%M:%S";
-        if (strftime(output, sizeof(output), actual_format, tm_ptr) > 0) {
-            if (rt_write_cstr(1, output) != 0) {
-                return 1;
-            }
-            if (format == 0 && use_utc) {
-                return rt_write_line(1, " UTC") == 0 ? 0 : 1;
-            }
-            if (format == 0) {
-                return rt_write_char(1, '\n') == 0 ? 0 : 1;
-            }
-            return rt_write_char(1, '\n') == 0 ? 0 : 1;
-        }
+    if (format != 0) {
+        actual_format = format;
     }
-#endif
 
     epoch_seconds = platform_get_epoch_time();
+    if (platform_format_time(epoch_seconds, use_utc ? 0 : 1, actual_format, output, sizeof(output)) == 0) {
+        if (rt_write_cstr(1, output) != 0) {
+            return 1;
+        }
+        if (format == 0 && use_utc) {
+            return rt_write_line(1, " UTC") == 0 ? 0 : 1;
+        }
+        return rt_write_char(1, '\n') == 0 ? 0 : 1;
+    }
+
     days = epoch_seconds / 86400LL;
     secs_of_day = (unsigned long long)(epoch_seconds % 86400LL);
 

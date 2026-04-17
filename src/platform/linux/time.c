@@ -2,6 +2,214 @@
 #include "common.h"
 #include "syscall.h"
 
+static int read_text_file(const char *path, char *buffer, size_t buffer_size) {
+    int fd;
+    size_t used = 0;
+
+    if (buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        buffer[0] = '\0';
+        return -1;
+    }
+
+    while (used + 1U < buffer_size) {
+        long bytes_read = platform_read(fd, buffer + used, buffer_size - used - 1U);
+        if (bytes_read < 0) {
+            platform_close(fd);
+            buffer[0] = '\0';
+            return -1;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        used += (size_t)bytes_read;
+    }
+
+    buffer[used] = '\0';
+    platform_close(fd);
+    return 0;
+}
+
+static int parse_unsigned_prefix(const char *text, unsigned long long *value_out) {
+    unsigned long long value = 0;
+    size_t index = 0;
+
+    if (text == 0 || value_out == 0 || text[0] < '0' || text[0] > '9') {
+        return -1;
+    }
+
+    while (text[index] >= '0' && text[index] <= '9') {
+        value = (value * 10ULL) + (unsigned long long)(text[index] - '0');
+        index += 1U;
+    }
+
+    *value_out = value;
+    return 0;
+}
+
+static int match_field_name(const char *text, const char *field_name) {
+    size_t index = 0;
+
+    while (field_name[index] != '\0') {
+        if (text[index] != field_name[index]) {
+            return 0;
+        }
+        index += 1U;
+    }
+
+    return text[index] == ':';
+}
+
+static int parse_meminfo_field(const char *contents, const char *field_name, unsigned long long *value_out) {
+    const char *cursor = contents;
+
+    while (cursor != 0 && *cursor != '\0') {
+        if (match_field_name(cursor, field_name)) {
+            unsigned long long kibibytes = 0;
+
+            cursor += linux_string_length(field_name) + 1U;
+            while (*cursor == ' ' || *cursor == '\t') {
+                cursor += 1;
+            }
+
+            if (parse_unsigned_prefix(cursor, &kibibytes) != 0) {
+                return -1;
+            }
+
+            *value_out = kibibytes * 1024ULL;
+            return 0;
+        }
+
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor += 1;
+        }
+        if (*cursor == '\n') {
+            cursor += 1;
+        }
+    }
+
+    return -1;
+}
+
+static int read_loadavg_text(char *buffer, size_t buffer_size) {
+    char contents[128];
+    size_t index = 0;
+    size_t length = 0;
+    int fields = 0;
+
+    if (buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    if (read_text_file("/proc/loadavg", contents, sizeof(contents)) != 0) {
+        return -1;
+    }
+
+    buffer[0] = '\0';
+    while (contents[index] != '\0' && fields < 3) {
+        while (rt_is_space(contents[index])) {
+            index += 1U;
+        }
+        if (contents[index] == '\0') {
+            break;
+        }
+        if (fields > 0 && length + 1U < buffer_size) {
+            buffer[length++] = ' ';
+        }
+        while (contents[index] != '\0' && !rt_is_space(contents[index])) {
+            if (length + 1U < buffer_size) {
+                buffer[length++] = contents[index];
+            }
+            index += 1U;
+        }
+        fields += 1;
+    }
+    buffer[length < buffer_size ? length : buffer_size - 1U] = '\0';
+
+    return fields == 3 ? 0 : -1;
+}
+
+static int linux_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    size_t length = *length_io;
+
+    if (length + 1 >= buffer_size) {
+        return -1;
+    }
+
+    buffer[length] = ch;
+    buffer[length + 1] = '\0';
+    *length_io = length + 1;
+    return 0;
+}
+
+static int linux_append_padded(char *buffer, size_t buffer_size, size_t *length_io, unsigned int value, unsigned int width) {
+    char digits[16];
+    unsigned int count = 0;
+
+    do {
+        digits[count++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    } while (value > 0U && count < sizeof(digits));
+
+    while (count < width) {
+        if (linux_append_char(buffer, buffer_size, length_io, '0') != 0) {
+            return -1;
+        }
+        width -= 1U;
+    }
+
+    while (count > 0U) {
+        count -= 1U;
+        if (linux_append_char(buffer, buffer_size, length_io, digits[count]) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void linux_civil_from_days(long long z, int *year_out, unsigned int *month_out, unsigned int *day_out) {
+    long long era;
+    unsigned long long doe;
+    unsigned long long yoe;
+    unsigned long long doy;
+    unsigned long long mp;
+    int year;
+    unsigned int month;
+
+    z += 719468LL;
+    era = (z >= 0LL ? z : z - 146096LL) / 146097LL;
+    doe = (unsigned long long)(z - era * 146097LL);
+    yoe = (doe - doe / 1460ULL + doe / 36524ULL - doe / 146096ULL) / 365ULL;
+    year = (int)yoe + (int)(era * 400LL);
+    doy = doe - (365ULL * yoe + yoe / 4ULL - yoe / 100ULL);
+    mp = (5ULL * doy + 2ULL) / 153ULL;
+
+    *day_out = (unsigned int)(doy - (153ULL * mp + 2ULL) / 5ULL + 1ULL);
+    month = (unsigned int)(mp < 10ULL ? mp + 3ULL : mp - 9ULL);
+    *month_out = month;
+    *year_out = year + (month <= 2U ? 1 : 0);
+}
+
+static int linux_append_year(char *buffer, size_t buffer_size, size_t *length_io, int year) {
+    unsigned int absolute_year;
+
+    if (year < 0) {
+        if (linux_append_char(buffer, buffer_size, length_io, '-') != 0) {
+            return -1;
+        }
+        absolute_year = (unsigned int)(-(year + 1)) + 1U;
+    } else {
+        absolute_year = (unsigned int)year;
+    }
+
+    return linux_append_padded(buffer, buffer_size, length_io, absolute_year, 4U);
+}
+
 int platform_sleep_seconds(unsigned int seconds) {
     struct linux_timespec req;
 
@@ -18,4 +226,155 @@ long long platform_get_epoch_time(void) {
     }
 
     return (long long)now.tv_sec;
+}
+
+int platform_get_memory_info(PlatformMemoryInfo *info_out) {
+    char meminfo[4096];
+
+    if (info_out == 0) {
+        return -1;
+    }
+
+    if (read_text_file("/proc/meminfo", meminfo, sizeof(meminfo)) != 0 ||
+        parse_meminfo_field(meminfo, "MemTotal", &info_out->total_bytes) != 0 ||
+        parse_meminfo_field(meminfo, "MemFree", &info_out->free_bytes) != 0) {
+        return -1;
+    }
+
+    if (parse_meminfo_field(meminfo, "MemAvailable", &info_out->available_bytes) != 0) {
+        info_out->available_bytes = info_out->free_bytes;
+    }
+
+    return 0;
+}
+
+int platform_get_uptime_info(PlatformUptimeInfo *info_out) {
+    char uptime_text[128];
+
+    if (info_out == 0) {
+        return -1;
+    }
+
+    info_out->uptime_seconds = 0;
+    linux_copy_string(info_out->load_average, sizeof(info_out->load_average), "0.00 0.00 0.00");
+
+    if (read_text_file("/proc/uptime", uptime_text, sizeof(uptime_text)) != 0 ||
+        parse_unsigned_prefix(uptime_text, &info_out->uptime_seconds) != 0) {
+        return -1;
+    }
+
+    (void)read_loadavg_text(info_out->load_average, sizeof(info_out->load_average));
+    return 0;
+}
+
+int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size) {
+    long long days;
+    unsigned long long secs_of_day;
+    unsigned int hour;
+    unsigned int minute;
+    unsigned int second;
+    unsigned int month;
+    unsigned int day;
+    int year;
+    size_t format_index = 0;
+    size_t length = 0;
+    const char *actual_format;
+
+    (void)use_local_time;
+
+    if (buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    buffer[0] = '\0';
+    actual_format = (format != 0 && format[0] != '\0') ? format : "%Y-%m-%d %H:%M:%S";
+    days = epoch_seconds / 86400LL;
+    secs_of_day = (unsigned long long)(epoch_seconds % 86400LL);
+
+    if (epoch_seconds < 0 && secs_of_day != 0ULL) {
+        days -= 1LL;
+        secs_of_day += 86400ULL;
+    }
+
+    linux_civil_from_days(days, &year, &month, &day);
+    hour = (unsigned int)(secs_of_day / 3600ULL);
+    minute = (unsigned int)((secs_of_day % 3600ULL) / 60ULL);
+    second = (unsigned int)(secs_of_day % 60ULL);
+
+    while (actual_format[format_index] != '\0') {
+        if (actual_format[format_index] != '%') {
+            if (linux_append_char(buffer, buffer_size, &length, actual_format[format_index]) != 0) {
+                return -1;
+            }
+            format_index += 1;
+            continue;
+        }
+
+        format_index += 1;
+        if (actual_format[format_index] == '\0') {
+            return -1;
+        }
+
+        switch (actual_format[format_index]) {
+            case '%':
+                if (linux_append_char(buffer, buffer_size, &length, '%') != 0) {
+                    return -1;
+                }
+                break;
+            case 'Y':
+                if (linux_append_year(buffer, buffer_size, &length, year) != 0) {
+                    return -1;
+                }
+                break;
+            case 'm':
+                if (linux_append_padded(buffer, buffer_size, &length, month, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'd':
+                if (linux_append_padded(buffer, buffer_size, &length, day, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'H':
+                if (linux_append_padded(buffer, buffer_size, &length, hour, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'M':
+                if (linux_append_padded(buffer, buffer_size, &length, minute, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'S':
+                if (linux_append_padded(buffer, buffer_size, &length, second, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'F':
+                if (linux_append_year(buffer, buffer_size, &length, year) != 0 ||
+                    linux_append_char(buffer, buffer_size, &length, '-') != 0 ||
+                    linux_append_padded(buffer, buffer_size, &length, month, 2U) != 0 ||
+                    linux_append_char(buffer, buffer_size, &length, '-') != 0 ||
+                    linux_append_padded(buffer, buffer_size, &length, day, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            case 'T':
+                if (linux_append_padded(buffer, buffer_size, &length, hour, 2U) != 0 ||
+                    linux_append_char(buffer, buffer_size, &length, ':') != 0 ||
+                    linux_append_padded(buffer, buffer_size, &length, minute, 2U) != 0 ||
+                    linux_append_char(buffer, buffer_size, &length, ':') != 0 ||
+                    linux_append_padded(buffer, buffer_size, &length, second, 2U) != 0) {
+                    return -1;
+                }
+                break;
+            default:
+                return -1;
+        }
+
+        format_index += 1;
+    }
+
+    return 0;
 }
