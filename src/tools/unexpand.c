@@ -2,20 +2,91 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#define UNEXPAND_MAX_TABSTOPS 32
+
 typedef struct {
-    unsigned long long tabstop;
+    unsigned long long stops[UNEXPAND_MAX_TABSTOPS];
+    size_t stop_count;
     int convert_all;
 } UnexpandOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-a] [-t TABSTOP] [file ...]");
+    tool_write_usage(program_name, "[-a] [-i] [-t TABSTOP[,TABSTOP...]] [file ...]");
 }
 
-static int write_blank_run(unsigned long long start_column, unsigned long long count, unsigned long long tabstop) {
+static int parse_tabstop_list(const char *text, UnexpandOptions *options) {
+    unsigned long long previous = 0ULL;
+    size_t count = 0;
+    size_t start = 0;
+    size_t i = 0;
+
+    while (1) {
+        char ch = text[i];
+        if (ch == ',' || ch == '\0') {
+            char token[32];
+            size_t length;
+            unsigned long long value = 0ULL;
+
+            if (count >= UNEXPAND_MAX_TABSTOPS || i == start) {
+                return -1;
+            }
+            length = i - start;
+            if (length + 1U > sizeof(token)) {
+                return -1;
+            }
+            memcpy(token, text + start, length);
+            token[length] = '\0';
+            if (rt_parse_uint(token, &value) != 0 || value == 0ULL) {
+                return -1;
+            }
+            if (count > 0U && value <= previous) {
+                return -1;
+            }
+
+            options->stops[count++] = value;
+            previous = value;
+
+            if (ch == '\0') {
+                break;
+            }
+            start = i + 1U;
+        }
+        i += 1;
+    }
+
+    options->stop_count = count;
+    return count > 0U ? 0 : -1;
+}
+
+static unsigned long long next_tabstop(const UnexpandOptions *options, unsigned long long column) {
+    size_t i;
+
+    if (options->stop_count == 0U) {
+        return column + 8ULL - (column % 8ULL);
+    }
+
+    if (options->stop_count == 1U) {
+        unsigned long long stop = options->stops[0];
+        return column + stop - (column % stop);
+    }
+
+    for (i = 0; i < options->stop_count; ++i) {
+        if (options->stops[i] > column) {
+            return options->stops[i];
+        }
+    }
+
+    return column + 1ULL;
+}
+
+static int write_blank_run(unsigned long long start_column,
+                           unsigned long long count,
+                           const UnexpandOptions *options) {
     unsigned long long column = start_column;
 
     while (count > 0ULL) {
-        unsigned long long to_next_stop = tabstop - (column % tabstop);
+        unsigned long long stop = next_tabstop(options, column);
+        unsigned long long to_next_stop = stop > column ? stop - column : 1ULL;
 
         if (to_next_stop <= count && to_next_stop > 1ULL) {
             if (rt_write_char(1, '\t') != 0) {
@@ -54,7 +125,7 @@ static int unexpand_stream(int fd, const UnexpandOptions *options) {
             }
 
             if (pending_spaces > 0ULL) {
-                if (write_blank_run(column, pending_spaces, options->tabstop) != 0) {
+                if (write_blank_run(column, pending_spaces, options) != 0) {
                     return -1;
                 }
                 column += pending_spaces;
@@ -71,7 +142,10 @@ static int unexpand_stream(int fd, const UnexpandOptions *options) {
                 if (rt_write_char(1, ch) != 0) {
                     return -1;
                 }
-                column += options->tabstop - (column % options->tabstop);
+                {
+                    unsigned long long stop = next_tabstop(options, column);
+                    column = stop > column ? stop : column + 1ULL;
+                }
                 if (!options->convert_all) {
                     leading = 1;
                 }
@@ -90,7 +164,7 @@ static int unexpand_stream(int fd, const UnexpandOptions *options) {
     }
 
     if (pending_spaces > 0ULL) {
-        if (write_blank_run(column, pending_spaces, options->tabstop) != 0) {
+        if (write_blank_run(column, pending_spaces, options) != 0) {
             return -1;
         }
     }
@@ -103,15 +177,19 @@ int main(int argc, char **argv) {
     int argi = 1;
     int exit_code = 0;
 
-    options.tabstop = 8ULL;
+    options.stops[0] = 8ULL;
+    options.stop_count = 1U;
     options.convert_all = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-a") == 0) {
             options.convert_all = 1;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "-i") == 0) {
+            options.convert_all = 0;
+            argi += 1;
         } else if (rt_strcmp(argv[argi], "-t") == 0) {
-            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &options.tabstop, "unexpand", "tabstop") != 0 || options.tabstop == 0ULL) {
+            if (argi + 1 >= argc || parse_tabstop_list(argv[argi + 1], &options) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }

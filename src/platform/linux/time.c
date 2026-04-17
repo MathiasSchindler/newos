@@ -95,6 +95,17 @@ static int parse_meminfo_field(const char *contents, const char *field_name, uns
     return -1;
 }
 
+static void clear_memory_info(PlatformMemoryInfo *info_out) {
+    info_out->total_bytes = 0;
+    info_out->free_bytes = 0;
+    info_out->available_bytes = 0;
+    info_out->shared_bytes = 0;
+    info_out->buffer_bytes = 0;
+    info_out->cache_bytes = 0;
+    info_out->swap_total_bytes = 0;
+    info_out->swap_free_bytes = 0;
+}
+
 static int read_loadavg_text(char *buffer, size_t buffer_size) {
     char contents[128];
     size_t index = 0;
@@ -234,10 +245,13 @@ long long platform_get_epoch_time(void) {
 
 int platform_get_memory_info(PlatformMemoryInfo *info_out) {
     char meminfo[4096];
+    unsigned long long reclaimable_bytes = 0;
 
     if (info_out == 0) {
         return -1;
     }
+
+    clear_memory_info(info_out);
 
     if (read_text_file("/proc/meminfo", meminfo, sizeof(meminfo)) != 0 ||
         parse_meminfo_field(meminfo, "MemTotal", &info_out->total_bytes) != 0 ||
@@ -248,6 +262,14 @@ int platform_get_memory_info(PlatformMemoryInfo *info_out) {
     if (parse_meminfo_field(meminfo, "MemAvailable", &info_out->available_bytes) != 0) {
         info_out->available_bytes = info_out->free_bytes;
     }
+    (void)parse_meminfo_field(meminfo, "Shmem", &info_out->shared_bytes);
+    (void)parse_meminfo_field(meminfo, "Buffers", &info_out->buffer_bytes);
+    (void)parse_meminfo_field(meminfo, "Cached", &info_out->cache_bytes);
+    if (parse_meminfo_field(meminfo, "SReclaimable", &reclaimable_bytes) == 0) {
+        info_out->cache_bytes += reclaimable_bytes;
+    }
+    (void)parse_meminfo_field(meminfo, "SwapTotal", &info_out->swap_total_bytes);
+    (void)parse_meminfo_field(meminfo, "SwapFree", &info_out->swap_free_bytes);
 
     return 0;
 }

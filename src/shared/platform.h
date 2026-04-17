@@ -52,7 +52,22 @@ typedef struct {
     unsigned long long total_bytes;
     unsigned long long free_bytes;
     unsigned long long available_bytes;
+    unsigned long long shared_bytes;
+    unsigned long long buffer_bytes;
+    unsigned long long cache_bytes;
+    unsigned long long swap_total_bytes;
+    unsigned long long swap_free_bytes;
 } PlatformMemoryInfo;
+
+typedef struct {
+    unsigned long long total_bytes;
+    unsigned long long free_bytes;
+    unsigned long long available_bytes;
+    unsigned long long total_inodes;
+    unsigned long long free_inodes;
+    unsigned long long available_inodes;
+    char type_name[PLATFORM_NAME_CAPACITY];
+} PlatformFilesystemInfo;
 
 typedef struct {
     unsigned long long uptime_seconds;
@@ -169,6 +184,7 @@ int platform_stream_file_to_stdout(const char *path);
 int platform_get_current_directory(char *buffer, size_t buffer_size);
 int platform_get_path_info(const char *path, PlatformDirEntry *entry_out);
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size);
+int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out);
 int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out);
 int platform_truncate_path(const char *path, unsigned long long size);
 int platform_sync_all(void);

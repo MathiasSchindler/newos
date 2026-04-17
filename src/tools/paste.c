@@ -2,8 +2,9 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PASTE_MAX_FILES 16
-#define PASTE_LINE_CAPACITY 4096
+#define PASTE_MAX_FILES 64
+#define PASTE_LINE_CAPACITY 8192
+#define PASTE_DELIMITER_CAPACITY 64
 
 typedef struct {
     int fd;
@@ -14,7 +15,8 @@ typedef struct {
 } LineReader;
 
 typedef struct {
-    const char *delimiters;
+    char delimiters[PASTE_DELIMITER_CAPACITY];
+    size_t delimiter_count;
     int serial_mode;
 } PasteOptions;
 
@@ -22,21 +24,36 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-s] [-d DELIMS] [file ...]");
 }
 
-static char parse_escape_char(const char *text) {
-    if (text[0] == '\\' && text[1] != '\0' && text[2] == '\0') {
-        if (text[1] == 't') {
-            return '\t';
+static int parse_delimiters(const char *text, PasteOptions *options) {
+    size_t out = 0;
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        char ch = text[i];
+
+        if (ch == '\\' && text[i + 1] != '\0') {
+            i += 1;
+            ch = text[i];
+            if (ch == 't') {
+                ch = '\t';
+            } else if (ch == 'n') {
+                ch = '\n';
+            } else if (ch == 'r') {
+                ch = '\r';
+            } else if (ch == '0') {
+                ch = '\0';
+            }
         }
-        if (text[1] == 'n') {
-            return '\n';
+
+        if (out >= PASTE_DELIMITER_CAPACITY) {
+            return -1;
         }
-        if (text[1] == '0') {
-            return '\0';
-        }
-        return text[1];
+        options->delimiters[out++] = ch;
+        i += 1;
     }
 
-    return text[0];
+    options->delimiter_count = out;
+    return 0;
 }
 
 static void init_reader(LineReader *reader, int fd) {
@@ -89,14 +106,22 @@ static int read_next_line(LineReader *reader, char *line, size_t line_size, int 
     return 0;
 }
 
-static char delimiter_at(const char *delimiters, size_t index) {
-    size_t len = rt_strlen(delimiters);
-
-    if (len == 0U) {
+static char delimiter_at(const PasteOptions *options, size_t index) {
+    if (options->delimiter_count == 0U) {
         return '\t';
     }
 
-    return delimiters[index % len];
+    return options->delimiters[index % options->delimiter_count];
+}
+
+static int write_delimiter(const PasteOptions *options, size_t index) {
+    char delimiter = delimiter_at(options, index);
+
+    if (delimiter == '\0') {
+        return 0;
+    }
+
+    return rt_write_char(1, delimiter);
 }
 
 static int paste_parallel(LineReader *readers, int file_count, const PasteOptions *options) {
@@ -127,7 +152,7 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
 
         for (i = 0; i < file_count; ++i) {
             if (i > 0) {
-                if (rt_write_char(1, delimiter_at(options->delimiters, (size_t)(i - 1))) != 0) {
+                if (write_delimiter(options, (size_t)(i - 1)) != 0) {
                     return -1;
                 }
             }
@@ -165,7 +190,7 @@ static int paste_serial(LineReader *readers, int file_count, const PasteOptions 
             }
 
             if (field_index > 0) {
-                if (rt_write_char(1, delimiter_at(options->delimiters, (size_t)(field_index - 1))) != 0) {
+                if (write_delimiter(options, (size_t)(field_index - 1)) != 0) {
                     return -1;
                 }
             }
@@ -198,7 +223,8 @@ int main(int argc, char **argv) {
     int file_count = 0;
     int i;
 
-    options.delimiters = "\t";
+    options.delimiters[0] = '\t';
+    options.delimiter_count = 1U;
     options.serial_mode = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
@@ -210,13 +236,9 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-            if (argv[argi + 1][0] == '\\' && argv[argi + 1][1] != '\0' && argv[argi + 1][2] == '\0') {
-                static char single[2];
-                single[0] = parse_escape_char(argv[argi + 1]);
-                single[1] = '\0';
-                options.delimiters = single;
-            } else {
-                options.delimiters = argv[argi + 1];
+            if (parse_delimiters(argv[argi + 1], &options) != 0) {
+                print_usage(argv[0]);
+                return 1;
             }
             argi += 2;
         } else if (rt_strcmp(argv[argi], "--") == 0) {

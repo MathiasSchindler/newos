@@ -494,24 +494,46 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     return 0;
 }
 
-int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out) {
     struct linux_statfs info;
     unsigned long long fragment_size;
     long result;
 
-    if (path == 0 || total_bytes_out == 0 || free_bytes_out == 0 || available_bytes_out == 0) {
+    if (path == 0 || info_out == 0) {
         return -1;
     }
 
+    rt_memset(info_out, 0, sizeof(*info_out));
     result = linux_syscall2(LINUX_SYS_STATFS, (long)path, (long)&info);
     if (result < 0) {
         return -1;
     }
 
     fragment_size = (info.f_frsize > 0) ? (unsigned long long)info.f_frsize : (unsigned long long)info.f_bsize;
-    *total_bytes_out = info.f_blocks * fragment_size;
-    *free_bytes_out = info.f_bfree * fragment_size;
-    *available_bytes_out = info.f_bavail * fragment_size;
+    info_out->total_bytes = info.f_blocks * fragment_size;
+    info_out->free_bytes = info.f_bfree * fragment_size;
+    info_out->available_bytes = info.f_bavail * fragment_size;
+    info_out->total_inodes = info.f_files;
+    info_out->free_inodes = info.f_ffree;
+    info_out->available_inodes = info.f_ffree;
+    rt_copy_string(info_out->type_name, sizeof(info_out->type_name), "linuxfs");
+    return 0;
+}
+
+int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+    PlatformFilesystemInfo info;
+
+    if (path == 0 || total_bytes_out == 0 || free_bytes_out == 0 || available_bytes_out == 0) {
+        return -1;
+    }
+
+    if (platform_get_filesystem_info(path, &info) != 0) {
+        return -1;
+    }
+
+    *total_bytes_out = info.total_bytes;
+    *free_bytes_out = info.free_bytes;
+    *available_bytes_out = info.available_bytes;
     return 0;
 }
 

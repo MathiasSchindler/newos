@@ -288,6 +288,11 @@ assert_text_equals "$readlink_full" "$WORK_DIR/dd.in" "readlink -f did not canon
 "$ROOT_DIR/build/stat" "$WORK_DIR/dd.in" > "$WORK_DIR/stat.out"
 assert_file_contains "$WORK_DIR/stat.out" '^Size:' "stat output missing size"
 assert_file_contains "$WORK_DIR/stat.out" 'Type: file' "stat output missing file type"
+stat_format_out=$("$ROOT_DIR/build/stat" -c '%F %a %n' "$WORK_DIR/dd.in" | tr -d '\r')
+printf '%s\n' "$stat_format_out" > "$WORK_DIR/stat_format.out"
+assert_file_contains "$WORK_DIR/stat_format.out" '^file [0-7][0-7][0-7][0-7]*[[:space:]].*dd\.in$' "stat -c format output was incomplete"
+stat_follow_out=$("$ROOT_DIR/build/stat" -L -c '%F' "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
+assert_text_equals "$stat_follow_out" 'file' "stat -L did not follow the symlink"
 
 mkdir -p "$WORK_DIR/cp_src" "$WORK_DIR/cp_dest" "$WORK_DIR/mv_dest"
 printf 'A' > "$WORK_DIR/cp_src/a.txt"
@@ -323,16 +328,36 @@ printf 'target-b\n' > "$WORK_DIR/link-b.txt"
 "$ROOT_DIR/build/ln" -sf link-b.txt "$WORK_DIR/force-link"
 force_link_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/force-link" | tr -d '\r\n')
 assert_text_equals "$force_link_out" 'link-b.txt' "ln -f did not replace the existing link"
+mkdir -p "$WORK_DIR/link-dir"
+"$ROOT_DIR/build/ln" -sv "$WORK_DIR/link-a.txt" "$WORK_DIR/link-b.txt" "$WORK_DIR/link-dir" > "$WORK_DIR/ln_v.out"
+[ -L "$WORK_DIR/link-dir/link-a.txt" ] || fail "ln multi-source mode did not create the first symlink in the destination directory"
+[ -L "$WORK_DIR/link-dir/link-b.txt" ] || fail "ln multi-source mode did not create the second symlink in the destination directory"
+assert_file_contains "$WORK_DIR/ln_v.out" 'link-dir/link-a.txt' "ln -v did not describe the created link"
+if "$ROOT_DIR/build/ln" -sT "$WORK_DIR/link-a.txt" "$WORK_DIR/link-dir" >/dev/null 2>&1; then
+    fail "ln -T should refuse to treat a directory as a plain destination"
+fi
 
 "$ROOT_DIR/build/du" "$WORK_DIR" > "$WORK_DIR/du.out"
 assert_file_contains "$WORK_DIR/du.out" '^[0-9][0-9]*[[:space:]].*extended_tools$' "du output missing directory total"
 du_h_out=$("$ROOT_DIR/build/du" -sh "$WORK_DIR" | tr -d '\r')
 printf '%s\n' "$du_h_out" > "$WORK_DIR/du_h.out"
 assert_file_contains "$WORK_DIR/du_h.out" '^[0-9][0-9.]*[BKMGTP][[:space:]]' "du -h did not produce human-readable sizes"
+"$ROOT_DIR/build/du" -a "$WORK_DIR/cp_src" > "$WORK_DIR/du_a.out"
+assert_file_contains "$WORK_DIR/du_a.out" 'cp_src/a.txt$' "du -a did not include file entries"
+"$ROOT_DIR/build/du" -d 0 "$WORK_DIR/cp_src" > "$WORK_DIR/du_d0.out"
+if grep 'cp_src/a.txt$' "$WORK_DIR/du_d0.out" >/dev/null 2>&1; then
+    fail "du -d 0 should suppress deeper child entries"
+fi
+"$ROOT_DIR/build/du" -ac "$WORK_DIR/cp_src" "$WORK_DIR/mv_dest" > "$WORK_DIR/du_ac.out"
+assert_file_contains "$WORK_DIR/du_ac.out" '[[:space:]]total$' "du -c did not print a grand total"
 "$ROOT_DIR/build/df" > "$WORK_DIR/df.out"
 assert_file_contains "$WORK_DIR/df.out" '^Filesystem[[:space:]]' "df header missing"
 "$ROOT_DIR/build/df" -h > "$WORK_DIR/df_h.out"
 assert_file_contains "$WORK_DIR/df_h.out" '^/[[:space:]][0-9][0-9.]*[BKMGTP]' "df -h did not produce human-readable sizes"
+"$ROOT_DIR/build/df" -iT > "$WORK_DIR/df_it.out"
+assert_file_contains "$WORK_DIR/df_it.out" '^Filesystem[[:space:]][[:space:]]*Type[[:space:]][[:space:]]*Inodes[[:space:]][[:space:]]*IUsed' "df -iT header missing inode/type columns"
+"$ROOT_DIR/build/stat" -f "$WORK_DIR" > "$WORK_DIR/stat_fs.out"
+assert_file_contains "$WORK_DIR/stat_fs.out" '^Filesystem:' "stat -f did not print filesystem information"
 
 chown_target="$WORK_DIR/chown.txt"
 printf 'owner\n' > "$chown_target"
@@ -403,6 +428,60 @@ EOF
 assert_files_equal "$WORK_DIR/awk.expected" "$WORK_DIR/awk.out" "awk BEGIN/END/pattern/NR/NF behavior failed"
 awk_nf_out=$("$ROOT_DIR/build/awk" 'NF == 3 { print NR, $1 }' "$WORK_DIR/awk.txt" | tr -d '\r\n')
 assert_text_equals "$awk_nf_out" '2 beta' "awk NF condition failed"
+
+printf '\tlead\nA\tB\n' | "$ROOT_DIR/build/expand" -i -t 4 > "$WORK_DIR/expand_i.out"
+printf '    lead\nA\tB\n' > "$WORK_DIR/expand_i.expected"
+assert_files_equal "$WORK_DIR/expand_i.expected" "$WORK_DIR/expand_i.out" "expand -i did not limit expansion to leading tabs"
+expand_list_out=$(printf '1\t2\t3\n' | "$ROOT_DIR/build/expand" -t 4,6,10 | tr -d '\r\n')
+assert_text_equals "$expand_list_out" '1   2 3' "expand tab-stop lists were not applied correctly"
+printf '    lead\nA    B\n' | "$ROOT_DIR/build/unexpand" -a -i -t 4 > "$WORK_DIR/unexpand_i.out"
+printf '\tlead\nA    B\n' > "$WORK_DIR/unexpand_i.expected"
+assert_files_equal "$WORK_DIR/unexpand_i.expected" "$WORK_DIR/unexpand_i.out" "unexpand -i should override -a and preserve interior spaces"
+unexpand_list_out=$(printf '    12  3\n' | "$ROOT_DIR/build/unexpand" -a -t 4,6,10 | tr -d '\r\n')
+assert_text_equals "$unexpand_list_out" '	12  3' "unexpand tab-stop list handling failed"
+
+printf 'A\n' > "$WORK_DIR/paste_a.txt"
+printf '1\n' > "$WORK_DIR/paste_1.txt"
+printf 'x\n' > "$WORK_DIR/paste_x.txt"
+paste_escape_out=$("$ROOT_DIR/build/paste" -d '\t:' "$WORK_DIR/paste_a.txt" "$WORK_DIR/paste_1.txt" "$WORK_DIR/paste_x.txt" | tr -d '\r\n')
+assert_text_equals "$paste_escape_out" 'A	1:x' "paste escaped delimiters were not decoded correctly"
+printf 'a\nb\nc\n' > "$WORK_DIR/paste_serial.txt"
+paste_serial_out=$("$ROOT_DIR/build/paste" -s -d ',\0' "$WORK_DIR/paste_serial.txt" | tr -d '\r\n')
+assert_text_equals "$paste_serial_out" 'a,bc' "paste serial delimiter cycling with \\0 failed"
+set --
+i=1
+while [ "$i" -le 18 ]; do
+    file="$WORK_DIR/paste_many_$i.txt"
+    printf '%s\n' "$i" > "$file"
+    set -- "$@" "$file"
+    i=$((i + 1))
+done
+"$ROOT_DIR/build/paste" -d ',' "$@" > "$WORK_DIR/paste_many.out"
+assert_file_contains "$WORK_DIR/paste_many.out" '1,2,3,4,5' "paste did not accept a practical number of input files"
+assert_file_contains "$WORK_DIR/paste_many.out" '16,17,18' "paste output was truncated when many files were provided"
+
+printf '\t12\n' | "$ROOT_DIR/build/fold" -w 4 > "$WORK_DIR/fold_columns.out"
+printf '\t\n12\n' > "$WORK_DIR/fold_columns.expected"
+assert_files_equal "$WORK_DIR/fold_columns.expected" "$WORK_DIR/fold_columns.out" "fold should count screen columns by default"
+printf '\t12\n' | "$ROOT_DIR/build/fold" -b -w 4 > "$WORK_DIR/fold_bytes.out"
+printf '\t12\n' > "$WORK_DIR/fold_bytes.expected"
+assert_files_equal "$WORK_DIR/fold_bytes.expected" "$WORK_DIR/fold_bytes.out" "fold -b should count bytes instead of display columns"
+
+cat > "$WORK_DIR/column.txt" <<'EOF'
+name:role:team
+Ada:Eng:Kernel
+Bob:Ops:Infra
+EOF
+"$ROOT_DIR/build/column" -t -s ':' -o ' | ' "$WORK_DIR/column.txt" > "$WORK_DIR/column.out"
+cat > "$WORK_DIR/column.expected" <<'EOF'
+name | role | team
+Ada  | Eng  | Kernel
+Bob  | Ops  | Infra
+EOF
+assert_files_equal "$WORK_DIR/column.expected" "$WORK_DIR/column.out" "column output styling or table alignment failed"
+"$ROOT_DIR/build/column" -t -s ':' -o ' | ' -c 12 "$WORK_DIR/column.txt" > "$WORK_DIR/column_narrow.out"
+column_first_line=$("$ROOT_DIR/build/head" -n 1 "$WORK_DIR/column_narrow.out" | tr -d '\r\n')
+assert_text_equals "$column_first_line" 'name | role' "column -c did not limit the rendered table width"
 
 cat > "$WORK_DIR/join_left.txt" <<'EOF'
 k1:left
@@ -508,7 +587,26 @@ wait "$netcat_pid"
 assert_file_contains "$WORK_DIR/netcat_server.out" 'hello nc' "netcat listener did not receive payload"
 "$ROOT_DIR/build/free" -h > "$WORK_DIR/free.out"
 assert_file_contains "$WORK_DIR/free.out" '^Mem:' "free -h output missing memory line"
+"$ROOT_DIR/build/free" -wt > "$WORK_DIR/free_wt.out"
+assert_file_contains "$WORK_DIR/free_wt.out" '^Swap:' "free -wt output missing swap line"
+assert_file_contains "$WORK_DIR/free_wt.out" '^Total:' "free -wt output missing total line"
 "$ROOT_DIR/build/uptime" -p > "$WORK_DIR/uptime.out"
 assert_file_contains "$WORK_DIR/uptime.out" '^up ' "uptime -p output missing pretty prefix"
+"$ROOT_DIR/build/uptime" -s > "$WORK_DIR/uptime_since.out"
+assert_file_contains "$WORK_DIR/uptime_since.out" '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] ' "uptime -s output missing timestamp"
 "$ROOT_DIR/build/who" -q > "$WORK_DIR/who_q.out"
 assert_file_contains "$WORK_DIR/who_q.out" '^# users=' "who -q output missing user count"
+"$ROOT_DIR/build/who" -b > "$WORK_DIR/who_b.out"
+assert_file_contains "$WORK_DIR/who_b.out" '^system boot  ' "who -b output missing boot line"
+users_count_out=$("$ROOT_DIR/build/users" -cu | tr -d '\r\n')
+case "$users_count_out" in
+    ''|*[!0-9]*) fail "users -cu did not return a numeric count" ;;
+esac
+groups_primary_out=$("$ROOT_DIR/build/groups" -dn | tr -d '\r\n')
+assert_text_equals "$groups_primary_out" "$(id -g)" "groups -dn reported the wrong primary gid"
+printenv_name_out=$(REPORTING_WAVE_CHECK=ready "$ROOT_DIR/build/printenv" -n REPORTING_WAVE_CHECK | tr -d '\r\n')
+assert_text_equals "$printenv_name_out" 'REPORTING_WAVE_CHECK' "printenv -n did not emit the requested name"
+assert_command_succeeds env REPORTING_WAVE_CHECK=ready "$ROOT_DIR/build/printenv" -q REPORTING_WAVE_CHECK
+if env REPORTING_WAVE_CHECK=ready "$ROOT_DIR/build/printenv" -q REPORTING_WAVE_MISSING; then
+    fail "printenv -q should fail for a missing variable"
+fi

@@ -111,6 +111,17 @@ static int parse_meminfo_field(const char *contents, const char *field_name, uns
     return -1;
 }
 
+static void clear_memory_info(PlatformMemoryInfo *info_out) {
+    info_out->total_bytes = 0;
+    info_out->free_bytes = 0;
+    info_out->available_bytes = 0;
+    info_out->shared_bytes = 0;
+    info_out->buffer_bytes = 0;
+    info_out->cache_bytes = 0;
+    info_out->swap_total_bytes = 0;
+    info_out->swap_free_bytes = 0;
+}
+
 static void set_default_load_average(char *buffer, size_t buffer_size) {
     rt_copy_string(buffer, buffer_size, "0.00 0.00 0.00");
 }
@@ -384,12 +395,23 @@ int platform_get_memory_info(PlatformMemoryInfo *info_out) {
         return -1;
     }
 
+    clear_memory_info(info_out);
+
     if (read_text_file("/proc/meminfo", meminfo, sizeof(meminfo)) == 0 &&
         parse_meminfo_field(meminfo, "MemTotal", &info_out->total_bytes) == 0 &&
         parse_meminfo_field(meminfo, "MemFree", &info_out->free_bytes) == 0) {
+        unsigned long long reclaimable_bytes = 0;
         if (parse_meminfo_field(meminfo, "MemAvailable", &info_out->available_bytes) != 0) {
             info_out->available_bytes = info_out->free_bytes;
         }
+        (void)parse_meminfo_field(meminfo, "Shmem", &info_out->shared_bytes);
+        (void)parse_meminfo_field(meminfo, "Buffers", &info_out->buffer_bytes);
+        (void)parse_meminfo_field(meminfo, "Cached", &info_out->cache_bytes);
+        if (parse_meminfo_field(meminfo, "SReclaimable", &reclaimable_bytes) == 0) {
+            info_out->cache_bytes += reclaimable_bytes;
+        }
+        (void)parse_meminfo_field(meminfo, "SwapTotal", &info_out->swap_total_bytes);
+        (void)parse_meminfo_field(meminfo, "SwapFree", &info_out->swap_free_bytes);
         return 0;
     }
 
@@ -415,9 +437,20 @@ int platform_get_memory_info(PlatformMemoryInfo *info_out) {
         }
 
         info_out->total_bytes = (unsigned long long)total_memory;
-        info_out->free_bytes = (unsigned long long)(vm_stats.free_count + vm_stats.inactive_count + vm_stats.speculative_count) *
+        info_out->free_bytes = (unsigned long long)(vm_stats.free_count + vm_stats.speculative_count) *
                                (unsigned long long)page_size;
-        info_out->available_bytes = info_out->free_bytes;
+        info_out->cache_bytes = (unsigned long long)vm_stats.inactive_count * (unsigned long long)page_size;
+        info_out->buffer_bytes = 0;
+        info_out->available_bytes = info_out->free_bytes + info_out->cache_bytes;
+
+        {
+            struct xsw_usage swap_usage;
+            size_t swap_size = sizeof(swap_usage);
+            if (sysctlbyname("vm.swapusage", &swap_usage, &swap_size, 0, 0) == 0) {
+                info_out->swap_total_bytes = (unsigned long long)swap_usage.xsu_total;
+                info_out->swap_free_bytes = (unsigned long long)swap_usage.xsu_avail;
+            }
+        }
         return 0;
     }
 #elif defined(_SC_PHYS_PAGES)

@@ -36,16 +36,29 @@ int main(int argc, char **argv) {
     size_t i;
     int sort_output = 0;
     int unique_output = 0;
+    int count_only = 0;
     int first = 1;
 
     for (i = 1; i < (size_t)argc; ++i) {
-        if (rt_strcmp(argv[i], "-s") == 0) {
-            sort_output = 1;
-        } else if (rt_strcmp(argv[i], "-u") == 0) {
-            unique_output = 1;
-        } else {
-            tool_write_usage(argv[0], "[-s] [-u]");
+        const char *arg = argv[i];
+        size_t j;
+
+        if (arg[0] != '-' || arg[1] == '\0') {
+            tool_write_usage(argv[0], "[-s] [-u] [-c]");
             return 1;
+        }
+
+        for (j = 1; arg[j] != '\0'; ++j) {
+            if (arg[j] == 's') {
+                sort_output = 1;
+            } else if (arg[j] == 'u') {
+                unique_output = 1;
+            } else if (arg[j] == 'c') {
+                count_only = 1;
+            } else {
+                tool_write_usage(argv[0], "[-s] [-u] [-c]");
+                return 1;
+            }
         }
     }
 
@@ -71,8 +84,13 @@ int main(int argc, char **argv) {
         sort_users(entries, count);
     }
 
+    session_count = 0;
     for (i = 0; i < count; ++i) {
         if (unique_output && i > 0 && rt_strcmp(entries[i - 1].name, entries[i].name) == 0) {
+            continue;
+        }
+        session_count += 1U;
+        if (count_only) {
             continue;
         }
         if (!first) {
@@ -80,6 +98,10 @@ int main(int argc, char **argv) {
         }
         rt_write_cstr(1, entries[i].name);
         first = 0;
+    }
+
+    if (count_only) {
+        rt_write_uint(1, (unsigned long long)session_count);
     }
     rt_write_char(1, '\n');
     return 0;

@@ -34,16 +34,59 @@ static void write_session_line(const PlatformSessionEntry *entry) {
 
 int main(int argc, char **argv) {
     PlatformSessionEntry entries[128];
+    PlatformUptimeInfo uptime;
     int quick = 0;
+    int show_header = 0;
+    int show_boot = 0;
     size_t count = 0;
     size_t i;
     size_t display_count;
+    int argi;
 
-    if (argc == 2 && rt_strcmp(argv[1], "-q") == 0) {
-        quick = 1;
-    } else if (argc != 1) {
-        tool_write_usage(argv[0], "[-q]");
-        return 1;
+    for (argi = 1; argi < argc; ++argi) {
+        const char *arg = argv[argi];
+        size_t j;
+
+        if (arg[0] != '-' || arg[1] == '\0') {
+            tool_write_usage(argv[0], "[-H] [-b] [-q]");
+            return 1;
+        }
+
+        for (j = 1; arg[j] != '\0'; ++j) {
+            if (arg[j] == 'q') {
+                quick = 1;
+            } else if (arg[j] == 'H') {
+                show_header = 1;
+            } else if (arg[j] == 'b') {
+                show_boot = 1;
+            } else {
+                tool_write_usage(argv[0], "[-H] [-b] [-q]");
+                return 1;
+            }
+        }
+    }
+
+    if (show_boot) {
+        char boot_text[64];
+        long long boot_time;
+
+        if (platform_get_uptime_info(&uptime) != 0) {
+            tool_write_error("who", "boot information unavailable", 0);
+            return 1;
+        }
+
+        boot_time = platform_get_epoch_time() - (long long)uptime.uptime_seconds;
+        if (platform_format_time(boot_time, 1, "%Y-%m-%d %H:%M", boot_text, sizeof(boot_text)) != 0) {
+            tool_write_error("who", "boot information unavailable", 0);
+            return 1;
+        }
+
+        if (show_header) {
+            rt_write_line(1, "EVENT        TIME");
+        }
+        rt_write_cstr(1, "system boot  ");
+        rt_write_line(1, boot_text);
+        return 0;
     }
 
     if (platform_list_sessions(entries, sizeof(entries) / sizeof(entries[0]), &count) != 0) {
@@ -65,6 +108,10 @@ int main(int argc, char **argv) {
         rt_write_uint(1, (unsigned long long)count);
         rt_write_char(1, '\n');
         return 0;
+    }
+
+    if (show_header) {
+        rt_write_line(1, "NAME             LINE             TIME             HOST");
     }
 
     for (i = 0; i < display_count; ++i) {

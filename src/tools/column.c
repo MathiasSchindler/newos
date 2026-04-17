@@ -6,6 +6,13 @@
 #define COLUMN_MAX_COLS 32
 #define COLUMN_CELL_CAPACITY 256
 #define COLUMN_LINE_CAPACITY 2048
+#define COLUMN_SEPARATOR_CAPACITY 32
+
+typedef struct {
+    const char *input_separators;
+    char output_separator[COLUMN_SEPARATOR_CAPACITY];
+    unsigned long long max_width;
+} ColumnOptions;
 
 typedef struct {
     char cells[COLUMN_MAX_COLS][COLUMN_CELL_CAPACITY];
@@ -14,7 +21,7 @@ typedef struct {
 } ColumnRow;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-t] [-s SEP] [file ...]");
+    tool_write_usage(program_name, "[-t] [-s SEP] [-o OUTSEP] [-c WIDTH] [file ...]");
 }
 
 static int is_in_set(char ch, const char *set) {
@@ -143,8 +150,9 @@ static int write_spaces(size_t count) {
     return 0;
 }
 
-static int print_rows(ColumnRow *rows, size_t row_count) {
+static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *options) {
     size_t widths[COLUMN_MAX_COLS];
+    size_t separator_len = rt_strlen(options->output_separator);
     size_t i;
     size_t j;
 
@@ -159,6 +167,8 @@ static int print_rows(ColumnRow *rows, size_t row_count) {
     }
 
     for (i = 0; i < row_count; ++i) {
+        size_t used = 0;
+
         if (rows[i].count == 0U) {
             if (rt_write_char(1, '\n') != 0) {
                 return -1;
@@ -169,15 +179,38 @@ static int print_rows(ColumnRow *rows, size_t row_count) {
         for (j = 0; j < rows[i].count; ++j) {
             size_t len = rows[i].widths[j];
 
-            if (rt_write_cstr(1, rows[i].cells[j]) != 0) {
+            if (j > 0U) {
+                if (options->max_width != 0ULL && used + separator_len > (size_t)options->max_width) {
+                    break;
+                }
+                if (rt_write_cstr(1, options->output_separator) != 0) {
+                    return -1;
+                }
+                used += separator_len;
+            }
+
+            if (options->max_width != 0ULL && used + len > (size_t)options->max_width) {
+                len = (size_t)options->max_width - used;
+            }
+
+            if (len > 0U && rt_write_all(1, rows[i].cells[j], len) != 0) {
                 return -1;
+            }
+            used += len;
+
+            if (len < rows[i].widths[j]) {
+                break;
             }
 
             if (j + 1U < rows[i].count) {
-                size_t padding = widths[j] > len ? widths[j] - len : 0U;
-                if (write_spaces(padding + 2U) != 0) {
+                size_t padding = widths[j] > rows[i].widths[j] ? widths[j] - rows[i].widths[j] : 0U;
+                if (options->max_width != 0ULL && used + padding > (size_t)options->max_width) {
+                    padding = (size_t)options->max_width - used;
+                }
+                if (write_spaces(padding) != 0) {
                     return -1;
                 }
+                used += padding;
             }
         }
 
@@ -191,10 +224,14 @@ static int print_rows(ColumnRow *rows, size_t row_count) {
 
 int main(int argc, char **argv) {
     static ColumnRow rows[COLUMN_MAX_ROWS];
-    const char *separators = 0;
+    ColumnOptions options;
     int argi = 1;
     int exit_code = 0;
     size_t row_count = 0;
+
+    options.input_separators = 0;
+    rt_copy_string(options.output_separator, sizeof(options.output_separator), "  ");
+    options.max_width = 0ULL;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-t") == 0) {
@@ -204,7 +241,20 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-            separators = argv[argi + 1];
+            options.input_separators = argv[argi + 1];
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-o") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            rt_copy_string(options.output_separator, sizeof(options.output_separator), argv[argi + 1]);
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-c") == 0) {
+            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &options.max_width, "column", "width") != 0 || options.max_width == 0ULL) {
+                print_usage(argv[0]);
+                return 1;
+            }
             argi += 2;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
@@ -218,7 +268,7 @@ int main(int argc, char **argv) {
     }
 
     if (argi == argc) {
-        if (collect_rows_from_fd(0, rows, &row_count, separators) != 0) {
+        if (collect_rows_from_fd(0, rows, &row_count, options.input_separators) != 0) {
             tool_write_error("column", "read error", "");
             return 1;
         }
@@ -233,7 +283,7 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            if (collect_rows_from_fd(fd, rows, &row_count, separators) != 0) {
+            if (collect_rows_from_fd(fd, rows, &row_count, options.input_separators) != 0) {
                 tool_write_error("column", "read error on ", argv[argi]);
                 exit_code = 1;
             }
@@ -242,7 +292,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (row_count > 0U && print_rows(rows, row_count) != 0) {
+    if (row_count > 0U && print_rows(rows, row_count, &options) != 0) {
         return 1;
     }
 

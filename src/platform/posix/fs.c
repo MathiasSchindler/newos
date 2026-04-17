@@ -1,3 +1,4 @@
+#define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform.h"
@@ -17,6 +18,10 @@
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <sys/mount.h>
+#endif
 
 static void copy_identity_names(uid_t uid, gid_t gid, PlatformDirEntry *entry) {
     struct passwd *pw = getpwuid(uid);
@@ -393,21 +398,57 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     return 0;
 }
 
-int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out) {
     struct statvfs info;
+
+    if (path == NULL || info_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(info_out, 0, sizeof(*info_out));
+    if (statvfs(path, &info) != 0) {
+        return -1;
+    }
+
+    info_out->total_bytes = (unsigned long long)info.f_blocks * (unsigned long long)info.f_frsize;
+    info_out->free_bytes = (unsigned long long)info.f_bfree * (unsigned long long)info.f_frsize;
+    info_out->available_bytes = (unsigned long long)info.f_bavail * (unsigned long long)info.f_frsize;
+    info_out->total_inodes = (unsigned long long)info.f_files;
+    info_out->free_inodes = (unsigned long long)info.f_ffree;
+    info_out->available_inodes = (unsigned long long)info.f_favail;
+
+#if defined(__APPLE__) || defined(__FreeBSD__)
+    {
+        struct statfs mount_info;
+        if (statfs(path, &mount_info) == 0) {
+            posix_copy_string(info_out->type_name, sizeof(info_out->type_name), mount_info.f_fstypename);
+        }
+    }
+#endif
+
+    if (info_out->type_name[0] == '\0') {
+        posix_copy_string(info_out->type_name, sizeof(info_out->type_name), "posix");
+    }
+
+    return 0;
+}
+
+int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+    PlatformFilesystemInfo info;
 
     if (path == NULL || total_bytes_out == NULL || free_bytes_out == NULL || available_bytes_out == NULL) {
         errno = EINVAL;
         return -1;
     }
 
-    if (statvfs(path, &info) != 0) {
+    if (platform_get_filesystem_info(path, &info) != 0) {
         return -1;
     }
 
-    *total_bytes_out = (unsigned long long)info.f_blocks * (unsigned long long)info.f_frsize;
-    *free_bytes_out = (unsigned long long)info.f_bfree * (unsigned long long)info.f_frsize;
-    *available_bytes_out = (unsigned long long)info.f_bavail * (unsigned long long)info.f_frsize;
+    *total_bytes_out = info.total_bytes;
+    *free_bytes_out = info.free_bytes;
+    *available_bytes_out = info.available_bytes;
     return 0;
 }
 
