@@ -13,8 +13,8 @@ static int starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
-static int parse_number_arg(const char *text, unsigned long long *value_out) {
-    return rt_parse_uint(text, value_out);
+static int parse_number_arg(const char *text, unsigned long long *value_out, const char *what) {
+    return tool_parse_uint_arg(text, value_out, "dd", what);
 }
 
 static int skip_input_bytes(int fd, unsigned long long byte_count) {
@@ -67,33 +67,30 @@ int main(int argc, char **argv) {
         } else if (starts_with(argv[i], "of=")) {
             output_path = argv[i] + 3;
         } else if (starts_with(argv[i], "bs=")) {
-            if (parse_number_arg(argv[i] + 3, &block_size) != 0 || block_size == 0ULL) {
-                rt_write_line(2, "dd: invalid block size");
+            if (parse_number_arg(argv[i] + 3, &block_size, "block size") != 0 || block_size == 0ULL) {
+                tool_write_error("dd", "invalid ", "block size");
                 return 1;
             }
         } else if (starts_with(argv[i], "count=")) {
-            if (parse_number_arg(argv[i] + 6, &count) != 0) {
-                rt_write_line(2, "dd: invalid count");
+            if (parse_number_arg(argv[i] + 6, &count, "count") != 0) {
                 return 1;
             }
         } else if (starts_with(argv[i], "skip=")) {
-            if (parse_number_arg(argv[i] + 5, &skip) != 0) {
-                rt_write_line(2, "dd: invalid skip");
+            if (parse_number_arg(argv[i] + 5, &skip, "skip") != 0) {
                 return 1;
             }
         } else if (starts_with(argv[i], "seek=")) {
-            if (parse_number_arg(argv[i] + 5, &seek) != 0) {
-                rt_write_line(2, "dd: invalid seek");
+            if (parse_number_arg(argv[i] + 5, &seek, "seek") != 0) {
                 return 1;
             }
         } else {
-            rt_write_line(2, "Usage: dd [if=file] [of=file] [bs=n] [count=n] [skip=n] [seek=n]");
+            tool_write_usage("dd", "[if=file] [of=file] [bs=n] [count=n] [skip=n] [seek=n]");
             return 1;
         }
     }
 
     if (tool_open_input(input_path, &in_fd, &should_close_in) != 0) {
-        rt_write_line(2, "dd: cannot open input");
+        tool_write_error("dd", "cannot open ", "input");
         return 1;
     }
 
@@ -101,7 +98,7 @@ int main(int argc, char **argv) {
         out_fd = platform_open_write(output_path, 0644U);
         if (out_fd < 0) {
             tool_close_input(in_fd, should_close_in);
-            rt_write_line(2, "dd: cannot open output");
+            tool_write_error("dd", "cannot open ", "output");
             return 1;
         }
     }
@@ -111,7 +108,7 @@ int main(int argc, char **argv) {
         if (output_path != 0) {
             platform_close(out_fd);
         }
-        rt_write_line(2, "dd: failed while skipping input");
+        tool_write_error("dd", "failed while skipping ", "input");
         return 1;
     }
 
@@ -120,7 +117,7 @@ int main(int argc, char **argv) {
         if (output_path != 0) {
             platform_close(out_fd);
         }
-        rt_write_line(2, "dd: failed while seeking output");
+        tool_write_error("dd", "failed while seeking ", "output");
         return 1;
     }
 
@@ -144,7 +141,7 @@ int main(int argc, char **argv) {
             if (output_path != 0) {
                 platform_close(out_fd);
             }
-            rt_write_line(2, "dd: read error");
+            tool_write_error("dd", "read error", 0);
             return 1;
         }
         if (bytes_read == 0) {
@@ -155,7 +152,7 @@ int main(int argc, char **argv) {
             if (output_path != 0) {
                 platform_close(out_fd);
             }
-            rt_write_line(2, "dd: write error");
+            tool_write_error("dd", "write error", 0);
             return 1;
         }
 

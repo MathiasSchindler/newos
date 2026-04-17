@@ -115,6 +115,10 @@ int platform_change_mode(const char *path, unsigned int mode) {
     return chmod(path, (mode_t)mode);
 }
 
+int platform_change_owner(const char *path, unsigned int uid, unsigned int gid) {
+    return chown(path, (uid_t)uid, (gid_t)gid);
+}
+
 int platform_touch_path(const char *path) {
     int fd = open(path, O_WRONLY | O_CREAT, 0644);
 

@@ -24,6 +24,36 @@ void tool_close_input(int fd, int should_close) {
     }
 }
 
+void tool_write_usage(const char *program_name, const char *usage_suffix) {
+    rt_write_cstr(2, "Usage: ");
+    rt_write_cstr(2, program_name);
+    if (usage_suffix != 0 && usage_suffix[0] != '\0') {
+        rt_write_char(2, ' ');
+        rt_write_cstr(2, usage_suffix);
+    }
+    rt_write_char(2, '\n');
+}
+
+void tool_write_error(const char *tool_name, const char *message, const char *detail) {
+    rt_write_cstr(2, tool_name);
+    rt_write_cstr(2, ": ");
+    if (message != 0) {
+        rt_write_cstr(2, message);
+    }
+    if (detail != 0) {
+        rt_write_cstr(2, detail);
+    }
+    rt_write_char(2, '\n');
+}
+
+int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what) {
+    if (text == 0 || rt_parse_uint(text, value_out) != 0) {
+        tool_write_error(tool_name, "invalid ", what);
+        return -1;
+    }
+    return 0;
+}
+
 const char *tool_base_name(const char *path) {
     const char *last = path;
     size_t i = 0;

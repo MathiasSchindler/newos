@@ -119,6 +119,10 @@ int platform_change_mode(const char *path, unsigned int mode) {
     return linux_syscall4(LINUX_SYS_FCHMODAT, LINUX_AT_FDCWD, (long)path, (long)mode, 0) < 0 ? -1 : 0;
 }
 
+int platform_change_owner(const char *path, unsigned int uid, unsigned int gid) {
+    return linux_syscall5(LINUX_SYS_FCHOWNAT, LINUX_AT_FDCWD, (long)path, (long)uid, (long)gid, 0) < 0 ? -1 : 0;
+}
+
 int platform_touch_path(const char *path) {
     long fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_WRONLY | LINUX_O_CREAT, 0644);
     struct linux_timespec times[2];

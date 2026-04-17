@@ -44,10 +44,15 @@ int platform_rename_path(const char *old_path, const char *new_path);
 int platform_create_hard_link(const char *target_path, const char *link_path);
 int platform_create_symbolic_link(const char *target_path, const char *link_path);
 int platform_change_mode(const char *path, unsigned int mode);
+int platform_change_owner(const char *path, unsigned int uid, unsigned int gid);
 int platform_touch_path(const char *path);
 int platform_change_directory(const char *path);
 int platform_sleep_seconds(unsigned int seconds);
 long long platform_get_epoch_time(void);
+int platform_send_signal(int pid, int signal_number);
+int platform_get_hostname(char *buffer, size_t buffer_size);
+int platform_set_hostname(const char *name);
+int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_spawn_process(
     char *const argv[],

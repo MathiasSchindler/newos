@@ -5,9 +5,7 @@
 #define TAIL_BUFFER_SIZE 65536
 
 static void print_usage(const char *program_name) {
-    rt_write_cstr(2, "Usage: ");
-    rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-n COUNT] [file ...]");
+    tool_write_usage(program_name, "[-n COUNT] [file ...]");
 }
 
 static int capture_tail_stream(int fd, char *storage, size_t storage_size, size_t *used_out) {
@@ -77,7 +75,7 @@ int main(int argc, char **argv) {
     int exit_code = 0;
 
     if (argc > 1 && rt_strcmp(argv[1], "-n") == 0) {
-        if (argc < 3 || rt_parse_uint(argv[2], &line_limit) != 0) {
+        if (argc < 3 || tool_parse_uint_arg(argv[2], &line_limit, "tail", "count") != 0) {
             print_usage(argv[0]);
             return 1;
         }
@@ -104,8 +102,7 @@ int main(int argc, char **argv) {
         size_t used;
 
         if (tool_open_input(argv[i], &fd, &should_close) != 0) {
-            rt_write_cstr(2, "tail: cannot open ");
-            rt_write_line(2, argv[i]);
+            tool_write_error("tail", "cannot open ", argv[i]);
             exit_code = 1;
             continue;
         }
@@ -120,8 +117,7 @@ int main(int argc, char **argv) {
         }
 
         if (capture_tail_stream(fd, storage, sizeof(storage), &used) != 0 || print_tail_buffer(storage, used, line_limit) != 0) {
-            rt_write_cstr(2, "tail: read error on ");
-            rt_write_line(2, argv[i]);
+            tool_write_error("tail", "read error on ", argv[i]);
             exit_code = 1;
         }
 

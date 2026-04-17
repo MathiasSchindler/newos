@@ -3,9 +3,7 @@
 #include "tool_util.h"
 
 static void print_usage(const char *program_name) {
-    rt_write_cstr(2, "Usage: ");
-    rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-n COUNT] [file ...]");
+    tool_write_usage(program_name, "[-n COUNT] [file ...]");
 }
 
 static int print_head_stream(int fd, unsigned long long limit) {
@@ -45,7 +43,7 @@ int main(int argc, char **argv) {
     int exit_code = 0;
 
     if (argc > 1 && rt_strcmp(argv[1], "-n") == 0) {
-        if (argc < 3 || rt_parse_uint(argv[2], &line_limit) != 0) {
+        if (argc < 3 || tool_parse_uint_arg(argv[2], &line_limit, "head", "count") != 0) {
             print_usage(argv[0]);
             return 1;
         }
@@ -62,8 +60,7 @@ int main(int argc, char **argv) {
         int should_close;
 
         if (tool_open_input(argv[i], &fd, &should_close) != 0) {
-            rt_write_cstr(2, "head: cannot open ");
-            rt_write_line(2, argv[i]);
+            tool_write_error("head", "cannot open ", argv[i]);
             exit_code = 1;
             continue;
         }
@@ -78,8 +75,7 @@ int main(int argc, char **argv) {
         }
 
         if (print_head_stream(fd, line_limit) != 0) {
-            rt_write_cstr(2, "head: read error on ");
-            rt_write_line(2, argv[i]);
+            tool_write_error("head", "read error on ", argv[i]);
             exit_code = 1;
         }
 

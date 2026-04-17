@@ -10,6 +10,18 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+int sethostname(const char *name, int namelen);
+#endif
+
+int platform_get_hostname(char *buffer, size_t buffer_size) {
+    return gethostname(buffer, buffer_size);
+}
+
+int platform_set_hostname(const char *name) {
+    return sethostname(name, (int)rt_strlen(name));
+}
+
 int platform_get_identity(PlatformIdentity *identity_out) {
     struct passwd *pw;
     struct group *gr;

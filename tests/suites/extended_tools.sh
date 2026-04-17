@@ -13,6 +13,17 @@ note "extended tools"
 "$ROOT_DIR/build/date" > "$WORK_DIR/date.out"
 assert_file_contains "$WORK_DIR/date.out" 'UTC$' "date output missing UTC suffix"
 
+env_out=$(FOO=bar "$ROOT_DIR/build/env" | tr -d '\r')
+case "$env_out" in
+    *FOO=bar*) ;;
+    *) fail "env output missing variable" ;;
+esac
+env_cmd_out=$("$ROOT_DIR/build/env" BAR=baz "$ROOT_DIR/build/sh" -c 'echo $BAR' | tr -d '\r\n')
+assert_text_equals "$env_cmd_out" 'baz' "env command override failed"
+
+hostname_out=$("$ROOT_DIR/build/hostname" | tr -d '\r\n')
+[ -n "$hostname_out" ] || fail "hostname output was empty"
+
 printf 'hello tee\n' | "$ROOT_DIR/build/tee" "$WORK_DIR/tee.txt" > "$WORK_DIR/tee.out"
 assert_files_equal "$WORK_DIR/tee.txt" "$WORK_DIR/tee.out" "tee output mismatch"
 
@@ -71,6 +82,18 @@ assert_file_contains "$WORK_DIR/du.out" '^[0-9][0-9]*[[:space:]].*extended_tools
 "$ROOT_DIR/build/df" > "$WORK_DIR/df.out"
 assert_file_contains "$WORK_DIR/df.out" '^Filesystem[[:space:]]' "df header missing"
 
+chown_target="$WORK_DIR/chown.txt"
+printf 'owner\n' > "$chown_target"
+assert_command_succeeds "$ROOT_DIR/build/chown" "$(id -u):$(id -g)" "$chown_target"
+
+"$ROOT_DIR/build/sleep" 30 &
+kill_pid=$!
+"$ROOT_DIR/build/kill" "$kill_pid"
+wait "$kill_pid" 2>/dev/null || true
+if kill -0 "$kill_pid" 2>/dev/null; then
+    fail "kill did not terminate the process"
+fi
+
 printf 'Hello\nNope\nHello\n' > "$WORK_DIR/grep_count.txt"
 grep_count=$("$ROOT_DIR/build/grep" -c Hello "$WORK_DIR/grep_count.txt" | tr -d '\r\n')
 assert_text_equals "$grep_count" '2' "grep count mode failed"
@@ -79,6 +102,18 @@ if ! "$ROOT_DIR/build/grep" -q Hello "$WORK_DIR/grep_count.txt"; then
 fi
 "$ROOT_DIR/build/grep" -l Hello "$WORK_DIR/grep_count.txt" > "$WORK_DIR/grep_l.out"
 assert_file_contains "$WORK_DIR/grep_l.out" 'grep_count.txt' "grep list-files mode failed"
+
+printf 'alpha one\nbeta two three\nalpha four\n' > "$WORK_DIR/awk.txt"
+"$ROOT_DIR/build/awk" 'BEGIN { print "begin" } /alpha/ { print NR, NF, $2 } END { print "end", NR }' "$WORK_DIR/awk.txt" > "$WORK_DIR/awk.out"
+cat > "$WORK_DIR/awk.expected" <<'EOF'
+begin
+1 2 one
+3 2 four
+end 3
+EOF
+assert_files_equal "$WORK_DIR/awk.expected" "$WORK_DIR/awk.out" "awk BEGIN/END/pattern/NR/NF behavior failed"
+awk_nf_out=$("$ROOT_DIR/build/awk" 'NF == 3 { print NR, $1 }' "$WORK_DIR/awk.txt" | tr -d '\r\n')
+assert_text_equals "$awk_nf_out" '2 beta' "awk NF condition failed"
 
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
@@ -91,3 +126,10 @@ printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
     "$ROOT_DIR/build/tar" -xzf ../test.tar.gz
 )
 assert_file_contains "$WORK_DIR/tar_extract_gz/tar_src/file.txt" 'archive-data' "tar gzip integration failed"
+
+"$ROOT_DIR/build/netcat" -l 24681 > "$WORK_DIR/netcat_server.out" &
+netcat_pid=$!
+sleep 1
+printf 'hello nc\n' | "$ROOT_DIR/build/netcat" 127.0.0.1 24681 > "$WORK_DIR/netcat_client.out"
+wait "$netcat_pid"
+assert_file_contains "$WORK_DIR/netcat_server.out" 'hello nc' "netcat listener did not receive payload"

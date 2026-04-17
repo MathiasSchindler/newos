@@ -7,7 +7,7 @@ TARGET_BUILD_DIR ?= build/linux-aarch64
 TARGET_TRIPLE ?= aarch64-linux-none
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
-TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod uname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df
+TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod chown uname hostname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df netcat
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 SHARED_SOURCES := \
 	src/shared/runtime/memory.c \
@@ -17,6 +17,11 @@ SHARED_SOURCES := \
 	src/shared/tool_util.c \
 	src/shared/archive_util.c \
 	src/shared/hash_util.c
+SHELL_SOURCES := \
+	src/shared/shell_parser.c \
+	src/shared/shell_execution.c \
+	src/shared/shell_builtins.c \
+	src/shared/shell_interactive.c
 HOST_PLATFORM_SOURCES := \
 	src/platform/posix/fs.c \
 	src/platform/posix/process.c \
@@ -61,6 +66,12 @@ endif
 
 $(BUILD_DIR) $(TARGET_BUILD_DIR):
 	mkdir -p $@
+
+$(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/shell_shared.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $< $(SHARED_SOURCES) $(SHELL_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/shell_shared.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) src/arch/aarch64/linux/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	$(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(SHELL_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
 
 $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@

@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -86,6 +87,10 @@ int platform_spawn_process(
 
     *pid_out = (int)pid;
     return 0;
+}
+
+int platform_send_signal(int pid, int signal_number) {
+    return kill((pid_t)pid, signal_number);
 }
 
 int platform_wait_process(int pid, int *exit_status_out) {
