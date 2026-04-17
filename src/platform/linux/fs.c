@@ -431,6 +431,55 @@ int platform_get_filesystem_usage(const char *path, unsigned long long *total_by
     return 0;
 }
 
+int platform_truncate_path(const char *path, unsigned long long size) {
+    long fd;
+    long result;
+
+    if (path == 0) {
+        return -1;
+    }
+
+    fd = linux_syscall4(
+        LINUX_SYS_OPENAT,
+        LINUX_AT_FDCWD,
+        (long)path,
+        LINUX_O_WRONLY | LINUX_O_CREAT,
+        0644
+    );
+    if (fd < 0) {
+        return -1;
+    }
+
+    result = linux_syscall2(LINUX_SYS_FTRUNCATE, fd, (long)size);
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    return result < 0 ? -1 : 0;
+}
+
+int platform_sync_all(void) {
+    return linux_syscall0(LINUX_SYS_SYNC) < 0 ? -1 : 0;
+}
+
+int platform_sync_path(const char *path) {
+    long fd;
+    long result;
+
+    if (path == 0) {
+        return -1;
+    }
+
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY, 0);
+    if (fd < 0) {
+        fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_WRONLY, 0);
+        if (fd < 0) {
+            return -1;
+        }
+    }
+
+    result = linux_syscall1(LINUX_SYS_FSYNC, fd);
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    return result < 0 ? -1 : 0;
+}
+
 void platform_free_entries(PlatformDirEntry *entries, size_t count) {
     (void)entries;
     (void)count;

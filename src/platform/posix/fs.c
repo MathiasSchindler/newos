@@ -382,6 +382,59 @@ int platform_get_filesystem_usage(const char *path, unsigned long long *total_by
     return 0;
 }
 
+int platform_truncate_path(const char *path, unsigned long long size) {
+    int fd;
+
+    if (path == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    fd = open(path, O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+
+    if (ftruncate(fd, (off_t)size) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+
+    return close(fd);
+}
+
+int platform_sync_all(void) {
+    sync();
+    return 0;
+}
+
+int platform_sync_path(const char *path) {
+    int fd;
+    int result;
+    int saved_errno;
+
+    if (path == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fd = open(path, O_WRONLY);
+        if (fd < 0) {
+            return -1;
+        }
+    }
+
+    result = fsync(fd);
+    saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return result;
+}
+
 void platform_format_mode(unsigned int mode, char out[11]) {
     out[0] = S_ISDIR(mode) ? 'd' :
              S_ISLNK(mode) ? 'l' :

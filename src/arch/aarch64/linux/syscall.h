@@ -22,7 +22,11 @@
 #define LINUX_SYS_MKDIRAT 34
 #define LINUX_SYS_NEWFSTATAT 79
 #define LINUX_SYS_READLINKAT 78
+#define LINUX_SYS_TRUNCATE 45
+#define LINUX_SYS_FTRUNCATE 46
 #define LINUX_SYS_STATFS 43
+#define LINUX_SYS_SYNC 81
+#define LINUX_SYS_FSYNC 82
 #define LINUX_SYS_EXIT 93
 #define LINUX_SYS_NANOSLEEP 101
 #define LINUX_SYS_CLOCK_GETTIME 113
@@ -38,6 +42,14 @@ static inline long linux_syscall1(long number, long arg0) {
     register long x0 __asm__("x0") = arg0;
 
     __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return x0;
+}
+
+static inline long linux_syscall0(long number) {
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = 0;
+
+    __asm__ volatile("svc #0" : "=r"(x0) : "r"(x8) : "memory");
     return x0;
 }
 
