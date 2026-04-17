@@ -4,9 +4,11 @@
 #define TR_SET_CAPACITY 512
 
 typedef struct {
+    int complement_set1;
     int delete_chars;
     int squeeze_chars;
     int translate_chars;
+    int squeeze_complement;
     char set1[TR_SET_CAPACITY];
     char set2[TR_SET_CAPACITY];
     char squeeze_set[TR_SET_CAPACITY];
@@ -15,7 +17,7 @@ typedef struct {
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-d] [-s] SET1 [SET2]");
+    rt_write_line(2, " [-c] [-d] [-s] SET1 [SET2]");
 }
 
 static char decode_escape_char(char ch) {
@@ -109,9 +111,24 @@ static int char_in_set(char ch, const char *set) {
     return 0;
 }
 
-static char translate_char(char ch, const char *set1, const char *set2) {
+static int char_in_effective_set(char ch, const char *set, int complement) {
+    int present = char_in_set(ch, set);
+    return complement ? !present : present;
+}
+
+static char translate_char(char ch, const char *set1, const char *set2, int complement) {
     size_t i;
     size_t set2_len = rt_strlen(set2);
+
+    if (complement) {
+        if (!char_in_set(ch, set1)) {
+            if (set2_len == 0) {
+                return ch;
+            }
+            return set2[set2_len - 1];
+        }
+        return ch;
+    }
 
     for (i = 0; set1[i] != '\0'; ++i) {
         if (set1[i] == ch) {
@@ -143,7 +160,9 @@ static int parse_options(int argc, char **argv, TrOptions *options) {
         }
 
         while (*flag != '\0') {
-            if (*flag == 'd') {
+            if (*flag == 'c') {
+                options->complement_set1 = 1;
+            } else if (*flag == 'd') {
                 options->delete_chars = 1;
             } else if (*flag == 's') {
                 options->squeeze_chars = 1;
@@ -189,8 +208,10 @@ static int parse_options(int argc, char **argv, TrOptions *options) {
             }
             options->translate_chars = 1;
             rt_copy_string(options->squeeze_set, sizeof(options->squeeze_set), options->set2);
+            options->squeeze_complement = 0;
         } else {
             rt_copy_string(options->squeeze_set, sizeof(options->squeeze_set), options->set1);
+            options->squeeze_complement = options->complement_set1;
         }
         return 0;
     }
@@ -204,10 +225,12 @@ static int parse_options(int argc, char **argv, TrOptions *options) {
     }
 
     if (remaining == 2) {
+        options->squeeze_complement = 0;
         return expand_set(argv[arg_index + 1], options->squeeze_set, sizeof(options->squeeze_set));
     }
 
     rt_copy_string(options->squeeze_set, sizeof(options->squeeze_set), options->set1);
+    options->squeeze_complement = options->complement_set1;
     return 0;
 }
 
@@ -232,17 +255,17 @@ int main(int argc, char **argv) {
             char current = buffer[i];
 
             if (options.translate_chars) {
-                current = translate_char(current, options.set1, options.set2);
+                current = translate_char(current, options.set1, options.set2, options.complement_set1);
             }
 
-            if (options.delete_chars && char_in_set(buffer[i], options.set1)) {
+            if (options.delete_chars && char_in_effective_set(buffer[i], options.set1, options.complement_set1)) {
                 continue;
             }
 
             if (options.squeeze_chars &&
                 have_last_output &&
                 current == last_output &&
-                char_in_set(current, options.squeeze_set)) {
+                char_in_effective_set(current, options.squeeze_set, options.squeeze_complement)) {
                 continue;
             }
 

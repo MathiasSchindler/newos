@@ -278,7 +278,18 @@ struct linux_utsname {
     char domainname[65];
 };
 
-int platform_get_uname(char *sysname, size_t sysname_size, char *nodename, size_t nodename_size, char *release, size_t release_size, char *machine, size_t machine_size) {
+int platform_get_uname(
+    char *sysname,
+    size_t sysname_size,
+    char *nodename,
+    size_t nodename_size,
+    char *release,
+    size_t release_size,
+    char *version,
+    size_t version_size,
+    char *machine,
+    size_t machine_size
+) {
     struct linux_utsname info;
 
     if (linux_syscall1(LINUX_SYS_UNAME, (long)&info) < 0) {
@@ -288,6 +299,7 @@ int platform_get_uname(char *sysname, size_t sysname_size, char *nodename, size_
     linux_copy_string(sysname, (unsigned long)sysname_size, info.sysname);
     linux_copy_string(nodename, (unsigned long)nodename_size, info.nodename);
     linux_copy_string(release, (unsigned long)release_size, info.release);
+    linux_copy_string(version, (unsigned long)version_size, info.version);
     linux_copy_string(machine, (unsigned long)machine_size, info.machine);
     return 0;
 }

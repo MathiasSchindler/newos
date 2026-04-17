@@ -7,12 +7,14 @@
 typedef struct {
     int interactive;
     int no_clobber;
+    int update_only;
+    int verbose;
 } MvOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-i] [-f] [-n] source... destination");
+    rt_write_line(2, " [-i] [-f] [-n] [-u] [-v] source... destination");
 }
 
 static int source_is_directory(const char *path) {
@@ -20,61 +22,66 @@ static int source_is_directory(const char *path) {
     return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
 }
 
-static int path_exists(const char *path) {
-    PlatformDirEntry entry;
-    return platform_get_path_info(path, &entry) == 0;
-}
+static int should_replace(const char *source_path, const char *target_path, int source_is_dir, const MvOptions *options) {
+    PlatformDirEntry source_info;
+    PlatformDirEntry target_info;
 
-static int prompt_yes_no(const char *message, const char *path) {
-    char reply[8];
-    long bytes_read;
-
-    rt_write_cstr(2, message);
-    rt_write_cstr(2, path);
-    rt_write_cstr(2, "? ");
-
-    bytes_read = platform_read(0, reply, sizeof(reply));
-    return bytes_read > 0 && (reply[0] == 'y' || reply[0] == 'Y');
-}
-
-static int should_replace(const char *target_path, const MvOptions *options) {
-    if (!path_exists(target_path)) {
+    if (!tool_path_exists(target_path)) {
         return 1;
     }
     if (options->no_clobber) {
         return 0;
     }
+    if (options->update_only &&
+        !source_is_dir &&
+        platform_get_path_info(source_path, &source_info) == 0 &&
+        platform_get_path_info(target_path, &target_info) == 0 &&
+        source_info.mtime <= target_info.mtime) {
+        return 0;
+    }
     if (options->interactive) {
-        return prompt_yes_no("mv: overwrite ", target_path);
+        return tool_prompt_yes_no("mv: overwrite ", target_path);
     }
     return 1;
 }
 
 static int move_one_path(const char *source_path, const char *dest_path, const MvOptions *options) {
     char target_path[MV_PATH_CAPACITY];
+    int source_is_dir;
 
     if (tool_resolve_destination(source_path, dest_path, target_path, sizeof(target_path)) != 0) {
         rt_write_line(2, "mv: destination path too long");
         return 1;
     }
 
-    if (rt_strcmp(source_path, target_path) == 0) {
+    if (tool_paths_equal(source_path, target_path)) {
         return 0;
     }
 
-    if (!should_replace(target_path, options)) {
+    source_is_dir = source_is_directory(source_path);
+
+    if (!should_replace(source_path, target_path, source_is_dir, options)) {
         return 0;
     }
 
     if (platform_rename_path(source_path, target_path) == 0) {
+        if (options->verbose) {
+            rt_write_cstr(1, source_path);
+            rt_write_cstr(1, " -> ");
+            rt_write_line(1, target_path);
+        }
         return 0;
     }
 
-    if (!source_is_directory(source_path) && tool_copy_file(source_path, target_path) == 0) {
-        if (platform_remove_file(source_path) == 0) {
+    if (tool_copy_path(source_path, target_path, 1, 1, 1) == 0) {
+        if (tool_remove_path(source_path, 1) == 0) {
+            if (options->verbose) {
+                rt_write_cstr(1, source_path);
+                rt_write_cstr(1, " -> ");
+                rt_write_line(1, target_path);
+            }
             return 0;
         }
-        (void)platform_remove_file(target_path);
     }
 
     rt_write_cstr(2, "mv: failed to move ");
@@ -110,6 +117,10 @@ int main(int argc, char **argv) {
             } else if (*flag == 'n') {
                 options.no_clobber = 1;
                 options.interactive = 0;
+            } else if (*flag == 'u') {
+                options.update_only = 1;
+            } else if (*flag == 'v') {
+                options.verbose = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;

@@ -19,6 +19,7 @@ typedef struct {
 typedef enum {
     CUT_MODE_NONE,
     CUT_MODE_CHARS,
+    CUT_MODE_BYTES,
     CUT_MODE_FIELDS
 } CutMode;
 
@@ -26,12 +27,13 @@ typedef struct {
     CutMode mode;
     CutRangeList selections;
     char delimiter;
+    int complement;
 } CutOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " (-c LIST | -f LIST [-d DELIM]) [file ...]");
+    rt_write_line(2, " [--complement] (-b LIST | -c LIST | -f LIST [-d DELIM]) [file ...]");
 }
 
 static int parse_single_range(const char *text, CutRange *range) {
@@ -175,7 +177,49 @@ static int cut_char_stream(int fd, const CutRangeList *list) {
     return bytes_read < 0 ? -1 : 0;
 }
 
-static int write_selected_fields(const char *line, const CutRangeList *list, char delimiter, int end_with_newline) {
+static int selection_includes(unsigned long long position, const CutOptions *options) {
+    int included = range_list_contains(position, &options->selections);
+    return options->complement ? !included : included;
+}
+
+static int cut_position_matches(unsigned long long position,
+                                const CutRangeList *list,
+                                int complement) {
+    int included = range_list_contains(position, list);
+    return complement ? !included : included;
+}
+
+static int cut_text_stream(int fd, const CutRangeList *list, int complement) {
+    char buffer[4096];
+    long bytes_read;
+    unsigned long long position = 1;
+
+    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+        long i;
+
+        for (i = 0; i < bytes_read; ++i) {
+            char ch = buffer[i];
+
+            if (ch == '\n') {
+                if (rt_write_char(1, '\n') != 0) {
+                    return -1;
+                }
+                position = 1;
+                continue;
+            }
+
+            if (cut_position_matches(position, list, complement) && rt_write_char(1, ch) != 0) {
+                return -1;
+            }
+
+            position += 1;
+        }
+    }
+
+    return bytes_read < 0 ? -1 : 0;
+}
+
+static int write_selected_fields(const char *line, const CutOptions *options, int end_with_newline) {
     unsigned long long field_no = 1;
     size_t field_start = 0;
     size_t i = 0;
@@ -184,9 +228,9 @@ static int write_selected_fields(const char *line, const CutRangeList *list, cha
     while (1) {
         char ch = line[i];
 
-        if (ch == delimiter || ch == '\0') {
-            if (range_list_contains(field_no, list)) {
-                if (wrote_field && rt_write_char(1, delimiter) != 0) {
+        if (ch == options->delimiter || ch == '\0') {
+            if (selection_includes(field_no, options)) {
+                if (wrote_field && rt_write_char(1, options->delimiter) != 0) {
                     return -1;
                 }
                 if (i > field_start && rt_write_all(1, line + field_start, i - field_start) != 0) {
@@ -212,7 +256,7 @@ static int write_selected_fields(const char *line, const CutRangeList *list, cha
     return 0;
 }
 
-static int cut_field_stream(int fd, const CutRangeList *list, char delimiter) {
+static int cut_field_stream(int fd, const CutOptions *options) {
     char chunk[4096];
     char line[CUT_LINE_CAPACITY];
     size_t line_len = 0;
@@ -226,7 +270,7 @@ static int cut_field_stream(int fd, const CutRangeList *list, char delimiter) {
 
             if (ch == '\n') {
                 line[line_len] = '\0';
-                if (write_selected_fields(line, list, delimiter, 1) != 0) {
+                if (write_selected_fields(line, options, 1) != 0) {
                     return -1;
                 }
                 line_len = 0;
@@ -242,7 +286,7 @@ static int cut_field_stream(int fd, const CutRangeList *list, char delimiter) {
 
     if (line_len > 0) {
         line[line_len] = '\0';
-        if (write_selected_fields(line, list, delimiter, 0) != 0) {
+        if (write_selected_fields(line, options, 0) != 0) {
             return -1;
         }
     }
@@ -252,9 +296,12 @@ static int cut_field_stream(int fd, const CutRangeList *list, char delimiter) {
 
 static int cut_stream(int fd, const CutOptions *options) {
     if (options->mode == CUT_MODE_FIELDS) {
-        return cut_field_stream(fd, &options->selections, options->delimiter);
+        return cut_field_stream(fd, options);
     }
-    return cut_char_stream(fd, &options->selections);
+    if (!options->complement) {
+        return cut_char_stream(fd, &options->selections);
+    }
+    return cut_text_stream(fd, &options->selections, options->complement);
 }
 
 static int parse_options(int argc, char **argv, CutOptions *options, int *arg_index_out) {
@@ -269,11 +316,26 @@ static int parse_options(int argc, char **argv, CutOptions *options, int *arg_in
             break;
         }
 
-        if ((rt_strcmp(argv[arg_index], "-c") == 0 || rt_strcmp(argv[arg_index], "-f") == 0) && arg_index + 1 < argc) {
+        if (rt_strcmp(argv[arg_index], "--complement") == 0) {
+            options->complement = 1;
+            arg_index += 1;
+            continue;
+        }
+
+        if ((rt_strcmp(argv[arg_index], "-b") == 0 ||
+             rt_strcmp(argv[arg_index], "-c") == 0 ||
+             rt_strcmp(argv[arg_index], "-f") == 0) &&
+            arg_index + 1 < argc) {
             if (parse_range_list(argv[arg_index + 1], &options->selections) != 0) {
                 return -1;
             }
-            options->mode = (argv[arg_index][1] == 'f') ? CUT_MODE_FIELDS : CUT_MODE_CHARS;
+            if (argv[arg_index][1] == 'f') {
+                options->mode = CUT_MODE_FIELDS;
+            } else if (argv[arg_index][1] == 'b') {
+                options->mode = CUT_MODE_BYTES;
+            } else {
+                options->mode = CUT_MODE_CHARS;
+            }
             arg_index += 2;
             continue;
         }

@@ -2,49 +2,49 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define CP_ENTRY_CAPACITY 1024
-#define CP_PATH_CAPACITY 1024
+#define CP_PATH_CAPACITY 2048
 
 typedef struct {
     int recursive;
+    int interactive;
+    int no_clobber;
+    int update_only;
+    int verbose;
+    int preserve_mode;
+    int preserve_symlinks;
 } CpOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-r] source destination");
-}
-
-static int ensure_directory(const char *path) {
-    int is_directory = 0;
-
-    if (platform_make_directory(path, 0755) == 0) {
-        return 0;
-    }
-
-    if (platform_path_is_directory(path, &is_directory) == 0 && is_directory) {
-        return 0;
-    }
-
-    return -1;
+    rt_write_line(2, " [-a] [-f] [-i] [-n] [-p] [-r|-R] [-u] [-v] source... destination");
 }
 
 static int path_is_same_or_child(const char *path, const char *prefix) {
+    char normalized_path[CP_PATH_CAPACITY];
+    char normalized_prefix[CP_PATH_CAPACITY];
     size_t i = 0;
 
-    if (prefix[0] == '/' && prefix[1] == '\0') {
+    if (tool_canonicalize_path(path, 0, 1, normalized_path, sizeof(normalized_path)) != 0) {
+        rt_copy_string(normalized_path, sizeof(normalized_path), path);
+    }
+    if (tool_canonicalize_path(prefix, 0, 1, normalized_prefix, sizeof(normalized_prefix)) != 0) {
+        rt_copy_string(normalized_prefix, sizeof(normalized_prefix), prefix);
+    }
+
+    if (normalized_prefix[0] == '/' && normalized_prefix[1] == '\0') {
         return 1;
     }
 
-    while (prefix[i] != '\0' && path[i] == prefix[i]) {
+    while (normalized_prefix[i] != '\0' && normalized_path[i] == normalized_prefix[i]) {
         i += 1U;
     }
 
-    if (prefix[i] != '\0') {
+    if (normalized_prefix[i] != '\0') {
         return 0;
     }
 
-    return path[i] == '\0' || path[i] == '/';
+    return normalized_path[i] == '\0' || normalized_path[i] == '/';
 }
 
 static int resolve_copy_target(const char *source_path, const char *dest_path, int source_is_directory, char *buffer, size_t buffer_size) {
@@ -65,51 +65,31 @@ static int resolve_copy_target(const char *source_path, const char *dest_path, i
     return tool_resolve_destination(source_path, dest_path, buffer, buffer_size);
 }
 
-static int copy_path_recursive(const char *source_path, const char *dest_path) {
-    int is_directory = 0;
+static int should_copy_to_target(const char *source_path, const char *target_path, int source_is_directory, const CpOptions *options) {
+    PlatformDirEntry source_info;
+    PlatformDirEntry target_info;
 
-    if (platform_path_is_directory(source_path, &is_directory) != 0) {
-        return -1;
+    if (!tool_path_exists(target_path)) {
+        return 1;
     }
 
-    if (!is_directory) {
-        return tool_copy_file(source_path, dest_path);
+    if (options->no_clobber) {
+        return 0;
     }
 
-    if (ensure_directory(dest_path) != 0) {
-        return -1;
+    if (options->update_only &&
+        !source_is_directory &&
+        platform_get_path_info(source_path, &source_info) == 0 &&
+        platform_get_path_info(target_path, &target_info) == 0 &&
+        source_info.mtime <= target_info.mtime) {
+        return 0;
     }
 
-    {
-        PlatformDirEntry entries[CP_ENTRY_CAPACITY];
-        size_t count = 0;
-        size_t i;
-        int path_is_directory = 0;
-        int result = 0;
-
-        if (platform_collect_entries(source_path, 1, entries, CP_ENTRY_CAPACITY, &count, &path_is_directory) != 0 || !path_is_directory) {
-            return -1;
-        }
-
-        for (i = 0; i < count; ++i) {
-            char child_source[CP_PATH_CAPACITY];
-            char child_dest[CP_PATH_CAPACITY];
-
-            if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
-                continue;
-            }
-
-            if (tool_join_path(source_path, entries[i].name, child_source, sizeof(child_source)) != 0 ||
-                tool_join_path(dest_path, entries[i].name, child_dest, sizeof(child_dest)) != 0 ||
-                copy_path_recursive(child_source, child_dest) != 0) {
-                result = -1;
-                break;
-            }
-        }
-
-        platform_free_entries(entries, count);
-        return result;
+    if (options->interactive) {
+        return tool_prompt_yes_no("cp: overwrite ", target_path);
     }
+
+    return 1;
 }
 
 static int copy_one_path(const char *source_path, const char *dest_path, const CpOptions *options) {
@@ -133,7 +113,7 @@ static int copy_one_path(const char *source_path, const char *dest_path, const C
         return 1;
     }
 
-    if (rt_strcmp(source_path, target_path) == 0) {
+    if (tool_paths_equal(source_path, target_path)) {
         rt_write_line(2, "cp: source and destination are the same");
         return 1;
     }
@@ -144,12 +124,22 @@ static int copy_one_path(const char *source_path, const char *dest_path, const C
         return 1;
     }
 
-    if (copy_path_recursive(source_path, target_path) != 0) {
+    if (!should_copy_to_target(source_path, target_path, source_is_directory, options)) {
+        return 0;
+    }
+
+    if (tool_copy_path(source_path, target_path, options->recursive, options->preserve_mode, options->preserve_symlinks) != 0) {
         rt_write_cstr(2, "cp: failed to copy ");
         rt_write_cstr(2, source_path);
         rt_write_cstr(2, " to ");
         rt_write_line(2, target_path);
         return 1;
+    }
+
+    if (options->verbose) {
+        rt_write_cstr(1, source_path);
+        rt_write_cstr(1, " -> ");
+        rt_write_line(1, target_path);
     }
 
     return 0;
@@ -173,8 +163,27 @@ int main(int argc, char **argv) {
         const char *flag = argv[argi] + 1;
 
         while (*flag != '\0') {
-            if (*flag == 'r' || *flag == 'R') {
+            if (*flag == 'a') {
                 options.recursive = 1;
+                options.preserve_mode = 1;
+                options.preserve_symlinks = 1;
+            } else if (*flag == 'r' || *flag == 'R') {
+                options.recursive = 1;
+            } else if (*flag == 'i') {
+                options.interactive = 1;
+                options.no_clobber = 0;
+            } else if (*flag == 'f') {
+                options.interactive = 0;
+                options.no_clobber = 0;
+            } else if (*flag == 'n') {
+                options.no_clobber = 1;
+                options.interactive = 0;
+            } else if (*flag == 'u') {
+                options.update_only = 1;
+            } else if (*flag == 'v') {
+                options.verbose = 1;
+            } else if (*flag == 'p') {
+                options.preserve_mode = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;

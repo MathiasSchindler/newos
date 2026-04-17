@@ -12,12 +12,18 @@ int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_
 int tool_parse_signal_name(const char *text, int *signal_out);
 const char *tool_signal_name(int signal_number);
 void tool_write_signal_list(int fd);
+int tool_prompt_yes_no(const char *message, const char *path);
 const char *tool_base_name(const char *path);
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size);
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size);
 int tool_wildcard_match(const char *pattern, const char *text);
 int tool_resolve_destination(const char *source_path, const char *dest_path, char *buffer, size_t buffer_size);
 int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_missing, char *buffer, size_t buffer_size);
+int tool_path_exists(const char *path);
+int tool_paths_equal(const char *left_path, const char *right_path);
+int tool_path_is_root(const char *path);
 int tool_copy_file(const char *source_path, const char *dest_path);
+int tool_copy_path(const char *source_path, const char *dest_path, int recursive, int preserve_mode, int preserve_symlinks);
+int tool_remove_path(const char *path, int recursive);
 
 #endif

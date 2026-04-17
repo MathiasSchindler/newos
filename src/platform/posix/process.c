@@ -90,6 +90,38 @@ static const PosixSignalEntry POSIX_SIGNAL_TABLE[] = {
 #endif
 };
 
+static char signal_upper_char(char ch) {
+    if (ch >= 'a' && ch <= 'z') {
+        return (char)(ch - 'a' + 'A');
+    }
+    return ch;
+}
+
+static int signal_name_matches(const char *input, const char *name) {
+    size_t offset = 0;
+    size_t index = 0;
+
+    if (input == NULL || name == NULL) {
+        return 0;
+    }
+
+    if (signal_upper_char(input[0]) == 'S' &&
+        signal_upper_char(input[1]) == 'I' &&
+        signal_upper_char(input[2]) == 'G') {
+        offset = 3;
+    }
+
+    while (input[offset] != '\0' && name[index] != '\0') {
+        if (signal_upper_char(input[offset]) != signal_upper_char(name[index])) {
+            return 0;
+        }
+        offset += 1U;
+        index += 1U;
+    }
+
+    return input[offset] == '\0' && name[index] == '\0';
+}
+
 int platform_parse_signal_name(const char *text, int *signal_out) {
     unsigned long long numeric = 0;
     size_t i;
@@ -105,18 +137,7 @@ int platform_parse_signal_name(const char *text, int *signal_out) {
     }
 
     for (i = 0; i < sizeof(POSIX_SIGNAL_TABLE) / sizeof(POSIX_SIGNAL_TABLE[0]); ++i) {
-        char prefixed[32];
-
-        if (rt_strcmp(text, POSIX_SIGNAL_TABLE[i].name) == 0) {
-            *signal_out = POSIX_SIGNAL_TABLE[i].value;
-            return 0;
-        }
-
-        prefixed[0] = 'S';
-        prefixed[1] = 'I';
-        prefixed[2] = 'G';
-        rt_copy_string(prefixed + 3, sizeof(prefixed) - 3, POSIX_SIGNAL_TABLE[i].name);
-        if (rt_strcmp(text, prefixed) == 0) {
+        if (signal_name_matches(text, POSIX_SIGNAL_TABLE[i].name)) {
             *signal_out = POSIX_SIGNAL_TABLE[i].value;
             return 0;
         }
@@ -337,12 +358,12 @@ static int decode_wait_status(int status) {
     return 1;
 }
 
-static int sleep_uninterrupted(unsigned int seconds) {
+static int sleep_uninterrupted(unsigned long long milliseconds) {
     struct timespec req;
     struct timespec rem;
 
-    req.tv_sec = (time_t)seconds;
-    req.tv_nsec = 0;
+    req.tv_sec = (time_t)(milliseconds / 1000ULL);
+    req.tv_nsec = (long)((milliseconds % 1000ULL) * 1000000ULL);
 
     while (nanosleep(&req, &rem) != 0) {
         if (errno != EINTR) {
@@ -373,15 +394,16 @@ int platform_wait_process(int pid, int *exit_status_out) {
 
 int platform_wait_process_timeout(
     int pid,
-    unsigned int timeout_seconds,
-    unsigned int kill_after_seconds,
+    unsigned long long timeout_milliseconds,
+    unsigned long long kill_after_milliseconds,
     int signal_number,
     int preserve_status,
     int *exit_status_out
 ) {
-    unsigned int elapsed = 0;
-    unsigned int after_signal = 0;
+    unsigned long long elapsed = 0;
+    unsigned long long after_signal = 0;
     int timed_out = 0;
+    const unsigned long long poll_milliseconds = 50ULL;
 
     if (exit_status_out == NULL) {
         errno = EINVAL;
@@ -404,23 +426,38 @@ int platform_wait_process_timeout(
             return -1;
         }
 
-        if (!timed_out && elapsed >= timeout_seconds) {
+        if (!timed_out && elapsed >= timeout_milliseconds) {
             (void)platform_send_signal(pid, signal_number);
             timed_out = 1;
             after_signal = 0;
-        } else if (timed_out && kill_after_seconds > 0 && after_signal >= kill_after_seconds) {
+        } else if (timed_out && kill_after_milliseconds > 0 && after_signal >= kill_after_milliseconds) {
             (void)platform_send_signal(pid, SIGKILL);
-            kill_after_seconds = 0;
+            kill_after_milliseconds = 0;
         }
 
-        if (sleep_uninterrupted(1U) != 0) {
-            return -1;
-        }
+        {
+            unsigned long long sleep_for = poll_milliseconds;
 
-        if (!timed_out) {
-            elapsed += 1;
-        } else {
-            after_signal += 1;
+            if (!timed_out && elapsed < timeout_milliseconds && timeout_milliseconds - elapsed < sleep_for) {
+                sleep_for = timeout_milliseconds - elapsed;
+            } else if (timed_out && kill_after_milliseconds > 0 &&
+                       after_signal < kill_after_milliseconds &&
+                       kill_after_milliseconds - after_signal < sleep_for) {
+                sleep_for = kill_after_milliseconds - after_signal;
+            }
+
+            if (sleep_for == 0ULL) {
+                sleep_for = 1ULL;
+            }
+            if (sleep_uninterrupted(sleep_for) != 0) {
+                return -1;
+            }
+
+            if (!timed_out) {
+                elapsed += sleep_for;
+            } else {
+                after_signal += sleep_for;
+            }
         }
     }
 }

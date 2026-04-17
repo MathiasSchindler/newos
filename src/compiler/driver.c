@@ -66,14 +66,16 @@ static CompilerTarget default_target(void) {
     char sysname[64];
     char nodename[64];
     char release[64];
+    char version[64];
     char machine[64];
 
-    if (platform_get_uname(sysname, sizeof(sysname), nodename, sizeof(nodename), release, sizeof(release), machine, sizeof(machine)) != 0) {
+    if (platform_get_uname(sysname, sizeof(sysname), nodename, sizeof(nodename), release, sizeof(release), version, sizeof(version), machine, sizeof(machine)) != 0) {
         return COMPILER_TARGET_MACOS_AARCH64;
     }
 
     (void)nodename;
     (void)release;
+    (void)version;
 
     if (text_equals(sysname, "Linux")) {
         if (text_equals(machine, "x86_64")) {

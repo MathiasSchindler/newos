@@ -149,8 +149,8 @@ int platform_spawn_process(
 int platform_wait_process(int pid, int *exit_status_out);
 int platform_wait_process_timeout(
     int pid,
-    unsigned int timeout_seconds,
-    unsigned int kill_after_seconds,
+    unsigned long long timeout_milliseconds,
+    unsigned long long kill_after_milliseconds,
     int signal_number,
     int preserve_status,
     int *exit_status_out
@@ -167,7 +167,18 @@ int platform_list_groups_for_identity(
 int platform_list_sessions(PlatformSessionEntry *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_get_memory_info(PlatformMemoryInfo *info_out);
 int platform_get_uptime_info(PlatformUptimeInfo *info_out);
-int platform_get_uname(char *sysname, size_t sysname_size, char *nodename, size_t nodename_size, char *release, size_t release_size, char *machine, size_t machine_size);
+int platform_get_uname(
+    char *sysname,
+    size_t sysname_size,
+    char *nodename,
+    size_t nodename_size,
+    char *release,
+    size_t release_size,
+    char *version,
+    size_t version_size,
+    char *machine,
+    size_t machine_size
+);
 int platform_ping_host(const char *host, const PlatformPingOptions *options);
 
 int platform_collect_entries(

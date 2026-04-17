@@ -20,6 +20,8 @@ case "$uname_out" in
     *" "*) ;;
     *) fail "uname flag output was unexpectedly thin" ;;
 esac
+uname_version_out=$("$ROOT_DIR/build/uname" --kernel-version | tr -d '\r\n')
+[ -n "$uname_version_out" ] || fail "uname --kernel-version produced no output"
 
 env_out=$(FOO=bar "$ROOT_DIR/build/env" | tr -d '\r')
 case "$env_out" in
@@ -86,6 +88,26 @@ mkdir -p "$WORK_DIR/cp_dest"
 assert_command_succeeds "$ROOT_DIR/build/cp" "$WORK_DIR/cp_a.txt" "$WORK_DIR/cp_b.txt" "$WORK_DIR/cp_dest"
 assert_file_contains "$WORK_DIR/cp_dest/cp_a.txt" 'copy-a' "cp multi-source copy failed for first file"
 assert_file_contains "$WORK_DIR/cp_dest/cp_b.txt" 'copy-b' "cp multi-source copy failed for second file"
+printf 'keep-me\n' > "$WORK_DIR/cp_keep.txt"
+printf 'replace-me\n' > "$WORK_DIR/cp_replace.txt"
+assert_command_succeeds "$ROOT_DIR/build/cp" -n "$WORK_DIR/cp_replace.txt" "$WORK_DIR/cp_keep.txt"
+assert_file_contains "$WORK_DIR/cp_keep.txt" '^keep-me$' "cp -n overwrote an existing destination"
+printf 'older-source\n' > "$WORK_DIR/cp_update_src.txt"
+"$ROOT_DIR/build/sleep" 1
+printf 'newer-destination\n' > "$WORK_DIR/cp_update_dest.txt"
+assert_command_succeeds "$ROOT_DIR/build/cp" -u "$WORK_DIR/cp_update_src.txt" "$WORK_DIR/cp_update_dest.txt"
+assert_file_contains "$WORK_DIR/cp_update_dest.txt" '^newer-destination$' "cp -u replaced a newer destination"
+"$ROOT_DIR/build/sleep" 1
+printf 'fresh-source\n' > "$WORK_DIR/cp_update_src.txt"
+assert_command_succeeds "$ROOT_DIR/build/cp" -u "$WORK_DIR/cp_update_src.txt" "$WORK_DIR/cp_update_dest.txt"
+assert_file_contains "$WORK_DIR/cp_update_dest.txt" '^fresh-source$' "cp -u did not refresh an older destination"
+printf 'echo archive\n' > "$WORK_DIR/archive-target.txt"
+ln -sf archive-target.txt "$WORK_DIR/archive-link"
+mkdir -p "$WORK_DIR/archive-dest"
+assert_command_succeeds "$ROOT_DIR/build/cp" -a "$WORK_DIR/archive-link" "$WORK_DIR/archive-dest"
+[ -L "$WORK_DIR/archive-dest/archive-link" ] || fail "cp -a did not preserve the symlink itself"
+archive_link_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/archive-dest/archive-link" | tr -d '\r\n')
+assert_text_equals "$archive_link_out" 'archive-target.txt' "cp -a preserved the wrong symlink target"
 printf 'move-a\n' > "$WORK_DIR/mv_a.txt"
 printf 'move-b\n' > "$WORK_DIR/mv_b.txt"
 mkdir -p "$WORK_DIR/mv_dest"
@@ -94,6 +116,18 @@ assert_file_contains "$WORK_DIR/mv_dest/mv_a.txt" 'move-a' "mv multi-source move
 assert_file_contains "$WORK_DIR/mv_dest/mv_b.txt" 'move-b' "mv multi-source move failed for second file"
 [ ! -e "$WORK_DIR/mv_a.txt" ] || fail "mv multi-source move left the original file behind"
 [ ! -e "$WORK_DIR/mv_b.txt" ] || fail "mv multi-source move left the second original file behind"
+printf 'older-source\n' > "$WORK_DIR/mv_update_src.txt"
+"$ROOT_DIR/build/sleep" 1
+printf 'newer-destination\n' > "$WORK_DIR/mv_update_dest.txt"
+assert_command_succeeds "$ROOT_DIR/build/mv" -u "$WORK_DIR/mv_update_src.txt" "$WORK_DIR/mv_update_dest.txt"
+[ -f "$WORK_DIR/mv_update_src.txt" ] || fail "mv -u should keep the source when the destination is newer"
+assert_file_contains "$WORK_DIR/mv_update_dest.txt" '^newer-destination$' "mv -u overwrote a newer destination"
+"$ROOT_DIR/build/sleep" 1
+printf 'fresh-source\n' > "$WORK_DIR/mv_update_src.txt"
+"$ROOT_DIR/build/mv" -uv "$WORK_DIR/mv_update_src.txt" "$WORK_DIR/mv_update_dest.txt" > "$WORK_DIR/mv_uv.out"
+assert_file_contains "$WORK_DIR/mv_uv.out" 'mv_update_src.txt -> .*mv_update_dest.txt' "mv -v did not report the move"
+[ ! -e "$WORK_DIR/mv_update_src.txt" ] || fail "mv -u/-v left the source file behind"
+assert_file_contains "$WORK_DIR/mv_update_dest.txt" '^fresh-source$' "mv -u did not replace an older destination"
 
 printf 'abcdef' > "$WORK_DIR/dd.in"
 "$ROOT_DIR/build/dd" if="$WORK_DIR/dd.in" of="$WORK_DIR/dd.out" bs=2 count=2
@@ -230,6 +264,21 @@ foo.bar
 foo.bar
 EOF
 assert_files_equal "$WORK_DIR/grep_fo.expected" "$WORK_DIR/grep_fo.out" "grep -F/-o literal matching failed"
+printf 'word\nsword\nword.\nwordplay\n' > "$WORK_DIR/grep_word.txt"
+"$ROOT_DIR/build/grep" -w word "$WORK_DIR/grep_word.txt" > "$WORK_DIR/grep_word.out"
+cat > "$WORK_DIR/grep_word.expected" <<'EOF'
+word
+word.
+EOF
+assert_files_equal "$WORK_DIR/grep_word.expected" "$WORK_DIR/grep_word.out" "grep whole-word mode failed"
+printf 'zero\none\ntwo\nthree\nfour\n' > "$WORK_DIR/grep_context.txt"
+"$ROOT_DIR/build/grep" -n -C 1 two "$WORK_DIR/grep_context.txt" > "$WORK_DIR/grep_context.out"
+cat > "$WORK_DIR/grep_context.expected" <<'EOF'
+2-one
+3:two
+4-three
+EOF
+assert_files_equal "$WORK_DIR/grep_context.expected" "$WORK_DIR/grep_context.out" "grep context mode failed"
 
 wc_selected=$(printf 'one two\nthree\n' | "$ROOT_DIR/build/wc" -lw | tr -d '\r\n')
 assert_text_equals "$wc_selected" '2 3' "wc selective counts failed"
@@ -256,11 +305,19 @@ Ada:Kernel
 Bob:Infra
 EOF
 assert_files_equal "$WORK_DIR/cut_fields.expected" "$WORK_DIR/cut_fields.out" "cut field mode failed"
+cut_bytes_out=$("$ROOT_DIR/build/cut" -b 2-4 "$WORK_DIR/bytes.txt" | tr -d '\r\n')
+assert_text_equals "$cut_bytes_out" 'bcd' "cut byte mode failed"
+"$ROOT_DIR/build/cut" --complement -d ':' -f 2 "$WORK_DIR/cut_fields.txt" > "$WORK_DIR/cut_complement.out"
+assert_files_equal "$WORK_DIR/cut_fields.expected" "$WORK_DIR/cut_complement.out" "cut complement mode failed"
 
 tr_delete=$(printf 'a1b22c333\n' | "$ROOT_DIR/build/tr" -d '0-9' | tr -d '\r\n')
 assert_text_equals "$tr_delete" 'abc' "tr delete range failed"
 tr_squeeze=$(printf 'aa   bb    cc\n' | "$ROOT_DIR/build/tr" -s ' ' | tr -d '\r\n')
 assert_text_equals "$tr_squeeze" 'aa bb cc' "tr squeeze mode failed"
+tr_keep_digits=$(printf 'room 101b' | "$ROOT_DIR/build/tr" -cd '0-9' | tr -d '\r\n')
+assert_text_equals "$tr_keep_digits" '101' "tr complement delete failed"
+tr_mask_out=$(printf 'abc123' | "$ROOT_DIR/build/tr" -c '0-9' x | tr -d '\r\n')
+assert_text_equals "$tr_mask_out" 'xxx123' "tr complement translate failed"
 printf 'tag Alpha\nTAG alpha\nkeep beta\nKEEP beta\n' > "$WORK_DIR/uniq.txt"
 "$ROOT_DIR/build/uniq" -i -f 1 -w 5 "$WORK_DIR/uniq.txt" > "$WORK_DIR/uniq.out"
 cat > "$WORK_DIR/uniq.expected" <<'EOF'
@@ -321,6 +378,19 @@ printf 'keep\n' > "$WORK_DIR/rm_verbose.txt"
 "$ROOT_DIR/build/rm" -v "$WORK_DIR/rm_verbose.txt" > "$WORK_DIR/rm_v.out"
 assert_file_contains "$WORK_DIR/rm_v.out" 'removed ' "rm -v did not report the removal"
 [ ! -e "$WORK_DIR/rm_verbose.txt" ] || fail "rm -v left the file behind"
+mkdir -p "$WORK_DIR/rm_safe/sub"
+printf 'safe\n' > "$WORK_DIR/rm_safe/sub/file.txt"
+assert_command_succeeds "$ROOT_DIR/build/rm" -rf --preserve-root "$WORK_DIR/rm_safe"
+[ ! -e "$WORK_DIR/rm_safe" ] || fail "rm --preserve-root should still remove normal directories"
+mkdir -p "$WORK_DIR/rm_dot"
+printf 'dot-keep\n' > "$WORK_DIR/rm_dot/file.txt"
+if (
+    cd "$WORK_DIR/rm_dot" &&
+    "$ROOT_DIR/build/rm" -rf . >/dev/null 2>&1
+); then
+    fail "rm should refuse to remove ."
+fi
+[ -f "$WORK_DIR/rm_dot/file.txt" ] || fail "rm removed files even though . should be protected"
 
 printf 'target-a\n' > "$WORK_DIR/link-a.txt"
 printf 'target-b\n' > "$WORK_DIR/link-b.txt"
@@ -377,19 +447,23 @@ id_groups_out=$("$ROOT_DIR/build/id" -Gn | tr -d '\r\n')
 
 "$ROOT_DIR/build/sleep" 30 &
 kill_pid=$!
-"$ROOT_DIR/build/kill" "$kill_pid"
+"$ROOT_DIR/build/kill" --signal TERM "$kill_pid"
 wait "$kill_pid" 2>/dev/null || true
 if kill -0 "$kill_pid" 2>/dev/null; then
     fail "kill did not terminate the process"
 fi
 "$ROOT_DIR/build/kill" -l > "$WORK_DIR/kill_signals.out"
 assert_file_contains "$WORK_DIR/kill_signals.out" 'TERM' "kill -l did not list signal names"
+kill_term_num=$("$ROOT_DIR/build/kill" -l TERM | tr -d '\r\n')
+assert_text_equals "$kill_term_num" '15' "kill -l TERM did not return the expected signal number"
+kill_term_name=$("$ROOT_DIR/build/kill" -l 143 | tr -d '\r\n')
+assert_text_equals "$kill_term_name" 'TERM' "kill -l 143 did not resolve the shell-status signal name"
 "$ROOT_DIR/build/ps" -p $$ > "$WORK_DIR/ps.out"
 assert_file_contains "$WORK_DIR/ps.out" '^PID' "ps header missing"
 assert_file_contains "$WORK_DIR/ps.out" "^$$[[:space:]]" "ps -p did not include the current shell"
 "$ROOT_DIR/build/pstree" $$ > "$WORK_DIR/pstree.out"
 assert_file_contains "$WORK_DIR/pstree.out" "$$" "pstree did not render the current shell tree"
-if "$ROOT_DIR/build/timeout" 1s "$ROOT_DIR/build/sleep" 3; then
+if "$ROOT_DIR/build/timeout" --signal=term --kill-after=200ms 0.2s "$ROOT_DIR/build/sleep" 3; then
     fail "timeout should have interrupted a long-running command"
 else
     timed_status=$?
@@ -592,8 +666,11 @@ assert_file_contains "$WORK_DIR/free_wt.out" '^Swap:' "free -wt output missing s
 assert_file_contains "$WORK_DIR/free_wt.out" '^Total:' "free -wt output missing total line"
 "$ROOT_DIR/build/uptime" -p > "$WORK_DIR/uptime.out"
 assert_file_contains "$WORK_DIR/uptime.out" '^up ' "uptime -p output missing pretty prefix"
+assert_file_contains "$WORK_DIR/uptime.out" 'day\|hour\|minute\|second' "uptime -p did not use human-friendly units"
 "$ROOT_DIR/build/uptime" -s > "$WORK_DIR/uptime_since.out"
 assert_file_contains "$WORK_DIR/uptime_since.out" '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] ' "uptime -s output missing timestamp"
+"$ROOT_DIR/build/uptime" > "$WORK_DIR/uptime_default.out"
+assert_file_contains "$WORK_DIR/uptime_default.out" 'load average:' "uptime default output missing load averages"
 "$ROOT_DIR/build/who" -q > "$WORK_DIR/who_q.out"
 assert_file_contains "$WORK_DIR/who_q.out" '^# users=' "who -q output missing user count"
 "$ROOT_DIR/build/who" -b > "$WORK_DIR/who_b.out"

@@ -8,19 +8,7 @@
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-f] [-i] [-v] [-d] [-r] path ...");
-}
-
-static int prompt_yes_no(const char *message, const char *path) {
-    char reply[8];
-    long bytes_read;
-
-    rt_write_cstr(2, message);
-    rt_write_cstr(2, path);
-    rt_write_cstr(2, "? ");
-
-    bytes_read = platform_read(0, reply, sizeof(reply));
-    return bytes_read > 0 && (reply[0] == 'y' || reply[0] == 'Y');
+    rt_write_line(2, " [-f] [-i] [-v] [-d] [-r] [--preserve-root|--no-preserve-root] path ...");
 }
 
 static void print_removed(const char *path, int is_directory) {
@@ -29,6 +17,11 @@ static void print_removed(const char *path, int is_directory) {
         rt_write_cstr(1, "directory ");
     }
     rt_write_line(1, path);
+}
+
+static int path_is_protected_name(const char *path) {
+    const char *base = tool_base_name(path);
+    return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0;
 }
 
 static int remove_path(const char *path, int recursive, int force, int interactive, int verbose, int allow_empty_dir) {
@@ -41,13 +34,14 @@ static int remove_path(const char *path, int recursive, int force, int interacti
         return force ? 0 : -1;
     }
 
-    if (interactive && !prompt_yes_no("rm: remove ", path)) {
+    if (interactive && !tool_prompt_yes_no("rm: remove ", path)) {
         platform_free_entries(entries, count);
         return 0;
     }
 
     if (!is_directory) {
         if (platform_remove_file(path) != 0) {
+            platform_free_entries(entries, count);
             return force ? 0 : -1;
         }
         if (verbose) {
@@ -111,6 +105,7 @@ int main(int argc, char **argv) {
     int interactive = 0;
     int verbose = 0;
     int allow_empty_dir = 0;
+    int preserve_root = 1;
     int first_path_index = 1;
     int exit_code = 0;
     int i;
@@ -122,6 +117,18 @@ int main(int argc, char **argv) {
         if (rt_strcmp(arg, "--") == 0) {
             first_path_index = i + 1;
             break;
+        }
+
+        if (rt_strcmp(arg, "--preserve-root") == 0) {
+            preserve_root = 1;
+            first_path_index = i + 1;
+            continue;
+        }
+
+        if (rt_strcmp(arg, "--no-preserve-root") == 0) {
+            preserve_root = 0;
+            first_path_index = i + 1;
+            continue;
         }
 
         if (arg[0] != '-' || arg[1] == '\0') {
@@ -157,6 +164,19 @@ int main(int argc, char **argv) {
     }
 
     for (i = first_path_index; i < argc; ++i) {
+        if (path_is_protected_name(argv[i])) {
+            rt_write_cstr(2, "rm: refusing to remove ");
+            rt_write_line(2, argv[i]);
+            exit_code = 1;
+            continue;
+        }
+
+        if (recursive && preserve_root && tool_path_is_root(argv[i])) {
+            rt_write_line(2, "rm: refusing to remove root directory '/'");
+            exit_code = 1;
+            continue;
+        }
+
         int result = remove_path(argv[i], recursive, force, interactive, verbose, allow_empty_dir);
 
         if (result == -2) {

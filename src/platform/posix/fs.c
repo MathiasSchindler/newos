@@ -200,7 +200,18 @@ int platform_change_directory(const char *path) {
     return chdir(path);
 }
 
-int platform_get_uname(char *sysname, size_t sysname_size, char *nodename, size_t nodename_size, char *release, size_t release_size, char *machine, size_t machine_size) {
+int platform_get_uname(
+    char *sysname,
+    size_t sysname_size,
+    char *nodename,
+    size_t nodename_size,
+    char *release,
+    size_t release_size,
+    char *version,
+    size_t version_size,
+    char *machine,
+    size_t machine_size
+) {
     struct utsname info;
 
     if (uname(&info) != 0) {
@@ -210,6 +221,7 @@ int platform_get_uname(char *sysname, size_t sysname_size, char *nodename, size_
     posix_copy_string(sysname, sysname_size, info.sysname);
     posix_copy_string(nodename, nodename_size, info.nodename);
     posix_copy_string(release, release_size, info.release);
+    posix_copy_string(version, version_size, info.version);
     posix_copy_string(machine, machine_size, info.machine);
     return 0;
 }
