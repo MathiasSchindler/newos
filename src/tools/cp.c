@@ -94,11 +94,49 @@ static int copy_path_recursive(const char *source_path, const char *dest_path) {
     }
 }
 
+static int copy_one_path(const char *source_path, const char *dest_path, const CpOptions *options) {
+    char target_path[CP_PATH_CAPACITY];
+    int source_is_directory = 0;
+
+    if (platform_path_is_directory(source_path, &source_is_directory) != 0) {
+        rt_write_cstr(2, "cp: cannot access ");
+        rt_write_line(2, source_path);
+        return 1;
+    }
+
+    if (source_is_directory && !options->recursive) {
+        rt_write_cstr(2, "cp: omitting directory ");
+        rt_write_line(2, source_path);
+        return 1;
+    }
+
+    if (resolve_copy_target(source_path, dest_path, source_is_directory, target_path, sizeof(target_path)) != 0) {
+        rt_write_line(2, "cp: destination path too long");
+        return 1;
+    }
+
+    if (rt_strcmp(source_path, target_path) == 0) {
+        rt_write_line(2, "cp: source and destination are the same");
+        return 1;
+    }
+
+    if (copy_path_recursive(source_path, target_path) != 0) {
+        rt_write_cstr(2, "cp: failed to copy ");
+        rt_write_cstr(2, source_path);
+        rt_write_cstr(2, " to ");
+        rt_write_line(2, target_path);
+        return 1;
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
     CpOptions options;
-    char target_path[CP_PATH_CAPACITY];
     int argi = 1;
-    int source_is_directory = 0;
+    int source_count;
+    const char *dest_path;
+    int exit_code = 0;
 
     rt_memset(&options, 0, sizeof(options));
 
@@ -118,40 +156,56 @@ int main(int argc, char **argv) {
         argi += 1;
     }
 
-    if (argc - argi != 2) {
+    source_count = argc - argi - 1;
+    if (source_count < 1) {
         print_usage(argv[0]);
         return 1;
     }
 
-    if (platform_path_is_directory(argv[argi], &source_is_directory) != 0) {
-        rt_write_cstr(2, "cp: cannot access ");
-        rt_write_line(2, argv[argi]);
+    dest_path = argv[argc - 1];
+    if (source_count > 1) {
+        int dest_is_directory = 0;
+        int i;
+
+        if (platform_path_is_directory(dest_path, &dest_is_directory) != 0 || !dest_is_directory) {
+            rt_write_line(2, "cp: target for multiple sources must be an existing directory");
+            return 1;
+        }
+
+        for (i = argi; i < argc - 1; ++i) {
+            if (copy_one_path(argv[i], dest_path, &options) != 0) {
+                exit_code = 1;
+            }
+        }
+        return exit_code;
+    }
+
+    return copy_one_path(argv[argi], dest_path, &options) += 1;
+    }
+
+    source_count = argc - argi - 1;
+    if (source_count < 1) {
+        print_usage(argv[0]);
         return 1;
     }
 
-    if (source_is_directory && !options.recursive) {
-        rt_write_cstr(2, "cp: omitting directory ");
-        rt_write_line(2, argv[argi]);
-        return 1;
+    dest_path = argv[argc - 1];
+    if (source_count > 1) {
+        int dest_is_directory = 0;
+        int i;
+
+        if (platform_path_is_directory(dest_path, &dest_is_directory) != 0 || !dest_is_directory) {
+            rt_write_line(2, "cp: target for multiple sources must be an existing directory");
+            return 1;
+        }
+
+        for (i = argi; i < argc - 1; ++i) {
+            if (copy_one_path(argv[i], dest_path, &options) != 0) {
+                exit_code = 1;
+            }
+        }
+        return exit_code;
     }
 
-    if (resolve_copy_target(argv[argi], argv[argi + 1], source_is_directory, target_path, sizeof(target_path)) != 0) {
-        rt_write_line(2, "cp: destination path too long");
-        return 1;
-    }
-
-    if (rt_strcmp(argv[argi], target_path) == 0) {
-        rt_write_line(2, "cp: source and destination are the same");
-        return 1;
-    }
-
-    if (copy_path_recursive(argv[argi], target_path) != 0) {
-        rt_write_cstr(2, "cp: failed to copy ");
-        rt_write_cstr(2, argv[argi]);
-        rt_write_cstr(2, " to ");
-        rt_write_line(2, target_path);
-        return 1;
-    }
-
-    return 0;
+    return copy_one_path(argv[argi], dest_path, &options);
 }

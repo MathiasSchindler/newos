@@ -20,6 +20,14 @@ case "$env_out" in
 esac
 env_cmd_out=$("$ROOT_DIR/build/env" BAR=baz "$ROOT_DIR/build/sh" -c 'echo $BAR' | tr -d '\r\n')
 assert_text_equals "$env_cmd_out" 'baz' "env command override failed"
+env_clean_out=$("$ROOT_DIR/build/env" -i FOO=solo | tr '\0\r' '\n')
+assert_text_equals "$env_clean_out" 'FOO=solo' "env -i did not reset the environment"
+FOO=gone "$ROOT_DIR/build/env" -u FOO > "$WORK_DIR/env_unset.out"
+if grep '^FOO=' "$WORK_DIR/env_unset.out" >/dev/null 2>&1; then
+    fail "env -u did not remove the variable"
+fi
+env_zero_out=$("$ROOT_DIR/build/env" -0 FOO=bar | tr '\0' '\n' | grep '^FOO=' | tr -d '\r\n')
+assert_text_equals "$env_zero_out" 'FOO=bar' "env -0 did not emit NUL-delimited output"
 
 hostname_out=$("$ROOT_DIR/build/hostname" | tr -d '\r\n')
 [ -n "$hostname_out" ] || fail "hostname output was empty"
@@ -30,6 +38,20 @@ assert_files_equal "$WORK_DIR/tee.txt" "$WORK_DIR/tee.out" "tee output mismatch"
 printf 'one two\n' | "$ROOT_DIR/build/xargs" "$ROOT_DIR/build/echo" prefix > "$WORK_DIR/xargs.out"
 actual_xargs=$(tr -d '\r' < "$WORK_DIR/xargs.out" | head -n 1)
 assert_text_equals "$actual_xargs" 'prefix one two' "xargs argument composition failed"
+printf 'copy-a\n' > "$WORK_DIR/cp_a.txt"
+printf 'copy-b\n' > "$WORK_DIR/cp_b.txt"
+mkdir -p "$WORK_DIR/cp_dest"
+assert_command_succeeds "$ROOT_DIR/build/cp" "$WORK_DIR/cp_a.txt" "$WORK_DIR/cp_b.txt" "$WORK_DIR/cp_dest"
+assert_file_contains "$WORK_DIR/cp_dest/cp_a.txt" 'copy-a' "cp multi-source copy failed for first file"
+assert_file_contains "$WORK_DIR/cp_dest/cp_b.txt" 'copy-b' "cp multi-source copy failed for second file"
+printf 'move-a\n' > "$WORK_DIR/mv_a.txt"
+printf 'move-b\n' > "$WORK_DIR/mv_b.txt"
+mkdir -p "$WORK_DIR/mv_dest"
+assert_command_succeeds "$ROOT_DIR/build/mv" "$WORK_DIR/mv_a.txt" "$WORK_DIR/mv_b.txt" "$WORK_DIR/mv_dest"
+assert_file_contains "$WORK_DIR/mv_dest/mv_a.txt" 'move-a' "mv multi-source move failed for first file"
+assert_file_contains "$WORK_DIR/mv_dest/mv_b.txt" 'move-b' "mv multi-source move failed for second file"
+[ ! -e "$WORK_DIR/mv_a.txt" ] || fail "mv multi-source move left the original file behind"
+[ ! -e "$WORK_DIR/mv_b.txt" ] || fail "mv multi-source move left the second original file behind"
 
 printf 'abcdef' > "$WORK_DIR/dd.in"
 "$ROOT_DIR/build/dd" if="$WORK_DIR/dd.in" of="$WORK_DIR/dd.out" bs=2 count=2
@@ -69,6 +91,15 @@ assert_text_equals "$printf_out" 'value=sample 42 ff' "printf formatting failed"
 
 which_out=$("$ROOT_DIR/build/which" ls | tr -d '\r\n')
 assert_text_equals "$which_out" "$ROOT_DIR/build/ls" "which did not resolve build tool"
+mkdir -p "$WORK_DIR/path1" "$WORK_DIR/path2"
+printf '#!/bin/sh\necho one\n' > "$WORK_DIR/path1/dupcmd"
+printf '#!/bin/sh\necho two\n' > "$WORK_DIR/path2/dupcmd"
+chmod +x "$WORK_DIR/path1/dupcmd" "$WORK_DIR/path2/dupcmd"
+which_all_out=$(PATH="$WORK_DIR/path1:$WORK_DIR/path2:$PATH" "$ROOT_DIR/build/which" -a dupcmd | tr -d '\r')
+assert_file_contains "$WORK_DIR/left.txt" '^left$' "diff fixture missing"
+printf '%s\n' "$which_all_out" > "$WORK_DIR/which_all.out"
+assert_file_contains "$WORK_DIR/which_all.out" 'path1/dupcmd' "which -a missing first match"
+assert_file_contains "$WORK_DIR/which_all.out" 'path2/dupcmd' "which -a missing second match"
 
 ln -sf dd.in "$WORK_DIR/link-to-dd"
 readlink_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-to-dd" | tr -d '\r\n')

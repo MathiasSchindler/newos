@@ -15,27 +15,55 @@ typedef struct {
     int show_all;
     int long_format;
     int recursive;
+    int reverse_order;
+    int classify;
+    int single_column;
     LsSortMode sort_mode;
 } LsOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-a] [-l] [-R] [-t] [-S] [path ...]");
+    rt_write_line(2, " [-a] [-l] [-R] [-t] [-S] [-r] [-1] [-F] [path ...]");
 }
 
-static int should_swap_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
+static int compare_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
     if (options->sort_mode == LS_SORT_TIME) {
-        if (right->mtime != left->mtime) {
-            return right->mtime > left->mtime;
+        if (left->mtime > right->mtime) {
+            return -1;
+        }
+        if (left->mtime < right->mtime) {
+            return 1;
         }
     } else if (options->sort_mode == LS_SORT_SIZE) {
-        if (right->size != left->size) {
-            return right->size > left->size;
+        if (left->size > right->size) {
+            return -1;
+        }
+        if (left->size < right->size) {
+            return 1;
         }
     }
 
-    return rt_strcmp(right->name, left->name) < 0;
+    return rt_strcmp(left->name, right->name);
+}
+
+static int should_swap_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
+    int cmp = compare_entries(left, right, options);
+    return options->reverse_order ? (cmp < 0) : (cmp > 0)) {
+        if (left->size > right->size) {
+            return -1;
+        }
+        if (left->size < right->size) {
+            return 1;
+        }
+    }
+
+    return rt_strcmp(left->name, right->name);
+}
+
+static int should_swap_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
+    int cmp = compare_entries(left, right, options);
+    return options->reverse_order ? (cmp < 0) : (cmp > 0);
 }
 
 static void sort_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options) {
@@ -57,21 +85,19 @@ static size_t count_digits_unsigned(unsigned long long value) {
     size_t digits = 1;
 
     while (value >= 10) {
-        value /= 10;
-        digits += 1;
+        value /= 1entry_name(const PlatformDirEntry *entry, const LsOptions *options) {
+    rt_write_cstr(1, entry->name);
+    if (options->classify) {
+        if (entry->is_dir) {
+            rt_write_char(1, '/');
+        } else if ((entry->mode & 0111) != 0) {
+            rt_write_char(1, '*');
+        }
     }
-
-    return digits;
+    rt_write_char(1, '\n');
 }
 
-static void write_padding(size_t current_width, size_t target_width) {
-    while (current_width < target_width) {
-        rt_write_char(1, ' ');
-        current_width += 1;
-    }
-}
-
-static void print_long_entry(const PlatformDirEntry *entry) {
+static void print_long_entry(const PlatformDirEntry *entry, const LsOptions *options) {
     char mode_buffer[11];
 
     platform_format_mode(entry->mode, mode_buffer);
@@ -90,7 +116,7 @@ static void print_long_entry(const PlatformDirEntry *entry) {
     rt_write_char(1, ' ');
     rt_write_int(1, entry->mtime);
     rt_write_char(1, ' ');
-    rt_write_line(1, entry->name);
+    print_entry_name(entry, options);
 }
 
 static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options) {
@@ -100,9 +126,35 @@ static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptio
 
     for (i = 0; i < count; ++i) {
         if (options->long_format) {
-            print_long_entry(&entries[i]);
+            print_long_entry(&entries[i], options);
         } else {
-            rt_write_line(1, entries[i].name);
+            print_entry_name(&entries[i], options
+    rt_write_char(1, ' ');
+    write_padding(count_digits_unsigned(entry->nlink), 3);
+    rt_write_uint(1, entry->nlink);
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, entry->owner[0] ? entry->owner : "?");
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, entry->group[0] ? entry->group : "?");
+    rt_write_char(1, ' ');
+    write_padding(count_digits_unsigned(entry->size), 8);
+    rt_write_uint(1, entry->size);
+    rt_write_char(1, ' ');
+    rt_write_int(1, entry->mtime);
+    rt_write_char(1, ' ');
+    print_entry_name(entry, options);
+}
+
+static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options) {
+    size_t i;
+
+    sort_entries(entries, count, options);
+
+    for (i = 0; i < count; ++i) {
+        if (options->long_format) {
+            print_long_entry(&entries[i], options);
+        } else {
+            print_entry_name(&entries[i], options);
         }
     }
 }
@@ -166,7 +218,16 @@ int main(int argc, char **argv) {
         size_t j;
 
         if (rt_strcmp(arg, "--") == 0) {
-            first_path_index = i + 1;
+            firscase 'r':
+                    options.reverse_order = 1;
+                    break;
+                case '1':
+                    options.single_column = 1;
+                    break;
+                case 'F':
+                    options.classify = 1;
+                    break;
+                t_path_index = i + 1;
             break;
         }
 
@@ -191,6 +252,15 @@ int main(int argc, char **argv) {
                     break;
                 case 'S':
                     options.sort_mode = LS_SORT_SIZE;
+                    break;
+                case 'r':
+                    options.reverse_order = 1;
+                    break;
+                case '1':
+                    options.single_column = 1;
+                    break;
+                case 'F':
+                    options.classify = 1;
                     break;
                 default:
                     print_usage(argv[0]);
