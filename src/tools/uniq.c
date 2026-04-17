@@ -8,10 +8,14 @@ typedef struct {
     int count_only;
     int duplicates_only;
     int unique_only;
+    int ignore_case;
+    unsigned long long skip_fields;
+    unsigned long long skip_chars;
+    unsigned long long max_chars;
 } UniqOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-cdu] [file]");
+    tool_write_usage(program_name, "[-cdui] [-f FIELDS] [-s CHARS] [-w CHARS] [file]");
 }
 
 static int should_print_group(unsigned long long count, const UniqOptions *options) {
@@ -40,6 +44,66 @@ static int emit_group(const char *line, unsigned long long count, const UniqOpti
     return rt_write_line(1, line);
 }
 
+static char ascii_tolower(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static const char *skip_compare_prefix(const char *line, const UniqOptions *options) {
+    unsigned long long fields = options->skip_fields;
+    unsigned long long chars = options->skip_chars;
+
+    while (fields > 0ULL) {
+        while (*line != '\0' && rt_is_space(*line)) {
+            line += 1;
+        }
+        while (*line != '\0' && !rt_is_space(*line)) {
+            line += 1;
+        }
+        fields -= 1ULL;
+    }
+
+    while (chars > 0ULL && *line != '\0') {
+        line += 1;
+        chars -= 1ULL;
+    }
+
+    return line;
+}
+
+static int lines_match(const char *left, const char *right, const UniqOptions *options) {
+    const char *lhs = skip_compare_prefix(left, options);
+    const char *rhs = skip_compare_prefix(right, options);
+    unsigned long long compared = 0ULL;
+
+    while (*lhs != '\0' || *rhs != '\0') {
+        char lhs_char;
+        char rhs_char;
+
+        if (options->max_chars != 0ULL && compared >= options->max_chars) {
+            return 1;
+        }
+
+        lhs_char = options->ignore_case ? ascii_tolower(*lhs) : *lhs;
+        rhs_char = options->ignore_case ? ascii_tolower(*rhs) : *rhs;
+        if (lhs_char != rhs_char) {
+            return 0;
+        }
+
+        if (*lhs == '\0') {
+            break;
+        }
+
+        lhs += 1;
+        rhs += 1;
+        compared += 1ULL;
+    }
+
+    return 1;
+}
+
 static int uniq_stream(int fd, const UniqOptions *options) {
     char chunk[4096];
     char previous[UNIQ_LINE_CAPACITY];
@@ -62,7 +126,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
                     rt_copy_string(previous, sizeof(previous), current);
                     repeat_count = 1ULL;
                     have_previous = 1;
-                } else if (rt_strcmp(previous, current) == 0) {
+                } else if (lines_match(previous, current, options)) {
                     repeat_count += 1ULL;
                 } else {
                     if (emit_group(previous, repeat_count, options) != 0) {
@@ -90,7 +154,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
             rt_copy_string(previous, sizeof(previous), current);
             repeat_count = 1ULL;
             have_previous = 1;
-        } else if (rt_strcmp(previous, current) == 0) {
+        } else if (lines_match(previous, current, options)) {
             repeat_count += 1ULL;
         } else {
             if (emit_group(previous, repeat_count, options) != 0) {
@@ -123,6 +187,23 @@ int main(int argc, char **argv) {
             break;
         }
 
+        if (rt_strcmp(argv[argi], "-f") == 0 || rt_strcmp(argv[argi], "-s") == 0 || rt_strcmp(argv[argi], "-w") == 0) {
+            unsigned long long value = 0ULL;
+            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &value, "uniq", "value") != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (argv[argi][1] == 'f') {
+                options.skip_fields = value;
+            } else if (argv[argi][1] == 's') {
+                options.skip_chars = value;
+            } else {
+                options.max_chars = value;
+            }
+            argi += 2;
+            continue;
+        }
+
         while (*flag != '\0') {
             if (*flag == 'c') {
                 options.count_only = 1;
@@ -130,6 +211,8 @@ int main(int argc, char **argv) {
                 options.duplicates_only = 1;
             } else if (*flag == 'u') {
                 options.unique_only = 1;
+            } else if (*flag == 'i') {
+                options.ignore_case = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;

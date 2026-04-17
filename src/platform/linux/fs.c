@@ -101,6 +101,23 @@ int platform_open_write(const char *path, unsigned int mode) {
     return fd < 0 ? -1 : (int)fd;
 }
 
+int platform_open_append(const char *path, unsigned int mode) {
+    long fd;
+
+    if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
+        return 1;
+    }
+
+    fd = linux_syscall4(
+        LINUX_SYS_OPENAT,
+        LINUX_AT_FDCWD,
+        (long)path,
+        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_APPEND,
+        (long)mode
+    );
+    return fd < 0 ? -1 : (int)fd;
+}
+
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
     const char *base = (prefix != 0 && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
     unsigned long long seed = (unsigned long long)(platform_get_epoch_time() < 0 ? 0 : platform_get_epoch_time());

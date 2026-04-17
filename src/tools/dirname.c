@@ -2,6 +2,13 @@
 
 #define DIRNAME_BUFFER_CAPACITY 1024
 
+static int write_result(const char *text, int zero_terminated) {
+    if (zero_terminated) {
+        return rt_write_all(1, text, rt_strlen(text)) == 0 && rt_write_char(1, '\0') == 0 ? 0 : -1;
+    }
+    return rt_write_line(1, text);
+}
+
 static void compute_dirname(const char *path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(path);
 
@@ -35,12 +42,35 @@ static void compute_dirname(const char *path, char *buffer, size_t buffer_size) 
 
 int main(int argc, char **argv) {
     char result[DIRNAME_BUFFER_CAPACITY];
+    int zero_terminated = 0;
+    int argi = 1;
+    int i;
 
-    if (argc != 2) {
-        rt_write_line(2, "Usage: dirname path");
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        }
+        if (rt_strcmp(argv[argi], "-z") == 0) {
+            zero_terminated = 1;
+        } else {
+            rt_write_line(2, "Usage: dirname [-z] path ...");
+            return 1;
+        }
+        argi += 1;
+    }
+
+    if (argi >= argc) {
+        rt_write_line(2, "Usage: dirname [-z] path ...");
         return 1;
     }
 
-    compute_dirname(argv[1], result, sizeof(result));
-    return rt_write_line(1, result) == 0 ? 0 : 1;
+    for (i = argi; i < argc; ++i) {
+        compute_dirname(argv[i], result, sizeof(result));
+        if (write_result(result, zero_terminated) != 0) {
+            return 1;
+        }
+    }
+
+    return 0;
 }

@@ -7,7 +7,7 @@
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-p] [-m mode] directory ...");
+    rt_write_line(2, " [-p] [-v] [-m mode] directory ...");
 }
 
 static int path_is_directory(const char *path) {
@@ -76,6 +76,7 @@ static int make_one_directory(const char *path, int create_parents, unsigned int
 
 int main(int argc, char **argv) {
     int create_parents = 0;
+    int verbose = 0;
     unsigned int mode = MKDIR_DEFAULT_MODE;
     int first_path_index = 1;
     int exit_code = 0;
@@ -83,6 +84,7 @@ int main(int argc, char **argv) {
 
     for (i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        size_t j;
 
         if (rt_strcmp(arg, "--") == 0) {
             first_path_index = i + 1;
@@ -94,24 +96,24 @@ int main(int argc, char **argv) {
             break;
         }
 
-        if (rt_strcmp(arg, "-p") == 0) {
-            create_parents = 1;
-            first_path_index = i + 1;
-            continue;
-        }
-
-        if (rt_strcmp(arg, "-m") == 0 || (arg[0] == '-' && arg[1] == 'm' && arg[2] != '\0')) {
-            const char *mode_text = (rt_strcmp(arg, "-m") == 0) ? ((i + 1 < argc) ? argv[++i] : 0) : (arg + 2);
-            if (parse_mode_arg(mode_text, &mode) != 0) {
+        for (j = 1; arg[j] != '\0'; ++j) {
+            if (arg[j] == 'p') {
+                create_parents = 1;
+            } else if (arg[j] == 'v') {
+                verbose = 1;
+            } else if (arg[j] == 'm') {
+                const char *mode_text = (arg[j + 1] != '\0') ? (arg + j + 1) : ((i + 1 < argc) ? argv[++i] : 0);
+                if (parse_mode_arg(mode_text, &mode) != 0) {
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                break;
+            } else {
                 print_usage(argv[0]);
                 return 1;
             }
-            first_path_index = i + 1;
-            continue;
         }
-
-        print_usage(argv[0]);
-        return 1;
+        first_path_index = i + 1;
     }
 
     if (first_path_index >= argc) {
@@ -124,6 +126,9 @@ int main(int argc, char **argv) {
             rt_write_cstr(2, "mkdir: cannot create ");
             rt_write_line(2, argv[i]);
             exit_code = 1;
+        } else if (verbose) {
+            rt_write_cstr(1, "created directory ");
+            rt_write_line(1, argv[i]);
         }
     }
 

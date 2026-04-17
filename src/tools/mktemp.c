@@ -135,7 +135,7 @@ static int create_directory_path(const char *path) {
 }
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-d] [-u] [-p DIR] [TEMPLATE]");
+    tool_write_usage(program_name, "[-d] [-u] [-p DIR] [-t PREFIX] [TEMPLATE]");
 }
 
 int main(int argc, char **argv) {
@@ -143,6 +143,7 @@ int main(int argc, char **argv) {
     int dry_run = 0;
     const char *directory = ".";
     const char *templ = 0;
+    int use_tmpdir = 0;
     char template_path[MKTEMP_PATH_CAPACITY];
     char candidate[MKTEMP_PATH_CAPACITY];
     int argi = 1;
@@ -171,6 +172,17 @@ int main(int argc, char **argv) {
                 return 1;
             }
             directory = argv[argi + 1];
+            use_tmpdir = 0;
+            argi += 2;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "-t") == 0) {
+            if (argi + 1 >= argc || templ != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            templ = argv[argi + 1];
+            use_tmpdir = 1;
             argi += 2;
             continue;
         }
@@ -183,7 +195,18 @@ int main(int argc, char **argv) {
     }
 
     if (argi < argc) {
+        if (templ != 0) {
+            print_usage(argv[0]);
+            return 1;
+        }
         templ = argv[argi];
+    }
+
+    if (use_tmpdir) {
+        const char *env_tmpdir = platform_getenv("TMPDIR");
+        if (env_tmpdir != 0 && env_tmpdir[0] != '\0') {
+            directory = env_tmpdir;
+        }
     }
 
     if (resolve_template_path(directory, templ, template_path, sizeof(template_path)) != 0) {

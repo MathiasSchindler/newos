@@ -352,8 +352,23 @@ static int posix_format_time_fallback(const struct tm *tm_ptr, const char *forma
     return 0;
 }
 
+int platform_sleep_milliseconds(unsigned long long milliseconds) {
+    struct timespec request;
+    struct timespec remaining;
+
+    request.tv_sec = (time_t)(milliseconds / 1000ULL);
+    request.tv_nsec = (long)((milliseconds % 1000ULL) * 1000000ULL);
+    while (nanosleep(&request, &remaining) != 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+        request = remaining;
+    }
+    return 0;
+}
+
 int platform_sleep_seconds(unsigned int seconds) {
-    return sleep(seconds) == 0 ? 0 : -1;
+    return platform_sleep_milliseconds((unsigned long long)seconds * 1000ULL);
 }
 
 long long platform_get_epoch_time(void) {

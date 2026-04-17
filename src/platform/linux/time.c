@@ -210,12 +210,16 @@ static int linux_append_year(char *buffer, size_t buffer_size, size_t *length_io
     return linux_append_padded(buffer, buffer_size, length_io, absolute_year, 4U);
 }
 
-int platform_sleep_seconds(unsigned int seconds) {
+int platform_sleep_milliseconds(unsigned long long milliseconds) {
     struct linux_timespec req;
 
-    req.tv_sec = (long)seconds;
-    req.tv_nsec = 0;
+    req.tv_sec = (long)(milliseconds / 1000ULL);
+    req.tv_nsec = (long)((milliseconds % 1000ULL) * 1000000ULL);
     return linux_syscall2(LINUX_SYS_NANOSLEEP, (long)&req, 0) < 0 ? -1 : 0;
+}
+
+int platform_sleep_seconds(unsigned int seconds) {
+    return platform_sleep_milliseconds((unsigned long long)seconds * 1000ULL);
 }
 
 long long platform_get_epoch_time(void) {

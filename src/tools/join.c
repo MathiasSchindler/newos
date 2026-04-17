@@ -4,6 +4,12 @@
 
 #define JOIN_MAX_LINES 1024
 #define JOIN_LINE_CAPACITY 1024
+#define JOIN_MAX_OUTPUT_FIELDS 32
+
+typedef struct {
+    int source;
+    unsigned long long field_no;
+} JoinOutputField;
 
 typedef struct {
     unsigned long long left_field;
@@ -11,6 +17,12 @@ typedef struct {
     char delimiter;
     int print_unpaired_left;
     int print_unpaired_right;
+    int only_unpaired_left;
+    int only_unpaired_right;
+    int use_output_list;
+    char empty_replacement[JOIN_LINE_CAPACITY];
+    JoinOutputField output_fields[JOIN_MAX_OUTPUT_FIELDS];
+    size_t output_field_count;
 } JoinOptions;
 
 static int store_line(char lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY], size_t *count, const char *line, size_t len) {
@@ -65,7 +77,7 @@ static int collect_lines_from_fd(int fd, char lines[JOIN_MAX_LINES][JOIN_LINE_CA
 }
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-a1] [-a2] [-1 FIELD] [-2 FIELD] [-t CHAR] file1 file2");
+    tool_write_usage(program_name, "[-a1] [-a2] [-v1] [-v2] [-1 FIELD] [-2 FIELD] [-j FIELD] [-t CHAR] [-e EMPTY] [-o LIST] file1 file2");
 }
 
 static char parse_delimiter(const char *text) {
@@ -159,6 +171,10 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
     size_t i = 0;
     unsigned long long field_no = 1ULL;
 
+    if (line == 0) {
+        return 0;
+    }
+
     if (delimiter == '\0') {
         while (line[i] != '\0') {
             size_t start;
@@ -213,16 +229,107 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
     return 0;
 }
 
-static int emit_joined_line(const char *left, const char *right, const JoinOptions *options) {
+static int parse_output_list(const char *text, JoinOptions *options) {
+    size_t index = 0;
+
+    options->output_field_count = 0U;
+    while (text[index] != '\0') {
+        char token[32];
+        size_t token_len = 0;
+        JoinOutputField field;
+
+        while (text[index] == ',' || rt_is_space(text[index])) {
+            index += 1;
+        }
+
+        if (text[index] == '\0') {
+            break;
+        }
+
+        while (text[index] != '\0' && text[index] != ',' && !rt_is_space(text[index])) {
+            if (token_len + 1U >= sizeof(token)) {
+                return -1;
+            }
+            token[token_len++] = text[index++];
+        }
+        token[token_len] = '\0';
+
+        if (options->output_field_count >= JOIN_MAX_OUTPUT_FIELDS) {
+            return -1;
+        }
+
+        if (rt_strcmp(token, "0") == 0) {
+            field.source = 0;
+            field.field_no = 0ULL;
+        } else if ((token[0] == '1' || token[0] == '2') && token[1] == '.') {
+            field.source = token[0] - '0';
+            if (rt_parse_uint(token + 2, &field.field_no) != 0 || field.field_no == 0ULL) {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
+
+        options->output_fields[options->output_field_count++] = field;
+    }
+
+    options->use_output_list = options->output_field_count > 0U ? 1 : 0;
+    return options->use_output_list ? 0 : -1;
+}
+
+static int emit_optional_value(const char *text, int found, const JoinOptions *options, int *first_out) {
+    if (emit_text_field(found ? text : options->empty_replacement, found ? rt_strlen(text) : rt_strlen(options->empty_replacement), options->delimiter, first_out) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int emit_selected_line(const char *left, const char *right, const JoinOptions *options) {
+    int first = 1;
+    size_t i;
+
+    for (i = 0; i < options->output_field_count; ++i) {
+        char value[JOIN_LINE_CAPACITY];
+        int found = 0;
+
+        if (options->output_fields[i].source == 0) {
+            if (left != 0 && extract_field(left, options->left_field, options->delimiter, value, sizeof(value)) == 0) {
+                found = 1;
+            } else if (right != 0 && extract_field(right, options->right_field, options->delimiter, value, sizeof(value)) == 0) {
+                found = 1;
+            }
+        } else if (options->output_fields[i].source == 1) {
+            if (left != 0 && extract_field(left, options->output_fields[i].field_no, options->delimiter, value, sizeof(value)) == 0) {
+                found = 1;
+            }
+        } else if (options->output_fields[i].source == 2) {
+            if (right != 0 && extract_field(right, options->output_fields[i].field_no, options->delimiter, value, sizeof(value)) == 0) {
+                found = 1;
+            }
+        }
+
+        if (emit_optional_value(value, found, options, &first) != 0) {
+            return -1;
+        }
+    }
+
+    return rt_write_char(1, '\n');
+}
+
+static int emit_default_line(const char *left, const char *right, const JoinOptions *options) {
     char key[JOIN_LINE_CAPACITY];
     int first = 1;
+    int found = 0;
 
-    if (extract_field(left, options->left_field, options->delimiter, key, sizeof(key)) != 0 &&
-        extract_field(right, options->right_field, options->delimiter, key, sizeof(key)) != 0) {
+    if (left != 0 && extract_field(left, options->left_field, options->delimiter, key, sizeof(key)) == 0) {
+        found = 1;
+    } else if (right != 0 && extract_field(right, options->right_field, options->delimiter, key, sizeof(key)) == 0) {
+        found = 1;
+    } else {
         key[0] = '\0';
     }
 
-    if (emit_text_field(key, rt_strlen(key), options->delimiter, &first) != 0 ||
+    if (emit_optional_value(key, found, options, &first) != 0 ||
         emit_fields_except(left, options->left_field, options->delimiter, &first) != 0 ||
         emit_fields_except(right, options->right_field, options->delimiter, &first) != 0 ||
         rt_write_char(1, '\n') != 0) {
@@ -230,6 +337,14 @@ static int emit_joined_line(const char *left, const char *right, const JoinOptio
     }
 
     return 0;
+}
+
+static int emit_output_line(const char *left, const char *right, const JoinOptions *options) {
+    if (options->use_output_list) {
+        return emit_selected_line(left, right, options);
+    }
+
+    return emit_default_line(left, right, options);
 }
 
 static int join_files(const char *left_path, const char *right_path, const JoinOptions *options) {
@@ -289,14 +404,16 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
             if (rt_strcmp(left_key, right_key) == 0) {
                 matched = 1;
                 right_matched[j] = 1;
-                if (emit_joined_line(left_lines[i], right_lines[j], options) != 0) {
-                    return -1;
+                if (!options->only_unpaired_left && !options->only_unpaired_right) {
+                    if (emit_output_line(left_lines[i], right_lines[j], options) != 0) {
+                        return -1;
+                    }
                 }
             }
         }
 
         if (!matched && options->print_unpaired_left) {
-            if (rt_write_line(1, left_lines[i]) != 0) {
+            if (emit_output_line(left_lines[i], 0, options) != 0) {
                 return -1;
             }
         }
@@ -304,8 +421,10 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
 
     if (options->print_unpaired_right) {
         for (i = 0; i < right_count; ++i) {
-            if (!right_matched[i] && rt_write_line(1, right_lines[i]) != 0) {
-                return -1;
+            if (!right_matched[i]) {
+                if (emit_output_line(0, right_lines[i], options) != 0) {
+                    return -1;
+                }
             }
         }
     }
@@ -322,6 +441,11 @@ int main(int argc, char **argv) {
     options.delimiter = '\0';
     options.print_unpaired_left = 0;
     options.print_unpaired_right = 0;
+    options.only_unpaired_left = 0;
+    options.only_unpaired_right = 0;
+    options.use_output_list = 0;
+    options.empty_replacement[0] = '\0';
+    options.output_field_count = 0U;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-a1") == 0) {
@@ -329,6 +453,14 @@ int main(int argc, char **argv) {
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-a2") == 0) {
             options.print_unpaired_right = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-v1") == 0) {
+            options.print_unpaired_left = 1;
+            options.only_unpaired_left = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-v2") == 0) {
+            options.print_unpaired_right = 1;
+            options.only_unpaired_right = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-1") == 0) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &options.left_field, "join", "field") != 0 || options.left_field == 0ULL) {
@@ -342,12 +474,34 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 2;
+        } else if (rt_strcmp(argv[argi], "-j") == 0) {
+            unsigned long long field = 0ULL;
+            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &field, "join", "field") != 0 || field == 0ULL) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            options.left_field = field;
+            options.right_field = field;
+            argi += 2;
         } else if (rt_strcmp(argv[argi], "-t") == 0) {
             if (argi + 1 >= argc || argv[argi + 1][0] == '\0') {
                 print_usage(argv[0]);
                 return 1;
             }
             options.delimiter = parse_delimiter(argv[argi + 1]);
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-e") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            rt_copy_string(options.empty_replacement, sizeof(options.empty_replacement), argv[argi + 1]);
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-o") == 0) {
+            if (argi + 1 >= argc || parse_output_list(argv[argi + 1], &options) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
             argi += 2;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;

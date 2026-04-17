@@ -3,21 +3,42 @@
 
 #define TEE_MAX_OUTPUTS 32
 
+static void print_usage(const char *program_name) {
+    rt_write_cstr(2, "Usage: ");
+    rt_write_cstr(2, program_name);
+    rt_write_line(2, " [-a] [file ...]");
+}
+
 int main(int argc, char **argv) {
     int output_fds[TEE_MAX_OUTPUTS];
     int output_count = 0;
     char buffer[4096];
     long bytes_read;
+    int append_mode = 0;
+    int argi = 1;
     int i;
     int exit_code = 0;
 
-    if (argc - 1 > TEE_MAX_OUTPUTS) {
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strcmp(argv[argi], "-a") == 0) {
+            append_mode = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        } else {
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    if (argc - argi > TEE_MAX_OUTPUTS) {
         rt_write_line(2, "tee: too many output files");
         return 1;
     }
 
-    for (i = 1; i < argc; ++i) {
-        int fd = platform_open_write(argv[i], 0644U);
+    for (i = argi; i < argc; ++i) {
+        int fd = append_mode ? platform_open_append(argv[i], 0644U) : platform_open_write(argv[i], 0644U);
         if (fd < 0) {
             rt_write_cstr(2, "tee: cannot open ");
             rt_write_line(2, argv[i]);

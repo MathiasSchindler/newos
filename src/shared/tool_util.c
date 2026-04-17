@@ -209,6 +209,216 @@ int tool_resolve_destination(const char *source_path, const char *dest_path, cha
     return 0;
 }
 
+static void tool_pop_path_component(char *path) {
+    size_t len;
+
+    if (path == 0) {
+        return;
+    }
+
+    len = rt_strlen(path);
+    while (len > 1U && path[len - 1U] == '/') {
+        path[len - 1U] = '\0';
+        len -= 1U;
+    }
+
+    while (len > 1U && path[len - 1U] != '/') {
+        path[len - 1U] = '\0';
+        len -= 1U;
+    }
+
+    while (len > 1U && path[len - 1U] == '/') {
+        path[len - 1U] = '\0';
+        len -= 1U;
+    }
+
+    if (len == 0U) {
+        rt_copy_string(path, 2U, "/");
+    }
+}
+
+static int tool_append_path_component(char *path, size_t buffer_size, const char *component) {
+    size_t len;
+    size_t component_len;
+
+    if (path == 0 || component == 0) {
+        return -1;
+    }
+
+    len = rt_strlen(path);
+    component_len = rt_strlen(component);
+    if (len == 0U) {
+        if (buffer_size < 2U) {
+            return -1;
+        }
+        path[0] = '/';
+        path[1] = '\0';
+        len = 1U;
+    }
+
+    if (!(len == 1U && path[0] == '/')) {
+        if (len + 1U >= buffer_size) {
+            return -1;
+        }
+        path[len++] = '/';
+        path[len] = '\0';
+    }
+
+    if (len + component_len + 1U > buffer_size) {
+        return -1;
+    }
+
+    memcpy(path + len, component, component_len + 1U);
+    return 0;
+}
+
+static int tool_build_absolute_path(const char *path, char *buffer, size_t buffer_size) {
+    char cwd[2048];
+
+    if (path == 0 || buffer == 0 || buffer_size == 0U || path[0] == '\0') {
+        return -1;
+    }
+
+    if (path[0] == '/') {
+        if (rt_strlen(path) + 1U > buffer_size) {
+            return -1;
+        }
+        rt_copy_string(buffer, buffer_size, path);
+        return 0;
+    }
+
+    if (platform_get_current_directory(cwd, sizeof(cwd)) != 0) {
+        return -1;
+    }
+
+    return tool_join_path(cwd, path, buffer, buffer_size);
+}
+
+static int tool_concat_path_suffix(const char *prefix, const char *suffix, char *buffer, size_t buffer_size) {
+    size_t prefix_len;
+    size_t suffix_index = 0;
+
+    if (prefix == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    prefix_len = rt_strlen(prefix);
+    if (prefix_len + 1U > buffer_size) {
+        return -1;
+    }
+
+    memcpy(buffer, prefix, prefix_len + 1U);
+    while (prefix_len > 1U && buffer[prefix_len - 1U] == '/' && suffix != 0 && suffix[suffix_index] == '/') {
+        buffer[prefix_len - 1U] = '\0';
+        prefix_len -= 1U;
+    }
+
+    while (suffix != 0 && suffix[suffix_index] != '\0') {
+        if (prefix_len + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[prefix_len++] = suffix[suffix_index++];
+    }
+    buffer[prefix_len] = '\0';
+    return 0;
+}
+
+int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_missing, char *buffer, size_t buffer_size) {
+    char pending[2048];
+    char resolved[2048];
+    size_t index = 0;
+    unsigned int symlink_count = 0U;
+
+    if (tool_build_absolute_path(path, pending, sizeof(pending)) != 0) {
+        return -1;
+    }
+
+    rt_copy_string(resolved, sizeof(resolved), "/");
+
+    while (pending[index] != '\0') {
+        char component[256];
+        size_t component_len = 0U;
+        char candidate[2048];
+
+        while (pending[index] == '/') {
+            index += 1U;
+        }
+        if (pending[index] == '\0') {
+            break;
+        }
+
+        while (pending[index] != '\0' && pending[index] != '/' && component_len + 1U < sizeof(component)) {
+            component[component_len++] = pending[index++];
+        }
+        component[component_len] = '\0';
+
+        while (pending[index] != '\0' && pending[index] != '/') {
+            index += 1U;
+        }
+
+        if (rt_strcmp(component, ".") == 0) {
+            continue;
+        }
+
+        if (rt_strcmp(component, "..") == 0) {
+            tool_pop_path_component(resolved);
+            continue;
+        }
+
+        rt_copy_string(candidate, sizeof(candidate), resolved);
+        if (tool_append_path_component(candidate, sizeof(candidate), component) != 0) {
+            return -1;
+        }
+
+        if (resolve_symlinks) {
+            char target[2048];
+
+            if (platform_read_symlink(candidate, target, sizeof(target)) == 0) {
+                char replacement[2048];
+                char remainder[2048];
+
+                if (symlink_count >= 64U) {
+                    return -1;
+                }
+                symlink_count += 1U;
+
+                if (target[0] == '/') {
+                    rt_copy_string(replacement, sizeof(replacement), target);
+                } else {
+                    if (tool_join_path(resolved, target, replacement, sizeof(replacement)) != 0) {
+                        return -1;
+                    }
+                }
+
+                rt_copy_string(remainder, sizeof(remainder), pending + index);
+                if (tool_concat_path_suffix(replacement, remainder, pending, sizeof(pending)) != 0) {
+                    return -1;
+                }
+
+                rt_copy_string(resolved, sizeof(resolved), "/");
+                index = 0U;
+                continue;
+            }
+        }
+
+        if (!allow_missing) {
+            PlatformDirEntry entry;
+            if (platform_get_path_info(candidate, &entry) != 0) {
+                return -1;
+            }
+        }
+
+        rt_copy_string(resolved, sizeof(resolved), candidate);
+    }
+
+    if (resolved[0] == '\0') {
+        rt_copy_string(resolved, sizeof(resolved), "/");
+    }
+
+    rt_copy_string(buffer, buffer_size, resolved);
+    return 0;
+}
+
 int tool_copy_file(const char *source_path, const char *dest_path) {
     int src_fd = platform_open_read(source_path);
     int dst_fd;

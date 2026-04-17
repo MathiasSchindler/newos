@@ -80,6 +80,14 @@ int platform_open_write(const char *path, unsigned int mode) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, (mode_t)mode);
 }
 
+int platform_open_append(const char *path, unsigned int mode) {
+    if (path == NULL || strcmp(path, "-") == 0) {
+        return STDOUT_FILENO;
+    }
+
+    return open(path, O_WRONLY | O_CREAT | O_APPEND, (mode_t)mode);
+}
+
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
     char templ[1024];
     const char *base = (prefix != NULL && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";

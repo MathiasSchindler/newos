@@ -44,12 +44,42 @@ assert_text_equals "$env_zero_out" 'FOO=bar' "env -0 did not emit NUL-delimited 
 hostname_out=$("$ROOT_DIR/build/hostname" | tr -d '\r\n')
 [ -n "$hostname_out" ] || fail "hostname output was empty"
 
+sleep_multi_start=$(date +%s)
+assert_command_succeeds "$ROOT_DIR/build/sleep" 0.01 0.02s
+sleep_multi_end=$(date +%s)
+[ "$sleep_multi_end" -ge "$sleep_multi_start" ] || fail "sleep duration parsing regressed"
+
 printf 'hello tee\n' | "$ROOT_DIR/build/tee" "$WORK_DIR/tee.txt" > "$WORK_DIR/tee.out"
 assert_files_equal "$WORK_DIR/tee.txt" "$WORK_DIR/tee.out" "tee output mismatch"
+printf 'first\n' > "$WORK_DIR/tee_append.txt"
+printf 'second\n' | "$ROOT_DIR/build/tee" -a "$WORK_DIR/tee_append.txt" > /dev/null
+cat > "$WORK_DIR/tee_append.expected" <<'EOF'
+first
+second
+EOF
+assert_files_equal "$WORK_DIR/tee_append.expected" "$WORK_DIR/tee_append.txt" "tee -a did not append to the existing file"
 
 printf 'one two\n' | "$ROOT_DIR/build/xargs" "$ROOT_DIR/build/echo" prefix > "$WORK_DIR/xargs.out"
 actual_xargs=$(tr -d '\r' < "$WORK_DIR/xargs.out" | head -n 1)
 assert_text_equals "$actual_xargs" 'prefix one two' "xargs argument composition failed"
+printf 'a b c d\n' | "$ROOT_DIR/build/xargs" -n 2 "$ROOT_DIR/build/echo" batch > "$WORK_DIR/xargs_n.out"
+cat > "$WORK_DIR/xargs_n.expected" <<'EOF'
+batch a b
+batch c d
+EOF
+assert_files_equal "$WORK_DIR/xargs_n.expected" "$WORK_DIR/xargs_n.out" "xargs -n batching failed"
+printf 'left side\nnext item\n' | "$ROOT_DIR/build/xargs" -I '{}' "$ROOT_DIR/build/echo" 'pre:{}:post' > "$WORK_DIR/xargs_i.out"
+cat > "$WORK_DIR/xargs_i.expected" <<'EOF'
+pre:left side:post
+pre:next item:post
+EOF
+assert_files_equal "$WORK_DIR/xargs_i.expected" "$WORK_DIR/xargs_i.out" "xargs -I replacement failed"
+printf 'red\0blue sky\0' | "$ROOT_DIR/build/xargs" -0 -n 1 "$ROOT_DIR/build/echo" item > "$WORK_DIR/xargs_0.out"
+cat > "$WORK_DIR/xargs_0.expected" <<'EOF'
+item red
+item blue sky
+EOF
+assert_files_equal "$WORK_DIR/xargs_0.expected" "$WORK_DIR/xargs_0.out" "xargs -0 parsing failed"
 printf 'copy-a\n' > "$WORK_DIR/cp_a.txt"
 printf 'copy-b\n' > "$WORK_DIR/cp_b.txt"
 mkdir -p "$WORK_DIR/cp_dest"
@@ -78,14 +108,42 @@ assert_file_contains "$WORK_DIR/hexdump.out" '61 62 63 64' "hexdump missing expe
 
 actual_basename=$("$ROOT_DIR/build/basename" /tmp/example.txt .txt | tr -d '\r\n')
 assert_text_equals "$actual_basename" 'example' "basename failed"
+basename_multi=$("$ROOT_DIR/build/basename" -a -s .txt "$WORK_DIR/alpha.txt" "$WORK_DIR/beta.txt" | tr -d '\r')
+printf '%s\n' "$basename_multi" > "$WORK_DIR/basename_multi.out"
+assert_file_contains "$WORK_DIR/basename_multi.out" '^alpha$' "basename -a/-s did not strip the suffix from the first path"
+assert_file_contains "$WORK_DIR/basename_multi.out" '^beta$' "basename -a/-s did not strip the suffix from the second path"
 actual_dirname=$("$ROOT_DIR/build/dirname" /tmp/example.txt | tr -d '\r\n')
 assert_text_equals "$actual_dirname" '/tmp' "dirname failed"
+dirname_multi=$("$ROOT_DIR/build/dirname" "$WORK_DIR/sub/example.txt" "$WORK_DIR/dd.in" | tr -d '\r')
+printf '%s\n' "$dirname_multi" > "$WORK_DIR/dirname_multi.out"
+assert_file_contains "$WORK_DIR/dirname_multi.out" '^.*/sub$' "dirname multi-path mode missed the nested directory"
 actual_realpath=$("$ROOT_DIR/build/realpath" "$WORK_DIR/sub/../dd.in" | tr -d '\r\n')
 assert_text_equals "$actual_realpath" "$WORK_DIR/dd.in" "realpath normalization failed"
+ln -sf ../dd.in "$WORK_DIR/sub/link-dd"
+realpath_link=$("$ROOT_DIR/build/realpath" "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
+assert_text_equals "$realpath_link" "$WORK_DIR/dd.in" "realpath did not resolve the symlink target"
+realpath_missing=$("$ROOT_DIR/build/realpath" -m "$WORK_DIR/sub/missing/../ghost.txt" | tr -d '\r\n')
+assert_text_equals "$realpath_missing" "$WORK_DIR/sub/ghost.txt" "realpath -m did not normalize a missing path"
+pwd_logical=$(
+    cd "$WORK_DIR/sub"
+    PWD="$WORK_DIR/sub" "$ROOT_DIR/build/pwd" -L | tr -d '\r\n'
+)
+assert_text_equals "$pwd_logical" "$WORK_DIR/sub" "pwd -L did not honor a valid logical path"
+pwd_physical=$(
+    cd "$WORK_DIR/sub"
+    PWD="$WORK_DIR" "$ROOT_DIR/build/pwd" -P | tr -d '\r\n'
+)
+assert_text_equals "$pwd_physical" "$WORK_DIR/sub" "pwd -P did not print the physical working directory"
 
 assert_command_succeeds "$ROOT_DIR/build/cmp" "$WORK_DIR/dd.in" "$WORK_DIR/dd.in"
 printf 'left\nline2\n' > "$WORK_DIR/left.txt"
 printf 'left\nchanged\n' > "$WORK_DIR/right.txt"
+if "$ROOT_DIR/build/cmp" -s "$WORK_DIR/left.txt" "$WORK_DIR/right.txt"; then
+    fail "cmp -s should have reported a difference"
+fi
+cmp_list_out=$("$ROOT_DIR/build/cmp" -l "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" | tr -d '\r')
+printf '%s\n' "$cmp_list_out" > "$WORK_DIR/cmp_l.out"
+assert_file_contains "$WORK_DIR/cmp_l.out" '^[0-9][0-9]* ' "cmp -l did not report the differing byte positions"
 if "$ROOT_DIR/build/diff" "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/diff.out"; then
     fail "diff should have reported a difference"
 fi
@@ -95,6 +153,15 @@ if "$ROOT_DIR/build/diff" -u "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK
 fi
 assert_file_contains "$WORK_DIR/diff_u.out" '^--- ' "diff -u header missing"
 assert_file_contains "$WORK_DIR/diff_u.out" '^@@ ' "diff -u hunk header missing"
+mkdir -p "$WORK_DIR/diff_left/sub" "$WORK_DIR/diff_right/sub"
+printf 'only-left\n' > "$WORK_DIR/diff_left/only.txt"
+printf 'same\n' > "$WORK_DIR/diff_left/sub/common.txt"
+printf 'changed-right\n' > "$WORK_DIR/diff_right/sub/common.txt"
+if "$ROOT_DIR/build/diff" -qr "$WORK_DIR/diff_left" "$WORK_DIR/diff_right" > "$WORK_DIR/diff_qr.out"; then
+    fail "diff -qr should have reported directory differences"
+fi
+assert_file_contains "$WORK_DIR/diff_qr.out" 'Only in .*diff_left: only.txt' "diff -qr did not report one-sided files"
+assert_file_contains "$WORK_DIR/diff_qr.out" 'Files .*common.txt.* differ' "diff -qr did not report nested file changes"
 
 "$ROOT_DIR/build/file" "$WORK_DIR/left.txt" > "$WORK_DIR/file.out"
 assert_file_contains "$WORK_DIR/file.out" 'ASCII text' "file type detection failed"
@@ -102,11 +169,30 @@ assert_file_contains "$WORK_DIR/file.out" 'ASCII text' "file type detection fail
 printf '\001\002HelloString\000xxMoreText\n' > "$WORK_DIR/strings.bin"
 "$ROOT_DIR/build/strings" "$WORK_DIR/strings.bin" > "$WORK_DIR/strings.out"
 assert_file_contains "$WORK_DIR/strings.out" 'HelloString' "strings output missing printable sequence"
+"$ROOT_DIR/build/strings" -t x "$WORK_DIR/strings.bin" > "$WORK_DIR/strings_offset.out"
+assert_file_contains "$WORK_DIR/strings_offset.out" '^2 HelloString$' "strings -t x did not include the expected offset"
 
 printf_out=$("$ROOT_DIR/build/printf" 'value=%s %d %x\n' sample 42 255 | tr -d '\r')
 assert_text_equals "$printf_out" 'value=sample 42 ff' "printf formatting failed"
+"$ROOT_DIR/build/printf" '%.3s %b' sample 'A\tB' > "$WORK_DIR/printf_features.out"
+printf 'sam A\tB' > "$WORK_DIR/printf_features.expected"
+assert_files_equal "$WORK_DIR/printf_features.expected" "$WORK_DIR/printf_features.out" "printf precision or %b handling failed"
+printf_cycle=$("$ROOT_DIR/build/printf" '%s:' A B C | tr -d '\r\n')
+assert_text_equals "$printf_cycle" 'A:B:C:' "printf format cycling failed"
 echo_out=$("$ROOT_DIR/build/echo" -n sample | tr -d '\r')
 assert_text_equals "$echo_out" 'sample' "echo -n failed"
+printf 'alpha\n\n\nbeta\n' > "$WORK_DIR/cat_flags.txt"
+"$ROOT_DIR/build/cat" -n "$WORK_DIR/cat_flags.txt" > "$WORK_DIR/cat_n.out"
+assert_file_contains "$WORK_DIR/cat_n.out" '^[[:space:]]*1[[:space:]]alpha$' "cat -n did not number the first line"
+"$ROOT_DIR/build/cat" -b "$WORK_DIR/cat_flags.txt" > "$WORK_DIR/cat_b.out"
+assert_file_contains "$WORK_DIR/cat_b.out" '^[[:space:]]*2[[:space:]]beta$' "cat -b did not skip blank lines when numbering"
+"$ROOT_DIR/build/cat" -s "$WORK_DIR/cat_flags.txt" > "$WORK_DIR/cat_s.out"
+cat > "$WORK_DIR/cat_s.expected" <<'EOF'
+alpha
+
+beta
+EOF
+assert_files_equal "$WORK_DIR/cat_s.expected" "$WORK_DIR/cat_s.out" "cat -s did not squeeze repeated blank lines"
 
 which_out=$("$ROOT_DIR/build/which" ls | tr -d '\r\n')
 assert_text_equals "$which_out" "$ROOT_DIR/build/ls" "which did not resolve build tool"
@@ -175,6 +261,13 @@ tr_delete=$(printf 'a1b22c333\n' | "$ROOT_DIR/build/tr" -d '0-9' | tr -d '\r\n')
 assert_text_equals "$tr_delete" 'abc' "tr delete range failed"
 tr_squeeze=$(printf 'aa   bb    cc\n' | "$ROOT_DIR/build/tr" -s ' ' | tr -d '\r\n')
 assert_text_equals "$tr_squeeze" 'aa bb cc' "tr squeeze mode failed"
+printf 'tag Alpha\nTAG alpha\nkeep beta\nKEEP beta\n' > "$WORK_DIR/uniq.txt"
+"$ROOT_DIR/build/uniq" -i -f 1 -w 5 "$WORK_DIR/uniq.txt" > "$WORK_DIR/uniq.out"
+cat > "$WORK_DIR/uniq.expected" <<'EOF'
+tag Alpha
+keep beta
+EOF
+assert_files_equal "$WORK_DIR/uniq.expected" "$WORK_DIR/uniq.out" "uniq comparison controls failed"
 
 printf 'keep\ndrop\nstop\nlater\n' > "$WORK_DIR/sed_more.txt"
 "$ROOT_DIR/build/sed" '/drop/d' "$WORK_DIR/sed_more.txt" > "$WORK_DIR/sed_delete.out"
@@ -190,6 +283,8 @@ assert_text_equals "$sed_print" 'drop' "sed -n with p/q commands failed"
 ln -sf dd.in "$WORK_DIR/link-to-dd"
 readlink_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-to-dd" | tr -d '\r\n')
 assert_text_equals "$readlink_out" 'dd.in' "readlink target mismatch"
+readlink_full=$("$ROOT_DIR/build/readlink" -f "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
+assert_text_equals "$readlink_full" "$WORK_DIR/dd.in" "readlink -f did not canonicalize the symlink"
 "$ROOT_DIR/build/stat" "$WORK_DIR/dd.in" > "$WORK_DIR/stat.out"
 assert_file_contains "$WORK_DIR/stat.out" '^Size:' "stat output missing size"
 assert_file_contains "$WORK_DIR/stat.out" 'Type: file' "stat output missing file type"
@@ -205,9 +300,17 @@ assert_command_succeeds "$ROOT_DIR/build/mv" "$WORK_DIR/cp_dest/a.txt" "$WORK_DI
 [ -f "$WORK_DIR/mv_dest/b.txt" ] || fail "mv multi-source mode did not move the second file"
 "$ROOT_DIR/build/ls" -1F "$WORK_DIR" > "$WORK_DIR/ls_flags.out"
 assert_file_contains "$WORK_DIR/ls_flags.out" 'cp_src/' "ls -1F did not classify directories"
-assert_command_succeeds "$ROOT_DIR/build/mkdir" -m 700 "$WORK_DIR/private-dir"
+assert_command_succeeds "$ROOT_DIR/build/mkdir" -vm 700 "$WORK_DIR/private-dir"
 "$ROOT_DIR/build/stat" "$WORK_DIR/private-dir" > "$WORK_DIR/private-dir.stat"
 assert_file_contains "$WORK_DIR/private-dir.stat" 'Mode: drwx------' "mkdir -m failed to apply the requested mode"
+assert_command_succeeds "$ROOT_DIR/build/mkdir" -vp "$WORK_DIR/rmdir_tree/a/b"
+(
+    cd "$WORK_DIR/rmdir_tree"
+    "$ROOT_DIR/build/rmdir" -pv a/b
+) > "$WORK_DIR/rmdir_pv.out"
+assert_file_contains "$WORK_DIR/rmdir_pv.out" 'removed directory ' "rmdir -pv did not report removals"
+[ ! -d "$WORK_DIR/rmdir_tree/a/b" ] || fail "rmdir -p left the nested directory behind"
+[ ! -d "$WORK_DIR/rmdir_tree/a" ] || fail "rmdir -p left the parent directory behind"
 
 printf 'keep\n' > "$WORK_DIR/rm_verbose.txt"
 "$ROOT_DIR/build/rm" -v "$WORK_DIR/rm_verbose.txt" > "$WORK_DIR/rm_v.out"
@@ -234,6 +337,18 @@ assert_file_contains "$WORK_DIR/df_h.out" '^/[[:space:]][0-9][0-9.]*[BKMGTP]' "d
 chown_target="$WORK_DIR/chown.txt"
 printf 'owner\n' > "$chown_target"
 assert_command_succeeds "$ROOT_DIR/build/chown" "$(id -u):$(id -g)" "$chown_target"
+chmod_target="$WORK_DIR/chmod_symbolic.txt"
+printf 'chmod\n' > "$chmod_target"
+assert_command_succeeds "$ROOT_DIR/build/chmod" u=rw,go= "$chmod_target"
+"$ROOT_DIR/build/stat" "$chmod_target" > "$WORK_DIR/chmod_symbolic.stat"
+assert_file_contains "$WORK_DIR/chmod_symbolic.stat" 'Mode: -rw-------' "chmod symbolic mode parsing failed"
+
+id_uid_out=$("$ROOT_DIR/build/id" -u | tr -d '\r\n')
+assert_text_equals "$id_uid_out" "$(id -u)" "id -u reported the wrong uid"
+id_user_out=$("$ROOT_DIR/build/id" -un | tr -d '\r\n')
+assert_text_equals "$id_user_out" "$(id -un)" "id -un reported the wrong username"
+id_groups_out=$("$ROOT_DIR/build/id" -Gn | tr -d '\r\n')
+[ -n "$id_groups_out" ] || fail "id -Gn produced no groups"
 
 "$ROOT_DIR/build/sleep" 30 &
 kill_pid=$!
@@ -289,6 +404,25 @@ assert_files_equal "$WORK_DIR/awk.expected" "$WORK_DIR/awk.out" "awk BEGIN/END/p
 awk_nf_out=$("$ROOT_DIR/build/awk" 'NF == 3 { print NR, $1 }' "$WORK_DIR/awk.txt" | tr -d '\r\n')
 assert_text_equals "$awk_nf_out" '2 beta' "awk NF condition failed"
 
+cat > "$WORK_DIR/join_left.txt" <<'EOF'
+k1:left
+k2:solo
+EOF
+cat > "$WORK_DIR/join_right.txt" <<'EOF'
+k1:right
+k3:extra
+EOF
+"$ROOT_DIR/build/join" -t ':' -o 0,1.2,2.2 -e NONE "$WORK_DIR/join_left.txt" "$WORK_DIR/join_right.txt" > "$WORK_DIR/join.out"
+cat > "$WORK_DIR/join.expected" <<'EOF'
+k1:left:right
+EOF
+assert_files_equal "$WORK_DIR/join.expected" "$WORK_DIR/join.out" "join -o output selection failed"
+"$ROOT_DIR/build/join" -t ':' -v1 -o 0,1.2,2.2 -e NONE "$WORK_DIR/join_left.txt" "$WORK_DIR/join_right.txt" > "$WORK_DIR/join_v1.out"
+cat > "$WORK_DIR/join_v1.expected" <<'EOF'
+k2:solo:NONE
+EOF
+assert_files_equal "$WORK_DIR/join_v1.expected" "$WORK_DIR/join_v1.out" "join -v1/-e handling failed"
+
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
 (
@@ -303,6 +437,16 @@ assert_file_contains "$WORK_DIR/tar_extract_gz/tar_src/file.txt" 'archive-data' 
 
 printf 'streamed-data\n' | "$ROOT_DIR/build/gzip" -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_stream.txt"
 assert_file_contains "$WORK_DIR/gzip_stream.txt" 'streamed-data' "gzip/gunzip streaming pipeline failed"
+
+printf 'checksum-data\n' > "$WORK_DIR/checksum.txt"
+"$ROOT_DIR/build/md5sum" "$WORK_DIR/checksum.txt" > "$WORK_DIR/checksum.md5"
+assert_command_succeeds "$ROOT_DIR/build/md5sum" -c "$WORK_DIR/checksum.md5"
+"$ROOT_DIR/build/sha256sum" -z "$WORK_DIR/checksum.txt" > "$WORK_DIR/checksum.sha256z"
+tr '\0' '\n' < "$WORK_DIR/checksum.sha256z" > "$WORK_DIR/checksum.sha256z.txt"
+assert_file_contains "$WORK_DIR/checksum.sha256z.txt" 'checksum.txt' "sha256sum -z output missing filename"
+assert_command_succeeds "$ROOT_DIR/build/sha256sum" -c -z "$WORK_DIR/checksum.sha256z"
+"$ROOT_DIR/build/sha512sum" "$WORK_DIR/checksum.txt" > "$WORK_DIR/checksum.sha512"
+assert_command_succeeds "$ROOT_DIR/build/sha512sum" --status -c "$WORK_DIR/checksum.sha512"
 
 mkdir -p "$WORK_DIR/tar_base/src_dir" "$WORK_DIR/tar_dest"
 printf 'tar-c-data\n' > "$WORK_DIR/tar_base/src_dir/nested.txt"
@@ -348,6 +492,13 @@ EOF
     "$ROOT_DIR/build/make"
 )
 assert_file_contains "$WORK_DIR/make_include/built.txt" '^included value$' "make include/default makefile handling failed"
+
+mktemp_path=$(TMPDIR="$WORK_DIR" "$ROOT_DIR/build/mktemp" -t wavecheck | tr -d '\r\n')
+case "$mktemp_path" in
+    "$WORK_DIR"/wavecheck.*) ;;
+    *) fail "mktemp -t did not honor TMPDIR/prefix" ;;
+esac
+[ -f "$mktemp_path" ] || fail "mktemp -t did not create the requested file"
 
 "$ROOT_DIR/build/netcat" -l 24681 > "$WORK_DIR/netcat_server.out" &
 netcat_pid=$!
