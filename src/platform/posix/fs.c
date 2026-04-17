@@ -40,25 +40,32 @@ static void copy_identity_names(uid_t uid, gid_t gid, PlatformDirEntry *entry) {
     }
 }
 
-static int fill_entry(const char *display_name, const char *full_path, PlatformDirEntry *entry) {
+static int fill_entry_mode(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
     struct stat st;
 
-    if (lstat(full_path, &st) != 0) {
+    if ((follow_symlinks ? stat(full_path, &st) : lstat(full_path, &st)) != 0) {
         return -1;
     }
 
     memset(entry, 0, sizeof(*entry));
     posix_copy_string(entry->name, sizeof(entry->name), display_name);
+    entry->device = (unsigned long long)st.st_dev;
     entry->mode = (unsigned int)st.st_mode;
     entry->size = (unsigned long long)st.st_size;
     entry->inode = (unsigned long long)st.st_ino;
     entry->nlink = (unsigned long)st.st_nlink;
+    entry->atime = (long long)st.st_atime;
     entry->mtime = (long long)st.st_mtime;
+    entry->ctime = (long long)st.st_ctime;
     entry->is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
     entry->is_hidden = (display_name[0] == '.') ? 1 : 0;
 
     copy_identity_names(st.st_uid, st.st_gid, entry);
     return 0;
+}
+
+static int fill_entry(const char *display_name, const char *full_path, PlatformDirEntry *entry) {
+    return fill_entry_mode(display_name, full_path, entry, 0);
 }
 
 long platform_write(int fd, const void *buffer, size_t count) {
@@ -77,12 +84,22 @@ int platform_open_read(const char *path) {
     return open(path, O_RDONLY);
 }
 
-int platform_open_write(const char *path, unsigned int mode) {
+int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing) {
+    int flags = O_WRONLY | O_CREAT;
+
     if (path == NULL || strcmp(path, "-") == 0) {
         return STDOUT_FILENO;
     }
 
-    return open(path, O_WRONLY | O_CREAT | O_TRUNC, (mode_t)mode);
+    if (truncate_existing) {
+        flags |= O_TRUNC;
+    }
+
+    return open(path, flags, (mode_t)mode);
+}
+
+int platform_open_write(const char *path, unsigned int mode) {
+    return platform_open_write_mode(path, mode, 1);
 }
 
 int platform_open_append(const char *path, unsigned int mode) {
@@ -124,6 +141,11 @@ int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char 
     return fd;
 }
 
+long long platform_seek(int fd, long long offset, int whence) {
+    off_t result = lseek(fd, (off_t)offset, whence);
+    return result < 0 ? -1 : (long long)result;
+}
+
 int platform_close(int fd) {
     if (fd == STDIN_FILENO || fd == STDOUT_FILENO) {
         return 0;
@@ -160,19 +182,61 @@ int platform_change_mode(const char *path, unsigned int mode) {
     return chmod(path, (mode_t)mode);
 }
 
+int platform_change_owner_ex(const char *path, unsigned int uid, unsigned int gid, int follow_symlinks) {
+    if (follow_symlinks) {
+        return chown(path, (uid_t)uid, (gid_t)gid);
+    }
+    return lchown(path, (uid_t)uid, (gid_t)gid);
+}
+
 int platform_change_owner(const char *path, unsigned int uid, unsigned int gid) {
-    return chown(path, (uid_t)uid, (gid_t)gid);
+    return platform_change_owner_ex(path, uid, gid, 1);
 }
 
 int platform_touch_path(const char *path) {
-    int fd = open(path, O_WRONLY | O_CREAT, 0644);
+    long long now = platform_get_epoch_time();
 
-    if (fd < 0) {
+    if (now < 0) {
+        errno = EINVAL;
         return -1;
     }
 
-    close(fd);
-    return utimes(path, NULL);
+    return platform_set_path_times(path, now, now, 1, 1, 1);
+}
+
+int platform_set_path_times(
+    const char *path,
+    long long atime,
+    long long mtime,
+    int create_if_missing,
+    int update_access,
+    int update_modify
+) {
+    struct timespec times[2];
+    int fd = -1;
+
+    if (path == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!update_access && !update_modify) {
+        return 0;
+    }
+
+    if (create_if_missing) {
+        fd = open(path, O_WRONLY | O_CREAT, 0644);
+        if (fd < 0) {
+            return -1;
+        }
+        close(fd);
+    }
+
+    times[0].tv_sec = update_access ? (time_t)atime : (time_t)0;
+    times[0].tv_nsec = update_access ? 0L : UTIME_OMIT;
+    times[1].tv_sec = update_modify ? (time_t)mtime : (time_t)0;
+    times[1].tv_nsec = update_modify ? 0L : UTIME_OMIT;
+    return utimensat(AT_FDCWD, path, times, 0);
 }
 
 int platform_path_access(const char *path, int mode) {
@@ -393,6 +457,15 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     return fill_entry(path, path, entry_out);
 }
 
+int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {
+    if (path == NULL || entry_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return fill_entry_mode(path, path, entry_out, 1);
+}
+
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     ssize_t length;
 
@@ -492,10 +565,8 @@ int platform_sync_all(void) {
     return 0;
 }
 
-int platform_sync_path(const char *path) {
+static int open_sync_fd(const char *path) {
     int fd;
-    int result;
-    int saved_errno;
 
     if (path == NULL) {
         errno = EINVAL;
@@ -505,12 +576,45 @@ int platform_sync_path(const char *path) {
     fd = open(path, O_RDONLY);
     if (fd < 0) {
         fd = open(path, O_WRONLY);
-        if (fd < 0) {
-            return -1;
-        }
+    }
+
+    return fd;
+}
+
+int platform_sync_path(const char *path) {
+    int fd;
+    int result;
+    int saved_errno;
+
+    fd = open_sync_fd(path);
+    if (fd < 0) {
+        return -1;
     }
 
     result = fsync(fd);
+    saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return result;
+}
+
+int platform_sync_path_data(const char *path) {
+    int fd;
+    int result;
+    int saved_errno;
+
+    fd = open_sync_fd(path);
+    if (fd < 0) {
+        return -1;
+    }
+
+#if defined(__APPLE__)
+    result = fsync(fd);
+#elif defined(_POSIX_SYNCHRONIZED_IO) && (_POSIX_SYNCHRONIZED_IO > 0)
+    result = fdatasync(fd);
+#else
+    result = fsync(fd);
+#endif
     saved_errno = errno;
     close(fd);
     errno = saved_errno;

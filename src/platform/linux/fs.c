@@ -19,7 +19,7 @@ struct linux_statfs {
     long f_spare[4];
 };
 
-static int fill_entry(const char *display_name, const char *full_path, PlatformDirEntry *entry) {
+static int fill_entry_mode(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
     struct linux_stat st;
     long result;
 
@@ -28,23 +28,30 @@ static int fill_entry(const char *display_name, const char *full_path, PlatformD
         LINUX_AT_FDCWD,
         (long)full_path,
         (long)&st,
-        LINUX_AT_SYMLINK_NOFOLLOW
+        follow_symlinks ? 0 : LINUX_AT_SYMLINK_NOFOLLOW
     );
     if (result < 0) {
         return -1;
     }
 
     copy_string(entry->name, sizeof(entry->name), display_name);
+    entry->device = (unsigned long long)st.st_dev;
     entry->mode = st.st_mode;
     entry->size = (unsigned long long)st.st_size;
     entry->inode = (unsigned long long)st.st_ino;
     entry->nlink = (unsigned long)st.st_nlink;
+    entry->atime = (long long)st.st_atime;
     entry->mtime = (long long)st.st_mtime;
+    entry->ctime = (long long)st.st_ctime;
     entry->is_dir = ((st.st_mode & LINUX_S_IFMT) == LINUX_S_IFDIR) ? 1 : 0;
     entry->is_hidden = (display_name[0] == '.') ? 1 : 0;
     unsigned_to_string((unsigned long long)st.st_uid, entry->owner, sizeof(entry->owner));
     unsigned_to_string((unsigned long long)st.st_gid, entry->group, sizeof(entry->group));
     return 0;
+}
+
+static int fill_entry(const char *display_name, const char *full_path, PlatformDirEntry *entry) {
+    return fill_entry_mode(display_name, full_path, entry, 0);
 }
 
 static unsigned int linux_permission_bits_from_mode(unsigned int mode, unsigned int read_bit, unsigned int write_bit, unsigned int exec_bit) {
@@ -84,21 +91,30 @@ int platform_open_read(const char *path) {
     return fd < 0 ? -1 : (int)fd;
 }
 
-int platform_open_write(const char *path, unsigned int mode) {
+int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing) {
     long fd;
+    long flags = LINUX_O_WRONLY | LINUX_O_CREAT;
 
     if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
         return 1;
+    }
+
+    if (truncate_existing) {
+        flags |= LINUX_O_TRUNC;
     }
 
     fd = linux_syscall4(
         LINUX_SYS_OPENAT,
         LINUX_AT_FDCWD,
         (long)path,
-        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_TRUNC,
+        flags,
         (long)mode
     );
     return fd < 0 ? -1 : (int)fd;
+}
+
+int platform_open_write(const char *path, unsigned int mode) {
+    return platform_open_write_mode(path, mode, 1);
 }
 
 int platform_open_append(const char *path, unsigned int mode) {
@@ -158,6 +174,11 @@ int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char 
     return -1;
 }
 
+long long platform_seek(int fd, long long offset, int whence) {
+    long result = linux_syscall3(LINUX_SYS_LSEEK, fd, (long)offset, whence);
+    return result < 0 ? -1 : (long long)result;
+}
+
 int platform_close(int fd) {
     if (fd == 0 || fd == 1) {
         return 0;
@@ -194,23 +215,62 @@ int platform_change_mode(const char *path, unsigned int mode) {
     return linux_syscall4(LINUX_SYS_FCHMODAT, LINUX_AT_FDCWD, (long)path, (long)mode, 0) < 0 ? -1 : 0;
 }
 
+int platform_change_owner_ex(const char *path, unsigned int uid, unsigned int gid, int follow_symlinks) {
+    return linux_syscall5(
+               LINUX_SYS_FCHOWNAT,
+               LINUX_AT_FDCWD,
+               (long)path,
+               (long)uid,
+               (long)gid,
+               follow_symlinks ? 0 : LINUX_AT_SYMLINK_NOFOLLOW
+           ) < 0
+               ? -1
+               : 0;
+}
+
 int platform_change_owner(const char *path, unsigned int uid, unsigned int gid) {
-    return linux_syscall5(LINUX_SYS_FCHOWNAT, LINUX_AT_FDCWD, (long)path, (long)uid, (long)gid, 0) < 0 ? -1 : 0;
+    return platform_change_owner_ex(path, uid, gid, 1);
 }
 
 int platform_touch_path(const char *path) {
-    long fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_WRONLY | LINUX_O_CREAT, 0644);
+    long long now = platform_get_epoch_time();
+    if (now < 0) {
+        return -1;
+    }
+    return platform_set_path_times(path, now, now, 1, 1, 1);
+}
+
+int platform_set_path_times(
+    const char *path,
+    long long atime,
+    long long mtime,
+    int create_if_missing,
+    int update_access,
+    int update_modify
+) {
+    long fd;
     struct linux_timespec times[2];
 
-    if (fd < 0) {
+    if (path == 0) {
         return -1;
     }
 
-    linux_syscall1(LINUX_SYS_CLOSE, fd);
-    times[0].tv_sec = 0;
-    times[0].tv_nsec = (long)0x3fffffff;
-    times[1].tv_sec = 0;
-    times[1].tv_nsec = (long)0x3fffffff;
+    if (!update_access && !update_modify) {
+        return 0;
+    }
+
+    if (create_if_missing) {
+        fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_WRONLY | LINUX_O_CREAT, 0644);
+        if (fd < 0) {
+            return -1;
+        }
+        linux_syscall1(LINUX_SYS_CLOSE, fd);
+    }
+
+    times[0].tv_sec = update_access ? (long)atime : 0;
+    times[0].tv_nsec = update_access ? 0L : LINUX_UTIME_OMIT;
+    times[1].tv_sec = update_modify ? (long)mtime : 0;
+    times[1].tv_nsec = update_modify ? 0L : LINUX_UTIME_OMIT;
     return linux_syscall4(LINUX_SYS_UTIMENSAT, LINUX_AT_FDCWD, (long)path, (long)times, 0) < 0 ? -1 : 0;
 }
 
@@ -490,6 +550,14 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     return fill_entry(path, path, entry_out);
 }
 
+int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {
+    if (path == 0 || entry_out == 0) {
+        return -1;
+    }
+
+    return fill_entry_mode(path, path, entry_out, 1);
+}
+
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     long length;
 
@@ -577,9 +645,8 @@ int platform_sync_all(void) {
     return linux_syscall0(LINUX_SYS_SYNC) < 0 ? -1 : 0;
 }
 
-int platform_sync_path(const char *path) {
+static long open_sync_fd(const char *path) {
     long fd;
-    long result;
 
     if (path == 0) {
         return -1;
@@ -588,12 +655,38 @@ int platform_sync_path(const char *path) {
     fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY, 0);
     if (fd < 0) {
         fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_WRONLY, 0);
-        if (fd < 0) {
-            return -1;
-        }
+    }
+
+    return fd;
+}
+
+int platform_sync_path(const char *path) {
+    long fd;
+    long result;
+
+    fd = open_sync_fd(path);
+    if (fd < 0) {
+        return -1;
     }
 
     result = linux_syscall1(LINUX_SYS_FSYNC, fd);
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    return result < 0 ? -1 : 0;
+}
+
+int platform_sync_path_data(const char *path) {
+    long fd;
+    long result;
+
+    fd = open_sync_fd(path);
+    if (fd < 0) {
+        return -1;
+    }
+
+    result = linux_syscall1(LINUX_SYS_FDATASYNC, fd);
+    if (result < 0) {
+        result = linux_syscall1(LINUX_SYS_FSYNC, fd);
+    }
     linux_syscall1(LINUX_SYS_CLOSE, fd);
     return result < 0 ? -1 : 0;
 }

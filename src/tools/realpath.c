@@ -4,12 +4,13 @@
 #define REALPATH_PATH_CAPACITY 2048
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-e|-m] path ...");
+    tool_write_usage(program_name, "[-e|-m] [-L|-P] path ...");
 }
 
 int main(int argc, char **argv) {
     char resolved[REALPATH_PATH_CAPACITY];
     int allow_missing = 0;
+    int logical_policy = 0;
     int argi = 1;
     int exit_code = 0;
     int i;
@@ -23,6 +24,10 @@ int main(int argc, char **argv) {
             allow_missing = 0;
         } else if (rt_strcmp(argv[argi], "-m") == 0) {
             allow_missing = 1;
+        } else if (rt_strcmp(argv[argi], "-L") == 0) {
+            logical_policy = 1;
+        } else if (rt_strcmp(argv[argi], "-P") == 0) {
+            logical_policy = 0;
         } else {
             print_usage(argv[0]);
             return 1;
@@ -36,7 +41,7 @@ int main(int argc, char **argv) {
     }
 
     for (i = argi; i < argc; ++i) {
-        if (tool_canonicalize_path(argv[i], 1, allow_missing, resolved, sizeof(resolved)) != 0) {
+        if (tool_canonicalize_path_policy(argv[i], 1, allow_missing, logical_policy, resolved, sizeof(resolved)) != 0) {
             rt_write_cstr(2, "realpath: cannot resolve ");
             rt_write_line(2, argv[i]);
             exit_code = 1;

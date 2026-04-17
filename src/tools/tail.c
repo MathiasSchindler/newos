@@ -9,25 +9,68 @@ typedef enum {
     TAIL_MODE_BYTES
 } TailMode;
 
+typedef enum {
+    TAIL_COUNT_LAST,
+    TAIL_COUNT_FROM_START
+} TailCountStyle;
+
 typedef struct {
     TailMode mode;
+    TailCountStyle style;
     unsigned long long count;
     int quiet;
     int verbose;
 } TailOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-n COUNT | -c COUNT] [-qv] [file ...]");
+    tool_write_usage(program_name, "[-n [+|-]COUNT | -c [+|-]COUNT] [-qv] [file ...]");
 }
 
-static int parse_count_value(const char *value_text, unsigned long long *count_out) {
-    return (value_text != 0 && tool_parse_uint_arg(value_text, count_out, "tail", "count") == 0) ? 0 : -1;
+static int parse_count_value(const char *value_text, TailCountStyle *style_out, unsigned long long *count_out) {
+    TailCountStyle style = TAIL_COUNT_LAST;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        tool_write_error("tail", "invalid ", "count");
+        return -1;
+    }
+
+    if (value_text[0] == '+') {
+        style = TAIL_COUNT_FROM_START;
+        value_text += 1;
+    } else if (value_text[0] == '-') {
+        value_text += 1;
+    }
+
+    if (tool_parse_uint_arg(value_text, count_out, "tail", "count") != 0) {
+        return -1;
+    }
+
+    *style_out = style;
+    return 0;
+}
+
+static int is_digit_text(const char *text) {
+    size_t i = 0;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+
+    while (text[i] != '\0') {
+        if (text[i] < '0' || text[i] > '9') {
+            return 0;
+        }
+        i += 1;
+    }
+
+    return 1;
 }
 
 static int parse_options(int argc, char **argv, TailOptions *options, int *arg_index_out) {
     int arg_index = 1;
 
     options->mode = TAIL_MODE_LINES;
+    options->style = TAIL_COUNT_LAST;
     options->count = 10;
     options->quiet = 0;
     options->verbose = 0;
@@ -55,7 +98,7 @@ static int parse_options(int argc, char **argv, TailOptions *options, int *arg_i
         }
 
         if (rt_strcmp(arg, "-n") == 0 || rt_strcmp(arg, "-c") == 0) {
-            if (arg_index + 1 >= argc || parse_count_value(argv[arg_index + 1], &options->count) != 0) {
+            if (arg_index + 1 >= argc || parse_count_value(argv[arg_index + 1], &options->style, &options->count) != 0) {
                 return -1;
             }
             options->mode = (arg[1] == 'c') ? TAIL_MODE_BYTES : TAIL_MODE_LINES;
@@ -64,10 +107,20 @@ static int parse_options(int argc, char **argv, TailOptions *options, int *arg_i
         }
 
         if ((arg[1] == 'n' || arg[1] == 'c') && arg[2] != '\0') {
-            if (parse_count_value(arg + 2, &options->count) != 0) {
+            if (parse_count_value(arg + 2, &options->style, &options->count) != 0) {
                 return -1;
             }
             options->mode = (arg[1] == 'c') ? TAIL_MODE_BYTES : TAIL_MODE_LINES;
+            arg_index += 1;
+            continue;
+        }
+
+        if (is_digit_text(arg + 1)) {
+            options->mode = TAIL_MODE_LINES;
+            options->style = TAIL_COUNT_LAST;
+            if (tool_parse_uint_arg(arg + 1, &options->count, "tail", "count") != 0) {
+                return -1;
+            }
             arg_index += 1;
             continue;
         }
@@ -152,6 +205,54 @@ static int print_tail_bytes(const char *storage, size_t used, unsigned long long
     return rt_write_all(1, storage + start, used - start);
 }
 
+static int print_from_start_lines(int fd, unsigned long long start_line) {
+    char buffer[4096];
+    long bytes_read;
+    unsigned long long current_line = 1ULL;
+
+    if (start_line <= 1ULL) {
+        start_line = 1ULL;
+    }
+
+    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+        long i;
+
+        for (i = 0; i < bytes_read; ++i) {
+            if (current_line >= start_line && rt_write_char(1, buffer[i]) != 0) {
+                return -1;
+            }
+            if (buffer[i] == '\n') {
+                current_line += 1ULL;
+            }
+        }
+    }
+
+    return bytes_read < 0 ? -1 : 0;
+}
+
+static int print_from_start_bytes(int fd, unsigned long long start_byte) {
+    char buffer[4096];
+    long bytes_read;
+    unsigned long long current_byte = 1ULL;
+
+    if (start_byte <= 1ULL) {
+        start_byte = 1ULL;
+    }
+
+    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+        long i;
+
+        for (i = 0; i < bytes_read; ++i) {
+            if (current_byte >= start_byte && rt_write_char(1, buffer[i]) != 0) {
+                return -1;
+            }
+            current_byte += 1ULL;
+        }
+    }
+
+    return bytes_read < 0 ? -1 : 0;
+}
+
 static int print_stream_result(const char *storage, size_t used, const TailOptions *options) {
     if (options->mode == TAIL_MODE_BYTES) {
         return print_tail_bytes(storage, used, options->count);
@@ -186,23 +287,29 @@ int main(int argc, char **argv) {
     show_header = should_print_header(&options, path_count);
 
     if (path_count <= 0) {
-        char storage[TAIL_BUFFER_SIZE];
-        size_t used;
-
-        if (capture_tail_stream(0, storage, sizeof(storage), &used) != 0) {
-            rt_write_line(2, "tail: read error");
-            return 1;
+        if (options.style == TAIL_COUNT_FROM_START) {
+            return ((options.mode == TAIL_MODE_BYTES ? print_from_start_bytes(0, options.count)
+                                                     : print_from_start_lines(0, options.count)) == 0)
+                       ? 0
+                       : 1;
         }
 
-        return print_stream_result(storage, used, &options) == 0 ? 0 : 1;
+        {
+            char storage[TAIL_BUFFER_SIZE];
+            size_t used;
+
+            if (capture_tail_stream(0, storage, sizeof(storage), &used) != 0) {
+                rt_write_line(2, "tail: read error");
+                return 1;
+            }
+
+            return print_stream_result(storage, used, &options) == 0 ? 0 : 1;
+        }
     }
 
     for (i = arg_index; i < argc; ++i) {
         int fd;
         int should_close;
-        char storage[TAIL_BUFFER_SIZE];
-        size_t used;
-
         if (tool_open_input(argv[i], &fd, &should_close) != 0) {
             tool_write_error("tail", "cannot open ", argv[i]);
             exit_code = 1;
@@ -218,10 +325,21 @@ int main(int argc, char **argv) {
             rt_write_line(1, " <==");
         }
 
-        if (capture_tail_stream(fd, storage, sizeof(storage), &used) != 0 ||
-            print_stream_result(storage, used, &options) != 0) {
-            tool_write_error("tail", "read error on ", argv[i]);
-            exit_code = 1;
+        if (options.style == TAIL_COUNT_FROM_START) {
+            if ((options.mode == TAIL_MODE_BYTES ? print_from_start_bytes(fd, options.count)
+                                                 : print_from_start_lines(fd, options.count)) != 0) {
+                tool_write_error("tail", "read error on ", argv[i]);
+                exit_code = 1;
+            }
+        } else {
+            char storage[TAIL_BUFFER_SIZE];
+            size_t used;
+
+            if (capture_tail_stream(fd, storage, sizeof(storage), &used) != 0 ||
+                print_stream_result(storage, used, &options) != 0) {
+                tool_write_error("tail", "read error on ", argv[i]);
+                exit_code = 1;
+            }
         }
 
         tool_close_input(fd, should_close);

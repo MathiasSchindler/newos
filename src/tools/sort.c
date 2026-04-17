@@ -9,7 +9,58 @@ typedef struct {
     int numeric;
     int reverse;
     int unique;
+    int have_key;
+    unsigned long long key_start;
+    unsigned long long key_end;
+    int have_separator;
+    char separator;
 } SortOptions;
+
+static int parse_key_spec(const char *text, SortOptions *options) {
+    unsigned long long start = 0ULL;
+    unsigned long long end = 0ULL;
+    size_t index = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return -1;
+    }
+
+    while (text[index] >= '0' && text[index] <= '9') {
+        start = start * 10ULL + (unsigned long long)(text[index] - '0');
+        index += 1U;
+    }
+
+    if (start == 0ULL) {
+        return -1;
+    }
+
+    end = start;
+    if (text[index] == ',') {
+        index += 1U;
+        if (text[index] == '\0') {
+            return -1;
+        }
+
+        end = 0ULL;
+        while (text[index] >= '0' && text[index] <= '9') {
+            end = end * 10ULL + (unsigned long long)(text[index] - '0');
+            index += 1U;
+        }
+
+        if (end == 0ULL || end < start) {
+            return -1;
+        }
+    }
+
+    if (text[index] != '\0') {
+        return -1;
+    }
+
+    options->have_key = 1;
+    options->key_start = start;
+    options->key_end = end;
+    return 0;
+}
 
 static int store_line(char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH], size_t *count, const char *line, size_t len) {
     size_t copy_len = len;
@@ -92,14 +143,138 @@ static long long parse_signed_number(const char *text, int *ok_out) {
     return value * sign;
 }
 
+static int is_sort_space(char ch) {
+    return ch == ' ' || ch == '\t';
+}
+
+static int extract_key_text(const char *line, char *buffer, size_t buffer_size, const SortOptions *options) {
+    size_t start_index = 0U;
+    size_t end_index = rt_strlen(line);
+    size_t out_len;
+
+    if (buffer_size == 0U) {
+        return -1;
+    }
+
+    if (!options->have_key) {
+        rt_copy_string(buffer, buffer_size, line);
+        return 0;
+    }
+
+    if (options->have_separator) {
+        unsigned long long field = 1ULL;
+        size_t i = 0U;
+        int have_start = 0;
+        int have_end = 0;
+
+        while (1) {
+            size_t field_begin = i;
+
+            while (line[i] != '\0' && line[i] != options->separator) {
+                i += 1U;
+            }
+
+            if (field == options->key_start) {
+                start_index = field_begin;
+                have_start = 1;
+            }
+            if (field == options->key_end) {
+                end_index = i;
+                have_end = 1;
+            }
+
+            if (line[i] == '\0') {
+                break;
+            }
+
+            i += 1U;
+            field += 1ULL;
+        }
+
+        if (!have_start) {
+            buffer[0] = '\0';
+            return 0;
+        }
+        if (!have_end) {
+            end_index = rt_strlen(line);
+        }
+    } else {
+        unsigned long long field = 0ULL;
+        size_t i = 0U;
+        int have_start = 0;
+        int have_end = 0;
+
+        while (line[i] != '\0') {
+            while (line[i] != '\0' && is_sort_space(line[i])) {
+                i += 1U;
+            }
+            if (line[i] == '\0') {
+                break;
+            }
+
+            field += 1ULL;
+            if (field == options->key_start) {
+                start_index = i;
+                have_start = 1;
+            }
+
+            while (line[i] != '\0' && !is_sort_space(line[i])) {
+                i += 1U;
+            }
+
+            if (field == options->key_end) {
+                end_index = i;
+                have_end = 1;
+                break;
+            }
+        }
+
+        if (!have_start) {
+            buffer[0] = '\0';
+            return 0;
+        }
+        if (!have_end) {
+            end_index = rt_strlen(line);
+        }
+    }
+
+    if (end_index < start_index) {
+        buffer[0] = '\0';
+        return 0;
+    }
+
+    out_len = end_index - start_index;
+    if (out_len + 1U > buffer_size) {
+        out_len = buffer_size - 1U;
+    }
+
+    memcpy(buffer, line + start_index, out_len);
+    buffer[out_len] = '\0';
+    return 0;
+}
+
 static int compare_lines(const char *left, const char *right, const SortOptions *options) {
     int result = 0;
+    char left_key[SORT_MAX_LINE_LENGTH];
+    char right_key[SORT_MAX_LINE_LENGTH];
+    const char *left_text = left;
+    const char *right_text = right;
+
+    if (extract_key_text(left, left_key, sizeof(left_key), options) != 0 ||
+        extract_key_text(right, right_key, sizeof(right_key), options) != 0) {
+        return 0;
+    }
+
+    if (options->have_key) {
+        left_text = left_key;
+        right_text = right_key;
+    }
 
     if (options->numeric) {
         int left_ok = 0;
         int right_ok = 0;
-        long long left_value = parse_signed_number(left, &left_ok);
-        long long right_value = parse_signed_number(right, &right_ok);
+        long long left_value = parse_signed_number(left_text, &left_ok);
+        long long right_value = parse_signed_number(right_text, &right_ok);
 
         if (left_ok && right_ok && left_value != right_value) {
             result = (left_value < right_value) ? -1 : 1;
@@ -107,6 +282,10 @@ static int compare_lines(const char *left, const char *right, const SortOptions 
     }
 
     if (result == 0) {
+        result = rt_strcmp(left_text, right_text);
+    }
+
+    if (result == 0 && options->have_key) {
         result = rt_strcmp(left, right);
     }
 
@@ -140,8 +319,34 @@ int main(int argc, char **argv) {
     rt_memset(&options, 0, sizeof(options));
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
-        const char *flag = argv[argi] + 1;
+        const char *flag;
 
+        if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        }
+        if (rt_strcmp(argv[argi], "-k") == 0 || (argv[argi][1] == 'k' && argv[argi][2] != '\0')) {
+            const char *value = (rt_strcmp(argv[argi], "-k") == 0) ? ((argi + 1 < argc) ? argv[argi + 1] : 0) : argv[argi] + 2;
+            if (parse_key_spec(value, &options) != 0) {
+                rt_write_line(2, "Usage: sort [-nru] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
+                return 1;
+            }
+            argi += (rt_strcmp(argv[argi], "-k") == 0) ? 2 : 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "-t") == 0 || (argv[argi][1] == 't' && argv[argi][2] != '\0')) {
+            const char *value = (rt_strcmp(argv[argi], "-t") == 0) ? ((argi + 1 < argc) ? argv[argi + 1] : 0) : argv[argi] + 2;
+            if (value == 0 || value[0] == '\0' || value[1] != '\0') {
+                rt_write_line(2, "Usage: sort [-nru] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
+                return 1;
+            }
+            options.have_separator = 1;
+            options.separator = value[0];
+            argi += (rt_strcmp(argv[argi], "-t") == 0) ? 2 : 1;
+            continue;
+        }
+
+        flag = argv[argi] + 1;
         while (*flag != '\0') {
             if (*flag == 'n') {
                 options.numeric = 1;
@@ -150,7 +355,7 @@ int main(int argc, char **argv) {
             } else if (*flag == 'u') {
                 options.unique = 1;
             } else {
-                rt_write_line(2, "Usage: sort [-n] [-r] [-u] [file ...]");
+                rt_write_line(2, "Usage: sort [-nru] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
                 return 1;
             }
             flag += 1;

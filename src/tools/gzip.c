@@ -160,12 +160,13 @@ static int compress_stream(int input_fd, int output_fd) {
     return 0;
 }
 
-static int process_path(const char *input_path, int to_stdout) {
+static int process_path(const char *input_path, int to_stdout, int force_overwrite, int keep_input) {
     char output_path[GZIP_PATH_CAPACITY];
     int input_fd = -1;
     int output_fd = -1;
     int close_input = 0;
     int close_output = 0;
+    int have_output_path = 0;
     int status = 1;
 
     if (tool_open_input(input_path, &input_fd, &close_input) != 0) {
@@ -181,12 +182,18 @@ static int process_path(const char *input_path, int to_stdout) {
             rt_write_line(2, "gzip: output path too long");
             return 1;
         }
+        if (!force_overwrite && tool_path_exists(output_path)) {
+            tool_close_input(input_fd, close_input);
+            tool_write_error("gzip", "output already exists (use -f): ", output_path);
+            return 1;
+        }
         output_fd = platform_open_write(output_path, 0644U);
         if (output_fd < 0) {
             tool_close_input(input_fd, close_input);
             rt_write_line(2, "gzip: cannot open output");
             return 1;
         }
+        have_output_path = 1;
         close_output = 1;
     }
 
@@ -194,6 +201,11 @@ static int process_path(const char *input_path, int to_stdout) {
     tool_close_input(input_fd, close_input);
     if (close_output) {
         platform_close(output_fd);
+    }
+    if (status != 0 && have_output_path) {
+        (void)platform_remove_file(output_path);
+    } else if (status == 0 && have_output_path && !keep_input && input_path != 0 && !is_dash_path(input_path)) {
+        (void)platform_remove_file(input_path);
     }
     return status;
 }
@@ -252,13 +264,15 @@ static int dispatch_to_gunzip(const char *argv0, int argc, char **argv) {
 int main(int argc, char **argv) {
     int to_stdout = 0;
     int decompress_mode = 0;
+    int force_overwrite = 0;
+    int keep_input = 0;
     int processed = 0;
     int status = 0;
     int i;
 
     for (i = 1; i < argc; ++i) {
         if (rt_strcmp(argv[i], "--help") == 0) {
-            tool_write_usage(tool_base_name(argv[0]), "[-c] [-d] [file ...]");
+            tool_write_usage(tool_base_name(argv[0]), "[-c] [-d] [-f] [-k] [file ...]");
             return 0;
         }
         if (argv[i][0] == '-' && argv[i][1] != '\0') {
@@ -268,7 +282,11 @@ int main(int argc, char **argv) {
                     to_stdout = 1;
                 } else if (argv[i][j] == 'd') {
                     decompress_mode = 1;
-                } else if (argv[i][j] != 'f' && argv[i][j] != 'k') {
+                } else if (argv[i][j] == 'f') {
+                    force_overwrite = 1;
+                } else if (argv[i][j] == 'k') {
+                    keep_input = 1;
+                } else if (argv[i][j] < '1' || argv[i][j] > '9') {
                     tool_write_error("gzip", "unsupported option ", argv[i]);
                     return 1;
                 }
@@ -286,13 +304,13 @@ int main(int argc, char **argv) {
             continue;
         }
         processed = 1;
-        if (process_path(argv[i], to_stdout) != 0) {
+        if (process_path(argv[i], to_stdout, force_overwrite, keep_input) != 0) {
             status = 1;
         }
     }
 
     if (!processed) {
-        return process_path("-", 1);
+        return process_path("-", 1, force_overwrite, keep_input);
     }
 
     return status;

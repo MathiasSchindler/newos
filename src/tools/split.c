@@ -6,7 +6,7 @@
 #define SPLIT_MODE_BYTES 2
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-l COUNT | -b SIZE] [file [prefix]]");
+    tool_write_usage(program_name, "[-l COUNT | -b SIZE] [-a SUFFIX_LEN] [-d] [file [prefix]]");
 }
 
 static int parse_size_value(const char *text, unsigned long long *value_out) {
@@ -58,28 +58,53 @@ static int parse_size_value(const char *text, unsigned long long *value_out) {
     return 0;
 }
 
-static int make_output_name(const char *prefix, unsigned long long index, char *buffer, size_t buffer_size) {
+static int make_output_name(const char *prefix,
+                            unsigned long long index,
+                            unsigned long long suffix_length,
+                            int numeric_suffixes,
+                            char *buffer,
+                            size_t buffer_size) {
     size_t prefix_len = rt_strlen(prefix);
+    size_t i;
 
-    if (index >= 26ULL * 26ULL || prefix_len + 3 > buffer_size) {
+    if (suffix_length == 0ULL || prefix_len + (size_t)suffix_length + 1U > buffer_size) {
         return -1;
     }
 
     memcpy(buffer, prefix, prefix_len);
-    buffer[prefix_len] = (char)('a' + (char)((index / 26ULL) % 26ULL));
-    buffer[prefix_len + 1] = (char)('a' + (char)(index % 26ULL));
-    buffer[prefix_len + 2] = '\0';
+
+    for (i = 0U; i < (size_t)suffix_length; ++i) {
+        size_t pos = prefix_len + (size_t)suffix_length - 1U - i;
+
+        if (numeric_suffixes) {
+            buffer[pos] = (char)('0' + (char)(index % 10ULL));
+            index /= 10ULL;
+        } else {
+            buffer[pos] = (char)('a' + (char)(index % 26ULL));
+            index /= 26ULL;
+        }
+    }
+
+    if (index != 0ULL) {
+        return -1;
+    }
+
+    buffer[prefix_len + (size_t)suffix_length] = '\0';
     return 0;
 }
 
-static int ensure_output_open(int *fd_out, const char *prefix, unsigned long long *index_io) {
+static int ensure_output_open(int *fd_out,
+                              const char *prefix,
+                              unsigned long long *index_io,
+                              unsigned long long suffix_length,
+                              int numeric_suffixes) {
     char path[256];
 
     if (*fd_out >= 0) {
         return 0;
     }
 
-    if (make_output_name(prefix, *index_io, path, sizeof(path)) != 0) {
+    if (make_output_name(prefix, *index_io, suffix_length, numeric_suffixes, path, sizeof(path)) != 0) {
         tool_write_error("split", "too many output files for prefix ", prefix);
         return -1;
     }
@@ -105,6 +130,8 @@ int main(int argc, char **argv) {
     int out_fd = -1;
     unsigned long long part_index = 0ULL;
     unsigned long long units_in_part = 0ULL;
+    unsigned long long suffix_length = 2ULL;
+    int numeric_suffixes = 0;
     char buffer[4096];
     int saw_input = 0;
 
@@ -123,6 +150,17 @@ int main(int argc, char **argv) {
             }
             mode = SPLIT_MODE_BYTES;
             argi += 2;
+        } else if (rt_strcmp(argv[argi], "-a") == 0) {
+            if (argi + 1 >= argc ||
+                tool_parse_uint_arg(argv[argi + 1], &suffix_length, "split", "suffix length") != 0 ||
+                suffix_length == 0ULL) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-d") == 0) {
+            numeric_suffixes = 1;
+            argi += 1;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
             break;
@@ -168,7 +206,7 @@ int main(int argc, char **argv) {
 
         saw_input = 1;
         for (i = 0; i < bytes_read; ++i) {
-            if (ensure_output_open(&out_fd, prefix, &part_index) != 0) {
+            if (ensure_output_open(&out_fd, prefix, &part_index, suffix_length, numeric_suffixes) != 0) {
                 tool_close_input(input_fd, should_close);
                 return 1;
             }
@@ -201,7 +239,7 @@ int main(int argc, char **argv) {
     }
 
     if (!saw_input) {
-        if (ensure_output_open(&out_fd, prefix, &part_index) != 0) {
+        if (ensure_output_open(&out_fd, prefix, &part_index, suffix_length, numeric_suffixes) != 0) {
             tool_close_input(input_fd, should_close);
             return 1;
         }

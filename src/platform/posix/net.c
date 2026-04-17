@@ -132,41 +132,98 @@ static int stream_socket_to_stdout(int sock) {
         }
     }
 
+    if (bytes_read < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return 0;
+    }
+
     return bytes_read < 0 ? -1 : 0;
 }
 
-int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
-    struct sockaddr_in addr;
+static int set_socket_timeout(int sock, unsigned int timeout_milliseconds) {
+    struct timeval timeout;
+
+    if (timeout_milliseconds == 0U) {
+        return 0;
+    }
+
+    timeout.tv_sec = (time_t)(timeout_milliseconds / 1000U);
+    timeout.tv_usec = (suseconds_t)((timeout_milliseconds % 1000U) * 1000U);
+    if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
+        timeout.tv_usec = 1000;
+    }
+
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
+        return -1;
+    }
+    if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
+    PlatformNetcatOptions effective_options;
     int sock = -1;
 
-    memset(&addr, 0, sizeof(addr));
+    if (options == NULL) {
+        memset(&effective_options, 0, sizeof(effective_options));
+        options = &effective_options;
+    }
 
-    if (listen_mode) {
-        int client;
+    if (options->listen_mode) {
         int reuse = 1;
-        sock = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in addr;
+
+        memset(&addr, 0, sizeof(addr));
+        sock = socket(AF_INET, options->use_udp ? SOCK_DGRAM : SOCK_STREAM, 0);
         if (sock < 0) {
             return -1;
         }
+        (void)set_socket_timeout(sock, options->timeout_milliseconds);
         addr.sin_family = AF_INET;
         addr.sin_port = htons((unsigned short)port);
         (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(sock, 1) != 0) {
+        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
             close(sock);
             return -1;
         }
-        client = accept(sock, NULL, NULL);
-        close(sock);
-        if (client < 0) {
+
+        if (options->use_udp) {
+            char buffer[4096];
+            ssize_t received = recvfrom(sock, buffer, sizeof(buffer), 0, NULL, NULL);
+
+            if (received < 0) {
+                close(sock);
+                return -1;
+            }
+            if (!options->scan_mode && received > 0 && rt_write_all(1, buffer, (size_t)received) != 0) {
+                close(sock);
+                return -1;
+            }
+            close(sock);
+            return 0;
+        }
+
+        if (listen(sock, 1) != 0) {
+            close(sock);
             return -1;
         }
-        if (stream_socket_to_stdout(client) != 0) {
+
+        {
+            int client = accept(sock, NULL, NULL);
+            close(sock);
+            if (client < 0) {
+                return -1;
+            }
+            (void)set_socket_timeout(client, options->timeout_milliseconds);
+            if (!options->scan_mode && stream_socket_to_stdout(client) != 0) {
+                close(client);
+                return -1;
+            }
             close(client);
-            return -1;
+            return 0;
         }
-        close(client);
-        return 0;
     }
 
     if (host == NULL) {
@@ -182,8 +239,8 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
+        hints.ai_socktype = options->use_udp ? SOCK_DGRAM : SOCK_STREAM;
+        hints.ai_protocol = options->use_udp ? IPPROTO_UDP : IPPROTO_TCP;
         (void)snprintf(port_text, sizeof(port_text), "%u", (unsigned int)port);
 
         if (getaddrinfo(host, port_text, &hints, &results) != 0) {
@@ -196,6 +253,7 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
             if (sock < 0) {
                 continue;
             }
+            (void)set_socket_timeout(sock, options->timeout_milliseconds);
             if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
                 break;
             }
@@ -210,12 +268,22 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
         return -1;
     }
 
+    if (options->scan_mode) {
+        close(sock);
+        return 0;
+    }
+
     if (!platform_isatty(0)) {
         if (stream_fd_to_socket(0, sock) != 0) {
             close(sock);
             return -1;
         }
-        (void)shutdown(sock, SHUT_WR);
+        if (!options->use_udp) {
+            (void)shutdown(sock, SHUT_WR);
+        } else {
+            close(sock);
+            return 0;
+        }
     }
 
     if (stream_socket_to_stdout(sock) != 0) {
@@ -225,6 +293,14 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
 
     close(sock);
     return 0;
+}
+
+int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
+    PlatformNetcatOptions options;
+
+    memset(&options, 0, sizeof(options));
+    options.listen_mode = listen_mode;
+    return platform_netcat(host, port, &options);
 }
 
 int platform_ping_host(const char *host, const PlatformPingOptions *options) {

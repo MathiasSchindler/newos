@@ -17,14 +17,20 @@
 #define PLATFORM_ACCESS_EXECUTE 1
 #define PLATFORM_ACCESS_WRITE 2
 #define PLATFORM_ACCESS_READ 4
+#define PLATFORM_SEEK_SET 0
+#define PLATFORM_SEEK_CUR 1
+#define PLATFORM_SEEK_END 2
 
 typedef struct {
     char name[PLATFORM_NAME_CAPACITY];
+    unsigned long long device;
     unsigned int mode;
     unsigned long long size;
     unsigned long long inode;
     unsigned long nlink;
+    long long atime;
     long long mtime;
+    long long ctime;
     char owner[PLATFORM_OWNER_CAPACITY];
     char group[PLATFORM_GROUP_CAPACITY];
     int is_dir;
@@ -95,6 +101,13 @@ typedef struct {
 } PlatformPingOptions;
 
 typedef struct {
+    int listen_mode;
+    int use_udp;
+    int scan_mode;
+    unsigned int timeout_milliseconds;
+} PlatformNetcatOptions;
+
+typedef struct {
     unsigned char bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
 } PlatformTerminalState;
 
@@ -102,7 +115,9 @@ long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 int platform_open_read(const char *path);
 int platform_open_write(const char *path, unsigned int mode);
+int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing);
 int platform_open_append(const char *path, unsigned int mode);
+long long platform_seek(int fd, long long offset, int whence);
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode);
 int platform_close(int fd);
 int platform_make_directory(const char *path, unsigned int mode);
@@ -112,8 +127,17 @@ int platform_rename_path(const char *old_path, const char *new_path);
 int platform_create_hard_link(const char *target_path, const char *link_path);
 int platform_create_symbolic_link(const char *target_path, const char *link_path);
 int platform_change_mode(const char *path, unsigned int mode);
+int platform_change_owner_ex(const char *path, unsigned int uid, unsigned int gid, int follow_symlinks);
 int platform_change_owner(const char *path, unsigned int uid, unsigned int gid);
 int platform_touch_path(const char *path);
+int platform_set_path_times(
+    const char *path,
+    long long atime,
+    long long mtime,
+    int create_if_missing,
+    int update_access,
+    int update_modify
+);
 int platform_path_access(const char *path, int mode);
 int platform_change_directory(const char *path);
 const char *platform_getenv(const char *name);
@@ -135,6 +159,7 @@ const char *platform_signal_name(int signal_number);
 void platform_write_signal_list(int fd);
 int platform_get_hostname(char *buffer, size_t buffer_size);
 int platform_set_hostname(const char *name);
+int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options);
 int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_spawn_process(
@@ -158,6 +183,7 @@ int platform_wait_process_timeout(
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_get_identity(PlatformIdentity *identity_out);
 int platform_lookup_identity(const char *username, PlatformIdentity *identity_out);
+int platform_lookup_group(const char *groupname, unsigned int *gid_out);
 int platform_list_groups_for_identity(
     const PlatformIdentity *identity,
     PlatformGroupEntry *entries_out,
@@ -194,12 +220,14 @@ int platform_path_is_directory(const char *path, int *is_directory_out);
 int platform_stream_file_to_stdout(const char *path);
 int platform_get_current_directory(char *buffer, size_t buffer_size);
 int platform_get_path_info(const char *path, PlatformDirEntry *entry_out);
+int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out);
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size);
 int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out);
 int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out);
 int platform_truncate_path(const char *path, unsigned long long size);
 int platform_sync_all(void);
 int platform_sync_path(const char *path);
+int platform_sync_path_data(const char *path);
 
 void platform_free_entries(PlatformDirEntry *entries, size_t count);
 void platform_format_mode(unsigned int mode, char out[11]);

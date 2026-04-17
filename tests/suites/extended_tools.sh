@@ -15,6 +15,12 @@ assert_file_contains "$WORK_DIR/date.out" 'UTC$' "date output missing UTC suffix
 date_fmt_out=$("$ROOT_DIR/build/date" +%Y-%m-%d | tr -d '\r\n')
 printf '%s\n' "$date_fmt_out" > "$WORK_DIR/date_fmt.out"
 assert_file_contains "$WORK_DIR/date_fmt.out" '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$' "date +FORMAT output was not formatted correctly"
+date_epoch_out=$("$ROOT_DIR/build/date" -d @0 +%Y-%m-%dT%H:%M:%S | tr -d '\r\n')
+assert_text_equals "$date_epoch_out" '1970-01-01T00:00:00' "date -d @0 did not honor the requested epoch"
+printf 'timestamp reference\n' > "$WORK_DIR/date_reference.txt"
+touch -t 200001021234 "$WORK_DIR/date_reference.txt"
+date_reference_out=$("$ROOT_DIR/build/date" -l -r "$WORK_DIR/date_reference.txt" +%Y-%m-%d | tr -d '\r\n')
+assert_text_equals "$date_reference_out" '2000-01-02' "date -r did not use the file modification time"
 uname_out=$("$ROOT_DIR/build/uname" -snrm | tr -d '\r\n')
 case "$uname_out" in
     *" "*) ;;
@@ -133,6 +139,43 @@ printf 'abcdef' > "$WORK_DIR/dd.in"
 "$ROOT_DIR/build/dd" if="$WORK_DIR/dd.in" of="$WORK_DIR/dd.out" bs=2 count=2
 printf 'abcd' > "$WORK_DIR/dd.expected"
 assert_files_equal "$WORK_DIR/dd.out" "$WORK_DIR/dd.expected" "dd block copy failed"
+printf 'xyz' > "$WORK_DIR/dd_sync.in"
+assert_command_succeeds "$ROOT_DIR/build/dd" if="$WORK_DIR/dd_sync.in" of="$WORK_DIR/dd_sync.out" bs=4 count=1 conv=sync status=none
+dd_sync_size=$(wc -c < "$WORK_DIR/dd_sync.out" | tr -d ' \r\n')
+assert_text_equals "$dd_sync_size" '4' "dd conv=sync did not pad the short block to the requested size"
+dd_sync_prefix=$("$ROOT_DIR/build/head" -c 3 "$WORK_DIR/dd_sync.out" | tr -d '\r\n')
+assert_text_equals "$dd_sync_prefix" 'xyz' "dd conv=sync altered the original payload"
+printf '01abcdef' > "$WORK_DIR/dd_notrunc.out"
+printf 'XY' > "$WORK_DIR/dd_patch.in"
+assert_command_succeeds "$ROOT_DIR/build/dd" if="$WORK_DIR/dd_patch.in" of="$WORK_DIR/dd_notrunc.out" bs=2 count=1 seek=1 conv=notrunc status=none
+dd_notrunc_out=$("$ROOT_DIR/build/head" -c 8 "$WORK_DIR/dd_notrunc.out" | tr -d '\r\n')
+assert_text_equals "$dd_notrunc_out" '01XYcdef' "dd conv=notrunc should preserve the surrounding destination bytes"
+"$ROOT_DIR/build/dd" if="$WORK_DIR/dd.in" of="$WORK_DIR/dd_status.out" bs=2 count=1 status=noxfer 2> "$WORK_DIR/dd_status.err"
+assert_file_contains "$WORK_DIR/dd_status.err" 'records in' "dd status=noxfer did not emit record counters"
+if grep 'bytes copied' "$WORK_DIR/dd_status.err" >/dev/null 2>&1; then
+    fail "dd status=noxfer should suppress the byte summary"
+fi
+
+seq_decimal_out=$("$ROOT_DIR/build/seq" -w 0.5 0.25 1.0 | tr -d '\r')
+printf '%s\n' "$seq_decimal_out" > "$WORK_DIR/seq_decimal.out"
+cat > "$WORK_DIR/seq_decimal.expected" <<'EOF'
+0.50
+0.75
+1.00
+EOF
+assert_files_equal "$WORK_DIR/seq_decimal.expected" "$WORK_DIR/seq_decimal.out" "seq decimal stepping or -w formatting failed"
+seq_format_out=$("$ROOT_DIR/build/seq" -s ',' -f 'item%.1f' 1 0.5 2 | tr -d '\r\n')
+assert_text_equals "$seq_format_out" 'item1.0,item1.5,item2.0' "seq -f or separator handling failed"
+
+printf 'truncate\n' > "$WORK_DIR/truncate_io.txt"
+assert_command_succeeds "$ROOT_DIR/build/truncate" -o -s 1 "$WORK_DIR/truncate_io.txt"
+truncate_io_size=$(wc -c < "$WORK_DIR/truncate_io.txt" | tr -d ' \r\n')
+assert_text_equals "$truncate_io_size" '512' "truncate -o should treat the size as I/O blocks"
+assert_command_succeeds "$ROOT_DIR/build/truncate" -c -s 5 "$WORK_DIR/truncate_missing.txt"
+[ ! -e "$WORK_DIR/truncate_missing.txt" ] || fail "truncate -c should not create a missing file"
+
+assert_command_succeeds "$ROOT_DIR/build/sync" -d -v "$WORK_DIR/truncate_io.txt" > "$WORK_DIR/sync_v.out"
+assert_file_contains "$WORK_DIR/sync_v.out" 'synced .*truncate_io.txt' "sync -v did not report the synced path"
 
 "$ROOT_DIR/build/od" "$WORK_DIR/dd.in" > "$WORK_DIR/od.out"
 assert_file_contains "$WORK_DIR/od.out" '141 142 143 144' "od dump missing expected bytes"
@@ -158,6 +201,12 @@ realpath_link=$("$ROOT_DIR/build/realpath" "$WORK_DIR/sub/link-dd" | tr -d '\r\n
 assert_text_equals "$realpath_link" "$WORK_DIR/dd.in" "realpath did not resolve the symlink target"
 realpath_missing=$("$ROOT_DIR/build/realpath" -m "$WORK_DIR/sub/missing/../ghost.txt" | tr -d '\r\n')
 assert_text_equals "$realpath_missing" "$WORK_DIR/sub/ghost.txt" "realpath -m did not normalize a missing path"
+mkdir -p "$WORK_DIR/realpath_policy/base/real/sub"
+ln -sf real/sub "$WORK_DIR/realpath_policy/base/linksub"
+realpath_physical_policy=$("$ROOT_DIR/build/realpath" -P "$WORK_DIR/realpath_policy/base/linksub/.." | tr -d '\r\n')
+assert_text_equals "$realpath_physical_policy" "$WORK_DIR/realpath_policy/base/real" "realpath -P should resolve symlinks before processing .."
+realpath_logical_policy=$("$ROOT_DIR/build/realpath" -L "$WORK_DIR/realpath_policy/base/linksub/.." | tr -d '\r\n')
+assert_text_equals "$realpath_logical_policy" "$WORK_DIR/realpath_policy/base" "realpath -L should honor logical traversal through .."
 pwd_logical=$(
     cd "$WORK_DIR/sub"
     PWD="$WORK_DIR/sub" "$ROOT_DIR/build/pwd" -L | tr -d '\r\n'
@@ -169,6 +218,40 @@ pwd_physical=$(
 )
 assert_text_equals "$pwd_physical" "$WORK_DIR/sub" "pwd -P did not print the physical working directory"
 
+mkdir -p "$WORK_DIR/find_tree/keep" "$WORK_DIR/find_tree/skip/deeper"
+printf 'keep\n' > "$WORK_DIR/find_tree/keep/kept.txt"
+printf 'skip\n' > "$WORK_DIR/find_tree/skip/deeper/skipped.txt"
+ln -sf keep/kept.txt "$WORK_DIR/find_tree/kept.link"
+"$ROOT_DIR/build/find" "$WORK_DIR/find_tree" -maxdepth 1 > "$WORK_DIR/find_maxdepth.out"
+assert_file_contains "$WORK_DIR/find_maxdepth.out" 'find_tree$' "find -maxdepth did not include the starting directory"
+if grep 'kept.txt\|skipped.txt' "$WORK_DIR/find_maxdepth.out" >/dev/null 2>&1; then
+    fail "find -maxdepth descended too deeply"
+fi
+"$ROOT_DIR/build/find" "$WORK_DIR/find_tree" -mindepth 1 -type f -print0 | tr '\0' '\n' > "$WORK_DIR/find_print0.out"
+assert_file_contains "$WORK_DIR/find_print0.out" 'kept.txt' "find -mindepth/-print0 missed the shallow file"
+assert_file_contains "$WORK_DIR/find_print0.out" 'skipped.txt' "find -mindepth/-print0 missed the nested file"
+"$ROOT_DIR/build/find" "$WORK_DIR/find_tree" -type l > "$WORK_DIR/find_links.out"
+assert_file_contains "$WORK_DIR/find_links.out" 'kept.link' "find -type l did not report symlinks"
+"$ROOT_DIR/build/find" "$WORK_DIR/find_tree" -name kept.txt -exec "$ROOT_DIR/build/echo" found {} ';' > "$WORK_DIR/find_exec.out"
+assert_file_contains "$WORK_DIR/find_exec.out" 'found .*kept.txt' "find -exec did not execute the requested command"
+
+printf 'older\n' > "$WORK_DIR/test_old.txt"
+"$ROOT_DIR/build/sleep" 1
+printf 'newer\n' > "$WORK_DIR/test_new.txt"
+assert_command_succeeds "$ROOT_DIR/build/test" "$WORK_DIR/test_new.txt" -nt "$WORK_DIR/test_old.txt"
+if "$ROOT_DIR/build/test" "$WORK_DIR/test_old.txt" -nt "$WORK_DIR/test_new.txt"; then
+    fail "test -nt reported the wrong ordering"
+fi
+ln "$WORK_DIR/test_new.txt" "$WORK_DIR/test_same.txt"
+assert_command_succeeds "$ROOT_DIR/build/test" "$WORK_DIR/test_new.txt" -ef "$WORK_DIR/test_same.txt"
+ln -sf test_new.txt "$WORK_DIR/test_link"
+assert_command_succeeds "$ROOT_DIR/build/test" "$WORK_DIR/test_new.txt" -ef "$WORK_DIR/test_link"
+assert_command_succeeds "$ROOT_DIR/build/[" -L "$WORK_DIR/test_link" ]
+assert_command_succeeds "$ROOT_DIR/build/test" alpha '<' beta
+if "$ROOT_DIR/build/test" gamma '<' beta; then
+    fail "test string comparison unexpectedly succeeded"
+fi
+
 assert_command_succeeds "$ROOT_DIR/build/cmp" "$WORK_DIR/dd.in" "$WORK_DIR/dd.in"
 printf 'left\nline2\n' > "$WORK_DIR/left.txt"
 printf 'left\nchanged\n' > "$WORK_DIR/right.txt"
@@ -178,6 +261,12 @@ fi
 cmp_list_out=$("$ROOT_DIR/build/cmp" -l "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" | tr -d '\r')
 printf '%s\n' "$cmp_list_out" > "$WORK_DIR/cmp_l.out"
 assert_file_contains "$WORK_DIR/cmp_l.out" '^[0-9][0-9]* ' "cmp -l did not report the differing byte positions"
+printf 'xxabcdefzz' > "$WORK_DIR/cmp_skip_left.txt"
+printf 'yyabcdefqq' > "$WORK_DIR/cmp_skip_right.txt"
+assert_command_succeeds "$ROOT_DIR/build/cmp" -i 2:2 -n 6 "$WORK_DIR/cmp_skip_left.txt" "$WORK_DIR/cmp_skip_right.txt"
+if "$ROOT_DIR/build/cmp" -i 2:2 -n 8 "$WORK_DIR/cmp_skip_left.txt" "$WORK_DIR/cmp_skip_right.txt" >/dev/null 2>&1; then
+    fail "cmp -i/-n should have detected the later differing bytes"
+fi
 if "$ROOT_DIR/build/diff" "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/diff.out"; then
     fail "diff should have reported a difference"
 fi
@@ -199,6 +288,14 @@ assert_file_contains "$WORK_DIR/diff_qr.out" 'Files .*common.txt.* differ' "diff
 
 "$ROOT_DIR/build/file" "$WORK_DIR/left.txt" > "$WORK_DIR/file.out"
 assert_file_contains "$WORK_DIR/file.out" 'ASCII text' "file type detection failed"
+ln -sf left.txt "$WORK_DIR/file-link"
+"$ROOT_DIR/build/file" "$WORK_DIR/file-link" > "$WORK_DIR/file_link.out"
+assert_file_contains "$WORK_DIR/file_link.out" 'symbolic link to left.txt' "file should describe symlinks by default"
+"$ROOT_DIR/build/file" -L "$WORK_DIR/file-link" > "$WORK_DIR/file_follow.out"
+assert_file_contains "$WORK_DIR/file_follow.out" 'ASCII text' "file -L did not inspect the symlink target"
+printf '\211PNG\r\n\032\nrest' > "$WORK_DIR/sample.png"
+file_mime_out=$("$ROOT_DIR/build/file" -i "$WORK_DIR/sample.png" | tr -d '\r\n')
+assert_text_equals "$file_mime_out" "$WORK_DIR/sample.png: image/png" "file -i did not report the PNG MIME type"
 
 printf '\001\002HelloString\000xxMoreText\n' > "$WORK_DIR/strings.bin"
 "$ROOT_DIR/build/strings" "$WORK_DIR/strings.bin" > "$WORK_DIR/strings.out"
@@ -215,6 +312,13 @@ printf_cycle=$("$ROOT_DIR/build/printf" '%s:' A B C | tr -d '\r\n')
 assert_text_equals "$printf_cycle" 'A:B:C:' "printf format cycling failed"
 echo_out=$("$ROOT_DIR/build/echo" -n sample | tr -d '\r')
 assert_text_equals "$echo_out" 'sample' "echo -n failed"
+"$ROOT_DIR/build/echo" -e 'line1\nline2\tend' > "$WORK_DIR/echo_escape.out"
+printf 'line1\nline2\tend\n' > "$WORK_DIR/echo_escape.expected"
+assert_files_equal "$WORK_DIR/echo_escape.expected" "$WORK_DIR/echo_escape.out" "echo -e did not decode common escapes"
+echo_literal_out=$("$ROOT_DIR/build/echo" -E 'left\nright' | tr -d '\r\n')
+assert_text_equals "$echo_literal_out" 'left\nright' "echo -E should leave backslash sequences untouched"
+echo_stop_out=$("$ROOT_DIR/build/echo" -e 'done\cignored' tail | tr -d '\r')
+assert_text_equals "$echo_stop_out" 'done' "echo -e \\c did not stop output early"
 printf 'alpha\n\n\nbeta\n' > "$WORK_DIR/cat_flags.txt"
 "$ROOT_DIR/build/cat" -n "$WORK_DIR/cat_flags.txt" > "$WORK_DIR/cat_n.out"
 assert_file_contains "$WORK_DIR/cat_n.out" '^[[:space:]]*1[[:space:]]alpha$' "cat -n did not number the first line"
@@ -296,6 +400,40 @@ if grep '^==>' "$WORK_DIR/head_q.out" >/dev/null 2>&1; then
 fi
 "$ROOT_DIR/build/tail" -v "$WORK_DIR/head_one.txt" > "$WORK_DIR/tail_v.out"
 assert_file_contains "$WORK_DIR/tail_v.out" '^==> .*head_one.txt <==$' "tail -v should force a header"
+printf 'first\nsecond\nthird\nfourth\n' > "$WORK_DIR/head_tail_compat.txt"
+"$ROOT_DIR/build/head" -n +3 "$WORK_DIR/head_tail_compat.txt" > "$WORK_DIR/head_plus.out"
+cat > "$WORK_DIR/head_plus.expected" <<'EOF'
+third
+fourth
+EOF
+assert_files_equal "$WORK_DIR/head_plus.expected" "$WORK_DIR/head_plus.out" "head -n +N should start at the requested line"
+"$ROOT_DIR/build/head" -n -1 "$WORK_DIR/head_tail_compat.txt" > "$WORK_DIR/head_minus.out"
+cat > "$WORK_DIR/head_minus.expected" <<'EOF'
+first
+second
+third
+EOF
+assert_files_equal "$WORK_DIR/head_minus.expected" "$WORK_DIR/head_minus.out" "head -n -N should omit the last lines"
+"$ROOT_DIR/build/head" -2 "$WORK_DIR/head_tail_compat.txt" > "$WORK_DIR/head_legacy.out"
+cat > "$WORK_DIR/head_legacy.expected" <<'EOF'
+first
+second
+EOF
+assert_files_equal "$WORK_DIR/head_legacy.expected" "$WORK_DIR/head_legacy.out" "head legacy -NUM form failed"
+"$ROOT_DIR/build/tail" -n +3 "$WORK_DIR/head_tail_compat.txt" > "$WORK_DIR/tail_plus.out"
+assert_files_equal "$WORK_DIR/head_plus.expected" "$WORK_DIR/tail_plus.out" "tail -n +N should start at the requested line"
+"$ROOT_DIR/build/tail" -2 "$WORK_DIR/head_tail_compat.txt" > "$WORK_DIR/tail_legacy.out"
+cat > "$WORK_DIR/tail_legacy.expected" <<'EOF'
+third
+fourth
+EOF
+assert_files_equal "$WORK_DIR/tail_legacy.expected" "$WORK_DIR/tail_legacy.out" "tail legacy -NUM form failed"
+head_byte_plus=$("$ROOT_DIR/build/head" -c +3 "$WORK_DIR/bytes.txt" | tr -d '\r\n')
+assert_text_equals "$head_byte_plus" 'cdef12345' "head -c +N should start at the requested byte"
+head_byte_minus=$("$ROOT_DIR/build/head" -c -5 "$WORK_DIR/bytes.txt" | tr -d '\r\n')
+assert_text_equals "$head_byte_minus" 'abcdef' "head -c -N should omit the final bytes"
+tail_byte_plus=$("$ROOT_DIR/build/tail" -c +7 "$WORK_DIR/bytes.txt" | tr -d '\r\n')
+assert_text_equals "$tail_byte_plus" '12345' "tail -c +N should start at the requested byte"
 
 printf 'name:role:team\nAda:Eng:Kernel\nBob:Ops:Infra\n' > "$WORK_DIR/cut_fields.txt"
 "$ROOT_DIR/build/cut" -d ':' -f 1,3 "$WORK_DIR/cut_fields.txt" > "$WORK_DIR/cut_fields.out"
@@ -325,6 +463,13 @@ tag Alpha
 keep beta
 EOF
 assert_files_equal "$WORK_DIR/uniq.expected" "$WORK_DIR/uniq.out" "uniq comparison controls failed"
+printf 'Alpha\0Alpha\0beta\0' > "$WORK_DIR/uniq_zero.txt"
+"$ROOT_DIR/build/uniq" -z -c "$WORK_DIR/uniq_zero.txt" | tr '\0' '\n' > "$WORK_DIR/uniq_zero.out"
+cat > "$WORK_DIR/uniq_zero.expected" <<'EOF'
+2 Alpha
+1 beta
+EOF
+assert_files_equal "$WORK_DIR/uniq_zero.expected" "$WORK_DIR/uniq_zero.out" "uniq -z did not preserve NUL-delimited groups"
 
 printf 'keep\ndrop\nstop\nlater\n' > "$WORK_DIR/sed_more.txt"
 "$ROOT_DIR/build/sed" '/drop/d' "$WORK_DIR/sed_more.txt" > "$WORK_DIR/sed_delete.out"
@@ -336,20 +481,104 @@ EOF
 assert_files_equal "$WORK_DIR/sed_delete.expected" "$WORK_DIR/sed_delete.out" "sed delete command failed"
 sed_print=$("$ROOT_DIR/build/sed" -n '2p;3q' "$WORK_DIR/sed_more.txt" | tr -d '\r\n')
 assert_text_equals "$sed_print" 'drop' "sed -n with p/q commands failed"
+printf 'pear:30\napple:10\nbanana:2\n' > "$WORK_DIR/sort_key.txt"
+"$ROOT_DIR/build/sort" -t ':' -k 2,2 -n "$WORK_DIR/sort_key.txt" > "$WORK_DIR/sort_key.out"
+cat > "$WORK_DIR/sort_key.expected" <<'EOF'
+banana:2
+apple:10
+pear:30
+EOF
+assert_files_equal "$WORK_DIR/sort_key.expected" "$WORK_DIR/sort_key.out" "sort -k/-t numeric key selection failed"
+printf 'alpha\nbeta\ngamma\n' > "$WORK_DIR/sed_insert.txt"
+"$ROOT_DIR/build/sed" '1i HEADER;2c BETA;3a FOOTER' "$WORK_DIR/sed_insert.txt" > "$WORK_DIR/sed_insert.out"
+cat > "$WORK_DIR/sed_insert.expected" <<'EOF'
+HEADER
+alpha
+BETA
+gamma
+FOOTER
+EOF
+assert_files_equal "$WORK_DIR/sed_insert.expected" "$WORK_DIR/sed_insert.out" "sed insert/change/append commands failed"
+printf 'red\nblue\n' > "$WORK_DIR/sed_inplace.txt"
+assert_command_succeeds "$ROOT_DIR/build/sed" -i.bak '2c azure' "$WORK_DIR/sed_inplace.txt"
+cat > "$WORK_DIR/sed_inplace.expected" <<'EOF'
+red
+azure
+EOF
+assert_files_equal "$WORK_DIR/sed_inplace.expected" "$WORK_DIR/sed_inplace.txt" "sed -i did not rewrite the file in place"
+assert_file_contains "$WORK_DIR/sed_inplace.txt.bak" '^blue$' "sed -i backup suffix did not preserve the original content"
+printf '\nfirst\n\nsecond\n' > "$WORK_DIR/nl_input.txt"
+"$ROOT_DIR/build/nl" -ba -v 10 -i 5 -w 2 -s ': ' "$WORK_DIR/nl_input.txt" > "$WORK_DIR/nl_options.out"
+printf '10: \n15: first\n20: \n25: second\n' > "$WORK_DIR/nl_options.expected"
+assert_files_equal "$WORK_DIR/nl_options.expected" "$WORK_DIR/nl_options.out" "nl increment/separator controls failed"
+printf 'abcdef' > "$WORK_DIR/split_input.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/split" -b 2 -a 3 -d split_input.txt part
+)
+assert_file_contains "$WORK_DIR/part000" '^ab$' "split -d/-a did not create the first numeric chunk"
+assert_file_contains "$WORK_DIR/part001" '^cd$' "split -d/-a did not create the second numeric chunk"
+assert_file_contains "$WORK_DIR/part002" '^ef$' "split -d/-a did not create the third numeric chunk"
+printf 'head\nmid\none\nmid\ntwo\n' > "$WORK_DIR/csplit_input.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/csplit" -s -n 3 -f cut csplit_input.txt /mid/{1}
+)
+assert_file_contains "$WORK_DIR/cut000" '^head$' "csplit repeat-count split missed the leading segment"
+assert_file_contains "$WORK_DIR/cut001" '^mid$' "csplit repeat-count split missed the first match segment"
+assert_file_contains "$WORK_DIR/cut001" '^one$' "csplit repeat-count split omitted the body after the first match"
+assert_file_contains "$WORK_DIR/cut002" '^mid$' "csplit repeat-count split missed the repeated match segment"
+assert_file_contains "$WORK_DIR/cut002" '^two$' "csplit repeat-count split omitted the body after the repeated match"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/csplit" -s -k -f keep csplit_input.txt /mid/ /missing/ >/dev/null 2>&1 || true
+)
+[ -f "$WORK_DIR/keep00" ] || fail "csplit -k should keep created output files after a later failure"
 
 ln -sf dd.in "$WORK_DIR/link-to-dd"
 readlink_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-to-dd" | tr -d '\r\n')
 assert_text_equals "$readlink_out" 'dd.in' "readlink target mismatch"
 readlink_full=$("$ROOT_DIR/build/readlink" -f "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
 assert_text_equals "$readlink_full" "$WORK_DIR/dd.in" "readlink -f did not canonicalize the symlink"
+readlink_verbose=$("$ROOT_DIR/build/readlink" -v "$WORK_DIR/link-to-dd" | tr -d '\r\n')
+assert_text_equals "$readlink_verbose" "$WORK_DIR/link-to-dd: dd.in" "readlink -v did not prefix the path"
 "$ROOT_DIR/build/stat" "$WORK_DIR/dd.in" > "$WORK_DIR/stat.out"
 assert_file_contains "$WORK_DIR/stat.out" '^Size:' "stat output missing size"
 assert_file_contains "$WORK_DIR/stat.out" 'Type: file' "stat output missing file type"
+assert_file_contains "$WORK_DIR/stat.out" '^Access:' "stat output missing access time"
+assert_file_contains "$WORK_DIR/stat.out" '^Change:' "stat output missing change time"
 stat_format_out=$("$ROOT_DIR/build/stat" -c '%F %a %n' "$WORK_DIR/dd.in" | tr -d '\r')
 printf '%s\n' "$stat_format_out" > "$WORK_DIR/stat_format.out"
 assert_file_contains "$WORK_DIR/stat_format.out" '^file [0-7][0-7][0-7][0-7]*[[:space:]].*dd\.in$' "stat -c format output was incomplete"
 stat_follow_out=$("$ROOT_DIR/build/stat" -L -c '%F' "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
 assert_text_equals "$stat_follow_out" 'file' "stat -L did not follow the symlink"
+stat_time_tokens=$("$ROOT_DIR/build/stat" -c '%X %Y %Z' "$WORK_DIR/dd.in" | tr -d '\r\n')
+case "$stat_time_tokens" in
+    [0-9]*' '[0-9]*' '[0-9]*) ;;
+    *) fail "stat time-format tokens did not emit numeric timestamps" ;;
+esac
+
+touch_target="$WORK_DIR/touch_flags.txt"
+printf 'touch\n' > "$touch_target"
+touch_original_m=$("$ROOT_DIR/build/stat" -c '%Y' "$touch_target" | tr -d '\r\n')
+assert_command_succeeds "$ROOT_DIR/build/touch" -a -d @1111111111 "$touch_target"
+touch_after_a_only=$("$ROOT_DIR/build/stat" -c '%X %Y' "$touch_target" | tr -d '\r\n')
+assert_text_equals "$touch_after_a_only" "1111111111 $touch_original_m" "touch -a should update access time without changing mtime"
+assert_command_succeeds "$ROOT_DIR/build/touch" -m -d @1234567890 "$touch_target"
+touch_after_m_only=$("$ROOT_DIR/build/stat" -c '%X %Y' "$touch_target" | tr -d '\r\n')
+assert_text_equals "$touch_after_m_only" '1111111111 1234567890' "touch -m should preserve atime while updating mtime"
+assert_command_succeeds "$ROOT_DIR/build/touch" -c "$WORK_DIR/not-created.txt"
+[ ! -e "$WORK_DIR/not-created.txt" ] || fail "touch -c unexpectedly created a missing file"
+touch_ref="$WORK_DIR/touch_reference.txt"
+touch_copy="$WORK_DIR/touch_copy.txt"
+assert_command_succeeds "$ROOT_DIR/build/touch" -d @1234567890 "$touch_ref"
+assert_command_succeeds "$ROOT_DIR/build/touch" -r "$touch_ref" "$touch_copy"
+touch_ref_times=$("$ROOT_DIR/build/stat" -c '%X %Y' "$touch_ref" | tr -d '\r\n')
+touch_copy_times=$("$ROOT_DIR/build/stat" -c '%X %Y' "$touch_copy" | tr -d '\r\n')
+assert_text_equals "$touch_copy_times" "$touch_ref_times" "touch -r did not copy the reference timestamps"
+assert_command_succeeds "$ROOT_DIR/build/touch" -t 202401020304.05 "$WORK_DIR/touch_stamp.txt"
+touch_stamp_time=$("$ROOT_DIR/build/stat" -c '%Y' "$WORK_DIR/touch_stamp.txt" | tr -d '\r\n')
+assert_text_equals "$touch_stamp_time" '1704164645' "touch -t did not parse the timestamp correctly"
 
 mkdir -p "$WORK_DIR/cp_src" "$WORK_DIR/cp_dest" "$WORK_DIR/mv_dest"
 printf 'A' > "$WORK_DIR/cp_src/a.txt"
@@ -432,6 +661,13 @@ assert_file_contains "$WORK_DIR/stat_fs.out" '^Filesystem:' "stat -f did not pri
 chown_target="$WORK_DIR/chown.txt"
 printf 'owner\n' > "$chown_target"
 assert_command_succeeds "$ROOT_DIR/build/chown" "$(id -u):$(id -g)" "$chown_target"
+assert_command_succeeds "$ROOT_DIR/build/chown" "$(id -un):$(id -gn)" "$chown_target"
+mkdir -p "$WORK_DIR/chown_tree/nested"
+printf 'owner\n' > "$WORK_DIR/chown_tree/nested/file.txt"
+assert_command_succeeds "$ROOT_DIR/build/chown" -R "$(id -un):$(id -gn)" "$WORK_DIR/chown_tree"
+"$ROOT_DIR/build/stat" "$WORK_DIR/chown_tree/nested/file.txt" > "$WORK_DIR/chown_recursive.stat"
+assert_file_contains "$WORK_DIR/chown_recursive.stat" "^Owner: $(id -un)$" "chown -R did not preserve the requested owner name on nested files"
+assert_file_contains "$WORK_DIR/chown_recursive.stat" "^Group: $(id -gn)$" "chown name lookup did not preserve the requested group on nested files"
 chmod_target="$WORK_DIR/chmod_symbolic.txt"
 printf 'chmod\n' > "$chmod_target"
 assert_command_succeeds "$ROOT_DIR/build/chmod" u=rw,go= "$chmod_target"
@@ -533,6 +769,14 @@ done
 "$ROOT_DIR/build/paste" -d ',' "$@" > "$WORK_DIR/paste_many.out"
 assert_file_contains "$WORK_DIR/paste_many.out" '1,2,3,4,5' "paste did not accept a practical number of input files"
 assert_file_contains "$WORK_DIR/paste_many.out" '16,17,18' "paste output was truncated when many files were provided"
+printf 'L\0R\0' > "$WORK_DIR/paste_zero_left.txt"
+printf '1\0002\000' > "$WORK_DIR/paste_zero_right.txt"
+"$ROOT_DIR/build/paste" -z -d ':' "$WORK_DIR/paste_zero_left.txt" "$WORK_DIR/paste_zero_right.txt" | tr '\0' '\n' > "$WORK_DIR/paste_zero.out"
+cat > "$WORK_DIR/paste_zero.expected" <<'EOF'
+L:1
+R:2
+EOF
+assert_files_equal "$WORK_DIR/paste_zero.expected" "$WORK_DIR/paste_zero.out" "paste -z did not join NUL-delimited records"
 
 printf '\t12\n' | "$ROOT_DIR/build/fold" -w 4 > "$WORK_DIR/fold_columns.out"
 printf '\t\n12\n' > "$WORK_DIR/fold_columns.expected"
@@ -540,6 +784,9 @@ assert_files_equal "$WORK_DIR/fold_columns.expected" "$WORK_DIR/fold_columns.out
 printf '\t12\n' | "$ROOT_DIR/build/fold" -b -w 4 > "$WORK_DIR/fold_bytes.out"
 printf '\t12\n' > "$WORK_DIR/fold_bytes.expected"
 assert_files_equal "$WORK_DIR/fold_bytes.expected" "$WORK_DIR/fold_bytes.out" "fold -b should count bytes instead of display columns"
+printf 'abcdef\n' | "$ROOT_DIR/build/fold" -3 > "$WORK_DIR/fold_short.out"
+printf 'abc\ndef\n' > "$WORK_DIR/fold_short.expected"
+assert_files_equal "$WORK_DIR/fold_short.expected" "$WORK_DIR/fold_short.out" "fold legacy -WIDTH form failed"
 
 cat > "$WORK_DIR/column.txt" <<'EOF'
 name:role:team
@@ -590,6 +837,30 @@ assert_file_contains "$WORK_DIR/tar_extract_gz/tar_src/file.txt" 'archive-data' 
 
 printf 'streamed-data\n' | "$ROOT_DIR/build/gzip" -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_stream.txt"
 assert_file_contains "$WORK_DIR/gzip_stream.txt" 'streamed-data' "gzip/gunzip streaming pipeline failed"
+printf 'level-data\n' | "$ROOT_DIR/build/gzip" -9 -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_level.txt"
+assert_file_contains "$WORK_DIR/gzip_level.txt" 'level-data' "gzip -9 compatibility parsing regressed"
+printf 'keep-data\n' > "$WORK_DIR/gzip_keep.txt"
+assert_command_succeeds "$ROOT_DIR/build/gzip" -k "$WORK_DIR/gzip_keep.txt"
+[ -f "$WORK_DIR/gzip_keep.txt" ] || fail "gzip -k should keep the original input file"
+[ -f "$WORK_DIR/gzip_keep.txt.gz" ] || fail "gzip -k did not create the compressed output"
+if "$ROOT_DIR/build/gzip" "$WORK_DIR/gzip_keep.txt" >/dev/null 2>&1; then
+    fail "gzip should refuse to overwrite an existing .gz output without -f"
+fi
+assert_command_succeeds "$ROOT_DIR/build/gzip" -f "$WORK_DIR/gzip_keep.txt"
+[ ! -e "$WORK_DIR/gzip_keep.txt" ] || fail "gzip should remove the input file after successful compression"
+[ -f "$WORK_DIR/gzip_keep.txt.gz" ] || fail "gzip -f did not leave the compressed output behind"
+assert_command_succeeds "$ROOT_DIR/build/gunzip" -k "$WORK_DIR/gzip_keep.txt.gz"
+[ -f "$WORK_DIR/gzip_keep.txt.gz" ] || fail "gunzip -k should keep the compressed input file"
+assert_file_contains "$WORK_DIR/gzip_keep.txt" '^keep-data$' "gunzip -k did not restore the original data"
+printf 'fresh-data\n' > "$WORK_DIR/gunzip_force.txt"
+assert_command_succeeds "$ROOT_DIR/build/gzip" "$WORK_DIR/gunzip_force.txt"
+printf 'stale-data\n' > "$WORK_DIR/gunzip_force.txt"
+if "$ROOT_DIR/build/gunzip" "$WORK_DIR/gunzip_force.txt.gz" >/dev/null 2>&1; then
+    fail "gunzip should refuse to overwrite an existing destination without -f"
+fi
+assert_command_succeeds "$ROOT_DIR/build/gunzip" -f "$WORK_DIR/gunzip_force.txt.gz"
+[ ! -e "$WORK_DIR/gunzip_force.txt.gz" ] || fail "gunzip should remove the compressed input after successful extraction"
+assert_file_contains "$WORK_DIR/gunzip_force.txt" '^fresh-data$' "gunzip -f did not overwrite the destination with decompressed content"
 
 printf 'checksum-data\n' > "$WORK_DIR/checksum.txt"
 "$ROOT_DIR/build/md5sum" "$WORK_DIR/checksum.txt" > "$WORK_DIR/checksum.md5"
@@ -628,6 +899,19 @@ EOF
 )
 assert_file_contains "$WORK_DIR/patch_target.txt" '^alpha$' "patch did not preserve the first line"
 assert_file_contains "$WORK_DIR/patch_target.txt" '^beta$' "patch reverse apply failed"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/patch" -b -p1 -i patch.diff
+)
+assert_file_contains "$WORK_DIR/patch_target.txt" '^gamma$' "patch -b did not apply the change"
+assert_file_contains "$WORK_DIR/patch_target.txt.orig" '^beta$' "patch -b did not create a backup of the original file"
+printf 'alpha\nbeta\n' > "$WORK_DIR/patch_target.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/patch" -p1 -o patch_preview.txt -i patch.diff
+)
+assert_file_contains "$WORK_DIR/patch_preview.txt" '^gamma$' "patch -o did not write the patched output file"
+assert_file_contains "$WORK_DIR/patch_target.txt" '^beta$' "patch -o should leave the original target unchanged"
 
 mkdir -p "$WORK_DIR/make_include"
 cat > "$WORK_DIR/make_include/makefile" <<'EOF'
@@ -645,6 +929,19 @@ EOF
     "$ROOT_DIR/build/make"
 )
 assert_file_contains "$WORK_DIR/make_include/built.txt" '^included value$' "make include/default makefile handling failed"
+mkdir -p "$WORK_DIR/make_pattern"
+cat > "$WORK_DIR/make_pattern/Makefile" <<'EOF'
+all: result.txt
+
+%.txt: %.in
+	printf 'stem=%s src=%s\n' "$*" "$<" > "$@"
+EOF
+printf 'pattern-input\n' > "$WORK_DIR/make_pattern/result.in"
+(
+    cd "$WORK_DIR/make_pattern"
+    "$ROOT_DIR/build/make"
+)
+assert_file_contains "$WORK_DIR/make_pattern/result.txt" '^stem=result src=result.in$' "make pattern rule or automatic variables failed"
 
 mktemp_path=$(TMPDIR="$WORK_DIR" "$ROOT_DIR/build/mktemp" -t wavecheck | tr -d '\r\n')
 case "$mktemp_path" in
@@ -659,6 +956,20 @@ sleep 1
 printf 'hello nc\n' | "$ROOT_DIR/build/netcat" localhost 24681 > "$WORK_DIR/netcat_client.out"
 wait "$netcat_pid"
 assert_file_contains "$WORK_DIR/netcat_server.out" 'hello nc' "netcat listener did not receive payload"
+"$ROOT_DIR/build/netcat" -u -l -w 3 24682 > "$WORK_DIR/netcat_udp_server.out" &
+netcat_udp_pid=$!
+sleep 1
+printf 'hello udp\n' | "$ROOT_DIR/build/netcat" -u -w 1 localhost 24682 > "$WORK_DIR/netcat_udp_client.out"
+wait "$netcat_udp_pid"
+assert_file_contains "$WORK_DIR/netcat_udp_server.out" 'hello udp' "netcat UDP mode did not receive the payload"
+"$ROOT_DIR/build/netcat" -l -w 3 24683 > "$WORK_DIR/netcat_scan_server.out" &
+netcat_scan_pid=$!
+sleep 1
+assert_command_succeeds "$ROOT_DIR/build/netcat" -z -w 1 localhost 24683
+wait "$netcat_scan_pid"
+if "$ROOT_DIR/build/netcat" -z -w 1 localhost 24684; then
+    fail "netcat -z unexpectedly succeeded against a closed port"
+fi
 "$ROOT_DIR/build/free" -h > "$WORK_DIR/free.out"
 assert_file_contains "$WORK_DIR/free.out" '^Mem:' "free -h output missing memory line"
 "$ROOT_DIR/build/free" -wt > "$WORK_DIR/free_wt.out"

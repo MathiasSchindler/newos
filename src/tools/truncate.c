@@ -8,7 +8,7 @@ typedef struct {
 } SizeSpec;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "-s SIZE file...");
+    tool_write_usage(program_name, "[-c] [-o] -s SIZE file...");
 }
 
 static int parse_size_value(const char *text, unsigned long long *value_out) {
@@ -59,7 +59,7 @@ static int parse_size_value(const char *text, unsigned long long *value_out) {
     return 0;
 }
 
-static int parse_size_spec(const char *text, SizeSpec *spec) {
+static int parse_size_spec(const char *text, SizeSpec *spec, int io_blocks) {
     spec->mode = '=';
 
     if (text == 0 || text[0] == '\0') {
@@ -71,7 +71,15 @@ static int parse_size_spec(const char *text, SizeSpec *spec) {
         text += 1;
     }
 
-    return parse_size_value(text, &spec->value);
+    if (parse_size_value(text, &spec->value) != 0) {
+        return -1;
+    }
+
+    if (io_blocks) {
+        spec->value *= 512ULL;
+    }
+
+    return 0;
 }
 
 static unsigned long long compute_target_size(unsigned long long current_size, const SizeSpec *spec) {
@@ -94,17 +102,51 @@ int main(int argc, char **argv) {
     SizeSpec spec;
     int argi = 1;
     int exit_code = 0;
+    int have_size = 0;
+    int no_create = 0;
+    int io_blocks = 0;
 
-    if (argc < 4 || rt_strcmp(argv[argi], "-s") != 0 || parse_size_spec(argv[argi + 1], &spec) != 0) {
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        if (rt_strcmp(argv[argi], "-c") == 0 || rt_strcmp(argv[argi], "--no-create") == 0) {
+            no_create = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "-o") == 0 || rt_strcmp(argv[argi], "--io-blocks") == 0) {
+            io_blocks = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "-s") == 0) {
+            if (argi + 1 >= argc || parse_size_spec(argv[argi + 1], &spec, io_blocks) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            have_size = 1;
+            argi += 2;
+            break;
+        }
+        break;
+    }
+
+    if (!have_size || argi >= argc) {
         print_usage(argv[0]);
         return 1;
     }
 
-    argi += 2;
     while (argi < argc) {
         PlatformDirEntry entry;
         unsigned long long current_size = 0ULL;
         unsigned long long target_size;
+
+        if (no_create && !tool_path_exists(argv[argi])) {
+            argi += 1;
+            continue;
+        }
 
         if (spec.mode != '=' && platform_get_path_info(argv[argi], &entry) == 0) {
             current_size = entry.size;

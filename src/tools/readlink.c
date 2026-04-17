@@ -12,6 +12,7 @@ int main(int argc, char **argv) {
     int no_newline = 0;
     int zero_terminated = 0;
     int quiet = 0;
+    int verbose = 0;
     int exit_code = 0;
     int i;
 
@@ -40,8 +41,10 @@ int main(int argc, char **argv) {
                 no_newline = 0;
             } else if (*flag == 'q') {
                 quiet = 1;
+            } else if (*flag == 'v') {
+                verbose = 1;
             } else {
-                rt_write_line(2, "Usage: readlink [-n] [-f|-e|-m] [-q] [-z] PATH...");
+                rt_write_line(2, "Usage: readlink [-n] [-f|-e|-m] [-q] [-v] [-z] PATH...");
                 return 1;
             }
             flag += 1;
@@ -51,7 +54,7 @@ int main(int argc, char **argv) {
     }
 
     if (argi >= argc) {
-        rt_write_line(2, "Usage: readlink [-n] [-f|-e|-m] [-q] [-z] PATH...");
+        rt_write_line(2, "Usage: readlink [-n] [-f|-e|-m] [-q] [-v] [-z] PATH...");
         return 1;
     }
 
@@ -74,14 +77,29 @@ int main(int argc, char **argv) {
         }
 
         if (zero_terminated) {
+            if (verbose) {
+                if (rt_write_cstr(1, argv[i]) != 0 || rt_write_cstr(1, ": ") != 0) {
+                    return 1;
+                }
+            }
             if (rt_write_all(1, buffer, rt_strlen(buffer)) != 0 || rt_write_char(1, '\0') != 0) {
                 return 1;
             }
         } else if (no_newline) {
+            if (verbose) {
+                if (rt_write_cstr(1, argv[i]) != 0 || rt_write_cstr(1, ": ") != 0) {
+                    return 1;
+                }
+            }
             if (rt_write_cstr(1, buffer) != 0) {
                 return 1;
             }
         } else {
+            if (verbose) {
+                if (rt_write_cstr(1, argv[i]) != 0 || rt_write_cstr(1, ": ") != 0) {
+                    return 1;
+                }
+            }
             if (rt_write_line(1, buffer) != 0) {
                 return 1;
             }

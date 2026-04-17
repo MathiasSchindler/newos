@@ -9,13 +9,14 @@ typedef struct {
     int duplicates_only;
     int unique_only;
     int ignore_case;
+    int zero_terminated;
     unsigned long long skip_fields;
     unsigned long long skip_chars;
     unsigned long long max_chars;
 } UniqOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-cdui] [-f FIELDS] [-s CHARS] [-w CHARS] [file]");
+    tool_write_usage(program_name, "[-cduiz] [-f FIELDS] [-s CHARS] [-w CHARS] [file]");
 }
 
 static int should_print_group(unsigned long long count, const UniqOptions *options) {
@@ -31,6 +32,8 @@ static int should_print_group(unsigned long long count, const UniqOptions *optio
 }
 
 static int emit_group(const char *line, unsigned long long count, const UniqOptions *options) {
+    char terminator = options->zero_terminated ? '\0' : '\n';
+
     if (!should_print_group(count, options)) {
         return 0;
     }
@@ -41,7 +44,10 @@ static int emit_group(const char *line, unsigned long long count, const UniqOpti
         }
     }
 
-    return rt_write_line(1, line);
+    if (rt_write_cstr(1, line) != 0) {
+        return -1;
+    }
+    return rt_write_char(1, terminator);
 }
 
 static char ascii_tolower(char ch) {
@@ -111,6 +117,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
     size_t current_len = 0;
     unsigned long long repeat_count = 0;
     int have_previous = 0;
+    char record_terminator = options->zero_terminated ? '\0' : '\n';
     long bytes_read;
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
@@ -119,7 +126,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
         for (i = 0; i < bytes_read; ++i) {
             char ch = chunk[i];
 
-            if (ch == '\n') {
+            if (ch == record_terminator) {
                 current[current_len] = '\0';
 
                 if (!have_previous) {
@@ -213,6 +220,8 @@ int main(int argc, char **argv) {
                 options.unique_only = 1;
             } else if (*flag == 'i') {
                 options.ignore_case = 1;
+            } else if (*flag == 'z') {
+                options.zero_terminated = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;

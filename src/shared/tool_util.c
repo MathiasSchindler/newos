@@ -339,7 +339,14 @@ static int tool_concat_path_suffix(const char *prefix, const char *suffix, char 
     return 0;
 }
 
-int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_missing, char *buffer, size_t buffer_size) {
+int tool_canonicalize_path_policy(
+    const char *path,
+    int resolve_symlinks,
+    int allow_missing,
+    int logical_policy,
+    char *buffer,
+    size_t buffer_size
+) {
     char pending[2048];
     char resolved[2048];
     size_t index = 0;
@@ -386,7 +393,7 @@ int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_mis
             return -1;
         }
 
-        if (resolve_symlinks) {
+        if (resolve_symlinks && !logical_policy) {
             char target[2048];
 
             if (platform_read_symlink(candidate, target, sizeof(target)) == 0) {
@@ -431,8 +438,16 @@ int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_mis
         rt_copy_string(resolved, sizeof(resolved), "/");
     }
 
+    if (resolve_symlinks && logical_policy) {
+        return tool_canonicalize_path_policy(resolved, 1, allow_missing, 0, buffer, buffer_size);
+    }
+
     rt_copy_string(buffer, buffer_size, resolved);
     return 0;
+}
+
+int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_missing, char *buffer, size_t buffer_size) {
+    return tool_canonicalize_path_policy(path, resolve_symlinks, allow_missing, 0, buffer, buffer_size);
 }
 
 int tool_path_exists(const char *path) {

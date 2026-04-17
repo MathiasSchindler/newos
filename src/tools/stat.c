@@ -69,6 +69,30 @@ static void write_quoted(const char *text) {
     rt_write_char(1, '\'');
 }
 
+static int write_time_value(long long epoch_seconds) {
+    char buffer[64];
+    if (platform_format_time(epoch_seconds, 1, "%Y-%m-%d %H:%M:%S", buffer, sizeof(buffer)) != 0) {
+        return rt_write_int(1, epoch_seconds);
+    }
+    return rt_write_cstr(1, buffer);
+}
+
+static int write_labeled_time(const char *label, long long epoch_seconds) {
+    if (rt_write_cstr(1, label) != 0) {
+        return 1;
+    }
+    if (write_time_value(epoch_seconds) != 0) {
+        return 1;
+    }
+    if (rt_write_cstr(1, " (") != 0) {
+        return 1;
+    }
+    if (rt_write_int(1, epoch_seconds) != 0) {
+        return 1;
+    }
+    return rt_write_line(1, ")");
+}
+
 static int print_file_format(const char *format, const char *path, const PlatformDirEntry *entry, const char *target) {
     size_t i = 0;
     char mode_text[11];
@@ -155,6 +179,31 @@ static int print_file_format(const char *format, const char *path, const Platfor
                 break;
             case 'Y':
                 if (rt_write_int(1, entry->mtime) != 0) {
+                    return 1;
+                }
+                break;
+            case 'X':
+                if (rt_write_int(1, entry->atime) != 0) {
+                    return 1;
+                }
+                break;
+            case 'Z':
+                if (rt_write_int(1, entry->ctime) != 0) {
+                    return 1;
+                }
+                break;
+            case 'x':
+                if (write_time_value(entry->atime) != 0) {
+                    return 1;
+                }
+                break;
+            case 'y':
+                if (write_time_value(entry->mtime) != 0) {
+                    return 1;
+                }
+                break;
+            case 'z':
+                if (write_time_value(entry->ctime) != 0) {
                     return 1;
                 }
                 break;
@@ -306,9 +355,11 @@ static int print_file_report(const char *path, const StatOptions *options) {
     rt_write_line(1, entry.owner);
     rt_write_cstr(1, "Group: ");
     rt_write_line(1, entry.group);
-    rt_write_cstr(1, "Modified: ");
-    rt_write_int(1, entry.mtime);
-    rt_write_char(1, '\n');
+    if (write_labeled_time("Access: ", entry.atime) != 0 ||
+        write_labeled_time("Modify: ", entry.mtime) != 0 ||
+        write_labeled_time("Change: ", entry.ctime) != 0) {
+        return 1;
+    }
 
     if (has_target) {
         rt_write_cstr(1, "Target: ");

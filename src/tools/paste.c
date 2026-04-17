@@ -18,10 +18,11 @@ typedef struct {
     char delimiters[PASTE_DELIMITER_CAPACITY];
     size_t delimiter_count;
     int serial_mode;
+    int zero_terminated;
 } PasteOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-s] [-d DELIMS] [file ...]");
+    tool_write_usage(program_name, "[-sz] [-d DELIMS] [file ...]");
 }
 
 static int parse_delimiters(const char *text, PasteOptions *options) {
@@ -40,6 +41,12 @@ static int parse_delimiters(const char *text, PasteOptions *options) {
                 ch = '\n';
             } else if (ch == 'r') {
                 ch = '\r';
+            } else if (ch == 'b') {
+                ch = '\b';
+            } else if (ch == 'f') {
+                ch = '\f';
+            } else if (ch == 'v') {
+                ch = '\v';
             } else if (ch == '0') {
                 ch = '\0';
             }
@@ -63,7 +70,7 @@ static void init_reader(LineReader *reader, int fd) {
     reader->eof = 0;
 }
 
-static int read_next_line(LineReader *reader, char *line, size_t line_size, int *has_line_out) {
+static int read_next_record(LineReader *reader, char *line, size_t line_size, char terminator, int *has_line_out) {
     size_t line_len = 0;
 
     while (!reader->eof) {
@@ -84,7 +91,7 @@ static int read_next_line(LineReader *reader, char *line, size_t line_size, int 
         while (reader->chunk_pos < reader->chunk_len) {
             char ch = reader->chunk[reader->chunk_pos++];
 
-            if (ch == '\n') {
+            if (ch == terminator) {
                 line[line_len] = '\0';
                 *has_line_out = 1;
                 return 0;
@@ -126,6 +133,7 @@ static int write_delimiter(const PasteOptions *options, size_t index) {
 
 static int paste_parallel(LineReader *readers, int file_count, const PasteOptions *options) {
     int still_active = 1;
+    char output_terminator = options->zero_terminated ? '\0' : '\n';
 
     while (still_active) {
         int any_line = 0;
@@ -136,7 +144,7 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
         still_active = 0;
         for (i = 0; i < file_count; ++i) {
             has_line[i] = 0;
-            if (read_next_line(&readers[i], lines[i], sizeof(lines[i]), &has_line[i]) != 0) {
+            if (read_next_record(&readers[i], lines[i], sizeof(lines[i]), output_terminator, &has_line[i]) != 0) {
                 return -1;
             }
 
@@ -162,7 +170,7 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
             }
         }
 
-        if (rt_write_char(1, '\n') != 0) {
+        if (rt_write_char(1, output_terminator) != 0) {
             return -1;
         }
     }
@@ -172,6 +180,7 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
 
 static int paste_serial(LineReader *readers, int file_count, const PasteOptions *options) {
     int i;
+    char output_terminator = options->zero_terminated ? '\0' : '\n';
 
     for (i = 0; i < file_count; ++i) {
         int field_index = 0;
@@ -181,7 +190,7 @@ static int paste_serial(LineReader *readers, int file_count, const PasteOptions 
             char line[PASTE_LINE_CAPACITY];
             int has_line = 0;
 
-            if (read_next_line(&readers[i], line, sizeof(line), &has_line) != 0) {
+            if (read_next_record(&readers[i], line, sizeof(line), output_terminator, &has_line) != 0) {
                 return -1;
             }
 
@@ -204,7 +213,7 @@ static int paste_serial(LineReader *readers, int file_count, const PasteOptions 
         }
 
         if (has_any || file_count > 0) {
-            if (rt_write_char(1, '\n') != 0) {
+            if (rt_write_char(1, output_terminator) != 0) {
                 return -1;
             }
         }
@@ -226,10 +235,14 @@ int main(int argc, char **argv) {
     options.delimiters[0] = '\t';
     options.delimiter_count = 1U;
     options.serial_mode = 0;
+    options.zero_terminated = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-s") == 0) {
             options.serial_mode = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-z") == 0) {
+            options.zero_terminated = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-d") == 0) {
             if (argi + 1 >= argc) {

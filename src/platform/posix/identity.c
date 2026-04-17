@@ -76,6 +76,30 @@ static int compare_group_ids(const void *lhs, const void *rhs) {
     return 0;
 }
 
+int platform_lookup_group(const char *groupname, unsigned int *gid_out) {
+    struct group *gr = NULL;
+    unsigned long long value = 0;
+
+    if (groupname == NULL || groupname[0] == '\0' || gid_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (rt_parse_uint(groupname, &value) == 0) {
+        *gid_out = (unsigned int)value;
+        return 0;
+    }
+
+    gr = getgrnam(groupname);
+    if (gr == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    *gid_out = (unsigned int)gr->gr_gid;
+    return 0;
+}
+
 int platform_lookup_identity(const char *username, PlatformIdentity *identity_out) {
     struct passwd *pw = NULL;
 

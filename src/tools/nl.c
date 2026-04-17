@@ -4,14 +4,22 @@
 
 #define NL_LINE_CAPACITY 4096
 
+typedef enum {
+    NL_STYLE_NONEMPTY = 0,
+    NL_STYLE_ALL = 1,
+    NL_STYLE_NONE = 2
+} NlStyle;
+
 typedef struct {
-    int number_all_lines;
+    NlStyle style;
     unsigned long long start;
+    unsigned long long increment;
     unsigned long long width;
+    char separator[32];
 } NlOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-ba] [-v START] [-w WIDTH] [file ...]");
+    tool_write_usage(program_name, "[-ba|-bt|-bn] [-v START] [-i INCREMENT] [-w WIDTH] [-s SEP] [file ...]");
 }
 
 static int write_padding(size_t count) {
@@ -48,20 +56,20 @@ static int emit_line(const char *line, int should_number, unsigned long long *li
 
         if (write_padding(padding) != 0 ||
             rt_write_uint(1, *line_no) != 0 ||
-            rt_write_char(1, '\t') != 0 ||
+            rt_write_cstr(1, options->separator) != 0 ||
             rt_write_line(1, line) != 0) {
             return -1;
         }
 
-        *line_no += 1ULL;
+        *line_no += options->increment;
         return 0;
     }
 
     return write_padding((size_t)options->width) == 0 &&
-           rt_write_char(1, '\t') == 0 &&
+           rt_write_cstr(1, options->separator) == 0 &&
            rt_write_line(1, line) == 0
-               ? 0
-               : -1;
+                ? 0
+                : -1;
 }
 
 static int nl_stream(int fd, const NlOptions *options) {
@@ -80,7 +88,7 @@ static int nl_stream(int fd, const NlOptions *options) {
             if (ch == '\n') {
                 int should_number;
                 line[line_len] = '\0';
-                should_number = options->number_all_lines || line_len > 0U;
+                should_number = options->style == NL_STYLE_ALL || (options->style == NL_STYLE_NONEMPTY && line_len > 0U);
                 if (emit_line(line, should_number, &line_no, options) != 0) {
                     return -1;
                 }
@@ -98,7 +106,7 @@ static int nl_stream(int fd, const NlOptions *options) {
     if (line_len > 0U) {
         int should_number;
         line[line_len] = '\0';
-        should_number = options->number_all_lines || line_len > 0U;
+        should_number = options->style == NL_STYLE_ALL || (options->style == NL_STYLE_NONEMPTY && line_len > 0U);
         if (emit_line(line, should_number, &line_no, options) != 0) {
             return -1;
         }
@@ -112,16 +120,48 @@ int main(int argc, char **argv) {
     int argi = 1;
     int exit_code = 0;
 
-    options.number_all_lines = 0;
+    options.style = NL_STYLE_NONEMPTY;
     options.start = 1ULL;
+    options.increment = 1ULL;
     options.width = 6ULL;
+    rt_copy_string(options.separator, sizeof(options.separator), "\t");
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-ba") == 0) {
-            options.number_all_lines = 1;
+            options.style = NL_STYLE_ALL;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "-bt") == 0) {
+            options.style = NL_STYLE_NONEMPTY;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-bn") == 0) {
+            options.style = NL_STYLE_NONE;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-b") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (rt_strcmp(argv[argi + 1], "a") == 0) {
+                options.style = NL_STYLE_ALL;
+            } else if (rt_strcmp(argv[argi + 1], "t") == 0) {
+                options.style = NL_STYLE_NONEMPTY;
+            } else if (rt_strcmp(argv[argi + 1], "n") == 0) {
+                options.style = NL_STYLE_NONE;
+            } else {
+                print_usage(argv[0]);
+                return 1;
+            }
+            argi += 2;
         } else if (rt_strcmp(argv[argi], "-v") == 0) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &options.start, "nl", "start") != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-i") == 0) {
+            if (argi + 1 >= argc ||
+                tool_parse_uint_arg(argv[argi + 1], &options.increment, "nl", "increment") != 0 ||
+                options.increment == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
@@ -131,6 +171,13 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "-s") == 0) {
+            if (argi + 1 >= argc || argv[argi + 1][0] == '\0') {
+                print_usage(argv[0]);
+                return 1;
+            }
+            rt_copy_string(options.separator, sizeof(options.separator), argv[argi + 1]);
             argi += 2;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;

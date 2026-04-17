@@ -20,6 +20,23 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-bcs] [-w WIDTH] [file ...]");
 }
 
+static int is_digit_text(const char *text) {
+    size_t i = 0;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+
+    while (text[i] != '\0') {
+        if (text[i] < '0' || text[i] > '9') {
+            return 0;
+        }
+        i += 1;
+    }
+
+    return 1;
+}
+
 static int flush_prefix(const char *buffer, size_t count) {
     if (count == 0U) {
         return 0;
@@ -180,6 +197,18 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 2;
+        } else if (argv[argi][1] == 'w' && argv[argi][2] != '\0') {
+            if (tool_parse_uint_arg(argv[argi] + 2, &options.width, "fold", "width") != 0 || options.width == 0ULL) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            argi += 1;
+        } else if (is_digit_text(argv[argi] + 1)) {
+            if (tool_parse_uint_arg(argv[argi] + 1, &options.width, "fold", "width") != 0 || options.width == 0ULL) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            argi += 1;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
             break;

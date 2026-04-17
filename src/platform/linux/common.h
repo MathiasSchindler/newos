@@ -16,6 +16,9 @@
 #define LINUX_O_TRUNC 01000
 #define LINUX_O_DIRECTORY 0200000
 
+#define LINUX_UTIME_OMIT 0x3ffffffeL
+#define LINUX_UTIME_NOW  0x3fffffffL
+
 #define LINUX_SIGHUP 1
 #define LINUX_SIGINT 2
 #define LINUX_SIGQUIT 3

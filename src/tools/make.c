@@ -19,10 +19,12 @@ typedef struct {
 
 typedef struct {
     char target[MAKE_NAME_CAPACITY];
+    char stem[MAKE_NAME_CAPACITY];
     char deps[MAKE_MAX_DEPS][MAKE_NAME_CAPACITY];
     size_t dep_count;
     char commands[MAKE_MAX_COMMANDS][MAKE_COMMAND_CAPACITY];
     size_t command_count;
+    int is_pattern;
     int building;
     int built;
 } MakeRule;
@@ -35,6 +37,8 @@ typedef struct {
     char phony[MAKE_MAX_PHONY][MAKE_NAME_CAPACITY];
     size_t phony_count;
     char first_target[MAKE_NAME_CAPACITY];
+    char active_targets[MAKE_MAX_RULES][MAKE_NAME_CAPACITY];
+    size_t active_count;
     int dry_run;
 } MakeProgram;
 
@@ -91,6 +95,19 @@ static int append_char(char *buffer, size_t *used, size_t buffer_size, char ch) 
     buffer[*used] = ch;
     *used += 1U;
     buffer[*used] = '\0';
+    return 0;
+}
+
+static int make_target_has_pattern(const char *text) {
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        if (text[i] == '%') {
+            return 1;
+        }
+        i += 1U;
+    }
+
     return 0;
 }
 
@@ -190,6 +207,137 @@ static int is_phony_target(const MakeProgram *program, const char *name) {
     return 0;
 }
 
+static int is_target_active(const MakeProgram *program, const char *name) {
+    size_t i;
+
+    for (i = 0; i < program->active_count; ++i) {
+        if (rt_strcmp(program->active_targets[i], name) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int push_active_target(MakeProgram *program, const char *name) {
+    if (program->active_count >= MAKE_MAX_RULES) {
+        return -1;
+    }
+
+    rt_copy_string(program->active_targets[program->active_count], sizeof(program->active_targets[program->active_count]), name);
+    program->active_count += 1U;
+    return 0;
+}
+
+static void pop_active_target(MakeProgram *program) {
+    if (program->active_count > 0) {
+        program->active_count -= 1U;
+    }
+}
+
+static int match_target_pattern(const char *pattern, const char *target, char *stem_out, size_t stem_size) {
+    size_t pattern_len;
+    size_t target_len;
+    size_t percent_index = 0;
+    size_t suffix_len;
+    size_t stem_len;
+    size_t i;
+
+    if (!make_target_has_pattern(pattern)) {
+        if (rt_strcmp(pattern, target) != 0) {
+            return 0;
+        }
+        if (stem_out != 0 && stem_size > 0U) {
+            stem_out[0] = '\0';
+        }
+        return 1;
+    }
+
+    pattern_len = rt_strlen(pattern);
+    target_len = rt_strlen(target);
+    while (pattern[percent_index] != '\0' && pattern[percent_index] != '%') {
+        percent_index += 1U;
+    }
+
+    suffix_len = pattern_len - percent_index - 1U;
+    if (target_len < percent_index + suffix_len) {
+        return 0;
+    }
+
+    for (i = 0; i < percent_index; ++i) {
+        if (pattern[i] != target[i]) {
+            return 0;
+        }
+    }
+    for (i = 0; i < suffix_len; ++i) {
+        if (pattern[pattern_len - suffix_len + i] != target[target_len - suffix_len + i]) {
+            return 0;
+        }
+    }
+
+    stem_len = target_len - percent_index - suffix_len;
+    if (stem_out == 0 || stem_len + 1U > stem_size) {
+        return 0;
+    }
+    memcpy(stem_out, target + percent_index, stem_len);
+    stem_out[stem_len] = '\0';
+    return 1;
+}
+
+static int substitute_pattern_text(const char *text, const char *stem, char *out, size_t out_size) {
+    size_t used = 0;
+    size_t i = 0;
+
+    out[0] = '\0';
+    while (text[i] != '\0') {
+        if (text[i] == '%') {
+            if (append_text(out, &used, out_size, stem) != 0) {
+                return -1;
+            }
+        } else if (append_char(out, &used, out_size, text[i]) != 0) {
+            return -1;
+        }
+        i += 1U;
+    }
+
+    return 0;
+}
+
+static MakeRule *find_pattern_rule(MakeProgram *program, const char *target, char *stem_out, size_t stem_size) {
+    size_t i;
+
+    for (i = 0; i < program->rule_count; ++i) {
+        if (program->rules[i].is_pattern && match_target_pattern(program->rules[i].target, target, stem_out, stem_size)) {
+            return &program->rules[i];
+        }
+    }
+
+    return 0;
+}
+
+static int instantiate_pattern_rule(const MakeRule *pattern_rule, const char *target, const char *stem, MakeRule *out_rule) {
+    size_t i;
+
+    rt_memset(out_rule, 0, sizeof(*out_rule));
+    rt_copy_string(out_rule->target, sizeof(out_rule->target), target);
+    rt_copy_string(out_rule->stem, sizeof(out_rule->stem), stem);
+
+    for (i = 0; i < pattern_rule->dep_count; ++i) {
+        if (out_rule->dep_count >= MAKE_MAX_DEPS ||
+            substitute_pattern_text(pattern_rule->deps[i], stem, out_rule->deps[out_rule->dep_count], sizeof(out_rule->deps[out_rule->dep_count])) != 0) {
+            return -1;
+        }
+        out_rule->dep_count += 1U;
+    }
+
+    for (i = 0; i < pattern_rule->command_count; ++i) {
+        rt_copy_string(out_rule->commands[out_rule->command_count], sizeof(out_rule->commands[out_rule->command_count]), pattern_rule->commands[i]);
+        out_rule->command_count += 1U;
+    }
+
+    return 0;
+}
+
 static int expand_text_recursive(
     const MakeProgram *program,
     const MakeRule *rule,
@@ -237,6 +385,11 @@ static int expand_text_recursive(
                             return -1;
                         }
                     }
+                }
+                pos += 2U;
+            } else if (next == '*') {
+                if (rule != 0 && append_text(out, &used, out_size, rule->stem) != 0) {
+                    return -1;
                 }
                 pos += 2U;
             } else if (next == '(' || next == '{') {
@@ -536,9 +689,10 @@ static int parse_makefile_internal(MakeProgram *program, const char *path, int d
                             rule = &program->rules[program->rule_count++];
                             rt_memset(rule, 0, sizeof(*rule));
                             rt_copy_string(rule->target, sizeof(rule->target), target);
+                            rule->is_pattern = make_target_has_pattern(target);
                         }
 
-                        if (program->first_target[0] == '\0' && target[0] != '.') {
+                        if (program->first_target[0] == '\0' && target[0] != '.' && !make_target_has_pattern(target)) {
                             rt_copy_string(program->first_target, sizeof(program->first_target), target);
                         }
 
@@ -654,11 +808,26 @@ static int run_rule_commands(MakeProgram *program, MakeRule *rule) {
 }
 
 static int build_target(MakeProgram *program, const char *target) {
+    MakeRule generated_rule;
     MakeRule *rule = find_rule(program, target);
     size_t i;
     int need_run = 0;
     long long target_mtime = 0;
     int target_exists = path_exists_and_mtime(target, &target_mtime);
+    int using_generated_rule = 0;
+
+    if (rule == 0) {
+        char stem[MAKE_NAME_CAPACITY];
+        MakeRule *pattern_rule = find_pattern_rule(program, target, stem, sizeof(stem));
+        if (pattern_rule != 0) {
+            if (instantiate_pattern_rule(pattern_rule, target, stem, &generated_rule) != 0) {
+                tool_write_error("make", "cannot expand pattern rule for ", target);
+                return 1;
+            }
+            rule = &generated_rule;
+            using_generated_rule = 1;
+        }
+    }
 
     if (rule == 0) {
         if (target_exists) {
@@ -668,11 +837,22 @@ static int build_target(MakeProgram *program, const char *target) {
         return 1;
     }
 
+    if (is_target_active(program, target)) {
+        tool_write_error("make", "dependency cycle on ", target);
+        return 1;
+    }
+    if (push_active_target(program, target) != 0) {
+        tool_write_error("make", "target stack overflow on ", target);
+        return 1;
+    }
+
     if (rule->building) {
+        pop_active_target(program);
         tool_write_error("make", "dependency cycle on ", target);
         return 1;
     }
     if (rule->built) {
+        pop_active_target(program);
         return 0;
     }
 
@@ -682,6 +862,7 @@ static int build_target(MakeProgram *program, const char *target) {
         long long dep_mtime = 0;
         if (build_target(program, rule->deps[i]) != 0) {
             rule->building = 0;
+            pop_active_target(program);
             return 1;
         }
         if (!target_exists || (path_exists_and_mtime(rule->deps[i], &dep_mtime) && dep_mtime > target_mtime)) {
@@ -701,18 +882,23 @@ static int build_target(MakeProgram *program, const char *target) {
         if (!target_exists && rule->dep_count == 0 && !is_phony_target(program, target)) {
             tool_write_error("make", "nothing to do for ", target);
             rule->building = 0;
+            pop_active_target(program);
             return 1;
         }
     } else if (need_run) {
         int run_status = run_rule_commands(program, rule);
         if (run_status != 0) {
             rule->building = 0;
+            pop_active_target(program);
             return run_status < 0 ? 1 : run_status;
         }
     }
 
     rule->building = 0;
-    rule->built = 1;
+    if (!using_generated_rule) {
+        rule->built = 1;
+    }
+    pop_active_target(program);
     return 0;
 }
 

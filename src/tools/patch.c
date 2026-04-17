@@ -78,6 +78,18 @@ static void copy_line(char *dst, size_t dst_size, const char *src) {
     rt_copy_string(dst, dst_size, src);
 }
 
+static int build_backup_path(const char *path, char *buffer, size_t buffer_size) {
+    size_t len = rt_strlen(path);
+
+    if (len + 6U > buffer_size) {
+        return -1;
+    }
+
+    memcpy(buffer, path, len);
+    memcpy(buffer + len, ".orig", 6);
+    return 0;
+}
+
 static int parse_path_header(const char *text, int strip_components, char *out, size_t out_size) {
     char raw[PATCH_PATH_CAPACITY];
     size_t raw_len = 0;
@@ -368,20 +380,27 @@ static int apply_hunk(unsigned long long old_start, size_t hunk_count, size_t *f
 
 int main(int argc, char **argv) {
     const char *patch_path = "-";
+    const char *output_path = 0;
     int strip_components = 0;
     int reverse_mode = 0;
+    int backup_mode = 0;
+    int output_used = 0;
     size_t line_count = 0;
     size_t i = 0;
     int argi;
 
     for (argi = 1; argi < argc; ++argi) {
         if (rt_strcmp(argv[argi], "--help") == 0) {
-            tool_write_usage(tool_base_name(argv[0]), "[-pN] [-R] [-i patchfile] [patchfile]");
+            tool_write_usage(tool_base_name(argv[0]), "[-pN] [-R] [-b] [-o outfile] [-i patchfile] [patchfile]");
             return 0;
         } else if (rt_strcmp(argv[argi], "-R") == 0) {
             reverse_mode = 1;
+        } else if (rt_strcmp(argv[argi], "-b") == 0 || rt_strcmp(argv[argi], "--backup") == 0) {
+            backup_mode = 1;
         } else if (rt_strcmp(argv[argi], "-i") == 0 && argi + 1 < argc) {
             patch_path = argv[++argi];
+        } else if (rt_strcmp(argv[argi], "-o") == 0 && argi + 1 < argc) {
+            output_path = argv[++argi];
         } else if (rt_strcmp(argv[argi], "-p") == 0 && argi + 1 < argc) {
             unsigned long long value = 0;
             if (rt_parse_uint(argv[++argi], &value) != 0) {
@@ -450,6 +469,11 @@ int main(int argc, char **argv) {
             rt_copy_string(target_path, sizeof(target_path), old_path);
         } else {
             rt_copy_string(target_path, sizeof(target_path), new_path);
+        }
+
+        if (output_path != 0 && output_used) {
+            tool_write_error("patch", "multiple file patches are not supported with -o", 0);
+            return 1;
         }
 
         if ((!reverse_mode && rt_strcmp(old_path, "/dev/null") == 0) ||
@@ -532,19 +556,37 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (have_changes || deleting_file) {
-            if (deleting_file) {
-                if (platform_remove_file(target_path) != 0) {
-                    tool_write_error("patch", "cannot remove ", target_path);
+        if (have_changes || deleting_file || output_path != 0) {
+            if (output_path != 0) {
+                output_used = 1;
+                if (write_target_file(output_path, deleting_file ? 0U : file_count) != 0) {
+                    tool_write_error("patch", "cannot write ", output_path);
                     return 1;
                 }
-            } else if (write_target_file(target_path, file_count) != 0) {
-                tool_write_error("patch", "cannot write ", target_path);
-                return 1;
-            }
+                rt_write_cstr(1, "patched ");
+                rt_write_line(1, output_path);
+            } else {
+                if (backup_mode && tool_path_exists(target_path)) {
+                    char backup_path[PATCH_PATH_CAPACITY];
+                    if (build_backup_path(target_path, backup_path, sizeof(backup_path)) != 0 ||
+                        tool_copy_file(target_path, backup_path) != 0) {
+                        tool_write_error("patch", "cannot write backup for ", target_path);
+                        return 1;
+                    }
+                }
+                if (deleting_file) {
+                    if (platform_remove_file(target_path) != 0) {
+                        tool_write_error("patch", "cannot remove ", target_path);
+                        return 1;
+                    }
+                } else if (write_target_file(target_path, file_count) != 0) {
+                    tool_write_error("patch", "cannot write ", target_path);
+                    return 1;
+                }
 
-            rt_write_cstr(1, "patched ");
-            rt_write_line(1, target_path);
+                rt_write_cstr(1, "patched ");
+                rt_write_line(1, target_path);
+            }
         }
     }
 
