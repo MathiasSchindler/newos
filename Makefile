@@ -7,7 +7,7 @@ TARGET_BUILD_DIR ?= build/linux-aarch64
 TARGET_TRIPLE ?= aarch64-linux-none
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
-TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod uname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep wc head tail ps sort cut tr t grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings
+TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod uname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 SHARED_SOURCES := \
 	src/shared/runtime/memory.c \
@@ -31,10 +31,13 @@ TARGET_PLATFORM_SOURCES := \
 	src/platform/linux/time.c
 TARGET_CRT := src/arch/aarch64/linux/crt0.S
 
-.PHONY: all host freestanding test clean
+.PHONY: all host freestanding test benchmark clean
 
 test: host
 	./tests/run_smoke_tests.sh
+
+benchmark: host
+	./tests/benchmarks/run_benchmarks.sh
 
 ifeq ($(AUTO_PARALLEL),1)
 all: host freestanding

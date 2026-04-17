@@ -77,6 +77,8 @@ int platform_path_is_directory(const char *path, int *is_directory_out);
 int platform_stream_file_to_stdout(const char *path);
 int platform_get_current_directory(char *buffer, size_t buffer_size);
 int platform_get_path_info(const char *path, PlatformDirEntry *entry_out);
+int platform_read_symlink(const char *path, char *buffer, size_t buffer_size);
+int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out);
 
 void platform_free_entries(PlatformDirEntry *entries, size_t count);
 void platform_format_mode(unsigned int mode, char out[11]);

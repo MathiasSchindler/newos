@@ -11,12 +11,29 @@ typedef struct {
     int ignore_case;
     int invert_match;
     int recursive;
+    int count_only;
+    int quiet;
+    int list_files;
 } GrepOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-nivr] PATTERN [file ...]");
+    rt_write_line(2, " [-nivrcql] PATTERN [file ...]");
+}
+
+static int print_count(const char *label, int show_label, unsigned long long count) {
+    if (show_label) {
+        if (rt_write_cstr(1, label) != 0 || rt_write_char(1, ':') != 0) {
+            return -1;
+        }
+    }
+
+    if (rt_write_uint(1, count) != 0 || rt_write_char(1, '\n') != 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static char to_lower_ascii(char ch) {
@@ -105,7 +122,9 @@ static int grep_stream(int fd, const char *pattern, const GrepOptions *options, 
     char line[GREP_LINE_CAPACITY];
     size_t line_len = 0;
     unsigned long long line_no = 1;
+    unsigned long long match_count = 0;
     int matched = 0;
+    int listed = 0;
     long bytes_read;
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
@@ -125,8 +144,24 @@ static int grep_stream(int fd, const char *pattern, const GrepOptions *options, 
 
                 if (line_matches) {
                     matched = 1;
-                    if (print_match(label, show_label, line_no, options->show_line_no, line) != 0) {
-                        return -1;
+                    match_count += 1ULL;
+                    if (options->quiet) {
+                        if (matched_out != 0) {
+                            *matched_out = matched;
+                        }
+                        return 0;
+                    }
+                    if (options->list_files) {
+                        if (!listed) {
+                            if (rt_write_line(1, label) != 0) {
+                                return -1;
+                            }
+                            listed = 1;
+                        }
+                    } else if (!options->count_only) {
+                        if (print_match(label, show_label, line_no, options->show_line_no, line) != 0) {
+                            return -1;
+                        }
                     }
                 }
                 line_len = 0;
@@ -152,9 +187,31 @@ static int grep_stream(int fd, const char *pattern, const GrepOptions *options, 
 
         if (line_matches) {
             matched = 1;
-            if (print_match(label, show_label, line_no, options->show_line_no, line) != 0) {
-                return -1;
+            match_count += 1ULL;
+            if (options->quiet) {
+                if (matched_out != 0) {
+                    *matched_out = matched;
+                }
+                return 0;
             }
+            if (options->list_files) {
+                if (!listed) {
+                    if (rt_write_line(1, label) != 0) {
+                        return -1;
+                    }
+                    listed = 1;
+                }
+            } else if (!options->count_only) {
+                if (print_match(label, show_label, line_no, options->show_line_no, line) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+
+    if (options->count_only && !options->quiet && !options->list_files) {
+        if (print_count(label, show_label, match_count) != 0) {
+            return -1;
         }
     }
 
@@ -263,6 +320,12 @@ int main(int argc, char **argv) {
                 options.invert_match = 1;
             } else if (*flag == 'r' || *flag == 'R') {
                 options.recursive = 1;
+            } else if (*flag == 'c') {
+                options.count_only = 1;
+            } else if (*flag == 'q') {
+                options.quiet = 1;
+            } else if (*flag == 'l') {
+                options.list_files = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;
@@ -276,6 +339,11 @@ int main(int argc, char **argv) {
     if (argc <= arg_index) {
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (options.quiet) {
+        options.count_only = 0;
+        options.list_files = 0;
     }
 
     file_count = argc - arg_index - 1;

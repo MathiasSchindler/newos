@@ -24,6 +24,12 @@ The repository now includes a structured smoke-test suite under [tests](tests).
 
 You can run the suite with make test.
 
+## Benchmarks
+
+A separate benchmark area now lives under [tests/benchmarks](tests/benchmarks) for host-side performance comparisons against the standard system tools.
+
+You can run it with make benchmark.
+
 ## License
 
 This project is released under CC-0.

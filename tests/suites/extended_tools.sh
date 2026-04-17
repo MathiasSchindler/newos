@@ -52,3 +52,42 @@ assert_file_contains "$WORK_DIR/file.out" 'ASCII text' "file type detection fail
 printf '\001\002HelloString\000xxMoreText\n' > "$WORK_DIR/strings.bin"
 "$ROOT_DIR/build/strings" "$WORK_DIR/strings.bin" > "$WORK_DIR/strings.out"
 assert_file_contains "$WORK_DIR/strings.out" 'HelloString' "strings output missing printable sequence"
+
+printf_out=$("$ROOT_DIR/build/printf" 'value=%s %d %x\n' sample 42 255 | tr -d '\r')
+assert_text_equals "$printf_out" 'value=sample 42 ff' "printf formatting failed"
+
+which_out=$("$ROOT_DIR/build/which" ls | tr -d '\r\n')
+assert_text_equals "$which_out" "$ROOT_DIR/build/ls" "which did not resolve build tool"
+
+ln -sf dd.in "$WORK_DIR/link-to-dd"
+readlink_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-to-dd" | tr -d '\r\n')
+assert_text_equals "$readlink_out" 'dd.in' "readlink target mismatch"
+"$ROOT_DIR/build/stat" "$WORK_DIR/dd.in" > "$WORK_DIR/stat.out"
+assert_file_contains "$WORK_DIR/stat.out" '^Size:' "stat output missing size"
+assert_file_contains "$WORK_DIR/stat.out" 'Type: file' "stat output missing file type"
+
+"$ROOT_DIR/build/du" "$WORK_DIR" > "$WORK_DIR/du.out"
+assert_file_contains "$WORK_DIR/du.out" '^[0-9][0-9]*[[:space:]].*extended_tools$' "du output missing directory total"
+"$ROOT_DIR/build/df" > "$WORK_DIR/df.out"
+assert_file_contains "$WORK_DIR/df.out" '^Filesystem[[:space:]]' "df header missing"
+
+printf 'Hello\nNope\nHello\n' > "$WORK_DIR/grep_count.txt"
+grep_count=$("$ROOT_DIR/build/grep" -c Hello "$WORK_DIR/grep_count.txt" | tr -d '\r\n')
+assert_text_equals "$grep_count" '2' "grep count mode failed"
+if ! "$ROOT_DIR/build/grep" -q Hello "$WORK_DIR/grep_count.txt"; then
+    fail "grep quiet mode failed"
+fi
+"$ROOT_DIR/build/grep" -l Hello "$WORK_DIR/grep_count.txt" > "$WORK_DIR/grep_l.out"
+assert_file_contains "$WORK_DIR/grep_l.out" 'grep_count.txt' "grep list-files mode failed"
+
+mkdir -p "$WORK_DIR/tar_src"
+printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/tar" -czf test.tar.gz tar_src
+    rm -rf tar_src
+    mkdir -p tar_extract_gz
+    cd tar_extract_gz
+    "$ROOT_DIR/build/tar" -xzf ../test.tar.gz
+)
+assert_file_contains "$WORK_DIR/tar_extract_gz/tar_src/file.txt" 'archive-data' "tar gzip integration failed"

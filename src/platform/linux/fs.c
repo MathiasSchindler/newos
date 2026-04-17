@@ -2,6 +2,23 @@
 #include "common.h"
 #include "syscall.h"
 
+struct linux_statfs {
+    long f_type;
+    long f_bsize;
+    unsigned long long f_blocks;
+    unsigned long long f_bfree;
+    unsigned long long f_bavail;
+    unsigned long long f_files;
+    unsigned long long f_ffree;
+    struct {
+        int val[2];
+    } f_fsid;
+    long f_namelen;
+    long f_frsize;
+    long f_flags;
+    long f_spare[4];
+};
+
 static int fill_entry(const char *display_name, const char *full_path, PlatformDirEntry *entry) {
     struct linux_stat st;
     long result;
@@ -329,6 +346,43 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     }
 
     return fill_entry(path, path, entry_out);
+}
+
+int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
+    long length;
+
+    if (path == 0 || buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    length = linux_syscall4(LINUX_SYS_READLINKAT, LINUX_AT_FDCWD, (long)path, (long)buffer, (long)(buffer_size - 1));
+    if (length < 0) {
+        return -1;
+    }
+
+    buffer[length] = '\0';
+    return 0;
+}
+
+int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+    struct linux_statfs info;
+    unsigned long long fragment_size;
+    long result;
+
+    if (path == 0 || total_bytes_out == 0 || free_bytes_out == 0 || available_bytes_out == 0) {
+        return -1;
+    }
+
+    result = linux_syscall2(LINUX_SYS_STATFS, (long)path, (long)&info);
+    if (result < 0) {
+        return -1;
+    }
+
+    fragment_size = (info.f_frsize > 0) ? (unsigned long long)info.f_frsize : (unsigned long long)info.f_bsize;
+    *total_bytes_out = info.f_blocks * fragment_size;
+    *free_bytes_out = info.f_bfree * fragment_size;
+    *available_bytes_out = info.f_bavail * fragment_size;
+    return 0;
 }
 
 void platform_free_entries(PlatformDirEntry *entries, size_t count) {

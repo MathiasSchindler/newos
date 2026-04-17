@@ -7,6 +7,13 @@
 #define TAR_PATH_CAPACITY 1024
 #define TAR_ENTRY_CAPACITY 1024
 
+typedef enum {
+    TAR_COMPRESS_NONE = 0,
+    TAR_COMPRESS_GZIP = 1,
+    TAR_COMPRESS_BZIP2 = 2,
+    TAR_COMPRESS_XZ = 3
+} TarCompression;
+
 typedef struct {
     char name[100];
     char mode[8];
@@ -67,6 +74,62 @@ static int is_zero_block(const unsigned char *block) {
     return 1;
 }
 
+static int has_suffix(const char *text, const char *suffix) {
+    size_t text_len = rt_strlen(text);
+    size_t suffix_len = rt_strlen(suffix);
+
+    if (suffix_len > text_len) {
+        return 0;
+    }
+
+    return rt_strcmp(text + text_len - suffix_len, suffix) == 0;
+}
+
+static TarCompression detect_compression(const char *archive_name) {
+    if (has_suffix(archive_name, ".tar.gz") || has_suffix(archive_name, ".tgz") || has_suffix(archive_name, ".gz")) {
+        return TAR_COMPRESS_GZIP;
+    }
+    if (has_suffix(archive_name, ".tar.bz2") || has_suffix(archive_name, ".bz2")) {
+        return TAR_COMPRESS_BZIP2;
+    }
+    if (has_suffix(archive_name, ".tar.xz") || has_suffix(archive_name, ".xz")) {
+        return TAR_COMPRESS_XZ;
+    }
+    return TAR_COMPRESS_NONE;
+}
+
+static const char *compression_suffix(TarCompression compression) {
+    if (compression == TAR_COMPRESS_GZIP) return ".gz";
+    if (compression == TAR_COMPRESS_BZIP2) return ".bz2";
+    if (compression == TAR_COMPRESS_XZ) return ".xz";
+    return "";
+}
+
+static const char *compressor_name(TarCompression compression) {
+    if (compression == TAR_COMPRESS_GZIP) return "gzip";
+    if (compression == TAR_COMPRESS_BZIP2) return "bzip2";
+    if (compression == TAR_COMPRESS_XZ) return "xz";
+    return "";
+}
+
+static const char *decompressor_name(TarCompression compression) {
+    if (compression == TAR_COMPRESS_GZIP) return "gunzip";
+    if (compression == TAR_COMPRESS_BZIP2) return "bunzip2";
+    if (compression == TAR_COMPRESS_XZ) return "unxz";
+    return "";
+}
+
+static int contains_slash(const char *text) {
+    size_t i = 0;
+    while (text[i] != '\0') {
+        if (text[i] == '/') {
+            return 1;
+        }
+        i += 1;
+    }
+    return 0;
+}
+
 static void tar_copy_name(char *dst, size_t dst_size, const char *src) {
     size_t i = 0;
     while (i + 1 < dst_size && src[i] != '\0') {
@@ -76,6 +139,82 @@ static void tar_copy_name(char *dst, size_t dst_size, const char *src) {
     if (dst_size > 0) {
         dst[i < dst_size ? i : (dst_size - 1)] = '\0';
     }
+}
+
+static int build_temp_path(const char *base_path, const char *suffix, char *buffer, size_t buffer_size) {
+    size_t base_len = rt_strlen(base_path);
+    size_t suffix_len = rt_strlen(suffix);
+
+    if (base_len + suffix_len + 1 > buffer_size) {
+        return -1;
+    }
+
+    memcpy(buffer, base_path, base_len);
+    memcpy(buffer + base_len, suffix, suffix_len + 1);
+    return 0;
+}
+
+static void get_program_dir(const char *argv0, char *buffer, size_t buffer_size) {
+    size_t len;
+    size_t i;
+
+    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0)) {
+        rt_copy_string(buffer, buffer_size, ".");
+        return;
+    }
+
+    len = rt_strlen(argv0);
+    if (len + 1 > buffer_size) {
+        rt_copy_string(buffer, buffer_size, ".");
+        return;
+    }
+
+    memcpy(buffer, argv0, len + 1);
+    for (i = len; i > 0; --i) {
+        if (buffer[i - 1] == '/') {
+            if (i == 1) {
+                buffer[1] = '\0';
+            } else {
+                buffer[i - 1] = '\0';
+            }
+            return;
+        }
+    }
+
+    rt_copy_string(buffer, buffer_size, ".");
+}
+
+static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
+    char dir[TAR_PATH_CAPACITY];
+
+    if (argv0 == 0 || !contains_slash(argv0)) {
+        rt_copy_string(buffer, buffer_size, tool_name);
+        return 0;
+    }
+
+    get_program_dir(argv0, dir, sizeof(dir));
+    return tool_join_path(dir, tool_name, buffer, buffer_size);
+}
+
+static int run_helper_tool(const char *argv0, const char *tool_name, const char *archive_path_name) {
+    char helper_path[TAR_PATH_CAPACITY];
+    char *const helper_argv[] = { helper_path, (char *)archive_path_name, 0 };
+    int pid = 0;
+    int status = 1;
+
+    if (build_helper_path(argv0, tool_name, helper_path, sizeof(helper_path)) != 0) {
+        return -1;
+    }
+
+    if (platform_spawn_process(helper_argv, -1, -1, 0, 0, 0, &pid) != 0) {
+        return -1;
+    }
+
+    if (platform_wait_process(pid, &status) != 0) {
+        return -1;
+    }
+
+    return (status == 0) ? 0 : -1;
 }
 
 static unsigned int header_checksum(const TarHeader *header) {
@@ -295,11 +434,64 @@ static int extract_archive(int archive_fd, int list_only) {
     }
 }
 
+static int compress_archive_file(const char *argv0, TarCompression compression, const char *plain_archive_path, const char *final_archive_path) {
+    char compressed_output[TAR_PATH_CAPACITY];
+
+    if (compression == TAR_COMPRESS_NONE) {
+        return 0;
+    }
+
+    if (build_temp_path(plain_archive_path, compression_suffix(compression), compressed_output, sizeof(compressed_output)) != 0) {
+        return -1;
+    }
+
+    if (run_helper_tool(argv0, compressor_name(compression), plain_archive_path) != 0) {
+        return -1;
+    }
+
+    (void)platform_remove_file(final_archive_path);
+    if (platform_rename_path(compressed_output, final_archive_path) != 0) {
+        return -1;
+    }
+
+    (void)platform_remove_file(plain_archive_path);
+    return 0;
+}
+
+static int prepare_archive_for_read(const char *argv0, TarCompression compression, const char *archive_path_name, char *temp_copy_path, size_t temp_copy_size, char *temp_plain_path, size_t temp_plain_size, const char **read_path_out) {
+    char compressed_copy[TAR_PATH_CAPACITY];
+
+    if (compression == TAR_COMPRESS_NONE) {
+        *read_path_out = archive_path_name;
+        return 0;
+    }
+
+    if (build_temp_path(archive_path_name, ".newos-tmp", temp_plain_path, temp_plain_size) != 0 ||
+        build_temp_path(temp_plain_path, compression_suffix(compression), compressed_copy, sizeof(compressed_copy)) != 0) {
+        return -1;
+    }
+
+    rt_copy_string(temp_copy_path, temp_copy_size, compressed_copy);
+    if (tool_copy_file(archive_path_name, compressed_copy) != 0) {
+        return -1;
+    }
+
+    if (run_helper_tool(argv0, decompressor_name(compression), compressed_copy) != 0) {
+        (void)platform_remove_file(compressed_copy);
+        return -1;
+    }
+
+    *read_path_out = temp_plain_path;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int create_mode = 0;
     int extract_mode = 0;
     int list_mode = 0;
+    TarCompression compression = TAR_COMPRESS_NONE;
     const char *archive_path_name = 0;
+    int path_start = argc;
     int i;
 
     if (argc < 3) {
@@ -308,13 +500,31 @@ int main(int argc, char **argv) {
     }
 
     for (i = 1; i < argc; ++i) {
-        if (argv[i][0] == '-') {
+        if (argv[i][0] != '-' || argv[i][1] == '\0') {
+            path_start = i;
+            break;
+        }
+
+        {
             const char *opt = argv[i] + 1;
             while (*opt != '\0') {
-                if (*opt == 'c') create_mode = 1;
-                else if (*opt == 'x') extract_mode = 1;
-                else if (*opt == 't') list_mode = 1;
-                else if (*opt == 'f' && i + 1 < argc) {
+                if (*opt == 'c') {
+                    create_mode = 1;
+                } else if (*opt == 'x') {
+                    extract_mode = 1;
+                } else if (*opt == 't') {
+                    list_mode = 1;
+                } else if (*opt == 'z') {
+                    compression = TAR_COMPRESS_GZIP;
+                } else if (*opt == 'j') {
+                    compression = TAR_COMPRESS_BZIP2;
+                } else if (*opt == 'J') {
+                    compression = TAR_COMPRESS_XZ;
+                } else if (*opt == 'f') {
+                    if (i + 1 >= argc) {
+                        rt_write_line(2, "tar: archive path required after -f");
+                        return 1;
+                    }
                     archive_path_name = argv[++i];
                     break;
                 }
@@ -328,16 +538,35 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (compression == TAR_COMPRESS_NONE) {
+        compression = detect_compression(archive_path_name);
+    }
+
     if (create_mode) {
-        int archive_fd = platform_open_write(archive_path_name, 0644U);
+        char plain_archive_path[TAR_PATH_CAPACITY];
+        const char *write_path = archive_path_name;
+        int archive_fd;
         unsigned char zeros[TAR_BLOCK_SIZE * 2];
 
+        if (path_start >= argc) {
+            rt_write_line(2, "tar: no input paths provided");
+            return 1;
+        }
+
+        if (compression != TAR_COMPRESS_NONE) {
+            if (build_temp_path(archive_path_name, ".newos-plain", plain_archive_path, sizeof(plain_archive_path)) != 0) {
+                return 1;
+            }
+            write_path = plain_archive_path;
+        }
+
+        archive_fd = platform_open_write(write_path, 0644U);
         if (archive_fd < 0) {
             return 1;
         }
 
         rt_memset(zeros, 0, sizeof(zeros));
-        for (i = 3; i < argc; ++i) {
+        for (i = path_start; i < argc; ++i) {
             if (rt_strcmp(argv[i], archive_path_name) == 0) {
                 continue;
             }
@@ -353,19 +582,39 @@ int main(int argc, char **argv) {
         }
 
         platform_close(archive_fd);
+
+        if (compression != TAR_COMPRESS_NONE) {
+            return (compress_archive_file(argv[0], compression, write_path, archive_path_name) == 0) ? 0 : 1;
+        }
+
         return 0;
     }
 
     if (extract_mode || list_mode) {
-        int archive_fd = platform_open_read(archive_path_name);
+        char temp_copy_path[TAR_PATH_CAPACITY];
+        char temp_plain_path[TAR_PATH_CAPACITY];
+        const char *read_path = archive_path_name;
+        int archive_fd;
         int result;
 
+        temp_copy_path[0] = '\0';
+        temp_plain_path[0] = '\0';
+
+        if (prepare_archive_for_read(argv[0], compression, archive_path_name, temp_copy_path, sizeof(temp_copy_path), temp_plain_path, sizeof(temp_plain_path), &read_path) != 0) {
+            return 1;
+        }
+
+        archive_fd = platform_open_read(read_path);
         if (archive_fd < 0) {
+            (void)platform_remove_file(temp_copy_path);
+            (void)platform_remove_file(temp_plain_path);
             return 1;
         }
 
         result = extract_archive(archive_fd, list_mode);
         platform_close(archive_fd);
+        (void)platform_remove_file(temp_copy_path);
+        (void)platform_remove_file(temp_plain_path);
         return (result == 0) ? 0 : 1;
     }
 

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -308,6 +309,41 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     }
 
     return fill_entry(path, path, entry_out);
+}
+
+int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
+    ssize_t length;
+
+    if (path == NULL || buffer == NULL || buffer_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    length = readlink(path, buffer, buffer_size - 1);
+    if (length < 0) {
+        return -1;
+    }
+
+    buffer[length] = '\0';
+    return 0;
+}
+
+int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+    struct statvfs info;
+
+    if (path == NULL || total_bytes_out == NULL || free_bytes_out == NULL || available_bytes_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (statvfs(path, &info) != 0) {
+        return -1;
+    }
+
+    *total_bytes_out = (unsigned long long)info.f_blocks * (unsigned long long)info.f_frsize;
+    *free_bytes_out = (unsigned long long)info.f_bfree * (unsigned long long)info.f_frsize;
+    *available_bytes_out = (unsigned long long)info.f_bavail * (unsigned long long)info.f_frsize;
+    return 0;
 }
 
 void platform_format_mode(unsigned int mode, char out[11]) {
