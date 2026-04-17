@@ -18,6 +18,29 @@ static int parse_compound_statement(CompilerParser *parser);
 static int parse_declaration_or_function(CompilerParser *parser, int allow_function_body, int emit_summary);
 static int parse_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int allow_abstract);
 static int parse_constant_expression(CompilerParser *parser, long long *value_out);
+static int parse_constant_unary(CompilerParser *parser, long long *value_out);
+static int parse_constant_multiplicative(CompilerParser *parser, long long *value_out);
+static int parse_constant_additive(CompilerParser *parser, long long *value_out);
+static int parse_constant_shift(CompilerParser *parser, long long *value_out);
+static int parse_constant_relational(CompilerParser *parser, long long *value_out);
+static int parse_constant_equality(CompilerParser *parser, long long *value_out);
+static int parse_constant_bitand(CompilerParser *parser, long long *value_out);
+static int parse_constant_bitxor(CompilerParser *parser, long long *value_out);
+static int parse_constant_bitor(CompilerParser *parser, long long *value_out);
+static int parse_constant_logical_and(CompilerParser *parser, long long *value_out);
+static int parse_constant_logical_or(CompilerParser *parser, long long *value_out);
+static int parse_cast_expression(CompilerParser *parser);
+static int parse_unary_expression(CompilerParser *parser);
+static int parse_multiplicative_expression(CompilerParser *parser);
+static int parse_additive_expression(CompilerParser *parser);
+static int parse_shift_expression(CompilerParser *parser);
+static int parse_relational_expression(CompilerParser *parser);
+static int parse_equality_expression(CompilerParser *parser);
+static int parse_bitand_expression(CompilerParser *parser);
+static int parse_bitxor_expression(CompilerParser *parser);
+static int parse_bitor_expression(CompilerParser *parser);
+static int parse_logical_and_expression(CompilerParser *parser);
+static int parse_logical_or_expression(CompilerParser *parser);
 static int parse_enum_specifier(CompilerParser *parser);
 
 static int token_text_equals(const CompilerToken *token, const char *text) {
@@ -43,6 +66,63 @@ static int current_is_keyword(const CompilerParser *parser, const char *text) {
 
 static int current_is_identifier(const CompilerParser *parser) {
     return parser->current.kind == COMPILER_TOKEN_IDENTIFIER;
+}
+
+static int current_is_storage_class_keyword(const CompilerParser *parser) {
+    if (current_is_keyword(parser, "typedef") ||
+        current_is_keyword(parser, "extern") ||
+        current_is_keyword(parser, "static") ||
+        current_is_keyword(parser, "auto") ||
+        current_is_keyword(parser, "register") ||
+        current_is_keyword(parser, "inline")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int current_is_type_qualifier_keyword(const CompilerParser *parser) {
+    if (current_is_keyword(parser, "const") ||
+        current_is_keyword(parser, "volatile") ||
+        current_is_keyword(parser, "restrict")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int current_is_aggregate_type_keyword(const CompilerParser *parser) {
+    if (current_is_keyword(parser, "struct") ||
+        current_is_keyword(parser, "union") ||
+        current_is_keyword(parser, "enum")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int current_is_arithmetic_type_keyword(const CompilerParser *parser) {
+    if (current_is_keyword(parser, "void") ||
+        current_is_keyword(parser, "char") ||
+        current_is_keyword(parser, "short") ||
+        current_is_keyword(parser, "int") ||
+        current_is_keyword(parser, "long") ||
+        current_is_keyword(parser, "signed") ||
+        current_is_keyword(parser, "unsigned") ||
+        current_is_keyword(parser, "float") ||
+        current_is_keyword(parser, "double")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int current_is_int_family_keyword(const CompilerParser *parser) {
+    if (current_is_keyword(parser, "short") ||
+        current_is_keyword(parser, "int") ||
+        current_is_keyword(parser, "long") ||
+        current_is_keyword(parser, "signed") ||
+        current_is_keyword(parser, "float") ||
+        current_is_keyword(parser, "double")) {
+        return 1;
+    }
+    return 0;
 }
 
 static int current_is_assignment_op(const CompilerParser *parser) {
@@ -241,27 +321,10 @@ static int maybe_type_identifier(const CompilerParser *parser, int allow_unknown
 }
 
 static int token_starts_decl_specifier(const CompilerParser *parser) {
-    if (current_is_keyword(parser, "typedef") ||
-        current_is_keyword(parser, "extern") ||
-        current_is_keyword(parser, "static") ||
-        current_is_keyword(parser, "auto") ||
-        current_is_keyword(parser, "register") ||
-        current_is_keyword(parser, "inline") ||
-        current_is_keyword(parser, "const") ||
-        current_is_keyword(parser, "volatile") ||
-        current_is_keyword(parser, "restrict") ||
-        current_is_keyword(parser, "void") ||
-        current_is_keyword(parser, "char") ||
-        current_is_keyword(parser, "short") ||
-        current_is_keyword(parser, "int") ||
-        current_is_keyword(parser, "long") ||
-        current_is_keyword(parser, "signed") ||
-        current_is_keyword(parser, "unsigned") ||
-        current_is_keyword(parser, "float") ||
-        current_is_keyword(parser, "double") ||
-        current_is_keyword(parser, "struct") ||
-        current_is_keyword(parser, "union") ||
-        current_is_keyword(parser, "enum")) {
+    if (current_is_storage_class_keyword(parser) ||
+        current_is_type_qualifier_keyword(parser) ||
+        current_is_arithmetic_type_keyword(parser) ||
+        current_is_aggregate_type_keyword(parser)) {
         return 1;
     }
 
@@ -269,21 +332,9 @@ static int token_starts_decl_specifier(const CompilerParser *parser) {
 }
 
 static int token_starts_known_type_specifier(const CompilerParser *parser) {
-    if (current_is_keyword(parser, "const") ||
-        current_is_keyword(parser, "volatile") ||
-        current_is_keyword(parser, "restrict") ||
-        current_is_keyword(parser, "void") ||
-        current_is_keyword(parser, "char") ||
-        current_is_keyword(parser, "short") ||
-        current_is_keyword(parser, "int") ||
-        current_is_keyword(parser, "long") ||
-        current_is_keyword(parser, "signed") ||
-        current_is_keyword(parser, "unsigned") ||
-        current_is_keyword(parser, "float") ||
-        current_is_keyword(parser, "double") ||
-        current_is_keyword(parser, "struct") ||
-        current_is_keyword(parser, "union") ||
-        current_is_keyword(parser, "enum")) {
+    if (current_is_type_qualifier_keyword(parser) ||
+        current_is_arithmetic_type_keyword(parser) ||
+        current_is_aggregate_type_keyword(parser)) {
         return 1;
     }
 
@@ -388,12 +439,7 @@ static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_
             } else if (current_is_keyword(parser, "char")) {
                 type_out->base = COMPILER_BASE_CHAR;
                 saw_explicit_base = 1;
-            } else if (current_is_keyword(parser, "short") ||
-                       current_is_keyword(parser, "int") ||
-                       current_is_keyword(parser, "long") ||
-                       current_is_keyword(parser, "signed") ||
-                       current_is_keyword(parser, "float") ||
-                       current_is_keyword(parser, "double")) {
+            } else if (current_is_int_family_keyword(parser)) {
                 type_out->base = COMPILER_BASE_INT;
                 saw_explicit_base = 1;
             } else if (current_is_keyword(parser, "unsigned")) {
@@ -403,9 +449,7 @@ static int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_
             }
         }
 
-        if (current_is_keyword(parser, "struct") ||
-            current_is_keyword(parser, "union") ||
-            current_is_keyword(parser, "enum")) {
+        if (current_is_aggregate_type_keyword(parser)) {
             int is_enum = current_is_keyword(parser, "enum");
 
             if (type_out != 0) {
@@ -655,43 +699,189 @@ static int parse_constant_unary(CompilerParser *parser, long long *value_out) {
     return parse_constant_primary(parser, value_out);
 }
 
-static int parse_constant_binary_chain(
-    CompilerParser *parser,
-    int (*subexpr)(CompilerParser *, long long *),
-    const char *const *ops,
-    size_t op_count,
-    long long *value_out
-) {
-    size_t i;
-    long long lhs;
+static const char *match_constant_binary_op(const CompilerParser *parser, int level) {
+    switch (level) {
+        case 0:
+            if (current_is_punct(parser, "*") || current_is_punct(parser, "/") || current_is_punct(parser, "%")) {
+                return parser->current.start;
+            }
+            break;
+        case 1:
+            if (current_is_punct(parser, "+") || current_is_punct(parser, "-")) {
+                return parser->current.start;
+            }
+            break;
+        case 2:
+            if (current_is_punct(parser, "<<") || current_is_punct(parser, ">>")) {
+                return parser->current.start;
+            }
+            break;
+        case 3:
+            if (current_is_punct(parser, "<") || current_is_punct(parser, ">") ||
+                current_is_punct(parser, "<=") || current_is_punct(parser, ">=")) {
+                return parser->current.start;
+            }
+            break;
+        case 4:
+            if (current_is_punct(parser, "==") || current_is_punct(parser, "!=")) {
+                return parser->current.start;
+            }
+            break;
+        case 5:
+            if (current_is_punct(parser, "&")) {
+                return parser->current.start;
+            }
+            break;
+        case 6:
+            if (current_is_punct(parser, "^")) {
+                return parser->current.start;
+            }
+            break;
+        case 7:
+            if (current_is_punct(parser, "|")) {
+                return parser->current.start;
+            }
+            break;
+        case 8:
+            if (current_is_punct(parser, "&&")) {
+                return parser->current.start;
+            }
+            break;
+        case 9:
+            if (current_is_punct(parser, "||")) {
+                return parser->current.start;
+            }
+            break;
+    }
 
-    if (subexpr(parser, &lhs) != 0) {
-        return -1;
+    return 0;
+}
+
+static int parse_constant_binary_chain(CompilerParser *parser, int level, long long *value_out) {
+    long long lhs;
+    char op[4];
+
+    switch (level) {
+        case 0:
+            if (parse_constant_unary(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 1:
+            if (parse_constant_multiplicative(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 2:
+            if (parse_constant_additive(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 3:
+            if (parse_constant_shift(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 4:
+            if (parse_constant_relational(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 5:
+            if (parse_constant_equality(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 6:
+            if (parse_constant_bitand(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 7:
+            if (parse_constant_bitxor(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        case 8:
+            if (parse_constant_bitor(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
+        default:
+            if (parse_constant_logical_and(parser, &lhs) != 0) {
+                return -1;
+            }
+            break;
     }
 
     for (;;) {
-        const char *matched = 0;
-
-        for (i = 0; i < op_count; ++i) {
-            if (current_is_punct(parser, ops[i])) {
-                matched = ops[i];
-                break;
-            }
-        }
+        long long rhs;
+        const char *matched = match_constant_binary_op(parser, level);
 
         if (matched == 0) {
             break;
         }
 
+        copy_token_text(&parser->current, op, sizeof(op));
         if (advance(parser) != 0) {
             return -1;
         }
 
-        {
-            long long rhs;
-            if (subexpr(parser, &rhs) != 0 || apply_constant_binary_op(parser, matched, lhs, rhs, &lhs) != 0) {
-                return -1;
-            }
+        switch (level) {
+            case 0:
+                if (parse_constant_unary(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 1:
+                if (parse_constant_multiplicative(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 2:
+                if (parse_constant_additive(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 3:
+                if (parse_constant_shift(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 4:
+                if (parse_constant_relational(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 5:
+                if (parse_constant_equality(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 6:
+                if (parse_constant_bitand(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 7:
+                if (parse_constant_bitxor(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            case 8:
+                if (parse_constant_bitor(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+            default:
+                if (parse_constant_logical_and(parser, &rhs) != 0) {
+                    return -1;
+                }
+                break;
+        }
+
+        if (apply_constant_binary_op(parser, op, lhs, rhs, &lhs) != 0) {
+            return -1;
         }
     }
 
@@ -700,53 +890,43 @@ static int parse_constant_binary_chain(
 }
 
 static int parse_constant_multiplicative(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"*", "/", "%"};
-    return parse_constant_binary_chain(parser, parse_constant_unary, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 0, value_out);
 }
 
 static int parse_constant_additive(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"+", "-"};
-    return parse_constant_binary_chain(parser, parse_constant_multiplicative, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 1, value_out);
 }
 
 static int parse_constant_shift(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"<<", ">>"};
-    return parse_constant_binary_chain(parser, parse_constant_additive, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 2, value_out);
 }
 
 static int parse_constant_relational(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"<", ">", "<=", ">="};
-    return parse_constant_binary_chain(parser, parse_constant_shift, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 3, value_out);
 }
 
 static int parse_constant_equality(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"==", "!="};
-    return parse_constant_binary_chain(parser, parse_constant_relational, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 4, value_out);
 }
 
 static int parse_constant_bitand(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"&"};
-    return parse_constant_binary_chain(parser, parse_constant_equality, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 5, value_out);
 }
 
 static int parse_constant_bitxor(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"^"};
-    return parse_constant_binary_chain(parser, parse_constant_bitand, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 6, value_out);
 }
 
 static int parse_constant_bitor(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"|"};
-    return parse_constant_binary_chain(parser, parse_constant_bitxor, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 7, value_out);
 }
 
 static int parse_constant_logical_and(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"&&"};
-    return parse_constant_binary_chain(parser, parse_constant_bitor, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 8, value_out);
 }
 
 static int parse_constant_logical_or(CompilerParser *parser, long long *value_out) {
-    static const char *const ops[] = {"||"};
-    return parse_constant_binary_chain(parser, parse_constant_logical_and, ops, sizeof(ops) / sizeof(ops[0]), value_out);
+    return parse_constant_binary_chain(parser, 9, value_out);
 }
 
 static int parse_constant_expression(CompilerParser *parser, long long *value_out) {
@@ -1018,29 +1198,142 @@ static int parse_cast_expression(CompilerParser *parser) {
     return parse_unary_expression(parser);
 }
 
-static int parse_binary_chain(CompilerParser *parser, int (*subexpr)(CompilerParser *), const char *const *ops, size_t op_count) {
-    size_t i;
+static int current_matches_binary_level(const CompilerParser *parser, int level) {
+    switch (level) {
+        case 0:
+            return current_is_punct(parser, "*") || current_is_punct(parser, "/") || current_is_punct(parser, "%");
+        case 1:
+            return current_is_punct(parser, "+") || current_is_punct(parser, "-");
+        case 2:
+            return current_is_punct(parser, "<<") || current_is_punct(parser, ">>");
+        case 3:
+            return current_is_punct(parser, "<") || current_is_punct(parser, ">") ||
+                   current_is_punct(parser, "<=") || current_is_punct(parser, ">=");
+        case 4:
+            return current_is_punct(parser, "==") || current_is_punct(parser, "!=");
+        case 5:
+            return current_is_punct(parser, "&");
+        case 6:
+            return current_is_punct(parser, "^");
+        case 7:
+            return current_is_punct(parser, "|");
+        case 8:
+            return current_is_punct(parser, "&&");
+        case 9:
+            return current_is_punct(parser, "||");
+    }
+    return 0;
+}
 
-    if (subexpr(parser) != 0) {
-        return -1;
+static int parse_binary_chain(CompilerParser *parser, int level) {
+    switch (level) {
+        case 0:
+            if (parse_cast_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 1:
+            if (parse_multiplicative_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 2:
+            if (parse_additive_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 3:
+            if (parse_shift_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 4:
+            if (parse_relational_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 5:
+            if (parse_equality_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 6:
+            if (parse_bitand_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 7:
+            if (parse_bitxor_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 8:
+            if (parse_bitor_expression(parser) != 0) {
+                return -1;
+            }
+            break;
+        default:
+            if (parse_logical_and_expression(parser) != 0) {
+                return -1;
+            }
+            break;
     }
 
-    for (;;) {
-        int matched = 0;
-
-        for (i = 0; i < op_count; ++i) {
-            if (current_is_punct(parser, ops[i])) {
-                matched = 1;
-                break;
-            }
-        }
-
-        if (!matched) {
-            break;
-        }
-
-        if (advance(parser) != 0 || subexpr(parser) != 0) {
+    while (current_matches_binary_level(parser, level)) {
+        if (advance(parser) != 0) {
             return -1;
+        }
+        switch (level) {
+            case 0:
+                if (parse_cast_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 1:
+                if (parse_multiplicative_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 2:
+                if (parse_additive_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 3:
+                if (parse_shift_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 4:
+                if (parse_relational_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 5:
+                if (parse_equality_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 6:
+                if (parse_bitand_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 7:
+                if (parse_bitxor_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 8:
+                if (parse_bitor_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
+            default:
+                if (parse_logical_and_expression(parser) != 0) {
+                    return -1;
+                }
+                break;
         }
     }
 
@@ -1048,53 +1341,43 @@ static int parse_binary_chain(CompilerParser *parser, int (*subexpr)(CompilerPar
 }
 
 static int parse_multiplicative_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"*", "/", "%"};
-    return parse_binary_chain(parser, parse_cast_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 0);
 }
 
 static int parse_additive_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"+", "-"};
-    return parse_binary_chain(parser, parse_multiplicative_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 1);
 }
 
 static int parse_shift_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"<<", ">>"};
-    return parse_binary_chain(parser, parse_additive_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 2);
 }
 
 static int parse_relational_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"<", ">", "<=", ">="};
-    return parse_binary_chain(parser, parse_shift_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 3);
 }
 
 static int parse_equality_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"==", "!="};
-    return parse_binary_chain(parser, parse_relational_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 4);
 }
 
 static int parse_bitand_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"&"};
-    return parse_binary_chain(parser, parse_equality_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 5);
 }
 
 static int parse_bitxor_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"^"};
-    return parse_binary_chain(parser, parse_bitand_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 6);
 }
 
 static int parse_bitor_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"|"};
-    return parse_binary_chain(parser, parse_bitxor_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 7);
 }
 
 static int parse_logical_and_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"&&"};
-    return parse_binary_chain(parser, parse_bitor_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 8);
 }
 
 static int parse_logical_or_expression(CompilerParser *parser) {
-    static const char *const ops[] = {"||"};
-    return parse_binary_chain(parser, parse_logical_and_expression, ops, sizeof(ops) / sizeof(ops[0]));
+    return parse_binary_chain(parser, 9);
 }
 
 static int parse_conditional_expression(CompilerParser *parser) {

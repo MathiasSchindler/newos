@@ -5,7 +5,7 @@
 #define COMPILER_BACKEND_MAX_FUNCTIONS 256
 #define COMPILER_BACKEND_MAX_GLOBALS 256
 #define COMPILER_BACKEND_MAX_LOCALS 256
-#define COMPILER_BACKEND_MAX_STRINGS 256
+#define COMPILER_BACKEND_MAX_STRINGS 1024
 #define COMPILER_BACKEND_MAX_CONSTANTS 512
 #define BACKEND_ARRAY_STACK_BYTES 4096
 
@@ -84,13 +84,48 @@ typedef struct {
 static int expr_parse_expression(ExprParser *parser);
 static int expr_parse_assignment(ExprParser *parser);
 static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized);
+static int expr_parse_unary(ExprParser *parser);
+static int expr_parse_multiplicative(ExprParser *parser);
+static int expr_parse_additive(ExprParser *parser);
+static int expr_parse_shift(ExprParser *parser);
+static int expr_parse_relational(ExprParser *parser);
+static int expr_parse_equality(ExprParser *parser);
+static int expr_parse_bitand(ExprParser *parser);
+static int expr_parse_bitxor(ExprParser *parser);
+static int expr_parse_bitor(ExprParser *parser);
 static int emit_binary_op(BackendState *state, const char *op);
 static int emit_push_value(BackendState *state);
 static int emit_load_immediate(BackendState *state, long long value);
 static int emit_binary_op(BackendState *state, const char *op);
+static int expr_read_punctuator_width(const char *cursor);
+static int is_assignment_operator_text(const char *text);
+static int is_assignment_stop_text(const char *text);
+static const char *binary_op_for_assignment(const char *op);
 
 static void set_error(CompilerBackend *backend, const char *message) {
     rt_copy_string(backend->error_message, sizeof(backend->error_message), message != 0 ? message : "backend error");
+}
+
+static void set_error_with_line(CompilerBackend *backend, const char *message, const char *line) {
+    char buffer[COMPILER_ERROR_CAPACITY];
+    size_t used;
+    size_t i = 0;
+
+    rt_copy_string(buffer, sizeof(buffer), message != 0 ? message : "backend error");
+    used = rt_strlen(buffer);
+    rt_copy_string(buffer + used, sizeof(buffer) - used, " near `");
+    used = rt_strlen(buffer);
+    while (line != 0 && line[i] != '\0' && line[i] != '\n' && used + 4 < sizeof(buffer)) {
+        buffer[used++] = line[i++];
+    }
+    if (line != 0 && line[i] != '\0' && used + 4 < sizeof(buffer)) {
+        buffer[used++] = '.';
+        buffer[used++] = '.';
+        buffer[used++] = '.';
+    }
+    buffer[used++] = '`';
+    buffer[used] = '\0';
+    set_error(backend, buffer);
 }
 
 static int emit_text(BackendState *state, const char *text) {
@@ -704,7 +739,7 @@ static int emit_store_name(BackendState *state, const char *name) {
 
     if (local_index >= 0) {
         if (state->locals[local_index].is_array) {
-            set_error(state->backend, "unsupported assignment target in backend");
+            set_error(state->backend, "unsupported local array assignment in backend");
             return -1;
         }
         return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rcx") == 0 &&
@@ -740,7 +775,7 @@ static int emit_store_name(BackendState *state, const char *name) {
         return emit_instruction(state, line);
     }
 
-    set_error(state->backend, "unsupported assignment target in backend");
+    set_error(state->backend, "unknown assignment target in backend");
     return -1;
 }
 
@@ -984,40 +1019,23 @@ static void expr_next(ExprParser *parser) {
     }
 
     parser->current.kind = EXPR_TOKEN_PUNCT;
-    if ((cursor[0] == '<' && cursor[1] == '<' && cursor[2] == '=') ||
-        (cursor[0] == '>' && cursor[1] == '>' && cursor[2] == '=')) {
-        parser->current.text[0] = cursor[0];
-        parser->current.text[1] = cursor[1];
-        parser->current.text[2] = cursor[2];
-        parser->current.text[3] = '\0';
-        parser->cursor = cursor + 3;
-        return;
-    }
-
-    if ((cursor[0] == '&' && cursor[1] == '&') ||
-        (cursor[0] == '|' && cursor[1] == '|') ||
-        (cursor[0] == '=' && cursor[1] == '=') ||
-        (cursor[0] == '!' && cursor[1] == '=') ||
-        (cursor[0] == '<' && cursor[1] == '=') ||
-        (cursor[0] == '>' && cursor[1] == '=') ||
-        (cursor[0] == '<' && cursor[1] == '<') ||
-        (cursor[0] == '>' && cursor[1] == '>') ||
-        (cursor[0] == '&' && cursor[1] == '=') ||
-        (cursor[0] == '|' && cursor[1] == '=') ||
-        (cursor[0] == '^' && cursor[1] == '=') ||
-        (cursor[0] == '+' && cursor[1] == '=') ||
-        (cursor[0] == '-' && cursor[1] == '=') ||
-        (cursor[0] == '*' && cursor[1] == '=') ||
-        (cursor[0] == '/' && cursor[1] == '=') ||
-        (cursor[0] == '%' && cursor[1] == '=') ||
-        (cursor[0] == '+' && cursor[1] == '+') ||
-        (cursor[0] == '-' && cursor[1] == '-') ||
-        (cursor[0] == '-' && cursor[1] == '>')) {
-        parser->current.text[0] = cursor[0];
-        parser->current.text[1] = cursor[1];
-        parser->current.text[2] = '\0';
-        parser->cursor = cursor + 2;
-        return;
+    {
+        int punctuator_width = expr_read_punctuator_width(cursor);
+        if (punctuator_width == 3) {
+            parser->current.text[0] = cursor[0];
+            parser->current.text[1] = cursor[1];
+            parser->current.text[2] = cursor[2];
+            parser->current.text[3] = '\0';
+            parser->cursor = cursor + 3;
+            return;
+        }
+        if (punctuator_width == 2) {
+            parser->current.text[0] = cursor[0];
+            parser->current.text[1] = cursor[1];
+            parser->current.text[2] = '\0';
+            parser->cursor = cursor + 2;
+            return;
+        }
     }
 
     parser->current.text[0] = *cursor;
@@ -1041,6 +1059,185 @@ static int expr_expect_punct(ExprParser *parser, const char *text) {
     return 0;
 }
 
+static int expr_read_punctuator_width(const char *cursor) {
+    if ((cursor[0] == '<' && cursor[1] == '<' && cursor[2] == '=') ||
+        (cursor[0] == '>' && cursor[1] == '>' && cursor[2] == '=')) {
+        return 3;
+    }
+    if (cursor[0] == '&' && cursor[1] == '&') {
+        return 2;
+    }
+    if (cursor[0] == '|' && cursor[1] == '|') {
+        return 2;
+    }
+    if (cursor[0] == '=' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '!' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '<' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '>' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '<' && cursor[1] == '<') {
+        return 2;
+    }
+    if (cursor[0] == '>' && cursor[1] == '>') {
+        return 2;
+    }
+    if (cursor[0] == '&' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '|' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '^' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '+' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '-' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '*' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '/' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '%' && cursor[1] == '=') {
+        return 2;
+    }
+    if (cursor[0] == '+' && cursor[1] == '+') {
+        return 2;
+    }
+    if (cursor[0] == '-' && cursor[1] == '-') {
+        return 2;
+    }
+    if (cursor[0] == '-' && cursor[1] == '>') {
+        return 2;
+    }
+    return 0;
+}
+
+static int is_assignment_operator_text(const char *text) {
+    if (names_equal(text, "=")) {
+        return 1;
+    }
+    if (names_equal(text, "&=")) {
+        return 1;
+    }
+    if (names_equal(text, "|=")) {
+        return 1;
+    }
+    if (names_equal(text, "^=")) {
+        return 1;
+    }
+    if (names_equal(text, "<<=")) {
+        return 1;
+    }
+    if (names_equal(text, ">>=")) {
+        return 1;
+    }
+    if (names_equal(text, "+=")) {
+        return 1;
+    }
+    if (names_equal(text, "-=")) {
+        return 1;
+    }
+    if (names_equal(text, "*=")) {
+        return 1;
+    }
+    if (names_equal(text, "/=")) {
+        return 1;
+    }
+    if (names_equal(text, "%=")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int is_assignment_stop_text(const char *text) {
+    if (names_equal(text, ",")) {
+        return 1;
+    }
+    if (names_equal(text, ":")) {
+        return 1;
+    }
+    if (names_equal(text, "?")) {
+        return 1;
+    }
+    return 0;
+}
+
+static const char *binary_op_for_assignment(const char *op) {
+    if (names_equal(op, "+=")) {
+        return "+";
+    }
+    if (names_equal(op, "&=")) {
+        return "&";
+    }
+    if (names_equal(op, "|=")) {
+        return "|";
+    }
+    if (names_equal(op, "^=")) {
+        return "^";
+    }
+    if (names_equal(op, "<<=")) {
+        return "<<";
+    }
+    if (names_equal(op, ">>=")) {
+        return ">>";
+    }
+    if (names_equal(op, "-=")) {
+        return "-";
+    }
+    if (names_equal(op, "*=")) {
+        return "*";
+    }
+    if (names_equal(op, "/=")) {
+        return "/";
+    }
+    return "%";
+}
+
+static int is_incdec_text(const char *text) {
+    return names_equal(text, "++") || names_equal(text, "--");
+}
+
+static int is_index_or_arrow_text(const char *text) {
+    return names_equal(text, "[") || names_equal(text, "->");
+}
+
+static int is_unary_prefix_text(const char *text) {
+    if (is_incdec_text(text)) {
+        return 1;
+    }
+    if (names_equal(text, "-")) {
+        return 1;
+    }
+    if (names_equal(text, "!")) {
+        return 1;
+    }
+    if (names_equal(text, "~")) {
+        return 1;
+    }
+    if (names_equal(text, "&")) {
+        return 1;
+    }
+    if (names_equal(text, "*")) {
+        return 1;
+    }
+    if (names_equal(text, "+")) {
+        return 1;
+    }
+    return 0;
+}
+
 static int name_prefers_word_index(const BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
@@ -1060,48 +1257,34 @@ static int identifier_looks_like_type(const char *name) {
     if (name[0] >= 'A' && name[0] <= 'Z') {
         return 1;
     }
-
-    return names_equal(name, "void") ||
-           names_equal(name, "char") ||
-           names_equal(name, "short") ||
-           names_equal(name, "int") ||
-           names_equal(name, "long") ||
-           names_equal(name, "signed") ||
-           names_equal(name, "unsigned") ||
-           names_equal(name, "const") ||
-           names_equal(name, "volatile") ||
-           names_equal(name, "struct") ||
-           names_equal(name, "union") ||
-           names_equal(name, "enum") ||
-           names_equal(name, "size_t") ||
-           (length > 2 && name[length - 2] == '_' && name[length - 1] == 't');
+    if (names_equal(name, "void") || names_equal(name, "char") || names_equal(name, "short") ||
+        names_equal(name, "int") || names_equal(name, "long") || names_equal(name, "signed") ||
+        names_equal(name, "unsigned") || names_equal(name, "const") || names_equal(name, "volatile") ||
+        names_equal(name, "struct") || names_equal(name, "union") || names_equal(name, "enum") ||
+        names_equal(name, "size_t")) {
+        return 1;
+    }
+    return length > 2 && name[length - 2] == '_' && name[length - 1] == 't';
 }
 
 static int member_prefers_word_index(const char *name) {
-    return names_equal(name, "argv") ||
-           names_equal(name, "envp") ||
-           names_equal(name, "commands") ||
-           names_equal(name, "jobs") ||
-           names_equal(name, "aliases") ||
-           names_equal(name, "functions") ||
-           names_equal(name, "entries") ||
-           names_equal(name, "fields");
+    if (names_equal(name, "argv") || names_equal(name, "envp") || names_equal(name, "commands") ||
+        names_equal(name, "jobs") || names_equal(name, "aliases") || names_equal(name, "functions") ||
+        names_equal(name, "entries") || names_equal(name, "fields")) {
+        return 1;
+    }
+    return 0;
 }
 
 static int member_decays_to_address(const char *name) {
-    return names_equal(name, "name") ||
-           names_equal(name, "path") ||
-           names_equal(name, "self_dir") ||
-           names_equal(name, "text") ||
-           names_equal(name, "pattern") ||
-           names_equal(name, "pattern_text") ||
-           names_equal(name, "buffer") ||
-           names_equal(name, "line") ||
-           names_equal(name, "data") ||
-           names_equal(name, "value") ||
-           names_equal(name, "body") ||
-           names_equal(name, "argv") ||
-           names_equal(name, "envp");
+    if (names_equal(name, "name") || names_equal(name, "path") || names_equal(name, "self_dir") ||
+        names_equal(name, "text") || names_equal(name, "pattern") || names_equal(name, "pattern_text") ||
+        names_equal(name, "buffer") || names_equal(name, "line") || names_equal(name, "data") ||
+        names_equal(name, "value") || names_equal(name, "body") || names_equal(name, "argv") ||
+        names_equal(name, "envp")) {
+        return 1;
+    }
+    return 0;
 }
 
 static int expr_looks_like_cast(ExprParser *parser) {
@@ -1189,42 +1372,60 @@ static int emit_index_address(BackendState *state, int word_index) {
 }
 
 static int emit_identifier_incdec(BackendState *state, const char *name, int delta, int return_old) {
+    const char *result_register = backend_is_aarch64(state) ? "x0" : "%rax";
+    const char *op = delta > 0 ? "+" : "-";
+
     if (emit_load_name(state, name) != 0) {
         return -1;
     }
     if (return_old && emit_push_value(state) != 0) {
         return -1;
     }
-    if (emit_push_value(state) != 0 ||
-        emit_load_immediate(state, 1) != 0 ||
-        emit_binary_op(state, delta > 0 ? "+" : "-") != 0 ||
-        emit_store_name(state, name) != 0) {
+    if (emit_push_value(state) != 0) {
+        return -1;
+    }
+    if (emit_load_immediate(state, 1) != 0) {
+        return -1;
+    }
+    if (emit_binary_op(state, op) != 0) {
+        return -1;
+    }
+    if (emit_store_name(state, name) != 0) {
         return -1;
     }
     if (return_old) {
-        return emit_pop_to_register(state, backend_is_aarch64(state) ? "x0" : "%rax");
+        return emit_pop_to_register(state, result_register);
     }
     return 0;
 }
 
 static int emit_address_incdec(BackendState *state, int byte_sized, int delta, int return_old) {
-    if (emit_push_value(state) != 0 ||
-        emit_load_from_address_register(state, backend_is_aarch64(state) ? "x0" : "%rax", byte_sized) != 0) {
+    const char *result_register = backend_is_aarch64(state) ? "x0" : "%rax";
+    const char *op = delta > 0 ? "+" : "-";
+
+    if (emit_push_value(state) != 0) {
+        return -1;
+    }
+    if (emit_load_from_address_register(state, result_register, byte_sized) != 0) {
         return -1;
     }
     if (return_old && emit_push_value(state) != 0) {
         return -1;
     }
-    if (emit_push_value(state) != 0 ||
-        emit_load_immediate(state, 1) != 0 ||
-        emit_binary_op(state, delta > 0 ? "+" : "-") != 0) {
+    if (emit_push_value(state) != 0) {
+        return -1;
+    }
+    if (emit_load_immediate(state, 1) != 0) {
+        return -1;
+    }
+    if (emit_binary_op(state, op) != 0) {
         return -1;
     }
     if (emit_pop_address_and_store(state, byte_sized) != 0) {
         return -1;
     }
     if (return_old) {
-        return emit_pop_to_register(state, backend_is_aarch64(state) ? "x0" : "%rax");
+        return emit_pop_to_register(state, result_register);
     }
     return 0;
 }
@@ -1254,10 +1455,16 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
 
     for (;;) {
         if (expr_match_punct(parser, "[")) {
-            if (emit_push_value(parser->state) != 0 ||
-                expr_parse_expression(parser) != 0 ||
-                expr_expect_punct(parser, "]") != 0 ||
-                emit_index_address(parser->state, word_index) != 0) {
+            if (emit_push_value(parser->state) != 0) {
+                return -1;
+            }
+            if (expr_parse_expression(parser) != 0) {
+                return -1;
+            }
+            if (expr_expect_punct(parser, "]") != 0) {
+                return -1;
+            }
+            if (emit_index_address(parser->state, word_index) != 0) {
                 return -1;
             }
             current_is_address = 1;
@@ -1266,7 +1473,7 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
             word_index = 0;
 
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
-                (names_equal(parser->current.text, "[") || names_equal(parser->current.text, "->"))) {
+                is_index_or_arrow_text(parser->current.text)) {
                 if (emit_load_from_address_register(parser->state, backend_is_aarch64(parser->state) ? "x0" : "%rax",
                                                     byte_sized) != 0) {
                     return -1;
@@ -1379,7 +1586,10 @@ static int expr_parse_primary(ExprParser *parser) {
             (void)expr_match_punct(parser, "(");
             if (!(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
                 for (;;) {
-                    if (expr_parse_expression(parser) != 0 || emit_push_value(parser->state) != 0) {
+                    if (expr_parse_expression(parser) != 0) {
+                        return -1;
+                    }
+                    if (emit_push_value(parser->state) != 0) {
                         return -1;
                     }
                     arg_count += 1;
@@ -1499,14 +1709,7 @@ static int expr_parse_unary(ExprParser *parser) {
     }
 
     if (parser->current.kind == EXPR_TOKEN_PUNCT &&
-        (names_equal(parser->current.text, "++") ||
-         names_equal(parser->current.text, "--") ||
-         names_equal(parser->current.text, "-") ||
-         names_equal(parser->current.text, "!") ||
-         names_equal(parser->current.text, "~") ||
-         names_equal(parser->current.text, "&") ||
-         names_equal(parser->current.text, "*") ||
-         names_equal(parser->current.text, "+"))) {
+        is_unary_prefix_text(parser->current.text)) {
         rt_copy_string(op, sizeof(op), parser->current.text);
         expr_next(parser);
 
@@ -1514,7 +1717,7 @@ static int expr_parse_unary(ExprParser *parser) {
             return expr_parse_unary(parser);
         }
 
-        if (names_equal(op, "++") || names_equal(op, "--")) {
+        if (is_incdec_text(op)) {
             int delta = names_equal(op, "++") ? 1 : -1;
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
                 set_error(parser->state->backend, "backend only supports ++/-- on identifiers");
@@ -1631,11 +1834,53 @@ static int emit_binary_op(BackendState *state, const char *op) {
     return -1;
 }
 
-static int expr_parse_chain(ExprParser *parser, int (*subexpr)(ExprParser *), const char *const *ops, size_t op_count) {
+static int expr_parse_chain(ExprParser *parser, int level, const char *const *ops, size_t op_count) {
     size_t i;
 
-    if (subexpr(parser) != 0) {
-        return -1;
+    switch (level) {
+        case 0:
+            if (expr_parse_unary(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 1:
+            if (expr_parse_multiplicative(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 2:
+            if (expr_parse_additive(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 3:
+            if (expr_parse_shift(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 4:
+            if (expr_parse_relational(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 5:
+            if (expr_parse_equality(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 6:
+            if (expr_parse_bitand(parser) != 0) {
+                return -1;
+            }
+            break;
+        case 7:
+            if (expr_parse_bitxor(parser) != 0) {
+                return -1;
+            }
+            break;
+        default:
+            set_error(parser->state->backend, "unsupported expression precedence in backend");
+            return -1;
     }
 
     for (;;) {
@@ -1658,7 +1903,55 @@ static int expr_parse_chain(ExprParser *parser, int (*subexpr)(ExprParser *), co
 
         rt_copy_string(op, sizeof(op), parser->current.text);
         expr_next(parser);
-        if (emit_push_value(parser->state) != 0 || subexpr(parser) != 0 || emit_binary_op(parser->state, op) != 0) {
+        if (emit_push_value(parser->state) != 0) {
+            return -1;
+        }
+        switch (level) {
+            case 0:
+                if (expr_parse_unary(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 1:
+                if (expr_parse_multiplicative(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 2:
+                if (expr_parse_additive(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 3:
+                if (expr_parse_shift(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 4:
+                if (expr_parse_relational(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 5:
+                if (expr_parse_equality(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 6:
+                if (expr_parse_bitand(parser) != 0) {
+                    return -1;
+                }
+                break;
+            case 7:
+                if (expr_parse_bitxor(parser) != 0) {
+                    return -1;
+                }
+                break;
+            default:
+                set_error(parser->state->backend, "unsupported expression precedence in backend");
+                return -1;
+        }
+        if (emit_binary_op(parser->state, op) != 0) {
             return -1;
         }
     }
@@ -1668,42 +1961,42 @@ static int expr_parse_chain(ExprParser *parser, int (*subexpr)(ExprParser *), co
 
 static int expr_parse_multiplicative(ExprParser *parser) {
     static const char *const ops[] = {"*", "/", "%"};
-    return expr_parse_chain(parser, expr_parse_unary, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 0, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_additive(ExprParser *parser) {
     static const char *const ops[] = {"+", "-"};
-    return expr_parse_chain(parser, expr_parse_multiplicative, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 1, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_shift(ExprParser *parser) {
     static const char *const ops[] = {"<<", ">>"};
-    return expr_parse_chain(parser, expr_parse_additive, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 2, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_relational(ExprParser *parser) {
     static const char *const ops[] = {"<", ">", "<=", ">="};
-    return expr_parse_chain(parser, expr_parse_shift, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 3, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_equality(ExprParser *parser) {
     static const char *const ops[] = {"==", "!="};
-    return expr_parse_chain(parser, expr_parse_relational, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 4, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_bitand(ExprParser *parser) {
     static const char *const ops[] = {"&"};
-    return expr_parse_chain(parser, expr_parse_equality, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 5, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_bitxor(ExprParser *parser) {
     static const char *const ops[] = {"^"};
-    return expr_parse_chain(parser, expr_parse_bitand, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 6, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_bitor(ExprParser *parser) {
     static const char *const ops[] = {"|"};
-    return expr_parse_chain(parser, expr_parse_bitxor, ops, sizeof(ops) / sizeof(ops[0]));
+    return expr_parse_chain(parser, 7, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_make_logic_label(BackendState *state, const char *prefix, char *buffer, size_t buffer_size) {
@@ -1861,24 +2154,10 @@ static int expr_assignment_operator(ExprParser snapshot, char *op, size_t op_siz
                     break;
                 }
                 depth -= 1;
-            } else if (depth == 0 &&
-                       (names_equal(snapshot.current.text, "=") ||
-                        names_equal(snapshot.current.text, "&=") ||
-                        names_equal(snapshot.current.text, "|=") ||
-                        names_equal(snapshot.current.text, "^=") ||
-                        names_equal(snapshot.current.text, "<<=") ||
-                        names_equal(snapshot.current.text, ">>=") ||
-                        names_equal(snapshot.current.text, "+=") ||
-                        names_equal(snapshot.current.text, "-=") ||
-                        names_equal(snapshot.current.text, "*=") ||
-                        names_equal(snapshot.current.text, "/=") ||
-                        names_equal(snapshot.current.text, "%="))) {
+            } else if (depth == 0 && is_assignment_operator_text(snapshot.current.text)) {
                 rt_copy_string(op, op_size, snapshot.current.text);
                 return 1;
-            } else if (depth == 0 &&
-                       (names_equal(snapshot.current.text, ",") ||
-                        names_equal(snapshot.current.text, ":") ||
-                        names_equal(snapshot.current.text, "?"))) {
+            } else if (depth == 0 && is_assignment_stop_text(snapshot.current.text)) {
                 break;
             }
         }
@@ -1965,17 +2244,7 @@ static int expr_parse_assignment(ExprParser *parser) {
         rt_copy_string(name, sizeof(name), snapshot.current.text);
         expr_next(&snapshot);
         if (snapshot.current.kind == EXPR_TOKEN_PUNCT &&
-            (names_equal(snapshot.current.text, "=") ||
-             names_equal(snapshot.current.text, "&=") ||
-             names_equal(snapshot.current.text, "|=") ||
-             names_equal(snapshot.current.text, "^=") ||
-             names_equal(snapshot.current.text, "<<=") ||
-             names_equal(snapshot.current.text, ">>=") ||
-             names_equal(snapshot.current.text, "+=") ||
-             names_equal(snapshot.current.text, "-=") ||
-             names_equal(snapshot.current.text, "*=") ||
-             names_equal(snapshot.current.text, "/=") ||
-             names_equal(snapshot.current.text, "%="))) {
+            is_assignment_operator_text(snapshot.current.text)) {
             rt_copy_string(op, sizeof(op), snapshot.current.text);
             expr_next(parser);
             expr_next(parser);
@@ -1990,16 +2259,7 @@ static int expr_parse_assignment(ExprParser *parser) {
                 return -1;
             }
 
-            if (!names_equal(op, "=") &&
-                emit_binary_op(parser->state, names_equal(op, "+=") ? "+" :
-                                              names_equal(op, "&=") ? "&" :
-                                              names_equal(op, "|=") ? "|" :
-                                              names_equal(op, "^=") ? "^" :
-                                              names_equal(op, "<<=") ? "<<" :
-                                              names_equal(op, ">>=") ? ">>" :
-                                              names_equal(op, "-=") ? "-" :
-                                              names_equal(op, "*=") ? "*" :
-                                              names_equal(op, "/=") ? "/" : "%") != 0) {
+            if (!names_equal(op, "=") && emit_binary_op(parser->state, binary_op_for_assignment(op)) != 0) {
                 return -1;
             }
 
@@ -2033,16 +2293,7 @@ static int expr_parse_assignment(ExprParser *parser) {
             return -1;
         }
 
-        if (!names_equal(op, "=") &&
-            emit_binary_op(parser->state, names_equal(op, "+=") ? "+" :
-                                          names_equal(op, "&=") ? "&" :
-                                          names_equal(op, "|=") ? "|" :
-                                          names_equal(op, "^=") ? "^" :
-                                          names_equal(op, "<<=") ? "<<" :
-                                          names_equal(op, ">>=") ? ">>" :
-                                          names_equal(op, "-=") ? "-" :
-                                          names_equal(op, "*=") ? "*" :
-                                          names_equal(op, "/=") ? "/" : "%") != 0) {
+        if (!names_equal(op, "=") && emit_binary_op(parser->state, binary_op_for_assignment(op)) != 0) {
             return -1;
         }
 
@@ -2098,6 +2349,25 @@ static int emit_expression(BackendState *state, const char *expr) {
     return 0;
 }
 
+static int emit_array_element_address(BackendState *state,
+                                      const char *name,
+                                      int word_index,
+                                      unsigned long long index) {
+    if (emit_address_of_name(state, name) != 0) {
+        return -1;
+    }
+    if (emit_push_value(state) != 0) {
+        return -1;
+    }
+    if (emit_load_immediate(state, (long long)index) != 0) {
+        return -1;
+    }
+    if (emit_index_address(state, word_index) != 0) {
+        return -1;
+    }
+    return emit_push_value(state);
+}
+
 static int emit_array_initializer_store(BackendState *state, const char *name, const char *expr) {
     ExprParser parser;
     unsigned long long index = 0;
@@ -2112,21 +2382,46 @@ static int emit_array_initializer_store(BackendState *state, const char *name, c
     parser.cursor = expr;
     parser.state = state;
     expr_next(&parser);
+    byte_sized = word_index ? 0 : 1;
+
+    if (parser.current.kind == EXPR_TOKEN_STRING) {
+        size_t i;
+        size_t length = rt_strlen(parser.current.text);
+
+        for (i = 0; i <= length; ++i) {
+            if (emit_array_element_address(state, name, word_index, index) != 0) {
+                return -1;
+            }
+            if (emit_load_immediate(state, (long long)(unsigned char)parser.current.text[i]) != 0) {
+                return -1;
+            }
+            if (emit_pop_address_and_store(state, byte_sized) != 0) {
+                return -1;
+            }
+            index += 1U;
+        }
+        expr_next(&parser);
+        if (parser.current.kind != EXPR_TOKEN_EOF) {
+            set_error(state->backend, "unsupported primary expression in backend");
+            return -1;
+        }
+        return 0;
+    }
+
     if (!expr_match_punct(&parser, "{")) {
         set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 
-    byte_sized = word_index ? 0 : 1;
     while (parser.current.kind != EXPR_TOKEN_EOF &&
            !(parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "}"))) {
-        if (emit_address_of_name(state, name) != 0 ||
-            emit_push_value(state) != 0 ||
-            emit_load_immediate(state, (long long)index) != 0 ||
-            emit_index_address(state, word_index) != 0 ||
-            emit_push_value(state) != 0 ||
-            expr_parse_assignment(&parser) != 0 ||
-            emit_pop_address_and_store(state, byte_sized) != 0) {
+        if (emit_array_element_address(state, name, word_index, index) != 0) {
+            return -1;
+        }
+        if (expr_parse_assignment(&parser) != 0) {
+            return -1;
+        }
+        if (emit_pop_address_and_store(state, byte_sized) != 0) {
             return -1;
         }
         index += 1U;
@@ -2555,7 +2850,7 @@ void compiler_backend_init(CompilerBackend *backend, CompilerBackendTarget targe
 }
 
 int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *ir, int fd) {
-    BackendState state;
+    static BackendState state;
     size_t i;
 
     rt_memset(&state, 0, sizeof(state));
@@ -2616,13 +2911,20 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             name[out] = '\0';
             expr = skip_spaces(expr + 4);
 
-            if (*expr == '{') {
-                if (emit_array_initializer_store(&state, name, expr) != 0) {
-                    return -1;
+            {
+                int array_word_index = 0;
+                int is_array_target = lookup_array_storage(&state, name, &array_word_index);
+
+                if (*expr == '{' || (*expr == '"' && is_array_target)) {
+                    if (emit_array_initializer_store(&state, name, expr) != 0) {
+                        set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                        return -1;
+                    }
+                    continue;
                 }
-                continue;
             }
             if (emit_expression(&state, expr) != 0 || emit_store_name(&state, name) != 0) {
+                set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
             }
             continue;
@@ -2630,6 +2932,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
         if (starts_with(line, "eval ")) {
             if (emit_expression(&state, line + 5) != 0) {
+                set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
             }
             continue;

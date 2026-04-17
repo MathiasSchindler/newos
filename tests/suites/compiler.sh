@@ -103,6 +103,36 @@ else
 fi
 assert_text_equals "$backend_expr_status" "0" "compiler backend did not preserve string/index expression semantics"
 
+cat > "$WORK_DIR/long_expr.c" <<'EOF'
+int main(void) {
+    return 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/long_expr.c" -o "$WORK_DIR/long_expr_macos.o"
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/long_expr.c" -o "$WORK_DIR/long_expr_macos_bin"
+if "$WORK_DIR/long_expr_macos_bin"; then
+    long_expr_status=0
+else
+    long_expr_status=$?
+fi
+assert_text_equals "$long_expr_status" "64" "compiler failed on a repository-scale long expression"
+
+cat > "$WORK_DIR/static_local_string_array.c" <<'EOF'
+int main(void) {
+    static const char punctuation[] = "{}[]()#";
+    return punctuation[2] == '[' ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/static_local_string_array.c" -o "$WORK_DIR/static_local_string_array_bin"
+if "$WORK_DIR/static_local_string_array_bin"; then
+    static_local_array_status=0
+else
+    static_local_array_status=$?
+fi
+assert_text_equals "$static_local_array_status" "0" "compiler failed on a function-local static string array initializer"
+
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/pwd.c" -o "$WORK_DIR/pwd_repo.s"
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/echo.c" -o "$WORK_DIR/echo_repo.s"
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/basename.c" -o "$WORK_DIR/basename_repo.s"

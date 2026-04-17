@@ -4,7 +4,12 @@
 #include "runtime.h"
 #include "source.h"
 
-#include <stdint.h>
+typedef signed char int8_t;
+typedef unsigned short uint16_t;
+typedef int int32_t;
+typedef unsigned int uint32_t;
+typedef unsigned long long uint64_t;
+typedef long long int64_t;
 
 #define OBJECT_WRITER_MAX_TEXT 262144
 #define OBJECT_WRITER_MAX_DATA 65536
@@ -319,39 +324,43 @@ static int add_relocation(ObjectAssembler *assembler, const char *name, size_t o
     return 0;
 }
 
-static int parse_register(const char *text, int *reg_out, int *is_byte_reg_out, const char **rest_out) {
-    static const struct {
-        const char *name;
-        int reg;
-        int is_byte_reg;
-    } regs[] = {
-        {"%rax", 0, 0}, {"%rcx", 1, 0}, {"%rdx", 2, 0}, {"%rbx", 3, 0},
-        {"%rsp", 4, 0}, {"%rbp", 5, 0}, {"%rsi", 6, 0}, {"%rdi", 7, 0},
-        {"%r8", 8, 0}, {"%r9", 9, 0}, {"%r10", 10, 0}, {"%r11", 11, 0},
-        {"%al", 0, 1}, {"%cl", 1, 1}
-    };
-    size_t i;
+static int try_parse_register(const char *text,
+                              const char *name,
+                              int reg,
+                              int is_byte_reg,
+                              int *reg_out,
+                              int *is_byte_reg_out,
+                              const char **rest_out) {
+    size_t len = string_length(name);
+    size_t j;
 
-    for (i = 0; i < sizeof(regs) / sizeof(regs[0]); ++i) {
-        size_t len = string_length(regs[i].name);
-        size_t j;
-        int match = 1;
-
-        for (j = 0; j < len; ++j) {
-            if (text[j] != regs[i].name[j]) {
-                match = 0;
-                break;
-            }
-        }
-
-        if (match) {
-            *reg_out = regs[i].reg;
-            *is_byte_reg_out = regs[i].is_byte_reg;
-            *rest_out = text + len;
+    for (j = 0; j < len; ++j) {
+        if (text[j] != name[j]) {
             return 0;
         }
     }
 
+    *reg_out = reg;
+    *is_byte_reg_out = is_byte_reg;
+    *rest_out = text + len;
+    return 1;
+}
+
+static int parse_register(const char *text, int *reg_out, int *is_byte_reg_out, const char **rest_out) {
+    if (try_parse_register(text, "%rax", 0, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rcx", 1, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rdx", 2, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rbx", 3, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rsp", 4, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rbp", 5, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rsi", 6, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%rdi", 7, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%r8", 8, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%r9", 9, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%r10", 10, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%r11", 11, 0, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%al", 0, 1, reg_out, is_byte_reg_out, rest_out)) return 0;
+    if (try_parse_register(text, "%cl", 1, 1, reg_out, is_byte_reg_out, rest_out)) return 0;
     return -1;
 }
 
@@ -1063,12 +1072,27 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     strtab[0] = 0U;
     shstrtab[0] = 0U;
 
-    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".text", &sh_name_text) != 0 ||
-        add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".data", &sh_name_data) != 0 ||
-        add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".rela.text", &sh_name_rela) != 0 ||
-        add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".symtab", &sh_name_symtab) != 0 ||
-        add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".strtab", &sh_name_strtab) != 0 ||
-        add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".shstrtab", &sh_name_shstrtab) != 0) {
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".text", &sh_name_text) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".data", &sh_name_data) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".rela.text", &sh_name_rela) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".symtab", &sh_name_symtab) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".strtab", &sh_name_strtab) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".shstrtab", &sh_name_shstrtab) != 0) {
         set_error(assembler->writer, "failed to build ELF string tables");
         return -1;
     }

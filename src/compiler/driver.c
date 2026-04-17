@@ -722,7 +722,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
     CompilerBackend backend;
     CompilerObjectWriter object_writer;
     CompilerPreprocessor preprocessor;
-    CompilerParser parser;
+    static CompilerParser parser;
     static CompilerSource source;
     char derived_output_path[COMPILER_PATH_CAPACITY];
     const char *output_path;
