@@ -61,19 +61,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
 }
 
-static int starts_with_at(const char *text, size_t pos, const char *pattern) {
-    size_t i = 0;
-
-    while (pattern[i] != '\0') {
-        if (text[pos + i] == '\0' || text[pos + i] != pattern[i]) {
-            return 0;
-        }
-        i += 1;
-    }
-
-    return 1;
-}
-
 static void trim_whitespace(char *text) {
     size_t start = 0;
     size_t end = rt_strlen(text);

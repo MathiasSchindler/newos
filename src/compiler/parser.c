@@ -339,16 +339,6 @@ static int token_starts_decl_specifier(const CompilerParser *parser) {
     return maybe_type_identifier(parser, 1);
 }
 
-static int token_starts_known_type_specifier(const CompilerParser *parser) {
-    if (current_is_type_qualifier_keyword(parser) ||
-        current_is_arithmetic_type_keyword(parser) ||
-        current_is_aggregate_type_keyword(parser)) {
-        return 1;
-    }
-
-    return maybe_type_identifier(parser, 0);
-}
-
 static int looks_like_declaration(const CompilerParser *parser) {
     return token_starts_decl_specifier(parser);
 }
