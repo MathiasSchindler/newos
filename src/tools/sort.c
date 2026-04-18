@@ -255,61 +255,123 @@ static int extract_key_text(const char *line, char *buffer, size_t buffer_size, 
 
 static int compare_lines(const char *left, const char *right, const SortOptions *options) {
     int result = 0;
-    char left_key[SORT_MAX_LINE_LENGTH];
-    char right_key[SORT_MAX_LINE_LENGTH];
-    const char *left_text = left;
-    const char *right_text = right;
 
-    if (extract_key_text(left, left_key, sizeof(left_key), options) != 0 ||
-        extract_key_text(right, right_key, sizeof(right_key), options) != 0) {
-        return 0;
+    if (!options->have_key) {
+        if (options->numeric) {
+            int left_ok = 0;
+            int right_ok = 0;
+            long long left_value = parse_signed_number(left, &left_ok);
+            long long right_value = parse_signed_number(right, &right_ok);
+
+            if (left_ok && right_ok && left_value != right_value) {
+                result = (left_value < right_value) ? -1 : 1;
+            }
+        }
+
+        if (result == 0) {
+            result = rt_strcmp(left, right);
+        }
+
+        return options->reverse ? -result : result;
     }
 
-    if (options->have_key) {
+    {
+        char left_key[SORT_MAX_LINE_LENGTH];
+        char right_key[SORT_MAX_LINE_LENGTH];
+        const char *left_text = left;
+        const char *right_text = right;
+
+        if (extract_key_text(left, left_key, sizeof(left_key), options) != 0 ||
+            extract_key_text(right, right_key, sizeof(right_key), options) != 0) {
+            return 0;
+        }
+
         left_text = left_key;
         right_text = right_key;
-    }
 
-    if (options->numeric) {
-        int left_ok = 0;
-        int right_ok = 0;
-        long long left_value = parse_signed_number(left_text, &left_ok);
-        long long right_value = parse_signed_number(right_text, &right_ok);
+        if (options->numeric) {
+            int left_ok = 0;
+            int right_ok = 0;
+            long long left_value = parse_signed_number(left_text, &left_ok);
+            long long right_value = parse_signed_number(right_text, &right_ok);
 
-        if (left_ok && right_ok && left_value != right_value) {
-            result = (left_value < right_value) ? -1 : 1;
+            if (left_ok && right_ok && left_value != right_value) {
+                result = (left_value < right_value) ? -1 : 1;
+            }
         }
-    }
 
-    if (result == 0) {
-        result = rt_strcmp(left_text, right_text);
-    }
+        if (result == 0) {
+            result = rt_strcmp(left_text, right_text);
+        }
 
-    if (result == 0 && options->have_key) {
-        result = rt_strcmp(left, right);
+        if (result == 0) {
+            result = rt_strcmp(left, right);
+        }
     }
 
     return options->reverse ? -result : result;
 }
 
-static void sort_lines(char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH], size_t count, const SortOptions *options) {
-    size_t i;
-    size_t j;
-    char tmp[SORT_MAX_LINE_LENGTH];
+static void merge_line_order(const char **order,
+                             const char **scratch,
+                             size_t left,
+                             size_t middle,
+                             size_t right,
+                             const SortOptions *options) {
+    size_t left_index = left;
+    size_t right_index = middle;
+    size_t out = left;
 
-    for (i = 0; i < count; ++i) {
-        for (j = i + 1; j < count; ++j) {
-            if (compare_lines(lines[j], lines[i], options) < 0) {
-                memcpy(tmp, lines[i], sizeof(tmp));
-                memcpy(lines[i], lines[j], sizeof(tmp));
-                memcpy(lines[j], tmp, sizeof(tmp));
-            }
+    while (left_index < middle && right_index < right) {
+        if (compare_lines(order[left_index], order[right_index], options) <= 0) {
+            scratch[out++] = order[left_index++];
+        } else {
+            scratch[out++] = order[right_index++];
         }
     }
+
+    while (left_index < middle) {
+        scratch[out++] = order[left_index++];
+    }
+    while (right_index < right) {
+        scratch[out++] = order[right_index++];
+    }
+
+    for (out = left; out < right; ++out) {
+        order[out] = scratch[out];
+    }
+}
+
+static void merge_sort_lines(const char **order,
+                             const char **scratch,
+                             size_t left,
+                             size_t right,
+                             const SortOptions *options) {
+    size_t middle;
+
+    if (right - left < 2U) {
+        return;
+    }
+
+    middle = left + ((right - left) / 2U);
+    merge_sort_lines(order, scratch, left, middle, options);
+    merge_sort_lines(order, scratch, middle, right, options);
+    merge_line_order(order, scratch, left, middle, right, options);
+}
+
+static void sort_lines(const char **order, size_t count, const SortOptions *options) {
+    const char *scratch[SORT_MAX_LINES];
+
+    if (count < 2U) {
+        return;
+    }
+
+    merge_sort_lines(order, scratch, 0U, count, options);
 }
 
 int main(int argc, char **argv) {
     char lines[SORT_MAX_LINES][SORT_MAX_LINE_LENGTH];
+    const char *order[SORT_MAX_LINES];
     size_t count = 0;
     int exit_code = 0;
     int argi = 1;
@@ -391,12 +453,16 @@ int main(int argc, char **argv) {
         }
     }
 
-    sort_lines(lines, count, &options);
     for (i = 0; i < (int)count; ++i) {
-        if (options.unique && i > 0 && rt_strcmp(lines[i], lines[i - 1]) == 0) {
+        order[i] = lines[i];
+    }
+
+    sort_lines(order, count, &options);
+    for (i = 0; i < (int)count; ++i) {
+        if (options.unique && i > 0 && rt_strcmp(order[i], order[i - 1]) == 0) {
             continue;
         }
-        rt_write_line(1, lines[i]);
+        rt_write_line(1, order[i]);
     }
 
     return exit_code;

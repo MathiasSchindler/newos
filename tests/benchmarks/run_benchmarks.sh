@@ -7,8 +7,13 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 WORK_DIR="$ROOT_DIR/tests/tmp/benchmarks"
 DATA_DIR="$WORK_DIR/data"
 ITERATIONS=${BENCH_ITERATIONS:-3}
+AWK_BIN=${AWK_BIN:-/usr/bin/awk}
 
-export ROOT_DIR WORK_DIR DATA_DIR ITERATIONS
+if [ ! -x "$AWK_BIN" ]; then
+    AWK_BIN=awk
+fi
+
+export ROOT_DIR WORK_DIR DATA_DIR ITERATIONS AWK_BIN
 
 mkdir -p "$DATA_DIR"
 
@@ -32,14 +37,17 @@ measure_seconds() {
 
     while [ "$run" -lt "$ITERATIONS" ]; do
         log_file="$WORK_DIR/time.$$.$run.log"
-        /usr/bin/time -p sh -c "$command_text" >/dev/null 2>"$log_file"
-        seconds=$(awk '/^real / { print $2 }' "$log_file")
+        LC_ALL=C /usr/bin/time -p sh -c "$command_text" >/dev/null 2>"$log_file"
+        seconds=$(LC_ALL=C "$AWK_BIN" '/^real / { print $2 }' "$log_file")
         rm -f "$log_file"
-        total=$(awk -v a="$total" -v b="$seconds" 'BEGIN { printf "%.6f", a + b }')
+        if [ -z "$seconds" ]; then
+            seconds="0"
+        fi
+        total=$(LC_ALL=C "$AWK_BIN" -v a="$total" -v b="$seconds" 'BEGIN { printf "%.6f", a + b }')
         run=$((run + 1))
     done
 
-    awk -v total="$total" -v n="$ITERATIONS" 'BEGIN { printf "%.4f", total / n }'
+    LC_ALL=C "$AWK_BIN" -v total="$total" -v n="$ITERATIONS" 'BEGIN { if (n <= 0) printf "0.0000"; else printf "%.4f", total / n }'
 }
 
 print_header() {
@@ -51,7 +59,18 @@ print_result() {
     label="$1"
     ours="$2"
     system="$3"
-    ratio=$(awk -v a="$ours" -v b="$system" 'BEGIN { if (b == 0) print "n/a"; else printf "%.2fx", a / b }')
+    ours_norm=$(printf '%s' "$ours" | tr ',' '.')
+    system_norm=$(printf '%s' "$system" | tr ',' '.')
+
+    case "$system_norm" in
+        ""|0|0.0|0.00|0.000|0.0000|0.00000|0.000000)
+            ratio="n/a"
+            ;;
+        *)
+            ratio=$(LC_ALL=C "$AWK_BIN" -v a="$ours_norm" -v b="$system_norm" 'BEGIN { if (b <= 0.0) print "n/a"; else printf "%.2fx", a / b }')
+            ;;
+    esac
+
     printf "%-14s %-10s %-10s %s\n" "$label" "$ours" "$system" "$ratio"
 }
 
