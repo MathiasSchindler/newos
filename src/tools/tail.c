@@ -158,10 +158,19 @@ static int capture_tail_stream(int fd, char *storage, size_t storage_size, size_
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
         size_t n = (size_t)bytes_read;
+        size_t copy_bytes = n;
 
-        if (n >= storage_size) {
-            memcpy(storage, chunk + (n - storage_size), storage_size);
-            used = storage_size;
+        if (n > sizeof(chunk)) {
+            return -1;
+        }
+
+        if (copy_bytes > storage_size) {
+            copy_bytes = storage_size;
+        }
+
+        if (copy_bytes < n) {
+            memcpy(storage, chunk + (n - copy_bytes), copy_bytes);
+            used = copy_bytes;
             continue;
         }
 
