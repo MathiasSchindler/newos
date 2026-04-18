@@ -192,6 +192,430 @@ int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t 
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }
 
+static char tool_regex_to_lower_ascii(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static int tool_regex_chars_equal(char lhs, char rhs, int ignore_case) {
+    if (ignore_case) {
+        lhs = tool_regex_to_lower_ascii(lhs);
+        rhs = tool_regex_to_lower_ascii(rhs);
+    }
+    return lhs == rhs;
+}
+
+static int tool_regex_is_word_char(char ch) {
+    return (ch >= 'a' && ch <= 'z') ||
+           (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') ||
+           ch == '_';
+}
+
+static int tool_regex_decode_escape(char code, char *out) {
+    if (out == 0) {
+        return -1;
+    }
+
+    if (code == 'n') {
+        *out = '\n';
+    } else if (code == 'r') {
+        *out = '\r';
+    } else if (code == 't') {
+        *out = '\t';
+    } else if (code == 'f') {
+        *out = '\f';
+    } else if (code == 'v') {
+        *out = '\v';
+    } else {
+        *out = code;
+    }
+    return 0;
+}
+
+static int tool_regex_escape_matches(char code, char ch, int ignore_case) {
+    char decoded = '\0';
+
+    if (code == 'd') {
+        return ch >= '0' && ch <= '9';
+    }
+    if (code == 'D') {
+        return !(ch >= '0' && ch <= '9');
+    }
+    if (code == 'w') {
+        return tool_regex_is_word_char(ch);
+    }
+    if (code == 'W') {
+        return !tool_regex_is_word_char(ch);
+    }
+    if (code == 's') {
+        return rt_is_space(ch);
+    }
+    if (code == 'S') {
+        return !rt_is_space(ch);
+    }
+
+    (void)tool_regex_decode_escape(code, &decoded);
+    return tool_regex_chars_equal(decoded, ch, ignore_case);
+}
+
+static size_t tool_regex_atom_length(const char *pattern) {
+    size_t i = 0U;
+
+    if (pattern == 0 || pattern[0] == '\0') {
+        return 0U;
+    }
+
+    if (pattern[0] == '\\' && pattern[1] != '\0') {
+        return 2U;
+    }
+
+    if (pattern[0] != '[') {
+        return 1U;
+    }
+
+    i = 1U;
+    if (pattern[i] == '^') {
+        i += 1U;
+    }
+    if (pattern[i] == ']') {
+        i += 1U;
+    }
+
+    while (pattern[i] != '\0') {
+        if (pattern[i] == '\\' && pattern[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (pattern[i] == ']') {
+            return i + 1U;
+        }
+        i += 1U;
+    }
+
+    return 1U;
+}
+
+static int tool_regex_class_matches(const char *pattern, size_t atom_len, char ch, int ignore_case) {
+    size_t i = 1U;
+    int negate = 0;
+    int matched = 0;
+
+    if (pattern == 0 || atom_len < 2U || pattern[0] != '[') {
+        return 0;
+    }
+
+    if (pattern[i] == '^') {
+        negate = 1;
+        i += 1U;
+    }
+
+    while (i + 1U < atom_len) {
+        int current_is_special = 0;
+        char current = '\0';
+
+        if (pattern[i] == '\\' && i + 2U < atom_len) {
+            char code = pattern[i + 1U];
+            int special = tool_regex_escape_matches(code, ch, ignore_case);
+            if (code == 'd' || code == 'D' || code == 'w' || code == 'W' || code == 's' || code == 'S') {
+                if (special) {
+                    matched = 1;
+                }
+                current_is_special = 1;
+            } else {
+                (void)tool_regex_decode_escape(code, &current);
+            }
+            i += 2U;
+        } else {
+            current = pattern[i];
+            i += 1U;
+        }
+
+        if (current_is_special) {
+            continue;
+        }
+
+        if (i + 1U < atom_len && pattern[i] == '-' && pattern[i + 1U] != ']') {
+            char range_end = '\0';
+
+            i += 1U;
+            if (pattern[i] == '\\' && i + 1U < atom_len) {
+                (void)tool_regex_decode_escape(pattern[i + 1U], &range_end);
+                i += 2U;
+            } else {
+                range_end = pattern[i];
+                i += 1U;
+            }
+
+            if (ignore_case) {
+                current = tool_regex_to_lower_ascii(current);
+                range_end = tool_regex_to_lower_ascii(range_end);
+                ch = tool_regex_to_lower_ascii(ch);
+            }
+
+            if (current <= ch && ch <= range_end) {
+                matched = 1;
+            }
+        } else if (tool_regex_chars_equal(current, ch, ignore_case)) {
+            matched = 1;
+        }
+    }
+
+    return negate ? !matched : matched;
+}
+
+static int tool_regex_atom_matches(const char *pattern, size_t atom_len, char ch, int ignore_case) {
+    if (pattern == 0 || atom_len == 0U) {
+        return 0;
+    }
+    if (pattern[0] == '.') {
+        return 1;
+    }
+    if (pattern[0] == '[') {
+        return tool_regex_class_matches(pattern, atom_len, ch, ignore_case);
+    }
+    if (pattern[0] == '\\' && atom_len >= 2U) {
+        return tool_regex_escape_matches(pattern[1], ch, ignore_case);
+    }
+    return tool_regex_chars_equal(pattern[0], ch, ignore_case);
+}
+
+static int tool_regex_match_here(const char *pattern, const char *text, int ignore_case, const char **end_out);
+
+static int tool_regex_match_repeated(const char *pattern,
+                                     size_t atom_len,
+                                     char quantifier,
+                                     const char *text,
+                                     int ignore_case,
+                                     const char **end_out) {
+    const char *cursor = text;
+    unsigned long long min_count = (quantifier == '+') ? 1ULL : 0ULL;
+    unsigned long long count = 0ULL;
+
+    while (*cursor != '\0' && tool_regex_atom_matches(pattern, atom_len, *cursor, ignore_case)) {
+        cursor += 1;
+        count += 1ULL;
+    }
+
+    while (cursor >= text) {
+        if (count >= min_count && tool_regex_match_here(pattern + atom_len + 1U, cursor, ignore_case, end_out)) {
+            return 1;
+        }
+        if (cursor == text) {
+            break;
+        }
+        cursor -= 1;
+        count -= 1ULL;
+    }
+
+    return 0;
+}
+
+static int tool_regex_match_here(const char *pattern, const char *text, int ignore_case, const char **end_out) {
+    size_t atom_len;
+    char quantifier;
+
+    if (pattern[0] == '\0') {
+        *end_out = text;
+        return 1;
+    }
+
+    if (pattern[0] == '$' && pattern[1] == '\0') {
+        if (text[0] == '\0') {
+            *end_out = text;
+            return 1;
+        }
+        return 0;
+    }
+
+    atom_len = tool_regex_atom_length(pattern);
+    if (atom_len == 0U) {
+        *end_out = text;
+        return 1;
+    }
+
+    quantifier = pattern[atom_len];
+    if (quantifier == '*' || quantifier == '+') {
+        return tool_regex_match_repeated(pattern, atom_len, quantifier, text, ignore_case, end_out);
+    }
+    if (quantifier == '?') {
+        if (*text != '\0' &&
+            tool_regex_atom_matches(pattern, atom_len, *text, ignore_case) &&
+            tool_regex_match_here(pattern + atom_len + 1U, text + 1, ignore_case, end_out)) {
+            return 1;
+        }
+        return tool_regex_match_here(pattern + atom_len + 1U, text, ignore_case, end_out);
+    }
+
+    if (*text != '\0' && tool_regex_atom_matches(pattern, atom_len, *text, ignore_case)) {
+        return tool_regex_match_here(pattern + atom_len, text + 1, ignore_case, end_out);
+    }
+
+    return 0;
+}
+
+int tool_regex_search(const char *pattern, const char *text, int ignore_case, size_t search_start, size_t *start_out, size_t *end_out) {
+    size_t pos = search_start;
+
+    if (pattern == 0 || text == 0 || start_out == 0 || end_out == 0) {
+        return 0;
+    }
+
+    if (pattern[0] == '^') {
+        const char *end = 0;
+        if (search_start != 0U) {
+            return 0;
+        }
+        if (tool_regex_match_here(pattern + 1, text, ignore_case, &end)) {
+            *start_out = 0U;
+            *end_out = (size_t)(end - text);
+            return 1;
+        }
+        return 0;
+    }
+
+    while (1) {
+        const char *end = 0;
+
+        if (tool_regex_match_here(pattern, text + pos, ignore_case, &end)) {
+            *start_out = pos;
+            *end_out = (size_t)(end - text);
+            return 1;
+        }
+
+        if (text[pos] == '\0') {
+            break;
+        }
+        pos += 1U;
+    }
+
+    return 0;
+}
+
+static int tool_regex_append_text(char *buffer, size_t buffer_size, size_t *used, const char *text, size_t length) {
+    if (*used + length + 1U > buffer_size) {
+        return -1;
+    }
+    if (length > 0U) {
+        memcpy(buffer + *used, text, length);
+        *used += length;
+    }
+    buffer[*used] = '\0';
+    return 0;
+}
+
+static int tool_regex_append_replacement(char *buffer,
+                                         size_t buffer_size,
+                                         size_t *used,
+                                         const char *replacement,
+                                         const char *input,
+                                         size_t match_start,
+                                         size_t match_end) {
+    size_t i = 0U;
+
+    while (replacement != 0 && replacement[i] != '\0') {
+        if (replacement[i] == '&') {
+            if (tool_regex_append_text(buffer, buffer_size, used, input + match_start, match_end - match_start) != 0) {
+                return -1;
+            }
+            i += 1U;
+            continue;
+        }
+
+        if (replacement[i] == '\\' && replacement[i + 1U] != '\0') {
+            char decoded = '\0';
+            char code = replacement[i + 1U];
+
+            if (code == '&' || code == '\\') {
+                decoded = code;
+            } else {
+                (void)tool_regex_decode_escape(code, &decoded);
+            }
+            if (tool_regex_append_text(buffer, buffer_size, used, &decoded, 1U) != 0) {
+                return -1;
+            }
+            i += 2U;
+            continue;
+        }
+
+        if (tool_regex_append_text(buffer, buffer_size, used, replacement + i, 1U) != 0) {
+            return -1;
+        }
+        i += 1U;
+    }
+
+    return 0;
+}
+
+int tool_regex_replace(const char *pattern,
+                       const char *replacement,
+                       const char *input,
+                       int ignore_case,
+                       int global,
+                       char *output,
+                       size_t output_size,
+                       int *changed_out) {
+    size_t in_pos = 0U;
+    size_t out_pos = 0U;
+    int changed = 0;
+
+    if (pattern == 0 || replacement == 0 || input == 0 || output == 0 || output_size == 0U) {
+        return -1;
+    }
+
+    if (changed_out != 0) {
+        *changed_out = 0;
+    }
+
+    output[0] = '\0';
+    if (pattern[0] == '\0') {
+        return tool_regex_append_text(output, output_size, &out_pos, input, rt_strlen(input));
+    }
+
+    while (1) {
+        size_t match_start = 0U;
+        size_t match_end = 0U;
+
+        if (!tool_regex_search(pattern, input, ignore_case, in_pos, &match_start, &match_end)) {
+            break;
+        }
+
+        if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, match_start - in_pos) != 0 ||
+            tool_regex_append_replacement(output, output_size, &out_pos, replacement, input, match_start, match_end) != 0) {
+            return -1;
+        }
+
+        changed = 1;
+        if (!global) {
+            in_pos = match_end;
+            break;
+        }
+
+        if (match_end > match_start) {
+            in_pos = match_end;
+        } else {
+            if (input[in_pos] == '\0') {
+                break;
+            }
+            if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, 1U) != 0) {
+                return -1;
+            }
+            in_pos += 1U;
+        }
+    }
+
+    if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, rt_strlen(input + in_pos)) != 0) {
+        return -1;
+    }
+
+    if (changed_out != 0) {
+        *changed_out = changed;
+    }
+    return 0;
+}
+
 int tool_wildcard_match(const char *pattern, const char *text) {
     if (pattern[0] == '\0') {
         return text[0] == '\0';

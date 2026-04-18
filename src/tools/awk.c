@@ -407,28 +407,9 @@ static int parse_program(const char *program_text, AwkProgram *program) {
 }
 
 static int contains_substring(const char *text, const char *pattern) {
-    size_t i = 0;
-    size_t pattern_len = rt_strlen(pattern);
-
-    if (pattern_len == 0) {
-        return 1;
-    }
-
-    while (text[i] != '\0') {
-        size_t j = 0;
-
-        while (pattern[j] != '\0' && text[i + j] != '\0' && text[i + j] == pattern[j]) {
-            j += 1;
-        }
-
-        if (j == pattern_len) {
-            return 1;
-        }
-
-        i += 1;
-    }
-
-    return 0;
+    size_t start = 0;
+    size_t end = 0;
+    return tool_regex_search(pattern, text, 0, 0, &start, &end);
 }
 
 static int compare_values(unsigned long long lhs, AwkCompareOp op, unsigned long long rhs) {

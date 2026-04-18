@@ -260,55 +260,10 @@ static int ed_insert_after(EditorBuffer *buffer, size_t index, InputReader *read
 }
 
 static int ed_replace_text(const char *line, const char *old_text, const char *new_text, int global, char *out, size_t out_size, int *changed_out) {
-    size_t old_len = rt_strlen(old_text);
-    size_t new_len = rt_strlen(new_text);
-    size_t in_pos = 0;
-    size_t out_pos = 0;
-    int changed = 0;
-
-    if (old_len == 0) {
+    if (old_text[0] == '\0') {
         return -1;
     }
-
-    while (line[in_pos] != '\0') {
-        size_t i;
-        int match = 1;
-
-        for (i = 0; i < old_len; ++i) {
-            if (line[in_pos + i] != old_text[i]) {
-                match = 0;
-                break;
-            }
-        }
-
-        if (match) {
-            if (out_pos + new_len + 1 > out_size) {
-                return -1;
-            }
-            memcpy(out + out_pos, new_text, new_len);
-            out_pos += new_len;
-            in_pos += old_len;
-            changed = 1;
-            if (!global) {
-                while (line[in_pos] != '\0') {
-                    if (out_pos + 2 > out_size) {
-                        return -1;
-                    }
-                    out[out_pos++] = line[in_pos++];
-                }
-                break;
-            }
-        } else {
-            if (out_pos + 2 > out_size) {
-                return -1;
-            }
-            out[out_pos++] = line[in_pos++];
-        }
-    }
-
-    out[out_pos] = '\0';
-    *changed_out = changed;
-    return 0;
+    return tool_regex_replace(old_text, new_text, line, 0, global, out, out_size, changed_out);
 }
 
 static int ed_parse_single_address(const char *text, size_t *pos, const EditorBuffer *buffer, size_t *value_out, int *has_value_out) {

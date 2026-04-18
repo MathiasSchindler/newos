@@ -383,6 +383,14 @@ cat > "$WORK_DIR/grep_context.expected" <<'EOF'
 4-three
 EOF
 assert_files_equal "$WORK_DIR/grep_context.expected" "$WORK_DIR/grep_context.out" "grep context mode failed"
+printf 'cat1\ncat22\ncat\ncot333\ndog9\n' > "$WORK_DIR/grep_regex.txt"
+"$ROOT_DIR/build/grep" '^c[ao]t[0-9]+$' "$WORK_DIR/grep_regex.txt" > "$WORK_DIR/grep_regex.out"
+cat > "$WORK_DIR/grep_regex.expected" <<'EOF'
+cat1
+cat22
+cot333
+EOF
+assert_files_equal "$WORK_DIR/grep_regex.expected" "$WORK_DIR/grep_regex.out" "grep shared regex engine did not handle classes or + quantifiers"
 
 wc_selected=$(printf 'one two\nthree\n' | "$ROOT_DIR/build/wc" -lw | tr -d '\r\n')
 assert_text_equals "$wc_selected" '2 3' "wc selective counts failed"
@@ -507,6 +515,17 @@ azure
 EOF
 assert_files_equal "$WORK_DIR/sed_inplace.expected" "$WORK_DIR/sed_inplace.txt" "sed -i did not rewrite the file in place"
 assert_file_contains "$WORK_DIR/sed_inplace.txt.bak" '^blue$' "sed -i backup suffix did not preserve the original content"
+printf 'item7\nitem42\nplain\n' > "$WORK_DIR/sed_regex.txt"
+"$ROOT_DIR/build/sed" 's/[0-9]+/<&>/' "$WORK_DIR/sed_regex.txt" > "$WORK_DIR/sed_regex.out"
+cat > "$WORK_DIR/sed_regex.expected" <<'EOF'
+item<7>
+item<42>
+plain
+EOF
+assert_files_equal "$WORK_DIR/sed_regex.expected" "$WORK_DIR/sed_regex.out" "sed shared regex substitution failed"
+printf 'room42\n' > "$WORK_DIR/ed_regex.txt"
+printf '1s/[0-9]+/XX/\nw\nq\n' | "$ROOT_DIR/build/ed" "$WORK_DIR/ed_regex.txt" > /dev/null
+assert_file_contains "$WORK_DIR/ed_regex.txt" '^roomXX$' "ed shared regex substitution failed"
 printf '\nfirst\n\nsecond\n' > "$WORK_DIR/nl_input.txt"
 "$ROOT_DIR/build/nl" -ba -v 10 -i 5 -w 2 -s ': ' "$WORK_DIR/nl_input.txt" > "$WORK_DIR/nl_options.out"
 printf '10: \n15: first\n20: \n25: second\n' > "$WORK_DIR/nl_options.expected"
@@ -738,6 +757,13 @@ EOF
 assert_files_equal "$WORK_DIR/awk.expected" "$WORK_DIR/awk.out" "awk BEGIN/END/pattern/NR/NF behavior failed"
 awk_nf_out=$("$ROOT_DIR/build/awk" 'NF == 3 { print NR, $1 }' "$WORK_DIR/awk.txt" | tr -d '\r\n')
 assert_text_equals "$awk_nf_out" '2 beta' "awk NF condition failed"
+printf 'alpha1 ok\nalpha22 go\nbeta nope\n' > "$WORK_DIR/awk_regex.txt"
+"$ROOT_DIR/build/awk" '/^alpha[0-9]+/ { print $1 }' "$WORK_DIR/awk_regex.txt" > "$WORK_DIR/awk_regex.out"
+cat > "$WORK_DIR/awk_regex.expected" <<'EOF'
+alpha1
+alpha22
+EOF
+assert_files_equal "$WORK_DIR/awk_regex.expected" "$WORK_DIR/awk_regex.out" "awk shared regex matching failed"
 
 printf '\tlead\nA\tB\n' | "$ROOT_DIR/build/expand" -i -t 4 > "$WORK_DIR/expand_i.out"
 printf '    lead\nA\tB\n' > "$WORK_DIR/expand_i.expected"

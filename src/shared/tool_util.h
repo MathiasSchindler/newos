@@ -17,6 +17,8 @@ const char *tool_base_name(const char *path);
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size);
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size);
 int tool_wildcard_match(const char *pattern, const char *text);
+int tool_regex_search(const char *pattern, const char *text, int ignore_case, size_t search_start, size_t *start_out, size_t *end_out);
+int tool_regex_replace(const char *pattern, const char *replacement, const char *input, int ignore_case, int global, char *output, size_t output_size, int *changed_out);
 int tool_resolve_destination(const char *source_path, const char *dest_path, char *buffer, size_t buffer_size);
 int tool_canonicalize_path_policy(const char *path, int resolve_symlinks, int allow_missing, int logical_policy, char *buffer, size_t buffer_size);
 int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_missing, char *buffer, size_t buffer_size);

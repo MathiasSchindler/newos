@@ -49,16 +49,6 @@ static char to_lower_ascii(char ch) {
     return ch;
 }
 
-static int same_char(char lhs, char rhs, int ignore_case) {
-    if (lhs == '.') {
-        return 1;
-    }
-    if (ignore_case) {
-        return to_lower_ascii(lhs) == to_lower_ascii(rhs);
-    }
-    return lhs == rhs;
-}
-
 static int is_word_char(char ch) {
     return (ch >= 'a' && ch <= 'z') ||
            (ch >= 'A' && ch <= 'Z') ||
@@ -74,53 +64,6 @@ static int match_has_word_boundaries(const char *text, size_t start, size_t end)
         return 0;
     }
     return 1;
-}
-
-static int match_here_span(const char *pattern, const char *text, int ignore_case, const char **end_out);
-
-static int match_star_span(int token,
-                           const char *pattern,
-                           const char *text,
-                           int ignore_case,
-                           const char **end_out) {
-    const char *cursor = text;
-
-    while (*cursor != '\0' && (token == '.' || same_char((char)token, *cursor, ignore_case))) {
-        cursor += 1;
-    }
-
-    do {
-        if (match_here_span(pattern, cursor, ignore_case, end_out)) {
-            return 1;
-        }
-    } while (cursor-- > text);
-
-    return 0;
-}
-
-static int match_here_span(const char *pattern, const char *text, int ignore_case, const char **end_out) {
-    if (pattern[0] == '\0') {
-        *end_out = text;
-        return 1;
-    }
-
-    if (pattern[1] == '*') {
-        return match_star_span(pattern[0], pattern + 2, text, ignore_case, end_out);
-    }
-
-    if (pattern[0] == '$' && pattern[1] == '\0') {
-        if (text[0] == '\0') {
-            *end_out = text;
-            return 1;
-        }
-        return 0;
-    }
-
-    if (text[0] != '\0' && same_char(pattern[0], text[0], ignore_case)) {
-        return match_here_span(pattern + 1, text + 1, ignore_case, end_out);
-    }
-
-    return 0;
 }
 
 static int starts_with_literal(const char *pattern, const char *text, int ignore_case) {
@@ -183,38 +126,7 @@ static int find_regex_match(const char *pattern,
                             size_t search_start,
                             size_t *start_out,
                             size_t *end_out) {
-    size_t pos = search_start;
-
-    if (pattern[0] == '^') {
-        const char *end = 0;
-
-        if (search_start != 0) {
-            return 0;
-        }
-        if (match_here_span(pattern + 1, text, ignore_case, &end)) {
-            *start_out = 0;
-            *end_out = (size_t)(end - text);
-            return 1;
-        }
-        return 0;
-    }
-
-    while (1) {
-        const char *end = 0;
-
-        if (match_here_span(pattern, text + pos, ignore_case, &end)) {
-            *start_out = pos;
-            *end_out = (size_t)(end - text);
-            return 1;
-        }
-
-        if (text[pos] == '\0') {
-            break;
-        }
-        pos += 1;
-    }
-
-    return 0;
+    return tool_regex_search(pattern, text, ignore_case, search_start, start_out, end_out);
 }
 
 static int find_next_match(const GrepOptions *options,

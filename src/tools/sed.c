@@ -94,19 +94,9 @@ static void trim_whitespace(char *text) {
 }
 
 static int line_contains(const char *text, const char *pattern) {
-    size_t i;
-
-    if (pattern[0] == '\0') {
-        return 1;
-    }
-
-    for (i = 0; text[i] != '\0'; ++i) {
-        if (starts_with_at(text, i, pattern)) {
-            return 1;
-        }
-    }
-
-    return 0;
+    size_t start = 0;
+    size_t end = 0;
+    return tool_regex_search(pattern, text, 0, 0, &start, &end);
 }
 
 static int parse_address(const char *expr, size_t *pos, SedAddress *address) {
@@ -337,38 +327,10 @@ static int load_script_file(const char *path, SedProgram *program) {
 }
 
 static int apply_substitution(const SedCommand *command, const char *input, char *output, size_t output_size) {
-    size_t in_pos = 0;
-    size_t out_pos = 0;
-    size_t old_len = rt_strlen(command->old_text);
-    size_t new_len = rt_strlen(command->new_text);
-    int replaced = 0;
-
-    if (old_len == 0) {
-        if (rt_strlen(input) + 1 > output_size) {
-            return -1;
-        }
-        memcpy(output, input, rt_strlen(input) + 1);
-        return 0;
+    int changed = 0;
+    if (tool_regex_replace(command->old_text, command->new_text, input, 0, command->global, output, output_size, &changed) != 0) {
+        return -1;
     }
-
-    while (input[in_pos] != '\0') {
-        if ((!replaced || command->global) && starts_with_at(input, in_pos, command->old_text)) {
-            if (out_pos + new_len + 1 > output_size) {
-                return -1;
-            }
-            memcpy(output + out_pos, command->new_text, new_len);
-            out_pos += new_len;
-            in_pos += old_len;
-            replaced = 1;
-        } else {
-            if (out_pos + 2 > output_size) {
-                return -1;
-            }
-            output[out_pos++] = input[in_pos++];
-        }
-    }
-
-    output[out_pos] = '\0';
     return 0;
 }
 
