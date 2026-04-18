@@ -66,6 +66,11 @@ first
 second
 EOF
 assert_files_equal "$WORK_DIR/tee_append.expected" "$WORK_DIR/tee_append.txt" "tee -a did not append to the existing file"
+tee_partial_status=0
+printf 'partial write\n' | "$ROOT_DIR/build/tee" -i "$WORK_DIR/tee_partial.txt" "$WORK_DIR/missing/tee_fail.txt" > "$WORK_DIR/tee_partial.out" || tee_partial_status=$?
+[ "$tee_partial_status" -ne 0 ] || fail "tee should return a failure status when one output cannot be opened"
+assert_file_contains "$WORK_DIR/tee_partial.txt" '^partial write$' "tee did not preserve healthy outputs after one output failed"
+assert_file_contains "$WORK_DIR/tee_partial.out" '^partial write$' "tee stdout copy regressed when handling a bad output path"
 
 printf 'one two\n' | "$ROOT_DIR/build/xargs" "$ROOT_DIR/build/echo" prefix > "$WORK_DIR/xargs.out"
 actual_xargs=$(tr -d '\r' < "$WORK_DIR/xargs.out" | head -n 1)
@@ -88,6 +93,28 @@ item red
 item blue sky
 EOF
 assert_files_equal "$WORK_DIR/xargs_0.expected" "$WORK_DIR/xargs_0.out" "xargs -0 parsing failed"
+printf '"two words" plain escaped\ space\n' | "$ROOT_DIR/build/xargs" -n 1 "$ROOT_DIR/build/echo" item > "$WORK_DIR/xargs_quote.out"
+cat > "$WORK_DIR/xargs_quote.expected" <<'EOF'
+item two words
+item plain
+item escaped space
+EOF
+assert_files_equal "$WORK_DIR/xargs_quote.expected" "$WORK_DIR/xargs_quote.out" "xargs quoting or backslash handling failed"
+printf 'aa bb ccc d\n' | "$ROOT_DIR/build/xargs" -s 6 "$ROOT_DIR/build/echo" batch > "$WORK_DIR/xargs_s.out"
+cat > "$WORK_DIR/xargs_s.expected" <<'EOF'
+batch aa bb
+batch ccc d
+EOF
+assert_files_equal "$WORK_DIR/xargs_s.expected" "$WORK_DIR/xargs_s.out" "xargs -s size batching failed"
+printf 'one two three four\n' | "$ROOT_DIR/build/xargs" -n 1 -P 2 "$ROOT_DIR/build/echo" > "$WORK_DIR/xargs_p.out"
+tr -d '\r' < "$WORK_DIR/xargs_p.out" | sort > "$WORK_DIR/xargs_p.sorted"
+cat > "$WORK_DIR/xargs_p.expected" <<'EOF'
+four
+one
+three
+two
+EOF
+assert_files_equal "$WORK_DIR/xargs_p.expected" "$WORK_DIR/xargs_p.sorted" "xargs -P did not execute all items"
 printf 'copy-a\n' > "$WORK_DIR/cp_a.txt"
 printf 'copy-b\n' > "$WORK_DIR/cp_b.txt"
 mkdir -p "$WORK_DIR/cp_dest"
@@ -302,6 +329,12 @@ printf '\001\002HelloString\000xxMoreText\n' > "$WORK_DIR/strings.bin"
 assert_file_contains "$WORK_DIR/strings.out" 'HelloString' "strings output missing printable sequence"
 "$ROOT_DIR/build/strings" -t x "$WORK_DIR/strings.bin" > "$WORK_DIR/strings_offset.out"
 assert_file_contains "$WORK_DIR/strings_offset.out" '^2 HelloString$' "strings -t x did not include the expected offset"
+printf 'W\000i\000d\000e\000\000\000' > "$WORK_DIR/strings_wide_le.bin"
+"$ROOT_DIR/build/strings" -e l -n 4 "$WORK_DIR/strings_wide_le.bin" > "$WORK_DIR/strings_wide_le.out"
+assert_file_contains "$WORK_DIR/strings_wide_le.out" '^Wide$' "strings -e l did not decode UTF-16LE-style text"
+printf '\000B\000i\000g\000E\000' > "$WORK_DIR/strings_wide_be.bin"
+"$ROOT_DIR/build/strings" -e b -n 4 -f "$WORK_DIR/strings_wide_be.bin" > "$WORK_DIR/strings_wide_be.out"
+assert_file_contains "$WORK_DIR/strings_wide_be.out" 'strings_wide_be.bin: BigE' "strings -e b/-f did not report wide text with file prefixes"
 
 printf_out=$("$ROOT_DIR/build/printf" 'value=%s %d %x\n' sample 42 255 | tr -d '\r')
 assert_text_equals "$printf_out" 'value=sample 42 ff' "printf formatting failed"
@@ -310,6 +343,10 @@ printf 'sam A\tB' > "$WORK_DIR/printf_features.expected"
 assert_files_equal "$WORK_DIR/printf_features.expected" "$WORK_DIR/printf_features.out" "printf precision or %b handling failed"
 printf_cycle=$("$ROOT_DIR/build/printf" '%s:' A B C | tr -d '\r\n')
 assert_text_equals "$printf_cycle" 'A:B:C:' "printf format cycling failed"
+printf_float=$("$ROOT_DIR/build/printf" '%.2f' 3.14159 | tr -d '\r\n')
+assert_text_equals "$printf_float" '3.14' "printf floating-point formatting failed"
+printf_positional=$("$ROOT_DIR/build/printf" '%2$s %1$s %3$d' first second 7 | tr -d '\r\n')
+assert_text_equals "$printf_positional" 'second first 7' "printf positional argument handling failed"
 echo_out=$("$ROOT_DIR/build/echo" -n sample | tr -d '\r')
 assert_text_equals "$echo_out" 'sample' "echo -n failed"
 "$ROOT_DIR/build/echo" -e 'line1\nline2\tend' > "$WORK_DIR/echo_escape.out"
@@ -336,6 +373,8 @@ which_out=$("$ROOT_DIR/build/which" ls | tr -d '\r\n')
 assert_text_equals "$which_out" "$ROOT_DIR/build/ls" "which did not resolve build tool"
 "$ROOT_DIR/build/which" -a ls > "$WORK_DIR/which_all.out"
 assert_file_contains "$WORK_DIR/which_all.out" 'build/ls' "which -a did not report all matches"
+which_builtin=$("$ROOT_DIR/build/which" cd | tr -d '\r\n')
+assert_text_equals "$which_builtin" 'cd: shell built-in' "which should recognize shell built-ins when no external command is available"
 mkdir -p "$WORK_DIR/path1" "$WORK_DIR/path2"
 printf '#!/bin/sh\necho one\n' > "$WORK_DIR/path1/dupcmd"
 printf '#!/bin/sh\necho two\n' > "$WORK_DIR/path2/dupcmd"
@@ -391,9 +430,28 @@ cat22
 cot333
 EOF
 assert_files_equal "$WORK_DIR/grep_regex.expected" "$WORK_DIR/grep_regex.out" "grep shared regex engine did not handle classes or + quantifiers"
+printf 'alpha-alpha\nalpha-beta\nwow-wow\n' > "$WORK_DIR/grep_regex_backref.txt"
+"$ROOT_DIR/build/grep" '^([a-z]+)-\1$' "$WORK_DIR/grep_regex_backref.txt" > "$WORK_DIR/grep_regex_backref.out"
+cat > "$WORK_DIR/grep_regex_backref.expected" <<'EOF'
+alpha-alpha
+wow-wow
+EOF
+assert_files_equal "$WORK_DIR/grep_regex_backref.expected" "$WORK_DIR/grep_regex_backref.out" "grep grouping, alternation, or backreference support failed"
+printf 'ab\naabb\naaabbb\naaaabbbb\n' > "$WORK_DIR/grep_regex_counted.txt"
+"$ROOT_DIR/build/grep" '^a{2,4}b{2,4}$' "$WORK_DIR/grep_regex_counted.txt" > "$WORK_DIR/grep_regex_counted.out"
+cat > "$WORK_DIR/grep_regex_counted.expected" <<'EOF'
+aabb
+aaabbb
+aaaabbbb
+EOF
+assert_files_equal "$WORK_DIR/grep_regex_counted.expected" "$WORK_DIR/grep_regex_counted.out" "grep counted repetition support failed"
 
 wc_selected=$(printf 'one two\nthree\n' | "$ROOT_DIR/build/wc" -lw | tr -d '\r\n')
 assert_text_equals "$wc_selected" '2 3' "wc selective counts failed"
+wc_chars=$(printf 'caf\303\251\n' | "$ROOT_DIR/build/wc" -m | tr -d ' \r\n')
+assert_text_equals "$wc_chars" '5' "wc -m should count characters rather than raw bytes"
+wc_width=$(printf 'ab\tc\nwide\n' | "$ROOT_DIR/build/wc" -L | tr -d ' \r\n')
+assert_text_equals "$wc_width" '9' "wc -L should report the maximum display width"
 
 printf 'abcdef12345' > "$WORK_DIR/bytes.txt"
 head_bytes=$("$ROOT_DIR/build/head" -c 5 "$WORK_DIR/bytes.txt" | tr -d '\r\n')
@@ -442,6 +500,38 @@ head_byte_minus=$("$ROOT_DIR/build/head" -c -5 "$WORK_DIR/bytes.txt" | tr -d '\r
 assert_text_equals "$head_byte_minus" 'abcdef' "head -c -N should omit the final bytes"
 tail_byte_plus=$("$ROOT_DIR/build/tail" -c +7 "$WORK_DIR/bytes.txt" | tr -d '\r\n')
 assert_text_equals "$tail_byte_plus" '12345' "tail -c +N should start at the requested byte"
+dd if=/dev/zero bs=40000 count=1 2>/dev/null | tr '\0' 'A' > "$WORK_DIR/tail_large.txt"
+printf '\n' >> "$WORK_DIR/tail_large.txt"
+dd if=/dev/zero bs=40000 count=1 2>/dev/null | tr '\0' 'B' >> "$WORK_DIR/tail_large.txt"
+printf '\n' >> "$WORK_DIR/tail_large.txt"
+dd if=/dev/zero bs=40000 count=1 2>/dev/null | tr '\0' 'C' >> "$WORK_DIR/tail_large.txt"
+printf '\n' >> "$WORK_DIR/tail_large.txt"
+"$ROOT_DIR/build/tail" -n 2 "$WORK_DIR/tail_large.txt" > "$WORK_DIR/tail_large.out"
+tail_large_size=$(wc -c < "$WORK_DIR/tail_large.out" | tr -d ' \r\n')
+assert_text_equals "$tail_large_size" '80002' "tail -n on large seekable files should not truncate long trailing lines"
+tail_large_head=$("$ROOT_DIR/build/head" -c 1 "$WORK_DIR/tail_large.out" | tr -d '\r\n')
+assert_text_equals "$tail_large_head" 'B' "tail large-file output started at the wrong line boundary"
+printf 'seed\n' > "$WORK_DIR/tail_follow.txt"
+(
+    "$ROOT_DIR/build/timeout" 1.5 "$ROOT_DIR/build/tail" -f "$WORK_DIR/tail_follow.txt" > "$WORK_DIR/tail_follow.out" 2> "$WORK_DIR/tail_follow.err" || true
+) &
+tail_follow_pid=$!
+"$ROOT_DIR/build/sleep" 0.3
+printf 'next\n' >> "$WORK_DIR/tail_follow.txt"
+wait "$tail_follow_pid"
+assert_file_contains "$WORK_DIR/tail_follow.out" '^seed$' "tail -f missed the initial file content"
+assert_file_contains "$WORK_DIR/tail_follow.out" '^next$' "tail -f did not follow appended data"
+printf 'old\n' > "$WORK_DIR/tail_follow_name.txt"
+(
+    "$ROOT_DIR/build/timeout" 2 "$ROOT_DIR/build/tail" -F "$WORK_DIR/tail_follow_name.txt" > "$WORK_DIR/tail_follow_name.out" 2> "$WORK_DIR/tail_follow_name.err" || true
+) &
+tail_follow_name_pid=$!
+"$ROOT_DIR/build/sleep" 0.3
+mv "$WORK_DIR/tail_follow_name.txt" "$WORK_DIR/tail_follow_name.old"
+printf 'replacement\n' > "$WORK_DIR/tail_follow_name.txt"
+wait "$tail_follow_name_pid"
+assert_file_contains "$WORK_DIR/tail_follow_name.out" '^old$' "tail -F should print the original file content"
+assert_file_contains "$WORK_DIR/tail_follow_name.out" '^replacement$' "tail -F should reopen and follow the replacement file"
 
 printf 'name:role:team\nAda:Eng:Kernel\nBob:Ops:Infra\n' > "$WORK_DIR/cut_fields.txt"
 "$ROOT_DIR/build/cut" -d ':' -f 1,3 "$WORK_DIR/cut_fields.txt" > "$WORK_DIR/cut_fields.out"
@@ -464,6 +554,12 @@ tr_keep_digits=$(printf 'room 101b' | "$ROOT_DIR/build/tr" -cd '0-9' | tr -d '\r
 assert_text_equals "$tr_keep_digits" '101' "tr complement delete failed"
 tr_mask_out=$(printf 'abc123' | "$ROOT_DIR/build/tr" -c '0-9' x | tr -d '\r\n')
 assert_text_equals "$tr_mask_out" 'xxx123' "tr complement translate failed"
+tr_class_upper=$(printf 'mixed Case 42\n' | "$ROOT_DIR/build/tr" '[:lower:]' '[:upper:]' | tr -d '\r\n')
+assert_text_equals "$tr_class_upper" 'MIXED CASE 42' "tr character-class translation failed"
+tr_space_squeeze=$(printf 'tabs\t\tand  spaces\n' | "$ROOT_DIR/build/tr" -s '[:space:]' ' ' | tr -d '\r\n')
+assert_text_equals "$tr_space_squeeze" 'tabs and spaces ' "tr class-based squeeze/translation failed"
+tr_octal=$(printf 'abc' | "$ROOT_DIR/build/tr" '\141-\143' 'XYZ' | tr -d '\r\n')
+assert_text_equals "$tr_octal" 'XYZ' "tr octal escape compatibility failed"
 printf 'tag Alpha\nTAG alpha\nkeep beta\nKEEP beta\n' > "$WORK_DIR/uniq.txt"
 "$ROOT_DIR/build/uniq" -i -f 1 -w 5 "$WORK_DIR/uniq.txt" > "$WORK_DIR/uniq.out"
 cat > "$WORK_DIR/uniq.expected" <<'EOF'
@@ -526,10 +622,55 @@ assert_files_equal "$WORK_DIR/sed_regex.expected" "$WORK_DIR/sed_regex.out" "sed
 printf 'room42\n' > "$WORK_DIR/ed_regex.txt"
 printf '1s/[0-9]+/XX/\nw\nq\n' | "$ROOT_DIR/build/ed" "$WORK_DIR/ed_regex.txt" > /dev/null
 assert_file_contains "$WORK_DIR/ed_regex.txt" '^roomXX$' "ed shared regex substitution failed"
+printf 'room42\n' > "$WORK_DIR/ed_backref.txt"
+printf '1s/(room)([0-9]+)/\\2-\\1/\nw\nq\n' | "$ROOT_DIR/build/ed" "$WORK_DIR/ed_backref.txt" > /dev/null
+assert_file_contains "$WORK_DIR/ed_backref.txt" '^42-room$' "ed grouped replacement and backreferences failed"
+printf 'item7\nitem42\nplain\n' > "$WORK_DIR/sed_backref.txt"
+"$ROOT_DIR/build/sed" 's/(item)([0-9]+)/\2<\1>/' "$WORK_DIR/sed_backref.txt" > "$WORK_DIR/sed_backref.out"
+cat > "$WORK_DIR/sed_backref.expected" <<'EOF'
+7<item>
+42<item>
+plain
+EOF
+assert_files_equal "$WORK_DIR/sed_backref.expected" "$WORK_DIR/sed_backref.out" "sed grouped replacement and backreferences failed"
+printf 'id7\nid42\nid314\nplain\n' > "$WORK_DIR/sed_counted.txt"
+"$ROOT_DIR/build/sed" 's/[0-9]{2,3}/<&>/g' "$WORK_DIR/sed_counted.txt" > "$WORK_DIR/sed_counted.out"
+cat > "$WORK_DIR/sed_counted.expected" <<'EOF'
+id7
+id<42>
+id<314>
+plain
+EOF
+assert_files_equal "$WORK_DIR/sed_counted.expected" "$WORK_DIR/sed_counted.out" "sed counted repetition support failed"
 printf '\nfirst\n\nsecond\n' > "$WORK_DIR/nl_input.txt"
 "$ROOT_DIR/build/nl" -ba -v 10 -i 5 -w 2 -s ': ' "$WORK_DIR/nl_input.txt" > "$WORK_DIR/nl_options.out"
 printf '10: \n15: first\n20: \n25: second\n' > "$WORK_DIR/nl_options.expected"
 assert_files_equal "$WORK_DIR/nl_options.expected" "$WORK_DIR/nl_options.out" "nl increment/separator controls failed"
+cat > "$WORK_DIR/nl_sections.txt" <<'EOF'
+@@@@@@
+preface
+@@@@
+body
+
+@@
+appendix
+EOF
+"$ROOT_DIR/build/nl" -d '@@' -ha -bt -fa -n rz -w 2 -s ': ' "$WORK_DIR/nl_sections.txt" > "$WORK_DIR/nl_sections.out"
+printf '01: preface\n02: body\n  : \n03: appendix\n' > "$WORK_DIR/nl_sections.expected"
+assert_files_equal "$WORK_DIR/nl_sections.expected" "$WORK_DIR/nl_sections.out" "nl section handling or number formatting failed"
+rev_utf8_out=$(printf 'héllo\n' | "$ROOT_DIR/build/rev" | tr -d '\r\n')
+assert_text_equals "$rev_utf8_out" 'olléh' "rev should preserve UTF-8 characters while reversing"
+printf 'ab\0wxyz\0' | "$ROOT_DIR/build/rev" -0 | tr '\0' '\n' > "$WORK_DIR/rev_zero.out"
+cat > "$WORK_DIR/rev_zero.expected" <<'EOF'
+ba
+zyxw
+EOF
+assert_files_equal "$WORK_DIR/rev_zero.expected" "$WORK_DIR/rev_zero.out" "rev -0 did not reverse NUL-delimited records"
+printf 'red::green::blue' | "$ROOT_DIR/build/tac" -s '::' > "$WORK_DIR/tac_sep.out"
+tac_sep_out=$(tr -d '\r\n' < "$WORK_DIR/tac_sep.out")
+assert_text_equals "$tac_sep_out" 'blue::green::red' "tac -s did not reverse custom-delimited records"
+tac_zero_out=$(printf 'left\0right side\0last' | "$ROOT_DIR/build/tac" -0 | tr '\0' '\n')
+assert_text_equals "$tac_zero_out" "$(printf 'last\nright side\nleft')" "tac -0 did not reverse NUL-delimited records"
 printf 'abcdef' > "$WORK_DIR/split_input.txt"
 (
     cd "$WORK_DIR"
@@ -553,6 +694,87 @@ assert_file_contains "$WORK_DIR/cut002" '^two$' "csplit repeat-count split omitt
     "$ROOT_DIR/build/csplit" -s -k -f keep csplit_input.txt /mid/ /missing/ >/dev/null 2>&1 || true
 )
 [ -f "$WORK_DIR/keep00" ] || fail "csplit -k should keep created output files after a later failure"
+printf 'aa\nbbbb\ncc\n' > "$WORK_DIR/split_linebytes.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/split" -C 6 split_linebytes.txt lb
+)
+assert_file_contains "$WORK_DIR/lbaa" '^aa$' "split -C did not keep the first short line in its own chunk"
+assert_file_contains "$WORK_DIR/lbab" '^bbbb$' "split -C did not honor line-sized chunking for the oversized middle line"
+assert_file_contains "$WORK_DIR/lbac" '^cc$' "split -C did not preserve the trailing line"
+printf 'abcdefghij' > "$WORK_DIR/split_chunks.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/split" -n 3 split_chunks.txt eq
+)
+assert_file_contains "$WORK_DIR/eqaa" '^abcd$' "split -n did not size the first equal chunk as expected"
+assert_file_contains "$WORK_DIR/eqab" '^efgh$' "split -n did not size the second equal chunk as expected"
+assert_file_contains "$WORK_DIR/eqac" '^ij$' "split -n did not preserve the final short chunk"
+split_chunks_joined=$(cat "$WORK_DIR/eqaa" "$WORK_DIR/eqab" "$WORK_DIR/eqac" | tr -d '\r\n')
+assert_text_equals "$split_chunks_joined" 'abcdefghij' "split -n did not preserve the original byte stream across chunks"
+printf 'intro\nmid1\nkeep-a\nmid2\nkeep-b\n' > "$WORK_DIR/csplit_regex.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/csplit" -q -f rx csplit_regex.txt '/^mid[0-9]+$/+1'
+)
+assert_file_contains "$WORK_DIR/rx00" '^intro$' "csplit regex mode did not keep the pre-match header"
+assert_file_contains "$WORK_DIR/rx00" '^mid1$' "csplit regex +OFFSET should keep the matching line in the first output chunk"
+assert_file_contains "$WORK_DIR/rx01" '^keep-a$' "csplit regex mode lost content after the first split"
+assert_file_contains "$WORK_DIR/rx01" '^mid2$' "csplit regex mode should keep later matching lines in subsequent chunks"
+printf 'skip\nnoise\nCUT\nkeep\n' > "$WORK_DIR/csplit_skip.txt"
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/csplit" -q -z -f drop csplit_skip.txt '%^CUT$%'
+)
+assert_file_contains "$WORK_DIR/drop00" '^CUT$' "csplit %regex% should start output at the requested match"
+assert_file_contains "$WORK_DIR/drop00" '^keep$' "csplit %regex% dropped the trailing content after the kept split point"
+if grep 'skip\|noise' "$WORK_DIR/drop00" >/dev/null 2>&1; then
+    fail "csplit %regex% should suppress the discarded prefix section"
+fi
+[ ! -f "$WORK_DIR/drop01" ] || fail "csplit -z should elide empty files instead of emitting a numbered placeholder"
+printf 'red\0blue sky\0green\0' > "$WORK_DIR/shuf_zero.in"
+printf 'abcdefgh' > "$WORK_DIR/shuf_random.bin"
+assert_command_succeeds "$ROOT_DIR/build/shuf" -z -n 2 --random-source="$WORK_DIR/shuf_random.bin" -o "$WORK_DIR/shuf_zero.out" "$WORK_DIR/shuf_zero.in"
+assert_command_succeeds "$ROOT_DIR/build/shuf" -z -n 2 --random-source="$WORK_DIR/shuf_random.bin" -o "$WORK_DIR/shuf_zero_again.out" "$WORK_DIR/shuf_zero.in"
+assert_files_equal "$WORK_DIR/shuf_zero.out" "$WORK_DIR/shuf_zero_again.out" "shuf --random-source should be deterministic for the same byte stream"
+tr '\0' '\n' < "$WORK_DIR/shuf_zero.out" > "$WORK_DIR/shuf_zero_lines.out"
+shuf_zero_count=$(grep -c . "$WORK_DIR/shuf_zero_lines.out" | tr -d ' \r\n')
+assert_text_equals "$shuf_zero_count" '2' "shuf -z/-o did not emit the requested number of NUL-delimited records"
+assert_file_contains "$WORK_DIR/shuf_zero_lines.out" '^blue sky$' "shuf -z should preserve spaces inside zero-delimited records"
+cat > "$WORK_DIR/fmt_prefix.txt" <<'EOF'
+# This is a comment block that should wrap cleanly and keep its marker.
+plain line
+EOF
+"$ROOT_DIR/build/fmt" -p '# ' -w 28 "$WORK_DIR/fmt_prefix.txt" > "$WORK_DIR/fmt_prefix.out"
+cat > "$WORK_DIR/fmt_prefix.expected" <<'EOF'
+# This is a comment block
+# that should wrap cleanly
+# and keep its marker.
+plain line
+EOF
+assert_files_equal "$WORK_DIR/fmt_prefix.expected" "$WORK_DIR/fmt_prefix.out" "fmt -p did not preserve and reapply the requested prefix"
+printf 'One sentence. next words keep wrapping neatly.\n' > "$WORK_DIR/fmt_uniform.txt"
+"$ROOT_DIR/build/fmt" -u -w 40 "$WORK_DIR/fmt_uniform.txt" > "$WORK_DIR/fmt_uniform.out"
+assert_file_contains "$WORK_DIR/fmt_uniform.out" 'sentence\.  next' "fmt -u should use sentence-aware spacing when normalizing whitespace"
+printf 'short one\nshort two\n' > "$WORK_DIR/fmt_split.txt"
+"$ROOT_DIR/build/fmt" -s -w 40 "$WORK_DIR/fmt_split.txt" > "$WORK_DIR/fmt_split.out"
+cat > "$WORK_DIR/fmt_split.expected" <<'EOF'
+short one
+short two
+EOF
+assert_files_equal "$WORK_DIR/fmt_split.expected" "$WORK_DIR/fmt_split.out" "fmt -s should preserve existing line boundaries when reflow is unnecessary"
+cat > "$WORK_DIR/fmt_crown.txt" <<'EOF'
+  This opening line introduces a paragraph that should keep
+    a hanging indent when crown mode is enabled.
+EOF
+"$ROOT_DIR/build/fmt" -c -w 34 "$WORK_DIR/fmt_crown.txt" > "$WORK_DIR/fmt_crown.out"
+cat > "$WORK_DIR/fmt_crown.expected" <<'EOF'
+  This opening line introduces a
+  paragraph that should keep a
+    hanging indent when crown mode
+    is enabled.
+EOF
+assert_files_equal "$WORK_DIR/fmt_crown.expected" "$WORK_DIR/fmt_crown.out" "fmt -c did not preserve the hanging-indent crown margin"
 
 ln -sf dd.in "$WORK_DIR/link-to-dd"
 readlink_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-to-dd" | tr -d '\r\n')
@@ -764,6 +986,23 @@ alpha1
 alpha22
 EOF
 assert_files_equal "$WORK_DIR/awk_regex.expected" "$WORK_DIR/awk_regex.out" "awk shared regex matching failed"
+printf 'alpha1 ok\nbeta22 go\ngamma nope\n' > "$WORK_DIR/awk_groups.txt"
+"$ROOT_DIR/build/awk" '/^(alpha|beta)[0-9]+/ { print $1 }' "$WORK_DIR/awk_groups.txt" > "$WORK_DIR/awk_groups.out"
+cat > "$WORK_DIR/awk_groups.expected" <<'EOF'
+alpha1
+beta22
+EOF
+assert_files_equal "$WORK_DIR/awk_groups.expected" "$WORK_DIR/awk_groups.out" "awk grouped alternation regex support failed"
+printf 'ada:11\nbob:2\neve:30\n' > "$WORK_DIR/awk_printf.txt"
+"$ROOT_DIR/build/awk" 'BEGIN { FS=":"; OFS="|"; print "user", "score" } $1 ~ /^(ada|eve)$/ { printf "%s=%s\n", $1, $2 } $2 !~ /^[0-9]{1}$/ { print $1, $2 }' "$WORK_DIR/awk_printf.txt" > "$WORK_DIR/awk_printf.out"
+cat > "$WORK_DIR/awk_printf.expected" <<'EOF'
+user|score
+ada=11
+ada|11
+eve=30
+eve|30
+EOF
+assert_files_equal "$WORK_DIR/awk_printf.expected" "$WORK_DIR/awk_printf.out" "awk FS/OFS, ~ / !~, or printf support failed"
 
 printf '\tlead\nA\tB\n' | "$ROOT_DIR/build/expand" -i -t 4 > "$WORK_DIR/expand_i.out"
 printf '    lead\nA\tB\n' > "$WORK_DIR/expand_i.expected"
@@ -829,6 +1068,15 @@ assert_files_equal "$WORK_DIR/column.expected" "$WORK_DIR/column.out" "column ou
 "$ROOT_DIR/build/column" -t -s ':' -o ' | ' -c 12 "$WORK_DIR/column.txt" > "$WORK_DIR/column_narrow.out"
 column_first_line=$("$ROOT_DIR/build/head" -n 1 "$WORK_DIR/column_narrow.out" | tr -d '\r\n')
 assert_text_equals "$column_first_line" 'name | role' "column -c did not limit the rendered table width"
+"$ROOT_DIR/build/column" -t -x -s ':' -o ' | ' "$WORK_DIR/column.txt" > "$WORK_DIR/column_transpose.out"
+cat > "$WORK_DIR/column_transpose.expected" <<'EOF'
+name | Ada    | Bob
+role | Eng    | Ops
+team | Kernel | Infra
+EOF
+assert_files_equal "$WORK_DIR/column_transpose.expected" "$WORK_DIR/column_transpose.out" "column -x did not transpose the input table cleanly"
+column_tabbed_out=$("$ROOT_DIR/build/column" -t -s ':' -o '\t' "$WORK_DIR/column.txt" | "$ROOT_DIR/build/head" -n 1 | tr -d '\r\n')
+assert_text_equals "$column_tabbed_out" "$(printf 'name\trole\tteam')" "column -o should decode escaped output separators"
 
 cat > "$WORK_DIR/join_left.txt" <<'EOF'
 k1:left
@@ -848,6 +1096,20 @@ cat > "$WORK_DIR/join_v1.expected" <<'EOF'
 k2:solo:NONE
 EOF
 assert_files_equal "$WORK_DIR/join_v1.expected" "$WORK_DIR/join_v1.out" "join -v1/-e handling failed"
+cat > "$WORK_DIR/join_case_left.txt" <<'EOF'
+Key:Left
+EOF
+cat > "$WORK_DIR/join_case_right.txt" <<'EOF'
+key:Right
+EOF
+"$ROOT_DIR/build/join" -i -a 1 -a 2 -t ':' -o 0,1.2,2.2 -e NONE "$WORK_DIR/join_case_left.txt" "$WORK_DIR/join_case_right.txt" > "$WORK_DIR/join_case.out"
+cat > "$WORK_DIR/join_case.expected" <<'EOF'
+Key:Left:Right
+EOF
+assert_files_equal "$WORK_DIR/join_case.expected" "$WORK_DIR/join_case.out" "join -i or split -a syntax failed"
+if "$ROOT_DIR/build/join" -a 3 "$WORK_DIR/join_left.txt" "$WORK_DIR/join_right.txt" >/dev/null 2>&1; then
+    fail "join should reject invalid file selectors for -a/-v"
+fi
 
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"

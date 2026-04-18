@@ -306,6 +306,11 @@ int platform_send_signal(int pid, int signal_number) {
     return linux_syscall2(LINUX_SYS_KILL, pid, signal_number) < 0 ? -1 : 0;
 }
 
+int platform_ignore_signal(int signal_number) {
+    (void)signal_number;
+    return 0;
+}
+
 int platform_wait_process(int pid, int *exit_status_out) {
     int status = 0;
     long result;

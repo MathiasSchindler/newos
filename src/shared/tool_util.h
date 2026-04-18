@@ -9,6 +9,7 @@ void tool_write_usage(const char *program_name, const char *usage_suffix);
 void tool_write_error(const char *tool_name, const char *message, const char *detail);
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what);
 int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_name, const char *what);
+int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out);
 int tool_parse_signal_name(const char *text, int *signal_out);
 const char *tool_signal_name(int signal_number);
 void tool_write_signal_list(int fd);

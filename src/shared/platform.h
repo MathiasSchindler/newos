@@ -154,6 +154,7 @@ int platform_sleep_seconds(unsigned int seconds);
 long long platform_get_epoch_time(void);
 int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size);
 int platform_send_signal(int pid, int signal_number);
+int platform_ignore_signal(int signal_number);
 int platform_parse_signal_name(const char *text, int *signal_out);
 const char *platform_signal_name(int signal_number);
 void platform_write_signal_list(int fd);

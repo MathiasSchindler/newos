@@ -1,5 +1,9 @@
 #include "runtime.h"
 
+static int ascii_is_digit(char ch) {
+    return ch >= '0' && ch <= '9';
+}
+
 static int parse_signed_value(const char *text, long long *value_out) {
     long long value = 0;
     long long sign = 1;
@@ -65,6 +69,81 @@ static size_t text_length(const char *text) {
     return length;
 }
 
+static double absolute_double(double value) {
+    return value < 0.0 ? -value : value;
+}
+
+static double power_of_ten(int exponent) {
+    double result = 1.0;
+    int i;
+
+    if (exponent >= 0) {
+        for (i = 0; i < exponent; ++i) {
+            result *= 10.0;
+        }
+    } else {
+        for (i = 0; i < -exponent; ++i) {
+            result /= 10.0;
+        }
+    }
+
+    return result;
+}
+
+static int parse_float_value(const char *text, double *value_out) {
+    double value = 0.0;
+    double fraction_scale = 0.1;
+    int sign = 1;
+    int exponent_sign = 1;
+    int exponent = 0;
+
+    if (text == 0 || value_out == 0) {
+        return -1;
+    }
+
+    while (*text == ' ' || *text == '\t') {
+        text += 1;
+    }
+
+    if (*text == '-') {
+        sign = -1;
+        text += 1;
+    } else if (*text == '+') {
+        text += 1;
+    }
+
+    while (ascii_is_digit(*text)) {
+        value = (value * 10.0) + (double)(*text - '0');
+        text += 1;
+    }
+
+    if (*text == '.') {
+        text += 1;
+        while (ascii_is_digit(*text)) {
+            value += (double)(*text - '0') * fraction_scale;
+            fraction_scale /= 10.0;
+            text += 1;
+        }
+    }
+
+    if (*text == 'e' || *text == 'E') {
+        text += 1;
+        if (*text == '-') {
+            exponent_sign = -1;
+            text += 1;
+        } else if (*text == '+') {
+            text += 1;
+        }
+        while (ascii_is_digit(*text)) {
+            exponent = (exponent * 10) + (int)(*text - '0');
+            text += 1;
+        }
+    }
+
+    *value_out = (double)sign * value * power_of_ten(exponent_sign * exponent);
+    return 0;
+}
+
 static void format_unsigned(unsigned long long value, unsigned int base, int uppercase, char *buffer, size_t buffer_size) {
     const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
     char scratch[64];
@@ -96,6 +175,29 @@ static void format_unsigned(unsigned long long value, unsigned int base, int upp
     buffer[i] = '\0';
 }
 
+static int append_char_to_buffer(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    if (*length_io + 1U >= buffer_size) {
+        return -1;
+    }
+    buffer[*length_io] = ch;
+    *length_io += 1U;
+    buffer[*length_io] = '\0';
+    return 0;
+}
+
+static int append_text_to_buffer(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
+    size_t index = 0;
+
+    while (text[index] != '\0') {
+        if (append_char_to_buffer(buffer, buffer_size, length_io, text[index]) != 0) {
+            return -1;
+        }
+        index += 1U;
+    }
+
+    return 0;
+}
+
 static int write_repeated_char(char ch, int count) {
     while (count > 0) {
         if (rt_write_char(1, ch) != 0) {
@@ -124,6 +226,29 @@ static int write_padded_chunk(const char *text, size_t length, int width, int le
     }
 
     return 0;
+}
+
+static int write_padded_numeric_text(const char *text, int width, int left_align, char pad) {
+    size_t length = text_length(text);
+    size_t body_offset = 0U;
+    int total_length = (int)length;
+
+    if (!left_align && pad == '0' && text[0] == '-') {
+        if (rt_write_char(1, '-') != 0) {
+            return -1;
+        }
+        body_offset = 1U;
+        length -= 1U;
+        if (width > total_length && write_repeated_char('0', width - total_length) != 0) {
+            return -1;
+        }
+        if (length > 0U && rt_write_all(1, text + body_offset, length) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    return write_padded_chunk(text, length, width, left_align, pad);
 }
 
 static int parse_escape_sequence(const char *text, char *out_char, size_t *consumed_out, int *stop_output) {
@@ -284,6 +409,207 @@ static int write_formatted_number(
     return 0;
 }
 
+static int format_fixed_double(double value, int precision, char *buffer, size_t buffer_size) {
+    char whole_buffer[128];
+    size_t length = 0;
+    unsigned long long scale = 1ULL;
+    unsigned long long whole;
+    unsigned long long fraction;
+    int negative = value < 0.0;
+    int i;
+
+    if (buffer_size == 0U) {
+        return -1;
+    }
+
+    if (precision < 0) {
+        precision = 6;
+    }
+    if (precision > 18) {
+        precision = 18;
+    }
+
+    value = absolute_double(value);
+    for (i = 0; i < precision; ++i) {
+        scale *= 10ULL;
+    }
+
+    {
+        double rounded = value * (double)scale + 0.5;
+        unsigned long long scaled = (unsigned long long)rounded;
+        whole = scale == 0ULL ? 0ULL : (scaled / scale);
+        fraction = scale == 0ULL ? 0ULL : (scaled % scale);
+    }
+
+    buffer[0] = '\0';
+    if (negative && append_char_to_buffer(buffer, buffer_size, &length, '-') != 0) {
+        return -1;
+    }
+
+    format_unsigned(whole, 10U, 0, whole_buffer, sizeof(whole_buffer));
+    if (append_text_to_buffer(buffer, buffer_size, &length, whole_buffer) != 0) {
+        return -1;
+    }
+
+    if (precision > 0) {
+        char fraction_buffer[32];
+        int digit_index;
+
+        if (append_char_to_buffer(buffer, buffer_size, &length, '.') != 0) {
+            return -1;
+        }
+
+        for (digit_index = precision - 1; digit_index >= 0; --digit_index) {
+            fraction_buffer[digit_index] = (char)('0' + (fraction % 10ULL));
+            fraction /= 10ULL;
+        }
+        fraction_buffer[precision] = '\0';
+
+        if (append_text_to_buffer(buffer, buffer_size, &length, fraction_buffer) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void trim_fractional_zeros(char *buffer) {
+    size_t length = text_length(buffer);
+
+    while (length > 0U && buffer[length - 1U] == '0') {
+        buffer[length - 1U] = '\0';
+        length -= 1U;
+    }
+
+    if (length > 0U && buffer[length - 1U] == '.') {
+        buffer[length - 1U] = '\0';
+    }
+}
+
+static int format_exponential_double(double value, int precision, int uppercase, char *buffer, size_t buffer_size) {
+    int exponent = 0;
+    double normalized;
+    char mantissa[128];
+    size_t length = 0;
+    char exponent_digits[32];
+    int exponent_negative = 0;
+    unsigned long long exponent_value;
+
+    if (precision < 0) {
+        precision = 6;
+    }
+
+    if (value == 0.0) {
+        if (format_fixed_double(0.0, precision, mantissa, sizeof(mantissa)) != 0) {
+            return -1;
+        }
+    } else {
+        normalized = absolute_double(value);
+        while (normalized >= 10.0) {
+            normalized /= 10.0;
+            exponent += 1;
+        }
+        while (normalized > 0.0 && normalized < 1.0) {
+            normalized *= 10.0;
+            exponent -= 1;
+        }
+
+        if (value < 0.0) {
+            normalized = -normalized;
+        }
+
+        if (format_fixed_double(normalized, precision, mantissa, sizeof(mantissa)) != 0) {
+            return -1;
+        }
+
+        if (mantissa[0] == '1' && mantissa[1] == '0' && mantissa[2] == '.') {
+            if (format_fixed_double((value < 0.0) ? -1.0 : 1.0, precision, mantissa, sizeof(mantissa)) != 0) {
+                return -1;
+            }
+            exponent += 1;
+        }
+    }
+
+    buffer[0] = '\0';
+    if (append_text_to_buffer(buffer, buffer_size, &length, mantissa) != 0) {
+        return -1;
+    }
+    if (append_char_to_buffer(buffer, buffer_size, &length, uppercase ? 'E' : 'e') != 0) {
+        return -1;
+    }
+    if (append_char_to_buffer(buffer, buffer_size, &length, exponent < 0 ? '-' : '+') != 0) {
+        return -1;
+    }
+
+    exponent_negative = exponent < 0;
+    exponent_value = (unsigned long long)(exponent_negative ? -exponent : exponent);
+    format_unsigned(exponent_value, 10U, 0, exponent_digits, sizeof(exponent_digits));
+    if (exponent_value < 10ULL && append_char_to_buffer(buffer, buffer_size, &length, '0') != 0) {
+        return -1;
+    }
+    if (append_text_to_buffer(buffer, buffer_size, &length, exponent_digits) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int format_general_double(double value, int precision, int uppercase, char *buffer, size_t buffer_size) {
+    double normalized = absolute_double(value);
+    int exponent = 0;
+
+    if (precision == 0) {
+        precision = 1;
+    } else if (precision < 0) {
+        precision = 6;
+    }
+
+    if (normalized > 0.0) {
+        while (normalized >= 10.0) {
+            normalized /= 10.0;
+            exponent += 1;
+        }
+        while (normalized < 1.0) {
+            normalized *= 10.0;
+            exponent -= 1;
+        }
+    }
+
+    if (exponent < -4 || exponent >= precision) {
+        if (format_exponential_double(value, precision - 1, uppercase, buffer, buffer_size) != 0) {
+            return -1;
+        }
+        {
+            char *marker = buffer;
+            while (*marker != '\0' && *marker != 'e' && *marker != 'E') {
+                marker += 1;
+            }
+            if (*marker == 'e' || *marker == 'E') {
+                char suffix[32];
+                size_t length = 0;
+                rt_copy_string(suffix, sizeof(suffix), marker);
+                *marker = '\0';
+                trim_fractional_zeros(buffer);
+                length = text_length(buffer);
+                if (append_text_to_buffer(buffer, buffer_size, &length, suffix) != 0) {
+                    return -1;
+                }
+            }
+        }
+    } else {
+        int digits_after_decimal = precision - (exponent + 1);
+        if (digits_after_decimal < 0) {
+            digits_after_decimal = 0;
+        }
+        if (format_fixed_double(value, digits_after_decimal, buffer, buffer_size) != 0) {
+            return -1;
+        }
+        trim_fractional_zeros(buffer);
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *format;
     int arg_index = 2;
@@ -297,7 +623,9 @@ int main(int argc, char **argv) {
     format = argv[1];
     while (!ran_once || arg_index < argc) {
         size_t i = 0;
+        int cycle_base = arg_index;
         int consumed_args = 0;
+        unsigned long long max_position = 0ULL;
 
         while (format[i] != '\0') {
             if (format[i] == '\\') {
@@ -324,15 +652,30 @@ int main(int argc, char **argv) {
                 int width = 0;
                 int precision = -1;
                 char spec;
-                const char *arg = (arg_index < argc) ? argv[arg_index] : "";
+                unsigned long long position = 0ULL;
+                const char *arg = "";
+                size_t spec_start;
+                size_t scan;
 
-                i += 1;
-                if (format[i] == '%') {
+                spec_start = i + 1U;
+                scan = spec_start;
+                if (format[spec_start] == '%') {
                     if (rt_write_char(1, '%') != 0) {
                         return 1;
                     }
-                    i += 1;
+                    i = spec_start + 1U;
                     continue;
+                }
+
+                while (ascii_is_digit(format[scan])) {
+                    position = (position * 10ULL) + (unsigned long long)(format[scan] - '0');
+                    scan += 1U;
+                }
+                if (scan > spec_start && format[scan] == '$' && position > 0ULL) {
+                    i = scan + 1U;
+                } else {
+                    position = 0ULL;
+                    i = spec_start;
                 }
 
                 while (format[i] == '-' || format[i] == '0') {
@@ -365,9 +708,20 @@ int main(int argc, char **argv) {
                 }
 
                 if (spec != '%') {
-                    if (arg_index < argc) {
-                        arg_index += 1;
-                        consumed_args += 1;
+                    if (position > 0ULL) {
+                        unsigned long long arg_offset = position - 1ULL;
+                        if (position > max_position) {
+                            max_position = position;
+                        }
+                        if ((unsigned long long)cycle_base + arg_offset < (unsigned long long)argc) {
+                            arg = argv[cycle_base + (int)arg_offset];
+                        }
+                    } else {
+                        arg = (arg_index < argc) ? argv[arg_index] : "";
+                        if (arg_index < argc) {
+                            arg_index += 1;
+                            consumed_args += 1;
+                        }
                     }
                 }
 
@@ -442,6 +796,28 @@ int main(int argc, char **argv) {
                     if (write_formatted_number(value, 0, 8U, 0, width, left_align, pad, precision) != 0) {
                         return 1;
                     }
+                } else if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') {
+                    char float_buffer[256];
+                    double value = 0.0;
+
+                    parse_float_value(arg, &value);
+                    if (spec == 'f' || spec == 'F') {
+                        if (format_fixed_double(value, precision, float_buffer, sizeof(float_buffer)) != 0) {
+                            return 1;
+                        }
+                    } else if (spec == 'e' || spec == 'E') {
+                        if (format_exponential_double(value, precision, spec == 'E', float_buffer, sizeof(float_buffer)) != 0) {
+                            return 1;
+                        }
+                    } else {
+                        if (format_general_double(value, precision, spec == 'G', float_buffer, sizeof(float_buffer)) != 0) {
+                            return 1;
+                        }
+                    }
+
+                    if (write_padded_numeric_text(float_buffer, width, left_align, pad) != 0) {
+                        return 1;
+                    }
                 } else {
                     if (rt_write_char(1, spec) != 0) {
                         return 1;
@@ -458,6 +834,12 @@ int main(int argc, char **argv) {
             i += 1;
         }
 
+        if (max_position > (unsigned long long)consumed_args) {
+            consumed_args = (int)max_position;
+        }
+        if (arg_index < cycle_base + consumed_args) {
+            arg_index = cycle_base + consumed_args;
+        }
         ran_once = 1;
         if (consumed_args == 0) {
             break;

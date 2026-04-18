@@ -14,35 +14,26 @@ typedef struct {
     const char *prefix;
     int quiet;
     int keep_files;
+    int elide_empty;
     unsigned long long suffix_length;
 } CsplitOptions;
 
+typedef enum {
+    CSPLIT_PATTERN_LINE_NUMBER,
+    CSPLIT_PATTERN_REGEX
+} CsplitPatternKind;
+
+typedef struct {
+    CsplitPatternKind kind;
+    int suppress_output;
+    char regex[CSPLIT_MAX_LINE_LENGTH];
+    unsigned long long line_number;
+    long long offset;
+    unsigned long long repeat;
+} CsplitPattern;
+
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-f PREFIX] [-n DIGITS] [-s] [-k] file PATTERN...");
-}
-
-static int contains_text(const char *line, const char *pattern) {
-    size_t i = 0;
-
-    if (pattern[0] == '\0') {
-        return 1;
-    }
-
-    while (line[i] != '\0') {
-        size_t j = 0;
-
-        while (line[i + j] != '\0' && pattern[j] != '\0' && line[i + j] == pattern[j]) {
-            j += 1;
-        }
-
-        if (pattern[j] == '\0') {
-            return 1;
-        }
-
-        i += 1;
-    }
-
-    return 0;
+    tool_write_usage(program_name, "[-f PREFIX] [-n DIGITS] [-s|-q] [-k] [-z] file PATTERN...");
 }
 
 static int store_line(LineBuffer *buffer, const char *line, size_t len) {
@@ -107,42 +98,40 @@ static int parse_line_number(const char *text, unsigned long long *value_out) {
     return rt_parse_uint(text, value_out) == 0 && *value_out > 0ULL ? 0 : -1;
 }
 
-static int find_split_index(const LineBuffer *buffer, size_t start, const char *pattern, size_t *index_out) {
-    size_t len = rt_strlen(pattern);
-    unsigned long long line_number = 0ULL;
+static int apply_split_offset(size_t base_index,
+                              size_t start,
+                              size_t count,
+                              long long offset,
+                              size_t *index_out) {
+    long long adjusted = (long long)base_index + offset;
+
+    if (adjusted < (long long)start || adjusted < 0 || adjusted > (long long)count) {
+        return -1;
+    }
+
+    *index_out = (size_t)adjusted;
+    return 0;
+}
+
+static int find_split_index(const LineBuffer *buffer, size_t start, const CsplitPattern *pattern, size_t *index_out) {
     size_t i;
 
-    if (len >= 2U && pattern[0] == '/' && pattern[len - 1U] == '/') {
-        char needle[CSPLIT_MAX_LINE_LENGTH];
-        size_t copy_len = len - 2U;
-
-        if (copy_len >= sizeof(needle)) {
-            copy_len = sizeof(needle) - 1U;
-        }
-
-        memcpy(needle, pattern + 1, copy_len);
-        needle[copy_len] = '\0';
-
+    if (pattern->kind == CSPLIT_PATTERN_REGEX) {
         for (i = start; i < buffer->count; ++i) {
-            if (contains_text(buffer->lines[i], needle)) {
-                *index_out = i;
-                return 0;
+            size_t match_start = 0U;
+            size_t match_end = 0U;
+            if (tool_regex_search(pattern->regex, buffer->lines[i], 0, 0, &match_start, &match_end)) {
+                return apply_split_offset(i, start, buffer->count, pattern->offset, index_out);
             }
         }
-
         return -1;
     }
 
-    if (parse_line_number(pattern, &line_number) != 0) {
+    if (pattern->line_number == 0ULL || pattern->line_number > (unsigned long long)buffer->count) {
         return -1;
     }
 
-    if (line_number == 0ULL || line_number > (unsigned long long)buffer->count) {
-        return -1;
-    }
-
-    *index_out = (size_t)(line_number - 1ULL);
-    return *index_out >= start ? 0 : -1;
+    return apply_split_offset((size_t)(pattern->line_number - 1ULL), start, buffer->count, pattern->offset, index_out);
 }
 
 static int make_output_name(const char *prefix,
@@ -189,11 +178,20 @@ static int write_segment(const LineBuffer *buffer,
                          size_t start,
                          size_t end,
                          const CsplitOptions *options,
-                         unsigned long long index) {
+                         unsigned long long index,
+                         int *created_out) {
     char path[256];
     int fd;
     unsigned long long bytes_written = 0ULL;
     size_t i;
+
+    if (created_out != 0) {
+        *created_out = 0;
+    }
+
+    if (start == end && options->elide_empty) {
+        return 0;
+    }
 
     if (make_output_name(options->prefix, index, options->suffix_length, path, sizeof(path)) != 0) {
         tool_write_error("csplit", "too many output files for prefix ", options->prefix);
@@ -219,6 +217,9 @@ static int write_segment(const LineBuffer *buffer,
     }
 
     platform_close(fd);
+    if (created_out != 0) {
+        *created_out = 1;
+    }
     if (!options->quiet) {
         rt_write_uint(1, bytes_written);
         rt_write_char(1, '\n');
@@ -226,33 +227,118 @@ static int write_segment(const LineBuffer *buffer,
     return 0;
 }
 
-static int parse_pattern_argument(const char *arg, char *pattern_out, size_t pattern_out_size, unsigned long long *repeat_out) {
+static int parse_pattern_argument(const char *arg, CsplitPattern *pattern_out) {
+    char working[CSPLIT_MAX_LINE_LENGTH];
     size_t len;
-    size_t i;
 
-    if (arg == 0 || pattern_out == 0 || pattern_out_size == 0 || repeat_out == 0) {
+    if (arg == 0 || pattern_out == 0) {
         return -1;
     }
 
-    *repeat_out = 0ULL;
-    rt_copy_string(pattern_out, pattern_out_size, arg);
-    len = rt_strlen(pattern_out);
+    rt_memset(pattern_out, 0, sizeof(*pattern_out));
+    rt_copy_string(working, sizeof(working), arg);
+    len = rt_strlen(working);
 
-    if (len >= 4U && pattern_out[len - 1U] == '}') {
+    if (len >= 4U && working[len - 1U] == '}') {
         unsigned long long repeat = 0ULL;
         size_t brace = len - 2U;
+        size_t i;
 
-        while (brace > 0U && pattern_out[brace] >= '0' && pattern_out[brace] <= '9') {
+        while (brace > 0U && working[brace] >= '0' && working[brace] <= '9') {
             brace -= 1U;
         }
 
-        if (pattern_out[brace] == '{' && brace + 1U < len - 1U) {
+        if (working[brace] == '{' && brace + 1U < len - 1U) {
             for (i = brace + 1U; i < len - 1U; ++i) {
-                repeat = repeat * 10ULL + (unsigned long long)(pattern_out[i] - '0');
+                repeat = repeat * 10ULL + (unsigned long long)(working[i] - '0');
             }
-            pattern_out[brace] = '\0';
-            *repeat_out = repeat;
-            return pattern_out[0] == '\0' ? -1 : 0;
+            working[brace] = '\0';
+            pattern_out->repeat = repeat;
+        }
+    }
+
+    if (working[0] == '/' || working[0] == '%') {
+        char delimiter = working[0];
+        size_t in_pos = 1U;
+        size_t out_pos = 0U;
+
+        pattern_out->kind = CSPLIT_PATTERN_REGEX;
+        pattern_out->suppress_output = (delimiter == '%');
+
+        while (working[in_pos] != '\0') {
+            if (working[in_pos] == '\\' && working[in_pos + 1U] != '\0') {
+                if (working[in_pos + 1U] == delimiter || working[in_pos + 1U] == '\\') {
+                    if (out_pos + 1U >= sizeof(pattern_out->regex)) {
+                        return -1;
+                    }
+                    pattern_out->regex[out_pos++] = working[in_pos + 1U];
+                    in_pos += 2U;
+                    continue;
+                }
+
+                if (out_pos + 2U >= sizeof(pattern_out->regex)) {
+                    return -1;
+                }
+                pattern_out->regex[out_pos++] = working[in_pos];
+                pattern_out->regex[out_pos++] = working[in_pos + 1U];
+                in_pos += 2U;
+                continue;
+            }
+
+            if (working[in_pos] == delimiter) {
+                break;
+            }
+
+            if (out_pos + 1U >= sizeof(pattern_out->regex)) {
+                return -1;
+            }
+            pattern_out->regex[out_pos++] = working[in_pos++];
+        }
+
+        if (working[in_pos] != delimiter || out_pos == 0U) {
+            return -1;
+        }
+
+        pattern_out->regex[out_pos] = '\0';
+        in_pos += 1U;
+
+        if (working[in_pos] != '\0' &&
+            tool_parse_int_arg(working + in_pos, &pattern_out->offset, "csplit", "offset") != 0) {
+            return -1;
+        }
+
+        return 0;
+    }
+
+    {
+        char number_text[32];
+        size_t pos = 0U;
+        size_t copy_len;
+
+        while (working[pos] >= '0' && working[pos] <= '9') {
+            pos += 1U;
+        }
+
+        if (pos == 0U) {
+            return -1;
+        }
+
+        copy_len = pos;
+        if (copy_len + 1U > sizeof(number_text)) {
+            return -1;
+        }
+
+        memcpy(number_text, working, copy_len);
+        number_text[copy_len] = '\0';
+
+        pattern_out->kind = CSPLIT_PATTERN_LINE_NUMBER;
+        if (parse_line_number(number_text, &pattern_out->line_number) != 0) {
+            return -1;
+        }
+
+        if (working[pos] != '\0' &&
+            tool_parse_int_arg(working + pos, &pattern_out->offset, "csplit", "offset") != 0) {
+            return -1;
         }
     }
 
@@ -273,6 +359,7 @@ int main(int argc, char **argv) {
     options.prefix = "xx";
     options.quiet = 0;
     options.keep_files = 0;
+    options.elide_empty = 0;
     options.suffix_length = 2ULL;
 
     if (argc < 3) {
@@ -296,11 +383,17 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 2;
-        } else if (rt_strcmp(argv[argi], "-s") == 0) {
+        } else if (rt_strcmp(argv[argi], "-s") == 0 ||
+                   rt_strcmp(argv[argi], "-q") == 0 ||
+                   rt_strcmp(argv[argi], "--quiet") == 0 ||
+                   rt_strcmp(argv[argi], "--silent") == 0) {
             options.quiet = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-k") == 0) {
             options.keep_files = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-z") == 0 || rt_strcmp(argv[argi], "--elide-empty-files") == 0) {
+            options.elide_empty = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
@@ -330,17 +423,16 @@ int main(int argc, char **argv) {
     tool_close_input(fd, should_close);
 
     while (argi < argc) {
-        char pattern[CSPLIT_MAX_LINE_LENGTH];
-        unsigned long long repeat = 0ULL;
+        CsplitPattern pattern;
         unsigned long long pass;
 
-        if (parse_pattern_argument(argv[argi], pattern, sizeof(pattern), &repeat) != 0) {
+        if (parse_pattern_argument(argv[argi], &pattern) != 0) {
             cleanup_outputs(&options, output_index);
             tool_write_error("csplit", "invalid pattern ", argv[argi]);
             return 1;
         }
 
-        for (pass = 0ULL; pass <= repeat; ++pass) {
+        for (pass = 0ULL; pass <= pattern.repeat; ++pass) {
             size_t split_index = 0U;
             size_t search_start = start;
 
@@ -353,24 +445,29 @@ int main(int argc, char **argv) {
                 search_start += 1U;
             }
 
-            if (find_split_index(&buffer, search_start, pattern, &split_index) != 0) {
+            if (find_split_index(&buffer, search_start, &pattern, &split_index) != 0) {
                 cleanup_outputs(&options, output_index);
                 tool_write_error("csplit", "invalid or unmatched pattern ", argv[argi]);
                 return 1;
             }
 
-            if (write_segment(&buffer, start, split_index, &options, output_index) != 0) {
-                cleanup_outputs(&options, output_index);
-                return 1;
+            if (!pattern.suppress_output) {
+                int created = 0;
+                if (write_segment(&buffer, start, split_index, &options, output_index, &created) != 0) {
+                    cleanup_outputs(&options, output_index);
+                    return 1;
+                }
+                if (created) {
+                    output_index += 1ULL;
+                }
             }
 
-            output_index += 1ULL;
             start = split_index;
         }
         argi += 1;
     }
 
-    if (write_segment(&buffer, start, buffer.count, &options, output_index) != 0) {
+    if (write_segment(&buffer, start, buffer.count, &options, output_index, 0) != 0) {
         cleanup_outputs(&options, output_index);
         return 1;
     }

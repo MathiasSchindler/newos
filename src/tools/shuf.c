@@ -6,14 +6,20 @@
 #define SHUF_MAX_ITEM_LENGTH 1024
 
 static unsigned long long shuf_rng_state = 1ULL;
+static int shuf_random_source_fd = -1;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-n COUNT] [-r] [file]");
-    tool_write_usage(program_name, "-e [-n COUNT] [-r] arg ...");
-    tool_write_usage(program_name, "-i LO-HI [-n COUNT] [-r]");
+    tool_write_usage(program_name, "[-n COUNT] [-r] [-z] [-o FILE] [--random-source=FILE] [file]");
+    tool_write_usage(program_name, "-e [-n COUNT] [-r] [-z] [-o FILE] [--random-source=FILE] arg ...");
+    tool_write_usage(program_name, "-i LO-HI [-n COUNT] [-r] [-o FILE] [--random-source=FILE]");
 }
 
 static void seed_rng(void) {
+    if (shuf_random_source_fd >= 0) {
+        shuf_rng_state = 1ULL;
+        return;
+    }
+
     unsigned long long seed = (unsigned long long)platform_get_epoch_time();
     unsigned long long addr = (unsigned long long)(unsigned long)(&seed);
 
@@ -24,8 +30,49 @@ static void seed_rng(void) {
 }
 
 static unsigned long long next_random(void) {
+    if (shuf_random_source_fd >= 0) {
+        unsigned char bytes[8];
+        size_t used = 0U;
+        unsigned long long value = 0ULL;
+
+        while (used < sizeof(bytes)) {
+            long bytes_read = platform_read(shuf_random_source_fd, bytes + used, sizeof(bytes) - used);
+            if (bytes_read < 0) {
+                break;
+            }
+            if (bytes_read == 0) {
+                if (platform_seek(shuf_random_source_fd, 0, PLATFORM_SEEK_SET) < 0) {
+                    break;
+                }
+                continue;
+            }
+            used += (size_t)bytes_read;
+        }
+
+        if (used == sizeof(bytes)) {
+            size_t i;
+            for (i = 0U; i < sizeof(bytes); ++i) {
+                value = (value << 8U) | (unsigned long long)bytes[i];
+            }
+            if (value != 0ULL) {
+                return value;
+            }
+        }
+    }
+
     shuf_rng_state = shuf_rng_state * 6364136223846793005ULL + 1ULL;
     return shuf_rng_state;
+}
+
+static int starts_with_text(const char *text, const char *prefix) {
+    size_t i = 0U;
+    while (prefix[i] != '\0') {
+        if (text[i] != prefix[i]) {
+            return 0;
+        }
+        i += 1U;
+    }
+    return 1;
 }
 
 static int parse_signed_value(const char *text, long long *value_out) {
@@ -111,7 +158,10 @@ static int add_item(char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH], size_t *co
     return 0;
 }
 
-static int collect_lines_from_fd(int fd, char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH], size_t *count_out) {
+static int collect_items_from_fd(int fd,
+                                 char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH],
+                                 size_t *count_out,
+                                 char delimiter) {
     char chunk[2048];
     char current[SHUF_MAX_ITEM_LENGTH];
     size_t current_len = 0U;
@@ -132,7 +182,7 @@ static int collect_lines_from_fd(int fd, char items[SHUF_MAX_ITEMS][SHUF_MAX_ITE
         for (i = 0; i < bytes_read; ++i) {
             char ch = chunk[i];
 
-            if (ch == '\n') {
+            if (ch == delimiter) {
                 current[current_len] = '\0';
                 if (add_item(items, count_out, current) != 0) {
                     return -1;
@@ -166,6 +216,15 @@ static void swap_items(char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH], size_t 
     memcpy(items[b], tmp, sizeof(tmp));
 }
 
+static int write_item(int fd, const char *text, char delimiter) {
+    size_t len = rt_strlen(text);
+
+    if (len > 0U && rt_write_all(fd, text, len) != 0) {
+        return -1;
+    }
+    return rt_write_char(fd, delimiter);
+}
+
 int main(int argc, char **argv) {
     char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH];
     size_t item_count = 0U;
@@ -174,6 +233,10 @@ int main(int argc, char **argv) {
     int repeat = 0;
     int mode = 0;
     int argi = 1;
+    int zero_terminated = 0;
+    const char *output_path = 0;
+    const char *random_source_path = 0;
+    int output_fd = 1;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "-n") == 0) {
@@ -184,6 +247,29 @@ int main(int argc, char **argv) {
             argi += 2;
         } else if (rt_strcmp(argv[argi], "-r") == 0) {
             repeat = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-z") == 0 || rt_strcmp(argv[argi], "--zero-terminated") == 0) {
+            zero_terminated = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-o") == 0 || rt_strcmp(argv[argi], "--output") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            output_path = argv[argi + 1];
+            argi += 2;
+        } else if (starts_with_text(argv[argi], "--output=")) {
+            output_path = argv[argi] + 9;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--random-source") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            random_source_path = argv[argi + 1];
+            argi += 2;
+        } else if (starts_with_text(argv[argi], "--random-source=")) {
+            random_source_path = argv[argi] + 16;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-e") == 0) {
             mode = 1;
@@ -249,7 +335,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (collect_lines_from_fd(fd, items, &item_count) != 0) {
+        if (collect_items_from_fd(fd, items, &item_count, zero_terminated ? '\0' : '\n') != 0) {
             tool_close_input(fd, should_close);
             tool_write_error("shuf", "failed to read input", 0);
             return 1;
@@ -269,13 +355,47 @@ int main(int argc, char **argv) {
         limit = (unsigned long long)item_count;
     }
 
+    if (random_source_path != 0) {
+        shuf_random_source_fd = platform_open_read(random_source_path);
+        if (shuf_random_source_fd < 0) {
+            tool_write_error("shuf", "cannot open random source ", random_source_path);
+            return 1;
+        }
+    }
+
+    if (output_path != 0) {
+        output_fd = platform_open_write(output_path, 0644U);
+        if (output_fd < 0) {
+            if (shuf_random_source_fd >= 0) {
+                platform_close(shuf_random_source_fd);
+            }
+            tool_write_error("shuf", "cannot create ", output_path);
+            return 1;
+        }
+    }
+
     seed_rng();
 
     if (repeat) {
         unsigned long long i;
         for (i = 0ULL; i < limit; ++i) {
             size_t index = (size_t)(next_random() % (unsigned long long)item_count);
-            rt_write_line(1, items[index]);
+            if (write_item(output_fd, items[index], zero_terminated ? '\0' : '\n') != 0) {
+                tool_write_error("shuf", "write error", 0);
+                if (output_fd != 1) {
+                    platform_close(output_fd);
+                }
+                if (shuf_random_source_fd >= 0) {
+                    platform_close(shuf_random_source_fd);
+                }
+                return 1;
+            }
+        }
+        if (output_fd != 1) {
+            platform_close(output_fd);
+        }
+        if (shuf_random_source_fd >= 0) {
+            platform_close(shuf_random_source_fd);
         }
         return 0;
     }
@@ -290,8 +410,24 @@ int main(int argc, char **argv) {
         }
 
         for (i = 0U; i < output_count; ++i) {
-            rt_write_line(1, items[i]);
+            if (write_item(output_fd, items[i], zero_terminated ? '\0' : '\n') != 0) {
+                tool_write_error("shuf", "write error", 0);
+                if (output_fd != 1) {
+                    platform_close(output_fd);
+                }
+                if (shuf_random_source_fd >= 0) {
+                    platform_close(shuf_random_source_fd);
+                }
+                return 1;
+            }
         }
+    }
+
+    if (output_fd != 1) {
+        platform_close(output_fd);
+    }
+    if (shuf_random_source_fd >= 0) {
+        platform_close(shuf_random_source_fd);
     }
 
     return 0;

@@ -348,6 +348,10 @@ int platform_send_signal(int pid, int signal_number) {
     return kill((pid_t)pid, signal_number);
 }
 
+int platform_ignore_signal(int signal_number) {
+    return signal(signal_number, SIG_IGN) == SIG_ERR ? -1 : 0;
+}
+
 static int decode_wait_status(int status) {
     if (WIFEXITED(status)) {
         return WEXITSTATUS(status);

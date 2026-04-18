@@ -15,6 +15,7 @@ typedef struct {
     unsigned long long left_field;
     unsigned long long right_field;
     char delimiter;
+    int ignore_case;
     int print_unpaired_left;
     int print_unpaired_right;
     int only_unpaired_left;
@@ -77,14 +78,64 @@ static int collect_lines_from_fd(int fd, char lines[JOIN_MAX_LINES][JOIN_LINE_CA
 }
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-a1] [-a2] [-v1] [-v2] [-1 FIELD] [-2 FIELD] [-j FIELD] [-t CHAR] [-e EMPTY] [-o LIST] file1 file2");
+    tool_write_usage(program_name, "[-i] [-a1|-a 1] [-a2|-a 2] [-v1|-v 1] [-v2|-v 2] [-1 FIELD] [-2 FIELD] [-j FIELD] [-t CHAR] [-e EMPTY] [-o LIST] file1 file2");
 }
 
-static char parse_delimiter(const char *text) {
-    if (text[0] == '\\' && text[1] == 't' && text[2] == '\0') {
-        return '\t';
+static char fold_ascii(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
     }
-    return text[0];
+    return ch;
+}
+
+static int compare_keys(const char *left, const char *right, int ignore_case) {
+    size_t i = 0U;
+
+    while (left[i] != '\0' || right[i] != '\0') {
+        char lhs = left[i];
+        char rhs = right[i];
+        if (ignore_case) {
+            lhs = fold_ascii(lhs);
+            rhs = fold_ascii(rhs);
+        }
+        if (lhs != rhs) {
+            return lhs < rhs ? -1 : 1;
+        }
+        if (left[i] == '\0') {
+            break;
+        }
+        i += 1U;
+    }
+
+    return 0;
+}
+
+static int parse_delimiter(const char *text, char *delimiter_out) {
+    if (text[0] == '\0') {
+        return -1;
+    }
+    if (text[0] == '\\' && text[1] == 't' && text[2] == '\0') {
+        *delimiter_out = '\t';
+        return 0;
+    }
+    if (text[1] != '\0') {
+        return -1;
+    }
+    *delimiter_out = text[0];
+    return 0;
+}
+
+static int parse_join_source(const char *text, int *source_out) {
+    if (rt_strcmp(text, "1") == 0) {
+        *source_out = 1;
+        return 0;
+    }
+    if (rt_strcmp(text, "2") == 0) {
+        *source_out = 2;
+        return 0;
+    }
+
+    return -1;
 }
 
 static int extract_field(const char *line, unsigned long long field_no, char delimiter, char *out, size_t out_size) {
@@ -401,7 +452,7 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
                 right_key[0] = '\0';
             }
 
-            if (rt_strcmp(left_key, right_key) == 0) {
+            if (compare_keys(left_key, right_key, options->ignore_case) == 0) {
                 matched = 1;
                 right_matched[j] = 1;
                 if (!options->only_unpaired_left && !options->only_unpaired_right) {
@@ -439,6 +490,7 @@ int main(int argc, char **argv) {
     options.left_field = 1ULL;
     options.right_field = 1ULL;
     options.delimiter = '\0';
+    options.ignore_case = 0;
     options.print_unpaired_left = 0;
     options.print_unpaired_right = 0;
     options.only_unpaired_left = 0;
@@ -447,13 +499,28 @@ int main(int argc, char **argv) {
     options.empty_replacement[0] = '\0';
     options.output_field_count = 0U;
 
-    while (argi < argc && argv[argi][0] == '-') {
-        if (rt_strcmp(argv[argi], "-a1") == 0) {
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strcmp(argv[argi], "-i") == 0 || rt_strcmp(argv[argi], "--ignore-case") == 0) {
+            options.ignore_case = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-a1") == 0) {
             options.print_unpaired_left = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-a2") == 0) {
             options.print_unpaired_right = 1;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "-a") == 0) {
+            int source = 0;
+            if (argi + 1 >= argc || parse_join_source(argv[argi + 1], &source) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (source == 1) {
+                options.print_unpaired_left = 1;
+            } else {
+                options.print_unpaired_right = 1;
+            }
+            argi += 2;
         } else if (rt_strcmp(argv[argi], "-v1") == 0) {
             options.print_unpaired_left = 1;
             options.only_unpaired_left = 1;
@@ -462,6 +529,20 @@ int main(int argc, char **argv) {
             options.print_unpaired_right = 1;
             options.only_unpaired_right = 1;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "-v") == 0) {
+            int source = 0;
+            if (argi + 1 >= argc || parse_join_source(argv[argi + 1], &source) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (source == 1) {
+                options.print_unpaired_left = 1;
+                options.only_unpaired_left = 1;
+            } else {
+                options.print_unpaired_right = 1;
+                options.only_unpaired_right = 1;
+            }
+            argi += 2;
         } else if (rt_strcmp(argv[argi], "-1") == 0) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &options.left_field, "join", "field") != 0 || options.left_field == 0ULL) {
                 print_usage(argv[0]);
@@ -484,11 +565,10 @@ int main(int argc, char **argv) {
             options.right_field = field;
             argi += 2;
         } else if (rt_strcmp(argv[argi], "-t") == 0) {
-            if (argi + 1 >= argc || argv[argi + 1][0] == '\0') {
+            if (argi + 1 >= argc || parse_delimiter(argv[argi + 1], &options.delimiter) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }
-            options.delimiter = parse_delimiter(argv[argi + 1]);
             argi += 2;
         } else if (rt_strcmp(argv[argi], "-e") == 0) {
             if (argi + 1 >= argc) {

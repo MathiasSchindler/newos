@@ -46,6 +46,51 @@ void tool_write_error(const char *tool_name, const char *message, const char *de
     rt_write_char(2, '\n');
 }
 
+int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out) {
+    size_t in_index = 0;
+    size_t out_index = 0;
+
+    if (text == 0 || buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    while (text[in_index] != '\0') {
+        char ch = text[in_index];
+
+        if (ch == '\\' && text[in_index + 1U] != '\0') {
+            in_index += 1U;
+            ch = text[in_index];
+            if (ch == 'n') {
+                ch = '\n';
+            } else if (ch == 'r') {
+                ch = '\r';
+            } else if (ch == 't') {
+                ch = '\t';
+            } else if (ch == 'f') {
+                ch = '\f';
+            } else if (ch == 'v') {
+                ch = '\v';
+            } else if (ch == '0') {
+                ch = '\0';
+            }
+        }
+
+        if (out_index + 1U >= buffer_size) {
+            buffer[buffer_size - 1U] = '\0';
+            return -1;
+        }
+
+        buffer[out_index++] = ch;
+        in_index += 1U;
+    }
+
+    buffer[out_index] = '\0';
+    if (length_out != 0) {
+        *length_out = out_index;
+    }
+    return 0;
+}
+
 int tool_prompt_yes_no(const char *message, const char *path) {
     char reply[8];
     long bytes_read;
@@ -192,6 +237,13 @@ int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t 
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }
 
+typedef struct {
+    const char *starts[10];
+    const char *ends[10];
+} ToolRegexCaptures;
+
+#define TOOL_REGEX_REPEAT_UNBOUNDED (~0ULL)
+
 static char tool_regex_to_lower_ascii(char ch) {
     if (ch >= 'A' && ch <= 'Z') {
         return (char)(ch - 'A' + 'a');
@@ -212,6 +264,18 @@ static int tool_regex_is_word_char(char ch) {
            (ch >= 'A' && ch <= 'Z') ||
            (ch >= '0' && ch <= '9') ||
            ch == '_';
+}
+
+static void tool_regex_copy_captures(ToolRegexCaptures *dst, const ToolRegexCaptures *src) {
+    size_t i;
+    for (i = 0; i < sizeof(dst->starts) / sizeof(dst->starts[0]); ++i) {
+        dst->starts[i] = src->starts[i];
+        dst->ends[i] = src->ends[i];
+    }
+}
+
+static void tool_regex_clear_captures(ToolRegexCaptures *captures) {
+    rt_memset(captures, 0, sizeof(*captures));
 }
 
 static int tool_regex_decode_escape(char code, char *out) {
@@ -261,31 +325,18 @@ static int tool_regex_escape_matches(char code, char ch, int ignore_case) {
     return tool_regex_chars_equal(decoded, ch, ignore_case);
 }
 
-static size_t tool_regex_atom_length(const char *pattern) {
-    size_t i = 0U;
+static size_t tool_regex_skip_class(const char *pattern, size_t pos, size_t end) {
+    size_t i = pos + 1U;
 
-    if (pattern == 0 || pattern[0] == '\0') {
-        return 0U;
-    }
-
-    if (pattern[0] == '\\' && pattern[1] != '\0') {
-        return 2U;
-    }
-
-    if (pattern[0] != '[') {
-        return 1U;
-    }
-
-    i = 1U;
-    if (pattern[i] == '^') {
+    if (i < end && pattern[i] == '^') {
         i += 1U;
     }
-    if (pattern[i] == ']') {
+    if (i < end && pattern[i] == ']') {
         i += 1U;
     }
 
-    while (pattern[i] != '\0') {
-        if (pattern[i] == '\\' && pattern[i + 1U] != '\0') {
+    while (i < end) {
+        if (pattern[i] == '\\' && i + 1U < end) {
             i += 2U;
             continue;
         }
@@ -295,6 +346,78 @@ static size_t tool_regex_atom_length(const char *pattern) {
         i += 1U;
     }
 
+    return pos + 1U;
+}
+
+static size_t tool_regex_find_group_end(const char *pattern, size_t pos, size_t end) {
+    size_t i = pos + 1U;
+    unsigned long long depth = 1ULL;
+
+    while (i < end) {
+        if (pattern[i] == '\\' && i + 1U < end) {
+            i += 2U;
+            continue;
+        }
+        if (pattern[i] == '[') {
+            i = tool_regex_skip_class(pattern, i, end);
+            continue;
+        }
+        if (pattern[i] == '(') {
+            depth += 1ULL;
+        } else if (pattern[i] == ')') {
+            depth -= 1ULL;
+            if (depth == 0ULL) {
+                return i;
+            }
+        }
+        i += 1U;
+    }
+
+    return end;
+}
+
+static size_t tool_regex_group_index(const char *pattern, size_t group_pos) {
+    size_t i = 0U;
+    size_t count = 0U;
+    size_t end = rt_strlen(pattern);
+
+    while (i < end && i <= group_pos) {
+        if (pattern[i] == '\\' && i + 1U < end) {
+            i += 2U;
+            continue;
+        }
+        if (pattern[i] == '[') {
+            i = tool_regex_skip_class(pattern, i, end);
+            continue;
+        }
+        if (pattern[i] == '(') {
+            count += 1U;
+            if (i == group_pos) {
+                return count;
+            }
+        }
+        i += 1U;
+    }
+
+    return 0U;
+}
+
+static size_t tool_regex_atom_span(const char *pattern, size_t pos, size_t end) {
+    if (pos >= end) {
+        return 0U;
+    }
+    if (pattern[pos] == '\\' && pos + 1U < end) {
+        return 2U;
+    }
+    if (pattern[pos] == '[') {
+        return tool_regex_skip_class(pattern, pos, end) - pos;
+    }
+    if (pattern[pos] == '(') {
+        size_t close = tool_regex_find_group_end(pattern, pos, end);
+        if (close < end) {
+            return close - pos + 1U;
+        }
+    }
     return 1U;
 }
 
@@ -302,6 +425,7 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, char c
     size_t i = 1U;
     int negate = 0;
     int matched = 0;
+    char compare_ch = ignore_case ? tool_regex_to_lower_ascii(ch) : ch;
 
     if (pattern == 0 || atom_len < 2U || pattern[0] != '[') {
         return 0;
@@ -337,6 +461,10 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, char c
             continue;
         }
 
+        if (ignore_case) {
+            current = tool_regex_to_lower_ascii(current);
+        }
+
         if (i + 1U < atom_len && pattern[i] == '-' && pattern[i + 1U] != ']') {
             char range_end = '\0';
 
@@ -350,15 +478,13 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, char c
             }
 
             if (ignore_case) {
-                current = tool_regex_to_lower_ascii(current);
                 range_end = tool_regex_to_lower_ascii(range_end);
-                ch = tool_regex_to_lower_ascii(ch);
             }
 
-            if (current <= ch && ch <= range_end) {
+            if (current <= compare_ch && compare_ch <= range_end) {
                 matched = 1;
             }
-        } else if (tool_regex_chars_equal(current, ch, ignore_case)) {
+        } else if (current == compare_ch) {
             matched = 1;
         }
     }
@@ -366,122 +492,403 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, char c
     return negate ? !matched : matched;
 }
 
-static int tool_regex_atom_matches(const char *pattern, size_t atom_len, char ch, int ignore_case) {
-    if (pattern == 0 || atom_len == 0U) {
+static int tool_regex_match_expression(const char *pattern,
+                                       size_t pos,
+                                       size_t end,
+                                       const char *text,
+                                       const char *origin,
+                                       int ignore_case,
+                                       ToolRegexCaptures *captures,
+                                       const char **end_out);
+
+static int tool_regex_match_atom(const char *pattern,
+                                 size_t pos,
+                                 size_t atom_end,
+                                 const char *text,
+                                 const char *origin,
+                                 int ignore_case,
+                                 ToolRegexCaptures *captures,
+                                 const char **next_text_out) {
+    if (pos >= atom_end) {
         return 0;
     }
-    if (pattern[0] == '.') {
-        return 1;
-    }
-    if (pattern[0] == '[') {
-        return tool_regex_class_matches(pattern, atom_len, ch, ignore_case);
-    }
-    if (pattern[0] == '\\' && atom_len >= 2U) {
-        return tool_regex_escape_matches(pattern[1], ch, ignore_case);
-    }
-    return tool_regex_chars_equal(pattern[0], ch, ignore_case);
-}
 
-static int tool_regex_match_here(const char *pattern, const char *text, int ignore_case, const char **end_out);
-
-static int tool_regex_match_repeated(const char *pattern,
-                                     size_t atom_len,
-                                     char quantifier,
-                                     const char *text,
-                                     int ignore_case,
-                                     const char **end_out) {
-    const char *cursor = text;
-    unsigned long long min_count = (quantifier == '+') ? 1ULL : 0ULL;
-    unsigned long long count = 0ULL;
-
-    while (*cursor != '\0' && tool_regex_atom_matches(pattern, atom_len, *cursor, ignore_case)) {
-        cursor += 1;
-        count += 1ULL;
-    }
-
-    while (cursor >= text) {
-        if (count >= min_count && tool_regex_match_here(pattern + atom_len + 1U, cursor, ignore_case, end_out)) {
+    if (pattern[pos] == '^' && atom_end == pos + 1U) {
+        if (text == origin) {
+            *next_text_out = text;
             return 1;
         }
-        if (cursor == text) {
-            break;
+        return 0;
+    }
+
+    if (pattern[pos] == '$' && atom_end == pos + 1U) {
+        if (*text == '\0') {
+            *next_text_out = text;
+            return 1;
         }
-        cursor -= 1;
-        count -= 1ULL;
+        return 0;
+    }
+
+    if (pattern[pos] == '(' && atom_end > pos + 1U && pattern[atom_end - 1U] == ')') {
+        ToolRegexCaptures local;
+        const char *group_end = 0;
+        size_t group_index = tool_regex_group_index(pattern, pos);
+
+        tool_regex_copy_captures(&local, captures);
+        if (!tool_regex_match_expression(pattern, pos + 1U, atom_end - 1U, text, origin, ignore_case, &local, &group_end)) {
+            return 0;
+        }
+        if (group_index < sizeof(local.starts) / sizeof(local.starts[0])) {
+            local.starts[group_index] = text;
+            local.ends[group_index] = group_end;
+        }
+        *captures = local;
+        *next_text_out = group_end;
+        return 1;
+    }
+
+    if (pattern[pos] == '\\' && pos + 1U < atom_end && pattern[pos + 1U] >= '0' && pattern[pos + 1U] <= '9') {
+        size_t capture_index = (size_t)(pattern[pos + 1U] - '0');
+        const char *capture_start = captures->starts[capture_index];
+        const char *capture_end = captures->ends[capture_index];
+        size_t i = 0U;
+        size_t length;
+
+        if (capture_start == 0 || capture_end == 0 || capture_end < capture_start) {
+            return 0;
+        }
+        length = (size_t)(capture_end - capture_start);
+        while (i < length) {
+            if (text[i] == '\0' || !tool_regex_chars_equal(capture_start[i], text[i], ignore_case)) {
+                return 0;
+            }
+            i += 1U;
+        }
+        *next_text_out = text + length;
+        return 1;
+    }
+
+    if (*text == '\0') {
+        return 0;
+    }
+
+    if (pattern[pos] == '.' && atom_end == pos + 1U) {
+        *next_text_out = text + 1;
+        return 1;
+    }
+    if (pattern[pos] == '[') {
+        if (tool_regex_class_matches(pattern + pos, atom_end - pos, *text, ignore_case)) {
+            *next_text_out = text + 1;
+            return 1;
+        }
+        return 0;
+    }
+    if (pattern[pos] == '\\' && pos + 1U < atom_end) {
+        if (tool_regex_escape_matches(pattern[pos + 1U], *text, ignore_case)) {
+            *next_text_out = text + 1;
+            return 1;
+        }
+        return 0;
+    }
+    if (tool_regex_chars_equal(pattern[pos], *text, ignore_case)) {
+        *next_text_out = text + 1;
+        return 1;
+    }
+    return 0;
+}
+
+static int tool_regex_parse_repeat_count(const char *pattern, size_t *pos, size_t end, unsigned long long *value_out) {
+    unsigned long long value = 0ULL;
+    size_t index = *pos;
+    int saw_digit = 0;
+
+    while (index < end && pattern[index] >= '0' && pattern[index] <= '9') {
+        saw_digit = 1;
+        value = (value * 10ULL) + (unsigned long long)(pattern[index] - '0');
+        index += 1U;
+    }
+
+    if (!saw_digit) {
+        return 0;
+    }
+
+    *pos = index;
+    *value_out = value;
+    return 1;
+}
+
+static int tool_regex_parse_quantifier(const char *pattern,
+                                       size_t pos,
+                                       size_t end,
+                                       unsigned long long *min_out,
+                                       unsigned long long *max_out,
+                                       size_t *quantifier_end_out) {
+    if (pos >= end) {
+        return 0;
+    }
+
+    if (pattern[pos] == '*') {
+        *min_out = 0ULL;
+        *max_out = TOOL_REGEX_REPEAT_UNBOUNDED;
+        *quantifier_end_out = pos + 1U;
+        return 1;
+    }
+    if (pattern[pos] == '+') {
+        *min_out = 1ULL;
+        *max_out = TOOL_REGEX_REPEAT_UNBOUNDED;
+        *quantifier_end_out = pos + 1U;
+        return 1;
+    }
+    if (pattern[pos] == '?') {
+        *min_out = 0ULL;
+        *max_out = 1ULL;
+        *quantifier_end_out = pos + 1U;
+        return 1;
+    }
+    if (pattern[pos] == '{') {
+        size_t index = pos + 1U;
+        unsigned long long minimum = 0ULL;
+        unsigned long long maximum = 0ULL;
+        int has_minimum = 0;
+        int has_maximum = 0;
+
+        has_minimum = tool_regex_parse_repeat_count(pattern, &index, end, &minimum);
+        if (!has_minimum) {
+            return 0;
+        }
+
+        if (index < end && pattern[index] == '}') {
+            *min_out = minimum;
+            *max_out = minimum;
+            *quantifier_end_out = index + 1U;
+            return 1;
+        }
+
+        if (index >= end || pattern[index] != ',') {
+            return 0;
+        }
+        index += 1U;
+
+        has_maximum = tool_regex_parse_repeat_count(pattern, &index, end, &maximum);
+        if (index >= end || pattern[index] != '}') {
+            return 0;
+        }
+
+        *min_out = minimum;
+        *max_out = has_maximum ? maximum : TOOL_REGEX_REPEAT_UNBOUNDED;
+        *quantifier_end_out = index + 1U;
+        return *max_out == TOOL_REGEX_REPEAT_UNBOUNDED || *max_out >= *min_out;
     }
 
     return 0;
 }
 
-static int tool_regex_match_here(const char *pattern, const char *text, int ignore_case, const char **end_out) {
-    size_t atom_len;
-    char quantifier;
+static int tool_regex_match_quantified(const char *pattern,
+                                       size_t pos,
+                                       size_t atom_end,
+                                       size_t rest_pos,
+                                       size_t end,
+                                       const char *text,
+                                       const char *origin,
+                                       int ignore_case,
+                                       unsigned long long min_count,
+                                       unsigned long long max_count,
+                                       unsigned long long count,
+                                       ToolRegexCaptures *captures,
+                                       const char **end_out);
 
-    if (pattern[0] == '\0') {
+static int tool_regex_match_sequence(const char *pattern,
+                                     size_t pos,
+                                     size_t end,
+                                     const char *text,
+                                     const char *origin,
+                                     int ignore_case,
+                                     ToolRegexCaptures *captures,
+                                     const char **end_out) {
+    size_t atom_len;
+    size_t atom_end;
+    size_t rest_pos;
+    unsigned long long min_count = 1ULL;
+    unsigned long long max_count = 1ULL;
+    size_t quantifier_end = 0U;
+
+    if (pos >= end) {
         *end_out = text;
         return 1;
     }
 
-    if (pattern[0] == '$' && pattern[1] == '\0') {
-        if (text[0] == '\0') {
-            *end_out = text;
-            return 1;
-        }
-        return 0;
-    }
-
-    atom_len = tool_regex_atom_length(pattern);
+    atom_len = tool_regex_atom_span(pattern, pos, end);
     if (atom_len == 0U) {
         *end_out = text;
         return 1;
     }
 
-    quantifier = pattern[atom_len];
-    if (quantifier == '*' || quantifier == '+') {
-        return tool_regex_match_repeated(pattern, atom_len, quantifier, text, ignore_case, end_out);
-    }
-    if (quantifier == '?') {
-        if (*text != '\0' &&
-            tool_regex_atom_matches(pattern, atom_len, *text, ignore_case) &&
-            tool_regex_match_here(pattern + atom_len + 1U, text + 1, ignore_case, end_out)) {
-            return 1;
-        }
-        return tool_regex_match_here(pattern + atom_len + 1U, text, ignore_case, end_out);
+    atom_end = pos + atom_len;
+    rest_pos = atom_end;
+    if (tool_regex_parse_quantifier(pattern, atom_end, end, &min_count, &max_count, &quantifier_end)) {
+        rest_pos = quantifier_end;
+        return tool_regex_match_quantified(pattern,
+                                           pos,
+                                           atom_end,
+                                           rest_pos,
+                                           end,
+                                           text,
+                                           origin,
+                                           ignore_case,
+                                           min_count,
+                                           max_count,
+                                           0ULL,
+                                           captures,
+                                           end_out);
     }
 
-    if (*text != '\0' && tool_regex_atom_matches(pattern, atom_len, *text, ignore_case)) {
-        return tool_regex_match_here(pattern + atom_len, text + 1, ignore_case, end_out);
+    {
+        ToolRegexCaptures local;
+        const char *next = 0;
+
+        tool_regex_copy_captures(&local, captures);
+        if (!tool_regex_match_atom(pattern, pos, atom_end, text, origin, ignore_case, &local, &next)) {
+            return 0;
+        }
+        if (tool_regex_match_sequence(pattern, rest_pos, end, next, origin, ignore_case, &local, end_out)) {
+            *captures = local;
+            return 1;
+        }
+        return 0;
+    }
+}
+
+static int tool_regex_match_quantified(const char *pattern,
+                                       size_t pos,
+                                       size_t atom_end,
+                                       size_t rest_pos,
+                                       size_t end,
+                                       const char *text,
+                                       const char *origin,
+                                       int ignore_case,
+                                       unsigned long long min_count,
+                                       unsigned long long max_count,
+                                       unsigned long long count,
+                                       ToolRegexCaptures *captures,
+                                       const char **end_out) {
+    if (max_count == TOOL_REGEX_REPEAT_UNBOUNDED || count < max_count) {
+        ToolRegexCaptures local;
+        const char *next = 0;
+
+        tool_regex_copy_captures(&local, captures);
+        if (tool_regex_match_atom(pattern, pos, atom_end, text, origin, ignore_case, &local, &next) &&
+            next != text &&
+            tool_regex_match_quantified(pattern,
+                                        pos,
+                                        atom_end,
+                                        rest_pos,
+                                        end,
+                                        next,
+                                        origin,
+                                        ignore_case,
+                                        min_count,
+                                        max_count,
+                                        count + 1ULL,
+                                        &local,
+                                        end_out)) {
+            *captures = local;
+            return 1;
+        }
+    }
+
+    if (count >= min_count) {
+        return tool_regex_match_sequence(pattern, rest_pos, end, text, origin, ignore_case, captures, end_out);
     }
 
     return 0;
 }
 
-int tool_regex_search(const char *pattern, const char *text, int ignore_case, size_t search_start, size_t *start_out, size_t *end_out) {
+static int tool_regex_match_expression(const char *pattern,
+                                       size_t pos,
+                                       size_t end,
+                                       const char *text,
+                                       const char *origin,
+                                       int ignore_case,
+                                       ToolRegexCaptures *captures,
+                                       const char **end_out) {
+    size_t branch_start = pos;
+    size_t i = pos;
+    unsigned long long depth = 0ULL;
+
+    while (i < end) {
+        if (pattern[i] == '\\' && i + 1U < end) {
+            i += 2U;
+            continue;
+        }
+        if (pattern[i] == '[') {
+            i = tool_regex_skip_class(pattern, i, end);
+            continue;
+        }
+        if (pattern[i] == '(') {
+            depth += 1ULL;
+            i += 1U;
+            continue;
+        }
+        if (pattern[i] == ')') {
+            if (depth > 0ULL) {
+                depth -= 1ULL;
+            }
+            i += 1U;
+            continue;
+        }
+        if (pattern[i] == '|' && depth == 0ULL) {
+            ToolRegexCaptures local;
+
+            tool_regex_copy_captures(&local, captures);
+            if (tool_regex_match_sequence(pattern, branch_start, i, text, origin, ignore_case, &local, end_out)) {
+                *captures = local;
+                return 1;
+            }
+            branch_start = i + 1U;
+        }
+        i += 1U;
+    }
+
+    {
+        ToolRegexCaptures local;
+
+        tool_regex_copy_captures(&local, captures);
+        if (tool_regex_match_sequence(pattern, branch_start, end, text, origin, ignore_case, &local, end_out)) {
+            *captures = local;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int tool_regex_search_internal(const char *pattern,
+                                      const char *text,
+                                      int ignore_case,
+                                      size_t search_start,
+                                      size_t *start_out,
+                                      size_t *end_out,
+                                      ToolRegexCaptures *captures_out) {
     size_t pos = search_start;
+    size_t pattern_end = rt_strlen(pattern);
 
     if (pattern == 0 || text == 0 || start_out == 0 || end_out == 0) {
         return 0;
     }
 
-    if (pattern[0] == '^') {
-        const char *end = 0;
-        if (search_start != 0U) {
-            return 0;
-        }
-        if (tool_regex_match_here(pattern + 1, text, ignore_case, &end)) {
-            *start_out = 0U;
-            *end_out = (size_t)(end - text);
-            return 1;
-        }
-        return 0;
-    }
-
     while (1) {
-        const char *end = 0;
+        ToolRegexCaptures captures;
+        const char *end_ptr = 0;
 
-        if (tool_regex_match_here(pattern, text + pos, ignore_case, &end)) {
+        tool_regex_clear_captures(&captures);
+        if (tool_regex_match_expression(pattern, 0U, pattern_end, text + pos, text, ignore_case, &captures, &end_ptr)) {
+            captures.starts[0] = text + pos;
+            captures.ends[0] = end_ptr;
             *start_out = pos;
-            *end_out = (size_t)(end - text);
+            *end_out = (size_t)(end_ptr - text);
+            if (captures_out != 0) {
+                *captures_out = captures;
+            }
             return 1;
         }
 
@@ -492,6 +899,10 @@ int tool_regex_search(const char *pattern, const char *text, int ignore_case, si
     }
 
     return 0;
+}
+
+int tool_regex_search(const char *pattern, const char *text, int ignore_case, size_t search_start, size_t *start_out, size_t *end_out) {
+    return tool_regex_search_internal(pattern, text, ignore_case, search_start, start_out, end_out, 0);
 }
 
 static int tool_regex_append_text(char *buffer, size_t buffer_size, size_t *used, const char *text, size_t length) {
@@ -510,14 +921,13 @@ static int tool_regex_append_replacement(char *buffer,
                                          size_t buffer_size,
                                          size_t *used,
                                          const char *replacement,
-                                         const char *input,
-                                         size_t match_start,
-                                         size_t match_end) {
+                                         const ToolRegexCaptures *captures) {
     size_t i = 0U;
 
     while (replacement != 0 && replacement[i] != '\0') {
         if (replacement[i] == '&') {
-            if (tool_regex_append_text(buffer, buffer_size, used, input + match_start, match_end - match_start) != 0) {
+            if (captures != 0 && captures->starts[0] != 0 && captures->ends[0] != 0 &&
+                tool_regex_append_text(buffer, buffer_size, used, captures->starts[0], (size_t)(captures->ends[0] - captures->starts[0])) != 0) {
                 return -1;
             }
             i += 1U;
@@ -525,16 +935,28 @@ static int tool_regex_append_replacement(char *buffer,
         }
 
         if (replacement[i] == '\\' && replacement[i + 1U] != '\0') {
-            char decoded = '\0';
             char code = replacement[i + 1U];
+            char decoded = '\0';
 
-            if (code == '&' || code == '\\') {
-                decoded = code;
+            if (code >= '0' && code <= '9') {
+                size_t capture_index = (size_t)(code - '0');
+                if (captures != 0 && captures->starts[capture_index] != 0 && captures->ends[capture_index] != 0 &&
+                    tool_regex_append_text(buffer,
+                                           buffer_size,
+                                           used,
+                                           captures->starts[capture_index],
+                                           (size_t)(captures->ends[capture_index] - captures->starts[capture_index])) != 0) {
+                    return -1;
+                }
             } else {
-                (void)tool_regex_decode_escape(code, &decoded);
-            }
-            if (tool_regex_append_text(buffer, buffer_size, used, &decoded, 1U) != 0) {
-                return -1;
+                if (code == '&' || code == '\\') {
+                    decoded = code;
+                } else {
+                    (void)tool_regex_decode_escape(code, &decoded);
+                }
+                if (tool_regex_append_text(buffer, buffer_size, used, &decoded, 1U) != 0) {
+                    return -1;
+                }
             }
             i += 2U;
             continue;
@@ -577,13 +999,14 @@ int tool_regex_replace(const char *pattern,
     while (1) {
         size_t match_start = 0U;
         size_t match_end = 0U;
+        ToolRegexCaptures captures;
 
-        if (!tool_regex_search(pattern, input, ignore_case, in_pos, &match_start, &match_end)) {
+        if (!tool_regex_search_internal(pattern, input, ignore_case, in_pos, &match_start, &match_end, &captures)) {
             break;
         }
 
         if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, match_start - in_pos) != 0 ||
-            tool_regex_append_replacement(output, output_size, &out_pos, replacement, input, match_start, match_end) != 0) {
+            tool_regex_append_replacement(output, output_size, &out_pos, replacement, &captures) != 0) {
             return -1;
         }
 
