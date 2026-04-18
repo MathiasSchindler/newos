@@ -13,10 +13,10 @@ typedef long long int64_t;
 
 #define OBJECT_WRITER_MAX_TEXT 262144
 #define OBJECT_WRITER_MAX_DATA 65536
-#define OBJECT_WRITER_MAX_SYMBOLS 512
-#define OBJECT_WRITER_MAX_LABELS 512
-#define OBJECT_WRITER_MAX_FIXUPS 1024
-#define OBJECT_WRITER_MAX_RELOCS 1024
+#define OBJECT_WRITER_MAX_SYMBOLS 1024
+#define OBJECT_WRITER_MAX_LABELS 2048
+#define OBJECT_WRITER_MAX_FIXUPS 4096
+#define OBJECT_WRITER_MAX_RELOCS 4096
 #define OBJECT_WRITER_MAX_OUTPUT (OBJECT_WRITER_MAX_TEXT + OBJECT_WRITER_MAX_DATA + 65536)
 
 #define ELFCLASS64 2U
@@ -786,7 +786,7 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
 
     if (starts_with(line, "call ")) {
         size_t disp_offset;
-        const char *name = line + 5;
+        const char *name = skip_spaces(line + 5);
         if (append_byte(assembler, OBJECT_SECTION_TEXT, 0xE8U) != 0) {
             return -1;
         }
@@ -800,7 +800,7 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
 
     if (starts_with(line, "je ") || starts_with(line, "jne ") || starts_with(line, "jmp ")) {
         size_t disp_offset;
-        const char *name = line + (starts_with(line, "jmp ") ? 4 : 3);
+        const char *name = skip_spaces(line + (starts_with(line, "jmp ") ? 4 : 3));
 
         if (starts_with(line, "jmp ")) {
             if (append_byte(assembler, OBJECT_SECTION_TEXT, 0xE9U) != 0) {
@@ -1015,7 +1015,8 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         starts_with(line, "orq %") || starts_with(line, "xorq %")) {
         char left[32];
         char right[32];
-        const char *comma = line + 5;
+        const char *operands = line;
+        const char *comma;
         size_t i = 0;
         unsigned char opcode = 0x01U;
         int src_reg;
@@ -1023,16 +1024,31 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         int is_byte;
         const char *rest;
 
-        while (comma[i] != '\0' && comma[i] != ',' && i + 1 < sizeof(left)) {
-            left[i] = comma[i];
+        while (*operands != '\0' && *operands != ' ' && *operands != '\t') {
+            operands += 1;
+        }
+        operands = skip_spaces(operands);
+        comma = find_top_level_comma(operands);
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported binary register form");
+            return -1;
+        }
+
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
             i += 1U;
         }
         left[i] = '\0';
-        rt_copy_string(right, sizeof(right), skip_spaces(comma + i + 1U));
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
 
         if (parse_register(left, &src_reg, &is_byte, &rest) != 0 || *rest != '\0' ||
             parse_register(right, &dst_reg, &is_byte, &rest) != 0 || *rest != '\0') {
-            set_error(assembler->writer, "unsupported binary register instruction");
+            rt_copy_string(assembler->writer->error_message,
+                           sizeof(assembler->writer->error_message),
+                           "unsupported binary register instruction: ");
+            rt_copy_string(assembler->writer->error_message + rt_strlen(assembler->writer->error_message),
+                           sizeof(assembler->writer->error_message) - rt_strlen(assembler->writer->error_message),
+                           line);
             return -1;
         }
 
