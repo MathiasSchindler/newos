@@ -83,6 +83,9 @@ typedef struct {
     BackendState *state;
 } ExprParser;
 
+#define set_error backend_set_error
+#define set_error_with_line backend_set_error_with_line
+
 void backend_set_error(CompilerBackend *backend, const char *message);
 void backend_set_error_with_line(CompilerBackend *backend, const char *message, const char *line);
 int emit_text(BackendState *state, const char *text);
