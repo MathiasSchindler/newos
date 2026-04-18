@@ -30,14 +30,24 @@ static int hex_digit_value(char ch) {
     return -1;
 }
 
-static int write_escaped_text(const char *text, int *stop_output) {
+static int append_output_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    if (*length_io >= buffer_size) {
+        return -1;
+    }
+
+    buffer[*length_io] = ch;
+    *length_io += 1;
+    return 0;
+}
+
+static int write_escaped_text(const char *text, char *buffer, size_t buffer_size, size_t *length_io, int *stop_output) {
     size_t i = 0;
 
     while (text[i] != '\0') {
         char ch = text[i];
 
         if (ch != '\\') {
-            if (rt_write_char(1, ch) != 0) {
+            if (append_output_char(buffer, buffer_size, length_io, ch) != 0) {
                 return -1;
             }
             i += 1;
@@ -46,7 +56,7 @@ static int write_escaped_text(const char *text, int *stop_output) {
 
         i += 1;
         if (text[i] == '\0') {
-            return rt_write_char(1, '\\');
+            return append_output_char(buffer, buffer_size, length_io, '\\');
         }
 
         ch = text[i];
@@ -81,7 +91,8 @@ static int write_escaped_text(const char *text, int *stop_output) {
             }
 
             if (digits == 0) {
-                if (rt_write_char(1, '\\') != 0 || rt_write_char(1, 'x') != 0) {
+                if (append_output_char(buffer, buffer_size, length_io, '\\') != 0 ||
+                    append_output_char(buffer, buffer_size, length_io, 'x') != 0) {
                     return -1;
                 }
                 i += 1;
@@ -101,12 +112,12 @@ static int write_escaped_text(const char *text, int *stop_output) {
 
             ch = (char)value;
         } else if (ch != '\\') {
-            if (rt_write_char(1, '\\') != 0) {
+            if (append_output_char(buffer, buffer_size, length_io, '\\') != 0) {
                 return -1;
             }
         }
 
-        if (rt_write_char(1, ch) != 0) {
+        if (append_output_char(buffer, buffer_size, length_io, ch) != 0) {
             return -1;
         }
 
@@ -117,6 +128,8 @@ static int write_escaped_text(const char *text, int *stop_output) {
 }
 
 int main(int argc, char **argv) {
+    char output[4096];
+    size_t output_len = 0;
     int i = 1;
     int trailing_newline = 1;
     int interpret_escapes = 0;
@@ -139,24 +152,32 @@ int main(int argc, char **argv) {
     }
 
     for (; i < argc && !stop_output; ++i) {
-        if (!first_argument && rt_write_char(1, ' ') != 0) {
+        size_t j;
+
+        if (!first_argument && append_output_char(output, sizeof(output), &output_len, ' ') != 0) {
             return 1;
         }
 
         if (interpret_escapes) {
-            if (write_escaped_text(argv[i], &stop_output) != 0) {
+            if (write_escaped_text(argv[i], output, sizeof(output), &output_len, &stop_output) != 0) {
                 return 1;
             }
-        } else if (rt_write_cstr(1, argv[i]) != 0) {
-            return 1;
+        } else {
+            for (j = 0; argv[i][j] != '\0'; ++j) {
+                if (append_output_char(output, sizeof(output), &output_len, argv[i][j]) != 0) {
+                    return 1;
+                }
+            }
         }
 
         first_argument = 0;
     }
 
     if (trailing_newline && !stop_output) {
-        return rt_write_char(1, '\n') == 0 ? 0 : 1;
+        if (append_output_char(output, sizeof(output), &output_len, '\n') != 0) {
+            return 1;
+        }
     }
 
-    return 0;
+    return rt_write_all(1, output, output_len) == 0 ? 0 : 1;
 }

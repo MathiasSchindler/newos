@@ -1,3 +1,7 @@
+#if defined(__linux__)
+#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform.h"
@@ -14,7 +18,7 @@
 
 #if defined(__APPLE__)
 int sethostname(const char *name, int namelen);
-int getgrouplist(const char *name, int basegid, int *groups, int *ngroups);
+int getgrouplist(const char *name, int basegid, gid_t *groups, int *ngroups);
 #endif
 
 int platform_get_hostname(char *buffer, size_t buffer_size) {
@@ -162,7 +166,7 @@ int platform_list_groups_for_identity(
         return -1;
     }
 
-    if (getgrouplist(identity->username, (int)identity->gid, (int *)group_ids, &group_count) < 0) {
+    if (getgrouplist(identity->username, (int)identity->gid, group_ids, &group_count) < 0) {
         gid_t *resized = (gid_t *)realloc(group_ids, (size_t)group_count * sizeof(gid_t));
         if (resized == NULL) {
             free(group_ids);
@@ -170,7 +174,7 @@ int platform_list_groups_for_identity(
             return -1;
         }
         group_ids = resized;
-        if (getgrouplist(identity->username, (int)identity->gid, (int *)group_ids, &group_count) < 0) {
+        if (getgrouplist(identity->username, (int)identity->gid, group_ids, &group_count) < 0) {
             group_count = 1;
             group_ids[0] = (gid_t)identity->gid;
         }

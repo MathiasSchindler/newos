@@ -8,6 +8,36 @@ WORK_DIR="$ROOT_DIR/tests/tmp/compiler"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 
+RUN_TARGET=""
+case "$(uname -s):$(uname -m)" in
+    Darwin:arm64|Darwin:aarch64)
+        RUN_TARGET="macos-aarch64"
+        ;;
+    Linux:x86_64)
+        RUN_TARGET="linux-x86_64"
+        ;;
+esac
+
+compile_and_check_native() {
+    source_path=$1
+    output_path=$2
+    expected_status=$3
+    message=$4
+    actual_status=0
+
+    if [ -z "$RUN_TARGET" ]; then
+        return 0
+    fi
+
+    "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" "$source_path" -o "$output_path"
+    if "$output_path"; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_text_equals "$actual_status" "$expected_status" "$message"
+}
+
 note "compiler"
 
 cat > "$WORK_DIR/sample.c" <<'EOF'
@@ -40,13 +70,7 @@ assert_file_contains "$WORK_DIR/sample_macos.s" 'movz x0, #42' "compiler macOS A
 "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/sample_macos.o" > "$WORK_DIR/sample_macos_obj_hex.out"
 assert_file_contains "$WORK_DIR/sample_macos_obj_hex.out" 'cf fa ed fe' "compiler macOS object writer did not emit Mach-O magic"
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos_bin"
-if "$WORK_DIR/sample_macos_bin"; then
-    sample_status=0
-else
-    sample_status=$?
-fi
-assert_text_equals "$sample_status" "42" "compiler macOS linker did not produce a runnable executable"
+compile_and_check_native "$WORK_DIR/sample.c" "$WORK_DIR/sample_native_bin" "42" "compiler linker did not produce a runnable executable"
 "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/sample.o" > "$WORK_DIR/sample_obj_hex.out"
 assert_file_contains "$WORK_DIR/sample_obj_hex.out" '7f 45 4c 46' "compiler object writer did not emit ELF magic"
@@ -72,13 +96,7 @@ assert_file_contains "$WORK_DIR/flow_macos.s" 'add x0, x1, x2' "compiler macOS A
 "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/flow_macos.o" > "$WORK_DIR/flow_macos_obj_hex.out"
 assert_file_contains "$WORK_DIR/flow_macos_obj_hex.out" 'cf fa ed fe' "compiler macOS object writer did not handle control-flow object emission"
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos_bin"
-if "$WORK_DIR/flow_macos_bin"; then
-    flow_status=0
-else
-    flow_status=$?
-fi
-assert_text_equals "$flow_status" "4" "compiler macOS linker did not preserve control-flow semantics"
+compile_and_check_native "$WORK_DIR/flow.c" "$WORK_DIR/flow_native_bin" "4" "compiler linker did not preserve control-flow semantics"
 "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/flow.o" > "$WORK_DIR/flow_obj_hex.out"
 assert_file_contains "$WORK_DIR/flow_obj_hex.out" '7f 45 4c 46' "compiler object writer did not handle control-flow object emission"
@@ -95,13 +113,7 @@ EOF
 
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/backend_expr.c" -o "$WORK_DIR/backend_expr_macos.s"
 assert_file_contains "$WORK_DIR/backend_expr_macos.s" '^\.Lstr[0-9][0-9]*:$' "compiler backend missing string literal emission"
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/backend_expr.c" -o "$WORK_DIR/backend_expr_macos_bin"
-if "$WORK_DIR/backend_expr_macos_bin"; then
-    backend_expr_status=0
-else
-    backend_expr_status=$?
-fi
-assert_text_equals "$backend_expr_status" "0" "compiler backend did not preserve string/index expression semantics"
+compile_and_check_native "$WORK_DIR/backend_expr.c" "$WORK_DIR/backend_expr_native_bin" "0" "compiler backend did not preserve string/index expression semantics"
 
 cat > "$WORK_DIR/long_expr.c" <<'EOF'
 int main(void) {
@@ -110,13 +122,7 @@ int main(void) {
 EOF
 
 assert_command_succeeds "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/long_expr.c" -o "$WORK_DIR/long_expr_macos.o"
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/long_expr.c" -o "$WORK_DIR/long_expr_macos_bin"
-if "$WORK_DIR/long_expr_macos_bin"; then
-    long_expr_status=0
-else
-    long_expr_status=$?
-fi
-assert_text_equals "$long_expr_status" "64" "compiler failed on a repository-scale long expression"
+compile_and_check_native "$WORK_DIR/long_expr.c" "$WORK_DIR/long_expr_native_bin" "64" "compiler failed on a repository-scale long expression"
 
 cat > "$WORK_DIR/static_local_string_array.c" <<'EOF'
 int main(void) {
@@ -125,13 +131,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/static_local_string_array.c" -o "$WORK_DIR/static_local_string_array_bin"
-if "$WORK_DIR/static_local_string_array_bin"; then
-    static_local_array_status=0
-else
-    static_local_array_status=$?
-fi
-assert_text_equals "$static_local_array_status" "0" "compiler failed on a function-local static string array initializer"
+compile_and_check_native "$WORK_DIR/static_local_string_array.c" "$WORK_DIR/static_local_string_array_bin" "0" "compiler failed on a function-local static string array initializer"
 
 cat > "$WORK_DIR/local_struct_init.c" <<'EOF'
 typedef struct {
@@ -145,13 +145,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/local_struct_init.c" -o "$WORK_DIR/local_struct_init_bin"
-if "$WORK_DIR/local_struct_init_bin"; then
-    local_struct_status=0
-else
-    local_struct_status=$?
-fi
-assert_text_equals "$local_struct_status" "0" "compiler failed on a function-local aggregate initializer"
+compile_and_check_native "$WORK_DIR/local_struct_init.c" "$WORK_DIR/local_struct_init_bin" "0" "compiler failed on a function-local aggregate initializer"
 
 cat > "$WORK_DIR/escaped_char_literal.c" <<'EOF'
 int main(void) {
@@ -160,13 +154,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/escaped_char_literal.c" -o "$WORK_DIR/escaped_char_literal_bin"
-if "$WORK_DIR/escaped_char_literal_bin"; then
-    escaped_char_status=0
-else
-    escaped_char_status=$?
-fi
-assert_text_equals "$escaped_char_status" "0" "compiler failed on an escaped single-quote character literal"
+compile_and_check_native "$WORK_DIR/escaped_char_literal.c" "$WORK_DIR/escaped_char_literal_bin" "0" "compiler failed on an escaped single-quote character literal"
 
 cat > "$WORK_DIR/adjacent_strings.c" <<'EOF'
 int main(void) {
@@ -175,13 +163,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/adjacent_strings.c" -o "$WORK_DIR/adjacent_strings_bin"
-if "$WORK_DIR/adjacent_strings_bin"; then
-    adjacent_strings_status=0
-else
-    adjacent_strings_status=$?
-fi
-assert_text_equals "$adjacent_strings_status" "0" "compiler failed on adjacent string literal concatenation"
+compile_and_check_native "$WORK_DIR/adjacent_strings.c" "$WORK_DIR/adjacent_strings_bin" "0" "compiler failed on adjacent string literal concatenation"
 
 cat > "$WORK_DIR/multi_arg_call.c" <<'EOF'
 int check_args(int number, const char *text) {
@@ -193,13 +175,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/multi_arg_call.c" -o "$WORK_DIR/multi_arg_call_bin"
-if "$WORK_DIR/multi_arg_call_bin"; then
-    multi_arg_status=0
-else
-    multi_arg_status=$?
-fi
-assert_text_equals "$multi_arg_status" "0" "compiler failed to pass multiple call arguments correctly"
+compile_and_check_native "$WORK_DIR/multi_arg_call.c" "$WORK_DIR/multi_arg_call_bin" "0" "compiler failed to pass multiple call arguments correctly"
 
 cat > "$WORK_DIR/many_arg_call.c" <<'EOF'
 int check_many(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
@@ -211,13 +187,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/many_arg_call.c" -o "$WORK_DIR/many_arg_call_bin"
-if "$WORK_DIR/many_arg_call_bin"; then
-    many_arg_status=0
-else
-    many_arg_status=$?
-fi
-assert_text_equals "$many_arg_status" "0" "compiler failed to preserve arguments beyond the register-only calling convention"
+compile_and_check_native "$WORK_DIR/many_arg_call.c" "$WORK_DIR/many_arg_call_bin" "0" "compiler failed to preserve arguments beyond the register-only calling convention"
 
 cat > "$WORK_DIR/branch_separator_string.c" <<'EOF'
 int check_text(int code, const char *text) {
@@ -232,13 +202,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/branch_separator_string.c" -o "$WORK_DIR/branch_separator_string_bin"
-if "$WORK_DIR/branch_separator_string_bin"; then
-    branch_separator_status=0
-else
-    branch_separator_status=$?
-fi
-assert_text_equals "$branch_separator_status" "0" "compiler confused a quoted ' ->' string with an IR branch separator"
+compile_and_check_native "$WORK_DIR/branch_separator_string.c" "$WORK_DIR/branch_separator_string_bin" "0" "compiler confused a quoted ' ->' string with an IR branch separator"
 
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/pwd.c" -o "$WORK_DIR/pwd_repo.s"
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/echo.c" -o "$WORK_DIR/echo_repo.s"

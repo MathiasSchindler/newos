@@ -491,12 +491,9 @@ static int emit_pop_to_register(BackendState *state, const char *reg) {
         return emit_instruction(state, line) == 0 &&
                emit_instruction(state, "add sp, sp, #16") == 0 ? 0 : -1;
     }
-    if (names_equal(reg, "%rax")) {
-        return emit_instruction(state, "popq %rax");
-    }
-    rt_copy_string(line, sizeof(line), "movq %rax, ");
+    rt_copy_string(line, sizeof(line), "popq ");
     rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-    return emit_instruction(state, "popq %rax") == 0 && emit_instruction(state, line) == 0 ? 0 : -1;
+    return emit_instruction(state, line);
 }
 
 static int emit_local_address(BackendState *state, int offset, const char *reg) {

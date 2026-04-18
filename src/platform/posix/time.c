@@ -1,4 +1,10 @@
+#if defined(__APPLE__)
 #define _DARWIN_C_SOURCE
+#endif
+#if defined(__linux__)
+#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform.h"

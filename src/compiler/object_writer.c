@@ -114,6 +114,25 @@ static int names_equal(const char *lhs, const char *rhs) {
     return rt_strcmp(lhs, rhs) == 0;
 }
 
+static const char *find_top_level_comma(const char *text) {
+    int depth = 0;
+
+    while (*text != '\0') {
+        if (*text == '(') {
+            depth += 1;
+        } else if (*text == ')') {
+            if (depth > 0) {
+                depth -= 1;
+            }
+        } else if (*text == ',' && depth == 0) {
+            return text;
+        }
+        text += 1;
+    }
+
+    return 0;
+}
+
 static int starts_with(const char *text, const char *prefix) {
     size_t i = 0;
 
@@ -384,6 +403,16 @@ static int append_modrm(ObjectAssembler *assembler, unsigned int mod, unsigned i
     return append_byte(assembler, OBJECT_SECTION_TEXT, byte);
 }
 
+static int append_mem_modrm(ObjectAssembler *assembler, unsigned int mod, unsigned int reg, int base_reg) {
+    if ((base_reg & 7) == 4) {
+        return append_modrm(assembler, mod, reg, 4U) == 0 &&
+               append_byte(assembler, OBJECT_SECTION_TEXT,
+                           (unsigned char)(0x20U | (unsigned int)(base_reg & 7))) == 0 ? 0 : -1;
+    }
+
+    return append_modrm(assembler, mod, reg, (unsigned int)base_reg);
+}
+
 static int encode_push_reg(ObjectAssembler *assembler, int reg) {
     if (reg >= 8 && append_byte(assembler, OBJECT_SECTION_TEXT, 0x41U) != 0) {
         return -1;
@@ -414,17 +443,17 @@ static int encode_mov_imm_reg(ObjectAssembler *assembler, long long value, int d
     return 0;
 }
 
-static int encode_sub_imm_rsp(ObjectAssembler *assembler, long long value) {
+static int encode_alu_imm_reg(ObjectAssembler *assembler, unsigned int alu_op, int dst_reg, long long value) {
     if (value >= -128 && value <= 127) {
-        return append_rex(assembler, 1, 0, 0, 4) == 0 &&
+        return append_rex(assembler, 1, 0, 0, dst_reg) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0x83U) == 0 &&
-               append_modrm(assembler, 3U, 5U, 4U) == 0 &&
+               append_modrm(assembler, 3U, alu_op, (unsigned int)dst_reg) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)value)) == 0 ? 0 : -1;
     }
 
-    return append_rex(assembler, 1, 0, 0, 4) == 0 &&
+    return append_rex(assembler, 1, 0, 0, dst_reg) == 0 &&
            append_byte(assembler, OBJECT_SECTION_TEXT, 0x81U) == 0 &&
-           append_modrm(assembler, 3U, 5U, 4U) == 0 &&
+           append_modrm(assembler, 3U, alu_op, (unsigned int)dst_reg) == 0 &&
            append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)value) == 0 ? 0 : -1;
 }
 
@@ -491,18 +520,18 @@ static int encode_mov_mem_reg(ObjectAssembler *assembler, int base_reg, int disp
     }
 
     if (disp == 0 && base_reg != 5) {
-        return append_modrm(assembler, 0U, (unsigned int)dst_reg, (unsigned int)base_reg);
+        return append_mem_modrm(assembler, 0U, (unsigned int)dst_reg, base_reg);
     }
 
     if (disp >= -128 && disp <= 127) {
-        if (append_modrm(assembler, 1U, (unsigned int)dst_reg, (unsigned int)base_reg) != 0 ||
+        if (append_mem_modrm(assembler, 1U, (unsigned int)dst_reg, base_reg) != 0 ||
             append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
             return -1;
         }
         return 0;
     }
 
-    if (append_modrm(assembler, 2U, (unsigned int)dst_reg, (unsigned int)base_reg) != 0 ||
+    if (append_mem_modrm(assembler, 2U, (unsigned int)dst_reg, base_reg) != 0 ||
         append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
         return -1;
     }
@@ -516,22 +545,135 @@ static int encode_mov_reg_mem(ObjectAssembler *assembler, int src_reg, int base_
     }
 
     if (disp == 0 && base_reg != 5) {
-        return append_modrm(assembler, 0U, (unsigned int)src_reg, (unsigned int)base_reg);
+        return append_mem_modrm(assembler, 0U, (unsigned int)src_reg, base_reg);
     }
 
     if (disp >= -128 && disp <= 127) {
-        if (append_modrm(assembler, 1U, (unsigned int)src_reg, (unsigned int)base_reg) != 0 ||
+        if (append_mem_modrm(assembler, 1U, (unsigned int)src_reg, base_reg) != 0 ||
             append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
             return -1;
         }
         return 0;
     }
 
-    if (append_modrm(assembler, 2U, (unsigned int)src_reg, (unsigned int)base_reg) != 0 ||
+    if (append_mem_modrm(assembler, 2U, (unsigned int)src_reg, base_reg) != 0 ||
         append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
         return -1;
     }
     return 0;
+}
+
+static int encode_movzx_mem_reg(ObjectAssembler *assembler, int base_reg, int disp, int dst_reg) {
+    if (append_rex(assembler, 1, dst_reg, 0, base_reg) != 0 ||
+        append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) != 0 ||
+        append_byte(assembler, OBJECT_SECTION_TEXT, 0xB6U) != 0) {
+        return -1;
+    }
+
+    if (disp == 0 && base_reg != 5) {
+        return append_mem_modrm(assembler, 0U, (unsigned int)dst_reg, base_reg);
+    }
+
+    if (disp >= -128 && disp <= 127) {
+        if (append_mem_modrm(assembler, 1U, (unsigned int)dst_reg, base_reg) != 0 ||
+            append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    if (append_mem_modrm(assembler, 2U, (unsigned int)dst_reg, base_reg) != 0 ||
+        append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int encode_mov_reg_mem_byte(ObjectAssembler *assembler, int src_reg, int base_reg, int disp) {
+    if (append_rex(assembler, 0, src_reg, 0, base_reg) != 0 ||
+        append_byte(assembler, OBJECT_SECTION_TEXT, 0x88U) != 0) {
+        return -1;
+    }
+
+    if (disp == 0 && base_reg != 5) {
+        return append_mem_modrm(assembler, 0U, (unsigned int)src_reg, base_reg);
+    }
+
+    if (disp >= -128 && disp <= 127) {
+        if (append_mem_modrm(assembler, 1U, (unsigned int)src_reg, base_reg) != 0 ||
+            append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    if (append_mem_modrm(assembler, 2U, (unsigned int)src_reg, base_reg) != 0 ||
+        append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int parse_indexed_mem(const char *operand, int *base_reg_out, int *index_reg_out, int *scale_out) {
+    const char *cursor = skip_spaces(operand);
+    int reg;
+    int is_byte;
+    const char *rest;
+    unsigned long long scale = 1ULL;
+
+    if (*cursor != '(' || cursor[1] != '%') {
+        return -1;
+    }
+
+    if (parse_register(cursor + 1, &reg, &is_byte, &rest) != 0 || *rest != ',') {
+        return -1;
+    }
+    *base_reg_out = reg;
+
+    cursor = skip_spaces(rest + 1);
+    if (parse_register(cursor, &reg, &is_byte, &rest) != 0) {
+        return -1;
+    }
+    *index_reg_out = reg;
+
+    if (*rest == ',') {
+        cursor = skip_spaces(rest + 1);
+        scale = 0ULL;
+        if (*cursor < '0' || *cursor > '9') {
+            return -1;
+        }
+        while (*cursor >= '0' && *cursor <= '9') {
+            scale = (scale * 10ULL) + (unsigned long long)(*cursor - '0');
+            cursor += 1;
+        }
+        rest = cursor;
+    }
+
+    if (*rest != ')' || (scale != 1ULL && scale != 2ULL && scale != 4ULL && scale != 8ULL)) {
+        return -1;
+    }
+
+    *scale_out = (int)scale;
+    return 0;
+}
+
+static int encode_lea_indexed_reg(ObjectAssembler *assembler, int base_reg, int index_reg, int scale, int dst_reg) {
+    unsigned int scale_bits = 0U;
+
+    if (scale == 2) scale_bits = 1U;
+    else if (scale == 4) scale_bits = 2U;
+    else if (scale == 8) scale_bits = 3U;
+    else if (scale != 1) return -1;
+
+    if ((index_reg & 7) == 4 || (base_reg & 7) == 5) {
+        return -1;
+    }
+
+    return append_rex(assembler, 1, dst_reg, index_reg, base_reg) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT, 0x8DU) == 0 &&
+           append_modrm(assembler, 0U, (unsigned int)dst_reg, 4U) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT,
+                       (unsigned char)((scale_bits << 6U) | ((unsigned int)(index_reg & 7) << 3U) | (unsigned int)(base_reg & 7))) == 0 ? 0 : -1;
 }
 
 static int encode_lea_mem_reg(ObjectAssembler *assembler, int base_reg, int disp, int dst_reg) {
@@ -540,13 +682,13 @@ static int encode_lea_mem_reg(ObjectAssembler *assembler, int base_reg, int disp
         return -1;
     }
     if (disp >= -128 && disp <= 127) {
-        if (append_modrm(assembler, 1U, (unsigned int)dst_reg, (unsigned int)base_reg) != 0 ||
+        if (append_mem_modrm(assembler, 1U, (unsigned int)dst_reg, base_reg) != 0 ||
             append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
             return -1;
         }
         return 0;
     }
-    if (append_modrm(assembler, 2U, (unsigned int)dst_reg, (unsigned int)base_reg) != 0 ||
+    if (append_mem_modrm(assembler, 2U, (unsigned int)dst_reg, base_reg) != 0 ||
         append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
         return -1;
     }
@@ -613,13 +755,33 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         return starts_with(line, "pushq ") ? encode_push_reg(assembler, reg) : encode_pop_reg(assembler, reg);
     }
 
-    if (starts_with(line, "subq $")) {
+    if (starts_with(line, "subq $") || starts_with(line, "addq $")) {
+        char operand[64];
+        const char *args = line + 5;
+        const char *comma = find_top_level_comma(args);
+        size_t i = 0;
         long long value = 0;
-        if (parse_immediate_operand(line + 6, &value) != 0) {
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        unsigned int alu_op = starts_with(line, "addq $") ? 0U : 5U;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported stack adjustment form");
+            return -1;
+        }
+        while (args + i < comma && i + 1 < sizeof(operand)) {
+            operand[i] = args[i];
+            i += 1U;
+        }
+        operand[i] = '\0';
+
+        if (parse_immediate_operand(operand + 1, &value) != 0 ||
+            parse_register(skip_spaces(comma + 1), &dst_reg, &is_byte, &rest) != 0 || *rest != '\0') {
             set_error(assembler->writer, "unsupported stack adjustment immediate");
             return -1;
         }
-        return encode_sub_imm_rsp(assembler, value);
+        return encode_alu_imm_reg(assembler, alu_op, dst_reg, value);
     }
 
     if (starts_with(line, "call ")) {
@@ -662,7 +824,8 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     if (starts_with(line, "movq ")) {
         char left[128];
         char right[128];
-        const char *comma = line + 5;
+        const char *operands = line + 5;
+        const char *comma = find_top_level_comma(operands);
         size_t i = 0;
         int src_reg;
         int dst_reg;
@@ -673,16 +836,20 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         char symbol[COMPILER_IR_NAME_CAPACITY];
         long long imm = 0;
 
-        while (comma[i] != '\0' && comma[i] != ',' && i + 1 < sizeof(left)) {
-            left[i] = comma[i];
-            i += 1U;
-        }
-        left[i] = '\0';
-        if (comma[i] != ',') {
+        if (comma == 0) {
             set_error(assembler->writer, "unsupported movq form");
             return -1;
         }
-        rt_copy_string(right, sizeof(right), skip_spaces(comma + i + 1U));
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movq form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
 
         if (left[0] == '$') {
             if (parse_signed_value(left + 1, &imm) != 0 ||
@@ -721,24 +888,110 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         return -1;
     }
 
-    if (starts_with(line, "leaq ")) {
+    if (starts_with(line, "movb ")) {
+        char left[64];
+        char right[128];
+        const char *operands = line + 5;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int src_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movb form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movb form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_register(left, &src_reg, &is_byte, &rest) == 0 && is_byte && *rest == '\0' &&
+            parse_local_mem(right, &disp, &base_reg) == 0) {
+            return encode_mov_reg_mem_byte(assembler, src_reg, base_reg, disp);
+        }
+
+        set_error(assembler->writer, "unsupported movb instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "movzbq ")) {
         char left[128];
         char right[64];
-        const char *comma = line + 5;
+        const char *operands = line + 7;
+        const char *comma = find_top_level_comma(operands);
         size_t i = 0;
         int dst_reg;
         int is_byte;
         const char *rest;
         int disp;
         int base_reg;
-        char symbol[COMPILER_IR_NAME_CAPACITY];
 
-        while (comma[i] != '\0' && comma[i] != ',' && i + 1 < sizeof(left)) {
-            left[i] = comma[i];
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movzbq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
             i += 1U;
         }
         left[i] = '\0';
-        rt_copy_string(right, sizeof(right), skip_spaces(comma + i + 1U));
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movzbq form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_local_mem(left, &disp, &base_reg) == 0 &&
+            parse_register(right, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return encode_movzx_mem_reg(assembler, base_reg, disp, dst_reg);
+        }
+
+        if (names_equal(left, "%al") && names_equal(right, "%rax")) {
+            return append_rex(assembler, 1, 0, 0, 0) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0xB6U) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0xC0U) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movzbq instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "leaq ")) {
+        char left[128];
+        char right[64];
+        const char *operands = line + 5;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+        int index_reg;
+        int scale;
+        char symbol[COMPILER_IR_NAME_CAPACITY];
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported leaq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
 
         if (parse_register(right, &dst_reg, &is_byte, &rest) != 0 || *rest != '\0') {
             set_error(assembler->writer, "unsupported lea destination");
@@ -746,6 +999,9 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         }
         if (parse_local_mem(left, &disp, &base_reg) == 0) {
             return encode_lea_mem_reg(assembler, base_reg, disp, dst_reg);
+        }
+        if (parse_indexed_mem(left, &base_reg, &index_reg, &scale) == 0) {
+            return encode_lea_indexed_reg(assembler, base_reg, index_reg, scale, dst_reg);
         }
         if (parse_symbol_rip(left, symbol, sizeof(symbol)) == 0) {
             return encode_riprel(assembler, 0x8DU, dst_reg, symbol, R_X86_64_PC32);
@@ -843,13 +1099,6 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     if (names_equal(line, "setg %al")) return encode_setcc_al(assembler, 0x9FU);
     if (names_equal(line, "setge %al")) return encode_setcc_al(assembler, 0x9DU);
 
-    if (names_equal(line, "movzbq %al, %rax")) {
-        return append_rex(assembler, 1, 0, 0, 0) == 0 &&
-               append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) == 0 &&
-               append_byte(assembler, OBJECT_SECTION_TEXT, 0xB6U) == 0 &&
-               append_byte(assembler, OBJECT_SECTION_TEXT, 0xC0U) == 0 ? 0 : -1;
-    }
-
     if (names_equal(line, "idivq %rcx")) {
         return append_rex(assembler, 1, 0, 0, 1) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0xF7U) == 0 &&
@@ -876,6 +1125,39 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
 
     set_error(assembler->writer, "unsupported assembly pattern in object writer");
     return -1;
+}
+
+static int append_asciz_directive(ObjectAssembler *assembler, const char *text) {
+    const char *cursor = skip_spaces(text);
+
+    if (assembler->current_section != OBJECT_SECTION_DATA || *cursor != '"') {
+        return -1;
+    }
+
+    cursor += 1;
+    while (*cursor != '\0' && *cursor != '"') {
+        unsigned char byte = (unsigned char)*cursor;
+
+        if (*cursor == '\\' && cursor[1] != '\0') {
+            cursor += 1;
+            if (*cursor == 'n') byte = (unsigned char)'\n';
+            else if (*cursor == 'r') byte = (unsigned char)'\r';
+            else if (*cursor == 't') byte = (unsigned char)'\t';
+            else if (*cursor == '0') byte = 0U;
+            else byte = (unsigned char)*cursor;
+        }
+
+        if (append_byte(assembler, OBJECT_SECTION_DATA, byte) != 0) {
+            return -1;
+        }
+        cursor += 1;
+    }
+
+    if (*cursor != '"') {
+        return -1;
+    }
+
+    return append_byte(assembler, OBJECT_SECTION_DATA, 0U);
 }
 
 static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource *source) {
@@ -922,13 +1204,24 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             if (line_len > 0 && line[line_len - 1] == ':') {
                 char name[COMPILER_IR_NAME_CAPACITY];
                 size_t i;
+                size_t offset = (assembler->current_section == OBJECT_SECTION_TEXT) ? assembler->text_size : assembler->data_size;
 
                 for (i = 0; i + 1 < line_len && i + 1 < sizeof(name); ++i) {
                     name[i] = line[i];
                 }
                 name[i] = '\0';
-                if (add_label(assembler, name, assembler->current_section, assembler->text_size) != 0) {
+                if (add_label(assembler, name, assembler->current_section, offset) != 0) {
                     return -1;
+                }
+                if (assembler->current_section == OBJECT_SECTION_DATA) {
+                    int symbol_index = get_symbol(assembler, name);
+                    if (symbol_index < 0) {
+                        return -1;
+                    }
+                    assembler->symbols[symbol_index].section = OBJECT_SECTION_DATA;
+                    assembler->symbols[symbol_index].offset = assembler->data_size;
+                    assembler->symbols[symbol_index].defined = 1;
+                    assembler->symbols[symbol_index].is_function = 0;
                 }
                 continue;
             }
@@ -959,6 +1252,13 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             if (assembler->current_section != OBJECT_SECTION_DATA || parse_signed_value(line + 6, &value) != 0 ||
                 append_u64(assembler, OBJECT_SECTION_DATA, (uint64_t)value) != 0) {
                 set_error(assembler->writer, "unsupported .quad initializer");
+                return -1;
+            }
+            continue;
+        }
+        if (starts_with(line, ".asciz ")) {
+            if (append_asciz_directive(assembler, line + 7) != 0) {
+                set_error(assembler->writer, "unsupported .asciz initializer");
                 return -1;
             }
             continue;

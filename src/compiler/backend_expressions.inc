@@ -909,6 +909,23 @@ static int expr_parse_primary(ExprParser *parser) {
                     }
                 }
             }
+            if (!backend_is_aarch64(parser->state) && stack_arg_count > 0) {
+                int stack_index;
+                for (stack_index = 0; stack_index < stack_arg_count; ++stack_index) {
+                    char reload[64];
+                    char offset_text[32];
+                    unsigned long long offset_bytes = (unsigned long long)(stack_index * 2) *
+                                                      (unsigned long long)stack_slot_size;
+                    rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
+                    rt_copy_string(reload, sizeof(reload), "movq ");
+                    rt_copy_string(reload + rt_strlen(reload), sizeof(reload) - rt_strlen(reload), offset_text);
+                    rt_copy_string(reload + rt_strlen(reload), sizeof(reload) - rt_strlen(reload), "(%rsp), %rax");
+                    if (emit_instruction(parser->state, reload) != 0 ||
+                        emit_instruction(parser->state, "pushq %rax") != 0) {
+                        return -1;
+                    }
+                }
+            }
             if (is_function_name(parser->state, name) ||
                 (find_local(parser->state, name) < 0 &&
                  find_global(parser->state, name) < 0 &&
@@ -925,7 +942,9 @@ static int expr_parse_primary(ExprParser *parser) {
                 }
                 if (arg_count > 0) {
                     char cleanup[64];
-                    unsigned long long cleanup_bytes = (unsigned long long)arg_count * (unsigned long long)stack_slot_size;
+                    unsigned long long cleanup_bytes =
+                        (unsigned long long)(arg_count + (backend_is_aarch64(parser->state) ? 0 : stack_arg_count)) *
+                        (unsigned long long)stack_slot_size;
                     char digits[32];
                     rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
                     if (backend_is_aarch64(parser->state)) {
@@ -951,7 +970,9 @@ static int expr_parse_primary(ExprParser *parser) {
             }
             if (arg_count > 0) {
                 char cleanup[64];
-                unsigned long long cleanup_bytes = (unsigned long long)arg_count * (unsigned long long)stack_slot_size;
+                unsigned long long cleanup_bytes =
+                    (unsigned long long)(arg_count + (backend_is_aarch64(parser->state) ? 0 : stack_arg_count)) *
+                    (unsigned long long)stack_slot_size;
                 char digits[32];
                 rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
                 if (backend_is_aarch64(parser->state)) {
