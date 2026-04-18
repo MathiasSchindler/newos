@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
             argi += 1;
             break;
         }
-        if (rt_strcmp(argv[argi], "-z") == 0) {
+        if (rt_strcmp(argv[argi], "--zero") == 0 || rt_strcmp(argv[argi], "-z") == 0) {
             zero_terminated = 1;
         } else {
             rt_write_line(2, "Usage: dirname [-z] path ...");

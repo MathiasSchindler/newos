@@ -8,6 +8,8 @@ typedef struct {
     int follow_symlinks;
     int filesystem;
     const char *format;
+    int suppress_newline;
+    int interpret_escapes;
 } StatOptions;
 
 static void print_usage(void) {
@@ -69,6 +71,73 @@ static void write_quoted(const char *text) {
     rt_write_char(1, '\'');
 }
 
+static int write_with_optional_newline(const StatOptions *options) {
+    if (options != 0 && options->suppress_newline) {
+        return 0;
+    }
+    return rt_write_char(1, '\n');
+}
+
+static void format_hex(unsigned long long value, char *buffer, size_t buffer_size) {
+    static const char digits[] = "0123456789abcdef";
+    char scratch[32];
+    size_t count = 0;
+    size_t i;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return;
+    }
+
+    if (value == 0ULL) {
+        if (buffer_size > 1U) {
+            buffer[0] = '0';
+            buffer[1] = '\0';
+        } else {
+            buffer[0] = '\0';
+        }
+        return;
+    }
+
+    while (value > 0ULL && count < sizeof(scratch)) {
+        scratch[count++] = digits[value & 0xFULL];
+        value >>= 4U;
+    }
+
+    if (count + 1U > buffer_size) {
+        count = buffer_size - 1U;
+    }
+
+    for (i = 0; i < count; ++i) {
+        buffer[i] = scratch[count - i - 1U];
+    }
+    buffer[count] = '\0';
+}
+
+static int write_numeric_identity(const char *name_or_id, int is_group) {
+    unsigned int id_value = 0U;
+
+    if (name_or_id == 0 || name_or_id[0] == '\0') {
+        return rt_write_char(1, '0');
+    }
+
+    if (rt_is_digit_string(name_or_id)) {
+        return rt_write_cstr(1, name_or_id);
+    }
+
+    if (is_group) {
+        if (platform_lookup_group(name_or_id, &id_value) == 0) {
+            return rt_write_uint(1, (unsigned long long)id_value);
+        }
+    } else {
+        PlatformIdentity identity;
+        if (platform_lookup_identity(name_or_id, &identity) == 0) {
+            return rt_write_uint(1, (unsigned long long)identity.uid);
+        }
+    }
+
+    return rt_write_cstr(1, name_or_id);
+}
+
 static int write_time_value(long long epoch_seconds) {
     char buffer[64];
     if (platform_format_time(epoch_seconds, 1, "%Y-%m-%d %H:%M:%S", buffer, sizeof(buffer)) != 0) {
@@ -93,17 +162,38 @@ static int write_labeled_time(const char *label, long long epoch_seconds) {
     return rt_write_line(1, ")");
 }
 
-static int print_file_format(const char *format, const char *path, const PlatformDirEntry *entry, const char *target) {
+static int print_file_format(const StatOptions *options, const char *path, const PlatformDirEntry *entry, const char *target) {
     size_t i = 0;
     char mode_text[11];
     char octal_text[16];
+    char mode_hex_text[16];
+    char device_hex_text[32];
+    unsigned long long block_count = (entry->size + 511ULL) / 512ULL;
 
     platform_format_mode(entry->mode, mode_text);
     format_octal((unsigned long long)(entry->mode & 07777U), octal_text, sizeof(octal_text));
+    format_hex((unsigned long long)entry->mode, mode_hex_text, sizeof(mode_hex_text));
+    format_hex(entry->device, device_hex_text, sizeof(device_hex_text));
 
-    while (format[i] != '\0') {
-        if (format[i] != '%') {
-            if (rt_write_char(1, format[i]) != 0) {
+    while (options->format[i] != '\0') {
+        if (options->interpret_escapes && options->format[i] == '\\' && options->format[i + 1U] != '\0') {
+            char ch = options->format[i + 1U];
+            if (ch == 'n') {
+                ch = '\n';
+            } else if (ch == 't') {
+                ch = '\t';
+            } else if (ch == '0') {
+                ch = '\0';
+            }
+            if (rt_write_char(1, ch) != 0) {
+                return 1;
+            }
+            i += 2U;
+            continue;
+        }
+
+        if (options->format[i] != '%') {
+            if (rt_write_char(1, options->format[i]) != 0) {
                 return 1;
             }
             i += 1U;
@@ -111,11 +201,11 @@ static int print_file_format(const char *format, const char *path, const Platfor
         }
 
         i += 1U;
-        if (format[i] == '\0') {
+        if (options->format[i] == '\0') {
             break;
         }
 
-        switch (format[i]) {
+        switch (options->format[i]) {
             case '%':
                 if (rt_write_char(1, '%') != 0) {
                     return 1;
@@ -140,6 +230,16 @@ static int print_file_format(const char *format, const char *path, const Platfor
                     return 1;
                 }
                 break;
+            case 'b':
+                if (rt_write_uint(1, block_count) != 0) {
+                    return 1;
+                }
+                break;
+            case 'B':
+                if (rt_write_uint(1, 512ULL) != 0) {
+                    return 1;
+                }
+                break;
             case 'F':
                 if (rt_write_cstr(1, detect_type(entry->mode)) != 0) {
                     return 1;
@@ -155,6 +255,21 @@ static int print_file_format(const char *format, const char *path, const Platfor
                     return 1;
                 }
                 break;
+            case 'd':
+                if (rt_write_uint(1, entry->device) != 0) {
+                    return 1;
+                }
+                break;
+            case 'D':
+                if (rt_write_cstr(1, device_hex_text) != 0) {
+                    return 1;
+                }
+                break;
+            case 'f':
+                if (rt_write_cstr(1, mode_hex_text) != 0) {
+                    return 1;
+                }
+                break;
             case 'h':
                 if (rt_write_uint(1, (unsigned long long)entry->nlink) != 0) {
                     return 1;
@@ -166,14 +281,27 @@ static int print_file_format(const char *format, const char *path, const Platfor
                 }
                 break;
             case 'U':
-            case 'u':
                 if (rt_write_cstr(1, entry->owner) != 0) {
                     return 1;
                 }
                 break;
+            case 'u':
+                if (write_numeric_identity(entry->owner, 0) != 0) {
+                    return 1;
+                }
+                break;
             case 'G':
-            case 'g':
                 if (rt_write_cstr(1, entry->group) != 0) {
+                    return 1;
+                }
+                break;
+            case 'g':
+                if (write_numeric_identity(entry->group, 1) != 0) {
+                    return 1;
+                }
+                break;
+            case 'W':
+                if (rt_write_char(1, '0') != 0) {
                     return 1;
                 }
                 break;
@@ -189,6 +317,11 @@ static int print_file_format(const char *format, const char *path, const Platfor
                 break;
             case 'Z':
                 if (rt_write_int(1, entry->ctime) != 0) {
+                    return 1;
+                }
+                break;
+            case 'w':
+                if (rt_write_char(1, '-') != 0) {
                     return 1;
                 }
                 break;
@@ -208,7 +341,7 @@ static int print_file_format(const char *format, const char *path, const Platfor
                 }
                 break;
             default:
-                if (rt_write_char(1, '%') != 0 || rt_write_char(1, format[i]) != 0) {
+                if (rt_write_char(1, '%') != 0 || rt_write_char(1, options->format[i]) != 0) {
                     return 1;
                 }
                 break;
@@ -217,17 +350,33 @@ static int print_file_format(const char *format, const char *path, const Platfor
         i += 1U;
     }
 
-    return rt_write_char(1, '\n');
+    return write_with_optional_newline(options);
 }
 
-static int print_fs_format(const char *format, const char *path, const PlatformFilesystemInfo *info) {
+static int print_fs_format(const StatOptions *options, const char *path, const PlatformFilesystemInfo *info) {
     size_t i = 0;
     unsigned long long used = (info->total_bytes >= info->free_bytes) ? (info->total_bytes - info->free_bytes) : 0ULL;
     unsigned long long use_percent = (info->total_bytes == 0ULL) ? 0ULL : (used * 100ULL) / info->total_bytes;
 
-    while (format[i] != '\0') {
-        if (format[i] != '%') {
-            if (rt_write_char(1, format[i]) != 0) {
+    while (options->format[i] != '\0') {
+        if (options->interpret_escapes && options->format[i] == '\\' && options->format[i + 1U] != '\0') {
+            char ch = options->format[i + 1U];
+            if (ch == 'n') {
+                ch = '\n';
+            } else if (ch == 't') {
+                ch = '\t';
+            } else if (ch == '0') {
+                ch = '\0';
+            }
+            if (rt_write_char(1, ch) != 0) {
+                return 1;
+            }
+            i += 2U;
+            continue;
+        }
+
+        if (options->format[i] != '%') {
+            if (rt_write_char(1, options->format[i]) != 0) {
                 return 1;
             }
             i += 1U;
@@ -235,11 +384,11 @@ static int print_fs_format(const char *format, const char *path, const PlatformF
         }
 
         i += 1U;
-        if (format[i] == '\0') {
+        if (options->format[i] == '\0') {
             break;
         }
 
-        switch (format[i]) {
+        switch (options->format[i]) {
             case '%':
                 if (rt_write_char(1, '%') != 0) {
                     return 1;
@@ -275,13 +424,28 @@ static int print_fs_format(const char *format, const char *path, const PlatformF
                     return 1;
                 }
                 break;
+            case 'c':
+                if (rt_write_uint(1, info->total_inodes) != 0) {
+                    return 1;
+                }
+                break;
+            case 'd':
+                if (rt_write_uint(1, info->free_inodes) != 0) {
+                    return 1;
+                }
+                break;
+            case 'S':
+                if (rt_write_uint(1, 1ULL) != 0) {
+                    return 1;
+                }
+                break;
             case 'p':
                 if (rt_write_uint(1, use_percent) != 0 || rt_write_char(1, '%') != 0) {
                     return 1;
                 }
                 break;
             default:
-                if (rt_write_char(1, '%') != 0 || rt_write_char(1, format[i]) != 0) {
+                if (rt_write_char(1, '%') != 0 || rt_write_char(1, options->format[i]) != 0) {
                     return 1;
                 }
                 break;
@@ -290,7 +454,7 @@ static int print_fs_format(const char *format, const char *path, const PlatformF
         i += 1U;
     }
 
-    return rt_write_char(1, '\n');
+    return write_with_optional_newline(options);
 }
 
 static int load_entry(const char *path, const StatOptions *options, PlatformDirEntry *entry_out) {
@@ -327,7 +491,7 @@ static int print_file_report(const char *path, const StatOptions *options) {
     }
 
     if (options->format != 0) {
-        return print_file_format(options->format, path, &entry, has_target ? target : 0);
+        return print_file_format(options, path, &entry, has_target ? target : 0);
     }
 
     platform_format_mode(entry.mode, mode_text);
@@ -381,7 +545,7 @@ static int print_filesystem_report(const char *path, const StatOptions *options)
     }
 
     if (options->format != 0) {
-        return print_fs_format(options->format, path, &info);
+        return print_fs_format(options, path, &info);
     }
 
     used = (info.total_bytes >= info.free_bytes) ? (info.total_bytes - info.free_bytes) : 0ULL;
@@ -425,6 +589,50 @@ int main(int argc, char **argv) {
             break;
         }
 
+        if (rt_strcmp(argv[argi], "--dereference") == 0) {
+            options.follow_symlinks = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--file-system") == 0) {
+            options.filesystem = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--format") == 0 || rt_strcmp(argv[argi], "--printf") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage();
+                return 1;
+            }
+            options.format = argv[argi + 1];
+            options.suppress_newline = (rt_strcmp(argv[argi], "--printf") == 0);
+            options.interpret_escapes = 1;
+            argi += 2;
+            continue;
+        }
+        if (argv[argi][0] == '-' && argv[argi][1] == '-' &&
+            argv[argi][2] == 'f' && argv[argi][3] == 'o' &&
+            argv[argi][4] == 'r' && argv[argi][5] == 'm' &&
+            argv[argi][6] == 'a' && argv[argi][7] == 't' &&
+            argv[argi][8] == '=') {
+            options.format = argv[argi] + 9;
+            options.suppress_newline = 0;
+            options.interpret_escapes = 1;
+            argi += 1;
+            continue;
+        }
+        if (argv[argi][0] == '-' && argv[argi][1] == '-' &&
+            argv[argi][2] == 'p' && argv[argi][3] == 'r' &&
+            argv[argi][4] == 'i' && argv[argi][5] == 'n' &&
+            argv[argi][6] == 't' && argv[argi][7] == 'f' &&
+            argv[argi][8] == '=') {
+            options.format = argv[argi] + 9;
+            options.suppress_newline = 1;
+            options.interpret_escapes = 1;
+            argi += 1;
+            continue;
+        }
+
         while (*flag != '\0') {
             if (*flag == 'L') {
                 options.follow_symlinks = 1;
@@ -445,6 +653,8 @@ int main(int argc, char **argv) {
                     argi += 1;
                     flag += 1;
                 }
+                options.suppress_newline = 0;
+                options.interpret_escapes = 1;
             } else {
                 print_usage();
                 return 1;

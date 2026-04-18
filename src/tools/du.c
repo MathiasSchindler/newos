@@ -10,14 +10,76 @@ typedef struct {
     int human_readable;
     int all_entries;
     int grand_total;
+    int follow_symlinks;
     int max_depth_set;
     unsigned long long max_depth;
+    unsigned long long block_size;
 } DuOptions;
+
+static int parse_block_size_text(const char *text, unsigned long long *size_out) {
+    char digits[32];
+    size_t index = 0;
+    unsigned long long value = 0ULL;
+    unsigned long long multiplier = 1ULL;
+    char suffix;
+
+    if (text == 0 || text[0] == '\0' || size_out == 0) {
+        return -1;
+    }
+
+    while (text[index] >= '0' && text[index] <= '9' && index + 1U < sizeof(digits)) {
+        digits[index] = text[index];
+        index += 1U;
+    }
+    digits[index] = '\0';
+    if (index == 0U || rt_parse_uint(digits, &value) != 0) {
+        return -1;
+    }
+
+    suffix = text[index];
+    if (suffix != '\0') {
+        if (text[index + 1U] != '\0' &&
+            !((text[index + 1U] == 'B' || text[index + 1U] == 'b') && text[index + 2U] == '\0')) {
+            return -1;
+        }
+        if (suffix == 'K' || suffix == 'k') {
+            multiplier = 1024ULL;
+        } else if (suffix == 'M' || suffix == 'm') {
+            multiplier = 1024ULL * 1024ULL;
+        } else if (suffix == 'G' || suffix == 'g') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL;
+        } else if (suffix == 'T' || suffix == 't') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+        } else if (suffix == 'P' || suffix == 'p') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+        } else if (suffix != 'B' && suffix != 'b') {
+            return -1;
+        }
+    }
+
+    *size_out = value * multiplier;
+    return *size_out == 0ULL ? -1 : 0;
+}
+
+static void format_total_text(unsigned long long total, const DuOptions *options, char *size_text, size_t size_text_size) {
+    if (options->human_readable) {
+        tool_format_size(total, 1, size_text, size_text_size);
+        return;
+    }
+
+    if (options->block_size > 1ULL) {
+        unsigned long long scaled = (total == 0ULL) ? 0ULL : ((total + options->block_size - 1ULL) / options->block_size);
+        rt_unsigned_to_string(scaled, size_text, size_text_size);
+        return;
+    }
+
+    rt_unsigned_to_string(total, size_text, size_text_size);
+}
 
 static void print_total(unsigned long long total, const char *path, const DuOptions *options) {
     char size_text[32];
 
-    tool_format_size(total, options->human_readable, size_text, sizeof(size_text));
+    format_total_text(total, options, size_text, sizeof(size_text));
     rt_write_cstr(1, size_text);
     rt_write_char(1, '\t');
     rt_write_line(1, path);
@@ -38,13 +100,20 @@ static int within_depth(const DuOptions *options, unsigned long long depth) {
 static unsigned long long du_path(const char *path, const DuOptions *options, unsigned long long depth, int *ok_out) {
     PlatformDirEntry entries[DU_ENTRY_CAPACITY];
     PlatformDirEntry current;
+    char lookup_path[DU_PATH_CAPACITY];
+    const char *scan_path = path;
     size_t count = 0;
     int is_directory = 0;
     unsigned long long total = 0ULL;
     size_t i;
 
     *ok_out = 0;
-    if (platform_get_path_info(path, &current) != 0) {
+    if (options->follow_symlinks && tool_canonicalize_path(path, 1, 0, lookup_path, sizeof(lookup_path)) == 0) {
+        scan_path = lookup_path;
+    }
+
+    if ((options->follow_symlinks ? platform_get_path_info_follow(scan_path, &current)
+                                  : platform_get_path_info(scan_path, &current)) != 0) {
         return 0ULL;
     }
 
@@ -56,7 +125,7 @@ static unsigned long long du_path(const char *path, const DuOptions *options, un
         return current.size;
     }
 
-    if (platform_collect_entries(path, 1, entries, DU_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
+    if (platform_collect_entries(scan_path, 1, entries, DU_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
         return 0ULL;
     }
 
@@ -70,7 +139,7 @@ static unsigned long long du_path(const char *path, const DuOptions *options, un
             continue;
         }
 
-        if (tool_join_path(path, entries[i].name, child_path, sizeof(child_path)) != 0) {
+        if (tool_join_path(scan_path, entries[i].name, child_path, sizeof(child_path)) != 0) {
             platform_free_entries(entries, count);
             return 0ULL;
         }
@@ -111,6 +180,7 @@ int main(int argc, char **argv) {
     unsigned long long grand_total = 0ULL;
 
     rt_memset(&options, 0, sizeof(options));
+    options.block_size = 1ULL;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         const char *arg = argv[argi];
@@ -142,6 +212,47 @@ int main(int argc, char **argv) {
                 argi += 1;
                 continue;
             }
+            if (rt_strcmp(arg, "--bytes") == 0) {
+                options.block_size = 1ULL;
+                argi += 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--dereference") == 0) {
+                options.follow_symlinks = 1;
+                argi += 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--no-dereference") == 0) {
+                options.follow_symlinks = 0;
+                argi += 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--block-size") == 0 && argi + 1 < argc) {
+                if (parse_block_size_text(argv[argi + 1], &options.block_size) != 0) {
+                    rt_write_line(2, "Usage: du [-a] [-b] [-c] [-h] [-k] [-L|-P] [-B SIZE] [-d N] [path ...]");
+                    return 1;
+                }
+                argi += 2;
+                continue;
+            }
+            if (arg[2] == 'b' &&
+                arg[3] == 'l' &&
+                arg[4] == 'o' &&
+                arg[5] == 'c' &&
+                arg[6] == 'k' &&
+                arg[7] == '-' &&
+                arg[8] == 's' &&
+                arg[9] == 'i' &&
+                arg[10] == 'z' &&
+                arg[11] == 'e' &&
+                arg[12] == '=') {
+                if (parse_block_size_text(arg + 13, &options.block_size) != 0) {
+                    rt_write_line(2, "Usage: du [-a] [-b] [-c] [-h] [-k] [-L|-P] [-B SIZE] [-d N] [path ...]");
+                    return 1;
+                }
+                argi += 1;
+                continue;
+            }
             if (arg[2] == 'm' &&
                 arg[3] == 'a' &&
                 arg[4] == 'x' &&
@@ -167,7 +278,7 @@ int main(int argc, char **argv) {
                 }
             }
 
-            rt_write_line(2, "Usage: du [-a] [-c] [-s] [-h] [-d N] [path ...]");
+            rt_write_line(2, "Usage: du [-a] [-b] [-c] [-h] [-k] [-L|-P] [-B SIZE] [-d N] [path ...]");
             return 1;
         }
 
@@ -185,6 +296,35 @@ int main(int argc, char **argv) {
             } else if (*flag == 'c') {
                 options.grand_total = 1;
                 flag += 1;
+            } else if (*flag == 'b') {
+                options.block_size = 1ULL;
+                flag += 1;
+            } else if (*flag == 'k') {
+                options.block_size = 1024ULL;
+                flag += 1;
+            } else if (*flag == 'm') {
+                options.block_size = 1024ULL * 1024ULL;
+                flag += 1;
+            } else if (*flag == 'L') {
+                options.follow_symlinks = 1;
+                flag += 1;
+            } else if (*flag == 'P') {
+                options.follow_symlinks = 0;
+                flag += 1;
+            } else if (*flag == 'B') {
+                if (flag[1] != '\0') {
+                    if (parse_block_size_text(flag + 1, &options.block_size) != 0) {
+                        return 1;
+                    }
+                    flag += rt_strlen(flag);
+                } else {
+                    if (argi + 1 >= argc || parse_block_size_text(argv[argi + 1], &options.block_size) != 0) {
+                        rt_write_line(2, "Usage: du [-a] [-b] [-c] [-h] [-k] [-L|-P] [-B SIZE] [-d N] [path ...]");
+                        return 1;
+                    }
+                    argi += 1;
+                    flag += 1;
+                }
             } else if (*flag == 'd') {
                 if (flag[1] != '\0') {
                     if (parse_depth_text(flag + 1, &options) != 0) {
@@ -193,14 +333,14 @@ int main(int argc, char **argv) {
                     flag += rt_strlen(flag);
                 } else {
                     if (argi + 1 >= argc || parse_depth_text(argv[argi + 1], &options) != 0) {
-                        rt_write_line(2, "Usage: du [-a] [-c] [-s] [-h] [-d N] [path ...]");
+                        rt_write_line(2, "Usage: du [-a] [-b] [-c] [-h] [-k] [-L|-P] [-B SIZE] [-d N] [path ...]");
                         return 1;
                     }
                     argi += 1;
                     flag += 1;
                 }
             } else {
-                rt_write_line(2, "Usage: du [-a] [-c] [-s] [-h] [-d N] [path ...]");
+                rt_write_line(2, "Usage: du [-a] [-b] [-c] [-h] [-k] [-L|-P] [-B SIZE] [-d N] [path ...]");
                 return 1;
             }
         }

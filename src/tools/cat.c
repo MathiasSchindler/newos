@@ -6,6 +6,10 @@ typedef struct {
     int number_all;
     int number_nonblank;
     int squeeze_blank;
+    int show_nonprinting;
+    int show_tabs;
+    int show_ends;
+    int unbuffered;
 } CatOptions;
 
 typedef struct {
@@ -17,7 +21,7 @@ typedef struct {
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-n] [-b] [-s] [file ...]");
+    rt_write_line(2, " [-n] [-b] [-s] [-u] [-v] [-E] [-T] [-A] [file ...]");
 }
 
 static int write_line_number(unsigned long long value) {
@@ -42,11 +46,61 @@ static int write_line_number(unsigned long long value) {
     return rt_write_char(1, '\t');
 }
 
+static int write_literal(const char *text) {
+    while (text != 0 && *text != '\0') {
+        if (rt_write_char(1, *text) != 0) {
+            return -1;
+        }
+        text += 1;
+    }
+    return 0;
+}
+
+static int write_visible_char(unsigned char ch, const CatOptions *options) {
+    if (ch == '\n') {
+        if (options->show_ends && rt_write_char(1, '$') != 0) {
+            return -1;
+        }
+        return rt_write_char(1, '\n');
+    }
+
+    if (ch == '\t') {
+        if (options->show_tabs) {
+            return write_literal("^I");
+        }
+        return rt_write_char(1, '\t');
+    }
+
+    if (!options->show_nonprinting) {
+        return rt_write_char(1, (char)ch);
+    }
+
+    if (ch >= 128U) {
+        if (write_literal("M-") != 0) {
+            return -1;
+        }
+        ch = (unsigned char)(ch - 128U);
+    }
+
+    if (ch == 127U) {
+        return write_literal("^?");
+    }
+
+    if (ch < 32U) {
+        if (rt_write_char(1, '^') != 0) {
+            return -1;
+        }
+        return rt_write_char(1, (char)(ch + 64U));
+    }
+
+    return rt_write_char(1, (char)ch);
+}
+
 static int cat_from_fd(int fd, const CatOptions *options, CatState *state) {
     char buffer[4096];
 
     for (;;) {
-        long bytes_read = platform_read(fd, buffer, sizeof(buffer));
+        long bytes_read = platform_read(fd, buffer, options->unbuffered ? 1U : sizeof(buffer));
         long i;
 
         if (bytes_read < 0) {
@@ -78,7 +132,7 @@ static int cat_from_fd(int fd, const CatOptions *options, CatState *state) {
                 }
             }
 
-            if (rt_write_char(1, ch) != 0) {
+            if (write_visible_char((unsigned char)ch, options) != 0) {
                 return -1;
             }
 
@@ -139,6 +193,24 @@ int main(int argc, char **argv) {
                 options.number_nonblank = 1;
             } else if (*flag == 's') {
                 options.squeeze_blank = 1;
+            } else if (*flag == 'u') {
+                options.unbuffered = 1;
+            } else if (*flag == 'v') {
+                options.show_nonprinting = 1;
+            } else if (*flag == 'E') {
+                options.show_ends = 1;
+            } else if (*flag == 'T') {
+                options.show_tabs = 1;
+            } else if (*flag == 'e') {
+                options.show_nonprinting = 1;
+                options.show_ends = 1;
+            } else if (*flag == 't') {
+                options.show_nonprinting = 1;
+                options.show_tabs = 1;
+            } else if (*flag == 'A') {
+                options.show_nonprinting = 1;
+                options.show_ends = 1;
+                options.show_tabs = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;

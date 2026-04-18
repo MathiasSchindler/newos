@@ -2,6 +2,23 @@
 
 #define BASENAME_BUFFER_CAPACITY 1024
 
+static void print_usage(void) {
+    rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
+}
+
+static int starts_with(const char *text, const char *prefix) {
+    size_t i = 0;
+
+    while (prefix[i] != '\0') {
+        if (text[i] != prefix[i]) {
+            return 0;
+        }
+        i += 1U;
+    }
+
+    return 1;
+}
+
 static int write_result(const char *text, int zero_terminated) {
     if (zero_terminated) {
         return rt_write_all(1, text, rt_strlen(text)) == 0 && rt_write_char(1, '\0') == 0 ? 0 : -1;
@@ -71,26 +88,54 @@ int main(int argc, char **argv) {
             argi += 1;
             break;
         }
-        if (rt_strcmp(argv[argi], "-a") == 0) {
+        if (rt_strcmp(argv[argi], "--multiple") == 0) {
             multi_arg = 1;
-        } else if (rt_strcmp(argv[argi], "-z") == 0) {
+        } else if (rt_strcmp(argv[argi], "--zero") == 0) {
             zero_terminated = 1;
-        } else if (rt_strcmp(argv[argi], "-s") == 0 || (argv[argi][0] == '-' && argv[argi][1] == 's' && argv[argi][2] != '\0')) {
-            suffix = (rt_strcmp(argv[argi], "-s") == 0) ? ((argi + 1 < argc) ? argv[++argi] : 0) : (argv[argi] + 2);
-            multi_arg = 1;
-            if (suffix == 0 || suffix[0] == '\0') {
-                rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
+        } else if (rt_strcmp(argv[argi], "--suffix") == 0) {
+            if (argi + 1 >= argc) {
+                print_usage();
                 return 1;
             }
+            suffix = argv[++argi];
+            multi_arg = 1;
+        } else if (starts_with(argv[argi], "--suffix=")) {
+            suffix = argv[argi] + 9;
+            multi_arg = 1;
         } else {
-            rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
+            const char *flag = argv[argi] + 1;
+            while (*flag != '\0') {
+                if (*flag == 'a') {
+                    multi_arg = 1;
+                    flag += 1;
+                } else if (*flag == 'z') {
+                    zero_terminated = 1;
+                    flag += 1;
+                } else if (*flag == 's') {
+                    if (flag[1] != '\0') {
+                        suffix = flag + 1;
+                    } else if (argi + 1 < argc) {
+                        suffix = argv[++argi];
+                    } else {
+                        suffix = 0;
+                    }
+                    multi_arg = 1;
+                    flag += rt_strlen(flag);
+                } else {
+                    print_usage();
+                    return 1;
+                }
+            }
+        }
+        if (suffix != 0 && suffix[0] == '\0') {
+            print_usage();
             return 1;
         }
         argi += 1;
     }
 
     if (argi >= argc) {
-        rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
+        print_usage();
         return 1;
     }
 
@@ -101,7 +146,7 @@ int main(int argc, char **argv) {
     }
 
     if (!multi_arg && argc - argi != 1) {
-        rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
+        print_usage();
         return 1;
     }
 

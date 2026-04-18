@@ -5,10 +5,16 @@
 #define RM_MAX_ENTRIES 1024
 #define RM_PATH_CAPACITY 1024
 
+enum {
+    RM_INTERACTIVE_NEVER = 0,
+    RM_INTERACTIVE_ONCE = 1,
+    RM_INTERACTIVE_ALWAYS = 2
+};
+
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-f] [-i] [-v] [-d] [-r] [--preserve-root|--no-preserve-root] path ...");
+    rt_write_line(2, " [-f] [-i] [-I] [-v] [-d] [-r] [--interactive=WHEN] [--preserve-root|--no-preserve-root] path ...");
 }
 
 static void print_removed(const char *path, int is_directory) {
@@ -22,6 +28,22 @@ static void print_removed(const char *path, int is_directory) {
 static int path_is_protected_name(const char *path) {
     const char *base = tool_base_name(path);
     return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0;
+}
+
+static int parse_interactive_mode(const char *text, int *mode_out) {
+    if (rt_strcmp(text, "never") == 0) {
+        *mode_out = RM_INTERACTIVE_NEVER;
+        return 0;
+    }
+    if (rt_strcmp(text, "once") == 0) {
+        *mode_out = RM_INTERACTIVE_ONCE;
+        return 0;
+    }
+    if (rt_strcmp(text, "always") == 0) {
+        *mode_out = RM_INTERACTIVE_ALWAYS;
+        return 0;
+    }
+    return -1;
 }
 
 static int remove_path(const char *path, int recursive, int force, int interactive, int verbose, int allow_empty_dir) {
@@ -102,7 +124,7 @@ static int remove_path(const char *path, int recursive, int force, int interacti
 int main(int argc, char **argv) {
     int recursive = 0;
     int force = 0;
-    int interactive = 0;
+    int interactive_mode = RM_INTERACTIVE_NEVER;
     int verbose = 0;
     int allow_empty_dir = 0;
     int preserve_root = 1;
@@ -131,6 +153,22 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        if (rt_strlen(arg) > 14U &&
+            arg[0] == '-' && arg[1] == '-' &&
+            arg[2] == 'i' && arg[3] == 'n' && arg[4] == 't' && arg[5] == 'e' &&
+            arg[6] == 'r' && arg[7] == 'a' && arg[8] == 'c' && arg[9] == 't' &&
+            arg[10] == 'i' && arg[11] == 'v' && arg[12] == 'e' && arg[13] == '=') {
+            if (parse_interactive_mode(arg + 14, &interactive_mode) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (interactive_mode != RM_INTERACTIVE_NEVER) {
+                force = 0;
+            }
+            first_path_index = i + 1;
+            continue;
+        }
+
         if (arg[0] != '-' || arg[1] == '\0') {
             first_path_index = i;
             break;
@@ -141,9 +179,12 @@ int main(int argc, char **argv) {
                 recursive = 1;
             } else if (arg[j] == 'f') {
                 force = 1;
-                interactive = 0;
+                interactive_mode = RM_INTERACTIVE_NEVER;
             } else if (arg[j] == 'i') {
-                interactive = 1;
+                interactive_mode = RM_INTERACTIVE_ALWAYS;
+                force = 0;
+            } else if (arg[j] == 'I') {
+                interactive_mode = RM_INTERACTIVE_ONCE;
                 force = 0;
             } else if (arg[j] == 'v') {
                 verbose = 1;
@@ -163,6 +204,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (interactive_mode == RM_INTERACTIVE_ONCE &&
+        !tool_prompt_yes_no("rm: remove all arguments", "")) {
+        return 0;
+    }
+
     for (i = first_path_index; i < argc; ++i) {
         if (path_is_protected_name(argv[i])) {
             rt_write_cstr(2, "rm: refusing to remove ");
@@ -177,7 +223,14 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        int result = remove_path(argv[i], recursive, force, interactive, verbose, allow_empty_dir);
+        int result = remove_path(
+            argv[i],
+            recursive,
+            force,
+            interactive_mode == RM_INTERACTIVE_ALWAYS,
+            verbose,
+            allow_empty_dir
+        );
 
         if (result == -2) {
             rt_write_cstr(2, "rm: cannot remove directory without -r: ");

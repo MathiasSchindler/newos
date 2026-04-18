@@ -11,6 +11,7 @@ typedef struct {
     int update_only;
     int verbose;
     int preserve_mode;
+    int preserve_times;
     int preserve_symlinks;
 } CpOptions;
 
@@ -92,6 +93,22 @@ static int should_copy_to_target(const char *source_path, const char *target_pat
     return 1;
 }
 
+static void preserve_copy_metadata(const char *source_path, const char *target_path, const CpOptions *options) {
+    PlatformDirEntry source_info;
+
+    if ((!options->preserve_mode && !options->preserve_times) ||
+        platform_get_path_info(source_path, &source_info) != 0) {
+        return;
+    }
+
+    if (options->preserve_mode) {
+        (void)platform_change_mode(target_path, source_info.mode & 07777U);
+    }
+    if (options->preserve_times) {
+        (void)platform_set_path_times(target_path, source_info.atime, source_info.mtime, 0, 1, 1);
+    }
+}
+
 static int copy_one_path(const char *source_path, const char *dest_path, const CpOptions *options) {
     char target_path[CP_PATH_CAPACITY];
     int source_is_directory = 0;
@@ -136,6 +153,8 @@ static int copy_one_path(const char *source_path, const char *dest_path, const C
         return 1;
     }
 
+    preserve_copy_metadata(source_path, target_path, options);
+
     if (options->verbose) {
         rt_write_cstr(1, source_path);
         rt_write_cstr(1, " -> ");
@@ -166,6 +185,7 @@ int main(int argc, char **argv) {
             if (*flag == 'a') {
                 options.recursive = 1;
                 options.preserve_mode = 1;
+                options.preserve_times = 1;
                 options.preserve_symlinks = 1;
             } else if (*flag == 'r' || *flag == 'R') {
                 options.recursive = 1;
@@ -184,6 +204,7 @@ int main(int argc, char **argv) {
                 options.verbose = 1;
             } else if (*flag == 'p') {
                 options.preserve_mode = 1;
+                options.preserve_times = 1;
             } else {
                 print_usage(argv[0]);
                 return 1;

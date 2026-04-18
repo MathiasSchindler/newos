@@ -1,12 +1,13 @@
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define RMDIR_PATH_CAPACITY 1024
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-p] [-v] directory ...");
+    rt_write_line(2, " [-p] [-v] [--ignore-fail-on-non-empty] directory ...");
 }
 
 static void trim_trailing_slashes(char *path) {
@@ -21,6 +22,16 @@ static void trim_trailing_slashes(char *path) {
 static void print_removed(const char *path) {
     rt_write_cstr(1, "rmdir: removed directory ");
     rt_write_line(1, path);
+}
+
+static int path_is_protected(const char *path) {
+    const char *base = tool_base_name(path);
+    return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0 || tool_path_is_root(path);
+}
+
+static int ignore_failure_for_existing_directory(const char *path) {
+    int is_directory = 0;
+    return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
 }
 
 static void path_parent(char *path) {
@@ -41,7 +52,7 @@ static void path_parent(char *path) {
     }
 }
 
-static int remove_one_directory(const char *path, int remove_parents, int verbose) {
+static int remove_one_directory(const char *path, int remove_parents, int verbose, int ignore_fail_on_non_empty) {
     char current[RMDIR_PATH_CAPACITY];
 
     if (rt_strlen(path) + 1U > sizeof(current)) {
@@ -53,6 +64,9 @@ static int remove_one_directory(const char *path, int remove_parents, int verbos
 
     for (;;) {
         if (platform_remove_directory(current) != 0) {
+            if (ignore_fail_on_non_empty && ignore_failure_for_existing_directory(current)) {
+                return 0;
+            }
             return -1;
         }
         if (verbose) {
@@ -71,6 +85,7 @@ static int remove_one_directory(const char *path, int remove_parents, int verbos
 int main(int argc, char **argv) {
     int remove_parents = 0;
     int verbose = 0;
+    int ignore_fail_on_non_empty = 0;
     int exit_code = 0;
     int i;
 
@@ -83,13 +98,21 @@ int main(int argc, char **argv) {
         if (rt_strcmp(argv[i], "--") == 0) {
             i += 1;
             for (; i < argc; ++i) {
-                if (remove_one_directory(argv[i], remove_parents, verbose) != 0) {
+                if (path_is_protected(argv[i])) {
+                    rt_write_cstr(2, "rmdir: refusing to remove ");
+                    rt_write_line(2, argv[i]);
+                    exit_code = 1;
+                } else if (remove_one_directory(argv[i], remove_parents, verbose, ignore_fail_on_non_empty) != 0) {
                     rt_write_cstr(2, "rmdir: cannot remove ");
                     rt_write_line(2, argv[i]);
                     exit_code = 1;
                 }
             }
             return exit_code;
+        }
+        if (rt_strcmp(argv[i], "--ignore-fail-on-non-empty") == 0) {
+            ignore_fail_on_non_empty = 1;
+            continue;
         }
         if (argv[i][0] == '-' && argv[i][1] != '\0') {
             size_t j;
@@ -106,7 +129,11 @@ int main(int argc, char **argv) {
             }
             continue;
         }
-        if (remove_one_directory(argv[i], remove_parents, verbose) != 0) {
+        if (path_is_protected(argv[i])) {
+            rt_write_cstr(2, "rmdir: refusing to remove ");
+            rt_write_line(2, argv[i]);
+            exit_code = 1;
+        } else if (remove_one_directory(argv[i], remove_parents, verbose, ignore_fail_on_non_empty) != 0) {
             rt_write_cstr(2, "rmdir: cannot remove ");
             rt_write_line(2, argv[i]);
             exit_code = 1;

@@ -8,9 +8,31 @@
 typedef struct {
     int recursive;
     int no_dereference;
+    int use_reference;
+    const char *reference_path;
     unsigned int uid;
     unsigned int gid;
 } ChownOptions;
+
+static int starts_with_text(const char *text, const char *prefix) {
+    size_t i = 0U;
+
+    while (prefix[i] != '\0') {
+        if (text[i] == '\0') {
+            return 0;
+        }
+        if (text[i] != prefix[i]) {
+            return 0;
+        }
+        i += 1U;
+    }
+
+    return 1;
+}
+
+static void write_usage(void) {
+    tool_write_usage("chown", "[-R] [-h] [--reference=FILE | OWNER[:GROUP]] PATH...");
+}
 
 static int resolve_owner_name(const char *text, unsigned int *uid_out, unsigned int *primary_gid_out, int *has_primary_gid_out) {
     PlatformIdentity identity;
@@ -43,6 +65,17 @@ static int resolve_owner_name(const char *text, unsigned int *uid_out, unsigned 
 }
 
 static int resolve_group_name(const char *text, unsigned int *gid_out) {
+    unsigned long long value = 0;
+
+    if (text == 0 || text[0] == '\0') {
+        return -1;
+    }
+
+    if (rt_parse_uint(text, &value) == 0) {
+        *gid_out = (unsigned int)value;
+        return 0;
+    }
+
     return platform_lookup_group(text, gid_out);
 }
 
@@ -94,6 +127,29 @@ static int parse_owner_spec(const char *text, unsigned int *uid_out, unsigned in
     }
 
     return (left_len == 0 && right_len == 0) ? -1 : 0;
+}
+
+static int load_reference_owner(const ChownOptions *options, unsigned int *uid_out, unsigned int *gid_out) {
+    PlatformDirEntry entry;
+    unsigned int uid = (unsigned int)-1;
+    unsigned int gid = (unsigned int)-1;
+
+    if ((options->no_dereference
+             ? platform_get_path_info(options->reference_path, &entry)
+             : platform_get_path_info_follow(options->reference_path, &entry)) != 0) {
+        return -1;
+    }
+
+    if (entry.owner[0] != '\0' && resolve_owner_name(entry.owner, &uid, 0, 0) != 0) {
+        return -1;
+    }
+    if (entry.group[0] != '\0' && resolve_group_name(entry.group, &gid) != 0) {
+        return -1;
+    }
+
+    *uid_out = uid;
+    *gid_out = gid;
+    return 0;
 }
 
 static int chown_one_path(const char *path, const ChownOptions *options) {
@@ -148,39 +204,85 @@ int main(int argc, char **argv) {
     options.gid = (unsigned int)-1;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
-        const char *flag = argv[argi] + 1;
-
         if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
             break;
         }
 
-        while (*flag != '\0') {
-            if (*flag == 'R') {
-                options.recursive = 1;
-            } else if (*flag == 'h') {
-                options.no_dereference = 1;
-            } else {
-                tool_write_usage("chown", "[-R] [-h] OWNER[:GROUP] PATH...");
+        if (rt_strcmp(argv[argi], "--recursive") == 0) {
+            options.recursive = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--no-dereference") == 0) {
+            options.no_dereference = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--dereference") == 0) {
+            options.no_dereference = 0;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--reference") == 0) {
+            if (argi + 1 >= argc) {
+                write_usage();
                 return 1;
             }
-            flag += 1;
+            options.use_reference = 1;
+            options.reference_path = argv[argi + 1];
+            argi += 2;
+            continue;
+        }
+        if (starts_with_text(argv[argi], "--reference=")) {
+            options.use_reference = 1;
+            options.reference_path = argv[argi] + 12;
+            if (options.reference_path[0] == '\0') {
+                write_usage();
+                return 1;
+            }
+            argi += 1;
+            continue;
+        }
+
+        {
+            const char *flag = argv[argi] + 1;
+
+            while (*flag != '\0') {
+                if (*flag == 'R') {
+                    options.recursive = 1;
+                } else if (*flag == 'h') {
+                    options.no_dereference = 1;
+                } else {
+                    write_usage();
+                    return 1;
+                }
+                flag += 1;
+            }
         }
 
         argi += 1;
     }
 
-    if (argc - argi < 2) {
-        tool_write_usage("chown", "[-R] [-h] OWNER[:GROUP] PATH...");
+    if ((!options.use_reference && argc - argi < 2) || (options.use_reference && argc - argi < 1)) {
+        write_usage();
         return 1;
     }
 
-    if (parse_owner_spec(argv[argi], &options.uid, &options.gid) != 0) {
-        tool_write_error("chown", "invalid owner spec ", argv[argi]);
-        return 1;
+    if (options.use_reference) {
+        if (load_reference_owner(&options, &options.uid, &options.gid) != 0) {
+            tool_write_error("chown", "cannot read reference ", options.reference_path);
+            return 1;
+        }
+    } else {
+        if (parse_owner_spec(argv[argi], &options.uid, &options.gid) != 0) {
+            tool_write_error("chown", "invalid owner spec ", argv[argi]);
+            return 1;
+        }
+        argi += 1;
     }
 
-    for (i = argi + 1; i < argc; ++i) {
+    for (i = argi; i < argc; ++i) {
         if (chown_one_path(argv[i], &options) != 0) {
             tool_write_error("chown", "cannot change owner for ", argv[i]);
             exit_code = 1;

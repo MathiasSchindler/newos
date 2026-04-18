@@ -14,10 +14,29 @@ int main(int argc, char **argv) {
     int i;
 
     for (i = 1; i < argc; ++i) {
-        if (rt_strcmp(argv[i], "-L") == 0) {
+        const char *flag = argv[i];
+
+        if (rt_strcmp(flag, "--logical") == 0) {
             physical = 0;
-        } else if (rt_strcmp(argv[i], "-P") == 0) {
+        } else if (rt_strcmp(flag, "--physical") == 0) {
             physical = 1;
+        } else if (flag[0] == '-' && flag[1] != '\0') {
+            if (flag[1] == '-' && flag[2] != '\0') {
+                print_usage(argv[0]);
+                return 1;
+            }
+            flag += 1;
+            while (*flag != '\0') {
+                if (*flag == 'L') {
+                    physical = 0;
+                } else if (*flag == 'P') {
+                    physical = 1;
+                } else {
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                flag += 1;
+            }
         } else {
             print_usage(argv[0]);
             return 1;

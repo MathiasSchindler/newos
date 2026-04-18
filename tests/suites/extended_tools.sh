@@ -57,6 +57,56 @@ assert_command_succeeds "$ROOT_DIR/build/sleep" 0.01 0.02s
 sleep_multi_end=$(date +%s)
 [ "$sleep_multi_end" -ge "$sleep_multi_start" ] || fail "sleep duration parsing regressed"
 
+printf 'preserve\n' > "$WORK_DIR/cp_preserve_src.txt"
+assert_command_succeeds "$ROOT_DIR/build/touch" -t 200102030405.06 "$WORK_DIR/cp_preserve_src.txt"
+assert_command_succeeds "$ROOT_DIR/build/cp" -p "$WORK_DIR/cp_preserve_src.txt" "$WORK_DIR/cp_preserve_dest.txt"
+cp_preserve_src_mtime=$("$ROOT_DIR/build/stat" -c '%Y' "$WORK_DIR/cp_preserve_src.txt" | tr -d '\r\n')
+cp_preserve_dest_mtime=$("$ROOT_DIR/build/stat" -c '%Y' "$WORK_DIR/cp_preserve_dest.txt" | tr -d '\r\n')
+assert_text_equals "$cp_preserve_dest_mtime" "$cp_preserve_src_mtime" "cp -p did not preserve the source modification time"
+
+mkdir -p "$WORK_DIR/mv_self_guard/child"
+if "$ROOT_DIR/build/mv" "$WORK_DIR/mv_self_guard" "$WORK_DIR/mv_self_guard/child" >/dev/null 2>&1; then
+    fail "mv should refuse to move a directory into itself"
+fi
+[ -d "$WORK_DIR/mv_self_guard" ] || fail "mv self-guard removed the original directory"
+
+printf 'keep\n' > "$WORK_DIR/rm_prompt.txt"
+printf 'n\n' | "$ROOT_DIR/build/rm" -I "$WORK_DIR/rm_prompt.txt" >/dev/null 2>&1
+[ -f "$WORK_DIR/rm_prompt.txt" ] || fail "rm -I removed a file after a negative confirmation"
+assert_command_succeeds "$ROOT_DIR/build/rm" --interactive=never "$WORK_DIR/rm_prompt.txt"
+[ ! -e "$WORK_DIR/rm_prompt.txt" ] || fail "rm --interactive=never did not remove the file"
+
+assert_command_succeeds "$ROOT_DIR/build/mkdir" -m u=rwx,go= "$WORK_DIR/mkdir_symbolic"
+"$ROOT_DIR/build/stat" "$WORK_DIR/mkdir_symbolic" > "$WORK_DIR/mkdir_symbolic.stat"
+assert_file_contains "$WORK_DIR/mkdir_symbolic.stat" 'Mode: drwx------' "mkdir symbolic mode parsing failed"
+
+mkdir -p "$WORK_DIR/rmdir_ignore/parent/child"
+printf 'stay\n' > "$WORK_DIR/rmdir_ignore/parent/keep.txt"
+assert_command_succeeds "$ROOT_DIR/build/rmdir" -p --ignore-fail-on-non-empty "$WORK_DIR/rmdir_ignore/parent/child"
+[ ! -d "$WORK_DIR/rmdir_ignore/parent/child" ] || fail "rmdir --ignore-fail-on-non-empty did not remove the requested leaf"
+[ -d "$WORK_DIR/rmdir_ignore/parent" ] || fail "rmdir --ignore-fail-on-non-empty should leave a non-empty parent in place"
+
+printf 'alpha\nbeta\ngamma\ndelta\n' > "$WORK_DIR/diff_context_left.txt"
+printf 'alpha\nbeta\nchanged\ndelta\n' > "$WORK_DIR/diff_context_right.txt"
+if "$ROOT_DIR/build/diff" -c "$WORK_DIR/diff_context_left.txt" "$WORK_DIR/diff_context_right.txt" > "$WORK_DIR/diff_c.out"; then
+    fail "diff -c should have reported a difference"
+fi
+assert_file_contains "$WORK_DIR/diff_c.out" '^\*\*\* ' "diff -c left header missing"
+assert_file_contains "$WORK_DIR/diff_c.out" '^--- ' "diff -c right header missing"
+assert_file_contains "$WORK_DIR/diff_c.out" '^! ' "diff -c output missing context change markers"
+i=1
+: > "$WORK_DIR/diff_large_left.txt"
+while [ "$i" -le 4200 ]; do
+    printf 'line %s\n' "$i" >> "$WORK_DIR/diff_large_left.txt"
+    i=$((i + 1))
+done
+cp "$WORK_DIR/diff_large_left.txt" "$WORK_DIR/diff_large_right.txt"
+printf 'trailer\n' >> "$WORK_DIR/diff_large_right.txt"
+if "$ROOT_DIR/build/diff" -u "$WORK_DIR/diff_large_left.txt" "$WORK_DIR/diff_large_right.txt" > "$WORK_DIR/diff_large.out"; then
+    fail "diff -u should still report differences for larger inputs"
+fi
+assert_file_contains "$WORK_DIR/diff_large.out" '^Files .* differ$' "diff large-file fallback regressed"
+
 printf 'hello tee\n' | "$ROOT_DIR/build/tee" "$WORK_DIR/tee.txt" > "$WORK_DIR/tee.out"
 assert_files_equal "$WORK_DIR/tee.txt" "$WORK_DIR/tee.out" "tee output mismatch"
 printf 'first\n' > "$WORK_DIR/tee_append.txt"
@@ -216,11 +266,16 @@ basename_multi=$("$ROOT_DIR/build/basename" -a -s .txt "$WORK_DIR/alpha.txt" "$W
 printf '%s\n' "$basename_multi" > "$WORK_DIR/basename_multi.out"
 assert_file_contains "$WORK_DIR/basename_multi.out" '^alpha$' "basename -a/-s did not strip the suffix from the first path"
 assert_file_contains "$WORK_DIR/basename_multi.out" '^beta$' "basename -a/-s did not strip the suffix from the second path"
+"$ROOT_DIR/build/basename" --multiple --suffix=.txt --zero "$WORK_DIR/alpha.txt" "$WORK_DIR/beta.txt" | tr '\0' '\n' > "$WORK_DIR/basename_long.out"
+assert_file_contains "$WORK_DIR/basename_long.out" '^alpha$' "basename long-option suffix stripping regressed"
+assert_file_contains "$WORK_DIR/basename_long.out" '^beta$' "basename --multiple/--zero missed one of the paths"
 actual_dirname=$("$ROOT_DIR/build/dirname" /tmp/example.txt | tr -d '\r\n')
 assert_text_equals "$actual_dirname" '/tmp' "dirname failed"
 dirname_multi=$("$ROOT_DIR/build/dirname" "$WORK_DIR/sub/example.txt" "$WORK_DIR/dd.in" | tr -d '\r')
 printf '%s\n' "$dirname_multi" > "$WORK_DIR/dirname_multi.out"
 assert_file_contains "$WORK_DIR/dirname_multi.out" '^.*/sub$' "dirname multi-path mode missed the nested directory"
+"$ROOT_DIR/build/dirname" --zero "$WORK_DIR/sub/example.txt" "$WORK_DIR/dd.in" | tr '\0' '\n' > "$WORK_DIR/dirname_zero.out"
+assert_file_contains "$WORK_DIR/dirname_zero.out" '^.*/sub$' "dirname --zero did not preserve the nested directory path"
 actual_realpath=$("$ROOT_DIR/build/realpath" "$WORK_DIR/sub/../dd.in" | tr -d '\r\n')
 assert_text_equals "$actual_realpath" "$WORK_DIR/dd.in" "realpath normalization failed"
 ln -sf ../dd.in "$WORK_DIR/sub/link-dd"
@@ -241,7 +296,7 @@ pwd_logical=$(
 assert_text_equals "$pwd_logical" "$WORK_DIR/sub" "pwd -L did not honor a valid logical path"
 pwd_physical=$(
     cd "$WORK_DIR/sub"
-    PWD="$WORK_DIR" "$ROOT_DIR/build/pwd" -P | tr -d '\r\n'
+    PWD="$WORK_DIR" "$ROOT_DIR/build/pwd" --physical | tr -d '\r\n'
 )
 assert_text_equals "$pwd_physical" "$WORK_DIR/sub" "pwd -P did not print the physical working directory"
 
@@ -323,6 +378,12 @@ assert_file_contains "$WORK_DIR/file_follow.out" 'ASCII text' "file -L did not i
 printf '\211PNG\r\n\032\nrest' > "$WORK_DIR/sample.png"
 file_mime_out=$("$ROOT_DIR/build/file" -i "$WORK_DIR/sample.png" | tr -d '\r\n')
 assert_text_equals "$file_mime_out" "$WORK_DIR/sample.png: image/png" "file -i did not report the PNG MIME type"
+printf 'RIFF1234WAVEfmt ' > "$WORK_DIR/sample.wav"
+"$ROOT_DIR/build/file" "$WORK_DIR/sample.wav" > "$WORK_DIR/file_wav.out"
+assert_file_contains "$WORK_DIR/file_wav.out" 'WAV audio data' "file did not detect RIFF/WAVE data"
+printf '<!DOCTYPE html><html><body>ok</body></html>\n' > "$WORK_DIR/sample.html"
+file_html_out=$("$ROOT_DIR/build/file" -i "$WORK_DIR/sample.html" | tr -d '\r\n')
+assert_text_equals "$file_html_out" "$WORK_DIR/sample.html: text/html; charset=us-ascii" "file -i did not recognize HTML text"
 
 printf '\001\002HelloString\000xxMoreText\n' > "$WORK_DIR/strings.bin"
 "$ROOT_DIR/build/strings" "$WORK_DIR/strings.bin" > "$WORK_DIR/strings.out"
@@ -368,6 +429,11 @@ alpha
 beta
 EOF
 assert_files_equal "$WORK_DIR/cat_s.expected" "$WORK_DIR/cat_s.out" "cat -s did not squeeze repeated blank lines"
+printf 'A\tB\001\n' > "$WORK_DIR/cat_visible.txt"
+"$ROOT_DIR/build/cat" -A "$WORK_DIR/cat_visible.txt" > "$WORK_DIR/cat_visible.out"
+assert_file_contains "$WORK_DIR/cat_visible.out" '^A\^IB\^A\$$' "cat -A did not render tabs, control bytes, and line endings visibly"
+"$ROOT_DIR/build/cat" -u "$WORK_DIR/cat_visible.txt" > "$WORK_DIR/cat_u.out"
+assert_files_equal "$WORK_DIR/cat_visible.txt" "$WORK_DIR/cat_u.out" "cat -u altered the byte stream"
 
 which_out=$("$ROOT_DIR/build/which" ls | tr -d '\r\n')
 assert_text_equals "$which_out" "$ROOT_DIR/build/ls" "which did not resolve build tool"
@@ -781,6 +847,11 @@ readlink_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-to-dd" | tr -d '\r\n')
 assert_text_equals "$readlink_out" 'dd.in' "readlink target mismatch"
 readlink_full=$("$ROOT_DIR/build/readlink" -f "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
 assert_text_equals "$readlink_full" "$WORK_DIR/dd.in" "readlink -f did not canonicalize the symlink"
+readlink_existing=$("$ROOT_DIR/build/readlink" --canonicalize-existing "$WORK_DIR/sub/link-dd" | tr -d '\r\n')
+assert_text_equals "$readlink_existing" "$WORK_DIR/dd.in" "readlink --canonicalize-existing regressed"
+readlink_missing_status=0
+"$ROOT_DIR/build/readlink" -f "$WORK_DIR/sub/missing-parent/ghost.txt" > /dev/null 2>&1 || readlink_missing_status=$?
+[ "$readlink_missing_status" -ne 0 ] || fail "readlink -f should reject paths with missing parent directories"
 readlink_verbose=$("$ROOT_DIR/build/readlink" -v "$WORK_DIR/link-to-dd" | tr -d '\r\n')
 assert_text_equals "$readlink_verbose" "$WORK_DIR/link-to-dd: dd.in" "readlink -v did not prefix the path"
 "$ROOT_DIR/build/stat" "$WORK_DIR/dd.in" > "$WORK_DIR/stat.out"
@@ -798,6 +869,9 @@ case "$stat_time_tokens" in
     [0-9]*' '[0-9]*' '[0-9]*) ;;
     *) fail "stat time-format tokens did not emit numeric timestamps" ;;
 esac
+stat_alias_out=$("$ROOT_DIR/build/stat" --printf='%u %g %U %G %f %B %W %w' "$WORK_DIR/dd.in" | tr -d '\r')
+printf '%s\n' "$stat_alias_out" > "$WORK_DIR/stat_alias.out"
+assert_file_contains "$WORK_DIR/stat_alias.out" "^$(id -u) $(id -g) $(id -un) $(id -gn) [0-9a-f][0-9a-f]* 512 0 -$" "stat compatibility aliases or --printf output regressed"
 
 touch_target="$WORK_DIR/touch_flags.txt"
 printf 'touch\n' > "$touch_target"
@@ -820,6 +894,12 @@ assert_text_equals "$touch_copy_times" "$touch_ref_times" "touch -r did not copy
 assert_command_succeeds "$ROOT_DIR/build/touch" -t 202401020304.05 "$WORK_DIR/touch_stamp.txt"
 touch_stamp_time=$("$ROOT_DIR/build/stat" -c '%Y' "$WORK_DIR/touch_stamp.txt" | tr -d '\r\n')
 assert_text_equals "$touch_stamp_time" '1704164645' "touch -t did not parse the timestamp correctly"
+touch_long="$WORK_DIR/touch_long_opts.txt"
+printf 'touch-long\n' > "$touch_long"
+touch_long_original_m=$("$ROOT_DIR/build/stat" --printf='%Y' "$touch_long" | tr -d '\r\n')
+assert_command_succeeds "$ROOT_DIR/build/touch" --time=access --date='2024-01-02 03:04:05 +0100' "$touch_long"
+touch_long_times=$("$ROOT_DIR/build/stat" --printf='%X %Y' "$touch_long" | tr -d '\r\n')
+assert_text_equals "$touch_long_times" "1704161045 $touch_long_original_m" "touch long options or timezone-offset parsing regressed"
 
 mkdir -p "$WORK_DIR/cp_src" "$WORK_DIR/cp_dest" "$WORK_DIR/mv_dest"
 printf 'A' > "$WORK_DIR/cp_src/a.txt"
@@ -832,6 +912,10 @@ assert_command_succeeds "$ROOT_DIR/build/mv" "$WORK_DIR/cp_dest/a.txt" "$WORK_DI
 [ -f "$WORK_DIR/mv_dest/b.txt" ] || fail "mv multi-source mode did not move the second file"
 "$ROOT_DIR/build/ls" -1F "$WORK_DIR" > "$WORK_DIR/ls_flags.out"
 assert_file_contains "$WORK_DIR/ls_flags.out" 'cp_src/' "ls -1F did not classify directories"
+ln -sf a.txt "$WORK_DIR/cp_src/a.link"
+"$ROOT_DIR/build/ls" -isF "$WORK_DIR/cp_src" > "$WORK_DIR/ls_isf.out"
+assert_file_contains "$WORK_DIR/ls_isf.out" '^[[:space:]]*[0-9][0-9]*[[:space:]][[:space:]]*[0-9][0-9]*[[:space:]][[:space:]]*a\.txt$' "ls -i/-s did not include inode and block prefixes"
+assert_file_contains "$WORK_DIR/ls_isf.out" 'a\.link@$' "ls -F did not classify symlinks"
 assert_command_succeeds "$ROOT_DIR/build/mkdir" -vm 700 "$WORK_DIR/private-dir"
 "$ROOT_DIR/build/stat" "$WORK_DIR/private-dir" > "$WORK_DIR/private-dir.stat"
 assert_file_contains "$WORK_DIR/private-dir.stat" 'Mode: drwx------' "mkdir -m failed to apply the requested mode"
@@ -876,6 +960,16 @@ assert_file_contains "$WORK_DIR/ln_v.out" 'link-dir/link-a.txt' "ln -v did not d
 if "$ROOT_DIR/build/ln" -sT "$WORK_DIR/link-a.txt" "$WORK_DIR/link-dir" >/dev/null 2>&1; then
     fail "ln -T should refuse to treat a directory as a plain destination"
 fi
+mkdir -p "$WORK_DIR/link-relative/real" "$WORK_DIR/link-relative/links" "$WORK_DIR/ln-default"
+printf 'relative-link\n' > "$WORK_DIR/link-relative/real/target.txt"
+"$ROOT_DIR/build/ln" -srv "$WORK_DIR/link-relative/real/target.txt" "$WORK_DIR/link-relative/links/relative-link" > "$WORK_DIR/ln_relative.out"
+ln_relative_target=$("$ROOT_DIR/build/readlink" "$WORK_DIR/link-relative/links/relative-link" | tr -d '\r\n')
+assert_text_equals "$ln_relative_target" '../real/target.txt' "ln -r did not compute a relative symlink target"
+(
+    cd "$WORK_DIR/ln-default"
+    assert_command_succeeds "$ROOT_DIR/build/ln" ../link-a.txt
+)
+assert_command_succeeds "$ROOT_DIR/build/test" "$WORK_DIR/link-a.txt" -ef "$WORK_DIR/ln-default/link-a.txt"
 
 "$ROOT_DIR/build/du" "$WORK_DIR" > "$WORK_DIR/du.out"
 assert_file_contains "$WORK_DIR/du.out" '^[0-9][0-9]*[[:space:]].*extended_tools$' "du output missing directory total"
@@ -890,10 +984,25 @@ if grep 'cp_src/a.txt$' "$WORK_DIR/du_d0.out" >/dev/null 2>&1; then
 fi
 "$ROOT_DIR/build/du" -ac "$WORK_DIR/cp_src" "$WORK_DIR/mv_dest" > "$WORK_DIR/du_ac.out"
 assert_file_contains "$WORK_DIR/du_ac.out" '[[:space:]]total$' "du -c did not print a grand total"
+"$ROOT_DIR/build/dd" if=/dev/zero of="$WORK_DIR/du_follow_target.txt" bs=64 count=1 status=none
+ln -sf du_follow_target.txt "$WORK_DIR/du_follow.link"
+set -- $("$ROOT_DIR/build/du" -sb "$WORK_DIR/du_follow.link" | tr -d '\r')
+du_link_plain=$1
+set -- $("$ROOT_DIR/build/du" -sLb "$WORK_DIR/du_follow.link" | tr -d '\r')
+du_link_follow=$1
+assert_text_equals "$du_link_follow" '64' "du -L -b should follow the symlink target size"
+if [ "$du_link_plain" -ge "$du_link_follow" ]; then
+    fail "du without -L should measure the symlink itself rather than the target contents"
+fi
+"$ROOT_DIR/build/dd" if=/dev/zero of="$WORK_DIR/du_block.bin" bs=1500 count=1 status=none
+"$ROOT_DIR/build/du" -sk "$WORK_DIR/du_block.bin" > "$WORK_DIR/du_k.out"
+assert_file_contains "$WORK_DIR/du_k.out" '^2[[:space:]].*du_block\.bin$' "du -k did not round the file size to 1K blocks"
 "$ROOT_DIR/build/df" > "$WORK_DIR/df.out"
 assert_file_contains "$WORK_DIR/df.out" '^Filesystem[[:space:]]' "df header missing"
 "$ROOT_DIR/build/df" -h > "$WORK_DIR/df_h.out"
 assert_file_contains "$WORK_DIR/df_h.out" '^/[[:space:]][0-9][0-9.]*[BKMGTP]' "df -h did not produce human-readable sizes"
+"$ROOT_DIR/build/df" -k "$WORK_DIR" > "$WORK_DIR/df_k.out"
+assert_file_contains "$WORK_DIR/df_k.out" '1K-blocks' "df -k did not label 1K-sized output columns"
 "$ROOT_DIR/build/df" -iT > "$WORK_DIR/df_it.out"
 assert_file_contains "$WORK_DIR/df_it.out" '^Filesystem[[:space:]][[:space:]]*Type[[:space:]][[:space:]]*Inodes[[:space:]][[:space:]]*IUsed' "df -iT header missing inode/type columns"
 "$ROOT_DIR/build/stat" -f "$WORK_DIR" > "$WORK_DIR/stat_fs.out"
@@ -903,17 +1012,35 @@ chown_target="$WORK_DIR/chown.txt"
 printf 'owner\n' > "$chown_target"
 assert_command_succeeds "$ROOT_DIR/build/chown" "$(id -u):$(id -g)" "$chown_target"
 assert_command_succeeds "$ROOT_DIR/build/chown" "$(id -un):$(id -gn)" "$chown_target"
+printf 'reference\n' > "$WORK_DIR/chown_reference_target.txt"
+assert_command_succeeds "$ROOT_DIR/build/chown" --reference="$chown_target" "$WORK_DIR/chown_reference_target.txt"
 mkdir -p "$WORK_DIR/chown_tree/nested"
 printf 'owner\n' > "$WORK_DIR/chown_tree/nested/file.txt"
 assert_command_succeeds "$ROOT_DIR/build/chown" -R "$(id -un):$(id -gn)" "$WORK_DIR/chown_tree"
 "$ROOT_DIR/build/stat" "$WORK_DIR/chown_tree/nested/file.txt" > "$WORK_DIR/chown_recursive.stat"
 assert_file_contains "$WORK_DIR/chown_recursive.stat" "^Owner: $(id -un)$" "chown -R did not preserve the requested owner name on nested files"
 assert_file_contains "$WORK_DIR/chown_recursive.stat" "^Group: $(id -gn)$" "chown name lookup did not preserve the requested group on nested files"
+"$ROOT_DIR/build/stat" "$WORK_DIR/chown_reference_target.txt" > "$WORK_DIR/chown_reference.stat"
+assert_file_contains "$WORK_DIR/chown_reference.stat" "^Owner: $(id -un)$" "chown --reference did not copy the owner"
+assert_file_contains "$WORK_DIR/chown_reference.stat" "^Group: $(id -gn)$" "chown --reference did not copy the group"
 chmod_target="$WORK_DIR/chmod_symbolic.txt"
 printf 'chmod\n' > "$chmod_target"
 assert_command_succeeds "$ROOT_DIR/build/chmod" u=rw,go= "$chmod_target"
 "$ROOT_DIR/build/stat" "$chmod_target" > "$WORK_DIR/chmod_symbolic.stat"
 assert_file_contains "$WORK_DIR/chmod_symbolic.stat" 'Mode: -rw-------' "chmod symbolic mode parsing failed"
+chmod_copy_target="$WORK_DIR/chmod_copy.txt"
+printf 'chmod copy\n' > "$chmod_copy_target"
+assert_command_succeeds "$ROOT_DIR/build/chmod" u=rw,g=u,o= "$chmod_copy_target"
+"$ROOT_DIR/build/stat" "$chmod_copy_target" > "$WORK_DIR/chmod_copy.stat"
+assert_file_contains "$WORK_DIR/chmod_copy.stat" 'Mode: -rw-rw----' "chmod permission-copy symbolic mode failed"
+ln -sf chmod_symbolic.txt "$WORK_DIR/chmod_link"
+assert_command_succeeds "$ROOT_DIR/build/chmod" --no-dereference 000 "$WORK_DIR/chmod_link"
+"$ROOT_DIR/build/stat" "$chmod_target" > "$WORK_DIR/chmod_noderef.stat"
+assert_file_contains "$WORK_DIR/chmod_noderef.stat" 'Mode: -rw-------' "chmod --no-dereference should not affect the symlink referent"
+chmod_invalid_status=0
+"$ROOT_DIR/build/chmod" bad "$chmod_target" > /dev/null 2> "$WORK_DIR/chmod_invalid.err" || chmod_invalid_status=$?
+[ "$chmod_invalid_status" -ne 0 ] || fail "chmod should reject invalid mode strings"
+assert_file_contains "$WORK_DIR/chmod_invalid.err" "invalid mode 'bad'" "chmod invalid-mode diagnostics regressed"
 
 id_uid_out=$("$ROOT_DIR/build/id" -u | tr -d '\r\n')
 assert_text_equals "$id_uid_out" "$(id -u)" "id -u reported the wrong uid"

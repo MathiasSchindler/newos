@@ -11,6 +11,65 @@ typedef struct {
     long long mtime;
 } TouchOptions;
 
+static char touch_to_lower_ascii(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static int touch_equals_ignore_case(const char *lhs, const char *rhs) {
+    size_t index = 0;
+
+    if (lhs == 0 || rhs == 0) {
+        return 0;
+    }
+
+    while (lhs[index] != '\0' && rhs[index] != '\0') {
+        if (touch_to_lower_ascii(lhs[index]) != touch_to_lower_ascii(rhs[index])) {
+            return 0;
+        }
+        index += 1U;
+    }
+
+    return lhs[index] == '\0' && rhs[index] == '\0';
+}
+
+static int touch_starts_with(const char *text, const char *prefix) {
+    size_t index = 0;
+
+    if (text == 0 || prefix == 0) {
+        return 0;
+    }
+
+    while (prefix[index] != '\0') {
+        if (text[index] != prefix[index]) {
+            return 0;
+        }
+        index += 1U;
+    }
+
+    return 1;
+}
+
+static int touch_matches_zone_name(const char *text, size_t index, const char *name) {
+    size_t offset = 0;
+
+    if (text == 0 || name == 0) {
+        return 0;
+    }
+
+    while (name[offset] != '\0') {
+        if (text[index + offset] == '\0' ||
+            touch_to_lower_ascii(text[index + offset]) != touch_to_lower_ascii(name[offset])) {
+            return 0;
+        }
+        offset += 1U;
+    }
+
+    return 1;
+}
+
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-acm] [-d DATETIME | -t STAMP | -r FILE] path ...");
 }
@@ -92,6 +151,91 @@ static int build_epoch_timestamp(int year, unsigned int month, unsigned int day,
     return 0;
 }
 
+static int parse_numeric_timezone_offset(const char *text, size_t *index_io, int *offset_seconds_out) {
+    size_t index = *index_io;
+    int sign = 1;
+    unsigned int hour = 0U;
+    unsigned int minute = 0U;
+
+    if (text[index] != '+' && text[index] != '-') {
+        return -1;
+    }
+    if (text[index] == '-') {
+        sign = -1;
+    }
+    index += 1U;
+
+    if (parse_fixed_digits(text, index, 2U, &hour) != 0) {
+        return -1;
+    }
+    index += 2U;
+
+    if (text[index] == ':') {
+        index += 1U;
+        if (parse_fixed_digits(text, index, 2U, &minute) != 0) {
+            return -1;
+        }
+        index += 2U;
+    } else if (text[index] >= '0' && text[index] <= '9') {
+        if (parse_fixed_digits(text, index, 2U, &minute) != 0) {
+            return -1;
+        }
+        index += 2U;
+    }
+
+    if (hour > 23U || minute > 59U) {
+        return -1;
+    }
+
+    *offset_seconds_out = sign * (int)((hour * 3600U) + (minute * 60U));
+    *index_io = index;
+    return 0;
+}
+
+static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset_seconds_out) {
+    size_t index = *index_io;
+
+    while (rt_is_space(text[index])) {
+        index += 1U;
+    }
+
+    if (text[index] == '\0') {
+        *offset_seconds_out = 0;
+        *index_io = index;
+        return 0;
+    }
+
+    if (touch_to_lower_ascii(text[index]) == 'z') {
+        *offset_seconds_out = 0;
+        *index_io = index + 1U;
+        return 0;
+    }
+
+    if (touch_matches_zone_name(text, index, "utc") ||
+        touch_matches_zone_name(text, index, "gmt")) {
+        index += 3U;
+        if (text[index] == '+' || text[index] == '-') {
+            if (parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+                return -1;
+            }
+        } else {
+            *offset_seconds_out = 0;
+        }
+        *index_io = index;
+        return 0;
+    }
+
+    if (text[index] == '+' || text[index] == '-') {
+        if (parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+            return -1;
+        }
+        *index_io = index;
+        return 0;
+    }
+
+    return -1;
+}
+
 static int parse_datetime_text(const char *text, long long *epoch_out) {
     unsigned int year;
     unsigned int month;
@@ -100,6 +244,8 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
     unsigned int minute = 0U;
     unsigned int second = 0U;
     size_t len;
+    size_t offset = 10U;
+    int timezone_offset_seconds = 0;
     long long explicit_epoch;
 
     if (text == 0 || epoch_out == 0 || text[0] == '\0') {
@@ -125,26 +271,48 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
     }
 
     if (len > 10U) {
-        size_t offset = 10U;
-        if (text[offset] != ' ' && text[offset] != 'T') {
-            return -1;
-        }
-        offset += 1U;
-        if (len < offset + 5U ||
-            parse_fixed_digits(text, offset, 2U, &hour) != 0 ||
-            text[offset + 2U] != ':' ||
-            parse_fixed_digits(text, offset + 3U, 2U, &minute) != 0) {
-            return -1;
-        }
-        offset += 5U;
-        if (text[offset] == ':') {
+        while (rt_is_space(text[offset])) {
             offset += 1U;
-            if (parse_fixed_digits(text, offset, 2U, &second) != 0) {
+        }
+        if (text[offset] == 'T') {
+            offset += 1U;
+        }
+
+        if (text[offset] == '+' || text[offset] == '-' || text[offset] == 'Z' ||
+            touch_to_lower_ascii(text[offset]) == 'u' || touch_to_lower_ascii(text[offset]) == 'g') {
+            if (parse_timezone_suffix(text, &offset, &timezone_offset_seconds) != 0) {
                 return -1;
             }
-            offset += 2U;
+        } else {
+            if (len < offset + 5U ||
+                parse_fixed_digits(text, offset, 2U, &hour) != 0 ||
+                text[offset + 2U] != ':' ||
+                parse_fixed_digits(text, offset + 3U, 2U, &minute) != 0) {
+                return -1;
+            }
+            offset += 5U;
+            if (text[offset] == ':') {
+                offset += 1U;
+                if (parse_fixed_digits(text, offset, 2U, &second) != 0) {
+                    return -1;
+                }
+                offset += 2U;
+            }
+            if (text[offset] == '.') {
+                offset += 1U;
+                if (text[offset] < '0' || text[offset] > '9') {
+                    return -1;
+                }
+                while (text[offset] >= '0' && text[offset] <= '9') {
+                    offset += 1U;
+                }
+            }
+            if (parse_timezone_suffix(text, &offset, &timezone_offset_seconds) != 0) {
+                return -1;
+            }
         }
-        if (text[offset] == 'Z') {
+
+        while (rt_is_space(text[offset])) {
             offset += 1U;
         }
         if (text[offset] != '\0') {
@@ -152,7 +320,11 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
         }
     }
 
-    return build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out);
+    if (build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out) != 0) {
+        return -1;
+    }
+    *epoch_out -= (long long)timezone_offset_seconds;
+    return 0;
 }
 
 static int current_year(void) {
@@ -251,6 +423,27 @@ static int load_reference_times(const char *path, TouchOptions *options) {
     return 0;
 }
 
+static int parse_time_selector(const char *text, TouchOptions *options) {
+    if (text == 0 || options == 0) {
+        return -1;
+    }
+
+    if (touch_equals_ignore_case(text, "access") ||
+        touch_equals_ignore_case(text, "atime") ||
+        touch_equals_ignore_case(text, "use")) {
+        options->update_access = 1;
+        return 0;
+    }
+
+    if (touch_equals_ignore_case(text, "modify") ||
+        touch_equals_ignore_case(text, "mtime")) {
+        options->update_modify = 1;
+        return 0;
+    }
+
+    return -1;
+}
+
 int main(int argc, char **argv) {
     TouchOptions options;
     PlatformDirEntry existing_entry;
@@ -274,6 +467,67 @@ int main(int argc, char **argv) {
         }
         if (rt_strcmp(argv[argi], "--no-create") == 0) {
             options.no_create = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--date") == 0 ||
+            rt_strcmp(argv[argi], "--reference") == 0 ||
+            rt_strcmp(argv[argi], "--time") == 0) {
+            const char *value_text = 0;
+
+            if (argi + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            value_text = argv[argi + 1];
+
+            if (rt_strcmp(argv[argi], "--date") == 0) {
+                if (parse_datetime_text(value_text, &timestamp) != 0) {
+                    tool_write_error("touch", "invalid date ", value_text);
+                    return 1;
+                }
+                options.explicit_time = 1;
+                options.atime = timestamp;
+                options.mtime = timestamp;
+            } else if (rt_strcmp(argv[argi], "--reference") == 0) {
+                if (load_reference_times(value_text, &options) != 0) {
+                    tool_write_error("touch", "cannot read reference ", value_text);
+                    return 1;
+                }
+            } else {
+                if (parse_time_selector(value_text, &options) != 0) {
+                    tool_write_error("touch", "invalid time selector ", value_text);
+                    return 1;
+                }
+            }
+
+            argi += 2;
+            continue;
+        }
+        if (touch_starts_with(argv[argi], "--date=")) {
+            if (parse_datetime_text(argv[argi] + 7, &timestamp) != 0) {
+                tool_write_error("touch", "invalid date ", argv[argi] + 7);
+                return 1;
+            }
+            options.explicit_time = 1;
+            options.atime = timestamp;
+            options.mtime = timestamp;
+            argi += 1;
+            continue;
+        }
+        if (touch_starts_with(argv[argi], "--reference=")) {
+            if (load_reference_times(argv[argi] + 12, &options) != 0) {
+                tool_write_error("touch", "cannot read reference ", argv[argi] + 12);
+                return 1;
+            }
+            argi += 1;
+            continue;
+        }
+        if (touch_starts_with(argv[argi], "--time=")) {
+            if (parse_time_selector(argv[argi] + 7, &options) != 0) {
+                tool_write_error("touch", "invalid time selector ", argv[argi] + 7);
+                return 1;
+            }
             argi += 1;
             continue;
         }

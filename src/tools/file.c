@@ -7,6 +7,49 @@ typedef struct {
     const char *mime;
 } FileTypeInfo;
 
+static unsigned char ascii_lower(unsigned char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (unsigned char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static int starts_with_ci(const unsigned char *buffer, size_t length, const char *text) {
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        if (i >= length || ascii_lower(buffer[i]) != ascii_lower((unsigned char)text[i])) {
+            return 0;
+        }
+        i += 1U;
+    }
+    return 1;
+}
+
+static int find_text_ci(const unsigned char *buffer, size_t length, const char *needle) {
+    size_t i;
+    size_t needle_length = rt_strlen(needle);
+
+    if (needle_length == 0U || needle_length > length) {
+        return 0;
+    }
+
+    for (i = 0; i + needle_length <= length; ++i) {
+        size_t j;
+        int match = 1;
+        for (j = 0; j < needle_length; ++j) {
+            if (ascii_lower(buffer[i + j]) != ascii_lower((unsigned char)needle[j])) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int looks_like_text(const unsigned char *buffer, size_t length) {
     size_t i;
 
@@ -45,6 +88,37 @@ static int looks_like_json(const unsigned char *buffer, size_t length) {
     return (buffer[start] == '{' && buffer[end - 1U] == '}') || (buffer[start] == '[' && buffer[end - 1U] == ']');
 }
 
+static int looks_like_html(const unsigned char *buffer, size_t length) {
+    size_t start = 0;
+
+    while (start < length && (buffer[start] == ' ' || buffer[start] == '\n' || buffer[start] == '\r' || buffer[start] == '\t')) {
+        start += 1U;
+    }
+
+    if (start >= length) {
+        return 0;
+    }
+
+    return starts_with_ci(buffer + start, length - start, "<!doctype html") ||
+           starts_with_ci(buffer + start, length - start, "<html") ||
+           starts_with_ci(buffer + start, length - start, "<head") ||
+           starts_with_ci(buffer + start, length - start, "<body");
+}
+
+static int looks_like_xml(const unsigned char *buffer, size_t length) {
+    size_t start = 0;
+
+    while (start < length && (buffer[start] == ' ' || buffer[start] == '\n' || buffer[start] == '\r' || buffer[start] == '\t')) {
+        start += 1U;
+    }
+
+    if (start >= length) {
+        return 0;
+    }
+
+    return starts_with_ci(buffer + start, length - start, "<?xml") || starts_with_ci(buffer + start, length - start, "<svg");
+}
+
 static FileTypeInfo detect_type(const unsigned char *buffer, size_t length) {
     FileTypeInfo info;
 
@@ -66,6 +140,11 @@ static FileTypeInfo detect_type(const unsigned char *buffer, size_t length) {
         info.mime = "application/gzip";
         return info;
     }
+    if (length >= 6U && buffer[0] == '7' && buffer[1] == 'z' && buffer[2] == 0xbcU && buffer[3] == 0xafU && buffer[4] == 0x27U && buffer[5] == 0x1cU) {
+        info.description = "7-zip archive data";
+        info.mime = "application/x-7z-compressed";
+        return info;
+    }
     if (length >= 4U && buffer[0] == 'B' && buffer[1] == 'Z' && buffer[2] == 'h') {
         info.description = "bzip2 compressed data";
         info.mime = "application/x-bzip2";
@@ -77,9 +156,37 @@ static FileTypeInfo detect_type(const unsigned char *buffer, size_t length) {
         return info;
     }
     if (length >= 2U && buffer[0] == '#' && buffer[1] == '!') {
-        info.description = "script text executable";
-        info.mime = "text/x-shellscript; charset=us-ascii";
+        if (find_text_ci(buffer, length, "python")) {
+            info.description = "Python script text executable";
+            info.mime = "text/x-python; charset=us-ascii";
+        } else if (find_text_ci(buffer, length, "perl")) {
+            info.description = "Perl script text executable";
+            info.mime = "text/x-perl; charset=us-ascii";
+        } else if (find_text_ci(buffer, length, "awk")) {
+            info.description = "AWK script text executable";
+            info.mime = "text/x-awk; charset=us-ascii";
+        } else {
+            info.description = "script text executable";
+            info.mime = "text/x-shellscript; charset=us-ascii";
+        }
         return info;
+    }
+    if (length >= 4U && buffer[0] == 'R' && buffer[1] == 'I' && buffer[2] == 'F' && buffer[3] == 'F') {
+        if (length >= 12U && buffer[8] == 'W' && buffer[9] == 'A' && buffer[10] == 'V' && buffer[11] == 'E') {
+            info.description = "WAV audio data";
+            info.mime = "audio/wav";
+            return info;
+        }
+        if (length >= 12U && buffer[8] == 'W' && buffer[9] == 'E' && buffer[10] == 'B' && buffer[11] == 'P') {
+            info.description = "WebP image data";
+            info.mime = "image/webp";
+            return info;
+        }
+        if (length >= 12U && buffer[8] == 'A' && buffer[9] == 'V' && buffer[10] == 'I' && buffer[11] == ' ') {
+            info.description = "AVI video data";
+            info.mime = "video/x-msvideo";
+            return info;
+        }
     }
     if (length > 262U && buffer[257] == 'u' && buffer[258] == 's' && buffer[259] == 't' && buffer[260] == 'a' && buffer[261] == 'r') {
         info.description = "tar archive";
@@ -109,23 +216,95 @@ static FileTypeInfo detect_type(const unsigned char *buffer, size_t length) {
         info.mime = "application/pdf";
         return info;
     }
+    if (length >= 10U && buffer[0] == '%' && buffer[1] == '!' && buffer[2] == 'P' && buffer[3] == 'S') {
+        info.description = "PostScript document";
+        info.mime = "application/postscript";
+        return info;
+    }
     if (length >= 4U && buffer[0] == 'P' && buffer[1] == 'K' && (buffer[2] == 0x03U || buffer[2] == 0x05U || buffer[2] == 0x07U)) {
         info.description = "ZIP archive data";
         info.mime = "application/zip";
         return info;
     }
+    if (length >= 8U && buffer[0] == '!' && buffer[1] == '<' && buffer[2] == 'a' && buffer[3] == 'r' &&
+        buffer[4] == 'c' && buffer[5] == 'h' && buffer[6] == '>' && buffer[7] == '\n') {
+        info.description = "ar archive";
+        info.mime = "application/x-archive";
+        return info;
+    }
+    if (length >= 2U && buffer[0] == 'B' && buffer[1] == 'M') {
+        info.description = "BMP image data";
+        info.mime = "image/bmp";
+        return info;
+    }
+    if (length >= 4U && buffer[0] == 'O' && buffer[1] == 'g' && buffer[2] == 'g' && buffer[3] == 'S') {
+        info.description = "Ogg data";
+        info.mime = "application/ogg";
+        return info;
+    }
+    if (length >= 4U && buffer[0] == 'f' && buffer[1] == 'L' && buffer[2] == 'a' && buffer[3] == 'C') {
+        info.description = "FLAC audio bitstream data";
+        info.mime = "audio/flac";
+        return info;
+    }
+    if (length >= 3U && buffer[0] == 'I' && buffer[1] == 'D' && buffer[2] == '3') {
+        info.description = "MP3 audio with ID3 tag";
+        info.mime = "audio/mpeg";
+        return info;
+    }
+    if (length >= 2U && buffer[0] == 'M' && buffer[1] == 'Z') {
+        info.description = "DOS/PE executable";
+        info.mime = "application/vnd.microsoft.portable-executable";
+        return info;
+    }
     if (length >= 4U &&
         ((buffer[0] == 0xfeU && buffer[1] == 0xedU && buffer[2] == 0xfaU && (buffer[3] == 0xceU || buffer[3] == 0xcfU)) ||
          (buffer[0] == 0xceU && buffer[1] == 0xfaU && buffer[2] == 0xedU && buffer[3] == 0xfeU) ||
-         (buffer[0] == 0xcfU && buffer[1] == 0xfaU && buffer[2] == 0xedU && buffer[3] == 0xfeU))) {
+          (buffer[0] == 0xcfU && buffer[1] == 0xfaU && buffer[2] == 0xedU && buffer[3] == 0xfeU))) {
         info.description = "Mach-O binary";
         info.mime = "application/x-mach-binary";
+        return info;
+    }
+    if (length >= 16U &&
+        buffer[0] == 'S' && buffer[1] == 'Q' && buffer[2] == 'L' && buffer[3] == 'i' &&
+        buffer[4] == 't' && buffer[5] == 'e' && buffer[6] == ' ' && buffer[7] == 'f' &&
+        buffer[8] == 'o' && buffer[9] == 'r' && buffer[10] == 'm' && buffer[11] == 'a' &&
+        buffer[12] == 't' && buffer[13] == ' ' && buffer[14] == '3' && buffer[15] == 0x00U) {
+        info.description = "SQLite 3.x database";
+        info.mime = "application/vnd.sqlite3";
+        return info;
+    }
+    if (length >= 4U && buffer[0] == 0x00U && buffer[1] == 'a' && buffer[2] == 's' && buffer[3] == 'm') {
+        info.description = "WebAssembly binary module";
+        info.mime = "application/wasm";
+        return info;
+    }
+    if (length >= 3U && buffer[0] == 0xefU && buffer[1] == 0xbbU && buffer[2] == 0xbfU) {
+        info.description = "UTF-8 Unicode text";
+        info.mime = "text/plain; charset=utf-8";
+        return info;
+    }
+    if (length >= 2U &&
+        ((buffer[0] == 0xffU && buffer[1] == 0xfeU) || (buffer[0] == 0xfeU && buffer[1] == 0xffU))) {
+        info.description = "UTF-16 Unicode text";
+        info.mime = "text/plain; charset=utf-16";
         return info;
     }
     if (looks_like_text(buffer, length)) {
         if (looks_like_json(buffer, length)) {
             info.description = "JSON text";
             info.mime = "application/json";
+        } else if (looks_like_html(buffer, length)) {
+            info.description = "HTML document text";
+            info.mime = "text/html; charset=us-ascii";
+        } else if (looks_like_xml(buffer, length)) {
+            if (find_text_ci(buffer, length, "<svg")) {
+                info.description = "SVG Scalable Vector Graphics image";
+                info.mime = "image/svg+xml";
+            } else {
+                info.description = "XML document text";
+                info.mime = "application/xml";
+            }
         } else {
             info.description = "ASCII text";
             info.mime = "text/plain; charset=us-ascii";
