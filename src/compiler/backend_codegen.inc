@@ -1,11 +1,5 @@
 /* IR prescan, data emission, and assembly dispatch helpers. */
 
-        }
-    }
-
-    return expr_expect_punct(&parser, "}");
-}
-
 static int parse_decl_line(const char *line,
                            char *storage,
                            size_t storage_size,
@@ -68,6 +62,43 @@ static int parse_const_line(const char *line, char *name, size_t name_size, long
     }
 
     return parse_signed_value(cursor, value_out);
+}
+
+static const char *find_ir_separator_outside_quotes(const char *text, const char *separator) {
+    const char *last = 0;
+    int in_string = 0;
+    int in_char = 0;
+    size_t i = 0;
+    size_t separator_length = rt_strlen(separator);
+
+    while (text[i] != '\0') {
+        if ((in_string || in_char) && text[i] == '\\' && text[i + 1] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && text[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && text[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char) {
+            size_t j = 0;
+            while (j < separator_length && text[i + j] == separator[j]) {
+                j += 1U;
+            }
+            if (j == separator_length) {
+                last = text + i;
+            }
+        }
+        i += 1U;
+    }
+
+    return last;
 }
 
 static int resolve_static_value(const BackendState *state, const char *expr, long long *value_out) {
@@ -377,27 +408,72 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
 
     if (names_equal(storage, "param")) {
         static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-        static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5"};
+        static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
         char asm_line[128];
         int index = state->param_count;
 
         if (allocate_local(state, name, is_array, prefers_word_index) != 0) {
             return -1;
         }
-        if (index < 6) {
+        {
             int local_index = find_local(state, name);
+            int max_register_params = backend_is_aarch64(state) ? 8 : 6;
             char offset_text[32];
             rt_unsigned_to_string((unsigned long long)state->locals[local_index].offset, offset_text, sizeof(offset_text));
-            if (backend_is_aarch64(state)) {
-                rt_copy_string(asm_line, sizeof(asm_line), "stur ");
-                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), aarch64_arg_regs[index]);
-                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", [x29, #-");
-                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+            if (index < max_register_params) {
+                if (backend_is_aarch64(state)) {
+                    if (state->locals[local_index].offset <= 255) {
+                        rt_copy_string(asm_line, sizeof(asm_line), "stur ");
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), aarch64_arg_regs[index]);
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", [x29, #-");
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
+                    } else {
+                        if (emit_local_address(state, state->locals[local_index].offset, "x10") != 0) {
+                            return -1;
+                        }
+                        rt_copy_string(asm_line, sizeof(asm_line), "str ");
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), aarch64_arg_regs[index]);
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", [x10]");
+                    }
+                } else {
+                    rt_copy_string(asm_line, sizeof(asm_line), "movq ");
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), x86_arg_regs[index]);
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", -");
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "(%rbp)");
+                }
+            } else if (backend_is_aarch64(state)) {
+                unsigned long long stack_offset = 16ULL + (unsigned long long)(index - max_register_params) * 16ULL;
+                char stack_text[32];
+                rt_unsigned_to_string(stack_offset, stack_text, sizeof(stack_text));
+                rt_copy_string(asm_line, sizeof(asm_line), "ldr x9, [x29, #");
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), stack_text);
                 rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
+                if (emit_instruction(state, asm_line) != 0) {
+                    return -1;
+                }
+                if (state->locals[local_index].offset <= 255) {
+                    rt_copy_string(asm_line, sizeof(asm_line), "stur x9, [x29, #-");
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
+                } else {
+                    if (emit_local_address(state, state->locals[local_index].offset, "x10") != 0) {
+                        return -1;
+                    }
+                    rt_copy_string(asm_line, sizeof(asm_line), "str x9, [x10]");
+                }
             } else {
+                unsigned long long stack_offset = 16ULL + (unsigned long long)(index - max_register_params) * 8ULL;
+                char stack_text[32];
+                rt_unsigned_to_string(stack_offset, stack_text, sizeof(stack_text));
                 rt_copy_string(asm_line, sizeof(asm_line), "movq ");
-                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), x86_arg_regs[index]);
-                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", -");
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), stack_text);
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "(%rbp), %rax");
+                if (emit_instruction(state, asm_line) != 0) {
+                    return -1;
+                }
+                rt_copy_string(asm_line, sizeof(asm_line), "movq %rax, -");
                 rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
                 rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "(%rbp)");
             }
@@ -491,7 +567,21 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 int array_word_index = 0;
                 int is_array_target = lookup_array_storage(&state, name, &array_word_index);
 
-                if (*expr == '{' || (*expr == '"' && is_array_target)) {
+                if (*expr == '{') {
+                    if (is_array_target) {
+                        if (emit_array_initializer_store(&state, name, expr) != 0) {
+                            set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                            return -1;
+                        }
+                    } else {
+                        if (emit_object_initializer_store(&state, name, expr) != 0) {
+                            set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                            return -1;
+                        }
+                    }
+                    continue;
+                }
+                if (*expr == '"' && is_array_target) {
                     if (emit_array_initializer_store(&state, name, expr) != 0) {
                         set_error_with_line(backend, compiler_backend_error_message(backend), line);
                         return -1;
@@ -537,11 +627,16 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             char asm_label[96];
             size_t out = 0;
 
-            while (*arrow != '\0' && !(arrow[0] == ' ' && arrow[1] == '-' && arrow[2] == '>') && out + 1 < sizeof(expr)) {
+            const char *separator = find_ir_separator_outside_quotes(arrow, " -> ");
+            if (separator == 0) {
+                set_error_with_line(backend, "malformed branch instruction in backend", line);
+                return -1;
+            }
+            while (arrow < separator && out + 1 < sizeof(expr)) {
                 expr[out++] = *arrow++;
             }
             expr[out] = '\0';
-            rt_copy_string(label, sizeof(label), skip_spaces(arrow + 4));
+            rt_copy_string(label, sizeof(label), skip_spaces(separator + 4));
             if (emit_expression(&state, expr) != 0 || emit_cmp_zero(&state) != 0) {
                 return -1;
             }

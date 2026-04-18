@@ -133,6 +133,113 @@ else
 fi
 assert_text_equals "$static_local_array_status" "0" "compiler failed on a function-local static string array initializer"
 
+cat > "$WORK_DIR/local_struct_init.c" <<'EOF'
+typedef struct {
+    int first;
+    int second;
+} Pair;
+
+int main(void) {
+    Pair pair = { 3, 4 };
+    return pair.first == 3 ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/local_struct_init.c" -o "$WORK_DIR/local_struct_init_bin"
+if "$WORK_DIR/local_struct_init_bin"; then
+    local_struct_status=0
+else
+    local_struct_status=$?
+fi
+assert_text_equals "$local_struct_status" "0" "compiler failed on a function-local aggregate initializer"
+
+cat > "$WORK_DIR/escaped_char_literal.c" <<'EOF'
+int main(void) {
+    char quote = '\'';
+    return quote == '\'' ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/escaped_char_literal.c" -o "$WORK_DIR/escaped_char_literal_bin"
+if "$WORK_DIR/escaped_char_literal_bin"; then
+    escaped_char_status=0
+else
+    escaped_char_status=$?
+fi
+assert_text_equals "$escaped_char_status" "0" "compiler failed on an escaped single-quote character literal"
+
+cat > "$WORK_DIR/adjacent_strings.c" <<'EOF'
+int main(void) {
+    const char *text = "hello, " "world";
+    return text[7] == 'w' ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/adjacent_strings.c" -o "$WORK_DIR/adjacent_strings_bin"
+if "$WORK_DIR/adjacent_strings_bin"; then
+    adjacent_strings_status=0
+else
+    adjacent_strings_status=$?
+fi
+assert_text_equals "$adjacent_strings_status" "0" "compiler failed on adjacent string literal concatenation"
+
+cat > "$WORK_DIR/multi_arg_call.c" <<'EOF'
+int check_args(int number, const char *text) {
+    return number == 7 && text[0] == 'o' ? 0 : 1;
+}
+
+int main(void) {
+    return check_args(7, "ok");
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/multi_arg_call.c" -o "$WORK_DIR/multi_arg_call_bin"
+if "$WORK_DIR/multi_arg_call_bin"; then
+    multi_arg_status=0
+else
+    multi_arg_status=$?
+fi
+assert_text_equals "$multi_arg_status" "0" "compiler failed to pass multiple call arguments correctly"
+
+cat > "$WORK_DIR/many_arg_call.c" <<'EOF'
+int check_many(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
+    return a == 1 && b == 2 && c == 3 && d == 4 && e == 5 && f == 6 && g == 7 && h == 8 && i == 9 ? 0 : 1;
+}
+
+int main(void) {
+    return check_many(1, 2, 3, 4, 5, 6, 7, 8, 9);
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/many_arg_call.c" -o "$WORK_DIR/many_arg_call_bin"
+if "$WORK_DIR/many_arg_call_bin"; then
+    many_arg_status=0
+else
+    many_arg_status=$?
+fi
+assert_text_equals "$many_arg_status" "0" "compiler failed to preserve arguments beyond the register-only calling convention"
+
+cat > "$WORK_DIR/branch_separator_string.c" <<'EOF'
+int check_text(int code, const char *text) {
+    return code == 1 && text[1] == '-' && text[2] == '>' ? 0 : 1;
+}
+
+int main(void) {
+    if (check_text(1, " ->") != 0) {
+        return 1;
+    }
+    return 0;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --target macos-aarch64 "$WORK_DIR/branch_separator_string.c" -o "$WORK_DIR/branch_separator_string_bin"
+if "$WORK_DIR/branch_separator_string_bin"; then
+    branch_separator_status=0
+else
+    branch_separator_status=$?
+fi
+assert_text_equals "$branch_separator_status" "0" "compiler confused a quoted ' ->' string with an IR branch separator"
+
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/pwd.c" -o "$WORK_DIR/pwd_repo.s"
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/echo.c" -o "$WORK_DIR/echo_repo.s"
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/basename.c" -o "$WORK_DIR/basename_repo.s"

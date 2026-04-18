@@ -86,8 +86,12 @@ static void expr_next(ExprParser *parser) {
             else if (*cursor == 'r') ch = '\r';
             else if (*cursor == '0') ch = '\0';
             else ch = *cursor;
+            cursor += 1;
         } else {
             ch = *cursor;
+            if (*cursor != '\0') {
+                cursor += 1;
+            }
         }
         parser->current.number_value = (long long)(unsigned char)ch;
         while (*cursor != '\0' && *cursor != '\'') {
@@ -102,24 +106,27 @@ static void expr_next(ExprParser *parser) {
 
     if (*cursor == '"') {
         parser->current.kind = EXPR_TOKEN_STRING;
-        cursor += 1;
-        while (*cursor != '\0' && *cursor != '"' && length + 1 < sizeof(parser->current.text)) {
-            if (*cursor == '\\' && cursor[1] != '\0') {
-                cursor += 1;
-                if (*cursor == 'n') parser->current.text[length++] = '\n';
-                else if (*cursor == 't') parser->current.text[length++] = '\t';
-                else if (*cursor == 'r') parser->current.text[length++] = '\r';
-                else if (*cursor == '0') parser->current.text[length++] = '\0';
-                else parser->current.text[length++] = *cursor;
-                cursor += 1;
-                continue;
-            }
-            parser->current.text[length++] = *cursor++;
-        }
-        parser->current.text[length] = '\0';
-        if (*cursor == '"') {
+        do {
             cursor += 1;
-        }
+            while (*cursor != '\0' && *cursor != '"' && length + 1 < sizeof(parser->current.text)) {
+                if (*cursor == '\\' && cursor[1] != '\0') {
+                    cursor += 1;
+                    if (*cursor == 'n') parser->current.text[length++] = '\n';
+                    else if (*cursor == 't') parser->current.text[length++] = '\t';
+                    else if (*cursor == 'r') parser->current.text[length++] = '\r';
+                    else if (*cursor == '0') parser->current.text[length++] = '\0';
+                    else parser->current.text[length++] = *cursor;
+                    cursor += 1;
+                    continue;
+                }
+                parser->current.text[length++] = *cursor++;
+            }
+            if (*cursor == '"') {
+                cursor += 1;
+            }
+            cursor = skip_spaces(cursor);
+        } while (*cursor == '"');
+        parser->current.text[length] = '\0';
         parser->cursor = cursor;
         return;
     }
@@ -799,6 +806,32 @@ static int expr_parse_compound_literal(ExprParser *parser, int want_address, int
     return 0;
 }
 
+static int expr_parse_call_arguments(ExprParser *parser, int *arg_count_out, int max_arg_count) {
+    int tail_count = 0;
+
+    if (expr_parse_assignment(parser) != 0) {
+        return -1;
+    }
+
+    if (emit_push_value(parser->state) != 0) {
+        return -1;
+    }
+
+    if (expr_match_punct(parser, ",")) {
+        if (expr_parse_call_arguments(parser, &tail_count, max_arg_count) != 0) {
+            return -1;
+        }
+        if (tail_count + 1 > max_arg_count) {
+            set_error(parser->state->backend,
+                      "backend only supports up to 32 call arguments");
+            return -1;
+        }
+    }
+
+    *arg_count_out = tail_count + 1;
+    return 0;
+}
+
 static int expr_parse_primary(ExprParser *parser) {
     if (parser->current.kind == EXPR_TOKEN_NUMBER || parser->current.kind == EXPR_TOKEN_CHAR) {
         long long value = parser->current.number_value;
@@ -828,48 +861,49 @@ static int expr_parse_primary(ExprParser *parser) {
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
             static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-            static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5"};
+            static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
             int arg_count = 0;
+            int register_arg_count = backend_is_aarch64(parser->state) ? 8 : 6;
+            int stack_arg_count = 0;
+            int stack_slot_size = backend_is_aarch64(parser->state) ? 16 : 8;
 
             (void)expr_match_punct(parser, "(");
             if (!(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
-                for (;;) {
-                    if (expr_parse_expression(parser) != 0) {
-                        return -1;
-                    }
-                    if (emit_push_value(parser->state) != 0) {
-                        return -1;
-                    }
-                    arg_count += 1;
-                    if (arg_count > 6) {
-                        set_error(parser->state->backend, "backend only supports up to 6 call arguments");
-                        return -1;
-                    }
-                    if (!expr_match_punct(parser, ",")) {
-                        break;
-                    }
+                if (expr_parse_call_arguments(parser, &arg_count, 32) != 0) {
+                    return -1;
                 }
             }
             if (expr_expect_punct(parser, ")") != 0) {
                 return -1;
             }
-            while (arg_count > 0) {
-                arg_count -= 1;
-                {
+
+            if (arg_count < register_arg_count) {
+                register_arg_count = arg_count;
+            }
+            stack_arg_count = arg_count - register_arg_count;
+
+            {
+                int reg_index;
+                for (reg_index = 0; reg_index < register_arg_count; ++reg_index) {
                     char line[64];
-                    const char *reg = backend_is_aarch64(parser->state) ? aarch64_arg_regs[arg_count] : x86_arg_regs[arg_count];
+                    unsigned long long offset_bytes =
+                        (unsigned long long)(stack_arg_count + (register_arg_count - 1 - reg_index)) *
+                        (unsigned long long)stack_slot_size;
+                    char offset_text[32];
+                    const char *reg = backend_is_aarch64(parser->state) ? aarch64_arg_regs[reg_index] : x86_arg_regs[reg_index];
+                    rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
                     if (backend_is_aarch64(parser->state)) {
                         rt_copy_string(line, sizeof(line), "ldr ");
                         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp]");
-                        if (emit_instruction(parser->state, line) != 0 ||
-                            emit_instruction(parser->state, "add sp, sp, #16") != 0) {
-                            return -1;
-                        }
-                        continue;
+                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp, #");
+                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
+                    } else {
+                        rt_copy_string(line, sizeof(line), "movq ");
+                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rsp), ");
+                        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
                     }
-                    rt_copy_string(line, sizeof(line), "popq ");
-                    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
                     if (emit_instruction(parser->state, line) != 0) {
                         return -1;
                     }
@@ -881,16 +915,58 @@ static int expr_parse_primary(ExprParser *parser) {
                  find_constant(parser->state, name) < 0)) {
                 char line[96];
                 char symbol[COMPILER_IR_NAME_CAPACITY];
+                int call_result;
                 format_symbol_name(parser->state, name, symbol, sizeof(symbol));
                 rt_copy_string(line, sizeof(line), backend_is_aarch64(parser->state) ? "bl " : "call ");
                 rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
-                return emit_instruction(parser->state, line);
+                call_result = emit_instruction(parser->state, line);
+                if (call_result != 0) {
+                    return -1;
+                }
+                if (arg_count > 0) {
+                    char cleanup[64];
+                    unsigned long long cleanup_bytes = (unsigned long long)arg_count * (unsigned long long)stack_slot_size;
+                    char digits[32];
+                    rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
+                    if (backend_is_aarch64(parser->state)) {
+                        rt_copy_string(cleanup, sizeof(cleanup), "add sp, sp, #");
+                        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
+                    } else {
+                        rt_copy_string(cleanup, sizeof(cleanup), "addq $");
+                        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
+                        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), ", %rsp");
+                    }
+                    if (emit_instruction(parser->state, cleanup) != 0) {
+                        return -1;
+                    }
+                }
+                return 0;
             }
 
             if (emit_load_name_into_register(parser->state, name, backend_is_aarch64(parser->state) ? "x16" : "%r11") != 0) {
                 return -1;
             }
-            return emit_instruction(parser->state, backend_is_aarch64(parser->state) ? "blr x16" : "call *%r11");
+            if (emit_instruction(parser->state, backend_is_aarch64(parser->state) ? "blr x16" : "call *%r11") != 0) {
+                return -1;
+            }
+            if (arg_count > 0) {
+                char cleanup[64];
+                unsigned long long cleanup_bytes = (unsigned long long)arg_count * (unsigned long long)stack_slot_size;
+                char digits[32];
+                rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
+                if (backend_is_aarch64(parser->state)) {
+                    rt_copy_string(cleanup, sizeof(cleanup), "add sp, sp, #");
+                    rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
+                } else {
+                    rt_copy_string(cleanup, sizeof(cleanup), "addq $");
+                    rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
+                    rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), ", %rsp");
+                }
+                if (emit_instruction(parser->state, cleanup) != 0) {
+                    return -1;
+                }
+            }
+            return 0;
         }
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
@@ -1692,3 +1768,96 @@ static int emit_array_initializer_store(BackendState *state, const char *name, c
         }
         index += 1U;
         if (!expr_match_punct(&parser, ",")) {
+            break;
+        }
+    }
+
+    if (!expr_match_punct(&parser, "}")) {
+        set_error(state->backend, "unsupported primary expression in backend");
+        return -1;
+    }
+
+    if (parser.current.kind != EXPR_TOKEN_EOF) {
+        set_error(state->backend, "unsupported primary expression in backend");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int emit_object_initializer_store(BackendState *state, const char *name, const char *expr) {
+    ExprParser parser;
+    unsigned long long index;
+    unsigned long long slot_count = 1ULL;
+    int byte_sized = 0;
+    int word_index = 1;
+    int local_index = find_local(state, name);
+    int global_index = find_global(state, name);
+
+    if (local_index < 0 && global_index < 0) {
+        set_error(state->backend, "unsupported assignment target in backend");
+        return -1;
+    }
+
+    if (local_index >= 0) {
+        if (state->locals[local_index].stack_bytes <= 1) {
+            byte_sized = 1;
+            word_index = 0;
+        } else {
+            slot_count = (unsigned long long)(state->locals[local_index].stack_bytes / 8);
+            if (slot_count == 0ULL) {
+                slot_count = 1ULL;
+            }
+        }
+    }
+
+    for (index = 0; index < slot_count; ++index) {
+        if (emit_array_element_address(state, name, word_index, index) != 0 ||
+            emit_load_immediate(state, 0) != 0 ||
+            emit_pop_address_and_store(state, byte_sized) != 0) {
+            return -1;
+        }
+    }
+
+    parser.cursor = expr;
+    parser.state = state;
+    expr_next(&parser);
+
+    if (!expr_match_punct(&parser, "{")) {
+        set_error(state->backend, "unsupported primary expression in backend");
+        return -1;
+    }
+
+    index = 0ULL;
+    while (parser.current.kind != EXPR_TOKEN_EOF &&
+           !(parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "}"))) {
+        if (index < slot_count) {
+            if (emit_array_element_address(state, name, word_index, index) != 0 ||
+                expr_parse_assignment(&parser) != 0 ||
+                emit_pop_address_and_store(state, byte_sized) != 0) {
+                return -1;
+            }
+        } else {
+            if (expr_parse_assignment(&parser) != 0) {
+                return -1;
+            }
+        }
+        index += 1ULL;
+
+        if (!expr_match_punct(&parser, ",")) {
+            break;
+        }
+    }
+
+    if (!expr_match_punct(&parser, "}")) {
+        set_error(state->backend, "unsupported primary expression in backend");
+        return -1;
+    }
+
+    if (parser.current.kind != EXPR_TOKEN_EOF) {
+        set_error(state->backend, "unsupported primary expression in backend");
+        return -1;
+    }
+
+    return 0;
+}
