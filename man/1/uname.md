@@ -1,0 +1,45 @@
+# UNAME
+
+## NAME
+
+uname - print system and kernel identity information
+
+## SYNOPSIS
+
+```text
+uname [-asnrvmipo] [--all] [--kernel-name] [--nodename] [--kernel-release] [--kernel-version] [--machine] [--processor] [--hardware-platform] [--operating-system]
+```
+
+## DESCRIPTION
+
+`uname` prints identifying information about the current system through the
+project's platform abstraction layer.
+
+## CURRENT CAPABILITIES
+
+- kernel name, hostname, release, version, and machine output
+- aggregate output with `-a` or `--all`
+- long-option forms for the common identity fields
+
+## OPTIONS
+
+- `-a`, `--all` print the standard full summary
+- `-s`, `-n`, `-r`, `-v`, `-m` select individual fields
+- `-p`, `-i`, `-o` request processor, hardware-platform, and operating-system style output
+
+## LIMITATIONS
+
+- some secondary fields may map to the same underlying platform information
+- output reflects the current platform backend rather than host `uname` quirks
+
+## EXAMPLES
+
+```text
+uname
+uname -a
+uname -sm
+```
+
+## SEE ALSO
+
+hostname, id, uptime
