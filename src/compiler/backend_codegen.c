@@ -1,5 +1,7 @@
 /* IR prescan, data emission, and assembly dispatch helpers. */
 
+#include "backend_internal.h"
+
 static int parse_decl_line(const char *line,
                            char *storage,
                            size_t storage_size,
@@ -247,7 +249,7 @@ static int emit_globals(BackendState *state) {
     }
 
     if (emit_line(state, ".data") != 0) {
-        set_error(state->backend, "failed to emit data section");
+        backend_set_error(state->backend, "failed to emit data section");
         return -1;
     }
 
@@ -261,7 +263,7 @@ static int emit_globals(BackendState *state) {
             emit_line(state, symbol) != 0 ||
             emit_text(state, symbol) != 0 ||
             emit_line(state, ":") != 0) {
-            set_error(state->backend, "failed to emit global symbol");
+            backend_set_error(state->backend, "failed to emit global symbol");
             return -1;
         }
 
@@ -274,7 +276,7 @@ static int emit_globals(BackendState *state) {
         }
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
         if (emit_line(state, line) != 0) {
-            set_error(state->backend, "failed to emit global initializer");
+            backend_set_error(state->backend, "failed to emit global initializer");
             return -1;
         }
     }
@@ -289,7 +291,7 @@ static int emit_string_literals(BackendState *state) {
         return 0;
     }
     if (emit_line(state, ".data") != 0) {
-        set_error(state->backend, "failed to emit string literal section");
+        backend_set_error(state->backend, "failed to emit string literal section");
         return -1;
     }
     for (i = 0; i < state->string_count; ++i) {
@@ -301,7 +303,7 @@ static int emit_string_literals(BackendState *state) {
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), state->strings[i].label);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ":");
         if (emit_line(state, line) != 0) {
-            set_error(state->backend, "failed to emit string literal label");
+            backend_set_error(state->backend, "failed to emit string literal label");
             return -1;
         }
 
@@ -328,7 +330,7 @@ static int emit_string_literals(BackendState *state) {
         line[out++] = '"';
         line[out] = '\0';
         if (emit_line(state, line) != 0) {
-            set_error(state->backend, "failed to emit string literal contents");
+            backend_set_error(state->backend, "failed to emit string literal contents");
             return -1;
         }
     }
@@ -347,29 +349,29 @@ static int begin_function(BackendState *state, const char *name) {
     format_symbol_name(state, name, symbol, sizeof(symbol));
 
     if (emit_line(state, ".text") != 0) {
-        set_error(state->backend, "failed to emit text section");
+        backend_set_error(state->backend, "failed to emit text section");
         return -1;
     }
     if (backend_is_aarch64(state) && emit_line(state, ".p2align 2") != 0) {
-        set_error(state->backend, "failed to emit function alignment");
+        backend_set_error(state->backend, "failed to emit function alignment");
         return -1;
     }
     if (emit_text(state, ".globl ") != 0 ||
         emit_line(state, symbol) != 0 ||
         emit_text(state, symbol) != 0 ||
         emit_line(state, ":") != 0) {
-        set_error(state->backend, "failed to emit function label");
+        backend_set_error(state->backend, "failed to emit function label");
         return -1;
     }
     if (backend_is_aarch64(state)) {
         if (emit_instruction(state, "stp x29, x30, [sp, #-16]!") != 0 ||
             emit_instruction(state, "mov x29, sp") != 0) {
-            set_error(state->backend, "failed to emit AArch64 function prologue");
+            backend_set_error(state->backend, "failed to emit AArch64 function prologue");
             return -1;
         }
     } else if (emit_instruction(state, "pushq %rbp") != 0 ||
                emit_instruction(state, "movq %rsp, %rbp") != 0) {
-        set_error(state->backend, "failed to emit x86_64 function prologue");
+        backend_set_error(state->backend, "failed to emit x86_64 function prologue");
         return -1;
     }
     return 0;
@@ -570,12 +572,12 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 if (*expr == '{') {
                     if (is_array_target) {
                         if (emit_array_initializer_store(&state, name, expr) != 0) {
-                            set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                            backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                             return -1;
                         }
                     } else {
                         if (emit_object_initializer_store(&state, name, expr) != 0) {
-                            set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                            backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                             return -1;
                         }
                     }
@@ -583,14 +585,14 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 }
                 if (*expr == '"' && is_array_target) {
                     if (emit_array_initializer_store(&state, name, expr) != 0) {
-                        set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                        backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                         return -1;
                     }
                     continue;
                 }
             }
             if (emit_expression(&state, expr) != 0 || emit_store_name(&state, name) != 0) {
-                set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
             }
             continue;
@@ -598,7 +600,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
         if (starts_with(line, "eval ")) {
             if (emit_expression(&state, line + 5) != 0) {
-                set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
             }
             continue;
@@ -629,7 +631,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
             const char *separator = find_ir_separator_outside_quotes(arrow, " -> ");
             if (separator == 0) {
-                set_error_with_line(backend, "malformed branch instruction in backend", line);
+                backend_set_error_with_line(backend, "malformed branch instruction in backend", line);
                 return -1;
             }
             while (arrow < separator && out + 1 < sizeof(expr)) {
@@ -661,7 +663,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             write_label_name(asm_label, sizeof(asm_label), line + 6);
             rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
             if (emit_line(&state, asm_label) != 0) {
-                set_error(backend, "failed to emit branch label");
+                backend_set_error(backend, "failed to emit branch label");
                 return -1;
             }
             continue;

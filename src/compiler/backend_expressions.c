@@ -1,7 +1,23 @@
 /* Expression lowering and initializer emission helpers. */
 
+#include "backend_internal.h"
+
 static int expr_match_punct(ExprParser *parser, const char *text);
 static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address);
+static int expr_read_punctuator_width(const char *cursor);
+static int emit_binary_op(BackendState *state, const char *op);
+static int expr_parse_expression(ExprParser *parser);
+static int expr_parse_assignment(ExprParser *parser);
+static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized);
+static int expr_parse_unary(ExprParser *parser);
+static int expr_parse_multiplicative(ExprParser *parser);
+static int expr_parse_additive(ExprParser *parser);
+static int expr_parse_shift(ExprParser *parser);
+static int expr_parse_relational(ExprParser *parser);
+static int expr_parse_equality(ExprParser *parser);
+static int expr_parse_bitand(ExprParser *parser);
+static int expr_parse_bitxor(ExprParser *parser);
+static int expr_parse_bitor(ExprParser *parser);
 
 static void expr_next(ExprParser *parser) {
     const char *cursor = skip_spaces(parser->cursor);
@@ -166,7 +182,7 @@ static int expr_match_punct(ExprParser *parser, const char *text) {
 
 static int expr_expect_punct(ExprParser *parser, const char *text) {
     if (!expr_match_punct(parser, text)) {
-        set_error(parser->state->backend, "unsupported expression syntax in backend");
+        backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
         return -1;
     }
     return 0;
@@ -655,7 +671,7 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
             (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->"))) {
             expr_next(parser);
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
-                set_error(parser->state->backend, "unsupported expression syntax in backend");
+                backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
                 return -1;
             }
             word_index = member_prefers_word_index(parser->current.text);
@@ -672,7 +688,7 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
         int delta;
 
         if (!current_is_address) {
-            set_error(parser->state->backend, "unsupported expression syntax in backend");
+            backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
             return -1;
         }
 
@@ -822,7 +838,7 @@ static int expr_parse_call_arguments(ExprParser *parser, int *arg_count_out, int
             return -1;
         }
         if (tail_count + 1 > max_arg_count) {
-            set_error(parser->state->backend,
+            backend_set_error(parser->state->backend,
                       "backend only supports up to 32 call arguments");
             return -1;
         }
@@ -1034,7 +1050,7 @@ static int expr_parse_primary(ExprParser *parser) {
             }
             if (parser->current.kind != EXPR_TOKEN_PUNCT ||
                 (!names_equal(parser->current.text, "++") && !names_equal(parser->current.text, "--"))) {
-                set_error(parser->state->backend, "unsupported expression syntax in backend");
+                backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
                 return -1;
             }
             delta = names_equal(parser->current.text, "++") ? 1 : -1;
@@ -1047,7 +1063,7 @@ static int expr_parse_primary(ExprParser *parser) {
         return expr_parse_postfix_suffixes(parser, 0, 0, 0);
     }
 
-    set_error(parser->state->backend, "unsupported primary expression in backend");
+    backend_set_error(parser->state->backend, "unsupported primary expression in backend");
     return -1;
 }
 
@@ -1078,7 +1094,7 @@ static int expr_parse_unary(ExprParser *parser) {
         if (is_incdec_text(op)) {
             int delta = names_equal(op, "++") ? 1 : -1;
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
-                set_error(parser->state->backend, "backend only supports ++/-- on identifiers");
+                backend_set_error(parser->state->backend, "backend only supports ++/-- on identifiers");
                 return -1;
             }
             if (emit_identifier_incdec(parser->state, parser->current.text, delta, 0) != 0) {
@@ -1188,7 +1204,7 @@ static int emit_binary_op(BackendState *state, const char *op) {
         if (names_equal(op, "!=")) return emit_set_condition(state, "ne");
     }
 
-    set_error(state->backend, "unsupported binary operation in backend");
+    backend_set_error(state->backend, "unsupported binary operation in backend");
     return -1;
 }
 
@@ -1237,7 +1253,7 @@ static int expr_parse_chain(ExprParser *parser, int level, const char *const *op
             }
             break;
         default:
-            set_error(parser->state->backend, "unsupported expression precedence in backend");
+            backend_set_error(parser->state->backend, "unsupported expression precedence in backend");
             return -1;
     }
 
@@ -1306,7 +1322,7 @@ static int expr_parse_chain(ExprParser *parser, int level, const char *const *op
                 }
                 break;
             default:
-                set_error(parser->state->backend, "unsupported expression precedence in backend");
+                backend_set_error(parser->state->backend, "unsupported expression precedence in backend");
                 return -1;
         }
         if (emit_binary_op(parser->state, op) != 0) {
@@ -1581,7 +1597,7 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
             if (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->")) {
                 expr_next(parser);
                 if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
-                    set_error(parser->state->backend, "unsupported assignment target in backend");
+                    backend_set_error(parser->state->backend, "unsupported assignment target in backend");
                     return -1;
                 }
                 *byte_sized = member_prefers_word_index(parser->current.text) ? 0 : 1;
@@ -1594,7 +1610,7 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         return 0;
     }
 
-    set_error(parser->state->backend, "unsupported assignment target in backend");
+    backend_set_error(parser->state->backend, "unsupported assignment target in backend");
     return -1;
 }
 
@@ -1637,7 +1653,7 @@ static int expr_parse_assignment(ExprParser *parser) {
             return -1;
         }
         if (parser->current.kind != EXPR_TOKEN_PUNCT || !names_equal(parser->current.text, op)) {
-            set_error(parser->state->backend, "unsupported expression syntax in backend");
+            backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
             return -1;
         }
         expr_next(parser);
@@ -1680,7 +1696,7 @@ static int expr_parse_expression(ExprParser *parser) {
     return 0;
 }
 
-static int emit_expression(BackendState *state, const char *expr) {
+int emit_expression(BackendState *state, const char *expr) {
     ExprParser parser;
 
     parser.cursor = expr;
@@ -1705,7 +1721,7 @@ static int emit_expression(BackendState *state, const char *expr) {
             }
             message[used++] = '`';
             message[used] = '\0';
-            set_error(state->backend, message);
+            backend_set_error(state->backend, message);
         }
         return -1;
     }
@@ -1731,14 +1747,14 @@ static int emit_array_element_address(BackendState *state,
     return emit_push_value(state);
 }
 
-static int emit_array_initializer_store(BackendState *state, const char *name, const char *expr) {
+int emit_array_initializer_store(BackendState *state, const char *name, const char *expr) {
     ExprParser parser;
     unsigned long long index = 0;
     int word_index = 0;
     int byte_sized;
 
     if (!lookup_array_storage(state, name, &word_index)) {
-        set_error(state->backend, "unsupported assignment target in backend");
+        backend_set_error(state->backend, "unsupported assignment target in backend");
         return -1;
     }
 
@@ -1765,14 +1781,14 @@ static int emit_array_initializer_store(BackendState *state, const char *name, c
         }
         expr_next(&parser);
         if (parser.current.kind != EXPR_TOKEN_EOF) {
-            set_error(state->backend, "unsupported primary expression in backend");
+            backend_set_error(state->backend, "unsupported primary expression in backend");
             return -1;
         }
         return 0;
     }
 
     if (!expr_match_punct(&parser, "{")) {
-        set_error(state->backend, "unsupported primary expression in backend");
+        backend_set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 
@@ -1794,19 +1810,19 @@ static int emit_array_initializer_store(BackendState *state, const char *name, c
     }
 
     if (!expr_match_punct(&parser, "}")) {
-        set_error(state->backend, "unsupported primary expression in backend");
+        backend_set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 
     if (parser.current.kind != EXPR_TOKEN_EOF) {
-        set_error(state->backend, "unsupported primary expression in backend");
+        backend_set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 
     return 0;
 }
 
-static int emit_object_initializer_store(BackendState *state, const char *name, const char *expr) {
+int emit_object_initializer_store(BackendState *state, const char *name, const char *expr) {
     ExprParser parser;
     unsigned long long index;
     unsigned long long slot_count = 1ULL;
@@ -1816,7 +1832,7 @@ static int emit_object_initializer_store(BackendState *state, const char *name, 
     int global_index = find_global(state, name);
 
     if (local_index < 0 && global_index < 0) {
-        set_error(state->backend, "unsupported assignment target in backend");
+        backend_set_error(state->backend, "unsupported assignment target in backend");
         return -1;
     }
 
@@ -1845,7 +1861,7 @@ static int emit_object_initializer_store(BackendState *state, const char *name, 
     expr_next(&parser);
 
     if (!expr_match_punct(&parser, "{")) {
-        set_error(state->backend, "unsupported primary expression in backend");
+        backend_set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 
@@ -1871,12 +1887,12 @@ static int emit_object_initializer_store(BackendState *state, const char *name, 
     }
 
     if (!expr_match_punct(&parser, "}")) {
-        set_error(state->backend, "unsupported primary expression in backend");
+        backend_set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 
     if (parser.current.kind != EXPR_TOKEN_EOF) {
-        set_error(state->backend, "unsupported primary expression in backend");
+        backend_set_error(state->backend, "unsupported primary expression in backend");
         return -1;
     }
 

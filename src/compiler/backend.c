@@ -1,112 +1,10 @@
-#include "backend.h"
+#include "backend_internal.h"
 
-#include "runtime.h"
-
-#define COMPILER_BACKEND_MAX_FUNCTIONS 256
-#define COMPILER_BACKEND_MAX_GLOBALS 256
-#define COMPILER_BACKEND_MAX_LOCALS 256
-#define COMPILER_BACKEND_MAX_STRINGS 1024
-#define COMPILER_BACKEND_MAX_CONSTANTS 512
-#define BACKEND_ARRAY_STACK_BYTES 4096
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-} BackendFunctionName;
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-    long long init_value;
-    int initialized;
-    int is_array;
-    int prefers_word_index;
-} BackendGlobal;
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-    int offset;
-    int stack_bytes;
-    int is_array;
-    int prefers_word_index;
-} BackendLocal;
-
-typedef struct {
-    char label[32];
-    char text[COMPILER_IR_LINE_CAPACITY];
-} BackendStringLiteral;
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-    long long value;
-} BackendConstant;
-
-typedef struct {
-    CompilerBackend *backend;
-    int fd;
-    BackendFunctionName functions[COMPILER_BACKEND_MAX_FUNCTIONS];
-    size_t function_count;
-    BackendGlobal globals[COMPILER_BACKEND_MAX_GLOBALS];
-    size_t global_count;
-    BackendStringLiteral strings[COMPILER_BACKEND_MAX_STRINGS];
-    size_t string_count;
-    BackendConstant constants[COMPILER_BACKEND_MAX_CONSTANTS];
-    size_t constant_count;
-    BackendLocal locals[COMPILER_BACKEND_MAX_LOCALS];
-    size_t local_count;
-    char current_function[COMPILER_IR_NAME_CAPACITY];
-    int in_function;
-    int param_count;
-    int saw_return_in_function;
-    int stack_size;
-    unsigned int label_counter;
-} BackendState;
-
-typedef enum {
-    EXPR_TOKEN_EOF = 0,
-    EXPR_TOKEN_IDENTIFIER,
-    EXPR_TOKEN_NUMBER,
-    EXPR_TOKEN_CHAR,
-    EXPR_TOKEN_STRING,
-    EXPR_TOKEN_PUNCT
-} ExprTokenKind;
-
-typedef struct {
-    ExprTokenKind kind;
-    char text[COMPILER_IR_LINE_CAPACITY];
-    long long number_value;
-} ExprToken;
-
-typedef struct {
-    const char *cursor;
-    ExprToken current;
-    BackendState *state;
-} ExprParser;
-
-static int expr_parse_expression(ExprParser *parser);
-static int expr_parse_assignment(ExprParser *parser);
-static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized);
-static int expr_parse_unary(ExprParser *parser);
-static int expr_parse_multiplicative(ExprParser *parser);
-static int expr_parse_additive(ExprParser *parser);
-static int expr_parse_shift(ExprParser *parser);
-static int expr_parse_relational(ExprParser *parser);
-static int expr_parse_equality(ExprParser *parser);
-static int expr_parse_bitand(ExprParser *parser);
-static int expr_parse_bitxor(ExprParser *parser);
-static int expr_parse_bitor(ExprParser *parser);
-static int emit_binary_op(BackendState *state, const char *op);
-static int emit_push_value(BackendState *state);
-static int emit_load_immediate(BackendState *state, long long value);
-static int emit_binary_op(BackendState *state, const char *op);
-static int expr_read_punctuator_width(const char *cursor);
-static int is_assignment_operator_text(const char *text);
-static int is_assignment_stop_text(const char *text);
-static const char *binary_op_for_assignment(const char *op);
-
-static void set_error(CompilerBackend *backend, const char *message) {
+void backend_set_error(CompilerBackend *backend, const char *message) {
     rt_copy_string(backend->error_message, sizeof(backend->error_message), message != 0 ? message : "backend error");
 }
 
-static void set_error_with_line(CompilerBackend *backend, const char *message, const char *line) {
+void backend_set_error_with_line(CompilerBackend *backend, const char *message, const char *line) {
     char buffer[COMPILER_ERROR_CAPACITY];
     size_t used;
     size_t i = 0;
@@ -125,30 +23,30 @@ static void set_error_with_line(CompilerBackend *backend, const char *message, c
     }
     buffer[used++] = '`';
     buffer[used] = '\0';
-    set_error(backend, buffer);
+    backend_set_error(backend, buffer);
 }
 
-static int emit_text(BackendState *state, const char *text) {
+int emit_text(BackendState *state, const char *text) {
     return rt_write_cstr(state->fd, text);
 }
 
-static int emit_line(BackendState *state, const char *text) {
+int emit_line(BackendState *state, const char *text) {
     return rt_write_line(state->fd, text);
 }
 
-static int emit_instruction(BackendState *state, const char *text) {
+int emit_instruction(BackendState *state, const char *text) {
     if (emit_text(state, "    ") != 0 || emit_line(state, text) != 0) {
-        set_error(state->backend, "failed to write assembly output");
+        backend_set_error(state->backend, "failed to write assembly output");
         return -1;
     }
     return 0;
 }
 
-static int names_equal(const char *lhs, const char *rhs) {
+int names_equal(const char *lhs, const char *rhs) {
     return rt_strcmp(lhs, rhs) == 0;
 }
 
-static int text_contains(const char *text, const char *needle) {
+int text_contains(const char *text, const char *needle) {
     size_t i;
     size_t needle_length = rt_strlen(needle);
 
@@ -167,7 +65,7 @@ static int text_contains(const char *text, const char *needle) {
     return 0;
 }
 
-static int starts_with(const char *text, const char *prefix) {
+int starts_with(const char *text, const char *prefix) {
     size_t i = 0;
     while (prefix[i] != '\0') {
         if (text[i] != prefix[i]) {
@@ -178,7 +76,7 @@ static int starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
-static int name_looks_like_macro_constant(const char *name) {
+int name_looks_like_macro_constant(const char *name) {
     size_t i = 0;
     int saw_alpha = 0;
 
@@ -202,23 +100,23 @@ static int name_looks_like_macro_constant(const char *name) {
     return saw_alpha;
 }
 
-static const char *skip_spaces(const char *text) {
+const char *skip_spaces(const char *text) {
     while (*text == ' ' || *text == '\t') {
         text += 1;
     }
     return text;
 }
 
-static int backend_is_aarch64(const BackendState *state) {
+int backend_is_aarch64(const BackendState *state) {
     return state->backend->target == COMPILER_BACKEND_TARGET_LINUX_AARCH64 ||
            state->backend->target == COMPILER_BACKEND_TARGET_MACOS_AARCH64;
 }
 
-static int backend_is_darwin(const BackendState *state) {
+int backend_is_darwin(const BackendState *state) {
     return state->backend->target == COMPILER_BACKEND_TARGET_MACOS_AARCH64;
 }
 
-static void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size) {
+void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size) {
     if (backend_is_darwin(state)) {
         rt_copy_string(buffer, buffer_size, "_");
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), name);
@@ -227,7 +125,7 @@ static void format_symbol_name(const BackendState *state, const char *name, char
     }
 }
 
-static void copy_last_word(const char *text, char *buffer, size_t buffer_size) {
+void copy_last_word(const char *text, char *buffer, size_t buffer_size) {
     size_t start = 0;
     size_t end = rt_strlen(text);
     size_t i;
@@ -249,7 +147,7 @@ static void copy_last_word(const char *text, char *buffer, size_t buffer_size) {
     buffer[out] = '\0';
 }
 
-static int parse_signed_value(const char *text, long long *value_out) {
+int parse_signed_value(const char *text, long long *value_out) {
     int negative = 0;
     unsigned long long magnitude = 0;
     unsigned int base = 10;
@@ -306,7 +204,7 @@ static int parse_signed_value(const char *text, long long *value_out) {
     return 0;
 }
 
-static int add_function_name(BackendState *state, const char *name) {
+int add_function_name(BackendState *state, const char *name) {
     size_t i;
 
     for (i = 0; i < state->function_count; ++i) {
@@ -316,7 +214,7 @@ static int add_function_name(BackendState *state, const char *name) {
     }
 
     if (state->function_count >= COMPILER_BACKEND_MAX_FUNCTIONS) {
-        set_error(state->backend, "too many functions for backend");
+        backend_set_error(state->backend, "too many functions for backend");
         return -1;
     }
 
@@ -325,7 +223,7 @@ static int add_function_name(BackendState *state, const char *name) {
     return 0;
 }
 
-static int should_prefer_word_index(const char *name, const char *type_text) {
+int should_prefer_word_index(const char *name, const char *type_text) {
     if (names_equal(name, "argv") || names_equal(name, "envp")) {
         return 1;
     }
@@ -338,7 +236,7 @@ static int should_prefer_word_index(const char *name, const char *type_text) {
     return 0;
 }
 
-static int is_function_name(const BackendState *state, const char *name) {
+int is_function_name(const BackendState *state, const char *name) {
     size_t i;
     for (i = 0; i < state->function_count; ++i) {
         if (names_equal(state->functions[i].name, name)) {
@@ -348,7 +246,7 @@ static int is_function_name(const BackendState *state, const char *name) {
     return 0;
 }
 
-static int find_global(const BackendState *state, const char *name) {
+int find_global(const BackendState *state, const char *name) {
     size_t i;
     for (i = 0; i < state->global_count; ++i) {
         if (names_equal(state->globals[i].name, name)) {
@@ -358,7 +256,7 @@ static int find_global(const BackendState *state, const char *name) {
     return -1;
 }
 
-static int find_constant(const BackendState *state, const char *name) {
+int find_constant(const BackendState *state, const char *name) {
     size_t i;
     for (i = 0; i < state->constant_count; ++i) {
         if (names_equal(state->constants[i].name, name)) {
@@ -368,7 +266,7 @@ static int find_constant(const BackendState *state, const char *name) {
     return -1;
 }
 
-static int add_constant(BackendState *state, const char *name, long long value) {
+int add_constant(BackendState *state, const char *name, long long value) {
     int existing = find_constant(state, name);
 
     if (existing >= 0) {
@@ -377,7 +275,7 @@ static int add_constant(BackendState *state, const char *name, long long value) 
     }
 
     if (state->constant_count >= COMPILER_BACKEND_MAX_CONSTANTS) {
-        set_error(state->backend, "too many constants for backend");
+        backend_set_error(state->backend, "too many constants for backend");
         return -1;
     }
 
@@ -387,7 +285,7 @@ static int add_constant(BackendState *state, const char *name, long long value) 
     return 0;
 }
 
-static int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index) {
+int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index) {
     int existing = find_global(state, name);
 
     if (existing >= 0) {
@@ -401,7 +299,7 @@ static int add_global(BackendState *state, const char *name, int is_array, int p
     }
 
     if (state->global_count >= COMPILER_BACKEND_MAX_GLOBALS) {
-        set_error(state->backend, "too many globals for backend");
+        backend_set_error(state->backend, "too many globals for backend");
         return -1;
     }
 
@@ -414,7 +312,7 @@ static int add_global(BackendState *state, const char *name, int is_array, int p
     return (int)(state->global_count - 1U);
 }
 
-static int find_local(const BackendState *state, const char *name) {
+int find_local(const BackendState *state, const char *name) {
     size_t i = state->local_count;
     while (i > 0) {
         i -= 1U;
@@ -425,10 +323,7 @@ static int find_local(const BackendState *state, const char *name) {
     return -1;
 }
 
-static int emit_load_immediate_register(BackendState *state, const char *reg, long long value);
-static int emit_binary_op(BackendState *state, const char *op);
-
-static int allocate_local(BackendState *state, const char *name, int is_array, int prefers_word_index) {
+int allocate_local(BackendState *state, const char *name, int is_array, int prefers_word_index) {
     char line[96];
     char offset_text[32];
     int existing = find_local(state, name);
@@ -445,7 +340,7 @@ static int allocate_local(BackendState *state, const char *name, int is_array, i
     }
 
     if (state->local_count >= COMPILER_BACKEND_MAX_LOCALS) {
-        set_error(state->backend, "too many local variables for backend");
+        backend_set_error(state->backend, "too many local variables for backend");
         return -1;
     }
 
@@ -476,13 +371,13 @@ static int allocate_local(BackendState *state, const char *name, int is_array, i
     }
 }
 
-static int write_label_name(char *buffer, size_t buffer_size, const char *label) {
+int write_label_name(char *buffer, size_t buffer_size, const char *label) {
     rt_copy_string(buffer, buffer_size, ".L");
     rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), label);
     return 0;
 }
 
-static int emit_pop_to_register(BackendState *state, const char *reg) {
+int emit_pop_to_register(BackendState *state, const char *reg) {
     char line[64];
     if (backend_is_aarch64(state)) {
         rt_copy_string(line, sizeof(line), "ldr ");
@@ -496,7 +391,7 @@ static int emit_pop_to_register(BackendState *state, const char *reg) {
     return emit_instruction(state, line);
 }
 
-static int emit_local_address(BackendState *state, int offset, const char *reg) {
+int emit_local_address(BackendState *state, int offset, const char *reg) {
     char line[128];
     char offset_text[32];
 
@@ -526,7 +421,7 @@ static int emit_local_address(BackendState *state, int offset, const char *reg) 
     return emit_instruction(state, line);
 }
 
-static int emit_load_from_address_into_register(BackendState *state, const char *address_reg, const char *dst_reg, int byte_value) {
+int emit_load_from_address_into_register(BackendState *state, const char *address_reg, const char *dst_reg, int byte_value) {
     char line[64];
 
     if (backend_is_aarch64(state)) {
@@ -546,11 +441,11 @@ static int emit_load_from_address_into_register(BackendState *state, const char 
     return emit_instruction(state, line);
 }
 
-static int emit_load_from_address_register(BackendState *state, const char *reg, int byte_value) {
+int emit_load_from_address_register(BackendState *state, const char *reg, int byte_value) {
     return emit_load_from_address_into_register(state, reg, backend_is_aarch64(state) ? "x0" : "%rax", byte_value);
 }
 
-static int emit_move_value_register(BackendState *state, const char *dst_reg) {
+int emit_move_value_register(BackendState *state, const char *dst_reg) {
     char line[64];
 
     if (backend_is_aarch64(state)) {
@@ -571,7 +466,7 @@ static int emit_move_value_register(BackendState *state, const char *dst_reg) {
     return emit_instruction(state, line);
 }
 
-static int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value) {
+int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value) {
     char line[64];
     if (backend_is_aarch64(state)) {
         rt_copy_string(line, sizeof(line), byte_value ? "strb w0, [" : "str x0, [");
@@ -586,12 +481,12 @@ static int emit_store_to_address_register(BackendState *state, const char *reg, 
     return emit_instruction(state, line);
 }
 
-static int emit_pop_address_and_store(BackendState *state, int byte_value) {
+int emit_pop_address_and_store(BackendState *state, int byte_value) {
     return emit_pop_to_register(state, backend_is_aarch64(state) ? "x1" : "%rcx") == 0 &&
            emit_store_to_address_register(state, backend_is_aarch64(state) ? "x1" : "%rcx", byte_value) == 0 ? 0 : -1;
 }
 
-static int find_string_literal(const BackendState *state, const char *text) {
+int find_string_literal(const BackendState *state, const char *text) {
     size_t i;
     for (i = 0; i < state->string_count; ++i) {
         if (names_equal(state->strings[i].text, text)) {
@@ -601,7 +496,7 @@ static int find_string_literal(const BackendState *state, const char *text) {
     return -1;
 }
 
-static int add_string_literal(BackendState *state, const char *text) {
+int add_string_literal(BackendState *state, const char *text) {
     char digits[32];
     int existing = find_string_literal(state, text);
 
@@ -609,7 +504,7 @@ static int add_string_literal(BackendState *state, const char *text) {
         return existing;
     }
     if (state->string_count >= COMPILER_BACKEND_MAX_STRINGS) {
-        set_error(state->backend, "too many string literals for backend");
+        backend_set_error(state->backend, "too many string literals for backend");
         return -1;
     }
 
@@ -623,7 +518,7 @@ static int add_string_literal(BackendState *state, const char *text) {
     return (int)(state->string_count - 1U);
 }
 
-static int emit_address_of_name(BackendState *state, const char *name) {
+int emit_address_of_name(BackendState *state, const char *name) {
     char line[128];
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
@@ -686,11 +581,11 @@ static int emit_address_of_name(BackendState *state, const char *name) {
         return emit_instruction(state, line);
     }
 
-    set_error(state->backend, "backend only supports address-of on known storage");
+    backend_set_error(state->backend, "backend only supports address-of on known storage");
     return -1;
 }
 
-static int emit_load_string_literal(BackendState *state, const char *text) {
+int emit_load_string_literal(BackendState *state, const char *text) {
     char line[128];
     int index = add_string_literal(state, text);
     const char *label;
@@ -722,7 +617,7 @@ static int emit_load_string_literal(BackendState *state, const char *text) {
     return emit_instruction(state, line);
 }
 
-static int emit_load_name_into_register(BackendState *state, const char *name, const char *dst_reg) {
+int emit_load_name_into_register(BackendState *state, const char *name, const char *dst_reg) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
     int constant_index = find_constant(state, name);
@@ -790,11 +685,11 @@ static int emit_load_name_into_register(BackendState *state, const char *name, c
         return emit_load_immediate_register(state, dst_reg, 0);
     }
 
-    set_error(state->backend, "unsupported value reference in backend");
+    backend_set_error(state->backend, "unsupported value reference in backend");
     return -1;
 }
 
-static int emit_load_name(BackendState *state, const char *name) {
+int emit_load_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
     int constant_index = find_constant(state, name);
@@ -852,17 +747,17 @@ static int emit_load_name(BackendState *state, const char *name) {
                                            emit_instruction(state, "movq $0, %rax");
     }
 
-    set_error(state->backend, "unsupported value reference in backend");
+    backend_set_error(state->backend, "unsupported value reference in backend");
     return -1;
 }
 
-static int emit_store_name(BackendState *state, const char *name) {
+int emit_store_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
 
     if (local_index >= 0) {
         if (state->locals[local_index].is_array) {
-            set_error(state->backend, "unsupported local array assignment in backend");
+            backend_set_error(state->backend, "unsupported local array assignment in backend");
             return -1;
         }
         return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rcx") == 0 &&
@@ -902,11 +797,11 @@ static int emit_store_name(BackendState *state, const char *name) {
         return 0;
     }
 
-    set_error(state->backend, "unknown assignment target in backend");
+    backend_set_error(state->backend, "unknown assignment target in backend");
     return -1;
 }
 
-static int lookup_array_storage(const BackendState *state, const char *name, int *word_index_out) {
+int lookup_array_storage(const BackendState *state, const char *name, int *word_index_out) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
 
@@ -921,7 +816,7 @@ static int lookup_array_storage(const BackendState *state, const char *name, int
     return 0;
 }
 
-static int emit_load_immediate_register(BackendState *state, const char *reg, long long value) {
+int emit_load_immediate_register(BackendState *state, const char *reg, long long value) {
     char digits[32];
     char line[96];
 
@@ -984,11 +879,11 @@ static int emit_load_immediate_register(BackendState *state, const char *reg, lo
     return 0;
 }
 
-static int emit_load_immediate(BackendState *state, long long value) {
+int emit_load_immediate(BackendState *state, long long value) {
     return emit_load_immediate_register(state, backend_is_aarch64(state) ? "x0" : "%rax", value);
 }
 
-static int emit_push_value(BackendState *state) {
+int emit_push_value(BackendState *state) {
     if (backend_is_aarch64(state)) {
         return emit_instruction(state, "sub sp, sp, #16") == 0 &&
                emit_instruction(state, "str x0, [sp]") == 0 ? 0 : -1;
@@ -996,12 +891,12 @@ static int emit_push_value(BackendState *state) {
     return emit_instruction(state, "pushq %rax");
 }
 
-static int emit_cmp_zero(BackendState *state) {
+int emit_cmp_zero(BackendState *state) {
     return backend_is_aarch64(state) ? emit_instruction(state, "cmp x0, #0") :
                                        emit_instruction(state, "cmpq $0, %rax");
 }
 
-static int emit_set_condition(BackendState *state, const char *condition) {
+int emit_set_condition(BackendState *state, const char *condition) {
     if (backend_is_aarch64(state)) {
         char line[32];
         rt_copy_string(line, sizeof(line), "cset x0, ");
@@ -1023,7 +918,7 @@ static int emit_set_condition(BackendState *state, const char *condition) {
     }
 }
 
-static int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *label) {
+int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *label) {
     char asm_label[96];
 
     if (backend_is_aarch64(state)) {
@@ -1036,8 +931,3 @@ static int emit_jump_to_label(BackendState *state, const char *mnemonic, const c
     rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), label);
     return emit_instruction(state, asm_label);
 }
-
-
-#include "backend_expressions.inc"
-
-#include "backend_codegen.inc"
