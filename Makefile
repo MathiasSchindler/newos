@@ -10,7 +10,7 @@ TARGET_BUILD_DIR ?= build/linux-aarch64
 TARGET_TRIPLE ?= aarch64-linux-none
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
-TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod chown uname hostname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df netcat ncc test [ true false expr uniq seq mktemp yes less more patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
+TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod chown uname hostname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df netcat ncc man test [ true false expr uniq seq mktemp yes less more patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 COMPILER_SOURCES := \
 	src/compiler/backend.c \

@@ -165,6 +165,13 @@ three
 two
 EOF
 assert_files_equal "$WORK_DIR/xargs_p.expected" "$WORK_DIR/xargs_p.sorted" "xargs -P did not execute all items"
+"$ROOT_DIR/build/man" ls > "$WORK_DIR/man_ls.out"
+assert_file_contains "$WORK_DIR/man_ls.out" '^LS$' "man did not open the ls manual page"
+assert_file_contains "$WORK_DIR/man_ls.out" 'list files and directories' "man page content for ls was missing"
+"$ROOT_DIR/build/man" 7 project-layout > "$WORK_DIR/man_layout.out"
+assert_file_contains "$WORK_DIR/man_layout.out" 'overview of the repository structure' "man section lookup failed"
+"$ROOT_DIR/build/man" -k compiler > "$WORK_DIR/man_search.out"
+assert_file_contains "$WORK_DIR/man_search.out" '^ncc (1)$' "man -k search did not find the compiler page"
 printf 'copy-a\n' > "$WORK_DIR/cp_a.txt"
 printf 'copy-b\n' > "$WORK_DIR/cp_b.txt"
 mkdir -p "$WORK_DIR/cp_dest"
