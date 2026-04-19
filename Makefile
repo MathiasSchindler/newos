@@ -11,6 +11,11 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/compiler -Isr
 FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables
 BUILD_DIR ?= build
 TARGET_BUILD_DIR ?= build/linux-$(TARGET_ARCH)
+DARWIN_TARGET_TRIPLE ?= arm64-apple-macos11
+DARWIN_BUILD_DIR ?= build/macos-aarch64
+DARWIN_ARCH_DIR := src/arch/aarch64/macos
+DARWIN_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/platform/common -Isrc/platform/macos -I$(DARWIN_ARCH_DIR)
+AR ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/llvm-ar ]; then echo /opt/homebrew/opt/llvm/bin/llvm-ar; elif command -v llvm-ar >/dev/null 2>&1; then command -v llvm-ar; else echo ar; fi)
 ifeq ($(TARGET_ARCH),x86_64)
 TARGET_TRIPLE ?= x86_64-linux-none
 else ifeq ($(TARGET_ARCH),aarch64)
@@ -42,10 +47,18 @@ SHELL_SOURCES := $(shell grep -oE '"src/shared/shell_[^"]+\.c"' src/compiler/sou
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
+DARWIN_RUNTIME_OBJECTS := \
+	$(DARWIN_BUILD_DIR)/runtime/memory.o \
+	$(DARWIN_BUILD_DIR)/runtime/string.o \
+	$(DARWIN_BUILD_DIR)/runtime/parse.o \
+	$(DARWIN_BUILD_DIR)/runtime/io.o \
+	$(DARWIN_BUILD_DIR)/runtime/unicode.o \
+	$(DARWIN_BUILD_DIR)/runtime/freestanding.o \
+	$(DARWIN_BUILD_DIR)/runtime/crt0.o
 
 .DEFAULT_GOAL := all
 
-.PHONY: all host freestanding test benchmark clean
+.PHONY: all host freestanding macos-runtime macos-freestanding-runtime test benchmark clean
 
 test: host
 	./tests/run_smoke_tests.sh
@@ -126,6 +139,23 @@ $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/
 
 $(TARGET_BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
+
+macos-runtime macos-freestanding-runtime: $(DARWIN_BUILD_DIR)/libnewos_runtime.a
+
+$(DARWIN_BUILD_DIR):
+	mkdir -p $@ $(DARWIN_BUILD_DIR)/runtime
+
+$(DARWIN_BUILD_DIR)/runtime/%.o: src/shared/runtime/%.c src/shared/runtime.h src/shared/platform.h | $(DARWIN_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(DARWIN_TARGET_TRIPLE) $(DARWIN_CFLAGS) $(FREESTANDING_CFLAGS) -c $< -o $@
+
+$(DARWIN_BUILD_DIR)/runtime/freestanding.o: src/platform/macos/freestanding.c src/shared/runtime.h src/shared/platform.h $(DARWIN_ARCH_DIR)/syscall.h | $(DARWIN_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(DARWIN_TARGET_TRIPLE) $(DARWIN_CFLAGS) $(FREESTANDING_CFLAGS) -c $< -o $@
+
+$(DARWIN_BUILD_DIR)/runtime/crt0.o: $(DARWIN_ARCH_DIR)/crt0.S | $(DARWIN_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(DARWIN_TARGET_TRIPLE) -c $< -o $@
+
+$(DARWIN_BUILD_DIR)/libnewos_runtime.a: $(DARWIN_RUNTIME_OBJECTS) | $(DARWIN_BUILD_DIR)
+	rm -f $@ && $(AR) rcs $@ $(DARWIN_RUNTIME_OBJECTS)
 
 clean:
 	rm -rf $(BUILD_DIR) tests/tmp
