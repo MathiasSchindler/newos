@@ -53,9 +53,7 @@ typedef struct {
 } LsLayout;
 
 static void print_usage(const char *program_name) {
-    rt_write_cstr(2, "Usage: ");
-    rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-aA] [-d] [-h] [-i] [-l] [-R] [-s] [-t] [-S] [-r] [-1] [-F] [-p] [-n] [-G] [-q] [--full-time] [--time-style=STYLE] [--color[=WHEN]] [path ...]");
+    tool_write_usage(program_name, "[-aA] [-d] [-h] [-i] [-l] [-R] [-s] [-t] [-S] [-r] [-1] [-F] [-p] [-n] [-G] [-q] [--full-time] [--time-style=STYLE] [--color[=WHEN]] [path ...]");
 }
 
 static int compare_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
@@ -240,13 +238,7 @@ static void filter_entries(PlatformDirEntry *entries, size_t *count_io, const Ls
 }
 
 static int ls_use_color(const LsOptions *options) {
-    if (options->color_mode == 2) {
-        return 1;
-    }
-    if (options->color_mode == 1) {
-        return platform_isatty(1);
-    }
-    return 0;
+    return tool_should_use_color_fd(1, options->color_mode);
 }
 
 static char classify_suffix(const PlatformDirEntry *entry, const LsOptions *options) {
@@ -276,28 +268,28 @@ static char classify_suffix(const PlatformDirEntry *entry, const LsOptions *opti
     return '\0';
 }
 
-static const char *entry_color_code(const PlatformDirEntry *entry, const LsOptions *options) {
+static int entry_color_style(const PlatformDirEntry *entry, const LsOptions *options) {
     unsigned int file_type = entry->mode & LS_MODE_TYPE_MASK;
 
     if (!ls_use_color(options)) {
-        return "";
+        return TOOL_STYLE_PLAIN;
     }
     if (entry->is_dir || file_type == LS_MODE_DIRECTORY) {
-        return "\033[1;34m";
+        return TOOL_STYLE_BOLD_BLUE;
     }
     if (file_type == LS_MODE_SYMLINK) {
-        return "\033[1;36m";
+        return TOOL_STYLE_BOLD_CYAN;
     }
     if (file_type == LS_MODE_SOCKET) {
-        return "\033[1;35m";
+        return TOOL_STYLE_BOLD_MAGENTA;
     }
     if (file_type == LS_MODE_FIFO) {
-        return "\033[33m";
+        return TOOL_STYLE_YELLOW;
     }
     if ((entry->mode & 0111U) != 0U) {
-        return "\033[1;32m";
+        return TOOL_STYLE_BOLD_GREEN;
     }
-    return "";
+    return TOOL_STYLE_PLAIN;
 }
 
 static void print_numeric_prefix(unsigned long long value, size_t width) {
@@ -318,16 +310,16 @@ static void print_entry_prefix(const PlatformDirEntry *entry, const LsOptions *o
 static void print_entry_display_name(const PlatformDirEntry *entry, const char *full_path, const LsOptions *options, int show_link_target) {
     char target[LS_PATH_CAPACITY];
     char suffix = classify_suffix(entry, options);
-    const char *color = entry_color_code(entry, options);
-    int use_color = color[0] != '\0';
+    int style = entry_color_style(entry, options);
+    int use_color = style != TOOL_STYLE_PLAIN;
     unsigned int file_type = entry->mode & LS_MODE_TYPE_MASK;
 
     if (use_color) {
-        rt_write_cstr(1, color);
+        tool_style_begin(1, options->color_mode, style);
     }
     write_name_text(entry->name, options->quote_nonprintable);
     if (use_color) {
-        rt_write_cstr(1, "\033[0m");
+        tool_style_end(1, options->color_mode);
     }
     if (suffix != '\0') {
         rt_write_char(1, suffix);
@@ -510,6 +502,8 @@ int main(int argc, char **argv) {
     int path_count;
 
     rt_memset(&options, 0, sizeof(options));
+    options.color_mode = TOOL_COLOR_AUTO;
+    options.time_style = LS_TIME_STYLE_HUMAN;
 
     for (i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -611,18 +605,18 @@ int main(int argc, char **argv) {
                 first_path_index = i + 1;
                 continue;
             }
-            if (rt_strcmp(arg, "--color") == 0 || rt_strcmp(arg, "--color=auto") == 0) {
-                options.color_mode = 1;
+            if (rt_strcmp(arg, "--color") == 0) {
+                options.color_mode = TOOL_COLOR_AUTO;
+                tool_set_global_color_mode(options.color_mode);
                 first_path_index = i + 1;
                 continue;
             }
-            if (rt_strcmp(arg, "--color=always") == 0) {
-                options.color_mode = 2;
-                first_path_index = i + 1;
-                continue;
-            }
-            if (rt_strcmp(arg, "--color=never") == 0) {
-                options.color_mode = 0;
+            if (rt_strncmp(arg, "--color=", 8U) == 0) {
+                if (tool_parse_color_mode(arg + 8, &options.color_mode) != 0) {
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                tool_set_global_color_mode(options.color_mode);
                 first_path_index = i + 1;
                 continue;
             }

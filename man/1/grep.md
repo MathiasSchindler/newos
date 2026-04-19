@@ -31,6 +31,7 @@ expression by default; use `-E` for extended syntax.
 - Quiet mode (exit code only) with `-q`
 - List matching file names with `-l`
 - Multiple patterns with `-e PATTERN`
+- optional colored match highlighting with `--color=WHEN`
 
 ## OPTIONS
 
@@ -49,12 +50,15 @@ expression by default; use `-E` for extended syntax.
 - `-B N` — print N lines of context before each match
 - `-C N` — print N lines of context before and after each match
 - `-e PATTERN` — specify an additional pattern
+- `--color[=WHEN]` — highlight matches and prefixes using `auto`, `always`, or `never`
 
 ## LIMITATIONS
 
 - No support for Perl-compatible regular expressions (PCRE).
 - No `-P` flag.
 - Context separators are `--` (standard) but no `--group-separator` option.
+
+Color output follows the shared project behavior documented in `output-style`.
 
 ## EXAMPLES
 
@@ -69,4 +73,4 @@ grep -o "[0-9]\+" file.txt
 
 ## SEE ALSO
 
-sed, awk, find
+sed, awk, find, output-style

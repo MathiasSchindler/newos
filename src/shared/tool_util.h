@@ -8,6 +8,37 @@ void tool_close_input(int fd, int should_close);
 void tool_write_usage(const char *program_name, const char *usage_suffix);
 void tool_write_error(const char *tool_name, const char *message, const char *detail);
 
+typedef enum {
+    TOOL_COLOR_NEVER = 0,
+    TOOL_COLOR_AUTO = 1,
+    TOOL_COLOR_ALWAYS = 2
+} ToolColorMode;
+
+typedef enum {
+    TOOL_STYLE_PLAIN = 0,
+    TOOL_STYLE_BOLD,
+    TOOL_STYLE_RED,
+    TOOL_STYLE_GREEN,
+    TOOL_STYLE_YELLOW,
+    TOOL_STYLE_BLUE,
+    TOOL_STYLE_MAGENTA,
+    TOOL_STYLE_CYAN,
+    TOOL_STYLE_BOLD_RED,
+    TOOL_STYLE_BOLD_GREEN,
+    TOOL_STYLE_BOLD_YELLOW,
+    TOOL_STYLE_BOLD_BLUE,
+    TOOL_STYLE_BOLD_MAGENTA,
+    TOOL_STYLE_BOLD_CYAN
+} ToolTextStyle;
+
+int tool_parse_color_mode(const char *text, int *mode_out);
+void tool_set_global_color_mode(int mode);
+int tool_get_global_color_mode(void);
+int tool_should_use_color_fd(int fd, int mode);
+void tool_style_begin(int fd, int mode, int style);
+void tool_style_end(int fd, int mode);
+void tool_write_styled(int fd, int mode, int style, const char *text);
+
 /*
  * Lightweight iterative option parser.
  *

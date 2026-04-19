@@ -54,3 +54,13 @@ assert_file_contains "$WORK_DIR/long.out" '^l.* root\.link -> root\.txt$' "ls -l
 
 "$ROOT_DIR/build/ls" -ln "$WORK_DIR/tree/root.txt" > "$WORK_DIR/numeric.out"
 assert_file_contains "$WORK_DIR/numeric.out" '^-[rwx-][rwx-][rwx-][rwx-][rwx-][rwx-][rwx-][rwx-][rwx-] [0-9][0-9]* [0-9][0-9]* [0-9][0-9]* ' "ls -ln did not show numeric uid/gid fields"
+
+"$ROOT_DIR/build/ls" --color=always "$WORK_DIR/tree" > "$WORK_DIR/color.out"
+if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/color.out"; then
+    fail "ls --color=always did not emit ANSI color sequences"
+fi
+
+NO_COLOR=1 "$ROOT_DIR/build/ls" --color=auto "$WORK_DIR/tree" > "$WORK_DIR/no_color.out"
+if LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/no_color.out"; then
+    fail "ls emitted ANSI color sequences even though NO_COLOR was set"
+fi

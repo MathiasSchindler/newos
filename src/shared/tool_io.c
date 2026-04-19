@@ -2,6 +2,135 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+static int tool_global_color_mode = TOOL_COLOR_AUTO;
+
+static int env_value_is_nonzero(const char *value) {
+    return value != 0 && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+}
+
+static const char *tool_text_style_code(int style) {
+    switch (style) {
+        case TOOL_STYLE_BOLD: return "1";
+        case TOOL_STYLE_RED: return "31";
+        case TOOL_STYLE_GREEN: return "32";
+        case TOOL_STYLE_YELLOW: return "33";
+        case TOOL_STYLE_BLUE: return "34";
+        case TOOL_STYLE_MAGENTA: return "35";
+        case TOOL_STYLE_CYAN: return "36";
+        case TOOL_STYLE_BOLD_RED: return "1;31";
+        case TOOL_STYLE_BOLD_GREEN: return "1;32";
+        case TOOL_STYLE_BOLD_YELLOW: return "1;33";
+        case TOOL_STYLE_BOLD_BLUE: return "1;34";
+        case TOOL_STYLE_BOLD_MAGENTA: return "1;35";
+        case TOOL_STYLE_BOLD_CYAN: return "1;36";
+        default: return "";
+    }
+}
+
+int tool_parse_color_mode(const char *text, int *mode_out) {
+    if (text == 0 || mode_out == 0) {
+        return -1;
+    }
+
+    if (rt_strcmp(text, "always") == 0 || rt_strcmp(text, "yes") == 0 || rt_strcmp(text, "force") == 0) {
+        *mode_out = TOOL_COLOR_ALWAYS;
+        return 0;
+    }
+    if (rt_strcmp(text, "auto") == 0) {
+        *mode_out = TOOL_COLOR_AUTO;
+        return 0;
+    }
+    if (rt_strcmp(text, "never") == 0 || rt_strcmp(text, "none") == 0 || rt_strcmp(text, "no") == 0) {
+        *mode_out = TOOL_COLOR_NEVER;
+        return 0;
+    }
+
+    return -1;
+}
+
+void tool_set_global_color_mode(int mode) {
+    tool_global_color_mode = mode;
+}
+
+int tool_get_global_color_mode(void) {
+    return tool_global_color_mode;
+}
+
+int tool_should_use_color_fd(int fd, int mode) {
+    const char *term;
+    const char *no_color;
+    const char *clicolor;
+    const char *clicolor_force;
+
+    if (mode == TOOL_COLOR_ALWAYS) {
+        return 1;
+    }
+    if (mode == TOOL_COLOR_NEVER) {
+        return 0;
+    }
+
+    clicolor_force = platform_getenv("CLICOLOR_FORCE");
+    if (env_value_is_nonzero(clicolor_force)) {
+        return 1;
+    }
+
+    no_color = platform_getenv("NO_COLOR");
+    if (no_color != 0) {
+        return 0;
+    }
+
+    clicolor = platform_getenv("CLICOLOR");
+    if (clicolor != 0 && clicolor[0] == '0' && clicolor[1] == '\0') {
+        return 0;
+    }
+
+    term = platform_getenv("TERM");
+    if (term != 0 && rt_strcmp(term, "dumb") == 0) {
+        return 0;
+    }
+
+    return platform_isatty(fd) != 0;
+}
+
+void tool_style_begin(int fd, int mode, int style) {
+    const char *code;
+
+    if (!tool_should_use_color_fd(fd, mode) || style == TOOL_STYLE_PLAIN) {
+        return;
+    }
+
+    code = tool_text_style_code(style);
+    if (code[0] == '\0') {
+        return;
+    }
+
+    rt_write_cstr(fd, "\033[");
+    rt_write_cstr(fd, code);
+    rt_write_char(fd, 'm');
+}
+
+void tool_style_end(int fd, int mode) {
+    if (tool_should_use_color_fd(fd, mode)) {
+        rt_write_cstr(fd, "\033[0m");
+    }
+}
+
+void tool_write_styled(int fd, int mode, int style, const char *text) {
+    int use_style;
+
+    if (text == 0) {
+        return;
+    }
+    use_style = tool_should_use_color_fd(fd, mode) && style != TOOL_STYLE_PLAIN;
+    if (use_style) {
+        tool_style_begin(fd, mode, style);
+    }
+    rt_write_cstr(fd, text);
+    if (use_style) {
+        tool_style_end(fd, mode);
+    }
+}
+
 int tool_open_input(const char *path, int *fd_out, int *should_close_out) {
     if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
         *fd_out = 0;
@@ -25,7 +154,8 @@ void tool_close_input(int fd, int should_close) {
 }
 
 void tool_write_usage(const char *program_name, const char *usage_suffix) {
-    rt_write_cstr(2, "Usage: ");
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_CYAN, "Usage:");
+    rt_write_char(2, ' ');
     rt_write_cstr(2, program_name);
     if (usage_suffix != 0 && usage_suffix[0] != '\0') {
         rt_write_char(2, ' ');
@@ -35,8 +165,8 @@ void tool_write_usage(const char *program_name, const char *usage_suffix) {
 }
 
 void tool_write_error(const char *tool_name, const char *message, const char *detail) {
-    rt_write_cstr(2, tool_name);
-    rt_write_cstr(2, ": ");
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_RED, tool_name);
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_RED, ": ");
     if (message != 0) {
         rt_write_cstr(2, message);
     }

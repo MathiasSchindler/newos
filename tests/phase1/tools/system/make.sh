@@ -17,3 +17,8 @@ assert_file_contains "$WORK_DIR/out.txt" '^phase1$' "make did not apply a comman
     assert_command_succeeds "$ROOT_DIR/build/make" -n MSG=dry-run > dry.out
 )
 assert_file_contains "$WORK_DIR/dry.out" "printf '%s\\\\n' dry-run > out.txt" "make -n did not print the recipe without executing it"
+
+"$ROOT_DIR/build/make" --color=always --help > "$WORK_DIR/help.out" 2>&1
+if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/help.out"; then
+    fail "make --color=always --help did not emit ANSI color sequences"
+fi

@@ -34,3 +34,17 @@ if "$ROOT_DIR/build/diff" -c "$WORK_DIR/left.txt" "$WORK_DIR/other.txt" > "$WORK
 fi
 assert_file_contains "$WORK_DIR/diff_c.out" '^\*\*\* ' "diff -c output was missing the left header"
 assert_file_contains "$WORK_DIR/diff_c.out" '^--- ' "diff -c output was missing the right header"
+
+if "$ROOT_DIR/build/diff" --color=always -u "$WORK_DIR/left.txt" "$WORK_DIR/other.txt" > "$WORK_DIR/diff_color.out"; then
+    fail "diff --color=always -u should still report a change"
+fi
+if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/diff_color.out"; then
+    fail "diff --color=always did not emit ANSI color sequences"
+fi
+
+if "$ROOT_DIR/build/diff" --color=never -u "$WORK_DIR/left.txt" "$WORK_DIR/other.txt" > "$WORK_DIR/diff_plain.out"; then
+    fail "diff --color=never -u should still report a change"
+fi
+if LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/diff_plain.out"; then
+    fail "diff --color=never unexpectedly emitted ANSI color sequences"
+fi

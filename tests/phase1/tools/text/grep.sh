@@ -48,3 +48,13 @@ assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/archive_util.c"$' "g
 awk 'BEGIN { for (i = 0; i < 7000; ++i) printf "A"; printf "MARKER\n"; }' > "$WORK_DIR/long.txt"
 "$ROOT_DIR/build/grep" 'MARKER' "$WORK_DIR/long.txt" > "$WORK_DIR/long.out"
 assert_file_contains "$WORK_DIR/long.out" 'MARKER' "grep failed to match text at the end of a long input line"
+
+"$ROOT_DIR/build/grep" --color=always 'alpha' "$WORK_DIR/input.txt" > "$WORK_DIR/color.out"
+if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/color.out"; then
+    fail "grep --color=always did not emit ANSI color sequences"
+fi
+
+"$ROOT_DIR/build/grep" --color=never 'alpha' "$WORK_DIR/input.txt" > "$WORK_DIR/plain.out"
+if LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/plain.out"; then
+    fail "grep --color=never unexpectedly emitted ANSI color sequences"
+fi

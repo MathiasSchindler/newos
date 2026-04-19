@@ -20,10 +20,18 @@ typedef struct {
     int whole_word;
     unsigned long long before_context;
     unsigned long long after_context;
+    int color_mode;
 } GrepOptions;
 
+static int find_next_match(const GrepOptions *options,
+                           const char *pattern,
+                           const char *text,
+                           size_t search_start,
+                           size_t *start_out,
+                           size_t *end_out);
+
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] PATTERN [file ...]");
+    tool_write_usage(program_name, "[-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] [--color[=WHEN]] PATTERN [file ...]");
 }
 
 static int print_count(const char *label, int show_label, unsigned long long count) {
@@ -38,6 +46,66 @@ static int print_count(const char *label, int show_label, unsigned long long cou
     }
 
     return 0;
+}
+
+static int grep_use_color(const GrepOptions *options) {
+    return tool_should_use_color_fd(1, options->color_mode);
+}
+
+static int write_plain_segment(const char *text, size_t length) {
+    return length == 0U ? 0 : rt_write_all(1, text, length);
+}
+
+static int write_highlighted_segment(const GrepOptions *options, const char *text, size_t length) {
+    if (length == 0U) {
+        return 0;
+    }
+    if (grep_use_color(options)) {
+        tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_RED);
+    }
+    if (rt_write_all(1, text, length) != 0) {
+        if (grep_use_color(options)) {
+            tool_style_end(1, options->color_mode);
+        }
+        return -1;
+    }
+    if (grep_use_color(options)) {
+        tool_style_end(1, options->color_mode);
+    }
+    return 0;
+}
+
+static int write_match_highlighted_line(const char *pattern, const GrepOptions *options, const char *line) {
+    size_t search_start = 0;
+    size_t rendered = 0;
+
+    while (1) {
+        size_t start = 0;
+        size_t end = 0;
+
+        if (!find_next_match(options, pattern, line, search_start, &start, &end)) {
+            break;
+        }
+
+        if (start > rendered && write_plain_segment(line + rendered, start - rendered) != 0) {
+            return -1;
+        }
+        if (write_highlighted_segment(options, line + start, end - start) != 0) {
+            return -1;
+        }
+
+        rendered = end;
+        if (end == start) {
+            if (line[end] == '\0') {
+                break;
+            }
+            search_start = end + 1U;
+        } else {
+            search_start = end;
+        }
+    }
+
+    return rt_write_line(1, line + rendered);
 }
 
 static int is_utf8_continuation_byte(unsigned char ch) {
@@ -206,15 +274,34 @@ static int print_prefix(const char *label,
                         int show_label,
                         unsigned long long line_no,
                         int show_line_no,
+                        const GrepOptions *options,
                         char separator) {
     if (show_label) {
-        if (rt_write_cstr(1, label) != 0 || rt_write_char(1, separator) != 0) {
+        if (grep_use_color(options)) {
+            tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_MAGENTA);
+        }
+        if (rt_write_cstr(1, label) != 0) {
+            return -1;
+        }
+        if (grep_use_color(options)) {
+            tool_style_end(1, options->color_mode);
+        }
+        if (rt_write_char(1, separator) != 0) {
             return -1;
         }
     }
 
     if (show_line_no) {
-        if (rt_write_uint(1, line_no) != 0 || rt_write_char(1, separator) != 0) {
+        if (grep_use_color(options)) {
+            tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_GREEN);
+        }
+        if (rt_write_uint(1, line_no) != 0) {
+            return -1;
+        }
+        if (grep_use_color(options)) {
+            tool_style_end(1, options->color_mode);
+        }
+        if (rt_write_char(1, separator) != 0) {
             return -1;
         }
     }
@@ -226,19 +313,25 @@ static int print_match_line(const char *label,
                             int show_label,
                             unsigned long long line_no,
                             int show_line_no,
+                            const char *pattern,
+                            const GrepOptions *options,
                             const char *line) {
-    if (print_prefix(label, show_label, line_no, show_line_no, ':') != 0) {
+    if (print_prefix(label, show_label, line_no, show_line_no, options, ':') != 0) {
         return -1;
     }
-    return rt_write_line(1, line);
+    if (!grep_use_color(options) || options->invert_match) {
+        return rt_write_line(1, line);
+    }
+    return write_match_highlighted_line(pattern, options, line);
 }
 
 static int print_context_line(const char *label,
                               int show_label,
                               unsigned long long line_no,
                               int show_line_no,
+                              const GrepOptions *options,
                               const char *line) {
-    if (print_prefix(label, show_label, line_no, show_line_no, '-') != 0) {
+    if (print_prefix(label, show_label, line_no, show_line_no, options, '-') != 0) {
         return -1;
     }
     return rt_write_line(1, line);
@@ -248,16 +341,22 @@ static int print_match_fragment(const char *label,
                                 int show_label,
                                 unsigned long long line_no,
                                 int show_line_no,
+                                const GrepOptions *options,
                                 const char *line,
                                 size_t start,
                                 size_t end) {
-    if (print_prefix(label, show_label, line_no, show_line_no, ':') != 0) {
+    if (print_prefix(label, show_label, line_no, show_line_no, options, ':') != 0) {
         return -1;
     }
-    if (end > start && rt_write_all(1, line + start, end - start) != 0) {
+    if (end > start) {
+        if (write_highlighted_segment(options, line + start, end - start) != 0) {
+            return -1;
+        }
+    }
+    if (rt_write_char(1, '\n') != 0) {
         return -1;
     }
-    return rt_write_char(1, '\n');
+    return 0;
 }
 
 static int emit_only_matches(const char *pattern,
@@ -278,7 +377,7 @@ static int emit_only_matches(const char *pattern,
         }
 
         if (start == end) {
-            if (!printed && print_match_fragment(label, show_label, line_no, options->show_line_no, line, start, end) != 0) {
+            if (!printed && print_match_fragment(label, show_label, line_no, options->show_line_no, options, line, start, end) != 0) {
                 return -1;
             }
             printed = 1;
@@ -289,7 +388,7 @@ static int emit_only_matches(const char *pattern,
             continue;
         }
 
-        if (print_match_fragment(label, show_label, line_no, options->show_line_no, line, start, end) != 0) {
+        if (print_match_fragment(label, show_label, line_no, options->show_line_no, options, line, start, end) != 0) {
             return -1;
         }
         printed = 1;
@@ -392,7 +491,7 @@ static int grep_handle_line(const char *pattern,
                 if (maybe_print_group_separator(before_line_numbers[i], show_groups, last_printed_line_no, printed_any_output) != 0) {
                     return -1;
                 }
-                if (print_context_line(label, show_label, before_line_numbers[i], options->show_line_no, before_lines[i]) != 0) {
+                if (print_context_line(label, show_label, before_line_numbers[i], options->show_line_no, options, before_lines[i]) != 0) {
                     return -1;
                 }
                 *printed_any_output = 1;
@@ -406,7 +505,7 @@ static int grep_handle_line(const char *pattern,
                 if (emit_only_matches(pattern, options, label, show_label, line_no, line) != 0) {
                     return -1;
                 }
-            } else if (print_match_line(label, show_label, line_no, options->show_line_no, line) != 0) {
+            } else if (print_match_line(label, show_label, line_no, options->show_line_no, pattern, options, line) != 0) {
                 return -1;
             }
             *printed_any_output = 1;
@@ -418,7 +517,7 @@ static int grep_handle_line(const char *pattern,
         if (maybe_print_group_separator(line_no, show_groups, last_printed_line_no, printed_any_output) != 0) {
             return -1;
         }
-        if (print_context_line(label, show_label, line_no, options->show_line_no, line) != 0) {
+        if (print_context_line(label, show_label, line_no, options->show_line_no, options, line) != 0) {
             return -1;
         }
         *printed_any_output = 1;
@@ -631,10 +730,30 @@ int main(int argc, char **argv) {
     int any_match = 0;
 
     rt_memset(&options, 0, sizeof(options));
+    options.color_mode = TOOL_COLOR_AUTO;
 
     tool_opt_init(&s, argc, argv, tool_base_name(argv[0]),
-                  "[-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] PATTERN [file ...]");
+                  "[-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] [--color[=WHEN]] PATTERN [file ...]");
     while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
+        if (s.flag[0] == '-' && s.flag[1] == '-') {
+            if (rt_strcmp(s.flag, "--color") == 0 || rt_strcmp(s.flag, "--colour") == 0) {
+                options.color_mode = TOOL_COLOR_AUTO;
+                tool_set_global_color_mode(options.color_mode);
+                continue;
+            }
+            if (rt_strncmp(s.flag, "--color=", 8U) == 0 || rt_strncmp(s.flag, "--colour=", 9U) == 0) {
+                const char *value = (rt_strncmp(s.flag, "--color=", 8U) == 0) ? (s.flag + 8) : (s.flag + 9);
+                if (tool_parse_color_mode(value, &options.color_mode) != 0) {
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                tool_set_global_color_mode(options.color_mode);
+                continue;
+            }
+            print_usage(argv[0]);
+            return 1;
+        }
+
         /* Combined short-option cluster: walk each character in the flag body */
         const char *flag = s.flag + 1;
 

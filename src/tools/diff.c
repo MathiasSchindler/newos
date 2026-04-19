@@ -12,7 +12,32 @@ typedef struct {
     int context;
     int recursive;
     int brief;
+    int color_mode;
 } DiffOptions;
+
+static void diff_print_usage(const char *program_name) {
+    tool_write_usage(program_name, "[-u|-c] [-q] [-r] [--color[=WHEN]] file1 file2");
+}
+
+static int diff_use_color(const DiffOptions *options) {
+    return tool_should_use_color_fd(1, options->color_mode);
+}
+
+static void diff_write_line_styled(const DiffOptions *options, int style, const char *prefix, const char *line) {
+    if (diff_use_color(options)) {
+        tool_style_begin(1, options->color_mode, style);
+    }
+    if (prefix != 0) {
+        rt_write_cstr(1, prefix);
+    }
+    if (line != 0) {
+        rt_write_cstr(1, line);
+    }
+    if (diff_use_color(options)) {
+        tool_style_end(1, options->color_mode);
+    }
+    rt_write_char(1, '\n');
+}
 
 static size_t diff_max_size(size_t left, size_t right) {
     return (left > right) ? left : right;
@@ -86,15 +111,22 @@ static int collect_lines_from_fd(
     return 0;
 }
 
-static void print_brief_difference(const char *left_path, const char *right_path) {
+static void print_brief_difference(const DiffOptions *options, const char *left_path, const char *right_path) {
+    if (diff_use_color(options)) {
+        tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_YELLOW);
+    }
     rt_write_cstr(1, "Files ");
     rt_write_cstr(1, left_path);
     rt_write_cstr(1, " and ");
     rt_write_cstr(1, right_path);
     rt_write_line(1, " differ");
+    if (diff_use_color(options)) {
+        tool_style_end(1, options->color_mode);
+    }
 }
 
 static void print_default_diff(
+    const DiffOptions *options,
     char left[DIFF_MAX_LINES][DIFF_MAX_LINE_LENGTH],
     size_t left_count,
     char right[DIFF_MAX_LINES][DIFF_MAX_LINE_LENGTH],
@@ -107,16 +139,20 @@ static void print_default_diff(
         const char *rhs = (i < right_count) ? right[i] : "";
 
         if ((i < left_count) != (i < right_count) || rt_strcmp(lhs, rhs) != 0) {
+            if (diff_use_color(options)) {
+                tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_CYAN);
+            }
             rt_write_cstr(1, "line ");
             rt_write_uint(1, (unsigned long long)(i + 1U));
             rt_write_line(1, ":");
+            if (diff_use_color(options)) {
+                tool_style_end(1, options->color_mode);
+            }
             if (i < left_count) {
-                rt_write_cstr(1, "< ");
-                rt_write_line(1, lhs);
+                diff_write_line_styled(options, TOOL_STYLE_RED, "< ", lhs);
             }
             if (i < right_count) {
-                rt_write_cstr(1, "> ");
-                rt_write_line(1, rhs);
+                diff_write_line_styled(options, TOOL_STYLE_GREEN, "> ", rhs);
             }
         }
     }
@@ -176,6 +212,7 @@ static void find_common_suffix(
 }
 
 static void print_unified_diff(
+    const DiffOptions *options,
     const char *left_name,
     const char *right_name,
     char left[DIFF_MAX_LINES][DIFF_MAX_LINE_LENGTH],
@@ -202,6 +239,9 @@ static void print_unified_diff(
     right_to = diff_min_size(right_count, right_suffix + context);
     line_count = diff_max_size(left_to, right_to);
 
+    if (diff_use_color(options)) {
+        tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_CYAN);
+    }
     rt_write_cstr(1, "--- ");
     rt_write_line(1, left_name);
     rt_write_cstr(1, "+++ ");
@@ -211,6 +251,9 @@ static void print_unified_diff(
     rt_write_cstr(1, " +");
     write_diff_range(right_from, right_to - right_from);
     rt_write_line(1, " @@");
+    if (diff_use_color(options)) {
+        tool_style_end(1, options->color_mode);
+    }
 
     for (i = left_from; i < line_count; ++i) {
         const char *lhs = (i < left_to) ? left[i] : 0;
@@ -222,18 +265,17 @@ static void print_unified_diff(
             rt_write_line(1, lhs);
         } else {
             if (lhs != 0) {
-                rt_write_cstr(1, "-");
-                rt_write_line(1, lhs);
+                diff_write_line_styled(options, TOOL_STYLE_RED, "-", lhs);
             }
             if (rhs != 0) {
-                rt_write_cstr(1, "+");
-                rt_write_line(1, rhs);
+                diff_write_line_styled(options, TOOL_STYLE_GREEN, "+", rhs);
             }
         }
     }
 }
 
 static void print_context_diff(
+    const DiffOptions *options,
     const char *left_name,
     const char *right_name,
     char left[DIFF_MAX_LINES][DIFF_MAX_LINE_LENGTH],
@@ -258,6 +300,9 @@ static void print_context_diff(
     left_to = diff_min_size(left_count, left_suffix + context);
     right_to = diff_min_size(right_count, right_suffix + context);
 
+    if (diff_use_color(options)) {
+        tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_CYAN);
+    }
     rt_write_cstr(1, "*** ");
     rt_write_line(1, left_name);
     rt_write_cstr(1, "--- ");
@@ -266,24 +311,33 @@ static void print_context_diff(
     rt_write_cstr(1, "*** ");
     write_diff_range(left_from, left_to - left_from);
     rt_write_line(1, " ****");
+    if (diff_use_color(options)) {
+        tool_style_end(1, options->color_mode);
+    }
     for (i = left_from; i < left_to; ++i) {
         if (i < prefix || i >= left_suffix) {
             rt_write_cstr(1, "  ");
+            rt_write_line(1, left[i]);
         } else {
-            rt_write_cstr(1, "! ");
+            diff_write_line_styled(options, TOOL_STYLE_YELLOW, "! ", left[i]);
         }
-        rt_write_line(1, left[i]);
+    }
+    if (diff_use_color(options)) {
+        tool_style_begin(1, options->color_mode, TOOL_STYLE_BOLD_CYAN);
     }
     rt_write_cstr(1, "--- ");
     write_diff_range(right_from, right_to - right_from);
     rt_write_line(1, " ----");
+    if (diff_use_color(options)) {
+        tool_style_end(1, options->color_mode);
+    }
     for (i = right_from; i < right_to; ++i) {
         if (i < prefix || i >= right_suffix) {
             rt_write_cstr(1, "  ");
+            rt_write_line(1, right[i]);
         } else {
-            rt_write_cstr(1, "! ");
+            diff_write_line_styled(options, TOOL_STYLE_YELLOW, "! ", right[i]);
         }
-        rt_write_line(1, right[i]);
     }
 }
 
@@ -364,30 +418,30 @@ static int compare_regular_files(const char *left_path, const char *right_path, 
         }
 
         if (options->brief) {
-            print_brief_difference(left_path, right_path);
+            print_brief_difference(options, left_path, right_path);
             *differences_out = 1;
             return 0;
         }
     }
 
     if (tool_open_input(left_path, &fd, &should_close) != 0) {
-        rt_write_line(2, "diff: cannot read first file");
+        tool_write_error("diff", "cannot read first file", 0);
         return -1;
     }
     if (collect_lines_from_fd(fd, left, &left_count, &left_truncated) != 0) {
         tool_close_input(fd, should_close);
-        rt_write_line(2, "diff: cannot read first file");
+        tool_write_error("diff", "cannot read first file", 0);
         return -1;
     }
     tool_close_input(fd, should_close);
 
     if (tool_open_input(right_path, &fd, &should_close) != 0) {
-        rt_write_line(2, "diff: cannot read second file");
+        tool_write_error("diff", "cannot read second file", 0);
         return -1;
     }
     if (collect_lines_from_fd(fd, right, &right_count, &right_truncated) != 0) {
         tool_close_input(fd, should_close);
-        rt_write_line(2, "diff: cannot read second file");
+        tool_write_error("diff", "cannot read second file", 0);
         return -1;
     }
     tool_close_input(fd, should_close);
@@ -411,20 +465,20 @@ static int compare_regular_files(const char *left_path, const char *right_path, 
         }
 
         if (options->brief) {
-            print_brief_difference(left_path, right_path);
+            print_brief_difference(options, left_path, right_path);
             *differences_out = 1;
             return 0;
         }
     }
 
     if (left_truncated || right_truncated) {
-        print_brief_difference(left_path, right_path);
+        print_brief_difference(options, left_path, right_path);
     } else if (options->context) {
-        print_context_diff(left_path, right_path, left, left_count, right, right_count);
+        print_context_diff(options, left_path, right_path, left, left_count, right, right_count);
     } else if (options->unified) {
-            print_unified_diff(left_path, right_path, left, left_count, right, right_count);
+            print_unified_diff(options, left_path, right_path, left, left_count, right, right_count);
     } else {
-        print_default_diff(left, left_count, right, right_count);
+        print_default_diff(options, left, left_count, right, right_count);
     }
 
     *differences_out = 1;
@@ -466,7 +520,7 @@ static int compare_directories(const char *left_path, const char *right_path, co
     if (platform_collect_entries(left_path, 1, left_entries, DIFF_ENTRY_CAPACITY, &left_count, &left_is_directory) != 0 ||
         platform_collect_entries(right_path, 1, right_entries, DIFF_ENTRY_CAPACITY, &right_count, &right_is_directory) != 0 ||
         !left_is_directory || !right_is_directory) {
-        rt_write_line(2, "diff: cannot compare directories");
+        tool_write_error("diff", "cannot compare directories", 0);
         return -1;
     }
 
@@ -548,7 +602,7 @@ static int compare_paths(const char *left_path, const char *right_path, const Di
     *differences_out = 0;
 
     if (platform_get_path_info(left_path, &left_entry) != 0 || platform_get_path_info(right_path, &right_entry) != 0) {
-        rt_write_line(2, "diff: cannot access input path");
+        tool_write_error("diff", "cannot access input path", 0);
         return -1;
     }
 
@@ -563,7 +617,7 @@ static int compare_paths(const char *left_path, const char *right_path, const Di
         }
 
         if (!options->recursive) {
-            rt_write_line(2, "diff: use -r to compare directories");
+            tool_write_error("diff", "use -r to compare directories", 0);
             return -1;
         }
 
@@ -579,12 +633,33 @@ int main(int argc, char **argv) {
     int differences = 0;
 
     rt_memset(&options, 0, sizeof(options));
+    options.color_mode = TOOL_COLOR_AUTO;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         const char *flag = argv[argi] + 1;
 
         if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
             break;
+        }
+
+        if (rt_strcmp(argv[argi], "--help") == 0) {
+            diff_print_usage(argv[0]);
+            return 0;
+        }
+        if (rt_strcmp(argv[argi], "--color") == 0) {
+            options.color_mode = TOOL_COLOR_AUTO;
+            tool_set_global_color_mode(options.color_mode);
+            argi += 1;
+            continue;
+        }
+        if (rt_strncmp(argv[argi], "--color=", 8U) == 0) {
+            if (tool_parse_color_mode(argv[argi] + 8, &options.color_mode) != 0) {
+                diff_print_usage(argv[0]);
+                return 1;
+            }
+            tool_set_global_color_mode(options.color_mode);
+            argi += 1;
+            continue;
         }
 
         while (*flag != '\0') {
@@ -599,7 +674,7 @@ int main(int argc, char **argv) {
             } else if (*flag == 'r') {
                 options.recursive = 1;
             } else {
-                rt_write_line(2, "Usage: diff [-u|-c] [-q] [-r] file1 file2");
+                diff_print_usage(argv[0]);
                 return 1;
             }
             flag += 1;
@@ -608,7 +683,7 @@ int main(int argc, char **argv) {
     }
 
     if (argc - argi != 2) {
-        rt_write_line(2, "Usage: diff [-u|-c] [-q] [-r] file1 file2");
+        diff_print_usage(argv[0]);
         return 1;
     }
 

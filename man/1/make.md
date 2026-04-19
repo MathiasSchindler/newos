@@ -27,6 +27,7 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 - built-in functions: `$(wildcard ...)`, `$(patsubst ...)`, `$(subst ...)`, `$(strip ...)`, `$(filter ...)`, `$(filter-out ...)`, `$(sort ...)`, `$(addprefix ...)`, `$(addsuffix ...)`, `$(dir ...)`, `$(notdir ...)`, `$(basename ...)`, `$(suffix ...)`, `$(firstword ...)`, `$(lastword ...)`, `$(words ...)`, `$(word ...)`, `$(foreach ...)`, `$(if ...)`, `$(origin ...)`, `$(shell ...)`
 - dry-run mode
 - changing into a build directory with `-C`
+- styled diagnostics and usage output with shared terminal color support
 
 ## OPTIONS
 
@@ -35,6 +36,7 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
   `makefile`, or `GNUmakefile`
 - `-C dir` — change to `dir` before reading the makefile and building targets
 - `VAR=value` — override or define a variable on the command line
+- `--color[=WHEN]` — control styled diagnostic output using `auto`, `always`, or `never`
 - `--help` — print the command usage summary
 
 ## LIMITATIONS
@@ -42,6 +44,8 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 - parallel execution (`-j`) is not supported
 - recursive make (`$(MAKE)`) invokes the same binary but does not pass job-count flags
 - some advanced GNU make features (e.g. `$(eval ...)`, load directives) are not implemented
+
+Color output follows the shared project behavior documented in `output-style`.
 
 ## NOTES
 
@@ -60,4 +64,4 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 
 ## SEE ALSO
 
-sh, ncc
+sh, ncc, output-style

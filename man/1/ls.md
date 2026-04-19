@@ -20,6 +20,7 @@ The ls tool lists directory entries from one or more paths. It supports the core
 - sort by name, size, or modification time
 - recursive traversal and directory-only views
 - inode, block, numeric owner, classification, and optional color output
+- shared `--color=auto|always|never` behavior for tty-friendly listings
 
 ## OPTIONS
 
@@ -53,6 +54,8 @@ The ls tool lists directory entries from one or more paths. It supports the core
   and some edge-case compatibility flags are not implemented.
 - Column widths are best-effort rather than exact GNU/BSD matching.
 
+Color output follows the shared project behavior documented in `output-style`.
+
 ## EXAMPLES
 
 - `ls`
@@ -61,4 +64,4 @@ The ls tool lists directory entries from one or more paths. It supports the core
 
 ## SEE ALSO
 
-cp, pwd, find, stat
+cp, pwd, find, stat, output-style
