@@ -37,6 +37,7 @@ compatibility.
 - `--dump-tokens`, `--dump-ast`, `--dump-ir` — print intermediate compiler
   stages for inspection
 - `--target TARGET` — choose a backend target
+- `--help` — print command usage and supported targets
 - `--version` — print the compiler stage/version string
 
 ## LIMITATIONS
@@ -45,8 +46,8 @@ compatibility.
 - not a complete ISO C implementation; the supported subset is aimed at the
   project's own code
 - final executable linking currently relies on the host `clang` toolchain
-- Linux x86-64 is the best-supported target today; Linux AArch64 output remains
-  incomplete
+- Linux x86-64 is the best-supported target today; Linux AArch64 output and
+  linking still report "not implemented yet"
 
 ## EXAMPLES
 

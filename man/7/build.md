@@ -19,7 +19,7 @@ healthy.
     make freestanding  — cross-compile static Linux binaries under build/linux-$(TARGET_ARCH)/
     make test          — build host binaries and run tests/run_smoke_tests.sh
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
-    make clean         — remove build output and test scratch files
+    make clean         — remove build output
 
 ## CONTRIBUTOR NOTES
 

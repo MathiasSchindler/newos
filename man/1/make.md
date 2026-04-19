@@ -31,9 +31,11 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 ## OPTIONS
 
 - `-n` — print commands that would be executed without running them
-- `-f makefile` — read makefile as the Makefile instead of the default `Makefile` or `makefile`
+- `-f makefile` — read `makefile` instead of the default `Makefile`,
+  `makefile`, or `GNUmakefile`
 - `-C dir` — change to `dir` before reading the makefile and building targets
 - `VAR=value` — override or define a variable on the command line
+- `--help` — print the command usage summary
 
 ## LIMITATIONS
 

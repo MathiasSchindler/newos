@@ -18,6 +18,7 @@ default output already includes `pid`, `ppid`, `user`, `stat`, `rss`, and
 
 - show a default full-format process table
 - accept common `-f`, `-e`, `-A`, `-a`, and `-x` compatibility flags
+- sort the displayed process list by PID
 - filter to specific PIDs
 - choose custom output fields from the supported set
 
@@ -35,6 +36,8 @@ default output already includes `pid`, `ppid`, `user`, `stat`, `rss`, and
 
 - This implementation reads from `/proc` and is Linux-only.
 - user filtering with `-u` and BSD-style bare forms such as `aux` are not implemented.
+- compatibility flags such as `-f`, `-e`, and `-x` are accepted, but they do
+  not currently change filtering beyond the normal full listing
 - RSS values are reported in kilobytes.
 
 ## EXAMPLES

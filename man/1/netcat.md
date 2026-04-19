@@ -32,7 +32,7 @@ for an incoming connection instead.
 - `-u` — use UDP instead of TCP
 - `-z` — scan mode; check whether the port is open without sending data
 - `-w TIMEOUT` — set connection or idle timeout (accepts suffix `s`, `ms`,
-  `m`; bare number is milliseconds)
+  `m`; bare number is milliseconds, so values such as `250ms` or `1.5s` work)
 - `-v` — verbose output
 
 ## LIMITATIONS
@@ -49,6 +49,7 @@ for an incoming connection instead.
 ```
 netcat example.com 80
 echo "GET / HTTP/1.0\r\n" | netcat example.com 80
+netcat -w 250ms example.com 80
 netcat -l 8080
 netcat -u 224.0.0.1 5353
 netcat -z -w 1s host.local 22

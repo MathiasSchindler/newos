@@ -47,7 +47,8 @@ and does not depend on libc.
 
 ## LIMITATIONS
 
-- The freestanding target currently supports Linux/x86-64 and Linux/AArch64
+- Hosted development assumes a POSIX environment; the freestanding target
+  currently focuses on Linux/AArch64
 - The abstraction is intentionally small; there is no threading or async event
   layer
 - Networking support is practical but still basic compared with a full libc or

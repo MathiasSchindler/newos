@@ -18,6 +18,7 @@ project's platform abstraction layer.
 ## CURRENT CAPABILITIES
 
 - kernel name, hostname, release, version, and machine output
+- default output of the kernel name when no flags are given
 - aggregate output with `-a` or `--all`
 - long-option forms for the common identity fields
 - compatibility fields for processor, hardware platform, and operating-system

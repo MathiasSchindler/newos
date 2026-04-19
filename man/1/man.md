@@ -19,7 +19,9 @@ The project `man` tool reads Markdown manual pages from repository-local
 depend on the host system manual database and does not install files into
 system locations.
 
-Pages are searched in sections such as 1, 5, and 7.
+Pages are searched across whatever numbered sections exist in the manual tree;
+in this repository that is primarily section 1 (tools) and section 7
+(components and project notes).
 
 ## CURRENT CAPABILITIES
 

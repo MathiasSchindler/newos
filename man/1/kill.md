@@ -37,6 +37,8 @@ The kill tool sends signals to running processes. By default it sends
 - Process-group syntax with negative PIDs may not work on all platforms.
 - The known signal-name list is fixed at build time.
 - No process-name matching or pattern-based selection is provided.
+- When several PIDs are given, `kill` continues attempting later ones even if an
+  earlier signal delivery fails.
 
 ## EXAMPLES
 

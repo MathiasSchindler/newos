@@ -45,7 +45,8 @@ hosted and freestanding builds can share as much logic as possible.
 - The freestanding path currently targets Linux/AArch64 and Linux/x86-64
 - Hosted development assumes a POSIX-like system; Windows is not a supported
   contributor platform
-- Manual coverage is good but not yet complete for every tool
+- Manual pages are kept in-tree and may lag very recent behavior changes until
+  they are refreshed alongside the code
 
 ## SEE ALSO
 
