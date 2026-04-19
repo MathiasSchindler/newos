@@ -55,7 +55,9 @@ SSH_CRYPTO_SOURCES := \
 	src/shared/crypto/ssh_kdf.c
 SHELL_SOURCES := $(shell grep -oE '"src/shared/shell_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
-TARGET_PLATFORM_SOURCES := $(shell sed -n '/^#define FOREACH_TARGET_PLATFORM_SOURCE(X) \\/,/^$$/p' src/compiler/source_manifest.h | grep -oE '"[^"]+\.(c|S)"' | tr -d '"')
+# Keep this shell extraction comma-free for compatibility with older GNU make on macOS.
+TARGET_PLATFORM_MANIFEST_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
+TARGET_PLATFORM_SOURCES := $(filter src/platform/linux/% $(TARGET_ARCH_DIR)/%,$(TARGET_PLATFORM_MANIFEST_SOURCES))
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
 
 .DEFAULT_GOAL := all
