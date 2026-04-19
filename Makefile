@@ -11,11 +11,6 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/compiler -Isr
 FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables
 BUILD_DIR ?= build
 TARGET_BUILD_DIR ?= build/linux-$(TARGET_ARCH)
-DARWIN_TARGET_TRIPLE ?= arm64-apple-macos11
-DARWIN_BUILD_DIR ?= build/macos-aarch64
-DARWIN_ARCH_DIR := src/arch/aarch64/macos
-DARWIN_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/platform/common -Isrc/platform/macos -I$(DARWIN_ARCH_DIR)
-AR ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/llvm-ar ]; then echo /opt/homebrew/opt/llvm/bin/llvm-ar; elif command -v llvm-ar >/dev/null 2>&1; then command -v llvm-ar; else echo ar; fi)
 ifeq ($(TARGET_ARCH),x86_64)
 TARGET_TRIPLE ?= x86_64-linux-none
 else ifeq ($(TARGET_ARCH),aarch64)
@@ -25,6 +20,11 @@ $(error Unsupported TARGET_ARCH '$(TARGET_ARCH)'; expected x86_64 or aarch64)
 endif
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
+LOCAL_PLATFORM_ONLY ?= $(if $(filter Darwin,$(HOST_OS)),1,0)
+DEFAULT_ALL_TARGETS := host
+ifeq ($(LOCAL_PLATFORM_ONLY),0)
+DEFAULT_ALL_TARGETS += freestanding
+endif
 TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod chown uname hostname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df netcat ssh ncc man test [ true false expr uniq seq mktemp yes less more patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
@@ -47,18 +47,10 @@ SHELL_SOURCES := $(shell grep -oE '"src/shared/shell_[^"]+\.c"' src/compiler/sou
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
-DARWIN_RUNTIME_OBJECTS := \
-	$(DARWIN_BUILD_DIR)/runtime/memory.o \
-	$(DARWIN_BUILD_DIR)/runtime/string.o \
-	$(DARWIN_BUILD_DIR)/runtime/parse.o \
-	$(DARWIN_BUILD_DIR)/runtime/io.o \
-	$(DARWIN_BUILD_DIR)/runtime/unicode.o \
-	$(DARWIN_BUILD_DIR)/runtime/freestanding.o \
-	$(DARWIN_BUILD_DIR)/runtime/crt0.o
 
 .DEFAULT_GOAL := all
 
-.PHONY: all host freestanding macos-runtime macos-freestanding-runtime test benchmark clean
+.PHONY: all host freestanding test benchmark clean
 
 test: host
 	./tests/run_smoke_tests.sh
@@ -67,23 +59,37 @@ benchmark: host
 	./tests/benchmarks/run_benchmarks.sh
 
 ifeq ($(AUTO_PARALLEL),1)
-all: host freestanding
+all: $(DEFAULT_ALL_TARGETS)
 else ifneq ($(strip $(PARALLEL_MAKEFLAGS)),)
-all: host freestanding
+all: $(DEFAULT_ALL_TARGETS)
 else
 all:
-	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) host freestanding
+	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) $(DEFAULT_ALL_TARGETS)
 endif
 
 ifeq ($(AUTO_PARALLEL),1)
 host: $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
+ifeq ($(LOCAL_PLATFORM_ONLY),1)
+freestanding: host
+else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
+endif
 else ifneq ($(strip $(PARALLEL_MAKEFLAGS)),)
 host: $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
-freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
+ifeq ($(LOCAL_PLATFORM_ONLY),1)
+freestanding: host
 else
-host freestanding:
-	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) $@
+freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
+endif
+else
+host:
+	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) host
+freestanding:
+ifeq ($(LOCAL_PLATFORM_ONLY),1)
+	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) host
+else
+	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding
+endif
 endif
 
 $(BUILD_DIR) $(TARGET_BUILD_DIR):
@@ -139,23 +145,6 @@ $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/
 
 $(TARGET_BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
-
-macos-runtime macos-freestanding-runtime: $(DARWIN_BUILD_DIR)/libnewos_runtime.a
-
-$(DARWIN_BUILD_DIR):
-	mkdir -p $@ $(DARWIN_BUILD_DIR)/runtime
-
-$(DARWIN_BUILD_DIR)/runtime/%.o: src/shared/runtime/%.c src/shared/runtime.h src/shared/platform.h | $(DARWIN_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(DARWIN_TARGET_TRIPLE) $(DARWIN_CFLAGS) $(FREESTANDING_CFLAGS) -c $< -o $@
-
-$(DARWIN_BUILD_DIR)/runtime/freestanding.o: src/platform/macos/freestanding.c src/shared/runtime.h src/shared/platform.h $(DARWIN_ARCH_DIR)/syscall.h | $(DARWIN_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(DARWIN_TARGET_TRIPLE) $(DARWIN_CFLAGS) $(FREESTANDING_CFLAGS) -c $< -o $@
-
-$(DARWIN_BUILD_DIR)/runtime/crt0.o: $(DARWIN_ARCH_DIR)/crt0.S | $(DARWIN_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(DARWIN_TARGET_TRIPLE) -c $< -o $@
-
-$(DARWIN_BUILD_DIR)/libnewos_runtime.a: $(DARWIN_RUNTIME_OBJECTS) | $(DARWIN_BUILD_DIR)
-	rm -f $@ && $(AR) rcs $@ $(DARWIN_RUNTIME_OBJECTS)
 
 clean:
 	rm -rf $(BUILD_DIR) tests/tmp
