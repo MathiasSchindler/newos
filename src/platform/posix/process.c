@@ -209,6 +209,10 @@ long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_
         return -1;
     }
 
+#ifndef __linux__
+    (void)clear_after_read;
+#endif
+
 #ifdef __linux__
     {
         int action = clear_after_read ? 4 : 3;

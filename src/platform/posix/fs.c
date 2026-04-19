@@ -174,6 +174,7 @@ int platform_remove_directory(const char *path) {
     return rmdir(path);
 }
 
+#if defined(__linux__)
 static unsigned long posix_mount_flags_from_platform(unsigned long long flags) {
     unsigned long native_flags = 0UL;
 
@@ -260,6 +261,7 @@ static unsigned long posix_mount_flags_from_platform(unsigned long long flags) {
 
     return native_flags;
 }
+#endif
 
 int platform_mount_filesystem(
     const char *source,

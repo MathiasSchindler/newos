@@ -1,10 +1,17 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
@@ -16,10 +23,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -597,6 +600,7 @@ static const char *posix_address_scope_name(const char *ifname, const struct soc
     return "global";
 }
 
+#if defined(__linux__)
 static unsigned int posix_route_prefix_from_mask(unsigned long value) {
     unsigned int count = 0;
 
@@ -606,6 +610,7 @@ static unsigned int posix_route_prefix_from_mask(unsigned long value) {
     }
     return count;
 }
+#endif
 
 static int posix_find_link_index(PlatformNetworkLink *entries_out, size_t count, const char *name) {
     size_t i;
@@ -811,11 +816,6 @@ int platform_list_network_routes(
     int family_filter,
     const char *ifname_filter
 ) {
-    FILE *file;
-    char line[512];
-    int header_seen = 0;
-    size_t count = 0;
-
     if (entries_out == NULL || count_out == NULL) {
         errno = EINVAL;
         return -1;
@@ -823,11 +823,16 @@ int platform_list_network_routes(
 
     *count_out = 0;
 #if !defined(__linux__)
+    (void)entry_capacity;
     (void)family_filter;
     (void)ifname_filter;
     errno = ENOTSUP;
     return -1;
 #else
+    FILE *file;
+    char line[512];
+    int header_seen = 0;
+    size_t count = 0;
     if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
         errno = ENOTSUP;
         return -1;
