@@ -45,6 +45,8 @@ typedef struct {
     char name[PLATFORM_NAME_CAPACITY];
     unsigned long long device;
     unsigned int mode;
+    unsigned int uid;
+    unsigned int gid;
     unsigned long long size;
     unsigned long long inode;
     unsigned long nlink;

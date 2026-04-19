@@ -39,6 +39,7 @@ script path it runs the file non-interactively.
 ## INTERACTIVE CONVENIENCES
 
 - `Tab` completes command names and path fragments in interactive mode
+- the interactive prompt shows the current working directory by default
 - `Up` / `Down` browse the current session history
 - `Left` / `Right`, `Home`, and `End` move the cursor within the line
 - `Ctrl-A`, `Ctrl-E`, `Ctrl-U`, `Ctrl-K`, `Ctrl-W`, and `Backspace` provide
@@ -51,8 +52,8 @@ script path it runs the file non-interactively.
   `bash` or `dash`
 - script argument handling is still narrower than full POSIX `$1`, `$2`, and
   related behavior
-- shell invocation options are intentionally minimal; login-shell startup and
-  broader compatibility modes are not implemented
+- shell invocation options are intentionally minimal; login-shell startup,
+  rc-file loading, and broader compatibility modes are not implemented yet
 
 ## EXAMPLES
 

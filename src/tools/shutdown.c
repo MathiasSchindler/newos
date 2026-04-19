@@ -23,7 +23,7 @@ static const char *action_name(int action) {
 }
 
 int main(int argc, char **argv) {
-    int action = PLATFORM_SHUTDOWN_POWEROFF;
+    int action = PLATFORM_SHUTDOWN_REBOOT;
     int saw_time = 0;
     int i;
 

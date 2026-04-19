@@ -57,6 +57,8 @@ static int fill_entry_mode(const char *display_name, const char *full_path, Plat
     copy_string(entry->name, sizeof(entry->name), display_name);
     entry->device = (unsigned long long)st.st_dev;
     entry->mode = st.st_mode;
+    entry->uid = (unsigned int)st.st_uid;
+    entry->gid = (unsigned int)st.st_gid;
     entry->size = (unsigned long long)st.st_size;
     entry->inode = (unsigned long long)st.st_ino;
     entry->nlink = (unsigned long)st.st_nlink;

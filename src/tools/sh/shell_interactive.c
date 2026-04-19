@@ -44,6 +44,90 @@ static void shell_append_string(char *dst, size_t dst_size, const char *suffix) 
     rt_copy_string(dst + used, dst_size - used, suffix);
 }
 
+static void shell_append_char(char *dst, size_t dst_size, char ch) {
+    size_t used = rt_strlen(dst);
+
+    if (used + 1U >= dst_size) {
+        return;
+    }
+
+    dst[used] = ch;
+    dst[used + 1U] = '\0';
+}
+
+static const char *shell_base_name(const char *path) {
+    size_t i;
+    const char *result = path;
+
+    if (path == 0 || path[0] == '\0') {
+        return ".";
+    }
+
+    for (i = 0; path[i] != '\0'; ++i) {
+        if (path[i] == '/' && path[i + 1U] != '\0') {
+            result = path + i + 1U;
+        }
+    }
+
+    return result;
+}
+
+static void shell_build_prompt(char *buffer, size_t buffer_size) {
+    const char *template_text = platform_getenv("PS1");
+    const char *user = platform_getenv("USER");
+    char cwd[SH_MAX_LINE];
+    char host[PLATFORM_NAME_CAPACITY];
+    int have_cwd = platform_get_current_directory(cwd, sizeof(cwd)) == 0;
+    size_t i = 0;
+
+    if (buffer_size == 0U) {
+        return;
+    }
+
+    buffer[0] = '\0';
+    if (user == 0 || user[0] == '\0') {
+        user = "user";
+    }
+    if (platform_get_hostname(host, sizeof(host)) != 0 || host[0] == '\0') {
+        rt_copy_string(host, sizeof(host), "newos");
+    }
+
+    while (template_text != 0 && template_text[i] != '\0') {
+        if (template_text[i] == '\\' && template_text[i + 1U] != '\0') {
+            i += 1U;
+            if (template_text[i] == 'w') {
+                shell_append_string(buffer, buffer_size, have_cwd ? cwd : ".");
+            } else if (template_text[i] == 'W') {
+                shell_append_string(buffer, buffer_size, have_cwd ? shell_base_name(cwd) : ".");
+            } else if (template_text[i] == 'u') {
+                shell_append_string(buffer, buffer_size, user);
+            } else if (template_text[i] == 'h') {
+                shell_append_string(buffer, buffer_size, host);
+            } else if (template_text[i] == '$') {
+                shell_append_char(buffer, buffer_size, '$');
+            } else if (template_text[i] == '\\') {
+                shell_append_char(buffer, buffer_size, '\\');
+            } else {
+                shell_append_char(buffer, buffer_size, template_text[i]);
+            }
+            i += 1U;
+            continue;
+        }
+
+        shell_append_char(buffer, buffer_size, template_text[i]);
+        i += 1U;
+    }
+
+    if (buffer[0] == '\0') {
+        if (have_cwd) {
+            rt_copy_string(buffer, buffer_size, cwd);
+            shell_append_string(buffer, buffer_size, "$ ");
+        } else {
+            rt_copy_string(buffer, buffer_size, "$ ");
+        }
+    }
+}
+
 static void shell_get_tool_dir(char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(shell_self_path);
     size_t i;
@@ -443,10 +527,11 @@ static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
     size_t cursor = 0;
     int history_index = shell_history_count;
     char saved_current[SH_MAX_LINE];
-    const char *prompt = "$ ";
+    char prompt[SH_MAX_LINE];
     int result = 0;
     int raw_mode_enabled = 0;
 
+    shell_build_prompt(prompt, sizeof(prompt));
     *eof_out = 0;
     saved_current[0] = '\0';
     line[0] = '\0';

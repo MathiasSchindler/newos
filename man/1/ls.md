@@ -15,11 +15,11 @@ The ls tool lists directory entries from one or more paths. It supports the core
 ## CURRENT CAPABILITIES
 
 - plain directory listings
-- long output mode with metadata
+- long output mode with metadata, readable local timestamps, and symlink targets
 - show hidden entries with `-a` or `-A`
 - sort by name, size, or modification time
 - recursive traversal and directory-only views
-- inode, block, numeric owner, and classification output
+- inode, block, numeric owner, classification, and optional color output
 
 ## OPTIONS
 
@@ -42,11 +42,15 @@ The ls tool lists directory entries from one or more paths. It supports the core
 | `-p` | Append `/` to directory names. |
 | `-G` | Suppress group output in long format. |
 | `-q` | Replace nonprinting characters with `?`. |
+| `--full-time` | Show timestamps with seconds. |
+| `--time-style=STYLE` | Use `long-iso`, `full-iso`, or `unix` timestamps. |
+| `--color[=WHEN]` | Use colored output (`auto`, `always`, `never`). |
 
 ## LIMITATIONS
 
-- No colorized output is implemented.
 - Extended attributes are not displayed.
+- Output is intentionally simpler than GNU/BSD `ls`; multi-column terminal layout
+  and some edge-case compatibility flags are not implemented.
 - Column widths are best-effort rather than exact GNU/BSD matching.
 
 ## EXAMPLES

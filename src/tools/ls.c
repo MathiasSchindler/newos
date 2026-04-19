@@ -16,30 +16,46 @@ typedef enum {
     LS_SORT_SIZE
 } LsSortMode;
 
+typedef enum {
+    LS_TIME_STYLE_HUMAN,
+    LS_TIME_STYLE_FULL,
+    LS_TIME_STYLE_UNIX
+} LsTimeStyle;
+
 typedef struct {
     int show_all;
+    int almost_all;
     int directory_as_file;
     int human_readable;
     int long_format;
     int recursive;
     int reverse_order;
     int classify;
+    int mark_directories;
     int single_column;
     int show_inode;
     int show_blocks;
     int color_mode;
+    int numeric_ids;
+    int omit_group;
+    int quote_nonprintable;
     LsSortMode sort_mode;
+    LsTimeStyle time_style;
 } LsOptions;
 
 typedef struct {
     size_t inode_width;
     size_t block_width;
+    size_t link_width;
+    size_t owner_width;
+    size_t group_width;
+    size_t size_width;
 } LsLayout;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-a] [-d] [-h] [-i] [-l] [-R] [-s] [-t] [-S] [-r] [-1] [-F] [--color[=WHEN]] [path ...]");
+    rt_write_line(2, " [-aA] [-d] [-h] [-i] [-l] [-R] [-s] [-t] [-S] [-r] [-1] [-F] [-p] [-n] [-G] [-q] [--full-time] [--time-style=STYLE] [--color[=WHEN]] [path ...]");
 }
 
 static int compare_entries(const PlatformDirEntry *left, const PlatformDirEntry *right, const LsOptions *options) {
@@ -91,6 +107,57 @@ static size_t count_digits_unsigned(unsigned long long value) {
     return digits;
 }
 
+static int is_dot_or_dotdot(const char *name) {
+    return rt_strcmp(name, ".") == 0 || rt_strcmp(name, "..") == 0;
+}
+
+static void format_identity(unsigned int value, const char *text, int numeric, char *buffer, size_t buffer_size) {
+    if (numeric) {
+        rt_unsigned_to_string((unsigned long long)value, buffer, buffer_size);
+        return;
+    }
+    rt_copy_string(buffer, buffer_size, (text != 0 && text[0] != '\0') ? text : "?");
+}
+
+static void format_entry_time(long long epoch_seconds, const LsOptions *options, char *buffer, size_t buffer_size) {
+    const char *format = "%Y-%m-%d %H:%M";
+
+    if (options->time_style == LS_TIME_STYLE_UNIX) {
+        if (epoch_seconds < 0) {
+            rt_copy_string(buffer, buffer_size, "0");
+        } else {
+            rt_unsigned_to_string((unsigned long long)epoch_seconds, buffer, buffer_size);
+        }
+        return;
+    }
+
+    if (options->time_style == LS_TIME_STYLE_FULL) {
+        format = "%Y-%m-%d %H:%M:%S";
+    }
+
+    if (platform_format_time(epoch_seconds, 1, format, buffer, buffer_size) != 0) {
+        if (epoch_seconds < 0) {
+            rt_copy_string(buffer, buffer_size, "0");
+        } else {
+            rt_unsigned_to_string((unsigned long long)epoch_seconds, buffer, buffer_size);
+        }
+    }
+}
+
+static void write_name_text(const char *text, int replace_nonprintable) {
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        unsigned char ch = (unsigned char)text[i];
+        if (replace_nonprintable && (ch < 32U || ch == 127U)) {
+            rt_write_char(1, '?');
+        } else {
+            rt_write_char(1, (char)ch);
+        }
+        i += 1U;
+    }
+}
+
 static void write_padding(size_t current_width, size_t desired_width) {
     while (current_width < desired_width) {
         rt_write_char(1, ' ');
@@ -110,6 +177,10 @@ static void build_layout(PlatformDirEntry *entries, size_t count, const LsOption
 
     layout->inode_width = 0U;
     layout->block_width = 0U;
+    layout->link_width = 0U;
+    layout->owner_width = 0U;
+    layout->group_width = 0U;
+    layout->size_width = 0U;
 
     for (i = 0; i < count; ++i) {
         if (options->show_inode) {
@@ -124,7 +195,48 @@ static void build_layout(PlatformDirEntry *entries, size_t count, const LsOption
                 layout->block_width = width;
             }
         }
+        if (options->long_format) {
+            char owner_buffer[32];
+            char group_buffer[32];
+            char size_buffer[32];
+            size_t link_width = count_digits_unsigned((unsigned long long)entries[i].nlink);
+
+            format_identity(entries[i].uid, entries[i].owner, options->numeric_ids, owner_buffer, sizeof(owner_buffer));
+            format_identity(entries[i].gid, entries[i].group, options->numeric_ids, group_buffer, sizeof(group_buffer));
+            tool_format_size(entries[i].size, options->human_readable, size_buffer, sizeof(size_buffer));
+
+            if (link_width > layout->link_width) {
+                layout->link_width = link_width;
+            }
+            if (rt_strlen(owner_buffer) > layout->owner_width) {
+                layout->owner_width = rt_strlen(owner_buffer);
+            }
+            if (rt_strlen(group_buffer) > layout->group_width) {
+                layout->group_width = rt_strlen(group_buffer);
+            }
+            if (rt_strlen(size_buffer) > layout->size_width) {
+                layout->size_width = rt_strlen(size_buffer);
+            }
+        }
     }
+}
+
+static void filter_entries(PlatformDirEntry *entries, size_t *count_io, const LsOptions *options) {
+    size_t input = *count_io;
+    size_t output = 0;
+    size_t i;
+
+    for (i = 0; i < input; ++i) {
+        if (options->almost_all && !options->show_all && is_dot_or_dotdot(entries[i].name)) {
+            continue;
+        }
+        if (output != i) {
+            entries[output] = entries[i];
+        }
+        output += 1U;
+    }
+
+    *count_io = output;
 }
 
 static int ls_use_color(const LsOptions *options) {
@@ -140,11 +252,14 @@ static int ls_use_color(const LsOptions *options) {
 static char classify_suffix(const PlatformDirEntry *entry, const LsOptions *options) {
     unsigned int file_type = entry->mode & LS_MODE_TYPE_MASK;
 
-    if (!options->classify) {
+    if (!options->classify && !options->mark_directories) {
         return '\0';
     }
     if (entry->is_dir || file_type == LS_MODE_DIRECTORY) {
         return '/';
+    }
+    if (!options->classify) {
+        return '\0';
     }
     if (file_type == LS_MODE_SYMLINK) {
         return '@';
@@ -200,61 +315,93 @@ static void print_entry_prefix(const PlatformDirEntry *entry, const LsOptions *o
     }
 }
 
-static void print_entry_name(const PlatformDirEntry *entry, const LsOptions *options, const LsLayout *layout) {
+static void print_entry_display_name(const PlatformDirEntry *entry, const char *full_path, const LsOptions *options, int show_link_target) {
+    char target[LS_PATH_CAPACITY];
     char suffix = classify_suffix(entry, options);
     const char *color = entry_color_code(entry, options);
     int use_color = color[0] != '\0';
+    unsigned int file_type = entry->mode & LS_MODE_TYPE_MASK;
 
-    print_entry_prefix(entry, options, layout);
     if (use_color) {
         rt_write_cstr(1, color);
     }
-    rt_write_cstr(1, entry->name);
+    write_name_text(entry->name, options->quote_nonprintable);
     if (use_color) {
         rt_write_cstr(1, "\033[0m");
     }
     if (suffix != '\0') {
         rt_write_char(1, suffix);
     }
+    if (show_link_target && full_path != 0 && file_type == LS_MODE_SYMLINK && platform_read_symlink(full_path, target, sizeof(target)) == 0) {
+        rt_write_cstr(1, " -> ");
+        write_name_text(target, options->quote_nonprintable);
+    }
+}
+
+static void print_short_entry(const PlatformDirEntry *entry, const char *full_path, const LsOptions *options, const LsLayout *layout) {
+    print_entry_prefix(entry, options, layout);
+    print_entry_display_name(entry, full_path, options, 0);
     rt_write_char(1, '\n');
 }
 
-static void print_long_entry(const PlatformDirEntry *entry, const LsOptions *options, const LsLayout *layout) {
+static void print_long_entry(const PlatformDirEntry *entry, const char *full_path, const LsOptions *options, const LsLayout *layout) {
     char mode_buffer[11];
     char size_buffer[32];
+    char time_buffer[32];
+    char owner_buffer[32];
+    char group_buffer[32];
 
     platform_format_mode(entry->mode, mode_buffer);
     tool_format_size(entry->size, options->human_readable, size_buffer, sizeof(size_buffer));
+    format_identity(entry->uid, entry->owner, options->numeric_ids, owner_buffer, sizeof(owner_buffer));
+    format_identity(entry->gid, entry->group, options->numeric_ids, group_buffer, sizeof(group_buffer));
+    format_entry_time(entry->mtime, options, time_buffer, sizeof(time_buffer));
 
     print_entry_prefix(entry, options, layout);
     rt_write_cstr(1, mode_buffer);
     rt_write_char(1, ' ');
-    write_padding(count_digits_unsigned((unsigned long long)entry->nlink), 3U);
+    write_padding(count_digits_unsigned((unsigned long long)entry->nlink), layout->link_width);
     rt_write_uint(1, (unsigned long long)entry->nlink);
     rt_write_char(1, ' ');
-    rt_write_cstr(1, entry->owner[0] ? entry->owner : "?");
+    rt_write_cstr(1, owner_buffer);
+    write_padding(rt_strlen(owner_buffer), layout->owner_width);
     rt_write_char(1, ' ');
-    rt_write_cstr(1, entry->group[0] ? entry->group : "?");
-    rt_write_char(1, ' ');
-    write_padding(rt_strlen(size_buffer), 8U);
+    if (!options->omit_group) {
+        rt_write_cstr(1, group_buffer);
+        write_padding(rt_strlen(group_buffer), layout->group_width);
+        rt_write_char(1, ' ');
+    }
+    write_padding(rt_strlen(size_buffer), layout->size_width);
     rt_write_cstr(1, size_buffer);
     rt_write_char(1, ' ');
-    rt_write_int(1, entry->mtime);
+    rt_write_cstr(1, time_buffer);
     rt_write_char(1, ' ');
-    print_entry_name(entry, options, layout);
+    print_entry_display_name(entry, full_path, options, 1);
+    rt_write_char(1, '\n');
 }
 
-static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options) {
+static void print_entries(PlatformDirEntry *entries, size_t count, const LsOptions *options, const char *base_path, int path_is_directory) {
     size_t i;
     LsLayout layout;
 
     sort_entries(entries, count, options);
     build_layout(entries, count, options, &layout);
     for (i = 0; i < count; ++i) {
-        if (options->long_format) {
-            print_long_entry(&entries[i], options, &layout);
+        char full_path[LS_PATH_CAPACITY];
+        const char *entry_path = 0;
+
+        if (path_is_directory) {
+            if (tool_join_path(base_path, entries[i].name, full_path, sizeof(full_path)) == 0) {
+                entry_path = full_path;
+            }
         } else {
-            print_entry_name(&entries[i], options, &layout);
+            entry_path = base_path;
+        }
+
+        if (options->long_format) {
+            print_long_entry(&entries[i], entry_path, options, &layout);
+        } else {
+            print_short_entry(&entries[i], entry_path, options, &layout);
         }
     }
 }
@@ -278,9 +425,10 @@ static int print_single_path(const char *path, const LsOptions *options) {
     }
 
     if (options->long_format) {
-        print_long_entry(&entry, options, &layout);
+        build_layout(&entry, 1U, options, &layout);
+        print_long_entry(&entry, path, options, &layout);
     } else {
-        print_entry_name(&entry, options, &layout);
+        print_short_entry(&entry, path, options, &layout);
     }
 
     return 0;
@@ -296,17 +444,19 @@ static int list_path(const char *path, const LsOptions *options, int print_heade
         return print_single_path(path, options);
     }
 
-    if (platform_collect_entries(path, options->show_all, entries, LS_ENTRY_CAPACITY, &count, &is_directory) != 0) {
+    if (platform_collect_entries(path, options->show_all || options->almost_all, entries, LS_ENTRY_CAPACITY, &count, &is_directory) != 0) {
         rt_write_cstr(2, "ls: cannot access ");
         rt_write_line(2, path);
         return 1;
     }
 
     if (!is_directory) {
-        print_entries(entries, count, options);
+        print_entries(entries, count, options, path, 0);
         platform_free_entries(entries, count);
         return 0;
     }
+
+    filter_entries(entries, &count, options);
 
     if (print_header) {
         rt_write_cstr(1, path);
@@ -324,7 +474,7 @@ static int list_path(const char *path, const LsOptions *options, int print_heade
         rt_write_char(1, '\n');
     }
 
-    print_entries(entries, count, options);
+    print_entries(entries, count, options, path, 1);
 
     if (options->recursive) {
         size_t i;
@@ -371,6 +521,96 @@ int main(int argc, char **argv) {
         }
 
         if (arg[0] == '-' && arg[1] == '-') {
+            if (rt_strcmp(arg, "--help") == 0) {
+                print_usage(argv[0]);
+                return 0;
+            }
+            if (rt_strcmp(arg, "--all") == 0) {
+                options.show_all = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--almost-all") == 0) {
+                options.almost_all = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--directory") == 0) {
+                options.directory_as_file = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--human-readable") == 0) {
+                options.human_readable = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--inode") == 0) {
+                options.show_inode = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--long") == 0) {
+                options.long_format = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--recursive") == 0) {
+                options.recursive = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--reverse") == 0) {
+                options.reverse_order = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--classify") == 0) {
+                options.classify = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--indicator-style=slash") == 0) {
+                options.mark_directories = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--numeric-uid-gid") == 0) {
+                options.numeric_ids = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--no-group") == 0) {
+                options.omit_group = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--quote-name") == 0) {
+                options.quote_nonprintable = 1;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strcmp(arg, "--full-time") == 0) {
+                options.long_format = 1;
+                options.time_style = LS_TIME_STYLE_FULL;
+                first_path_index = i + 1;
+                continue;
+            }
+            if (rt_strncmp(arg, "--time-style=", 13U) == 0) {
+                const char *style = arg + 13;
+                if (rt_strcmp(style, "unix") == 0) {
+                    options.time_style = LS_TIME_STYLE_UNIX;
+                } else if (rt_strcmp(style, "full-iso") == 0) {
+                    options.time_style = LS_TIME_STYLE_FULL;
+                } else if (rt_strcmp(style, "long-iso") == 0 || rt_strcmp(style, "iso") == 0) {
+                    options.time_style = LS_TIME_STYLE_HUMAN;
+                } else {
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                first_path_index = i + 1;
+                continue;
+            }
             if (rt_strcmp(arg, "--color") == 0 || rt_strcmp(arg, "--color=auto") == 0) {
                 options.color_mode = 1;
                 first_path_index = i + 1;
@@ -399,6 +639,9 @@ int main(int argc, char **argv) {
             switch (arg[j]) {
                 case 'a':
                     options.show_all = 1;
+                    break;
+                case 'A':
+                    options.almost_all = 1;
                     break;
                 case 'd':
                     options.directory_as_file = 1;
@@ -432,6 +675,18 @@ int main(int argc, char **argv) {
                     break;
                 case 'F':
                     options.classify = 1;
+                    break;
+                case 'p':
+                    options.mark_directories = 1;
+                    break;
+                case 'n':
+                    options.numeric_ids = 1;
+                    break;
+                case 'G':
+                    options.omit_group = 1;
+                    break;
+                case 'q':
+                    options.quote_nonprintable = 1;
                     break;
                 default:
                     print_usage(argv[0]);
