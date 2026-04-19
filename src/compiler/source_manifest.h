@@ -52,7 +52,10 @@
     X("src/shared/runtime/parse.c") \
     X("src/shared/runtime/io.c") \
     X("src/shared/runtime/unicode.c") \
-    X("src/shared/tool_util.c") \
+    X("src/shared/tool_io.c") \
+    X("src/shared/tool_regex.c") \
+    X("src/shared/tool_path.c") \
+    X("src/shared/tool_fs.c") \
     X("src/shared/archive_util.c")
 
 /* ── crypto primitives ───────────────────────────────────────────────────── */
@@ -94,5 +97,17 @@
     X("src/platform/linux/identity.c") \
     X("src/platform/linux/net.c") \
     X("src/platform/linux/time.c")
+
+/* ── SSH client implementation ───────────────────────────────────────────── */
+
+#define FOREACH_SSH_CLIENT_SOURCE(X) \
+    X("src/shared/ssh_core.c") \
+    X("src/shared/ssh_known_hosts.c") \
+    X("src/shared/ssh_client_io.c") \
+    X("src/shared/ssh_client_identity.c") \
+    X("src/shared/ssh_client_kex.c") \
+    X("src/shared/ssh_client_auth.c") \
+    X("src/shared/ssh_client_channel.c") \
+    X("src/shared/ssh_client.c")
 
 #endif /* SOURCE_MANIFEST_H */

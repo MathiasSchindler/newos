@@ -26,15 +26,12 @@ COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/sour
 COMPILER_IMPL_INCLUDES := \
 	src/compiler/backend_internal.h \
 	src/compiler/parser_internal.h
-SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|tool_util|archive_util)\.c"' src/compiler/source_manifest.h | tr -d '"')
+SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util)\.c"' src/compiler/source_manifest.h | tr -d '"')
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HASH_SOURCES := \
 	$(shell grep -oE '"src/shared/hash_util\.c"' src/compiler/source_manifest.h | tr -d '"') \
 	$(CRYPTO_SOURCES)
-SSH_CORE_SOURCES := \
-	src/shared/ssh_core.c \
-	src/shared/ssh_known_hosts.c \
-	src/shared/ssh_client.c
+SSH_CORE_SOURCES := $(shell grep -oE '"src/shared/ssh_(core|known_hosts|client[^"]*)\.[ch]"' src/compiler/source_manifest.h | grep '\.c"' | tr -d '"')
 SSH_CRYPTO_SOURCES := \
 	$(CRYPTO_SOURCES) \
 	src/shared/crypto/curve25519.c \
@@ -79,10 +76,10 @@ endif
 $(BUILD_DIR) $(TARGET_BUILD_DIR):
 	mkdir -p $@
 
-$(BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(BUILD_DIR)
+$(BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/ssh_client_internal.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
 
-$(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/ssh_client_internal.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
 
 $(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/shell_shared.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
@@ -103,10 +100,10 @@ $(BUILD_DIR)/md5sum $(BUILD_DIR)/sha256sum $(BUILD_DIR)/sha512sum: $(BUILD_DIR)/
 $(TARGET_BUILD_DIR)/md5sum $(TARGET_BUILD_DIR)/sha256sum $(TARGET_BUILD_DIR)/sha512sum: $(TARGET_BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) $(HASH_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/md5.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(HASH_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
 
-$(BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
+$(BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/ssh_client_internal.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(CFLAGS) $< $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/ssh_client_internal.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
 
 $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
