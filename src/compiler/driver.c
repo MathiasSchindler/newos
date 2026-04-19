@@ -8,6 +8,7 @@
 #include "preprocessor.h"
 #include "runtime.h"
 #include "source.h"
+#include "source_manifest.h"
 #include "tool_util.h"
 
 #define COMPILER_MAX_OPTION_DEFINES 32
@@ -222,44 +223,21 @@ static int write_temp_object(
 }
 
 static int link_executable_output(const CompilerOptions *options, const CompilerIr *ir) {
+#define _SRC(s) s,
     static char *const shared_sources[] = {
-        "src/shared/runtime/memory.c",
-        "src/shared/runtime/string.c",
-        "src/shared/runtime/parse.c",
-        "src/shared/runtime/io.c",
-        "src/shared/runtime/unicode.c",
-        "src/shared/tool_util.c",
-        "src/shared/archive_util.c",
-        "src/shared/hash_util.c",
-        "src/shared/crypto/crypto_util.c",
-        "src/shared/crypto/md5.c",
-        "src/shared/crypto/sha256.c",
-        "src/shared/crypto/sha512.c"
+        FOREACH_SHARED_SOURCE(_SRC)
+        FOREACH_HASH_SOURCE(_SRC)
     };
     static char *const host_platform_sources[] = {
-        "src/platform/posix/fs.c",
-        "src/platform/posix/process.c",
-        "src/platform/posix/identity.c",
-        "src/platform/posix/net.c",
-        "src/platform/posix/time.c"
+        FOREACH_HOST_PLATFORM_SOURCE(_SRC)
     };
     static char *const compiler_sources[] = {
-        "src/compiler/backend.c",
-        "src/compiler/driver.c",
-        "src/compiler/ir.c",
-        "src/compiler/object_writer.c",
-        "src/compiler/parser.c",
-        "src/compiler/preprocessor.c",
-        "src/compiler/semantic.c",
-        "src/compiler/source.c",
-        "src/compiler/lexer.c"
+        FOREACH_COMPILER_SOURCE(_SRC)
     };
     static char *const shell_sources[] = {
-        "src/shared/shell_parser.c",
-        "src/shared/shell_execution.c",
-        "src/shared/shell_builtins.c",
-        "src/shared/shell_interactive.c"
+        FOREACH_SHELL_SOURCE(_SRC)
     };
+#undef _SRC
     char derived_output_path[COMPILER_PATH_CAPACITY];
     char object_path[COMPILER_PATH_CAPACITY];
     const char *output_path = pick_link_output_path(options, derived_output_path, sizeof(derived_output_path));
@@ -295,6 +273,7 @@ static int link_executable_output(const CompilerOptions *options, const Compiler
     append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/compiler");
     append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/posix");
     append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/linux");
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/common");
     append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/arch/aarch64/linux");
     append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), object_path);
 
