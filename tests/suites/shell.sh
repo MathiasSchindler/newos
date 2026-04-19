@@ -10,6 +10,22 @@ mkdir -p "$WORK_DIR"
 
 note "shell"
 
+run_shell_tty() {
+    input_path=$1
+    output_path=$2
+
+    if ! command -v script >/dev/null 2>&1; then
+        note "shell tty checks skipped: script(1) not available"
+        return 0
+    fi
+
+    if script --version >/dev/null 2>&1; then
+        script -qfec "$ROOT_DIR/build/sh -i" /dev/null < "$input_path" > "$output_path" 2>&1
+    else
+        script -q /dev/null "$ROOT_DIR/build/sh" -i < "$input_path" > "$output_path" 2>&1
+    fi
+}
+
 printf 'export FOO=bar\necho $FOO\nfalse\necho $?\necho ${FOO}\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/sh.out"
 assert_file_contains "$WORK_DIR/sh.out" '^bar$' "shell variable expansion failed"
 assert_file_contains "$WORK_DIR/sh.out" '^1$' "shell status expansion failed"
@@ -38,3 +54,11 @@ printf 'cat <<EOF\ncleanup-check\nEOF\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/her
 after_docs=$(find /tmp -maxdepth 1 -name 'newos-sh-heredoc-*' 2>/dev/null | wc -l | tr -d ' ')
 assert_file_contains "$WORK_DIR/heredoc_cleanup.out" '^cleanup-check$' "shell heredoc cleanup run failed"
 assert_text_equals "$after_docs" "$before_docs" "shell heredoc temp files leaked"
+
+printf 'ec\t tab-complete-ok\nexit\n' > "$WORK_DIR/tty_completion.input"
+run_shell_tty "$WORK_DIR/tty_completion.input" "$WORK_DIR/tty_completion.out"
+assert_file_contains "$WORK_DIR/tty_completion.out" 'tab-complete-ok' "shell interactive tab completion failed"
+
+printf 'world\001echo hello \nexit\n' > "$WORK_DIR/tty_ctrl_a.input"
+run_shell_tty "$WORK_DIR/tty_ctrl_a.input" "$WORK_DIR/tty_ctrl_a.out"
+assert_file_contains "$WORK_DIR/tty_ctrl_a.out" 'hello world' "shell interactive Ctrl-A line editing failed"

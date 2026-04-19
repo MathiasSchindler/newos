@@ -341,6 +341,23 @@ int platform_ignore_signal(int signal_number) {
     return 0;
 }
 
+int platform_shutdown_system(int action) {
+    unsigned long command = LINUX_REBOOT_CMD_POWER_OFF;
+
+    if (action == PLATFORM_SHUTDOWN_REBOOT) {
+        command = LINUX_REBOOT_CMD_RESTART;
+    } else if (action == PLATFORM_SHUTDOWN_HALT) {
+        command = LINUX_REBOOT_CMD_HALT;
+    }
+
+    (void)platform_sync_all();
+    return linux_syscall4(LINUX_SYS_REBOOT,
+                          LINUX_REBOOT_MAGIC1,
+                          LINUX_REBOOT_MAGIC2,
+                          command,
+                          0) < 0 ? -1 : 0;
+}
+
 int platform_wait_process(int pid, int *exit_status_out) {
     int status = 0;
     long result;

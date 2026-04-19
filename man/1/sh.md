@@ -21,18 +21,28 @@ script path it runs the file non-interactively.
 
 ## CURRENT CAPABILITIES
 
-- interactive command entry with in-session history
+- interactive command entry with in-session history, cursor movement, and basic
+  line editing conveniences
 - one-shot execution with `-c` and script execution from a file
 - pipelines, redirections, background jobs, and here-docs
 - shell builtins including `cd`, `exit`, `jobs`, `fg`, `bg`, `history`,
   `export`, `unset`, `alias`, and `command -v`
 - variable expansion, aliases, and shell functions in the current implementation
+- interactive Tab completion for command names and path arguments
 
 ## OPTIONS
 
 - `-c COMMAND` — execute `COMMAND` and exit
 - `SCRIPT [ARG ...]` — read commands from `SCRIPT`; extra command-line
   arguments are currently accepted but have only limited script visibility
+
+## INTERACTIVE CONVENIENCES
+
+- `Tab` completes command names and path fragments in interactive mode
+- `Up` / `Down` browse the current session history
+- `Left` / `Right`, `Home`, and `End` move the cursor within the line
+- `Ctrl-A`, `Ctrl-E`, `Ctrl-U`, `Ctrl-K`, `Ctrl-W`, and `Backspace` provide
+  quick line editing
 
 ## LIMITATIONS
 

@@ -72,6 +72,8 @@ int sh_contains_wildcards(const char *text);
 int sh_is_name_start_char(char ch);
 int sh_is_name_char(char ch);
 void sh_add_history_entry(const char *line);
+size_t sh_shell_builtin_count(void);
+const char *sh_shell_builtin_name_at(size_t index);
 void sh_skip_spaces(char **cursor);
 char *sh_scan_quoted_text(char *scan, char quote);
 int sh_is_shell_builtin_name(const char *name);

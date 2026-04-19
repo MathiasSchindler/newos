@@ -19,6 +19,7 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <sys/klog.h>
+#include <sys/reboot.h>
 #endif
 
 extern char **environ;
@@ -255,6 +256,25 @@ int platform_set_console_log_level(int level) {
     return klogctl(8, NULL, level) < 0 ? -1 : 0;
 #else
     (void)level;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int platform_shutdown_system(int action) {
+#ifdef __linux__
+    int command = RB_POWER_OFF;
+
+    if (action == PLATFORM_SHUTDOWN_REBOOT) {
+        command = RB_AUTOBOOT;
+    } else if (action == PLATFORM_SHUTDOWN_HALT) {
+        command = RB_HALT_SYSTEM;
+    }
+
+    (void)platform_sync_all();
+    return reboot(command) < 0 ? -1 : 0;
+#else
+    (void)action;
     errno = ENOSYS;
     return -1;
 #endif

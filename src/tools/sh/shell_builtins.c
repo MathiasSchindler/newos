@@ -3,6 +3,21 @@
 #include "shell_shared.h"
 #include "runtime.h"
 
+static const char *const SH_BUILTIN_NAMES[] = {
+    "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias"
+};
+
+size_t sh_shell_builtin_count(void) {
+    return sizeof(SH_BUILTIN_NAMES) / sizeof(SH_BUILTIN_NAMES[0]);
+}
+
+const char *sh_shell_builtin_name_at(size_t index) {
+    if (index >= sh_shell_builtin_count()) {
+        return 0;
+    }
+    return SH_BUILTIN_NAMES[index];
+}
+
 static int builtin_jobs(void) {
     int i;
 
@@ -188,13 +203,10 @@ static int builtin_command_command(const ShCommand *cmd) {
 }
 
 int sh_is_shell_builtin_name(const char *name) {
-    static const char *names[] = {
-        "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias"
-    };
     size_t i;
 
-    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        if (rt_strcmp(name, names[i]) == 0) {
+    for (i = 0; i < sh_shell_builtin_count(); ++i) {
+        if (rt_strcmp(name, SH_BUILTIN_NAMES[i]) == 0) {
             return 1;
         }
     }

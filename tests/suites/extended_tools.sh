@@ -119,3 +119,6 @@ netcat_udp_pid=$!
 printf 'hello udp\n' | "$ROOT_DIR/build/netcat" -u -w 1 localhost 24682 > "$WORK_DIR/netcat_udp_client.out"
 wait "$netcat_udp_pid"
 assert_file_contains "$WORK_DIR/netcat_udp_server.out" 'hello udp' "netcat UDP mode did not receive the payload"
+
+"$ROOT_DIR/build/shutdown" --help > "$WORK_DIR/shutdown_help.out" 2>&1
+assert_file_contains "$WORK_DIR/shutdown_help.out" 'shutdown' "shutdown help output missing"
