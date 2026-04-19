@@ -35,6 +35,22 @@ expected to use before sending changes.
 - When changing a tool, extend the nearest existing suite instead of creating a
   one-off runner.
 - Benchmarks are informational; smoke tests are the main regression gate.
+- `make test` validates the hosted build, so changes in shared runtime,
+  platform, startup, or compiler-link logic should still be followed by a
+  `make freestanding` check.
+
+## HOSTED VS FREESTANDING VALIDATION
+
+The hosted test path is the primary contributor workflow because it is fast and
+exercises most user-visible behavior. The freestanding path is a second check:
+it is not the same as the smoke-test run, and it can still fail when the hosted
+suites are green.
+
+A good rule of thumb is:
+
+- tool behavior change: run `make test`
+- low-level runtime or platform change: run `make test` and `make freestanding`
+- compiler or startup-path change: run both and inspect the compiler suite
 
 ## LIMITATIONS
 

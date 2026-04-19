@@ -193,6 +193,10 @@ EOF
 "$ROOT_DIR/build/man" -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_render.out"
 assert_file_contains "$WORK_DIR/man_render.out" '^  \| quoted note$' "man did not render block quotes cleanly"
 assert_file_contains "$WORK_DIR/man_render.out" '^    echo hi$' "man did not preserve fenced code blocks as indented text"
+printf 'ABCDEFGHIJKLMNOPQRSTUVWX\n' > "$WORK_DIR/man_wrap.md"
+COLUMNS=20 "$ROOT_DIR/build/man" -l "$WORK_DIR/man_wrap.md" > "$WORK_DIR/man_wrap.out"
+assert_file_contains "$WORK_DIR/man_wrap.out" '^ABCDEFGHIJKLMNOPQRST$' "man did not use the configured console width for wrapping"
+assert_file_contains "$WORK_DIR/man_wrap.out" '^UVWX$' "man did not continue wrapped content on the next visual line"
 mkdir -p "$WORK_DIR/manroot/1"
 i=0
 cat > "$WORK_DIR/manroot/1/deep.md" <<'EOF'

@@ -10,6 +10,7 @@
 #define MAN_RESULT_CAPACITY 512
 #define MAN_RESULT_KEY_CAPACITY 320
 #define DEFAULT_PAGE_LINES 23
+#define DEFAULT_PAGE_COLUMNS 80
 
 typedef struct {
     char self_dir[MAN_PATH_CAPACITY];
@@ -20,6 +21,8 @@ typedef struct {
     int raw_mode_enabled;
     unsigned int page_lines;
     unsigned int lines_seen;
+    unsigned int page_columns;
+    unsigned int columns_seen;
     PlatformTerminalState saved_state;
 } ManPager;
 
@@ -38,10 +41,35 @@ static unsigned int pager_page_lines(void) {
     return DEFAULT_PAGE_LINES;
 }
 
+static unsigned int pager_page_columns(int *explicit_out) {
+    const char *text = platform_getenv("COLUMNS");
+    unsigned long long value = 0;
+
+    if (explicit_out != 0) {
+        *explicit_out = 0;
+    }
+
+    if (text != 0 && rt_parse_uint(text, &value) == 0 && value >= 16 && value < 2000) {
+        if (explicit_out != 0) {
+            *explicit_out = 1;
+        }
+        return (unsigned int)value;
+    }
+
+    return DEFAULT_PAGE_COLUMNS;
+}
+
 static void pager_init(ManPager *pager) {
+    int explicit_columns = 0;
+
     rt_memset(pager, 0, sizeof(*pager));
     pager->page_lines = pager_page_lines();
+    pager->page_columns = pager_page_columns(&explicit_columns);
     pager->interactive = (platform_isatty(0) != 0 && platform_isatty(1) != 0);
+
+    if (!pager->interactive && !explicit_columns) {
+        pager->page_columns = 0U;
+    }
 
     if (pager->interactive && platform_terminal_enable_raw_mode(0, &pager->saved_state) == 0) {
         pager->raw_mode_enabled = 1;
@@ -88,26 +116,65 @@ static int pager_prompt(ManPager *pager) {
 }
 
 static int pager_write_all(ManPager *pager, const char *text, size_t length) {
-    size_t i;
+    size_t index = 0U;
 
-    if (rt_write_all(1, text, length) != 0) {
-        return -1;
-    }
+    while (index < length) {
+        size_t next = index;
+        unsigned int codepoint = 0U;
+        unsigned int display_width;
+        int prompt_result;
 
-    if (!pager->interactive || pager->page_lines == 0U) {
-        return 0;
-    }
+        if (pager->interactive && pager->page_lines > 0U && pager->lines_seen >= pager->page_lines) {
+            prompt_result = pager_prompt(pager);
+            if (prompt_result != 0) {
+                return prompt_result;
+            }
+        }
 
-    for (i = 0; i < length; ++i) {
-        if (text[i] == '\n') {
+        if (rt_utf8_decode(text, length, &next, &codepoint) != 0 || next <= index) {
+            next = index + 1U;
+            codepoint = (unsigned char)text[index];
+        }
+
+        if (codepoint == '\n') {
+            if (rt_write_all(1, text + index, next - index) != 0) {
+                return -1;
+            }
             pager->lines_seen += 1U;
-            if (pager->lines_seen >= pager->page_lines) {
-                int prompt_result = pager_prompt(pager);
+            pager->columns_seen = 0U;
+            index = next;
+            continue;
+        }
+
+        display_width = (codepoint == '\t') ? (4U - (pager->columns_seen % 4U)) : rt_unicode_display_width(codepoint);
+
+        if (pager->page_columns > 0U && pager->columns_seen > 0U && display_width > 0U &&
+            pager->columns_seen + display_width > pager->page_columns) {
+            if (rt_write_char(1, '\n') != 0) {
+                return -1;
+            }
+            pager->lines_seen += 1U;
+            pager->columns_seen = 0U;
+
+            if (pager->interactive && pager->page_lines > 0U && pager->lines_seen >= pager->page_lines) {
+                prompt_result = pager_prompt(pager);
                 if (prompt_result != 0) {
                     return prompt_result;
                 }
             }
+
+            if (codepoint == ' ') {
+                index = next;
+                continue;
+            }
         }
+
+        if (rt_write_all(1, text + index, next - index) != 0) {
+            return -1;
+        }
+
+        pager->columns_seen += display_width;
+        index = next;
     }
 
     return 0;

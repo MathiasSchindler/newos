@@ -11,6 +11,20 @@ tool code are expected to program against `src/shared/platform.h`, which is then
 backed by either the hosted POSIX implementation or the freestanding raw-Linux
 syscall implementation.
 
+## BUILD-MODE SUMMARY
+
+The platform abstraction exists so that most tool code can stay the same across
+both development and target builds.
+
+In practice:
+
+- the hosted build is for fast local iteration, testing, and debugging
+- the freestanding build is for verifying that the same logic still works with
+  the raw Linux ABI and minimal startup support
+- a bug that appears only in one mode usually means the abstraction boundary is
+  missing an implementation detail or has leaked an assumption from the other
+  side
+
 ## STRUCTURE
 
 ### Hosted POSIX layer (`src/platform/posix`)
