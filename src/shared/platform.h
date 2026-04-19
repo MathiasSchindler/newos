@@ -147,6 +147,7 @@ int platform_unsetenv(const char *name);
 int platform_clearenv(void);
 int platform_isatty(int fd);
 int platform_get_process_id(void);
+int platform_random_bytes(unsigned char *buffer, size_t count);
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out);
 int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state);
 int platform_sleep_milliseconds(unsigned long long milliseconds);

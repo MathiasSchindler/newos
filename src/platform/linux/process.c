@@ -180,6 +180,35 @@ int platform_get_process_id(void) {
     return pid < 0 ? -1 : (int)pid;
 }
 
+int platform_random_bytes(unsigned char *buffer, size_t count) {
+    long fd;
+    size_t offset = 0;
+
+    if (buffer == 0 && count != 0U) {
+        return -1;
+    }
+    if (count == 0U) {
+        return 0;
+    }
+
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/dev/urandom", LINUX_O_RDONLY, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    while (offset < count) {
+        long bytes = linux_syscall3(LINUX_SYS_READ, fd, (long)(buffer + offset), (long)(count - offset));
+        if (bytes <= 0) {
+            linux_syscall1(LINUX_SYS_CLOSE, fd);
+            return -1;
+        }
+        offset += (size_t)bytes;
+    }
+
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    return 0;
+}
+
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
     struct linux_termios saved;
     struct linux_termios raw;

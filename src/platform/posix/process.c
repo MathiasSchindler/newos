@@ -230,6 +230,37 @@ int platform_get_process_id(void) {
     return (int)getpid();
 }
 
+int platform_random_bytes(unsigned char *buffer, size_t count) {
+    size_t offset = 0;
+    int fd;
+
+    if (buffer == NULL && count != 0U) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (count == 0U) {
+        return 0;
+    }
+
+    fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    while (offset < count) {
+        ssize_t bytes = read(fd, buffer + offset, count - offset);
+        if (bytes <= 0) {
+            close(fd);
+            errno = EIO;
+            return -1;
+        }
+        offset += (size_t)bytes;
+    }
+
+    close(fd);
+    return 0;
+}
+
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
     struct termios saved;
     struct termios raw;
