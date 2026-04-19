@@ -2,49 +2,56 @@
 
 ## NAME
 
-platform - the platform abstraction layers for hosted and freestanding builds
+platform - the OS abstraction layers for hosted and freestanding builds
 
 ## DESCRIPTION
 
-The platform component isolates operating-system-specific behaviour behind a uniform interface so that tool and runtime code does not call OS APIs directly. Two concrete platform layers are provided: a POSIX layer for hosted development builds and a Linux layer for the freestanding cross-compiled target. An architecture-specific CRT and syscall header complete the freestanding support for AArch64.
+The platform component keeps shared code away from direct OS calls. Runtime and
+tool code are expected to program against `src/shared/platform.h`, which is then
+backed by either the hosted POSIX implementation or the freestanding raw-Linux
+syscall implementation.
 
 ## STRUCTURE
 
-### POSIX platform (src/platform/posix)
+### Hosted POSIX layer (`src/platform/posix`)
 
-Used in the hosted build (make host). Calls standard POSIX library functions.
+Used by `make host` and by the smoke tests.
 
-- fs.c — file and directory operations (open, read, write, stat, readdir, …)
-- process.c — process creation, waiting, signal delivery, environment access
-- identity.c — user and group identity queries
-- net.c — socket creation and basic TCP/UDP I/O
-- time.c — wall-clock and monotonic time
+- `fs.c` — file, directory, and path operations
+- `process.c` — spawn, wait, signal, terminal, and environment handling
+- `identity.c` — users, groups, sessions, and related lookups
+- `net.c` — sockets plus helpers for tools such as `ping` and `netcat`
+- `time.c` — clocks, formatting, uptime, and sleep helpers
 
-### Linux platform (src/platform/linux)
+### Freestanding Linux layer (`src/platform/linux`)
 
-Used in the freestanding cross-compiled build (make freestanding). Makes raw Linux system calls; does not link against libc.
+Used by `make freestanding`. This layer talks to the Linux kernel ABI directly
+and does not depend on libc.
 
-- fs.c — file and directory operations via Linux syscalls
-- process.c — fork, exec, wait, kill, and environment via syscalls
-- identity.c — getuid, getgid, and related syscalls
-- net.c — socket and connect syscalls
-- time.c — clock_gettime and gettimeofday syscalls
+- `fs.c`, `process.c`, `identity.c`, `net.c`, `time.c` mirror the hosted
+  interface using syscalls
 
-### AArch64/Linux arch layer (src/arch/aarch64/linux)
+### Architecture glue (`src/arch/*/linux`)
 
-- crt0.S — C runtime startup; sets up the initial stack frame and calls main
-- syscall.h — inline assembly helpers for making raw AArch64 Linux system calls
+- `crt0.S` — minimal process startup for the freestanding binaries
+- `syscall.h` — inline syscall helpers for the selected Linux target ABI
 
-### Platform header
+## CONTRIBUTOR BOUNDARIES
 
-- src/platform/posix/common.h and src/platform/linux/common.h declare the uniform interface that the runtime and tools program against
-- src/shared/platform.h includes the correct common.h based on build configuration
+- Shared code should call `platform_*` helpers rather than `open(2)`,
+  `read(2)`, `getenv(3)`, or other OS APIs directly.
+- If a new capability is needed in both build modes, add it to the platform
+  interface and implement both backends.
+- ABI- or startup-specific code belongs under `src/arch/*`, not in the generic
+  runtime or tool sources.
 
 ## LIMITATIONS
 
-- Only Linux/AArch64 is supported as a freestanding target; other architectures have no arch layer yet
-- The Linux platform layer targets the stable Linux syscall ABI; kernel versions below 3.x may be missing some calls
-- IPv6 support in the net modules is minimal
+- The freestanding target currently supports Linux/x86-64 and Linux/AArch64
+- The abstraction is intentionally small; there is no threading or async event
+  layer
+- Networking support is practical but still basic compared with a full libc or
+  shell environment
 
 ## SEE ALSO
 

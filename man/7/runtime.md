@@ -2,38 +2,46 @@
 
 ## NAME
 
-runtime - the shared runtime library and utility modules used across tools
+runtime - the shared support code compiled into the project tools
 
 ## DESCRIPTION
 
-The runtime component provides the low-level building blocks that all tools rely on. It is divided into a core runtime layer (src/shared/runtime) and a set of shared utility modules (src/shared). These sources are compiled into every tool and replace the C standard library functions that would otherwise require libc linkage, supporting both the hosted and the freestanding build targets.
+The runtime is the portability layer that most tools sit on top of. It is not a
+separately versioned library or a full libc replacement; it is a compact set of
+helpers compiled directly into the tools so the same sources work in both the
+hosted and freestanding builds.
 
 ## CURRENT CAPABILITIES
 
-### Core runtime (src/shared/runtime)
+### Core runtime (`src/shared/runtime`)
 
-- memory.c — heap allocation, reallocation, and freeing built on top of the platform memory interface
-- string.c — string operations: copy, compare, length, search, conversion to and from integers
-- parse.c — number parsing helpers used by tools that process numeric input
-- io.c — buffered read and write wrappers over the platform I/O interface
+- `memory.c` — allocation helpers built on the platform memory interface
+- `string.c` — string copying, comparison, parsing, and path joining helpers
+- `parse.c` — numeric parsing used by command-line tools
+- `io.c` — small buffered I/O wrappers over the platform layer
 
-### Shared utilities (src/shared)
+### Shared utilities (`src/shared`)
 
-- tool_util.c / tool_util.h — common argument parsing and error reporting helpers used by most tools
-- archive_util.c / archive_util.h — tar-format archive reading and writing
-- hash_util.c / hash_util.h — MD5, SHA-256, and SHA-512 implementations used by the checksum tools
+- `tool_util.*` — common CLI parsing, error reporting, path, regex, and copy/remove helpers
+- `archive_util.*` — tar archive support
+- `hash_util.*` — MD5, SHA-256, and SHA-512 implementations
 
-### Header interfaces
+## CONTRIBUTOR BOUNDARIES
 
-- src/shared/runtime.h — public runtime API included by all tools
-- src/shared/platform.h — thin abstraction over platform-specific I/O and memory primitives
-- src/shared/shell_shared.h — shell-specific constants and types (included only by the shell subsystem)
+- Put genuinely reusable, libc-independent helpers here.
+- If logic is only used by one command, keep it in that tool instead of growing
+  the runtime unnecessarily.
+- Code in this layer should go through `platform.h` for OS interaction rather
+  than calling libc or POSIX APIs directly.
 
 ## LIMITATIONS
 
-- The runtime intentionally provides only the subset of functionality needed by the project tools; it is not a general-purpose libc replacement
-- Locale and wide-character support are absent
-- Threading primitives are not provided
+- This is a focused internal support layer, not a general-purpose standard
+  library
+- There is no `FILE *`/stdio abstraction, locale support, wide-character
+  support, or threading API
+- Formatting and parsing support cover the project's needs, not every libc edge
+  case
 
 ## SEE ALSO
 

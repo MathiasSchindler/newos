@@ -22,6 +22,7 @@ decoding the stream.
 - write to standard output with `-c`
 - keep the compressed input with `-k`
 - replace existing output when forced with `-f`
+- decompress multiple archives in one invocation
 
 ## OPTIONS
 
@@ -31,14 +32,17 @@ decoding the stream.
 
 ## LIMITATIONS
 
-- intentionally smaller than full GNU gzip compatibility
-- unsupported or malformed deflate blocks are rejected explicitly
+- only gzip-formatted streams are accepted
+- no archive listing or test-only modes are implemented
+- unsupported or malformed deflate blocks are rejected explicitly rather than
+  guessed around
 
 ## EXAMPLES
 
 ```text
 gunzip logs.gz
 gunzip -c logs.gz > logs.txt
+gunzip -k backup.tar.gz
 ```
 
 ## SEE ALSO

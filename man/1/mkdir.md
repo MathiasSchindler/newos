@@ -19,19 +19,22 @@ parents and apply an explicit octal mode.
 
 - create one or more directories
 - create parent directories with `-p`
+- quietly accept already-existing parents in `-p` mode
 - verbose creation messages with `-v`
 - set an explicit mode with `-m`
 
 ## OPTIONS
 
-- `-p` create parent directories as needed
-- `-v` print a line for each created directory
-- `-m MODE` apply an octal permission mode
+- `-p` create parent directories as needed and do not fail if they already exist
+- `-v` print a line for each directory actually created
+- `-m MODE` apply an explicit permission mode (typically octal such as `755`)
 
 ## LIMITATIONS
 
-- mode handling is numeric/octal-oriented
-- advanced host-specific permission semantics are not the focus
+- symbolic mode strings are not guaranteed; `-m` is intended for numeric/octal
+  modes
+- when `-m` is not supplied, final permissions still depend on the current
+  process umask
 
 ## EXAMPLES
 

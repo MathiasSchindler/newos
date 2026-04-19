@@ -24,6 +24,7 @@ passes them as arguments to COMMAND. If no COMMAND is given, `echo` is used.
 - Replace a placeholder string in arguments with `-I REPLSTR` (one item per
   invocation, reads by line)
 - Accept NUL-delimited input with `-0`
+- Use `echo` as the default command when none is specified
 
 ## OPTIONS
 
@@ -40,6 +41,8 @@ passes them as arguments to COMMAND. If no COMMAND is given, `echo` is used.
 - No `-p` (prompt before each invocation).
 - No `-r`/`--no-run-if-empty`; an empty stdin still runs the command once
   unless `-I` or `-0` mode causes no tokens to be collected.
+- `xargs` does not invoke a shell unless you explicitly run one, so wildcard
+  expansion, redirection, and pipelines are not interpreted automatically.
 
 ## EXAMPLES
 

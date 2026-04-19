@@ -2,39 +2,41 @@
 
 ## NAME
 
-shell - the sh command and its underlying shell subsystem
+shell - the `sh` command and its internal shell subsystem
 
 ## DESCRIPTION
 
-The shell component consists of the sh tool (src/tools/sh.c) and four shared source modules that implement parsing, execution, built-in commands, and interactive line editing. The shared modules live in src/shared and are compiled into sh; they are not linked into any other tool.
+The shell component consists of the `sh` tool plus a private subsystem in
+`src/shared/shell_*`. It provides an interactive command shell and script
+runner for the repository userland, but it is still intentionally smaller than a
+full production shell such as `bash`.
 
 ## CURRENT CAPABILITIES
 
-- POSIX-style command parsing including pipelines, redirections, and semicolons
-- AND/OR lists (&&, ||) and background jobs (&)
-- here-documents
-- variable assignment and expansion
-- command substitution via $()
-- if, while, for, case, and function definitions
-- built-in commands: cd, export, unset, exit, source, alias, jobs, fg, bg, wait, and others
-- interactive line editing with history (up to 64 entries) and simple completion
-- up to 16 concurrent background jobs
-- up to 32 user-defined aliases and 32 shell functions
+- pipelines, redirections, semicolon-separated commands, and `&&`/`||`
+- background jobs with `jobs`, `fg`, `bg`, and `wait`
+- variable assignment and expansion, wildcard expansion, and command
+  substitution with `$()`
+- `if`, `while`, `for`, `case`, and shell-function definitions
+- here-documents and aliases
+- interactive history plus simple line editing and completion when run on a TTY
 
-## INTERFACES
+## INTERNAL LAYOUT
 
-- src/shared/shell_shared.h defines shared constants and data structures
-- src/shared/shell_parser.c tokenises and parses command lines into ShCommand trees
-- src/shared/shell_execution.c forks, execs, and manages pipelines and job control
-- src/shared/shell_builtins.c implements the built-in command table
-- src/shared/shell_interactive.c handles the read-line loop and history
+- `shell_parser.c` — tokenization and parse-tree construction
+- `shell_execution.c` — process launching, pipelines, and job handling
+- `shell_builtins.c` — built-in commands and shell state updates
+- `shell_interactive.c` — line editing, prompt loop, and command history
+- `shell_shared.h` — shared limits and data structures
 
-## LIMITATIONS
+## CURRENT BOUNDARIES
 
-- Arithmetic expansion is limited; bc is the recommended workaround for complex expressions
-- No process substitution (<(...) or >(...))
-- History and line editing are only active in interactive mode; non-interactive scripts run without them
-- SH_MAX_ARGS is capped at 64; SH_MAX_COMMANDS per pipeline at 8
+- The subsystem is private to `sh`; other tools should not depend on it
+- Interactive features only apply when the shell is attached to a terminal
+- Fixed ceilings remain in place: 8 commands per pipeline, 64 arguments per
+  command, 16 jobs, 64 history entries, and 32 aliases/functions
+- No process substitution, and shell-language compatibility is still narrower
+  than `bash` or `dash`
 
 ## SEE ALSO
 

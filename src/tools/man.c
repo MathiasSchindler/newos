@@ -7,6 +7,8 @@
 #define MAN_LINE_CAPACITY 1024
 #define MAN_SCAN_BUFFER 4096
 #define MAN_ROOT_CAPACITY 16
+#define MAN_RESULT_CAPACITY 512
+#define MAN_RESULT_KEY_CAPACITY 320
 
 typedef struct {
     char self_dir[MAN_PATH_CAPACITY];
@@ -120,6 +122,36 @@ static void set_self_dir(const char *argv0, char *buffer, size_t buffer_size) {
     rt_copy_string(buffer, buffer_size, ".");
 }
 
+static void add_root_if_unique(const char *path,
+                               char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY],
+                               size_t *count_io) {
+    char normalized[MAN_PATH_CAPACITY];
+    const char *candidate = path;
+    int is_dir = 0;
+    size_t i;
+
+    if (path == 0 || path[0] == '\0' || *count_io >= MAN_ROOT_CAPACITY) {
+        return;
+    }
+
+    if (tool_canonicalize_path(path, 0, 0, normalized, sizeof(normalized)) == 0) {
+        candidate = normalized;
+    }
+
+    if (platform_path_is_directory(candidate, &is_dir) != 0 || !is_dir) {
+        return;
+    }
+
+    for (i = 0; i < *count_io; ++i) {
+        if (rt_strcmp(roots[i], candidate) == 0) {
+            return;
+        }
+    }
+
+    rt_copy_string(roots[*count_io], MAN_PATH_CAPACITY, candidate);
+    *count_io += 1U;
+}
+
 static void parse_root_list(const char *text,
                             char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY],
                             size_t *count_io) {
@@ -128,7 +160,6 @@ static void parse_root_list(const char *text,
     while (text != 0 && text[i] != '\0' && *count_io < MAN_ROOT_CAPACITY) {
         char part[MAN_PATH_CAPACITY];
         size_t length = 0;
-        size_t j;
 
         while (text[i] != '\0' && text[i] != ':') {
             if (length + 1U < sizeof(part)) {
@@ -145,19 +176,37 @@ static void parse_root_list(const char *text,
             continue;
         }
 
-        for (j = 0; j < *count_io; ++j) {
-            if (rt_strcmp(roots[j], part) == 0) {
-                break;
-            }
-        }
-        if (j == *count_io) {
-            int is_dir = 0;
-            if (platform_path_is_directory(part, &is_dir) == 0 && is_dir) {
-                rt_copy_string(roots[*count_io], MAN_PATH_CAPACITY, part);
-                *count_io += 1U;
-            }
+        add_root_if_unique(part, roots, count_io);
+    }
+}
+
+static int should_emit_search_result(const char *section,
+                                     const char *name,
+                                     char seen[MAN_RESULT_CAPACITY][MAN_RESULT_KEY_CAPACITY],
+                                     size_t *seen_count_io) {
+    char key[MAN_RESULT_KEY_CAPACITY];
+    size_t i;
+
+    if (section == 0 || name == 0 || seen_count_io == 0) {
+        return 1;
+    }
+
+    rt_copy_string(key, sizeof(key), section);
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), "/");
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), name);
+
+    for (i = 0; i < *seen_count_io; ++i) {
+        if (rt_strcmp(seen[i], key) == 0) {
+            return 0;
         }
     }
+
+    if (*seen_count_io < MAN_RESULT_CAPACITY) {
+        rt_copy_string(seen[*seen_count_io], MAN_RESULT_KEY_CAPACITY, key);
+        *seen_count_io += 1U;
+    }
+
+    return 1;
 }
 
 static int collect_man_roots(const ManContext *context,
@@ -513,7 +562,9 @@ static int write_search_result(const char *section, const char *name) {
 
 static int search_keyword(const ManContext *context, const char *keyword) {
     char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY];
+    char seen_results[MAN_RESULT_CAPACITY][MAN_RESULT_KEY_CAPACITY];
     size_t root_count = 0;
+    size_t seen_count = 0;
     int found = 0;
     size_t root_index;
 
@@ -560,6 +611,10 @@ static int search_keyword(const ManContext *context, const char *keyword) {
                     continue;
                 }
                 if (!contains_case_insensitive(entries[i].name, keyword) && !file_contains_keyword(page_path, keyword)) {
+                    continue;
+                }
+                if (!should_emit_search_result(sections[section_index].name, entries[i].name, seen_results, &seen_count)) {
+                    found = 1;
                     continue;
                 }
                 if (write_search_result(sections[section_index].name, entries[i].name) != 0) {

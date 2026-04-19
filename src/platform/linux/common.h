@@ -70,6 +70,28 @@
 #define LINUX_S_IWOTH 0002U
 #define LINUX_S_IXOTH 0001U
 
+#if defined(__x86_64__)
+struct linux_stat {
+    unsigned long st_dev;
+    unsigned long st_ino;
+    unsigned long st_nlink;
+    unsigned int st_mode;
+    unsigned int st_uid;
+    unsigned int st_gid;
+    unsigned int __pad0;
+    unsigned long st_rdev;
+    long st_size;
+    long st_blksize;
+    long st_blocks;
+    long st_atime;
+    unsigned long st_atime_nsec;
+    long st_mtime;
+    unsigned long st_mtime_nsec;
+    long st_ctime;
+    unsigned long st_ctime_nsec;
+    long __unused[3];
+};
+#else
 struct linux_stat {
     unsigned long st_dev;
     unsigned long st_ino;
@@ -92,6 +114,7 @@ struct linux_stat {
     unsigned int __unused4;
     unsigned int __unused5;
 };
+#endif
 
 struct linux_dirent64 {
     unsigned long long d_ino;

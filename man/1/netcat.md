@@ -38,6 +38,8 @@ for an incoming connection instead.
 ## LIMITATIONS
 
 - Only a single connection per invocation; no `-k` (keep listening).
+- Listen mode binds by port only; there is no flag for choosing a specific
+  local address or source port.
 - No `-e` (execute program) or `-c` (shell command).
 - No UNIX-domain socket support.
 - No IPv6 flag; address family is determined by the platform resolver.

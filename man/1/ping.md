@@ -20,6 +20,7 @@ and packet loss statistics.
 - Send a configurable number of packets
 - Configurable send interval, timeout, payload size, and TTL
 - Reports per-packet RTT and a summary on completion
+- Hostname resolution through the platform IPv4 networking backend
 
 ## OPTIONS
 
@@ -34,6 +35,7 @@ and packet loss statistics.
 
 - Requires appropriate privileges (raw socket or setuid) to send ICMP packets.
 - No IPv6 support; IPv4 only.
+- Timing and size options are integer-only; fractional intervals are not accepted.
 - Flood mode (`-f`) is not implemented.
 - Deadline mode (`-w`) is not implemented.
 

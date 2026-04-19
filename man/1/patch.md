@@ -15,6 +15,7 @@ patch reads a unified-format diff and applies it to the corresponding source fil
 ## CURRENT CAPABILITIES
 
 - applying unified diff hunks to existing files
+- reading patches from standard input, `-i`, or a positional patch file
 - stripping leading path components from filenames in the patch
 - reverse-applying a patch
 - creating a `.orig` backup before modifying a file
@@ -33,6 +34,8 @@ patch reads a unified-format diff and applies it to the corresponding source fil
 - only unified diff format (`--- / +++` headers, `@@ ... @@` hunks) is supported; context and ed-script formats are not
 - binary patches are not supported
 - `--dry-run` is not implemented
+- hunk matching is conservative; patches generated against substantially changed
+  files may fail instead of applying with large fuzz
 
 ## EXAMPLES
 

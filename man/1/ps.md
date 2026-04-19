@@ -6,16 +6,18 @@ ps - list running processes
 
 ## SYNOPSIS
 
-ps [-f] [-h] [-p PID[,PID...]] [-o FIELD[,FIELD...]]
+ps [-f] [-e|-A|-a|-x] [-h|--no-headers] [-p PID[,PID...]] [-o FIELD[,FIELD...]]
 
 ## DESCRIPTION
 
-The ps tool displays process information gathered from `/proc`. By default it prints the process ID, status, and command.
+The ps tool displays process information gathered from `/proc`. The current
+default output already includes `pid`, `ppid`, `user`, `stat`, `rss`, and
+`command`.
 
 ## CURRENT CAPABILITIES
 
-- show a default `pid`, `stat`, and `command` view
-- display a fuller process listing with `-f`
+- show a default full-format process table
+- accept common `-f`, `-e`, `-A`, `-a`, and `-x` compatibility flags
 - filter to specific PIDs
 - choose custom output fields from the supported set
 
@@ -23,21 +25,23 @@ The ps tool displays process information gathered from `/proc`. By default it pr
 
 | Flag | Description |
 |------|-------------|
-| `-f` | Use full format: `pid`, `ppid`, `user`, `stat`, `rss`, `command`. |
-| `-h` | Suppress the header row. |
+| `-f` | Accepted for compatibility; the default output is already full format. |
+| `-e`, `-A`, `-a`, `-x` | Accepted compatibility forms for showing the normal full listing. |
+| `-h`, `--no-headers` | Suppress the header row. |
 | `-p PID[,PID...]` | Show only the listed process IDs. |
-| `-o FIELD[,FIELD...]` | Select output fields from `pid`, `ppid`, `user`, `stat`, `rss`, and `command`. |
+| `-o FIELD[,FIELD...]` | Select output fields from `pid`, `ppid`, `user`, `stat`/`state`, `rss`/`rss_kb`, and `command`/`cmd`/`comm`. |
 
 ## LIMITATIONS
 
 - This implementation reads from `/proc` and is Linux-only.
-- BSD-style flag syntax and user filtering with `-u` are not implemented.
+- user filtering with `-u` and BSD-style bare forms such as `aux` are not implemented.
 - RSS values are reported in kilobytes.
 
 ## EXAMPLES
 
 - `ps`
 - `ps -f`
+- `ps --no-headers -p 1`
 - `ps -p 1,123 -o pid,ppid,command`
 
 ## SEE ALSO

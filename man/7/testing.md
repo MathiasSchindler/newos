@@ -2,40 +2,45 @@
 
 ## NAME
 
-testing - the smoke-test and benchmark infrastructure for the project
+testing - smoke-test and benchmark workflow for the project
 
 ## DESCRIPTION
 
-The tests directory contains a structured smoke-test suite that exercises the built host-side tools, a shared assertion library, and a separate benchmarks area for comparing tool performance against the host system equivalents.
+The repository relies on shell-script smoke tests rather than a unit-test
+framework. `make test` builds the hosted binaries, runs the suites in parallel,
+and summarizes the result. This is the main correctness check contributors are
+expected to use before sending changes.
 
 ## STRUCTURE
 
-- tests/run_smoke_tests.sh — entry point; runs all suites in parallel and reports results
-- tests/lib/assert.sh — shared assertion helpers sourced by each suite
-- tests/suites/ — individual test suites, one script per area
-- tests/benchmarks/ — benchmark scripts comparing newos tools to system tools
-- tests/tmp/ — temporary working directory created at test runtime; not committed
+- `tests/run_smoke_tests.sh` — main runner; starts all suites and reports a
+  combined status
+- `tests/lib/assert.sh` — shared assertion helpers
+- `tests/suites/` — area-specific smoke suites
+- `tests/benchmarks/` — performance comparisons against host-system tools
+- `tests/tmp/` — scratch output and per-suite logs; safe to delete
 
 ## SUITES
 
-- core_tools.sh — tests for fundamental tools (ls, cat, cp, echo, …)
-- extended_tools.sh — tests for more complex tools (sed, awk, sort, grep, …)
-- shell.sh — tests for sh built-ins and scripting features
-- compiler.sh — tests for ncc compilation behaviour
-- boundaries.sh — edge-case and boundary-condition tests
+- `core_tools.sh` — basic Unix-style utilities
+- `extended_tools.sh` — richer text, archive, and filesystem behavior
+- `shell.sh` — `sh` parsing, built-ins, and script execution
+- `compiler.sh` — `ncc` behavior and compile flows
+- `boundaries.sh` — edge conditions and platform-sensitive cases
 
-## WORKFLOW
+## CONTRIBUTOR NOTES
 
-    make test       — build host binaries and run the full smoke-test suite
-    make benchmark  — build host binaries and run the benchmark suite
-
-The smoke-test runner launches all suites concurrently, collects per-suite logs under tests/tmp/logs, and prints a summary on completion. A non-zero exit code means at least one suite reported a failure.
+- A failing run leaves logs under `tests/tmp/logs/<suite>.log`; start there
+  rather than rerunning blindly.
+- When changing a tool, extend the nearest existing suite instead of creating a
+  one-off runner.
+- Benchmarks are informational; smoke tests are the main regression gate.
 
 ## LIMITATIONS
 
-- Tests run against the host build only; the freestanding binaries are not exercised by the suite
-- No unit test framework is present; tests are shell scripts calling the tools directly
-- The benchmark suite requires the host system to provide the reference tools (coreutils equivalents)
+- The automated suite validates the hosted build only
+- Tests are black-box shell scripts, so fine-grained unit isolation is limited
+- Benchmarks assume the host system provides comparable reference tools
 
 ## SEE ALSO
 

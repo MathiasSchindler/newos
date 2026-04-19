@@ -22,6 +22,7 @@ support. It can also act in decompression mode.
 - write to standard output with `-c`
 - keep the input file with `-k`
 - overwrite output when forced with `-f`
+- process multiple input files in one invocation
 
 ## OPTIONS
 
@@ -32,8 +33,10 @@ support. It can also act in decompression mode.
 
 ## LIMITATIONS
 
-- the tool focuses on core gzip workflow rather than every GNU extension
-- advanced metadata and obscure stream variations may not be implemented
+- only gzip streams are handled; this is not a general `.zip` extractor
+- no recursive directory compression mode, test mode (`-t`), or listing mode
+  (`-l`) is implemented
+- directory trees usually need to be packed first with `tar`
 
 ## EXAMPLES
 
@@ -41,6 +44,7 @@ support. It can also act in decompression mode.
 gzip file.txt
 gzip -c file.txt > file.txt.gz
 gzip -d archive.gz
+tar -cf backup.tar src && gzip backup.tar
 ```
 
 ## SEE ALSO

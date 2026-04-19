@@ -26,6 +26,7 @@ commonly used for low-level copying, device I/O, and data extraction.
   on read errors), `notrunc` (do not truncate output file)
 - Status reporting: `default`, `noxfer` (suppress transfer stats), `none`
   (suppress all stats)
+- `count`, `skip`, and `seek` operate in units of the current block size
 
 ## OPTIONS
 
@@ -42,6 +43,7 @@ commonly used for low-level copying, device I/O, and data extraction.
 
 - No `ibs`/`obs` (separate input/output block sizes).
 - `conv=` keywords beyond `sync`, `noerror`, `notrunc` are not supported.
+- No `status=progress`, `iflag=...`, or `oflag=...` support.
 - No progress display during transfer (only a final summary).
 
 ## EXAMPLES

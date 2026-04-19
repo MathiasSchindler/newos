@@ -8,37 +8,47 @@ sh - command shell for the newos userland
 
 ```text
 sh
+sh -c COMMAND
 sh SCRIPT [ARG ...]
 ```
 
 ## DESCRIPTION
 
-`sh` provides the project's interactive and scriptable shell environment. It is
-used to run pipelines, builtins, and external tools from the repository userland.
+`sh` provides the project's interactive and scriptable shell environment. With
+no arguments it reads commands from standard input, using interactive mode when
+stdin is a terminal. With `-c` it executes a single command string, and with a
+script path it runs the file non-interactively.
 
 ## CURRENT CAPABILITIES
 
-- interactive command entry
-- shell scripts and non-interactive execution
-- pipelines and standard redirections
-- builtins for common shell workflow
-- variable expansion, aliases, and here-doc support in the current implementation
+- interactive command entry with in-session history
+- one-shot execution with `-c` and script execution from a file
+- pipelines, redirections, background jobs, and here-docs
+- shell builtins including `cd`, `exit`, `jobs`, `fg`, `bg`, `history`,
+  `export`, `unset`, `alias`, and `command -v`
+- variable expansion, aliases, and shell functions in the current implementation
 
 ## OPTIONS
 
-The shell currently focuses on invocation as an interactive shell or with a
-script path. Its command-line flag surface is intentionally small.
+- `-c COMMAND` — execute `COMMAND` and exit
+- `SCRIPT [ARG ...]` — read commands from `SCRIPT`; extra command-line
+  arguments are currently accepted but have only limited script visibility
 
 ## LIMITATIONS
 
 - it is not a full drop-in replacement for a mature POSIX shell
-- advanced job control, completion, and history behavior are still limited
-- some shell-language edge cases and compatibility details remain narrower than `bash` or `dash`
+- job control and interactive convenience features remain basic compared with
+  `bash` or `dash`
+- script argument handling is still narrower than full POSIX `$1`, `$2`, and
+  related behavior
+- shell invocation options are intentionally minimal; login-shell startup and
+  broader compatibility modes are not implemented
 
 ## EXAMPLES
 
 ```text
 sh
+sh -c 'echo hello | wc -c'
 sh build-script.sh
 printf 'echo hello\n' | sh
 ```

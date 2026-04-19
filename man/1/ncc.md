@@ -13,31 +13,47 @@ ncc [OPTIONS] FILE
 ## DESCRIPTION
 
 `ncc` is the repository compiler used to build and evolve the toolchain itself.
-It supports hosted development today and is being extended toward the broader
-freestanding system goals of the project.
+It can preprocess, inspect compiler stages, emit assembly or objects, and on
+supported host targets produce a runnable executable. The focus remains the
+project's own codebase and self-hosting workflows rather than full GCC/Clang
+compatibility.
 
 ## CURRENT CAPABILITIES
 
-- Parsing and semantic analysis for the project C codebase
-- Linux x86-64 code generation and ELF object output
-- Support for the repository tools and self-hosting workflows
-- Multiple backend targets under active development
+- preprocessing with `-E` and additional include or define options
+- token, AST, and IR dumps for compiler debugging
+- assembly output with `-S` and object output with `-c`
+- default executable output on supported targets when linking succeeds
+- target selection for `linux-x86_64`, `linux-aarch64`, and `macos-aarch64`
 
 ## OPTIONS
 
-- `-o FILE` — write output to FILE
+- `-E`, `--preprocess` — stop after preprocessing and write preprocessed output
+- `-S`, `--emit-asm` — compile to assembly output
 - `-c` — compile to object file without linking
-- `-S` — compile to assembly output
+- `-o FILE` — write output to FILE
+- `-I DIR` — add an include search directory
+- `-DNAME[=VALUE]` — define a preprocessor macro
+- `--dump-tokens`, `--dump-ast`, `--dump-ir` — print intermediate compiler
+  stages for inspection
+- `--target TARGET` — choose a backend target
+- `--version` — print the compiler stage/version string
 
 ## LIMITATIONS
 
-- Not a complete ISO C implementation; targets the project's own C subset.
-- Only Linux x86-64 output is production-ready; other targets are in progress.
+- only one input source file is accepted per invocation
+- not a complete ISO C implementation; the supported subset is aimed at the
+  project's own code
+- final executable linking currently relies on the host `clang` toolchain
+- Linux x86-64 is the best-supported target today; Linux AArch64 output remains
+  incomplete
 
 ## EXAMPLES
 
 ```
+ncc -E -I include -DDEBUG=1 hello.c
 ncc hello.c -o hello
+ncc --dump-ir source.c
 ncc -S source.c -o source.s
 ncc -c file.c -o file.o
 ```
