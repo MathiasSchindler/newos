@@ -62,10 +62,15 @@ TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
 
 .DEFAULT_GOAL := all
 
-.PHONY: all host freestanding test benchmark clean
+.PHONY: all host freestanding test test-phase1 test-smoke benchmark clean
 
-test: host
-	./tests/run_smoke_tests.sh
+test: test-phase1 test-smoke
+
+test-phase1: host
+	sh ./tests/phase1/run_phase1_tests.sh
+
+test-smoke: host
+	SKIP_PHASE1=1 sh ./tests/run_smoke_tests.sh
 
 benchmark: host
 	./tests/benchmarks/run_benchmarks.sh
