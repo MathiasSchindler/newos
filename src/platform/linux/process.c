@@ -1,6 +1,7 @@
 #include "platform.h"
 #include "common.h"
 #include "syscall.h"
+#include "signal_util.h"
 
 _Static_assert(sizeof(struct linux_termios) <= PLATFORM_TERMINAL_STATE_CAPACITY, "PlatformTerminalState is too small");
 
@@ -56,38 +57,6 @@ static const LinuxSignalEntry LINUX_SIGNAL_TABLE[] = {
     { "TTIN", LINUX_SIGTTIN },
     { "TTOU", LINUX_SIGTTOU },
 };
-
-static char signal_upper_char(char ch) {
-    if (ch >= 'a' && ch <= 'z') {
-        return (char)(ch - 'a' + 'A');
-    }
-    return ch;
-}
-
-static int signal_name_matches(const char *input, const char *name) {
-    size_t offset = 0;
-    size_t index = 0;
-
-    if (input == 0 || name == 0) {
-        return 0;
-    }
-
-    if (signal_upper_char(input[0]) == 'S' &&
-        signal_upper_char(input[1]) == 'I' &&
-        signal_upper_char(input[2]) == 'G') {
-        offset = 3;
-    }
-
-    while (input[offset] != '\0' && name[index] != '\0') {
-        if (signal_upper_char(input[offset]) != signal_upper_char(name[index])) {
-            return 0;
-        }
-        offset += 1U;
-        index += 1U;
-    }
-
-    return input[offset] == '\0' && name[index] == '\0';
-}
 
 static int linux_decode_wait_status(int status) {
     if ((status & 0x7f) == 0) {
