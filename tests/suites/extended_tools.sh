@@ -179,6 +179,20 @@ assert_file_contains "$WORK_DIR/man_search.out" '^ncc (1)$' "man -k search did n
 "$ROOT_DIR/build/man" env > "$WORK_DIR/man_env.out"
 assert_file_contains "$WORK_DIR/man_env.out" 'Flag .*Description' "man did not render table headers cleanly"
 assert_file_contains "$WORK_DIR/man_env.out" 'emit NUL-delimited output with -0' "man did not strip inline markdown markers"
+cat > "$WORK_DIR/man_render.md" <<'EOF'
+# RENDER
+
+> quoted note
+
+- bullet entry
+
+```sh
+echo hi
+```
+EOF
+"$ROOT_DIR/build/man" -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_render.out"
+assert_file_contains "$WORK_DIR/man_render.out" '^  \| quoted note$' "man did not render block quotes cleanly"
+assert_file_contains "$WORK_DIR/man_render.out" '^    echo hi$' "man did not preserve fenced code blocks as indented text"
 mkdir -p "$WORK_DIR/manroot/1"
 i=0
 cat > "$WORK_DIR/manroot/1/deep.md" <<'EOF'

@@ -6,7 +6,7 @@
 #define CRYPTO_SHA256_DIGEST_SIZE 32
 #define CRYPTO_SHA256_BLOCK_SIZE 64
 
-typedef struct {
+typedef struct sha256_ctx {
     unsigned int state[8];
     unsigned long long bit_count;
     unsigned char buffer[CRYPTO_SHA256_BLOCK_SIZE];

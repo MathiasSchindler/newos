@@ -230,7 +230,11 @@ static int link_executable_output(const CompilerOptions *options, const Compiler
         "src/shared/runtime/unicode.c",
         "src/shared/tool_util.c",
         "src/shared/archive_util.c",
-        "src/shared/hash_util.c"
+        "src/shared/hash_util.c",
+        "src/shared/crypto/crypto_util.c",
+        "src/shared/crypto/md5.c",
+        "src/shared/crypto/sha256.c",
+        "src/shared/crypto/sha512.c"
     };
     static char *const host_platform_sources[] = {
         "src/platform/posix/fs.c",

@@ -6,7 +6,7 @@
 #define CRYPTO_SHA512_DIGEST_SIZE 64
 #define CRYPTO_SHA512_BLOCK_SIZE 128
 
-typedef struct {
+typedef struct sha512_ctx {
     unsigned long long state[8];
     unsigned long long bit_count_low;
     unsigned long long bit_count_high;

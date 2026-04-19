@@ -184,7 +184,7 @@ void ssh_profile_init_default_client(SshAlgorithmProfile *profile) {
         return;
     }
 
-    rt_copy_string(profile->kex_algorithms, sizeof(profile->kex_algorithms), "curve25519-sha256,ext-info-c,kex-strict-c-v00@openssh.com");
+    rt_copy_string(profile->kex_algorithms, sizeof(profile->kex_algorithms), "curve25519-sha256");
     rt_copy_string(profile->host_key_algorithms, sizeof(profile->host_key_algorithms), "ssh-ed25519");
     rt_copy_string(profile->ciphers_c_to_s, sizeof(profile->ciphers_c_to_s), "chacha20-poly1305@openssh.com");
     rt_copy_string(profile->ciphers_s_to_c, sizeof(profile->ciphers_s_to_c), "chacha20-poly1305@openssh.com");
@@ -199,7 +199,7 @@ void ssh_profile_init_default_server(SshAlgorithmProfile *profile) {
         return;
     }
 
-    rt_copy_string(profile->kex_algorithms, sizeof(profile->kex_algorithms), "curve25519-sha256,kex-strict-s-v00@openssh.com");
+    rt_copy_string(profile->kex_algorithms, sizeof(profile->kex_algorithms), "curve25519-sha256");
     rt_copy_string(profile->host_key_algorithms, sizeof(profile->host_key_algorithms), "ssh-ed25519");
     rt_copy_string(profile->ciphers_c_to_s, sizeof(profile->ciphers_c_to_s), "chacha20-poly1305@openssh.com");
     rt_copy_string(profile->ciphers_s_to_c, sizeof(profile->ciphers_s_to_c), "chacha20-poly1305@openssh.com");

@@ -92,7 +92,8 @@ int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size
 }
 
 int tool_prompt_yes_no(const char *message, const char *path) {
-    char reply[8];
+    char ch = '\0';
+    char answer = '\0';
     long bytes_read;
 
     if (message != 0) {
@@ -103,8 +104,23 @@ int tool_prompt_yes_no(const char *message, const char *path) {
     }
     rt_write_cstr(2, "? ");
 
-    bytes_read = platform_read(0, reply, sizeof(reply));
-    return bytes_read > 0 && (reply[0] == 'y' || reply[0] == 'Y');
+    for (;;) {
+        bytes_read = platform_read(0, &ch, 1U);
+        if (bytes_read <= 0) {
+            return 0;
+        }
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        if (answer == '\0' && ch != ' ' && ch != '\t') {
+            answer = ch;
+        }
+    }
+
+    return answer == 'y' || answer == 'Y';
 }
 
 static size_t tool_buffer_append_char(char *buffer, size_t buffer_size, size_t length, char ch) {

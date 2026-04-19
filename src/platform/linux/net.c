@@ -24,3 +24,18 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
     options.timeout_milliseconds = 0;
     return platform_netcat(host, port, &options);
 }
+
+int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out) {
+    (void)host;
+    (void)port;
+    (void)socket_fd_out;
+    return -1;
+}
+
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+    (void)fds;
+    (void)fd_count;
+    (void)ready_index_out;
+    (void)timeout_milliseconds;
+    return -1;
+}

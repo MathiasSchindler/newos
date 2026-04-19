@@ -10,6 +10,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -161,6 +162,100 @@ static int set_socket_timeout(int sock, unsigned int timeout_milliseconds) {
     return 0;
 }
 
+int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int sock = -1;
+
+    if (host == NULL || socket_fd_out == NULL || port == 0U || port > 65535U) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    (void)snprintf(port_text, sizeof(port_text), "%u", port);
+
+    if (getaddrinfo(host, port_text, &hints, &results) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sock < 0) {
+            continue;
+        }
+        if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
+            break;
+        }
+        close(sock);
+        sock = -1;
+    }
+
+    freeaddrinfo(results);
+    if (sock < 0) {
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+    fd_set read_set;
+    struct timeval timeout;
+    struct timeval *timeout_ptr = NULL;
+    int max_fd = -1;
+    size_t i;
+    int rc;
+
+    if (fds == NULL || fd_count == 0U || ready_index_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    FD_ZERO(&read_set);
+    for (i = 0; i < fd_count; ++i) {
+        if (fds[i] < 0) {
+            continue;
+        }
+        FD_SET(fds[i], &read_set);
+        if (fds[i] > max_fd) {
+            max_fd = fds[i];
+        }
+    }
+
+    if (max_fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (timeout_milliseconds >= 0) {
+        timeout.tv_sec = (time_t)(timeout_milliseconds / 1000);
+        timeout.tv_usec = (suseconds_t)((timeout_milliseconds % 1000) * 1000);
+        timeout_ptr = &timeout;
+    }
+
+    rc = select(max_fd + 1, &read_set, NULL, NULL, timeout_ptr);
+    if (rc <= 0) {
+        return rc;
+    }
+
+    for (i = 0; i < fd_count; ++i) {
+        if (fds[i] >= 0 && FD_ISSET(fds[i], &read_set)) {
+            *ready_index_out = i;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
     PlatformNetcatOptions effective_options;
     int sock = -1;
@@ -231,7 +326,12 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         return -1;
     }
 
-    {
+    if (!options->use_udp) {
+        if (platform_connect_tcp(host, port, &sock) != 0) {
+            return -1;
+        }
+        (void)set_socket_timeout(sock, options->timeout_milliseconds);
+    } else {
         struct addrinfo hints;
         struct addrinfo *results = 0;
         struct addrinfo *current;
@@ -239,8 +339,8 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = options->use_udp ? SOCK_DGRAM : SOCK_STREAM;
-        hints.ai_protocol = options->use_udp ? IPPROTO_UDP : IPPROTO_TCP;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_protocol = IPPROTO_UDP;
         (void)snprintf(port_text, sizeof(port_text), "%u", (unsigned int)port);
 
         if (getaddrinfo(host, port_text, &hints, &results) != 0) {

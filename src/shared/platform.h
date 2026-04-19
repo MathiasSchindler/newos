@@ -163,6 +163,8 @@ int platform_get_hostname(char *buffer, size_t buffer_size);
 int platform_set_hostname(const char *name);
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options);
 int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);
+int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out);
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_spawn_process(
     char *const argv[],
