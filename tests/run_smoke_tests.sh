@@ -21,9 +21,10 @@ run_suite extended_tools "$ROOT_DIR/tests/suites/extended_tools.sh"
 run_suite compiler "$ROOT_DIR/tests/suites/compiler.sh"
 run_suite shell "$ROOT_DIR/tests/suites/shell.sh"
 run_suite boundaries "$ROOT_DIR/tests/suites/boundaries.sh"
+run_suite bignum "$ROOT_DIR/tests/suites/bignum.sh"
 
 status=0
-for suite_name in core_tools extended_tools compiler shell boundaries; do
+for suite_name in core_tools extended_tools compiler shell boundaries bignum; do
     eval "suite_pid=\${${suite_name}_pid}"
     log_path="$LOG_DIR/$suite_name.log"
     if ! wait "$suite_pid"; then

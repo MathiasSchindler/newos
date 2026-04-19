@@ -1,9 +1,10 @@
+#include "bignum.h"
 #include "runtime.h"
 #include "tool_util.h"
 
 typedef struct {
     int is_string;
-    long long int_value;
+    Bignum int_value;
     const char *string_value;
 } ExprValue;
 
@@ -17,7 +18,15 @@ typedef struct {
 static ExprValue make_int_value(long long value) {
     ExprValue result;
     result.is_string = 0;
-    result.int_value = value;
+    bn_from_int(&result.int_value, value);
+    result.string_value = 0;
+    return result;
+}
+
+static ExprValue make_bignum_value(const Bignum *value) {
+    ExprValue result;
+    result.is_string = 0;
+    result.int_value = *value;
     result.string_value = 0;
     return result;
 }
@@ -25,7 +34,7 @@ static ExprValue make_int_value(long long value) {
 static ExprValue make_string_value(const char *value) {
     ExprValue result;
     result.is_string = 1;
-    result.int_value = 0;
+    bn_zero(&result.int_value);
     result.string_value = (value != 0) ? value : "";
     return result;
 }
@@ -67,7 +76,7 @@ static int compare_strings(const char *lhs, const char *rhs) {
 
 static int value_truthy(const ExprValue *value) {
     if (!value->is_string) {
-        return value->int_value != 0;
+        return !bn_is_zero(&value->int_value);
     }
 
     return value->string_value[0] != '\0' &&
@@ -78,21 +87,18 @@ static const char *value_as_string(const ExprValue *value, char *buffer, size_t 
     if (value->is_string) {
         return value->string_value;
     }
-    rt_unsigned_to_string((value->int_value < 0) ? (unsigned long long)(-value->int_value) : (unsigned long long)value->int_value,
-                          buffer + ((value->int_value < 0 && buffer_size > 1) ? 1 : 0),
-                          buffer_size - ((value->int_value < 0 && buffer_size > 1) ? 1U : 0U));
-    if (value->int_value < 0 && buffer_size > 1) {
-        buffer[0] = '-';
+    if (bn_to_string(&value->int_value, buffer, buffer_size) != 0 && buffer_size > 0) {
+        buffer[0] = '\0';
     }
     return buffer;
 }
 
-static int value_as_int(const ExprValue *value, long long *out) {
+static int value_as_bignum(const ExprValue *value, Bignum *out) {
     if (!value->is_string) {
         *out = value->int_value;
         return 0;
     }
-    return parse_signed_value(value->string_value, out);
+    return bn_from_string(out, value->string_value);
 }
 
 static ExprValue expr_parse_or(ExprParser *parser);
@@ -201,8 +207,10 @@ static ExprValue expr_parse_mul(ExprParser *parser) {
 
     while (!parser->error && parser->index < parser->argc) {
         const char *op = parser->argv[parser->index];
-        long long lhs;
-        long long rhs;
+        Bignum lhs;
+        Bignum rhs;
+        Bignum result;
+        Bignum remainder;
 
         if (rt_strcmp(op, "*") != 0 && rt_strcmp(op, "/") != 0 && rt_strcmp(op, "%") != 0) {
             break;
@@ -211,24 +219,41 @@ static ExprValue expr_parse_mul(ExprParser *parser) {
         parser->index += 1;
         {
             ExprValue right = expr_parse_primary(parser);
-            if (value_as_int(&value, &lhs) != 0 || value_as_int(&right, &rhs) != 0) {
+            if (value_as_bignum(&value, &lhs) != 0 || value_as_bignum(&right, &rhs) != 0) {
                 parser->error = 1;
                 return make_int_value(0);
             }
         }
 
-        if ((rt_strcmp(op, "/") == 0 || rt_strcmp(op, "%") == 0) && rhs == 0) {
+        if ((rt_strcmp(op, "/") == 0 || rt_strcmp(op, "%") == 0) && bn_is_zero(&rhs)) {
             tool_write_error("expr", "division by zero", 0);
             parser->error = 1;
             return make_int_value(0);
         }
 
         if (rt_strcmp(op, "*") == 0) {
-            value = make_int_value(lhs * rhs);
+            if (bn_multiply(&lhs, &rhs, &result) != 0) {
+                tool_write_error("expr", "numeric overflow", 0);
+                parser->error = 1;
+                return make_int_value(0);
+            }
+            value = make_bignum_value(&result);
         } else if (rt_strcmp(op, "/") == 0) {
-            value = make_int_value(lhs / rhs);
+            bn_zero(&remainder);
+            if (bn_divide(&lhs, &rhs, &result, &remainder) != 0) {
+                tool_write_error("expr", "numeric overflow", 0);
+                parser->error = 1;
+                return make_int_value(0);
+            }
+            value = make_bignum_value(&result);
         } else {
-            value = make_int_value(lhs % rhs);
+            bn_zero(&remainder);
+            if (bn_divide(&lhs, &rhs, &result, &remainder) != 0) {
+                tool_write_error("expr", "numeric overflow", 0);
+                parser->error = 1;
+                return make_int_value(0);
+            }
+            value = make_bignum_value(&remainder);
         }
     }
 
@@ -240,8 +265,9 @@ static ExprValue expr_parse_add(ExprParser *parser) {
 
     while (!parser->error && parser->index < parser->argc) {
         const char *op = parser->argv[parser->index];
-        long long lhs;
-        long long rhs;
+        Bignum lhs;
+        Bignum rhs;
+        Bignum result;
 
         if (rt_strcmp(op, "+") != 0 && rt_strcmp(op, "-") != 0) {
             break;
@@ -250,17 +276,26 @@ static ExprValue expr_parse_add(ExprParser *parser) {
         parser->index += 1;
         {
             ExprValue right = expr_parse_mul(parser);
-            if (value_as_int(&value, &lhs) != 0 || value_as_int(&right, &rhs) != 0) {
+            if (value_as_bignum(&value, &lhs) != 0 || value_as_bignum(&right, &rhs) != 0) {
                 parser->error = 1;
                 return make_int_value(0);
             }
         }
 
         if (rt_strcmp(op, "+") == 0) {
-            value = make_int_value(lhs + rhs);
+            if (bn_add(&lhs, &rhs, &result) != 0) {
+                tool_write_error("expr", "numeric overflow", 0);
+                parser->error = 1;
+                return make_int_value(0);
+            }
         } else {
-            value = make_int_value(lhs - rhs);
+            if (bn_subtract(&lhs, &rhs, &result) != 0) {
+                tool_write_error("expr", "numeric overflow", 0);
+                parser->error = 1;
+                return make_int_value(0);
+            }
         }
+        value = make_bignum_value(&result);
     }
 
     return value;
@@ -272,8 +307,8 @@ static ExprValue expr_parse_cmp(ExprParser *parser) {
     while (!parser->error && parser->index < parser->argc) {
         const char *op = parser->argv[parser->index];
         ExprValue right;
-        long long lhs_num;
-        long long rhs_num;
+        Bignum lhs_num;
+        Bignum rhs_num;
         int comparison;
 
         if (rt_strcmp(op, "=") != 0 && rt_strcmp(op, "!=") != 0 &&
@@ -286,23 +321,23 @@ static ExprValue expr_parse_cmp(ExprParser *parser) {
         right = expr_parse_add(parser);
 
         if (rt_strcmp(op, "=") == 0) {
-            char lhs_buffer[64];
-            char rhs_buffer[64];
+            char lhs_buffer[2048];
+            char rhs_buffer[2048];
             comparison = compare_strings(value_as_string(&value, lhs_buffer, sizeof(lhs_buffer)),
                                          value_as_string(&right, rhs_buffer, sizeof(rhs_buffer)));
             value = make_int_value(comparison == 0 ? 1 : 0);
         } else if (rt_strcmp(op, "!=") == 0) {
-            char lhs_buffer[64];
-            char rhs_buffer[64];
+            char lhs_buffer[2048];
+            char rhs_buffer[2048];
             comparison = compare_strings(value_as_string(&value, lhs_buffer, sizeof(lhs_buffer)),
                                          value_as_string(&right, rhs_buffer, sizeof(rhs_buffer)));
             value = make_int_value(comparison != 0 ? 1 : 0);
         } else {
-            if (value_as_int(&value, &lhs_num) == 0 && value_as_int(&right, &rhs_num) == 0) {
-                comparison = (lhs_num > rhs_num) - (lhs_num < rhs_num);
+            if (value_as_bignum(&value, &lhs_num) == 0 && value_as_bignum(&right, &rhs_num) == 0) {
+                comparison = bn_compare(&lhs_num, &rhs_num);
             } else {
-                char lhs_buffer[64];
-                char rhs_buffer[64];
+                char lhs_buffer[2048];
+                char rhs_buffer[2048];
                 comparison = compare_strings(value_as_string(&value, lhs_buffer, sizeof(lhs_buffer)),
                                              value_as_string(&right, rhs_buffer, sizeof(rhs_buffer)));
             }
@@ -356,10 +391,13 @@ static int write_value(const ExprValue *value) {
     if (value->is_string) {
         return rt_write_line(1, value->string_value);
     }
-    if (rt_write_int(1, value->int_value) != 0) {
-        return -1;
+    {
+        char buffer[2048];
+        if (bn_to_string(&value->int_value, buffer, sizeof(buffer)) != 0) {
+            return -1;
+        }
+        return rt_write_line(1, buffer);
     }
-    return rt_write_char(1, '\n');
 }
 
 int main(int argc, char **argv) {

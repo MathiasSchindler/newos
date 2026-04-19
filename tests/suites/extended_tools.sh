@@ -1170,6 +1170,10 @@ bc_cli_out=$("$ROOT_DIR/build/bc" 'scale=3; 10 / 4' | tr -d '\r' | tail -n 1)
 assert_text_equals "$bc_cli_out" '2.500' "bc command-line decimal evaluation failed"
 bc_pow_out=$("$ROOT_DIR/build/bc" '2^8' | tr -d '\r' | tail -n 1)
 assert_text_equals "$bc_pow_out" '256' "bc power operator failed on inline expressions"
+bc_big_add_out=$("$ROOT_DIR/build/bc" '999999999999999999999999999999 + 1' | tr -d '\r' | tail -n 1)
+assert_text_equals "$bc_big_add_out" '1000000000000000000000000000000' "bc arbitrary-precision addition regressed"
+bc_big_mul_out=$("$ROOT_DIR/build/bc" '12345678901234567890 * 98765432109876543210' | tr -d '\r' | tail -n 1)
+assert_text_equals "$bc_big_mul_out" '1219326311370217952237463801111263526900' "bc arbitrary-precision multiplication regressed"
 bc_math_out=$("$ROOT_DIR/build/bc" -l 'pi > 3 && e > 2' | tr -d '\r' | tail -n 1)
 assert_text_equals "$bc_math_out" '1' "bc -l math mode failed"
 cat > "$WORK_DIR/bc_flow_input.txt" <<'EOF'

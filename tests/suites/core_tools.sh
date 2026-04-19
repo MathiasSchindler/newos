@@ -99,3 +99,8 @@ assert_file_contains "$WORK_DIR/join_unicode.out" '^Äpfel 1 2$' "join did not m
 printf 'eins zwei\n' > "$WORK_DIR/awk_unicode.txt"
 "$ROOT_DIR/build/awk" '{ print NF }' "$WORK_DIR/awk_unicode.txt" > "$WORK_DIR/awk_unicode.out"
 assert_file_contains "$WORK_DIR/awk_unicode.out" '^2$' "awk did not split fields on Unicode whitespace"
+
+expr_big_add=$("$ROOT_DIR/build/expr" 9223372036854775807 + 1 | tr -d '\r\n')
+assert_text_equals "$expr_big_add" '9223372036854775808' "expr arbitrary-precision addition regressed"
+expr_big_mul=$("$ROOT_DIR/build/expr" 999999999999999999999999 '*' 9 | tr -d '\r\n')
+assert_text_equals "$expr_big_mul" '8999999999999999999999991' "expr arbitrary-precision multiplication regressed"

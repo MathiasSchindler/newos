@@ -47,6 +47,28 @@ When adding or extending userland tools:
 - optimize for useful real-world behavior before chasing obscure compatibility
   edge cases
 
+## SHARED PRIMITIVES
+
+The project maintains shared implementation primitives in `src/shared/` that
+multiple tools can reuse:
+
+- **bignum.{c,h}** - freestanding arbitrary-precision signed integer arithmetic,
+  used by `expr` and `bc` to provide high-range numeric support without libc or
+  heap allocation. The implementation uses base-1000000000 representation with
+  up to 128 digits (approximately 1150 decimal digits capacity) and supports
+  addition, subtraction, multiplication, division, modulo, comparisons, and
+  power/scale operations.
+
+- **platform.h** - OS abstraction for syscalls and platform-specific features
+
+- **runtime.{c,h}** - freestanding runtime helpers (string, memory, I/O) that
+  work without libc
+
+- **tool_util.h** - common tool argument parsing and error reporting
+
+Other shared components include archive utilities, crypto, hash functions,
+regex, path manipulation, and shell infrastructure.
+
 ## HIGH-VALUE REMAINING GAPS
 
 For a fuller self-hosted or stand-alone OS environment, the most valuable
