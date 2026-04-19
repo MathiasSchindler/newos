@@ -149,6 +149,32 @@ int platform_get_process_id(void) {
     return pid < 0 ? -1 : (int)pid;
 }
 
+long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_read) {
+    long bytes;
+    long action;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    action = clear_after_read ? 4 : 3;
+    bytes = linux_syscall3(LINUX_SYS_SYSLOG, action, (long)buffer, (long)(buffer_size - 1U));
+    if (bytes < 0) {
+        return -1;
+    }
+
+    buffer[bytes] = '\0';
+    return bytes;
+}
+
+int platform_clear_kernel_log(void) {
+    return linux_syscall3(LINUX_SYS_SYSLOG, 5, 0, 0) < 0 ? -1 : 0;
+}
+
+int platform_set_console_log_level(int level) {
+    return linux_syscall3(LINUX_SYS_SYSLOG, 8, 0, level) < 0 ? -1 : 0;
+}
+
 int platform_random_bytes(unsigned char *buffer, size_t count) {
     long fd;
     size_t offset = 0;
@@ -268,6 +294,12 @@ int platform_spawn_process(
             }
         } else if (stdout_fd >= 0 && stdout_fd != 1) {
             if (linux_syscall3(LINUX_SYS_DUP3, stdout_fd, 1, 0) < 0) {
+                linux_child_exit(126);
+            }
+        }
+
+        if (output_path != 0 || stdout_fd >= 0) {
+            if (linux_syscall3(LINUX_SYS_DUP3, 1, 2, 0) < 0) {
                 linux_child_exit(126);
             }
         }

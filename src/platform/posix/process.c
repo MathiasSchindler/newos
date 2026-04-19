@@ -17,6 +17,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/klog.h>
+#endif
 
 extern char **environ;
 
@@ -199,6 +202,64 @@ int platform_get_process_id(void) {
     return (int)getpid();
 }
 
+long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_read) {
+    if (buffer == NULL || buffer_size == 0U) {
+        errno = EINVAL;
+        return -1;
+    }
+
+#ifdef __linux__
+    {
+        int action = clear_after_read ? 4 : 3;
+        int bytes = klogctl(action, buffer, (int)(buffer_size - 1U));
+        if (bytes >= 0) {
+            buffer[bytes] = '\0';
+            return bytes;
+        }
+    }
+#endif
+
+    {
+        const char *fallbacks[] = { "/var/run/dmesg.boot", "/var/log/dmesg" };
+        size_t i;
+
+        for (i = 0; i < sizeof(fallbacks) / sizeof(fallbacks[0]); ++i) {
+            int fd = open(fallbacks[i], O_RDONLY);
+            if (fd >= 0) {
+                ssize_t bytes = read(fd, buffer, buffer_size - 1U);
+                close(fd);
+                if (bytes < 0) {
+                    return -1;
+                }
+                buffer[bytes] = '\0';
+                return bytes;
+            }
+        }
+    }
+
+    errno = ENOSYS;
+    return -1;
+}
+
+int platform_clear_kernel_log(void) {
+#ifdef __linux__
+    return klogctl(5, NULL, 0) < 0 ? -1 : 0;
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int platform_set_console_log_level(int level) {
+#ifdef __linux__
+    return klogctl(8, NULL, level) < 0 ? -1 : 0;
+#else
+    (void)level;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 int platform_random_bytes(unsigned char *buffer, size_t count) {
     size_t offset = 0;
     int fd;
@@ -325,6 +386,12 @@ int platform_spawn_process(
             }
         } else if (stdout_fd >= 0 && stdout_fd != STDOUT_FILENO) {
             if (dup2(stdout_fd, STDOUT_FILENO) < 0) {
+                _exit(126);
+            }
+        }
+
+        if (output_path != NULL || stdout_fd >= 0) {
+            if (dup2(STDOUT_FILENO, STDERR_FILENO) < 0) {
                 _exit(126);
             }
         }

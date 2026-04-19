@@ -68,12 +68,28 @@ assert_file_contains "$WORK_DIR/mount_help.out" '^Usage: .*mount' "mount --help 
 umount_help_out=$("$ROOT_DIR/build/umount" --help | tr -d '\r')
 printf '%s\n' "$umount_help_out" > "$WORK_DIR/umount_help.out"
 assert_file_contains "$WORK_DIR/umount_help.out" '^Usage: .*umount' "umount --help did not print usage"
+dmesg_help_out=$("$ROOT_DIR/build/dmesg" --help | tr -d '\r')
+printf '%s\n' "$dmesg_help_out" > "$WORK_DIR/dmesg_help.out"
+assert_file_contains "$WORK_DIR/dmesg_help.out" '^Usage: .*dmesg' "dmesg --help did not print usage"
+getty_help_out=$("$ROOT_DIR/build/getty" --help | tr -d '\r')
+printf '%s\n' "$getty_help_out" > "$WORK_DIR/getty_help.out"
+assert_file_contains "$WORK_DIR/getty_help.out" '^Usage: .*getty' "getty --help did not print usage"
 if [ -r /proc/self/mounts ] || [ -r /proc/mounts ]; then
     "$ROOT_DIR/build/mount" > "$WORK_DIR/mount_list.out"
     assert_file_contains "$WORK_DIR/mount_list.out" '^[^ ][^ ]* [^ ][^ ]* [^ ][^ ]*' "mount did not list the current mount table"
 fi
 if "$ROOT_DIR/build/umount" >/dev/null 2>&1; then
     fail "umount without a target should fail"
+fi
+if "$ROOT_DIR/build/dmesg" > "$WORK_DIR/dmesg.out" 2>/dev/null; then
+    assert_file_contains "$WORK_DIR/dmesg.out" '.' "dmesg succeeded but produced no output"
+fi
+assert_command_succeeds "$ROOT_DIR/build/getty" -n -q /dev/null /bin/true
+getty_status=0
+"$ROOT_DIR/build/getty" -n -q /dev/null /bin/sh -c 'exit 7' >/dev/null 2>&1 || getty_status=$?
+assert_text_equals "$getty_status" '7' "getty did not propagate the child exit status"
+if "$ROOT_DIR/build/getty" -n -q >/dev/null 2>&1; then
+    fail "getty without a tty path should fail"
 fi
 
 printf 'wget sample\n' > "$WORK_DIR/wget_source.txt"
