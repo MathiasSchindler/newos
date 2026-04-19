@@ -172,6 +172,29 @@ assert_file_contains "$WORK_DIR/man_ls.out" 'list files and directories' "man pa
 assert_file_contains "$WORK_DIR/man_layout.out" 'overview of the repository structure' "man section lookup failed"
 "$ROOT_DIR/build/man" -k compiler > "$WORK_DIR/man_search.out"
 assert_file_contains "$WORK_DIR/man_search.out" '^ncc (1)$' "man -k search did not find the compiler page"
+"$ROOT_DIR/build/man" env > "$WORK_DIR/man_env.out"
+assert_file_contains "$WORK_DIR/man_env.out" 'Flag .*Description' "man did not render table headers cleanly"
+assert_file_contains "$WORK_DIR/man_env.out" 'emit NUL-delimited output with -0' "man did not strip inline markdown markers"
+mkdir -p "$WORK_DIR/manroot/1"
+i=0
+cat > "$WORK_DIR/manroot/1/deep.md" <<'EOF'
+# DEEP
+
+## NAME
+
+deep - search depth coverage page
+
+## DESCRIPTION
+EOF
+while [ "$i" -lt 180 ]; do
+    printf 'Padding line %03d keeps this manual page well beyond four kibibytes of searchable content.\n' "$i" >> "$WORK_DIR/manroot/1/deep.md"
+    i=$((i + 1))
+done
+printf '\nSpecial marker: depthsentinel.\n' >> "$WORK_DIR/manroot/1/deep.md"
+MANPATH="$WORK_DIR/manroot" "$ROOT_DIR/build/man" -k depthsentinel > "$WORK_DIR/man_deep_search.out"
+assert_file_contains "$WORK_DIR/man_deep_search.out" '^deep (1)$' "man -k only searched an initial prefix of the page"
+MANPATH="$WORK_DIR/manroot" "$ROOT_DIR/build/man" deep > "$WORK_DIR/man_deep_page.out"
+assert_file_contains "$WORK_DIR/man_deep_page.out" '^DEEP$' "man did not discover sections from the configured manual root"
 printf 'copy-a\n' > "$WORK_DIR/cp_a.txt"
 printf 'copy-b\n' > "$WORK_DIR/cp_b.txt"
 mkdir -p "$WORK_DIR/cp_dest"

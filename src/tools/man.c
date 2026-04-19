@@ -6,6 +6,7 @@
 #define MAN_ENTRY_CAPACITY 256
 #define MAN_LINE_CAPACITY 1024
 #define MAN_SCAN_BUFFER 4096
+#define MAN_ROOT_CAPACITY 16
 
 typedef struct {
     char self_dir[MAN_PATH_CAPACITY];
@@ -119,29 +120,66 @@ static void set_self_dir(const char *argv0, char *buffer, size_t buffer_size) {
     rt_copy_string(buffer, buffer_size, ".");
 }
 
-static int find_man_root(const ManContext *context, char *buffer, size_t buffer_size) {
-    int is_dir = 0;
+static void parse_root_list(const char *text,
+                            char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY],
+                            size_t *count_io) {
+    size_t i = 0;
+
+    while (text != 0 && text[i] != '\0' && *count_io < MAN_ROOT_CAPACITY) {
+        char part[MAN_PATH_CAPACITY];
+        size_t length = 0;
+        size_t j;
+
+        while (text[i] != '\0' && text[i] != ':') {
+            if (length + 1U < sizeof(part)) {
+                part[length++] = text[i];
+            }
+            i += 1U;
+        }
+        part[length] = '\0';
+        if (text[i] == ':') {
+            i += 1U;
+        }
+
+        if (part[0] == '\0') {
+            continue;
+        }
+
+        for (j = 0; j < *count_io; ++j) {
+            if (rt_strcmp(roots[j], part) == 0) {
+                break;
+            }
+        }
+        if (j == *count_io) {
+            int is_dir = 0;
+            if (platform_path_is_directory(part, &is_dir) == 0 && is_dir) {
+                rt_copy_string(roots[*count_io], MAN_PATH_CAPACITY, part);
+                *count_io += 1U;
+            }
+        }
+    }
+}
+
+static int collect_man_roots(const ManContext *context,
+                             char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY],
+                             size_t *count_out) {
     char candidate[MAN_PATH_CAPACITY];
 
+    *count_out = 0U;
+    parse_root_list(platform_getenv("MANPATH"), roots, count_out);
+
     rt_copy_string(candidate, sizeof(candidate), "man");
-    if (platform_path_is_directory(candidate, &is_dir) == 0 && is_dir) {
-        rt_copy_string(buffer, buffer_size, candidate);
-        return 0;
+    parse_root_list(candidate, roots, count_out);
+
+    if (tool_join_path(context->self_dir, "../man", candidate, sizeof(candidate)) == 0) {
+        parse_root_list(candidate, roots, count_out);
     }
 
-    if (tool_join_path(context->self_dir, "../man", candidate, sizeof(candidate)) == 0 &&
-        platform_path_is_directory(candidate, &is_dir) == 0 && is_dir) {
-        rt_copy_string(buffer, buffer_size, candidate);
-        return 0;
+    if (tool_join_path(context->self_dir, "man", candidate, sizeof(candidate)) == 0) {
+        parse_root_list(candidate, roots, count_out);
     }
 
-    if (tool_join_path(context->self_dir, "man", candidate, sizeof(candidate)) == 0 &&
-        platform_path_is_directory(candidate, &is_dir) == 0 && is_dir) {
-        rt_copy_string(buffer, buffer_size, candidate);
-        return 0;
-    }
-
-    return -1;
+    return *count_out > 0U ? 0 : -1;
 }
 
 static void build_page_filename(const char *topic, char *buffer, size_t buffer_size) {
@@ -177,8 +215,149 @@ static int find_page_in_section(const char *man_root, const char *section, const
     return tool_path_exists(path_out) ? 0 : -1;
 }
 
+static int buffer_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    if (*length_io + 1U >= buffer_size) {
+        return -1;
+    }
+    buffer[*length_io] = ch;
+    *length_io += 1U;
+    buffer[*length_io] = '\0';
+    return 0;
+}
+
+static void trim_range(const char **start_io, const char **end_io) {
+    while (*start_io < *end_io && ((**start_io == ' ') || (**start_io == '\t'))) {
+        *start_io += 1;
+    }
+    while (*end_io > *start_io && (((*end_io)[-1] == ' ') || ((*end_io)[-1] == '\t'))) {
+        *end_io -= 1;
+    }
+}
+
+static int line_contains_char(const char *text, char target) {
+    size_t i = 0;
+    while (text[i] != '\0') {
+        if (text[i] == target) {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static int is_table_separator_line(const char *text) {
+    int saw_rule = 0;
+
+    while (*text != '\0') {
+        if (*text == '-' || *text == ':' || *text == '|' || *text == ' ' || *text == '\t') {
+            if (*text == '-' || *text == ':') {
+                saw_rule = 1;
+            }
+            text += 1;
+            continue;
+        }
+        return 0;
+    }
+
+    return saw_rule;
+}
+
+static int format_inline_markdown(const char *text, char *buffer, size_t buffer_size) {
+    size_t i = 0;
+    size_t out = 0;
+
+    buffer[0] = '\0';
+    while (text[i] != '\0') {
+        if ((text[i] == '*' && text[i + 1U] == '*') || (text[i] == '_' && text[i + 1U] == '_')) {
+            i += 2U;
+            continue;
+        }
+        if (text[i] == '`') {
+            i += 1U;
+            continue;
+        }
+        if (text[i] == '[') {
+            i += 1U;
+            while (text[i] != '\0' && text[i] != ']') {
+                if (buffer_append_char(buffer, buffer_size, &out, text[i]) != 0) {
+                    return -1;
+                }
+                i += 1U;
+            }
+            if (text[i] == ']') {
+                i += 1U;
+            }
+            if (text[i] == '(') {
+                while (text[i] != '\0' && text[i] != ')') {
+                    i += 1U;
+                }
+                if (text[i] == ')') {
+                    i += 1U;
+                }
+            }
+            continue;
+        }
+        if (text[i] == '*' || text[i] == '_') {
+            i += 1U;
+            continue;
+        }
+        if (buffer_append_char(buffer, buffer_size, &out, text[i]) != 0) {
+            return -1;
+        }
+        i += 1U;
+    }
+
+    return 0;
+}
+
+static int render_table_row(const char *text) {
+    const char *cursor = text;
+    int first_cell = 1;
+
+    while (*cursor != '\0') {
+        const char *start;
+        const char *end;
+        char cell[MAN_LINE_CAPACITY];
+        char rendered[MAN_LINE_CAPACITY];
+        size_t length = 0;
+
+        if (*cursor == '|') {
+            cursor += 1;
+        }
+        start = cursor;
+        while (*cursor != '\0' && *cursor != '|') {
+            cursor += 1;
+        }
+        end = cursor;
+        trim_range(&start, &end);
+        while (start < end && length + 1U < sizeof(cell)) {
+            cell[length++] = *start++;
+        }
+        cell[length] = '\0';
+
+        if (cell[0] == '\0') {
+            continue;
+        }
+
+        if (format_inline_markdown(cell, rendered, sizeof(rendered)) != 0) {
+            return -1;
+        }
+
+        if (!first_cell && rt_write_cstr(1, "    ") != 0) {
+            return -1;
+        }
+        if (rt_write_cstr(1, rendered) != 0) {
+            return -1;
+        }
+        first_cell = 0;
+    }
+
+    return rt_write_char(1, '\n');
+}
+
 static int flush_rendered_line(const char *line, int *in_code_block) {
     const char *text = line;
+    char rendered[MAN_LINE_CAPACITY];
 
     if (text_starts_with(text, "```")) {
         *in_code_block = !*in_code_block;
@@ -193,12 +372,23 @@ static int flush_rendered_line(const char *line, int *in_code_block) {
             text += 1;
         }
 
+        if (is_table_separator_line(text)) {
+            return 0;
+        }
+        if (line_contains_char(text, '|')) {
+            return render_table_row(text);
+        }
+
         if (text_starts_with(text, "- ") || text_starts_with(text, "* ")) {
             if (rt_write_cstr(1, "  * ") != 0) {
                 return -1;
             }
             text += 2;
         }
+    }
+
+    if (!*in_code_block && format_inline_markdown(text, rendered, sizeof(rendered)) == 0) {
+        text = rendered;
     }
 
     if (rt_write_cstr(1, text) != 0 || rt_write_char(1, '\n') != 0) {
@@ -265,22 +455,43 @@ static int render_markdown_file(const char *path) {
 }
 
 static int file_contains_keyword(const char *path, const char *keyword) {
-    char buffer[MAN_SCAN_BUFFER + 1];
+    char buffer[(MAN_SCAN_BUFFER * 2) + 1];
+    size_t carry = 0;
+    size_t keyword_len = rt_strlen(keyword);
     int fd = platform_open_read(path);
     long bytes_read;
 
     if (fd < 0) {
         return 0;
     }
-
-    bytes_read = platform_read(fd, buffer, MAN_SCAN_BUFFER);
-    platform_close(fd);
-    if (bytes_read <= 0) {
-        return 0;
+    if (keyword_len == 0U) {
+        platform_close(fd);
+        return 1;
+    }
+    if (keyword_len > MAN_SCAN_BUFFER) {
+        keyword_len = MAN_SCAN_BUFFER;
     }
 
-    buffer[(size_t)bytes_read] = '\0';
-    return contains_case_insensitive(buffer, keyword);
+    while ((bytes_read = platform_read(fd, buffer + carry, MAN_SCAN_BUFFER)) > 0) {
+        size_t total = carry + (size_t)bytes_read;
+        buffer[total] = '\0';
+
+        if (contains_case_insensitive(buffer, keyword)) {
+            platform_close(fd);
+            return 1;
+        }
+
+        carry = keyword_len > 0U ? (keyword_len - 1U) : 0U;
+        if (carry > total) {
+            carry = total;
+        }
+        if (carry > 0U) {
+            memmove(buffer, buffer + total - carry, carry);
+        }
+    }
+
+    platform_close(fd);
+    return 0;
 }
 
 static int write_search_result(const char *section, const char *name) {
@@ -301,46 +512,61 @@ static int write_search_result(const char *section, const char *name) {
 }
 
 static int search_keyword(const ManContext *context, const char *keyword) {
-    static const char *sections[] = {"1", "5", "7"};
-    char man_root[MAN_PATH_CAPACITY];
+    char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY];
+    size_t root_count = 0;
     int found = 0;
-    size_t section_index;
+    size_t root_index;
 
-    if (find_man_root(context, man_root, sizeof(man_root)) != 0) {
+    if (collect_man_roots(context, roots, &root_count) != 0) {
         tool_write_error("man", "cannot find manual directory", 0);
         return 1;
     }
 
-    for (section_index = 0; section_index < sizeof(sections) / sizeof(sections[0]); ++section_index) {
-        PlatformDirEntry entries[MAN_ENTRY_CAPACITY];
-        size_t count = 0;
+    for (root_index = 0; root_index < root_count; ++root_index) {
+        PlatformDirEntry sections[MAN_ENTRY_CAPACITY];
+        size_t section_count = 0;
         int path_is_directory = 0;
-        char section_dir[MAN_PATH_CAPACITY];
-        size_t i;
+        size_t section_index;
 
-        if (tool_join_path(man_root, sections[section_index], section_dir, sizeof(section_dir)) != 0) {
-            continue;
-        }
-        if (platform_collect_entries(section_dir, 0, entries, MAN_ENTRY_CAPACITY, &count, &path_is_directory) != 0 || !path_is_directory) {
+        if (platform_collect_entries(roots[root_index], 0, sections, MAN_ENTRY_CAPACITY,
+                                     &section_count, &path_is_directory) != 0 || !path_is_directory) {
             continue;
         }
 
-        for (i = 0; i < count; ++i) {
-            char page_path[MAN_PATH_CAPACITY];
+        for (section_index = 0; section_index < section_count; ++section_index) {
+            PlatformDirEntry entries[MAN_ENTRY_CAPACITY];
+            size_t count = 0;
+            int section_is_directory = 0;
+            char section_dir[MAN_PATH_CAPACITY];
+            size_t i;
 
-            if (entries[i].is_dir || !text_ends_with(entries[i].name, ".md")) {
+            if (!sections[section_index].is_dir || sections[section_index].is_hidden) {
                 continue;
             }
-            if (tool_join_path(section_dir, entries[i].name, page_path, sizeof(page_path)) != 0) {
+            if (tool_join_path(roots[root_index], sections[section_index].name, section_dir, sizeof(section_dir)) != 0) {
                 continue;
             }
-            if (!contains_case_insensitive(entries[i].name, keyword) && !file_contains_keyword(page_path, keyword)) {
+            if (platform_collect_entries(section_dir, 0, entries, MAN_ENTRY_CAPACITY, &count, &section_is_directory) != 0 || !section_is_directory) {
                 continue;
             }
-            if (write_search_result(sections[section_index], entries[i].name) != 0) {
-                return 1;
+
+            for (i = 0; i < count; ++i) {
+                char page_path[MAN_PATH_CAPACITY];
+
+                if (entries[i].is_dir || !text_ends_with(entries[i].name, ".md")) {
+                    continue;
+                }
+                if (tool_join_path(section_dir, entries[i].name, page_path, sizeof(page_path)) != 0) {
+                    continue;
+                }
+                if (!contains_case_insensitive(entries[i].name, keyword) && !file_contains_keyword(page_path, keyword)) {
+                    continue;
+                }
+                if (write_search_result(sections[section_index].name, entries[i].name) != 0) {
+                    return 1;
+                }
+                found = 1;
             }
-            found = 1;
         }
     }
 
@@ -353,24 +579,39 @@ static int search_keyword(const ManContext *context, const char *keyword) {
 }
 
 static int open_named_page(const ManContext *context, const char *section, const char *topic) {
-    static const char *sections[] = {"1", "5", "7"};
-    char man_root[MAN_PATH_CAPACITY];
+    char roots[MAN_ROOT_CAPACITY][MAN_PATH_CAPACITY];
     char page_path[MAN_PATH_CAPACITY];
-    size_t i;
+    size_t root_count = 0;
+    size_t root_index;
 
-    if (find_man_root(context, man_root, sizeof(man_root)) != 0) {
+    if (collect_man_roots(context, roots, &root_count) != 0) {
         tool_write_error("man", "cannot find manual directory", 0);
         return 1;
     }
 
-    if (section != 0) {
-        if (find_page_in_section(man_root, section, topic, page_path, sizeof(page_path)) == 0) {
-            return render_markdown_file(page_path) == 0 ? 0 : 1;
-        }
-    } else {
-        for (i = 0; i < sizeof(sections) / sizeof(sections[0]); ++i) {
-            if (find_page_in_section(man_root, sections[i], topic, page_path, sizeof(page_path)) == 0) {
+    for (root_index = 0; root_index < root_count; ++root_index) {
+        if (section != 0) {
+            if (find_page_in_section(roots[root_index], section, topic, page_path, sizeof(page_path)) == 0) {
                 return render_markdown_file(page_path) == 0 ? 0 : 1;
+            }
+        } else {
+            PlatformDirEntry sections[MAN_ENTRY_CAPACITY];
+            size_t section_count = 0;
+            int path_is_directory = 0;
+            size_t i;
+
+            if (platform_collect_entries(roots[root_index], 0, sections, MAN_ENTRY_CAPACITY,
+                                         &section_count, &path_is_directory) != 0 || !path_is_directory) {
+                continue;
+            }
+
+            for (i = 0; i < section_count; ++i) {
+                if (!sections[i].is_dir || sections[i].is_hidden) {
+                    continue;
+                }
+                if (find_page_in_section(roots[root_index], sections[i].name, topic, page_path, sizeof(page_path)) == 0) {
+                    return render_markdown_file(page_path) == 0 ? 0 : 1;
+                }
             }
         }
     }

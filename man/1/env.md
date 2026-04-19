@@ -40,6 +40,10 @@ The env tool prints the current environment or runs a command with modified envi
 - `env -i PATH=/bin sh -c "echo $PATH"`
 - `env -u HOME printenv`
 
+## NOTES
+
+- **Important:** variable assignments made by env affect only the invoked command.
+
 ## SEE ALSO
 
 sh, printenv, export
