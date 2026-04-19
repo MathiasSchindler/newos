@@ -304,8 +304,21 @@ static int create_heredoc_temp_file(char *buffer, size_t buffer_size) {
 }
 
 void sh_skip_spaces(char **cursor) {
-    while (**cursor != '\0' && rt_is_space(**cursor)) {
-        *cursor += 1;
+    while (**cursor != '\0') {
+        size_t index = 0U;
+        unsigned int codepoint = 0U;
+        size_t length = rt_strlen(*cursor);
+
+        if (rt_utf8_decode(*cursor, length, &index, &codepoint) != 0 || index == 0U) {
+            index = 1U;
+            codepoint = (unsigned char)**cursor;
+        }
+
+        if (!rt_unicode_is_space(codepoint)) {
+            break;
+        }
+
+        *cursor += index;
     }
 }
 

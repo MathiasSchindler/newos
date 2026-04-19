@@ -28,6 +28,12 @@ Visible tool-level improvements already landed include:
 - `grep` performing Stage 1 Unicode-aware ignore-case matching in both fixed-string and regex search paths
 - `man` performing Unicode-aware keyword lookup for manual pages
 - `column`, `fold`, and `fmt` using visual width instead of raw byte count for alignment and wrapping
+- `cut` selecting character positions by UTF-8 code point in character mode
+- `join` matching keys with Unicode-aware ignore-case behavior and safer whitespace splitting
+- `awk` treating Unicode whitespace more consistently for default field splitting
+- `tr` translating, deleting, and squeezing literal Unicode characters as whole code points instead of raw bytes
+- the shell parser recognizing Unicode whitespace separators more consistently, with interactive input no longer restricted to plain ASCII bytes
+- `sed` benefiting from the shared Unicode-aware regex/search layer for pattern matching and substitution
 - `file` recognizing UTF-8 and UTF-16 text signatures
 
 Important limitations still remain. The current implementation is intentionally compact and does not yet provide full normalization, grapheme-cluster segmentation, locale-specific collation, or exhaustive case-fold coverage.
@@ -56,9 +62,9 @@ This stage now provides:
 - display-width logic for combining marks and wide characters
 - targeted adoption in the most visible text tools
 
-So far, Stage 1 work has reached `wc`, `rev`, `grep`, `man`, `column`, `fold`, and `fmt`.
+So far, Stage 1 work has reached `wc`, `rev`, `grep`, `man`, `column`, `fold`, `fmt`, `cut`, `join`, `awk`, `tr`, important `sed` paths, and the shell tokenizer/parser.
 
-Remaining Stage 1 work is mainly about expanding shared tables and carrying the same behavior into more text-processing tools.
+Remaining Stage 1 work is now mainly about broadening the same behavior across the rest of the text-processing layer and filling in a few remaining edge cases.
 
 ## LATER STAGES
 
@@ -66,7 +72,8 @@ After the current Stage 1 rollout is broadened, the next major steps are:
 
 - fuller case-fold coverage beyond the compact Stage 1 tables
 - Unicode-aware character classes and semantics across the broader regex and text-processing layer
-- safer character-oriented behavior in `cut`, `join`, `awk`, `sed`, and the shell
+- broader shell expansion, editing, and quoting polish for Unicode-heavy interactive use
+- richer Unicode class and range semantics where current Stage 1 behavior is still intentionally compact
 - grapheme-cluster awareness for visibly single characters made of multiple code points
 - normalization-aware comparison where exact equivalence matters
 - policy decisions around compiler identifiers and source normalization

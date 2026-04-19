@@ -81,30 +81,70 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-i] [-a1|-a 1] [-a2|-a 2] [-v1|-v 1] [-v2|-v 2] [-1 FIELD] [-2 FIELD] [-j FIELD] [-t CHAR] [-e EMPTY] [-o LIST] file1 file2");
 }
 
-static char fold_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
+static size_t join_decode_codepoint(const char *text, size_t length, size_t start, unsigned int *codepoint_out) {
+    size_t index = start;
+
+    if (start >= length) {
+        if (codepoint_out != 0) {
+            *codepoint_out = 0U;
+        }
+        return 0U;
     }
-    return ch;
+
+    if (rt_utf8_decode(text, length, &index, codepoint_out) != 0 || index <= start) {
+        if (codepoint_out != 0) {
+            *codepoint_out = (unsigned char)text[start];
+        }
+        return 1U;
+    }
+
+    return index - start;
+}
+
+static int join_unicode_space_at(const char *line, size_t index, size_t *advance_out) {
+    size_t length = rt_strlen(line);
+    unsigned int codepoint = 0U;
+    size_t advance = join_decode_codepoint(line, length, index, &codepoint);
+
+    if (advance_out != 0) {
+        *advance_out = advance;
+    }
+    return advance > 0U && rt_unicode_is_space(codepoint);
 }
 
 static int compare_keys(const char *left, const char *right, int ignore_case) {
-    size_t i = 0U;
+    size_t left_index = 0U;
+    size_t right_index = 0U;
+    size_t left_length = rt_strlen(left);
+    size_t right_length = rt_strlen(right);
 
-    while (left[i] != '\0' || right[i] != '\0') {
-        char lhs = left[i];
-        char rhs = right[i];
-        if (ignore_case) {
-            lhs = fold_ascii(lhs);
-            rhs = fold_ascii(rhs);
+    while (left_index < left_length || right_index < right_length) {
+        unsigned int lhs = 0U;
+        unsigned int rhs = 0U;
+        size_t left_advance;
+        size_t right_advance;
+
+        if (left_index >= left_length) {
+            return -1;
         }
+        if (right_index >= right_length) {
+            return 1;
+        }
+
+        left_advance = join_decode_codepoint(left, left_length, left_index, &lhs);
+        right_advance = join_decode_codepoint(right, right_length, right_index, &rhs);
+
+        if (ignore_case) {
+            lhs = rt_unicode_simple_fold(lhs);
+            rhs = rt_unicode_simple_fold(rhs);
+        }
+
         if (lhs != rhs) {
             return lhs < rhs ? -1 : 1;
         }
-        if (left[i] == '\0') {
-            break;
-        }
-        i += 1U;
+
+        left_index += left_advance;
+        right_index += right_advance;
     }
 
     return 0;
@@ -145,8 +185,10 @@ static int extract_field(const char *line, unsigned long long field_no, char del
 
     if (delimiter == '\0') {
         while (line[i] != '\0') {
-            while (line[i] != '\0' && rt_is_space(line[i])) {
-                i += 1;
+            size_t advance = 0U;
+
+            while (line[i] != '\0' && join_unicode_space_at(line, i, &advance)) {
+                i += advance;
             }
 
             if (line[i] == '\0') {
@@ -154,18 +196,21 @@ static int extract_field(const char *line, unsigned long long field_no, char del
             }
 
             if (current_field == field_no) {
-                while (line[i] != '\0' && !rt_is_space(line[i])) {
-                    if (out_len + 1U < out_size) {
-                        out[out_len++] = line[i];
+                while (line[i] != '\0' && !join_unicode_space_at(line, i, &advance)) {
+                    if (out_len + advance < out_size) {
+                        size_t j;
+                        for (j = 0; j < advance; ++j) {
+                            out[out_len++] = line[i + j];
+                        }
                     }
-                    i += 1;
+                    i += advance;
                 }
                 out[out_len] = '\0';
                 return 0;
             }
 
-            while (line[i] != '\0' && !rt_is_space(line[i])) {
-                i += 1;
+            while (line[i] != '\0' && !join_unicode_space_at(line, i, &advance)) {
+                i += advance;
             }
             current_field += 1ULL;
         }
@@ -230,9 +275,10 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
         while (line[i] != '\0') {
             size_t start;
             size_t len = 0;
+            size_t advance = 0U;
 
-            while (line[i] != '\0' && rt_is_space(line[i])) {
-                i += 1;
+            while (line[i] != '\0' && join_unicode_space_at(line, i, &advance)) {
+                i += advance;
             }
 
             if (line[i] == '\0') {
@@ -240,9 +286,9 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
             }
 
             start = i;
-            while (line[i] != '\0' && !rt_is_space(line[i])) {
-                i += 1;
-                len += 1;
+            while (line[i] != '\0' && !join_unicode_space_at(line, i, &advance)) {
+                i += advance;
+                len += advance;
             }
 
             if (field_no != skip_field) {

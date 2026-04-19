@@ -9,11 +9,11 @@ typedef struct {
     int squeeze_chars;
     int translate_chars;
     int squeeze_complement;
-    unsigned char set1[TR_SET_CAPACITY];
+    unsigned int set1[TR_SET_CAPACITY];
     size_t set1_len;
-    unsigned char set2[TR_SET_CAPACITY];
+    unsigned int set2[TR_SET_CAPACITY];
     size_t set2_len;
-    unsigned char squeeze_set[TR_SET_CAPACITY];
+    unsigned int squeeze_set[TR_SET_CAPACITY];
     size_t squeeze_set_len;
 } TrOptions;
 
@@ -126,21 +126,21 @@ static int tr_class_matches(const char *name, size_t name_len, unsigned char ch)
     return 0;
 }
 
-static int append_char(unsigned char *buffer, size_t buffer_size, size_t *length, unsigned char ch) {
+static int append_codepoint(unsigned int *buffer, size_t buffer_size, size_t *length, unsigned int codepoint) {
     if (*length >= buffer_size) {
         return -1;
     }
-    buffer[*length] = ch;
+    buffer[*length] = codepoint;
     *length += 1U;
     return 0;
 }
 
-static int append_class_chars(unsigned char *buffer, size_t buffer_size, size_t *length, const char *name, size_t name_len) {
+static int append_class_chars(unsigned int *buffer, size_t buffer_size, size_t *length, const char *name, size_t name_len) {
     unsigned int ch;
 
     for (ch = 0U; ch <= 255U; ++ch) {
         if (tr_class_matches(name, name_len, (unsigned char)ch) &&
-            append_char(buffer, buffer_size, length, (unsigned char)ch) != 0) {
+            append_codepoint(buffer, buffer_size, length, ch) != 0) {
             return -1;
         }
     }
@@ -161,12 +161,19 @@ static int hex_value(char ch) {
     return -1;
 }
 
-static size_t decode_escape_char(const char *text, size_t index, unsigned char *out) {
+static size_t decode_escape_codepoint(const char *text, size_t index, unsigned int *out) {
     unsigned char code;
     size_t pos;
     int value;
+    size_t text_length;
+    size_t decode_index;
 
     if (text[index] != '\\' || text[index + 1U] == '\0') {
+        text_length = rt_strlen(text);
+        decode_index = index;
+        if (rt_utf8_decode(text, text_length, &decode_index, out) == 0 && decode_index > index) {
+            return decode_index - index;
+        }
         *out = (unsigned char)text[index];
         return 1U;
     }
@@ -208,7 +215,7 @@ static size_t decode_escape_char(const char *text, size_t index, unsigned char *
                 value = (value * 16) + hex_value(text[pos]);
                 pos += 1U;
             }
-            *out = (unsigned char)(value & 0xff);
+            *out = (unsigned int)value;
             return pos - index;
         default:
             if (code >= '0' && code <= '7') {
@@ -218,7 +225,7 @@ static size_t decode_escape_char(const char *text, size_t index, unsigned char *
                     value = (value * 8) + (text[pos] - '0');
                     pos += 1U;
                 }
-                *out = (unsigned char)(value & 0xff);
+                *out = (unsigned int)value;
                 return pos - index;
             }
             *out = code;
@@ -245,7 +252,7 @@ static size_t parse_class_token(const char *text, size_t index, const char **nam
     return 0U;
 }
 
-static int expand_set(const char *text, unsigned char *buffer, size_t buffer_size, size_t *length_out) {
+static int expand_set(const char *text, unsigned int *buffer, size_t buffer_size, size_t *length_out) {
     size_t length = 0U;
     size_t i = 0U;
 
@@ -253,7 +260,7 @@ static int expand_set(const char *text, unsigned char *buffer, size_t buffer_siz
         const char *class_name = 0;
         size_t class_name_len = 0U;
         size_t class_len = parse_class_token(text, i, &class_name, &class_name_len);
-        unsigned char first;
+        unsigned int first;
         size_t first_len;
 
         if (class_len != 0U) {
@@ -264,25 +271,26 @@ static int expand_set(const char *text, unsigned char *buffer, size_t buffer_siz
             continue;
         }
 
-        first_len = decode_escape_char(text, i, &first);
+        first_len = decode_escape_codepoint(text, i, &first);
         if (text[i + first_len] == '-' && text[i + first_len + 1U] != '\0') {
             const char *range_class = 0;
             size_t range_class_name_len = 0U;
             size_t range_class_len = parse_class_token(text, i + first_len + 1U, &range_class, &range_class_name_len);
 
             if (range_class_len == 0U) {
-                unsigned char last;
-                size_t last_len = decode_escape_char(text, i + first_len + 1U, &last);
-                int step = ((unsigned int)first <= (unsigned int)last) ? 1 : -1;
+                unsigned int last;
+                size_t last_len = decode_escape_codepoint(text, i + first_len + 1U, &last);
+                int step = (first <= last) ? 1 : -1;
+                unsigned int value = first;
 
                 while (1) {
-                    if (append_char(buffer, buffer_size, &length, first) != 0) {
+                    if (append_codepoint(buffer, buffer_size, &length, value) != 0) {
                         return -1;
                     }
-                    if (first == last) {
+                    if (value == last) {
                         break;
                     }
-                    first = (unsigned char)(first + step);
+                    value = (unsigned int)((int)value + step);
                 }
 
                 i += first_len + 1U + last_len;
@@ -290,7 +298,7 @@ static int expand_set(const char *text, unsigned char *buffer, size_t buffer_siz
             }
         }
 
-        if (append_char(buffer, buffer_size, &length, first) != 0) {
+        if (append_codepoint(buffer, buffer_size, &length, first) != 0) {
             return -1;
         }
         i += first_len;
@@ -300,7 +308,7 @@ static int expand_set(const char *text, unsigned char *buffer, size_t buffer_siz
     return 0;
 }
 
-static int char_in_set(unsigned char ch, const unsigned char *set, size_t set_len) {
+static int codepoint_in_set(unsigned int ch, const unsigned int *set, size_t set_len) {
     size_t i = 0U;
     while (i < set_len) {
         if (set[i] == ch) {
@@ -311,21 +319,21 @@ static int char_in_set(unsigned char ch, const unsigned char *set, size_t set_le
     return 0;
 }
 
-static int char_in_effective_set(unsigned char ch, const unsigned char *set, size_t set_len, int complement) {
-    int present = char_in_set(ch, set, set_len);
+static int codepoint_in_effective_set(unsigned int ch, const unsigned int *set, size_t set_len, int complement) {
+    int present = codepoint_in_set(ch, set, set_len);
     return complement ? !present : present;
 }
 
-static unsigned char translate_char(unsigned char ch,
-                                    const unsigned char *set1,
-                                    size_t set1_len,
-                                    const unsigned char *set2,
-                                    size_t set2_len,
-                                    int complement) {
+static unsigned int translate_codepoint(unsigned int ch,
+                                        const unsigned int *set1,
+                                        size_t set1_len,
+                                        const unsigned int *set2,
+                                        size_t set2_len,
+                                        int complement) {
     size_t i;
 
     if (complement) {
-        if (!char_in_set(ch, set1, set1_len)) {
+        if (!codepoint_in_set(ch, set1, set1_len)) {
             if (set2_len == 0U) {
                 return ch;
             }
@@ -347,6 +355,41 @@ static unsigned char translate_char(unsigned char ch,
     }
 
     return ch;
+}
+
+static size_t decode_input_codepoint(const char *buffer, size_t length, size_t start, unsigned int *codepoint_out, int *incomplete_out) {
+    size_t index = start;
+    unsigned char lead;
+    size_t needed = 1U;
+
+    *incomplete_out = 0;
+    if (start >= length) {
+        *codepoint_out = 0U;
+        return 0U;
+    }
+
+    lead = (unsigned char)buffer[start];
+    if ((lead & 0x80U) == 0U) {
+        needed = 1U;
+    } else if ((lead & 0xe0U) == 0xc0U) {
+        needed = 2U;
+    } else if ((lead & 0xf0U) == 0xe0U) {
+        needed = 3U;
+    } else if ((lead & 0xf8U) == 0xf0U) {
+        needed = 4U;
+    }
+
+    if (needed > 1U && length - start < needed) {
+        *incomplete_out = 1;
+        return 0U;
+    }
+
+    if (rt_utf8_decode(buffer, length, &index, codepoint_out) == 0 && index > start) {
+        return index - start;
+    }
+
+    *codepoint_out = lead;
+    return 1U;
 }
 
 static int parse_options(int argc, char **argv, TrOptions *options) {
@@ -443,57 +486,105 @@ static int parse_options(int argc, char **argv, TrOptions *options) {
 
 int main(int argc, char **argv) {
     TrOptions options;
-    char buffer[4096];
+    char read_buffer[4096];
+    char input[4104];
+    char carry[8];
+    size_t carry_len = 0U;
     long bytes_read;
     int have_last_output = 0;
-    unsigned char last_output = 0U;
+    unsigned int last_output = 0U;
 
     if (parse_options(argc, argv, &options) != 0) {
         print_usage(argv[0]);
         return 1;
     }
 
-    while ((bytes_read = platform_read(0, buffer, sizeof(buffer))) > 0) {
-        long i;
-        unsigned char out[4096];
+    while ((bytes_read = platform_read(0, read_buffer, sizeof(read_buffer))) > 0) {
+        char out[4096];
         size_t out_len = 0U;
+        size_t total_len;
+        size_t index = 0U;
 
-        for (i = 0; i < bytes_read; ++i) {
-            unsigned char original = (unsigned char)buffer[i];
-            unsigned char current = original;
+        if (carry_len > 0U) {
+            memcpy(input, carry, carry_len);
+        }
+        memcpy(input + carry_len, read_buffer, (size_t)bytes_read);
+        total_len = carry_len + (size_t)bytes_read;
 
+        while (index < total_len) {
+            unsigned int original = 0U;
+            unsigned int current;
+            int incomplete = 0;
+            size_t advance = decode_input_codepoint(input, total_len, index, &original, &incomplete);
+            char encoded[8];
+            size_t encoded_len = 0U;
+
+            if (incomplete) {
+                break;
+            }
+
+            current = original;
             if (options.translate_chars) {
-                current = translate_char(current,
-                                         options.set1,
-                                         options.set1_len,
-                                         options.set2,
-                                         options.set2_len,
-                                         options.complement_set1);
+                current = translate_codepoint(current,
+                                              options.set1,
+                                              options.set1_len,
+                                              options.set2,
+                                              options.set2_len,
+                                              options.complement_set1);
             }
 
             if (options.delete_chars &&
-                char_in_effective_set(original, options.set1, options.set1_len, options.complement_set1)) {
+                codepoint_in_effective_set(original, options.set1, options.set1_len, options.complement_set1)) {
+                index += advance;
                 continue;
             }
 
             if (options.squeeze_chars &&
                 have_last_output &&
                 current == last_output &&
-                char_in_effective_set(current, options.squeeze_set, options.squeeze_set_len, options.squeeze_complement)) {
+                codepoint_in_effective_set(current, options.squeeze_set, options.squeeze_set_len, options.squeeze_complement)) {
+                index += advance;
                 continue;
             }
 
-            if (out_len < sizeof(out)) {
-                out[out_len++] = current;
+            if (rt_utf8_encode(current, encoded, sizeof(encoded), &encoded_len) != 0 || encoded_len == 0U) {
+                encoded[0] = (char)(current & 0xffU);
+                encoded_len = 1U;
             }
+
+            if (out_len + encoded_len > sizeof(out)) {
+                if (rt_write_all(1, out, out_len) != 0) {
+                    return 1;
+                }
+                out_len = 0U;
+            }
+
+            memcpy(out + out_len, encoded, encoded_len);
+            out_len += encoded_len;
             have_last_output = 1;
             last_output = current;
+            index += advance;
         }
 
         if (out_len > 0U && rt_write_all(1, out, out_len) != 0) {
             return 1;
         }
+
+        carry_len = total_len - index;
+        if (carry_len > 0U) {
+            memcpy(carry, input + index, carry_len);
+        }
     }
 
-    return bytes_read < 0 ? 1 : 0;
+    if (bytes_read < 0) {
+        return 1;
+    }
+
+    if (carry_len > 0U) {
+        if (rt_write_all(1, carry, carry_len) != 0) {
+            return 1;
+        }
+    }
+
+    return 0;
 }

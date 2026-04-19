@@ -2,14 +2,39 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+static int shell_text_is_space(const char *text, size_t *advance_out) {
+    size_t index = 0U;
+    unsigned int codepoint = 0U;
+    size_t length;
+
+    if (text == 0 || text[0] == '\0') {
+        if (advance_out != 0) {
+            *advance_out = 0U;
+        }
+        return 0;
+    }
+
+    length = rt_strlen(text);
+    if (rt_utf8_decode(text, length, &index, &codepoint) != 0 || index == 0U) {
+        index = 1U;
+        codepoint = (unsigned char)text[0];
+    }
+
+    if (advance_out != 0) {
+        *advance_out = index;
+    }
+    return rt_unicode_is_space(codepoint);
+}
+
 static int parse_word(char **cursor, char **word_out, int *no_expand_out) {
     char *src = *cursor;
     char *dst = *cursor;
     char terminator;
     int saw_any = 0;
     int no_expand = 0;
+    size_t separator_advance = 0U;
 
-    while (*src != '\0' && !rt_is_space(*src) && *src != '|' && *src != '<' && *src != '>') {
+    while (*src != '\0' && !shell_text_is_space(src, &separator_advance) && *src != '|' && *src != '<' && *src != '>') {
         if (*src == '\\' && src[1] != '\0') {
             src += 1;
             *dst++ = *src++;
@@ -56,7 +81,7 @@ static int parse_word(char **cursor, char **word_out, int *no_expand_out) {
     *no_expand_out = no_expand;
 
     if (terminator != '\0' && terminator != '|' && terminator != '<' && terminator != '>') {
-        src += 1;
+        src += separator_advance > 0U ? separator_advance : 1U;
     }
 
     *cursor = src;

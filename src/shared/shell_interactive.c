@@ -123,7 +123,7 @@ static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
             continue;
         }
 
-        if (ch >= 32 && ch <= 126) {
+        if ((unsigned char)ch >= 32U && ch != 127) {
             if (length + 1 >= line_size) {
                 result = 2;
                 break;

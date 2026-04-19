@@ -27,6 +27,8 @@ assert_file_contains "$WORK_DIR/features.out" '^heredoc-line$' "shell here-docum
 printf 'alias say="echo two words"\nsay\nshow() { echo "$1"; }\nshow "quoted text"\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/stability.out"
 assert_file_contains "$WORK_DIR/stability.out" '^two words$' "shell quoted alias expansion failed"
 assert_file_contains "$WORK_DIR/stability.out" '^quoted text$' "shell quoted function argument failed"
+printf 'echo unicode-space\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/unicode_space.out"
+assert_file_contains "$WORK_DIR/unicode_space.out" '^unicode-space$' "shell did not treat Unicode whitespace as a separator"
 
 before_docs=$(find /tmp -maxdepth 1 -name 'newos-sh-heredoc-*' 2>/dev/null | wc -l | tr -d ' ')
 printf 'cat <<EOF\ncleanup-check\nEOF\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/heredoc_cleanup.out"
