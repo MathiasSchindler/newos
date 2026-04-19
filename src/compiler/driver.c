@@ -12,6 +12,8 @@
 #include "tool_util.h"
 
 #define COMPILER_MAX_OPTION_DEFINES 32
+#define COMPILER_MAX_INPUT_FILES 256
+#define COMPILER_MAX_LINK_ARGS (COMPILER_MAX_INPUT_FILES * 4 + 32)
 
 typedef enum {
     COMPILER_TARGET_LINUX_X86_64 = 0,
@@ -23,13 +25,19 @@ typedef struct {
     const char *program_name;
     const char *input_path;
     const char *output_path;
+    const char *input_paths[COMPILER_MAX_INPUT_FILES];
+    size_t input_count;
     CompilerTarget target;
     int compile_only;
+    int syntax_only;
     int dump_tokens;
     int preprocess_only;
     int dump_ast;
     int dump_ir;
     int emit_assembly;
+    int freestanding;
+    int no_stdlib;
+    int static_link;
     char include_dirs[COMPILER_MAX_INCLUDE_DIRS][COMPILER_PATH_CAPACITY];
     size_t include_dir_count;
     char define_names[COMPILER_MAX_OPTION_DEFINES][COMPILER_MACRO_NAME_CAPACITY];
@@ -63,7 +71,66 @@ static int starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
+static int ends_with(const char *text, const char *suffix) {
+    size_t text_length = rt_strlen(text);
+    size_t suffix_length = rt_strlen(suffix);
+
+    if (suffix_length > text_length) {
+        return 0;
+    }
+
+    return text_equals(text + text_length - suffix_length, suffix);
+}
+
+static int is_ignored_option(const char *arg) {
+    if (text_equals(arg, "-Wall") ||
+        text_equals(arg, "-Wextra") ||
+        text_equals(arg, "-Wpedantic") ||
+        text_equals(arg, "-ffreestanding") ||
+        text_equals(arg, "-fno-builtin") ||
+        text_equals(arg, "-fno-stack-protector") ||
+        text_equals(arg, "-fno-unwind-tables") ||
+        text_equals(arg, "-fno-asynchronous-unwind-tables") ||
+        text_equals(arg, "-nostdlib") ||
+        text_equals(arg, "-static") ||
+        text_equals(arg, "-fsyntax-only") ||
+        text_equals(arg, "-fuse-ld=lld")) {
+        return 1;
+    }
+
+    if (starts_with(arg, "-std=") || starts_with(arg, "-O")) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int is_direct_link_input(const char *path) {
+    return ends_with(path, ".o") ||
+           ends_with(path, ".a") ||
+           ends_with(path, ".s") ||
+           ends_with(path, ".S");
+}
+
+static int looks_like_ncc_driver(const char *path) {
+    const char *base_name;
+
+    if (path == 0 || path[0] == '\0') {
+        return 0;
+    }
+
+    base_name = tool_base_name(path);
+    return ends_with(base_name, "ncc");
+}
+
 static CompilerTarget default_target(void) {
+#if defined(__linux__) && defined(__x86_64__)
+    return COMPILER_TARGET_LINUX_X86_64;
+#elif defined(__linux__) && (defined(__aarch64__) || defined(__arm64__))
+    return COMPILER_TARGET_LINUX_AARCH64;
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    return COMPILER_TARGET_MACOS_AARCH64;
+#else
     char sysname[64];
     char nodename[64];
     char release[64];
@@ -86,6 +153,7 @@ static CompilerTarget default_target(void) {
     }
 
     return COMPILER_TARGET_MACOS_AARCH64;
+#endif
 }
 
 static const char *target_name(CompilerTarget target) {
@@ -102,11 +170,11 @@ static const char *target_name(CompilerTarget target) {
 }
 
 static int parse_target(const char *text, CompilerTarget *target_out) {
-    if (text_equals(text, "linux-x86_64") || text_equals(text, "linux-x64")) {
+    if (text_equals(text, "linux-x86_64") || text_equals(text, "linux-x64") || text_equals(text, "x86_64-linux-none") || text_equals(text, "x86_64-linux-gnu")) {
         *target_out = COMPILER_TARGET_LINUX_X86_64;
         return 0;
     }
-    if (text_equals(text, "linux-aarch64") || text_equals(text, "linux-arm64")) {
+    if (text_equals(text, "linux-aarch64") || text_equals(text, "linux-arm64") || text_equals(text, "aarch64-linux-none") || text_equals(text, "aarch64-linux-gnu")) {
         *target_out = COMPILER_TARGET_LINUX_AARCH64;
         return 0;
     }
@@ -118,7 +186,7 @@ static int parse_target(const char *text, CompilerTarget *target_out) {
 }
 
 static void write_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-E|--preprocess] [-S|--emit-asm] [--dump-tokens|--dump-ast|--dump-ir] [--target TARGET] [-I DIR] [-DNAME=VALUE] [-c] [-o OUTPUT] FILE");
+    tool_write_usage(program_name, "[-E|--preprocess] [-S|--emit-asm] [--dump-tokens|--dump-ast|--dump-ir] [--target TARGET] [-I DIR] [-DNAME=VALUE] [-c] [-fsyntax-only] [-o OUTPUT] FILE...");
     rt_write_line(2, "Targets: linux-x86_64, linux-aarch64, macos-aarch64");
 }
 
@@ -158,6 +226,8 @@ static const char *pick_output_path(const CompilerOptions *options, char *buffer
     return buffer;
 }
 
+static int parse_translation_unit(const CompilerOptions *options);
+
 static const char *pick_link_output_path(const CompilerOptions *options, char *buffer, size_t buffer_size) {
     if (options->output_path != 0) {
         return options->output_path;
@@ -166,147 +236,149 @@ static const char *pick_link_output_path(const CompilerOptions *options, char *b
     return buffer;
 }
 
-static void append_link_arg(char **argv, size_t *count, size_t capacity, char *value) {
+static void append_link_arg(char **argv, size_t *count, size_t capacity, const char *value) {
     if (*count + 1U < capacity) {
-        argv[*count] = value;
+        argv[*count] = (char *)value;
         *count += 1U;
     }
 }
 
-static int write_temp_object(
+static void cleanup_temp_paths(char paths[][COMPILER_PATH_CAPACITY], size_t count) {
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        if (paths[i][0] != '\0') {
+            (void)platform_remove_file(paths[i]);
+        }
+    }
+}
+
+static int compile_input_to_object(
     const CompilerOptions *options,
-    const CompilerIr *ir,
+    const char *input_path,
     char *path_buffer,
     size_t path_buffer_size
 ) {
-    CompilerObjectWriter object_writer;
+    CompilerOptions compile_options;
     int fd;
 
-    compiler_object_writer_init(&object_writer);
     fd = platform_create_temp_file(path_buffer, path_buffer_size, "/tmp/newos-ncc-link-", 0600U);
     if (fd < 0) {
-        tool_write_error(options->program_name, "failed to create temporary object for ", options->input_path);
-        return -1;
+        tool_write_error(options->program_name, "failed to create temporary object for ", input_path);
+        return 1;
     }
-
-    switch (options->target) {
-        case COMPILER_TARGET_LINUX_X86_64:
-            if (compiler_object_write_elf64_x86_64(&object_writer, ir, fd) != 0) {
-                (void)platform_close(fd);
-                (void)platform_remove_file(path_buffer);
-                tool_write_error(options->program_name, "failed while writing temporary object output: ", compiler_object_writer_error_message(&object_writer));
-                return -1;
-            }
-            break;
-        case COMPILER_TARGET_MACOS_AARCH64:
-            if (compiler_object_write_macho64_aarch64(&object_writer, ir, fd) != 0) {
-                (void)platform_close(fd);
-                (void)platform_remove_file(path_buffer);
-                tool_write_error(options->program_name, "failed while writing temporary object output: ", compiler_object_writer_error_message(&object_writer));
-                return -1;
-            }
-            break;
-        case COMPILER_TARGET_LINUX_AARCH64:
-            (void)platform_close(fd);
-            (void)platform_remove_file(path_buffer);
-            tool_write_error(options->program_name, "object emission is not implemented yet for target ", target_name(options->target));
-            return -1;
-    }
-
     if (platform_close(fd) != 0) {
         (void)platform_remove_file(path_buffer);
-        tool_write_error(options->program_name, "failed to finalize temporary object for ", options->input_path);
-        return -1;
+        tool_write_error(options->program_name, "failed to finalize temporary object for ", input_path);
+        return 1;
+    }
+
+    {
+        size_t length = rt_strlen(path_buffer);
+        if (length + 3U >= path_buffer_size) {
+            (void)platform_remove_file(path_buffer);
+            tool_write_error(options->program_name, "temporary object path too long for ", input_path);
+            return 1;
+        }
+        (void)platform_remove_file(path_buffer);
+        path_buffer[length] = '.';
+        path_buffer[length + 1] = 'o';
+        path_buffer[length + 2] = '\0';
+    }
+
+    compile_options = *options;
+    compile_options.input_path = input_path;
+    compile_options.output_path = path_buffer;
+    compile_options.compile_only = 1;
+    compile_options.syntax_only = 0;
+    compile_options.dump_tokens = 0;
+    compile_options.preprocess_only = 0;
+    compile_options.dump_ast = 0;
+    compile_options.dump_ir = 0;
+    compile_options.emit_assembly = 0;
+
+    if (parse_translation_unit(&compile_options) != 0) {
+        (void)platform_remove_file(path_buffer);
+        return 1;
     }
 
     return 0;
 }
 
-static int link_executable_output(const CompilerOptions *options, const CompilerIr *ir) {
-#define _SRC(s) s,
-    static char *const shared_sources[] = {
-        FOREACH_SHARED_SOURCE(_SRC)
-        FOREACH_HASH_SOURCE(_SRC)
-    };
-    static char *const host_platform_sources[] = {
-        FOREACH_HOST_PLATFORM_SOURCE(_SRC)
-    };
-    static char *const compiler_sources[] = {
-        FOREACH_COMPILER_SOURCE(_SRC)
-    };
-    static char *const shell_sources[] = {
-        FOREACH_SHELL_SOURCE(_SRC)
-    };
-#undef _SRC
+static int link_executable_output(const CompilerOptions *options) {
     char derived_output_path[COMPILER_PATH_CAPACITY];
-    char object_path[COMPILER_PATH_CAPACITY];
+    char temp_paths[COMPILER_MAX_INPUT_FILES][COMPILER_PATH_CAPACITY];
     const char *output_path = pick_link_output_path(options, derived_output_path, sizeof(derived_output_path));
-    const char *input_name = tool_base_name(options->input_path);
-    char *argv[64];
+    const char *link_driver = platform_getenv("NEWOS_NCC_LINKER");
+    char *argv[COMPILER_MAX_LINK_ARGS];
     size_t argc = 0;
+    size_t temp_count = 0;
     size_t i;
     int pid = -1;
     int exit_status = 0;
 
-    if (write_temp_object(options, ir, object_path, sizeof(object_path)) != 0) {
-        return 1;
+    rt_memset(temp_paths, 0, sizeof(temp_paths));
+
+    if (link_driver == 0 || link_driver[0] == '\0') {
+        const char *cc_driver = platform_getenv("CC");
+        if (!looks_like_ncc_driver(cc_driver)) {
+            link_driver = cc_driver;
+        }
+    }
+    if (link_driver == 0 || link_driver[0] == '\0') {
+        link_driver = "cc";
     }
 
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "clang");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-target");
-    switch (options->target) {
-        case COMPILER_TARGET_MACOS_AARCH64:
-            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "arm64-apple-darwin");
-            break;
-        case COMPILER_TARGET_LINUX_X86_64:
-            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "x86_64-linux-gnu");
-            break;
-        case COMPILER_TARGET_LINUX_AARCH64:
-            (void)platform_remove_file(object_path);
-            tool_write_error(options->program_name, "linking is not implemented yet for target ", target_name(options->target));
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), link_driver);
+    if (options->freestanding) {
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-ffreestanding");
+    }
+    if (options->no_stdlib) {
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-nostdlib");
+    }
+    if (options->static_link) {
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-static");
+    }
+
+    for (i = 0; i < options->input_count; ++i) {
+        const char *input_path = options->input_paths[i];
+
+        if (is_direct_link_input(input_path)) {
+            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), input_path);
+            continue;
+        }
+
+        if (!ends_with(input_path, ".c")) {
+            cleanup_temp_paths(temp_paths, temp_count);
+            tool_write_error(options->program_name, "unsupported linker input ", input_path);
             return 1;
+        }
+
+        if (temp_count >= COMPILER_MAX_INPUT_FILES || compile_input_to_object(options, input_path, temp_paths[temp_count], sizeof(temp_paths[temp_count])) != 0) {
+            cleanup_temp_paths(temp_paths, temp_count + 1U);
+            return 1;
+        }
+
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), temp_paths[temp_count]);
+        temp_count += 1U;
     }
 
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-std=c11");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-O2");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/shared");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/compiler");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/posix");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/linux");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/platform/common");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-Isrc/arch/aarch64/linux");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), object_path);
-
-    for (i = 0; i < sizeof(shared_sources) / sizeof(shared_sources[0]); ++i) {
-        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), shared_sources[i]);
-    }
-    for (i = 0; i < sizeof(host_platform_sources) / sizeof(host_platform_sources[0]); ++i) {
-        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), host_platform_sources[i]);
-    }
-    if (text_equals(input_name, "sh.c")) {
-        for (i = 0; i < sizeof(shell_sources) / sizeof(shell_sources[0]); ++i) {
-            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), shell_sources[i]);
-        }
-    } else if (text_equals(input_name, "ncc.c")) {
-        for (i = 0; i < sizeof(compiler_sources) / sizeof(compiler_sources[0]); ++i) {
-            append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), compiler_sources[i]);
-        }
-    }
     append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-o");
-    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), (char *)output_path);
+    append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), output_path);
     argv[argc] = 0;
 
     if (platform_spawn_process(argv, -1, -1, 0, 0, 0, &pid) != 0) {
-        (void)platform_remove_file(object_path);
+        cleanup_temp_paths(temp_paths, temp_count);
         tool_write_error(options->program_name, "failed to invoke linker driver for ", target_name(options->target));
         return 1;
     }
     if (platform_wait_process(pid, &exit_status) != 0) {
-        (void)platform_remove_file(object_path);
+        cleanup_temp_paths(temp_paths, temp_count);
         tool_write_error(options->program_name, "failed while waiting for linker driver for ", target_name(options->target));
         return 1;
     }
-    (void)platform_remove_file(object_path);
+
+    cleanup_temp_paths(temp_paths, temp_count);
 
     if (exit_status != 0) {
         tool_write_error(options->program_name, "linking failed for target ", target_name(options->target));
@@ -401,6 +473,22 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
             options->compile_only = 1;
             continue;
         }
+        if (text_equals(arg, "-fsyntax-only")) {
+            options->syntax_only = 1;
+            continue;
+        }
+        if (text_equals(arg, "-ffreestanding")) {
+            options->freestanding = 1;
+            continue;
+        }
+        if (text_equals(arg, "-nostdlib")) {
+            options->no_stdlib = 1;
+            continue;
+        }
+        if (text_equals(arg, "-static")) {
+            options->static_link = 1;
+            continue;
+        }
         if (text_equals(arg, "-I")) {
             if (i + 1 >= argc || add_include_dir(options, argv[++i]) != 0) {
                 tool_write_error(options->program_name, "invalid include directory ", (i < argc) ? argv[i] : "-I");
@@ -452,18 +540,24 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
             }
             continue;
         }
+        if (is_ignored_option(arg)) {
+            continue;
+        }
         if (arg[0] == '-') {
             tool_write_error(options->program_name, "unknown option ", arg);
             return -1;
         }
-        if (options->input_path != 0) {
-            tool_write_error(options->program_name, "only one input file is supported for now: ", arg);
+        if (options->input_count >= COMPILER_MAX_INPUT_FILES) {
+            tool_write_error(options->program_name, "too many input files; last one was ", arg);
             return -1;
         }
-        options->input_path = arg;
+        options->input_paths[options->input_count++] = arg;
+        if (options->input_path == 0) {
+            options->input_path = arg;
+        }
     }
 
-    if (options->input_path == 0) {
+    if (options->input_count == 0) {
         write_usage(options->program_name);
         return -1;
     }
@@ -473,6 +567,11 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
 
 static int configure_preprocessor(CompilerPreprocessor *preprocessor, const CompilerOptions *options) {
     size_t i;
+    const char *arch_include_dir = "src/arch/x86_64/linux";
+
+    if (options->target != COMPILER_TARGET_LINUX_X86_64) {
+        arch_include_dir = "src/arch/aarch64/linux";
+    }
 
     compiler_preprocessor_init(preprocessor);
     if (compiler_preprocessor_add_include_dir(preprocessor, ".") != 0 ||
@@ -480,11 +579,11 @@ static int configure_preprocessor(CompilerPreprocessor *preprocessor, const Comp
         compiler_preprocessor_add_include_dir(preprocessor, "src/compiler") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/platform/posix") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/platform/linux") != 0 ||
-        compiler_preprocessor_add_include_dir(preprocessor, "src/arch/aarch64/linux") != 0) {
+        compiler_preprocessor_add_include_dir(preprocessor, arch_include_dir) != 0) {
         return -1;
     }
 
-    if (compiler_preprocessor_define(preprocessor, "__STDC_HOSTED__", "1") != 0) {
+    if (compiler_preprocessor_define(preprocessor, "__STDC_HOSTED__", options->freestanding ? "0" : "1") != 0) {
         return -1;
     }
 
@@ -839,25 +938,28 @@ static int parse_translation_unit(const CompilerOptions *options) {
         (void)platform_close(out_fd);
     }
 
-    if (!options->dump_ast && !options->dump_ir && !options->emit_assembly) {
-        if (options->compile_only) {
-            return 0;
-        } else {
-            return link_executable_output(options, &parser.ir);
-        }
-    }
-
     return 0;
 }
 
 int compiler_main(int argc, char **argv) {
     CompilerOptions options;
+    size_t i;
     int parse_result = parse_options(argc, argv, &options);
 
     if (parse_result == 1 || parse_result == 2) {
         return 0;
     }
     if (parse_result != 0) {
+        return 1;
+    }
+
+    if ((options.preprocess_only || options.dump_tokens || options.dump_ast || options.dump_ir) && options.input_count > 1U) {
+        tool_write_error(options.program_name, "this mode currently accepts only one input file: ", options.input_paths[1]);
+        return 1;
+    }
+
+    if ((options.compile_only || options.emit_assembly) && options.output_path != 0 && options.input_count > 1U) {
+        tool_write_error(options.program_name, "cannot use -o when compiling multiple input files with ", options.compile_only ? "-c" : "-S");
         return 1;
     }
 
@@ -869,5 +971,16 @@ int compiler_main(int argc, char **argv) {
         return dump_tokens(&options);
     }
 
-    return parse_translation_unit(&options);
+    if (options.compile_only || options.emit_assembly || options.syntax_only || options.dump_ast || options.dump_ir) {
+        for (i = 0; i < options.input_count; ++i) {
+            CompilerOptions per_input = options;
+            per_input.input_path = options.input_paths[i];
+            if (parse_translation_unit(&per_input) != 0) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    return link_executable_output(&options);
 }

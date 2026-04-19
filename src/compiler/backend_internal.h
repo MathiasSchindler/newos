@@ -13,6 +13,7 @@
 
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
+    int global;
 } BackendFunctionName;
 
 typedef struct {
@@ -21,6 +22,8 @@ typedef struct {
     int initialized;
     int is_array;
     int prefers_word_index;
+    int global;
+    int has_storage;
 } BackendGlobal;
 
 typedef struct {
@@ -101,13 +104,13 @@ int backend_is_darwin(const BackendState *state);
 void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size);
 void copy_last_word(const char *text, char *buffer, size_t buffer_size);
 int parse_signed_value(const char *text, long long *value_out);
-int add_function_name(BackendState *state, const char *name);
+int add_function_name(BackendState *state, const char *name, int global);
 int should_prefer_word_index(const char *name, const char *type_text);
 int is_function_name(const BackendState *state, const char *name);
 int find_global(const BackendState *state, const char *name);
 int find_constant(const BackendState *state, const char *name);
 int add_constant(BackendState *state, const char *name, long long value);
-int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index);
+int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index, int global, int has_storage);
 int find_local(const BackendState *state, const char *name);
 int allocate_local(BackendState *state, const char *name, int is_array, int prefers_word_index);
 int write_label_name(char *buffer, size_t buffer_size, const char *label);

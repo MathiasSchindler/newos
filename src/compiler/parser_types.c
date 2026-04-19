@@ -16,7 +16,7 @@ static int parse_constant_bitor(CompilerParser *parser, long long *value_out);
 static int parse_constant_logical_and(CompilerParser *parser, long long *value_out);
 static int parse_constant_logical_or(CompilerParser *parser, long long *value_out);
 
-int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, int *is_extern_out, CompilerType *type_out) {
+int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, int *is_extern_out, int *is_static_out, CompilerType *type_out) {
     int saw_any = 0;
     int saw_explicit_base = 0;
 
@@ -25,6 +25,9 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
     }
     if (is_extern_out != 0) {
         *is_extern_out = 0;
+    }
+    if (is_static_out != 0) {
+        *is_static_out = 0;
     }
     if (type_out != 0) {
         compiler_type_init(type_out);
@@ -37,6 +40,8 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
             *is_typedef_out = 1;
         } else if (current_is_keyword(parser, "extern") && is_extern_out != 0) {
             *is_extern_out = 1;
+        } else if (current_is_keyword(parser, "static") && is_static_out != 0) {
+            *is_static_out = 1;
         } else if (type_out != 0) {
             if (current_is_keyword(parser, "void")) {
                 type_out->base = COMPILER_BASE_VOID;
@@ -44,7 +49,8 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
             } else if (current_is_keyword(parser, "char")) {
                 type_out->base = COMPILER_BASE_CHAR;
                 saw_explicit_base = 1;
-            } else if (current_is_int_family_keyword(parser)) {
+            } else if (current_is_int_family_keyword(parser) ||
+                       (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
                 type_out->base = COMPILER_BASE_INT;
                 saw_explicit_base = 1;
             } else if (current_is_keyword(parser, "unsigned")) {
@@ -100,6 +106,24 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
     return saw_any;
 }
 
+static int identifier_looks_like_type_name(const CompilerToken *token) {
+    size_t i;
+    int has_lower = 0;
+
+    if (token->length == 0 || token->start[0] < 'A' || token->start[0] > 'Z') {
+        return 0;
+    }
+
+    for (i = 0; i < token->length; ++i) {
+        if (token->start[i] >= 'a' && token->start[i] <= 'z') {
+            has_lower = 1;
+            break;
+        }
+    }
+
+    return has_lower;
+}
+
 static int token_is_known_type_specifier(const CompilerParser *parser, const CompilerToken *token) {
     if (token->kind == COMPILER_TOKEN_KEYWORD &&
         (token_text_equals(token, "const") || token_text_equals(token, "volatile") ||
@@ -109,7 +133,7 @@ static int token_is_known_type_specifier(const CompilerParser *parser, const Com
          token_text_equals(token, "signed") || token_text_equals(token, "unsigned") ||
          token_text_equals(token, "float") || token_text_equals(token, "double") ||
          token_text_equals(token, "struct") || token_text_equals(token, "union") ||
-         token_text_equals(token, "enum"))) {
+         token_text_equals(token, "enum") || token_text_equals(token, "__int128"))) {
         return 1;
     }
 
@@ -118,10 +142,18 @@ static int token_is_known_type_specifier(const CompilerParser *parser, const Com
         if (is_typedef_name(parser, token)) {
             return 1;
         }
+        if (token_text_equals(token, "__int128") ||
+            token_text_equals(token, "u8") || token_text_equals(token, "u16") ||
+            token_text_equals(token, "u32") || token_text_equals(token, "u64") ||
+            token_text_equals(token, "i8") || token_text_equals(token, "i16") ||
+            token_text_equals(token, "i32") || token_text_equals(token, "i64") ||
+            token_text_equals(token, "usize")) {
+            return 1;
+        }
         if (length > 2 && token->start[length - 2] == '_' && token->start[length - 1] == 't') {
             return 1;
         }
-        if (length > 0 && token->start[0] >= 'A' && token->start[0] <= 'Z') {
+        if (identifier_looks_like_type_name(token)) {
             return 1;
         }
     }
@@ -183,7 +215,7 @@ int parse_type_name(CompilerParser *parser) {
     CompilerDeclarator declarator;
 
     compiler_type_init(&type);
-    saw = parse_declaration_specifiers(parser, 0, 0, &type);
+    saw = parse_declaration_specifiers(parser, 0, 0, 0, &type);
 
     if (saw <= 0) {
         set_error(parser, "expected type name");

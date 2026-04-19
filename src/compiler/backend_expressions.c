@@ -391,10 +391,22 @@ static int identifier_looks_like_type(const char *name) {
         names_equal(name, "unsigned") || names_equal(name, "float") || names_equal(name, "double") ||
         names_equal(name, "const") || names_equal(name, "volatile") ||
         names_equal(name, "struct") || names_equal(name, "union") || names_equal(name, "enum") ||
-        names_equal(name, "size_t")) {
+        names_equal(name, "size_t") || names_equal(name, "usize") || names_equal(name, "__int128")) {
         return 1;
     }
-    return length > 2 && name[length - 2] == '_' && name[length - 1] == 't';
+    if (length > 2 && name[length - 2] == '_' && name[length - 1] == 't') {
+        return 1;
+    }
+    if ((name[0] == 'u' || name[0] == 'i') && name[1] != '\0') {
+        size_t i = 1;
+        while (name[i] >= '0' && name[i] <= '9') {
+            i += 1U;
+        }
+        if (name[i] == '\0' && i > 1U) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int member_prefers_word_index(const char *name) {
@@ -1747,9 +1759,55 @@ static int emit_array_element_address(BackendState *state,
     return emit_push_value(state);
 }
 
+static int emit_flat_initializer_store(ExprParser *parser,
+                                      BackendState *state,
+                                      const char *name,
+                                      int word_index,
+                                      int byte_sized,
+                                      unsigned long long *index_inout,
+                                      unsigned long long slot_limit) {
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "{")) {
+        expr_next(parser);
+        while (parser->current.kind != EXPR_TOKEN_EOF &&
+               !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "}"))) {
+            if (emit_flat_initializer_store(parser, state, name, word_index, byte_sized, index_inout, slot_limit) != 0) {
+                return -1;
+            }
+            if (!expr_match_punct(parser, ",")) {
+                break;
+            }
+        }
+        if (!expr_match_punct(parser, "}")) {
+            backend_set_error(state->backend, "unsupported primary expression in backend");
+            return -1;
+        }
+        return 0;
+    }
+
+    if (*index_inout < slot_limit) {
+        if (emit_array_element_address(state, name, word_index, *index_inout) != 0) {
+            return -1;
+        }
+        if (expr_parse_assignment(parser) != 0) {
+            return -1;
+        }
+        if (emit_pop_address_and_store(state, byte_sized) != 0) {
+            return -1;
+        }
+    } else {
+        if (expr_parse_assignment(parser) != 0) {
+            return -1;
+        }
+    }
+
+    *index_inout += 1ULL;
+    return 0;
+}
+
 int emit_array_initializer_store(BackendState *state, const char *name, const char *expr) {
     ExprParser parser;
     unsigned long long index = 0;
+    unsigned long long slot_limit;
     int word_index = 0;
     int byte_sized;
 
@@ -1762,6 +1820,7 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
     parser.state = state;
     expr_next(&parser);
     byte_sized = word_index ? 0 : 1;
+    slot_limit = word_index ? (BACKEND_ARRAY_STACK_BYTES / 8U) : BACKEND_ARRAY_STACK_BYTES;
 
     if (parser.current.kind == EXPR_TOKEN_STRING) {
         size_t i;
@@ -1787,30 +1846,7 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
         return 0;
     }
 
-    if (!expr_match_punct(&parser, "{")) {
-        backend_set_error(state->backend, "unsupported primary expression in backend");
-        return -1;
-    }
-
-    while (parser.current.kind != EXPR_TOKEN_EOF &&
-           !(parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "}"))) {
-        if (emit_array_element_address(state, name, word_index, index) != 0) {
-            return -1;
-        }
-        if (expr_parse_assignment(&parser) != 0) {
-            return -1;
-        }
-        if (emit_pop_address_and_store(state, byte_sized) != 0) {
-            return -1;
-        }
-        index += 1U;
-        if (!expr_match_punct(&parser, ",")) {
-            break;
-        }
-    }
-
-    if (!expr_match_punct(&parser, "}")) {
-        backend_set_error(state->backend, "unsupported primary expression in backend");
+    if (emit_flat_initializer_store(&parser, state, name, word_index, byte_sized, &index, slot_limit) != 0) {
         return -1;
     }
 
@@ -1860,34 +1896,8 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
     parser.state = state;
     expr_next(&parser);
 
-    if (!expr_match_punct(&parser, "{")) {
-        backend_set_error(state->backend, "unsupported primary expression in backend");
-        return -1;
-    }
-
     index = 0ULL;
-    while (parser.current.kind != EXPR_TOKEN_EOF &&
-           !(parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "}"))) {
-        if (index < slot_count) {
-            if (emit_array_element_address(state, name, word_index, index) != 0 ||
-                expr_parse_assignment(&parser) != 0 ||
-                emit_pop_address_and_store(state, byte_sized) != 0) {
-                return -1;
-            }
-        } else {
-            if (expr_parse_assignment(&parser) != 0) {
-                return -1;
-            }
-        }
-        index += 1ULL;
-
-        if (!expr_match_punct(&parser, ",")) {
-            break;
-        }
-    }
-
-    if (!expr_match_punct(&parser, "}")) {
-        backend_set_error(state->backend, "unsupported primary expression in backend");
+    if (emit_flat_initializer_store(&parser, state, name, word_index, byte_sized, &index, slot_count) != 0) {
         return -1;
     }
 

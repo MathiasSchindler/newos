@@ -8,7 +8,7 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     CompilerDeclarator declarator;
 
     compiler_type_init(&type);
-    saw = parse_declaration_specifiers(parser, 0, 0, &type);
+    saw = parse_declaration_specifiers(parser, 0, 0, 0, &type);
 
     if (saw <= 0) {
         set_error(parser, "expected parameter declaration");
@@ -138,6 +138,8 @@ static int declare_symbol(
     const CompilerDeclarator *declarator,
     const CompilerType *base_type,
     int is_typedef,
+    int is_extern,
+    int is_static,
     int is_definition,
     int emit_summary
 ) {
@@ -172,7 +174,18 @@ static int declare_symbol(
     }
 
     if (declarator->name[0] != '\0') {
-        const char *storage = parser->semantic.in_function ? "local" : "global";
+        const char *storage = "local";
+
+        if (!parser->semantic.in_function) {
+            if (is_static) {
+                storage = "static";
+            } else if (is_extern && !is_definition) {
+                storage = "extern";
+            } else {
+                storage = "global";
+            }
+        }
+
         if (emit_ir_status(parser, compiler_ir_emit_decl(&parser->ir, storage, declarator->is_function, &symbol_type, declarator->name)) != 0) {
             return -1;
         }
@@ -185,10 +198,19 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
     CompilerType declared_type;
     int is_typedef = 0;
     int is_extern = 0;
+    int is_static = 0;
     int saw;
 
+    if ((parser->current.kind == COMPILER_TOKEN_KEYWORD || parser->current.kind == COMPILER_TOKEN_IDENTIFIER) &&
+        (token_text_equals(&parser->current, "_Static_assert") || token_text_equals(&parser->current, "static_assert"))) {
+        if (advance(parser) != 0 || skip_balanced_group(parser, "(", ")") != 0 || expect_punct(parser, ";") != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
     compiler_type_init(&declared_type);
-    saw = parse_declaration_specifiers(parser, &is_typedef, &is_extern, &declared_type);
+    saw = parse_declaration_specifiers(parser, &is_typedef, &is_extern, &is_static, &declared_type);
 
     if (saw <= 0) {
         set_error(parser, "expected declaration");
@@ -211,7 +233,7 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
             size_t i;
             CompilerType function_type = declared_type;
 
-            if (declare_symbol(parser, &declarator, &declared_type, 0, 1, emit_summary) != 0) {
+            if (declare_symbol(parser, &declarator, &declared_type, 0, is_extern, is_static, 1, emit_summary) != 0) {
                 return -1;
             }
 
@@ -236,7 +258,7 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
         }
 
         is_definition = declarator.is_function ? 0 : (!is_extern || current_is_punct(parser, "="));
-        if (declare_symbol(parser, &declarator, &declared_type, is_typedef, is_definition, emit_summary) != 0) {
+        if (declare_symbol(parser, &declarator, &declared_type, is_typedef, is_extern, is_static, is_definition, emit_summary) != 0) {
             return -1;
         }
 

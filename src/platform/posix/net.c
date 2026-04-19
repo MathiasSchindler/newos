@@ -30,6 +30,38 @@ typedef struct {
     unsigned short sequence;
 } PosixIcmpPacket;
 
+static void posix_fd_zero(void *set_ptr) {
+    memset(set_ptr, 0, 128U);
+}
+
+static void posix_fd_set_bit(void *set_ptr, int fd) {
+    unsigned long *bits = (unsigned long *)set_ptr;
+    unsigned int index;
+    unsigned int bit;
+
+    if (set_ptr == NULL || fd < 0 || fd >= 1024) {
+        return;
+    }
+
+    index = (unsigned int)fd / 64U;
+    bit = (unsigned int)fd % 64U;
+    bits[index] |= (1UL << bit);
+}
+
+static int posix_fd_is_set_bit(const void *set_ptr, int fd) {
+    const unsigned long *bits = (const unsigned long *)set_ptr;
+    unsigned int index;
+    unsigned int bit;
+
+    if (set_ptr == NULL || fd < 0 || fd >= 1024) {
+        return 0;
+    }
+
+    index = (unsigned int)fd / 64U;
+    bit = (unsigned int)fd % 64U;
+    return (bits[index] & (1UL << bit)) != 0 ? 1 : 0;
+}
+
 static unsigned short compute_icmp_checksum(const void *data, size_t length) {
     const unsigned short *words = (const unsigned short *)data;
     unsigned int sum = 0;

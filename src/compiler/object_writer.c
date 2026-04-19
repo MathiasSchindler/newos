@@ -731,6 +731,18 @@ static int encode_setcc_al(ObjectAssembler *assembler, unsigned char opcode) {
            append_byte(assembler, OBJECT_SECTION_TEXT, 0xC0U) == 0 ? 0 : -1;
 }
 
+static int encode_call_reg(ObjectAssembler *assembler, int reg) {
+    return append_rex(assembler, 0, 0, 0, reg) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT, 0xFFU) == 0 &&
+           append_modrm(assembler, 3U, 2U, (unsigned int)reg) == 0 ? 0 : -1;
+}
+
+static int encode_jmp_reg(ObjectAssembler *assembler, int reg) {
+    return append_rex(assembler, 0, 0, 0, reg) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT, 0xFFU) == 0 &&
+           append_modrm(assembler, 3U, 4U, (unsigned int)reg) == 0 ? 0 : -1;
+}
+
 static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     if (names_equal(line, "pushq %rbp")) return encode_push_reg(assembler, 5);
     if (names_equal(line, "pushq %rax")) return encode_push_reg(assembler, 0);
@@ -787,6 +799,14 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     if (starts_with(line, "call ")) {
         size_t disp_offset;
         const char *name = skip_spaces(line + 5);
+        int reg;
+        int is_byte;
+        const char *rest;
+
+        if (*name == '*' && parse_register(skip_spaces(name + 1), &reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return encode_call_reg(assembler, reg);
+        }
+
         if (append_byte(assembler, OBJECT_SECTION_TEXT, 0xE8U) != 0) {
             return -1;
         }
@@ -803,6 +823,13 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         const char *name = skip_spaces(line + (starts_with(line, "jmp ") ? 4 : 3));
 
         if (starts_with(line, "jmp ")) {
+            int reg;
+            int is_byte;
+            const char *rest;
+
+            if (*name == '*' && parse_register(skip_spaces(name + 1), &reg, &is_byte, &rest) == 0 && *rest == '\0') {
+                return encode_jmp_reg(assembler, reg);
+            }
             if (append_byte(assembler, OBJECT_SECTION_TEXT, 0xE9U) != 0) {
                 return -1;
             }

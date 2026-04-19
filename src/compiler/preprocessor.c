@@ -57,6 +57,60 @@ static int append_text(CompilerSource *source_out, size_t *offset, const char *t
     return 0;
 }
 
+static int append_text_to_buffer(char *buffer, size_t buffer_size, size_t *offset, const char *text) {
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        if (*offset + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[*offset] = text[i];
+        *offset += 1U;
+        i += 1;
+    }
+
+    buffer[*offset] = '\0';
+    return 0;
+}
+
+static int build_replacement1(char *buffer,
+                              size_t buffer_size,
+                              const char *prefix,
+                              const char *arg,
+                              const char *suffix) {
+    size_t offset = 0;
+
+    if (buffer_size == 0) {
+        return -1;
+    }
+    buffer[0] = '\0';
+
+    return append_text_to_buffer(buffer, buffer_size, &offset, prefix) == 0 &&
+           append_text_to_buffer(buffer, buffer_size, &offset, arg) == 0 &&
+           append_text_to_buffer(buffer, buffer_size, &offset, suffix) == 0 ? 0 : -1;
+}
+
+static int build_replacement2(char *buffer,
+                              size_t buffer_size,
+                              const char *prefix,
+                              const char *arg0,
+                              const char *middle,
+                              const char *arg1,
+                              const char *suffix) {
+    size_t offset = 0;
+
+    if (buffer_size == 0) {
+        return -1;
+    }
+    buffer[0] = '\0';
+
+    return append_text_to_buffer(buffer, buffer_size, &offset, prefix) == 0 &&
+           append_text_to_buffer(buffer, buffer_size, &offset, arg0) == 0 &&
+           append_text_to_buffer(buffer, buffer_size, &offset, middle) == 0 &&
+           append_text_to_buffer(buffer, buffer_size, &offset, arg1) == 0 &&
+           append_text_to_buffer(buffer, buffer_size, &offset, suffix) == 0 ? 0 : -1;
+}
+
 static const char *skip_spaces(const char *text) {
     while (*text == ' ' || *text == '\t') {
         text += 1;
@@ -117,6 +171,15 @@ static int names_equal(const char *lhs, const char *rhs) {
     return lhs[i] == rhs[i];
 }
 
+static int expand_text(
+    CompilerPreprocessor *preprocessor,
+    const char *input,
+    CompilerSource *source_out,
+    size_t *offset,
+    int depth,
+    int *in_block_comment
+);
+
 static int find_macro(const CompilerPreprocessor *preprocessor, const char *name) {
     size_t i;
 
@@ -127,6 +190,216 @@ static int find_macro(const CompilerPreprocessor *preprocessor, const char *name
     }
 
     return -1;
+}
+
+static void copy_trimmed_slice(const char *start, size_t length, char *buffer, size_t buffer_size) {
+    while (length > 0 && (*start == ' ' || *start == '\t')) {
+        start += 1;
+        length -= 1U;
+    }
+    while (length > 0 && (start[length - 1] == ' ' || start[length - 1] == '\t')) {
+        length -= 1U;
+    }
+    if (length + 1U > buffer_size) {
+        length = buffer_size - 1U;
+    }
+    memcpy(buffer, start, length);
+    buffer[length] = '\0';
+}
+
+static int parse_macro_arguments(const char *input,
+                                 size_t open_paren,
+                                 size_t *end_out,
+                                 char args[][COMPILER_MAX_LINE_LENGTH],
+                                 size_t max_args,
+                                 size_t *arg_count_out) {
+    size_t i = open_paren + 1U;
+    size_t arg_start = i;
+    size_t arg_count = 0;
+    int depth = 1;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (input[i] != '\0') {
+        if ((in_string || in_char) && input[i] == '\\' && input[i + 1] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && input[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && input[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char) {
+            if (input[i] == '(') {
+                depth += 1;
+            } else if (input[i] == ')') {
+                depth -= 1;
+                if (depth == 0) {
+                    if (arg_count < max_args) {
+                        copy_trimmed_slice(input + arg_start, i - arg_start, args[arg_count], COMPILER_MAX_LINE_LENGTH);
+                    }
+                    *arg_count_out = (arg_count == 0 && i == arg_start) ? 0U : (arg_count + 1U);
+                    *end_out = i + 1U;
+                    return 0;
+                }
+            } else if (input[i] == ',' && depth == 1) {
+                if (arg_count >= max_args) {
+                    return -1;
+                }
+                copy_trimmed_slice(input + arg_start, i - arg_start, args[arg_count], COMPILER_MAX_LINE_LENGTH);
+                arg_count += 1U;
+                arg_start = i + 1U;
+            }
+        }
+        i += 1U;
+    }
+
+    return -1;
+}
+
+static int substitute_macro_parameter(const CompilerMacro *macro,
+                                      const char *argument,
+                                      char *buffer,
+                                      size_t buffer_size) {
+    size_t in = 0;
+    size_t out = 0;
+
+    while (macro->value[in] != '\0' && out + 1U < buffer_size) {
+        if (is_identifier_start(macro->value[in])) {
+            char identifier[COMPILER_MACRO_NAME_CAPACITY];
+            size_t length = 0;
+            size_t start = in;
+
+            while (is_identifier_continue(macro->value[in]) && length + 1U < sizeof(identifier)) {
+                identifier[length++] = macro->value[in++];
+            }
+            identifier[length] = '\0';
+
+            if (names_equal(identifier, macro->parameter_name)) {
+                size_t arg_index = 0;
+                while (argument[arg_index] != '\0' && out + 1U < buffer_size) {
+                    buffer[out++] = argument[arg_index++];
+                }
+            } else {
+                while (start < in && out + 1U < buffer_size) {
+                    buffer[out++] = macro->value[start++];
+                }
+            }
+            continue;
+        }
+
+        buffer[out++] = macro->value[in++];
+    }
+
+    buffer[out] = '\0';
+    return macro->value[in] == '\0' ? 0 : -1;
+}
+
+static int try_expand_builtin_macro(CompilerPreprocessor *preprocessor,
+                                    const char *input,
+                                    size_t *index_inout,
+                                    CompilerSource *source_out,
+                                    size_t *offset,
+                                    int depth,
+                                    int *in_block_comment) {
+    char name[COMPILER_MACRO_NAME_CAPACITY];
+    char args[2][COMPILER_MAX_LINE_LENGTH];
+    char replacement[COMPILER_MAX_LINE_LENGTH];
+    size_t i = *index_inout;
+    size_t name_length = 0;
+    size_t cursor;
+    size_t end = 0;
+    size_t arg_count = 0;
+    int nested_block_comment = 0;
+
+    while (is_identifier_continue(input[i]) && name_length + 1U < sizeof(name)) {
+        name[name_length++] = input[i++];
+    }
+    name[name_length] = '\0';
+
+    cursor = i;
+    while (input[cursor] == ' ' || input[cursor] == '\t') {
+        cursor += 1U;
+    }
+    if (input[cursor] != '(' || parse_macro_arguments(input, cursor, &end, args, sizeof(args) / sizeof(args[0]), &arg_count) != 0) {
+        return 0;
+    }
+
+    replacement[0] = '\0';
+    if (arg_count == 1U) {
+        if (names_equal(name, "WIFEXITED")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0x7f) == 0)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "WEXITSTATUS")) {
+            if (build_replacement1(replacement, sizeof(replacement), "(((((", args[0], ")) >> 8) & 0xff))") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "WIFSIGNALED")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((((", args[0], ")) & 0x7f) + 1) >= 2))") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "WTERMSIG")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0x7f))") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "S_ISDIR")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0xF000) == 0x4000)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "S_ISLNK")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0xF000) == 0xA000)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "S_ISCHR")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0xF000) == 0x2000)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "S_ISBLK")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0xF000) == 0x6000)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "S_ISFIFO")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0xF000) == 0x1000)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "S_ISSOCK")) {
+            if (build_replacement1(replacement, sizeof(replacement), "((((", args[0], ")) & 0xF000) == 0xC000)") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "FD_ZERO")) {
+            if (build_replacement1(replacement, sizeof(replacement), "posix_fd_zero((void *)(", args[0], "))") != 0) {
+                return -1;
+            }
+        }
+    } else if (arg_count == 2U) {
+        if (names_equal(name, "FD_SET")) {
+            if (build_replacement2(replacement, sizeof(replacement), "posix_fd_set_bit((void *)(", args[1], "), (", args[0], "))") != 0) {
+                return -1;
+            }
+        } else if (names_equal(name, "FD_ISSET")) {
+            if (build_replacement2(replacement, sizeof(replacement), "posix_fd_is_set_bit((const void *)(", args[1], "), (", args[0], "))") != 0) {
+                return -1;
+            }
+        }
+    }
+
+    if (replacement[0] == '\0') {
+        return 0;
+    }
+
+    *index_inout = end;
+    if (expand_text(preprocessor, replacement, source_out, offset, depth + 1, &nested_block_comment) != 0) {
+        return -1;
+    }
+    (void)in_block_comment;
+    return 1;
 }
 
 void compiler_preprocessor_init(CompilerPreprocessor *preprocessor) {
@@ -160,7 +433,31 @@ int compiler_preprocessor_define(CompilerPreprocessor *preprocessor, const char 
 
     rt_copy_string(preprocessor->macros[index].name, sizeof(preprocessor->macros[index].name), name);
     rt_copy_string(preprocessor->macros[index].value, sizeof(preprocessor->macros[index].value), value != 0 ? value : "");
+    preprocessor->macros[index].parameter_name[0] = '\0';
     preprocessor->macros[index].defined = 1;
+    preprocessor->macros[index].is_function_like = 0;
+    return 0;
+}
+
+static int define_function_like_macro(CompilerPreprocessor *preprocessor,
+                                      const char *name,
+                                      const char *parameter_name,
+                                      const char *value) {
+    int index = find_macro(preprocessor, name);
+
+    if (index < 0) {
+        if (preprocessor->macro_count >= COMPILER_MAX_MACROS) {
+            return -1;
+        }
+        index = (int)preprocessor->macro_count;
+        preprocessor->macro_count += 1U;
+    }
+
+    rt_copy_string(preprocessor->macros[index].name, sizeof(preprocessor->macros[index].name), name);
+    rt_copy_string(preprocessor->macros[index].value, sizeof(preprocessor->macros[index].value), value != 0 ? value : "");
+    rt_copy_string(preprocessor->macros[index].parameter_name, sizeof(preprocessor->macros[index].parameter_name), parameter_name != 0 ? parameter_name : "");
+    preprocessor->macros[index].defined = 1;
+    preprocessor->macros[index].is_function_like = 1;
     return 0;
 }
 
@@ -172,8 +469,10 @@ int compiler_preprocessor_undefine(CompilerPreprocessor *preprocessor, const cha
     }
 
     preprocessor->macros[index].defined = 0;
+    preprocessor->macros[index].is_function_like = 0;
     preprocessor->macros[index].name[0] = '\0';
     preprocessor->macros[index].value[0] = '\0';
+    preprocessor->macros[index].parameter_name[0] = '\0';
     return 0;
 }
 
@@ -278,7 +577,8 @@ static int expand_text(
     const char *input,
     CompilerSource *source_out,
     size_t *offset,
-    int depth
+    int depth,
+    int *in_block_comment
 ) {
     size_t i = 0;
 
@@ -287,6 +587,19 @@ static int expand_text(
     }
 
     while (input[i] != '\0') {
+        if (in_block_comment != 0 && *in_block_comment) {
+            if (input[i] == '*' && input[i + 1] == '/') {
+                *in_block_comment = 0;
+                i += 2;
+                if (append_char(source_out, offset, ' ') != 0) {
+                    return -1;
+                }
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
         if (input[i] == '"' || input[i] == '\'') {
             char quote = input[i++];
             if (append_char(source_out, offset, quote) != 0) {
@@ -311,13 +624,32 @@ static int expand_text(
         }
 
         if (input[i] == '/' && input[i + 1] == '/') {
-            return append_text(source_out, offset, input + i);
+            break;
+        }
+
+        if (input[i] == '/' && input[i + 1] == '*') {
+            if (append_char(source_out, offset, ' ') != 0) {
+                return -1;
+            }
+            if (in_block_comment != 0) {
+                *in_block_comment = 1;
+            }
+            i += 2;
+            continue;
         }
 
         if (is_identifier_start(input[i])) {
             char name[COMPILER_MACRO_NAME_CAPACITY];
             size_t length = 0;
             int index;
+            int builtin_result = try_expand_builtin_macro(preprocessor, input, &i, source_out, offset, depth, in_block_comment);
+
+            if (builtin_result < 0) {
+                return -1;
+            }
+            if (builtin_result > 0) {
+                continue;
+            }
 
             while (is_identifier_continue(input[i]) && length + 1 < sizeof(name)) {
                 name[length++] = input[i++];
@@ -326,7 +658,31 @@ static int expand_text(
 
             index = find_macro(preprocessor, name);
             if (index >= 0) {
-                if (expand_text(preprocessor, preprocessor->macros[index].value, source_out, offset, depth + 1) != 0) {
+                int nested_block_comment = 0;
+                if (preprocessor->macros[index].is_function_like) {
+                    char args[1][COMPILER_MAX_LINE_LENGTH];
+                    char expanded[COMPILER_MAX_LINE_LENGTH];
+                    size_t call_cursor = i;
+                    size_t end = 0;
+                    size_t arg_count = 0;
+
+                    while (input[call_cursor] == ' ' || input[call_cursor] == '\t') {
+                        call_cursor += 1U;
+                    }
+                    if (input[call_cursor] != '(' ||
+                        parse_macro_arguments(input, call_cursor, &end, args, sizeof(args) / sizeof(args[0]), &arg_count) != 0 ||
+                        arg_count != 1U ||
+                        substitute_macro_parameter(&preprocessor->macros[index], args[0], expanded, sizeof(expanded)) != 0) {
+                        if (append_text(source_out, offset, name) != 0) {
+                            return -1;
+                        }
+                    } else {
+                        i = end;
+                        if (expand_text(preprocessor, expanded, source_out, offset, depth + 1, &nested_block_comment) != 0) {
+                            return -1;
+                        }
+                    }
+                } else if (expand_text(preprocessor, preprocessor->macros[index].value, source_out, offset, depth + 1, &nested_block_comment) != 0) {
                     return -1;
                 }
             } else {
@@ -506,8 +862,26 @@ static int handle_directive(
             return -1;
         }
         if (*arg_cursor == '(') {
-            set_error(preprocessor, path, line_no, "function-like macros are not supported yet");
-            return -1;
+            char parameter_name[COMPILER_MACRO_NAME_CAPACITY];
+            size_t parameter_length = 0;
+
+            arg_cursor += 1;
+            arg_cursor = skip_spaces(arg_cursor);
+            while (is_identifier_continue(*arg_cursor) && parameter_length + 1 < sizeof(parameter_name)) {
+                parameter_name[parameter_length++] = *arg_cursor++;
+            }
+            parameter_name[parameter_length] = '\0';
+            arg_cursor = skip_spaces(arg_cursor);
+            if (*arg_cursor != ')') {
+                set_error(preprocessor, path, line_no, "only simple one-parameter function-like macros are supported");
+                return -1;
+            }
+            arg_cursor = skip_spaces(arg_cursor + 1);
+            if (define_function_like_macro(preprocessor, name, parameter_name, arg_cursor) != 0) {
+                set_error(preprocessor, path, line_no, "too many macros");
+                return -1;
+            }
+            return append_char(source_out, offset, '\n');
         }
         arg_cursor = skip_spaces(arg_cursor);
         if (compiler_preprocessor_define(preprocessor, name, arg_cursor) != 0) {
@@ -574,6 +948,7 @@ static int preprocess_file_internal(
     unsigned long long line_no = 1;
     size_t frame_count = 0;
     int active = 1;
+    int in_block_comment = 0;
     size_t pos = 0;
     int load_result;
 
@@ -594,14 +969,27 @@ static int preprocess_file_internal(
         char line[COMPILER_MAX_LINE_LENGTH];
         const char *trimmed;
         size_t line_length = 0;
+        unsigned long long consumed_lines = 0;
+        int continued;
 
-        while (pos < loaded.size && loaded.data[pos] != '\n' && line_length + 1 < sizeof(line)) {
-            line[line_length++] = loaded.data[pos++];
-        }
+        do {
+            continued = 0;
+            while (pos < loaded.size && loaded.data[pos] != '\n' && line_length + 1 < sizeof(line)) {
+                line[line_length++] = loaded.data[pos++];
+            }
+            if (pos < loaded.size && loaded.data[pos] == '\n') {
+                pos += 1;
+                consumed_lines += 1ULL;
+            }
+            if (line_length > 0 && line[line_length - 1] == '\\') {
+                line_length -= 1U;
+                continued = 1;
+            }
+        } while (continued && pos < loaded.size);
         line[line_length] = '\0';
 
-        if (pos < loaded.size && loaded.data[pos] == '\n') {
-            pos += 1;
+        if (consumed_lines == 0ULL) {
+            consumed_lines = 1ULL;
         }
 
         trimmed = skip_spaces(line);
@@ -610,7 +998,7 @@ static int preprocess_file_internal(
                 return -1;
             }
         } else if (active) {
-            if (expand_text(preprocessor, line, source_out, offset, 0) != 0 || append_char(source_out, offset, '\n') != 0) {
+            if (expand_text(preprocessor, line, source_out, offset, 0, &in_block_comment) != 0 || append_char(source_out, offset, '\n') != 0) {
                 set_error(preprocessor, path, line_no, "preprocessed output exceeds stage0 capacity");
                 return -1;
             }
@@ -619,7 +1007,7 @@ static int preprocess_file_internal(
             return -1;
         }
 
-        line_no += 1ULL;
+        line_no += consumed_lines;
     }
 
     if (frame_count != 0) {

@@ -204,11 +204,14 @@ int parse_signed_value(const char *text, long long *value_out) {
     return 0;
 }
 
-int add_function_name(BackendState *state, const char *name) {
+int add_function_name(BackendState *state, const char *name, int global) {
     size_t i;
 
     for (i = 0; i < state->function_count; ++i) {
         if (names_equal(state->functions[i].name, name)) {
+            if (global) {
+                state->functions[i].global = 1;
+            }
             return 0;
         }
     }
@@ -219,6 +222,7 @@ int add_function_name(BackendState *state, const char *name) {
     }
 
     rt_copy_string(state->functions[state->function_count].name, sizeof(state->functions[state->function_count].name), name);
+    state->functions[state->function_count].global = global ? 1 : 0;
     state->function_count += 1U;
     return 0;
 }
@@ -285,7 +289,7 @@ int add_constant(BackendState *state, const char *name, long long value) {
     return 0;
 }
 
-int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index) {
+int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index, int global, int has_storage) {
     int existing = find_global(state, name);
 
     if (existing >= 0) {
@@ -294,6 +298,12 @@ int add_global(BackendState *state, const char *name, int is_array, int prefers_
         }
         if (prefers_word_index) {
             state->globals[existing].prefers_word_index = 1;
+        }
+        if (global) {
+            state->globals[existing].global = 1;
+        }
+        if (has_storage) {
+            state->globals[existing].has_storage = 1;
         }
         return existing;
     }
@@ -308,6 +318,8 @@ int add_global(BackendState *state, const char *name, int is_array, int prefers_
     state->globals[state->global_count].initialized = 0;
     state->globals[state->global_count].is_array = is_array;
     state->globals[state->global_count].prefers_word_index = prefers_word_index;
+    state->globals[state->global_count].global = global ? 1 : 0;
+    state->globals[state->global_count].has_storage = has_storage ? 1 : 0;
     state->global_count += 1U;
     return (int)(state->global_count - 1U);
 }

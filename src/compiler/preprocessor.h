@@ -5,14 +5,16 @@
 #include "source.h"
 
 #define COMPILER_MAX_INCLUDE_DIRS 16
-#define COMPILER_MAX_MACROS 128
+#define COMPILER_MAX_MACROS 512
 #define COMPILER_MACRO_NAME_CAPACITY 64
 #define COMPILER_MACRO_VALUE_CAPACITY 256
 
 typedef struct {
     char name[COMPILER_MACRO_NAME_CAPACITY];
     char value[COMPILER_MACRO_VALUE_CAPACITY];
+    char parameter_name[COMPILER_MACRO_NAME_CAPACITY];
     int defined;
+    int is_function_like;
 } CompilerMacro;
 
 typedef struct {

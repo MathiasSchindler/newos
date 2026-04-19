@@ -66,7 +66,8 @@ int current_is_arithmetic_type_keyword(const CompilerParser *parser) {
         current_is_keyword(parser, "signed") ||
         current_is_keyword(parser, "unsigned") ||
         current_is_keyword(parser, "float") ||
-        current_is_keyword(parser, "double")) {
+        current_is_keyword(parser, "double") ||
+        (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
         return 1;
     }
     return 0;
@@ -78,7 +79,8 @@ int current_is_int_family_keyword(const CompilerParser *parser) {
         current_is_keyword(parser, "long") ||
         current_is_keyword(parser, "signed") ||
         current_is_keyword(parser, "float") ||
-        current_is_keyword(parser, "double")) {
+        current_is_keyword(parser, "double") ||
+        (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
         return 1;
     }
     return 0;

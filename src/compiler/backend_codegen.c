@@ -162,7 +162,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                 name[out++] = line[j++];
             }
             name[out] = '\0';
-            if (add_function_name(state, name) != 0) {
+            if (add_function_name(state, name, 0) != 0) {
                 return -1;
             }
         }
@@ -201,16 +201,32 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             continue;
         }
 
-        if (!in_function && starts_with(line, "decl global ")) {
+        if (!in_function && starts_with(line, "decl ")) {
             char storage[16];
             char kind[16];
             char type_text[128];
             char name[COMPILER_IR_NAME_CAPACITY];
+            int has_global_linkage;
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
-            if (names_equal(kind, "obj") &&
+            has_global_linkage = names_equal(storage, "global");
+
+            if (names_equal(kind, "func")) {
+                if (add_function_name(state, name, has_global_linkage) != 0) {
+                    return -1;
+                }
+                continue;
+            }
+
+            if ((names_equal(storage, "global") || names_equal(storage, "static") || names_equal(storage, "extern")) &&
+                names_equal(kind, "obj") &&
                 !is_function_name(state, name) &&
-                add_global(state, name, text_contains(type_text, "[]"), should_prefer_word_index(name, type_text)) < 0) {
+                add_global(state,
+                           name,
+                           text_contains(type_text, "[]"),
+                           should_prefer_word_index(name, type_text),
+                           has_global_linkage,
+                           names_equal(storage, "global") || names_equal(storage, "static")) < 0) {
                 return -1;
             }
             continue;
@@ -259,10 +275,17 @@ static int emit_globals(BackendState *state) {
         char symbol[COMPILER_IR_NAME_CAPACITY];
         format_symbol_name(state, state->globals[i].name, symbol, sizeof(symbol));
 
-        if (emit_text(state, ".globl ") != 0 ||
-            emit_line(state, symbol) != 0 ||
-            emit_text(state, symbol) != 0 ||
-            emit_line(state, ":") != 0) {
+        if (!state->globals[i].has_storage) {
+            continue;
+        }
+
+        if (state->globals[i].global) {
+            if (emit_text(state, ".globl ") != 0 || emit_line(state, symbol) != 0) {
+                backend_set_error(state->backend, "failed to emit global symbol");
+                return -1;
+            }
+        }
+        if (emit_text(state, symbol) != 0 || emit_line(state, ":") != 0) {
             backend_set_error(state->backend, "failed to emit global symbol");
             return -1;
         }
@@ -338,8 +361,21 @@ static int emit_string_literals(BackendState *state) {
     return 0;
 }
 
+static int function_has_global_linkage(const BackendState *state, const char *name) {
+    size_t i;
+
+    for (i = 0; i < state->function_count; ++i) {
+        if (names_equal(state->functions[i].name, name)) {
+            return state->functions[i].global;
+        }
+    }
+
+    return 1;
+}
+
 static int begin_function(BackendState *state, const char *name) {
     char symbol[COMPILER_IR_NAME_CAPACITY];
+    int export_symbol = function_has_global_linkage(state, name);
     state->in_function = 1;
     state->local_count = 0;
     state->param_count = 0;
@@ -356,10 +392,13 @@ static int begin_function(BackendState *state, const char *name) {
         backend_set_error(state->backend, "failed to emit function alignment");
         return -1;
     }
-    if (emit_text(state, ".globl ") != 0 ||
-        emit_line(state, symbol) != 0 ||
-        emit_text(state, symbol) != 0 ||
-        emit_line(state, ":") != 0) {
+    if (export_symbol) {
+        if (emit_text(state, ".globl ") != 0 || emit_line(state, symbol) != 0) {
+            backend_set_error(state->backend, "failed to emit function label");
+            return -1;
+        }
+    }
+    if (emit_text(state, symbol) != 0 || emit_line(state, ":") != 0) {
         backend_set_error(state->backend, "failed to emit function label");
         return -1;
     }
@@ -492,7 +531,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     }
 
     if (names_equal(kind, "func")) {
-        return add_function_name(state, name);
+        return add_function_name(state, name, !names_equal(storage, "static"));
     }
 
     return 0;

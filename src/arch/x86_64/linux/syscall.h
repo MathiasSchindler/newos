@@ -41,61 +41,11 @@
 #define LINUX_SYS_DUP3 292
 #define LINUX_SYS_GETDENTS64 217
 
-static inline long linux_syscall0(long number) {
-    register long rax __asm__("rax") = number;
-
-    __asm__ volatile("syscall" : "+a"(rax) : : "rcx", "r11", "memory");
-    return rax;
-}
-
-static inline long linux_syscall1(long number, long arg0) {
-    register long rax __asm__("rax") = number;
-    register long rdi __asm__("rdi") = arg0;
-
-    __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi) : "rcx", "r11", "memory");
-    return rax;
-}
-
-static inline long linux_syscall2(long number, long arg0, long arg1) {
-    register long rax __asm__("rax") = number;
-    register long rdi __asm__("rdi") = arg0;
-    register long rsi __asm__("rsi") = arg1;
-
-    __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi), "S"(rsi) : "rcx", "r11", "memory");
-    return rax;
-}
-
-static inline long linux_syscall3(long number, long arg0, long arg1, long arg2) {
-    register long rax __asm__("rax") = number;
-    register long rdi __asm__("rdi") = arg0;
-    register long rsi __asm__("rsi") = arg1;
-    register long rdx __asm__("rdx") = arg2;
-
-    __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi), "S"(rsi), "d"(rdx) : "rcx", "r11", "memory");
-    return rax;
-}
-
-static inline long linux_syscall4(long number, long arg0, long arg1, long arg2, long arg3) {
-    register long rax __asm__("rax") = number;
-    register long rdi __asm__("rdi") = arg0;
-    register long rsi __asm__("rsi") = arg1;
-    register long rdx __asm__("rdx") = arg2;
-    register long r10 __asm__("r10") = arg3;
-
-    __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi), "S"(rsi), "d"(rdx), "r"(r10) : "rcx", "r11", "memory");
-    return rax;
-}
-
-static inline long linux_syscall5(long number, long arg0, long arg1, long arg2, long arg3, long arg4) {
-    register long rax __asm__("rax") = number;
-    register long rdi __asm__("rdi") = arg0;
-    register long rsi __asm__("rsi") = arg1;
-    register long rdx __asm__("rdx") = arg2;
-    register long r10 __asm__("r10") = arg3;
-    register long r8 __asm__("r8") = arg4;
-
-    __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi), "S"(rsi), "d"(rdx), "r"(r10), "r"(r8) : "rcx", "r11", "memory");
-    return rax;
-}
+long linux_syscall0(long number);
+long linux_syscall1(long number, long arg0);
+long linux_syscall2(long number, long arg0, long arg1);
+long linux_syscall3(long number, long arg0, long arg1, long arg2);
+long linux_syscall4(long number, long arg0, long arg1, long arg2, long arg3);
+long linux_syscall5(long number, long arg0, long arg1, long arg2, long arg3, long arg4);
 
 #endif
