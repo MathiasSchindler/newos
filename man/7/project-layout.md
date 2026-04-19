@@ -25,8 +25,8 @@ hosted and freestanding builds can share as much logic as possible.
   x86-64 target
 - `tests/` — smoke suites, helpers, benchmarks, and run-time logs under
   `tests/tmp/`
-- `man/` — repository-local manuals; update these when contributor-visible
-  behavior changes
+- `man/` — repository-local manuals; `man/1` and `man/7` are the active home for
+  current documentation and contributor-facing project notes
 - `build/` — generated binaries and other build output
 
 ## LAYERING RULES
@@ -39,6 +39,8 @@ hosted and freestanding builds can share as much logic as possible.
   dependencies on it.
 - OS-specific behavior belongs in `src/platform/*` or `src/arch/*`, not in the
   generic tool code.
+- Legacy planning notes may still exist elsewhere in the tree, but the manual
+  pages under `man/` should be treated as the current source of truth.
 
 ## LIMITATIONS
 
@@ -50,4 +52,4 @@ hosted and freestanding builds can share as much logic as possible.
 
 ## SEE ALSO
 
-man, shell, compiler, runtime, platform, testing, build
+man, shell, compiler, runtime, platform, testing, build, userland

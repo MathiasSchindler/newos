@@ -22,6 +22,15 @@ compiler.
 - object emission for Linux/x86-64 ELF and macOS/AArch64 Mach-O
 - partial self-hosting across most of its own source tree
 
+## SUCCESS CRITERIA
+
+The compiler is doing the right job when it can:
+
+1. compile the shared runtime and support code used across the repository
+2. compile the userland tools under `src/tools/`
+3. rebuild itself in staged form with steadily less outside toolchain help
+4. stay understandable enough that contributors can still debug and extend it
+
 ## WORKFLOW
 
 Compilation proceeds in these layers:
@@ -35,6 +44,15 @@ Compilation proceeds in these layers:
 7. `backend*.c` — target-specific code generation
 8. `object_writer.c` — object-file serialization
 9. `driver.c` — command-line handling and orchestration
+
+## SELF-HOSTING STAGES
+
+The practical progression looks like this:
+
+1. bootstrap with the host compiler
+2. compile the project's own runtime and userland reliably
+3. rebuild `ncc` with itself in repeatable stages
+4. reduce dependence on the external host linker/toolchain where practical
 
 ## CONTRIBUTOR NOTES
 

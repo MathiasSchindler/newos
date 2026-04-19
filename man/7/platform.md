@@ -25,6 +25,18 @@ In practice:
   missing an implementation detail or has leaked an assumption from the other
   side
 
+## FREESTANDING-FIRST POLICY
+
+The platform layer exists to keep the project from quietly drifting into a
+host-libc-only design.
+
+- Prefer shared logic plus narrow `platform_*` primitives rather than direct
+  POSIX calls in every tool.
+- the hostedness escape hatch should stay narrow and should not become the
+  default implementation strategy.
+- If a capability matters in both build modes, implement it in both backends or
+  document clearly why it is hosted-only.
+
 ## STRUCTURE
 
 ### Hosted POSIX layer (`src/platform/posix`)
@@ -70,4 +82,4 @@ and does not depend on libc.
 
 ## SEE ALSO
 
-man, project-layout, runtime, build
+man, project-layout, runtime, build, userland
