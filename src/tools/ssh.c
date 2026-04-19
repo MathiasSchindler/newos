@@ -1,7 +1,7 @@
 #include "platform.h"
 #include "runtime.h"
-#include "ssh_client.h"
-#include "ssh_core.h"
+#include "ssh/ssh_client.h"
+#include "ssh/ssh_core.h"
 #include "tool_util.h"
 
 int main(int argc, char **argv) {

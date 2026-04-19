@@ -39,7 +39,9 @@ When adding or extending userland tools:
 
 - prefer statically linked, freestanding-friendly implementations whenever
   practical
-- keep tool logic in `src/tools/` and shared reusable behavior in `src/shared/`
+- keep one public entry point per tool in `src/tools/`
+- if a tool grows internal modules, place them in `src/tools/<tool>/`
+- keep only genuinely reusable cross-tool behavior in `src/shared/`
 - route OS interaction through the shared platform interface instead of pulling
   host APIs directly into generic tool code
 - optimize for useful real-world behavior before chasing obscure compatibility

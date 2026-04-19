@@ -2,10 +2,10 @@
  * awk.c - entry point for the awk tool.
  *
  * Argument parsing and top-level orchestration only.
- * Implementation is split across awk_parse.c and awk_exec.c.
+ * Implementation is split across awk/awk_parse.c and awk/awk_exec.c.
  */
 
-#include "awk_impl.h"
+#include "awk/awk_impl.h"
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");

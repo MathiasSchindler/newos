@@ -31,6 +31,8 @@ hosted and freestanding builds.
 - Put genuinely reusable, libc-independent helpers here.
 - If logic is only used by one command, keep it in that tool instead of growing
   the runtime unnecessarily.
+- Tool-private helper modules should live under `src/tools/<tool>/`, with the
+  tool's public entry point kept in `src/tools/<tool>.c`.
 - Code in this layer should go through `platform.h` for OS interaction rather
   than calling libc or POSIX APIs directly.
 

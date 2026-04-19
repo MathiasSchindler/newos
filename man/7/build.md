@@ -78,8 +78,13 @@ a change touches runtime code, platform code, startup code, or the compiler.
 
 - Most new tools only need `src/tools/name.c` plus an entry in `TOOLS` in the
   `Makefile`; the generic pattern rules handle both build variants.
-- `sh` and `ncc` have explicit rules because they pull in additional shared
-  subsystems. A new tool with special dependencies should follow that pattern.
+- If a tool grows private helper files or internal headers, keep the public
+  entry point at `src/tools/name.c` and place the private implementation under
+  `src/tools/name/`.
+- Reserve `src/shared/` for code that is genuinely reused across multiple tools.
+- `sh` and `ncc` have explicit rules because they pull in additional private or
+  shared subsystems. A new tool with special dependencies should follow that
+  pattern.
 - Hosted and freestanding outputs are intentionally separate. A passing hosted
   build does not guarantee the syscall-only target is also healthy.
 - If a new shared runtime helper is added, make sure any explicit special-case

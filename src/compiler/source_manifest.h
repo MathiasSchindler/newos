@@ -73,13 +73,13 @@
     X("src/shared/hash_util.c") \
     FOREACH_CRYPTO_SOURCE(X)
 
-/* ── shell (sh) ──────────────────────────────────────────────────────────── */
+/* ── shell (sh) private implementation ──────────────────────────────────── */
 
 #define FOREACH_SHELL_SOURCE(X) \
-    X("src/shared/shell_parser.c") \
-    X("src/shared/shell_execution.c") \
-    X("src/shared/shell_builtins.c") \
-    X("src/shared/shell_interactive.c")
+    X("src/tools/sh/shell_parser.c") \
+    X("src/tools/sh/shell_execution.c") \
+    X("src/tools/sh/shell_builtins.c") \
+    X("src/tools/sh/shell_interactive.c")
 
 /* ── POSIX host platform ─────────────────────────────────────────────────── */
 
@@ -100,16 +100,16 @@
     X("src/platform/linux/time.c") \
     X("src/arch/x86_64/linux/syscall_stubs.S")
 
-/* ── SSH client implementation ───────────────────────────────────────────── */
+/* ── SSH client private implementation ───────────────────────────────────── */
 
 #define FOREACH_SSH_CLIENT_SOURCE(X) \
-    X("src/shared/ssh_core.c") \
-    X("src/shared/ssh_known_hosts.c") \
-    X("src/shared/ssh_client_io.c") \
-    X("src/shared/ssh_client_identity.c") \
-    X("src/shared/ssh_client_kex.c") \
-    X("src/shared/ssh_client_auth.c") \
-    X("src/shared/ssh_client_channel.c") \
-    X("src/shared/ssh_client.c")
+    X("src/tools/ssh/ssh_core.c") \
+    X("src/tools/ssh/ssh_known_hosts.c") \
+    X("src/tools/ssh/ssh_client_io.c") \
+    X("src/tools/ssh/ssh_client_identity.c") \
+    X("src/tools/ssh/ssh_client_kex.c") \
+    X("src/tools/ssh/ssh_client_auth.c") \
+    X("src/tools/ssh/ssh_client_channel.c") \
+    X("src/tools/ssh/ssh_client.c")
 
 #endif /* SOURCE_MANIFEST_H */

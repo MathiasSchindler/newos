@@ -5,7 +5,7 @@
  * ssh_client_internal.h - private declarations shared across the ssh_client
  * implementation modules.
  *
- * Nothing outside of src/shared/ssh_client*.c should include this header.
+ * Nothing outside of src/tools/ssh should include this header.
  */
 
 #include "crypto/chacha20_poly1305.h"

@@ -2,10 +2,10 @@
  * make.c - entry point for the make tool.
  *
  * Argument parsing and top-level orchestration only.
- * Implementation is split across make_parse.c and make_exec.c.
+ * Implementation is split across make/make_parse.c and make/make_exec.c.
  */
 
-#include "make_impl.h"
+#include "make/make_impl.h"
 
 int main(int argc, char **argv) {
     MakeProgram program;

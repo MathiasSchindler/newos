@@ -63,7 +63,7 @@ print_result() {
     system_norm=$(printf '%s' "$system" | tr ',' '.')
 
     case "$system_norm" in
-        ""|0|0.0|0.00|0.000|0.0000|0.00000|0.000000)
+        ""|n/a|N/A|0|0.0|0.00|0.000|0.0000|0.00000|0.000000)
             ratio="n/a"
             ;;
         *)
@@ -105,18 +105,28 @@ benchmark_hashes() {
 
 benchmark_compression() {
     ours=$(measure_seconds 'cp "'$DATA_DIR'/compress_input.txt" "'$WORK_DIR'/gzip-input.txt" && "'$ROOT_DIR'/build/gzip" "'$WORK_DIR'/gzip-input.txt" >/dev/null 2>&1 && rm -f "'$WORK_DIR'/gzip-input.txt" "'$WORK_DIR'/gzip-input.txt.gz"')
-    system=$(measure_seconds 'gzip -c "'$DATA_DIR'/compress_input.txt" > "'$WORK_DIR'/gzip.sys.gz" && rm -f "'$WORK_DIR'/gzip.sys.gz"')
+    if command -v gzip >/dev/null 2>&1; then
+        system=$(measure_seconds 'gzip -c "'$DATA_DIR'/compress_input.txt" > "'$WORK_DIR'/gzip.sys.gz" && rm -f "'$WORK_DIR'/gzip.sys.gz"')
+    else
+        system="n/a"
+    fi
     print_result gzip "$ours" "$system"
 
     ours=$(measure_seconds 'cp "'$DATA_DIR'/compress_input.txt" "'$WORK_DIR'/bzip-input.txt" && "'$ROOT_DIR'/build/bzip2" "'$WORK_DIR'/bzip-input.txt" >/dev/null 2>&1 && rm -f "'$WORK_DIR'/bzip-input.txt" "'$WORK_DIR'/bzip-input.txt.bz2"')
-    system=$(measure_seconds 'bzip2 -c "'$DATA_DIR'/compress_input.txt" > "'$WORK_DIR'/bzip.sys.bz2" && rm -f "'$WORK_DIR'/bzip.sys.bz2"')
+    if command -v bzip2 >/dev/null 2>&1; then
+        system=$(measure_seconds 'bzip2 -c "'$DATA_DIR'/compress_input.txt" > "'$WORK_DIR'/bzip.sys.bz2" && rm -f "'$WORK_DIR'/bzip.sys.bz2"')
+    else
+        system="n/a"
+    fi
     print_result bzip2 "$ours" "$system"
 
+    ours=$(measure_seconds 'cp "'$DATA_DIR'/compress_input.txt" "'$WORK_DIR'/xz-input.txt" && "'$ROOT_DIR'/build/xz" "'$WORK_DIR'/xz-input.txt" >/dev/null 2>&1 && rm -f "'$WORK_DIR'/xz-input.txt" "'$WORK_DIR'/xz-input.txt.xz"')
     if command -v xz >/dev/null 2>&1; then
-        ours=$(measure_seconds 'cp "'$DATA_DIR'/compress_input.txt" "'$WORK_DIR'/xz-input.txt" && "'$ROOT_DIR'/build/xz" "'$WORK_DIR'/xz-input.txt" >/dev/null 2>&1 && rm -f "'$WORK_DIR'/xz-input.txt" "'$WORK_DIR'/xz-input.txt.xz"')
         system=$(measure_seconds 'xz -c "'$DATA_DIR'/compress_input.txt" > "'$WORK_DIR'/xz.sys.xz" && rm -f "'$WORK_DIR'/xz.sys.xz"')
-        print_result xz "$ours" "$system"
+    else
+        system="n/a"
     fi
+    print_result xz "$ours" "$system"
 }
 
 create_data

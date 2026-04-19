@@ -7,9 +7,9 @@ shell - the `sh` command and its internal shell subsystem
 ## DESCRIPTION
 
 The shell component consists of the `sh` tool plus a private subsystem in
-`src/shared/shell_*`. It provides an interactive command shell and script
-runner for the repository userland, but it is still intentionally smaller than a
-full production shell such as `bash`.
+`src/tools/sh/`. It provides an interactive command shell and script runner for
+the repository userland, but it is still intentionally smaller than a full
+production shell such as `bash`.
 
 ## CURRENT CAPABILITIES
 
@@ -22,6 +22,9 @@ full production shell such as `bash`.
 - interactive history plus simple line editing and completion when run on a TTY
 
 ## INTERNAL LAYOUT
+
+The public entry point remains `src/tools/sh.c`. Private shell implementation
+files live under `src/tools/sh/`:
 
 - `shell_parser.c` — tokenization and parse-tree construction
 - `shell_execution.c` — process launching, pipelines, and job handling

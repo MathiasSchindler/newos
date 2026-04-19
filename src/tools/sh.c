@@ -3,7 +3,7 @@
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "shell_shared.h"
+#include "sh/shell_shared.h"
 
 #define SH_MAX_POSITIONAL_ARGS 16
 #define SH_POSITIONAL_ARG_CAPACITY 256

@@ -2,7 +2,7 @@
 
 #include "runtime.h"
 #include "tool_util.h"
-#include "test_impl.h"
+#include "test/test_impl.h"
 
 int main(int argc, char **argv) {
     int status;

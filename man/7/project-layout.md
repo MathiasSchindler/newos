@@ -10,12 +10,17 @@ The tree is organized by responsibility: user-facing tools, reusable shared
 code, compiler internals, and platform-specific code are kept separate so that
 hosted and freestanding builds can share as much logic as possible.
 
+The project now also follows a stronger ownership rule for tools: each command
+keeps one public entry file in `src/tools/`, and if it grows additional private
+implementation files they live in a same-named subdirectory owned by that tool.
+
 ## STRUCTURE
 
-- `src/tools/` — command entry points and tool-specific logic; the default home
-  for a new utility
-- `src/shared/` — reusable runtime helpers, shared utilities, and the shell
-  subsystem
+- `src/tools/` — command entry points and tool-specific logic; each tool keeps
+  one public entry file here, and larger tools may also own a private
+  subdirectory such as `src/tools/awk/` or `src/tools/ssh/`
+- `src/shared/` — reusable runtime helpers and cross-tool utilities; this is
+  the home for genuinely shared code, not one-off private helper files
 - `src/compiler/` — the `ncc` frontend, IR, backends, and object writers
 - `src/platform/posix/` — hosted development and test implementation
 - `src/platform/linux/` — freestanding raw-syscall implementation
@@ -33,8 +38,12 @@ hosted and freestanding builds can share as much logic as possible.
 
 - Most tools should depend on `src/shared/` and `platform.h`, not on direct OS
   headers or compiler internals.
-- Shell-specific code stays in `src/shared/shell_*` and is compiled only into
-  `sh`.
+- Each tool should present one obvious public entry file in `src/tools/`; if it
+  needs extra internal modules, place them under `src/tools/<tool>/` rather
+  than flattening them into the top-level tool directory.
+- `src/shared/` is reserved for code that is reused by more than one tool or is
+  intentionally maintained as a reusable subsystem.
+- Shell-specific code stays in `src/tools/sh/` and is compiled only into `sh`.
 - `src/compiler/` is largely private to `ncc`; other tools should not grow hard
   dependencies on it.
 - OS-specific behavior belongs in `src/platform/*` or `src/arch/*`, not in the
