@@ -114,13 +114,27 @@ static int is_direct_link_input(const char *path) {
 
 static int looks_like_ncc_driver(const char *path) {
     const char *base_name;
+    size_t i = 0;
 
     if (path == 0 || path[0] == '\0') {
         return 0;
     }
 
     base_name = tool_base_name(path);
-    return ends_with(base_name, "ncc");
+    if (ends_with(base_name, "ncc")) {
+        return 1;
+    }
+
+    while (base_name[i] != '\0') {
+        if (base_name[i] == 'n' &&
+            base_name[i + 1] == 'c' &&
+            base_name[i + 2] == 'c') {
+            return 1;
+        }
+        i += 1U;
+    }
+
+    return 0;
 }
 
 static CompilerTarget default_target(void) {
@@ -321,7 +335,12 @@ static int link_executable_output(const CompilerOptions *options) {
 
     if (link_driver == 0 || link_driver[0] == '\0') {
         const char *cc_driver = platform_getenv("CC");
-        if (!looks_like_ncc_driver(cc_driver)) {
+        const char *self_base = tool_base_name(options->program_name);
+        const char *cc_base = tool_base_name(cc_driver);
+
+        if (cc_driver != 0 && cc_driver[0] != '\0' &&
+            !looks_like_ncc_driver(cc_driver) &&
+            !text_equals(cc_base, self_base)) {
             link_driver = cc_driver;
         }
     }
