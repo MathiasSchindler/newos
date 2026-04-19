@@ -57,6 +57,9 @@ CRYPTO_SOURCES := \
 HASH_SOURCES := \
 	src/shared/hash_util.c \
 	$(CRYPTO_SOURCES)
+SSH_CORE_SOURCES := \
+	src/shared/ssh_core.c \
+	src/shared/ssh_known_hosts.c
 SHELL_SOURCES := \
 	src/shared/shell_parser.c \
 	src/shared/shell_execution.c \
@@ -96,11 +99,11 @@ all:
 endif
 
 ifeq ($(AUTO_PARALLEL),1)
-host: $(addprefix $(BUILD_DIR)/,$(TOOLS))
-freestanding: $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
+host: $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
+freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 else ifneq ($(strip $(PARALLEL_MAKEFLAGS)),)
-host: $(addprefix $(BUILD_DIR)/,$(TOOLS))
-freestanding: $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
+host: $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
+freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 else
 host freestanding:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) $@
@@ -108,6 +111,12 @@ endif
 
 $(BUILD_DIR) $(TARGET_BUILD_DIR):
 	mkdir -p $@
+
+$(BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
+
+$(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
 
 $(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/shell_shared.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(CFLAGS) $< $(SHARED_SOURCES) $(SHELL_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
