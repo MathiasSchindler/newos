@@ -27,3 +27,16 @@ assert_file_contains "$WORK_DIR/links.out" 'kept.link' "find -type l did not rep
 
 "$ROOT_DIR/build/find" "$WORK_DIR/tree" -name kept.txt -exec "$ROOT_DIR/build/echo" found {} ';' > "$WORK_DIR/exec.out"
 assert_file_contains "$WORK_DIR/exec.out" 'found .*kept.txt' "find -exec did not run the requested command"
+
+DEEP_SRC="$WORK_DIR/deep_src"
+DEEP_REL=""
+level=1
+while [ "$level" -le 12 ]; do
+    DEEP_REL="$DEEP_REL/level_$level"
+    mkdir -p "$DEEP_SRC$DEEP_REL"
+    level=$((level + 1))
+done
+printf 'deep-data\n' > "$DEEP_SRC$DEEP_REL/final.txt"
+
+"$ROOT_DIR/build/find" "$DEEP_SRC" -name final.txt > "$WORK_DIR/deep_find.out"
+assert_file_contains "$WORK_DIR/deep_find.out" 'final.txt' "find did not traverse a deeply nested directory"

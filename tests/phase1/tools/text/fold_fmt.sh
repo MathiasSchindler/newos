@@ -16,3 +16,12 @@ printf 'foo bar baz\n' > "$WORK_DIR/fmt.txt"
 "$ROOT_DIR/build/fmt" -w 6 "$WORK_DIR/fmt.txt" > "$WORK_DIR/fmt.out"
 printf 'foo\nbar\nbaz\n' > "$WORK_DIR/fmt.expected"
 assert_files_equal "$WORK_DIR/fmt.expected" "$WORK_DIR/fmt.out" "fmt did not reflow the line into the requested width"
+
+printf '界界界a\n' > "$WORK_DIR/fold_unicode.txt"
+"$ROOT_DIR/build/fold" -w 6 "$WORK_DIR/fold_unicode.txt" > "$WORK_DIR/fold_unicode.out"
+assert_file_contains "$WORK_DIR/fold_unicode.out" '^界界界$' "fold did not wrap on Unicode display-width boundaries"
+assert_file_contains "$WORK_DIR/fold_unicode.out" '^a$' "fold did not preserve the trailing character after Unicode wrapping"
+
+printf 'äö aa\n' > "$WORK_DIR/fmt_unicode.txt"
+"$ROOT_DIR/build/fmt" -w 5 "$WORK_DIR/fmt_unicode.txt" > "$WORK_DIR/fmt_unicode.out"
+assert_file_contains "$WORK_DIR/fmt_unicode.out" '^äö aa$' "fmt did not keep a Unicode-width-fitting line intact"

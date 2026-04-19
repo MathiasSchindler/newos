@@ -31,3 +31,37 @@ printf 'replace\n' > "$WORK_DIR/replace.txt"
 assert_command_succeeds "$ROOT_DIR/build/cp" -n "$WORK_DIR/replace.txt" "$WORK_DIR/keep.txt"
 keep_text=$(tr -d '\r\n' < "$WORK_DIR/keep.txt")
 assert_text_equals "$keep_text" 'keep' "cp -n overwrote an existing destination"
+
+printf 'older-source\n' > "$WORK_DIR/update_src.txt"
+assert_command_succeeds "$ROOT_DIR/build/touch" -d @1000000000 "$WORK_DIR/update_src.txt"
+printf 'newer-destination\n' > "$WORK_DIR/update_dest.txt"
+assert_command_succeeds "$ROOT_DIR/build/touch" -d @2000000000 "$WORK_DIR/update_dest.txt"
+assert_command_succeeds "$ROOT_DIR/build/cp" -u "$WORK_DIR/update_src.txt" "$WORK_DIR/update_dest.txt"
+update_text=$(tr -d '\r\n' < "$WORK_DIR/update_dest.txt")
+assert_text_equals "$update_text" 'newer-destination' "cp -u replaced a newer destination"
+
+printf 'archive-data\n' > "$WORK_DIR/archive-target.txt"
+ln -sf archive-target.txt "$WORK_DIR/archive-link"
+mkdir -p "$WORK_DIR/archive-dest"
+assert_command_succeeds "$ROOT_DIR/build/cp" -a "$WORK_DIR/archive-link" "$WORK_DIR/archive-dest"
+[ -L "$WORK_DIR/archive-dest/archive-link" ] || fail "cp -a did not preserve the symlink itself"
+archive_link_out=$("$ROOT_DIR/build/readlink" "$WORK_DIR/archive-dest/archive-link" | tr -d '\r\n')
+assert_text_equals "$archive_link_out" 'archive-target.txt' "cp -a preserved the wrong symlink target"
+
+DEEP_SRC="$WORK_DIR/deep_src"
+DEEP_REL=""
+level=1
+while [ "$level" -le 12 ]; do
+    DEEP_REL="$DEEP_REL/level_$level"
+    mkdir -p "$DEEP_SRC$DEEP_REL"
+    level=$((level + 1))
+done
+printf 'deep-data\n' > "$DEEP_SRC$DEEP_REL/final.txt"
+
+assert_command_succeeds "$ROOT_DIR/build/cp" -r "$DEEP_SRC" "$WORK_DIR/deep_copy"
+assert_file_contains "$WORK_DIR/deep_copy$DEEP_REL/final.txt" 'deep-data' "cp -r did not preserve a deeply nested file"
+
+ODD_FILE="$WORK_DIR/odd name [v1] !.txt"
+printf 'odd-data\n' > "$ODD_FILE"
+assert_command_succeeds "$ROOT_DIR/build/cp" "$ODD_FILE" "$WORK_DIR/odd-copy.txt"
+assert_file_contains "$WORK_DIR/odd-copy.txt" '^odd-data$' "cp did not handle an odd filename safely"

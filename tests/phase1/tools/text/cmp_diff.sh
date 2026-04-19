@@ -24,3 +24,13 @@ fi
 assert_file_contains "$WORK_DIR/diff.out" '^--- ' "diff output was missing the left-file header"
 assert_file_contains "$WORK_DIR/diff.out" '^[+][+][+] ' "diff output was missing the right-file header"
 assert_file_contains "$WORK_DIR/diff.out" '^@@ ' "diff output was missing the hunk marker"
+
+cmp_list_out=$("$ROOT_DIR/build/cmp" -l "$WORK_DIR/left.txt" "$WORK_DIR/other.txt" | tr -d '\r')
+printf '%s\n' "$cmp_list_out" > "$WORK_DIR/cmp_l.out"
+assert_file_contains "$WORK_DIR/cmp_l.out" '^[0-9][0-9]* ' "cmp -l did not report the differing byte positions"
+
+if "$ROOT_DIR/build/diff" -c "$WORK_DIR/left.txt" "$WORK_DIR/other.txt" > "$WORK_DIR/diff_c.out"; then
+    fail "diff -c should have reported a change"
+fi
+assert_file_contains "$WORK_DIR/diff_c.out" '^\*\*\* ' "diff -c output was missing the left header"
+assert_file_contains "$WORK_DIR/diff_c.out" '^--- ' "diff -c output was missing the right header"

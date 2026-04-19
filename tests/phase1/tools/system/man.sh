@@ -4,9 +4,56 @@ set -eu
 . "$(dirname "$0")/common.inc"
 phase1_setup man
 
+"$ROOT_DIR/build/man" ls > "$WORK_DIR/man_ls.out"
+assert_file_contains "$WORK_DIR/man_ls.out" '^LS$' "man did not open the ls manual page"
+assert_file_contains "$WORK_DIR/man_ls.out" 'list files and directories' "man page content for ls was missing"
+
+"$ROOT_DIR/build/man" 7 project-layout > "$WORK_DIR/man_layout.out"
+assert_file_contains "$WORK_DIR/man_layout.out" 'overview of the repository structure' "man section lookup failed"
+
+"$ROOT_DIR/build/man" 7 unicode > "$WORK_DIR/man_unicode.out"
+assert_file_contains "$WORK_DIR/man_unicode.out" 'implementation roadmap for full Unicode support' "man did not open the unicode design page"
+
 "$ROOT_DIR/build/man" env > "$WORK_DIR/man_env.out"
 assert_file_contains "$WORK_DIR/man_env.out" '^ENV$' "man did not open the env manual page"
 assert_file_contains "$WORK_DIR/man_env.out" 'emit NUL-delimited output with -0' "man output missed env option details"
 
 "$ROOT_DIR/build/man" -k compiler > "$WORK_DIR/man_search.out"
 assert_file_contains "$WORK_DIR/man_search.out" '^ncc (1)$' "man -k did not find the compiler page"
+
+cat > "$WORK_DIR/man_render.md" <<'EOF'
+# RENDER
+
+> quoted note
+
+- bullet entry
+
+```sh
+echo hi
+```
+EOF
+"$ROOT_DIR/build/man" -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_render.out"
+assert_file_contains "$WORK_DIR/man_render.out" '^  \| quoted note$' "man did not render block quotes cleanly"
+assert_file_contains "$WORK_DIR/man_render.out" '^    echo hi$' "man did not preserve fenced code blocks as indented text"
+
+mkdir -p "$WORK_DIR/manroot/1"
+i=0
+cat > "$WORK_DIR/manroot/1/deep.md" <<'EOF'
+# DEEP
+
+## NAME
+
+deep - search depth coverage page
+
+## DESCRIPTION
+EOF
+while [ "$i" -lt 180 ]; do
+    printf 'Padding line %03d keeps this manual page well beyond four kibibytes of searchable content.\n' "$i" >> "$WORK_DIR/manroot/1/deep.md"
+    i=$((i + 1))
+done
+printf '\nSpecial marker: depthsentinel.\n' >> "$WORK_DIR/manroot/1/deep.md"
+MANPATH="$WORK_DIR/manroot" "$ROOT_DIR/build/man" -k depthsentinel > "$WORK_DIR/man_deep_search.out"
+assert_file_contains "$WORK_DIR/man_deep_search.out" '^deep (1)$' "man -k only searched an initial prefix of the page"
+
+"$ROOT_DIR/build/man" -k 'überblick' > "$WORK_DIR/man_unicode_search.out"
+assert_file_contains "$WORK_DIR/man_unicode_search.out" '^unicode (7)$' "man keyword search did not find the unicode design page"

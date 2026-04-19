@@ -4,6 +4,9 @@ set -eu
 . "$(dirname "$0")/common.inc"
 phase1_setup date
 
+"$ROOT_DIR/build/date" > "$WORK_DIR/date.out"
+assert_file_contains "$WORK_DIR/date.out" 'UTC$' "date default output was missing the UTC suffix"
+
 date_fmt_out=$("$ROOT_DIR/build/date" +%Y-%m-%d | tr -d '\r\n')
 printf '%s\n' "$date_fmt_out" > "$WORK_DIR/date_fmt.out"
 assert_file_contains "$WORK_DIR/date_fmt.out" '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$' "date +FORMAT output was malformed"

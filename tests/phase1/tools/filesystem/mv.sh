@@ -30,3 +30,9 @@ assert_command_succeeds "$ROOT_DIR/build/mv" -u "$WORK_DIR/update_src.txt" "$WOR
 [ -f "$WORK_DIR/update_src.txt" ] || fail "mv -u moved an older source that should have been skipped"
 update_text=$(tr -d '\r\n' < "$WORK_DIR/update_dest.txt")
 assert_text_equals "$update_text" 'new-dest' "mv -u replaced a newer destination"
+
+printf 'fresh-source\n' > "$WORK_DIR/update_src.txt"
+assert_command_succeeds "$ROOT_DIR/build/touch" -d @3000000000 "$WORK_DIR/update_src.txt"
+assert_command_succeeds "$ROOT_DIR/build/mv" -u "$WORK_DIR/update_src.txt" "$WORK_DIR/update_dest.txt"
+[ ! -e "$WORK_DIR/update_src.txt" ] || fail "mv -u left the source file behind"
+assert_file_contains "$WORK_DIR/update_dest.txt" '^fresh-source$' "mv -u did not replace an older destination"

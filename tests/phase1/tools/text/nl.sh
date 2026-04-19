@@ -13,3 +13,7 @@ printf 'first\n\nthird\n' > "$WORK_DIR/input.txt"
 assert_file_contains "$WORK_DIR/out.txt" '^[[:space:]]*1[[:space:]]first$' "nl did not number the first line"
 assert_file_contains "$WORK_DIR/out.txt" '^[[:space:]]*2[[:space:]]*$' "nl -ba did not number the blank line"
 assert_file_contains "$WORK_DIR/out.txt" '^[[:space:]]*3[[:space:]]third$' "nl did not number the final line"
+
+"$ROOT_DIR/build/nl" -ba -v 10 -i 5 -w 2 -s ': ' "$WORK_DIR/input.txt" > "$WORK_DIR/options.out"
+assert_file_contains "$WORK_DIR/options.out" '^10: first$' "nl did not honor the starting number and separator"
+assert_file_contains "$WORK_DIR/options.out" '^15: $' "nl did not increment over a blank line"

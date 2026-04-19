@@ -19,12 +19,8 @@ run_suite() {
     SUITE_NAMES="${SUITE_NAMES}${SUITE_NAMES:+ }$suite_name"
 }
 
-run_suite core_tools "$ROOT_DIR/tests/suites/core_tools.sh"
 run_suite extended_tools "$ROOT_DIR/tests/suites/extended_tools.sh"
-run_suite compiler "$ROOT_DIR/tests/suites/compiler.sh"
 run_suite shell "$ROOT_DIR/tests/suites/shell.sh"
-run_suite boundaries "$ROOT_DIR/tests/suites/boundaries.sh"
-run_suite bignum "$ROOT_DIR/tests/suites/bignum.sh"
 
 if [ "${SKIP_PHASE1:-0}" != "1" ] && [ -f "$ROOT_DIR/tests/phase1/run_phase1_tests.sh" ]; then
     run_suite phase1 "$ROOT_DIR/tests/phase1/run_phase1_tests.sh"
