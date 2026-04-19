@@ -1217,10 +1217,11 @@ static void bc_format_decimal(BcValue value, char *buffer, size_t buffer_size) {
     rt_unsigned_to_string(integer_part, integer_digits, sizeof(integer_digits));
     int_len = rt_strlen(integer_digits);
     if (len + int_len + 1 > buffer_size) {
-        int_len = buffer_size - len - 1;
+        int_len = (buffer_size > len + 1U) ? (buffer_size - len - 1U) : 0U;
     }
-    memcpy(buffer + len, integer_digits, int_len);
-    len += int_len;
+    for (i = 0; i < (int)int_len; ++i) {
+        buffer[len++] = integer_digits[i];
+    }
 
     if (value.scale > 0) {
         for (i = value.scale - 1; i >= 0; --i) {

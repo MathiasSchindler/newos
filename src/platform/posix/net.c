@@ -251,12 +251,12 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
         return -1;
     }
 
-    FD_ZERO(&read_set);
+    posix_fd_zero(&read_set);
     for (i = 0; i < fd_count; ++i) {
         if (fds[i] < 0) {
             continue;
         }
-        FD_SET(fds[i], &read_set);
+        posix_fd_set_bit(&read_set, fds[i]);
         if (fds[i] > max_fd) {
             max_fd = fds[i];
         }
@@ -279,7 +279,7 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
     }
 
     for (i = 0; i < fd_count; ++i) {
-        if (fds[i] >= 0 && FD_ISSET(fds[i], &read_set)) {
+        if (fds[i] >= 0 && posix_fd_is_set_bit(&read_set, fds[i])) {
             *ready_index_out = i;
             return 1;
         }
