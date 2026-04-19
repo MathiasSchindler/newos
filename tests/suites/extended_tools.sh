@@ -1136,6 +1136,64 @@ else
     timed_status=$?
     [ "$timed_status" -eq 124 ] || fail "timeout returned the wrong exit code"
 fi
+cat > "$WORK_DIR/bc_input.txt" <<'EOF'
+3 * (4 + 5)
+20 % 7; -5 + 2
+alpha = 5
+beta = alpha ^ 3
+beta
+sqrt(81) + 1
+length(12345) + 90
+scale(3.1250) + 40
+# comment lines should be ignored
+5 + 7
+last * 2
+alpha < beta
+alpha == 4
+scale = 4
+22 / 7
+EOF
+"$ROOT_DIR/build/bc" < "$WORK_DIR/bc_input.txt" > "$WORK_DIR/bc.out"
+assert_file_contains "$WORK_DIR/bc.out" '^27$' "bc arithmetic precedence regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^6$' "bc remainder evaluation regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^-3$' "bc unary minus handling regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^3\.1428$' "bc scale-controlled decimal division regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^125$' "bc variable assignment or power evaluation regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^10$' "bc sqrt() support regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^95$' "bc length() support regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^44$' "bc scale() support regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^12$' "bc basic addition output regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^24$' "bc last-result tracking or comment parsing regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^1$' "bc comparison truthiness regressed"
+assert_file_contains "$WORK_DIR/bc.out" '^0$' "bc comparison false-case regressed"
+bc_cli_out=$("$ROOT_DIR/build/bc" 'scale=3; 10 / 4' | tr -d '\r' | tail -n 1)
+assert_text_equals "$bc_cli_out" '2.500' "bc command-line decimal evaluation failed"
+bc_pow_out=$("$ROOT_DIR/build/bc" '2^8' | tr -d '\r' | tail -n 1)
+assert_text_equals "$bc_pow_out" '256' "bc power operator failed on inline expressions"
+bc_math_out=$("$ROOT_DIR/build/bc" -l 'pi > 3 && e > 2' | tr -d '\r' | tail -n 1)
+assert_text_equals "$bc_math_out" '1' "bc -l math mode failed"
+cat > "$WORK_DIR/bc_flow_input.txt" <<'EOF'
+sum = 0
+for (i = 0; i < 4; i = i + 1) sum = sum + i
+if (sum == 6) sum else 0
+n = 0
+acc = 1
+while (n < 3) { acc = acc * 2; n = n + 1 }
+acc
+obase = 16
+255
+ibase = 16
+A + 5
+EOF
+"$ROOT_DIR/build/bc" < "$WORK_DIR/bc_flow_input.txt" > "$WORK_DIR/bc_flow.out"
+assert_file_contains "$WORK_DIR/bc_flow.out" '^6$' "bc for-loop or if execution regressed"
+assert_file_contains "$WORK_DIR/bc_flow.out" '^8$' "bc while-loop execution regressed"
+assert_file_contains "$WORK_DIR/bc_flow.out" '^FF$' "bc obase conversion regressed"
+assert_file_contains "$WORK_DIR/bc_flow.out" '^F$' "bc ibase conversion regressed"
+bc_divzero_status=0
+"$ROOT_DIR/build/bc" '10 / 0' > "$WORK_DIR/bc_divzero.out" 2> "$WORK_DIR/bc_divzero.err" || bc_divzero_status=$?
+[ "$bc_divzero_status" -ne 0 ] || fail "bc should reject division by zero"
+assert_file_contains "$WORK_DIR/bc_divzero.err" '^bc: division by zero$' "bc division-by-zero diagnostics regressed"
 "$ROOT_DIR/build/ping" -c 1 -i 0 -W 1 -s 0 -t 64 127.0.0.1 > "$WORK_DIR/ping_loopback.out" 2>&1 || true
 if grep '^Usage:' "$WORK_DIR/ping_loopback.out" >/dev/null 2>&1; then
     fail "ping rejected its supported option set"

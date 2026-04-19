@@ -2,44 +2,71 @@
 
 ## NAME
 
-bc - arbitrary precision calculator
+bc - line-oriented calculator with decimal arithmetic and variables
 
 ## SYNOPSIS
 
+```
 bc [expression]
+```
 
 ## DESCRIPTION
 
-bc evaluates arithmetic expressions with arbitrary precision. An expression may be provided directly on the command line or interactively on standard input. Supports integers and fixed-decimal fractions, variables, and basic arithmetic.
+`bc` evaluates arithmetic expressions supplied either as a single command-line
+argument or through standard input. It is now a practical scripting calculator
+for the newos userland, covering scale-aware decimal arithmetic, variables,
+comparisons, boolean logic, base conversion, and simple control flow.
+
+Input is line-oriented. Separate expressions with newlines or semicolons; each
+non-assignment result is written on its own line. In stdin mode, `#`, `//`,
+and `/* ... */` comments are ignored.
 
 ## CURRENT CAPABILITIES
 
-- arithmetic operators: `+`, `-`, `*`, `/`, `%`, `^` (power)
-- comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- assignment: `var = expr`
-- built-in functions: `sqrt(x)`, `length(x)`, `scale(x)`
-- the special variable `scale` controls the number of decimal digits
-- multi-line expressions via standard input
+- integer and fixed-scale decimal literals
+- arithmetic operators `+`, `-`, `*`, `/`, `%`, and `^`
+- comparison operators `==`, `!=`, `<`, `<=`, `>`, and `>=`
+- boolean operators `!`, `&&`, and `||`
+- parentheses for grouping
+- unary `+` and unary `-`
+- variable assignment and reuse within the current input
+- the special variables `scale` (division precision) and `last` (previous result)
+- base conversion via `ibase` and `obase` (2 through 16)
+- built-in functions `sqrt(x)`, `length(x)`, and `scale(x)`
+- `if`, `while`, and `for` statements with `{}` blocks
+- explicit output with the `print` keyword
+- multiple expressions via standard input, separated by newline or `;`
 - inline expression via command-line argument
 
 ## OPTIONS
 
-bc accepts no flags other than an expression argument and `--help`.
+`bc` accepts an optional `-l` mode plus an expression argument and `--help`.
+
+- `-l` enables higher-precision math mode and predefines the constants `pi` and
+  `e`
 
 ## LIMITATIONS
 
-- no `bc` standard library functions (`s`, `c`, `a`, `e`, `j`, `l`) as defined in POSIX
-- no `-l` (math library) flag
-- no `define` for user-defined functions
-- no `for`, `while`, or `if` control flow statements
-- output base (`obase`) and input base (`ibase`) variables are not supported
+- precision is intentionally practical and bounded for shell use; this is not
+  a full arbitrary-precision desktop `bc`
+- remainder is primarily useful with whole-number operands
+- `-l` does not yet provide the full traditional POSIX math library function
+  set; it mainly enables higher default precision and useful constants
+- no `define`, `auto`, arrays, or string values
+- no `break` or `continue` flow-control statements
 
 ## EXAMPLES
 
-- `bc <<< "2^32"` — compute a power
-- `bc <<< "scale=10; 22/7"` — pi approximation to 10 decimal places
-- `echo "3 * (4 + 5)" | bc` — pipeline calculation
-- `bc` — interactive session
+```sh
+echo "3 * (4 + 5)" | bc
+printf 'scale=4; 22 / 7\n' | bc
+printf 'radius=12; radius^2\n' | bc
+printf '5 + 7; last * 2\n' | bc
+printf 'sum=0; for (i=0; i<4; i=i+1) sum=sum+i; sum\n' | bc
+printf 'obase=16; 255\n' | bc
+printf 'sqrt(81); 5 <= 3\n' | bc
+bc -l 'pi > 3 && e > 2'
+```
 
 ## SEE ALSO
 
