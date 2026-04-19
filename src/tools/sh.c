@@ -1110,11 +1110,11 @@ static int run_line(char *line) {
     return last_status;
 }
 
-static int process_stream(int fd) {
+static int process_stream(int fd, int interactive_requested) {
     char line[SH_MAX_LINE];
     int last_status = 0;
 
-    if (sh_shell_is_interactive(fd)) {
+    if (interactive_requested || sh_shell_is_interactive(fd)) {
         return sh_process_interactive_stream(run_line);
     }
 
@@ -1152,35 +1152,59 @@ static int process_stream(int fd) {
 }
 
 int main(int argc, char **argv) {
+    int interactive_requested = 0;
+    int argi = 1;
+
     set_shell_self_path((argc > 0) ? argv[0] : "sh");
 
-    if (argc >= 3 && rt_strcmp(argv[1], "-c") == 0) {
-        char buffer[SH_MAX_LINE];
-        size_t len = rt_strlen(argv[2]);
-
-        if (len + 1 > sizeof(buffer)) {
-            rt_write_line(2, "sh: command too long");
-            return 2;
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
         }
 
-        memcpy(buffer, argv[2], len + 1);
-        return run_line(buffer);
+        if (rt_strcmp(argv[argi], "-i") == 0 || rt_strcmp(argv[argi], "--interactive") == 0) {
+            interactive_requested = 1;
+            argi += 1;
+            continue;
+        }
+
+        if (rt_strcmp(argv[argi], "-c") == 0) {
+            char buffer[SH_MAX_LINE];
+            size_t len;
+
+            if (argi + 1 >= argc) {
+                rt_write_line(2, "sh: option requires an argument -- c");
+                return 2;
+            }
+
+            len = rt_strlen(argv[argi + 1]);
+            if (len + 1 > sizeof(buffer)) {
+                rt_write_line(2, "sh: command too long");
+                return 2;
+            }
+
+            memcpy(buffer, argv[argi + 1], len + 1);
+            return run_line(buffer);
+        }
+
+        break;
     }
 
-    if (argc >= 2) {
-        int fd = platform_open_read(argv[1]);
+    if (argi < argc) {
+        int fd = platform_open_read(argv[argi]);
         int result;
 
         if (fd < 0) {
             rt_write_cstr(2, "sh: cannot open ");
-            rt_write_line(2, argv[1]);
+            rt_write_line(2, argv[argi]);
             return 1;
         }
 
-        result = process_stream(fd);
+        result = process_stream(fd, interactive_requested);
         platform_close(fd);
         return result;
     }
 
-    return process_stream(0);
+    return process_stream(0, interactive_requested);
 }

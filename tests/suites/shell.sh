@@ -18,6 +18,9 @@ printf 'echo first\necho second\nhistory\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/
 assert_file_contains "$WORK_DIR/history.out" '1  echo first' "shell history missing first command"
 assert_file_contains "$WORK_DIR/history.out" '2  echo second' "shell history missing second command"
 
+printf 'echo interactive-flag-ok\n' | "$ROOT_DIR/build/sh" -i > "$WORK_DIR/interactive_flag.out"
+assert_file_contains "$WORK_DIR/interactive_flag.out" '^interactive-flag-ok$' "shell -i flag handling failed"
+
 printf 'command -v ls\nalias hi="echo alias-ok"\nhi\nfn() { echo func-ok; }\nfn\ncat <<EOF\nheredoc-line\nEOF\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/features.out"
 assert_file_contains "$WORK_DIR/features.out" '/ls$' "shell command -v failed"
 assert_file_contains "$WORK_DIR/features.out" '^alias-ok$' "shell alias failed"
