@@ -42,50 +42,85 @@ static int print_count(const char *label, int show_label, unsigned long long cou
     return 0;
 }
 
-static char to_lower_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
+static int is_utf8_continuation_byte(unsigned char ch) {
+    return (ch & 0xc0U) == 0x80U;
 }
 
-static int is_word_char(char ch) {
-    return (ch >= 'a' && ch <= 'z') ||
-           (ch >= 'A' && ch <= 'Z') ||
-           (ch >= '0' && ch <= '9') ||
-           ch == '_';
+static size_t previous_codepoint_start(const char *text, size_t index) {
+    if (index == 0U) {
+        return 0U;
+    }
+
+    index -= 1U;
+    while (index > 0U && is_utf8_continuation_byte((unsigned char)text[index])) {
+        index -= 1U;
+    }
+    return index;
+}
+
+static size_t next_codepoint_start(const char *text, size_t index) {
+    size_t length = rt_strlen(text);
+    unsigned int codepoint = 0;
+    size_t next = index;
+
+    if (index >= length) {
+        return index;
+    }
+    if (rt_utf8_decode(text, length, &next, &codepoint) != 0) {
+        return index + 1U;
+    }
+    return next;
 }
 
 static int match_has_word_boundaries(const char *text, size_t start, size_t end) {
-    if (start > 0 && is_word_char(text[start - 1])) {
-        return 0;
+    size_t length = rt_strlen(text);
+
+    if (start > 0U) {
+        size_t prev = previous_codepoint_start(text, start);
+        size_t index = prev;
+        unsigned int codepoint = 0;
+
+        if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
+            return 0;
+        }
     }
-    if (is_word_char(text[end])) {
-        return 0;
+
+    if (end < length) {
+        size_t index = end;
+        unsigned int codepoint = 0;
+
+        if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
+            return 0;
+        }
     }
+
     return 1;
 }
 
-static int starts_with_literal(const char *pattern, const char *text, int ignore_case) {
-    size_t i = 0;
+static int starts_with_literal(const char *pattern, const char *text, int ignore_case, size_t *consumed_out) {
+    size_t pattern_len = rt_strlen(pattern);
+    size_t text_len = rt_strlen(text);
+    size_t pi = 0U;
+    size_t ti = 0U;
 
-    while (pattern[i] != '\0') {
-        char lhs = pattern[i];
-        char rhs = text[i];
+    while (pi < pattern_len) {
+        unsigned int lhs = 0;
+        unsigned int rhs = 0;
 
-        if (rhs == '\0') {
+        if (ti >= text_len || rt_utf8_decode(pattern, pattern_len, &pi, &lhs) != 0 ||
+            rt_utf8_decode(text, text_len, &ti, &rhs) != 0) {
             return 0;
         }
         if (ignore_case) {
-            lhs = to_lower_ascii(lhs);
-            rhs = to_lower_ascii(rhs);
+            lhs = rt_unicode_simple_fold(lhs);
+            rhs = rt_unicode_simple_fold(rhs);
         }
         if (lhs != rhs) {
             return 0;
         }
-        i += 1;
     }
 
+    *consumed_out = ti;
     return 1;
 }
 
@@ -95,26 +130,28 @@ static int find_fixed_match(const char *pattern,
                             size_t search_start,
                             size_t *start_out,
                             size_t *end_out) {
-    size_t pattern_len = rt_strlen(pattern);
     size_t pos = search_start;
+    size_t pattern_len = rt_strlen(pattern);
 
-    if (pattern_len == 0) {
+    if (pattern_len == 0U) {
         *start_out = search_start;
         *end_out = search_start;
         return 1;
     }
 
     while (1) {
-        if (starts_with_literal(pattern, text + pos, ignore_case)) {
+        size_t consumed = 0U;
+
+        if (starts_with_literal(pattern, text + pos, ignore_case, &consumed)) {
             *start_out = pos;
-            *end_out = pos + pattern_len;
+            *end_out = pos + consumed;
             return 1;
         }
 
         if (text[pos] == '\0') {
             break;
         }
-        pos += 1;
+        pos = pos + next_codepoint_start(text + pos, 0U);
     }
 
     return 0;

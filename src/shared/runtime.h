@@ -18,6 +18,14 @@ int rt_is_digit_string(const char *text);
 int rt_parse_pid_value(const char *text);
 void rt_trim_newline(char *text);
 int rt_parse_uint(const char *text, unsigned long long *value_out);
+int rt_utf8_decode(const char *text, size_t text_length, size_t *index_io, unsigned int *codepoint_out);
+int rt_utf8_validate(const char *text, size_t text_length);
+unsigned long long rt_utf8_codepoint_count(const char *text, size_t text_length);
+int rt_utf8_encode(unsigned int codepoint, char *buffer, size_t buffer_size, size_t *length_out);
+unsigned int rt_unicode_simple_fold(unsigned int codepoint);
+int rt_unicode_is_space(unsigned int codepoint);
+int rt_unicode_is_word(unsigned int codepoint);
+unsigned int rt_unicode_display_width(unsigned int codepoint);
 
 int rt_write_all(int fd, const void *data, size_t count);
 int rt_write_cstr(int fd, const char *text);

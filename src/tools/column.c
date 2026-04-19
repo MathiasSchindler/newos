@@ -39,6 +39,65 @@ static int is_in_set(char ch, const char *set) {
     return 0;
 }
 
+static size_t utf8_display_width_n(const char *text, size_t length) {
+    size_t index = 0U;
+    size_t width = 0U;
+
+    while (index < length) {
+        size_t before = index;
+        unsigned int codepoint = 0;
+
+        if (rt_utf8_decode(text, length, &index, &codepoint) != 0) {
+            index = before + 1U;
+            codepoint = 0xfffdU;
+        }
+        if (codepoint == '\t') {
+            width += 8U - (width % 8U);
+        } else {
+            width += (size_t)rt_unicode_display_width(codepoint);
+        }
+    }
+
+    return width;
+}
+
+static size_t utf8_display_width(const char *text) {
+    return utf8_display_width_n(text, rt_strlen(text));
+}
+
+static size_t utf8_prefix_bytes_for_width(const char *text, size_t max_width) {
+    size_t length = rt_strlen(text);
+    size_t index = 0U;
+    size_t width = 0U;
+    size_t last_complete = 0U;
+
+    while (index < length) {
+        size_t before = index;
+        unsigned int codepoint = 0;
+        size_t codepoint_width;
+
+        if (rt_utf8_decode(text, length, &index, &codepoint) != 0) {
+            index = before + 1U;
+            codepoint = 0xfffdU;
+        }
+
+        if (codepoint == '\t') {
+            codepoint_width = 8U - (width % 8U);
+        } else {
+            codepoint_width = (size_t)rt_unicode_display_width(codepoint);
+        }
+
+        if (width + codepoint_width > max_width) {
+            break;
+        }
+
+        width += codepoint_width;
+        last_complete = index;
+    }
+
+    return last_complete;
+}
+
 static int parse_row(const char *line, const char *separators, ColumnRow *row) {
     size_t i = 0;
 
@@ -64,7 +123,7 @@ static int parse_row(const char *line, const char *separators, ColumnRow *row) {
             }
 
             row->cells[row->count][cell_len] = '\0';
-            row->widths[row->count] = cell_len;
+            row->widths[row->count] = utf8_display_width(row->cells[row->count]);
             row->count += 1U;
         }
     } else {
@@ -82,7 +141,7 @@ static int parse_row(const char *line, const char *separators, ColumnRow *row) {
             }
 
             row->cells[row->count][cell_len] = '\0';
-            row->widths[row->count] = cell_len;
+            row->widths[row->count] = utf8_display_width(row->cells[row->count]);
             row->count += 1U;
 
             if (line[cursor] == '\0') {
@@ -203,8 +262,10 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
             }
 
             for (j = 0; j <= last_col; ++j) {
-                size_t cell_len = rows[j].count > i ? rows[j].widths[i] : 0U;
-                size_t len = cell_len;
+                size_t cell_width = rows[j].count > i ? rows[j].widths[i] : 0U;
+                size_t cell_bytes = rows[j].count > i ? rt_strlen(rows[j].cells[i]) : 0U;
+                size_t write_bytes = cell_bytes;
+                size_t written_width = cell_width;
 
                 if (j > 0U) {
                     if (options->max_width != 0ULL && used >= (size_t)options->max_width) {
@@ -218,21 +279,22 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
                     }
                 }
 
-                if (options->max_width != 0ULL && used < (size_t)options->max_width && used + len > (size_t)options->max_width) {
-                    len = (size_t)options->max_width - used;
+                if (options->max_width != 0ULL && used < (size_t)options->max_width && used + cell_width > (size_t)options->max_width) {
+                    write_bytes = utf8_prefix_bytes_for_width(rows[j].cells[i], (size_t)options->max_width - used);
+                    written_width = utf8_display_width_n(rows[j].cells[i], write_bytes);
                 }
 
-                if (len > 0U && rows[j].count > i && rt_write_all(1, rows[j].cells[i], len) != 0) {
+                if (write_bytes > 0U && rows[j].count > i && rt_write_all(1, rows[j].cells[i], write_bytes) != 0) {
                     return -1;
                 }
-                used += len;
+                used += written_width;
 
-                if (len < cell_len) {
+                if (write_bytes < cell_bytes) {
                     break;
                 }
 
                 if (j < last_col) {
-                    size_t padding = widths[j] > cell_len ? widths[j] - cell_len : 0U;
+                    size_t padding = widths[j] > cell_width ? widths[j] - cell_width : 0U;
                     if (options->max_width != 0ULL && used >= (size_t)options->max_width) {
                         break;
                     }
@@ -273,8 +335,10 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
         }
 
         for (j = 0; j < rows[i].count; ++j) {
-            size_t cell_len = rows[i].widths[j];
-            size_t len = cell_len;
+            size_t cell_width = rows[i].widths[j];
+            size_t cell_bytes = rt_strlen(rows[i].cells[j]);
+            size_t write_bytes = cell_bytes;
+            size_t written_width = cell_width;
 
             if (j > 0U) {
                 if (options->max_width != 0ULL && used >= (size_t)options->max_width) {
@@ -288,21 +352,22 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
                 }
             }
 
-            if (options->max_width != 0ULL && used < (size_t)options->max_width && used + len > (size_t)options->max_width) {
-                len = (size_t)options->max_width - used;
+            if (options->max_width != 0ULL && used < (size_t)options->max_width && used + cell_width > (size_t)options->max_width) {
+                write_bytes = utf8_prefix_bytes_for_width(rows[i].cells[j], (size_t)options->max_width - used);
+                written_width = utf8_display_width_n(rows[i].cells[j], write_bytes);
             }
 
-            if (len > 0U && rt_write_all(1, rows[i].cells[j], len) != 0) {
+            if (write_bytes > 0U && rt_write_all(1, rows[i].cells[j], write_bytes) != 0) {
                 return -1;
             }
-            used += len;
+            used += written_width;
 
-            if (len < cell_len) {
+            if (write_bytes < cell_bytes) {
                 break;
             }
 
             if (j + 1U < rows[i].count) {
-                size_t padding = widths[j] > cell_len ? widths[j] - cell_len : 0U;
+                size_t padding = widths[j] > cell_width ? widths[j] - cell_width : 0U;
                 if (options->max_width != 0ULL && used >= (size_t)options->max_width) {
                     break;
                 }

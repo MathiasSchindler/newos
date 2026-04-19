@@ -44,18 +44,28 @@ static int write_padded_uint(int fd, unsigned long long value, unsigned int mini
     return rt_write_uint(fd, value);
 }
 
-static int is_utf8_continuation_byte(unsigned char ch) {
-    return (ch & 0xc0U) == 0x80U;
+static size_t utf8_expected_length(unsigned char lead) {
+    if ((lead & 0x80U) == 0U) {
+        return 1U;
+    }
+    if ((lead & 0xE0U) == 0xC0U) {
+        return 2U;
+    }
+    if ((lead & 0xF0U) == 0xE0U) {
+        return 3U;
+    }
+    if ((lead & 0xF8U) == 0xF0U) {
+        return 4U;
+    }
+    return 1U;
 }
 
-static unsigned long long next_display_width(unsigned long long current_width, unsigned char ch) {
-    if (ch == '\t') {
+static unsigned long long next_display_width(unsigned long long current_width, unsigned int codepoint) {
+    if (codepoint == '\t') {
         return current_width + (8ULL - (current_width % 8ULL));
     }
-    if (ch == '\r' || ch < 32U || ch == 127U || is_utf8_continuation_byte(ch)) {
-        return current_width;
-    }
-    return current_width + 1ULL;
+
+    return current_width + (unsigned long long)rt_unicode_display_width(codepoint);
 }
 
 static void print_counts(const WcOptions *options, const WcStats *stats, const char *name) {
@@ -110,8 +120,9 @@ static void print_counts(const WcOptions *options, const WcStats *stats, const c
 }
 
 static int count_stream(int fd, WcStats *stats_out) {
-    char buffer[4096];
+    char buffer[4096 + 4];
     long bytes_read;
+    size_t carry = 0;
     int in_word = 0;
     unsigned long long lines = 0ULL;
     unsigned long long words = 0ULL;
@@ -120,28 +131,42 @@ static int count_stream(int fd, WcStats *stats_out) {
     unsigned long long current_line_length = 0ULL;
     unsigned long long max_line_length = 0ULL;
 
-    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
+    while ((bytes_read = platform_read(fd, buffer + carry, sizeof(buffer) - carry)) > 0) {
+        size_t total = carry + (size_t)bytes_read;
+        size_t i = 0;
 
         bytes += (unsigned long long)bytes_read;
-        for (i = 0; i < bytes_read; ++i) {
-            unsigned char ch = (unsigned char)buffer[i];
+        carry = 0;
 
-            if (!is_utf8_continuation_byte(ch)) {
-                chars += 1ULL;
+        while (i < total) {
+            size_t before = i;
+            unsigned int codepoint = 0;
+            size_t needed = utf8_expected_length((unsigned char)buffer[i]);
+
+            if (needed > 1U && needed > total - i) {
+                carry = total - i;
+                memmove(buffer, buffer + i, carry);
+                break;
             }
 
-            if (ch == '\n') {
+            (void)rt_utf8_decode(buffer, total, &i, &codepoint);
+            if (i == before) {
+                i += 1U;
+                codepoint = 0xfffdU;
+            }
+
+            chars += 1ULL;
+            if (codepoint == '\n') {
                 if (current_line_length > max_line_length) {
                     max_line_length = current_line_length;
                 }
                 current_line_length = 0ULL;
                 lines += 1ULL;
             } else {
-                current_line_length = next_display_width(current_line_length, ch);
+                current_line_length = next_display_width(current_line_length, codepoint);
             }
 
-            if (rt_is_space((char)ch)) {
+            if (rt_unicode_is_space(codepoint)) {
                 in_word = 0;
             } else if (!in_word) {
                 words += 1ULL;
@@ -152,6 +177,32 @@ static int count_stream(int fd, WcStats *stats_out) {
 
     if (bytes_read < 0) {
         return -1;
+    }
+
+    while (carry > 0U) {
+        size_t index = 0U;
+        unsigned int codepoint = 0;
+        size_t before = index;
+
+        (void)rt_utf8_decode(buffer, carry, &index, &codepoint);
+        if (index == before) {
+            index += 1U;
+            codepoint = 0xfffdU;
+        }
+
+        chars += 1ULL;
+        current_line_length = next_display_width(current_line_length, codepoint);
+        if (rt_unicode_is_space(codepoint)) {
+            in_word = 0;
+        } else if (!in_word) {
+            words += 1ULL;
+            in_word = 1;
+        }
+
+        if (index < carry) {
+            memmove(buffer, buffer + index, carry - index);
+        }
+        carry -= index;
     }
 
     if (current_line_length > max_line_length) {

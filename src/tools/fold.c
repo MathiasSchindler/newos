@@ -51,25 +51,33 @@ static int flush_prefix(const char *buffer, size_t count) {
 
 static unsigned long long measure_units(const char *buffer, size_t count, const FoldOptions *options) {
     unsigned long long units = 0ULL;
-    size_t i;
+    size_t i = 0U;
 
-    for (i = 0; i < count; ++i) {
-        char ch = buffer[i];
+    while (i < count) {
+        size_t before = i;
+        unsigned int codepoint = 0;
+
+        if (rt_utf8_decode(buffer, count, &i, &codepoint) != 0) {
+            i = before + 1U;
+            codepoint = (unsigned char)buffer[before];
+        }
 
         if (options->count_mode == FOLD_COUNT_COLUMNS) {
-            if (ch == '\t') {
+            if (codepoint == '\t') {
                 units += 8ULL - (units % 8ULL);
-            } else if (ch == '\b') {
+            } else if (codepoint == '\b') {
                 if (units > 0ULL) {
                     units -= 1ULL;
                 }
-            } else if (ch == '\r') {
+            } else if (codepoint == '\r') {
                 units = 0ULL;
             } else {
-                units += 1ULL;
+                units += (unsigned long long)rt_unicode_display_width(codepoint);
             }
-        } else {
+        } else if (options->count_mode == FOLD_COUNT_CHARACTERS) {
             units += 1ULL;
+        } else {
+            units += (unsigned long long)(i - before);
         }
     }
 
@@ -81,10 +89,16 @@ static size_t find_split_point(const char *buffer, size_t count, const FoldOptio
 
     while (split > 0U && measure_units(buffer, split, options) > options->width) {
         split -= 1U;
+        while (split > 0U && ((unsigned char)buffer[split] & 0xc0U) == 0x80U) {
+            split -= 1U;
+        }
     }
 
     if (split == 0U) {
         split = 1U;
+        while (split < count && ((unsigned char)buffer[split] & 0xc0U) == 0x80U) {
+            split += 1U;
+        }
     }
 
     if (options->break_spaces) {
@@ -92,6 +106,9 @@ static size_t find_split_point(const char *buffer, size_t count, const FoldOptio
 
         while (space_split > 0U && buffer[space_split - 1U] != ' ' && buffer[space_split - 1U] != '\t') {
             space_split -= 1U;
+            while (space_split > 0U && ((unsigned char)buffer[space_split] & 0xc0U) == 0x80U) {
+                space_split -= 1U;
+            }
         }
 
         if (space_split > 0U) {

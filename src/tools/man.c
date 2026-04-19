@@ -46,29 +46,44 @@ static int text_ends_with(const char *text, const char *suffix) {
     return 1;
 }
 
-static char to_lower_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
 static int contains_case_insensitive(const char *text, const char *needle) {
-    size_t i;
+    size_t text_len = rt_strlen(text);
     size_t needle_len = rt_strlen(needle);
+    size_t pos = 0U;
 
     if (needle_len == 0U) {
         return 1;
     }
 
-    for (i = 0; text[i] != '\0'; ++i) {
-        size_t j = 0;
-        while (needle[j] != '\0' && text[i + j] != '\0' &&
-               to_lower_ascii(text[i + j]) == to_lower_ascii(needle[j])) {
-            j += 1U;
+    while (pos < text_len) {
+        size_t ti = pos;
+        size_t ni = 0U;
+        int matched = 1;
+
+        while (ni < needle_len) {
+            unsigned int lhs = 0;
+            unsigned int rhs = 0;
+
+            if (ti >= text_len || rt_utf8_decode(text, text_len, &ti, &lhs) != 0 ||
+                rt_utf8_decode(needle, needle_len, &ni, &rhs) != 0) {
+                matched = 0;
+                break;
+            }
+            if (rt_unicode_simple_fold(lhs) != rt_unicode_simple_fold(rhs)) {
+                matched = 0;
+                break;
+            }
         }
-        if (j == needle_len) {
+
+        if (matched) {
             return 1;
+        }
+
+        {
+            unsigned int ignored = 0;
+            if (rt_utf8_decode(text, text_len, &pos, &ignored) != 0) {
+                pos += 1U;
+            }
         }
     }
 

@@ -22,8 +22,11 @@ typedef struct {
     char body_prefix[FMT_MAX_PREFIX];
     size_t first_prefix_len;
     size_t body_prefix_len;
+    size_t first_prefix_width;
+    size_t body_prefix_width;
     char current_line[FMT_MAX_LINE];
     size_t current_line_len;
+    size_t current_line_width;
     char previous_word[FMT_MAX_WORD];
     size_t previous_word_len;
     unsigned int input_line_count;
@@ -74,6 +77,29 @@ static int is_blank_text(const char *text) {
         i += 1U;
     }
     return 1;
+}
+
+static size_t utf8_display_width_n(const char *text, size_t length) {
+    size_t index = 0U;
+    size_t width = 0U;
+
+    while (index < length) {
+        size_t before = index;
+        unsigned int codepoint = 0;
+
+        if (rt_utf8_decode(text, length, &index, &codepoint) != 0) {
+            index = before + 1U;
+            codepoint = 0xfffdU;
+        }
+
+        if (codepoint == '\t') {
+            width += 8U - (width % 8U);
+        } else {
+            width += (size_t)rt_unicode_display_width(codepoint);
+        }
+    }
+
+    return width;
 }
 
 static void detect_prefix(const char *line, char *prefix, size_t prefix_size, const char **content_out) {
@@ -133,7 +159,10 @@ static void fmt_reset_paragraph(FmtState *state) {
     state->body_prefix[0] = '\0';
     state->first_prefix_len = 0U;
     state->body_prefix_len = 0U;
+    state->first_prefix_width = 0U;
+    state->body_prefix_width = 0U;
     state->current_line_len = 0U;
+    state->current_line_width = 0U;
     state->previous_word_len = 0U;
     state->input_line_count = 0U;
     state->paragraph_active = 0;
@@ -151,6 +180,7 @@ static int fmt_flush_output_line(FmtState *state) {
     }
 
     state->current_line_len = 0U;
+    state->current_line_width = 0U;
     state->use_first_prefix = 0;
     return 0;
 }
@@ -169,6 +199,8 @@ static void fmt_start_paragraph(FmtState *state, const char *prefix) {
     rt_copy_string(state->body_prefix, sizeof(state->body_prefix), prefix);
     state->first_prefix_len = rt_strlen(state->first_prefix);
     state->body_prefix_len = rt_strlen(state->body_prefix);
+    state->first_prefix_width = utf8_display_width_n(state->first_prefix, state->first_prefix_len);
+    state->body_prefix_width = utf8_display_width_n(state->body_prefix, state->body_prefix_len);
     state->paragraph_active = 1;
 }
 
@@ -177,12 +209,15 @@ static int fmt_append_word(FmtState *state, const char *word, size_t word_len) {
                            ? (FMT_MAX_LINE - 1U)
                            : (size_t)state->options->width;
     size_t copy_len = word_len;
+    size_t word_width;
     const char *prefix = state->use_first_prefix ? state->first_prefix : state->body_prefix;
     size_t prefix_len = state->use_first_prefix ? state->first_prefix_len : state->body_prefix_len;
+    size_t prefix_width = state->use_first_prefix ? state->first_prefix_width : state->body_prefix_width;
 
     if (copy_len >= FMT_MAX_WORD) {
         copy_len = FMT_MAX_WORD - 1U;
     }
+    word_width = utf8_display_width_n(word, copy_len);
 
     if (state->current_line_len == 0U) {
         if (prefix_len > 0U) {
@@ -190,6 +225,7 @@ static int fmt_append_word(FmtState *state, const char *word, size_t word_len) {
         }
         memcpy(state->current_line + prefix_len, word, copy_len);
         state->current_line_len = prefix_len + copy_len;
+        state->current_line_width = prefix_width + word_width;
     } else {
         size_t gap = 1U;
 
@@ -197,17 +233,19 @@ static int fmt_append_word(FmtState *state, const char *word, size_t word_len) {
             gap = 2U;
         }
 
-        if (state->current_line_len + gap + copy_len > max_width && state->current_line_len > prefix_len) {
+        if (state->current_line_width + gap + word_width > max_width && state->current_line_width > prefix_width) {
             if (fmt_flush_output_line(state) != 0) {
                 return -1;
             }
             prefix = state->use_first_prefix ? state->first_prefix : state->body_prefix;
             prefix_len = state->use_first_prefix ? state->first_prefix_len : state->body_prefix_len;
+            prefix_width = state->use_first_prefix ? state->first_prefix_width : state->body_prefix_width;
             if (prefix_len > 0U) {
                 memcpy(state->current_line, prefix, prefix_len);
             }
             memcpy(state->current_line + prefix_len, word, copy_len);
             state->current_line_len = prefix_len + copy_len;
+            state->current_line_width = prefix_width + word_width;
         } else {
             size_t i;
             for (i = 0U; i < gap; ++i) {
@@ -215,6 +253,7 @@ static int fmt_append_word(FmtState *state, const char *word, size_t word_len) {
             }
             memcpy(state->current_line + state->current_line_len, word, copy_len);
             state->current_line_len += copy_len;
+            state->current_line_width += gap + word_width;
         }
     }
 
@@ -224,7 +263,7 @@ static int fmt_append_word(FmtState *state, const char *word, size_t word_len) {
     state->previous_word[copy_len] = '\0';
     state->previous_word_len = copy_len;
 
-    if (state->current_line_len >= max_width) {
+    if (state->current_line_width >= max_width) {
         return fmt_flush_output_line(state);
     }
 
@@ -300,6 +339,7 @@ static int process_input_line(FmtState *state, const char *raw_line) {
         if (rt_strcmp(prefix, state->first_prefix) != 0) {
             rt_copy_string(state->body_prefix, sizeof(state->body_prefix), prefix);
             state->body_prefix_len = rt_strlen(state->body_prefix);
+            state->body_prefix_width = utf8_display_width_n(state->body_prefix, state->body_prefix_len);
         }
     } else {
         const char *expected_prefix = state->options->crown_margin ? state->body_prefix : state->first_prefix;
