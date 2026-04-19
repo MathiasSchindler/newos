@@ -19,6 +19,26 @@ struct linux_statfs {
     long f_spare[4];
 };
 
+#define LINUX_MS_RDONLY      0x00000001UL
+#define LINUX_MS_NOSUID      0x00000002UL
+#define LINUX_MS_NODEV       0x00000004UL
+#define LINUX_MS_NOEXEC      0x00000008UL
+#define LINUX_MS_SYNCHRONOUS 0x00000010UL
+#define LINUX_MS_REMOUNT     0x00000020UL
+#define LINUX_MS_MANDLOCK    0x00000040UL
+#define LINUX_MS_DIRSYNC     0x00000080UL
+#define LINUX_MS_NOATIME     0x00000400UL
+#define LINUX_MS_NODIRATIME  0x00000800UL
+#define LINUX_MS_BIND        0x00001000UL
+#define LINUX_MS_REC         0x00004000UL
+#define LINUX_MS_SILENT      0x00008000UL
+#define LINUX_MS_RELATIME    0x00200000UL
+#define LINUX_MS_STRICTATIME 0x01000000UL
+#define LINUX_MS_LAZYTIME    0x02000000UL
+
+#define LINUX_MNT_FORCE  0x00000001
+#define LINUX_MNT_DETACH 0x00000002
+
 static int fill_entry_mode(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
     struct linux_stat st;
     long result;
@@ -197,6 +217,101 @@ int platform_remove_file(const char *path) {
 
 int platform_remove_directory(const char *path) {
     return linux_syscall3(LINUX_SYS_UNLINKAT, LINUX_AT_FDCWD, (long)path, LINUX_AT_REMOVEDIR) < 0 ? -1 : 0;
+}
+
+static unsigned long linux_mount_flags_from_platform(unsigned long long flags) {
+    unsigned long native_flags = 0UL;
+
+    if ((flags & PLATFORM_MOUNT_RDONLY) != 0ULL) {
+        native_flags |= LINUX_MS_RDONLY;
+    }
+    if ((flags & PLATFORM_MOUNT_NOSUID) != 0ULL) {
+        native_flags |= LINUX_MS_NOSUID;
+    }
+    if ((flags & PLATFORM_MOUNT_NODEV) != 0ULL) {
+        native_flags |= LINUX_MS_NODEV;
+    }
+    if ((flags & PLATFORM_MOUNT_NOEXEC) != 0ULL) {
+        native_flags |= LINUX_MS_NOEXEC;
+    }
+    if ((flags & PLATFORM_MOUNT_SYNC) != 0ULL) {
+        native_flags |= LINUX_MS_SYNCHRONOUS;
+    }
+    if ((flags & PLATFORM_MOUNT_REMOUNT) != 0ULL) {
+        native_flags |= LINUX_MS_REMOUNT;
+    }
+    if ((flags & PLATFORM_MOUNT_MANDLOCK) != 0ULL) {
+        native_flags |= LINUX_MS_MANDLOCK;
+    }
+    if ((flags & PLATFORM_MOUNT_DIRSYNC) != 0ULL) {
+        native_flags |= LINUX_MS_DIRSYNC;
+    }
+    if ((flags & PLATFORM_MOUNT_NOATIME) != 0ULL) {
+        native_flags |= LINUX_MS_NOATIME;
+    }
+    if ((flags & PLATFORM_MOUNT_NODIRATIME) != 0ULL) {
+        native_flags |= LINUX_MS_NODIRATIME;
+    }
+    if ((flags & PLATFORM_MOUNT_BIND) != 0ULL) {
+        native_flags |= LINUX_MS_BIND;
+    }
+    if ((flags & PLATFORM_MOUNT_REC) != 0ULL) {
+        native_flags |= LINUX_MS_REC;
+    }
+    if ((flags & PLATFORM_MOUNT_SILENT) != 0ULL) {
+        native_flags |= LINUX_MS_SILENT;
+    }
+    if ((flags & PLATFORM_MOUNT_RELATIME) != 0ULL) {
+        native_flags |= LINUX_MS_RELATIME;
+    }
+    if ((flags & PLATFORM_MOUNT_STRICTATIME) != 0ULL) {
+        native_flags |= LINUX_MS_STRICTATIME;
+    }
+    if ((flags & PLATFORM_MOUNT_LAZYTIME) != 0ULL) {
+        native_flags |= LINUX_MS_LAZYTIME;
+    }
+
+    return native_flags;
+}
+
+int platform_mount_filesystem(
+    const char *source,
+    const char *target,
+    const char *filesystem_type,
+    unsigned long long flags,
+    const char *data
+) {
+    long result;
+
+    if (target == 0 || target[0] == '\0') {
+        return -1;
+    }
+
+    result = linux_syscall5(
+        LINUX_SYS_MOUNT,
+        (long)((source != 0 && source[0] != '\0' && rt_strcmp(source, "none") != 0) ? source : 0),
+        (long)target,
+        (long)((filesystem_type != 0 && filesystem_type[0] != '\0') ? filesystem_type : 0),
+        (long)linux_mount_flags_from_platform(flags),
+        (long)((data != 0 && data[0] != '\0') ? data : 0)
+    );
+    return result < 0 ? -1 : 0;
+}
+
+int platform_unmount_filesystem(const char *target, int force, int lazy) {
+    long flags = 0;
+
+    if (target == 0 || target[0] == '\0') {
+        return -1;
+    }
+    if (force) {
+        flags |= LINUX_MNT_FORCE;
+    }
+    if (lazy) {
+        flags |= LINUX_MNT_DETACH;
+    }
+
+    return linux_syscall2(LINUX_SYS_UMOUNT2, (long)target, flags) < 0 ? -1 : 0;
 }
 
 int platform_rename_path(const char *old_path, const char *new_path) {

@@ -74,6 +74,25 @@ A common contributor sequence is:
 Use the hosted build for quick iteration, then rerun the freestanding path when
 a change touches runtime code, platform code, startup code, or the compiler.
 
+## SELF-HOSTED HOST BUILD STATUS
+
+On Linux, the in-tree build helpers are now capable enough to drive the root
+hosted build logic for representative rebuilds when `PATH` prefers `build/`
+first.
+
+A typical check looks like:
+
+    env PATH="$PWD/build:/usr/bin:/bin" ./build/make build/grep build/ncc
+
+That path now covers the GNU-style Makefile features used by the repository's
+normal host build, including includes, conditionals, command-line variable
+origin, common text functions, line continuations, pattern rules, and the
+manifest extraction pipeline built from `grep -oE` plus `tr`.
+
+This is an important self-hosting milestone, but it is not a full bootstrap
+closure yet. The project still relies on the host C compiler, assembler,
+linker, and `/bin/sh` to execute the actual compile and link steps.
+
 ## CONTRIBUTOR NOTES
 
 - Most new tools only need `src/tools/name.c` plus an entry in `TOOLS` in the

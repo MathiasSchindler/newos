@@ -29,6 +29,11 @@ assert_file_contains "$WORK_DIR/grep_unicode_fixed.out" '^Äpfel$' "grep Unicode
 assert_file_contains "$WORK_DIR/grep_unicode_regex.out" '^Äpfel$' "grep Unicode ignore-case regex matching failed"
 "$ROOT_DIR/build/grep" -iw 'öl' "$WORK_DIR/grep_unicode.txt" > "$WORK_DIR/grep_unicode_word.out"
 assert_file_contains "$WORK_DIR/grep_unicode_word.out" '^Öl$' "grep Unicode whole-word regex matching failed"
+printf 'X("src/shared/runtime/memory.c")\nX("src/shared/tool_io.c")\nX("src/shared/archive_util.c")\n' > "$WORK_DIR/grep_manifest.txt"
+"$ROOT_DIR/build/grep" -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util|bignum)\.c"' "$WORK_DIR/grep_manifest.txt" > "$WORK_DIR/grep_manifest.out"
+assert_file_contains "$WORK_DIR/grep_manifest.out" '^"src/shared/runtime/memory.c"$' "grep -oE did not extract the runtime manifest entry"
+assert_file_contains "$WORK_DIR/grep_manifest.out" '^"src/shared/tool_io.c"$' "grep -oE did not extract the tool manifest entry"
+assert_file_contains "$WORK_DIR/grep_manifest.out" '^"src/shared/archive_util.c"$' "grep -oE did not extract the archive manifest entry"
 
 printf '123456\n' > "$WORK_DIR/lsdir/large"
 printf '1\n' > "$WORK_DIR/lsdir/small"

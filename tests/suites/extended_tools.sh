@@ -62,6 +62,20 @@ printf '%s\n' "$watch_out" > "$WORK_DIR/watch.out"
 watch_runs=$(grep -c '^watched$' "$WORK_DIR/watch.out" | tr -d '\r\n')
 assert_text_equals "$watch_runs" '2' "watch did not re-run the command the requested number of times"
 
+mount_help_out=$("$ROOT_DIR/build/mount" --help | tr -d '\r')
+printf '%s\n' "$mount_help_out" > "$WORK_DIR/mount_help.out"
+assert_file_contains "$WORK_DIR/mount_help.out" '^Usage: .*mount' "mount --help did not print usage"
+umount_help_out=$("$ROOT_DIR/build/umount" --help | tr -d '\r')
+printf '%s\n' "$umount_help_out" > "$WORK_DIR/umount_help.out"
+assert_file_contains "$WORK_DIR/umount_help.out" '^Usage: .*umount' "umount --help did not print usage"
+if [ -r /proc/self/mounts ] || [ -r /proc/mounts ]; then
+    "$ROOT_DIR/build/mount" > "$WORK_DIR/mount_list.out"
+    assert_file_contains "$WORK_DIR/mount_list.out" '^[^ ][^ ]* [^ ][^ ]* [^ ][^ ]*' "mount did not list the current mount table"
+fi
+if "$ROOT_DIR/build/umount" >/dev/null 2>&1; then
+    fail "umount without a target should fail"
+fi
+
 printf 'wget sample\n' > "$WORK_DIR/wget_source.txt"
 assert_command_succeeds "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_copy.txt" "file://$WORK_DIR/wget_source.txt"
 assert_files_equal "$WORK_DIR/wget_source.txt" "$WORK_DIR/wget_copy.txt" "wget file:// download failed"
@@ -1482,6 +1496,47 @@ printf 'pattern-input\n' > "$WORK_DIR/make_pattern/result.in"
     "$ROOT_DIR/build/make"
 )
 assert_file_contains "$WORK_DIR/make_pattern/result.txt" '^stem=result src=result.in$' "make pattern rule or automatic variables failed"
+mkdir -p "$WORK_DIR/make_gnuish"
+cat > "$WORK_DIR/make_gnuish/Makefile" <<'EOF'
+ifeq ($(origin MODE), undefined)
+MODE := default
+endif
+
+LIST := \
+    alpha \
+    beta
+FILTERED := $(filter beta,$(LIST))
+PREFIXED := $(addprefix x-,$(LIST))
+STRIPPED := $(strip   $(FILTERED)   )
+STAMP := $(shell printf shell-ok)
+
+ifeq ($(STRIPPED),beta)
+RESULT := $(STAMP) $(PREFIXED)
+else
+RESULT := bad
+endif
+
+all:
+	printf '%s\n' "$(RESULT)" > out.txt
+EOF
+(
+    cd "$WORK_DIR/make_gnuish"
+    "$ROOT_DIR/build/make"
+)
+assert_file_contains "$WORK_DIR/make_gnuish/out.txt" '^shell-ok x-alpha x-beta$' "make did not handle the root Makefile style functions and conditionals"
+mkdir -p "$WORK_DIR/make_recursive"
+cat > "$WORK_DIR/make_recursive/Makefile" <<'EOF'
+all:
+	@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j4 child
+
+child:
+	printf 'recursive-ok\n' > out.txt
+EOF
+(
+    cd "$WORK_DIR/make_recursive"
+    "$ROOT_DIR/build/make"
+)
+assert_file_contains "$WORK_DIR/make_recursive/out.txt" '^recursive-ok$' "make did not preserve $(MAKE) or tolerate recursive parallel flags"
 
 mktemp_path=$(TMPDIR="$WORK_DIR" "$ROOT_DIR/build/mktemp" -t wavecheck | tr -d '\r\n')
 case "$mktemp_path" in

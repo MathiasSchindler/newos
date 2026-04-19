@@ -34,7 +34,7 @@ static int run_rule_commands(MakeProgram *program, MakeRule *rule) {
             return -1;
         }
 
-        while (*command_ptr == '@' || *command_ptr == '-') {
+        while (*command_ptr == '@' || *command_ptr == '-' || *command_ptr == '+') {
             if (*command_ptr == '@') {
                 silent = 1;
             } else if (*command_ptr == '-') {
@@ -52,7 +52,7 @@ static int run_rule_commands(MakeProgram *program, MakeRule *rule) {
             continue;
         }
 
-        argv_exec[0] = "sh";
+        argv_exec[0] = "/bin/sh";
         argv_exec[1] = "-c";
         argv_exec[2] = command_ptr;
         argv_exec[3] = 0;

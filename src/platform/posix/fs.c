@@ -25,7 +25,7 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/mount.h>
 #endif
 
@@ -170,6 +170,158 @@ int platform_remove_file(const char *path) {
 
 int platform_remove_directory(const char *path) {
     return rmdir(path);
+}
+
+static unsigned long posix_mount_flags_from_platform(unsigned long long flags) {
+    unsigned long native_flags = 0UL;
+
+#ifdef MS_RDONLY
+    if ((flags & PLATFORM_MOUNT_RDONLY) != 0ULL) {
+        native_flags |= MS_RDONLY;
+    }
+#endif
+#ifdef MS_NOSUID
+    if ((flags & PLATFORM_MOUNT_NOSUID) != 0ULL) {
+        native_flags |= MS_NOSUID;
+    }
+#endif
+#ifdef MS_NODEV
+    if ((flags & PLATFORM_MOUNT_NODEV) != 0ULL) {
+        native_flags |= MS_NODEV;
+    }
+#endif
+#ifdef MS_NOEXEC
+    if ((flags & PLATFORM_MOUNT_NOEXEC) != 0ULL) {
+        native_flags |= MS_NOEXEC;
+    }
+#endif
+#ifdef MS_SYNCHRONOUS
+    if ((flags & PLATFORM_MOUNT_SYNC) != 0ULL) {
+        native_flags |= MS_SYNCHRONOUS;
+    }
+#endif
+#ifdef MS_REMOUNT
+    if ((flags & PLATFORM_MOUNT_REMOUNT) != 0ULL) {
+        native_flags |= MS_REMOUNT;
+    }
+#endif
+#ifdef MS_MANDLOCK
+    if ((flags & PLATFORM_MOUNT_MANDLOCK) != 0ULL) {
+        native_flags |= MS_MANDLOCK;
+    }
+#endif
+#ifdef MS_DIRSYNC
+    if ((flags & PLATFORM_MOUNT_DIRSYNC) != 0ULL) {
+        native_flags |= MS_DIRSYNC;
+    }
+#endif
+#ifdef MS_NOATIME
+    if ((flags & PLATFORM_MOUNT_NOATIME) != 0ULL) {
+        native_flags |= MS_NOATIME;
+    }
+#endif
+#ifdef MS_NODIRATIME
+    if ((flags & PLATFORM_MOUNT_NODIRATIME) != 0ULL) {
+        native_flags |= MS_NODIRATIME;
+    }
+#endif
+#ifdef MS_BIND
+    if ((flags & PLATFORM_MOUNT_BIND) != 0ULL) {
+        native_flags |= MS_BIND;
+    }
+#endif
+#ifdef MS_REC
+    if ((flags & PLATFORM_MOUNT_REC) != 0ULL) {
+        native_flags |= MS_REC;
+    }
+#endif
+#ifdef MS_SILENT
+    if ((flags & PLATFORM_MOUNT_SILENT) != 0ULL) {
+        native_flags |= MS_SILENT;
+    }
+#endif
+#ifdef MS_RELATIME
+    if ((flags & PLATFORM_MOUNT_RELATIME) != 0ULL) {
+        native_flags |= MS_RELATIME;
+    }
+#endif
+#ifdef MS_STRICTATIME
+    if ((flags & PLATFORM_MOUNT_STRICTATIME) != 0ULL) {
+        native_flags |= MS_STRICTATIME;
+    }
+#endif
+#ifdef MS_LAZYTIME
+    if ((flags & PLATFORM_MOUNT_LAZYTIME) != 0ULL) {
+        native_flags |= MS_LAZYTIME;
+    }
+#endif
+
+    return native_flags;
+}
+
+int platform_mount_filesystem(
+    const char *source,
+    const char *target,
+    const char *filesystem_type,
+    unsigned long long flags,
+    const char *data
+) {
+    if (target == NULL || target[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(__linux__)
+    return mount(
+        (source != NULL && source[0] != '\0' && strcmp(source, "none") != 0) ? source : NULL,
+        target,
+        (filesystem_type != NULL && filesystem_type[0] != '\0') ? filesystem_type : NULL,
+        posix_mount_flags_from_platform(flags),
+        (void *)((data != NULL && data[0] != '\0') ? data : NULL)
+    );
+#else
+    (void)source;
+    (void)filesystem_type;
+    (void)flags;
+    (void)data;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int platform_unmount_filesystem(const char *target, int force, int lazy) {
+    if (target == NULL || target[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(__linux__)
+    {
+        int flags = 0;
+#ifdef MNT_FORCE
+        if (force) {
+            flags |= MNT_FORCE;
+        }
+#endif
+#ifdef MNT_DETACH
+        if (lazy) {
+            flags |= MNT_DETACH;
+        }
+#endif
+        return umount2(target, flags);
+    }
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    if (lazy) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return unmount(target, force ? MNT_FORCE : 0);
+#else
+    (void)force;
+    (void)lazy;
+    errno = ENOSYS;
+    return -1;
+#endif
 }
 
 int platform_rename_path(const char *old_path, const char *new_path) {

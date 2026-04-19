@@ -20,6 +20,22 @@
 #define PLATFORM_SEEK_SET 0
 #define PLATFORM_SEEK_CUR 1
 #define PLATFORM_SEEK_END 2
+#define PLATFORM_MOUNT_RDONLY     (1ULL << 0)
+#define PLATFORM_MOUNT_NOSUID     (1ULL << 1)
+#define PLATFORM_MOUNT_NODEV      (1ULL << 2)
+#define PLATFORM_MOUNT_NOEXEC     (1ULL << 3)
+#define PLATFORM_MOUNT_SYNC       (1ULL << 4)
+#define PLATFORM_MOUNT_REMOUNT    (1ULL << 5)
+#define PLATFORM_MOUNT_MANDLOCK   (1ULL << 6)
+#define PLATFORM_MOUNT_DIRSYNC    (1ULL << 7)
+#define PLATFORM_MOUNT_NOATIME    (1ULL << 8)
+#define PLATFORM_MOUNT_NODIRATIME (1ULL << 9)
+#define PLATFORM_MOUNT_BIND       (1ULL << 10)
+#define PLATFORM_MOUNT_REC        (1ULL << 11)
+#define PLATFORM_MOUNT_SILENT     (1ULL << 12)
+#define PLATFORM_MOUNT_RELATIME   (1ULL << 13)
+#define PLATFORM_MOUNT_STRICTATIME (1ULL << 14)
+#define PLATFORM_MOUNT_LAZYTIME   (1ULL << 15)
 
 typedef struct {
     char name[PLATFORM_NAME_CAPACITY];
@@ -123,6 +139,14 @@ int platform_close(int fd);
 int platform_make_directory(const char *path, unsigned int mode);
 int platform_remove_file(const char *path);
 int platform_remove_directory(const char *path);
+int platform_mount_filesystem(
+    const char *source,
+    const char *target,
+    const char *filesystem_type,
+    unsigned long long flags,
+    const char *data
+);
+int platform_unmount_filesystem(const char *target, int force, int lazy);
 int platform_rename_path(const char *old_path, const char *new_path);
 int platform_create_hard_link(const char *target_path, const char *link_path);
 int platform_create_symbolic_link(const char *target_path, const char *link_path);

@@ -9,6 +9,7 @@ void *memset(void *buffer, int byte_value, size_t count);
 
 size_t rt_strlen(const char *text);
 int rt_strcmp(const char *lhs, const char *rhs);
+int rt_strncmp(const char *lhs, const char *rhs, size_t count);
 void rt_copy_string(char *dst, size_t dst_size, const char *src);
 int rt_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size);
 void rt_unsigned_to_string(unsigned long long value, char *buffer, size_t buffer_size);

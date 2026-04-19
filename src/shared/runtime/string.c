@@ -19,6 +19,20 @@ int rt_strcmp(const char *lhs, const char *rhs) {
     return (unsigned char)*lhs - (unsigned char)*rhs;
 }
 
+int rt_strncmp(const char *lhs, const char *rhs, size_t count) {
+    size_t i = 0;
+
+    while (i < count && lhs[i] != '\0' && rhs[i] != '\0' && lhs[i] == rhs[i]) {
+        i += 1U;
+    }
+
+    if (i == count) {
+        return 0;
+    }
+
+    return (unsigned char)lhs[i] - (unsigned char)rhs[i];
+}
+
 void rt_copy_string(char *dst, size_t dst_size, const char *src) {
     size_t i = 0;
 

@@ -12,18 +12,24 @@
 #include "tool_util.h"
 
 #define MAKE_MAX_RULES 128
-#define MAKE_MAX_DEPS 32
-#define MAKE_MAX_COMMANDS 32
-#define MAKE_MAX_VARS 64
-#define MAKE_MAX_PHONY 64
-#define MAKE_NAME_CAPACITY 128
-#define MAKE_VALUE_CAPACITY 512
-#define MAKE_COMMAND_CAPACITY 512
-#define MAKE_LINE_CAPACITY 1024
+#define MAKE_MAX_DEPS 128
+#define MAKE_MAX_COMMANDS 16
+#define MAKE_MAX_VARS 128
+#define MAKE_MAX_PHONY 128
+#define MAKE_NAME_CAPACITY 256
+#define MAKE_VALUE_CAPACITY 4096
+#define MAKE_COMMAND_CAPACITY 4096
+#define MAKE_LINE_CAPACITY 4096
+
+typedef enum {
+    MAKE_ORIGIN_FILE = 1,
+    MAKE_ORIGIN_COMMAND_LINE = 2
+} MakeVariableOrigin;
 
 typedef struct {
     char name[MAKE_NAME_CAPACITY];
     char value[MAKE_VALUE_CAPACITY];
+    MakeVariableOrigin origin;
 } MakeVariable;
 
 typedef struct {
@@ -54,6 +60,7 @@ typedef struct {
 /* ── make_parse.c ── */
 char *trim_leading_whitespace(char *text);
 int set_variable(MakeProgram *program, const char *name, const char *value);
+int set_variable_with_origin(MakeProgram *program, const char *name, const char *value, MakeVariableOrigin origin);
 int expand_text(const MakeProgram *program, const MakeRule *rule, const char *text, char *out, size_t out_size);
 MakeRule *find_rule(MakeProgram *program, const char *target);
 int is_phony_target(const MakeProgram *program, const char *name);
