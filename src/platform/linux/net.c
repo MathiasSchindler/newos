@@ -32,6 +32,72 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     return -1;
 }
 
+int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out != 0) {
+        *count_out = 0U;
+    }
+    return -1;
+}
+
+int platform_list_network_addresses(
+    PlatformNetworkAddress *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)family_filter;
+    (void)ifname_filter;
+    if (count_out != 0) {
+        *count_out = 0U;
+    }
+    return -1;
+}
+
+int platform_list_network_routes(
+    PlatformRouteEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)family_filter;
+    (void)ifname_filter;
+    if (count_out != 0) {
+        *count_out = 0U;
+    }
+    return -1;
+}
+
+int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_value, int set_mtu) {
+    (void)ifname;
+    (void)want_up;
+    (void)mtu_value;
+    (void)set_mtu;
+    return -1;
+}
+
+int platform_network_address_change(const char *ifname, const char *cidr, int add) {
+    (void)ifname;
+    (void)cidr;
+    (void)add;
+    return -1;
+}
+
+int platform_network_route_change(const char *destination, const char *gateway, const char *ifname, int add) {
+    (void)destination;
+    (void)gateway;
+    (void)ifname;
+    (void)add;
+    return -1;
+}
+
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
     (void)fds;
     (void)fd_count;

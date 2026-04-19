@@ -13,6 +13,15 @@
 #define PLATFORM_PING_DEFAULT_PAYLOAD_SIZE 56U
 #define PLATFORM_PING_MAX_PAYLOAD_SIZE 1400U
 #define PLATFORM_PING_MAX_TTL 255U
+#define PLATFORM_NETWORK_TEXT_CAPACITY 64
+#define PLATFORM_NETWORK_FAMILY_ANY 0
+#define PLATFORM_NETWORK_FAMILY_IPV4 4
+#define PLATFORM_NETWORK_FAMILY_IPV6 6
+#define PLATFORM_NETWORK_FLAG_UP        (1U << 0)
+#define PLATFORM_NETWORK_FLAG_BROADCAST (1U << 1)
+#define PLATFORM_NETWORK_FLAG_LOOPBACK  (1U << 2)
+#define PLATFORM_NETWORK_FLAG_RUNNING   (1U << 3)
+#define PLATFORM_NETWORK_FLAG_MULTICAST (1U << 4)
 #define PLATFORM_ACCESS_EXISTS 0
 #define PLATFORM_ACCESS_EXECUTE 1
 #define PLATFORM_ACCESS_WRITE 2
@@ -133,6 +142,36 @@ typedef struct {
     unsigned char bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
 } PlatformTerminalState;
 
+typedef struct {
+    unsigned int index;
+    unsigned int flags;
+    unsigned int mtu;
+    int has_mac;
+    char name[PLATFORM_NAME_CAPACITY];
+    char mac[PLATFORM_NETWORK_TEXT_CAPACITY];
+} PlatformNetworkLink;
+
+typedef struct {
+    int family;
+    unsigned int prefix_length;
+    int has_broadcast;
+    char ifname[PLATFORM_NAME_CAPACITY];
+    char address[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char broadcast[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char scope[16];
+} PlatformNetworkAddress;
+
+typedef struct {
+    int family;
+    unsigned int prefix_length;
+    unsigned int metric;
+    int is_default;
+    int has_gateway;
+    char ifname[PLATFORM_NAME_CAPACITY];
+    char destination[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char gateway[PLATFORM_NETWORK_TEXT_CAPACITY];
+} PlatformRouteEntry;
+
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 int platform_open_read(const char *path);
@@ -198,6 +237,24 @@ int platform_set_hostname(const char *name);
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options);
 int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);
 int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out);
+int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out);
+int platform_list_network_addresses(
+    PlatformNetworkAddress *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+);
+int platform_list_network_routes(
+    PlatformRouteEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+);
+int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_value, int set_mtu);
+int platform_network_address_change(const char *ifname, const char *cidr, int add);
+int platform_network_route_change(const char *destination, const char *gateway, const char *ifname, int add);
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_spawn_process(
