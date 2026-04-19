@@ -41,7 +41,8 @@ host-libc-only design.
 
 ### Hosted POSIX layer (`src/platform/posix`)
 
-Used by `make host` and by the smoke tests.
+Used by `make host` and by the smoke tests. On macOS this is also the default
+local build path used by `make` and, by default, `make freestanding`.
 
 - `fs.c` — file, directory, and path operations
 - `process.c` — spawn, wait, signal, terminal, and environment handling
@@ -73,8 +74,10 @@ and does not depend on libc.
 
 ## LIMITATIONS
 
-- Hosted development assumes a POSIX environment; the freestanding target
-  currently focuses on Linux/AArch64
+- Hosted development assumes a POSIX environment; the true freestanding target
+  currently focuses on Linux/AArch64 and Linux/x86-64
+- On macOS, the project currently favors local hosted binaries over a separate
+  Darwin syscall-only userland target
 - The abstraction is intentionally small; there is no threading or async event
   layer
 - Networking support is practical but still basic compared with a full libc or
@@ -82,4 +85,4 @@ and does not depend on libc.
 
 ## SEE ALSO
 
-man, project-layout, runtime, build, userland
+man, project-layout, runtime, build, macos, userland

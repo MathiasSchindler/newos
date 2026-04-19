@@ -45,6 +45,8 @@ hosted and freestanding builds can share as much logic as possible.
 ## LIMITATIONS
 
 - The freestanding path currently targets Linux/AArch64 and Linux/x86-64
+- macOS is a first-class hosted development platform, but not yet a separate
+  freestanding runtime target in the same sense
 - Hosted development assumes a POSIX-like system; Windows is not a supported
   contributor platform
 - Manual pages are kept in-tree and may lag very recent behavior changes until
@@ -52,4 +54,4 @@ hosted and freestanding builds can share as much logic as possible.
 
 ## SEE ALSO
 
-man, shell, compiler, runtime, platform, testing, build, userland
+man, shell, compiler, runtime, platform, macos, testing, build, userland

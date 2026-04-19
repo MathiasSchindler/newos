@@ -11,9 +11,11 @@ freestanding target. The same tools are compiled in both modes where practical,
 but they are linked against different backends and start-up paths.
 
 For most contributors, the usual loop is `make host` followed by `make test`.
-`make freestanding` is the cross-compilation path for the libc-free Linux
-target and is mainly used to keep the syscall-only environment healthy and to
-catch regressions that do not show up in the hosted build.
+On Linux, `make freestanding` is the cross-compilation path for the libc-free
+Linux target and is mainly used to keep the syscall-only environment healthy and
+to catch regressions that do not show up in the hosted build. On macOS, the
+local default remains the hosted build unless an explicit alternative target is
+requested.
 
 ## HOSTED BUILD
 
@@ -43,9 +45,9 @@ and anything that adds new low-level dependencies.
 
 ## TARGETS
 
-    make               — build both host and freestanding targets
+    make               — on macOS build the local hosted set; on Linux build host plus freestanding
     make host          — build the hosted POSIX binaries under build/
-    make freestanding  — cross-compile static Linux binaries under build/linux-$(TARGET_ARCH)/
+    make freestanding  — on Linux build the static syscall-only target under build/linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
     make test          — build host binaries and run tests/run_smoke_tests.sh
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
     make clean         — remove build output
@@ -87,7 +89,9 @@ a change touches runtime code, platform code, startup code, or the compiler.
 
 ## LIMITATIONS
 
-- The freestanding build currently assumes Clang plus `lld`
+- The Linux freestanding build currently assumes Clang plus `lld`
+- On macOS, the default build behavior favors local runnable binaries over a
+  separate fully freestanding Darwin userland target
 - `make test` exercises the hosted binaries only
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but
@@ -95,4 +99,4 @@ a change touches runtime code, platform code, startup code, or the compiler.
 
 ## SEE ALSO
 
-man, project-layout, compiler, platform, testing
+man, project-layout, compiler, platform, macos, testing
