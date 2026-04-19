@@ -5,6 +5,7 @@
 #include "tool_util.h"
 
 int main(int argc, char **argv) {
+    static const char USAGE[] = "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]";
     const char *destination = 0;
     const char *identity_path = 0;
     const char *password = 0;
@@ -13,61 +14,58 @@ int main(int argc, char **argv) {
     char default_user[SSH_USER_CAPACITY];
     SshDestination parsed;
     SshClientConfig config;
+    ToolOptState s;
     unsigned long long port_override = 0ULL;
     int verbose = 0;
-    int argi = 1;
+    int r;
 
     default_user[0] = '\0';
     if (env_user != 0 && env_user[0] != '\0') {
         rt_copy_string(default_user, sizeof(default_user), env_user);
     }
 
-    while (argi < argc && argv[argi][0] == '-') {
-        if (rt_strcmp(argv[argi], "-h") == 0 || rt_strcmp(argv[argi], "--help") == 0) {
-            rt_write_line(1, "ssh - minimal interactive SSH client");
-            rt_write_line(1, "Usage: ssh [-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
-            rt_write_line(1, "Current scope: interactive shell sessions with curve25519-sha256, ssh-ed25519,");
-            rt_write_line(1, "and chacha20-poly1305@openssh.com. Public-key auth supports unencrypted Ed25519 keys.");
-            return 0;
-        } else if (rt_strcmp(argv[argi], "-v") == 0) {
+    tool_opt_init(&s, argc, argv, "ssh", USAGE);
+    while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
+        if (rt_strcmp(s.flag, "-v") == 0) {
             verbose = 1;
-        } else if (rt_strcmp(argv[argi], "-i") == 0) {
-            if (argi + 1 >= argc) {
-                tool_write_usage("ssh", "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
-                return 1;
-            }
-            identity_path = argv[++argi];
-        } else if (rt_strcmp(argv[argi], "-l") == 0) {
-            if (argi + 1 >= argc) {
-                tool_write_usage("ssh", "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
-                return 1;
-            }
-            user_override = argv[++argi];
-        } else if (rt_strcmp(argv[argi], "-p") == 0) {
-            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &port_override, "ssh", "port") != 0 ||
+        } else if (rt_strcmp(s.flag, "-i") == 0) {
+            if (tool_opt_require_value(&s) != 0) return 1;
+            identity_path = s.value;
+        } else if (rt_strcmp(s.flag, "-l") == 0) {
+            if (tool_opt_require_value(&s) != 0) return 1;
+            user_override = s.value;
+        } else if (rt_strcmp(s.flag, "-p") == 0) {
+            if (tool_opt_require_value(&s) != 0) return 1;
+            if (tool_parse_uint_arg(s.value, &port_override, "ssh", "port") != 0 ||
                 port_override == 0ULL || port_override > 65535ULL) {
-                tool_write_usage("ssh", "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
+                tool_write_usage("ssh", USAGE);
                 return 1;
             }
-            argi += 1;
         } else {
-            tool_write_usage("ssh", "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
+            tool_write_error("ssh", "unknown option: ", s.flag);
+            tool_write_usage("ssh", USAGE);
             return 1;
         }
-        argi += 1;
+    }
+    if (r == TOOL_OPT_HELP) {
+        rt_write_line(1, "ssh - minimal interactive SSH client");
+        rt_write_line(1, "Usage: ssh [-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
+        rt_write_line(1, "Current scope: interactive shell sessions with curve25519-sha256, ssh-ed25519,");
+        rt_write_line(1, "and chacha20-poly1305@openssh.com. Public-key auth supports unencrypted Ed25519 keys.");
+        return 0;
     }
 
-    if (argi >= argc) {
-        tool_write_usage("ssh", "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
+    if (s.argi >= argc) {
+        tool_write_usage("ssh", USAGE);
         return 1;
     }
 
-    destination = argv[argi++];
-    if (argi < argc) {
-        password = argv[argi++];
+    destination = argv[s.argi++];
+    if (s.argi < argc) {
+        password = argv[s.argi++];
     }
-    if (argi != argc) {
-        tool_write_usage("ssh", "[-v] [-i IDENTITY] [-l USER] [-p PORT] HOST|USER@HOST[:PORT] [PASSWORD]");
+    if (s.argi != argc) {
+        tool_write_usage("ssh", USAGE);
         return 1;
     }
 

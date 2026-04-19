@@ -53,6 +53,7 @@
     X("src/shared/runtime/io.c") \
     X("src/shared/runtime/unicode.c") \
     X("src/shared/tool_io.c") \
+    X("src/shared/tool_cli.c") \
     X("src/shared/tool_regex.c") \
     X("src/shared/tool_path.c") \
     X("src/shared/tool_fs.c") \

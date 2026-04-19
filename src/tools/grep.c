@@ -23,9 +23,7 @@ typedef struct {
 } GrepOptions;
 
 static void print_usage(const char *program_name) {
-    rt_write_cstr(2, "Usage: ");
-    rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] PATTERN [file ...]");
+    tool_write_usage(program_name, "[-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] PATTERN [file ...]");
 }
 
 static int print_count(const char *label, int show_label, unsigned long long count) {
@@ -625,7 +623,8 @@ static int grep_path(const char *path,
 
 int main(int argc, char **argv) {
     GrepOptions options;
-    int arg_index = 1;
+    ToolOptState s;
+    int r;
     int file_count;
     int i;
     int exit_code = 0;
@@ -633,13 +632,11 @@ int main(int argc, char **argv) {
 
     rt_memset(&options, 0, sizeof(options));
 
-    while (arg_index < argc && argv[arg_index][0] == '-' && argv[arg_index][1] != '\0') {
-        const char *flag = argv[arg_index] + 1;
-
-        if (rt_strcmp(argv[arg_index], "--") == 0) {
-            arg_index += 1;
-            break;
-        }
+    tool_opt_init(&s, argc, argv, tool_base_name(argv[0]),
+                  "[-EinvrcqloFw] [-A NUM] [-B NUM] [-C NUM] PATTERN [file ...]");
+    while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
+        /* Combined short-option cluster: walk each character in the flag body */
+        const char *flag = s.flag + 1;
 
         while (*flag != '\0') {
             if (*flag == 'n') {
@@ -669,11 +666,12 @@ int main(int argc, char **argv) {
                 const char *value_text = flag + 1;
 
                 if (*value_text == '\0') {
-                    arg_index += 1;
-                    if (arg_index >= argc || rt_parse_uint(argv[arg_index], &value) != 0) {
+                    /* value is the next separate argument */
+                    if (s.argi >= argc || rt_parse_uint(argv[s.argi], &value) != 0) {
                         print_usage(argv[0]);
                         return 1;
                     }
+                    s.argi += 1;
                 } else if (rt_parse_uint(value_text, &value) != 0) {
                     print_usage(argv[0]);
                     return 1;
@@ -694,11 +692,13 @@ int main(int argc, char **argv) {
             }
             flag += 1;
         }
-
-        arg_index += 1;
+    }
+    if (r == TOOL_OPT_HELP) {
+        print_usage(argv[0]);
+        return 0;
     }
 
-    if (argc <= arg_index) {
+    if (argc <= s.argi) {
         print_usage(argv[0]);
         return 1;
     }
@@ -708,16 +708,16 @@ int main(int argc, char **argv) {
         options.list_files = 0;
     }
 
-    file_count = argc - arg_index - 1;
+    file_count = argc - s.argi - 1;
     if (file_count <= 0) {
         int matched = 0;
-        return grep_stream(0, argv[arg_index], &options, "", 0, &matched) == 0 ? (matched ? 0 : 1) : 1;
+        return grep_stream(0, argv[s.argi], &options, "", 0, &matched) == 0 ? (matched ? 0 : 1) : 1;
     }
 
-    for (i = arg_index + 1; i < argc; ++i) {
+    for (i = s.argi + 1; i < argc; ++i) {
         int matched = 0;
 
-        if (grep_path(argv[i], argv[arg_index], &options, file_count > 1, &matched) != 0) {
+        if (grep_path(argv[i], argv[s.argi], &options, file_count > 1, &matched) != 0) {
             rt_write_cstr(2, "grep: read error on ");
             rt_write_line(2, argv[i]);
             exit_code = 1;

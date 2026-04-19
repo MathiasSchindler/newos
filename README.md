@@ -46,6 +46,35 @@ A separate benchmark area now lives under [tests/benchmarks](tests/benchmarks) f
 
 You can run it with make benchmark.
 
-## License
+## Contributing: shared CLI/options helper
 
-This project is released under CC-0.
+Tools that need non-trivial option parsing use the lightweight `ToolOptState`
+facility declared in [`src/shared/tool_util.h`](src/shared/tool_util.h) and
+implemented in [`src/shared/tool_cli.c`](src/shared/tool_cli.c).
+
+**Pattern** (`ssh`, `sed`, `grep`, `make` are migrated examples):
+
+```c
+ToolOptState s;
+int r;
+tool_opt_init(&s, argc, argv, "mytool", "[-x] [-f FILE] [args ...]");
+while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
+    if (rt_strcmp(s.flag, "-f") == 0) {
+        if (tool_opt_require_value(&s) != 0) return 1;
+        path = s.value;
+    } else if (rt_strcmp(s.flag, "-x") == 0) {
+        opt_x = 1;
+    } else {
+        tool_write_error(s.prog, "unknown option: ", s.flag);
+        tool_write_usage(s.prog, s.usage_suffix);
+        return 1;
+    }
+}
+if (r == TOOL_OPT_HELP) { /* print extended help */; return 0; }
+/* s.argi is now the index of the first positional argument */
+```
+
+Key properties: `-h`/`--help` detection, `--` end-of-options, proper
+error messages for missing option arguments, no heap allocation.
+
+

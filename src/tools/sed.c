@@ -56,9 +56,7 @@ typedef struct {
 } SedExecutionResult;
 
 static void print_usage(const char *program_name) {
-    rt_write_cstr(2, "Usage: ");
-    rt_write_cstr(2, program_name);
-    rt_write_line(2, " [-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
+    tool_write_usage(program_name, "[-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
 }
 
 static void trim_whitespace(char *text) {
@@ -593,7 +591,8 @@ cleanup:
 
 int main(int argc, char **argv) {
     SedProgram program;
-    int argi = 1;
+    ToolOptState s;
+    int r;
     int i;
     int exit_code = 0;
     int in_place = 0;
@@ -601,54 +600,60 @@ int main(int argc, char **argv) {
 
     rt_memset(&program, 0, sizeof(program));
 
-    while (argi < argc && argv[argi][0] == '-') {
-        if (rt_strcmp(argv[argi], "-n") == 0) {
+    tool_opt_init(&s, argc, argv, tool_base_name(argv[0]),
+                  "[-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
+    while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
+        if (rt_strcmp(s.flag, "-n") == 0) {
             program.suppress_default_output = 1;
-            argi += 1;
-        } else if (rt_strcmp(argv[argi], "-i") == 0) {
+        } else if (rt_strcmp(s.flag, "-i") == 0) {
             in_place = 1;
             backup_suffix = "";
-            argi += 1;
-        } else if (argv[argi][0] == '-' && argv[argi][1] == 'i' && argv[argi][2] != '\0') {
+        } else if (s.flag[1] == 'i') {
+            /* -iSUFFIX: inline edit with backup suffix embedded in flag */
             in_place = 1;
-            backup_suffix = argv[argi] + 2;
-            argi += 1;
-        } else if (rt_strcmp(argv[argi], "-f") == 0 && argi + 1 < argc) {
-            if (load_script_file(argv[argi + 1], &program) != 0) {
+            backup_suffix = s.flag + 2;
+        } else if (rt_strcmp(s.flag, "-f") == 0) {
+            if (tool_opt_require_value(&s) != 0) return 1;
+            if (load_script_file(s.value, &program) != 0) {
                 rt_write_cstr(2, "sed: cannot load script ");
-                rt_write_line(2, argv[argi + 1]);
+                rt_write_line(2, s.value);
                 return 1;
             }
-            argi += 2;
-        } else if (rt_strcmp(argv[argi], "-e") == 0 && argi + 1 < argc) {
-            if (load_program_text(argv[argi + 1], &program) != 0) {
+        } else if (rt_strcmp(s.flag, "-e") == 0) {
+            if (tool_opt_require_value(&s) != 0) return 1;
+            if (load_program_text(s.value, &program) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }
-            argi += 2;
         } else {
+            /* Unknown flag: stop option scanning (may be implicit script) */
+            s.argi -= 1;
             break;
         }
     }
+    if (r == TOOL_OPT_HELP) {
+        print_usage(argv[0]);
+        return 0;
+    }
 
     if (program.count == 0) {
-        if (argi >= argc || load_program_text(argv[argi], &program) != 0) {
+        if (s.argi >= argc || load_program_text(argv[s.argi], &program) != 0) {
             print_usage(argv[0]);
             return 1;
         }
-        argi += 1;
+        s.argi += 1;
     }
 
-    if (in_place && argi == argc) {
+    if (in_place && s.argi == argc) {
         print_usage(argv[0]);
         return 1;
     }
 
-    if (argi == argc) {
+    if (s.argi == argc) {
         return sed_stream_to_fd(0, 1, &program) == 0 ? 0 : 1;
     }
 
-    for (i = argi; i < argc; ++i) {
+    for (i = s.argi; i < argc; ++i) {
         int fd;
         int should_close;
 

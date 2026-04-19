@@ -106,6 +106,21 @@ $(BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CR
 $(TARGET_BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/ssh_core.h src/shared/ssh_known_hosts.h src/shared/ssh_client.h src/shared/ssh_client_internal.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld $< $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $(SSH_CRYPTO_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
 
+MAKE_TOOL_SOURCES := src/tools/make_parse.c src/tools/make_exec.c
+AWK_TOOL_SOURCES  := src/tools/awk_parse.c src/tools/awk_exec.c
+
+$(BUILD_DIR)/make: src/tools/make.c $(MAKE_TOOL_SOURCES) src/tools/make_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(CFLAGS) src/tools/make.c $(MAKE_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/make: src/tools/make.c $(MAKE_TOOL_SOURCES) src/tools/make_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld src/tools/make.c $(MAKE_TOOL_SOURCES) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
+
+$(BUILD_DIR)/awk: src/tools/awk.c $(AWK_TOOL_SOURCES) src/tools/awk_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(CFLAGS) src/tools/awk.c $(AWK_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/awk: src/tools/awk.c $(AWK_TOOL_SOURCES) src/tools/awk_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) --target=$(TARGET_TRIPLE) $(CFLAGS) $(FREESTANDING_CFLAGS) -nostdlib -static -fuse-ld=lld src/tools/awk.c $(AWK_TOOL_SOURCES) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) -o $@
+
 $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
