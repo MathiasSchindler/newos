@@ -29,6 +29,10 @@ sending changes.
 - `extended_tools.sh` — multi-tool workflow and integration scenarios
 - `shell.sh` — `sh` parsing, built-ins, and script execution
 
+Current Phase 1 coverage spans the core filesystem and text utilities plus
+compiler, math, platform, archive/compression, checksum, ELF inspection,
+process-state, metadata, and basic local network/build contracts.
+
 ## CONTRIBUTOR NOTES
 
 - A failing run leaves logs under `tests/tmp/logs/<suite>.log`; start there
@@ -37,6 +41,8 @@ sending changes.
   creating a one-off runner.
 - Reserve `extended_tools.sh` for real workflow-style tests that combine
   multiple tools.
+- Phase 1 runs several per-tool scripts in parallel by default; set
+  `PHASE1_JOBS=1` when debugging a single failure in strict serial order.
 - Benchmarks are informational; smoke tests are the main regression gate.
 - `make test` validates the hosted build, so changes in shared runtime,
   platform, startup, or compiler-link logic should still be followed by a

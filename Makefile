@@ -29,6 +29,7 @@ else
 $(error Unsupported TARGET_ARCH '$(TARGET_ARCH)'; expected x86_64 or aarch64)
 endif
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+PHASE1_JOBS ?= $(PARALLEL_JOBS)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
 LOCAL_PLATFORM_ONLY ?= $(if $(filter Darwin,$(HOST_OS)),1,0)
 DEFAULT_ALL_TARGETS := host
@@ -67,7 +68,7 @@ TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
 test: test-phase1 test-smoke
 
 test-phase1: host
-	sh ./tests/phase1/run_phase1_tests.sh
+	PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 
 test-smoke: host
 	SKIP_PHASE1=1 sh ./tests/run_smoke_tests.sh
