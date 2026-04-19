@@ -244,6 +244,34 @@ typedef struct {
 
 #define TOOL_REGEX_REPEAT_UNBOUNDED (~0ULL)
 
+static int tool_regex_is_utf8_continuation(unsigned char ch) {
+    return (ch & 0xc0U) == 0x80U;
+}
+
+static size_t tool_regex_decode_codepoint(const char *text, unsigned int *codepoint_out) {
+    size_t index = 0U;
+    size_t length;
+    unsigned int local_codepoint = 0U;
+    unsigned int *target = codepoint_out != 0 ? codepoint_out : &local_codepoint;
+
+    if (text == 0 || text[0] == '\0') {
+        if (codepoint_out != 0) {
+            *codepoint_out = 0U;
+        }
+        return 0U;
+    }
+
+    length = rt_strlen(text);
+    if (rt_utf8_decode(text, length, &index, target) != 0 || index == 0U) {
+        if (codepoint_out != 0) {
+            *codepoint_out = (unsigned char)text[0];
+        }
+        return 1U;
+    }
+
+    return index;
+}
+
 static char tool_regex_to_lower_ascii(char ch) {
     if (ch >= 'A' && ch <= 'Z') {
         return (char)(ch - 'A' + 'a');
@@ -251,19 +279,20 @@ static char tool_regex_to_lower_ascii(char ch) {
     return ch;
 }
 
-static int tool_regex_chars_equal(char lhs, char rhs, int ignore_case) {
+static int tool_regex_codepoints_equal(unsigned int lhs, unsigned int rhs, int ignore_case) {
     if (ignore_case) {
-        lhs = tool_regex_to_lower_ascii(lhs);
-        rhs = tool_regex_to_lower_ascii(rhs);
+        lhs = rt_unicode_simple_fold(lhs);
+        rhs = rt_unicode_simple_fold(rhs);
     }
     return lhs == rhs;
 }
 
-static int tool_regex_is_word_char(char ch) {
-    return (ch >= 'a' && ch <= 'z') ||
-           (ch >= 'A' && ch <= 'Z') ||
-           (ch >= '0' && ch <= '9') ||
-           ch == '_';
+static int tool_regex_chars_equal(char lhs, char rhs, int ignore_case) {
+    return tool_regex_codepoints_equal((unsigned char)lhs, (unsigned char)rhs, ignore_case);
+}
+
+static int tool_regex_is_word_char(unsigned int ch) {
+    return rt_unicode_is_word(ch);
 }
 
 static void tool_regex_copy_captures(ToolRegexCaptures *dst, const ToolRegexCaptures *src) {
@@ -299,7 +328,7 @@ static int tool_regex_decode_escape(char code, char *out) {
     return 0;
 }
 
-static int tool_regex_escape_matches(char code, char ch, int ignore_case) {
+static int tool_regex_escape_matches(char code, unsigned int ch, int ignore_case) {
     char decoded = '\0';
 
     if (code == 'd') {
@@ -315,14 +344,14 @@ static int tool_regex_escape_matches(char code, char ch, int ignore_case) {
         return !tool_regex_is_word_char(ch);
     }
     if (code == 's') {
-        return rt_is_space(ch);
+        return rt_unicode_is_space(ch);
     }
     if (code == 'S') {
-        return !rt_is_space(ch);
+        return !rt_unicode_is_space(ch);
     }
 
     (void)tool_regex_decode_escape(code, &decoded);
-    return tool_regex_chars_equal(decoded, ch, ignore_case);
+    return tool_regex_codepoints_equal((unsigned char)decoded, ch, ignore_case);
 }
 
 static size_t tool_regex_skip_class(const char *pattern, size_t pos, size_t end) {
@@ -418,14 +447,25 @@ static size_t tool_regex_atom_span(const char *pattern, size_t pos, size_t end) 
             return close - pos + 1U;
         }
     }
+    if (((unsigned char)pattern[pos] & 0x80U) != 0U) {
+        size_t i = pos + 1U;
+        while (i < end && tool_regex_is_utf8_continuation((unsigned char)pattern[i])) {
+            i += 1U;
+        }
+        return i - pos;
+    }
     return 1U;
 }
 
-static int tool_regex_class_matches(const char *pattern, size_t atom_len, char ch, int ignore_case) {
+static int tool_regex_class_matches(const char *pattern, size_t atom_len, unsigned int ch, int ignore_case) {
     size_t i = 1U;
     int negate = 0;
     int matched = 0;
-    char compare_ch = ignore_case ? tool_regex_to_lower_ascii(ch) : ch;
+    char compare_ch = (char)(ch <= 0x7fU ? ch : 0);
+
+    if (ignore_case && ch <= 0x7fU) {
+        compare_ch = tool_regex_to_lower_ascii(compare_ch);
+    }
 
     if (pattern == 0 || atom_len < 2U || pattern[0] != '[') {
         return 0;
@@ -509,6 +549,8 @@ static int tool_regex_match_atom(const char *pattern,
                                  int ignore_case,
                                  ToolRegexCaptures *captures,
                                  const char **next_text_out) {
+    unsigned int text_codepoint = 0U;
+    size_t text_advance = 0U;
     if (pos >= atom_end) {
         return 0;
     }
@@ -572,28 +614,40 @@ static int tool_regex_match_atom(const char *pattern,
         return 0;
     }
 
+    text_advance = tool_regex_decode_codepoint(text, &text_codepoint);
+    if (text_advance == 0U) {
+        return 0;
+    }
+
     if (pattern[pos] == '.' && atom_end == pos + 1U) {
-        *next_text_out = text + 1;
+        *next_text_out = text + text_advance;
         return 1;
     }
     if (pattern[pos] == '[') {
-        if (tool_regex_class_matches(pattern + pos, atom_end - pos, *text, ignore_case)) {
-            *next_text_out = text + 1;
+        if (tool_regex_class_matches(pattern + pos, atom_end - pos, text_codepoint, ignore_case)) {
+            *next_text_out = text + text_advance;
             return 1;
         }
         return 0;
     }
     if (pattern[pos] == '\\' && pos + 1U < atom_end) {
-        if (tool_regex_escape_matches(pattern[pos + 1U], *text, ignore_case)) {
-            *next_text_out = text + 1;
+        if (tool_regex_escape_matches(pattern[pos + 1U], text_codepoint, ignore_case)) {
+            *next_text_out = text + text_advance;
             return 1;
         }
         return 0;
     }
-    if (tool_regex_chars_equal(pattern[pos], *text, ignore_case)) {
-        *next_text_out = text + 1;
-        return 1;
+
+    {
+        unsigned int pattern_codepoint = 0U;
+        size_t pattern_advance = tool_regex_decode_codepoint(pattern + pos, &pattern_codepoint);
+
+        if (pattern_advance > 0U && tool_regex_codepoints_equal(pattern_codepoint, text_codepoint, ignore_case)) {
+            *next_text_out = text + text_advance;
+            return 1;
+        }
     }
+
     return 0;
 }
 
@@ -895,7 +949,12 @@ static int tool_regex_search_internal(const char *pattern,
         if (text[pos] == '\0') {
             break;
         }
-        pos += 1U;
+        if (tool_regex_is_utf8_continuation((unsigned char)text[pos])) {
+            pos += 1U;
+        } else {
+            size_t advance = tool_regex_decode_codepoint(text + pos, 0);
+            pos += advance > 0U ? advance : 1U;
+        }
     }
 
     return 0;

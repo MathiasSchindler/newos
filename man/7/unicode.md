@@ -17,15 +17,20 @@ The intended long-term model is:
 
 ## CURRENT STATE
 
-At present, most tools are byte-oriented and therefore preserve UTF-8 input reasonably well, but much of the parsing and matching logic remains ASCII-centric.
+Stage 1 is now underway in the repository rather than being only a design goal.
 
-Examples of partial Unicode awareness already present in the tree include:
+The shared runtime layer already provides UTF-8 decode, encode, validation, simple case folding, Unicode whitespace checks, word-character checks, and display-width helpers.
 
-- `wc` counting non-continuation UTF-8 bytes as characters
-- `rev` avoiding naive reversal inside UTF-8 sequences
+Visible tool-level improvements already landed include:
+
+- `wc` counting Unicode code points and display width more accurately
+- `rev` preserving UTF-8 sequences while reversing text
+- `grep` performing Stage 1 Unicode-aware ignore-case matching in both fixed-string and regex search paths
+- `man` performing Unicode-aware keyword lookup for manual pages
+- `column`, `fold`, and `fmt` using visual width instead of raw byte count for alignment and wrapping
 - `file` recognizing UTF-8 and UTF-16 text signatures
 
-Important limitations still exist for case-insensitive matching, word boundaries, field splitting, and terminal display width.
+Important limitations still remain. The current implementation is intentionally compact and does not yet provide full normalization, grapheme-cluster segmentation, locale-specific collation, or exhaustive case-fold coverage.
 
 ## GOALS
 
@@ -40,26 +45,30 @@ The full Unicode-support direction for this repository includes:
 
 ## STAGE 1
 
-Stage 1 builds the shared foundation layer.
+Stage 1 builds the shared foundation layer and is now partially implemented.
 
-This stage should provide:
+This stage now provides:
 
 - UTF-8 decode and encode helpers in the runtime
 - validation of incoming byte streams
 - code-point iteration helpers
-- basic Unicode whitespace detection
+- basic Unicode whitespace and word-character detection
 - display-width logic for combining marks and wide characters
 - targeted adoption in the most visible text tools
 
-The first tools expected to benefit from Stage 1 are `wc`, `rev`, `grep`, and `man`.
+So far, Stage 1 work has reached `wc`, `rev`, `grep`, `man`, `column`, `fold`, and `fmt`.
+
+Remaining Stage 1 work is mainly about expanding shared tables and carrying the same behavior into more text-processing tools.
 
 ## LATER STAGES
 
-After the runtime layer is in place, later work can extend Unicode handling to:
+After the current Stage 1 rollout is broadened, the next major steps are:
 
-- case-insensitive search in `grep` and manual-page lookup
-- proper alignment in `column`, `fmt`, and `fold`
-- safer character-oriented behavior in `cut`, `join`, `awk`, and the shell
+- fuller case-fold coverage beyond the compact Stage 1 tables
+- Unicode-aware character classes and semantics across the broader regex and text-processing layer
+- safer character-oriented behavior in `cut`, `join`, `awk`, `sed`, and the shell
+- grapheme-cluster awareness for visibly single characters made of multiple code points
+- normalization-aware comparison where exact equivalence matters
 - policy decisions around compiler identifiers and source normalization
 
 ## DESIGN RULES

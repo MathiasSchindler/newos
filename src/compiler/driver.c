@@ -227,6 +227,7 @@ static int link_executable_output(const CompilerOptions *options, const Compiler
         "src/shared/runtime/string.c",
         "src/shared/runtime/parse.c",
         "src/shared/runtime/io.c",
+        "src/shared/runtime/unicode.c",
         "src/shared/tool_util.c",
         "src/shared/archive_util.c",
         "src/shared/hash_util.c"
