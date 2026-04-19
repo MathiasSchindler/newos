@@ -28,13 +28,28 @@ cat > "$WORK_DIR/man_render.md" <<'EOF'
 
 - bullet entry
 
+Literal flag: `--color[=WHEN]`
+
+| Flag | Meaning |
+|------|---------|
+| `-a` | alpha |
+| `-b` | beta mode |
+
 ```sh
 echo hi
 ```
 EOF
 "$ROOT_DIR/build/man" -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_render.out"
-assert_file_contains "$WORK_DIR/man_render.out" '^  \| quoted note$' "man did not render block quotes cleanly"
+assert_file_contains "$WORK_DIR/man_render.out" '^  [|] quoted note$' "man did not render block quotes cleanly"
 assert_file_contains "$WORK_DIR/man_render.out" '^    echo hi$' "man did not preserve fenced code blocks as indented text"
+assert_file_contains "$WORK_DIR/man_render.out" '^Literal flag: --color\[=WHEN\]$' "man did not preserve literal bracketed option syntax"
+assert_file_contains "$WORK_DIR/man_render.out" '^[+].*[+]$' "man did not render markdown tables with ASCII borders"
+assert_file_contains "$WORK_DIR/man_render.out" '^[|] Flag .* [|]$' "man did not render the table header row cleanly"
+
+"$ROOT_DIR/build/man" --color=always -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_color.out"
+if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/man_color.out"; then
+    fail "man --color=always did not emit ANSI color sequences"
+fi
 
 mkdir -p "$WORK_DIR/manroot/1"
 i=0

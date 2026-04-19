@@ -9,6 +9,8 @@
 #define MAN_ROOT_CAPACITY 16
 #define MAN_RESULT_CAPACITY 512
 #define MAN_RESULT_KEY_CAPACITY 320
+#define MAN_TABLE_MAX_ROWS 64
+#define MAN_TABLE_MAX_COLS 16
 #define DEFAULT_PAGE_LINES 23
 #define DEFAULT_PAGE_COLUMNS 80
 
@@ -23,11 +25,22 @@ typedef struct {
     unsigned int lines_seen;
     unsigned int page_columns;
     unsigned int columns_seen;
+    int color_mode;
     PlatformTerminalState saved_state;
 } ManPager;
 
+typedef struct {
+    int in_code_block;
+    int table_pending;
+    int table_active;
+    int table_has_header;
+    size_t table_row_count;
+    char pending_table_line[MAN_LINE_CAPACITY];
+    char table_rows[MAN_TABLE_MAX_ROWS][MAN_LINE_CAPACITY];
+} ManRenderState;
+
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-k KEYWORD] [-l FILE] [SECTION] TOPIC");
+    tool_write_usage(program_name, "[-k KEYWORD] [-l FILE] [--color[=WHEN]] [SECTION] TOPIC");
 }
 
 static unsigned int pager_page_lines(void) {
@@ -65,6 +78,7 @@ static void pager_init(ManPager *pager) {
     rt_memset(pager, 0, sizeof(*pager));
     pager->page_lines = pager_page_lines();
     pager->page_columns = pager_page_columns(&explicit_columns);
+    pager->color_mode = tool_get_global_color_mode();
     pager->interactive = (platform_isatty(0) != 0 && platform_isatty(1) != 0);
 
     if (!pager->interactive && !explicit_columns) {
@@ -131,6 +145,22 @@ static int pager_write_all(ManPager *pager, const char *text, size_t length) {
             }
         }
 
+        if (text[index] == '\033' && index + 1U < length && text[index + 1U] == '[') {
+            size_t escape_end = index + 2U;
+
+            while (escape_end < length) {
+                char ch = text[escape_end++];
+                if (ch >= '@' && ch <= '~') {
+                    break;
+                }
+            }
+            if (rt_write_all(1, text + index, escape_end - index) != 0) {
+                return -1;
+            }
+            index = escape_end;
+            continue;
+        }
+
         if (rt_utf8_decode(text, length, &next, &codepoint) != 0 || next <= index) {
             next = index + 1U;
             codepoint = (unsigned char)text[index];
@@ -186,6 +216,50 @@ static int pager_write_cstr(ManPager *pager, const char *text) {
 
 static int pager_write_char(ManPager *pager, char ch) {
     return pager_write_all(pager, &ch, 1U);
+}
+
+static int pager_write_styled_cstr(ManPager *pager, int style, const char *text) {
+    int use_style;
+    int result;
+
+    if (text == 0) {
+        return 0;
+    }
+    use_style = (style != TOOL_STYLE_PLAIN) && tool_should_use_color_fd(1, pager->color_mode);
+    if (use_style) {
+        tool_style_begin(1, pager->color_mode, style);
+    }
+    result = pager_write_cstr(pager, text);
+    if (use_style) {
+        tool_style_end(1, pager->color_mode);
+    }
+    return result;
+}
+
+static int pager_write_styled_char(ManPager *pager, int style, char ch) {
+    int use_style = (style != TOOL_STYLE_PLAIN) && tool_should_use_color_fd(1, pager->color_mode);
+    int result;
+
+    if (use_style) {
+        tool_style_begin(1, pager->color_mode, style);
+    }
+    result = pager_write_char(pager, ch);
+    if (use_style) {
+        tool_style_end(1, pager->color_mode);
+    }
+    return result;
+}
+
+static int pager_write_repeated_char(ManPager *pager, int style, char ch, unsigned int count) {
+    unsigned int i;
+
+    for (i = 0U; i < count; ++i) {
+        int result = pager_write_styled_char(pager, style, ch);
+        if (result != 0) {
+            return result;
+        }
+    }
+    return 0;
 }
 
 static int text_starts_with(const char *text, const char *prefix) {
@@ -468,15 +542,28 @@ static void trim_range(const char **start_io, const char **end_io) {
     }
 }
 
-static int line_contains_char(const char *text, char target) {
-    size_t i = 0;
-    while (text[i] != '\0') {
-        if (text[i] == target) {
-            return 1;
+static unsigned int display_text_width(const char *text) {
+    size_t text_length = rt_strlen(text);
+    size_t index = 0U;
+    unsigned int width = 0U;
+
+    while (index < text_length) {
+        size_t next = index;
+        unsigned int codepoint = 0U;
+
+        if (rt_utf8_decode(text, text_length, &next, &codepoint) != 0 || next <= index) {
+            next = index + 1U;
+            codepoint = (unsigned char)text[index];
         }
-        i += 1U;
+        if (codepoint == '\t') {
+            width += 4U - (width % 4U);
+        } else {
+            width += rt_unicode_display_width(codepoint);
+        }
+        index = next;
     }
-    return 0;
+
+    return width;
 }
 
 static int is_table_separator_line(const char *text) {
@@ -496,6 +583,23 @@ static int is_table_separator_line(const char *text) {
     return saw_rule;
 }
 
+static int is_table_candidate_line(const char *text) {
+    int pipe_count = 0;
+    int saw_nonspace = 0;
+    size_t i = 0U;
+
+    while (text[i] != '\0') {
+        if (text[i] == '|') {
+            pipe_count += 1;
+        } else if (text[i] != ' ' && text[i] != '\t') {
+            saw_nonspace = 1;
+        }
+        i += 1U;
+    }
+
+    return saw_nonspace && pipe_count >= 2;
+}
+
 static int format_inline_markdown(const char *text, char *buffer, size_t buffer_size) {
     size_t i = 0;
     size_t out = 0;
@@ -511,25 +615,35 @@ static int format_inline_markdown(const char *text, char *buffer, size_t buffer_
             continue;
         }
         if (text[i] == '[') {
-            i += 1U;
-            while (text[i] != '\0' && text[i] != ']') {
-                if (buffer_append_char(buffer, buffer_size, &out, text[i]) != 0) {
-                    return -1;
-                }
-                i += 1U;
+            size_t lookahead = i + 1U;
+
+            while (text[lookahead] != '\0' && text[lookahead] != ']') {
+                lookahead += 1U;
             }
-            if (text[i] == ']') {
+            if (text[lookahead] == ']' && text[lookahead + 1U] == '(') {
                 i += 1U;
-            }
-            if (text[i] == '(') {
-                while (text[i] != '\0' && text[i] != ')') {
+                while (text[i] != '\0' && text[i] != ']') {
+                    if (buffer_append_char(buffer, buffer_size, &out, text[i]) != 0) {
+                        return -1;
+                    }
                     i += 1U;
                 }
                 if (text[i] == ')') {
                     i += 1U;
                 }
+                if (text[i] == ']') {
+                    i += 1U;
+                }
+                if (text[i] == '(') {
+                    while (text[i] != '\0' && text[i] != ')') {
+                        i += 1U;
+                    }
+                    if (text[i] == ')') {
+                        i += 1U;
+                    }
+                }
+                continue;
             }
-            continue;
         }
         if (text[i] == '*' || text[i] == '_') {
             i += 1U;
@@ -544,72 +658,212 @@ static int format_inline_markdown(const char *text, char *buffer, size_t buffer_
     return 0;
 }
 
-static int render_table_row(const char *text, ManPager *pager) {
+static int parse_table_row_cells(const char *text,
+                                 char cells[MAN_TABLE_MAX_COLS][MAN_LINE_CAPACITY],
+                                 size_t *count_out) {
     const char *cursor = text;
-    int first_cell = 1;
-    int result;
+    int at_row_start = 1;
+    size_t count = 0U;
 
-    while (*cursor != '\0') {
-        const char *start;
+    while (1) {
+        const char *start = cursor;
         const char *end;
-        char cell[MAN_LINE_CAPACITY];
-        char rendered[MAN_LINE_CAPACITY];
-        size_t length = 0;
+        char raw[MAN_LINE_CAPACITY];
+        size_t raw_length = 0U;
+        int is_last_segment;
 
-        if (*cursor == '|') {
-            cursor += 1;
-        }
-        start = cursor;
         while (*cursor != '\0' && *cursor != '|') {
             cursor += 1;
         }
         end = cursor;
         trim_range(&start, &end);
-        while (start < end && length + 1U < sizeof(cell)) {
-            cell[length++] = *start++;
-        }
-        cell[length] = '\0';
+        is_last_segment = (*cursor == '\0');
 
-        if (cell[0] == '\0') {
-            continue;
-        }
+        if (!(start == end && (at_row_start || is_last_segment))) {
+            while (start < end && raw_length + 1U < sizeof(raw)) {
+                raw[raw_length++] = *start++;
+            }
+            raw[raw_length] = '\0';
 
-        if (format_inline_markdown(cell, rendered, sizeof(rendered)) != 0) {
-            return -1;
-        }
-
-        if (!first_cell) {
-            result = pager_write_cstr(pager, "    ");
-            if (result != 0) {
-                return result;
+            if (count < MAN_TABLE_MAX_COLS) {
+                if (format_inline_markdown(raw, cells[count], MAN_LINE_CAPACITY) != 0) {
+                    return -1;
+                }
+                count += 1U;
             }
         }
-        result = pager_write_cstr(pager, rendered);
+
+        at_row_start = 0;
+        if (*cursor == '\0') {
+            break;
+        }
+        cursor += 1;
+    }
+
+    *count_out = count;
+    return 0;
+}
+
+static void clear_table_state(ManRenderState *state) {
+    state->table_pending = 0;
+    state->table_active = 0;
+    state->table_has_header = 0;
+    state->table_row_count = 0U;
+    state->pending_table_line[0] = '\0';
+}
+
+static int add_table_row(ManRenderState *state, const char *line) {
+    if (state->table_row_count >= MAN_TABLE_MAX_ROWS) {
+        return -1;
+    }
+    rt_copy_string(state->table_rows[state->table_row_count], MAN_LINE_CAPACITY, line);
+    state->table_row_count += 1U;
+    return 0;
+}
+
+static int render_table_border(ManPager *pager,
+                               const unsigned int *widths,
+                               size_t column_count,
+                               char rule_char) {
+    size_t column;
+    int result;
+
+    result = pager_write_styled_char(pager, TOOL_STYLE_CYAN, '+');
+    if (result != 0) {
+        return result;
+    }
+    for (column = 0U; column < column_count; ++column) {
+        result = pager_write_repeated_char(pager, TOOL_STYLE_CYAN, rule_char, widths[column] + 2U);
         if (result != 0) {
             return result;
         }
-        first_cell = 0;
+        result = pager_write_styled_char(pager, TOOL_STYLE_CYAN, '+');
+        if (result != 0) {
+            return result;
+        }
+    }
+    return pager_write_char(pager, '\n');
+}
+
+static int render_table_row_framed(ManPager *pager,
+                                   const char *line,
+                                   const unsigned int *widths,
+                                   size_t column_count,
+                                   int is_header) {
+    char cells[MAN_TABLE_MAX_COLS][MAN_LINE_CAPACITY];
+    size_t count = 0U;
+    size_t column;
+    int result;
+
+    if (parse_table_row_cells(line, cells, &count) != 0) {
+        return -1;
+    }
+
+    result = pager_write_styled_char(pager, TOOL_STYLE_CYAN, '|');
+    if (result != 0) {
+        return result;
+    }
+
+    for (column = 0U; column < column_count; ++column) {
+        unsigned int width = 0U;
+        unsigned int padding = 0U;
+        const char *cell_text = column < count ? cells[column] : "";
+
+        result = pager_write_char(pager, ' ');
+        if (result != 0) {
+            return result;
+        }
+        result = pager_write_styled_cstr(pager, is_header ? TOOL_STYLE_BOLD_CYAN : TOOL_STYLE_PLAIN, cell_text);
+        if (result != 0) {
+            return result;
+        }
+
+        width = display_text_width(cell_text);
+        padding = widths[column] > width ? (widths[column] - width) : 0U;
+        result = pager_write_repeated_char(pager, TOOL_STYLE_PLAIN, ' ', padding + 1U);
+        if (result != 0) {
+            return result;
+        }
+        result = pager_write_styled_char(pager, TOOL_STYLE_CYAN, '|');
+        if (result != 0) {
+            return result;
+        }
     }
 
     return pager_write_char(pager, '\n');
 }
 
-static int flush_rendered_line(const char *line, int *in_code_block, ManPager *pager) {
+static int render_table_block(ManRenderState *state, ManPager *pager) {
+    unsigned int widths[MAN_TABLE_MAX_COLS];
+    size_t column_count = 0U;
+    size_t row;
+    int result;
+
+    rt_memset(widths, 0, sizeof(widths));
+
+    for (row = 0U; row < state->table_row_count; ++row) {
+        char cells[MAN_TABLE_MAX_COLS][MAN_LINE_CAPACITY];
+        size_t count = 0U;
+        size_t column;
+
+        if (parse_table_row_cells(state->table_rows[row], cells, &count) != 0) {
+            return -1;
+        }
+        if (count > column_count) {
+            column_count = count;
+        }
+        for (column = 0U; column < count; ++column) {
+            unsigned int width = display_text_width(cells[column]);
+            if (width > widths[column]) {
+                widths[column] = width;
+            }
+        }
+    }
+
+    if (column_count == 0U) {
+        clear_table_state(state);
+        return 0;
+    }
+
+    result = render_table_border(pager, widths, column_count, '-');
+    if (result != 0) {
+        return result;
+    }
+
+    for (row = 0U; row < state->table_row_count; ++row) {
+        result = render_table_row_framed(pager, state->table_rows[row], widths, column_count, state->table_has_header && row == 0U);
+        if (result != 0) {
+            return result;
+        }
+        if (state->table_has_header && row == 0U) {
+            result = render_table_border(pager, widths, column_count, '=');
+            if (result != 0) {
+                return result;
+            }
+        }
+    }
+
+    result = render_table_border(pager, widths, column_count, '-');
+    clear_table_state(state);
+    return result;
+}
+
+static int render_plain_line(const char *line, ManRenderState *state, ManPager *pager) {
     const char *text = line;
     char rendered[MAN_LINE_CAPACITY];
     int result;
 
     if (text_starts_with(text, "```")) {
-        *in_code_block = !*in_code_block;
+        state->in_code_block = !state->in_code_block;
         return 0;
     }
 
-    if (*in_code_block) {
-        result = pager_write_cstr(pager, "    ");
+    if (state->in_code_block) {
+        result = pager_write_styled_cstr(pager, TOOL_STYLE_GREEN, "    ");
         if (result != 0) {
             return result;
         }
-        result = pager_write_cstr(pager, text);
+        result = pager_write_styled_cstr(pager, TOOL_STYLE_GREEN, text);
         if (result != 0) {
             return result;
         }
@@ -636,7 +890,7 @@ static int flush_rendered_line(const char *line, int *in_code_block, ManPager *p
             return -1;
         }
         underline_char = level <= 1U ? '=' : '-';
-        result = pager_write_cstr(pager, rendered);
+        result = pager_write_styled_cstr(pager, TOOL_STYLE_BOLD_CYAN, rendered);
         if (result != 0) {
             return result;
         }
@@ -645,16 +899,12 @@ static int flush_rendered_line(const char *line, int *in_code_block, ManPager *p
             return result;
         }
         for (i = 0; rendered[i] != '\0'; ++i) {
-            result = pager_write_char(pager, underline_char);
+            result = pager_write_styled_char(pager, TOOL_STYLE_CYAN, underline_char);
             if (result != 0) {
                 return result;
             }
         }
         return pager_write_char(pager, '\n');
-    }
-
-    if (is_table_separator_line(text)) {
-        return 0;
     }
     if (text_starts_with(text, "> ") || *text == '>') {
         if (*text == '>') {
@@ -666,7 +916,7 @@ static int flush_rendered_line(const char *line, int *in_code_block, ManPager *p
         if (format_inline_markdown(text, rendered, sizeof(rendered)) != 0) {
             return -1;
         }
-        result = pager_write_cstr(pager, "  | ");
+        result = pager_write_styled_cstr(pager, TOOL_STYLE_YELLOW, "  | ");
         if (result != 0) {
             return result;
         }
@@ -676,12 +926,9 @@ static int flush_rendered_line(const char *line, int *in_code_block, ManPager *p
         }
         return pager_write_char(pager, '\n');
     }
-    if (line_contains_char(text, '|')) {
-        return render_table_row(text, pager);
-    }
 
     if (text_starts_with(text, "- ") || text_starts_with(text, "* ")) {
-        result = pager_write_cstr(pager, "  * ");
+        result = pager_write_styled_cstr(pager, TOOL_STYLE_BOLD_YELLOW, "  * ");
         if (result != 0) {
             return result;
         }
@@ -692,7 +939,7 @@ static int flush_rendered_line(const char *line, int *in_code_block, ManPager *p
             i += 1U;
         }
         if ((text[i] == '.' || text[i] == ')') && text[i + 1U] == ' ') {
-            result = pager_write_cstr(pager, "  ");
+            result = pager_write_styled_cstr(pager, TOOL_STYLE_BOLD_YELLOW, "  ");
             if (result != 0) {
                 return result;
             }
@@ -709,21 +956,77 @@ static int flush_rendered_line(const char *line, int *in_code_block, ManPager *p
     }
 
     return pager_write_char(pager, '\n');
+}
 
-    return 0;
+static int flush_rendered_line(const char *line, ManRenderState *state, ManPager *pager) {
+    const char *text = line;
+
+    while (*text == ' ' || *text == '\t') {
+        text += 1;
+    }
+
+    if (!state->in_code_block && is_table_separator_line(text)) {
+        if (state->table_pending) {
+            state->table_active = 1;
+            state->table_has_header = 1;
+            if (add_table_row(state, state->pending_table_line) != 0) {
+                return -1;
+            }
+            state->table_pending = 0;
+            state->pending_table_line[0] = '\0';
+        }
+        return 0;
+    }
+
+    if (!state->in_code_block && is_table_candidate_line(text)) {
+        if (state->table_active) {
+            return add_table_row(state, text);
+        }
+        if (state->table_pending) {
+            state->table_active = 1;
+            if (add_table_row(state, state->pending_table_line) != 0 || add_table_row(state, text) != 0) {
+                return -1;
+            }
+            state->table_pending = 0;
+            state->pending_table_line[0] = '\0';
+            return 0;
+        }
+
+        rt_copy_string(state->pending_table_line, sizeof(state->pending_table_line), text);
+        state->table_pending = 1;
+        return 0;
+    }
+
+    if (state->table_active) {
+        int table_result = render_table_block(state, pager);
+        if (table_result != 0) {
+            return table_result;
+        }
+    } else if (state->table_pending) {
+        int pending_result;
+        state->table_pending = 0;
+        pending_result = render_plain_line(state->pending_table_line, state, pager);
+        state->pending_table_line[0] = '\0';
+        if (pending_result != 0) {
+            return pending_result;
+        }
+    }
+
+    return render_plain_line(text, state, pager);
 }
 
 static int render_markdown_file(const char *path) {
     char buffer[MAN_SCAN_BUFFER];
     char line[MAN_LINE_CAPACITY];
     size_t line_length = 0;
-    int in_code_block = 0;
     int fd;
     long bytes_read;
     int result = 0;
     ManPager pager;
+    ManRenderState state;
 
     pager_init(&pager);
+    rt_memset(&state, 0, sizeof(state));
 
     fd = platform_open_read(path);
     if (fd < 0) {
@@ -744,7 +1047,7 @@ static int render_markdown_file(const char *path) {
             if (ch == '\n') {
                 int flush_result;
                 line[line_length] = '\0';
-                flush_result = flush_rendered_line(line, &in_code_block, &pager);
+                flush_result = flush_rendered_line(line, &state, &pager);
                 if (flush_result > 0) {
                     platform_close(fd);
                     pager_finish(&pager);
@@ -771,8 +1074,18 @@ static int render_markdown_file(const char *path) {
     } else if (line_length > 0U) {
         int flush_result;
         line[line_length] = '\0';
-        flush_result = flush_rendered_line(line, &in_code_block, &pager);
+        flush_result = flush_rendered_line(line, &state, &pager);
         if (flush_result < 0) {
+            result = -1;
+        }
+    }
+
+    if (result == 0 && state.table_active) {
+        if (render_table_block(&state, &pager) != 0) {
+            result = -1;
+        }
+    } else if (result == 0 && state.table_pending) {
+        if (render_plain_line(state.pending_table_line, &state, &pager) != 0) {
             result = -1;
         }
     }
@@ -963,6 +1276,7 @@ int main(int argc, char **argv) {
     int argi = 1;
 
     set_self_dir(argv[0], context.self_dir, sizeof(context.self_dir));
+    tool_set_global_color_mode(TOOL_COLOR_AUTO);
 
     if (argc > 1 && rt_strcmp(argv[1], "--help") == 0) {
         print_usage(argv[0]);
@@ -984,6 +1298,17 @@ int main(int argc, char **argv) {
             }
             literal_path = argv[argi + 1];
             argi += 2;
+        } else if (rt_strcmp(argv[argi], "--color") == 0) {
+            tool_set_global_color_mode(TOOL_COLOR_ALWAYS);
+            argi += 1;
+        } else if (text_starts_with(argv[argi], "--color=")) {
+            int color_mode = TOOL_COLOR_AUTO;
+            if (tool_parse_color_mode(argv[argi] + 8, &color_mode) != 0) {
+                tool_write_error("man", "invalid color mode: ", argv[argi] + 8);
+                return 1;
+            }
+            tool_set_global_color_mode(color_mode);
+            argi += 1;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
             break;
