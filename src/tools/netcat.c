@@ -2,64 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static int parse_duration_ms(const char *text, unsigned int *milliseconds_out) {
-    unsigned long long whole = 0;
-    unsigned long long fraction = 0;
-    unsigned long long divisor = 1;
-    unsigned long long unit_ms = 1000ULL;
-    unsigned long long total;
-    int saw_digit = 0;
-    int saw_fraction = 0;
-
-    if (text == 0 || text[0] == '\0' || milliseconds_out == 0) {
-        return -1;
-    }
-
-    while (*text >= '0' && *text <= '9') {
-        saw_digit = 1;
-        whole = (whole * 10ULL) + (unsigned long long)(*text - '0');
-        text += 1;
-    }
-
-    if (*text == '.') {
-        text += 1;
-        while (*text >= '0' && *text <= '9') {
-            saw_digit = 1;
-            saw_fraction = 1;
-            if (divisor < 1000000ULL) {
-                fraction = (fraction * 10ULL) + (unsigned long long)(*text - '0');
-                divisor *= 10ULL;
-            }
-            text += 1;
-        }
-    }
-
-    if (!saw_digit) {
-        return -1;
-    }
-
-    if (text[0] == '\0' || (text[0] == 's' && text[1] == '\0')) {
-        unit_ms = 1000ULL;
-    } else if (text[0] == 'm' && text[1] == 's' && text[2] == '\0') {
-        unit_ms = 1ULL;
-    } else if (text[0] == 'm' && text[1] == '\0') {
-        unit_ms = 60ULL * 1000ULL;
-    } else {
-        return -1;
-    }
-
-    total = whole * unit_ms;
-    if (saw_fraction) {
-        total += ((fraction * unit_ms) + (divisor / 2ULL)) / divisor;
-    }
-    if (total > 0xffffffffULL) {
-        return -1;
-    }
-
-    *milliseconds_out = (unsigned int)total;
-    return 0;
-}
-
 int main(int argc, char **argv) {
     unsigned long long port = 0;
     PlatformNetcatOptions options;
@@ -79,10 +21,12 @@ int main(int argc, char **argv) {
         } else if (rt_strcmp(argv[argi], "-z") == 0) {
             scan_mode = 1;
         } else if (rt_strcmp(argv[argi], "-w") == 0) {
-            if (argi + 1 >= argc || parse_duration_ms(argv[argi + 1], &options.timeout_milliseconds) != 0) {
+            unsigned long long timeout_value = 0;
+            if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &timeout_value) != 0 || timeout_value > 0xffffffffULL) {
                 tool_write_usage("netcat", "[-u] [-z] [-w TIMEOUT] [-v] HOST PORT | -l [-u] [-w TIMEOUT] [-v] PORT");
                 return 1;
             }
+            options.timeout_milliseconds = (unsigned int)timeout_value;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-v") == 0) {
             verbose = 1;

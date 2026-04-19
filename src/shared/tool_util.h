@@ -53,6 +53,7 @@ int  tool_opt_next(ToolOptState *s);
 int  tool_opt_require_value(ToolOptState *s);
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what);
 int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_name, const char *what);
+int tool_parse_duration_ms(const char *text, unsigned long long *milliseconds_out);
 int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out);
 int tool_parse_signal_name(const char *text, int *signal_out);
 const char *tool_signal_name(int signal_number);

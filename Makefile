@@ -25,7 +25,7 @@ DEFAULT_ALL_TARGETS := host
 ifeq ($(LOCAL_PLATFORM_ONLY),0)
 DEFAULT_ALL_TARGETS += freestanding
 endif
-TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod chown uname hostname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df netcat ssh ncc man test [ true false expr uniq seq mktemp yes less more patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
+TOOLS := sh ls cat echo pwd mkdir rm rmdir cp mv ln chmod chown uname hostname touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill wc head tail ps sort cut tr grep ping id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings printf which readlink stat du df netcat ssh ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 COMPILER_IMPL_INCLUDES := \

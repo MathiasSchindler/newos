@@ -57,6 +57,17 @@ assert_command_succeeds "$ROOT_DIR/build/sleep" 0.01 0.02s
 sleep_multi_end=$(date +%s)
 [ "$sleep_multi_end" -ge "$sleep_multi_start" ] || fail "sleep duration parsing regressed"
 
+watch_out=$("$ROOT_DIR/build/watch" -n 0.01 -c 2 -t "$ROOT_DIR/build/echo" watched | tr -d '\r')
+printf '%s\n' "$watch_out" > "$WORK_DIR/watch.out"
+watch_runs=$(grep -c '^watched$' "$WORK_DIR/watch.out" | tr -d '\r\n')
+assert_text_equals "$watch_runs" '2' "watch did not re-run the command the requested number of times"
+
+printf 'wget sample\n' > "$WORK_DIR/wget_source.txt"
+assert_command_succeeds "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_copy.txt" "file://$WORK_DIR/wget_source.txt"
+assert_files_equal "$WORK_DIR/wget_source.txt" "$WORK_DIR/wget_copy.txt" "wget file:// download failed"
+wget_stdout=$("$ROOT_DIR/build/wget" -q -O - "file://$WORK_DIR/wget_source.txt" | tr -d '\r\n')
+assert_text_equals "$wget_stdout" 'wget sample' "wget -O - did not stream the fetched content"
+
 printf 'preserve\n' > "$WORK_DIR/cp_preserve_src.txt"
 assert_command_succeeds "$ROOT_DIR/build/touch" -t 200102030405.06 "$WORK_DIR/cp_preserve_src.txt"
 assert_command_succeeds "$ROOT_DIR/build/cp" -p "$WORK_DIR/cp_preserve_src.txt" "$WORK_DIR/cp_preserve_dest.txt"

@@ -17,66 +17,6 @@ static int starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
-static int parse_duration_ms(const char *text, unsigned long long *milliseconds_out) {
-    unsigned long long whole = 0;
-    unsigned long long fraction = 0;
-    unsigned long long divisor = 1;
-    unsigned long long unit_ms = 1000ULL;
-    int saw_digit = 0;
-    int saw_fraction = 0;
-
-    if (text == 0 || text[0] == '\0' || milliseconds_out == 0) {
-        return -1;
-    }
-
-    while (*text >= '0' && *text <= '9') {
-        saw_digit = 1;
-        whole = (whole * 10ULL) + (unsigned long long)(*text - '0');
-        text += 1;
-    }
-
-    if (*text == '.') {
-        text += 1;
-        while (*text >= '0' && *text <= '9') {
-            saw_digit = 1;
-            saw_fraction = 1;
-            if (divisor < 1000000ULL) {
-                fraction = (fraction * 10ULL) + (unsigned long long)(*text - '0');
-                divisor *= 10ULL;
-            }
-            text += 1;
-        }
-    }
-
-    if (!saw_digit) {
-        return -1;
-    }
-
-    if (text[0] == '\0' || (text[0] == 's' && text[1] == '\0')) {
-        unit_ms = 1000ULL;
-    } else if (text[0] == 'm' && text[1] == 's' && text[2] == '\0') {
-        unit_ms = 1ULL;
-    } else if (text[0] == 'm' && text[1] == '\0') {
-        unit_ms = 60ULL * 1000ULL;
-    } else if (text[0] == 'h' && text[1] == '\0') {
-        unit_ms = 60ULL * 60ULL * 1000ULL;
-    } else if (text[0] == 'd' && text[1] == '\0') {
-        unit_ms = 24ULL * 60ULL * 60ULL * 1000ULL;
-    } else {
-        return -1;
-    }
-
-    *milliseconds_out = whole * unit_ms;
-    if (saw_fraction) {
-        unsigned long long fraction_ms = ((fraction * unit_ms) + (divisor / 2ULL)) / divisor;
-        if (fraction_ms == 0ULL && fraction > 0ULL) {
-            fraction_ms = 1ULL;
-        }
-        *milliseconds_out += fraction_ms;
-    }
-    return 0;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[--preserve-status] [-s SIGNAL|--signal SIGNAL] [-k DURATION|--kill-after DURATION] DURATION COMMAND [ARG ...]");
 }
@@ -135,7 +75,7 @@ int main(int argc, char **argv) {
             continue;
         }
         if (rt_strcmp(arg, "-k") == 0 || rt_strcmp(arg, "--kill-after") == 0) {
-            if (argi + 1 >= argc || parse_duration_ms(argv[argi + 1], &kill_after_milliseconds) != 0) {
+            if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &kill_after_milliseconds) != 0) {
                 print_usage(argv[0]);
                 return 125;
             }
@@ -143,7 +83,7 @@ int main(int argc, char **argv) {
             continue;
         }
         if (starts_with(arg, "--kill-after=")) {
-            if (parse_duration_ms(arg + 13, &kill_after_milliseconds) != 0) {
+            if (tool_parse_duration_ms(arg + 13, &kill_after_milliseconds) != 0) {
                 print_usage(argv[0]);
                 return 125;
             }
@@ -151,7 +91,7 @@ int main(int argc, char **argv) {
             continue;
         }
         if (arg[0] == '-' && arg[1] == 'k' && arg[2] != '\0') {
-            if (parse_duration_ms(arg + 2, &kill_after_milliseconds) != 0) {
+            if (tool_parse_duration_ms(arg + 2, &kill_after_milliseconds) != 0) {
                 print_usage(argv[0]);
                 return 125;
             }
@@ -161,7 +101,7 @@ int main(int argc, char **argv) {
         break;
     }
 
-    if (argc - argi < 2 || parse_duration_ms(argv[argi], &timeout_milliseconds) != 0) {
+    if (argc - argi < 2 || tool_parse_duration_ms(argv[argi], &timeout_milliseconds) != 0) {
         print_usage(argv[0]);
         return 125;
     }
