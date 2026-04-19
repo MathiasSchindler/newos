@@ -2,8 +2,6 @@
 
 #include "ssh_client_internal.h"
 
-#include <string.h>
-
 int ssh_write_all(int fd, const void *buffer, size_t count) {
     const unsigned char *data = (const unsigned char *)buffer;
     size_t offset = 0U;
