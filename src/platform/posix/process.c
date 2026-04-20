@@ -318,6 +318,76 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
     return 0;
 }
 
+static void platform_make_raw_termios(struct termios *raw) {
+    if (raw == NULL) {
+        return;
+    }
+
+    raw->c_iflag &= ~(tcflag_t)(
+#ifdef IGNBRK
+        IGNBRK |
+#endif
+#ifdef BRKINT
+        BRKINT |
+#endif
+#ifdef PARMRK
+        PARMRK |
+#endif
+#ifdef ISTRIP
+        ISTRIP |
+#endif
+#ifdef INLCR
+        INLCR |
+#endif
+#ifdef IGNCR
+        IGNCR |
+#endif
+#ifdef ICRNL
+        ICRNL |
+#endif
+#ifdef IXON
+        IXON |
+#endif
+        0);
+#ifdef OPOST
+    raw->c_oflag &= (tcflag_t)~OPOST;
+#endif
+    raw->c_lflag &= ~(tcflag_t)(
+#ifdef ECHO
+        ECHO |
+#endif
+#ifdef ECHONL
+        ECHONL |
+#endif
+#ifdef ICANON
+        ICANON |
+#endif
+#ifdef ISIG
+        ISIG |
+#endif
+#ifdef IEXTEN
+        IEXTEN |
+#endif
+        0);
+    raw->c_cflag &= ~(tcflag_t)(
+#ifdef CSIZE
+        CSIZE |
+#endif
+#ifdef PARENB
+        PARENB |
+#endif
+        0);
+#ifdef CS8
+    raw->c_cflag |= CS8;
+#endif
+#ifdef VMIN
+    raw->c_cc[VMIN] = 1;
+#endif
+#ifdef VTIME
+    raw->c_cc[VTIME] = 0;
+#endif
+}
+
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
     unsigned char saved_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
     unsigned char raw_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
@@ -337,7 +407,7 @@ int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) 
     memcpy(state_out, saved_bytes, PLATFORM_TERMINAL_STATE_CAPACITY);
 
     memcpy(raw_bytes, saved_bytes, PLATFORM_TERMINAL_STATE_CAPACITY);
-    cfmakeraw(raw);
+    platform_make_raw_termios(raw);
 
     return tcsetattr(fd, TCSANOW, raw);
 }
