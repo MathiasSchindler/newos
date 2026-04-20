@@ -7,7 +7,9 @@
 **readelf** [**-h**] [**-S**] [**-s**] FILE ...
 
 ## Description
-`readelf` prints structural information from ELF binaries and object files.
+`readelf` prints structural information from ELF binaries and object files. On
+hosted macOS builds it can also recognize Mach-O headers well enough to report
+basic file information instead of failing outright.
 
 Supported output modes:
 
@@ -24,4 +26,6 @@ readelf -S -s hello.o
 ```
 
 ## Limitations
-The current implementation supports ELF64 little-endian files, which covers the project’s Linux outputs on x86_64 and AArch64.
+Detailed section and symbol inspection currently targets ELF64 little-endian
+files, which covers the project's Linux outputs on x86_64 and AArch64. Mach-O
+support is currently limited to basic header reporting for hosted compatibility.

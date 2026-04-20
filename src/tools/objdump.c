@@ -29,6 +29,16 @@ typedef struct {
     unsigned short shentsize;
 } ElfHeaderInfo;
 
+typedef struct {
+    unsigned int magic;
+    unsigned int cputype;
+    unsigned int cpusubtype;
+    unsigned int filetype;
+    unsigned int ncmds;
+    unsigned int sizeofcmds;
+    unsigned int flags;
+} MachHeaderInfo;
+
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
 }
@@ -39,6 +49,22 @@ static unsigned int read_u32_le_local(const unsigned char *bytes) {
 
 static unsigned long long read_u64_le_local(const unsigned char *bytes) {
     return archive_read_u64_le(bytes);
+}
+
+static const char *macho_machine_name(unsigned int cputype) {
+    unsigned int family = cputype & 0x00ffffffU;
+
+    if (family == 7U) return "x86-64";
+    if (family == 12U) return "aarch64";
+    return "unknown";
+}
+
+static const char *macho_type_name(unsigned int type) {
+    if (type == 1U) return "object";
+    if (type == 2U) return "executable";
+    if (type == 6U) return "shared-library";
+    if (type == 8U) return "bundle";
+    return "unknown";
 }
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
@@ -117,6 +143,28 @@ static int parse_elf_header(int fd, ElfHeaderInfo *info) {
     return 0;
 }
 
+static int parse_macho_header(int fd, MachHeaderInfo *info) {
+    unsigned char header[32];
+    unsigned int magic;
+
+    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
+        return -1;
+    }
+    magic = read_u32_le_local(header + 0);
+    if (magic != 0xfeedfacfU) {
+        return -1;
+    }
+
+    info->magic = magic;
+    info->cputype = read_u32_le_local(header + 4);
+    info->cpusubtype = read_u32_le_local(header + 8);
+    info->filetype = read_u32_le_local(header + 12);
+    info->ncmds = read_u32_le_local(header + 16);
+    info->sizeofcmds = read_u32_le_local(header + 20);
+    info->flags = read_u32_le_local(header + 24);
+    return 0;
+}
+
 static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *sections) {
     unsigned short i;
     unsigned char raw[64];
@@ -187,6 +235,21 @@ static void print_file_header(const char *path, const ElfHeaderInfo *header) {
     rt_write_line(1, type_name(header->type));
     rt_write_cstr(1, "start address ");
     write_hex_value(header->entry);
+    rt_write_char(1, '\n');
+}
+
+static void print_macho_file_header(const char *path, const MachHeaderInfo *header) {
+    rt_write_cstr(1, "\n");
+    rt_write_line(1, path);
+    rt_write_line(1, "file format mach-o-64");
+    rt_write_cstr(1, "architecture: ");
+    rt_write_cstr(1, macho_machine_name(header->cputype));
+    rt_write_cstr(1, ", type: ");
+    rt_write_line(1, macho_type_name(header->filetype));
+    rt_write_cstr(1, "load commands: ");
+    rt_write_uint(1, (unsigned long long)header->ncmds);
+    rt_write_cstr(1, ", flags: ");
+    write_hex_value((unsigned long long)header->flags);
     rt_write_char(1, '\n');
 }
 
@@ -332,6 +395,7 @@ int main(int argc, char **argv) {
     for (i = argi; i < argc; ++i) {
         int fd = platform_open_read(argv[i]);
         ElfHeaderInfo header;
+        MachHeaderInfo macho;
         ElfSectionInfo sections[OBJDUMP_MAX_SECTIONS];
         char names[OBJDUMP_NAME_TABLE_CAPACITY];
         size_t names_size = 0U;
@@ -344,8 +408,26 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 || load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
-            rt_write_cstr(2, "objdump: unsupported or invalid ELF file ");
+        if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
+            load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
+            if (parse_macho_header(fd, &macho) == 0) {
+                if (show_file) {
+                    print_macho_file_header(argv[i], &macho);
+                }
+                if (show_sections) {
+                    rt_write_line(1, "Section dumping for Mach-O inputs is not implemented yet.");
+                }
+                if (show_contents) {
+                    rt_write_line(1, "Raw section contents for Mach-O inputs are not implemented yet.");
+                }
+                if (show_symbols) {
+                    rt_write_line(1, "Symbol dumping for Mach-O inputs is not implemented yet.");
+                }
+                platform_close(fd);
+                continue;
+            }
+
+            rt_write_cstr(2, "objdump: unsupported or invalid object file ");
             rt_write_line(2, argv[i]);
             platform_close(fd);
             exit_code = 1;

@@ -32,6 +32,16 @@ typedef struct {
     unsigned short shstrndx;
 } ElfHeaderInfo;
 
+typedef struct {
+    unsigned int magic;
+    unsigned int cputype;
+    unsigned int cpusubtype;
+    unsigned int filetype;
+    unsigned int ncmds;
+    unsigned int sizeofcmds;
+    unsigned int flags;
+} MachHeaderInfo;
+
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
 }
@@ -42,6 +52,14 @@ static unsigned int read_u32_le_local(const unsigned char *bytes) {
 
 static unsigned long long read_u64_le_local(const unsigned char *bytes) {
     return archive_read_u64_le(bytes);
+}
+
+static const char *macho_type_name(unsigned int type) {
+    if (type == 1U) return "OBJECT";
+    if (type == 2U) return "EXECUTE";
+    if (type == 6U) return "DYLIB";
+    if (type == 8U) return "BUNDLE";
+    return "UNKNOWN";
 }
 
 static const char *elf_type_name(unsigned short type) {
@@ -55,6 +73,14 @@ static const char *elf_type_name(unsigned short type) {
 static const char *elf_machine_name(unsigned short machine) {
     if (machine == 62U) return "Advanced Micro Devices X86-64";
     if (machine == 183U) return "AArch64";
+    return "Unknown";
+}
+
+static const char *macho_machine_name(unsigned int cputype) {
+    unsigned int family = cputype & 0x00ffffffU;
+
+    if (family == 7U) return "Advanced Micro Devices X86-64";
+    if (family == 12U) return "AArch64";
     return "Unknown";
 }
 
@@ -138,6 +164,29 @@ static int parse_elf_header(int fd, ElfHeaderInfo *info) {
     return 0;
 }
 
+static int parse_macho_header(int fd, MachHeaderInfo *info) {
+    unsigned char header[32];
+    unsigned int magic;
+
+    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
+        return -1;
+    }
+
+    magic = read_u32_le_local(header + 0);
+    if (magic != 0xfeedfacfU) {
+        return -1;
+    }
+
+    info->magic = magic;
+    info->cputype = read_u32_le_local(header + 4);
+    info->cpusubtype = read_u32_le_local(header + 8);
+    info->filetype = read_u32_le_local(header + 12);
+    info->ncmds = read_u32_le_local(header + 16);
+    info->sizeofcmds = read_u32_le_local(header + 20);
+    info->flags = read_u32_le_local(header + 24);
+    return 0;
+}
+
 static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *sections) {
     unsigned char raw[64];
     unsigned short i;
@@ -216,6 +265,22 @@ static void print_header(const ElfHeaderInfo *info) {
     rt_write_uint(1, info->shnum);
     rt_write_cstr(1, " at ");
     write_hex_value(info->shoff);
+    rt_write_char(1, '\n');
+}
+
+static void print_macho_header(const MachHeaderInfo *info) {
+    rt_write_line(1, "Mach-O Header:");
+    rt_write_cstr(1, "  Type: ");
+    rt_write_line(1, macho_type_name(info->filetype));
+    rt_write_cstr(1, "  Machine: ");
+    rt_write_line(1, macho_machine_name(info->cputype));
+    rt_write_cstr(1, "  Load commands: ");
+    rt_write_uint(1, (unsigned long long)info->ncmds);
+    rt_write_cstr(1, " (");
+    rt_write_uint(1, (unsigned long long)info->sizeofcmds);
+    rt_write_line(1, " bytes)");
+    rt_write_cstr(1, "  Flags: ");
+    write_hex_value((unsigned long long)info->flags);
     rt_write_char(1, '\n');
 }
 
@@ -346,6 +411,7 @@ int main(int argc, char **argv) {
     for (i = argi; i < argc; ++i) {
         int fd = platform_open_read(argv[i]);
         ElfHeaderInfo header;
+        MachHeaderInfo macho;
         ElfSectionInfo sections[READELF_MAX_SECTIONS];
         char names[READELF_NAME_TABLE_CAPACITY];
         size_t names_size = 0U;
@@ -357,8 +423,25 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 || load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
-            rt_write_cstr(2, "readelf: unsupported or invalid ELF file ");
+        if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
+            load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
+            if (parse_macho_header(fd, &macho) == 0) {
+                rt_write_cstr(1, "File: ");
+                rt_write_line(1, argv[i]);
+                if (show_header_flag) {
+                    print_macho_header(&macho);
+                }
+                if (show_sections_flag) {
+                    rt_write_line(1, "Section header dumping for Mach-O inputs is not implemented yet.");
+                }
+                if (show_symbols_flag) {
+                    rt_write_line(1, "Symbol dumping for Mach-O inputs is not implemented yet.");
+                }
+                platform_close(fd);
+                continue;
+            }
+
+            rt_write_cstr(2, "readelf: unsupported or invalid object file ");
             rt_write_line(2, argv[i]);
             platform_close(fd);
             exit_code = 1;

@@ -27,11 +27,15 @@ EOF
 assert_command_succeeds cc -o "$WORK_DIR/probe" "$WORK_DIR/probe.c"
 
 assert_command_succeeds "$ROOT_DIR/build/readelf" -h "$WORK_DIR/probe" > "$WORK_DIR/readelf.out"
-assert_file_contains "$WORK_DIR/readelf.out" '^ELF Header:' "readelf -h did not print an ELF header"
+if ! grep -q '^ELF Header:' "$WORK_DIR/readelf.out"; then
+    assert_file_contains "$WORK_DIR/readelf.out" '^Mach-O Header:' "readelf -h did not print a recognizable object header"
+fi
 assert_file_contains "$WORK_DIR/readelf.out" 'Machine:' "readelf -h did not include the machine field"
 
 assert_command_succeeds "$ROOT_DIR/build/objdump" -f "$WORK_DIR/probe" > "$WORK_DIR/objdump.out"
-assert_file_contains "$WORK_DIR/objdump.out" 'file format elf' "objdump -f did not identify the ELF format"
+if ! grep -q 'file format elf' "$WORK_DIR/objdump.out"; then
+    assert_file_contains "$WORK_DIR/objdump.out" 'file format mach-o' "objdump -f did not identify the hosted object format"
+fi
 
 assert_command_succeeds "$ROOT_DIR/build/strip" -o "$WORK_DIR/probe.stripped" "$WORK_DIR/probe"
 [ -f "$WORK_DIR/probe.stripped" ] || fail "strip did not create the requested output file"

@@ -83,6 +83,7 @@ static int strip_one_file(const char *input_path, const char *output_path, int i
     unsigned long long phoff;
     unsigned long long file_size;
     unsigned long long copy_size = 0ULL;
+    int is_elf = 0;
     int input_fd = -1;
     int output_fd = -1;
     char temp_path[1024];
@@ -102,30 +103,35 @@ static int strip_one_file(const char *input_path, const char *output_path, int i
         return 1;
     }
 
-    if (archive_read_exact(input_fd, header, sizeof(header)) != 0 ||
-        !(header[0] == 0x7fU && header[1] == 'E' && header[2] == 'L' && header[3] == 'F') ||
-        header[4] != 2U || header[5] != 1U) {
-        rt_write_cstr(2, "strip: only ELF64 little-endian files are supported: ");
+    if (archive_read_exact(input_fd, header, sizeof(header)) != 0) {
+        rt_write_cstr(2, "strip: cannot read ");
         rt_write_line(2, input_path);
         platform_close(input_fd);
         return 1;
     }
 
-    elf_type = read_u16_le(header + 16);
-    if (elf_type == 1U) {
-        rt_write_cstr(2, "strip: relocatable objects are not yet supported: ");
-        rt_write_line(2, input_path);
-        platform_close(input_fd);
-        return 1;
+    if (header[0] == 0x7fU && header[1] == 'E' && header[2] == 'L' && header[3] == 'F' &&
+        header[4] == 2U && header[5] == 1U) {
+        is_elf = 1;
     }
 
-    phoff = read_u64_le_local(header + 32);
-    phentsize = read_u16_le(header + 54);
-    phnum = read_u16_le(header + 56);
+    if (is_elf) {
+        elf_type = read_u16_le(header + 16);
+        if (elf_type == 1U) {
+            rt_write_cstr(2, "strip: relocatable objects are not yet supported: ");
+            rt_write_line(2, input_path);
+            platform_close(input_fd);
+            return 1;
+        }
+
+        phoff = read_u64_le_local(header + 32);
+        phentsize = read_u16_le(header + 54);
+        phnum = read_u16_le(header + 56);
+    }
     file_size = entry.size;
     copy_size = file_size;
 
-    if (phoff > 0ULL && phnum > 0U && phentsize >= 56U) {
+    if (is_elf && phoff > 0ULL && phnum > 0U && phentsize >= 56U) {
         copy_size = 0ULL;
         for (i = 0U; i < phnum; ++i) {
             unsigned char phdr[56];
@@ -175,20 +181,22 @@ static int strip_one_file(const char *input_path, const char *output_path, int i
         return 1;
     }
 
-    write_u64_le_local(header + 40, 0ULL);
-    write_u16_le_local(header + 58, 0U);
-    write_u16_le_local(header + 60, 0U);
-    write_u16_le_local(header + 62, 0U);
+    if (is_elf) {
+        write_u64_le_local(header + 40, 0ULL);
+        write_u16_le_local(header + 58, 0U);
+        write_u16_le_local(header + 60, 0U);
+        write_u16_le_local(header + 62, 0U);
 
-    if (platform_seek(output_fd, 0, PLATFORM_SEEK_SET) < 0 || rt_write_all(output_fd, header, sizeof(header)) != 0) {
-        rt_write_cstr(2, "strip: failed to patch ELF header for ");
-        rt_write_line(2, input_path);
-        platform_close(input_fd);
-        platform_close(output_fd);
-        if (inplace) {
-            (void)platform_remove_file(temp_path);
+        if (platform_seek(output_fd, 0, PLATFORM_SEEK_SET) < 0 || rt_write_all(output_fd, header, sizeof(header)) != 0) {
+            rt_write_cstr(2, "strip: failed to patch ELF header for ");
+            rt_write_line(2, input_path);
+            platform_close(input_fd);
+            platform_close(output_fd);
+            if (inplace) {
+                (void)platform_remove_file(temp_path);
+            }
+            return 1;
         }
-        return 1;
     }
 
     platform_close(input_fd);

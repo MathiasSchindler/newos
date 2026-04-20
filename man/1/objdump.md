@@ -7,7 +7,8 @@
 **objdump** [**-f**] [**-h**] [**-s**] [**-t**] FILE ...
 
 ## Description
-`objdump` provides a compact view of ELF files.
+`objdump` provides a compact view of ELF files. On hosted macOS builds it also
+reports basic Mach-O file summaries so the inspection workflow remains usable.
 
 Supported output modes:
 
@@ -25,4 +26,6 @@ objdump -s -t app
 ```
 
 ## Limitations
-This implementation currently targets ELF64 little-endian inputs and focuses on section/symbol inspection rather than full instruction disassembly.
+Full section, symbol, and content dumping is centered on ELF64 little-endian
+inputs. Mach-O handling is currently limited to file-summary reporting rather
+than deep disassembly or section decoding.
