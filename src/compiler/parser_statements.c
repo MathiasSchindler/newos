@@ -504,6 +504,22 @@ void compiler_parser_init(CompilerParser *parser, const CompilerSource *source, 
         CompilerType type;
         (void)add_typedef_name(parser, builtin_types[i]);
         compiler_type_init(&type);
+        if (rt_strcmp(builtin_types[i], "size_t") == 0 ||
+            rt_strcmp(builtin_types[i], "ssize_t") == 0 ||
+            rt_strcmp(builtin_types[i], "ptrdiff_t") == 0 ||
+            rt_strcmp(builtin_types[i], "intptr_t") == 0 ||
+            rt_strcmp(builtin_types[i], "uintptr_t") == 0 ||
+            rt_strcmp(builtin_types[i], "off_t") == 0 ||
+            rt_strcmp(builtin_types[i], "time_t") == 0 ||
+            rt_strcmp(builtin_types[i], "usize") == 0) {
+            type.scalar_bytes = 8U;
+        } else if (rt_strcmp(builtin_types[i], "FILE") == 0 ||
+                   rt_strcmp(builtin_types[i], "DIR") == 0) {
+            type.base = COMPILER_BASE_STRUCT;
+            type.scalar_bytes = 0U;
+        } else {
+            type.scalar_bytes = 4U;
+        }
         (void)compiler_semantic_declare(&parser->semantic, builtin_types[i], COMPILER_SYMBOL_TYPEDEF, &type, 1);
     }
 

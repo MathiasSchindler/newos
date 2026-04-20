@@ -26,6 +26,9 @@ typedef struct {
     int is_array;
     int is_unsigned;
     unsigned long long array_length;
+    unsigned long long array_stride;
+    unsigned int scalar_bytes;
+    unsigned short aggregate_layout_id;
     char aggregate_name[COMPILER_SYMBOL_NAME_CAPACITY];
 } CompilerType;
 

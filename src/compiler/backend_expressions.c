@@ -20,6 +20,7 @@ static int expr_parse_bitand(ExprParser *parser);
 static int expr_parse_bitxor(ExprParser *parser);
 static int expr_parse_bitor(ExprParser *parser);
 static int name_prefers_word_index(const BackendState *state, const char *name);
+static long long type_storage_bytes_text(const BackendState *state, const char *type_text);
 
 static void expr_next(ExprParser *parser) {
     const char *cursor = skip_spaces(parser->cursor);
@@ -443,6 +444,25 @@ static int name_prefers_word_index(const BackendState *state, const char *name) 
     return names_equal(name, "argv") || names_equal(name, "envp");
 }
 
+static int type_access_size(const char *type_text, int word_index) {
+    const char *type = skip_spaces(type_text != 0 ? type_text : "");
+
+    if (type[0] == '\0') {
+        return word_index ? 0 : 1;
+    }
+    if (text_contains(type, "char") && !text_contains(type, "*") &&
+        !starts_with(type, "struct") && !starts_with(type, "union") && !starts_with(type, "enum")) {
+        return 1;
+    }
+    if (text_contains(type, "short") && !text_contains(type, "*")) {
+        return 2;
+    }
+    if ((text_contains(type, "int") || starts_with(type, "enum")) && !text_contains(type, "*")) {
+        return 4;
+    }
+    return 0;
+}
+
 static int identifier_looks_like_type(const char *name) {
     size_t length = rt_strlen(name);
 
@@ -472,7 +492,17 @@ static int identifier_looks_like_type(const char *name) {
     return 0;
 }
 
-static int member_prefers_word_index(const char *name) {
+static int member_prefers_word_index(const char *name, const char *type_text) {
+    if (type_text != 0 && should_prefer_word_index(name != 0 ? name : "", type_text)) {
+        return 1;
+    }
+    if (type_text != 0 && type_text[0] != '\0') {
+        if (text_contains(type_text, "char") && !text_contains(type_text, "*") && !text_contains(type_text, "struct") &&
+            !text_contains(type_text, "union") && !text_contains(type_text, "enum")) {
+            return 0;
+        }
+        return 1;
+    }
     if (names_equal(name, "argv") || names_equal(name, "envp") || names_equal(name, "commands") ||
          names_equal(name, "jobs") || names_equal(name, "aliases") || names_equal(name, "functions") ||
          names_equal(name, "entries") || names_equal(name, "fields") ||
@@ -496,7 +526,13 @@ static int type_matches_named_aggregate(const char *base_type, const char *name)
            text_contains(base_type, name);
 }
 
-static int member_byte_offset(const char *base_type, const char *member_name) {
+static int member_byte_offset(const BackendState *state, const char *base_type, const char *member_name) {
+    int offset = 0;
+
+    if (lookup_aggregate_member(state, base_type, member_name, &offset, 0) == 0) {
+        return offset;
+    }
+
     if (type_matches_named_aggregate(base_type, "ShCommand")) {
         if (names_equal(member_name, "argv")) return 0;
         if (names_equal(member_name, "argc")) return 520;
@@ -537,32 +573,78 @@ static int member_byte_offset(const char *base_type, const char *member_name) {
     return 0;
 }
 
-static const char *member_result_type(const char *base_type, const char *member_name) {
+static void copy_member_result_type(const BackendState *state,
+                                    const char *base_type,
+                                    const char *member_name,
+                                    char *buffer,
+                                    size_t buffer_size) {
+    const char *member_type = 0;
+
+    if (buffer_size == 0) {
+        return;
+    }
+
+    if (lookup_aggregate_member(state, base_type, member_name, 0, &member_type) == 0 &&
+        member_type != 0 && member_type[0] != '\0') {
+        rt_copy_string(buffer, buffer_size, member_type);
+        return;
+    }
+
     if (type_matches_named_aggregate(base_type, "ShPipeline") && names_equal(member_name, "commands")) {
-        return "struct:ShCommand[8]";
+        rt_copy_string(buffer, buffer_size, "struct:ShCommand[8]");
+        return;
     }
     if (type_matches_named_aggregate(base_type, "ShCommand")) {
-        if (names_equal(member_name, "argv")) return "char*[65]";
-        if (names_equal(member_name, "input_path") || names_equal(member_name, "output_path")) return "char*";
-        if (names_equal(member_name, "no_expand")) return "int[64]";
+        if (names_equal(member_name, "argv")) {
+            rt_copy_string(buffer, buffer_size, "char*[65]");
+            return;
+        }
+        if (names_equal(member_name, "input_path") || names_equal(member_name, "output_path")) {
+            rt_copy_string(buffer, buffer_size, "char*");
+            return;
+        }
+        if (names_equal(member_name, "no_expand")) {
+            rt_copy_string(buffer, buffer_size, "int[64]");
+            return;
+        }
     }
     if (type_matches_named_aggregate(base_type, "ShJob") && names_equal(member_name, "pids")) {
-        return "int[8]";
+        rt_copy_string(buffer, buffer_size, "int[8]");
+        return;
     }
     if (type_matches_named_aggregate(base_type, "ShJob") && names_equal(member_name, "command")) {
-        return "char[4096]";
+        rt_copy_string(buffer, buffer_size, "char[4096]");
+        return;
     }
     if (type_matches_named_aggregate(base_type, "ShAlias")) {
-        if (names_equal(member_name, "name")) return "char[64]";
-        if (names_equal(member_name, "value")) return "char[4096]";
+        if (names_equal(member_name, "name")) {
+            rt_copy_string(buffer, buffer_size, "char[64]");
+            return;
+        }
+        if (names_equal(member_name, "value")) {
+            rt_copy_string(buffer, buffer_size, "char[4096]");
+            return;
+        }
     }
     if (type_matches_named_aggregate(base_type, "ShFunction")) {
-        if (names_equal(member_name, "name")) return "char[64]";
-        if (names_equal(member_name, "body")) return "char[4096]";
+        if (names_equal(member_name, "name")) {
+            rt_copy_string(buffer, buffer_size, "char[64]");
+            return;
+        }
+        if (names_equal(member_name, "body")) {
+            rt_copy_string(buffer, buffer_size, "char[4096]");
+            return;
+        }
     }
     if (type_matches_named_aggregate(base_type, "PlatformDirEntry")) {
-        if (names_equal(member_name, "name")) return "char[256]";
-        if (names_equal(member_name, "owner") || names_equal(member_name, "group")) return "char[32]";
+        if (names_equal(member_name, "name")) {
+            rt_copy_string(buffer, buffer_size, "char[256]");
+            return;
+        }
+        if (names_equal(member_name, "owner") || names_equal(member_name, "group")) {
+            rt_copy_string(buffer, buffer_size, "char[32]");
+            return;
+        }
     }
     if (names_equal(member_name, "bytes") || names_equal(member_name, "data") ||
         names_equal(member_name, "text") || names_equal(member_name, "buffer") ||
@@ -571,44 +653,53 @@ static const char *member_result_type(const char *base_type, const char *member_
         names_equal(member_name, "body") || names_equal(member_name, "command") ||
         names_equal(member_name, "user") || names_equal(member_name, "owner") ||
         names_equal(member_name, "group") || names_equal(member_name, "state")) {
-        return "char[4096]";
+        rt_copy_string(buffer, buffer_size, "char[4096]");
+        return;
     }
-    return base_type;
+    rt_copy_string(buffer, buffer_size, base_type != 0 ? base_type : "");
 }
 
 static int type_is_pointer_like(const char *base_type) {
     return base_type != 0 && text_contains(base_type, "*");
 }
 
-static const char *indexed_result_type(const char *base_type) {
+static void copy_indexed_result_type(const char *base_type, char *buffer, size_t buffer_size) {
+    size_t i = 0;
+    size_t out = 0;
+    const char *suffix = 0;
+
+    if (buffer_size == 0) {
+        return;
+    }
     if (base_type == 0) {
-        return 0;
+        buffer[0] = '\0';
+        return;
     }
-    if (text_contains(base_type, "ShCommand[")) {
-        return "struct:ShCommand";
+
+    while (base_type[i] != '\0' && base_type[i] != '[' && out + 1 < buffer_size) {
+        buffer[out++] = base_type[i++];
     }
-    if (text_contains(base_type, "ShJob[")) {
-        return "struct:ShJob";
+    while (base_type[i] != '\0' && base_type[i] != ']') {
+        i += 1U;
     }
-    if (text_contains(base_type, "ShAlias[")) {
-        return "struct:ShAlias";
+    if (base_type[i] == ']') {
+        suffix = base_type + i + 1U;
     }
-    if (text_contains(base_type, "ShFunction[")) {
-        return "struct:ShFunction";
+    while (out > 0U && buffer[out - 1U] == ' ') {
+        out -= 1U;
     }
-    if (text_contains(base_type, "char*[")) {
-        return "char*";
+    buffer[out] = '\0';
+    if (suffix != 0 && suffix[0] != '\0') {
+        rt_copy_string(buffer + out, buffer_size - out, suffix);
     }
-    if (text_contains(base_type, "int[")) {
-        return "int";
-    }
-    if (text_contains(base_type, "char[")) {
-        return "char";
-    }
-    return base_type;
 }
 
-static int named_aggregate_element_size(const char *base_type) {
+static int named_aggregate_element_size(const BackendState *state, const char *base_type) {
+    int generic_size = lookup_aggregate_size(state, base_type);
+
+    if (generic_size > 0) {
+        return generic_size;
+    }
     if (type_matches_named_aggregate(base_type, "ShCommand")) return 808;
     if (type_matches_named_aggregate(base_type, "ShPipeline")) return 6472;
     if (type_matches_named_aggregate(base_type, "ShJob")) return 4140;
@@ -619,12 +710,13 @@ static int named_aggregate_element_size(const char *base_type) {
 
 static int array_index_scale(const BackendState *state, const char *base_type, int word_index) {
     if (base_type != 0 && text_contains(base_type, "[")) {
-        int aggregate_size = named_aggregate_element_size(base_type);
-        if (aggregate_size > 0) {
-            return aggregate_size;
-        }
-        if (text_contains(base_type, "char") && !text_contains(base_type, "*")) {
-            return 1;
+        char element_type[128];
+        long long element_size;
+
+        copy_indexed_result_type(base_type, element_type, sizeof(element_type));
+        element_size = type_storage_bytes_text(state, element_type);
+        if (element_size > 0 && element_size <= 0x7fffffffLL) {
+            return (int)element_size;
         }
         return backend_stack_slot_size(state);
     }
@@ -734,15 +826,120 @@ static int expr_looks_like_cast(ExprParser *parser) {
     return 0;
 }
 
+static void copy_dereferenced_type(const char *base_type, char *buffer, size_t buffer_size) {
+    size_t length;
+
+    if (buffer_size == 0) {
+        return;
+    }
+    if (base_type == 0) {
+        buffer[0] = '\0';
+        return;
+    }
+
+    rt_copy_string(buffer, buffer_size, base_type);
+    length = rt_strlen(buffer);
+    while (length > 0U && buffer[length - 1U] == ' ') {
+        buffer[--length] = '\0';
+    }
+    while (length > 0U && buffer[length - 1U] == '*') {
+        buffer[--length] = '\0';
+        break;
+    }
+    while (length > 0U && buffer[length - 1U] == ' ') {
+        buffer[--length] = '\0';
+    }
+    if (text_contains(buffer, "[")) {
+        char indexed[128];
+        copy_indexed_result_type(buffer, indexed, sizeof(indexed));
+        rt_copy_string(buffer, buffer_size, indexed);
+    }
+}
+
+static long long type_storage_bytes_text(const BackendState *state, const char *type_text) {
+    const char *type = skip_spaces(type_text != 0 ? type_text : "");
+    char element_type[128];
+    const char *open = 0;
+    unsigned long long length = 0ULL;
+    long long element_size;
+    int aggregate_size;
+
+    if (type[0] == '\0') {
+        return backend_stack_slot_size(state);
+    }
+
+    open = type;
+    while (*open != '\0' && *open != '[') {
+        open += 1;
+    }
+    if (*open == '[') {
+        const char *cursor = open + 1;
+        copy_indexed_result_type(type, element_type, sizeof(element_type));
+        while (*cursor >= '0' && *cursor <= '9') {
+            length = length * 10ULL + (unsigned long long)(*cursor - '0');
+            cursor += 1;
+        }
+        if (length == 0ULL) {
+            length = 1ULL;
+        }
+        element_size = type_storage_bytes_text(state, element_type);
+        return element_size * (long long)length;
+    }
+
+    if (starts_with(type, "struct:") || starts_with(type, "union:")) {
+        aggregate_size = lookup_aggregate_size(state, type);
+        if (aggregate_size > 0) {
+            return aggregate_size;
+        }
+        aggregate_size = named_aggregate_element_size(state, type);
+        if (aggregate_size > 0) {
+            return aggregate_size;
+        }
+        return BACKEND_STRUCT_STACK_BYTES;
+    }
+    if (text_contains(type, "*")) {
+        return backend_stack_slot_size(state);
+    }
+    if (names_equal(type, "size_t") || names_equal(type, "ssize_t") || names_equal(type, "ptrdiff_t") ||
+        names_equal(type, "intptr_t") || names_equal(type, "uintptr_t") || names_equal(type, "usize") ||
+        names_equal(type, "off_t") || names_equal(type, "time_t")) {
+        return 8;
+    }
+    if (text_contains(type, "char")) {
+        return 1;
+    }
+    if (text_contains(type, "short")) {
+        return 2;
+    }
+    if (text_contains(type, "__int128")) {
+        return 16;
+    }
+    if (text_contains(type, "long") || text_contains(type, "double")) {
+        return 8;
+    }
+    if (starts_with(type, "enum") || text_contains(type, "int")) {
+        return 4;
+    }
+
+    rt_copy_string(element_type, sizeof(element_type), "struct:");
+    rt_copy_string(element_type + rt_strlen(element_type), sizeof(element_type) - rt_strlen(element_type), type);
+    aggregate_size = lookup_aggregate_size(state, element_type);
+    if (aggregate_size > 0) {
+        return aggregate_size;
+    }
+
+    return backend_stack_slot_size(state);
+}
+
 static long long guess_identifier_size(const BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
 
     if (local_index >= 0) {
-        return (long long)state->locals[local_index].stack_bytes;
+        return type_storage_bytes_text(state, state->locals[local_index].type_text);
     }
-    if (global_index >= 0 && state->globals[global_index].is_array) {
-        return BACKEND_ARRAY_STACK_BYTES;
+    if (global_index >= 0) {
+        return type_storage_bytes_text(state, state->globals[global_index].type_text);
     }
     return 8;
 }
@@ -891,12 +1088,13 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
                 emit_index_address(parser->state, element_scale) != 0) {
                 return -1;
             }
-            *byte_sized = element_scale == 1 ? 1 : 0;
+            *byte_sized = (element_scale == 1 || element_scale == 2 || element_scale == 4) ? element_scale : 0;
             word_index = 0;
             continue;
         }
         if (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->")) {
             char member_name[64];
+            char member_type[128];
             int offset;
             expr_next(parser);
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
@@ -904,7 +1102,7 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
                 return -1;
             }
             rt_copy_string(member_name, sizeof(member_name), parser->current.text);
-            offset = member_byte_offset(base_type, member_name);
+            offset = member_byte_offset(parser->state, base_type, member_name);
             if (offset > 0) {
                 if (emit_push_value(parser->state) != 0 ||
                     emit_load_immediate(parser->state, offset) != 0 ||
@@ -912,9 +1110,10 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
                     return -1;
                 }
             }
-            base_type = member_result_type(base_type, member_name);
-            word_index = member_prefers_word_index(member_name);
-            *byte_sized = word_index ? 0 : 1;
+            copy_member_result_type(parser->state, base_type, member_name, member_type, sizeof(member_type));
+            base_type = member_type;
+            word_index = member_prefers_word_index(member_name, base_type);
+            *byte_sized = type_access_size(base_type, word_index);
             expr_next(parser);
             continue;
         }
@@ -924,13 +1123,14 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
 }
 
 static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address, const char *base_type) {
-    int byte_sized = word_index ? 0 : 1;
+    int byte_sized = type_access_size(base_type, word_index);
 
     for (;;) {
         if (expr_match_punct(parser, "[")) {
-            const char *element_type = indexed_result_type(base_type);
+            char element_type[128];
             int element_scale = array_index_scale(parser->state, base_type, word_index);
 
+            copy_indexed_result_type(base_type, element_type, sizeof(element_type));
             if (emit_push_value(parser->state) != 0) {
                 return -1;
             }
@@ -944,10 +1144,10 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
                 return -1;
             }
             current_is_address = 1;
-            load_final_address = 1;
-            byte_sized = element_scale == 1 ? 1 : 0;
+            byte_sized = (element_scale == 1 || element_scale == 2 || element_scale == 4) ? element_scale : 0;
             word_index = 0;
             base_type = element_type;
+            load_final_address = member_result_decays_to_address(element_type) ? 0 : 1;
 
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
                 is_index_or_arrow_text(parser->current.text)) {
@@ -965,6 +1165,7 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
             (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->"))) {
             char member_name[64];
+            char member_type[128];
             int offset;
             expr_next(parser);
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
@@ -972,7 +1173,7 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
                 return -1;
             }
             rt_copy_string(member_name, sizeof(member_name), parser->current.text);
-            offset = member_byte_offset(base_type, member_name);
+            offset = member_byte_offset(parser->state, base_type, member_name);
             if (offset > 0) {
                 if (emit_push_value(parser->state) != 0 ||
                     emit_load_immediate(parser->state, offset) != 0 ||
@@ -980,9 +1181,10 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
                     return -1;
                 }
             }
-            base_type = member_result_type(base_type, member_name);
-            word_index = member_prefers_word_index(member_name);
-            byte_sized = word_index ? 0 : 1;
+            copy_member_result_type(parser->state, base_type, member_name, member_type, sizeof(member_type));
+            base_type = member_type;
+            word_index = member_prefers_word_index(member_name, base_type);
+            byte_sized = type_access_size(base_type, word_index);
             load_final_address = member_result_decays_to_address(base_type) ? 0 : 1;
             current_is_address = 1;
             expr_next(parser);
@@ -1015,12 +1217,62 @@ static int expr_parse_sizeof(ExprParser *parser) {
     long long size = 8;
 
     if (expr_match_punct(parser, "(")) {
-        if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
-            size = guess_identifier_size(parser->state, parser->current.text);
-            expr_next(parser);
-        } else if (parser->current.kind == EXPR_TOKEN_STRING) {
+        if (parser->current.kind == EXPR_TOKEN_STRING) {
             size = (long long)rt_strlen(parser->current.text) + 1;
             expr_next(parser);
+        } else if (parser->current.kind == EXPR_TOKEN_IDENTIFIER ||
+                   (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*"))) {
+            char type_text[128];
+            int deref_count = 0;
+
+            type_text[0] = '\0';
+            while (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*")) {
+                deref_count += 1;
+                expr_next(parser);
+            }
+            if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
+                const char *known_type = lookup_name_type_text(parser->state, parser->current.text);
+                if (known_type != 0 && known_type[0] != '\0') {
+                    rt_copy_string(type_text, sizeof(type_text), known_type);
+                } else {
+                    rt_copy_string(type_text, sizeof(type_text), parser->current.text);
+                }
+                expr_next(parser);
+                while (parser->current.kind == EXPR_TOKEN_PUNCT &&
+                       (names_equal(parser->current.text, "[") || names_equal(parser->current.text, ".") ||
+                        names_equal(parser->current.text, "->"))) {
+                    if (names_equal(parser->current.text, "[")) {
+                        while (parser->current.kind != EXPR_TOKEN_EOF && !names_equal(parser->current.text, "]")) {
+                            expr_next(parser);
+                        }
+                        if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "]")) {
+                            char indexed[128];
+                            copy_indexed_result_type(type_text, indexed, sizeof(indexed));
+                            rt_copy_string(type_text, sizeof(type_text), indexed);
+                            expr_next(parser);
+                        }
+                        continue;
+                    }
+                    expr_next(parser);
+                    if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
+                        char member_type[128];
+                        copy_member_result_type(parser->state, type_text, parser->current.text, member_type, sizeof(member_type));
+                        rt_copy_string(type_text, sizeof(type_text), member_type);
+                        expr_next(parser);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            while (deref_count > 0 && type_text[0] != '\0') {
+                char deref_type[128];
+                copy_dereferenced_type(type_text, deref_type, sizeof(deref_type));
+                rt_copy_string(type_text, sizeof(type_text), deref_type);
+                deref_count -= 1;
+            }
+            if (type_text[0] != '\0') {
+                size = type_storage_bytes_text(parser->state, type_text);
+            }
         }
         if (parser->current.kind != EXPR_TOKEN_PUNCT || !names_equal(parser->current.text, ")")) {
             int depth = 0;
@@ -2134,7 +2386,7 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
     parser.state = state;
     expr_next(&parser);
     element_scale = array_index_scale(state, lookup_name_type_text(state, name), word_index);
-    byte_sized = element_scale == 1 ? 1 : 0;
+    byte_sized = (element_scale == 1 || element_scale == 2 || element_scale == 4) ? element_scale : 0;
     slot_limit = element_scale > 1 ? (BACKEND_ARRAY_STACK_BYTES / (unsigned long long)element_scale) : BACKEND_ARRAY_STACK_BYTES;
 
     if (parser.current.kind == EXPR_TOKEN_STRING) {
@@ -2178,7 +2430,7 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
     unsigned long long index;
     unsigned long long slot_count = 1ULL;
     int byte_sized = 0;
-    int word_index = 1;
+    int element_scale;
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
 
@@ -2190,17 +2442,18 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
     if (local_index >= 0) {
         if (state->locals[local_index].stack_bytes <= 1) {
             byte_sized = 1;
-            word_index = 0;
         } else {
-            slot_count = (unsigned long long)(state->locals[local_index].stack_bytes / 8);
+            slot_count = (unsigned long long)(state->locals[local_index].stack_bytes / backend_stack_slot_size(state));
             if (slot_count == 0ULL) {
                 slot_count = 1ULL;
             }
         }
     }
 
+    element_scale = byte_sized != 0 ? byte_sized : backend_stack_slot_size(state);
+
     for (index = 0; index < slot_count; ++index) {
-        if (emit_array_element_address(state, name, word_index, index) != 0 ||
+        if (emit_array_element_address(state, name, element_scale, index) != 0 ||
             emit_load_immediate(state, 0) != 0 ||
             emit_pop_address_and_store(state, byte_sized) != 0) {
             return -1;
@@ -2212,7 +2465,7 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
     expr_next(&parser);
 
     index = 0ULL;
-    if (emit_flat_initializer_store(&parser, state, name, word_index, byte_sized, &index, slot_count) != 0) {
+    if (emit_flat_initializer_store(&parser, state, name, element_scale, byte_sized, &index, slot_count) != 0) {
         return -1;
     }
 

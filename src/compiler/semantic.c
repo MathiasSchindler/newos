@@ -16,9 +16,11 @@ static int types_are_compatible(const CompilerType *lhs, const CompilerType *rhs
            lhs->is_function == rhs->is_function &&
            lhs->is_array == rhs->is_array &&
            lhs->is_unsigned == rhs->is_unsigned &&
+           (lhs->scalar_bytes == 0U || rhs->scalar_bytes == 0U || lhs->scalar_bytes == rhs->scalar_bytes) &&
            ((lhs->aggregate_name[0] == '\0' || rhs->aggregate_name[0] == '\0') ||
             names_equal(lhs->aggregate_name, rhs->aggregate_name)) &&
-           (lhs->array_length == 0ULL || rhs->array_length == 0ULL || lhs->array_length == rhs->array_length);
+           (lhs->array_length == 0ULL || rhs->array_length == 0ULL || lhs->array_length == rhs->array_length) &&
+           (lhs->array_stride == 0ULL || rhs->array_stride == 0ULL || lhs->array_stride == rhs->array_stride);
 }
 
 static int is_macro_like_name(const char *name) {
@@ -80,6 +82,7 @@ static int find_symbol_in_current_scope(const CompilerSemantic *semantic, const 
 void compiler_type_init(CompilerType *type) {
     rt_memset(type, 0, sizeof(*type));
     type->base = COMPILER_BASE_INT;
+    type->scalar_bytes = 4U;
 }
 
 void compiler_semantic_init(CompilerSemantic *semantic) {

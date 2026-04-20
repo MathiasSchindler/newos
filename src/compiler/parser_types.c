@@ -16,6 +16,399 @@ static int parse_constant_bitor(CompilerParser *parser, long long *value_out);
 static int parse_constant_logical_and(CompilerParser *parser, long long *value_out);
 static int parse_constant_logical_or(CompilerParser *parser, long long *value_out);
 
+static unsigned long long align_up(unsigned long long value, unsigned long long alignment) {
+    if (alignment <= 1ULL) {
+        return value;
+    }
+    return (value + alignment - 1ULL) & ~(alignment - 1ULL);
+}
+
+static int find_aggregate_layout_by_name(const CompilerParser *parser, const char *name) {
+    size_t i;
+
+    if (name == 0 || name[0] == '\0') {
+        return -1;
+    }
+
+    for (i = 0; i < parser->aggregate_layout_count; ++i) {
+        if (rt_strcmp(parser->aggregate_layouts[i].name, name) == 0) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+static int ensure_aggregate_layout(CompilerParser *parser, CompilerType *type, int is_union) {
+    int index;
+
+    if (type == 0) {
+        return -1;
+    }
+    if (type->aggregate_layout_id > 0U) {
+        return (int)type->aggregate_layout_id - 1;
+    }
+
+    index = find_aggregate_layout_by_name(parser, type->aggregate_name);
+    if (index >= 0) {
+        parser->aggregate_layouts[index].is_union = is_union ? 1 : 0;
+        type->aggregate_layout_id = (unsigned short)(index + 1);
+        return index;
+    }
+
+    if (parser->aggregate_layout_count >= COMPILER_MAX_AGGREGATE_LAYOUTS) {
+        set_error(parser, "aggregate layout table exhausted");
+        return -1;
+    }
+
+    index = (int)parser->aggregate_layout_count;
+    rt_memset(&parser->aggregate_layouts[index], 0, sizeof(parser->aggregate_layouts[index]));
+    rt_copy_string(parser->aggregate_layouts[index].name,
+                   sizeof(parser->aggregate_layouts[index].name),
+                   type->aggregate_name);
+    parser->aggregate_layouts[index].base = type->base;
+    parser->aggregate_layouts[index].is_union = is_union ? 1 : 0;
+    parser->aggregate_layouts[index].align_bytes = 1U;
+    parser->aggregate_layouts[index].field_start = parser->aggregate_field_count;
+    parser->aggregate_layout_count += 1U;
+    type->aggregate_layout_id = (unsigned short)(index + 1);
+    return index;
+}
+
+static unsigned long long type_storage_bytes(const CompilerParser *parser, const CompilerType *type);
+
+static unsigned long long type_alignment_bytes(const CompilerParser *parser, const CompilerType *type) {
+    int layout_index;
+
+    if (type == 0) {
+        return 1U;
+    }
+    if (type->pointer_depth > 0 || type->is_function) {
+        return 8U;
+    }
+    if (type->is_array) {
+        CompilerType element_type = *type;
+        if (type->array_stride > 0ULL) {
+            element_type.is_array = 1;
+            element_type.array_length = type->array_stride;
+            element_type.array_stride = 0ULL;
+        } else {
+            element_type.is_array = 0;
+            element_type.array_length = 0ULL;
+            element_type.array_stride = 0ULL;
+        }
+        return type_alignment_bytes(parser, &element_type);
+    }
+    if (type->base == COMPILER_BASE_CHAR) {
+        return 1U;
+    }
+    if (type->base == COMPILER_BASE_VOID) {
+        return 1U;
+    }
+    if (type->base == COMPILER_BASE_STRUCT || type->base == COMPILER_BASE_UNION) {
+        if (type->aggregate_layout_id > 0U) {
+            layout_index = (int)type->aggregate_layout_id - 1;
+            if (layout_index >= 0 && (size_t)layout_index < parser->aggregate_layout_count &&
+                parser->aggregate_layouts[layout_index].align_bytes > 0ULL) {
+                return parser->aggregate_layouts[layout_index].align_bytes;
+            }
+        }
+        layout_index = find_aggregate_layout_by_name(parser, type->aggregate_name);
+        if (layout_index >= 0 && parser->aggregate_layouts[layout_index].align_bytes > 0ULL) {
+            return parser->aggregate_layouts[layout_index].align_bytes;
+        }
+        return 8U;
+    }
+    if (type->scalar_bytes >= 8U) {
+        return 8U;
+    }
+    if (type->scalar_bytes == 2U) {
+        return 2U;
+    }
+    if (type->scalar_bytes == 1U) {
+        return 1U;
+    }
+    return 4U;
+}
+
+static unsigned long long type_storage_bytes(const CompilerParser *parser, const CompilerType *type) {
+    int layout_index;
+    unsigned long long element_size;
+    unsigned long long length;
+
+    if (type == 0) {
+        return 0ULL;
+    }
+    if (type->is_array) {
+        CompilerType element_type = *type;
+        if (type->array_stride > 0ULL) {
+            element_type.is_array = 1;
+            element_type.array_length = type->array_stride;
+            element_type.array_stride = 0ULL;
+        } else {
+            element_type.is_array = 0;
+            element_type.array_length = 0ULL;
+            element_type.array_stride = 0ULL;
+        }
+        element_size = type_storage_bytes(parser, &element_type);
+        if (element_size == 0ULL) {
+            element_size = 1ULL;
+        }
+        length = type->array_length > 0ULL ? type->array_length : 1ULL;
+        return element_size * length;
+    }
+    if (type->pointer_depth > 0 || type->is_function) {
+        return 8U;
+    }
+    if (type->base == COMPILER_BASE_CHAR) {
+        return 1U;
+    }
+    if (type->base == COMPILER_BASE_VOID) {
+        return 1U;
+    }
+    if (type->base == COMPILER_BASE_STRUCT || type->base == COMPILER_BASE_UNION) {
+        if (type->aggregate_layout_id > 0U) {
+            layout_index = (int)type->aggregate_layout_id - 1;
+            if (layout_index >= 0 && (size_t)layout_index < parser->aggregate_layout_count &&
+                parser->aggregate_layouts[layout_index].size_bytes > 0ULL) {
+                return parser->aggregate_layouts[layout_index].size_bytes;
+            }
+        }
+        layout_index = find_aggregate_layout_by_name(parser, type->aggregate_name);
+        if (layout_index >= 0 && parser->aggregate_layouts[layout_index].size_bytes > 0ULL) {
+            return parser->aggregate_layouts[layout_index].size_bytes;
+        }
+        return 16U;
+    }
+    if (type->scalar_bytes > 0U) {
+        return (unsigned long long)type->scalar_bytes;
+    }
+    return 4U;
+}
+
+static void format_layout_type(const CompilerType *type, char *buffer, size_t buffer_size) {
+    size_t i;
+    const char *base = "int";
+
+    if (type->base == COMPILER_BASE_VOID) {
+        base = "void";
+    } else if (type->base == COMPILER_BASE_CHAR) {
+        base = "char";
+    } else if (type->base == COMPILER_BASE_STRUCT) {
+        base = "struct";
+    } else if (type->base == COMPILER_BASE_UNION) {
+        base = "union";
+    } else if (type->base == COMPILER_BASE_ENUM) {
+        base = "enum";
+    }
+
+    buffer[0] = '\0';
+    if (type->is_unsigned) {
+        rt_copy_string(buffer, buffer_size, "unsigned ");
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), base);
+    } else {
+        rt_copy_string(buffer, buffer_size, base);
+    }
+
+    if ((type->base == COMPILER_BASE_STRUCT || type->base == COMPILER_BASE_UNION || type->base == COMPILER_BASE_ENUM) &&
+        type->aggregate_name[0] != '\0') {
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), ":");
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), type->aggregate_name);
+    }
+
+    for (i = 0; i < (size_t)type->pointer_depth; ++i) {
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "*");
+    }
+
+    if (type->is_array) {
+        char digits[32];
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+        if (type->array_length > 0ULL) {
+            rt_unsigned_to_string(type->array_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+        }
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        if (type->array_stride > 0ULL) {
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_stride, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        }
+    }
+}
+
+static int emit_pending_aggregate_layout(CompilerParser *parser, const CompilerType *type) {
+    CompilerAggregateLayout *layout;
+    int index;
+    size_t i;
+    char detail[COMPILER_IR_LINE_CAPACITY];
+    char digits[32];
+
+    if (type == 0 || !parser ||
+        (type->base != COMPILER_BASE_STRUCT && type->base != COMPILER_BASE_UNION)) {
+        return 0;
+    }
+
+    if (type->aggregate_layout_id > 0U) {
+        index = (int)type->aggregate_layout_id - 1;
+    } else {
+        index = find_aggregate_layout_by_name(parser, type->aggregate_name);
+    }
+    if (index < 0 || (size_t)index >= parser->aggregate_layout_count) {
+        return 0;
+    }
+
+    layout = &parser->aggregate_layouts[index];
+    if (layout->name[0] == '\0' && type->aggregate_name[0] != '\0') {
+        rt_copy_string(layout->name, sizeof(layout->name), type->aggregate_name);
+    }
+    if (layout->name[0] == '\0' || layout->emitted) {
+        return 0;
+    }
+
+    rt_copy_string(detail, sizeof(detail), layout->is_union ? "union " : "struct ");
+    rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), layout->name);
+    rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), " ");
+    rt_unsigned_to_string(layout->size_bytes, digits, sizeof(digits));
+    rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), digits);
+    rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), " ");
+    rt_unsigned_to_string(layout->align_bytes, digits, sizeof(digits));
+    rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), digits);
+    if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "aggregate", detail)) != 0) {
+        return -1;
+    }
+
+    for (i = 0; i < parser->aggregate_field_count; ++i) {
+        char type_text[128];
+        if (parser->aggregate_fields[i].layout_id != (unsigned short)(index + 1)) {
+            continue;
+        }
+        format_layout_type(&parser->aggregate_fields[i].type, type_text, sizeof(type_text));
+        rt_copy_string(detail, sizeof(detail), layout->name);
+        rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), " ");
+        rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), parser->aggregate_fields[i].name);
+        rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), " ");
+        rt_unsigned_to_string(parser->aggregate_fields[i].offset_bytes, digits, sizeof(digits));
+        rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), digits);
+        rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), " ");
+        rt_copy_string(detail + rt_strlen(detail), sizeof(detail) - rt_strlen(detail), type_text);
+        if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "member", detail)) != 0) {
+            return -1;
+        }
+    }
+
+    layout->emitted = 1;
+    return 0;
+}
+
+int parser_emit_type_layout_notes(CompilerParser *parser, const CompilerType *type) {
+    return emit_pending_aggregate_layout(parser, type);
+}
+
+static int parse_aggregate_definition(CompilerParser *parser, CompilerType *type_out, int is_union) {
+    int layout_index;
+    CompilerAggregateLayout *layout;
+
+    layout_index = ensure_aggregate_layout(parser, type_out, is_union);
+    if (layout_index < 0) {
+        return -1;
+    }
+
+    layout = &parser->aggregate_layouts[layout_index];
+    if (advance(parser) != 0) {
+        return -1;
+    }
+
+    while (!current_is_punct(parser, "}")) {
+        CompilerType field_base;
+        int saw = 0;
+
+        compiler_type_init(&field_base);
+        saw = parse_declaration_specifiers(parser, 0, 0, 0, &field_base);
+        if (saw <= 0) {
+            set_error(parser, "expected aggregate member declaration");
+            return -1;
+        }
+
+        if (current_is_punct(parser, ";")) {
+            if (advance(parser) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        for (;;) {
+            CompilerDeclarator declarator;
+            CompilerType member_type = field_base;
+            unsigned long long field_align;
+            unsigned long long field_size;
+            unsigned long long offset;
+
+            if (parse_declarator(parser, &declarator, 0) != 0) {
+                return -1;
+            }
+
+            member_type.pointer_depth += declarator.pointer_depth;
+            member_type.is_function = declarator.is_function;
+            member_type.is_array = declarator.is_array;
+            member_type.array_length = declarator.array_length;
+            member_type.array_stride = declarator.array_stride;
+
+            field_align = type_alignment_bytes(parser, &member_type);
+            field_size = type_storage_bytes(parser, &member_type);
+            if (field_size == 0ULL) {
+                field_size = 1ULL;
+            }
+
+            if (layout->is_union) {
+                offset = 0ULL;
+                if (field_size > layout->size_bytes) {
+                    layout->size_bytes = field_size;
+                }
+            } else {
+                offset = align_up(layout->size_bytes, field_align);
+                layout->size_bytes = offset + field_size;
+            }
+            if (field_align > layout->align_bytes) {
+                layout->align_bytes = field_align;
+            }
+
+            if (declarator.name[0] != '\0') {
+                if (parser->aggregate_field_count >= COMPILER_MAX_AGGREGATE_FIELDS) {
+                    set_error(parser, "aggregate member table exhausted");
+                    return -1;
+                }
+                rt_copy_string(parser->aggregate_fields[parser->aggregate_field_count].aggregate_name,
+                               sizeof(parser->aggregate_fields[parser->aggregate_field_count].aggregate_name),
+                               layout->name);
+                rt_copy_string(parser->aggregate_fields[parser->aggregate_field_count].name,
+                               sizeof(parser->aggregate_fields[parser->aggregate_field_count].name),
+                               declarator.name);
+                parser->aggregate_fields[parser->aggregate_field_count].type = member_type;
+                parser->aggregate_fields[parser->aggregate_field_count].layout_id = (unsigned short)(layout_index + 1);
+                parser->aggregate_fields[parser->aggregate_field_count].offset_bytes = offset;
+                parser->aggregate_fields[parser->aggregate_field_count].size_bytes = field_size;
+                parser->aggregate_field_count += 1U;
+                layout->field_count += 1U;
+            }
+
+            if (!current_is_punct(parser, ",")) {
+                break;
+            }
+            if (advance(parser) != 0) {
+                return -1;
+            }
+        }
+
+        if (expect_punct(parser, ";") != 0) {
+            return -1;
+        }
+    }
+
+    layout->size_bytes = align_up(layout->size_bytes, layout->align_bytes);
+    return expect_punct(parser, "}");
+}
+
 int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, int *is_extern_out, int *is_static_out, CompilerType *type_out) {
     int saw_any = 0;
     int saw_explicit_base = 0;
@@ -45,17 +438,31 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
         } else if (type_out != 0) {
             if (current_is_keyword(parser, "void")) {
                 type_out->base = COMPILER_BASE_VOID;
+                type_out->scalar_bytes = 0U;
                 saw_explicit_base = 1;
             } else if (current_is_keyword(parser, "char")) {
                 type_out->base = COMPILER_BASE_CHAR;
+                type_out->scalar_bytes = 1U;
                 saw_explicit_base = 1;
             } else if (current_is_int_family_keyword(parser) ||
                        (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
                 type_out->base = COMPILER_BASE_INT;
+                if (current_is_keyword(parser, "short")) {
+                    type_out->scalar_bytes = 2U;
+                } else if (current_is_keyword(parser, "long") ||
+                           current_is_keyword(parser, "double") ||
+                           (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
+                    type_out->scalar_bytes = token_text_equals(&parser->current, "__int128") ? 16U : 8U;
+                } else {
+                    type_out->scalar_bytes = 4U;
+                }
                 saw_explicit_base = 1;
             } else if (current_is_keyword(parser, "unsigned")) {
                 type_out->base = COMPILER_BASE_INT;
                 type_out->is_unsigned = 1;
+                if (type_out->scalar_bytes == 0U) {
+                    type_out->scalar_bytes = 4U;
+                }
                 saw_explicit_base = 1;
             } else if (current_is_identifier(parser) && is_typedef_name(parser, &parser->current)) {
                 char typedef_name[COMPILER_TYPEDEF_NAME_CAPACITY];
@@ -71,6 +478,7 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
 
         if (current_is_aggregate_type_keyword(parser)) {
             int is_enum = current_is_keyword(parser, "enum");
+            int is_union = current_is_keyword(parser, "union");
 
             if (type_out != 0) {
                 if (current_is_keyword(parser, "struct")) {
@@ -83,11 +491,11 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
                 saw_explicit_base = 1;
             }
 
-            if (is_enum) {
-                if (parse_enum_specifier(parser) != 0) {
-                    return -1;
-                }
-            } else {
+                if (is_enum) {
+                    if (parse_enum_specifier(parser) != 0) {
+                        return -1;
+                    }
+                } else {
                 if (advance(parser) != 0) {
                     return -1;
                 }
@@ -101,8 +509,10 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
                     }
                 }
 
-                if (current_is_punct(parser, "{") && skip_balanced_group(parser, "{", "}") != 0) {
-                    return -1;
+                if (current_is_punct(parser, "{")) {
+                    if (parse_aggregate_definition(parser, type_out, is_union) != 0) {
+                        return -1;
+                    }
                 }
             }
             continue;

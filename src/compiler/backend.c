@@ -227,6 +227,41 @@ static int find_function_index(const BackendState *state, const char *name) {
     return -1;
 }
 
+static int copy_aggregate_name_from_type(const char *type_text, char *buffer, size_t buffer_size) {
+    const char *cursor;
+    size_t out = 0;
+
+    if (buffer_size == 0 || type_text == 0) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    type_text = skip_spaces(type_text);
+    if (starts_with(type_text, "struct:")) {
+        cursor = type_text + 7;
+    } else if (starts_with(type_text, "union:")) {
+        cursor = type_text + 6;
+    } else {
+        return -1;
+    }
+
+    while (*cursor != '\0' && *cursor != '[' && *cursor != '*' && *cursor != ' ' && out + 1 < buffer_size) {
+        buffer[out++] = *cursor++;
+    }
+    buffer[out] = '\0';
+    return out > 0 ? 0 : -1;
+}
+
+static int find_aggregate_index(const BackendState *state, const char *name) {
+    size_t i;
+
+    for (i = 0; i < state->aggregate_count; ++i) {
+        if (names_equal(state->aggregates[i].name, name)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 int add_function_name(BackendState *state, const char *name, int global) {
     int existing = find_function_index(state, name);
 
@@ -308,6 +343,121 @@ int add_constant(BackendState *state, const char *name, long long value) {
     return 0;
 }
 
+int add_aggregate_layout(BackendState *state, const char *name, int is_union, int size_bytes, int align_bytes) {
+    int existing;
+
+    if (name == 0 || name[0] == '\0') {
+        return -1;
+    }
+
+    existing = find_aggregate_index(state, name);
+    if (existing >= 0) {
+        if (size_bytes > 0) {
+            state->aggregates[existing].size_bytes = size_bytes;
+        }
+        if (align_bytes > 0) {
+            state->aggregates[existing].align_bytes = align_bytes;
+        }
+        state->aggregates[existing].is_union = is_union ? 1 : 0;
+        return existing;
+    }
+
+    if (state->aggregate_count >= COMPILER_BACKEND_MAX_AGGREGATES) {
+        backend_set_error(state->backend, "too many aggregate layouts for backend");
+        return -1;
+    }
+
+    rt_copy_string(state->aggregates[state->aggregate_count].name,
+                   sizeof(state->aggregates[state->aggregate_count].name),
+                   name);
+    state->aggregates[state->aggregate_count].is_union = is_union ? 1 : 0;
+    state->aggregates[state->aggregate_count].size_bytes = size_bytes;
+    state->aggregates[state->aggregate_count].align_bytes = align_bytes;
+    state->aggregate_count += 1U;
+    return (int)(state->aggregate_count - 1U);
+}
+
+int add_aggregate_member(BackendState *state, const char *aggregate_name, const char *name, const char *type_text, int offset_bytes) {
+    size_t i;
+
+    if (aggregate_name == 0 || aggregate_name[0] == '\0' || name == 0 || name[0] == '\0') {
+        return -1;
+    }
+
+    for (i = 0; i < state->aggregate_member_count; ++i) {
+        if (names_equal(state->aggregate_members[i].aggregate_name, aggregate_name) &&
+            names_equal(state->aggregate_members[i].name, name)) {
+            state->aggregate_members[i].offset_bytes = offset_bytes;
+            if (type_text != 0 && type_text[0] != '\0') {
+                rt_copy_string(state->aggregate_members[i].type_text,
+                               sizeof(state->aggregate_members[i].type_text),
+                               type_text);
+            }
+            return (int)i;
+        }
+    }
+
+    if (state->aggregate_member_count >= COMPILER_BACKEND_MAX_AGGREGATE_MEMBERS) {
+        backend_set_error(state->backend, "too many aggregate members for backend");
+        return -1;
+    }
+
+    rt_copy_string(state->aggregate_members[state->aggregate_member_count].aggregate_name,
+                   sizeof(state->aggregate_members[state->aggregate_member_count].aggregate_name),
+                   aggregate_name);
+    rt_copy_string(state->aggregate_members[state->aggregate_member_count].name,
+                   sizeof(state->aggregate_members[state->aggregate_member_count].name),
+                   name);
+    rt_copy_string(state->aggregate_members[state->aggregate_member_count].type_text,
+                   sizeof(state->aggregate_members[state->aggregate_member_count].type_text),
+                   type_text != 0 ? type_text : "");
+    state->aggregate_members[state->aggregate_member_count].offset_bytes = offset_bytes;
+    state->aggregate_member_count += 1U;
+    return (int)(state->aggregate_member_count - 1U);
+}
+
+int lookup_aggregate_size(const BackendState *state, const char *type_text) {
+    char name[COMPILER_IR_NAME_CAPACITY];
+    int index;
+
+    if (copy_aggregate_name_from_type(type_text, name, sizeof(name)) != 0) {
+        return 0;
+    }
+    index = find_aggregate_index(state, name);
+    if (index < 0) {
+        return 0;
+    }
+    return state->aggregates[index].size_bytes;
+}
+
+int lookup_aggregate_member(const BackendState *state,
+                            const char *base_type,
+                            const char *member_name,
+                            int *offset_out,
+                            const char **type_text_out) {
+    char aggregate_name[COMPILER_IR_NAME_CAPACITY];
+    size_t i;
+
+    if (copy_aggregate_name_from_type(base_type, aggregate_name, sizeof(aggregate_name)) != 0) {
+        return -1;
+    }
+
+    for (i = 0; i < state->aggregate_member_count; ++i) {
+        if (names_equal(state->aggregate_members[i].aggregate_name, aggregate_name) &&
+            names_equal(state->aggregate_members[i].name, member_name)) {
+            if (offset_out != 0) {
+                *offset_out = state->aggregate_members[i].offset_bytes;
+            }
+            if (type_text_out != 0) {
+                *type_text_out = state->aggregate_members[i].type_text;
+            }
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 int add_global(
     BackendState *state,
     const char *name,
@@ -347,6 +497,7 @@ int add_global(
 
     rt_copy_string(state->globals[state->global_count].name, sizeof(state->globals[state->global_count].name), name);
     rt_copy_string(state->globals[state->global_count].type_text, sizeof(state->globals[state->global_count].type_text), type_text != 0 ? type_text : "");
+    state->globals[state->global_count].init_text[0] = '\0';
     state->globals[state->global_count].init_value = 0;
     state->globals[state->global_count].initialized = 0;
     state->globals[state->global_count].is_array = is_array;
@@ -464,12 +615,38 @@ int emit_local_address(BackendState *state, int offset, const char *reg) {
     return emit_instruction(state, line);
 }
 
+static const char *x86_reg32_name(const char *reg) {
+    if (names_equal(reg, "%rax")) return "%eax";
+    if (names_equal(reg, "%rbx")) return "%ebx";
+    if (names_equal(reg, "%rcx")) return "%ecx";
+    if (names_equal(reg, "%rdx")) return "%edx";
+    if (names_equal(reg, "%rsi")) return "%esi";
+    if (names_equal(reg, "%rdi")) return "%edi";
+    if (names_equal(reg, "%r8")) return "%r8d";
+    if (names_equal(reg, "%r9")) return "%r9d";
+    if (names_equal(reg, "%r10")) return "%r10d";
+    if (names_equal(reg, "%r11")) return "%r11d";
+    return "%eax";
+}
+
 int emit_load_from_address_into_register(BackendState *state, const char *address_reg, const char *dst_reg, int byte_value) {
     char line[64];
+    int access_size = byte_value;
+
+    if (access_size == 0) {
+        access_size = backend_stack_slot_size(state);
+    }
 
     if (backend_is_aarch64(state)) {
-        rt_copy_string(line, sizeof(line), byte_value ? "ldrb " : "ldr ");
-        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), byte_value ? "w" : "x");
+        if (access_size == 1) {
+            rt_copy_string(line, sizeof(line), "ldrb w");
+        } else if (access_size == 2) {
+            rt_copy_string(line, sizeof(line), "ldrh w");
+        } else if (access_size == 4) {
+            rt_copy_string(line, sizeof(line), "ldr w");
+        } else {
+            rt_copy_string(line, sizeof(line), "ldr x");
+        }
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg + 1);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [");
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_reg);
@@ -477,10 +654,20 @@ int emit_load_from_address_into_register(BackendState *state, const char *addres
         return emit_instruction(state, line);
     }
 
-    rt_copy_string(line, sizeof(line), byte_value ? "movzbq (" : "movq (");
+    if (access_size == 1) {
+        rt_copy_string(line, sizeof(line), "movzbq (");
+    } else if (access_size == 2) {
+        rt_copy_string(line, sizeof(line), "movzwq (");
+    } else if (access_size == 4) {
+        rt_copy_string(line, sizeof(line), "movl (");
+    } else {
+        rt_copy_string(line, sizeof(line), "movq (");
+    }
     rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_reg);
     rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), ");
-    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+    rt_copy_string(line + rt_strlen(line),
+                   sizeof(line) - rt_strlen(line),
+                   access_size == 4 ? x86_reg32_name(dst_reg) : dst_reg);
     return emit_instruction(state, line);
 }
 
@@ -511,14 +698,35 @@ int emit_move_value_register(BackendState *state, const char *dst_reg) {
 
 int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value) {
     char line[64];
+    int access_size = byte_value;
+
+    if (access_size == 0) {
+        access_size = backend_stack_slot_size(state);
+    }
     if (backend_is_aarch64(state)) {
-        rt_copy_string(line, sizeof(line), byte_value ? "strb w0, [" : "str x0, [");
+        if (access_size == 1) {
+            rt_copy_string(line, sizeof(line), "strb w0, [");
+        } else if (access_size == 2) {
+            rt_copy_string(line, sizeof(line), "strh w0, [");
+        } else if (access_size == 4) {
+            rt_copy_string(line, sizeof(line), "str w0, [");
+        } else {
+            rt_copy_string(line, sizeof(line), "str x0, [");
+        }
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
         return emit_instruction(state, line);
     }
 
-    rt_copy_string(line, sizeof(line), byte_value ? "movb %al, (" : "movq %rax, (");
+    if (access_size == 1) {
+        rt_copy_string(line, sizeof(line), "movb %al, (");
+    } else if (access_size == 2) {
+        rt_copy_string(line, sizeof(line), "movw %ax, (");
+    } else if (access_size == 4) {
+        rt_copy_string(line, sizeof(line), "movl %eax, (");
+    } else {
+        rt_copy_string(line, sizeof(line), "movq %rax, (");
+    }
     rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
     rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ")");
     return emit_instruction(state, line);

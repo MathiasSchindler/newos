@@ -9,6 +9,8 @@
 #define COMPILER_BACKEND_MAX_LOCALS 256
 #define COMPILER_BACKEND_MAX_STRINGS 1024
 #define COMPILER_BACKEND_MAX_CONSTANTS 512
+#define COMPILER_BACKEND_MAX_AGGREGATES 256
+#define COMPILER_BACKEND_MAX_AGGREGATE_MEMBERS 4096
 #define BACKEND_ARRAY_STACK_BYTES 4096
 #define BACKEND_STRUCT_STACK_BYTES 16384
 #define BACKEND_MAX_OBJECT_STACK_BYTES (4 * 1024 * 1024)
@@ -22,6 +24,7 @@ typedef struct {
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
     char type_text[128];
+    char init_text[COMPILER_IR_LINE_CAPACITY];
     long long init_value;
     int initialized;
     int is_array;
@@ -54,6 +57,20 @@ typedef struct {
 } BackendConstant;
 
 typedef struct {
+    char name[COMPILER_IR_NAME_CAPACITY];
+    int is_union;
+    int size_bytes;
+    int align_bytes;
+} BackendAggregate;
+
+typedef struct {
+    char aggregate_name[COMPILER_IR_NAME_CAPACITY];
+    char name[COMPILER_IR_NAME_CAPACITY];
+    char type_text[128];
+    int offset_bytes;
+} BackendAggregateMember;
+
+typedef struct {
     CompilerBackend *backend;
     int fd;
     BackendFunctionName functions[COMPILER_BACKEND_MAX_FUNCTIONS];
@@ -64,6 +81,10 @@ typedef struct {
     size_t string_count;
     BackendConstant constants[COMPILER_BACKEND_MAX_CONSTANTS];
     size_t constant_count;
+    BackendAggregate aggregates[COMPILER_BACKEND_MAX_AGGREGATES];
+    size_t aggregate_count;
+    BackendAggregateMember aggregate_members[COMPILER_BACKEND_MAX_AGGREGATE_MEMBERS];
+    size_t aggregate_member_count;
     BackendLocal locals[COMPILER_BACKEND_MAX_LOCALS];
     size_t local_count;
     char current_function[COMPILER_IR_NAME_CAPACITY];
@@ -122,6 +143,14 @@ int is_function_name(const BackendState *state, const char *name);
 int find_global(const BackendState *state, const char *name);
 int find_constant(const BackendState *state, const char *name);
 int add_constant(BackendState *state, const char *name, long long value);
+int add_aggregate_layout(BackendState *state, const char *name, int is_union, int size_bytes, int align_bytes);
+int add_aggregate_member(BackendState *state, const char *aggregate_name, const char *name, const char *type_text, int offset_bytes);
+int lookup_aggregate_size(const BackendState *state, const char *type_text);
+int lookup_aggregate_member(const BackendState *state,
+                            const char *base_type,
+                            const char *member_name,
+                            int *offset_out,
+                            const char **type_text_out);
 int add_global(BackendState *state, const char *name, const char *type_text, int is_array, int pointer_depth, int char_based, int prefers_word_index, int global, int has_storage);
 int find_local(const BackendState *state, const char *name);
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);

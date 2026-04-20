@@ -22,9 +22,9 @@ ip route {add|del} DESTINATION[/PREFIX]|default [via GATEWAY] [dev IFACE]
 network settings. It focuses on the most common day-to-day tasks:
 
 - list interfaces and their state
-- show IPv4 and IPv6 addresses
+- show IPv4 addresses everywhere, with limited IPv6 display depending on backend
 - show brief single-line interface summaries
-- show IPv4 and IPv6 route tables on Linux and hosted POSIX/macOS builds
+- show IPv4 route tables on Linux and hosted POSIX/macOS builds
 - bring links up or down
 - adjust MTU values
 - add, remove, or flush IPv4 addresses and routes when the host kernel allows it
@@ -56,12 +56,11 @@ network settings. It focuses on the most common day-to-day tasks:
 
 ## LIMITATIONS
 
-- This is not a full `iproute2` replacement.
-- Hosted route display now works across Linux and common POSIX/macOS builds, but advanced route metadata is intentionally compact.
-- Address and route mutation still focus on IPv4.
+- This is not a full iproute2 replacement.
+- Hosted route display works across Linux and common POSIX and macOS builds, but advanced route metadata is intentionally compact.
+- The freestanding Linux backend is currently most practical for IPv4 links, addresses, and routes; IPv6 support remains partial.
 - Changing interfaces or routes typically requires elevated privileges.
-- Advanced policy routing, monitoring, namespaces, tunnels, and JSON output are
-  not implemented.
+- Advanced policy routing, monitoring, namespaces, tunnels, and JSON output are not implemented.
 
 ## EXAMPLES
 

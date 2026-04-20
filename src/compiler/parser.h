@@ -8,6 +8,28 @@
 #define COMPILER_MAX_TYPEDEF_NAMES 256
 #define COMPILER_TYPEDEF_NAME_CAPACITY 64
 #define COMPILER_MAX_LOOP_DEPTH 64
+#define COMPILER_MAX_AGGREGATE_LAYOUTS 256
+#define COMPILER_MAX_AGGREGATE_FIELDS 4096
+
+typedef struct {
+    char name[COMPILER_SYMBOL_NAME_CAPACITY];
+    CompilerBaseType base;
+    int is_union;
+    unsigned long long size_bytes;
+    unsigned long long align_bytes;
+    size_t field_start;
+    size_t field_count;
+    int emitted;
+} CompilerAggregateLayout;
+
+typedef struct {
+    char aggregate_name[COMPILER_SYMBOL_NAME_CAPACITY];
+    char name[COMPILER_SYMBOL_NAME_CAPACITY];
+    CompilerType type;
+    unsigned short layout_id;
+    unsigned long long offset_bytes;
+    unsigned long long size_bytes;
+} CompilerAggregateField;
 
 typedef struct {
     const CompilerSource *source;
@@ -32,6 +54,10 @@ typedef struct {
     char break_labels[COMPILER_MAX_LOOP_DEPTH][COMPILER_TYPEDEF_NAME_CAPACITY];
     char continue_labels[COMPILER_MAX_LOOP_DEPTH][COMPILER_TYPEDEF_NAME_CAPACITY];
     size_t loop_depth;
+    CompilerAggregateLayout aggregate_layouts[COMPILER_MAX_AGGREGATE_LAYOUTS];
+    size_t aggregate_layout_count;
+    CompilerAggregateField aggregate_fields[COMPILER_MAX_AGGREGATE_FIELDS];
+    size_t aggregate_field_count;
 } CompilerParser;
 
 void compiler_parser_init(CompilerParser *parser, const CompilerSource *source, int dump_ast, int dump_ir, int output_fd);

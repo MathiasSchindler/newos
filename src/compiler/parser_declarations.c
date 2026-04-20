@@ -28,6 +28,7 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     parameter_type.is_function = 0;
     parameter_type.is_array = 0;
     parameter_type.array_length = 0ULL;
+    parameter_type.array_stride = 0ULL;
     if (declarator.is_function) {
         parameter_type.pointer_depth += 1;
     }
@@ -52,12 +53,14 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     return 0;
 }
 
-static void maybe_capture_array_length(const CompilerToken *token, unsigned long long *length_out) {
+static void maybe_capture_array_length(const CompilerToken *token,
+                                       unsigned long long *length_out,
+                                       unsigned long long *stride_out) {
     char text[64];
     size_t length;
     unsigned long long value = 0;
 
-    if (token == 0 || length_out == 0 || token->kind != COMPILER_TOKEN_NUMBER) {
+    if (token == 0 || length_out == 0 || stride_out == 0 || token->kind != COMPILER_TOKEN_NUMBER) {
         return;
     }
 
@@ -73,8 +76,10 @@ static void maybe_capture_array_length(const CompilerToken *token, unsigned long
     if (rt_parse_uint(text, &value) == 0 && value > 0ULL) {
         if (*length_out == 0ULL) {
             *length_out = value;
+        } else if (*stride_out == 0ULL) {
+            *stride_out = value;
         } else {
-            *length_out *= value;
+            *stride_out *= value;
         }
     }
 }
@@ -144,7 +149,7 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
             return -1;
         }
         if (!current_is_punct(parser, "]")) {
-            maybe_capture_array_length(&parser->current, &declarator->array_length);
+            maybe_capture_array_length(&parser->current, &declarator->array_length, &declarator->array_stride);
             if (parse_expression(parser) != 0) {
                 return -1;
             }
@@ -195,11 +200,15 @@ static int declare_symbol(
     symbol_type.is_function = declarator->is_function;
     symbol_type.is_array = declarator->is_array;
     symbol_type.array_length = declarator->array_length;
+    symbol_type.array_stride = declarator->array_stride;
 
     if (is_typedef) {
         if ((symbol_type.base == COMPILER_BASE_STRUCT || symbol_type.base == COMPILER_BASE_UNION) &&
             symbol_type.aggregate_name[0] == '\0') {
             rt_copy_string(symbol_type.aggregate_name, sizeof(symbol_type.aggregate_name), declarator->name);
+        }
+        if (parser_emit_type_layout_notes(parser, &symbol_type) != 0) {
+            return -1;
         }
         if (add_typedef_name(parser, declarator->name) != 0) {
             set_error(parser, "typedef table exhausted");
@@ -222,6 +231,10 @@ static int declare_symbol(
             is_definition
         ) != 0) {
         return semantic_error(parser);
+    }
+
+    if (parser_emit_type_layout_notes(parser, &symbol_type) != 0) {
+        return -1;
     }
 
     if (declarator->name[0] != '\0') {
@@ -269,6 +282,9 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
     }
 
     if (current_is_punct(parser, ";")) {
+        if (parser_emit_type_layout_notes(parser, &declared_type) != 0) {
+            return -1;
+        }
         return advance(parser);
     }
 
@@ -292,6 +308,7 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
             function_type.is_function = 1;
             function_type.is_array = declarator.is_array;
             function_type.array_length = declarator.array_length;
+            function_type.array_stride = declarator.array_stride;
             parser->pending_function_type = function_type;
             rt_copy_string(parser->pending_function_name, sizeof(parser->pending_function_name), declarator.name);
             parser->pending_parameter_count = declarator.parameter_count;

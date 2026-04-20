@@ -20,14 +20,14 @@ for an incoming connection instead.
 ## CURRENT CAPABILITIES
 
 - Outbound TCP connection to HOST PORT
-- Listen for a single incoming TCP connection with `-l`
-- Keep a listener alive for multiple connections with `-k`
-- UDP mode with `-u`
-- Port-scan mode (connect and immediately close) with `-z`
-- Configurable connection timeout with `-w`
-- Bind or source-select a local address/port with `-s` and `-p`
-- IPv4/IPv6 family selection and numeric-only resolution flags
-- Verbose reporting of connection events with `-v`
+- Listen for a single incoming TCP connection with -l
+- Keep a listener alive for multiple connections with -k
+- Port-scan mode with -z
+- Configurable connection timeout with -w
+- Bind or source-select a local address and port with -s and -p
+- IPv4 operation across hosted and freestanding Linux builds
+- Additional UDP and IPv6 modes on backends that implement them
+- Verbose reporting of connection events with -v
 
 ## OPTIONS
 
@@ -46,9 +46,8 @@ for an incoming connection instead.
 
 ## LIMITATIONS
 
-- UDP and IPv6 support depend on the selected platform backend; the hosted POSIX
-  build has the strongest coverage today.
-- No `-e` (execute program) or `-c` (shell command).
+- UDP and IPv6 support depend on the selected platform backend; the hosted POSIX build has the strongest coverage today, while the freestanding Linux backend is currently IPv4 and TCP focused.
+- No -e execute program or -c shell command mode.
 - No UNIX-domain socket support.
 
 ## EXAMPLES

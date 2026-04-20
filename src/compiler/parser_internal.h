@@ -10,6 +10,7 @@ typedef struct {
     int is_array;
     int pointer_depth;
     unsigned long long array_length;
+    unsigned long long array_stride;
     char parameter_names[64][COMPILER_TYPEDEF_NAME_CAPACITY];
     CompilerType parameter_types[64];
     size_t parameter_count;
@@ -85,5 +86,6 @@ int looks_like_type_name_after_lparen(const CompilerParser *parser);
 int looks_like_compound_literal_after_lparen(const CompilerParser *parser);
 int parse_type_name(CompilerParser *parser);
 int parse_enum_specifier(CompilerParser *parser);
+int parser_emit_type_layout_notes(CompilerParser *parser, const CompilerType *type);
 
 #endif

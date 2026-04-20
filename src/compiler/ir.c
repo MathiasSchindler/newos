@@ -828,6 +828,10 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), type->aggregate_name);
     }
 
+    for (i = 0; i < (size_t)type->pointer_depth && rt_strlen(buffer) + 2U < buffer_size; ++i) {
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "*");
+    }
+
     if (type->is_array && rt_strlen(buffer) + 3U < buffer_size) {
         char digits[32];
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
@@ -836,10 +840,12 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
         }
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
-    }
-
-    for (i = 0; i < (size_t)type->pointer_depth && rt_strlen(buffer) + 2U < buffer_size; ++i) {
-        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "*");
+        if (type->array_stride > 0ULL) {
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_stride, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        }
     }
 }
 
