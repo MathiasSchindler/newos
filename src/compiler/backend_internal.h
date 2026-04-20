@@ -10,6 +10,8 @@
 #define COMPILER_BACKEND_MAX_STRINGS 1024
 #define COMPILER_BACKEND_MAX_CONSTANTS 512
 #define BACKEND_ARRAY_STACK_BYTES 4096
+#define BACKEND_STRUCT_STACK_BYTES 16384
+#define BACKEND_MAX_OBJECT_STACK_BYTES (4 * 1024 * 1024)
 
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
@@ -22,6 +24,8 @@ typedef struct {
     long long init_value;
     int initialized;
     int is_array;
+    int pointer_depth;
+    int char_based;
     int prefers_word_index;
     int global;
     int has_storage;
@@ -32,6 +36,8 @@ typedef struct {
     int offset;
     int stack_bytes;
     int is_array;
+    int pointer_depth;
+    int char_based;
     int prefers_word_index;
 } BackendLocal;
 
@@ -114,9 +120,9 @@ int is_function_name(const BackendState *state, const char *name);
 int find_global(const BackendState *state, const char *name);
 int find_constant(const BackendState *state, const char *name);
 int add_constant(BackendState *state, const char *name, long long value);
-int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index, int global, int has_storage);
+int add_global(BackendState *state, const char *name, int is_array, int pointer_depth, int char_based, int prefers_word_index, int global, int has_storage);
 int find_local(const BackendState *state, const char *name);
-int allocate_local(BackendState *state, const char *name, int is_array, int prefers_word_index);
+int allocate_local(BackendState *state, const char *name, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label);
 int emit_pop_to_register(BackendState *state, const char *reg);
 int emit_local_address(BackendState *state, int offset, const char *reg);
@@ -132,6 +138,7 @@ int emit_load_string_literal(BackendState *state, const char *text);
 int emit_load_name_into_register(BackendState *state, const char *name, const char *dst_reg);
 int emit_load_name(BackendState *state, const char *name);
 int emit_store_name(BackendState *state, const char *name);
+int emit_copy_object_to_name(BackendState *state, const char *name);
 int lookup_array_storage(const BackendState *state, const char *name, int *word_index_out);
 int emit_load_immediate_register(BackendState *state, const char *reg, long long value);
 int emit_load_immediate(BackendState *state, long long value);
@@ -143,5 +150,6 @@ int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *la
 int emit_expression(BackendState *state, const char *expr);
 int emit_array_initializer_store(BackendState *state, const char *name, const char *expr);
 int emit_object_initializer_store(BackendState *state, const char *name, const char *expr);
+int emit_object_copy_store(BackendState *state, const char *name, const char *expr);
 
 #endif

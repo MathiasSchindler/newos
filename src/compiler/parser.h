@@ -25,6 +25,7 @@ typedef struct {
     CompilerType pending_function_type;
     char pending_function_name[COMPILER_TYPEDEF_NAME_CAPACITY];
     char pending_parameter_names[64][COMPILER_TYPEDEF_NAME_CAPACITY];
+    CompilerType pending_parameter_types[64];
     size_t pending_parameter_count;
     int pending_function_scope;
 } CompilerParser;

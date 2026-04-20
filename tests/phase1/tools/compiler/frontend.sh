@@ -63,6 +63,21 @@ EOF
 "$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/identity_fold.c" > "$WORK_DIR/identity_fold_ir.out"
 assert_file_contains "$WORK_DIR/identity_fold_ir.out" '^ret argc$' "compiler IR optimizer did not simplify neutral arithmetic identities"
 
+cat > "$WORK_DIR/typedef_struct_local.c" <<'EOF'
+typedef struct {
+    unsigned char bytes[128];
+} State;
+
+int main(void) {
+    State state;
+    state.bytes[0] = 'x';
+    return state.bytes[0] == 'x' ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/typedef_struct_local.c" > "$WORK_DIR/typedef_struct_local_ir.out"
+assert_file_contains "$WORK_DIR/typedef_struct_local_ir.out" '^decl local obj struct state$' "compiler lost a typedef-backed struct local and lowered it as a plain scalar"
+
 cat > "$WORK_DIR/local.h" <<'EOF'
 #ifndef LOCAL_H
 #define LOCAL_H

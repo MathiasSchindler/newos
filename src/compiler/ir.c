@@ -821,8 +821,14 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
         rt_copy_string(buffer, buffer_size, base);
     }
 
-    if (type->is_array && rt_strlen(buffer) + 2U < buffer_size) {
-        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[]");
+    if (type->is_array && rt_strlen(buffer) + 3U < buffer_size) {
+        char digits[32];
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+        if (type->array_length > 0ULL) {
+            rt_unsigned_to_string(type->array_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+        }
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
     }
 
     for (i = 0; i < (size_t)type->pointer_depth && rt_strlen(buffer) + 2U < buffer_size; ++i) {

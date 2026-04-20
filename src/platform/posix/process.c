@@ -1,3 +1,6 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform.h"
@@ -316,42 +319,40 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
 }
 
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
-    struct termios saved;
-    struct termios raw;
+    unsigned char saved_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
+    unsigned char raw_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
+    struct termios *saved = (struct termios *)saved_bytes;
+    struct termios *raw = (struct termios *)raw_bytes;
 
     if (state_out == NULL) {
         errno = EINVAL;
         return -1;
     }
 
-    if (tcgetattr(fd, &saved) != 0) {
+    if (tcgetattr(fd, saved) != 0) {
         return -1;
     }
 
-    memset(state_out, 0, sizeof(*state_out));
-    memcpy(state_out->bytes, &saved, sizeof(saved));
+    memset(state_out, 0, PLATFORM_TERMINAL_STATE_CAPACITY);
+    memcpy(state_out, saved_bytes, PLATFORM_TERMINAL_STATE_CAPACITY);
 
-    raw = saved;
-    raw.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-    raw.c_oflag &= (tcflag_t)~(OPOST);
-    raw.c_cflag |= (tcflag_t)CS8;
-    raw.c_lflag &= (tcflag_t)~(ECHO | ICANON | IEXTEN | ISIG);
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
+    memcpy(raw_bytes, saved_bytes, PLATFORM_TERMINAL_STATE_CAPACITY);
+    cfmakeraw(raw);
 
-    return tcsetattr(fd, TCSANOW, &raw);
+    return tcsetattr(fd, TCSANOW, raw);
 }
 
 int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
-    struct termios saved;
+    unsigned char saved_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
+    struct termios *saved = (struct termios *)saved_bytes;
 
     if (state == NULL) {
         errno = EINVAL;
         return -1;
     }
 
-    memcpy(&saved, state->bytes, sizeof(saved));
-    return tcsetattr(fd, TCSANOW, &saved);
+    memcpy(saved_bytes, state, PLATFORM_TERMINAL_STATE_CAPACITY);
+    return tcsetattr(fd, TCSANOW, saved);
 }
 
 int platform_create_pipe(int pipe_fds[2]) {

@@ -305,7 +305,16 @@ int add_constant(BackendState *state, const char *name, long long value) {
     return 0;
 }
 
-int add_global(BackendState *state, const char *name, int is_array, int prefers_word_index, int global, int has_storage) {
+int add_global(
+    BackendState *state,
+    const char *name,
+    int is_array,
+    int pointer_depth,
+    int char_based,
+    int prefers_word_index,
+    int global,
+    int has_storage
+) {
     int existing = find_global(state, name);
 
     if (existing >= 0) {
@@ -333,6 +342,8 @@ int add_global(BackendState *state, const char *name, int is_array, int prefers_
     state->globals[state->global_count].init_value = 0;
     state->globals[state->global_count].initialized = 0;
     state->globals[state->global_count].is_array = is_array;
+    state->globals[state->global_count].pointer_depth = pointer_depth;
+    state->globals[state->global_count].char_based = char_based;
     state->globals[state->global_count].prefers_word_index = prefers_word_index;
     state->globals[state->global_count].global = global ? 1 : 0;
     state->globals[state->global_count].has_storage = has_storage ? 1 : 0;
@@ -351,8 +362,8 @@ int find_local(const BackendState *state, const char *name) {
     return -1;
 }
 
-int allocate_local(BackendState *state, const char *name, int is_array, int prefers_word_index) {
-    int slot_size = is_array ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state);
+int allocate_local(BackendState *state, const char *name, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index) {
+    int slot_size = stack_bytes > 0 ? stack_bytes : (is_array ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state));
 
     if (state->local_count >= COMPILER_BACKEND_MAX_LOCALS) {
         backend_set_error(state->backend, "too many local variables for backend");
@@ -363,6 +374,8 @@ int allocate_local(BackendState *state, const char *name, int is_array, int pref
     state->locals[state->local_count].stack_bytes = slot_size;
     state->locals[state->local_count].offset = state->stack_size + slot_size;
     state->locals[state->local_count].is_array = is_array;
+    state->locals[state->local_count].pointer_depth = pointer_depth;
+    state->locals[state->local_count].char_based = char_based;
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->stack_size += slot_size;
     state->local_count += 1U;
@@ -844,6 +857,70 @@ int emit_store_name(BackendState *state, const char *name) {
 
     backend_set_error(state->backend, "unknown assignment target in backend");
     return -1;
+}
+
+int emit_copy_object_to_name(BackendState *state, const char *name) {
+    int local_index = find_local(state, name);
+    int bytes;
+    int offset;
+    int chunk;
+
+    if (local_index < 0 || !state->locals[local_index].is_array) {
+        backend_set_error(state->backend, "unsupported object assignment target in backend");
+        return -1;
+    }
+
+    bytes = state->locals[local_index].stack_bytes;
+    offset = state->locals[local_index].offset;
+    if (bytes <= 0) {
+        return 0;
+    }
+
+    if (backend_is_aarch64(state)) {
+        if (emit_instruction(state, "mov x10, x0") != 0 ||
+            emit_local_address(state, offset, "x9") != 0) {
+            return -1;
+        }
+        for (chunk = 0; chunk < bytes; chunk += 8) {
+            char load_line[64];
+            char store_line[64];
+            char chunk_text[32];
+
+            rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
+            rt_copy_string(load_line, sizeof(load_line), "ldr x11, [x10, #");
+            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
+            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "]");
+            rt_copy_string(store_line, sizeof(store_line), "str x11, [x9, #");
+            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
+            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "]");
+            if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+                return -1;
+            }
+        }
+        return emit_instruction(state, "mov x0, x9");
+    }
+
+    if (emit_instruction(state, "movq %rax, %rdx") != 0 ||
+        emit_local_address(state, offset, "%rcx") != 0) {
+        return -1;
+    }
+    for (chunk = 0; chunk < bytes; chunk += 8) {
+        char load_line[64];
+        char store_line[64];
+        char chunk_text[32];
+
+        rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
+        rt_copy_string(load_line, sizeof(load_line), "movq ");
+        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
+        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "(%rdx), %r11");
+        rt_copy_string(store_line, sizeof(store_line), "movq %r11, ");
+        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
+        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "(%rcx)");
+        if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+            return -1;
+        }
+    }
+    return emit_instruction(state, "movq %rcx, %rax");
 }
 
 int lookup_array_storage(const BackendState *state, const char *name, int *word_index_out) {

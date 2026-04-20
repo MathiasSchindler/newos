@@ -15,7 +15,8 @@ static int types_are_compatible(const CompilerType *lhs, const CompilerType *rhs
            lhs->pointer_depth == rhs->pointer_depth &&
            lhs->is_function == rhs->is_function &&
            lhs->is_array == rhs->is_array &&
-           lhs->is_unsigned == rhs->is_unsigned;
+           lhs->is_unsigned == rhs->is_unsigned &&
+           (lhs->array_length == 0ULL || rhs->array_length == 0ULL || lhs->array_length == rhs->array_length);
 }
 
 static int is_macro_like_name(const char *name) {
@@ -242,6 +243,22 @@ int compiler_semantic_lookup_constant(const CompilerSemantic *semantic, const ch
     }
 
     *value_out = semantic->symbols[index].constant_value;
+    return 0;
+}
+
+int compiler_semantic_lookup_typedef(const CompilerSemantic *semantic, const char *name, CompilerType *type_out) {
+    int index;
+
+    if (semantic == 0 || name == 0 || name[0] == '\0' || type_out == 0) {
+        return -1;
+    }
+
+    index = find_symbol(semantic, name);
+    if (index < 0 || semantic->symbols[index].kind != COMPILER_SYMBOL_TYPEDEF) {
+        return -1;
+    }
+
+    *type_out = semantic->symbols[index].type;
     return 0;
 }
 

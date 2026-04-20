@@ -9,7 +9,9 @@ typedef struct {
     int is_function;
     int is_array;
     int pointer_depth;
+    unsigned long long array_length;
     char parameter_names[64][COMPILER_TYPEDEF_NAME_CAPACITY];
+    CompilerType parameter_types[64];
     size_t parameter_count;
 } CompilerDeclarator;
 

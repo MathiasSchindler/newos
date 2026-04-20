@@ -4,6 +4,7 @@
 
 static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarator *owner) {
     CompilerType type;
+    CompilerType parameter_type;
     int saw;
     CompilerDeclarator declarator;
 
@@ -22,6 +23,12 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
         }
     }
 
+    parameter_type = type;
+    parameter_type.pointer_depth += declarator.pointer_depth;
+    parameter_type.is_function = declarator.is_function;
+    parameter_type.is_array = declarator.is_array;
+    parameter_type.array_length = declarator.array_length;
+
     if (owner != 0 &&
         declarator.name[0] != '\0' &&
         owner->parameter_count < sizeof(owner->parameter_names) / sizeof(owner->parameter_names[0])) {
@@ -30,10 +37,38 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
             sizeof(owner->parameter_names[owner->parameter_count]),
             declarator.name
         );
+        owner->parameter_types[owner->parameter_count] = parameter_type;
         owner->parameter_count += 1U;
     }
 
     return 0;
+}
+
+static void maybe_capture_array_length(const CompilerToken *token, unsigned long long *length_out) {
+    char text[64];
+    size_t length;
+    unsigned long long value = 0;
+
+    if (token == 0 || length_out == 0 || token->kind != COMPILER_TOKEN_NUMBER) {
+        return;
+    }
+
+    copy_token_text(token, text, sizeof(text));
+    length = rt_strlen(text);
+    while (length > 0 &&
+           (text[length - 1] == 'u' || text[length - 1] == 'U' ||
+            text[length - 1] == 'l' || text[length - 1] == 'L')) {
+        text[length - 1] = '\0';
+        length -= 1U;
+    }
+
+    if (rt_parse_uint(text, &value) == 0 && value > 0ULL) {
+        if (*length_out == 0ULL) {
+            *length_out = value;
+        } else {
+            *length_out *= value;
+        }
+    }
 }
 
 static int parse_parameter_list(CompilerParser *parser, CompilerDeclarator *declarator) {
@@ -100,8 +135,11 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
         if (advance(parser) != 0) {
             return -1;
         }
-        if (!current_is_punct(parser, "]") && parse_expression(parser) != 0) {
-            return -1;
+        if (!current_is_punct(parser, "]")) {
+            maybe_capture_array_length(&parser->current, &declarator->array_length);
+            if (parse_expression(parser) != 0) {
+                return -1;
+            }
         }
         declarator->is_array = 1;
         if (expect_punct(parser, "]") != 0) {
@@ -148,6 +186,7 @@ static int declare_symbol(
     symbol_type.pointer_depth += declarator->pointer_depth;
     symbol_type.is_function = declarator->is_function;
     symbol_type.is_array = declarator->is_array;
+    symbol_type.array_length = declarator->array_length;
 
     if (is_typedef) {
         if (add_typedef_name(parser, declarator->name) != 0) {
@@ -240,6 +279,7 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
             function_type.pointer_depth += declarator.pointer_depth;
             function_type.is_function = 1;
             function_type.is_array = declarator.is_array;
+            function_type.array_length = declarator.array_length;
             parser->pending_function_type = function_type;
             rt_copy_string(parser->pending_function_name, sizeof(parser->pending_function_name), declarator.name);
             parser->pending_parameter_count = declarator.parameter_count;
@@ -253,6 +293,7 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
                     sizeof(parser->pending_parameter_names[i]),
                     declarator.parameter_names[i]
                 );
+                parser->pending_parameter_types[i] = declarator.parameter_types[i];
             }
             return parse_compound_statement(parser);
         }

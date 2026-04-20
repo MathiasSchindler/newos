@@ -362,26 +362,23 @@ int parse_compound_statement(CompilerParser *parser) {
     }
 
     if (parser->pending_function_scope) {
-        CompilerType parameter_type;
-
         entered_function_scope = 1;
         parser->pending_function_scope = 0;
         compiler_semantic_begin_function(&parser->semantic, &parser->pending_function_type);
-        compiler_type_init(&parameter_type);
 
         for (i = 0; i < parser->pending_parameter_count; ++i) {
             if (compiler_semantic_declare(
                     &parser->semantic,
                     parser->pending_parameter_names[i],
                     COMPILER_SYMBOL_OBJECT,
-                    &parameter_type,
+                    &parser->pending_parameter_types[i],
                     1
                 ) != 0) {
                 compiler_semantic_end_function(&parser->semantic);
                 compiler_semantic_exit_scope(&parser->semantic);
                 return semantic_error(parser);
             }
-            if (emit_ir_status(parser, compiler_ir_emit_decl(&parser->ir, "param", 0, &parameter_type, parser->pending_parameter_names[i])) != 0) {
+            if (emit_ir_status(parser, compiler_ir_emit_decl(&parser->ir, "param", 0, &parser->pending_parameter_types[i], parser->pending_parameter_names[i])) != 0) {
                 compiler_semantic_end_function(&parser->semantic);
                 compiler_semantic_exit_scope(&parser->semantic);
                 return -1;

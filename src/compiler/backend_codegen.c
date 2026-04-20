@@ -29,6 +29,7 @@ static int parse_decl_line(const char *line,
         kind[length++] = *cursor++;
     }
     kind[length] = '\0';
+    cursor = skip_spaces(cursor);
 
     copy_last_word(cursor, name, name_size);
     scan = cursor;
@@ -64,6 +65,71 @@ static int parse_const_line(const char *line, char *name, size_t name_size, long
     }
 
     return parse_signed_value(cursor, value_out);
+}
+
+static int decl_slot_size(const BackendState *state, const char *type_text) {
+    const char *type = skip_spaces(type_text);
+    const char *open = 0;
+    unsigned long long length = 0;
+    unsigned long long element_size = (unsigned long long)backend_stack_slot_size(state);
+    unsigned long long total_size;
+
+    if (starts_with(type, "char")) {
+        element_size = 1ULL;
+    } else if ((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*")) {
+        element_size = BACKEND_STRUCT_STACK_BYTES;
+    }
+
+    open = type;
+    while (*open != '\0' && *open != '[') {
+        open += 1;
+    }
+
+    if (*open == '[') {
+        const char *cursor = open + 1;
+        while (*cursor >= '0' && *cursor <= '9') {
+            length = length * 10ULL + (unsigned long long)(*cursor - '0');
+            cursor += 1;
+        }
+        if (length == 0ULL) {
+            return BACKEND_ARRAY_STACK_BYTES;
+        }
+        total_size = length * element_size;
+        if (total_size > (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES) {
+            total_size = (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES;
+        }
+        return (int)total_size;
+    }
+
+    if (((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*"))) {
+        return BACKEND_STRUCT_STACK_BYTES;
+    }
+    return backend_stack_slot_size(state);
+}
+
+static int decl_requires_object_storage(const char *type_text) {
+    const char *type = skip_spaces(type_text);
+
+    return text_contains(type, "[") ||
+           ((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*"));
+}
+
+static int decl_pointer_depth(const char *type_text) {
+    const char *type = skip_spaces(type_text);
+    int depth = 0;
+
+    while (*type != '\0') {
+        if (*type == '*') {
+            depth += 1;
+        }
+        type += 1;
+    }
+
+    return depth;
+}
+
+static int decl_char_based(const char *type_text) {
+    return text_contains(skip_spaces(type_text), "char");
 }
 
 static int aligned_function_stack_bytes(int stack_bytes) {
@@ -270,7 +336,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                 continue;
             }
 
-            slot_size = text_contains(type_text, "[]") ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state);
+            slot_size = decl_slot_size(state, type_text);
             for (function_index = 0; function_index < state->function_count; ++function_index) {
                 if (names_equal(state->functions[function_index].name, current_function)) {
                     state->functions[function_index].stack_bytes += slot_size;
@@ -327,7 +393,9 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                 !is_function_name(state, name) &&
                 add_global(state,
                            name,
-                           text_contains(type_text, "[]"),
+                           decl_requires_object_storage(type_text),
+                           decl_pointer_depth(type_text),
+                           decl_char_based(type_text),
                            should_prefer_word_index(name, type_text),
                            has_global_linkage,
                            names_equal(storage, "global") || names_equal(storage, "static")) < 0) {
@@ -574,10 +642,16 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     char type_text[128];
     char name[COMPILER_IR_NAME_CAPACITY];
     int is_array;
+    int slot_size;
+    int pointer_depth;
+    int char_based;
     int prefers_word_index;
 
     parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
-    is_array = text_contains(type_text, "[]");
+    is_array = decl_requires_object_storage(type_text);
+    slot_size = decl_slot_size(state, type_text);
+    pointer_depth = decl_pointer_depth(type_text);
+    char_based = decl_char_based(type_text);
     prefers_word_index = should_prefer_word_index(name, type_text);
 
     if (names_equal(storage, "param")) {
@@ -586,7 +660,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         char asm_line[128];
         int index = state->param_count;
 
-        if (allocate_local(state, name, is_array, prefers_word_index) != 0) {
+        if (allocate_local(state, name, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
             return -1;
         }
         {
@@ -660,7 +734,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     }
 
     if (names_equal(storage, "local")) {
-        return allocate_local(state, name, is_array, prefers_word_index);
+        return allocate_local(state, name, slot_size, is_array, pointer_depth, char_based, prefers_word_index);
     }
 
     if (names_equal(kind, "func")) {
@@ -757,6 +831,13 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 }
                 if (*expr == '"' && is_array_target) {
                     if (emit_array_initializer_store(&state, name, expr) != 0) {
+                        backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                        return -1;
+                    }
+                    continue;
+                }
+                if (is_array_target) {
+                    if (emit_object_copy_store(&state, name, expr) != 0) {
                         backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                         return -1;
                     }

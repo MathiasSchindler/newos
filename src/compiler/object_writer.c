@@ -1675,8 +1675,63 @@ static int emit_backend_assembly_to_temp(
     return 0;
 }
 
+static int write_external_elf_object(CompilerObjectWriter *writer, const char *asm_path, int fd) {
+    static CompilerSource object_source;
+    char object_path[COMPILER_PATH_CAPACITY];
+    char *argv[] = {
+        "cc",
+        "-x",
+        "assembler",
+        "-c",
+        (char *)asm_path,
+        "-o",
+        object_path,
+        0
+    };
+    int object_fd;
+    int pid;
+    int exit_status = 0;
+
+    object_fd = platform_create_temp_file(object_path, sizeof(object_path), "/tmp/newos-ncc-obj-", 0600U);
+    if (object_fd < 0) {
+        set_error(writer, "failed to create temporary ELF object file");
+        return -1;
+    }
+    (void)platform_close(object_fd);
+
+    if (platform_spawn_process(argv, -1, -1, 0, 0, 0, &pid) != 0) {
+        (void)platform_remove_file(object_path);
+        set_error(writer, "failed to invoke system assembler for ELF object emission");
+        return -1;
+    }
+    if (platform_wait_process(pid, &exit_status) != 0) {
+        (void)platform_remove_file(object_path);
+        set_error(writer, "failed while waiting for ELF object emission");
+        return -1;
+    }
+    if (exit_status != 0) {
+        (void)platform_remove_file(object_path);
+        set_error(writer, "system assembler could not assemble x86_64 output");
+        return -1;
+    }
+
+    if (compiler_load_source(object_path, &object_source) != 0) {
+        (void)platform_remove_file(object_path);
+        set_error(writer, "failed to read generated ELF object");
+        return -1;
+    }
+    (void)platform_remove_file(object_path);
+
+    if (rt_write_all(fd, object_source.data, object_source.size) != 0) {
+        set_error(writer, "failed while writing ELF object output");
+        return -1;
+    }
+
+    return 0;
+}
+
 int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd) {
-    CompilerSource source;
+    static CompilerSource source;
     ObjectAssembler assembler;
     char temp_path[COMPILER_PATH_CAPACITY];
 
@@ -1689,9 +1744,9 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
     }
 
     if (compiler_load_source(temp_path, &source) != 0) {
+        int fallback_status = write_external_elf_object(writer, temp_path, fd);
         (void)platform_remove_file(temp_path);
-        set_error(writer, "failed to read temporary assembly for object writing");
-        return -1;
+        return fallback_status;
     }
     (void)platform_remove_file(temp_path);
 
@@ -1703,7 +1758,7 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
 }
 
 int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd) {
-    CompilerSource object_source;
+    static CompilerSource object_source;
     char asm_path[COMPILER_PATH_CAPACITY];
     char object_path[COMPILER_PATH_CAPACITY];
     char *argv[] = {

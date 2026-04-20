@@ -210,6 +210,116 @@ EOF
 
 compile_and_check_native "$WORK_DIR/casted_member_lvalue.c" "$WORK_DIR/casted_member_lvalue_bin" "0" "compiler failed on a casted pointer member assignment lvalue"
 
+cat > "$WORK_DIR/struct_array_member_decay.c" <<'EOF'
+typedef struct {
+    unsigned char bytes[8];
+} State;
+
+static void fill(unsigned char *dst) {
+    dst[0] = 'o';
+    dst[1] = 'k';
+    dst[2] = '\0';
+}
+
+int main(void) {
+    State state;
+    fill(state.bytes);
+    return state.bytes[1] == 'k' ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/struct_array_member_decay.c" "$WORK_DIR/struct_array_member_decay_bin" "0" "compiler failed to decay a struct byte-array member to its address"
+
+cat > "$WORK_DIR/typedef_struct_local_storage.c" <<'EOF'
+typedef struct {
+    unsigned char bytes[8192];
+} State;
+
+static void fill(State *state) {
+    int i;
+    for (i = 0; i < 8192; i += 1) {
+        state->bytes[i] = (unsigned char)i;
+    }
+}
+
+int main(void) {
+    State state;
+    fill(&state);
+    return state.bytes[8191] == 255 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/typedef_struct_local_storage.c" "$WORK_DIR/typedef_struct_local_storage_bin" "0" "compiler under-allocated stack storage for a typedef-backed local struct"
+
+cat > "$WORK_DIR/typedef_struct_copy_assignment.c" <<'EOF'
+typedef struct {
+    unsigned char bytes[128];
+} State;
+
+static void fill(State *state) {
+    int i;
+    for (i = 0; i < 128; i += 1) {
+        state->bytes[i] = (unsigned char)i;
+    }
+}
+
+static int check(const State *state) {
+    State copy;
+    copy = *state;
+    return copy.bytes[64] == 64 && copy.bytes[127] == 127;
+}
+
+int main(void) {
+    State state;
+    fill(&state);
+    return check(&state) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/typedef_struct_copy_assignment.c" "$WORK_DIR/typedef_struct_copy_assignment_bin" "0" "compiler failed to copy a typedef-backed struct by value"
+
+cat > "$WORK_DIR/typedef_struct_return_assignment.c" <<'EOF'
+typedef struct {
+    unsigned char bytes[2];
+} Buffer;
+
+static Buffer make_buffer(void) {
+    Buffer buffer = { { 3, 4 } };
+    return buffer;
+}
+
+int main(void) {
+    Buffer value;
+    value = make_buffer();
+    return value.bytes[0] == 3 && value.bytes[1] == 4 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/typedef_struct_return_assignment.c" "$WORK_DIR/typedef_struct_return_assignment_bin" "0" "compiler failed to assign a typedef-backed struct returned from a function"
+
+cat > "$WORK_DIR/char_pointer_deref.c" <<'EOF'
+int main(void) {
+    const char *text = "-c";
+    return (*text == '-' && *(text + 1) == 'c') ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/char_pointer_deref.c" "$WORK_DIR/char_pointer_deref_bin" "0" "compiler loaded a full word instead of a byte for char-pointer dereference"
+
+cat > "$WORK_DIR/char_double_pointer_deref.c" <<'EOF'
+static int first_is_a(char **cursor) {
+    return **cursor == 'a';
+}
+
+int main(void) {
+    char text[] = "abc";
+    char *cursor = text;
+    return first_is_a(&cursor) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/char_double_pointer_deref.c" "$WORK_DIR/char_double_pointer_deref_bin" "0" "compiler loaded a full word instead of a byte through a char double-pointer dereference"
+
 cat > "$WORK_DIR/shadowed_local_name.c" <<'EOF'
 static int path_is_nonempty(char **argv) {
     return argv[0][0] != '\0';

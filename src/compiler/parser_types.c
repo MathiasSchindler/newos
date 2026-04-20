@@ -57,6 +57,15 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
                 type_out->base = COMPILER_BASE_INT;
                 type_out->is_unsigned = 1;
                 saw_explicit_base = 1;
+            } else if (current_is_identifier(parser) && is_typedef_name(parser, &parser->current)) {
+                char typedef_name[COMPILER_TYPEDEF_NAME_CAPACITY];
+                CompilerType resolved_type;
+
+                copy_token_text(&parser->current, typedef_name, sizeof(typedef_name));
+                if (compiler_semantic_lookup_typedef(&parser->semantic, typedef_name, &resolved_type) == 0) {
+                    *type_out = resolved_type;
+                }
+                saw_explicit_base = 1;
             }
         }
 
