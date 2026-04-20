@@ -7,53 +7,49 @@ awk - pattern-action text processing language
 ## SYNOPSIS
 
 ```
-awk 'program' [file ...]
+awk [-F sep] [-v var=value] [-f program-file]... ['program'] [file ...]
 ```
 
 ## DESCRIPTION
 
-`awk` reads input line by line, splits each line into fields, and executes the
-program for lines matching its patterns. Programs consist of optional `BEGIN`
-and `END` blocks plus pattern-action pairs.
+`awk` reads input records, splits them into fields, and executes pattern-action
+rules. This implementation focuses on a practical, low-dependency subset that
+covers common field-processing tasks without pulling in a heavyweight runtime.
 
 ## CURRENT CAPABILITIES
 
 - `BEGIN` and `END` blocks
-- Pattern matching with `/regex/` and expression patterns
-- Field splitting by `FS` (default: whitespace); `$1`, `$2`, ..., `$NF`
-- Built-in variables: `FS`, `OFS`, `RS`, `ORS`, `NR`, `NF`, `FILENAME`
-- Arithmetic operators: `+`, `-`, `*`, `/`, `%`, `^`
-- String concatenation
-- Comparison and logical operators
-- `if`/`else`, `while`, `for`, `do`/`while`, `break`, `continue`, `next`,
-  `exit`
-- Built-in functions: `length`, `substr`, `index`, `split`, `sub`, `gsub`,
-  `match`, `sprintf`, `printf`, `print`, `int`, `sqrt`, `sin`, `cos`,
-  `atan2`, `exp`, `log`, `rand`, `srand`, `toupper`, `tolower`, `systime`,
-  `system`, `getline`
-- Arrays (associative)
-- Output redirection with `>`, `>>`, `|`
+- Regex pattern matching with `/regex/` and `expr ~ /regex/`
+- Record and field access via `$0`, `$1` ... `$NF`
+- Built-in variables: `FS`, `OFS`, `RS`, `ORS`, `NR`, `FNR`, `NF`, `FILENAME`
+- Simple variable assignment in the program and via `-v var=value`
+- `print` and `printf`
+- Inline programs or one/more `-f` program files
 
 ## OPTIONS
 
-Awk takes a single positional program argument followed by optional file
-arguments. No `-F`, `-v`, or `-f` flags are currently implemented.
+| Flag | Description |
+|------|-------------|
+| `-F sep` | Set `FS` before executing `BEGIN` blocks. Common escapes like `\t` are accepted. |
+| `-v var=value` | Predefine a variable or separator setting before execution. |
+| `-f program-file` | Read program text from `program-file`. May be used more than once. |
 
 ## LIMITATIONS
 
-- `-F` field separator flag is not supported; set `FS` in `BEGIN` instead.
-- `-v VAR=VALUE` variable assignment is not supported.
-- `-f FILE` script file is not supported; program must be given inline.
-- No OFMT/CONVFMT or `ARGC`/`ARGV`.
-- `getline` from command pipelines may have limited support.
+- This is still a focused awk subset rather than full POSIX/GNU awk.
+- No user-defined functions, range patterns, `ARGC`/`ARGV`, or the full awk
+  expression/control-flow language are implemented.
+- `RS` is treated as a literal record separator string rather than full awk
+  regex/paragraph-mode semantics.
+- No `OFMT`/`CONVFMT`, locale-aware formatting, or advanced `getline` forms.
 
 ## EXAMPLES
 
 ```
 awk '{ print $1 }' file.txt
-awk 'BEGIN { FS=":"; OFS="|" } /pattern/ { printf "%s\n", $1 } END { print NR }' file
-awk 'NR % 2 == 0' file.txt
-awk '{ sum += $1 } END { print sum }' numbers.txt
+awk -F: '{ print $1 }' /etc/passwd
+awk -v prefix=tag 'FNR == 1 { print FILENAME } { print prefix, $1 }' file1 file2
+awk -f script.awk input.txt
 ```
 
 ## SEE ALSO

@@ -8,25 +8,30 @@ mount - list mounted file systems or attach a file system at a target path
 
 ```sh
 mount
-mount [-rvwB] [-t TYPE] [-o OPTIONS] SOURCE TARGET
+mount [-rvwBp] [-t TYPE] [-o OPTIONS] [SOURCE [TARGET]]
 ```
 
 ## DESCRIPTION
 
 With no positional arguments, `mount` prints the current kernel mount table when
 that information is available (currently via `/proc/self/mounts` or
-`/proc/mounts` on Linux-style systems).
+`/proc/mounts` on Linux-style systems). With a single path-like argument, it
+prints the matching mount entry by source, target, or filesystem type.
 
 With `SOURCE` and `TARGET`, it asks the kernel to mount a file system. This is a
 small Linux-first implementation intended for early userspace and simple system
-setup tasks.
+setup tasks. When you provide only `TARGET`, `mount` can also handle practical
+single-target cases such as `-t proc /proc`, `-t tmpfs /mnt`, or
+`-o remount,rw /`.
 
 ## CURRENT CAPABILITIES
 
-- list current mounts on Linux-style systems
+- list current mounts on Linux-style systems in a readable `source on target type ...` form
+- filter the displayed mount table by passing one path or filesystem token
 - mount a file system with an explicit type via `-t`
 - pass common mount flags such as read-only, bind, remount, and noexec
 - forward additional filesystem-specific options via `-o`
+- create missing mountpoint directories with `-p` / `--mkdir`
 
 ## OPTIONS
 
@@ -39,6 +44,7 @@ setup tasks.
 - `-r`, `--read-only` - mount read-only
 - `-w`, `--read-write` - clear read-only mode
 - `-B`, `--bind` - request a bind mount
+- `-p`, `--mkdir` - create the target directory tree before attempting the mount
 - `-v`, `--verbose` - print a short success message after mounting
 - `-h`, `--help` - show usage information
 
@@ -49,8 +55,6 @@ setup tasks.
   platforms may compile the tool but not support real mounts
 - no `/etc/fstab` parsing, `-a`, label/UUID lookup, or automatic filesystem
   probing yet
-- mount listing currently prints the kernel table directly instead of formatting
-  a richer column view
 
 ## EXAMPLES
 

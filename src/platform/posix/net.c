@@ -714,6 +714,160 @@ static unsigned int posix_route_prefix_from_mask(unsigned long value) {
 }
 #endif
 
+static unsigned int posix_count_prefix_bits_from_text(const char *text, int family) {
+    char *end = NULL;
+    unsigned long prefix;
+
+    if (text == NULL || text[0] == '\0' || rt_strcmp(text, "default") == 0) {
+        return 0U;
+    }
+
+    prefix = strtoul(text, &end, 10);
+    if (end != NULL && *end == '\0') {
+        if (family == PLATFORM_NETWORK_FAMILY_IPV4 && prefix <= 32UL) {
+            return (unsigned int)prefix;
+        }
+        if (family == PLATFORM_NETWORK_FAMILY_IPV6 && prefix <= 128UL) {
+            return (unsigned int)prefix;
+        }
+    }
+
+    if (family == PLATFORM_NETWORK_FAMILY_IPV4) {
+        struct in_addr address;
+        unsigned int value;
+        unsigned int count = 0U;
+
+        if (inet_pton(AF_INET, text, &address) != 1) {
+            return 0U;
+        }
+        value = ntohl(address.s_addr);
+        while ((value & 0x80000000U) != 0U) {
+            count += 1U;
+            value <<= 1U;
+        }
+        return count;
+    }
+
+    if (family == PLATFORM_NETWORK_FAMILY_IPV6) {
+        struct in6_addr address6;
+        unsigned int count = 0U;
+        size_t i;
+
+        if (inet_pton(AF_INET6, text, &address6) != 1) {
+            return 0U;
+        }
+        for (i = 0U; i < sizeof(address6.s6_addr); ++i) {
+            unsigned char byte = address6.s6_addr[i];
+            unsigned int bit;
+
+            for (bit = 0U; bit < 8U; ++bit) {
+                if ((byte & 0x80U) == 0U) {
+                    return count;
+                }
+                count += 1U;
+                byte <<= 1U;
+            }
+        }
+        return count;
+    }
+
+    return 0U;
+}
+
+static int posix_route_flags_has_host(const char *flags) {
+    size_t i = 0U;
+
+    if (flags == NULL) {
+        return 0;
+    }
+    while (flags[i] != '\0') {
+        if (flags[i] == 'H') {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static void posix_parse_route_destination(const char *token, int family, const char *flags, PlatformRouteEntry *entry) {
+    char destination[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char *slash;
+
+    rt_copy_string(destination, sizeof(destination), token != NULL ? token : "");
+    if (rt_strcmp(destination, "default") == 0) {
+        entry->is_default = 1;
+        rt_copy_string(entry->destination, sizeof(entry->destination), "default");
+        entry->prefix_length = 0U;
+        return;
+    }
+
+    slash = strchr(destination, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+        entry->prefix_length = posix_count_prefix_bits_from_text(slash + 1, family);
+    } else if (posix_route_flags_has_host(flags)) {
+        entry->prefix_length = (family == PLATFORM_NETWORK_FAMILY_IPV6) ? 128U : 32U;
+    } else {
+        entry->prefix_length = 0U;
+    }
+
+    rt_copy_string(entry->destination, sizeof(entry->destination), destination);
+}
+
+static int posix_parse_netstat_routes(
+    FILE *file,
+    int family,
+    const char *ifname_filter,
+    PlatformRouteEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_io
+) {
+    char line[512];
+    int table_ready = 0;
+
+    while (fgets(line, sizeof(line), file) != NULL) {
+        char destination[PLATFORM_NETWORK_TEXT_CAPACITY];
+        char gateway[PLATFORM_NETWORK_TEXT_CAPACITY];
+        char flags[64];
+        char ifname[PLATFORM_NAME_CAPACITY];
+        PlatformRouteEntry *entry;
+
+        if (!table_ready) {
+            if (strstr(line, "Destination") != NULL && strstr(line, "Gateway") != NULL) {
+                table_ready = 1;
+            }
+            continue;
+        }
+        if (line[0] == '\n' || line[0] == '\0') {
+            continue;
+        }
+        if (sscanf(line, "%63s %63s %63s %255s", destination, gateway, flags, ifname) < 4) {
+            continue;
+        }
+        if (ifname_filter != NULL && rt_strcmp(ifname_filter, ifname) != 0) {
+            continue;
+        }
+        if (*count_io >= entry_capacity) {
+            break;
+        }
+
+        entry = &entries_out[*count_io];
+        memset(entry, 0, sizeof(*entry));
+        entry->family = family;
+        rt_copy_string(entry->ifname, sizeof(entry->ifname), ifname);
+        posix_parse_route_destination(destination, family, flags, entry);
+
+        if (gateway[0] != '\0' && gateway[0] != '-' && strncmp(gateway, "link#", 5U) != 0) {
+            rt_copy_string(entry->gateway, sizeof(entry->gateway), gateway);
+            entry->has_gateway = 1;
+        }
+
+        *count_io += 1U;
+    }
+
+    return 0;
+}
+
 static int posix_find_link_index(PlatformNetworkLink *entries_out, size_t count, const char *name) {
     size_t i;
 
@@ -925,11 +1079,52 @@ int platform_list_network_routes(
 
     *count_out = 0;
 #if !defined(__linux__)
-    (void)entry_capacity;
-    (void)family_filter;
-    (void)ifname_filter;
-    errno = ENOTSUP;
-    return -1;
+    {
+        size_t count = 0U;
+        int any_success = 0;
+
+        if (family_filter != PLATFORM_NETWORK_FAMILY_IPV6) {
+            FILE *file = popen("netstat -rn -f inet 2>/dev/null", "r");
+            if (file != NULL) {
+                any_success = 1;
+                if (posix_parse_netstat_routes(file,
+                                               PLATFORM_NETWORK_FAMILY_IPV4,
+                                               ifname_filter,
+                                               entries_out,
+                                               entry_capacity,
+                                               &count) != 0) {
+                    (void)pclose(file);
+                    return -1;
+                }
+                (void)pclose(file);
+            }
+        }
+
+        if (family_filter != PLATFORM_NETWORK_FAMILY_IPV4 && count < entry_capacity) {
+            FILE *file = popen("netstat -rn -f inet6 2>/dev/null", "r");
+            if (file != NULL) {
+                any_success = 1;
+                if (posix_parse_netstat_routes(file,
+                                               PLATFORM_NETWORK_FAMILY_IPV6,
+                                               ifname_filter,
+                                               entries_out,
+                                               entry_capacity,
+                                               &count) != 0) {
+                    (void)pclose(file);
+                    return -1;
+                }
+                (void)pclose(file);
+            }
+        }
+
+        if (!any_success) {
+            errno = ENOTSUP;
+            return -1;
+        }
+
+        *count_out = count;
+        return 0;
+    }
 #else
     FILE *file;
     char line[512];

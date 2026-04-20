@@ -53,6 +53,86 @@ static void refresh_makeflags(MakeProgram *program) {
     }
 
     (void)set_variable_with_origin(program, "MAKEFLAGS", flags, MAKE_ORIGIN_FILE);
+    (void)platform_setenv("MAKEFLAGS", flags, 1);
+    (void)platform_setenv("MAKE", get_variable_value(program, "MAKE"), 1);
+}
+
+static int text_is_decimal(const char *text) {
+    size_t i = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+    while (text[i] != '\0') {
+        if (text[i] < '0' || text[i] > '9') {
+            return 0;
+        }
+        i += 1U;
+    }
+    return 1;
+}
+
+static void apply_makeflags_env(MakeProgram *program) {
+    const char *env_flags = platform_getenv("MAKEFLAGS");
+    size_t i = 0U;
+
+    if (env_flags == 0 || env_flags[0] == '\0') {
+        return;
+    }
+
+    while (env_flags[i] != '\0') {
+        char token[MAKE_LINE_CAPACITY];
+        size_t used = 0U;
+        size_t j;
+
+        while (env_flags[i] == ' ' || env_flags[i] == '\t') {
+            i += 1U;
+        }
+        if (env_flags[i] == '\0') {
+            break;
+        }
+
+        while (env_flags[i] != '\0' && env_flags[i] != ' ' && env_flags[i] != '\t' && used + 1U < sizeof(token)) {
+            token[used++] = env_flags[i++];
+        }
+        token[used] = '\0';
+        if (token[0] == '\0') {
+            continue;
+        }
+
+        if (rt_strcmp(token, "-n") == 0) {
+            program->dry_run = 1;
+        } else if (rt_strcmp(token, "-s") == 0 || rt_strcmp(token, "--silent") == 0) {
+            program->silent = 1;
+        } else if (rt_strcmp(token, "-B") == 0 || rt_strcmp(token, "--always-make") == 0) {
+            program->always_make = 1;
+        } else if (rt_strcmp(token, "--no-print-directory") == 0 ||
+                   (token[0] == '-' && token[1] == '-' && token[2] == 'j')) {
+            continue;
+        } else if (token[0] == '-' && token[1] == 'j') {
+            program->jobs_flag_present = 1;
+            if (token[2] != '\0') {
+                (void)tool_parse_uint_arg(token + 2, &program->requested_jobs, "make", "jobs");
+            }
+        } else {
+            for (j = 0U; token[j] != '\0'; ++j) {
+                if (token[j] == '=') {
+                    char name[MAKE_NAME_CAPACITY];
+                    char value[MAKE_VALUE_CAPACITY];
+                    size_t name_len = j;
+
+                    if (name_len >= sizeof(name)) {
+                        name_len = sizeof(name) - 1U;
+                    }
+                    memcpy(name, token, name_len);
+                    name[name_len] = '\0';
+                    rt_copy_string(value, sizeof(value), token + j + 1U);
+                    (void)set_variable_with_origin(program, name, value, MAKE_ORIGIN_COMMAND_LINE);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 int main(int argc, char **argv) {
@@ -66,7 +146,9 @@ int main(int argc, char **argv) {
     int i;
 
     rt_memset(&program, 0, sizeof(program));
+    rt_copy_string(program.program_name, sizeof(program.program_name), argv[0] != 0 ? argv[0] : "make");
     set_variable_with_origin(&program, "MAKE", argv[0] != 0 ? argv[0] : "make", MAKE_ORIGIN_FILE);
+    apply_makeflags_env(&program);
 
     tool_opt_init(&s, argc, argv, "make", "[-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
     while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
@@ -104,17 +186,7 @@ int main(int argc, char **argv) {
             program.jobs_flag_present = 1;
             if (rt_strcmp(s.flag, "-j") == 0 && s.argi < argc) {
                 const char *jobs_arg = argv[s.argi];
-                size_t jobs_index = 0U;
-                int all_digits = jobs_arg[0] != '\0';
-
-                while (jobs_arg[jobs_index] != '\0') {
-                    if (jobs_arg[jobs_index] < '0' || jobs_arg[jobs_index] > '9') {
-                        all_digits = 0;
-                        break;
-                    }
-                    jobs_index += 1U;
-                }
-                if (all_digits) {
+                if (text_is_decimal(jobs_arg)) {
                     (void)tool_parse_uint_arg(jobs_arg, &program.requested_jobs, "make", "jobs");
                     s.argi += 1;
                 }
@@ -197,17 +269,7 @@ int main(int argc, char **argv) {
                 program.jobs_flag_present = 1;
                 if (argv[i][2] == '\0' && i + 1 < argc) {
                     const char *jobs_arg = argv[i + 1];
-                    size_t jobs_index = 0U;
-                    int all_digits = jobs_arg[0] != '\0';
-
-                    while (jobs_arg[jobs_index] != '\0') {
-                        if (jobs_arg[jobs_index] < '0' || jobs_arg[jobs_index] > '9') {
-                            all_digits = 0;
-                            break;
-                        }
-                        jobs_index += 1U;
-                    }
-                    if (all_digits) {
+                    if (text_is_decimal(jobs_arg)) {
                         if (tool_parse_uint_arg(jobs_arg, &program.requested_jobs, "make", "jobs") != 0) {
                             return 1;
                         }
@@ -254,6 +316,10 @@ int main(int argc, char **argv) {
     }
 
     refresh_makeflags(&program);
+    if (sync_program_environment(&program) != 0) {
+        tool_write_error("make", "cannot prepare the recipe environment", 0);
+        return 1;
+    }
 
     if (makefile_path == 0) {
         long long mtime = 0;
@@ -269,6 +335,7 @@ int main(int argc, char **argv) {
         }
         makefile_path = selected_makefile;
     }
+    rt_copy_string(program.makefile_path, sizeof(program.makefile_path), makefile_path);
 
     if (parse_makefile(&program, makefile_path) != 0) {
         tool_write_error("make", "cannot read makefile ", makefile_path);
@@ -283,10 +350,8 @@ int main(int argc, char **argv) {
         targets[target_count++] = program.first_target;
     }
 
-    for (i = 0; i < (int)target_count; ++i) {
-        if (build_target(&program, targets[i]) != 0) {
-            return 1;
-        }
+    if (build_targets(&program, targets, target_count) != 0) {
+        return 1;
     }
 
     return 0;

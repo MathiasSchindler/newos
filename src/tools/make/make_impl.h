@@ -20,16 +20,19 @@
 #define MAKE_VALUE_CAPACITY 4096
 #define MAKE_COMMAND_CAPACITY 4096
 #define MAKE_LINE_CAPACITY 4096
+#define MAKE_SCRIPT_CAPACITY (MAKE_COMMAND_CAPACITY * MAKE_MAX_COMMANDS)
 
 typedef enum {
     MAKE_ORIGIN_FILE = 1,
-    MAKE_ORIGIN_COMMAND_LINE = 2
+    MAKE_ORIGIN_COMMAND_LINE = 2,
+    MAKE_ORIGIN_ENVIRONMENT = 3
 } MakeVariableOrigin;
 
 typedef struct {
     char name[MAKE_NAME_CAPACITY];
     char value[MAKE_VALUE_CAPACITY];
     MakeVariableOrigin origin;
+    int exported;
 } MakeVariable;
 
 typedef struct {
@@ -59,12 +62,18 @@ typedef struct {
     int always_make;
     int jobs_flag_present;
     unsigned long long requested_jobs;
+    int oneshell;
+    char program_name[MAKE_NAME_CAPACITY];
+    char makefile_path[MAKE_LINE_CAPACITY];
 } MakeProgram;
 
 /* ── make_parse.c ── */
 char *trim_leading_whitespace(char *text);
 int set_variable(MakeProgram *program, const char *name, const char *value);
 int set_variable_with_origin(MakeProgram *program, const char *name, const char *value, MakeVariableOrigin origin);
+const char *get_variable_value(const MakeProgram *program, const char *name);
+int mark_variable_exported(MakeProgram *program, const char *name, int exported);
+int sync_program_environment(const MakeProgram *program);
 int expand_text(const MakeProgram *program, const MakeRule *rule, const char *text, char *out, size_t out_size);
 MakeRule *find_rule(MakeProgram *program, const char *target);
 int is_phony_target(const MakeProgram *program, const char *name);
@@ -77,6 +86,8 @@ int parse_makefile(MakeProgram *program, const char *path);
 
 /* ── make_exec.c ── */
 int path_exists_and_mtime(const char *path, long long *mtime_out);
+unsigned long long effective_job_count(const MakeProgram *program);
+int build_targets(MakeProgram *program, const char **targets, size_t target_count);
 int build_target(MakeProgram *program, const char *target);
 
 #endif /* MAKE_IMPL_H */

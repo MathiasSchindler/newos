@@ -26,11 +26,14 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 - `include` directives
 - conditional blocks (`ifeq`, `ifneq`, `ifdef`, `ifndef`)
 - built-in functions: `$(wildcard ...)`, `$(patsubst ...)`, `$(subst ...)`, `$(strip ...)`, `$(filter ...)`, `$(filter-out ...)`, `$(sort ...)`, `$(addprefix ...)`, `$(addsuffix ...)`, `$(dir ...)`, `$(notdir ...)`, `$(basename ...)`, `$(suffix ...)`, `$(firstword ...)`, `$(lastword ...)`, `$(words ...)`, `$(word ...)`, `$(foreach ...)`, `$(if ...)`, `$(origin ...)`, `$(shell ...)`
+- imported environment variables plus `export VAR` / `export VAR = value`
+- `.ONESHELL` multi-line recipe execution and `SHELL` overrides
+- GNU-compatible `+` recipe prefixes that still run under `-n`
 - dry-run mode
 - global silent mode (`-s`)
 - force rebuild mode (`-B`)
 - changing into a build directory with `-C`
-- GNU-style `-j` parsing with `MAKEFLAGS` propagation for recursive compatibility
+- limited parallel builds for independent goals and prerequisite batches with `-j`
 - styled diagnostics and usage output with shared terminal color support
 
 ## OPTIONS
@@ -41,14 +44,14 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 - `-f makefile` — read `makefile` instead of the default `Makefile`,
   `makefile`, or `GNUmakefile`
 - `-C dir` — change to `dir` before reading the makefile and building targets
-- `-j [jobs]` — accept a GNU-compatible job count flag and expose it through `MAKEFLAGS`
+- `-j [jobs]` — run up to `jobs` independent build goals/prerequisite batches concurrently; bare `-j` selects a small automatic default
 - `VAR=value` — override or define a variable on the command line
 - `--color[=WHEN]` — control styled diagnostic output using `auto`, `always`, or `never`
 - `--help` — print the command usage summary
 
 ## LIMITATIONS
 
-- parallel recipe execution is still not implemented; `-j` is accepted for compatibility and recursive propagation
+- parallel scheduling is intentionally smaller than full GNU `make`: it batches independent goals and prerequisite sub-builds, but does not implement the full jobserver protocol
 - some advanced GNU make features (e.g. `$(eval ...)`, load directives) are not implemented
 
 Color output follows the shared project behavior documented in `output-style`.
@@ -57,8 +60,12 @@ Color output follows the shared project behavior documented in `output-style`.
 
 - Command-line variable assignments override ordinary Makefile assignments for
   that invocation.
+- Environment variables are visible to the Makefile and can be forwarded to
+  recipes with `export`.
 - As in traditional `make`, each recipe line normally runs through the shell on
-  its own; combine commands with `&&` when one line depends on the previous one.
+  its own; use `.ONESHELL:` when later lines depend on earlier shell state.
+- Lines prefixed with `+` still execute in dry-run mode for recursive or
+  side-effectful compatibility recipes.
 
 ## EXAMPLES
 

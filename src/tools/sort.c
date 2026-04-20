@@ -10,6 +10,7 @@
 #endif
 
 #define SORT_FREESTANDING_MAX_LINES 8192U
+#define SORT_FREESTANDING_MAX_INPUTS 8U
 #define SORT_FREESTANDING_STORAGE_CAPACITY (2U * 1024U * 1024U)
 #define SORT_FREESTANDING_LINE_CAPACITY (64U * 1024U)
 
@@ -17,6 +18,10 @@
 #define SORT_COLLECT_MEMORY_ERROR (-2)
 
 typedef struct {
+    int check_only;
+    int quiet_check;
+    int ignore_case;
+    int ignore_leading_blanks;
     int numeric;
     int reverse;
     int unique;
@@ -44,6 +49,18 @@ typedef struct {
 } SortLineBuilder;
 
 typedef struct {
+    int fd;
+    int should_close;
+    int finished;
+    int have_current;
+    char buffer[2048];
+    size_t buffer_pos;
+    size_t buffer_len;
+    SortLineBuilder builder;
+    SortLine current;
+} SortInput;
+
+typedef struct {
     SortLine *lines;
     SortLine **order;
     SortLine **scratch;
@@ -68,7 +85,7 @@ typedef struct {
 } SortNumericKey;
 
 static void write_usage(int fd) {
-    rt_write_line(fd, "Usage: sort [-mnrsu] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
+    rt_write_line(fd, "Usage: sort [-bCcfmnrsu] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
 }
 
 static int parse_key_spec(const char *text, SortOptions *options) {
@@ -177,6 +194,86 @@ static void line_builder_free(SortLineBuilder *builder) {
 #else
     (void)builder;
 #endif
+}
+
+static int line_builder_copy_text(SortLineBuilder *builder, const char *text, size_t length) {
+    if (line_builder_ensure_capacity(builder, length + 1U) != 0) {
+        return -1;
+    }
+
+    if (length > 0U && text != 0) {
+        memcpy(builder->data, text, length);
+    }
+    builder->length = length;
+    builder->data[length] = '\0';
+    return 0;
+}
+
+static void sort_input_init(SortInput *input) {
+    rt_memset(input, 0, sizeof(*input));
+    line_builder_init(&input->builder);
+}
+
+static void sort_input_close(SortInput *input) {
+    if (input->should_close) {
+        (void)platform_close(input->fd);
+    }
+    line_builder_free(&input->builder);
+}
+
+static int sort_input_open(SortInput *input, const char *path) {
+    sort_input_init(input);
+    return tool_open_input(path, &input->fd, &input->should_close);
+}
+
+static int sort_input_read_next(SortInput *input) {
+    line_builder_reset(&input->builder);
+
+    while (1) {
+        if (input->buffer_pos >= input->buffer_len) {
+            long bytes_read;
+
+            if (input->finished) {
+                input->have_current = 0;
+                return 0;
+            }
+
+            bytes_read = platform_read(input->fd, input->buffer, sizeof(input->buffer));
+            if (bytes_read < 0) {
+                input->have_current = 0;
+                return SORT_COLLECT_READ_ERROR;
+            }
+            if (bytes_read == 0) {
+                input->finished = 1;
+                if (input->builder.length > 0U) {
+                    input->current.text = input->builder.data != 0 ? input->builder.data : "";
+                    input->current.length = input->builder.length;
+                    input->have_current = 1;
+                    return 1;
+                }
+                input->have_current = 0;
+                return 0;
+            }
+
+            input->buffer_pos = 0U;
+            input->buffer_len = (size_t)bytes_read;
+        }
+
+        while (input->buffer_pos < input->buffer_len) {
+            char ch = input->buffer[input->buffer_pos++];
+
+            if (ch == '\n') {
+                input->current.text = input->builder.data != 0 ? input->builder.data : "";
+                input->current.length = input->builder.length;
+                input->have_current = 1;
+                return 1;
+            }
+            if (line_builder_append_char(&input->builder, ch) != 0) {
+                input->have_current = 0;
+                return SORT_COLLECT_MEMORY_ERROR;
+            }
+        }
+    }
 }
 
 static void sort_collection_init(SortCollection *collection) {
@@ -327,12 +424,30 @@ static int is_sort_space(char ch) {
     return ch == ' ' || ch == '\t';
 }
 
-static int compare_text_spans(const char *left, size_t left_len, const char *right, size_t right_len) {
+static char sort_fold_ascii(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static void sort_trim_leading_blanks(const char **text, size_t *length) {
+    while (*length > 0U && is_sort_space((*text)[0])) {
+        *text += 1;
+        *length -= 1U;
+    }
+}
+
+static int compare_text_spans(const char *left,
+                              size_t left_len,
+                              const char *right,
+                              size_t right_len,
+                              const SortOptions *options) {
     size_t i = 0U;
 
     while (i < left_len && i < right_len) {
-        unsigned char lhs = (unsigned char)left[i];
-        unsigned char rhs = (unsigned char)right[i];
+        unsigned char lhs = (unsigned char)(options->ignore_case ? sort_fold_ascii(left[i]) : left[i]);
+        unsigned char rhs = (unsigned char)(options->ignore_case ? sort_fold_ascii(right[i]) : right[i]);
 
         if (lhs != rhs) {
             return lhs < rhs ? -1 : 1;
@@ -360,6 +475,9 @@ static void extract_key_span(const SortLine *line,
     *length_out = line->length;
 
     if (!options->have_key) {
+        if (options->ignore_leading_blanks) {
+            sort_trim_leading_blanks(start_out, length_out);
+        }
         return;
     }
 
@@ -448,6 +566,9 @@ static void extract_key_span(const SortLine *line,
 
     *start_out = line->text + start_index;
     *length_out = end_index - start_index;
+    if (options->ignore_leading_blanks) {
+        sort_trim_leading_blanks(start_out, length_out);
+    }
 }
 
 static void parse_numeric_key(const char *text, size_t length, SortNumericKey *key) {
@@ -523,7 +644,12 @@ static int compare_numeric_keys(const SortNumericKey *left, const SortNumericKey
     if (left->int_len != right->int_len) {
         result = left->int_len < right->int_len ? -1 : 1;
     } else if (left->int_len > 0U) {
-        result = compare_text_spans(left->int_digits, left->int_len, right->int_digits, right->int_len);
+        for (i = 0U; i < left->int_len; ++i) {
+            if (left->int_digits[i] != right->int_digits[i]) {
+                result = left->int_digits[i] < right->int_digits[i] ? -1 : 1;
+                break;
+            }
+        }
     }
 
     if (result == 0) {
@@ -566,7 +692,7 @@ static int compare_lines(const SortLine *left, const SortLine *right, const Sort
     }
 
     if (result == 0) {
-        result = compare_text_spans(left_text, left_len, right_text, right_len);
+        result = compare_text_spans(left_text, left_len, right_text, right_len, options);
     }
 
     return options->reverse ? -result : result;
@@ -649,6 +775,298 @@ static int write_sorted_output(int fd, const SortCollection *collection, const S
     return 0;
 }
 
+static int write_sort_line(int fd, const SortLine *line) {
+    if ((line->length > 0U && rt_write_all(fd, line->text, line->length) != 0) ||
+        rt_write_char(fd, '\n') != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int copy_sort_line(SortLineBuilder *builder, SortLine *dest, const SortLine *src) {
+    if (line_builder_copy_text(builder, src->text, src->length) != 0) {
+        return -1;
+    }
+    dest->text = builder->data != 0 ? builder->data : "";
+    dest->length = src->length;
+    return 0;
+}
+
+static int report_disorder(const SortOptions *options, const SortLine *line) {
+    if (!options->quiet_check) {
+        rt_write_cstr(2, "sort: disorder: ");
+        rt_write_line(2, line->text);
+    }
+    return 1;
+}
+
+static int check_input_sorted(int argc, char **argv, int argi, const SortOptions *options) {
+    SortLineBuilder previous_builder;
+    SortLine previous;
+    int have_previous = 0;
+    int status = 0;
+    int i;
+
+    rt_memset(&previous, 0, sizeof(previous));
+    line_builder_init(&previous_builder);
+
+    if (argi == argc) {
+        SortInput input;
+        sort_input_init(&input);
+        input.fd = 0;
+        input.should_close = 0;
+
+        while ((status = sort_input_read_next(&input)) > 0) {
+            if (have_previous) {
+                int comparison = compare_lines(&previous, &input.current, options);
+                if (comparison > 0 || (options->unique && comparison == 0)) {
+                    int rc = report_disorder(options, &input.current);
+                    sort_input_close(&input);
+                    line_builder_free(&previous_builder);
+                    return rc;
+                }
+            }
+            if (copy_sort_line(&previous_builder, &previous, &input.current) != 0) {
+                sort_input_close(&input);
+                line_builder_free(&previous_builder);
+                rt_write_line(2, "sort: input too large for available memory");
+                return 1;
+            }
+            have_previous = 1;
+        }
+
+        sort_input_close(&input);
+        if (status == SORT_COLLECT_READ_ERROR) {
+            rt_write_line(2, "sort: read error");
+            line_builder_free(&previous_builder);
+            return 1;
+        }
+        if (status == SORT_COLLECT_MEMORY_ERROR) {
+            rt_write_line(2, "sort: input too large for available memory");
+            line_builder_free(&previous_builder);
+            return 1;
+        }
+    } else {
+        for (i = argi; i < argc; ++i) {
+            SortInput input;
+
+            if (sort_input_open(&input, argv[i]) != 0) {
+                rt_write_cstr(2, "sort: cannot open ");
+                rt_write_line(2, argv[i]);
+                line_builder_free(&previous_builder);
+                return 1;
+            }
+
+            while ((status = sort_input_read_next(&input)) > 0) {
+                if (have_previous) {
+                    int comparison = compare_lines(&previous, &input.current, options);
+                    if (comparison > 0 || (options->unique && comparison == 0)) {
+                        int rc = report_disorder(options, &input.current);
+                        sort_input_close(&input);
+                        line_builder_free(&previous_builder);
+                        return rc;
+                    }
+                }
+                if (copy_sort_line(&previous_builder, &previous, &input.current) != 0) {
+                    sort_input_close(&input);
+                    line_builder_free(&previous_builder);
+                    rt_write_line(2, "sort: input too large for available memory");
+                    return 1;
+                }
+                have_previous = 1;
+            }
+
+            sort_input_close(&input);
+            if (status == SORT_COLLECT_READ_ERROR) {
+                rt_write_cstr(2, "sort: read error on ");
+                rt_write_line(2, argv[i]);
+                line_builder_free(&previous_builder);
+                return 1;
+            }
+            if (status == SORT_COLLECT_MEMORY_ERROR) {
+                rt_write_cstr(2, "sort: input too large while reading ");
+                rt_write_line(2, argv[i]);
+                line_builder_free(&previous_builder);
+                return 1;
+            }
+        }
+    }
+
+    line_builder_free(&previous_builder);
+    return 0;
+}
+
+static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, const SortOptions *options, int *exit_code) {
+    int input_count = (argi == argc) ? 1 : (argc - argi);
+    int active_count = 0;
+    int i;
+    SortLineBuilder previous_builder;
+    SortLine previous_line;
+#if SORT_HOSTED_DYNAMIC
+    SortInput *inputs = 0;
+#else
+    SortInput fixed_inputs[SORT_FREESTANDING_MAX_INPUTS];
+    SortInput *inputs = fixed_inputs;
+#endif
+    int have_previous = 0;
+
+    rt_memset(&previous_line, 0, sizeof(previous_line));
+    line_builder_init(&previous_builder);
+
+#if SORT_HOSTED_DYNAMIC
+    inputs = (SortInput *)calloc((size_t)input_count, sizeof(SortInput));
+    if (inputs == 0) {
+        line_builder_free(&previous_builder);
+        rt_write_line(2, "sort: input too large for available memory");
+        return 1;
+    }
+#else
+    if ((size_t)input_count > SORT_FREESTANDING_MAX_INPUTS) {
+        line_builder_free(&previous_builder);
+        rt_write_line(2, "sort: too many inputs for merge mode");
+        return 1;
+    }
+#endif
+
+    for (i = 0; i < input_count; ++i) {
+        const char *path = (argi == argc) ? "-" : argv[argi + i];
+        int status;
+
+        if (sort_input_open(&inputs[i], path) != 0) {
+            rt_write_cstr(2, "sort: cannot open ");
+            rt_write_line(2, path);
+            *exit_code = 1;
+            continue;
+        }
+
+        status = sort_input_read_next(&inputs[i]);
+        if (status > 0) {
+            active_count += 1;
+            continue;
+        }
+        if (status == SORT_COLLECT_READ_ERROR) {
+            rt_write_cstr(2, "sort: read error on ");
+            rt_write_line(2, path);
+            sort_input_close(&inputs[i]);
+            line_builder_free(&previous_builder);
+#if SORT_HOSTED_DYNAMIC
+            free(inputs);
+#endif
+            return 1;
+        }
+        if (status == SORT_COLLECT_MEMORY_ERROR) {
+            rt_write_cstr(2, "sort: input too large while reading ");
+            rt_write_line(2, path);
+            sort_input_close(&inputs[i]);
+            line_builder_free(&previous_builder);
+#if SORT_HOSTED_DYNAMIC
+            free(inputs);
+#endif
+            return 1;
+        }
+    }
+
+    while (active_count > 0) {
+        int best_index = -1;
+
+        for (i = 0; i < input_count; ++i) {
+            if (!inputs[i].have_current) {
+                continue;
+            }
+            if (best_index < 0 || compare_lines(&inputs[i].current, &inputs[best_index].current, options) < 0) {
+                best_index = i;
+            }
+        }
+
+        if (best_index < 0) {
+            break;
+        }
+
+        if (!options->unique || !have_previous || compare_lines(&previous_line, &inputs[best_index].current, options) != 0) {
+            if (write_sort_line(output_fd, &inputs[best_index].current) != 0) {
+                rt_write_line(2, "sort: write error");
+                line_builder_free(&previous_builder);
+                for (i = 0; i < input_count; ++i) {
+                    sort_input_close(&inputs[i]);
+                }
+#if SORT_HOSTED_DYNAMIC
+                free(inputs);
+#endif
+                return 1;
+            }
+            if (copy_sort_line(&previous_builder, &previous_line, &inputs[best_index].current) != 0) {
+                rt_write_line(2, "sort: input too large for available memory");
+                line_builder_free(&previous_builder);
+                for (i = 0; i < input_count; ++i) {
+                    sort_input_close(&inputs[i]);
+                }
+#if SORT_HOSTED_DYNAMIC
+                free(inputs);
+#endif
+                return 1;
+            }
+            have_previous = 1;
+        }
+
+        {
+            int status = sort_input_read_next(&inputs[best_index]);
+            if (status <= 0) {
+                if (status == SORT_COLLECT_READ_ERROR) {
+                    rt_write_cstr(2, "sort: read error on ");
+                    rt_write_line(2, (argi == argc) ? "-" : argv[argi + best_index]);
+                    line_builder_free(&previous_builder);
+                    for (i = 0; i < input_count; ++i) {
+                        sort_input_close(&inputs[i]);
+                    }
+#if SORT_HOSTED_DYNAMIC
+                    free(inputs);
+#endif
+                    return 1;
+                }
+                if (status == SORT_COLLECT_MEMORY_ERROR) {
+                    rt_write_cstr(2, "sort: input too large while reading ");
+                    rt_write_line(2, (argi == argc) ? "-" : argv[argi + best_index]);
+                    line_builder_free(&previous_builder);
+                    for (i = 0; i < input_count; ++i) {
+                        sort_input_close(&inputs[i]);
+                    }
+#if SORT_HOSTED_DYNAMIC
+                    free(inputs);
+#endif
+                    return 1;
+                }
+                inputs[best_index].have_current = 0;
+                active_count -= 1;
+            }
+        }
+    }
+
+    line_builder_free(&previous_builder);
+    for (i = 0; i < input_count; ++i) {
+        sort_input_close(&inputs[i]);
+    }
+#if SORT_HOSTED_DYNAMIC
+    free(inputs);
+#endif
+    return *exit_code;
+}
+
+static int output_conflicts_with_inputs(const char *output_path, int argc, char **argv, int argi) {
+    int i;
+
+    if (output_path == 0) {
+        return 0;
+    }
+
+    for (i = argi; i < argc; ++i) {
+        if (rt_strcmp(output_path, argv[i]) == 0 || tool_paths_equal(output_path, argv[i])) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
     SortCollection collection;
     int exit_code = 0;
@@ -708,7 +1126,16 @@ int main(int argc, char **argv) {
 
         flag = argv[argi] + 1;
         while (*flag != '\0') {
-            if (*flag == 'm') {
+            if (*flag == 'b') {
+                options.ignore_leading_blanks = 1;
+            } else if (*flag == 'c') {
+                options.check_only = 1;
+            } else if (*flag == 'C') {
+                options.check_only = 1;
+                options.quiet_check = 1;
+            } else if (*flag == 'f') {
+                options.ignore_case = 1;
+            } else if (*flag == 'm') {
                 options.merge_mode = 1;
             } else if (*flag == 'n') {
                 options.numeric = 1;
@@ -727,6 +1154,30 @@ int main(int argc, char **argv) {
         }
 
         argi += 1;
+    }
+
+    if (options.check_only) {
+        sort_collection_free(&collection);
+        return check_input_sorted(argc, argv, argi, &options);
+    }
+
+    if (options.merge_mode && !output_conflicts_with_inputs(options.output_path, argc, argv, argi)) {
+        if (options.output_path != 0) {
+            output_fd = platform_open_write(options.output_path, 0644U);
+            if (output_fd < 0) {
+                rt_write_cstr(2, "sort: cannot open output ");
+                rt_write_line(2, options.output_path);
+                sort_collection_free(&collection);
+                return 1;
+            }
+            close_output = 1;
+        }
+        exit_code = merge_sorted_inputs(argc, argv, argi, output_fd, &options, &exit_code);
+        if (close_output) {
+            (void)platform_close(output_fd);
+        }
+        sort_collection_free(&collection);
+        return exit_code;
     }
 
     if (argi == argc) {

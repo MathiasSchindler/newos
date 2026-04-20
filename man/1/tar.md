@@ -25,10 +25,12 @@ external runtime dependencies.
 - extract or list only selected members by exact name or wildcard pattern
 - skip matching paths during create/list/extract with `--exclude`
 - strip leading path components during list or extract with `--strip-components`
-- handle longer `ustar` path names using the standard `prefix` field
+- handle longer paths using `ustar` prefixes plus GNU long-name records when needed
 - change directory before acting with `-C`
 - print file names in verbose mode
 - use `-z`, `-j`, and `-J` for gzip, bzip2, and xz archive workflows
+- preserve symbolic links and restore hard links from compatible archives
+- read common GNU/PAX path metadata from archives produced by host tar tools
 - refuse unsafe extraction paths such as absolute names or `..` traversal unless
   `-P` / `--absolute-names` is given
 
@@ -52,9 +54,9 @@ external runtime dependencies.
 ## LIMITATIONS
 
 - No append/update/delete modes (`-r`, `-u`, `--delete`) are supported.
-- Long paths are supported within classic `ustar` limits; POSIX PAX extensions
-  and sparse-file handling are not implemented.
-- Hard-link and special-file handling remains basic.
+- Sparse files and device/special-file recreation are still not implemented.
+- Only the most common GNU/PAX metadata fields are honored; richer ownership or
+  extended-attribute preservation is intentionally minimal.
 - Compressed streaming to or from standard input/output is still limited compared
   with a full GNU tar implementation.
 

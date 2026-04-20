@@ -14,9 +14,80 @@ static int contains_substring(const char *text, const char *pattern) {
     return tool_regex_search(pattern, text, 0, 0, &start, &end);
 }
 
+static const char *lookup_variable_value(const AwkState *state, const char *name) {
+    size_t i;
+
+    if (state == 0 || name == 0) {
+        return "";
+    }
+
+    for (i = 0; i < AWK_MAX_VARIABLES; ++i) {
+        if (state->variables[i].in_use && rt_strcmp(state->variables[i].name, name) == 0) {
+            return state->variables[i].value;
+        }
+    }
+
+    return "";
+}
+
+int awk_assign_variable(AwkState *state, const char *name, const char *value) {
+    size_t i;
+
+    if (state == 0 || name == 0 || name[0] == '\0' || value == 0) {
+        return -1;
+    }
+
+    if (rt_strcmp(name, "FS") == 0) {
+        rt_copy_string(state->fs, sizeof(state->fs), value);
+        return 0;
+    }
+    if (rt_strcmp(name, "OFS") == 0) {
+        rt_copy_string(state->ofs, sizeof(state->ofs), value);
+        return 0;
+    }
+    if (rt_strcmp(name, "RS") == 0) {
+        rt_copy_string(state->rs, sizeof(state->rs), value);
+        return 0;
+    }
+    if (rt_strcmp(name, "ORS") == 0) {
+        rt_copy_string(state->ors, sizeof(state->ors), value);
+        return 0;
+    }
+
+    for (i = 0; i < AWK_MAX_VARIABLES; ++i) {
+        if (state->variables[i].in_use && rt_strcmp(state->variables[i].name, name) == 0) {
+            rt_copy_string(state->variables[i].value, sizeof(state->variables[i].value), value);
+            return 0;
+        }
+    }
+
+    for (i = 0; i < AWK_MAX_VARIABLES; ++i) {
+        if (!state->variables[i].in_use) {
+            state->variables[i].in_use = 1;
+            rt_copy_string(state->variables[i].name, sizeof(state->variables[i].name), name);
+            rt_copy_string(state->variables[i].value, sizeof(state->variables[i].value), value);
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+void awk_set_filename(AwkState *state, const char *filename) {
+    if (state == 0) {
+        return;
+    }
+
+    rt_copy_string(state->filename, sizeof(state->filename), filename != 0 ? filename : "");
+    state->fnr = 0ULL;
+}
+
 void init_state(AwkState *state) {
+    rt_memset(state, 0, sizeof(*state));
     rt_copy_string(state->fs, sizeof(state->fs), " ");
     rt_copy_string(state->ofs, sizeof(state->ofs), " ");
+    rt_copy_string(state->rs, sizeof(state->rs), "\n");
+    rt_copy_string(state->ors, sizeof(state->ors), "\n");
 }
 
 static int compare_values(unsigned long long lhs, AwkCompareOp op, unsigned long long rhs) {
@@ -142,6 +213,7 @@ void init_record(AwkRecord *record, const char *line, unsigned long long nr, con
     rt_memset(record, 0, sizeof(*record));
     record->line = line;
     record->nr = nr;
+    record->fnr = state != 0 ? state->fnr : 0ULL;
 
     if (state == 0 || state->fs[0] == '\0' || (state->fs[0] == ' ' && state->fs[1] == '\0')) {
         split_fields_whitespace(record, line);
@@ -185,6 +257,9 @@ static void expression_to_string(const AwkExpression *expression,
         case AWK_EXPR_NF:
             rt_unsigned_to_string(record->nf, buffer, buffer_size);
             break;
+        case AWK_EXPR_FNR:
+            rt_unsigned_to_string(record->fnr, buffer, buffer_size);
+            break;
         case AWK_EXPR_FS:
             if (state != 0) {
                 rt_copy_string(buffer, buffer_size, state->fs);
@@ -193,6 +268,26 @@ static void expression_to_string(const AwkExpression *expression,
         case AWK_EXPR_OFS:
             if (state != 0) {
                 rt_copy_string(buffer, buffer_size, state->ofs);
+            }
+            break;
+        case AWK_EXPR_RS:
+            if (state != 0) {
+                rt_copy_string(buffer, buffer_size, state->rs);
+            }
+            break;
+        case AWK_EXPR_ORS:
+            if (state != 0) {
+                rt_copy_string(buffer, buffer_size, state->ors);
+            }
+            break;
+        case AWK_EXPR_FILENAME:
+            if (state != 0) {
+                rt_copy_string(buffer, buffer_size, state->filename);
+            }
+            break;
+        case AWK_EXPR_VARIABLE:
+            if (state != 0) {
+                rt_copy_string(buffer, buffer_size, lookup_variable_value(state, expression->text));
             }
             break;
         case AWK_EXPR_STRING:
@@ -221,6 +316,9 @@ static unsigned long long expression_to_unsigned(const AwkExpression *expression
     if (expression->type == AWK_EXPR_NF) {
         return record->nf;
     }
+    if (expression->type == AWK_EXPR_FNR) {
+        return record->fnr;
+    }
 
     expression_to_string(expression, record, state, buffer, sizeof(buffer));
     if (buffer[0] == '\0' || rt_parse_uint(buffer, &value) != 0) {
@@ -241,6 +339,9 @@ static long long expression_to_signed(const AwkExpression *expression, const Awk
     }
     if (expression->type == AWK_EXPR_NF) {
         return (long long)record->nf;
+    }
+    if (expression->type == AWK_EXPR_FNR) {
+        return (long long)record->fnr;
     }
 
     expression_to_string(expression, record, state, buffer, sizeof(buffer));
@@ -540,10 +641,14 @@ static int execute_statement(const AwkStatement *statement, const AwkRecord *rec
             return 0;
         }
         expression_to_string(&statement->expressions[0], record, state, value, sizeof(value));
-        if (statement->variable == AWK_VARIABLE_FS) {
-            rt_copy_string(state->fs, sizeof(state->fs), value);
-        } else if (statement->variable == AWK_VARIABLE_OFS) {
-            rt_copy_string(state->ofs, sizeof(state->ofs), value);
+        if (statement->variable == AWK_VARIABLE_FS ||
+            statement->variable == AWK_VARIABLE_OFS ||
+            statement->variable == AWK_VARIABLE_RS ||
+            statement->variable == AWK_VARIABLE_ORS ||
+            statement->variable == AWK_VARIABLE_USER) {
+            if (awk_assign_variable(state, statement->variable_name, value) != 0) {
+                return -1;
+            }
         }
         return 0;
     }
@@ -553,7 +658,10 @@ static int execute_statement(const AwkStatement *statement, const AwkRecord *rec
     }
 
     if (statement->expression_count == 0) {
-        return rt_write_line(1, record->line);
+        if (rt_write_cstr(1, record->line) != 0) {
+            return -1;
+        }
+        return rt_write_cstr(1, state->ors);
     }
 
     for (i = 0; i < statement->expression_count; ++i) {
@@ -565,7 +673,7 @@ static int execute_statement(const AwkStatement *statement, const AwkRecord *rec
         }
     }
 
-    return rt_write_char(1, '\n');
+    return rt_write_cstr(1, state->ors);
 }
 
 static int clause_matches(const AwkClause *clause, const AwkRecord *record, const AwkState *state) {
@@ -578,6 +686,8 @@ static int clause_matches(const AwkClause *clause, const AwkRecord *record, cons
             return compare_values(record->nr, clause->compare_op, clause->compare_value);
         case AWK_PATTERN_NF:
             return compare_values(record->nf, clause->compare_op, clause->compare_value);
+        case AWK_PATTERN_FNR:
+            return compare_values(record->fnr, clause->compare_op, clause->compare_value);
         case AWK_PATTERN_EXPR_REGEX: {
             char value[AWK_MAX_TEXT];
             int matched;
@@ -615,6 +725,37 @@ int execute_clauses(const AwkProgram *program, AwkClauseKind kind, const AwkReco
     return 0;
 }
 
+static int line_ends_with_separator(const char *line, size_t line_length, const char *separator, size_t separator_length) {
+    size_t i;
+
+    if (separator == 0 || separator_length == 0U || line_length < separator_length) {
+        return 0;
+    }
+
+    for (i = 0U; i < separator_length; ++i) {
+        if (line[line_length - separator_length + i] != separator[i]) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int emit_record(const char *line,
+                       const AwkProgram *program,
+                       AwkState *state,
+                       unsigned long long *line_number,
+                       unsigned long long *last_nf) {
+    AwkRecord record;
+
+    *line_number += 1ULL;
+    state->fnr += 1ULL;
+    init_record(&record, line, *line_number, state);
+    *last_nf = record.nf;
+
+    return execute_clauses(program, AWK_CLAUSE_MAIN, &record, state);
+}
+
 int awk_stream(int fd,
                const AwkProgram *program,
                AwkState *state,
@@ -630,21 +771,21 @@ int awk_stream(int fd,
 
         for (i = 0; i < bytes_read; ++i) {
             char ch = chunk[i];
+            const char *separator = (state->rs[0] != '\0') ? state->rs : "\n";
+            size_t separator_length = rt_strlen(separator);
 
-            if (ch == '\n') {
-                AwkRecord record;
-
+            if (line_len + 1 < sizeof(line)) {
+                line[line_len++] = ch;
                 line[line_len] = '\0';
-                *line_number += 1;
-                init_record(&record, line, *line_number, state);
-                *last_nf = record.nf;
+            }
 
-                if (execute_clauses(program, AWK_CLAUSE_MAIN, &record, state) != 0) {
+            if (line_ends_with_separator(line, line_len, separator, separator_length)) {
+                line_len -= separator_length;
+                line[line_len] = '\0';
+                if (emit_record(line, program, state, line_number, last_nf) != 0) {
                     return -1;
                 }
                 line_len = 0;
-            } else if (line_len + 1 < sizeof(line)) {
-                line[line_len++] = ch;
             }
         }
     }
@@ -654,14 +795,8 @@ int awk_stream(int fd,
     }
 
     if (line_len > 0) {
-        AwkRecord record;
-
         line[line_len] = '\0';
-        *line_number += 1;
-        init_record(&record, line, *line_number, state);
-        *last_nf = record.nf;
-
-        if (execute_clauses(program, AWK_CLAUSE_MAIN, &record, state) != 0) {
+        if (emit_record(line, program, state, line_number, last_nf) != 0) {
             return -1;
         }
     }

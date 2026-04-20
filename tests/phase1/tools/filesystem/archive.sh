@@ -55,6 +55,58 @@ if [ -e "$WORK_DIR/tar_stripped/skip/omit.txt" ]; then
     fail "tar extracted a file that should have been excluded"
 fi
 
+mkdir -p "$WORK_DIR/tar_advanced_src/links"
+long_newos_rel='tar_advanced_src/very-long-component-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/second-very-long-component-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/third-very-long-component-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/file-with-a-very-long-name-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.txt'
+mkdir -p "$(dirname "$WORK_DIR/$long_newos_rel")"
+printf 'advanced-data\n' > "$WORK_DIR/$long_newos_rel"
+printf 'symlink-target-data\n' > "$WORK_DIR/tar_advanced_src/links/target.txt"
+ln -s target.txt "$WORK_DIR/tar_advanced_src/links/link.txt"
+(
+    cd "$WORK_DIR"
+    assert_command_succeeds "$ROOT_DIR/build/tar" -cf advanced.tar tar_advanced_src
+    assert_command_succeeds "$ROOT_DIR/build/tar" -tf advanced.tar > advanced_list.out
+)
+assert_file_contains "$WORK_DIR/advanced_list.out" 'file-with-a-very-long-name-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.txt$' "tar did not preserve the long GNU-compatible path"
+mkdir -p "$WORK_DIR/tar_advanced_extract"
+(
+    cd "$WORK_DIR/tar_advanced_extract"
+    assert_command_succeeds "$ROOT_DIR/build/tar" -xf "$WORK_DIR/advanced.tar"
+)
+assert_file_contains "$WORK_DIR/tar_advanced_extract/$long_newos_rel" '^advanced-data$' "tar did not restore the long GNU-compatible path"
+if [ ! -L "$WORK_DIR/tar_advanced_extract/tar_advanced_src/links/link.txt" ]; then
+    fail "tar did not restore a symbolic link"
+fi
+if [ "$("$ROOT_DIR/build/readlink" "$WORK_DIR/tar_advanced_extract/tar_advanced_src/links/link.txt")" != 'target.txt' ]; then
+    fail "tar restored the symbolic link with the wrong target"
+fi
+
+if command -v tar >/dev/null 2>&1; then
+    mkdir -p "$WORK_DIR/external_tar_src/dir"
+    external_rel='external_tar_src/dir/long-path-component-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/another-long-path-component-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/external-file-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.txt'
+    mkdir -p "$(dirname "$WORK_DIR/$external_rel")"
+    printf 'external-data\n' > "$WORK_DIR/$external_rel"
+    printf 'external-target\n' > "$WORK_DIR/external_tar_src/dir/target.txt"
+    ln -s dir/target.txt "$WORK_DIR/external_tar_src/link.txt"
+    (
+        cd "$WORK_DIR"
+        tar -cf external.tar external_tar_src
+        assert_command_succeeds "$ROOT_DIR/build/tar" -tf external.tar > external_list.out
+    )
+    assert_file_contains "$WORK_DIR/external_list.out" 'external-file-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.txt$' "tar did not understand a host-generated archive path"
+    mkdir -p "$WORK_DIR/external_tar_extract"
+    (
+        cd "$WORK_DIR/external_tar_extract"
+        assert_command_succeeds "$ROOT_DIR/build/tar" -xf "$WORK_DIR/external.tar"
+    )
+    assert_file_contains "$WORK_DIR/external_tar_extract/$external_rel" '^external-data$' "tar did not extract the host-generated archive file"
+    if [ ! -L "$WORK_DIR/external_tar_extract/external_tar_src/link.txt" ]; then
+        fail "tar did not preserve the host-generated symbolic link"
+    fi
+    if [ "$("$ROOT_DIR/build/readlink" "$WORK_DIR/external_tar_extract/external_tar_src/link.txt")" != 'dir/target.txt' ]; then
+        fail "tar restored the host-generated symbolic link with the wrong target"
+    fi
+fi
+
 printf 'one\n' > "$WORK_DIR/a.txt"
 printf 'two\n' > "$WORK_DIR/b.txt"
 assert_command_succeeds "$ROOT_DIR/build/ar" rc "$WORK_DIR/test.a" "$WORK_DIR/a.txt" "$WORK_DIR/b.txt"

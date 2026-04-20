@@ -166,6 +166,22 @@ static void tar_copy_name(char *dst, size_t dst_size, const char *src) {
     }
 }
 
+static const char *tar_base_name(const char *path) {
+    const char *base = path;
+    size_t i = 0;
+
+    if (path == 0) {
+        return "item";
+    }
+    while (path[i] != '\0') {
+        if (path[i] == '/') {
+            base = path + i + 1;
+        }
+        i += 1;
+    }
+    return (base[0] != '\0') ? base : "item";
+}
+
 static void tar_copy_trimmed_path(char *dst, size_t dst_size, const char *src) {
     size_t len = rt_strlen(src);
 
@@ -213,6 +229,17 @@ static int tar_split_header_path(TarHeader *header, const char *stored_name) {
     }
 
     return -1;
+}
+
+static int tar_name_requires_extension(const char *stored_name) {
+    TarHeader header;
+
+    rt_memset(&header, 0, sizeof(header));
+    return tar_split_header_path(&header, stored_name) != 0;
+}
+
+static int tar_link_requires_extension(const char *link_name) {
+    return link_name != 0 && rt_strlen(link_name) >= sizeof(((TarHeader *)0)->linkname);
 }
 
 static int tar_header_path(const TarHeader *header, char *buffer, size_t buffer_size) {
@@ -419,25 +446,71 @@ static int write_padding(int fd, unsigned long long size) {
     return rt_write_all(fd, zeros, (size_t)padding);
 }
 
-static int fill_header(TarHeader *header, const char *stored_name, const PlatformDirEntry *entry, char typeflag) {
+static int fill_header(TarHeader *header,
+                       const char *stored_name,
+                       const char *link_name,
+                       const PlatformDirEntry *entry,
+                       char typeflag) {
     rt_memset(header, 0, sizeof(*header));
 
     if (tar_split_header_path(header, stored_name) != 0) {
-        return -1;
+        tar_copy_name(header->name, sizeof(header->name), tar_base_name(stored_name));
     }
 
     archive_write_octal(header->mode, sizeof(header->mode), (unsigned long long)(entry->mode & 0777U));
     archive_write_octal(header->uid, sizeof(header->uid), 0);
     archive_write_octal(header->gid, sizeof(header->gid), 0);
-    archive_write_octal(header->size, sizeof(header->size), (typeflag == '5') ? 0ULL : entry->size);
+    archive_write_octal(header->size,
+                        sizeof(header->size),
+                        (typeflag == '5' || typeflag == '1' || typeflag == '2') ? 0ULL : entry->size);
     archive_write_octal(header->mtime, sizeof(header->mtime), (unsigned long long)entry->mtime);
     header->typeflag = typeflag;
     tar_copy_name(header->magic, sizeof(header->magic), "ustar");
     tar_copy_name(header->version, sizeof(header->version), "00");
+    if (link_name != 0) {
+        tar_copy_name(header->linkname, sizeof(header->linkname), link_name);
+    }
     tar_copy_name(header->uname, sizeof(header->uname), entry->owner);
     tar_copy_name(header->gname, sizeof(header->gname), entry->group);
     archive_write_octal(header->checksum, sizeof(header->checksum), header_checksum(header));
     return 0;
+}
+
+static int write_special_metadata_header(int archive_fd, const char *value, char typeflag) {
+    TarHeader header;
+    PlatformDirEntry entry;
+
+    rt_memset(&entry, 0, sizeof(entry));
+    entry.mode = 0644U;
+    entry.size = (unsigned long long)(rt_strlen(value) + 1U);
+    entry.mtime = platform_get_epoch_time();
+    if (fill_header(&header, "././@LongLink", 0, &entry, typeflag) != 0) {
+        return -1;
+    }
+    if (rt_write_all(archive_fd, &header, sizeof(header)) != 0 ||
+        rt_write_all(archive_fd, value, (size_t)entry.size) != 0) {
+        return -1;
+    }
+    return write_padding(archive_fd, entry.size);
+}
+
+static int write_archive_header(int archive_fd,
+                                const char *stored_name,
+                                const char *link_name,
+                                const PlatformDirEntry *entry,
+                                char typeflag) {
+    TarHeader header;
+
+    if (tar_name_requires_extension(stored_name) && write_special_metadata_header(archive_fd, stored_name, 'L') != 0) {
+        return -1;
+    }
+    if (tar_link_requires_extension(link_name) && write_special_metadata_header(archive_fd, link_name, 'K') != 0) {
+        return -1;
+    }
+    if (fill_header(&header, stored_name, link_name, entry, typeflag) != 0) {
+        return -1;
+    }
+    return rt_write_all(archive_fd, &header, sizeof(header));
 }
 
 static int archive_path(int archive_fd,
@@ -446,26 +519,36 @@ static int archive_path(int archive_fd,
                         int verbose,
                         char exclude_patterns[][TAR_PATH_CAPACITY],
                         size_t exclude_count) {
-    PlatformDirEntry entries[TAR_ENTRY_CAPACITY];
-    size_t count = 0;
+    PlatformDirEntry entry;
     int is_directory = 0;
-    size_t i;
+    char link_target[TAR_PATH_CAPACITY];
+    int is_symlink = 0;
 
     if (exclude_count > 0 && tar_path_matches(stored_name, exclude_patterns, exclude_count)) {
         return 0;
     }
 
-    if (platform_collect_entries(path, 1, entries, TAR_ENTRY_CAPACITY, &count, &is_directory) != 0 || count == 0) {
+    if (platform_get_path_info(path, &entry) != 0) {
         return -1;
+    }
+    is_directory = entry.is_dir;
+    link_target[0] = '\0';
+    if (!is_directory && platform_read_symlink(path, link_target, sizeof(link_target)) == 0) {
+        is_symlink = 1;
     }
 
     if (is_directory) {
-        TarHeader header;
-
-        if (fill_header(&header, stored_name, &entries[0], '5') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
+        PlatformDirEntry entries[TAR_ENTRY_CAPACITY];
+        size_t count = 0;
+        size_t i;
+        if (write_archive_header(archive_fd, stored_name, 0, &entry, '5') != 0) {
             return -1;
         }
         if (verbose && tar_write_display_name(stored_name, 1) != 0) {
+            return -1;
+        }
+
+        if (platform_collect_entries(path, 1, entries, TAR_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
             return -1;
         }
 
@@ -491,11 +574,20 @@ static int archive_path(int archive_fd,
     }
 
     {
-        TarHeader header;
         int file_fd;
         unsigned char buffer[4096];
 
-        if (fill_header(&header, stored_name, &entries[0], '0') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
+        if (is_symlink) {
+            if (write_archive_header(archive_fd, stored_name, link_target, &entry, '2') != 0) {
+                return -1;
+            }
+            if (verbose && tar_write_display_name(stored_name, 0) != 0) {
+                return -1;
+            }
+            return 0;
+        }
+
+        if (write_archive_header(archive_fd, stored_name, 0, &entry, '0') != 0) {
             return -1;
         }
         if (verbose && tar_write_display_name(stored_name, 0) != 0) {
@@ -523,7 +615,7 @@ static int archive_path(int archive_fd,
         }
 
         platform_close(file_fd);
-        return write_padding(archive_fd, entries[0].size);
+        return write_padding(archive_fd, entry.size);
     }
 }
 
@@ -541,6 +633,115 @@ static int ensure_parent_dirs(char *path) {
     return 0;
 }
 
+static int tar_read_text_payload(int archive_fd, unsigned long long size, char *buffer, size_t buffer_size) {
+    unsigned char chunk[256];
+    size_t used = 0;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    while (size > 0ULL) {
+        size_t piece = (size > (unsigned long long)sizeof(chunk)) ? sizeof(chunk) : (size_t)size;
+        size_t copy_length = 0U;
+
+        if (read_exact(archive_fd, chunk, piece) != 0) {
+            return -1;
+        }
+        if (used + 1U < buffer_size) {
+            copy_length = piece;
+            if (used + copy_length + 1U > buffer_size) {
+                copy_length = buffer_size - used - 1U;
+            }
+            if (copy_length > 0U) {
+                memcpy(buffer + used, chunk, copy_length);
+                used += copy_length;
+            }
+        }
+        size -= (unsigned long long)piece;
+    }
+
+    while (used > 0U && (buffer[used - 1U] == '\0' || buffer[used - 1U] == '\n')) {
+        used -= 1U;
+    }
+    buffer[used] = '\0';
+    return 0;
+}
+
+static void tar_copy_record_value(char *buffer, size_t buffer_size, const char *value, size_t value_length) {
+    if (buffer_size == 0U) {
+        return;
+    }
+    if (value_length + 1U > buffer_size) {
+        value_length = buffer_size - 1U;
+    }
+    memcpy(buffer, value, value_length);
+    buffer[value_length] = '\0';
+}
+
+static void tar_parse_pax_payload(const char *data,
+                                  size_t data_length,
+                                  char *path_buffer,
+                                  size_t path_buffer_size,
+                                  char *link_buffer,
+                                  size_t link_buffer_size) {
+    size_t index = 0U;
+
+    while (index < data_length) {
+        size_t record_start = index;
+        unsigned long long record_length = 0ULL;
+        size_t payload_start;
+        size_t payload_length;
+        size_t key_length = 0U;
+
+        while (index < data_length && data[index] >= '0' && data[index] <= '9') {
+            record_length = (record_length * 10ULL) + (unsigned long long)(data[index] - '0');
+            index += 1U;
+        }
+        if (record_length == 0ULL || index >= data_length || data[index] != ' ') {
+            break;
+        }
+        payload_start = index + 1U;
+        if (record_start + (size_t)record_length > data_length || payload_start <= record_start) {
+            break;
+        }
+        payload_length = (record_start + (size_t)record_length) - payload_start;
+        if (payload_length > 0U && data[payload_start + payload_length - 1U] == '\n') {
+            payload_length -= 1U;
+        }
+        while (key_length < payload_length && data[payload_start + key_length] != '=') {
+            key_length += 1U;
+        }
+        if (key_length < payload_length) {
+            const char *value = data + payload_start + key_length + 1U;
+            size_t value_length = payload_length - key_length - 1U;
+
+            if (key_length == 4U && rt_strncmp(data + payload_start, "path", 4) == 0) {
+                tar_copy_record_value(path_buffer, path_buffer_size, value, value_length);
+            } else if (key_length == 8U && rt_strncmp(data + payload_start, "linkpath", 8) == 0) {
+                tar_copy_record_value(link_buffer, link_buffer_size, value, value_length);
+            }
+        }
+        index = record_start + (size_t)record_length;
+    }
+}
+
+static int tar_read_pax_attributes(int archive_fd,
+                                   unsigned long long size,
+                                   char *path_buffer,
+                                   size_t path_buffer_size,
+                                   char *link_buffer,
+                                   size_t link_buffer_size) {
+    char pax_data[TAR_PATH_CAPACITY * 4];
+
+    pax_data[0] = '\0';
+    if (tar_read_text_payload(archive_fd, size, pax_data, sizeof(pax_data)) != 0) {
+        return -1;
+    }
+    tar_parse_pax_payload(pax_data, rt_strlen(pax_data), path_buffer, path_buffer_size, link_buffer, link_buffer_size);
+    return 0;
+}
+
 static int extract_archive(int archive_fd,
                            int list_only,
                            int verbose,
@@ -551,6 +752,11 @@ static int extract_archive(int archive_fd,
                            unsigned int strip_components,
                            int allow_absolute_names) {
     unsigned char block[TAR_BLOCK_SIZE];
+    char pending_path[TAR_PATH_CAPACITY];
+    char pending_link[TAR_PATH_CAPACITY];
+
+    pending_path[0] = '\0';
+    pending_link[0] = '\0';
 
     for (;;) {
         TarHeader *header;
@@ -558,8 +764,10 @@ static int extract_archive(int archive_fd,
         unsigned long long padding;
         char stored_path[TAR_PATH_CAPACITY];
         char output_path[TAR_PATH_CAPACITY];
+        char link_target[TAR_PATH_CAPACITY];
         int is_directory;
         int strip_result;
+        char typeflag;
 
         if (read_exact(archive_fd, block, sizeof(block)) != 0) {
             return -1;
@@ -570,12 +778,57 @@ static int extract_archive(int archive_fd,
         }
 
         header = (TarHeader *)block;
+        size = archive_parse_octal(header->size, sizeof(header->size));
+        padding = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
+        typeflag = (header->typeflag == '\0') ? '0' : header->typeflag;
+
+        if (typeflag == 'L' || typeflag == 'K') {
+            char *target = (typeflag == 'L') ? pending_path : pending_link;
+            if (tar_read_text_payload(archive_fd, size, target, TAR_PATH_CAPACITY) != 0) {
+                return -1;
+            }
+            if (padding > 0ULL && skip_exact(archive_fd, padding) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (typeflag == 'x' || typeflag == 'g') {
+            if (typeflag == 'x') {
+                pending_path[0] = '\0';
+                pending_link[0] = '\0';
+                if (tar_read_pax_attributes(archive_fd,
+                                            size,
+                                            pending_path,
+                                            sizeof(pending_path),
+                                            pending_link,
+                                            sizeof(pending_link)) != 0) {
+                    return -1;
+                }
+            } else if (skip_exact(archive_fd, size) != 0) {
+                return -1;
+            }
+            if (padding > 0ULL && skip_exact(archive_fd, padding) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
         if (tar_header_path(header, stored_path, sizeof(stored_path)) != 0) {
             return -1;
         }
-        size = archive_parse_octal(header->size, sizeof(header->size));
-        padding = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
-        is_directory = (header->typeflag == '5');
+        if (pending_path[0] != '\0') {
+            rt_copy_string(stored_path, sizeof(stored_path), pending_path);
+            pending_path[0] = '\0';
+        }
+        link_target[0] = '\0';
+        if (pending_link[0] != '\0') {
+            rt_copy_string(link_target, sizeof(link_target), pending_link);
+            pending_link[0] = '\0';
+        } else {
+            rt_copy_string(link_target, sizeof(link_target), header->linkname);
+        }
+        is_directory = (typeflag == '5');
 
         if (!tar_path_matches(stored_path, member_patterns, member_count) ||
             (exclude_count > 0 && tar_path_matches(stored_path, exclude_patterns, exclude_count))) {
@@ -585,7 +838,9 @@ static int extract_archive(int archive_fd,
             continue;
         }
 
-        if (!list_only && !allow_absolute_names && tar_path_is_unsafe(stored_path)) {
+        if (!list_only && !allow_absolute_names &&
+            (tar_path_is_unsafe(stored_path) ||
+             ((typeflag == '1' || typeflag == '2') && link_target[0] != '\0' && tar_path_is_unsafe(link_target)))) {
             tool_write_error("tar", "refusing unsafe path in archive: ", stored_path);
             return -1;
         }
@@ -611,10 +866,51 @@ static int extract_archive(int archive_fd,
             continue;
         }
 
+        if (typeflag != '0' && typeflag != '5' && typeflag != '1' && typeflag != '2') {
+            if (skip_exact(archive_fd, size + padding) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
         ensure_parent_dirs(output_path);
 
         if (is_directory) {
             (void)platform_make_directory(output_path, 0755U);
+            continue;
+        }
+
+        if (typeflag == '2') {
+            (void)platform_remove_file(output_path);
+            if (platform_create_symbolic_link(link_target, output_path) != 0) {
+                return -1;
+            }
+            if (size + padding > 0ULL && skip_exact(archive_fd, size + padding) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (typeflag == '1') {
+            const char *link_path = link_target;
+            char stripped_link[TAR_PATH_CAPACITY];
+
+            if (strip_components != 0U) {
+                if (tar_strip_components(link_target, strip_components, stripped_link, sizeof(stripped_link)) != 0) {
+                    if (skip_exact(archive_fd, size + padding) != 0) {
+                        return -1;
+                    }
+                    continue;
+                }
+                link_path = stripped_link;
+            }
+            (void)platform_remove_file(output_path);
+            if (platform_create_hard_link(link_path, output_path) != 0) {
+                return -1;
+            }
+            if (size + padding > 0ULL && skip_exact(archive_fd, size + padding) != 0) {
+                return -1;
+            }
             continue;
         }
 

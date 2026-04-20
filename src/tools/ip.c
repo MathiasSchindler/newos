@@ -41,7 +41,8 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "  address|addr|a  [show [IFACE|dev IFACE]] | flush dev IFACE");
     rt_write_line(1, "                  | add CIDR dev IFACE | del CIDR dev IFACE");
     rt_write_line(1, "  link|l          [show [IFACE|dev IFACE]] | set dev IFACE [up|down] [mtu N]");
-    rt_write_line(1, "  route|r         [show [dev IFACE]] | add DEST|default [via GW] [dev IFACE]");
+    rt_write_line(1, "  route|r         [show [default|PREFIX|dev IFACE]]");
+    rt_write_line(1, "                  | add DEST|default [via GW] [dev IFACE]");
     rt_write_line(1, "                  | del DEST|default [via GW] [dev IFACE]");
 }
 
@@ -325,10 +326,35 @@ static int show_addresses(const char *dev_name, int family_filter, int brief_mod
     return 0;
 }
 
-static int show_routes(const char *dev_name, int family_filter) {
+static int route_matches_filter(const PlatformRouteEntry *route, const char *filter) {
+    char destination[PLATFORM_NETWORK_TEXT_CAPACITY + 16];
+
+    if (filter == 0 || filter[0] == '\0') {
+        return 1;
+    }
+    if (route->is_default) {
+        return streq(filter, "default");
+    }
+    if (streq(filter, route->destination)) {
+        return 1;
+    }
+
+    destination[0] = '\0';
+    rt_copy_string(destination, sizeof(destination), route->destination);
+    if (!contains_char(route->destination, '/') && route->prefix_length != 0U) {
+        if (append_text(destination, sizeof(destination), "/") != 0 ||
+            append_uint_text(destination, sizeof(destination), (unsigned long long)route->prefix_length) != 0) {
+            return 0;
+        }
+    }
+    return streq(filter, destination);
+}
+
+static int show_routes(const char *dev_name, int family_filter, const char *route_filter) {
     PlatformRouteEntry routes[IP_MAX_ROUTES];
     size_t count = 0U;
     size_t i;
+    int matched = 0;
 
     if (platform_list_network_routes(routes, IP_MAX_ROUTES, &count, family_filter, dev_name) != 0) {
         tool_write_error("ip", "route listing is not available on this platform", 0);
@@ -336,12 +362,17 @@ static int show_routes(const char *dev_name, int family_filter) {
     }
 
     for (i = 0U; i < count; ++i) {
+        if (!route_matches_filter(&routes[i], route_filter)) {
+            continue;
+        }
         if (routes[i].is_default) {
             rt_write_cstr(1, "default");
         } else {
             rt_write_cstr(1, routes[i].destination);
-            rt_write_char(1, '/');
-            rt_write_uint(1, (unsigned long long)routes[i].prefix_length);
+            if (!contains_char(routes[i].destination, '/') && routes[i].prefix_length != 0U) {
+                rt_write_char(1, '/');
+                rt_write_uint(1, (unsigned long long)routes[i].prefix_length);
+            }
         }
 
         if (routes[i].has_gateway) {
@@ -356,6 +387,12 @@ static int show_routes(const char *dev_name, int family_filter) {
             rt_write_uint(1, (unsigned long long)routes[i].metric);
         }
         rt_write_char(1, '\n');
+        matched = 1;
+    }
+
+    if (!matched && dev_name != 0) {
+        tool_write_error("ip", "unknown device: ", dev_name);
+        return 1;
     }
 
     return 0;
@@ -573,12 +610,13 @@ static int handle_link_command(int argc, char **argv, int argi, int brief_mode) 
 static int handle_route_command(int argc, char **argv, int argi, int family_filter) {
     const char *command = 0;
     const char *dev_name = 0;
+    const char *route_filter = 0;
     const char *destination = 0;
     const char *gateway = 0;
     int add = 1;
 
     if (argi >= argc) {
-        return show_routes(0, family_filter);
+        return show_routes(0, family_filter, 0);
     }
 
     command = argv[argi];
@@ -588,6 +626,13 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
             if (streq(argv[argi], "dev") && argi + 1 < argc) {
                 dev_name = argv[argi + 1];
                 argi += 2;
+            } else if (route_filter == 0 &&
+                       (streq(argv[argi], "default") ||
+                        contains_char(argv[argi], '/') ||
+                        contains_char(argv[argi], '.') ||
+                        contains_char(argv[argi], ':'))) {
+                route_filter = argv[argi];
+                argi += 1;
             } else if (dev_name == 0) {
                 dev_name = argv[argi];
                 argi += 1;
@@ -596,7 +641,7 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
                 return 1;
             }
         }
-        return show_routes(dev_name, family_filter);
+        return show_routes(dev_name, family_filter, route_filter);
     }
 
     if (!(streq(command, "add") || streq(command, "del") || streq(command, "delete"))) {

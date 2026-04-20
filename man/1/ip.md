@@ -12,7 +12,7 @@ ip [-4|-6] address {add|del} ADDRESS/PREFIX dev IFACE
 ip [-4|-6] address flush dev IFACE
 ip [-br|-brief|-o|--oneline] link [show [IFACE|dev IFACE]]
 ip link set dev IFACE [up|down] [mtu N]
-ip [-4|-6] route [show [dev IFACE]]
+ip [-4|-6] route [show [default|PREFIX|dev IFACE]]
 ip route {add|del} DESTINATION[/PREFIX]|default [via GATEWAY] [dev IFACE]
 ```
 
@@ -24,7 +24,7 @@ network settings. It focuses on the most common day-to-day tasks:
 - list interfaces and their state
 - show IPv4 and IPv6 addresses
 - show brief single-line interface summaries
-- show the current IPv4 route table where the platform exposes it
+- show IPv4 and IPv6 route tables on Linux and hosted POSIX/macOS builds
 - bring links up or down
 - adjust MTU values
 - add, remove, or flush IPv4 addresses and routes when the host kernel allows it
@@ -50,16 +50,15 @@ network settings. It focuses on the most common day-to-day tasks:
   - `set dev IFACE up|down [mtu N]` - change common link attributes
 
 - `route`, `r`
-  - `show [dev IFACE]` - display the current IPv4 route table
+  - `show [default|PREFIX|dev IFACE]` - display the current route table, optionally filtered by destination or device
   - `add DESTINATION|default [via GATEWAY] [dev IFACE]` - add an IPv4 route
   - `del DESTINATION|default [via GATEWAY] [dev IFACE]` - remove an IPv4 route
 
 ## LIMITATIONS
 
 - This is not a full `iproute2` replacement.
-- Display support is strongest on Linux hosts; route listing is currently
-  Linux-first.
-- Address and route mutation currently focus on IPv4.
+- Hosted route display now works across Linux and common POSIX/macOS builds, but advanced route metadata is intentionally compact.
+- Address and route mutation still focus on IPv4.
 - Changing interfaces or routes typically requires elevated privileges.
 - Advanced policy routing, monitoring, namespaces, tunnels, and JSON output are
   not implemented.
@@ -73,6 +72,8 @@ ip -4 addr show dev eth0
 ip link show eth0
 ip link set dev eth0 up
 ip link set dev eth0 mtu 1400
+ip route show default
+ip -6 route show
 ip addr add 192.168.10.20/24 dev eth0
 ip addr flush dev eth0
 ip route add default via 192.168.10.1 dev eth0

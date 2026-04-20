@@ -7,7 +7,8 @@ init - tiny init-style process supervisor
 ## SYNOPSIS
 
 ```sh
-init [-nq] [-r DELAY] [-c COMMAND] [PROGRAM [ARG ...]]
+init [-nq] [-r DELAY] [-m COUNT] [-t PATH] [-e NAME=VALUE] [-c COMMAND]
+     [PROGRAM [ARG ...]]
 ```
 
 ## DESCRIPTION
@@ -23,7 +24,10 @@ rather than a full service manager.
 
 - launch a default shell when no explicit program is given
 - run a shell command string with `-c`
+- attach the supervised program to a chosen console or stdio path with `-t`
+- export child environment overrides with repeated `-e NAME=VALUE`
 - restart the managed child after exit
+- bound crash loops with `-m`
 - disable respawning for one-shot use with `-n`
 - pause between restarts with `-r`
 - keep status messages off stderr with `-q`
@@ -34,6 +38,13 @@ rather than a full service manager.
 - `-q`, `--quiet` - suppress supervisor status messages
 - `-r DELAY`, `--restart-delay DELAY` - wait before respawning; accepts the same
   duration syntax used by other tools such as `100ms`, `1s`, or `2m`
+- `-m COUNT`, `--max-restarts COUNT` - stop respawning after `COUNT` restarts;
+  `0` means “run once unless `-n` already does”
+- `-t PATH`, `--console PATH` - connect the child’s stdin/stdout/stderr to a
+  console or log path such as `/dev/console`; use `-` to reuse the current
+  stdio streams
+- `-e NAME=VALUE`, `--setenv NAME=VALUE` - export an environment override to
+  the supervised child; may be provided more than once
 - `-c COMMAND`, `--command COMMAND` - run `sh -c COMMAND` under supervision
 - `-h`, `--help` - show usage information
 
@@ -51,6 +62,8 @@ rather than a full service manager.
 init
 init -n sh -c 'echo boot smoke test'
 init -r 500ms /bin/sh
+init -t /dev/console -e TERM=linux -e PATH=/bin:/usr/bin /bin/sh
+init -m 3 -r 1s -c 'echo booting; exit 1'
 init -q -c 'while true; do date; sleep 5; done'
 ```
 

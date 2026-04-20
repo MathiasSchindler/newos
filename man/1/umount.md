@@ -14,13 +14,16 @@ umount [-flv] TARGET...
 
 `umount` asks the kernel to detach one or more mounted file systems from their
 target paths. It is a small Linux-first counterpart to the project's `mount`
-tool and is aimed at direct system or early-userspace use.
+tool and is aimed at direct system or early-userspace use. Each `TARGET` may be
+either the mount point itself or the mounted source/device name when that can be
+resolved from the current mount table.
 
 ## CURRENT CAPABILITIES
 
 - unmount one or more targets in one invocation
 - request forced unmounts with `-f`
 - request lazy detaches with `-l`
+- accept a mount point or mounted source path for each target
 - print per-target confirmation with `-v`
 
 ## OPTIONS

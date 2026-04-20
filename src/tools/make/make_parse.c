@@ -98,8 +98,9 @@ static MakeVariable *find_variable(MakeProgram *program, const char *name) {
     return 0;
 }
 
-static const char *get_variable_value(const MakeProgram *program, const char *name) {
+const char *get_variable_value(const MakeProgram *program, const char *name) {
     size_t i;
+    const char *env_value;
 
     for (i = 0; i < program->var_count; ++i) {
         if (rt_strcmp(program->vars[i].name, name) == 0) {
@@ -107,6 +108,10 @@ static const char *get_variable_value(const MakeProgram *program, const char *na
         }
     }
 
+    env_value = platform_getenv(name);
+    if (env_value != 0) {
+        return env_value;
+    }
     return "";
 }
 
@@ -119,6 +124,9 @@ static MakeVariableOrigin get_variable_origin(const MakeProgram *program, const 
         }
     }
 
+    if (platform_getenv(name) != 0) {
+        return MAKE_ORIGIN_ENVIRONMENT;
+    }
     return 0;
 }
 
@@ -127,6 +135,9 @@ static const char *get_variable_origin_text(const MakeProgram *program, const ch
 
     if (origin == MAKE_ORIGIN_COMMAND_LINE) {
         return "command line";
+    }
+    if (origin == MAKE_ORIGIN_ENVIRONMENT) {
+        return "environment";
     }
     if (origin == MAKE_ORIGIN_FILE) {
         return "file";
@@ -157,6 +168,51 @@ int set_variable(MakeProgram *program, const char *name, const char *value) {
     return set_variable_with_origin(program, name, value, MAKE_ORIGIN_FILE);
 }
 
+int mark_variable_exported(MakeProgram *program, const char *name, int exported) {
+    MakeVariable *variable = find_variable(program, name);
+
+    if (variable == 0) {
+        const char *env_value;
+        if (program->var_count >= MAKE_MAX_VARS) {
+            return -1;
+        }
+        variable = &program->vars[program->var_count++];
+        rt_memset(variable, 0, sizeof(*variable));
+        rt_copy_string(variable->name, sizeof(variable->name), name);
+        env_value = platform_getenv(name);
+        if (env_value != 0) {
+            rt_copy_string(variable->value, sizeof(variable->value), env_value);
+            variable->origin = MAKE_ORIGIN_ENVIRONMENT;
+        } else {
+            variable->origin = MAKE_ORIGIN_FILE;
+        }
+    }
+
+    variable->exported = exported != 0;
+    return 0;
+}
+
+int sync_program_environment(const MakeProgram *program) {
+    size_t i;
+
+    for (i = 0; i < program->var_count; ++i) {
+        const MakeVariable *variable = &program->vars[i];
+        if (variable->name[0] == '\0') {
+            continue;
+        }
+        if (variable->exported ||
+            variable->origin == MAKE_ORIGIN_COMMAND_LINE ||
+            rt_strcmp(variable->name, "MAKE") == 0 ||
+            rt_strcmp(variable->name, "MAKEFLAGS") == 0) {
+            if (platform_setenv(variable->name, variable->value, 1) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 static int append_variable(MakeProgram *program, const char *name, const char *value) {
     MakeVariable *variable = find_variable(program, name);
     char combined[MAKE_VALUE_CAPACITY];
@@ -182,6 +238,83 @@ static int append_variable(MakeProgram *program, const char *name, const char *v
     }
 
     return set_variable(program, name, combined);
+}
+
+static int handle_variable_assignment(MakeProgram *program, char *content, int export_after) {
+    char *equals = 0;
+    char *colon = 0;
+    size_t j = 0U;
+
+    while (content[j] != '\0') {
+        if (content[j] == ':' && colon == 0) {
+            colon = content + j;
+        }
+        if (content[j] == '=' && equals == 0) {
+            equals = content + j;
+        }
+        j += 1U;
+    }
+
+    if (equals == 0 ||
+        !(colon == 0 || equals < colon ||
+          (equals > content && (equals[-1] == ':' || equals[-1] == '+' || equals[-1] == '?')))) {
+        return 0;
+    }
+
+    {
+        char name[MAKE_NAME_CAPACITY];
+        char value[MAKE_VALUE_CAPACITY];
+        char expanded[MAKE_VALUE_CAPACITY];
+        char assign_mode = '=';
+        char *name_end = equals;
+        size_t name_len;
+
+        if (equals > content && (equals[-1] == ':' || equals[-1] == '+' || equals[-1] == '?')) {
+            assign_mode = equals[-1];
+            name_end = equals - 1;
+        }
+
+        *name_end = '\0';
+        rt_copy_string(name, sizeof(name), trim_leading_whitespace(content));
+        trim_trailing_whitespace(name);
+        rt_copy_string(value, sizeof(value), trim_leading_whitespace(equals + 1));
+        name_len = rt_strlen(name);
+
+        if (name_len == 0U) {
+            return -1;
+        }
+
+        if (assign_mode == ':') {
+            if (expand_text(program, 0, value, expanded, sizeof(expanded)) != 0 ||
+                set_variable(program, name, expanded) != 0) {
+                return -1;
+            }
+        } else if (assign_mode == '?') {
+            if ((get_variable_origin(program, name) == 0 || get_variable_value(program, name)[0] == '\0') &&
+                set_variable(program, name, value) != 0) {
+                return -1;
+            }
+        } else if (assign_mode == '+') {
+            if (append_variable(program, name, value) != 0) {
+                return -1;
+            }
+        } else if (set_variable(program, name, value) != 0) {
+            return -1;
+        }
+
+        if (export_after && mark_variable_exported(program, name, 1) != 0) {
+            return -1;
+        }
+
+        if (rt_strcmp(name, ".DEFAULT_GOAL") == 0) {
+            const char *goal = get_variable_value(program, name);
+            if (goal[0] != '\0') {
+                rt_copy_string(program->first_target, sizeof(program->first_target), goal);
+            }
+        }
+    }
+
+    return 1;
 }
 
 MakeRule *find_rule(MakeProgram *program, const char *target) {
@@ -1222,7 +1355,6 @@ static int parse_makefile_internal(MakeProgram *program, const char *path, int d
                         }
                     }
                 } else {
-                    char *equals = 0;
                     char *colon = 0;
                     char *second_colon = 0;
                     size_t j = 0;
@@ -1234,9 +1366,6 @@ static int parse_makefile_internal(MakeProgram *program, const char *path, int d
                             colon = content + j;
                         } else if (content[j] == ':' && colon != 0 && second_colon == 0) {
                             second_colon = content + j;
-                        }
-                        if (content[j] == '=' && equals == 0) {
-                            equals = content + j;
                         }
                         j += 1U;
                     }
@@ -1280,59 +1409,48 @@ static int parse_makefile_internal(MakeProgram *program, const char *path, int d
                                 }
                             }
                         }
-                    } else if (equals != 0 &&
-                               (colon == 0 || equals < colon ||
-                                (equals > content && (equals[-1] == ':' || equals[-1] == '+' || equals[-1] == '?')))) {
-                        char name[MAKE_NAME_CAPACITY];
-                        char value[MAKE_VALUE_CAPACITY];
-                        char expanded[MAKE_VALUE_CAPACITY];
-                        char assign_mode = '=';
-                        char *name_end = equals;
-                        size_t name_len;
+                    } else if (starts_with_keyword(content, "export")) {
+                        char export_text[MAKE_LINE_CAPACITY];
+                        char *cursor;
 
-                        if (equals > content && (equals[-1] == ':' || equals[-1] == '+' || equals[-1] == '?')) {
-                            assign_mode = equals[-1];
-                            name_end = equals - 1;
-                        }
+                        rt_copy_string(export_text, sizeof(export_text), trim_leading_whitespace(content + 6));
+                        trim_trailing_whitespace(export_text);
 
-                        *name_end = '\0';
-                        rt_copy_string(name, sizeof(name), trim_leading_whitespace(content));
-                        trim_trailing_whitespace(name);
-                        rt_copy_string(value, sizeof(value), trim_leading_whitespace(equals + 1));
-                        name_len = rt_strlen(name);
-
-                        if (name_len > 0) {
-                            if (assign_mode == ':') {
-                                if (expand_text(program, 0, value, expanded, sizeof(expanded)) != 0 ||
-                                    set_variable(program, name, expanded) != 0) {
-                                    platform_close(fd);
-                                    return -1;
-                                }
-                            } else if (assign_mode == '?') {
-                                MakeVariable *existing = find_variable(program, name);
-                                if ((existing == 0 || existing->value[0] == '\0') &&
-                                    set_variable(program, name, value) != 0) {
-                                    platform_close(fd);
-                                    return -1;
-                                }
-                            } else if (assign_mode == '+') {
-                                if (append_variable(program, name, value) != 0) {
-                                    platform_close(fd);
-                                    return -1;
-                                }
-                            } else if (set_variable(program, name, value) != 0) {
+                        if (export_text[0] != '\0') {
+                            int handled = handle_variable_assignment(program, export_text, 1);
+                            if (handled < 0) {
                                 platform_close(fd);
                                 return -1;
                             }
+                            if (handled == 0) {
+                                cursor = export_text;
+                                while (*cursor != '\0') {
+                                    char name[MAKE_NAME_CAPACITY];
+                                    size_t name_len = 0U;
 
-                            if (rt_strcmp(name, ".DEFAULT_GOAL") == 0) {
-                                const char *goal = get_variable_value(program, name);
-                                if (goal[0] != '\0') {
-                                    rt_copy_string(program->first_target, sizeof(program->first_target), goal);
+                                    while (*cursor == ' ' || *cursor == '\t') {
+                                        cursor += 1U;
+                                    }
+                                    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t' &&
+                                           name_len + 1U < sizeof(name)) {
+                                        name[name_len++] = *cursor++;
+                                    }
+                                    name[name_len] = '\0';
+
+                                    if (name[0] != '\0' && mark_variable_exported(program, name, 1) != 0) {
+                                        platform_close(fd);
+                                        return -1;
+                                    }
                                 }
                             }
                         }
-                    } else if (colon != 0) {
+                    } else {
+                        int handled_assignment = handle_variable_assignment(program, content, 0);
+                        if (handled_assignment < 0) {
+                            platform_close(fd);
+                            return -1;
+                        }
+                        if (handled_assignment == 0 && colon != 0) {
                         char targets_text[MAKE_LINE_CAPACITY];
                         char deps_text[MAKE_LINE_CAPACITY];
                         char pattern_text[MAKE_LINE_CAPACITY];
@@ -1384,6 +1502,11 @@ static int parse_makefile_internal(MakeProgram *program, const char *path, int d
                             target[len] = '\0';
                             if (target[0] == '\0') {
                                 break;
+                            }
+
+                            if (rt_strcmp(target, ".ONESHELL") == 0) {
+                                program->oneshell = 1;
+                                continue;
                             }
 
                             if (rt_strcmp(target, ".PHONY") == 0) {
@@ -1448,6 +1571,7 @@ static int parse_makefile_internal(MakeProgram *program, const char *path, int d
                             if (current_rule_count < MAKE_MAX_RULES) {
                                 current_rules[current_rule_count++] = rule;
                             }
+                        }
                         }
                     }
                 }

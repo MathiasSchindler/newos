@@ -11,12 +11,13 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define AWK_LINE_CAPACITY 8192
+#define AWK_LINE_CAPACITY 65536
 #define AWK_MAX_CLAUSES 16
 #define AWK_MAX_STATEMENTS 16
 #define AWK_MAX_EXPRESSIONS 16
-#define AWK_MAX_TEXT 256
+#define AWK_MAX_TEXT 1024
 #define AWK_MAX_FIELDS 256
+#define AWK_MAX_VARIABLES 64
 
 typedef enum {
     AWK_CLAUSE_MAIN = 0,
@@ -29,7 +30,8 @@ typedef enum {
     AWK_PATTERN_REGEX = 1,
     AWK_PATTERN_NR = 2,
     AWK_PATTERN_NF = 3,
-    AWK_PATTERN_EXPR_REGEX = 4
+    AWK_PATTERN_EXPR_REGEX = 4,
+    AWK_PATTERN_FNR = 5
 } AwkPatternType;
 
 typedef enum {
@@ -49,7 +51,12 @@ typedef enum {
     AWK_EXPR_FS = 4,
     AWK_EXPR_OFS = 5,
     AWK_EXPR_STRING = 6,
-    AWK_EXPR_NUMBER = 7
+    AWK_EXPR_NUMBER = 7,
+    AWK_EXPR_FNR = 8,
+    AWK_EXPR_FILENAME = 9,
+    AWK_EXPR_RS = 10,
+    AWK_EXPR_ORS = 11,
+    AWK_EXPR_VARIABLE = 12
 } AwkExprType;
 
 typedef enum {
@@ -61,7 +68,10 @@ typedef enum {
 typedef enum {
     AWK_VARIABLE_NONE = 0,
     AWK_VARIABLE_FS = 1,
-    AWK_VARIABLE_OFS = 2
+    AWK_VARIABLE_OFS = 2,
+    AWK_VARIABLE_RS = 3,
+    AWK_VARIABLE_ORS = 4,
+    AWK_VARIABLE_USER = 5
 } AwkVariableName;
 
 typedef struct {
@@ -75,6 +85,7 @@ typedef struct {
     AwkExpression expressions[AWK_MAX_EXPRESSIONS];
     AwkStatementKind kind;
     AwkVariableName variable;
+    char variable_name[AWK_MAX_TEXT];
 } AwkStatement;
 
 typedef struct {
@@ -97,14 +108,26 @@ typedef struct {
 typedef struct {
     const char *line;
     unsigned long long nr;
+    unsigned long long fnr;
     unsigned long long nf;
     const char *field_starts[AWK_MAX_FIELDS];
     size_t field_lengths[AWK_MAX_FIELDS];
 } AwkRecord;
 
 typedef struct {
+    int in_use;
+    char name[AWK_MAX_TEXT];
+    char value[AWK_MAX_TEXT];
+} AwkVariable;
+
+typedef struct {
     char fs[AWK_MAX_TEXT];
     char ofs[AWK_MAX_TEXT];
+    char rs[AWK_MAX_TEXT];
+    char ors[AWK_MAX_TEXT];
+    char filename[AWK_MAX_TEXT];
+    unsigned long long fnr;
+    AwkVariable variables[AWK_MAX_VARIABLES];
 } AwkState;
 
 /* ── awk_parse.c ── */
@@ -115,5 +138,7 @@ void init_state(AwkState *state);
 void init_record(AwkRecord *record, const char *line, unsigned long long nr, const AwkState *state);
 int execute_clauses(const AwkProgram *program, AwkClauseKind kind, const AwkRecord *record, AwkState *state);
 int awk_stream(int fd, const AwkProgram *program, AwkState *state, unsigned long long *line_number, unsigned long long *last_nf);
+int awk_assign_variable(AwkState *state, const char *name, const char *value);
+void awk_set_filename(AwkState *state, const char *filename);
 
 #endif /* AWK_IMPL_H */

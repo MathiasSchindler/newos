@@ -70,3 +70,24 @@ long_first=$(head -n 1 "$WORK_DIR/sort_long_lines.out" | cut -c 1 | tr -d '\r\n'
 long_first_len=$(awk 'NR == 1 { print length($0) }' "$WORK_DIR/sort_long_lines.out" | tr -d ' \r\n')
 assert_text_equals "$long_first" 'a' "sort failed lexical ordering on long lines"
 assert_text_equals "$long_first_len" '701' "sort truncated a long input line"
+
+printf 'banana\nApple\ncarrot\n' > "$WORK_DIR/casefold.txt"
+"$ROOT_DIR/build/sort" -f "$WORK_DIR/casefold.txt" > "$WORK_DIR/casefold.out"
+printf 'Apple\nbanana\ncarrot\n' > "$WORK_DIR/casefold.expected"
+assert_files_equal "$WORK_DIR/casefold.expected" "$WORK_DIR/casefold.out" "sort -f did not ignore ASCII case"
+
+printf 'banana\nApple\ncarrot\n' > "$WORK_DIR/check_unsorted.txt"
+if "$ROOT_DIR/build/sort" -c "$WORK_DIR/check_unsorted.txt" > /dev/null 2> "$WORK_DIR/check_unsorted.err"; then
+    fail "sort -c accepted unsorted input"
+fi
+assert_file_contains "$WORK_DIR/check_unsorted.err" '^sort: disorder: Apple$' "sort -c did not report the first disorder"
+
+printf 'Apple\nbanana\ncarrot\n' > "$WORK_DIR/check_sorted.txt"
+"$ROOT_DIR/build/sort" -c "$WORK_DIR/check_sorted.txt" > /dev/null 2> "$WORK_DIR/check_sorted.err" || \
+    fail "sort -c rejected already sorted input"
+
+printf 'alpha\nbeta\n' > "$WORK_DIR/merge_a.txt"
+printf 'beta\ngamma\n' > "$WORK_DIR/merge_b.txt"
+"$ROOT_DIR/build/sort" -m -u "$WORK_DIR/merge_a.txt" "$WORK_DIR/merge_b.txt" > "$WORK_DIR/merge.out"
+printf 'alpha\nbeta\ngamma\n' > "$WORK_DIR/merge.expected"
+assert_files_equal "$WORK_DIR/merge.expected" "$WORK_DIR/merge.out" "sort -m -u did not merge sorted inputs correctly"

@@ -12,6 +12,10 @@ static int is_identifier_char(char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
 }
 
+static int is_identifier_start(char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
+}
+
 static int starts_with_keyword(const char *text, size_t index, const char *keyword) {
     size_t i = 0;
 
@@ -46,6 +50,37 @@ static int parse_uint_token(const char *text, size_t *index, unsigned long long 
     }
 
     return rt_parse_uint(digits, value_out);
+}
+
+static int parse_identifier(const char *text, size_t *index, char *buffer, size_t buffer_size) {
+    size_t out = 0;
+
+    if (!is_identifier_start(text[*index]) || buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    while (is_identifier_char(text[*index])) {
+        if (out + 1 >= buffer_size) {
+            return -1;
+        }
+        buffer[out++] = text[*index];
+        *index += 1;
+    }
+
+    buffer[out] = '\0';
+    return 0;
+}
+
+static int looks_like_assignment_statement(const char *text, size_t index) {
+    char identifier[AWK_MAX_TEXT];
+    size_t probe = index;
+
+    if (parse_identifier(text, &probe, identifier, sizeof(identifier)) != 0) {
+        return 0;
+    }
+
+    skip_spaces(text, &probe);
+    return text[probe] == '=' && text[probe + 1] != '=';
 }
 
 static int parse_string_literal(const char *text, size_t *index, char *buffer, size_t buffer_size) {
@@ -189,8 +224,10 @@ static int parse_pattern(const char *text, size_t *index, AwkClause *clause) {
             return parse_regex_literal(text, index, clause->pattern_text, sizeof(clause->pattern_text));
         }
 
-        if (expression.type == AWK_EXPR_NR || expression.type == AWK_EXPR_NF) {
-            clause->pattern_type = (expression.type == AWK_EXPR_NR) ? AWK_PATTERN_NR : AWK_PATTERN_NF;
+        if (expression.type == AWK_EXPR_NR || expression.type == AWK_EXPR_NF || expression.type == AWK_EXPR_FNR) {
+            clause->pattern_type = (expression.type == AWK_EXPR_NR)
+                                     ? AWK_PATTERN_NR
+                                     : ((expression.type == AWK_EXPR_NF) ? AWK_PATTERN_NF : AWK_PATTERN_FNR);
 
             if (parse_compare_operator(text, index, &clause->compare_op) != 0) {
                 clause->compare_op = AWK_COMPARE_NE;
@@ -236,6 +273,18 @@ static int parse_expression(const char *text, size_t *index, AwkExpression *expr
         return 0;
     }
 
+    if (starts_with_keyword(text, *index, "FNR")) {
+        expression->type = AWK_EXPR_FNR;
+        *index += 3;
+        return 0;
+    }
+
+    if (starts_with_keyword(text, *index, "FILENAME")) {
+        expression->type = AWK_EXPR_FILENAME;
+        *index += 8;
+        return 0;
+    }
+
     if (starts_with_keyword(text, *index, "FS")) {
         expression->type = AWK_EXPR_FS;
         *index += 2;
@@ -248,6 +297,18 @@ static int parse_expression(const char *text, size_t *index, AwkExpression *expr
         return 0;
     }
 
+    if (starts_with_keyword(text, *index, "RS")) {
+        expression->type = AWK_EXPR_RS;
+        *index += 2;
+        return 0;
+    }
+
+    if (starts_with_keyword(text, *index, "ORS")) {
+        expression->type = AWK_EXPR_ORS;
+        *index += 3;
+        return 0;
+    }
+
     if (text[*index] == '"') {
         expression->type = AWK_EXPR_STRING;
         return parse_string_literal(text, index, expression->text, sizeof(expression->text));
@@ -256,6 +317,11 @@ static int parse_expression(const char *text, size_t *index, AwkExpression *expr
     if (text[*index] >= '0' && text[*index] <= '9') {
         expression->type = AWK_EXPR_NUMBER;
         return parse_uint_token(text, index, &expression->number);
+    }
+
+    if (is_identifier_start(text[*index])) {
+        expression->type = AWK_EXPR_VARIABLE;
+        return parse_identifier(text, index, expression->text, sizeof(expression->text));
     }
 
     return -1;
@@ -297,27 +363,31 @@ static int parse_output_statement(const char *text, size_t *index, AwkStatement 
 }
 
 static int parse_assignment_statement(const char *text, size_t *index, AwkStatement *statement) {
-    AwkVariableName variable;
+    size_t saved = *index;
+    char identifier[AWK_MAX_TEXT];
 
-    if (starts_with_keyword(text, *index, "FS")) {
-        variable = AWK_VARIABLE_FS;
-    } else if (starts_with_keyword(text, *index, "OFS")) {
-        variable = AWK_VARIABLE_OFS;
-    } else {
+    if (parse_identifier(text, index, identifier, sizeof(identifier)) != 0) {
         return -1;
     }
 
     rt_memset(statement, 0, sizeof(*statement));
     statement->kind = AWK_STATEMENT_ASSIGN;
-    statement->variable = variable;
-    if (variable == AWK_VARIABLE_FS) {
-        *index += 2;
+    rt_copy_string(statement->variable_name, sizeof(statement->variable_name), identifier);
+    if (rt_strcmp(identifier, "FS") == 0) {
+        statement->variable = AWK_VARIABLE_FS;
+    } else if (rt_strcmp(identifier, "OFS") == 0) {
+        statement->variable = AWK_VARIABLE_OFS;
+    } else if (rt_strcmp(identifier, "RS") == 0) {
+        statement->variable = AWK_VARIABLE_RS;
+    } else if (rt_strcmp(identifier, "ORS") == 0) {
+        statement->variable = AWK_VARIABLE_ORS;
     } else {
-        *index += 3;
+        statement->variable = AWK_VARIABLE_USER;
     }
 
     skip_spaces(text, index);
     if (text[*index] != '=' || text[*index + 1] == '=') {
+        *index = saved;
         return -1;
     }
     *index += 1;
@@ -383,8 +453,7 @@ static int parse_action(const char *text, size_t *index, AwkClause *clause, int 
 
     if (starts_with_keyword(text, *index, "print") ||
         starts_with_keyword(text, *index, "printf") ||
-        starts_with_keyword(text, *index, "FS") ||
-        starts_with_keyword(text, *index, "OFS")) {
+        looks_like_assignment_statement(text, *index)) {
         if (parse_statement(text, index, &clause->statements[0]) != 0) {
             return -1;
         }
@@ -431,8 +500,7 @@ int parse_program(const char *program_text, AwkProgram *program) {
         } else if (program_text[index] != '{' &&
                    !starts_with_keyword(program_text, index, "print") &&
                    !starts_with_keyword(program_text, index, "printf") &&
-                   !starts_with_keyword(program_text, index, "FS") &&
-                   !starts_with_keyword(program_text, index, "OFS")) {
+                   !looks_like_assignment_statement(program_text, index)) {
             if (parse_pattern(program_text, &index, clause) != 0) {
                 return -1;
             }

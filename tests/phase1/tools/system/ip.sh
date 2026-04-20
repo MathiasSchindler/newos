@@ -28,14 +28,21 @@ assert_command_succeeds "$ROOT_DIR/build/ip" -br addr show > "$WORK_DIR/brief.ou
 assert_file_contains "$WORK_DIR/brief.out" "^$dev_name" "ip -br addr show did not print the brief summary format"
 assert_file_contains "$WORK_DIR/brief.out" '/[0-9][0-9]*' "ip -br addr show did not include any prefix-length addresses"
 
-route_status=0
-"$ROOT_DIR/build/ip" route > "$WORK_DIR/route.out" 2>&1 || route_status=$?
-case "$route_status" in
-    0|1) ;;
-    *) fail "ip route returned an unexpected exit status: $route_status" ;;
-esac
-if [ "$route_status" -eq 0 ]; then
-    [ -s "$WORK_DIR/route.out" ] || fail "ip route succeeded without printing any route data"
-else
-    assert_file_contains "$WORK_DIR/route.out" 'route listing is not available' "ip route failed without a useful explanation"
+assert_command_succeeds "$ROOT_DIR/build/ip" route > "$WORK_DIR/route.out"
+[ -s "$WORK_DIR/route.out" ] || fail "ip route succeeded without printing any route data"
+assert_file_contains "$WORK_DIR/route.out" ' dev ' "ip route did not print recognizable route entries"
+
+assert_command_succeeds "$ROOT_DIR/build/ip" route show dev "$dev_name" > "$WORK_DIR/route_dev.out"
+if [ -s "$WORK_DIR/route_dev.out" ]; then
+    assert_file_contains "$WORK_DIR/route_dev.out" " dev $dev_name" "ip route show dev did not preserve the device filter"
+fi
+
+assert_command_succeeds "$ROOT_DIR/build/ip" -6 route show > "$WORK_DIR/route6.out"
+if [ -s "$WORK_DIR/route6.out" ]; then
+    assert_file_contains "$WORK_DIR/route6.out" ':' "ip -6 route show did not produce IPv6-style route output"
+fi
+
+if grep -q '^default' "$WORK_DIR/route.out"; then
+    assert_command_succeeds "$ROOT_DIR/build/ip" route show default > "$WORK_DIR/default.out"
+    assert_file_contains "$WORK_DIR/default.out" '^default' "ip route show default did not keep the default-route filter"
 fi
