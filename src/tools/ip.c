@@ -30,12 +30,17 @@ static int is_object_name(const char *text, const char *long_name, const char *m
 static void print_help(const char *program_name) {
     rt_write_cstr(1, "Usage: ");
     rt_write_cstr(1, program_name);
-    rt_write_cstr(1, " " IP_USAGE "\n");
+    rt_write_cstr(1, " [-4|-6] [-br|-brief|-o|--oneline] {address|addr|a|link|l|route|r} ...\n");
     rt_write_line(1, "Show and change network links, IPv4/IPv6 addresses, and IPv4 routes.");
+    rt_write_line(1, "Common flags:");
+    rt_write_line(1, "  -4, -6         restrict output to IPv4 or IPv6");
+    rt_write_line(1, "  -br, -brief    concise one-line summaries");
+    rt_write_line(1, "  -o, --oneline  compatibility alias for one-line output");
     rt_write_line(1, "");
     rt_write_line(1, "Objects:");
-    rt_write_line(1, "  address|addr|a  [show [dev IFACE]] | add CIDR dev IFACE | del CIDR dev IFACE");
-    rt_write_line(1, "  link|l          [show [dev IFACE]] | set dev IFACE [up|down] [mtu N]");
+    rt_write_line(1, "  address|addr|a  [show [IFACE|dev IFACE]] | flush dev IFACE");
+    rt_write_line(1, "                  | add CIDR dev IFACE | del CIDR dev IFACE");
+    rt_write_line(1, "  link|l          [show [IFACE|dev IFACE]] | set dev IFACE [up|down] [mtu N]");
     rt_write_line(1, "  route|r         [show [dev IFACE]] | add DEST|default [via GW] [dev IFACE]");
     rt_write_line(1, "                  | del DEST|default [via GW] [dev IFACE]");
 }
@@ -119,6 +124,93 @@ static void write_link_header(size_t ordinal, const PlatformNetworkLink *link) {
     rt_write_char(1, '\n');
 }
 
+static void write_padding(size_t width, size_t used) {
+    while (used < width) {
+        rt_write_char(1, ' ');
+        used += 1U;
+    }
+}
+
+static int append_text(char *buffer, size_t buffer_size, const char *text) {
+    size_t used = rt_strlen(buffer);
+    size_t length = rt_strlen(text);
+
+    if (used + length + 1U > buffer_size) {
+        return -1;
+    }
+    memcpy(buffer + used, text, length + 1U);
+    return 0;
+}
+
+static int append_uint_text(char *buffer, size_t buffer_size, unsigned long long value) {
+    char digits[32];
+    size_t count = 0U;
+    size_t i;
+
+    if (value == 0ULL) {
+        return append_text(buffer, buffer_size, "0");
+    }
+    while (value > 0ULL && count < sizeof(digits)) {
+        digits[count++] = (char)('0' + (value % 10ULL));
+        value /= 10ULL;
+    }
+    for (i = 0U; i < count; ++i) {
+        char ch[2];
+        ch[0] = digits[count - 1U - i];
+        ch[1] = '\0';
+        if (append_text(buffer, buffer_size, ch) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void write_brief_link_line(const PlatformNetworkLink *link) {
+    size_t name_length = rt_strlen(link->name);
+    const char *state = link_state_name(link->flags);
+    size_t state_length = rt_strlen(state);
+
+    rt_write_cstr(1, link->name);
+    write_padding(16U, name_length);
+    rt_write_cstr(1, state);
+    write_padding(10U, state_length);
+    rt_write_cstr(1, "mtu ");
+    rt_write_uint(1, (unsigned long long)link->mtu);
+    if ((link->flags & PLATFORM_NETWORK_FLAG_LOOPBACK) != 0U) {
+        rt_write_cstr(1, " loopback");
+    } else if (link->has_mac) {
+        rt_write_cstr(1, " ");
+        rt_write_cstr(1, link->mac);
+    }
+    rt_write_char(1, '\n');
+}
+
+static int show_links_brief(const char *dev_name) {
+    PlatformNetworkLink links[IP_MAX_LINKS];
+    size_t count = 0U;
+    size_t i;
+    int matched = 0;
+
+    if (platform_list_network_links(links, IP_MAX_LINKS, &count) != 0) {
+        tool_write_error("ip", "cannot inspect network links", 0);
+        return 1;
+    }
+
+    for (i = 0U; i < count; ++i) {
+        if (dev_name != 0 && rt_strcmp(dev_name, links[i].name) != 0) {
+            continue;
+        }
+        write_brief_link_line(&links[i]);
+        matched = 1;
+    }
+
+    if (!matched && dev_name != 0) {
+        tool_write_error("ip", "unknown device: ", dev_name);
+        return 1;
+    }
+    return 0;
+}
+
 static int show_links(const char *dev_name) {
     PlatformNetworkLink links[IP_MAX_LINKS];
     size_t count = 0U;
@@ -145,7 +237,42 @@ static int show_links(const char *dev_name) {
     return 0;
 }
 
-static int show_addresses(const char *dev_name, int family_filter) {
+static void write_brief_addresses_for_link(
+    const PlatformNetworkLink *link,
+    const PlatformNetworkAddress *addresses,
+    size_t address_count
+) {
+    size_t name_length = rt_strlen(link->name);
+    const char *state = link_state_name(link->flags);
+    size_t state_length = rt_strlen(state);
+    size_t j;
+    int wrote_any = 0;
+
+    rt_write_cstr(1, link->name);
+    write_padding(16U, name_length);
+    rt_write_cstr(1, state);
+    write_padding(10U, state_length);
+
+    for (j = 0U; j < address_count; ++j) {
+        if (rt_strcmp(addresses[j].ifname, link->name) != 0) {
+            continue;
+        }
+        if (wrote_any) {
+            rt_write_char(1, ' ');
+        }
+        rt_write_cstr(1, addresses[j].address);
+        rt_write_char(1, '/');
+        rt_write_uint(1, (unsigned long long)addresses[j].prefix_length);
+        wrote_any = 1;
+    }
+
+    if (!wrote_any) {
+        rt_write_cstr(1, "-");
+    }
+    rt_write_char(1, '\n');
+}
+
+static int show_addresses(const char *dev_name, int family_filter, int brief_mode) {
     PlatformNetworkLink links[IP_MAX_LINKS];
     PlatformNetworkAddress addresses[IP_MAX_ADDRESSES];
     size_t link_count = 0U;
@@ -165,24 +292,28 @@ static int show_addresses(const char *dev_name, int family_filter) {
             continue;
         }
 
-        write_link_header(i, &links[i]);
-        for (j = 0U; j < address_count; ++j) {
-            if (rt_strcmp(addresses[j].ifname, links[i].name) != 0) {
-                continue;
+        if (brief_mode) {
+            write_brief_addresses_for_link(&links[i], addresses, address_count);
+        } else {
+            write_link_header(i, &links[i]);
+            for (j = 0U; j < address_count; ++j) {
+                if (rt_strcmp(addresses[j].ifname, links[i].name) != 0) {
+                    continue;
+                }
+                rt_write_cstr(1, "    ");
+                rt_write_cstr(1, addresses[j].family == PLATFORM_NETWORK_FAMILY_IPV6 ? "inet6 " : "inet ");
+                rt_write_cstr(1, addresses[j].address);
+                rt_write_char(1, '/');
+                rt_write_uint(1, (unsigned long long)addresses[j].prefix_length);
+                if (addresses[j].has_broadcast) {
+                    rt_write_cstr(1, " brd ");
+                    rt_write_cstr(1, addresses[j].broadcast);
+                }
+                rt_write_cstr(1, " scope ");
+                rt_write_cstr(1, addresses[j].scope);
+                rt_write_cstr(1, " ");
+                rt_write_line(1, addresses[j].ifname);
             }
-            rt_write_cstr(1, "    ");
-            rt_write_cstr(1, addresses[j].family == PLATFORM_NETWORK_FAMILY_IPV6 ? "inet6 " : "inet ");
-            rt_write_cstr(1, addresses[j].address);
-            rt_write_char(1, '/');
-            rt_write_uint(1, (unsigned long long)addresses[j].prefix_length);
-            if (addresses[j].has_broadcast) {
-                rt_write_cstr(1, " brd ");
-                rt_write_cstr(1, addresses[j].broadcast);
-            }
-            rt_write_cstr(1, " scope ");
-            rt_write_cstr(1, addresses[j].scope);
-            rt_write_cstr(1, " ");
-            rt_write_line(1, addresses[j].ifname);
         }
         matched = 1;
     }
@@ -230,25 +361,85 @@ static int show_routes(const char *dev_name, int family_filter) {
     return 0;
 }
 
-static int handle_address_command(int argc, char **argv, int argi, int family_filter) {
+static int flush_addresses(const char *dev_name, int family_filter) {
+    PlatformNetworkAddress addresses[IP_MAX_ADDRESSES];
+    size_t address_count = 0U;
+    size_t i;
+    int removed_any = 0;
+
+    if (dev_name == 0) {
+        tool_write_error("ip", "flush requires a device name", 0);
+        return 1;
+    }
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+        tool_write_error("ip", "IPv6 address changes are not yet implemented", 0);
+        return 1;
+    }
+    if (platform_list_network_addresses(addresses, IP_MAX_ADDRESSES, &address_count, family_filter, dev_name) != 0) {
+        tool_write_error("ip", "cannot inspect interface addresses", 0);
+        return 1;
+    }
+
+    for (i = 0U; i < address_count; ++i) {
+        char cidr[PLATFORM_NETWORK_TEXT_CAPACITY + 16];
+
+        if (rt_strcmp(addresses[i].ifname, dev_name) != 0 || contains_char(addresses[i].address, ':')) {
+            continue;
+        }
+        rt_copy_string(cidr, sizeof(cidr), addresses[i].address);
+        if (append_text(cidr, sizeof(cidr), "/") != 0 ||
+            append_uint_text(cidr, sizeof(cidr), (unsigned long long)addresses[i].prefix_length) != 0) {
+            tool_write_error("ip", "address text is too long for ", dev_name);
+            return 1;
+        }
+        if (platform_network_address_change(dev_name, cidr, 0) != 0) {
+            tool_write_error("ip", "cannot delete address on ", dev_name);
+            return 1;
+        }
+        removed_any = 1;
+    }
+
+    if (!removed_any) {
+        return 0;
+    }
+    return 0;
+}
+
+static int parse_optional_dev_name(int argc, char **argv, int *argi_in_out, const char **dev_name_out, const char *context) {
+    int argi = *argi_in_out;
+
+    if (argi >= argc) {
+        return 0;
+    }
+    if (streq(argv[argi], "dev")) {
+        if (argi + 1 >= argc) {
+            tool_write_error("ip", "missing device name after dev in ", context);
+            return 1;
+        }
+        *dev_name_out = argv[argi + 1];
+        *argi_in_out = argi + 2;
+        return 0;
+    }
+    *dev_name_out = argv[argi];
+    *argi_in_out = argi + 1;
+    return 0;
+}
+
+static int handle_address_command(int argc, char **argv, int argi, int family_filter, int brief_mode) {
     const char *command = 0;
     const char *dev_name = 0;
     const char *cidr = 0;
     int add = 1;
 
     if (argi >= argc) {
-        return show_addresses(0, family_filter);
+        return show_addresses(0, family_filter, brief_mode);
     }
 
     command = argv[argi];
     if (streq(command, "show") || streq(command, "list")) {
         argi += 1;
         if (argi < argc) {
-            if (streq(argv[argi], "dev") && argi + 1 < argc) {
-                dev_name = argv[argi + 1];
-                argi += 2;
-            } else {
-                tool_write_error("ip", "unexpected address argument: ", argv[argi]);
+            if (parse_optional_dev_name(argc, argv, &argi, &dev_name, "address show") != 0) {
                 return 1;
             }
         }
@@ -256,7 +447,19 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
             tool_write_error("ip", "unexpected address argument: ", argv[argi]);
             return 1;
         }
-        return show_addresses(dev_name, family_filter);
+        return show_addresses(dev_name, family_filter, brief_mode);
+    }
+
+    if (streq(command, "flush")) {
+        argi += 1;
+        if (argi < argc && parse_optional_dev_name(argc, argv, &argi, &dev_name, "address flush") != 0) {
+            return 1;
+        }
+        if (argi != argc) {
+            tool_write_error("ip", "unexpected address argument: ", argv[argi]);
+            return 1;
+        }
+        return flush_addresses(dev_name, family_filter);
     }
 
     if (!(streq(command, "add") || streq(command, "replace") || streq(command, "del") || streq(command, "delete"))) {
@@ -297,7 +500,7 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
     return 0;
 }
 
-static int handle_link_command(int argc, char **argv, int argi) {
+static int handle_link_command(int argc, char **argv, int argi, int brief_mode) {
     const char *command = 0;
     const char *dev_name = 0;
     unsigned long long mtu_value = 0ULL;
@@ -305,18 +508,14 @@ static int handle_link_command(int argc, char **argv, int argi) {
     int set_mtu = 0;
 
     if (argi >= argc) {
-        return show_links(0);
+        return brief_mode ? show_links_brief(0) : show_links(0);
     }
 
     command = argv[argi];
     if (streq(command, "show") || streq(command, "list")) {
         argi += 1;
         if (argi < argc) {
-            if (streq(argv[argi], "dev") && argi + 1 < argc) {
-                dev_name = argv[argi + 1];
-                argi += 2;
-            } else {
-                tool_write_error("ip", "unexpected link argument: ", argv[argi]);
+            if (parse_optional_dev_name(argc, argv, &argi, &dev_name, "link show") != 0) {
                 return 1;
             }
         }
@@ -324,7 +523,7 @@ static int handle_link_command(int argc, char **argv, int argi) {
             tool_write_error("ip", "unexpected link argument: ", argv[argi]);
             return 1;
         }
-        return show_links(dev_name);
+        return brief_mode ? show_links_brief(dev_name) : show_links(dev_name);
     }
 
     if (!streq(command, "set")) {
@@ -389,6 +588,9 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
             if (streq(argv[argi], "dev") && argi + 1 < argc) {
                 dev_name = argv[argi + 1];
                 argi += 2;
+            } else if (dev_name == 0) {
+                dev_name = argv[argi];
+                argi += 1;
             } else {
                 tool_write_error("ip", "unexpected route argument: ", argv[argi]);
                 return 1;
@@ -439,12 +641,16 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
 int main(int argc, char **argv) {
     int argi = 1;
     int family_filter = PLATFORM_NETWORK_FAMILY_ANY;
+    int brief_mode = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (streq(argv[argi], "-4")) {
             family_filter = PLATFORM_NETWORK_FAMILY_IPV4;
         } else if (streq(argv[argi], "-6")) {
             family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
+        } else if (streq(argv[argi], "-br") || streq(argv[argi], "-brief") ||
+                   streq(argv[argi], "-o") || streq(argv[argi], "--oneline")) {
+            brief_mode = 1;
         } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
@@ -457,14 +663,14 @@ int main(int argc, char **argv) {
     }
 
     if (argi >= argc) {
-        return show_addresses(0, family_filter);
+        return show_addresses(0, family_filter, brief_mode);
     }
 
     if (is_object_name(argv[argi], "address", "addr", "a")) {
-        return handle_address_command(argc, argv, argi + 1, family_filter);
+        return handle_address_command(argc, argv, argi + 1, family_filter, brief_mode);
     }
     if (is_object_name(argv[argi], "link", "link", "l")) {
-        return handle_link_command(argc, argv, argi + 1);
+        return handle_link_command(argc, argv, argi + 1, brief_mode);
     }
     if (is_object_name(argv[argi], "route", "route", "r")) {
         return handle_route_command(argc, argv, argi + 1, family_filter);

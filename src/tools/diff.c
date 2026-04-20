@@ -13,10 +13,14 @@ typedef struct {
     int recursive;
     int brief;
     int color_mode;
+    int ignore_all_space;
+    int ignore_space_change;
+    int ignore_blank_lines;
+    int ignore_case;
 } DiffOptions;
 
 static void diff_print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-u|-c] [-q] [-r] [--color[=WHEN]] file1 file2");
+    tool_write_usage(program_name, "[-u|-c] [-q] [-r] [-w] [-b] [-B] [-i] [--color[=WHEN]] file1 file2");
 }
 
 static int diff_use_color(const DiffOptions *options) {
@@ -45,6 +49,78 @@ static size_t diff_max_size(size_t left, size_t right) {
 
 static size_t diff_min_size(size_t left, size_t right) {
     return (left < right) ? left : right;
+}
+
+static int diff_is_space(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\f' || ch == '\v';
+}
+
+static char diff_ascii_tolower(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static void normalize_compare_line(char *line, const DiffOptions *options) {
+    char normalized[DIFF_MAX_LINE_LENGTH];
+    size_t in_pos = 0U;
+    size_t out_pos = 0U;
+    int pending_space = 0;
+
+    while (line[in_pos] != '\0' && out_pos + 1U < sizeof(normalized)) {
+        char ch = line[in_pos++];
+
+        if (options->ignore_all_space) {
+            if (diff_is_space(ch)) {
+                continue;
+            }
+        } else if (options->ignore_space_change) {
+            if (diff_is_space(ch)) {
+                if (out_pos > 0U) {
+                    pending_space = 1;
+                }
+                continue;
+            }
+            if (pending_space && out_pos + 1U < sizeof(normalized)) {
+                normalized[out_pos++] = ' ';
+                pending_space = 0;
+            }
+        }
+
+        if (options->ignore_case) {
+            ch = diff_ascii_tolower(ch);
+        }
+        normalized[out_pos++] = ch;
+    }
+
+    if (options->ignore_space_change && out_pos > 0U && normalized[out_pos - 1U] == ' ') {
+        out_pos -= 1U;
+    }
+    normalized[out_pos] = '\0';
+    rt_copy_string(line, DIFF_MAX_LINE_LENGTH, normalized);
+}
+
+static void prepare_compare_lines(
+    char lines[DIFF_MAX_LINES][DIFF_MAX_LINE_LENGTH],
+    size_t *count_io,
+    const DiffOptions *options
+) {
+    size_t in_index;
+    size_t out_index = 0U;
+
+    for (in_index = 0U; in_index < *count_io; ++in_index) {
+        normalize_compare_line(lines[in_index], options);
+        if (options->ignore_blank_lines && lines[in_index][0] == '\0') {
+            continue;
+        }
+        if (out_index != in_index) {
+            rt_copy_string(lines[out_index], sizeof(lines[out_index]), lines[in_index]);
+        }
+        out_index += 1U;
+    }
+
+    *count_io = out_index;
 }
 
 static int store_line(
@@ -404,7 +480,11 @@ static int compare_regular_files(const char *left_path, const char *right_path, 
     int differences = 0;
     int used_fast_compare = 0;
 
-    if (!(left_path[0] == '-' && left_path[1] == '\0') &&
+    if (!options->ignore_all_space &&
+        !options->ignore_space_change &&
+        !options->ignore_blank_lines &&
+        !options->ignore_case &&
+        !(left_path[0] == '-' && left_path[1] == '\0') &&
         !(right_path[0] == '-' && right_path[1] == '\0')) {
         if (files_differ_bytewise(left_path, right_path, &differences) != 0) {
             rt_write_line(2, "diff: cannot read input file");
@@ -445,6 +525,11 @@ static int compare_regular_files(const char *left_path, const char *right_path, 
         return -1;
     }
     tool_close_input(fd, should_close);
+
+    if (options->ignore_all_space || options->ignore_space_change || options->ignore_blank_lines || options->ignore_case) {
+        prepare_compare_lines(left, &left_count, options);
+        prepare_compare_lines(right, &right_count, options);
+    }
 
     if (!used_fast_compare) {
         size_t i;
@@ -673,6 +758,14 @@ int main(int argc, char **argv) {
                 options.brief = 1;
             } else if (*flag == 'r') {
                 options.recursive = 1;
+            } else if (*flag == 'w') {
+                options.ignore_all_space = 1;
+            } else if (*flag == 'b') {
+                options.ignore_space_change = 1;
+            } else if (*flag == 'B') {
+                options.ignore_blank_lines = 1;
+            } else if (*flag == 'i') {
+                options.ignore_case = 1;
             } else {
                 diff_print_usage(argv[0]);
                 return 1;

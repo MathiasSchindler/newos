@@ -7,6 +7,54 @@
 
 #include "make/make_impl.h"
 
+static int append_makeflag(char *buffer, size_t buffer_size, size_t *used_io, const char *text) {
+    if (*used_io > 0U) {
+        if (*used_io + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[*used_io] = ' ';
+        *used_io += 1U;
+    }
+    if (rt_strlen(text) + *used_io + 1U > buffer_size) {
+        return -1;
+    }
+    rt_copy_string(buffer + *used_io, buffer_size - *used_io, text);
+    *used_io += rt_strlen(text);
+    return 0;
+}
+
+static void refresh_makeflags(MakeProgram *program) {
+    char flags[MAKE_VALUE_CAPACITY];
+    size_t used = 0U;
+
+    flags[0] = '\0';
+    if (program->dry_run) {
+        (void)append_makeflag(flags, sizeof(flags), &used, "-n");
+    }
+    if (program->silent) {
+        (void)append_makeflag(flags, sizeof(flags), &used, "-s");
+    }
+    if (program->always_make) {
+        (void)append_makeflag(flags, sizeof(flags), &used, "-B");
+    }
+    if (program->jobs_flag_present) {
+        if (program->requested_jobs > 0ULL) {
+            char jobs_text[32];
+            char flag_text[40];
+            rt_unsigned_to_string(program->requested_jobs, jobs_text, sizeof(jobs_text));
+            flag_text[0] = '-';
+            flag_text[1] = 'j';
+            flag_text[2] = '\0';
+            rt_copy_string(flag_text + 2, sizeof(flag_text) - 2U, jobs_text);
+            (void)append_makeflag(flags, sizeof(flags), &used, flag_text);
+        } else {
+            (void)append_makeflag(flags, sizeof(flags), &used, "-j");
+        }
+    }
+
+    (void)set_variable_with_origin(program, "MAKEFLAGS", flags, MAKE_ORIGIN_FILE);
+}
+
 int main(int argc, char **argv) {
     static MakeProgram program;
     ToolOptState s;
@@ -20,10 +68,14 @@ int main(int argc, char **argv) {
     rt_memset(&program, 0, sizeof(program));
     set_variable_with_origin(&program, "MAKE", argv[0] != 0 ? argv[0] : "make", MAKE_ORIGIN_FILE);
 
-    tool_opt_init(&s, argc, argv, "make", "[-n] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
+    tool_opt_init(&s, argc, argv, "make", "[-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
     while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(s.flag, "-n") == 0) {
             program.dry_run = 1;
+        } else if (rt_strcmp(s.flag, "-s") == 0 || rt_strcmp(s.flag, "--silent") == 0) {
+            program.silent = 1;
+        } else if (rt_strcmp(s.flag, "-B") == 0 || rt_strcmp(s.flag, "--always-make") == 0) {
+            program.always_make = 1;
         } else if (rt_strcmp(s.flag, "-f") == 0) {
             if (tool_opt_require_value(&s) != 0) return 1;
             makefile_path = s.value;
@@ -39,7 +91,7 @@ int main(int argc, char **argv) {
             int color_mode = TOOL_COLOR_AUTO;
             if (tool_parse_color_mode(s.flag + 8, &color_mode) != 0) {
                 tool_write_error("make", "invalid color mode ", s.flag + 8);
-                tool_write_usage("make", "[-n] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
+                tool_write_usage("make", "[-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
                 return 1;
             }
             tool_set_global_color_mode(color_mode);
@@ -49,6 +101,7 @@ int main(int argc, char **argv) {
                     s.flag[8] == 'v' && s.flag[9] == 'e' && s.flag[10] == 'r')) {
             /* GNU make compatibility flags accepted but ignored. */
         } else if (s.flag[0] == '-' && s.flag[1] == 'j') {
+            program.jobs_flag_present = 1;
             if (rt_strcmp(s.flag, "-j") == 0 && s.argi < argc) {
                 const char *jobs_arg = argv[s.argi];
                 size_t jobs_index = 0U;
@@ -62,18 +115,23 @@ int main(int argc, char **argv) {
                     jobs_index += 1U;
                 }
                 if (all_digits) {
+                    (void)tool_parse_uint_arg(jobs_arg, &program.requested_jobs, "make", "jobs");
                     s.argi += 1;
+                }
+            } else if (s.flag[2] != '\0') {
+                if (tool_parse_uint_arg(s.flag + 2, &program.requested_jobs, "make", "jobs") != 0) {
+                    return 1;
                 }
             }
             /* Parallel execution is not implemented yet; accept the flag. */
         } else {
             tool_write_error("make", "unknown option: ", s.flag);
-            tool_write_usage("make", "[-n] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
+            tool_write_usage("make", "[-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
             return 1;
         }
     }
     if (r == TOOL_OPT_HELP) {
-        tool_write_usage(tool_base_name(argv[0]), "[-n] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
+        tool_write_usage(tool_base_name(argv[0]), "[-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
         return 0;
     }
 
@@ -82,14 +140,22 @@ int main(int argc, char **argv) {
         size_t j = 0;
         int has_equals = 0;
 
-        if (argv[i][0] == '-') {
-            if (rt_strcmp(argv[i], "-n") == 0) {
-                program.dry_run = 1;
-                continue;
-            }
-            if (rt_strcmp(argv[i], "--color") == 0) {
-                tool_set_global_color_mode(TOOL_COLOR_AUTO);
-                continue;
+            if (argv[i][0] == '-') {
+                if (rt_strcmp(argv[i], "-n") == 0) {
+                    program.dry_run = 1;
+                    continue;
+                }
+                if (rt_strcmp(argv[i], "-s") == 0 || rt_strcmp(argv[i], "--silent") == 0) {
+                    program.silent = 1;
+                    continue;
+                }
+                if (rt_strcmp(argv[i], "-B") == 0 || rt_strcmp(argv[i], "--always-make") == 0) {
+                    program.always_make = 1;
+                    continue;
+                }
+                if (rt_strcmp(argv[i], "--color") == 0) {
+                    tool_set_global_color_mode(TOOL_COLOR_AUTO);
+                    continue;
             }
             if (rt_strncmp(argv[i], "--color=", 8U) == 0) {
                 int color_mode = TOOL_COLOR_AUTO;
@@ -128,6 +194,7 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (argv[i][0] == '-' && argv[i][1] == 'j') {
+                program.jobs_flag_present = 1;
                 if (argv[i][2] == '\0' && i + 1 < argc) {
                     const char *jobs_arg = argv[i + 1];
                     size_t jobs_index = 0U;
@@ -141,14 +208,21 @@ int main(int argc, char **argv) {
                         jobs_index += 1U;
                     }
                     if (all_digits) {
+                        if (tool_parse_uint_arg(jobs_arg, &program.requested_jobs, "make", "jobs") != 0) {
+                            return 1;
+                        }
                         i += 1;
+                    }
+                } else if (argv[i][2] != '\0') {
+                    if (tool_parse_uint_arg(argv[i] + 2, &program.requested_jobs, "make", "jobs") != 0) {
+                        return 1;
                     }
                 }
                 continue;
             }
 
             tool_write_error("make", "unknown option: ", argv[i]);
-            tool_write_usage("make", "[-n] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
+            tool_write_usage("make", "[-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]] [--color[=WHEN]] [VAR=value] [target ...]");
             return 1;
         }
 
@@ -178,6 +252,8 @@ int main(int argc, char **argv) {
             targets[target_count++] = argv[i];
         }
     }
+
+    refresh_makeflags(&program);
 
     if (makefile_path == 0) {
         long long mtime = 0;

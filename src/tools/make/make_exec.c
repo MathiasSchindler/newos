@@ -44,7 +44,7 @@ static int run_rule_commands(MakeProgram *program, MakeRule *rule) {
         }
         command_ptr = trim_leading_whitespace(command_ptr);
 
-        if (!silent) {
+        if (!silent && !program->silent) {
             rt_write_line(1, command_ptr);
         }
 
@@ -133,6 +133,10 @@ int build_target(MakeProgram *program, const char *target) {
     }
 
     if (is_phony_target(program, target)) {
+        need_run = 1;
+    }
+
+    if (program->always_make && rule->command_count > 0) {
         need_run = 1;
     }
 

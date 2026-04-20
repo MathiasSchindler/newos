@@ -8,6 +8,10 @@
 
 typedef struct {
     int zero_terminated;
+    int custom_delimiter;
+    char delimiter;
+    int no_run_if_empty;
+    int trace;
     unsigned long long max_args;
     unsigned long long max_chars;
     unsigned long long max_procs;
@@ -15,7 +19,46 @@ typedef struct {
 } XargsOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-0] [-n MAXARGS] [-s MAXCHARS] [-P MAXPROCS] [-I REPLSTR] [command [initial-args...]]");
+    tool_write_usage(
+        program_name,
+        "[-0] [-r] [-t] [-d DELIM] [-n MAXARGS] [-s MAXCHARS] [-P MAXPROCS] [-I REPLSTR] [command [initial-args...]]"
+    );
+}
+
+static int parse_delimiter_text(const char *text, char *delimiter_out) {
+    if (text[0] == '\0') {
+        return -1;
+    }
+    if (text[0] != '\\') {
+        if (text[1] != '\0') {
+            return -1;
+        }
+        *delimiter_out = text[0];
+        return 0;
+    }
+
+    if (text[1] == '0' && text[2] == '\0') {
+        *delimiter_out = '\0';
+        return 0;
+    }
+    if (text[1] == 'n' && text[2] == '\0') {
+        *delimiter_out = '\n';
+        return 0;
+    }
+    if (text[1] == 'r' && text[2] == '\0') {
+        *delimiter_out = '\r';
+        return 0;
+    }
+    if (text[1] == 't' && text[2] == '\0') {
+        *delimiter_out = '\t';
+        return 0;
+    }
+    if (text[1] == '\\' && text[2] == '\0') {
+        *delimiter_out = '\\';
+        return 0;
+    }
+
+    return -1;
 }
 
 static int append_item(
@@ -54,7 +97,9 @@ static int collect_args(
     char current[XARGS_MAX_ARG_LENGTH];
     size_t current_len = 0;
     int count = 0;
-    int preserve_empty = (options->zero_terminated || options->replace_text != 0) ? 1 : 0;
+    int preserve_empty = (options->zero_terminated || options->replace_text != 0 || options->custom_delimiter) ? 1 : 0;
+    int simple_delimited = options->zero_terminated || options->replace_text != 0 || options->custom_delimiter;
+    char delimiter = options->zero_terminated ? '\0' : (options->replace_text != 0 ? '\n' : options->delimiter);
     int token_started = 0;
     int in_single = 0;
     int in_double = 0;
@@ -67,8 +112,8 @@ static int collect_args(
         for (i = 0; i < bytes_read; ++i) {
             char ch = buffer[i];
 
-            if (options->zero_terminated || options->replace_text != 0) {
-                int is_delimiter = options->zero_terminated ? (ch == '\0') : (ch == '\n');
+            if (simple_delimited) {
+                int is_delimiter = (ch == delimiter);
 
                 if (is_delimiter) {
                     if (current_len > 0U || token_started || preserve_empty) {
@@ -80,7 +125,7 @@ static int collect_args(
                     continue;
                 }
 
-                if (options->replace_text != 0 && ch == '\r') {
+                if ((options->replace_text != 0 || delimiter == '\n') && ch == '\r') {
                     continue;
                 }
 
@@ -250,6 +295,22 @@ static int execute_command(char *const spawn_argv[]) {
     return status;
 }
 
+static void trace_command(const XargsOptions *options, char *const spawn_argv[]) {
+    int i;
+
+    if (!options->trace) {
+        return;
+    }
+
+    for (i = 0; spawn_argv[i] != 0; ++i) {
+        if (i > 0) {
+            rt_write_char(2, ' ');
+        }
+        rt_write_cstr(2, spawn_argv[i]);
+    }
+    rt_write_char(2, '\n');
+}
+
 static int effective_parallelism(const XargsOptions *options) {
     if (options->max_procs == 0ULL || options->max_procs > (unsigned long long)XARGS_MAX_PROCESSES) {
         return XARGS_MAX_PROCESSES;
@@ -314,6 +375,7 @@ static int queue_command(
     int pid;
 
     if (limit <= 1) {
+        trace_command(options, spawn_argv);
         record_failure(execute_command(spawn_argv), exit_status_io);
         return 0;
     }
@@ -329,6 +391,7 @@ static int queue_command(
         return 0;
     }
 
+    trace_command(options, spawn_argv);
     if (spawn_only(spawn_argv, &pid) != 0) {
         record_failure(1, exit_status_io);
         return -1;
@@ -368,6 +431,10 @@ static int run_with_placeholder(
     int exit_status = 0;
     int invocation_count = input_count > 0 ? input_count : 1;
     int item_index;
+
+    if (input_count == 0 && options->no_run_if_empty) {
+        return 0;
+    }
 
     for (item_index = 0; item_index < invocation_count; ++item_index) {
         const char *value = (item_index < input_count) ? input_args[item_index] : "";
@@ -441,6 +508,9 @@ static int run_in_batches(
 
     if (input_count == 0) {
         int i;
+        if (options->no_run_if_empty) {
+            return 0;
+        }
         for (i = 0; i < base_count; ++i) {
             spawn_argv[i] = base_argv[i];
         }
@@ -495,6 +565,10 @@ int main(int argc, char **argv) {
     int i;
 
     options.zero_terminated = 0;
+    options.custom_delimiter = 0;
+    options.delimiter = '\n';
+    options.no_run_if_empty = 0;
+    options.trace = 0;
     options.max_args = 0ULL;
     options.max_chars = 0ULL;
     options.max_procs = 1ULL;
@@ -504,6 +578,20 @@ int main(int argc, char **argv) {
         if (rt_strcmp(argv[argi], "-0") == 0) {
             options.zero_terminated = 1;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "-r") == 0 || rt_strcmp(argv[argi], "--no-run-if-empty") == 0) {
+            options.no_run_if_empty = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-t") == 0) {
+            options.trace = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-d") == 0) {
+            if (argi + 1 >= argc || parse_delimiter_text(argv[argi + 1], &options.delimiter) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            options.custom_delimiter = 1;
+            options.zero_terminated = (options.delimiter == '\0');
+            argi += 2;
         } else if (rt_strcmp(argv[argi], "-n") == 0) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &options.max_args, "xargs", "max-args") != 0 || options.max_args == 0ULL) {
                 print_usage(argv[0]);

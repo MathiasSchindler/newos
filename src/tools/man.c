@@ -99,31 +99,45 @@ static void pager_finish(ManPager *pager) {
 
 static int pager_prompt(ManPager *pager) {
     char input[1];
-    long bytes_read;
 
     if (!pager->interactive || pager->page_lines == 0U) {
         return 0;
     }
 
-    if (rt_write_cstr(1, "--More--") != 0) {
-        return -1;
-    }
+    for (;;) {
+        long bytes_read;
 
-    bytes_read = platform_read(0, input, sizeof(input));
-    (void)rt_write_cstr(1, "\r        \r");
+        tool_style_begin(1, pager->color_mode, TOOL_STYLE_BOLD_CYAN);
+        if (rt_write_cstr(1, "--More--") != 0) {
+            tool_style_end(1, pager->color_mode);
+            return -1;
+        }
+        tool_style_end(1, pager->color_mode);
 
-    if (bytes_read <= 0) {
-        return 1;
-    }
+        bytes_read = platform_read(0, input, sizeof(input));
+        (void)rt_write_cstr(1, "\r\033[K");
 
-    if (input[0] == 'q' || input[0] == 'Q') {
-        return 1;
-    }
+        if (bytes_read <= 0) {
+            return 1;
+        }
 
-    if (input[0] == ' ') {
-        pager->lines_seen = 0U;
-    } else {
-        pager->lines_seen = pager->page_lines > 0U ? (pager->page_lines - 1U) : 0U;
+        if (input[0] == 'q' || input[0] == 'Q') {
+            return 1;
+        }
+
+        if (input[0] == 'h' || input[0] == 'H' || input[0] == '?') {
+            if (rt_write_cstr(1, "Keys: Enter/j line, Space/f page, q quit\n") != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (input[0] == ' ' || input[0] == 'f' || input[0] == 'F') {
+            pager->lines_seen = 0U;
+        } else {
+            pager->lines_seen = pager->page_lines > 0U ? (pager->page_lines - 1U) : 0U;
+        }
+        break;
     }
 
     return 0;

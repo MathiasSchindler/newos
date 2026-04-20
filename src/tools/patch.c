@@ -302,6 +302,26 @@ static int hunk_matches_at(size_t position, size_t file_count, size_t hunk_count
     return 1;
 }
 
+static int hunk_matches_after_apply_at(size_t position, size_t file_count, size_t hunk_count) {
+    size_t file_pos = position;
+    size_t i;
+
+    for (i = 0; i < hunk_count; ++i) {
+        if (patch_hunk_kinds[i] == '-') {
+            continue;
+        }
+        if (file_pos >= file_count) {
+            return 0;
+        }
+        if (rt_strcmp(patch_file_lines[file_pos], patch_hunk_lines[i]) != 0) {
+            return 0;
+        }
+        file_pos += 1U;
+    }
+
+    return 1;
+}
+
 static size_t find_hunk_position(unsigned long long old_start, size_t file_count, size_t hunk_count) {
     size_t expected = (old_start > 0) ? (size_t)(old_start - 1ULL) : 0U;
     size_t offset;
@@ -322,6 +342,26 @@ static size_t find_hunk_position(unsigned long long old_start, size_t file_count
     return (size_t)-1;
 }
 
+static size_t find_applied_hunk_position(unsigned long long old_start, size_t file_count, size_t hunk_count) {
+    size_t expected = (old_start > 0) ? (size_t)(old_start - 1ULL) : 0U;
+    size_t offset;
+
+    if (expected <= file_count && hunk_matches_after_apply_at(expected, file_count, hunk_count)) {
+        return expected;
+    }
+
+    for (offset = 0; offset <= file_count; ++offset) {
+        if (expected >= offset && hunk_matches_after_apply_at(expected - offset, file_count, hunk_count)) {
+            return expected - offset;
+        }
+        if (expected + offset <= file_count && hunk_matches_after_apply_at(expected + offset, file_count, hunk_count)) {
+            return expected + offset;
+        }
+    }
+
+    return (size_t)-1;
+}
+
 static int apply_hunk(unsigned long long old_start, size_t hunk_count, size_t *file_count) {
     size_t position = find_hunk_position(old_start, *file_count, hunk_count);
     size_t input_pos;
@@ -334,6 +374,9 @@ static int apply_hunk(unsigned long long old_start, size_t hunk_count, size_t *f
     }
 
     if (position == (size_t)-1) {
+        if (find_applied_hunk_position(old_start, *file_count, hunk_count) != (size_t)-1) {
+            return 1;
+        }
         return -1;
     }
 
@@ -384,6 +427,7 @@ int main(int argc, char **argv) {
     int strip_components = 0;
     int reverse_mode = 0;
     int backup_mode = 0;
+    int dry_run = 0;
     int output_used = 0;
     size_t line_count = 0;
     size_t i = 0;
@@ -391,12 +435,14 @@ int main(int argc, char **argv) {
 
     for (argi = 1; argi < argc; ++argi) {
         if (rt_strcmp(argv[argi], "--help") == 0) {
-            tool_write_usage(tool_base_name(argv[0]), "[-pN] [-R] [-b] [-o outfile] [-i patchfile] [patchfile]");
+            tool_write_usage(tool_base_name(argv[0]), "[-pN] [-R] [-b] [--dry-run] [-o outfile] [-i patchfile] [patchfile]");
             return 0;
         } else if (rt_strcmp(argv[argi], "-R") == 0) {
             reverse_mode = 1;
         } else if (rt_strcmp(argv[argi], "-b") == 0 || rt_strcmp(argv[argi], "--backup") == 0) {
             backup_mode = 1;
+        } else if (rt_strcmp(argv[argi], "--dry-run") == 0) {
+            dry_run = 1;
         } else if (rt_strcmp(argv[argi], "-i") == 0 && argi + 1 < argc) {
             patch_path = argv[++argi];
         } else if (rt_strcmp(argv[argi], "-o") == 0 && argi + 1 < argc) {
@@ -544,9 +590,16 @@ int main(int argc, char **argv) {
                 }
 
                 apply_start = reverse_mode ? new_start : old_start;
-                if (apply_hunk(apply_start, hunk_count, &file_count) != 0) {
-                    tool_write_error("patch", "failed to apply hunk to ", target_path);
-                    return 1;
+                {
+                    int apply_result = apply_hunk(apply_start, hunk_count, &file_count);
+                    if (apply_result > 0) {
+                        tool_write_error("patch", "patch appears to be already applied to ", target_path);
+                        return 1;
+                    }
+                    if (apply_result != 0) {
+                        tool_write_error("patch", "failed to apply hunk to ", target_path);
+                        return 1;
+                    }
                 }
                 have_changes = 1;
             } else if (starts_with(patch_lines[i], "diff --git ")) {
@@ -557,7 +610,13 @@ int main(int argc, char **argv) {
         }
 
         if (have_changes || deleting_file || output_path != 0) {
-            if (output_path != 0) {
+            if (dry_run) {
+                if (output_path != 0) {
+                    output_used = 1;
+                }
+                rt_write_cstr(1, "checked ");
+                rt_write_line(1, output_path != 0 ? output_path : target_path);
+            } else if (output_path != 0) {
                 output_used = 1;
                 if (write_target_file(output_path, deleting_file ? 0U : file_count) != 0) {
                     tool_write_error("patch", "cannot write ", output_path);

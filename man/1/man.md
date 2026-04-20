@@ -37,6 +37,7 @@ readable terminal layout.
   terminal form
 - display tables with aligned ASCII borders instead of flattened pipe-separated rows
 - pause between terminal-sized screens in interactive use
+- accept pager-style help and single-line/page stepping keys during interactive viewing
 - use shared terminal colors with `--color=WHEN`
 
 ## OPTIONS
@@ -74,6 +75,9 @@ MANPATH=extras/man:man man topic
 man -l man/1/ncc.md
 man --color=always ls
 ```
+
+When the built-in pager is active, `Space` or `f` advances a page, `Enter` or
+`j` advances a line, `q` quits, and `h` shows a brief key summary.
 
 ## SEE ALSO
 

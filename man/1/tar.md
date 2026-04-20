@@ -6,22 +6,31 @@ tar - create or extract tar archives
 
 ## SYNOPSIS
 
-tar [-v] [-C dir] -cf archive.tar paths... | tar [-v] [-C dir] -xf archive.tar | tar -tf archive.tar
+tar [-v] [-P] [-C dir] [--exclude PATTERN] -cf archive.tar paths...
+
+tar [-v] [-P] [-C dir] [--strip-components N] -xf archive.tar [members...]
+
+tar [-v] [--strip-components N] -tf archive.tar [members...]
 
 ## DESCRIPTION
 
-The tar tool creates, extracts, and lists plain tar archives. It focuses on
-core archive workflows without built-in compression wrappers.
+The tar tool creates, extracts, and lists `ustar` archives with a practical
+subset of familiar workflow features. It keeps the implementation self-contained
+and works with the in-tree `gzip`, `bzip2`, and `xz` helpers rather than adding
+external runtime dependencies.
 
 ## CURRENT CAPABILITIES
 
-- create tar archives from one or more paths
-- extract archives into the current or chosen directory
-- list archive contents without extracting them
+- create archives from one or more paths
+- extract or list only selected members by exact name or wildcard pattern
+- skip matching paths during create/list/extract with `--exclude`
+- strip leading path components during list or extract with `--strip-components`
+- handle longer `ustar` path names using the standard `prefix` field
 - change directory before acting with `-C`
 - print file names in verbose mode
-- work cleanly with separate `gzip` / `gunzip` steps when compressed archives
-  are needed
+- use `-z`, `-j`, and `-J` for gzip, bzip2, and xz archive workflows
+- refuse unsafe extraction paths such as absolute names or `..` traversal unless
+  `-P` / `--absolute-names` is given
 
 ## OPTIONS
 
@@ -33,22 +42,29 @@ core archive workflows without built-in compression wrappers.
 | `-f archive` | Use the specified archive file. |
 | `-v` | Print file names as they are processed. |
 | `-C dir` | Change to `dir` before operating. |
+| `-z` | Use gzip compression/decompression helpers. |
+| `-j` | Use bzip2 compression/decompression helpers. |
+| `-J` | Use xz compression/decompression helpers. |
+| `--exclude pattern` | Skip paths or members matching the wildcard pattern. |
+| `--strip-components N` | Remove the first `N` path components when listing or extracting. |
+| `-P`, `--absolute-names` | Allow absolute or parent-traversing member paths during extract. |
 
 ## LIMITATIONS
 
-- No gzip, bzip2, or xz integration flags such as `-z`, `-j`, or `-J` are supported.
 - No append/update/delete modes (`-r`, `-u`, `--delete`) are supported.
-- No include/exclude pattern engine is implemented; choose the input paths
-  explicitly before creating the archive.
-- POSIX extended headers, PAX format, and sparse file support are not implemented.
-- Hard-link tracking is basic only.
+- Long paths are supported within classic `ustar` limits; POSIX PAX extensions
+  and sparse-file handling are not implemented.
+- Hard-link and special-file handling remains basic.
+- Compressed streaming to or from standard input/output is still limited compared
+  with a full GNU tar implementation.
 
 ## EXAMPLES
 
 - `tar -cf backup.tar src docs`
-- `tar -cf backup.tar src docs && gzip backup.tar`
-- `tar -tf backup.tar`
-- `tar -C out -xf backup.tar`
+- `tar -czf backup.tar.gz src docs`
+- `tar -tf backup.tar 'src/*.c'`
+- `tar --exclude='build/*' -cf source.tar src build`
+- `tar -C out --strip-components=1 -xf backup.tar docs/readme.txt`
 
 ## SEE ALSO
 

@@ -48,3 +48,11 @@ fi
 if LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/diff_plain.out"; then
     fail "diff --color=never unexpectedly emitted ANSI color sequences"
 fi
+
+printf 'alpha  beta\n\nGamma\n' > "$WORK_DIR/ws_left.txt"
+printf 'alpha beta\ngamma\n' > "$WORK_DIR/ws_right.txt"
+if ! "$ROOT_DIR/build/diff" -wBi "$WORK_DIR/ws_left.txt" "$WORK_DIR/ws_right.txt" > "$WORK_DIR/diff_ignore.out"; then
+    fail "diff -wBi should ignore whitespace, blank-line, and case-only changes"
+fi
+diff_ignore_text=$(tr -d '\r\n' < "$WORK_DIR/diff_ignore.out")
+assert_text_equals "$diff_ignore_text" '' "diff -wBi should not emit output for ignored-only changes"

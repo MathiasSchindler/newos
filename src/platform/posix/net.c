@@ -212,6 +212,65 @@ static int set_socket_timeout(int sock, unsigned int timeout_milliseconds) {
     return 0;
 }
 
+static int posix_netcat_ai_family(int family_filter) {
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV4) {
+        return AF_INET;
+    }
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+        return AF_INET6;
+    }
+    return AF_UNSPEC;
+}
+
+static int bind_socket_local_endpoint(
+    int sock,
+    int family,
+    int socktype,
+    int protocol,
+    const PlatformNetcatOptions *options
+) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    const char *host = 0;
+
+    if (options == NULL) {
+        return 0;
+    }
+    if (options->bind_host[0] == '\0' && options->bind_port == 0U) {
+        return 0;
+    }
+
+    host = options->bind_host[0] != '\0' ? options->bind_host : 0;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = family;
+    hints.ai_socktype = socktype;
+    hints.ai_protocol = protocol;
+    hints.ai_flags = AI_PASSIVE;
+#ifdef AI_NUMERICHOST
+    if (options->numeric_only && host != 0) {
+        hints.ai_flags |= AI_NUMERICHOST;
+    }
+#endif
+    (void)snprintf(port_text, sizeof(port_text), "%u", options->bind_port);
+
+    if (getaddrinfo(host, port_text, &hints, &results) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        if (bind(sock, current->ai_addr, current->ai_addrlen) == 0) {
+            freeaddrinfo(results);
+            return 0;
+        }
+    }
+
+    freeaddrinfo(results);
+    return -1;
+}
+
 int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out) {
     struct addrinfo hints;
     struct addrinfo *results = 0;
@@ -309,28 +368,56 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
     PlatformNetcatOptions effective_options;
     int sock = -1;
+    int ai_family;
 
     if (options == NULL) {
         memset(&effective_options, 0, sizeof(effective_options));
         options = &effective_options;
     }
 
-    if (options->listen_mode) {
-        int reuse = 1;
-        struct sockaddr_in addr;
+    ai_family = posix_netcat_ai_family(options->family);
 
-        memset(&addr, 0, sizeof(addr));
-        sock = socket(AF_INET, options->use_udp ? SOCK_DGRAM : SOCK_STREAM, 0);
-        if (sock < 0) {
+    if (options->listen_mode) {
+        struct addrinfo hints;
+        struct addrinfo *results = 0;
+        struct addrinfo *current;
+        char port_text[16];
+        unsigned int listen_port = options->bind_port != 0U ? options->bind_port : port;
+
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = ai_family;
+        hints.ai_socktype = options->use_udp ? SOCK_DGRAM : SOCK_STREAM;
+        hints.ai_protocol = options->use_udp ? IPPROTO_UDP : IPPROTO_TCP;
+        hints.ai_flags = AI_PASSIVE;
+#ifdef AI_NUMERICHOST
+        if (options->numeric_only && options->bind_host[0] != '\0') {
+            hints.ai_flags |= AI_NUMERICHOST;
+        }
+#endif
+        (void)snprintf(port_text, sizeof(port_text), "%u", listen_port);
+
+        if (getaddrinfo(options->bind_host[0] != '\0' ? options->bind_host : 0, port_text, &hints, &results) != 0) {
+            errno = EINVAL;
             return -1;
         }
-        (void)set_socket_timeout(sock, options->timeout_milliseconds);
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons((unsigned short)port);
-        (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+
+        for (current = results; current != 0; current = current->ai_next) {
+            int reuse = 1;
+
+            sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+            if (sock < 0) {
+                continue;
+            }
+            (void)set_socket_timeout(sock, options->timeout_milliseconds);
+            (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+            if (bind(sock, current->ai_addr, current->ai_addrlen) == 0) {
+                break;
+            }
             close(sock);
+            sock = -1;
+        }
+        freeaddrinfo(results);
+        if (sock < 0) {
             return -1;
         }
 
@@ -356,6 +443,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         }
 
         {
+            size_t ready_index = 0U;
+
+            if (options->timeout_milliseconds > 0U &&
+                platform_poll_fds(&sock, 1U, &ready_index, (int)options->timeout_milliseconds) <= 0) {
+                close(sock);
+                return -1;
+            }
+
             int client = accept(sock, NULL, NULL);
             close(sock);
             if (client < 0) {
@@ -376,21 +471,23 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         return -1;
     }
 
-    if (!options->use_udp) {
-        if (platform_connect_tcp(host, port, &sock) != 0) {
-            return -1;
-        }
-        (void)set_socket_timeout(sock, options->timeout_milliseconds);
-    } else {
+    {
         struct addrinfo hints;
         struct addrinfo *results = 0;
         struct addrinfo *current;
         char port_text[16];
+        int socktype = options->use_udp ? SOCK_DGRAM : SOCK_STREAM;
+        int protocol = options->use_udp ? IPPROTO_UDP : IPPROTO_TCP;
 
         memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_DGRAM;
-        hints.ai_protocol = IPPROTO_UDP;
+        hints.ai_family = ai_family;
+        hints.ai_socktype = socktype;
+        hints.ai_protocol = protocol;
+#ifdef AI_NUMERICHOST
+        if (options->numeric_only) {
+            hints.ai_flags |= AI_NUMERICHOST;
+        }
+#endif
         (void)snprintf(port_text, sizeof(port_text), "%u", (unsigned int)port);
 
         if (getaddrinfo(host, port_text, &hints, &results) != 0) {
@@ -404,6 +501,11 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
                 continue;
             }
             (void)set_socket_timeout(sock, options->timeout_milliseconds);
+            if (bind_socket_local_endpoint(sock, current->ai_family, current->ai_socktype, current->ai_protocol, options) != 0) {
+                close(sock);
+                sock = -1;
+                continue;
+            }
             if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
                 break;
             }
@@ -1194,6 +1296,8 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     double min_ms = 0.0;
     double max_ms = 0.0;
     double total_ms = 0.0;
+    struct timeval overall_start;
+    int deadline_exceeded = 0;
 
     if (options == NULL) {
         effective_options.count = PLATFORM_PING_DEFAULT_COUNT;
@@ -1201,6 +1305,8 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         effective_options.timeout_seconds = PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS;
         effective_options.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
         effective_options.ttl = 0;
+        effective_options.deadline_seconds = 0;
+        effective_options.quiet_output = 0;
         options = &effective_options;
     }
 
@@ -1233,6 +1339,7 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     }
 
     identifier = (unsigned short)((process_id > 0) ? process_id : 0x1234);
+    (void)gettimeofday(&overall_start, 0);
 
     rt_write_cstr(1, "PING ");
     rt_write_cstr(1, host);
@@ -1248,9 +1355,18 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         PosixIcmpPacket *header = (PosixIcmpPacket *)packet;
         struct timeval start_time;
         struct timeval end_time;
+        struct timeval current_time;
         ssize_t reply_size;
         size_t packet_size = sizeof(PosixIcmpPacket) + options->payload_size;
         int matched = 0;
+
+        if (options->deadline_seconds > 0U) {
+            (void)gettimeofday(&current_time, 0);
+            if (elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                deadline_exceeded = 1;
+                break;
+            }
+        }
 
         memset(packet, 0, packet_size);
         header->type = POSIX_ICMP_ECHO;
@@ -1289,10 +1405,11 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
                 if (reply_header->type == POSIX_ICMP_REPLY &&
                     ntohs(reply_header->identifier) == identifier &&
                     ntohs(reply_header->sequence) == (unsigned short)seq) {
-                    double rtt_ms = 0.0;
+                        double rtt_ms = 0.0;
+                        unsigned int ttl = (offset >= 20U && (size_t)reply_size >= 9U) ? reply[8] : 0U;
 
-                    (void)gettimeofday(&end_time, 0);
-                    rtt_ms = elapsed_milliseconds(&start_time, &end_time);
+                        (void)gettimeofday(&end_time, 0);
+                        rtt_ms = elapsed_milliseconds(&start_time, &end_time);
                     if (received_count == 0U || rtt_ms < min_ms) {
                         min_ms = rtt_ms;
                     }
@@ -1302,14 +1419,20 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
                     total_ms += rtt_ms;
                     received_count += 1U;
 
-                    rt_write_uint(1, (unsigned long long)((reply_size > (ssize_t)offset) ? (reply_size - (ssize_t)offset) : reply_size));
-                    rt_write_cstr(1, " bytes from ");
-                    rt_write_cstr(1, ip_text);
-                    rt_write_cstr(1, ": icmp_seq=");
-                    rt_write_uint(1, seq);
-                    rt_write_cstr(1, " time=");
-                    write_milliseconds(rtt_ms);
-                    rt_write_line(1, " ms");
+                    if (!options->quiet_output) {
+                        rt_write_uint(1, (unsigned long long)((reply_size > (ssize_t)offset) ? (reply_size - (ssize_t)offset) : reply_size));
+                        rt_write_cstr(1, " bytes from ");
+                        rt_write_cstr(1, ip_text);
+                        rt_write_cstr(1, ": icmp_seq=");
+                        rt_write_uint(1, seq);
+                        if (ttl != 0U) {
+                            rt_write_cstr(1, " ttl=");
+                            rt_write_uint(1, (unsigned long long)ttl);
+                        }
+                        rt_write_cstr(1, " time=");
+                        write_milliseconds(rtt_ms);
+                        rt_write_line(1, " ms");
+                    }
 
                     matched = 1;
                     break;
@@ -1317,18 +1440,29 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
             }
         }
 
-        if (!matched) {
+        if (!matched && !options->quiet_output) {
             rt_write_cstr(1, "Request timeout for icmp_seq ");
             rt_write_uint(1, seq);
             rt_write_char(1, '\n');
         }
 
         if (seq < options->count && options->interval_seconds > 0U) {
+            if (options->deadline_seconds > 0U) {
+                (void)gettimeofday(&current_time, 0);
+                if (elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                    deadline_exceeded = 1;
+                    break;
+                }
+            }
             (void)platform_sleep_seconds(options->interval_seconds);
         }
     }
 
     close(sock);
+
+    if (deadline_exceeded && !options->quiet_output) {
+        rt_write_line(1, "ping: deadline reached");
+    }
 
     rt_write_cstr(1, "--- ");
     rt_write_cstr(1, host);

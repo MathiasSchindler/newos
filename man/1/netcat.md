@@ -7,8 +7,8 @@ netcat - arbitrary TCP/UDP connections and listeners
 ## SYNOPSIS
 
 ```
-netcat [-u] [-z] [-w TIMEOUT] [-v] HOST PORT
-netcat -l [-u] [-w TIMEOUT] [-v] PORT
+netcat [-46nuvz] [-w TIMEOUT] [-s ADDR] [-p PORT] [-v] HOST PORT
+netcat -l [-46kuv] [-w TIMEOUT] [-s ADDR] [-p PORT] [ADDR] PORT
 ```
 
 ## DESCRIPTION
@@ -21,28 +21,35 @@ for an incoming connection instead.
 
 - Outbound TCP connection to HOST PORT
 - Listen for a single incoming TCP connection with `-l`
+- Keep a listener alive for multiple connections with `-k`
 - UDP mode with `-u`
 - Port-scan mode (connect and immediately close) with `-z`
 - Configurable connection timeout with `-w`
+- Bind or source-select a local address/port with `-s` and `-p`
+- IPv4/IPv6 family selection and numeric-only resolution flags
 - Verbose reporting of connection events with `-v`
 
 ## OPTIONS
 
+- `-4` — force IPv4 sockets
+- `-6` — force IPv6 sockets where the backend supports it
 - `-l` — listen mode; wait for an incoming connection on PORT
+- `-k` — keep listening for multiple connections or datagrams
 - `-u` — use UDP instead of TCP
 - `-z` — scan mode; check whether the port is open without sending data
+- `-n` — numeric addresses only; skip name resolution
+- `-s ADDR` — bind the local socket or listener to ADDR
+- `-p PORT` — bind the local socket to PORT before connecting or listening
 - `-w TIMEOUT` — set connection or idle timeout (accepts suffix `s`, `ms`,
   `m`; bare number is milliseconds, so values such as `250ms` or `1.5s` work)
 - `-v` — verbose output
 
 ## LIMITATIONS
 
-- Only a single connection per invocation; no `-k` (keep listening).
-- Listen mode binds by port only; there is no flag for choosing a specific
-  local address or source port.
+- UDP and IPv6 support depend on the selected platform backend; the hosted POSIX
+  build has the strongest coverage today.
 - No `-e` (execute program) or `-c` (shell command).
 - No UNIX-domain socket support.
-- No IPv6 flag; address family is determined by the platform resolver.
 
 ## EXAMPLES
 
@@ -50,8 +57,9 @@ for an incoming connection instead.
 netcat example.com 80
 echo "GET / HTTP/1.0\r\n" | netcat example.com 80
 netcat -w 250ms example.com 80
-netcat -l 8080
+netcat -l -k -s 127.0.0.1 8080
 netcat -u 224.0.0.1 5353
+netcat -4 -n -z -w 1s 127.0.0.1 22
 netcat -z -w 1s host.local 22
 ```
 

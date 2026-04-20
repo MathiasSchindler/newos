@@ -26,15 +26,17 @@ script path it runs the file non-interactively.
 - one-shot execution with `-c` and script execution from a file
 - pipelines, redirections, background jobs, and here-docs
 - shell builtins including `cd`, `exit`, `jobs`, `fg`, `bg`, `history`,
-  `export`, `unset`, `alias`, and `command -v`
+  `export`, `unset`, `alias`, `set`, `shift`, and `command -v`
 - variable expansion, aliases, and shell functions in the current implementation
+- script and `-c` argument visibility through `$0`, `$1` ... `${10}`, `$#`,
+  `$*`, and `$@`
 - interactive Tab completion for command names and path arguments
 
 ## OPTIONS
 
 - `-c COMMAND` — execute `COMMAND` and exit
 - `SCRIPT [ARG ...]` — read commands from `SCRIPT`; extra command-line
-  arguments are currently accepted but have only limited script visibility
+  arguments are exposed through the usual positional-parameter expansions
 
 ## INTERACTIVE CONVENIENCES
 
@@ -44,14 +46,16 @@ script path it runs the file non-interactively.
 - `Left` / `Right`, `Home`, and `End` move the cursor within the line
 - `Ctrl-A`, `Ctrl-E`, `Ctrl-U`, `Ctrl-K`, `Ctrl-W`, and `Backspace` provide
   quick line editing
+- if raw terminal mode is unavailable, common control-key edits and unique Tab
+  completions are still replayed sensibly from scripted tty input
 
 ## LIMITATIONS
 
 - it is not a full drop-in replacement for a mature POSIX shell
 - job control and interactive convenience features remain basic compared with
   `bash` or `dash`
-- script argument handling is still narrower than full POSIX `$1`, `$2`, and
-  related behavior
+- positional parameter handling is intentionally compact and does not yet match
+  every quoting edge case of a full POSIX shell
 - shell invocation options are intentionally minimal; login-shell startup,
   rc-file loading, and broader compatibility modes are not implemented yet
 
@@ -61,6 +65,7 @@ script path it runs the file non-interactively.
 sh
 sh -c 'echo hello | wc -c'
 sh build-script.sh
+sh -c 'echo "$0 -> $1"' name value
 printf 'echo hello\n' | sh
 ```
 

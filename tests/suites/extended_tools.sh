@@ -36,7 +36,23 @@ cat > "$WORK_DIR/patch.diff" <<'EOF'
 EOF
 (
     cd "$WORK_DIR"
+    "$ROOT_DIR/build/patch" -p1 --dry-run -i patch.diff > patch_dry.out
+)
+assert_file_contains "$WORK_DIR/patch_dry.out" '^checked ' "patch --dry-run did not validate the patch input"
+assert_file_contains "$WORK_DIR/patch_target.txt" '^beta$' "patch --dry-run unexpectedly modified the source file"
+(
+    cd "$WORK_DIR"
     cat patch.diff | "$ROOT_DIR/build/patch" -p1
+)
+patch_status=0
+(
+    cd "$WORK_DIR"
+    "$ROOT_DIR/build/patch" -p1 -i patch.diff
+) > "$WORK_DIR/patch_repeat.out" 2>&1 || patch_status=$?
+assert_text_equals "$patch_status" '1' "patch should reject an already-applied hunk"
+assert_file_contains "$WORK_DIR/patch_repeat.out" 'already applied' "patch did not explain the repeated-apply failure"
+(
+    cd "$WORK_DIR"
     "$ROOT_DIR/build/patch" -R -p1 -i patch.diff
 )
 assert_file_contains "$WORK_DIR/patch_target.txt" '^beta$' "patch reverse apply failed"
@@ -45,6 +61,22 @@ assert_file_contains "$WORK_DIR/patch_target.txt" '^beta$' "patch reverse apply 
     "$ROOT_DIR/build/patch" -p1 -o patch_preview.txt -i patch.diff
 )
 assert_file_contains "$WORK_DIR/patch_preview.txt" '^gamma$' "patch -o did not write the patched preview output"
+
+printf 'alpha\nbeta\nGamma\n' > "$WORK_DIR/pager.txt"
+"$ROOT_DIR/build/less" -N -p gamma "$WORK_DIR/pager.txt" > "$WORK_DIR/less_search.out"
+assert_file_contains "$WORK_DIR/less_search.out" '^3[[:space:]][[:space:]]*Gamma$' "less -p did not jump to the requested match"
+if grep -q '^1[[:space:]][[:space:]]*alpha$' "$WORK_DIR/less_search.out"; then
+    fail "less -p unexpectedly printed content before the requested match"
+fi
+
+"$ROOT_DIR/build/more" -N +/beta "$WORK_DIR/pager.txt" > "$WORK_DIR/more_search.out"
+assert_file_contains "$WORK_DIR/more_search.out" '^2[[:space:]][[:space:]]*beta$' "more +/pattern did not jump to the first matching line"
+assert_file_contains "$WORK_DIR/more_search.out" '^3[[:space:]][[:space:]]*Gamma$' "more search output was incomplete"
+
+"$ROOT_DIR/build/more" --color=always -N "$WORK_DIR/pager.txt" > "$WORK_DIR/more_color.out"
+if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/more_color.out"; then
+    fail "more --color=always did not emit ANSI color sequences"
+fi
 
 mkdir -p "$WORK_DIR/make_include"
 cat > "$WORK_DIR/make_include/Makefile" <<'EOF'
@@ -119,6 +151,15 @@ netcat_udp_pid=$!
 printf 'hello udp\n' | "$ROOT_DIR/build/netcat" -u -w 1 localhost 24682 > "$WORK_DIR/netcat_udp_client.out"
 wait "$netcat_udp_pid"
 assert_file_contains "$WORK_DIR/netcat_udp_server.out" 'hello udp' "netcat UDP mode did not receive the payload"
+
+"$ROOT_DIR/build/netcat" -4 -k -l -s 127.0.0.1 -w 1500ms 24683 > "$WORK_DIR/netcat_keep_server.out" &
+netcat_keep_pid=$!
+"$ROOT_DIR/build/sleep" 1
+printf 'hello keep one\n' | "$ROOT_DIR/build/netcat" -4 -n 127.0.0.1 24683 > "$WORK_DIR/netcat_keep_client1.out"
+printf 'hello keep two\n' | "$ROOT_DIR/build/netcat" -4 -n 127.0.0.1 24683 > "$WORK_DIR/netcat_keep_client2.out"
+wait "$netcat_keep_pid"
+assert_file_contains "$WORK_DIR/netcat_keep_server.out" 'hello keep one' "netcat -k did not keep the listener alive for the first payload"
+assert_file_contains "$WORK_DIR/netcat_keep_server.out" 'hello keep two' "netcat -k did not keep the listener alive for the second payload"
 
 "$ROOT_DIR/build/shutdown" --help > "$WORK_DIR/shutdown_help.out" 2>&1
 assert_file_contains "$WORK_DIR/shutdown_help.out" 'shutdown' "shutdown help output missing"

@@ -33,6 +33,12 @@ assert_command_succeeds "$ROOT_DIR/build/dd" if="$WORK_DIR/dd_input.txt" of="$WO
 dd_out=$(tr -d '\r\n' < "$WORK_DIR/dd_output.txt")
 assert_text_equals "$dd_out" 'abcdef' "dd did not copy the expected data blocks"
 
+printf 'abcdefghi\n' > "$WORK_DIR/dd_blocks.txt"
+assert_command_succeeds "$ROOT_DIR/build/dd" if="$WORK_DIR/dd_blocks.txt" of="$WORK_DIR/dd_blocks.out" ibs=2 obs=1k count=3 status=progress 2> "$WORK_DIR/dd_progress.err"
+dd_blocks_out=$(tr -d '\r\n' < "$WORK_DIR/dd_blocks.out")
+assert_text_equals "$dd_blocks_out" 'abcdef' "dd ibs/obs handling copied the wrong data"
+assert_file_contains "$WORK_DIR/dd_progress.err" 'bytes copied' "dd status=progress did not report transfer statistics"
+
 chown_status=0
 "$ROOT_DIR/build/chown" nosuchuser "$WORK_DIR/mode.txt" > "$WORK_DIR/chown.out" 2>&1 || chown_status=$?
 assert_text_equals "$chown_status" '1' "chown with an invalid owner should fail"

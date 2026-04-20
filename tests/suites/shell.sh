@@ -13,6 +13,7 @@ note "shell"
 run_shell_tty() {
     input_path=$1
     output_path=$2
+    tty_cmd="cat \"$input_path\" | \"$ROOT_DIR/build/sh\" -i"
 
     if ! command -v script >/dev/null 2>&1; then
         note "shell tty checks skipped: script(1) not available"
@@ -20,9 +21,9 @@ run_shell_tty() {
     fi
 
     if script --version >/dev/null 2>&1; then
-        script -qfec "$ROOT_DIR/build/sh -i" /dev/null < "$input_path" > "$output_path" 2>&1
+        script -qfec "$tty_cmd" /dev/null > "$output_path" 2>&1
     else
-        script -q /dev/null "$ROOT_DIR/build/sh" -i < "$input_path" > "$output_path" 2>&1
+        script -q /dev/null /bin/sh -c "$tty_cmd" > "$output_path" 2>&1
     fi
 }
 
@@ -46,6 +47,30 @@ assert_file_contains "$WORK_DIR/features.out" '^heredoc-line$' "shell here-docum
 printf 'alias say="echo two words"\nsay\nshow() { echo "$1"; }\nshow "quoted text"\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/stability.out"
 assert_file_contains "$WORK_DIR/stability.out" '^two words$' "shell quoted alias expansion failed"
 assert_file_contains "$WORK_DIR/stability.out" '^quoted text$' "shell quoted function argument failed"
+
+cat > "$WORK_DIR/args.sh" <<'EOF'
+echo "0:$0"
+echo "1:$1"
+echo "2:$2"
+echo "count:$#"
+echo "all:$*"
+set -- reset "two words" done
+echo "set:$1|$2|$3|$#"
+shift 2
+echo "shift:$1|$#"
+EOF
+"$ROOT_DIR/build/sh" "$WORK_DIR/args.sh" alpha "beta gamma" > "$WORK_DIR/args.out"
+assert_file_contains "$WORK_DIR/args.out" '^0:.*args\.sh$' "shell script name was not visible through \$0"
+assert_file_contains "$WORK_DIR/args.out" '^1:alpha$' "shell \$1 expansion failed for script arguments"
+assert_file_contains "$WORK_DIR/args.out" '^2:beta gamma$' "shell quoted script argument visibility failed"
+assert_file_contains "$WORK_DIR/args.out" '^count:2$' "shell \$# expansion failed"
+assert_file_contains "$WORK_DIR/args.out" '^all:alpha beta gamma$' "shell \$\\* expansion failed"
+assert_file_contains "$WORK_DIR/args.out" '^set:reset|two words|done|3$' "shell set -- builtin failed"
+assert_file_contains "$WORK_DIR/args.out" '^shift:done|1$' "shell shift builtin failed"
+
+"$ROOT_DIR/build/sh" -c 'echo "$0|$1|$#"' invoked-name extra > "$WORK_DIR/cmode_args.out"
+assert_file_contains "$WORK_DIR/cmode_args.out" '^invoked-name|extra|1$' "shell -c argument handling failed"
+
 printf 'echo unicode-space\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/unicode_space.out"
 assert_file_contains "$WORK_DIR/unicode_space.out" '^unicode-space$' "shell did not treat Unicode whitespace as a separator"
 

@@ -503,10 +503,10 @@ static int linux_connect_ipv4(int sock, const LinuxInAddr *ip, unsigned int port
     return linux_syscall3(LINUX_SYS_CONNECT, sock, (long)&address, sizeof(address)) < 0 ? -1 : 0;
 }
 
-static int linux_bind_ipv4_any(int sock, unsigned int port) {
+static int linux_bind_ipv4(int sock, const LinuxInAddr *ip, unsigned int port) {
     struct linux_sockaddr_in address;
 
-    linux_prepare_sockaddr(&address, 0, port);
+    linux_prepare_sockaddr(&address, ip, port);
     return linux_syscall3(LINUX_SYS_BIND, sock, (long)&address, sizeof(address)) < 0 ? -1 : 0;
 }
 
@@ -699,6 +699,9 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
 
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
     PlatformNetcatOptions defaults;
+    LinuxInAddr address;
+    LinuxInAddr bind_address;
+    const LinuxInAddr *bind_ptr = 0;
     int sock = -1;
 
     if (options == 0) {
@@ -706,20 +709,35 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         options = &defaults;
     }
 
-    if (options->use_udp) {
+    if (options->use_udp || options->family == PLATFORM_NETWORK_FAMILY_IPV6) {
         return -1;
+    }
+    if (options->bind_host[0] != '\0') {
+        if ((options->numeric_only && linux_parse_ipv4_text(options->bind_host, &bind_address) != 0) ||
+            (!options->numeric_only && linux_resolve_ipv4_host(options->bind_host, &bind_address) != 0)) {
+            return -1;
+        }
+        bind_ptr = &bind_address;
     }
 
     if (options->listen_mode) {
         long accepted;
         int reuse = 1;
+        unsigned int listen_port = options->bind_port != 0U ? options->bind_port : port;
+        size_t ready_index = 0U;
 
         sock = linux_open_inet_socket(LINUX_SOCK_STREAM, LINUX_IPPROTO_TCP);
         if (sock < 0) {
             return -1;
         }
         (void)linux_set_socket_int_option(sock, LINUX_SOL_SOCKET, LINUX_SO_REUSEADDR, reuse);
-        if (linux_bind_ipv4_any(sock, port) != 0 || linux_syscall2(LINUX_SYS_LISTEN, sock, 1) < 0) {
+        if (linux_bind_ipv4(sock, bind_ptr, listen_port) != 0 || linux_syscall2(LINUX_SYS_LISTEN, sock, 1) < 0) {
+            platform_close(sock);
+            return -1;
+        }
+
+        if (options->timeout_milliseconds > 0U &&
+            platform_poll_fds(&sock, 1U, &ready_index, (int)options->timeout_milliseconds) <= 0) {
             platform_close(sock);
             return -1;
         }
@@ -745,7 +763,20 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     if (host == 0) {
         return -1;
     }
-    if (platform_connect_tcp(host, port, &sock) != 0) {
+    if ((options->numeric_only && linux_parse_ipv4_text(host, &address) != 0) ||
+        (!options->numeric_only && linux_resolve_ipv4_host(host, &address) != 0)) {
+        return -1;
+    }
+    sock = linux_open_inet_socket(LINUX_SOCK_STREAM, LINUX_IPPROTO_TCP);
+    if (sock < 0) {
+        return -1;
+    }
+    if ((bind_ptr != 0 || options->bind_port != 0U) && linux_bind_ipv4(sock, bind_ptr, options->bind_port) != 0) {
+        platform_close(sock);
+        return -1;
+    }
+    if (linux_connect_ipv4(sock, &address, port) != 0) {
+        platform_close(sock);
         return -1;
     }
     if (options->scan_mode) {
@@ -1249,6 +1280,8 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     unsigned short identifier;
     int sock;
     unsigned int sequence;
+    unsigned long long overall_start_ms;
+    int deadline_exceeded = 0;
 
     if (host == 0) {
         return 1;
@@ -1260,6 +1293,8 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         defaults.timeout_seconds = PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS;
         defaults.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
         defaults.ttl = 0U;
+        defaults.deadline_seconds = 0U;
+        defaults.quiet_output = 0;
         options = &defaults;
     }
 
@@ -1297,6 +1332,7 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     rt_write_uint(1, (unsigned long long)payload_size);
     rt_write_line(1, " data bytes");
 
+    overall_start_ms = linux_monotonic_milliseconds();
     identifier = (unsigned short)(platform_get_process_id() & 0xffff);
     for (sequence = 0U; sequence < count; ++sequence) {
         unsigned char packet[8 + PLATFORM_PING_MAX_PAYLOAD_SIZE];
@@ -1307,6 +1343,12 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         int matched = 0;
         size_t ready_index = 0U;
         unsigned int i;
+
+        if (options->deadline_seconds > 0U &&
+            linux_monotonic_milliseconds() - overall_start_ms >= (unsigned long long)options->deadline_seconds * 1000ULL) {
+            deadline_exceeded = 1;
+            break;
+        }
 
         rt_memset(packet, 0, sizeof(packet));
         icmp->type = LINUX_ICMP_ECHO;
@@ -1356,30 +1398,37 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
                 linux_net_to_host16(reply_icmp->sequence) == (unsigned short)sequence) {
                 unsigned long long elapsed = linux_monotonic_milliseconds() - start_ms;
                 unsigned int ttl = (ip_header_length >= 9U) ? reply[8] : 0U;
-                rt_write_uint(1, (unsigned long long)(reply_bytes - (long)ip_header_length));
-                rt_write_cstr(1, " bytes from ");
-                rt_write_cstr(1, address_text);
-                rt_write_cstr(1, ": icmp_seq=");
-                rt_write_uint(1, (unsigned long long)(sequence + 1U));
-                if (ttl != 0U) {
-                    rt_write_cstr(1, " ttl=");
-                    rt_write_uint(1, (unsigned long long)ttl);
+                if (!options->quiet_output) {
+                    rt_write_uint(1, (unsigned long long)(reply_bytes - (long)ip_header_length));
+                    rt_write_cstr(1, " bytes from ");
+                    rt_write_cstr(1, address_text);
+                    rt_write_cstr(1, ": icmp_seq=");
+                    rt_write_uint(1, (unsigned long long)(sequence + 1U));
+                    if (ttl != 0U) {
+                        rt_write_cstr(1, " ttl=");
+                        rt_write_uint(1, (unsigned long long)ttl);
+                    }
+                    rt_write_cstr(1, " time=");
+                    linux_write_milliseconds(elapsed, 0ULL);
+                    rt_write_line(1, " ms");
                 }
-                rt_write_cstr(1, " time=");
-                linux_write_milliseconds(elapsed, 0ULL);
-                rt_write_line(1, " ms");
                 received += 1U;
                 matched = 1;
             }
         }
 
-        if (!matched) {
+        if (!matched && !options->quiet_output) {
             rt_write_cstr(1, "Request timeout for icmp_seq ");
             rt_write_uint(1, (unsigned long long)(sequence + 1U));
             rt_write_char(1, '\n');
         }
 
         if (sequence + 1U < count && interval_seconds > 0U) {
+            if (options->deadline_seconds > 0U &&
+                linux_monotonic_milliseconds() - overall_start_ms >= (unsigned long long)options->deadline_seconds * 1000ULL) {
+                deadline_exceeded = 1;
+                break;
+            }
             (void)platform_sleep_seconds(interval_seconds);
         }
     }
@@ -1393,6 +1442,10 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     rt_write_cstr(1, " packets received, ");
     rt_write_uint(1, transmitted == 0U ? 0ULL : (unsigned long long)(((transmitted - received) * 100U) / transmitted));
     rt_write_line(1, "% packet loss");
+
+    if (deadline_exceeded && !options->quiet_output) {
+        rt_write_line(1, "ping: deadline reached");
+    }
 
     platform_close(sock);
     return received == 0U ? 1 : 0;

@@ -31,3 +31,18 @@ item red
 item blue sky
 EOF
 assert_files_equal "$WORK_DIR/zero.expected" "$WORK_DIR/zero.out" "xargs -0 parsing failed"
+
+printf '' | "$ROOT_DIR/build/xargs" -r "$ROOT_DIR/build/echo" should-not-run > "$WORK_DIR/norun.out"
+norun_out=$(tr -d '\r\n' < "$WORK_DIR/norun.out")
+assert_text_equals "$norun_out" '' "xargs -r unexpectedly ran the command for empty input"
+
+printf 'left,right,center' | "$ROOT_DIR/build/xargs" -d , -n 2 "$ROOT_DIR/build/echo" part > "$WORK_DIR/delim.out"
+cat > "$WORK_DIR/delim.expected" <<'EOF'
+part left right
+part center
+EOF
+assert_files_equal "$WORK_DIR/delim.expected" "$WORK_DIR/delim.out" "xargs -d custom delimiter batching failed"
+
+printf 'trace-me\n' | "$ROOT_DIR/build/xargs" -t -n 1 "$ROOT_DIR/build/echo" show > "$WORK_DIR/trace.out" 2> "$WORK_DIR/trace.err"
+assert_file_contains "$WORK_DIR/trace.err" 'show trace-me' "xargs -t did not trace the command invocation"
+assert_file_contains "$WORK_DIR/trace.out" '^show trace-me$' "xargs -t changed the executed command output"

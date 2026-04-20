@@ -8,6 +8,23 @@ assert_command_succeeds "$ROOT_DIR/build/ps" -p $$ > "$WORK_DIR/ps.out"
 assert_file_contains "$WORK_DIR/ps.out" '^PID' "ps did not print the process table header"
 assert_file_contains "$WORK_DIR/ps.out" "^$$[[:space:]]" "ps did not include the current shell pid"
 
+current_user=$(id -un)
+assert_command_succeeds "$ROOT_DIR/build/ps" aux > "$WORK_DIR/ps_aux.out"
+assert_file_contains "$WORK_DIR/ps_aux.out" "^$$[[:space:]]" "ps aux compatibility did not include the current shell pid"
+
+assert_command_succeeds "$ROOT_DIR/build/ps" -u "$current_user" -s S -o pid=,uid=,command= > "$WORK_DIR/ps_filtered.out"
+assert_file_contains "$WORK_DIR/ps_filtered.out" "^$$[[:space:]][[:digit:]][[:digit:]]*[[:space:]]" "ps filtering or custom -o output did not include the current shell"
+if grep -q '^PID' "$WORK_DIR/ps_filtered.out"; then
+    fail "ps -o field= should suppress the default header labels"
+fi
+
+assert_command_succeeds "$ROOT_DIR/build/pstree" -A -u -p $$ > "$WORK_DIR/pstree.out"
+assert_file_contains "$WORK_DIR/pstree.out" "\\($$\\)" "pstree -p did not show the current shell pid"
+assert_file_contains "$WORK_DIR/pstree.out" '{' "pstree -u did not annotate user ownership"
+if ! grep -Eq '(^|[[:space:]])(\|- |`- )' "$WORK_DIR/pstree.out"; then
+    fail "pstree -A did not use ASCII branch markers"
+fi
+
 kill_term=$("$ROOT_DIR/build/kill" -l TERM | tr -d '\r\n')
 assert_text_equals "$kill_term" '15' "kill -l TERM did not resolve to SIGTERM"
 

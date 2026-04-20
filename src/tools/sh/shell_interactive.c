@@ -12,6 +12,21 @@ typedef struct {
     int is_dir;
 } ShCompletionMatch;
 
+static int shell_replace_span(char *line,
+                              size_t line_size,
+                              size_t *length_io,
+                              size_t *cursor_io,
+                              size_t start,
+                              size_t end,
+                              const char *replacement,
+                              int append_slash);
+static void shell_collect_path_matches(const char *token,
+                                       ShCompletionMatch *matches,
+                                       size_t *count_io);
+static void shell_collect_command_matches(const char *prefix,
+                                          ShCompletionMatch *matches,
+                                          size_t *count_io);
+
 int sh_shell_is_interactive(int fd) {
     return fd == 0 && platform_isatty(fd);
 }
@@ -263,6 +278,59 @@ static void shell_print_completion_list(const ShCompletionMatch *matches, size_t
     rt_write_char(1, '\n');
 }
 
+static int shell_apply_completion(char *line, size_t line_size, size_t *length_io, size_t *cursor_io, int print_matches) {
+    ShCompletionMatch matches[SH_COMPLETION_MAX_MATCHES];
+    size_t start = shell_find_token_start(line, *cursor_io);
+    size_t end = shell_find_token_end(line, *length_io, *cursor_io);
+    size_t token_length = end - start;
+    char token[SH_MAX_LINE];
+    size_t match_count = 0;
+    int path_mode;
+
+    if (token_length + 1U > sizeof(token)) {
+        return -1;
+    }
+
+    memcpy(token, line + start, token_length);
+    token[token_length] = '\0';
+    path_mode = sh_contains_slash(token) || !shell_token_is_command_position(line, start);
+
+    if (path_mode) {
+        shell_collect_path_matches(token, matches, &match_count);
+    } else {
+        shell_collect_command_matches(token, matches, &match_count);
+    }
+
+    if (match_count == 0U) {
+        return 1;
+    }
+
+    shell_sort_completion_matches(matches, match_count);
+
+    if (match_count == 1U) {
+        int add_space = !matches[0].is_dir && (end == *length_io || !shell_is_token_separator(line[end]));
+        return shell_replace_span(line, line_size, length_io, cursor_io, start, end, matches[0].text, add_space);
+    }
+
+    {
+        size_t common_length = shell_completion_common_prefix(matches, match_count);
+        if (common_length > token_length) {
+            char prefix_text[SH_MAX_LINE];
+            if (common_length + 1U > sizeof(prefix_text)) {
+                return -1;
+            }
+            memcpy(prefix_text, matches[0].text, common_length);
+            prefix_text[common_length] = '\0';
+            return shell_replace_span(line, line_size, length_io, cursor_io, start, end, prefix_text, 0);
+        }
+    }
+
+    if (print_matches) {
+        shell_print_completion_list(matches, match_count);
+    }
+    return 2;
+}
+
 static int shell_replace_span(char *line, size_t line_size, size_t *length_io, size_t *cursor_io, size_t start, size_t end, const char *replacement, int add_space) {
     size_t old_length = *length_io;
     size_t replace_length = rt_strlen(replacement);
@@ -457,68 +525,85 @@ static void refresh_input_line(const char *prompt, const char *line, size_t leng
 }
 
 static void shell_attempt_completion(const char *prompt, char *line, size_t line_size, size_t *length_io, size_t *cursor_io) {
-    ShCompletionMatch matches[SH_COMPLETION_MAX_MATCHES];
-    size_t start = shell_find_token_start(line, *cursor_io);
-    size_t end = shell_find_token_end(line, *length_io, *cursor_io);
-    size_t token_length = end - start;
-    char token[SH_MAX_LINE];
-    size_t match_count = 0;
-    int path_mode;
+    int result = shell_apply_completion(line, line_size, length_io, cursor_io, 1);
 
-    if (token_length + 1U > sizeof(token)) {
+    if (result == 1) {
         rt_write_char(1, '\a');
         return;
     }
-
-    memcpy(token, line + start, token_length);
-    token[token_length] = '\0';
-    path_mode = sh_contains_slash(token) || !shell_token_is_command_position(line, start);
-
-    if (path_mode) {
-        shell_collect_path_matches(token, matches, &match_count);
-    } else {
-        shell_collect_command_matches(token, matches, &match_count);
-    }
-
-    if (match_count == 0) {
+    if (result != 0) {
         rt_write_char(1, '\a');
-        return;
     }
-
-    shell_sort_completion_matches(matches, match_count);
-
-    if (match_count == 1U) {
-        int add_space = !matches[0].is_dir && (end == *length_io || !shell_is_token_separator(line[end]));
-        if (shell_replace_span(line, line_size, length_io, cursor_io, start, end, matches[0].text, add_space) != 0) {
-            rt_write_char(1, '\a');
-            return;
-        }
-        refresh_input_line(prompt, line, *length_io, *cursor_io);
-        return;
-    }
-
-    {
-        size_t common_length = shell_completion_common_prefix(matches, match_count);
-        if (common_length > token_length) {
-            char prefix_text[SH_MAX_LINE];
-            if (common_length + 1U > sizeof(prefix_text)) {
-                rt_write_char(1, '\a');
-                return;
-            }
-            memcpy(prefix_text, matches[0].text, common_length);
-            prefix_text[common_length] = '\0';
-            if (shell_replace_span(line, line_size, length_io, cursor_io, start, end, prefix_text, 0) != 0) {
-                rt_write_char(1, '\a');
-                return;
-            }
-            refresh_input_line(prompt, line, *length_io, *cursor_io);
-            return;
-        }
-    }
-
-    rt_write_char(1, '\a');
-    shell_print_completion_list(matches, match_count);
     refresh_input_line(prompt, line, *length_io, *cursor_io);
+}
+
+static void shell_apply_cooked_input_edits(char *line, size_t line_size) {
+    char edited[SH_MAX_LINE];
+    size_t in = 0;
+    size_t length = 0;
+    size_t cursor = 0;
+
+    edited[0] = '\0';
+    while (line[in] != '\0') {
+        unsigned char ch = (unsigned char)line[in++];
+
+        if (ch == 1U) {
+            cursor = 0U;
+            continue;
+        }
+        if (ch == 5U) {
+            cursor = length;
+            continue;
+        }
+        if (ch == 11U) {
+            edited[cursor] = '\0';
+            length = cursor;
+            continue;
+        }
+        if (ch == 21U) {
+            if (cursor > 0U) {
+                memmove(edited, edited + cursor, length - cursor + 1U);
+                length -= cursor;
+                cursor = 0U;
+            }
+            continue;
+        }
+        if (ch == 23U) {
+            size_t word_start = cursor;
+            while (word_start > 0U && (edited[word_start - 1U] == ' ' || edited[word_start - 1U] == '\t')) {
+                word_start -= 1U;
+            }
+            while (word_start > 0U && !shell_is_token_separator(edited[word_start - 1U])) {
+                word_start -= 1U;
+            }
+            if (word_start < cursor) {
+                memmove(edited + word_start, edited + cursor, length - cursor + 1U);
+                length -= (cursor - word_start);
+                cursor = word_start;
+            }
+            continue;
+        }
+        if (ch == 127U || ch == 8U) {
+            if (cursor > 0U) {
+                memmove(edited + cursor - 1U, edited + cursor, length - cursor + 1U);
+                cursor -= 1U;
+                length -= 1U;
+            }
+            continue;
+        }
+        if (ch == '\t') {
+            (void)shell_apply_completion(edited, line_size, &length, &cursor, 0);
+            continue;
+        }
+        if (ch >= 32U && length + 1U < line_size) {
+            memmove(edited + cursor + 1U, edited + cursor, length - cursor + 1U);
+            edited[cursor] = (char)ch;
+            cursor += 1U;
+            length += 1U;
+        }
+    }
+
+    memcpy(line, edited, length + 1U);
 }
 
 static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
@@ -542,7 +627,11 @@ static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
         if (platform_isatty(0)) {
             rt_write_cstr(1, prompt);
         }
-        return sh_read_line_from_fd(0, line, line_size, eof_out);
+        result = sh_read_line_from_fd(0, line, line_size, eof_out);
+        if (result == 0 && line[0] != '\0') {
+            shell_apply_cooked_input_edits(line, line_size);
+        }
+        return result;
     }
 
     refresh_input_line(prompt, line, length, cursor);

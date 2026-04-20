@@ -55,6 +55,10 @@ typedef struct {
     char active_targets[MAKE_MAX_RULES][MAKE_NAME_CAPACITY];
     size_t active_count;
     int dry_run;
+    int silent;
+    int always_make;
+    int jobs_flag_present;
+    unsigned long long requested_jobs;
 } MakeProgram;
 
 /* ── make_parse.c ── */

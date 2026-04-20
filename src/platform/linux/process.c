@@ -220,7 +220,10 @@ int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) 
     memcpy(state_out->bytes, &saved, sizeof(saved));
 
     raw = saved;
-    raw.c_lflag &= ~(LINUX_ICANON | LINUX_ECHO);
+    raw.c_iflag &= ~(LINUX_BRKINT | LINUX_ICRNL | LINUX_INPCK | LINUX_ISTRIP | LINUX_IXON);
+    raw.c_oflag &= ~LINUX_OPOST;
+    raw.c_cflag |= LINUX_CS8;
+    raw.c_lflag &= ~(LINUX_ECHO | LINUX_ICANON | LINUX_IEXTEN | LINUX_ISIG);
     raw.c_cc[LINUX_VMIN] = 1;
     raw.c_cc[LINUX_VTIME] = 0;
 

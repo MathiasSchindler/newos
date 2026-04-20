@@ -5,7 +5,7 @@
 #include "tool_util.h"
 #include "sh/shell_shared.h"
 
-#define SH_MAX_POSITIONAL_ARGS 16
+#define SH_MAX_POSITIONAL_ARGS SH_MAX_ARGS
 #define SH_POSITIONAL_ARG_CAPACITY 256
 
 static int run_line(char *line);
@@ -22,6 +22,7 @@ ShAlias shell_aliases[SH_MAX_ALIASES];
 ShFunction shell_functions[SH_MAX_FUNCTIONS];
 static int shell_positional_argc = 0;
 static char shell_positional_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY];
+static char shell_parameter_zero[SH_POSITIONAL_ARG_CAPACITY];
 
 int sh_is_name_start_char(char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
@@ -62,10 +63,31 @@ static const char *shell_get_positional_parameter(unsigned long long index) {
     return shell_positional_args[index - 1];
 }
 
-static void shell_set_positional_parameters(const ShCommand *cmd) {
+const char *sh_get_shell_parameter_zero(void) {
+    return shell_parameter_zero[0] != '\0' ? shell_parameter_zero : "sh";
+}
+
+void sh_set_shell_invocation_name(const char *name) {
+    if (name == 0 || name[0] == '\0') {
+        rt_copy_string(shell_parameter_zero, sizeof(shell_parameter_zero), "sh");
+        return;
+    }
+    rt_copy_string(shell_parameter_zero, sizeof(shell_parameter_zero), name);
+}
+
+static void shell_clear_positional_parameters(void) {
     int i;
 
     shell_positional_argc = 0;
+    for (i = 0; i < SH_MAX_POSITIONAL_ARGS; ++i) {
+        shell_positional_args[i][0] = '\0';
+    }
+}
+
+static void shell_set_positional_parameters(const ShCommand *cmd) {
+    int i;
+
+    shell_clear_positional_parameters();
     for (i = 1; i < cmd->argc && shell_positional_argc < SH_MAX_POSITIONAL_ARGS; ++i) {
         rt_copy_string(shell_positional_args[shell_positional_argc], sizeof(shell_positional_args[0]), cmd->argv[i]);
         shell_positional_argc += 1;
@@ -82,6 +104,73 @@ static void shell_restore_positional_parameters(int saved_argc, char saved_args[
     for (; i < SH_MAX_POSITIONAL_ARGS; ++i) {
         shell_positional_args[i][0] = '\0';
     }
+}
+
+int sh_set_shell_positionals_from_argv(int argc, char *const *argv, int start_index) {
+    int i;
+
+    shell_clear_positional_parameters();
+    for (i = start_index; i < argc && shell_positional_argc < SH_MAX_POSITIONAL_ARGS; ++i) {
+        rt_copy_string(shell_positional_args[shell_positional_argc], sizeof(shell_positional_args[0]), argv[i]);
+        shell_positional_argc += 1;
+    }
+
+    return 0;
+}
+
+int sh_shift_shell_positionals(unsigned int count) {
+    unsigned int i;
+    unsigned int new_argc;
+
+    if (count == 0U) {
+        return 0;
+    }
+
+    if (count > (unsigned int)shell_positional_argc) {
+        shell_clear_positional_parameters();
+        return 0;
+    }
+
+    new_argc = (unsigned int)shell_positional_argc - count;
+    for (i = 0U; i < new_argc; ++i) {
+        rt_copy_string(shell_positional_args[i], sizeof(shell_positional_args[0]), shell_positional_args[i + count]);
+    }
+    for (i = new_argc; i < SH_MAX_POSITIONAL_ARGS; ++i) {
+        shell_positional_args[i][0] = '\0';
+    }
+    shell_positional_argc = (int)new_argc;
+    return 0;
+}
+
+static int shell_join_positional_parameters(char *buffer, size_t buffer_size) {
+    int i;
+    size_t out = 0;
+
+    if (buffer_size == 0U) {
+        return -1;
+    }
+
+    buffer[0] = '\0';
+    for (i = 0; i < shell_positional_argc; ++i) {
+        const char *text = shell_positional_args[i];
+        size_t j = 0;
+
+        if (i > 0) {
+            if (out + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[out++] = ' ';
+        }
+
+        while (text[j] != '\0') {
+            if (out + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[out++] = text[j++];
+        }
+    }
+    buffer[out] = '\0';
+    return 0;
 }
 
 static int path_exists_as_file(const char *path) {
@@ -587,6 +676,7 @@ static int expand_shell_parameters(char *line) {
         if (line[i] == '$') {
             char name[128];
             char value[64];
+            char positional_join[SH_MAX_LINE];
             size_t name_len = 0;
             const char *replacement = "";
 
@@ -595,11 +685,17 @@ static int expand_shell_parameters(char *line) {
                 replacement = value;
                 i += 2;
             } else if (line[i + 1] == '0') {
-                replacement = shell_self_path;
+                replacement = sh_get_shell_parameter_zero();
                 i += 2;
             } else if (line[i + 1] == '#') {
                 rt_unsigned_to_string((unsigned long long)shell_positional_argc, value, sizeof(value));
                 replacement = value;
+                i += 2;
+            } else if (line[i + 1] == '*' || line[i + 1] == '@') {
+                if (shell_join_positional_parameters(positional_join, sizeof(positional_join)) != 0) {
+                    return -1;
+                }
+                replacement = positional_join;
                 i += 2;
             } else if (line[i + 1] >= '1' && line[i + 1] <= '9') {
                 replacement = shell_get_positional_parameter((unsigned long long)(line[i + 1] - '0'));
@@ -617,6 +713,13 @@ static int expand_shell_parameters(char *line) {
                 if (rt_strcmp(name, "#") == 0) {
                     rt_unsigned_to_string((unsigned long long)shell_positional_argc, value, sizeof(value));
                     replacement = value;
+                } else if (rt_strcmp(name, "0") == 0) {
+                    replacement = sh_get_shell_parameter_zero();
+                } else if (rt_strcmp(name, "*") == 0 || rt_strcmp(name, "@") == 0) {
+                    if (shell_join_positional_parameters(positional_join, sizeof(positional_join)) != 0) {
+                        return -1;
+                    }
+                    replacement = positional_join;
                 } else if (rt_is_digit_string(name)) {
                     unsigned long long index = 0;
                     if (rt_parse_uint(name, &index) != 0) {
@@ -1156,6 +1259,8 @@ int main(int argc, char **argv) {
     int argi = 1;
 
     set_shell_self_path((argc > 0) ? argv[0] : "sh");
+    sh_set_shell_invocation_name((argc > 0) ? argv[0] : "sh");
+    shell_clear_positional_parameters();
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "--") == 0) {
@@ -1184,6 +1289,13 @@ int main(int argc, char **argv) {
                 return 2;
             }
 
+            if (argi + 2 < argc) {
+                sh_set_shell_invocation_name(argv[argi + 2]);
+                (void)sh_set_shell_positionals_from_argv(argc, argv, argi + 3);
+            } else {
+                sh_set_shell_invocation_name((argc > 0) ? argv[0] : "sh");
+                shell_clear_positional_parameters();
+            }
             memcpy(buffer, argv[argi + 1], len + 1);
             return run_line(buffer);
         }
@@ -1201,6 +1313,8 @@ int main(int argc, char **argv) {
             return 1;
         }
 
+        sh_set_shell_invocation_name(argv[argi]);
+        (void)sh_set_shell_positionals_from_argv(argc, argv, argi + 1);
         result = process_stream(fd, interactive_requested);
         platform_close(fd);
         return result;

@@ -129,6 +129,8 @@ typedef struct {
     unsigned int timeout_seconds;
     unsigned int payload_size;
     unsigned int ttl;
+    unsigned int deadline_seconds;
+    int quiet_output;
 } PlatformPingOptions;
 
 typedef struct {
@@ -136,6 +138,10 @@ typedef struct {
     int use_udp;
     int scan_mode;
     unsigned int timeout_milliseconds;
+    int family;
+    int numeric_only;
+    unsigned int bind_port;
+    char bind_host[PLATFORM_NETWORK_TEXT_CAPACITY];
 } PlatformNetcatOptions;
 
 typedef struct {

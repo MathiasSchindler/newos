@@ -4,7 +4,7 @@
 #include "runtime.h"
 
 static const char *const SH_BUILTIN_NAMES[] = {
-    "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias"
+    "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias", "set", "shift"
 };
 
 size_t sh_shell_builtin_count(void) {
@@ -93,7 +93,11 @@ static int builtin_bg(int argc, char **argv) {
 }
 
 static int builtin_cd(const ShCommand *cmd) {
-    const char *path = (cmd->argc >= 2) ? cmd->argv[1] : ".";
+    const char *path = (cmd->argc >= 2) ? cmd->argv[1] : platform_getenv("HOME");
+
+    if (path == 0 || path[0] == '\0') {
+        path = ".";
+    }
 
     if (platform_change_directory(path) != 0) {
         rt_write_cstr(2, "sh: cd failed: ");
@@ -202,6 +206,30 @@ static int builtin_command_command(const ShCommand *cmd) {
     return exit_code;
 }
 
+static int builtin_set_command(const ShCommand *cmd) {
+    if (cmd->argc == 1) {
+        return 0;
+    }
+
+    if (rt_strcmp(cmd->argv[1], "--") != 0) {
+        rt_write_line(2, "Usage: set -- [ARG ...]");
+        return 2;
+    }
+
+    return sh_set_shell_positionals_from_argv(cmd->argc, cmd->argv, 2);
+}
+
+static int builtin_shift_command(const ShCommand *cmd) {
+    unsigned long long count = 1;
+
+    if (cmd->argc >= 2 && rt_parse_uint(cmd->argv[1], &count) != 0) {
+        rt_write_line(2, "sh: shift requires numeric count");
+        return 2;
+    }
+
+    return sh_shift_shell_positionals((unsigned int)count);
+}
+
 int sh_is_shell_builtin_name(const char *name) {
     size_t i;
 
@@ -270,6 +298,16 @@ int sh_try_run_builtin(const ShPipeline *pipeline, int *status_out) {
 
     if (rt_strcmp(cmd->argv[0], "command") == 0) {
         *status_out = builtin_command_command(cmd);
+        return 1;
+    }
+
+    if (rt_strcmp(cmd->argv[0], "set") == 0) {
+        *status_out = builtin_set_command(cmd);
+        return 1;
+    }
+
+    if (rt_strcmp(cmd->argv[0], "shift") == 0) {
+        *status_out = builtin_shift_command(cmd);
         return 1;
     }
 

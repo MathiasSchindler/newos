@@ -6,6 +6,7 @@
 #define TAR_BLOCK_SIZE 512
 #define TAR_PATH_CAPACITY 1024
 #define TAR_ENTRY_CAPACITY 1024
+#define TAR_MAX_PATTERNS 64
 
 typedef enum {
     TAR_COMPRESS_NONE = 0,
@@ -165,6 +166,155 @@ static void tar_copy_name(char *dst, size_t dst_size, const char *src) {
     }
 }
 
+static void tar_copy_trimmed_path(char *dst, size_t dst_size, const char *src) {
+    size_t len = rt_strlen(src);
+
+    while (len > 1 && src[len - 1] == '/') {
+        len -= 1;
+    }
+    if (len + 1 > dst_size) {
+        len = dst_size - 1;
+    }
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+static int tar_split_header_path(TarHeader *header, const char *stored_name) {
+    char normalized[TAR_PATH_CAPACITY];
+    size_t len;
+    size_t i;
+
+    tar_copy_trimmed_path(normalized, sizeof(normalized), stored_name);
+    len = rt_strlen(normalized);
+    if (len == 0) {
+        return -1;
+    }
+
+    if (len < sizeof(header->name)) {
+        tar_copy_name(header->name, sizeof(header->name), normalized);
+        return 0;
+    }
+
+    for (i = len; i > 0; --i) {
+        size_t prefix_len;
+        size_t name_len;
+        if (normalized[i - 1] != '/') {
+            continue;
+        }
+        prefix_len = i - 1;
+        name_len = len - i;
+        if (prefix_len > 0 && prefix_len < sizeof(header->prefix) && name_len > 0 && name_len < sizeof(header->name)) {
+            memcpy(header->prefix, normalized, prefix_len);
+            header->prefix[prefix_len] = '\0';
+            memcpy(header->name, normalized + i, name_len);
+            header->name[name_len] = '\0';
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+static int tar_header_path(const TarHeader *header, char *buffer, size_t buffer_size) {
+    if (header->prefix[0] != '\0') {
+        return tool_join_path(header->prefix, header->name, buffer, buffer_size);
+    }
+    rt_copy_string(buffer, buffer_size, header->name);
+    return 0;
+}
+
+static int tar_path_matches(const char *path, char patterns[][TAR_PATH_CAPACITY], size_t pattern_count) {
+    char normalized_path[TAR_PATH_CAPACITY];
+    size_t i;
+
+    if (pattern_count == 0) {
+        return 1;
+    }
+
+    tar_copy_trimmed_path(normalized_path, sizeof(normalized_path), path);
+    for (i = 0; i < pattern_count; ++i) {
+        char normalized_pattern[TAR_PATH_CAPACITY];
+        tar_copy_trimmed_path(normalized_pattern, sizeof(normalized_pattern), patterns[i]);
+        if (tool_wildcard_match(normalized_pattern, normalized_path)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int tar_path_is_unsafe(const char *path) {
+    size_t i = 0;
+
+    if (path == 0 || path[0] == '\0' || path[0] == '/') {
+        return 1;
+    }
+
+    while (path[i] != '\0') {
+        size_t start;
+        size_t len;
+
+        while (path[i] == '/') {
+            i += 1;
+        }
+        start = i;
+        while (path[i] != '\0' && path[i] != '/') {
+            i += 1;
+        }
+        len = i - start;
+        if (len == 2 && path[start] == '.' && path[start + 1] == '.') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int tar_strip_components(const char *path, unsigned int strip_components, char *buffer, size_t buffer_size) {
+    size_t i = 0;
+    unsigned int stripped = 0;
+
+    while (path[i] == '/') {
+        i += 1;
+    }
+    while (stripped < strip_components) {
+        if (path[i] == '\0') {
+            return 1;
+        }
+        while (path[i] != '\0' && path[i] != '/') {
+            i += 1;
+        }
+        while (path[i] == '/') {
+            i += 1;
+        }
+        stripped += 1U;
+    }
+
+    if (path[i] == '\0') {
+        return 1;
+    }
+
+    rt_copy_string(buffer, buffer_size, path + i);
+    return 0;
+}
+
+static int tar_write_display_name(const char *path, int is_directory) {
+    size_t len = rt_strlen(path);
+
+    if (is_directory && (len == 0 || path[len - 1] != '/')) {
+        char display[TAR_PATH_CAPACITY];
+        if (len + 2 > sizeof(display)) {
+            return rt_write_line(1, path);
+        }
+        memcpy(display, path, len);
+        display[len] = '/';
+        display[len + 1] = '\0';
+        return rt_write_line(1, display);
+    }
+
+    return rt_write_line(1, path);
+}
+
 static int build_temp_path(const char *base_path, const char *suffix, char *buffer, size_t buffer_size) {
     size_t base_len = rt_strlen(base_path);
     size_t suffix_len = rt_strlen(suffix);
@@ -272,11 +422,10 @@ static int write_padding(int fd, unsigned long long size) {
 static int fill_header(TarHeader *header, const char *stored_name, const PlatformDirEntry *entry, char typeflag) {
     rt_memset(header, 0, sizeof(*header));
 
-    if (rt_strlen(stored_name) >= sizeof(header->name)) {
+    if (tar_split_header_path(header, stored_name) != 0) {
         return -1;
     }
 
-    tar_copy_name(header->name, sizeof(header->name), stored_name);
     archive_write_octal(header->mode, sizeof(header->mode), (unsigned long long)(entry->mode & 0777U));
     archive_write_octal(header->uid, sizeof(header->uid), 0);
     archive_write_octal(header->gid, sizeof(header->gid), 0);
@@ -291,11 +440,20 @@ static int fill_header(TarHeader *header, const char *stored_name, const Platfor
     return 0;
 }
 
-static int archive_path(int archive_fd, const char *path, const char *stored_name, int verbose) {
+static int archive_path(int archive_fd,
+                        const char *path,
+                        const char *stored_name,
+                        int verbose,
+                        char exclude_patterns[][TAR_PATH_CAPACITY],
+                        size_t exclude_count) {
     PlatformDirEntry entries[TAR_ENTRY_CAPACITY];
     size_t count = 0;
     int is_directory = 0;
     size_t i;
+
+    if (exclude_count > 0 && tar_path_matches(stored_name, exclude_patterns, exclude_count)) {
+        return 0;
+    }
 
     if (platform_collect_entries(path, 1, entries, TAR_ENTRY_CAPACITY, &count, &is_directory) != 0 || count == 0) {
         return -1;
@@ -303,25 +461,11 @@ static int archive_path(int archive_fd, const char *path, const char *stored_nam
 
     if (is_directory) {
         TarHeader header;
-        char dir_name[TAR_PATH_CAPACITY];
-        size_t len = rt_strlen(stored_name);
 
-        if (len + 2 > sizeof(dir_name)) {
+        if (fill_header(&header, stored_name, &entries[0], '5') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
             return -1;
         }
-
-        memcpy(dir_name, stored_name, len);
-        if (len == 0 || dir_name[len - 1] != '/') {
-            dir_name[len] = '/';
-            dir_name[len + 1] = '\0';
-        } else {
-            dir_name[len] = '\0';
-        }
-
-        if (fill_header(&header, dir_name, &entries[0], '5') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
-            return -1;
-        }
-        if (verbose && rt_write_line(1, dir_name) != 0) {
+        if (verbose && tar_write_display_name(stored_name, 1) != 0) {
             return -1;
         }
 
@@ -338,7 +482,7 @@ static int archive_path(int archive_fd, const char *path, const char *stored_nam
                 return -1;
             }
 
-            if (archive_path(archive_fd, child_path, child_name, verbose) != 0) {
+            if (archive_path(archive_fd, child_path, child_name, verbose, exclude_patterns, exclude_count) != 0) {
                 return -1;
             }
         }
@@ -354,7 +498,7 @@ static int archive_path(int archive_fd, const char *path, const char *stored_nam
         if (fill_header(&header, stored_name, &entries[0], '0') != 0 || rt_write_all(archive_fd, &header, sizeof(header)) != 0) {
             return -1;
         }
-        if (verbose && rt_write_line(1, stored_name) != 0) {
+        if (verbose && tar_write_display_name(stored_name, 0) != 0) {
             return -1;
         }
 
@@ -397,14 +541,25 @@ static int ensure_parent_dirs(char *path) {
     return 0;
 }
 
-static int extract_archive(int archive_fd, int list_only, int verbose) {
+static int extract_archive(int archive_fd,
+                           int list_only,
+                           int verbose,
+                           char member_patterns[][TAR_PATH_CAPACITY],
+                           size_t member_count,
+                           char exclude_patterns[][TAR_PATH_CAPACITY],
+                           size_t exclude_count,
+                           unsigned int strip_components,
+                           int allow_absolute_names) {
     unsigned char block[TAR_BLOCK_SIZE];
 
     for (;;) {
         TarHeader *header;
         unsigned long long size;
         unsigned long long padding;
-        char path[TAR_PATH_CAPACITY];
+        char stored_path[TAR_PATH_CAPACITY];
+        char output_path[TAR_PATH_CAPACITY];
+        int is_directory;
+        int strip_result;
 
         if (read_exact(archive_fd, block, sizeof(block)) != 0) {
             return -1;
@@ -415,12 +570,36 @@ static int extract_archive(int archive_fd, int list_only, int verbose) {
         }
 
         header = (TarHeader *)block;
-        tar_copy_name(path, sizeof(path), header->name);
+        if (tar_header_path(header, stored_path, sizeof(stored_path)) != 0) {
+            return -1;
+        }
         size = archive_parse_octal(header->size, sizeof(header->size));
         padding = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
+        is_directory = (header->typeflag == '5');
+
+        if (!tar_path_matches(stored_path, member_patterns, member_count) ||
+            (exclude_count > 0 && tar_path_matches(stored_path, exclude_patterns, exclude_count))) {
+            if (skip_exact(archive_fd, size + padding) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (!list_only && !allow_absolute_names && tar_path_is_unsafe(stored_path)) {
+            tool_write_error("tar", "refusing unsafe path in archive: ", stored_path);
+            return -1;
+        }
+
+        strip_result = tar_strip_components(stored_path, strip_components, output_path, sizeof(output_path));
+        if (strip_result != 0) {
+            if (skip_exact(archive_fd, size + padding) != 0) {
+                return -1;
+            }
+            continue;
+        }
 
         if (list_only || verbose) {
-            if (rt_write_line(1, path) != 0) {
+            if (tar_write_display_name(output_path, is_directory) != 0) {
                 return -1;
             }
         }
@@ -432,15 +611,15 @@ static int extract_archive(int archive_fd, int list_only, int verbose) {
             continue;
         }
 
-        ensure_parent_dirs(path);
+        ensure_parent_dirs(output_path);
 
-        if (header->typeflag == '5') {
-            (void)platform_make_directory(path, 0755U);
+        if (is_directory) {
+            (void)platform_make_directory(output_path, 0755U);
             continue;
         }
 
         {
-            int out_fd = platform_open_write(path, 0644U);
+            int out_fd = platform_open_write(output_path, 0644U);
             unsigned char data[4096];
             unsigned long long remaining = size;
 
@@ -458,7 +637,7 @@ static int extract_archive(int archive_fd, int list_only, int verbose) {
             }
 
             platform_close(out_fd);
-            (void)platform_change_mode(path, (unsigned int)archive_parse_octal(header->mode, sizeof(header->mode)));
+            (void)platform_change_mode(output_path, (unsigned int)archive_parse_octal(header->mode, sizeof(header->mode)));
         }
 
         if (padding > 0ULL && skip_exact(archive_fd, padding) != 0) {
@@ -523,24 +702,74 @@ int main(int argc, char **argv) {
     int extract_mode = 0;
     int list_mode = 0;
     int verbose_mode = 0;
+    int allow_absolute_names = 0;
     TarCompression compression = TAR_COMPRESS_NONE;
     char archive_path_buffer[TAR_PATH_CAPACITY];
+    char exclude_patterns[TAR_MAX_PATTERNS][TAR_PATH_CAPACITY];
+    char member_patterns[TAR_MAX_PATTERNS][TAR_PATH_CAPACITY];
+    size_t exclude_count = 0;
+    size_t member_count = 0;
     const char *archive_path_name = 0;
     const char *change_dir = 0;
+    unsigned int strip_components = 0U;
     int path_start = argc;
     int i;
 
     archive_path_buffer[0] = '\0';
 
     if (argc < 3) {
-        rt_write_line(2, "Usage: tar [-v] [-C dir] -cf archive.tar paths... | tar [-v] [-C dir] -xf archive.tar | tar -tf archive.tar");
+        rt_write_line(2, "Usage: tar [-v] [-P] [-C dir] [--exclude PATTERN] [-cf archive.tar paths...]");
+        rt_write_line(2, "       tar [-v] [-P] [-C dir] [--strip-components N] -xf archive.tar [members...]");
+        rt_write_line(2, "       tar [-v] [--strip-components N] -tf archive.tar [members...]");
         return 1;
     }
 
     for (i = 1; i < argc; ++i) {
         if (rt_strcmp(argv[i], "--help") == 0) {
-            rt_write_line(2, "Usage: tar [-v] [-C dir] -cf archive.tar paths... | tar [-v] [-C dir] -xf archive.tar | tar -tf archive.tar");
+            rt_write_line(2, "Usage: tar [-v] [-P] [-C dir] [--exclude PATTERN] [-cf archive.tar paths...]");
+            rt_write_line(2, "       tar [-v] [-P] [-C dir] [--strip-components N] -xf archive.tar [members...]");
+            rt_write_line(2, "       tar [-v] [--strip-components N] -tf archive.tar [members...]");
             return 0;
+        }
+        if (rt_strcmp(argv[i], "--") == 0) {
+            path_start = i + 1;
+            break;
+        }
+        if (rt_strcmp(argv[i], "--absolute-names") == 0) {
+            allow_absolute_names = 1;
+            continue;
+        }
+        if (rt_strncmp(argv[i], "--exclude=", 10) == 0) {
+            if (exclude_count >= TAR_MAX_PATTERNS) {
+                rt_write_line(2, "tar: too many exclude patterns");
+                return 1;
+            }
+            rt_copy_string(exclude_patterns[exclude_count++], TAR_PATH_CAPACITY, argv[i] + 10);
+            continue;
+        }
+        if (rt_strcmp(argv[i], "--exclude") == 0) {
+            if (i + 1 >= argc || exclude_count >= TAR_MAX_PATTERNS) {
+                rt_write_line(2, "tar: pattern required after --exclude");
+                return 1;
+            }
+            rt_copy_string(exclude_patterns[exclude_count++], TAR_PATH_CAPACITY, argv[++i]);
+            continue;
+        }
+        if (rt_strncmp(argv[i], "--strip-components=", 19) == 0) {
+            unsigned long long strip_value = 0ULL;
+            if (tool_parse_uint_arg(argv[i] + 19, &strip_value, "tar", "strip-components") != 0) {
+                return 1;
+            }
+            strip_components = (unsigned int)strip_value;
+            continue;
+        }
+        if (rt_strcmp(argv[i], "--strip-components") == 0) {
+            unsigned long long strip_value = 0ULL;
+            if (i + 1 >= argc || tool_parse_uint_arg(argv[++i], &strip_value, "tar", "strip-components") != 0) {
+                return 1;
+            }
+            strip_components = (unsigned int)strip_value;
+            continue;
         }
         if (argv[i][0] != '-' || argv[i][1] == '\0') {
             path_start = i;
@@ -558,6 +787,8 @@ int main(int argc, char **argv) {
                     list_mode = 1;
                 } else if (*opt == 'v') {
                     verbose_mode = 1;
+                } else if (*opt == 'P') {
+                    allow_absolute_names = 1;
                 } else if (*opt == 'z') {
                     compression = TAR_COMPRESS_GZIP;
                 } else if (*opt == 'j') {
@@ -593,8 +824,28 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if ((create_mode + extract_mode + list_mode) != 1) {
+        rt_write_line(2, "tar: choose exactly one of -c, -x, or -t");
+        return 1;
+    }
+
     if (compression == TAR_COMPRESS_NONE) {
         compression = detect_compression(archive_path_name);
+    }
+
+    if ((extract_mode || list_mode) && path_start < argc) {
+        for (i = path_start; i < argc; ++i) {
+            if (member_count >= TAR_MAX_PATTERNS) {
+                rt_write_line(2, "tar: too many member patterns");
+                return 1;
+            }
+            rt_copy_string(member_patterns[member_count++], TAR_PATH_CAPACITY, argv[i]);
+        }
+    }
+
+    if (create_mode && strip_components != 0U) {
+        rt_write_line(2, "tar: --strip-components is only valid with -x or -t");
+        return 1;
     }
 
     if (create_mode) {
@@ -641,10 +892,11 @@ int main(int argc, char **argv) {
 
         rt_memset(zeros, 0, sizeof(zeros));
         for (i = path_start; i < argc; ++i) {
-            if (rt_strcmp(argv[i], archive_path_name) == 0) {
+            if ((!is_dash_path(archive_path_name) && tool_paths_equal(argv[i], archive_path_name)) ||
+                (!is_dash_path(write_path) && tool_paths_equal(argv[i], write_path))) {
                 continue;
             }
-            if (archive_path(archive_fd, argv[i], argv[i], verbose_mode) != 0) {
+            if (archive_path(archive_fd, argv[i], argv[i], verbose_mode, exclude_patterns, exclude_count) != 0) {
                 if (close_archive_fd) {
                     platform_close(archive_fd);
                 }
@@ -712,7 +964,15 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        result = extract_archive(archive_fd, list_mode, verbose_mode);
+        result = extract_archive(archive_fd,
+                                 list_mode,
+                                 verbose_mode,
+                                 member_patterns,
+                                 member_count,
+                                 exclude_patterns,
+                                 exclude_count,
+                                 strip_components,
+                                 allow_absolute_names);
         if (close_archive_fd) {
             platform_close(archive_fd);
         }
@@ -721,6 +981,6 @@ int main(int argc, char **argv) {
         return (result == 0) ? 0 : 1;
     }
 
-    rt_write_line(2, "tar: choose one of -c, -x, or -t");
+    rt_write_line(2, "tar: choose exactly one of -c, -x, or -t");
     return 1;
 }

@@ -332,7 +332,10 @@ int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) 
     memcpy(state_out->bytes, &saved, sizeof(saved));
 
     raw = saved;
-    raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    raw.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= (tcflag_t)~(OPOST);
+    raw.c_cflag |= (tcflag_t)CS8;
+    raw.c_lflag &= (tcflag_t)~(ECHO | ICANON | IEXTEN | ISIG);
     raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
 
