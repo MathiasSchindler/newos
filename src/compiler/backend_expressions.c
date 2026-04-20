@@ -9,6 +9,7 @@ static int emit_binary_op(BackendState *state, const char *op);
 static int expr_parse_expression(ExprParser *parser);
 static int expr_parse_assignment(ExprParser *parser);
 static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized);
+static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index);
 static int expr_parse_unary(ExprParser *parser);
 static int expr_parse_multiplicative(ExprParser *parser);
 static int expr_parse_additive(ExprParser *parser);
@@ -642,6 +643,36 @@ static int expr_group_has_postfix_incdec(ExprParser *parser) {
             depth -= 1;
         }
         expr_next(&snapshot);
+    }
+    return 0;
+}
+
+static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index) {
+    while (parser->current.kind == EXPR_TOKEN_PUNCT) {
+        if (names_equal(parser->current.text, "[")) {
+            expr_next(parser);
+            if (emit_push_value(parser->state) != 0 ||
+                expr_parse_expression(parser) != 0 ||
+                expr_expect_punct(parser, "]") != 0 ||
+                emit_index_address(parser->state, word_index) != 0) {
+                return -1;
+            }
+            *byte_sized = word_index ? 0 : 1;
+            word_index = 0;
+            continue;
+        }
+        if (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->")) {
+            expr_next(parser);
+            if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
+                backend_set_error(parser->state->backend, "unsupported assignment target in backend");
+                return -1;
+            }
+            word_index = member_prefers_word_index(parser->current.text);
+            *byte_sized = word_index ? 0 : 1;
+            expr_next(parser);
+            continue;
+        }
+        break;
     }
     return 0;
 }
@@ -1561,11 +1592,23 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         return expr_parse_compound_literal(parser, 1, byte_sized);
     }
 
+    if (expr_looks_like_cast(parser)) {
+        expr_next(parser);
+        while (parser->current.kind != EXPR_TOKEN_EOF &&
+               !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
+            expr_next(parser);
+        }
+        if (expr_expect_punct(parser, ")") != 0 || expr_parse_unary(parser) != 0) {
+            return -1;
+        }
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0);
+    }
+
     if (expr_match_punct(parser, "(")) {
         if (expr_parse_lvalue_address(parser, byte_sized) != 0 || expr_expect_punct(parser, ")") != 0) {
             return -1;
         }
-        return 0;
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0);
     }
 
     if (expr_match_punct(parser, "*")) {
@@ -1593,33 +1636,7 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
             return -1;
         }
 
-        while (parser->current.kind == EXPR_TOKEN_PUNCT) {
-            if (names_equal(parser->current.text, "[")) {
-                expr_next(parser);
-                if (emit_push_value(parser->state) != 0 ||
-                    expr_parse_expression(parser) != 0 ||
-                    expr_expect_punct(parser, "]") != 0 ||
-                    emit_index_address(parser->state, word_index) != 0) {
-                    return -1;
-                }
-                *byte_sized = word_index ? 0 : 1;
-                word_index = 0;
-                continue;
-            }
-            if (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->")) {
-                expr_next(parser);
-                if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
-                    backend_set_error(parser->state->backend, "unsupported assignment target in backend");
-                    return -1;
-                }
-                *byte_sized = member_prefers_word_index(parser->current.text) ? 0 : 1;
-                expr_next(parser);
-                continue;
-            }
-            break;
-        }
-
-        return 0;
+        return expr_parse_lvalue_suffixes(parser, byte_sized, word_index);
     }
 
     backend_set_error(parser->state->backend, "unsupported assignment target in backend");

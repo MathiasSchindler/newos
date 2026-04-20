@@ -215,16 +215,26 @@ int parse_signed_value(const char *text, long long *value_out) {
     return 0;
 }
 
-int add_function_name(BackendState *state, const char *name, int global) {
+static int find_function_index(const BackendState *state, const char *name) {
     size_t i;
 
     for (i = 0; i < state->function_count; ++i) {
         if (names_equal(state->functions[i].name, name)) {
-            if (global) {
-                state->functions[i].global = 1;
-            }
-            return 0;
+            return (int)i;
         }
+    }
+
+    return -1;
+}
+
+int add_function_name(BackendState *state, const char *name, int global) {
+    int existing = find_function_index(state, name);
+
+    if (existing >= 0) {
+        if (global) {
+            state->functions[existing].global = 1;
+        }
+        return 0;
     }
 
     if (state->function_count >= COMPILER_BACKEND_MAX_FUNCTIONS) {
@@ -234,6 +244,7 @@ int add_function_name(BackendState *state, const char *name, int global) {
 
     rt_copy_string(state->functions[state->function_count].name, sizeof(state->functions[state->function_count].name), name);
     state->functions[state->function_count].global = global ? 1 : 0;
+    state->functions[state->function_count].stack_bytes = 0;
     state->function_count += 1U;
     return 0;
 }
@@ -252,13 +263,7 @@ int should_prefer_word_index(const char *name, const char *type_text) {
 }
 
 int is_function_name(const BackendState *state, const char *name) {
-    size_t i;
-    for (i = 0; i < state->function_count; ++i) {
-        if (names_equal(state->functions[i].name, name)) {
-            return 1;
-        }
-    }
-    return 0;
+    return find_function_index(state, name) >= 0;
 }
 
 int find_global(const BackendState *state, const char *name) {
@@ -347,20 +352,7 @@ int find_local(const BackendState *state, const char *name) {
 }
 
 int allocate_local(BackendState *state, const char *name, int is_array, int prefers_word_index) {
-    char line[96];
-    char offset_text[32];
-    int existing = find_local(state, name);
     int slot_size = is_array ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state);
-
-    if (existing >= 0) {
-        if (is_array) {
-            state->locals[existing].is_array = 1;
-        }
-        if (prefers_word_index) {
-            state->locals[existing].prefers_word_index = 1;
-        }
-        return 0;
-    }
 
     if (state->local_count >= COMPILER_BACKEND_MAX_LOCALS) {
         backend_set_error(state->backend, "too many local variables for backend");
@@ -375,23 +367,12 @@ int allocate_local(BackendState *state, const char *name, int is_array, int pref
     state->stack_size += slot_size;
     state->local_count += 1U;
 
-    rt_unsigned_to_string((unsigned long long)slot_size, offset_text, sizeof(offset_text));
-    if (backend_is_aarch64(state)) {
-        if (slot_size <= 4095) {
-            rt_copy_string(line, sizeof(line), "sub sp, sp, #");
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
-            return emit_instruction(state, line);
-        }
-        if (emit_load_immediate_register(state, "x9", slot_size) != 0) {
-            return -1;
-        }
-        return emit_instruction(state, "sub sp, sp, x9");
-    } else {
-        rt_copy_string(line, sizeof(line), "subq $");
-        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
-        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rsp");
-        return emit_instruction(state, line);
+    if (state->reserved_stack_size > 0 && state->stack_size > state->reserved_stack_size) {
+        backend_set_error(state->backend, "local stack reservation mismatch");
+        return -1;
     }
+
+    return 0;
 }
 
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label) {

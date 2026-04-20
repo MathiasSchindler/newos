@@ -29,8 +29,7 @@ assert_file_contains "$WORK_DIR/sample_linux_hex.out" '7f 45 4c 46' "compiler ob
 assert_file_contains "$WORK_DIR/sample_macos_hex.out" 'cf fa ed fe' "compiler macOS object writer did not emit Mach-O magic"
 
 cat > "$WORK_DIR/flow.c" <<'EOF'
-int main(void) {
-    int value = 3;
+int adjust(int value) {
     if (value < 5) {
         value = value + 1;
     } else {
@@ -38,14 +37,18 @@ int main(void) {
     }
     return value;
 }
+
+int main(void) {
+    return adjust(3);
+}
 EOF
 
 "$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_linux.s"
-assert_file_contains "$WORK_DIR/flow_linux.s" '^\.Lelse[0-9][0-9]*:$' "compiler backend missing conditional branch label"
+assert_file_contains "$WORK_DIR/flow_linux.s" '^\.L[a-zA-Z0-9_]*_else[0-9][0-9]*:$' "compiler backend missing conditional branch label"
 assert_file_contains "$WORK_DIR/flow_linux.s" 'addq %rcx, %rax' "compiler backend missing arithmetic lowering"
 
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos.s"
-assert_file_contains "$WORK_DIR/flow_macos.s" 'b\.eq \.Lelse[0-9][0-9]*' "compiler macOS AArch64 backend missing conditional branch"
+assert_file_contains "$WORK_DIR/flow_macos.s" 'b\.eq \.L[a-zA-Z0-9_]*_else[0-9][0-9]*' "compiler macOS AArch64 backend missing conditional branch"
 assert_file_contains "$WORK_DIR/flow_macos.s" 'add x0, x1, x2' "compiler macOS AArch64 backend missing arithmetic lowering"
 
 "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos.o"

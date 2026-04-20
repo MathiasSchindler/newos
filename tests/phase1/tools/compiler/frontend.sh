@@ -27,6 +27,29 @@ assert_file_contains "$WORK_DIR/ast.out" '^function main$' "compiler AST output 
 assert_file_contains "$WORK_DIR/ir.out" '^func main' "compiler IR output missing function header"
 assert_file_contains "$WORK_DIR/ir.out" '^ret 42$' "compiler IR output missing return instruction"
 
+cat > "$WORK_DIR/constant_fold.c" <<'EOF'
+int main(void) {
+    return (6 * 7) - (2 + 1);
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/constant_fold.c" > "$WORK_DIR/constant_fold_ir.out"
+assert_file_contains "$WORK_DIR/constant_fold_ir.out" '^ret 39$' "compiler IR optimizer did not fold a pure integer expression"
+
+cat > "$WORK_DIR/constant_branch.c" <<'EOF'
+int main(void) {
+    if (1 < 2) {
+        return 7;
+    }
+    return 9;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/constant_branch.c" > "$WORK_DIR/constant_branch_ir.out"
+if grep -q '^brfalse ' "$WORK_DIR/constant_branch_ir.out"; then
+    fail "compiler IR optimizer did not simplify a constant branch"
+fi
+
 cat > "$WORK_DIR/local.h" <<'EOF'
 #ifndef LOCAL_H
 #define LOCAL_H

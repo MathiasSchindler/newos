@@ -163,6 +163,66 @@ EOF
 
 compile_and_check_native "$WORK_DIR/branch_separator_string.c" "$WORK_DIR/branch_separator_string_bin" "0" "compiler confused a quoted ' ->' string with an IR branch separator"
 
+cat > "$WORK_DIR/casted_member_lvalue.c" <<'EOF'
+typedef struct {
+    unsigned char code;
+} Box;
+
+int main(void) {
+    static unsigned char storage[16];
+    ((Box *)storage)->code = 7;
+    return ((Box *)storage)->code == 7 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/casted_member_lvalue.c" "$WORK_DIR/casted_member_lvalue_bin" "0" "compiler failed on a casted pointer member assignment lvalue"
+
+cat > "$WORK_DIR/shadowed_local_name.c" <<'EOF'
+static int path_is_nonempty(char **argv) {
+    return argv[0][0] != '\0';
+}
+
+int main(int argc, char **argv) {
+    int guard = 0;
+    if (argc > 100) {
+        int j = 1;
+        guard = j;
+    }
+    if (guard == 0) {
+        int j = 0;
+        if (path_is_nonempty(argv)) {
+            return j;
+        }
+        return 2;
+    }
+    return 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/shadowed_local_name.c" "$WORK_DIR/shadowed_local_name_bin" "0" "compiler corrupted a shadowed block-local with the same name in a later scope"
+
+cat > "$WORK_DIR/implicit_fallthrough_return.c" <<'EOF'
+static void copy_text(char *dst, int limit, const char *src) {
+    int i = 0;
+    if (limit == 0) {
+        return;
+    }
+    while (src[i] != '\0' && i + 1 < limit) {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+    dst[i] = '\0';
+}
+
+int main(int argc, char **argv) {
+    char buf[32];
+    copy_text(buf, 32, argc > 0 ? argv[0] : "copy");
+    return buf[0] != '\0' ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/implicit_fallthrough_return.c" "$WORK_DIR/implicit_fallthrough_return_bin" "0" "compiler omitted the function epilogue after an early return in a void helper"
+
 cat > "$WORK_DIR/int128_cast.c" <<'EOF'
 int main(void) {
     unsigned __int128 root = 42;

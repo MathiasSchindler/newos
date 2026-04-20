@@ -779,6 +779,14 @@ static int parse_translation_unit(const CompilerOptions *options) {
         return 1;
     }
 
+    if (compiler_ir_optimize(&parser.ir) != 0) {
+        if (should_close) {
+            (void)platform_close(out_fd);
+        }
+        tool_write_error(options->program_name, "failed while optimizing IR: ", compiler_ir_error_message(&parser.ir));
+        return 1;
+    }
+
     if (options->dump_ir && compiler_ir_write_dump(&parser.ir, out_fd) != 0) {
         if (should_close) {
             (void)platform_close(out_fd);

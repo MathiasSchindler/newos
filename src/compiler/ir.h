@@ -19,6 +19,7 @@ typedef struct {
 
 void compiler_ir_init(CompilerIr *ir);
 int compiler_ir_make_label(CompilerIr *ir, const char *prefix, char *buffer, size_t buffer_size);
+int compiler_ir_optimize(CompilerIr *ir);
 int compiler_ir_emit_function_begin(CompilerIr *ir, const char *name, const CompilerType *type);
 int compiler_ir_emit_function_end(CompilerIr *ir, const char *name);
 int compiler_ir_emit_constant(CompilerIr *ir, const char *name, long long value);

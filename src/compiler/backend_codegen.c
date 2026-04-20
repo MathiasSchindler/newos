@@ -66,6 +66,61 @@ static int parse_const_line(const char *line, char *name, size_t name_size, long
     return parse_signed_value(cursor, value_out);
 }
 
+static int aligned_function_stack_bytes(int stack_bytes) {
+    if (stack_bytes <= 0) {
+        return 0;
+    }
+    return (stack_bytes + 15) & ~15;
+}
+
+static int lookup_function_stack_bytes(const BackendState *state, const char *name) {
+    size_t i;
+
+    for (i = 0; i < state->function_count; ++i) {
+        if (names_equal(state->functions[i].name, name)) {
+            return aligned_function_stack_bytes(state->functions[i].stack_bytes);
+        }
+    }
+
+    return 0;
+}
+
+static int count_compound_literal_slots(const char *text) {
+    int count = 0;
+    int in_string = 0;
+    int in_char = 0;
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        if ((in_string || in_char) && text[i] == '\\' && text[i + 1] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && text[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && text[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char && text[i] == ')') {
+            size_t j = i + 1U;
+            while (text[j] == ' ' || text[j] == '\t') {
+                j += 1U;
+            }
+            if (text[j] == '{') {
+                count += 1;
+            }
+        }
+        i += 1U;
+    }
+
+    return count;
+}
+
 static const char *find_ir_separator_outside_quotes(const char *text, const char *separator) {
     const char *last = 0;
     int in_string = 0;
@@ -150,6 +205,9 @@ static int resolve_static_value(const BackendState *state, const char *expr, lon
 static int prescan_ir(BackendState *state, const CompilerIr *ir) {
     size_t i;
     int in_function = 0;
+    char current_function[COMPILER_IR_NAME_CAPACITY];
+
+    current_function[0] = '\0';
 
     for (i = 0; i < ir->count; ++i) {
         const char *line = ir->lines[i];
@@ -183,11 +241,57 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
 
         if (starts_with(line, "func ")) {
             in_function = 1;
+            {
+                size_t j = 5;
+                size_t out = 0;
+                while (line[j] != '\0' && !(line[j] == ' ' && line[j + 1] == ':') && out + 1 < sizeof(current_function)) {
+                    current_function[out++] = line[j++];
+                }
+                current_function[out] = '\0';
+            }
             continue;
         }
         if (starts_with(line, "endfunc ")) {
             in_function = 0;
+            current_function[0] = '\0';
             continue;
+        }
+
+        if (in_function && starts_with(line, "decl ")) {
+            char storage[16];
+            char kind[16];
+            char type_text[128];
+            char name[COMPILER_IR_NAME_CAPACITY];
+            int slot_size;
+            size_t function_index;
+
+            parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
+            if (!names_equal(storage, "param") && !names_equal(storage, "local")) {
+                continue;
+            }
+
+            slot_size = text_contains(type_text, "[]") ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state);
+            for (function_index = 0; function_index < state->function_count; ++function_index) {
+                if (names_equal(state->functions[function_index].name, current_function)) {
+                    state->functions[function_index].stack_bytes += slot_size;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if (in_function && current_function[0] != '\0') {
+            int compound_slots = count_compound_literal_slots(line);
+            size_t function_index;
+
+            if (compound_slots > 0) {
+                for (function_index = 0; function_index < state->function_count; ++function_index) {
+                    if (names_equal(state->functions[function_index].name, current_function)) {
+                        state->functions[function_index].stack_bytes += compound_slots * backend_stack_slot_size(state);
+                        break;
+                    }
+                }
+            }
         }
 
         if (starts_with(line, "const ")) {
@@ -381,6 +485,7 @@ static int begin_function(BackendState *state, const char *name) {
     state->param_count = 0;
     state->saw_return_in_function = 0;
     state->stack_size = 0;
+    state->reserved_stack_size = lookup_function_stack_bytes(state, name);
     rt_copy_string(state->current_function, sizeof(state->current_function), name);
     format_symbol_name(state, name, symbol, sizeof(symbol));
 
@@ -408,10 +513,37 @@ static int begin_function(BackendState *state, const char *name) {
             backend_set_error(state->backend, "failed to emit AArch64 function prologue");
             return -1;
         }
+        if (state->reserved_stack_size > 0) {
+            if (state->reserved_stack_size <= 4095) {
+                char line[64];
+                char size_text[32];
+                rt_unsigned_to_string((unsigned long long)state->reserved_stack_size, size_text, sizeof(size_text));
+                rt_copy_string(line, sizeof(line), "sub sp, sp, #");
+                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), size_text);
+                if (emit_instruction(state, line) != 0) {
+                    return -1;
+                }
+            } else {
+                if (emit_load_immediate_register(state, "x9", state->reserved_stack_size) != 0 ||
+                    emit_instruction(state, "sub sp, sp, x9") != 0) {
+                    return -1;
+                }
+            }
+        }
     } else if (emit_instruction(state, "pushq %rbp") != 0 ||
                emit_instruction(state, "movq %rsp, %rbp") != 0) {
         backend_set_error(state->backend, "failed to emit x86_64 function prologue");
         return -1;
+    } else if (state->reserved_stack_size > 0) {
+        char line[64];
+        char size_text[32];
+        rt_unsigned_to_string((unsigned long long)state->reserved_stack_size, size_text, sizeof(size_text));
+        rt_copy_string(line, sizeof(line), "subq $");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), size_text);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rsp");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
     }
     return 0;
 }
@@ -422,6 +554,7 @@ static int end_function(BackendState *state) {
     state->param_count = 0;
     state->saw_return_in_function = 0;
     state->stack_size = 0;
+    state->reserved_stack_size = 0;
     state->current_function[0] = '\0';
     return 0;
 }
@@ -575,7 +708,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         }
 
         if (starts_with(line, "endfunc ")) {
-            if (state.in_function && !state.saw_return_in_function && emit_function_return(&state) != 0) {
+            if (state.in_function && emit_function_return(&state) != 0) {
                 return -1;
             }
             end_function(&state);

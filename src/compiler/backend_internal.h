@@ -14,6 +14,7 @@
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
     int global;
+    int stack_bytes;
 } BackendFunctionName;
 
 typedef struct {
@@ -62,6 +63,7 @@ typedef struct {
     int param_count;
     int saw_return_in_function;
     int stack_size;
+    int reserved_stack_size;
     unsigned int label_counter;
 } BackendState;
 
