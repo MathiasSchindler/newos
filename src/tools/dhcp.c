@@ -120,6 +120,9 @@ int main(int argc, char **argv) {
         tool_write_error("dhcp", "-A requires an interface via -i ", 0);
         return 1;
     }
+    if (ifname != 0 && ifname[0] != '\0') {
+        (void)platform_network_link_set(ifname, 1, 0U, 0);
+    }
 
     if (platform_dhcp_request(ifname, server, (unsigned int)server_port, (unsigned int)client_port, (unsigned int)timeout_ms, &lease) != 0) {
         tool_write_error("dhcp", "failed to acquire a lease", 0);

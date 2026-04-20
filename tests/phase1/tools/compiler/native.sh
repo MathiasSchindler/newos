@@ -79,6 +79,14 @@ EOF
 
 compile_and_check_native "$WORK_DIR/escaped_char_literal.c" "$WORK_DIR/escaped_char_literal_bin" "0" "compiler failed on an escaped single-quote character literal"
 
+cat > "$WORK_DIR/escaped_control_literals.c" <<'EOF'
+int main(void) {
+    return ('\v' == 11 && '\f' == 12) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/escaped_control_literals.c" "$WORK_DIR/escaped_control_literals_bin" "0" "compiler miscompiled escaped vertical-tab or form-feed character literals"
+
 cat > "$WORK_DIR/adjacent_strings.c" <<'EOF'
 int main(void) {
     const char *text = "hello, " "world";
@@ -250,6 +258,20 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/typedef_struct_local_storage.c" "$WORK_DIR/typedef_struct_local_storage_bin" "0" "compiler under-allocated stack storage for a typedef-backed local struct"
+
+cat > "$WORK_DIR/global_multidim_array.c" <<'EOF'
+static unsigned char grid[256][256];
+
+int main(void) {
+    int i;
+    for (i = 0; i < 256; i += 1) {
+        grid[i][0] = (unsigned char)'A';
+    }
+    return sizeof(grid) == 65536U && grid[255][0] == (unsigned char)'A' ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/global_multidim_array.c" "$WORK_DIR/global_multidim_array_bin" "0" "compiler under-allocated a multidimensional global array"
 
 cat > "$WORK_DIR/typedef_struct_copy_assignment.c" <<'EOF'
 typedef struct {

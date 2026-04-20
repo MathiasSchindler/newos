@@ -19,22 +19,22 @@ static int contains_char(const char *text, char ch) {
 }
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-4] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST");
+    tool_write_usage(program_name, "[-4|-6] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST");
 }
 
 static void print_usage_stdout(const char *program_name) {
     rt_write_cstr(1, "Usage: ");
     rt_write_cstr(1, program_name);
-    rt_write_cstr(1, " [-4] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST\n");
+    rt_write_cstr(1, " [-4|-6] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST\n");
 }
 
 static void print_help(const char *program_name) {
     print_usage_stdout(program_name);
-    rt_write_line(1, "Send ICMP echo requests to an IPv4 host and report reachability.");
+    rt_write_line(1, "Send ICMP echo requests to an IPv4 or IPv6 host and report reachability.");
     rt_write_line(1, "");
     rt_write_line(1, "Options:");
-    rt_write_line(1, "  -4           use IPv4 (default)");
-    rt_write_line(1, "  -6           request IPv6 mode and fail with a clear message");
+    rt_write_line(1, "  -4           use IPv4 mode");
+    rt_write_line(1, "  -6           use IPv6 mode");
     rt_write_line(1, "  -n           numeric output only; accepted for compatibility");
     rt_write_line(1, "  -q           quiet output; show only the banner and summary");
     rt_write_line(1, "  -c COUNT     send COUNT probes");
@@ -57,6 +57,11 @@ int main(int argc, char **argv) {
     int family_filter = PLATFORM_NETWORK_FAMILY_ANY;
     int quiet = 0;
     int numeric_only = 0;
+    const char *base_name = tool_base_name(argv[0]);
+
+    if (base_name != 0 && streq(base_name, "ping6")) {
+        family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
+    }
 
     while (argi < argc) {
         if (streq(argv[argi], "-4")) {
@@ -140,15 +145,9 @@ int main(int argc, char **argv) {
     }
     host = argv[argi];
 
-    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6 || contains_char(host, ':')) {
-        tool_write_error("ping", "IPv6 echo requests are not yet implemented", 0);
-        return 1;
-    }
-
     {
         PlatformPingOptions options;
 
-        (void)numeric_only;
         options.count = (unsigned int)count;
         options.interval_seconds = (unsigned int)interval_seconds;
         options.timeout_seconds = (unsigned int)timeout_seconds;
@@ -156,6 +155,9 @@ int main(int argc, char **argv) {
         options.ttl = (unsigned int)ttl;
         options.deadline_seconds = (unsigned int)deadline_seconds;
         options.quiet_output = quiet;
+        options.family = family_filter != PLATFORM_NETWORK_FAMILY_ANY ? family_filter :
+            (contains_char(host, ':') ? PLATFORM_NETWORK_FAMILY_IPV6 : PLATFORM_NETWORK_FAMILY_IPV4);
+        options.numeric_only = numeric_only;
         return platform_ping_host(host, &options);
     }
 }

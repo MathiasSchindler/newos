@@ -1534,6 +1534,536 @@ int platform_network_route_change(const char *destination, const char *gateway, 
 #endif
 }
 
+static int posix_add_dns_entry(
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_io,
+    const char *name,
+    int family,
+    const char *address
+) {
+    PlatformDnsEntry *entry;
+    size_t i;
+
+    if (entries_out == NULL || count_io == NULL || *count_io >= entry_capacity) {
+        return -1;
+    }
+    for (i = 0U; i < *count_io; ++i) {
+        if (entries_out[i].family == family && rt_strcmp(entries_out[i].address, address) == 0) {
+            return 0;
+        }
+    }
+    entry = &entries_out[*count_io];
+    memset(entry, 0, sizeof(*entry));
+    entry->family = family;
+    rt_copy_string(entry->name, sizeof(entry->name), name);
+    rt_copy_string(entry->address, sizeof(entry->address), address);
+    *count_io += 1U;
+    return 0;
+}
+
+int platform_dns_lookup(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    int family_filter,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    struct addrinfo hints;
+    struct addrinfo *results = NULL;
+    struct addrinfo *current;
+    int family = AF_UNSPEC;
+    size_t count = 0U;
+    char port_text[16];
+
+    if (name == NULL || entries_out == NULL || count_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *count_out = 0U;
+
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV4) {
+        family = AF_INET;
+    } else if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+        family = AF_INET6;
+    }
+
+    if (server != NULL && server[0] != '\0') {
+        int sock;
+        struct sockaddr_in server_addr;
+        unsigned char query[512];
+        unsigned char reply[512];
+        long reply_length;
+        size_t used = 12U;
+        unsigned short query_id = (unsigned short)(((unsigned int)platform_get_process_id() & 0xffffU) ^ 0x5a5aU);
+        size_t offset;
+        unsigned int answer_count;
+        unsigned int i;
+
+        memset(query, 0, sizeof(query));
+        query[0] = (unsigned char)(query_id >> 8);
+        query[1] = (unsigned char)(query_id & 0xffU);
+        query[2] = 0x01U;
+        query[5] = 0x01U;
+
+        {
+            const char *label = name;
+            while (*label != '\0') {
+                const char *end = label;
+                size_t length;
+                while (*end != '\0' && *end != '.') {
+                    end += 1;
+                }
+                length = (size_t)(end - label);
+                if (length == 0U || length > 63U || used + length + 2U >= sizeof(query)) {
+                    errno = EINVAL;
+                    return -1;
+                }
+                query[used++] = (unsigned char)length;
+                memcpy(query + used, label, length);
+                used += length;
+                label = (*end == '.') ? (end + 1) : end;
+            }
+            query[used++] = 0U;
+            query[used++] = 0x00U;
+            query[used++] = (unsigned char)(family_filter == PLATFORM_NETWORK_FAMILY_IPV6 ? 28U : 1U);
+            query[used++] = 0x00U;
+            query[used++] = 0x01U;
+        }
+
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock < 0) {
+            return -1;
+        }
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons((unsigned short)(port == 0U ? 53U : port));
+        if (inet_pton(AF_INET, server, &server_addr.sin_addr) != 1) {
+            close(sock);
+            errno = EINVAL;
+            return -1;
+        }
+        if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0 || send(sock, query, used, 0) < 0) {
+            close(sock);
+            return -1;
+        }
+        reply_length = recv(sock, reply, sizeof(reply), 0);
+        if (reply_length < 12) {
+            close(sock);
+            return -1;
+        }
+        close(sock);
+
+        answer_count = ((unsigned int)reply[6] << 8) | (unsigned int)reply[7];
+        offset = 12U;
+        while (offset < (size_t)reply_length && reply[offset] != 0U) {
+            if ((reply[offset] & 0xc0U) == 0xc0U) {
+                offset += 2U;
+                break;
+            }
+            offset += 1U + (size_t)reply[offset];
+        }
+        offset += 5U;
+
+        for (i = 0U; i < answer_count && offset + 12U <= (size_t)reply_length; ++i) {
+            unsigned short type;
+            unsigned short rdlength;
+            if ((reply[offset] & 0xc0U) == 0xc0U) {
+                offset += 2U;
+            } else {
+                while (offset < (size_t)reply_length && reply[offset] != 0U) {
+                    offset += 1U + (size_t)reply[offset];
+                }
+                offset += 1U;
+            }
+            if (offset + 10U > (size_t)reply_length) {
+                break;
+            }
+            type = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
+            rdlength = (unsigned short)(((unsigned int)reply[offset + 8U] << 8) | (unsigned int)reply[offset + 9U]);
+            offset += 10U;
+            if (offset + rdlength > (size_t)reply_length) {
+                break;
+            }
+            if (type == 1U && rdlength == 4U) {
+                char address[INET_ADDRSTRLEN];
+                if (inet_ntop(AF_INET, reply + offset, address, sizeof(address)) != NULL) {
+                    (void)posix_add_dns_entry(entries_out, entry_capacity, &count, name, PLATFORM_NETWORK_FAMILY_IPV4, address);
+                }
+            } else if (type == 28U && rdlength == 16U) {
+                char address[INET6_ADDRSTRLEN];
+                if (inet_ntop(AF_INET6, reply + offset, address, sizeof(address)) != NULL) {
+                    (void)posix_add_dns_entry(entries_out, entry_capacity, &count, name, PLATFORM_NETWORK_FAMILY_IPV6, address);
+                }
+            }
+            offset += rdlength;
+        }
+
+        *count_out = count;
+        return count > 0U ? 0 : -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = family;
+    hints.ai_socktype = SOCK_DGRAM;
+    (void)snprintf(port_text, sizeof(port_text), "%u", 0U);
+
+    if (getaddrinfo(name, port_text, &hints, &results) != 0 || results == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (current = results; current != NULL; current = current->ai_next) {
+        char address[INET6_ADDRSTRLEN];
+        int result_family = PLATFORM_NETWORK_FAMILY_ANY;
+        const void *addr_ptr = NULL;
+
+        if (current->ai_family == AF_INET) {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)current->ai_addr;
+            result_family = PLATFORM_NETWORK_FAMILY_IPV4;
+            addr_ptr = &sin->sin_addr;
+        } else if (current->ai_family == AF_INET6) {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)current->ai_addr;
+            result_family = PLATFORM_NETWORK_FAMILY_IPV6;
+            addr_ptr = &sin6->sin6_addr;
+        } else {
+            continue;
+        }
+
+        if ((family_filter == PLATFORM_NETWORK_FAMILY_IPV4 && result_family != PLATFORM_NETWORK_FAMILY_IPV4) ||
+            (family_filter == PLATFORM_NETWORK_FAMILY_IPV6 && result_family != PLATFORM_NETWORK_FAMILY_IPV6)) {
+            continue;
+        }
+
+        if (inet_ntop(current->ai_family, addr_ptr, address, sizeof(address)) != NULL) {
+            (void)posix_add_dns_entry(entries_out, entry_capacity, &count, name, result_family, address);
+        }
+    }
+
+    freeaddrinfo(results);
+    *count_out = count;
+    return count > 0U ? 0 : -1;
+}
+
+static int posix_select_mac_address(const char *ifname, unsigned char mac_out[6]) {
+    struct ifaddrs *ifaddr = NULL;
+    struct ifaddrs *ifa;
+
+    if (mac_out == NULL) {
+        return -1;
+    }
+    if (getifaddrs(&ifaddr) != 0) {
+        return -1;
+    }
+
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) {
+            continue;
+        }
+        if (ifname != NULL && ifname[0] != '\0' && rt_strcmp(ifname, ifa->ifa_name) != 0) {
+            continue;
+        }
+#ifdef __linux__
+        if (ifa->ifa_addr->sa_family == AF_PACKET) {
+            const struct sockaddr_ll *sll = (const struct sockaddr_ll *)ifa->ifa_addr;
+            if ((ifa->ifa_flags & IFF_LOOPBACK) != 0 || sll->sll_halen < 6) {
+                continue;
+            }
+            memcpy(mac_out, sll->sll_addr, 6U);
+            freeifaddrs(ifaddr);
+            return 0;
+        }
+#endif
+#ifdef __APPLE__
+        if (ifa->ifa_addr->sa_family == AF_LINK) {
+            const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)ifa->ifa_addr;
+            const unsigned char *addr = posix_sockaddr_dl_addr(sdl);
+            if ((ifa->ifa_flags & IFF_LOOPBACK) != 0 || addr == NULL || sdl->sdl_alen < 6) {
+                continue;
+            }
+            memcpy(mac_out, addr, 6U);
+            freeifaddrs(ifaddr);
+            return 0;
+        }
+#endif
+    }
+
+    freeifaddrs(ifaddr);
+    return -1;
+}
+
+static void posix_store_be16(unsigned char *buffer, unsigned short value) {
+    buffer[0] = (unsigned char)(value >> 8);
+    buffer[1] = (unsigned char)(value & 0xffU);
+}
+
+static void posix_store_be32(unsigned char *buffer, unsigned int value) {
+    buffer[0] = (unsigned char)(value >> 24);
+    buffer[1] = (unsigned char)((value >> 16) & 0xffU);
+    buffer[2] = (unsigned char)((value >> 8) & 0xffU);
+    buffer[3] = (unsigned char)(value & 0xffU);
+}
+
+static unsigned int posix_load_be32(const unsigned char *buffer) {
+    return ((unsigned int)buffer[0] << 24) |
+           ((unsigned int)buffer[1] << 16) |
+           ((unsigned int)buffer[2] << 8) |
+           (unsigned int)buffer[3];
+}
+
+static int posix_build_dhcp_packet(
+    unsigned char *packet,
+    size_t packet_size,
+    unsigned int xid,
+    const unsigned char mac[6],
+    unsigned char message_type,
+    const unsigned char *requested_ip,
+    const unsigned char *server_id
+) {
+    size_t offset = 240U;
+    static const unsigned char param_request[] = { 1U, 3U, 6U, 15U, 51U, 54U };
+
+    if (packet == NULL || packet_size < 300U || mac == NULL) {
+        return -1;
+    }
+    memset(packet, 0, packet_size);
+    packet[0] = 1U;
+    packet[1] = 1U;
+    packet[2] = 6U;
+    posix_store_be32(packet + 4, xid);
+    posix_store_be16(packet + 10, 0x8000U);
+    memcpy(packet + 28, mac, 6U);
+    posix_store_be32(packet + 236, 0x63825363U);
+
+    packet[offset++] = 53U;
+    packet[offset++] = 1U;
+    packet[offset++] = message_type;
+
+    packet[offset++] = 61U;
+    packet[offset++] = 7U;
+    packet[offset++] = 1U;
+    memcpy(packet + offset, mac, 6U);
+    offset += 6U;
+
+    if (requested_ip != NULL) {
+        packet[offset++] = 50U;
+        packet[offset++] = 4U;
+        memcpy(packet + offset, requested_ip, 4U);
+        offset += 4U;
+    }
+    if (server_id != NULL) {
+        packet[offset++] = 54U;
+        packet[offset++] = 4U;
+        memcpy(packet + offset, server_id, 4U);
+        offset += 4U;
+    }
+
+    packet[offset++] = 55U;
+    packet[offset++] = (unsigned char)sizeof(param_request);
+    memcpy(packet + offset, param_request, sizeof(param_request));
+    offset += sizeof(param_request);
+    packet[offset++] = 255U;
+    return (int)offset;
+}
+
+static int posix_mask_to_prefix(const unsigned char *mask) {
+    int prefix = 0;
+    int i;
+    int bit;
+
+    for (i = 0; i < 4; ++i) {
+        for (bit = 7; bit >= 0; --bit) {
+            if ((mask[i] & (1U << bit)) != 0U) {
+                prefix += 1;
+            } else {
+                return prefix;
+            }
+        }
+    }
+    return prefix;
+}
+
+static int posix_parse_dhcp_reply(
+    const unsigned char *packet,
+    size_t packet_length,
+    unsigned int xid,
+    const unsigned char mac[6],
+    unsigned char expected_message_type,
+    PlatformDhcpLease *lease_out
+) {
+    size_t offset = 240U;
+    unsigned char message_type = 0U;
+    struct in_addr addr;
+
+    if (packet == NULL || lease_out == NULL || packet_length < 240U || mac == NULL) {
+        return -1;
+    }
+    if (packet[0] != 2U || posix_load_be32(packet + 4) != xid || memcmp(packet + 28, mac, 6U) != 0 ||
+        posix_load_be32(packet + 236) != 0x63825363U) {
+        return -1;
+    }
+
+    memcpy(&addr, packet + 16, 4U);
+    if (inet_ntop(AF_INET, &addr, lease_out->address, sizeof(lease_out->address)) == NULL) {
+        return -1;
+    }
+
+    while (offset < packet_length) {
+        unsigned char option = packet[offset++];
+        unsigned char length;
+
+        if (option == 0U) {
+            continue;
+        }
+        if (option == 255U) {
+            break;
+        }
+        if (offset >= packet_length) {
+            break;
+        }
+        length = packet[offset++];
+        if (offset + length > packet_length) {
+            break;
+        }
+
+        if (option == 53U && length >= 1U) {
+            message_type = packet[offset];
+        } else if (option == 1U && length == 4U) {
+            lease_out->prefix_length = (unsigned int)posix_mask_to_prefix(packet + offset);
+        } else if (option == 3U && length >= 4U) {
+            memcpy(&addr, packet + offset, 4U);
+            (void)inet_ntop(AF_INET, &addr, lease_out->router, sizeof(lease_out->router));
+        } else if (option == 6U && length >= 4U) {
+            memcpy(&addr, packet + offset, 4U);
+            (void)inet_ntop(AF_INET, &addr, lease_out->dns1, sizeof(lease_out->dns1));
+            if (length >= 8U) {
+                memcpy(&addr, packet + offset + 4U, 4U);
+                (void)inet_ntop(AF_INET, &addr, lease_out->dns2, sizeof(lease_out->dns2));
+            }
+        } else if (option == 51U && length == 4U) {
+            lease_out->lease_seconds = posix_load_be32(packet + offset);
+        } else if (option == 54U && length == 4U) {
+            memcpy(&addr, packet + offset, 4U);
+            (void)inet_ntop(AF_INET, &addr, lease_out->server, sizeof(lease_out->server));
+        }
+
+        offset += length;
+    }
+
+    if (message_type != expected_message_type) {
+        return -1;
+    }
+    if (lease_out->prefix_length == 0U) {
+        lease_out->prefix_length = 24U;
+    }
+    return 0;
+}
+
+int platform_dhcp_request(
+    const char *ifname,
+    const char *server,
+    unsigned int server_port,
+    unsigned int client_port,
+    unsigned int timeout_milliseconds,
+    PlatformDhcpLease *lease_out
+) {
+    unsigned char mac[6];
+    unsigned char packet[512];
+    unsigned char reply[512];
+    struct sockaddr_in server_addr;
+    struct sockaddr_in peer_addr;
+    struct sockaddr_in bind_addr;
+    socklen_t peer_len = sizeof(peer_addr);
+    int sock;
+    int packet_length;
+    unsigned int xid;
+    int broadcast = 1;
+    struct timeval timeout;
+    unsigned char requested_ip[4];
+    unsigned char server_id[4];
+    int have_server_id = 0;
+
+    (void)ifname;
+
+    if (lease_out == NULL || posix_select_mac_address(ifname, mac) != 0) {
+        return -1;
+    }
+    memset(lease_out, 0, sizeof(*lease_out));
+
+    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        return -1;
+    }
+
+    timeout.tv_sec = (time_t)((timeout_milliseconds == 0U ? 3000U : timeout_milliseconds) / 1000U);
+    timeout.tv_usec = (suseconds_t)(((timeout_milliseconds == 0U ? 3000U : timeout_milliseconds) % 1000U) * 1000U);
+    if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
+        timeout.tv_usec = 1000;
+    }
+    (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    (void)setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast, sizeof(broadcast));
+    (void)setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = htons((unsigned short)(client_port == 0U ? 68U : client_port));
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0) {
+        close(sock);
+        return -1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons((unsigned short)(server_port == 0U ? 67U : server_port));
+    if (server == NULL || server[0] == '\0') {
+        server_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    } else if (inet_pton(AF_INET, server, &server_addr.sin_addr) != 1) {
+        close(sock);
+        errno = EINVAL;
+        return -1;
+    }
+
+    xid = ((unsigned int)platform_get_process_id() & 0xffffU) ^ 0x44480000U;
+    packet_length = posix_build_dhcp_packet(packet, sizeof(packet), xid, mac, 1U, NULL, NULL);
+    if (packet_length < 0 || sendto(sock, packet, (size_t)packet_length, 0, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        close(sock);
+        return -1;
+    }
+
+    {
+        ssize_t offer_bytes = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer_addr, &peer_len);
+        if (offer_bytes <= 0 || posix_parse_dhcp_reply(reply, (size_t)offer_bytes, xid, mac, 2U, lease_out) != 0) {
+            close(sock);
+            return -1;
+        }
+    }
+
+    memcpy(requested_ip, reply + 16, 4U);
+    if (lease_out->server[0] != '\0' && inet_pton(AF_INET, lease_out->server, server_id) == 1) {
+        have_server_id = 1;
+    }
+
+    packet_length = posix_build_dhcp_packet(packet, sizeof(packet), xid, mac, 3U, requested_ip, have_server_id ? server_id : NULL);
+    if (packet_length < 0 || sendto(sock, packet, (size_t)packet_length, 0, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0) {
+        close(sock);
+        return -1;
+    }
+    {
+        ssize_t ack_bytes = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer_addr, &peer_len);
+        if (ack_bytes <= 0 || posix_parse_dhcp_reply(reply, (size_t)ack_bytes, xid, mac, 5U, lease_out) != 0) {
+            close(sock);
+            return -1;
+        }
+    }
+
+    close(sock);
+    return 0;
+}
+
 int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     struct sockaddr_in addr;
     char ip_text[INET_ADDRSTRLEN];
@@ -1559,6 +2089,8 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         effective_options.ttl = 0;
         effective_options.deadline_seconds = 0;
         effective_options.quiet_output = 0;
+        effective_options.family = PLATFORM_NETWORK_FAMILY_ANY;
+        effective_options.numeric_only = 0;
         options = &effective_options;
     }
 
@@ -1566,6 +2098,186 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         options->payload_size > PLATFORM_PING_MAX_PAYLOAD_SIZE || options->ttl > PLATFORM_PING_MAX_TTL) {
         errno = EINVAL;
         return 1;
+    }
+
+    if (options->family == PLATFORM_NETWORK_FAMILY_IPV6 ||
+        (options->family != PLATFORM_NETWORK_FAMILY_IPV4 && strchr(host, ':') != NULL)) {
+        struct sockaddr_in6 addr6;
+        char ip_text6[INET6_ADDRSTRLEN];
+
+        if (resolve_ping_host6(host, &addr6, ip_text6, sizeof(ip_text6)) != 0) {
+            tool_write_error("ping", "unknown host ", host);
+            return 1;
+        }
+
+        sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+        if (sock < 0) {
+            sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+        }
+        if (sock < 0) {
+            tool_write_error("ping", "unable to create ICMPv6 socket", 0);
+            return 1;
+        }
+
+        timeout.tv_sec = (time_t)options->timeout_seconds;
+        timeout.tv_usec = 0;
+        (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        if (options->ttl > 0U) {
+            int hops_value = (int)options->ttl;
+            (void)setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops_value, sizeof(hops_value));
+        }
+        if (connect(sock, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
+            close(sock);
+            tool_write_error("ping", "cannot reach ", host);
+            return 1;
+        }
+
+        identifier = (unsigned short)((process_id > 0) ? process_id : 0x1234);
+        (void)gettimeofday(&overall_start, 0);
+
+        rt_write_cstr(1, "PING ");
+        rt_write_cstr(1, host);
+        rt_write_cstr(1, " (");
+        rt_write_cstr(1, ip_text6);
+        rt_write_cstr(1, ") ");
+        rt_write_uint(1, options->payload_size);
+        rt_write_line(1, " data bytes");
+
+        for (seq = 1U; seq <= options->count; ++seq) {
+            unsigned char packet[sizeof(PosixIcmpv6Packet) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+            unsigned char reply[sizeof(packet) + 128];
+            PosixIcmpv6Packet *header = (PosixIcmpv6Packet *)packet;
+            struct timeval start_time;
+            struct timeval end_time;
+            struct timeval current_time;
+            ssize_t reply_size;
+            size_t packet_size = sizeof(PosixIcmpv6Packet) + options->payload_size;
+            int matched = 0;
+
+            if (options->deadline_seconds > 0U) {
+                (void)gettimeofday(&current_time, 0);
+                if (elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                    deadline_exceeded = 1;
+                    break;
+                }
+            }
+
+            memset(packet, 0, packet_size);
+            header->type = POSIX_ICMPV6_ECHO_REQUEST;
+            header->code = 0;
+            header->identifier = htons(identifier);
+            header->sequence = htons((unsigned short)seq);
+            memset(packet + sizeof(PosixIcmpv6Packet), 0x42, options->payload_size);
+            header->checksum = 0;
+
+            (void)gettimeofday(&start_time, 0);
+            if (send(sock, packet, packet_size, 0) < 0) {
+                close(sock);
+                tool_write_error("ping", "send failed to ", host);
+                return 1;
+            }
+            transmitted += 1U;
+
+            for (;;) {
+                reply_size = recv(sock, reply, sizeof(reply), 0);
+                if (reply_size < 0) {
+                    break;
+                }
+
+                {
+                    size_t offset = 0U;
+                    const PosixIcmpv6Packet *reply_header;
+
+                    if ((size_t)reply_size >= 40U && (reply[0] >> 4) == 6U) {
+                        offset = 40U;
+                    }
+                    if ((size_t)reply_size < offset + sizeof(PosixIcmpv6Packet)) {
+                        continue;
+                    }
+
+                    reply_header = (const PosixIcmpv6Packet *)(reply + offset);
+                    if (reply_header->type == POSIX_ICMPV6_ECHO_REPLY &&
+                        ntohs(reply_header->identifier) == identifier &&
+                        ntohs(reply_header->sequence) == (unsigned short)seq) {
+                        double rtt_ms = 0.0;
+                        (void)gettimeofday(&end_time, 0);
+                        rtt_ms = elapsed_milliseconds(&start_time, &end_time);
+                        if (received_count == 0U || rtt_ms < min_ms) {
+                            min_ms = rtt_ms;
+                        }
+                        if (received_count == 0U || rtt_ms > max_ms) {
+                            max_ms = rtt_ms;
+                        }
+                        total_ms += rtt_ms;
+                        received_count += 1U;
+
+                        if (!options->quiet_output) {
+                            rt_write_uint(1, (unsigned long long)((reply_size > (ssize_t)offset) ? (reply_size - (ssize_t)offset) : reply_size));
+                            rt_write_cstr(1, " bytes from ");
+                            rt_write_cstr(1, ip_text6);
+                            rt_write_cstr(1, ": icmp_seq=");
+                            rt_write_uint(1, seq);
+                            rt_write_cstr(1, " time=");
+                            write_milliseconds(rtt_ms);
+                            rt_write_line(1, " ms");
+                        }
+
+                        matched = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (!matched && !options->quiet_output) {
+                rt_write_cstr(1, "Request timeout for icmp_seq ");
+                rt_write_uint(1, seq);
+                rt_write_char(1, '\n');
+            }
+
+            if (seq < options->count && options->interval_seconds > 0U) {
+                if (options->deadline_seconds > 0U) {
+                    (void)gettimeofday(&current_time, 0);
+                    if (elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                        deadline_exceeded = 1;
+                        break;
+                    }
+                }
+                (void)platform_sleep_seconds(options->interval_seconds);
+            }
+        }
+
+        close(sock);
+
+        if (deadline_exceeded && !options->quiet_output) {
+            rt_write_line(1, "ping: deadline reached");
+        }
+
+        rt_write_cstr(1, "--- ");
+        rt_write_cstr(1, host);
+        rt_write_line(1, " ping statistics ---");
+        rt_write_uint(1, transmitted);
+        rt_write_cstr(1, " packets transmitted, ");
+        rt_write_uint(1, received_count);
+        rt_write_cstr(1, " packets received, ");
+        if (transmitted > 0U) {
+            unsigned long long loss = ((unsigned long long)(transmitted - received_count) * 100ULL) / (unsigned long long)transmitted;
+            rt_write_uint(1, loss);
+        } else {
+            rt_write_uint(1, 0ULL);
+        }
+        rt_write_line(1, "% packet loss");
+
+        if (received_count > 0U) {
+            rt_write_cstr(1, "round-trip min/avg/max = ");
+            write_milliseconds(min_ms);
+            rt_write_char(1, '/');
+            write_milliseconds(total_ms / (double)received_count);
+            rt_write_char(1, '/');
+            write_milliseconds(max_ms);
+            rt_write_line(1, " ms");
+        }
+
+        return received_count > 0U ? 0 : 1;
     }
 
     if (resolve_ping_host(host, &addr, ip_text, sizeof(ip_text)) != 0) {

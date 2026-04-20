@@ -227,6 +227,8 @@ static void global_init_next(GlobalInitParser *parser) {
                 if (*cursor == 'n') parser->text[length++] = '\n';
                 else if (*cursor == 't') parser->text[length++] = '\t';
                 else if (*cursor == 'r') parser->text[length++] = '\r';
+                else if (*cursor == 'v') parser->text[length++] = '\v';
+                else if (*cursor == 'f') parser->text[length++] = '\f';
                 else if (*cursor == '0') parser->text[length++] = '\0';
                 else parser->text[length++] = *cursor;
                 cursor += 1;
@@ -640,6 +642,7 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
     unsigned long long length = 0;
     unsigned long long element_size = (unsigned long long)backend_stack_slot_size(state);
     unsigned long long total_size;
+    char element_type[128];
     int has_pointer = text_contains(type, "*");
     int aggregate_size = named_aggregate_stack_bytes(state, type);
 
@@ -658,6 +661,13 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
 
     if (*open == '[') {
         const char *cursor = open + 1;
+        copy_indexed_type_text(type, element_type, sizeof(element_type));
+        if (element_type[0] != '\0' && rt_strcmp(element_type, type) != 0) {
+            int nested_size = decl_slot_size(state, element_type);
+            if (nested_size > 0) {
+                element_size = (unsigned long long)nested_size;
+            }
+        }
         while (*cursor >= '0' && *cursor <= '9') {
             length = length * 10ULL + (unsigned long long)(*cursor - '0');
             cursor += 1;

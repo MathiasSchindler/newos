@@ -1186,6 +1186,8 @@ static int append_asciz_directive(ObjectAssembler *assembler, const char *text) 
             if (*cursor == 'n') byte = (unsigned char)'\n';
             else if (*cursor == 'r') byte = (unsigned char)'\r';
             else if (*cursor == 't') byte = (unsigned char)'\t';
+            else if (*cursor == 'v') byte = (unsigned char)'\v';
+            else if (*cursor == 'f') byte = (unsigned char)'\f';
             else if (*cursor == '0') byte = 0U;
             else byte = (unsigned char)*cursor;
         }

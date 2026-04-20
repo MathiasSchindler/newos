@@ -115,6 +115,8 @@ static void expr_next(ExprParser *parser) {
             if (*cursor == 'n') ch = '\n';
             else if (*cursor == 't') ch = '\t';
             else if (*cursor == 'r') ch = '\r';
+            else if (*cursor == 'v') ch = '\v';
+            else if (*cursor == 'f') ch = '\f';
             else if (*cursor == '0') ch = '\0';
             else ch = *cursor;
             cursor += 1;
@@ -145,6 +147,8 @@ static void expr_next(ExprParser *parser) {
                     if (*cursor == 'n') parser->current.text[length++] = '\n';
                     else if (*cursor == 't') parser->current.text[length++] = '\t';
                     else if (*cursor == 'r') parser->current.text[length++] = '\r';
+                    else if (*cursor == 'v') parser->current.text[length++] = '\v';
+                    else if (*cursor == 'f') parser->current.text[length++] = '\f';
                     else if (*cursor == '0') parser->current.text[length++] = '\0';
                     else parser->current.text[length++] = *cursor;
                     cursor += 1;
@@ -974,6 +978,9 @@ static long long guess_identifier_size(const BackendState *state, const char *na
     int global_index = find_global(state, name);
 
     if (local_index >= 0) {
+        if (state->locals[local_index].is_array && state->locals[local_index].stack_bytes > 0) {
+            return state->locals[local_index].stack_bytes;
+        }
         return type_storage_bytes_text(state, state->locals[local_index].type_text);
     }
     if (global_index >= 0) {
@@ -1284,15 +1291,21 @@ static int expr_parse_sizeof(ExprParser *parser) {
         } else if (parser->current.kind == EXPR_TOKEN_IDENTIFIER ||
                    (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*"))) {
             char type_text[128];
+            char identifier_name[COMPILER_IR_NAME_CAPACITY];
             int deref_count = 0;
+            int had_deref = 0;
+            int saw_suffix = 0;
 
             type_text[0] = '\0';
+            identifier_name[0] = '\0';
             while (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*")) {
                 deref_count += 1;
+                had_deref = 1;
                 expr_next(parser);
             }
             if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
                 const char *known_type = lookup_name_type_text(parser->state, parser->current.text);
+                rt_copy_string(identifier_name, sizeof(identifier_name), parser->current.text);
                 if (known_type != 0 && known_type[0] != '\0') {
                     rt_copy_string(type_text, sizeof(type_text), known_type);
                 } else {
@@ -1302,6 +1315,7 @@ static int expr_parse_sizeof(ExprParser *parser) {
                 while (parser->current.kind == EXPR_TOKEN_PUNCT &&
                        (names_equal(parser->current.text, "[") || names_equal(parser->current.text, ".") ||
                         names_equal(parser->current.text, "->"))) {
+                    saw_suffix = 1;
                     if (names_equal(parser->current.text, "[")) {
                         while (parser->current.kind != EXPR_TOKEN_EOF && !names_equal(parser->current.text, "]")) {
                             expr_next(parser);
@@ -1331,7 +1345,9 @@ static int expr_parse_sizeof(ExprParser *parser) {
                 rt_copy_string(type_text, sizeof(type_text), deref_type);
                 deref_count -= 1;
             }
-            if (type_text[0] != '\0') {
+            if (type_text[0] != '\0' && identifier_name[0] != '\0' && !saw_suffix && !had_deref) {
+                size = guess_identifier_size(parser->state, identifier_name);
+            } else if (type_text[0] != '\0') {
                 size = type_storage_bytes_text(parser->state, type_text);
             }
         }
@@ -2643,6 +2659,8 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
     int word_index = 0;
     int element_scale;
     int byte_sized;
+    int local_index = find_local(state, name);
+    int storage_bytes = local_index >= 0 ? state->locals[local_index].stack_bytes : BACKEND_ARRAY_STACK_BYTES;
 
     if (!lookup_array_storage(state, name, &word_index)) {
         backend_set_error(state->backend, "unsupported assignment target in backend");
@@ -2654,7 +2672,23 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
     expr_next(&parser);
     element_scale = array_index_scale(state, lookup_name_type_text(state, name), word_index);
     byte_sized = (element_scale == 1 || element_scale == 2 || element_scale == 4) ? element_scale : 0;
-    slot_limit = element_scale > 1 ? (BACKEND_ARRAY_STACK_BYTES / (unsigned long long)element_scale) : BACKEND_ARRAY_STACK_BYTES;
+    if (storage_bytes <= 0) {
+        storage_bytes = BACKEND_ARRAY_STACK_BYTES;
+    }
+    slot_limit = element_scale > 1 ? ((unsigned long long)storage_bytes / (unsigned long long)element_scale)
+                                   : (unsigned long long)storage_bytes;
+    if (slot_limit == 0ULL) {
+        slot_limit = 1ULL;
+    }
+
+    for (index = 0ULL; index < slot_limit; ++index) {
+        if (emit_array_element_address(state, name, element_scale, index) != 0 ||
+            emit_load_immediate(state, 0) != 0 ||
+            emit_pop_address_and_store(state, byte_sized) != 0) {
+            return -1;
+        }
+    }
+    index = 0ULL;
 
     if (parser.current.kind == EXPR_TOKEN_STRING) {
         size_t i;

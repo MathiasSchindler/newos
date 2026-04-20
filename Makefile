@@ -49,7 +49,7 @@ DEFAULT_ALL_TARGETS := host
 ifeq ($(LOCAL_PLATFORM_ONLY),0)
 DEFAULT_ALL_TARGETS += freestanding
 endif
-TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown uname hostname init getty dmesg touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill shutdown wc head tail ps top sort cut tr grep ping ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat ssh ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
+TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown uname hostname init getty dmesg touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill shutdown wc head tail ps top sort cut tr grep ping ping6 ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat dhcp nslookup ssh ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 COMPILER_IMPL_INCLUDES := \
@@ -137,6 +137,12 @@ $(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
 
 $(BUILD_ROOT)/%: $(BUILD_DIR)/% | $(BUILD_ROOT)
 	rm -f $@ && ln -sfn $(patsubst $(BUILD_ROOT)/%,%,$<) $@
+
+$(BUILD_DIR)/ping6: $(BUILD_DIR)/ping | $(BUILD_DIR)
+	rm -f $@ && ln -sfn ping $@
+
+$(TARGET_BUILD_DIR)/ping6: $(TARGET_BUILD_DIR)/ping | $(TARGET_BUILD_DIR)
+	rm -f $@ && ln -sfn ping $@
 
 $(BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@

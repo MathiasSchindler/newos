@@ -693,6 +693,10 @@ static int parse_char_token_value(const CompilerToken *token, long long *value_o
             *value_out = '\t';
         } else if (escaped == 'r') {
             *value_out = '\r';
+        } else if (escaped == 'v') {
+            *value_out = '\v';
+        } else if (escaped == 'f') {
+            *value_out = '\f';
         } else if (escaped == '0') {
             *value_out = '\0';
         } else {

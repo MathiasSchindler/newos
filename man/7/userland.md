@@ -79,7 +79,7 @@ missing tools are now concentrated in system bringup and administration:
 - `dmesg`
 - a small `ip` tool for links, addresses, and routes
 - `getty` and possibly `login`
-- a DHCP client and a small DNS lookup tool
+- richer DHCP/DNS/autoconfiguration beyond the newly added small clients
 
 Those are now more strategically important than adding yet another text filter,
 because they unlock more of the "boot into the project and live there" story.
@@ -91,7 +91,7 @@ practical order is:
 
 1. `mount`, `umount`, and a small `init`
 2. `dmesg`, `getty`, and console/session plumbing
-3. `ip` plus DHCP/DNS basics
+3. deeper IPv6, DHCP renewal, and richer DNS/network diagnostics
 4. later account-management and multi-user tools such as `login`, `passwd`, and
    `su`
 

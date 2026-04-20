@@ -133,13 +133,6 @@ static unsigned short linux_byte_swap16(unsigned short value) {
     return (unsigned short)(((value & 0x00ffU) << 8) | ((value & 0xff00U) >> 8));
 }
 
-static unsigned int linux_byte_swap32(unsigned int value) {
-    return ((value & 0x000000ffU) << 24) |
-           ((value & 0x0000ff00U) << 8) |
-           ((value & 0x00ff0000U) >> 8) |
-           ((value & 0xff000000U) >> 24);
-}
-
 static unsigned short linux_host_to_net16(unsigned short value) {
     return linux_byte_swap16(value);
 }
@@ -148,13 +141,6 @@ static unsigned short linux_net_to_host16(unsigned short value) {
     return linux_byte_swap16(value);
 }
 
-static unsigned int linux_host_to_net32(unsigned int value) {
-    return linux_byte_swap32(value);
-}
-
-static unsigned int linux_net_to_host32(unsigned int value) {
-    return linux_byte_swap32(value);
-}
 
 static int linux_is_space_char(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
@@ -573,12 +559,6 @@ static int linux_connect_ipv6(int sock, const LinuxIn6Addr *ip, unsigned int por
     return linux_syscall3(LINUX_SYS_CONNECT, sock, (long)&address, sizeof(address)) < 0 ? -1 : 0;
 }
 
-static int linux_bind_ipv6(int sock, const LinuxIn6Addr *ip, unsigned int port) {
-    struct linux_sockaddr_in6 address;
-
-    linux_prepare_sockaddr6(&address, ip, port);
-    return linux_syscall3(LINUX_SYS_BIND, sock, (long)&address, sizeof(address)) < 0 ? -1 : 0;
-}
 
 static int linux_set_socket_int_option(int sock, int level, int option, int value) {
     return linux_syscall5(LINUX_SYS_SETSOCKOPT, sock, level, option, (long)&value, sizeof(value)) < 0 ? -1 : 0;
@@ -796,9 +776,15 @@ static int linux_add_dns_entry(
     unsigned int ttl
 ) {
     PlatformDnsEntry *entry;
+    size_t i;
 
     if (entries_out == 0 || count_io == 0 || *count_io >= entry_capacity) {
         return -1;
+    }
+    for (i = 0U; i < *count_io; ++i) {
+        if (entries_out[i].family == family && rt_strcmp(entries_out[i].address, address) == 0) {
+            return 0;
+        }
     }
 
     entry = &entries_out[*count_io];
@@ -1993,8 +1979,16 @@ static int linux_parse_dhcp_reply(
     if (packet == 0 || lease_out == 0 || packet_length < 240U || mac == 0) {
         return -1;
     }
-    if (packet[0] != 2U || linux_load_be32(packet + 4) != xid || memcmp(packet + 28, mac, 6U) != 0) {
-        return -1;
+    {
+        size_t mac_index;
+        if (packet[0] != 2U || linux_load_be32(packet + 4) != xid) {
+            return -1;
+        }
+        for (mac_index = 0U; mac_index < 6U; ++mac_index) {
+            if (packet[28U + mac_index] != mac[mac_index]) {
+                return -1;
+            }
+        }
     }
     if (linux_load_be32(packet + 236) != 0x63825363U) {
         return -1;

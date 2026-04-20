@@ -7,7 +7,7 @@ ping - send ICMP ECHO_REQUEST packets to a host
 ## SYNOPSIS
 
 ```
-ping [-4] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST
+ping [-4|-6] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST
 ```
 
 ## DESCRIPTION
@@ -21,13 +21,14 @@ and packet loss statistics.
 - Configurable send interval, timeout, payload size, and TTL
 - Optional quiet mode and overall deadline handling
 - Reports per-packet RTT and a summary on completion
-- Hostname resolution through the platform IPv4 networking backend
+- Hostname resolution through the platform networking backend
+- IPv4 and IPv6 echo requests where the backend and current privileges allow it
 - Accepts common compatibility flags such as `-4`, `-6`, and `-n`
 
 ## OPTIONS
 
-- `-4` — force IPv4 mode (the current implementation default)
-- `-6` — request IPv6 mode and fail with a clear diagnostic
+- `-4` — force IPv4 mode
+- `-6` — force IPv6 mode
 - `-n` — numeric output only; accepted for compatibility
 - `-q` — quiet output; suppress per-packet lines and show the summary block
 - `-c COUNT` — send COUNT packets (must be ≥ 1; default: platform value)
@@ -40,8 +41,8 @@ and packet loss statistics.
 
 ## LIMITATIONS
 
-- Requires appropriate privileges (raw socket or setuid) to send ICMP packets.
-- IPv6 probes are not yet implemented; `-6` reports that explicitly.
+- Requires appropriate privileges (raw socket or ICMP socket access) to send ICMP packets.
+- IPv6 support now exists, but backend coverage and host permission models can still vary more than for IPv4.
 - Timing and size options are integer-only; fractional intervals are not accepted.
 - Flood mode (`-f`) is not implemented.
 
@@ -54,6 +55,7 @@ ping -q -c 5 host.local
 ping -c 5 -i 2 -W 3 host.local
 ping -c 10 -w 15 10.0.0.1
 ping -s 64 -t 64 10.0.0.1
+ping -6 ::1
 ```
 
 ## SEE ALSO

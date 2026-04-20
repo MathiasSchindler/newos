@@ -25,6 +25,10 @@ static int is_number_continue(char ch) {
 static int same_text_n(const char *text, const char *candidate, size_t length) {
     size_t i;
 
+    if (text == 0 || candidate == 0) {
+        return 0;
+    }
+
     for (i = 0; i < length; ++i) {
         if (candidate[i] == '\0' || text[i] != candidate[i]) {
             return 0;
@@ -130,6 +134,9 @@ static size_t match_punctuator(const char *text) {
 
     for (i = 0; i < sizeof(multi_char) / sizeof(multi_char[0]); ++i) {
         size_t j = 0;
+        if (multi_char[i] == 0) {
+            break;
+        }
         while (multi_char[i][j] != '\0' && text[j] == multi_char[i][j]) {
             j += 1;
         }

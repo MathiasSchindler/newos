@@ -349,6 +349,8 @@ static void ir_const_next(IrConstParser *parser) {
             if (*cursor == 'n') ch = '\n';
             else if (*cursor == 't') ch = '\t';
             else if (*cursor == 'r') ch = '\r';
+            else if (*cursor == 'v') ch = '\v';
+            else if (*cursor == 'f') ch = '\f';
             else if (*cursor == '0') ch = '\0';
             else ch = *cursor;
             cursor += 1;
