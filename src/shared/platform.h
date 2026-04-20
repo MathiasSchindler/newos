@@ -131,6 +131,8 @@ typedef struct {
     unsigned int ttl;
     unsigned int deadline_seconds;
     int quiet_output;
+    int family;
+    int numeric_only;
 } PlatformPingOptions;
 
 typedef struct {
@@ -177,6 +179,23 @@ typedef struct {
     char destination[PLATFORM_NETWORK_TEXT_CAPACITY];
     char gateway[PLATFORM_NETWORK_TEXT_CAPACITY];
 } PlatformRouteEntry;
+
+typedef struct {
+    int family;
+    unsigned int ttl;
+    char name[PLATFORM_NAME_CAPACITY];
+    char address[PLATFORM_NETWORK_TEXT_CAPACITY];
+} PlatformDnsEntry;
+
+typedef struct {
+    unsigned int lease_seconds;
+    unsigned int prefix_length;
+    char address[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char server[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char router[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char dns1[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char dns2[PLATFORM_NETWORK_TEXT_CAPACITY];
+} PlatformDhcpLease;
 
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
@@ -261,6 +280,23 @@ int platform_list_network_routes(
 int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_value, int set_mtu);
 int platform_network_address_change(const char *ifname, const char *cidr, int add);
 int platform_network_route_change(const char *destination, const char *gateway, const char *ifname, int add);
+int platform_dns_lookup(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    int family_filter,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+);
+int platform_dhcp_request(
+    const char *ifname,
+    const char *server,
+    unsigned int server_port,
+    unsigned int client_port,
+    unsigned int timeout_milliseconds,
+    PlatformDhcpLease *lease_out
+);
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_spawn_process(

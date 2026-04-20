@@ -9,7 +9,11 @@ static int emit_binary_op(BackendState *state, const char *op);
 static int expr_parse_expression(ExprParser *parser);
 static int expr_parse_assignment(ExprParser *parser);
 static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized);
-static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index, const char *base_type);
+static int expr_parse_lvalue_suffixes(ExprParser *parser,
+                                      int *byte_sized,
+                                      int word_index,
+                                      int current_is_address,
+                                      const char *base_type);
 static int expr_parse_unary(ExprParser *parser);
 static int expr_parse_multiplicative(ExprParser *parser);
 static int expr_parse_additive(ExprParser *parser);
@@ -20,7 +24,15 @@ static int expr_parse_bitand(ExprParser *parser);
 static int expr_parse_bitxor(ExprParser *parser);
 static int expr_parse_bitor(ExprParser *parser);
 static int name_prefers_word_index(const BackendState *state, const char *name);
+static int type_access_size(const char *type_text, int word_index);
 static long long type_storage_bytes_text(const BackendState *state, const char *type_text);
+static void copy_indexed_result_type(const char *base_type, char *buffer, size_t buffer_size);
+static void copy_member_result_type(const BackendState *state,
+                                    const char *base_type,
+                                    const char *member_name,
+                                    char *buffer,
+                                    size_t buffer_size);
+static void copy_dereferenced_type(const char *base_type, char *buffer, size_t buffer_size);
 
 static void expr_next(ExprParser *parser) {
     const char *cursor = skip_spaces(parser->cursor);
@@ -373,6 +385,9 @@ static int is_unary_prefix_text(const char *text) {
 static int expr_operand_prefers_byte_load(ExprParser *parser) {
     ExprParser snapshot = *parser;
     int deref_depth = 1;
+    char type_text[128];
+
+    type_text[0] = '\0';
 
     while (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "(")) {
         expr_next(&snapshot);
@@ -387,25 +402,48 @@ static int expr_operand_prefers_byte_load(ExprParser *parser) {
     }
 
     if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
-        const BackendState *state = snapshot.state;
-        int local_index = find_local(state, snapshot.current.text);
-        int global_index = find_global(state, snapshot.current.text);
-
-        if (local_index >= 0) {
-            if (state->locals[local_index].is_array && !state->locals[local_index].prefers_word_index) {
-                return 1;
+        const char *known_type = lookup_name_type_text(snapshot.state, snapshot.current.text);
+        if (known_type != 0 && known_type[0] != '\0') {
+            rt_copy_string(type_text, sizeof(type_text), known_type);
+            expr_next(&snapshot);
+            while (snapshot.current.kind == EXPR_TOKEN_PUNCT &&
+                   (names_equal(snapshot.current.text, "[") || names_equal(snapshot.current.text, ".") ||
+                    names_equal(snapshot.current.text, "->"))) {
+                if (names_equal(snapshot.current.text, "[")) {
+                    while (snapshot.current.kind != EXPR_TOKEN_EOF && !names_equal(snapshot.current.text, "]")) {
+                        expr_next(&snapshot);
+                    }
+                    if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "]")) {
+                        char indexed[128];
+                        copy_indexed_result_type(type_text, indexed, sizeof(indexed));
+                        rt_copy_string(type_text, sizeof(type_text), indexed);
+                        expr_next(&snapshot);
+                    }
+                    continue;
+                }
+                expr_next(&snapshot);
+                if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
+                    char member_type[128];
+                    copy_member_result_type(snapshot.state, type_text, snapshot.current.text, member_type, sizeof(member_type));
+                    rt_copy_string(type_text, sizeof(type_text), member_type);
+                    expr_next(&snapshot);
+                } else {
+                    break;
+                }
             }
-            return state->locals[local_index].char_based &&
-                   state->locals[local_index].pointer_depth > 0 &&
-                   deref_depth >= state->locals[local_index].pointer_depth;
         }
-        if (global_index >= 0) {
-            if (state->globals[global_index].is_array && !state->globals[global_index].prefers_word_index) {
-                return 1;
-            }
-            return state->globals[global_index].char_based &&
-                   state->globals[global_index].pointer_depth > 0 &&
-                   deref_depth >= state->globals[global_index].pointer_depth;
+    }
+
+    while (deref_depth > 0 && type_text[0] != '\0') {
+        char deref_type[128];
+        copy_dereferenced_type(type_text, deref_type, sizeof(deref_type));
+        rt_copy_string(type_text, sizeof(type_text), deref_type);
+        deref_depth -= 1;
+    }
+
+    if (type_text[0] != '\0') {
+        if (type_access_size(type_text, should_prefer_word_index("", type_text)) == 1) {
+            return 1;
         }
     }
 
@@ -1077,10 +1115,23 @@ static int expr_group_has_postfix_incdec(ExprParser *parser) {
     return 0;
 }
 
-static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index, const char *base_type) {
+static int expr_parse_lvalue_suffixes(ExprParser *parser,
+                                      int *byte_sized,
+                                      int word_index,
+                                      int current_is_address,
+                                      const char *base_type) {
     while (parser->current.kind == EXPR_TOKEN_PUNCT) {
         if (names_equal(parser->current.text, "[")) {
             int element_scale = array_index_scale(parser->state, base_type, word_index);
+            int access_size = type_access_size(base_type, word_index);
+
+            if (current_is_address && type_is_pointer_like(base_type) && !member_result_decays_to_address(base_type)) {
+                if (emit_load_from_address_register(parser->state,
+                                                    backend_is_aarch64(parser->state) ? "x0" : "%rax",
+                                                    access_size) != 0) {
+                    return -1;
+                }
+            }
             expr_next(parser);
             if (emit_push_value(parser->state) != 0 ||
                 expr_parse_expression(parser) != 0 ||
@@ -1090,6 +1141,7 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
             }
             *byte_sized = (element_scale == 1 || element_scale == 2 || element_scale == 4) ? element_scale : 0;
             word_index = 0;
+            current_is_address = 1;
             continue;
         }
         if (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->")) {
@@ -1114,6 +1166,7 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
             base_type = member_type;
             word_index = member_prefers_word_index(member_name, base_type);
             *byte_sized = type_access_size(base_type, word_index);
+            current_is_address = 1;
             expr_next(parser);
             continue;
         }
@@ -1131,6 +1184,14 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
             int element_scale = array_index_scale(parser->state, base_type, word_index);
 
             copy_indexed_result_type(base_type, element_type, sizeof(element_type));
+            if (current_is_address && type_is_pointer_like(base_type) && !member_result_decays_to_address(base_type)) {
+                if (emit_load_from_address_register(parser->state,
+                                                    backend_is_aarch64(parser->state) ? "x0" : "%rax",
+                                                    byte_sized) != 0) {
+                    return -1;
+                }
+                current_is_address = 0;
+            }
             if (emit_push_value(parser->state) != 0) {
                 return -1;
             }
@@ -1754,11 +1815,6 @@ static int emit_binary_op(BackendState *state, const char *op) {
         if (names_equal(op, "<<")) return emit_instruction(state, "salq %cl, %rax");
         if (names_equal(op, ">>")) return emit_instruction(state, "sarq %cl, %rax");
         if (names_equal(op, "/") || names_equal(op, "%")) {
-            if (emit_instruction(state, "movq %rax, %r11") != 0 ||
-                emit_instruction(state, "movq %rcx, %r10") != 0 ||
-                emit_instruction(state, "movq %r11, %rcx") != 0) {
-                return -1;
-            }
             if (emit_instruction(state, "cqto") != 0 || emit_instruction(state, "idivq %rcx") != 0) {
                 return -1;
             }
@@ -2133,14 +2189,14 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         if (expr_expect_punct(parser, ")") != 0 || expr_parse_unary(parser) != 0) {
             return -1;
         }
-        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0);
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0, 0);
     }
 
     if (expr_match_punct(parser, "(")) {
         if (expr_parse_lvalue_address(parser, byte_sized) != 0 || expr_expect_punct(parser, ")") != 0) {
             return -1;
         }
-        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0);
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 1, 0);
     }
 
     if (expr_match_punct(parser, "*")) {
@@ -2159,16 +2215,25 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         expr_next(parser);
         word_index = name_prefers_word_index(parser->state, name);
 
-        if (parser->current.kind == EXPR_TOKEN_PUNCT &&
+        {
+            int current_is_address = 1;
+
+            if (parser->current.kind == EXPR_TOKEN_PUNCT &&
             (names_equal(parser->current.text, "[") || names_equal(parser->current.text, "->"))) {
-            if (emit_load_name(parser->state, name) != 0) {
+                if (emit_load_name(parser->state, name) != 0) {
+                    return -1;
+                }
+                current_is_address = 0;
+            } else if (emit_address_of_name(parser->state, name) != 0) {
                 return -1;
             }
-        } else if (emit_address_of_name(parser->state, name) != 0) {
-            return -1;
-        }
 
-        return expr_parse_lvalue_suffixes(parser, byte_sized, word_index, lookup_name_type_text(parser->state, name));
+            return expr_parse_lvalue_suffixes(parser,
+                                              byte_sized,
+                                              word_index,
+                                              current_is_address,
+                                              lookup_name_type_text(parser->state, name));
+        }
     }
 
     backend_set_error(parser->state->backend, "unsupported assignment target in backend");
@@ -2193,13 +2258,35 @@ static int expr_parse_assignment(ExprParser *parser) {
                 int word_index = 0;
                 if (lookup_array_storage(parser->state, name, &word_index)) {
                     int rhs_byte_sized = 0;
+                    int local_index = find_local(parser->state, name);
+                    int bytes = 0;
+                    int direct_store_size = -1;
 
+                    if (local_index >= 0) {
+                        bytes = parser->state->locals[local_index].stack_bytes;
+                    }
+                    if (bytes == 1) {
+                        direct_store_size = 1;
+                    } else if (bytes == 2) {
+                        direct_store_size = 2;
+                    } else if (bytes == 4) {
+                        direct_store_size = 4;
+                    } else if (bytes > 0 && bytes <= backend_stack_slot_size(parser->state)) {
+                        direct_store_size = 0;
+                    }
                     if (expr_may_be_object_lvalue_source(parser)) {
                         if (expr_parse_lvalue_address(parser, &rhs_byte_sized) != 0) {
                             return -1;
                         }
                     } else if (expr_parse_assignment(parser) != 0) {
                         return -1;
+                    } else if (local_index >= 0 && direct_store_size >= 0) {
+                        return emit_local_address(parser->state,
+                                                  parser->state->locals[local_index].offset,
+                                                  backend_is_aarch64(parser->state) ? "x9" : "%rcx") == 0 &&
+                               emit_store_to_address_register(parser->state,
+                                                              backend_is_aarch64(parser->state) ? "x9" : "%rcx",
+                                                              direct_store_size) == 0 ? 0 : -1;
                     }
                     return emit_copy_object_to_name(parser->state, name);
                 }
@@ -2324,9 +2411,111 @@ static int emit_array_element_address(BackendState *state,
     return emit_push_value(state);
 }
 
+static unsigned long long initializer_array_length_limit(const char *type_text, int element_scale) {
+    const char *open = type_text != 0 ? type_text : "";
+    unsigned long long length = 0ULL;
+
+    while (*open != '\0' && *open != '[') {
+        open += 1;
+    }
+    if (*open == '[') {
+        open += 1;
+        while (*open >= '0' && *open <= '9') {
+            length = length * 10ULL + (unsigned long long)(*open - '0');
+            open += 1;
+        }
+    }
+    if (length == 0ULL) {
+        int scale = element_scale > 0 ? element_scale : 1;
+        return (unsigned long long)BACKEND_ARRAY_STACK_BYTES / (unsigned long long)scale;
+    }
+    return length;
+}
+
+static int emit_offset_address(BackendState *state, const char *name, int offset_bytes) {
+    if (emit_address_of_name(state, name) != 0) {
+        return -1;
+    }
+    if (offset_bytes > 0) {
+        if (emit_push_value(state) != 0 ||
+            emit_load_immediate(state, offset_bytes) != 0 ||
+            emit_binary_op(state, "+") != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int emit_initializer_value_at_offset(ExprParser *parser,
+                                            BackendState *state,
+                                            const char *name,
+                                            int offset_bytes,
+                                            const char *type_text) {
+    const char *type = skip_spaces(type_text != 0 ? type_text : "");
+
+    if (text_contains(type, "[")) {
+        char element_type[128];
+        int element_word_index = should_prefer_word_index(name, type);
+        int element_scale = array_index_scale(state, type, element_word_index);
+        unsigned long long slot_limit = initializer_array_length_limit(type, element_scale);
+        unsigned long long index = 0ULL;
+
+        copy_indexed_result_type(type, element_type, sizeof(element_type));
+        if (parser->current.kind == EXPR_TOKEN_STRING) {
+            size_t i;
+            size_t length = rt_strlen(parser->current.text);
+            for (i = 0; i <= length && index < slot_limit; ++i, ++index) {
+                if (emit_offset_address(state, name, offset_bytes + (int)(index * (unsigned long long)element_scale)) != 0 ||
+                    emit_push_value(state) != 0 ||
+                    emit_load_immediate(state, (long long)(unsigned char)parser->current.text[i]) != 0 ||
+                    emit_pop_address_and_store(state, 1) != 0) {
+                    return -1;
+                }
+            }
+            expr_next(parser);
+            return 0;
+        }
+        if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "{")) {
+            expr_next(parser);
+            while (parser->current.kind != EXPR_TOKEN_EOF &&
+                   !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "}"))) {
+                if (index < slot_limit &&
+                    emit_initializer_value_at_offset(parser,
+                                                     state,
+                                                     name,
+                                                     offset_bytes + (int)(index * (unsigned long long)element_scale),
+                                                     element_type) != 0) {
+                    return -1;
+                }
+                if (index < slot_limit) {
+                    index += 1ULL;
+                }
+                if (!expr_match_punct(parser, ",")) {
+                    break;
+                }
+            }
+            if (!expr_match_punct(parser, "}")) {
+                backend_set_error(state->backend, "unsupported primary expression in backend");
+                return -1;
+            }
+            return 0;
+        }
+    }
+
+    if (emit_offset_address(state, name, offset_bytes) != 0 ||
+        emit_push_value(state) != 0 ||
+        expr_parse_assignment(parser) != 0 ||
+        emit_pop_address_and_store(state,
+                                   type_access_size(type,
+                                                    should_prefer_word_index(name, type))) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int emit_flat_initializer_store(ExprParser *parser,
-                                      BackendState *state,
-                                      const char *name,
+                                       BackendState *state,
+                                       const char *name,
                                       int element_scale,
                                       int byte_sized,
                                       unsigned long long *index_inout,
@@ -2366,6 +2555,84 @@ static int emit_flat_initializer_store(ExprParser *parser,
     }
 
     *index_inout += 1ULL;
+    return 0;
+}
+
+static void copy_initializer_aggregate_name(const char *type_text, char *buffer, size_t buffer_size) {
+    const char *cursor;
+    size_t out = 0;
+
+    if (buffer_size == 0) {
+        return;
+    }
+    buffer[0] = '\0';
+    type_text = skip_spaces(type_text != 0 ? type_text : "");
+    if (starts_with(type_text, "struct:")) {
+        cursor = type_text + 7;
+    } else if (starts_with(type_text, "union:")) {
+        cursor = type_text + 6;
+    } else {
+        return;
+    }
+    while (*cursor != '\0' && *cursor != '[' && *cursor != '*' && *cursor != ' ' && out + 1 < buffer_size) {
+        buffer[out++] = *cursor++;
+    }
+    buffer[out] = '\0';
+}
+
+static int emit_named_object_initializer_store(BackendState *state, const char *name, const char *type_text, const char *expr) {
+    ExprParser parser;
+    char aggregate_name[COMPILER_IR_NAME_CAPACITY];
+    size_t i;
+    int matched = 0;
+
+    copy_initializer_aggregate_name(type_text, aggregate_name, sizeof(aggregate_name));
+    if (aggregate_name[0] == '\0') {
+        return -1;
+    }
+
+    parser.cursor = expr;
+    parser.state = state;
+    expr_next(&parser);
+
+    if (parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "{")) {
+        expr_next(&parser);
+    }
+
+    for (i = 0; i < state->aggregate_member_count; ++i) {
+        int access_size;
+
+        if (!names_equal(state->aggregate_members[i].aggregate_name, aggregate_name)) {
+            continue;
+        }
+        matched = 1;
+        if (parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "}")) {
+            break;
+        }
+
+        access_size = type_access_size(state->aggregate_members[i].type_text,
+                                       should_prefer_word_index(state->aggregate_members[i].name,
+                                                                state->aggregate_members[i].type_text));
+        (void)access_size;
+        if (emit_initializer_value_at_offset(&parser,
+                                             state,
+                                             name,
+                                             state->aggregate_members[i].offset_bytes,
+                                             state->aggregate_members[i].type_text) != 0) {
+            return -1;
+        }
+        if (parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, ",")) {
+            expr_next(&parser);
+        }
+    }
+
+    if (parser.current.kind == EXPR_TOKEN_PUNCT && names_equal(parser.current.text, "}")) {
+        expr_next(&parser);
+    }
+
+    if (!matched || parser.current.kind != EXPR_TOKEN_EOF) {
+        return -1;
+    }
     return 0;
 }
 
@@ -2427,6 +2694,7 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
 
 int emit_object_initializer_store(BackendState *state, const char *name, const char *expr) {
     ExprParser parser;
+    const char *object_type = lookup_name_type_text(state, name);
     unsigned long long index;
     unsigned long long slot_count = 1ULL;
     int byte_sized = 0;
@@ -2442,6 +2710,10 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
     if (local_index >= 0) {
         if (state->locals[local_index].stack_bytes <= 1) {
             byte_sized = 1;
+        } else if (state->locals[local_index].stack_bytes <= 2) {
+            byte_sized = 2;
+        } else if (state->locals[local_index].stack_bytes <= 4) {
+            byte_sized = 4;
         } else {
             slot_count = (unsigned long long)(state->locals[local_index].stack_bytes / backend_stack_slot_size(state));
             if (slot_count == 0ULL) {
@@ -2458,6 +2730,12 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
             emit_pop_address_and_store(state, byte_sized) != 0) {
             return -1;
         }
+    }
+
+    if ((starts_with(skip_spaces(object_type), "struct:") || starts_with(skip_spaces(object_type), "union:")) &&
+        !text_contains(skip_spaces(object_type), "*") &&
+        emit_named_object_initializer_store(state, name, object_type, expr) == 0) {
+        return 0;
     }
 
     parser.cursor = expr;
@@ -2480,10 +2758,26 @@ int emit_object_initializer_store(BackendState *state, const char *name, const c
 int emit_object_copy_store(BackendState *state, const char *name, const char *expr) {
     ExprParser parser;
     int byte_sized = 0;
+    int local_index = find_local(state, name);
+    int bytes = 0;
+    int direct_store_size = -1;
 
     parser.cursor = expr;
     parser.state = state;
     expr_next(&parser);
+
+    if (local_index >= 0) {
+        bytes = state->locals[local_index].stack_bytes;
+    }
+    if (bytes == 1) {
+        direct_store_size = 1;
+    } else if (bytes == 2) {
+        direct_store_size = 2;
+    } else if (bytes == 4) {
+        direct_store_size = 4;
+    } else if (bytes > 0 && bytes <= backend_stack_slot_size(state)) {
+        direct_store_size = 0;
+    }
 
     if (expr_may_be_object_lvalue_source(&parser)) {
         if (expr_parse_lvalue_address(&parser, &byte_sized) != 0) {
@@ -2494,6 +2788,11 @@ int emit_object_copy_store(BackendState *state, const char *name, const char *ex
 
     if (emit_expression(state, expr) != 0) {
         return -1;
+    }
+
+    if (local_index >= 0 && direct_store_size >= 0) {
+        return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rcx") == 0 &&
+               emit_store_to_address_register(state, backend_is_aarch64(state) ? "x9" : "%rcx", direct_store_size) == 0 ? 0 : -1;
     }
 
     return emit_copy_object_to_name(state, name);

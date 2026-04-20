@@ -976,6 +976,13 @@ int emit_load_name(BackendState *state, const char *name) {
 
     if (local_index >= 0) {
         if (state->locals[local_index].is_array) {
+            const char *type_text = skip_spaces(state->locals[local_index].type_text);
+            if ((starts_with(type_text, "struct:") || starts_with(type_text, "union:")) &&
+                !text_contains(type_text, "*") &&
+                !text_contains(type_text, "[")) {
+                return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rax") == 0 &&
+                       emit_load_from_address_register(state, backend_is_aarch64(state) ? "x9" : "%rax", 0) == 0 ? 0 : -1;
+            }
             return emit_address_of_name(state, name);
         }
         return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rax") == 0 &&
@@ -986,7 +993,12 @@ int emit_load_name(BackendState *state, const char *name) {
         char line[128];
         char symbol[COMPILER_IR_NAME_CAPACITY];
         if (state->globals[global_index].is_array) {
-            return emit_address_of_name(state, name);
+            const char *type_text = skip_spaces(state->globals[global_index].type_text);
+            if (!((starts_with(type_text, "struct:") || starts_with(type_text, "union:")) &&
+                  !text_contains(type_text, "*") &&
+                  !text_contains(type_text, "["))) {
+                return emit_address_of_name(state, name);
+            }
         }
         format_symbol_name(state, name, symbol, sizeof(symbol));
         if (backend_is_aarch64(state)) {

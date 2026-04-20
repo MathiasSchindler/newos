@@ -173,6 +173,9 @@ static int parse_member_line(const char *line,
     return aggregate_name[0] != '\0' && member_name[0] != '\0' ? 0 : -1;
 }
 
+static const char *find_global_initializer_expr(const BackendState *state, const char *name);
+static int resolve_static_value(const BackendState *state, const char *expr, long long *value_out);
+
 typedef enum {
     GLOBAL_INIT_EOF = 0,
     GLOBAL_INIT_IDENTIFIER,
@@ -976,6 +979,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             char type_text[128];
             char name[COMPILER_IR_NAME_CAPACITY];
             int has_global_linkage;
+            int global_index;
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
             has_global_linkage = names_equal(storage, "global");
@@ -990,16 +994,39 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             if ((names_equal(storage, "global") || names_equal(storage, "static") || names_equal(storage, "extern")) &&
                 names_equal(kind, "obj") &&
                 !is_function_name(state, name) &&
-                add_global(state,
-                           name,
-                           type_text,
-                           decl_requires_object_storage(type_text),
-                           decl_pointer_depth(type_text),
-                           decl_char_based(type_text),
-                           should_prefer_word_index(name, type_text),
-                           has_global_linkage,
-                           names_equal(storage, "global") || names_equal(storage, "static")) < 0) {
+                (global_index = add_global(state,
+                                           name,
+                                           type_text,
+                                           decl_requires_object_storage(type_text),
+                                           decl_pointer_depth(type_text),
+                                           decl_char_based(type_text),
+                                           should_prefer_word_index(name, type_text),
+                                           has_global_linkage,
+                                           names_equal(storage, "global") || names_equal(storage, "static"))) < 0) {
                 return -1;
+            }
+            if (names_equal(kind, "obj") && global_index >= 0 && i + 1U < ir->count && starts_with(ir->lines[i + 1U], "store ")) {
+                const char *next = ir->lines[i + 1U] + 6;
+                char store_name[COMPILER_IR_NAME_CAPACITY];
+                size_t out = 0;
+                long long value = 0;
+
+                while (*next != '\0' && !(next[0] == ' ' && next[1] == '<') && out + 1 < sizeof(store_name)) {
+                    store_name[out++] = *next++;
+                }
+                store_name[out] = '\0';
+                next = skip_spaces(next + 4);
+                if (names_equal(store_name, name)) {
+                    if (resolve_static_value(state, next, &value) == 0) {
+                        state->globals[global_index].init_value = value;
+                        state->globals[global_index].initialized = 1;
+                    } else if (next[0] != '\0') {
+                        rt_copy_string(state->globals[global_index].init_text,
+                                       sizeof(state->globals[global_index].init_text),
+                                       next);
+                        state->globals[global_index].initialized = 1;
+                    }
+                }
             }
             continue;
         }
@@ -1070,11 +1097,14 @@ static int emit_globals(BackendState *state) {
         }
 
         if (needs_object_storage) {
-            if (state->globals[i].init_text[0] != '\0') {
+            const char *init_expr = state->globals[i].init_text[0] != '\0'
+                                        ? state->globals[i].init_text
+                                        : find_global_initializer_expr(state, state->globals[i].name);
+            if (init_expr != 0 && init_expr[0] != '\0') {
                 GlobalInitParser parser;
                 unsigned long long bytes_written = 0ULL;
 
-                parser.cursor = state->globals[i].init_text;
+                parser.cursor = init_expr;
                 global_init_next(&parser);
                 if (emit_global_initializer_value(state, state->globals[i].type_text, &parser, &bytes_written) != 0) {
                     backend_set_error(state->backend, "failed to emit global object initializer");
@@ -1111,6 +1141,44 @@ static int emit_globals(BackendState *state) {
         if (emit_line(state, line) != 0) {
             backend_set_error(state->backend, "failed to emit global initializer");
             return -1;
+        }
+    }
+
+    return 0;
+}
+
+static const char *find_global_initializer_expr(const BackendState *state, const char *name) {
+    size_t i;
+    int in_function = 0;
+
+    if (state == 0 || state->ir == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+
+    for (i = 0; i < state->ir->count; ++i) {
+        const char *line = state->ir->lines[i];
+        const char *expr = line + 6;
+        char store_name[COMPILER_IR_NAME_CAPACITY];
+        size_t out = 0;
+
+        if (starts_with(line, "func ")) {
+            in_function = 1;
+            continue;
+        }
+        if (starts_with(line, "endfunc ")) {
+            in_function = 0;
+            continue;
+        }
+        if (in_function || !starts_with(line, "store ")) {
+            continue;
+        }
+
+        while (*expr != '\0' && !(expr[0] == ' ' && expr[1] == '<') && out + 1 < sizeof(store_name)) {
+            store_name[out++] = *expr++;
+        }
+        store_name[out] = '\0';
+        if (names_equal(store_name, name)) {
+            return skip_spaces(expr + 4);
         }
     }
 
@@ -1322,6 +1390,110 @@ static int emit_function_return(BackendState *state) {
     return emit_instruction(state, "leave") == 0 && emit_instruction(state, "ret") == 0 ? 0 : -1;
 }
 
+static void make_switch_label(char *buffer,
+                              size_t buffer_size,
+                              unsigned int switch_id,
+                              const char *kind,
+                              unsigned int case_index) {
+    char digits[32];
+
+    rt_copy_string(buffer, buffer_size, "switch");
+    rt_unsigned_to_string((unsigned long long)switch_id, digits, sizeof(digits));
+    rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+    rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "_");
+    rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), kind);
+    if (names_equal(kind, "case")) {
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "_");
+        rt_unsigned_to_string((unsigned long long)case_index, digits, sizeof(digits));
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+    }
+}
+
+static int emit_switch_dispatch(BackendState *state,
+                                const CompilerIr *ir,
+                                size_t line_index,
+                                const char *expr) {
+    BackendSwitchContext *context;
+    size_t scan = line_index + 1U;
+    int depth = 1;
+    unsigned int switch_id = state->label_counter++;
+
+    if (state->switch_depth >= COMPILER_BACKEND_MAX_SWITCH_DEPTH) {
+        backend_set_error(state->backend, "switch nesting exceeded backend capacity");
+        return -1;
+    }
+
+    context = &state->switch_stack[state->switch_depth];
+    rt_memset(context, 0, sizeof(*context));
+    context->switch_id = switch_id;
+    make_switch_label(context->end_label, sizeof(context->end_label), switch_id, "end", 0);
+    make_switch_label(context->default_label, sizeof(context->default_label), switch_id, "default", 0);
+
+    if (emit_expression(state, expr) != 0 || emit_push_value(state) != 0) {
+        return -1;
+    }
+
+    while (scan < ir->count && depth > 0) {
+        const char *scan_line = ir->lines[scan];
+
+        if (starts_with(scan_line, "switch ")) {
+            depth += 1;
+            scan += 1U;
+            continue;
+        }
+        if (starts_with(scan_line, "endswitch")) {
+            depth -= 1;
+            if (depth == 0) {
+                break;
+            }
+            scan += 1U;
+            continue;
+        }
+        if (depth == 1 && starts_with(scan_line, "case ")) {
+            char case_label[32];
+            const char *case_expr = skip_spaces(scan_line + 5);
+
+            make_switch_label(case_label, sizeof(case_label), switch_id, "case", context->case_count);
+            if (emit_expression(state, case_expr) != 0) {
+                return -1;
+            }
+            if (backend_is_aarch64(state)) {
+                if (emit_instruction(state, "ldr x1, [sp]") != 0 ||
+                    emit_instruction(state, "cmp x1, x0") != 0 ||
+                    emit_jump_to_label(state, "b.eq", case_label) != 0) {
+                    return -1;
+                }
+            } else {
+                if (emit_instruction(state, "cmpq %rax, (%rsp)") != 0 ||
+                    emit_jump_to_label(state, "je", case_label) != 0) {
+                    return -1;
+                }
+            }
+            context->case_count += 1U;
+        } else if (depth == 1 && starts_with(scan_line, "default")) {
+            context->has_default = 1;
+        }
+        scan += 1U;
+    }
+
+    if (backend_is_aarch64(state)) {
+        if (emit_instruction(state, "add sp, sp, #16") != 0) {
+            return -1;
+        }
+    } else if (emit_instruction(state, "addq $8, %rsp") != 0) {
+        return -1;
+    }
+
+    if (emit_jump_to_label(state,
+                           backend_is_aarch64(state) ? "b" : "jmp",
+                           context->has_default ? context->default_label : context->end_label) != 0) {
+        return -1;
+    }
+
+    state->switch_depth += 1U;
+    return 0;
+}
+
 static int emit_decl_instruction(BackendState *state, const char *line) {
     char storage[16];
     char kind[16];
@@ -1339,6 +1511,14 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     pointer_depth = decl_pointer_depth(type_text);
     char_based = decl_char_based(type_text);
     prefers_word_index = should_prefer_word_index(name, type_text);
+
+    if (names_equal(storage, "param") && text_contains(type_text, "[")) {
+        is_array = 0;
+        if (pointer_depth == 0) {
+            pointer_depth = 1;
+        }
+        slot_size = backend_stack_slot_size(state);
+    }
 
     if (names_equal(storage, "param")) {
         static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
@@ -1441,6 +1621,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
     rt_memset(&state, 0, sizeof(state));
     state.backend = backend;
+    state.ir = ir;
     state.fd = fd;
 
     if (prescan_ir(&state, ir) != 0) {
@@ -1501,9 +1682,19 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             {
                 int array_word_index = 0;
                 int is_array_target = lookup_array_storage(&state, name, &array_word_index);
+                const char *target_type = lookup_name_type_text(&state, name);
+                const char *target_base = skip_spaces(target_type);
+                int is_aggregate_target =
+                    decl_requires_object_storage(target_base) &&
+                    (starts_with(target_base, "struct:") || starts_with(target_base, "union:"));
 
                 if (*expr == '{') {
-                    if (is_array_target) {
+                    if (is_aggregate_target) {
+                        if (emit_object_initializer_store(&state, name, expr) != 0) {
+                            backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                            return -1;
+                        }
+                    } else if (is_array_target) {
                         if (emit_array_initializer_store(&state, name, expr) != 0) {
                             backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                             return -1;
@@ -1523,7 +1714,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                     }
                     continue;
                 }
-                if (is_array_target) {
+                if (is_array_target || is_aggregate_target) {
                     if (emit_object_copy_store(&state, name, expr) != 0) {
                         backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                         return -1;
@@ -1558,6 +1749,67 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             state.saw_return_in_function = 1;
             if (emit_function_return(&state) != 0) {
                 return -1;
+            }
+            continue;
+        }
+
+        if (starts_with(line, "switch ")) {
+            if (emit_switch_dispatch(&state, ir, i, skip_spaces(line + 6)) != 0) {
+                backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                return -1;
+            }
+            continue;
+        }
+
+        if (starts_with(line, "case ")) {
+            if (state.switch_depth > 0) {
+                BackendSwitchContext *context = &state.switch_stack[state.switch_depth - 1U];
+                char asm_label[96];
+                char case_label[32];
+
+                make_switch_label(case_label,
+                                  sizeof(case_label),
+                                  context->switch_id,
+                                  "case",
+                                  context->next_case_index);
+                context->next_case_index += 1U;
+                write_label_name(&state, asm_label, sizeof(asm_label), case_label);
+                rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+                if (emit_line(&state, asm_label) != 0) {
+                    backend_set_error(state.backend, "failed to emit switch case label");
+                    return -1;
+                }
+            }
+            continue;
+        }
+
+        if (starts_with(line, "default")) {
+            if (state.switch_depth > 0) {
+                BackendSwitchContext *context = &state.switch_stack[state.switch_depth - 1U];
+                char asm_label[96];
+
+                write_label_name(&state, asm_label, sizeof(asm_label), context->default_label);
+                rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+                if (emit_line(&state, asm_label) != 0) {
+                    backend_set_error(state.backend, "failed to emit switch default label");
+                    return -1;
+                }
+            }
+            continue;
+        }
+
+        if (starts_with(line, "endswitch")) {
+            if (state.switch_depth > 0) {
+                BackendSwitchContext *context = &state.switch_stack[state.switch_depth - 1U];
+                char asm_label[96];
+
+                write_label_name(&state, asm_label, sizeof(asm_label), context->end_label);
+                rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+                if (emit_line(&state, asm_label) != 0) {
+                    backend_set_error(state.backend, "failed to emit switch end label");
+                    return -1;
+                }
+                state.switch_depth -= 1U;
             }
             continue;
         }

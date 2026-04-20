@@ -26,16 +26,11 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     parameter_type = type;
     parameter_type.pointer_depth += declarator.pointer_depth;
     parameter_type.is_function = 0;
-    parameter_type.is_array = 0;
-    parameter_type.array_length = 0ULL;
-    parameter_type.array_stride = 0ULL;
+    parameter_type.is_array = declarator.is_array;
+    parameter_type.array_length = declarator.array_length;
+    parameter_type.array_stride = declarator.array_stride;
     if (declarator.is_function) {
         parameter_type.pointer_depth += 1;
-    }
-    if (declarator.is_array) {
-        parameter_type.pointer_depth += 1;
-    } else {
-        parameter_type.array_length = declarator.array_length;
     }
 
     if (owner != 0 &&
@@ -53,15 +48,13 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     return 0;
 }
 
-static void maybe_capture_array_length(const CompilerToken *token,
-                                       unsigned long long *length_out,
-                                       unsigned long long *stride_out) {
+static int parse_array_length_token_value(const CompilerToken *token, unsigned long long *value_out) {
     char text[64];
     size_t length;
     unsigned long long value = 0;
 
-    if (token == 0 || length_out == 0 || stride_out == 0 || token->kind != COMPILER_TOKEN_NUMBER) {
-        return;
+    if (token == 0 || value_out == 0 || token->kind != COMPILER_TOKEN_NUMBER) {
+        return -1;
     }
 
     copy_token_text(token, text, sizeof(text));
@@ -74,14 +67,67 @@ static void maybe_capture_array_length(const CompilerToken *token,
     }
 
     if (rt_parse_uint(text, &value) == 0 && value > 0ULL) {
-        if (*length_out == 0ULL) {
-            *length_out = value;
-        } else if (*stride_out == 0ULL) {
-            *stride_out = value;
-        } else {
-            *stride_out *= value;
+        *value_out = value;
+        return 0;
+    }
+    return -1;
+}
+
+static unsigned long long maybe_capture_array_length(CompilerParser *parser) {
+    long long sum = 0;
+    long long term = 0;
+    char pending_op = '+';
+    int saw_value = 0;
+
+    if (parser == 0) {
+        return 0ULL;
+    }
+
+    while (parser->current.kind != COMPILER_TOKEN_EOF && !current_is_punct(parser, "]")) {
+        if (parser->current.kind == COMPILER_TOKEN_NUMBER) {
+            unsigned long long parsed = 0ULL;
+            long long value;
+
+            if (parse_array_length_token_value(&parser->current, &parsed) == 0) {
+                value = (long long)parsed;
+                if (!saw_value) {
+                    term = value;
+                    saw_value = 1;
+                } else if (pending_op == '*') {
+                    term *= value;
+                } else if (pending_op == '/') {
+                    if (value != 0) {
+                        term /= value;
+                    }
+                } else if (pending_op == '-') {
+                    sum += term;
+                    term = -value;
+                } else {
+                    sum += term;
+                    term = value;
+                }
+            }
+        } else if (parser->current.kind == COMPILER_TOKEN_PUNCTUATOR) {
+            char punct[8];
+            copy_token_text(&parser->current, punct, sizeof(punct));
+            if (rt_strcmp(punct, "+") == 0 || rt_strcmp(punct, "-") == 0 ||
+                rt_strcmp(punct, "*") == 0 || rt_strcmp(punct, "/") == 0) {
+                pending_op = punct[0];
+            }
+        }
+
+        if (advance(parser) != 0) {
+            return 0ULL;
         }
     }
+
+    if (saw_value) {
+        unsigned long long value = (unsigned long long)(sum + term);
+        if (value > 0ULL) {
+            return value;
+        }
+    }
+    return 0ULL;
 }
 
 static int parse_parameter_list(CompilerParser *parser, CompilerDeclarator *declarator) {
@@ -149,9 +195,17 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
             return -1;
         }
         if (!current_is_punct(parser, "]")) {
-            maybe_capture_array_length(&parser->current, &declarator->array_length, &declarator->array_stride);
-            if (parse_expression(parser) != 0) {
-                return -1;
+            unsigned long long array_value = maybe_capture_array_length(parser);
+            if (array_value > 0ULL) {
+                if (!declarator->is_array && declarator->array_length == 0ULL) {
+                    declarator->array_length = array_value;
+                } else if (declarator->array_length == 0ULL) {
+                    declarator->array_stride = array_value;
+                } else if (declarator->array_stride == 0ULL) {
+                    declarator->array_stride = array_value;
+                } else {
+                    declarator->array_stride *= array_value;
+                }
             }
         }
         declarator->is_array = 1;

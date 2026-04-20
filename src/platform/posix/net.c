@@ -36,9 +36,17 @@
 #ifndef IP_TTL
 #define IP_TTL 4
 #endif
+#ifndef IPPROTO_ICMPV6
+#define IPPROTO_ICMPV6 58
+#endif
+#ifndef IPV6_UNICAST_HOPS
+#define IPV6_UNICAST_HOPS 16
+#endif
 
 #define POSIX_ICMP_ECHO 8
 #define POSIX_ICMP_REPLY 0
+#define POSIX_ICMPV6_ECHO_REQUEST 128
+#define POSIX_ICMPV6_ECHO_REPLY 129
 
 typedef struct {
     unsigned char type;
@@ -47,6 +55,14 @@ typedef struct {
     unsigned short identifier;
     unsigned short sequence;
 } PosixIcmpPacket;
+
+typedef struct {
+    unsigned char type;
+    unsigned char code;
+    unsigned short checksum;
+    unsigned short identifier;
+    unsigned short sequence;
+} PosixIcmpv6Packet;
 
 #ifdef __APPLE__
 static const unsigned char *posix_sockaddr_dl_addr(const struct sockaddr_dl *sdl) {
@@ -126,6 +142,30 @@ static int resolve_ping_host(const char *host, struct sockaddr_in *addr_out, cha
 
     memcpy(addr_out, results->ai_addr, sizeof(*addr_out));
     if (inet_ntop(AF_INET, &addr_out->sin_addr, ip_out, (socklen_t)ip_out_size) == 0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+
+    freeaddrinfo(results);
+    return 0;
+}
+
+static int resolve_ping_host6(const char *host, struct sockaddr_in6 *addr_out, char *ip_out, size_t ip_out_size) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    int rc;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET6;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    rc = getaddrinfo(host, 0, &hints, &results);
+    if (rc != 0 || results == 0) {
+        return -1;
+    }
+
+    memcpy(addr_out, results->ai_addr, sizeof(*addr_out));
+    if (inet_ntop(AF_INET6, &addr_out->sin6_addr, ip_out, (socklen_t)ip_out_size) == 0) {
         freeaddrinfo(results);
         return -1;
     }

@@ -11,6 +11,7 @@
 #define COMPILER_BACKEND_MAX_CONSTANTS 512
 #define COMPILER_BACKEND_MAX_AGGREGATES 256
 #define COMPILER_BACKEND_MAX_AGGREGATE_MEMBERS 4096
+#define COMPILER_BACKEND_MAX_SWITCH_DEPTH 64
 #define BACKEND_ARRAY_STACK_BYTES 4096
 #define BACKEND_STRUCT_STACK_BYTES 16384
 #define BACKEND_MAX_OBJECT_STACK_BYTES (4 * 1024 * 1024)
@@ -71,7 +72,17 @@ typedef struct {
 } BackendAggregateMember;
 
 typedef struct {
+    char end_label[32];
+    char default_label[32];
+    unsigned int switch_id;
+    unsigned int case_count;
+    unsigned int next_case_index;
+    int has_default;
+} BackendSwitchContext;
+
+typedef struct {
     CompilerBackend *backend;
+    const CompilerIr *ir;
     int fd;
     BackendFunctionName functions[COMPILER_BACKEND_MAX_FUNCTIONS];
     size_t function_count;
@@ -87,6 +98,8 @@ typedef struct {
     size_t aggregate_member_count;
     BackendLocal locals[COMPILER_BACKEND_MAX_LOCALS];
     size_t local_count;
+    BackendSwitchContext switch_stack[COMPILER_BACKEND_MAX_SWITCH_DEPTH];
+    size_t switch_depth;
     char current_function[COMPILER_IR_NAME_CAPACITY];
     int in_function;
     int param_count;
