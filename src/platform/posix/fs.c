@@ -376,6 +376,8 @@ int platform_set_path_times(
 ) {
     struct timespec times[2];
     int fd = -1;
+    PlatformDirEntry entry;
+    int have_entry = 0;
 
     if (path == NULL) {
         errno = EINVAL;
@@ -386,18 +388,30 @@ int platform_set_path_times(
         return 0;
     }
 
-    if (create_if_missing) {
+    have_entry = (platform_get_path_info(path, &entry) == 0);
+
+    if (create_if_missing && !have_entry) {
         fd = open(path, O_WRONLY | O_CREAT, 0644);
         if (fd < 0) {
             return -1;
         }
         close(fd);
+        have_entry = (platform_get_path_info(path, &entry) == 0);
     }
 
-    times[0].tv_sec = update_access ? (time_t)atime : (time_t)0;
-    times[0].tv_nsec = update_access ? 0L : UTIME_OMIT;
-    times[1].tv_sec = update_modify ? (time_t)mtime : (time_t)0;
-    times[1].tv_nsec = update_modify ? 0L : UTIME_OMIT;
+    if ((!update_access || !update_modify) && have_entry) {
+        if (!update_access) {
+            atime = entry.atime;
+        }
+        if (!update_modify) {
+            mtime = entry.mtime;
+        }
+    }
+
+    times[0].tv_sec = (time_t)atime;
+    times[0].tv_nsec = 0L;
+    times[1].tv_sec = (time_t)mtime;
+    times[1].tv_nsec = 0L;
     return utimensat(AT_FDCWD, path, times, 0);
 }
 

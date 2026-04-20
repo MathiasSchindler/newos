@@ -22,8 +22,14 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-4] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST");
 }
 
+static void print_usage_stdout(const char *program_name) {
+    rt_write_cstr(1, "Usage: ");
+    rt_write_cstr(1, program_name);
+    rt_write_cstr(1, " [-4] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST\n");
+}
+
 static void print_help(const char *program_name) {
-    print_usage(program_name);
+    print_usage_stdout(program_name);
     rt_write_line(1, "Send ICMP echo requests to an IPv4 host and report reachability.");
     rt_write_line(1, "");
     rt_write_line(1, "Options:");

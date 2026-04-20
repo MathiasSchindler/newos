@@ -367,6 +367,8 @@ int platform_set_path_times(
 ) {
     long fd;
     struct linux_timespec times[2];
+    PlatformDirEntry entry;
+    int have_entry = 0;
 
     if (path == 0) {
         return -1;
@@ -376,18 +378,30 @@ int platform_set_path_times(
         return 0;
     }
 
-    if (create_if_missing) {
+    have_entry = (platform_get_path_info(path, &entry) == 0);
+
+    if (create_if_missing && !have_entry) {
         fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_WRONLY | LINUX_O_CREAT, 0644);
         if (fd < 0) {
             return -1;
         }
         linux_syscall1(LINUX_SYS_CLOSE, fd);
+        have_entry = (platform_get_path_info(path, &entry) == 0);
     }
 
-    times[0].tv_sec = update_access ? (long)atime : 0;
-    times[0].tv_nsec = update_access ? 0L : LINUX_UTIME_OMIT;
-    times[1].tv_sec = update_modify ? (long)mtime : 0;
-    times[1].tv_nsec = update_modify ? 0L : LINUX_UTIME_OMIT;
+    if ((!update_access || !update_modify) && have_entry) {
+        if (!update_access) {
+            atime = entry.atime;
+        }
+        if (!update_modify) {
+            mtime = entry.mtime;
+        }
+    }
+
+    times[0].tv_sec = (long)atime;
+    times[0].tv_nsec = 0L;
+    times[1].tv_sec = (long)mtime;
+    times[1].tv_nsec = 0L;
     return linux_syscall4(LINUX_SYS_UTIMENSAT, LINUX_AT_FDCWD, (long)path, (long)times, 0) < 0 ? -1 : 0;
 }
 

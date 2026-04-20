@@ -15,7 +15,7 @@ EOF
 wait "$netcat_pid"
 assert_file_contains "$WORK_DIR/netcat_server.out" 'phase1-netcat' "netcat loopback mode did not deliver the payload"
 
-assert_command_succeeds "$ROOT_DIR/build/ping" --help > "$WORK_DIR/ping_help.out"
+assert_command_succeeds "$ROOT_DIR/build/ping" --help > "$WORK_DIR/ping_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping_help.out" 'quiet output' "ping --help did not describe the extended options"
 
 ping_ipv6_status=0

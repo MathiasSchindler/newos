@@ -19,7 +19,8 @@ EOF
 assert_files_equal "$WORK_DIR/append.expected" "$WORK_DIR/append.txt" "tee -a did not append to the existing file"
 
 tee_status=0
-printf 'partial write\n' | "$ROOT_DIR/build/tee" -i "$WORK_DIR/partial.txt" "$WORK_DIR/missing/fail.txt" > "$WORK_DIR/partial.out" || tee_status=$?
+printf 'partial write\n' | "$ROOT_DIR/build/tee" -i "$WORK_DIR/partial.txt" "$WORK_DIR/missing/fail.txt" > "$WORK_DIR/partial.out" 2> "$WORK_DIR/partial.err" || tee_status=$?
 [ "$tee_status" -ne 0 ] || fail "tee should return a failure status when one output cannot be opened"
 assert_file_contains "$WORK_DIR/partial.txt" '^partial write$' "tee did not preserve the healthy destination after a partial failure"
 assert_file_contains "$WORK_DIR/partial.out" '^partial write$' "tee did not preserve stdout output after a partial failure"
+assert_file_contains "$WORK_DIR/partial.err" 'cannot open' "tee did not report the failing destination on stderr"
