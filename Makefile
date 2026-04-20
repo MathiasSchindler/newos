@@ -14,11 +14,19 @@ HOST_ARCH := $(shell uname -m 2>/dev/null || echo unknown)
 TARGET_ARCH ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_64,$(HOST_ARCH)),x86_64,aarch64),aarch64)
 TARGET_ARCH_DIR := src/arch/$(TARGET_ARCH)/linux
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -I$(TARGET_ARCH_DIR)
-FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables
+FREESTANDING_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
+FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS)
+FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
 TARGET_LINKER_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -fuse-ld=lld -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
-TARGET_LDFLAGS ?= -nostdlib -static $(TARGET_LINKER_FLAG) $(TARGET_BUILTINS_LIB)
+FREESTANDING_GC_LDFLAGS ?= -Wl,--gc-sections
+ifeq ($(FREESTANDING_DEBUG),1)
+FREESTANDING_STRIP_LDFLAGS ?=
+else
+FREESTANDING_STRIP_LDFLAGS ?= -Wl,-s
+endif
+TARGET_LDFLAGS ?= -nostdlib -static $(TARGET_LINKER_FLAG) $(FREESTANDING_GC_LDFLAGS) $(FREESTANDING_STRIP_LDFLAGS) $(TARGET_BUILTINS_LIB)
 BUILD_DIR ?= build
 TARGET_BUILD_DIR ?= build/linux-$(TARGET_ARCH)
 ifeq ($(TARGET_ARCH),x86_64)

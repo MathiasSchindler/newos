@@ -723,6 +723,7 @@ static unsigned int posix_route_prefix_from_mask(unsigned long value) {
 }
 #endif
 
+#if !defined(__linux__)
 static unsigned int posix_count_prefix_bits_from_text(const char *text, int family) {
     char *end = NULL;
     unsigned long prefix;
@@ -876,6 +877,7 @@ static int posix_parse_netstat_routes(
 
     return 0;
 }
+#endif
 
 static int posix_find_link_index(PlatformNetworkLink *entries_out, size_t count, const char *name) {
     size_t i;
