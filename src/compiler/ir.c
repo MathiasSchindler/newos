@@ -821,6 +821,13 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
         rt_copy_string(buffer, buffer_size, base);
     }
 
+    if ((type->base == COMPILER_BASE_STRUCT || type->base == COMPILER_BASE_UNION || type->base == COMPILER_BASE_ENUM) &&
+        type->aggregate_name[0] != '\0' &&
+        rt_strlen(buffer) + 1U + rt_strlen(type->aggregate_name) < buffer_size) {
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), ":");
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), type->aggregate_name);
+    }
+
     if (type->is_array && rt_strlen(buffer) + 3U < buffer_size) {
         char digits[32];
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");

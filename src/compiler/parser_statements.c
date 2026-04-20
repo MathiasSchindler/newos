@@ -2,6 +2,27 @@
 
 #include "parser_internal.h"
 
+static int push_loop_labels(CompilerParser *parser, const char *continue_label, const char *break_label) {
+    if (parser->loop_depth >= COMPILER_MAX_LOOP_DEPTH) {
+        set_error(parser, "loop nesting too deep");
+        return -1;
+    }
+    rt_copy_string(parser->continue_labels[parser->loop_depth],
+                   sizeof(parser->continue_labels[parser->loop_depth]),
+                   continue_label != 0 ? continue_label : "");
+    rt_copy_string(parser->break_labels[parser->loop_depth],
+                   sizeof(parser->break_labels[parser->loop_depth]),
+                   break_label != 0 ? break_label : "");
+    parser->loop_depth += 1U;
+    return 0;
+}
+
+static void pop_loop_labels(CompilerParser *parser) {
+    if (parser->loop_depth > 0U) {
+        parser->loop_depth -= 1U;
+    }
+}
+
 int parse_statement(CompilerParser *parser) {
     if (current_is_punct(parser, "{")) {
         return parse_compound_statement(parser);
@@ -70,8 +91,15 @@ int parse_statement(CompilerParser *parser) {
         }
         copy_normalized_span(cond_start, cond_end, cond_text, sizeof(cond_text), "1");
         if (emit_ir_status(parser, compiler_ir_emit_branch_zero(&parser->ir, cond_text, end_label)) != 0 ||
-            parse_statement(parser) != 0 ||
-            emit_ir_status(parser, compiler_ir_emit_jump(&parser->ir, loop_label)) != 0 ||
+            push_loop_labels(parser, loop_label, end_label) != 0) {
+            return -1;
+        }
+        if (parse_statement(parser) != 0) {
+            pop_loop_labels(parser);
+            return -1;
+        }
+        pop_loop_labels(parser);
+        if (emit_ir_status(parser, compiler_ir_emit_jump(&parser->ir, loop_label)) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, end_label)) != 0) {
             return -1;
         }
@@ -80,6 +108,7 @@ int parse_statement(CompilerParser *parser) {
 
     if (current_is_keyword(parser, "do")) {
         char loop_label[COMPILER_IR_NAME_CAPACITY];
+        char continue_label[COMPILER_IR_NAME_CAPACITY];
         char end_label[COMPILER_IR_NAME_CAPACITY];
         char cond_text[COMPILER_IR_LINE_CAPACITY];
         const char *cond_start;
@@ -87,11 +116,17 @@ int parse_statement(CompilerParser *parser) {
 
         if (advance(parser) != 0 ||
             emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "do", loop_label, sizeof(loop_label))) != 0 ||
+            emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "docont", continue_label, sizeof(continue_label))) != 0 ||
             emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "enddo", end_label, sizeof(end_label))) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, loop_label)) != 0 ||
-            parse_statement(parser) != 0) {
+            push_loop_labels(parser, continue_label, end_label) != 0) {
             return -1;
         }
+        if (parse_statement(parser) != 0) {
+            pop_loop_labels(parser);
+            return -1;
+        }
+        pop_loop_labels(parser);
         if (!current_is_keyword(parser, "while")) {
             set_error(parser, "expected while after do statement");
             return -1;
@@ -108,7 +143,8 @@ int parse_statement(CompilerParser *parser) {
             return -1;
         }
         copy_normalized_span(cond_start, cond_end, cond_text, sizeof(cond_text), "1");
-        if (emit_ir_status(parser, compiler_ir_emit_branch_zero(&parser->ir, cond_text, end_label)) != 0 ||
+        if (emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, continue_label)) != 0 ||
+            emit_ir_status(parser, compiler_ir_emit_branch_zero(&parser->ir, cond_text, end_label)) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_jump(&parser->ir, loop_label)) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, end_label)) != 0) {
             return -1;
@@ -119,6 +155,7 @@ int parse_statement(CompilerParser *parser) {
     if (current_is_keyword(parser, "for")) {
         int status = -1;
         char loop_label[COMPILER_IR_NAME_CAPACITY];
+        char continue_label[COMPILER_IR_NAME_CAPACITY];
         char end_label[COMPILER_IR_NAME_CAPACITY];
         char init_text[COMPILER_IR_LINE_CAPACITY];
         char cond_text[COMPILER_IR_LINE_CAPACITY];
@@ -157,6 +194,7 @@ int parse_statement(CompilerParser *parser) {
         }
 
         if (emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "for", loop_label, sizeof(loop_label))) != 0 ||
+            emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "forstep", continue_label, sizeof(continue_label))) != 0 ||
             emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "endfor", end_label, sizeof(end_label))) != 0 ||
             emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, loop_label)) != 0) {
             goto for_cleanup;
@@ -186,7 +224,15 @@ int parse_statement(CompilerParser *parser) {
             }
             copy_normalized_span(segment_start, parser->current.start, step_text, sizeof(step_text), "");
         }
-        if (expect_punct(parser, ")") != 0 || parse_statement(parser) != 0) {
+        if (expect_punct(parser, ")") != 0 || push_loop_labels(parser, continue_label, end_label) != 0) {
+            goto for_cleanup;
+        }
+        if (parse_statement(parser) != 0) {
+            pop_loop_labels(parser);
+            goto for_cleanup;
+        }
+        pop_loop_labels(parser);
+        if (emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, continue_label)) != 0) {
             goto for_cleanup;
         }
         if (step_text[0] != '\0' && emit_ir_status(parser, compiler_ir_emit_eval(&parser->ir, step_text)) != 0) {
@@ -297,7 +343,14 @@ for_cleanup:
         if (advance(parser) != 0) {
             return -1;
         }
-        if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, keyword, "")) != 0) {
+        if (parser->loop_depth > 0U) {
+            const char *target = rt_strcmp(keyword, "continue") == 0
+                                     ? parser->continue_labels[parser->loop_depth - 1U]
+                                     : parser->break_labels[parser->loop_depth - 1U];
+            if (emit_ir_status(parser, compiler_ir_emit_jump(&parser->ir, target)) != 0) {
+                return -1;
+            }
+        } else if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, keyword, "")) != 0) {
             return -1;
         }
         return expect_punct(parser, ";");

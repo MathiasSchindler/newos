@@ -16,6 +16,8 @@ static int types_are_compatible(const CompilerType *lhs, const CompilerType *rhs
            lhs->is_function == rhs->is_function &&
            lhs->is_array == rhs->is_array &&
            lhs->is_unsigned == rhs->is_unsigned &&
+           ((lhs->aggregate_name[0] == '\0' || rhs->aggregate_name[0] == '\0') ||
+            names_equal(lhs->aggregate_name, rhs->aggregate_name)) &&
            (lhs->array_length == 0ULL || rhs->array_length == 0ULL || lhs->array_length == rhs->array_length);
 }
 

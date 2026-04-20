@@ -7,6 +7,7 @@
 
 #define COMPILER_MAX_TYPEDEF_NAMES 256
 #define COMPILER_TYPEDEF_NAME_CAPACITY 64
+#define COMPILER_MAX_LOOP_DEPTH 64
 
 typedef struct {
     const CompilerSource *source;
@@ -28,6 +29,9 @@ typedef struct {
     CompilerType pending_parameter_types[64];
     size_t pending_parameter_count;
     int pending_function_scope;
+    char break_labels[COMPILER_MAX_LOOP_DEPTH][COMPILER_TYPEDEF_NAME_CAPACITY];
+    char continue_labels[COMPILER_MAX_LOOP_DEPTH][COMPILER_TYPEDEF_NAME_CAPACITY];
+    size_t loop_depth;
 } CompilerParser;
 
 void compiler_parser_init(CompilerParser *parser, const CompilerSource *source, int dump_ast, int dump_ir, int output_fd);

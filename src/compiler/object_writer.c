@@ -1676,8 +1676,8 @@ static int emit_backend_assembly_to_temp(
 }
 
 static int write_external_elf_object(CompilerObjectWriter *writer, const char *asm_path, int fd) {
-    static CompilerSource object_source;
     char object_path[COMPILER_PATH_CAPACITY];
+    unsigned char buffer[16384];
     char *argv[] = {
         "cc",
         "-x",
@@ -1691,6 +1691,7 @@ static int write_external_elf_object(CompilerObjectWriter *writer, const char *a
     int object_fd;
     int pid;
     int exit_status = 0;
+    long bytes_read;
 
     object_fd = platform_create_temp_file(object_path, sizeof(object_path), "/tmp/newos-ncc-obj-", 0600U);
     if (object_fd < 0) {
@@ -1715,15 +1716,24 @@ static int write_external_elf_object(CompilerObjectWriter *writer, const char *a
         return -1;
     }
 
-    if (compiler_load_source(object_path, &object_source) != 0) {
+    object_fd = platform_open_read(object_path);
+    if (object_fd < 0) {
         (void)platform_remove_file(object_path);
         set_error(writer, "failed to read generated ELF object");
         return -1;
     }
+    while ((bytes_read = platform_read(object_fd, buffer, sizeof(buffer))) > 0) {
+        if (rt_write_all(fd, buffer, (size_t)bytes_read) != 0) {
+            (void)platform_close(object_fd);
+            (void)platform_remove_file(object_path);
+            set_error(writer, "failed while writing ELF object output");
+            return -1;
+        }
+    }
+    (void)platform_close(object_fd);
     (void)platform_remove_file(object_path);
-
-    if (rt_write_all(fd, object_source.data, object_source.size) != 0) {
-        set_error(writer, "failed while writing ELF object output");
+    if (bytes_read < 0) {
+        set_error(writer, "failed while reading generated ELF object");
         return -1;
     }
 

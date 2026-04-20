@@ -3,13 +3,13 @@
 #include "backend_internal.h"
 
 static int expr_match_punct(ExprParser *parser, const char *text);
-static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address);
+static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address, const char *base_type);
 static int expr_read_punctuator_width(const char *cursor);
 static int emit_binary_op(BackendState *state, const char *op);
 static int expr_parse_expression(ExprParser *parser);
 static int expr_parse_assignment(ExprParser *parser);
 static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized);
-static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index);
+static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index, const char *base_type);
 static int expr_parse_unary(ExprParser *parser);
 static int expr_parse_multiplicative(ExprParser *parser);
 static int expr_parse_additive(ExprParser *parser);
@@ -474,8 +474,14 @@ static int identifier_looks_like_type(const char *name) {
 
 static int member_prefers_word_index(const char *name) {
     if (names_equal(name, "argv") || names_equal(name, "envp") || names_equal(name, "commands") ||
-        names_equal(name, "jobs") || names_equal(name, "aliases") || names_equal(name, "functions") ||
-        names_equal(name, "entries") || names_equal(name, "fields")) {
+         names_equal(name, "jobs") || names_equal(name, "aliases") || names_equal(name, "functions") ||
+         names_equal(name, "entries") || names_equal(name, "fields") ||
+         names_equal(name, "input_path") || names_equal(name, "output_path") ||
+         names_equal(name, "no_expand") || names_equal(name, "pids") ||
+         names_equal(name, "argc") || names_equal(name, "count") ||
+         names_equal(name, "output_append") || names_equal(name, "active") ||
+         names_equal(name, "job_id") || names_equal(name, "pid_count") ||
+         names_equal(name, "is_dir") || names_equal(name, "is_hidden")) {
         return 1;
     }
     return 0;
@@ -485,12 +491,148 @@ static int member_decays_to_address(const char *name) {
     if (names_equal(name, "name") || names_equal(name, "path") || names_equal(name, "self_dir") ||
          names_equal(name, "text") || names_equal(name, "pattern") || names_equal(name, "pattern_text") ||
          names_equal(name, "buffer") || names_equal(name, "line") || names_equal(name, "data") ||
-         names_equal(name, "bytes") ||
+          names_equal(name, "bytes") ||
          names_equal(name, "value") || names_equal(name, "body") || names_equal(name, "argv") ||
-         names_equal(name, "envp")) {
+         names_equal(name, "envp") || names_equal(name, "input_path") || names_equal(name, "output_path") ||
+         names_equal(name, "commands") || names_equal(name, "jobs") || names_equal(name, "aliases") ||
+         names_equal(name, "functions") || names_equal(name, "entries") || names_equal(name, "fields") ||
+         names_equal(name, "pids") || names_equal(name, "no_expand") || names_equal(name, "owner") ||
+         names_equal(name, "group") || names_equal(name, "command") || names_equal(name, "user") ||
+         names_equal(name, "state")) {
         return 1;
     }
     return 0;
+}
+
+static int type_matches_named_aggregate(const char *base_type, const char *name) {
+    return base_type != 0 && name != 0 && base_type[0] != '\0' &&
+           text_contains(base_type, name);
+}
+
+static int member_byte_offset(const char *base_type, const char *member_name) {
+    if (type_matches_named_aggregate(base_type, "ShCommand")) {
+        if (names_equal(member_name, "argv")) return 0;
+        if (names_equal(member_name, "argc")) return 520;
+        if (names_equal(member_name, "input_path")) return 528;
+        if (names_equal(member_name, "output_path")) return 536;
+        if (names_equal(member_name, "output_append")) return 544;
+        if (names_equal(member_name, "no_expand")) return 548;
+    }
+    if (type_matches_named_aggregate(base_type, "ShPipeline")) {
+        if (names_equal(member_name, "commands")) return 0;
+        if (names_equal(member_name, "count")) return 6464;
+    }
+    if (type_matches_named_aggregate(base_type, "ShJob")) {
+        if (names_equal(member_name, "active")) return 0;
+        if (names_equal(member_name, "job_id")) return 4;
+        if (names_equal(member_name, "pid_count")) return 8;
+        if (names_equal(member_name, "pids")) return 12;
+        if (names_equal(member_name, "command")) return 44;
+    }
+    if (type_matches_named_aggregate(base_type, "ShAlias") || type_matches_named_aggregate(base_type, "ShFunction")) {
+        if (names_equal(member_name, "active")) return 0;
+        if (names_equal(member_name, "name")) return 4;
+        if (names_equal(member_name, "value") || names_equal(member_name, "body")) return 68;
+    }
+    if (type_matches_named_aggregate(base_type, "ExprParser")) {
+        if (names_equal(member_name, "argc")) return 0;
+        if (names_equal(member_name, "argv")) return 8;
+        if (names_equal(member_name, "index")) return 16;
+        if (names_equal(member_name, "error")) return 24;
+    }
+    if (type_matches_named_aggregate(base_type, "PlatformDirEntry")) {
+        if (names_equal(member_name, "name")) return 0;
+        if (names_equal(member_name, "owner")) return 328;
+        if (names_equal(member_name, "group")) return 360;
+        if (names_equal(member_name, "is_dir")) return 392;
+        if (names_equal(member_name, "is_hidden")) return 396;
+    }
+    return 0;
+}
+
+static const char *member_result_type(const char *base_type, const char *member_name) {
+    if (type_matches_named_aggregate(base_type, "ShPipeline") && names_equal(member_name, "commands")) {
+        return "struct:ShCommand[8]";
+    }
+    if (type_matches_named_aggregate(base_type, "ShCommand")) {
+        if (names_equal(member_name, "argv")) return "char*[65]";
+        if (names_equal(member_name, "input_path") || names_equal(member_name, "output_path")) return "char*";
+        if (names_equal(member_name, "no_expand")) return "int[64]";
+    }
+    if (type_matches_named_aggregate(base_type, "ShJob") && names_equal(member_name, "pids")) {
+        return "int[8]";
+    }
+    if (type_matches_named_aggregate(base_type, "ShJob") && names_equal(member_name, "command")) {
+        return "char[4096]";
+    }
+    if (type_matches_named_aggregate(base_type, "ShAlias")) {
+        if (names_equal(member_name, "name")) return "char[64]";
+        if (names_equal(member_name, "value")) return "char[4096]";
+    }
+    if (type_matches_named_aggregate(base_type, "ShFunction")) {
+        if (names_equal(member_name, "name")) return "char[64]";
+        if (names_equal(member_name, "body")) return "char[4096]";
+    }
+    if (type_matches_named_aggregate(base_type, "PlatformDirEntry")) {
+        if (names_equal(member_name, "name")) return "char[256]";
+        if (names_equal(member_name, "owner") || names_equal(member_name, "group")) return "char[32]";
+    }
+    return base_type;
+}
+
+static int type_is_pointer_like(const char *base_type) {
+    return base_type != 0 && text_contains(base_type, "*");
+}
+
+static const char *indexed_result_type(const char *base_type) {
+    if (base_type == 0) {
+        return 0;
+    }
+    if (text_contains(base_type, "ShCommand[")) {
+        return "struct:ShCommand";
+    }
+    if (text_contains(base_type, "ShJob[")) {
+        return "struct:ShJob";
+    }
+    if (text_contains(base_type, "ShAlias[")) {
+        return "struct:ShAlias";
+    }
+    if (text_contains(base_type, "ShFunction[")) {
+        return "struct:ShFunction";
+    }
+    if (text_contains(base_type, "char*[")) {
+        return "char*";
+    }
+    if (text_contains(base_type, "int[")) {
+        return "int";
+    }
+    if (text_contains(base_type, "char[")) {
+        return "char";
+    }
+    return base_type;
+}
+
+static int named_aggregate_element_size(const char *base_type) {
+    if (type_matches_named_aggregate(base_type, "ShCommand")) return 808;
+    if (type_matches_named_aggregate(base_type, "ShPipeline")) return 6472;
+    if (type_matches_named_aggregate(base_type, "ShJob")) return 4140;
+    if (type_matches_named_aggregate(base_type, "ShAlias") || type_matches_named_aggregate(base_type, "ShFunction")) return 4164;
+    if (type_matches_named_aggregate(base_type, "PlatformDirEntry")) return 400;
+    return 0;
+}
+
+static int array_index_scale(const BackendState *state, const char *base_type, int word_index) {
+    if (base_type != 0 && text_contains(base_type, "[")) {
+        int aggregate_size = named_aggregate_element_size(base_type);
+        if (aggregate_size > 0) {
+            return aggregate_size;
+        }
+        if (text_contains(base_type, "char") && !text_contains(base_type, "*")) {
+            return 1;
+        }
+        return backend_stack_slot_size(state);
+    }
+    return word_index ? backend_stack_slot_size(state) : 1;
 }
 
 static int expr_looks_like_compound_literal(ExprParser *parser) {
@@ -609,15 +751,26 @@ static long long guess_identifier_size(const BackendState *state, const char *na
     return 8;
 }
 
-static int emit_index_address(BackendState *state, int word_index) {
+static int emit_index_address(BackendState *state, int element_scale) {
     if (backend_is_aarch64(state)) {
         if (emit_instruction(state, "mov x2, x0") != 0 ||
             emit_instruction(state, "ldr x1, [sp]") != 0 ||
             emit_instruction(state, "add sp, sp, #16") != 0) {
             return -1;
         }
-        if (word_index && emit_instruction(state, "lsl x2, x2, #3") != 0) {
-            return -1;
+        if (element_scale > 1) {
+            if (element_scale == 2) {
+                if (emit_instruction(state, "lsl x2, x2, #1") != 0) return -1;
+            } else if (element_scale == 4) {
+                if (emit_instruction(state, "lsl x2, x2, #2") != 0) return -1;
+            } else if (element_scale == 8) {
+                if (emit_instruction(state, "lsl x2, x2, #3") != 0) return -1;
+            } else {
+                if (emit_load_immediate_register(state, "x3", element_scale) != 0 ||
+                    emit_instruction(state, "mul x2, x2, x3") != 0) {
+                    return -1;
+                }
+            }
         }
         return emit_instruction(state, "add x0, x1, x2");
     }
@@ -625,8 +778,22 @@ static int emit_index_address(BackendState *state, int word_index) {
     if (emit_instruction(state, "movq %rax, %rcx") != 0 || emit_instruction(state, "popq %rax") != 0) {
         return -1;
     }
-    if (word_index) {
-        return emit_instruction(state, "leaq (%rax,%rcx,8), %rax");
+    if (element_scale == 1) {
+        return emit_instruction(state, "addq %rcx, %rax");
+    }
+    if (element_scale == 2 || element_scale == 4 || element_scale == 8) {
+        char line[64];
+        char scale_text[8];
+
+        rt_unsigned_to_string((unsigned long long)element_scale, scale_text, sizeof(scale_text));
+        rt_copy_string(line, sizeof(line), "leaq (%rax,%rcx,");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), scale_text);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), %rax");
+        return emit_instruction(state, line);
+    }
+    if (emit_load_immediate_register(state, "%r11", element_scale) != 0 ||
+        emit_instruction(state, "imulq %r11, %rcx") != 0) {
+        return -1;
     }
     return emit_instruction(state, "addq %rcx, %rax");
 }
@@ -710,27 +877,40 @@ static int expr_group_has_postfix_incdec(ExprParser *parser) {
     return 0;
 }
 
-static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index) {
+static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int word_index, const char *base_type) {
     while (parser->current.kind == EXPR_TOKEN_PUNCT) {
         if (names_equal(parser->current.text, "[")) {
+            int element_scale = array_index_scale(parser->state, base_type, word_index);
             expr_next(parser);
             if (emit_push_value(parser->state) != 0 ||
                 expr_parse_expression(parser) != 0 ||
                 expr_expect_punct(parser, "]") != 0 ||
-                emit_index_address(parser->state, word_index) != 0) {
+                emit_index_address(parser->state, element_scale) != 0) {
                 return -1;
             }
-            *byte_sized = word_index ? 0 : 1;
+            *byte_sized = element_scale == 1 ? 1 : 0;
             word_index = 0;
             continue;
         }
         if (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->")) {
+            char member_name[64];
+            int offset;
             expr_next(parser);
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
                 backend_set_error(parser->state->backend, "unsupported assignment target in backend");
                 return -1;
             }
-            word_index = member_prefers_word_index(parser->current.text);
+            rt_copy_string(member_name, sizeof(member_name), parser->current.text);
+            offset = member_byte_offset(base_type, member_name);
+            if (offset > 0) {
+                if (emit_push_value(parser->state) != 0 ||
+                    emit_load_immediate(parser->state, offset) != 0 ||
+                    emit_binary_op(parser->state, "+") != 0) {
+                    return -1;
+                }
+            }
+            base_type = member_result_type(base_type, member_name);
+            word_index = member_prefers_word_index(member_name);
             *byte_sized = word_index ? 0 : 1;
             expr_next(parser);
             continue;
@@ -740,11 +920,14 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser, int *byte_sized, int w
     return 0;
 }
 
-static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address) {
+static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address, const char *base_type) {
     int byte_sized = word_index ? 0 : 1;
 
     for (;;) {
         if (expr_match_punct(parser, "[")) {
+            const char *element_type = indexed_result_type(base_type);
+            int element_scale = array_index_scale(parser->state, base_type, word_index);
+
             if (emit_push_value(parser->state) != 0) {
                 return -1;
             }
@@ -754,35 +937,50 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
             if (expr_expect_punct(parser, "]") != 0) {
                 return -1;
             }
-            if (emit_index_address(parser->state, word_index) != 0) {
+            if (emit_index_address(parser->state, element_scale) != 0) {
                 return -1;
             }
             current_is_address = 1;
             load_final_address = 1;
-            byte_sized = word_index ? 0 : 1;
+            byte_sized = element_scale == 1 ? 1 : 0;
             word_index = 0;
+            base_type = element_type;
 
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
                 is_index_or_arrow_text(parser->current.text)) {
-                if (emit_load_from_address_register(parser->state, backend_is_aarch64(parser->state) ? "x0" : "%rax",
-                                                    byte_sized) != 0) {
-                    return -1;
+                if (type_is_pointer_like(element_type)) {
+                    if (emit_load_from_address_register(parser->state, backend_is_aarch64(parser->state) ? "x0" : "%rax",
+                                                        byte_sized) != 0) {
+                        return -1;
+                    }
+                    current_is_address = 0;
                 }
-                current_is_address = 0;
             }
             continue;
         }
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
             (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->"))) {
+            char member_name[64];
+            int offset;
             expr_next(parser);
             if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
                 backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
                 return -1;
             }
-            word_index = member_prefers_word_index(parser->current.text);
+            rt_copy_string(member_name, sizeof(member_name), parser->current.text);
+            offset = member_byte_offset(base_type, member_name);
+            if (offset > 0) {
+                if (emit_push_value(parser->state) != 0 ||
+                    emit_load_immediate(parser->state, offset) != 0 ||
+                    emit_binary_op(parser->state, "+") != 0) {
+                    return -1;
+                }
+            }
+            base_type = member_result_type(base_type, member_name);
+            word_index = member_prefers_word_index(member_name);
             byte_sized = word_index ? 0 : 1;
-            load_final_address = member_decays_to_address(parser->current.text) ? 0 : 1;
+            load_final_address = member_decays_to_address(member_name) ? 0 : 1;
             current_is_address = 1;
             expr_next(parser);
             continue;
@@ -885,7 +1083,7 @@ static int expr_parse_compound_literal(ExprParser *parser, int want_address, int
     parser->state->label_counter += 1U;
     rt_copy_string(temp_name + rt_strlen(temp_name), sizeof(temp_name) - rt_strlen(temp_name), digits);
 
-    if (allocate_local(parser->state, temp_name, 0, 0, 0, 0, 0) != 0) {
+    if (allocate_local(parser->state, temp_name, "int", 0, 0, 0, 0, 0) != 0) {
         return -1;
     }
 
@@ -967,7 +1165,7 @@ static int expr_parse_primary(ExprParser *parser) {
         if (result != 0) {
             return -1;
         }
-        return expr_parse_postfix_suffixes(parser, 0, 1, 0);
+        return expr_parse_postfix_suffixes(parser, 0, 1, 0, 0);
     }
 
     if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
@@ -1081,7 +1279,7 @@ static int expr_parse_primary(ExprParser *parser) {
                         return -1;
                     }
                 }
-                return expr_parse_postfix_suffixes(parser, 0, 0, 0);
+                return expr_parse_postfix_suffixes(parser, 0, 0, 0, 0);
             }
 
             if (emit_load_name_into_register(parser->state, name, backend_is_aarch64(parser->state) ? "x16" : "%r11") != 0) {
@@ -1109,7 +1307,7 @@ static int expr_parse_primary(ExprParser *parser) {
                     return -1;
                 }
             }
-            return expr_parse_postfix_suffixes(parser, 0, 0, 0);
+            return expr_parse_postfix_suffixes(parser, 0, 0, 0, 0);
         }
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
@@ -1138,7 +1336,8 @@ static int expr_parse_primary(ExprParser *parser) {
                                            name_prefers_word_index(parser->state, name),
                                            saw_structish_suffix ? 1 : (find_local(parser->state, name) >= 0 &&
                                                                        parser->state->locals[find_local(parser->state, name)].is_array),
-                                           saw_structish_suffix ? 1 : 0);
+                                           saw_structish_suffix ? 1 : 0,
+                                           lookup_name_type_text(parser->state, name));
     }
 
     if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(") &&
@@ -1166,7 +1365,7 @@ static int expr_parse_primary(ExprParser *parser) {
         if (expr_parse_expression(parser) != 0 || expr_expect_punct(parser, ")") != 0) {
             return -1;
         }
-        return expr_parse_postfix_suffixes(parser, 0, 0, 0);
+        return expr_parse_postfix_suffixes(parser, 0, 0, 0, 0);
     }
 
     backend_set_error(parser->state->backend, "unsupported primary expression in backend");
@@ -1671,14 +1870,14 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         if (expr_expect_punct(parser, ")") != 0 || expr_parse_unary(parser) != 0) {
             return -1;
         }
-        return expr_parse_lvalue_suffixes(parser, byte_sized, 0);
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0);
     }
 
     if (expr_match_punct(parser, "(")) {
         if (expr_parse_lvalue_address(parser, byte_sized) != 0 || expr_expect_punct(parser, ")") != 0) {
             return -1;
         }
-        return expr_parse_lvalue_suffixes(parser, byte_sized, 0);
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0);
     }
 
     if (expr_match_punct(parser, "*")) {
@@ -1706,7 +1905,7 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
             return -1;
         }
 
-        return expr_parse_lvalue_suffixes(parser, byte_sized, word_index);
+        return expr_parse_lvalue_suffixes(parser, byte_sized, word_index, lookup_name_type_text(parser->state, name));
     }
 
     backend_set_error(parser->state->backend, "unsupported assignment target in backend");

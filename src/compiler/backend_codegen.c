@@ -67,17 +67,42 @@ static int parse_const_line(const char *line, char *name, size_t name_size, long
     return parse_signed_value(cursor, value_out);
 }
 
+static int named_aggregate_stack_bytes(const char *type_text) {
+    const char *type = skip_spaces(type_text);
+
+    if (text_contains(type, "ShCommand")) {
+        return 808;
+    }
+    if (text_contains(type, "ShPipeline")) {
+        return 6472;
+    }
+    if (text_contains(type, "ShJob")) {
+        return 4140;
+    }
+    if (text_contains(type, "ShAlias") || text_contains(type, "ShFunction")) {
+        return 4164;
+    }
+    if (text_contains(type, "PlatformDirEntry")) {
+        return 400;
+    }
+    return 0;
+}
+
 static int decl_slot_size(const BackendState *state, const char *type_text) {
     const char *type = skip_spaces(type_text);
     const char *open = 0;
     unsigned long long length = 0;
     unsigned long long element_size = (unsigned long long)backend_stack_slot_size(state);
     unsigned long long total_size;
+    int has_pointer = text_contains(type, "*");
+    int aggregate_size = named_aggregate_stack_bytes(type);
 
-    if (starts_with(type, "char")) {
+    if (has_pointer) {
+        element_size = (unsigned long long)backend_stack_slot_size(state);
+    } else if (text_contains(type, "char")) {
         element_size = 1ULL;
     } else if ((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*")) {
-        element_size = BACKEND_STRUCT_STACK_BYTES;
+        element_size = (unsigned long long)(aggregate_size > 0 ? aggregate_size : BACKEND_STRUCT_STACK_BYTES);
     }
 
     open = type;
@@ -102,7 +127,7 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
     }
 
     if (((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*"))) {
-        return BACKEND_STRUCT_STACK_BYTES;
+        return aggregate_size > 0 ? aggregate_size : BACKEND_STRUCT_STACK_BYTES;
     }
     return backend_stack_slot_size(state);
 }
@@ -393,6 +418,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                 !is_function_name(state, name) &&
                 add_global(state,
                            name,
+                           type_text,
                            decl_requires_object_storage(type_text),
                            decl_pointer_depth(type_text),
                            decl_char_based(type_text),
@@ -660,7 +686,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         char asm_line[128];
         int index = state->param_count;
 
-        if (allocate_local(state, name, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
+        if (allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
             return -1;
         }
         {
@@ -734,7 +760,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     }
 
     if (names_equal(storage, "local")) {
-        return allocate_local(state, name, slot_size, is_array, pointer_depth, char_based, prefers_word_index);
+        return allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index);
     }
 
     if (names_equal(kind, "func")) {

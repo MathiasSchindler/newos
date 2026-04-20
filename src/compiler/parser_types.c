@@ -92,8 +92,13 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
                     return -1;
                 }
 
-                if (current_is_identifier(parser) && advance(parser) != 0) {
-                    return -1;
+                if (current_is_identifier(parser)) {
+                    if (type_out != 0) {
+                        copy_token_text(&parser->current, type_out->aggregate_name, sizeof(type_out->aggregate_name));
+                    }
+                    if (advance(parser) != 0) {
+                        return -1;
+                    }
                 }
 
                 if (current_is_punct(parser, "{") && skip_balanced_group(parser, "{", "}") != 0) {

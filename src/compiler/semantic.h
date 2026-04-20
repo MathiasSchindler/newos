@@ -26,6 +26,7 @@ typedef struct {
     int is_array;
     int is_unsigned;
     unsigned long long array_length;
+    char aggregate_name[COMPILER_SYMBOL_NAME_CAPACITY];
 } CompilerType;
 
 typedef enum {

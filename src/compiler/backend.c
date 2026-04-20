@@ -253,6 +253,9 @@ int should_prefer_word_index(const char *name, const char *type_text) {
     if (names_equal(name, "argv") || names_equal(name, "envp")) {
         return 1;
     }
+    if (text_contains(type_text, "[") && text_contains(type_text, "*")) {
+        return 1;
+    }
     if (text_contains(type_text, "**")) {
         return 1;
     }
@@ -308,6 +311,7 @@ int add_constant(BackendState *state, const char *name, long long value) {
 int add_global(
     BackendState *state,
     const char *name,
+    const char *type_text,
     int is_array,
     int pointer_depth,
     int char_based,
@@ -320,6 +324,9 @@ int add_global(
     if (existing >= 0) {
         if (is_array) {
             state->globals[existing].is_array = 1;
+        }
+        if (type_text != 0 && type_text[0] != '\0') {
+            rt_copy_string(state->globals[existing].type_text, sizeof(state->globals[existing].type_text), type_text);
         }
         if (prefers_word_index) {
             state->globals[existing].prefers_word_index = 1;
@@ -339,6 +346,7 @@ int add_global(
     }
 
     rt_copy_string(state->globals[state->global_count].name, sizeof(state->globals[state->global_count].name), name);
+    rt_copy_string(state->globals[state->global_count].type_text, sizeof(state->globals[state->global_count].type_text), type_text != 0 ? type_text : "");
     state->globals[state->global_count].init_value = 0;
     state->globals[state->global_count].initialized = 0;
     state->globals[state->global_count].is_array = is_array;
@@ -362,7 +370,7 @@ int find_local(const BackendState *state, const char *name) {
     return -1;
 }
 
-int allocate_local(BackendState *state, const char *name, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index) {
+int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index) {
     int slot_size = stack_bytes > 0 ? stack_bytes : (is_array ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state));
 
     if (state->local_count >= COMPILER_BACKEND_MAX_LOCALS) {
@@ -371,6 +379,7 @@ int allocate_local(BackendState *state, const char *name, int stack_bytes, int i
     }
 
     rt_copy_string(state->locals[state->local_count].name, sizeof(state->locals[state->local_count].name), name);
+    rt_copy_string(state->locals[state->local_count].type_text, sizeof(state->locals[state->local_count].type_text), type_text != 0 ? type_text : "");
     state->locals[state->local_count].stack_bytes = slot_size;
     state->locals[state->local_count].offset = state->stack_size + slot_size;
     state->locals[state->local_count].is_array = is_array;
@@ -386,6 +395,19 @@ int allocate_local(BackendState *state, const char *name, int stack_bytes, int i
     }
 
     return 0;
+}
+
+const char *lookup_name_type_text(const BackendState *state, const char *name) {
+    int local_index = find_local(state, name);
+    int global_index = find_global(state, name);
+
+    if (local_index >= 0) {
+        return state->locals[local_index].type_text;
+    }
+    if (global_index >= 0) {
+        return state->globals[global_index].type_text;
+    }
+    return "";
 }
 
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label) {

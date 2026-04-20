@@ -189,6 +189,10 @@ static int declare_symbol(
     symbol_type.array_length = declarator->array_length;
 
     if (is_typedef) {
+        if ((symbol_type.base == COMPILER_BASE_STRUCT || symbol_type.base == COMPILER_BASE_UNION) &&
+            symbol_type.aggregate_name[0] == '\0') {
+            rt_copy_string(symbol_type.aggregate_name, sizeof(symbol_type.aggregate_name), declarator->name);
+        }
         if (add_typedef_name(parser, declarator->name) != 0) {
             set_error(parser, "typedef table exhausted");
             return -1;

@@ -21,6 +21,7 @@ typedef struct {
 
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
+    char type_text[128];
     long long init_value;
     int initialized;
     int is_array;
@@ -33,6 +34,7 @@ typedef struct {
 
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
+    char type_text[128];
     int offset;
     int stack_bytes;
     int is_array;
@@ -120,9 +122,10 @@ int is_function_name(const BackendState *state, const char *name);
 int find_global(const BackendState *state, const char *name);
 int find_constant(const BackendState *state, const char *name);
 int add_constant(BackendState *state, const char *name, long long value);
-int add_global(BackendState *state, const char *name, int is_array, int pointer_depth, int char_based, int prefers_word_index, int global, int has_storage);
+int add_global(BackendState *state, const char *name, const char *type_text, int is_array, int pointer_depth, int char_based, int prefers_word_index, int global, int has_storage);
 int find_local(const BackendState *state, const char *name);
-int allocate_local(BackendState *state, const char *name, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
+int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
+const char *lookup_name_type_text(const BackendState *state, const char *name);
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label);
 int emit_pop_to_register(BackendState *state, const char *reg);
 int emit_local_address(BackendState *state, int offset, const char *reg);
