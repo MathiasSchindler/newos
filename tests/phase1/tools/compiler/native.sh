@@ -112,6 +112,39 @@ EOF
 
 compile_and_check_native "$WORK_DIR/multi_arg_call.c" "$WORK_DIR/multi_arg_call_bin" "0" "compiler failed to pass multiple call arguments correctly"
 
+cat > "$WORK_DIR/logical_or_side_effect.c" <<'EOF'
+typedef struct {
+    char **argv;
+    int index;
+} Parser;
+
+static int parse_depth(char *text, long long *out, const char *tool, const char *name) {
+    (void)text;
+    (void)tool;
+    (void)name;
+    *out = 3;
+    return 0;
+}
+
+static int parse_parser(Parser *parser) {
+    long long depth = 0;
+    if (parse_depth(parser->argv[parser->index + 1], &depth, "find", "mindepth") != 0 || depth < 0) {
+        return 1;
+    }
+    return depth == 3 ? 0 : 2;
+}
+
+int main(int argc, char **argv) {
+    Parser parser;
+    (void)argc;
+    parser.argv = argv;
+    parser.index = 0;
+    return parse_parser(&parser);
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/logical_or_side_effect.c" "$WORK_DIR/logical_or_side_effect_bin" "0" "compiler IR optimization corrupted a logical-or expression after a pointer-mutating call"
+
 cat > "$WORK_DIR/multi_file_helper.c" <<'EOF'
 int helper_value(void) {
     return 41;

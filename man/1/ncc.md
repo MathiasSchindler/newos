@@ -32,8 +32,9 @@ choices are isolated in the backend and target-description layers under
 - target selection for `linux-x86_64`, `linux-aarch64`, and `macos-aarch64`
 - target-specific ABI and object-format details are routed through explicit
   compiler target descriptors instead of being hard-coded across the frontend
-- a platform-neutral IR pass folds pure integer expressions and trims obviously
-  constant control-flow before backend emission
+- a platform-neutral IR pass folds pure integer expressions, simplifies common
+  identity operations, and trims obviously constant control-flow before backend
+  emission
 - common warning-style compatibility flags such as `-Wall`, `-Wextra`, and
   `-Wno-pedantic` are accepted so existing project make rules keep working
 

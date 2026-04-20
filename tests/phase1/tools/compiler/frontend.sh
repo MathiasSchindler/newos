@@ -49,6 +49,19 @@ EOF
 if grep -q '^brfalse ' "$WORK_DIR/constant_branch_ir.out"; then
     fail "compiler IR optimizer did not simplify a constant branch"
 fi
+if grep -q '^ret 9$' "$WORK_DIR/constant_branch_ir.out"; then
+    fail "compiler IR optimizer did not prune unreachable IR after a constant branch"
+fi
+
+cat > "$WORK_DIR/identity_fold.c" <<'EOF'
+int main(int argc, char **argv) {
+    (void)argv;
+    return ((argc + 0) ^ 0);
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/identity_fold.c" > "$WORK_DIR/identity_fold_ir.out"
+assert_file_contains "$WORK_DIR/identity_fold_ir.out" '^ret argc$' "compiler IR optimizer did not simplify neutral arithmetic identities"
 
 cat > "$WORK_DIR/local.h" <<'EOF'
 #ifndef LOCAL_H

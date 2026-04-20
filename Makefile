@@ -27,8 +27,13 @@ else
 FREESTANDING_STRIP_LDFLAGS ?= -Wl,-s
 endif
 TARGET_LDFLAGS ?= -nostdlib -static $(TARGET_LINKER_FLAG) $(FREESTANDING_GC_LDFLAGS) $(FREESTANDING_STRIP_LDFLAGS) $(TARGET_BUILTINS_LIB)
-BUILD_DIR ?= build
-TARGET_BUILD_DIR ?= build/linux-$(TARGET_ARCH)
+BUILD_ROOT ?= build
+HOST_OS_NAME := $(if $(filter Darwin,$(HOST_OS)),macos,$(shell printf '%s' "$(HOST_OS)" | tr A-Z a-z))
+HOST_ARCH_NAME := $(if $(filter arm64 aarch64,$(HOST_ARCH)),aarch64,$(HOST_ARCH))
+DEFAULT_HOST_BUILD_DIR := $(BUILD_ROOT)/host-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
+BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
+TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
+SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 ifeq ($(TARGET_ARCH),x86_64)
 TARGET_TRIPLE ?= x86_64-linux-none
 else ifeq ($(TARGET_ARCH),aarch64)
@@ -69,10 +74,12 @@ HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/co
 TARGET_PLATFORM_MANIFEST_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(filter src/platform/linux/% $(TARGET_ARCH_DIR)/%,$(TARGET_PLATFORM_MANIFEST_SOURCES))
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
+HOST_OUTPUTS := $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
+HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(BUILD_ROOT)/.ssh_core_check $(addprefix $(BUILD_ROOT)/,$(TOOLS)))
 
 .DEFAULT_GOAL := all
 
-.PHONY: all host freestanding test test-phase1 test-smoke benchmark clean
+.PHONY: all host freestanding selfhost test test-phase1 test-smoke benchmark clean
 
 test: test-phase1 test-smoke
 
@@ -95,14 +102,14 @@ all:
 endif
 
 ifeq ($(AUTO_PARALLEL),1)
-host: $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
+host: $(HOST_OUTPUTS) $(HOST_COMPAT_TARGETS)
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
 else ifneq ($(strip $(PARALLEL_MAKEFLAGS)),)
-host: $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
+host: $(HOST_OUTPUTS) $(HOST_COMPAT_TARGETS)
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else
@@ -119,8 +126,17 @@ else
 endif
 endif
 
-$(BUILD_DIR) $(TARGET_BUILD_DIR):
+selfhost: $(DEFAULT_HOST_BUILD_DIR)/ncc
+	+@$(MAKE) --no-print-directory BUILD_DIR="$(SELFHOST_BUILD_DIR)" CC="$(abspath $(DEFAULT_HOST_BUILD_DIR)/ncc)" NEWOS_NCC_LINKER="$${NEWOS_NCC_LINKER:-cc}" host
+
+$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(SELFHOST_BUILD_DIR)):
 	mkdir -p $@
+
+$(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
+	rm -f $@ && ln -sfn $(patsubst $(BUILD_ROOT)/%,%,$<) $@
+
+$(BUILD_ROOT)/%: $(BUILD_DIR)/% | $(BUILD_ROOT)
+	rm -f $@ && ln -sfn $(patsubst $(BUILD_ROOT)/%,%,$<) $@
 
 $(BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
@@ -180,4 +196,4 @@ $(TARGET_BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) tests/tmp
+	rm -rf $(BUILD_ROOT) tests/tmp

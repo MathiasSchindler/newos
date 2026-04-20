@@ -46,8 +46,9 @@ Compilation proceeds in these layers:
 9. `driver.c` — command-line handling and orchestration
 
 The current optimization work should stay in the target-neutral layers when
-possible. A small IR cleanup pass already folds pure integer expressions and
-simplifies constant branches before any backend-specific assembly is emitted.
+possible. A small IR cleanup pass already folds pure integer expressions,
+simplifies neutral arithmetic identities, and prunes unreachable instructions
+after constant control-flow before any backend-specific assembly is emitted.
 
 ## SELF-HOSTING STAGES
 

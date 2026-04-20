@@ -22,7 +22,8 @@ requested.
 The hosted build is the normal development path.
 
 - built with `make host`
-- writes binaries to `build/`
+- writes binaries to `build/host-<os>-<arch>/`
+- keeps compatibility symlinks at `build/<tool>` for the default hosted build
 - uses the POSIX backend in `src/platform/posix/`
 - is the variant exercised by the smoke tests and benchmarks
 - is the fastest loop for day-to-day tool, shell, and compiler work
@@ -35,10 +36,19 @@ the first mode to get green.
 The freestanding build is the Linux target without libc.
 
 - built with `make freestanding`
-- writes binaries to `build/linux-$(TARGET_ARCH)/`
+- writes binaries to `build/freestanding-linux-$(TARGET_ARCH)/`
 - uses `src/platform/linux/` plus `src/arch/$(TARGET_ARCH)/linux/`
 - links with the minimal `crt0.S` entry path and direct syscalls
 - is where ABI, start-up, and portability mistakes become visible
+
+## SELF-HOSTED BUILD
+
+The self-hosted build reuses the in-tree `ncc` compiler for the hosted tool set.
+
+- built with `make selfhost`
+- writes binaries to `build/selfhost-<os>-<arch>/`
+- uses the hosted `ncc` binary as `CC` while still relying on the system linker
+- is the main bootstrap-progress check for Linux/x86-64 today
 
 This path matters especially for shared runtime changes, shell support code,
 and anything that adds new low-level dependencies.
@@ -46,8 +56,9 @@ and anything that adds new low-level dependencies.
 ## TARGETS
 
     make               — on macOS build the local hosted set; on Linux build host plus freestanding
-    make host          — build the hosted POSIX binaries under build/
-    make freestanding  — on Linux build the static syscall-only target under build/linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
+    make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
+    make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
+    make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries and run tests/run_smoke_tests.sh
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
     make clean         — remove build output
@@ -70,19 +81,20 @@ A common contributor sequence is:
     make host
     make test
     make freestanding
+    make selfhost
 
 Use the hosted build for quick iteration, then rerun the freestanding path when
 a change touches runtime code, platform code, startup code, or the compiler.
 
 ## SELF-HOSTED HOST BUILD STATUS
 
-On Linux, the in-tree build helpers are now capable enough to drive the root
-hosted build logic for representative rebuilds when `PATH` prefers `build/`
-first.
+On Linux, the in-tree compiler is now capable enough to rebuild the hosted tool
+set in a separate self-host tree.
 
 A typical check looks like:
 
-    env PATH="$PWD/build:/usr/bin:/bin" ./build/make build/grep build/ncc
+    make host
+    make selfhost
 
 That path now covers the GNU-style Makefile features used by the repository's
 normal host build, including includes, conditionals, command-line variable
@@ -104,8 +116,9 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 - `sh` and `ncc` have explicit rules because they pull in additional private or
   shared subsystems. A new tool with special dependencies should follow that
   pattern.
-- Hosted and freestanding outputs are intentionally separate. A passing hosted
-  build does not guarantee the syscall-only target is also healthy.
+- Hosted, freestanding, and self-hosted outputs are intentionally separate. A
+  passing hosted build does not guarantee the syscall-only target is also
+  healthy.
 - If a new shared runtime helper is added, make sure any explicit special-case
   build rules and compiler-driver source lists stay in sync.
 - Header dependency tracking is lightweight. If shared headers or build flags

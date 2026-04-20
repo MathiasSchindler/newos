@@ -46,6 +46,9 @@ static int ir_parse_number_value(const char *text, long long *value_out);
 static void ir_const_next(IrConstParser *parser);
 static int ir_lookup_value(const IrOptimizerState *state, const char *name, long long *value_out);
 static int ir_apply_binary_op(const char *op, long long lhs, long long rhs, long long *value_out);
+static int ir_is_identifier_char(char ch);
+static int ir_operator_is_embedded(const char *expr, size_t index, const char *op);
+static int ir_expr_has_side_effect_risk(const char *expr);
 static int ir_parse_conditional_expr(IrConstParser *parser, long long *value_out);
 static int ir_parse_logical_or_expr(IrConstParser *parser, long long *value_out);
 static int ir_parse_logical_and_expr(IrConstParser *parser, long long *value_out);
@@ -65,9 +68,26 @@ static int ir_copy_identifier(char *buffer, size_t buffer_size, const char *star
 static void ir_clear_local_values(IrOptimizerState *state);
 static void ir_invalidate_local_value(IrOptimizerState *state, const char *name);
 static int ir_set_tracked_value(IrTrackedValue *values, size_t *count, const char *name, long long value);
+static int ir_starts_block_boundary(const char *line);
+static int ir_is_terminator_line(const char *line);
+static int ir_label_is_referenced(const CompilerIr *ir, const char *label, size_t skip_index);
+static const char *ir_find_separator_outside_quotes(const char *text, const char *separator);
+static const char *ir_trim_trailing_spaces(const char *start, const char *end);
+static int ir_strip_outer_parens(const char *expr, char *buffer, size_t buffer_size);
+static int ir_find_top_level_operator(const char *expr, const char *op, const char **position_out);
+static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size);
+static int ir_optimize_expr_text(const char *expr,
+                                 const IrOptimizerState *state,
+                                 char *buffer,
+                                 size_t buffer_size,
+                                 int *changed_out,
+                                 int *constant_out,
+                                 long long *value_out);
 static int ir_rewrite_expr_line(CompilerIr *ir, size_t index, const char *prefix, const char *expr);
+static int ir_rewrite_branch_line(CompilerIr *ir, size_t index, const char *expr, const char *label);
 static int ir_rewrite_jump_line(CompilerIr *ir, size_t index, const char *label);
 static void ir_remove_line(CompilerIr *ir, size_t index);
+static void ir_remove_unreachable_after_terminator(CompilerIr *ir, size_t index);
 static int ir_extract_store_parts(const char *line, char *name, size_t name_size, const char **expr_out);
 static int ir_extract_assignment_parts(const char *expr, char *name, size_t name_size, char *op, size_t op_size, const char **rhs_out);
 static int ir_extract_branch_parts(const char *line, char *label, size_t label_size, char *expr, size_t expr_size);
@@ -103,11 +123,85 @@ static int ir_starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
+static int ir_is_identifier_char(char ch) {
+    return (ch >= 'a' && ch <= 'z') ||
+           (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') ||
+           ch == '_';
+}
+
 static const char *ir_skip_spaces(const char *text) {
     while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') {
         text += 1;
     }
     return text;
+}
+
+static int ir_operator_is_embedded(const char *expr, size_t index, const char *op) {
+    size_t op_length = rt_strlen(op);
+    char prev = index > 0U ? expr[index - 1U] : '\0';
+    char next = expr[index + op_length];
+
+    if (op_length == 1U) {
+        if ((op[0] == '|' && (prev == '|' || next == '|' || next == '=')) ||
+            (op[0] == '&' && (prev == '&' || next == '&' || next == '=')) ||
+            ((op[0] == '+' || op[0] == '-') && (prev == op[0] || next == op[0] || next == '=')) ||
+            (op[0] == '-' && next == '>') ||
+            ((op[0] == '*' || op[0] == '/' || op[0] == '%' || op[0] == '^') && next == '=')) {
+            return 1;
+        }
+    }
+
+    if ((ir_text_equals(op, "<<") || ir_text_equals(op, ">>")) && next == '=') {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int ir_expr_has_side_effect_risk(const char *expr) {
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        if ((in_string || in_char) && expr[i] == '\\' && expr[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && expr[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && expr[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (in_string || in_char) {
+            i += 1U;
+            continue;
+        }
+
+        if (expr[i] == '&' && expr[i + 1U] != '&' && expr[i + 1U] != '=') {
+            return 1;
+        }
+        if (expr[i] == '(') {
+            size_t k = i;
+            while (k > 0U && (expr[k - 1U] == ' ' || expr[k - 1U] == '\t')) {
+                k -= 1U;
+            }
+            if (k > 0U &&
+                (ir_is_identifier_char(expr[k - 1U]) || expr[k - 1U] == ')' || expr[k - 1U] == ']' ||
+                 expr[k - 1U] == '*')) {
+                return 1;
+            }
+        }
+        i += 1U;
+    }
+
+    return 0;
 }
 
 static int ir_parse_punctuator_width(const char *cursor) {
@@ -759,6 +853,359 @@ static int ir_copy_identifier(char *buffer, size_t buffer_size, const char *star
     return (start == end && length > 0U) ? 0 : -1;
 }
 
+static int ir_starts_block_boundary(const char *line) {
+    return ir_starts_with(line, "func ") ||
+           ir_starts_with(line, "endfunc ") ||
+           ir_starts_with(line, "label ") ||
+           ir_starts_with(line, "switch ") ||
+           ir_starts_with(line, "case ") ||
+           ir_text_equals(line, "default") ||
+           ir_starts_with(line, "endswitch");
+}
+
+static int ir_is_terminator_line(const char *line) {
+    return ir_text_equals(line, "ret") ||
+           ir_starts_with(line, "ret ");
+}
+
+static int ir_label_is_referenced(const CompilerIr *ir, const char *label, size_t skip_index) {
+    size_t i;
+    char line_buffer[COMPILER_IR_LINE_CAPACITY];
+
+    rt_copy_string(line_buffer, sizeof(line_buffer), "jump ");
+    rt_copy_string(line_buffer + rt_strlen(line_buffer), sizeof(line_buffer) - rt_strlen(line_buffer), label);
+    for (i = 0; i < ir->count; ++i) {
+        if (i == skip_index) {
+            continue;
+        }
+        if (ir_text_equals(ir->lines[i], line_buffer)) {
+            return 1;
+        }
+        if (ir_starts_with(ir->lines[i], "brfalse ")) {
+            char branch_label[COMPILER_IR_NAME_CAPACITY];
+            char expr[COMPILER_IR_LINE_CAPACITY];
+            if (ir_extract_branch_parts(ir->lines[i], branch_label, sizeof(branch_label), expr, sizeof(expr)) == 0 &&
+                ir_text_equals(branch_label, label)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static const char *ir_trim_trailing_spaces(const char *start, const char *end) {
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+        end -= 1;
+    }
+    return end;
+}
+
+static int ir_strip_outer_parens(const char *expr, char *buffer, size_t buffer_size) {
+    const char *start = ir_skip_spaces(expr);
+    const char *end = ir_trim_trailing_spaces(start, start + rt_strlen(start));
+    const char *cursor;
+    int depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (end <= start + 1 || *start != '(' || end[-1] != ')') {
+        return 0;
+    }
+
+    for (cursor = start; cursor < end; ++cursor) {
+        if ((in_string || in_char) && *cursor == '\\' && cursor + 1 < end) {
+            cursor += 1;
+            continue;
+        }
+        if (!in_char && *cursor == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (!in_string && *cursor == '\'') {
+            in_char = !in_char;
+            continue;
+        }
+        if (in_string || in_char) {
+            continue;
+        }
+        if (*cursor == '(') {
+            depth += 1;
+        } else if (*cursor == ')') {
+            depth -= 1;
+            if (depth == 0 && cursor + 1 < end) {
+                return 0;
+            }
+        }
+    }
+
+    if (depth != 0) {
+        return 0;
+    }
+
+    start = ir_skip_spaces(start + 1);
+    end = ir_trim_trailing_spaces(start, end - 1);
+    return ir_copy_identifier(buffer, buffer_size, start, end) == 0 ? 1 : -1;
+}
+
+static int ir_find_top_level_operator(const char *expr, const char *op, const char **position_out) {
+    const char *last = 0;
+    size_t i = 0;
+    size_t op_length = rt_strlen(op);
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        if ((in_string || in_char) && expr[i] == '\\' && expr[i + 1] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && expr[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && expr[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (in_string || in_char) {
+            i += 1U;
+            continue;
+        }
+
+        if (expr[i] == '(') {
+            paren_depth += 1;
+            i += 1U;
+            continue;
+        }
+        if (expr[i] == ')') {
+            if (paren_depth > 0) {
+                paren_depth -= 1;
+            }
+            i += 1U;
+            continue;
+        }
+        if (expr[i] == '[') {
+            bracket_depth += 1;
+            i += 1U;
+            continue;
+        }
+        if (expr[i] == ']') {
+            if (bracket_depth > 0) {
+                bracket_depth -= 1;
+            }
+            i += 1U;
+            continue;
+        }
+        if (expr[i] == '{') {
+            brace_depth += 1;
+            i += 1U;
+            continue;
+        }
+        if (expr[i] == '}') {
+            if (brace_depth > 0) {
+                brace_depth -= 1;
+            }
+            i += 1U;
+            continue;
+        }
+
+        if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+            size_t j = 0;
+            while (j < op_length && expr[i + j] == op[j]) {
+                j += 1U;
+            }
+                if (j == op_length) {
+                    int skip = 0;
+
+                    if (ir_operator_is_embedded(expr, i, op)) {
+                        i += op_length;
+                        continue;
+                    }
+
+                    if (op_length == 1U && (op[0] == '+' || op[0] == '-' || op[0] == '*')) {
+                        size_t k = i;
+                    while (k > 0U && (expr[k - 1U] == ' ' || expr[k - 1U] == '\t')) {
+                        k -= 1U;
+                    }
+                    if (k == 0U ||
+                        expr[k - 1U] == '(' || expr[k - 1U] == '[' || expr[k - 1U] == '{' ||
+                        expr[k - 1U] == ',' || expr[k - 1U] == '?' || expr[k - 1U] == ':' ||
+                        expr[k - 1U] == '=' || expr[k - 1U] == '!' || expr[k - 1U] == '~' ||
+                        expr[k - 1U] == '+' || expr[k - 1U] == '-' || expr[k - 1U] == '*' ||
+                        expr[k - 1U] == '/' || expr[k - 1U] == '%' || expr[k - 1U] == '<' ||
+                        expr[k - 1U] == '>' || expr[k - 1U] == '&' || expr[k - 1U] == '|' ||
+                        expr[k - 1U] == '^') {
+                        skip = 1;
+                    }
+                }
+
+                if (!skip) {
+                    last = expr + i;
+                }
+                i += op_length;
+                continue;
+            }
+        }
+        i += 1U;
+    }
+
+    if (last == 0) {
+        return -1;
+    }
+    *position_out = last;
+    return 0;
+}
+
+static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size) {
+    static const char *const ops[] = {"|", "^", "<<", ">>", "+", "-", "*", "/"};
+    size_t op_index;
+
+    for (op_index = 0; op_index < sizeof(ops) / sizeof(ops[0]); ++op_index) {
+        const char *op = ops[op_index];
+        const char *position = 0;
+        const char *lhs_start;
+        const char *lhs_end;
+        const char *rhs_start;
+        const char *rhs_end;
+        char lhs[COMPILER_IR_LINE_CAPACITY];
+        char rhs[COMPILER_IR_LINE_CAPACITY];
+        long long lhs_value = 0;
+        long long rhs_value = 0;
+        int lhs_is_constant;
+        int rhs_is_constant;
+
+        if (ir_find_top_level_operator(expr, op, &position) != 0) {
+            continue;
+        }
+
+        lhs_start = ir_skip_spaces(expr);
+        lhs_end = ir_trim_trailing_spaces(lhs_start, position);
+        rhs_start = ir_skip_spaces(position + rt_strlen(op));
+        rhs_end = ir_trim_trailing_spaces(rhs_start, rhs_start + rt_strlen(rhs_start));
+
+        if (ir_copy_identifier(lhs, sizeof(lhs), lhs_start, lhs_end) != 0 ||
+            ir_copy_identifier(rhs, sizeof(rhs), rhs_start, rhs_end) != 0) {
+            continue;
+        }
+
+        lhs_is_constant = ir_evaluate_constant_expression(lhs, state, &lhs_value) == 0;
+        rhs_is_constant = ir_evaluate_constant_expression(rhs, state, &rhs_value) == 0;
+
+        if ((ir_text_equals(op, "+") || ir_text_equals(op, "|") || ir_text_equals(op, "^")) &&
+            lhs_is_constant && lhs_value == 0) {
+            rt_copy_string(buffer, buffer_size, rhs);
+            return 1;
+        }
+        if ((ir_text_equals(op, "+") || ir_text_equals(op, "-") || ir_text_equals(op, "|") ||
+             ir_text_equals(op, "^") || ir_text_equals(op, "<<") || ir_text_equals(op, ">>")) &&
+            rhs_is_constant && rhs_value == 0) {
+            rt_copy_string(buffer, buffer_size, lhs);
+            return 1;
+        }
+        if (ir_text_equals(op, "*") && lhs_is_constant && lhs_value == 1) {
+            rt_copy_string(buffer, buffer_size, rhs);
+            return 1;
+        }
+        if (ir_text_equals(op, "*") && rhs_is_constant && rhs_value == 1) {
+            rt_copy_string(buffer, buffer_size, lhs);
+            return 1;
+        }
+        if (ir_text_equals(op, "/") && rhs_is_constant && rhs_value == 1) {
+            rt_copy_string(buffer, buffer_size, lhs);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int ir_optimize_expr_text(const char *expr,
+                                 const IrOptimizerState *state,
+                                 char *buffer,
+                                 size_t buffer_size,
+                                 int *changed_out,
+                                 int *constant_out,
+                                 long long *value_out) {
+    char current[COMPILER_IR_LINE_CAPACITY];
+    IrOptimizerState cautious_state;
+    const IrOptimizerState *effective_state = state;
+    int changed = 0;
+    int local_change;
+
+    if (changed_out != 0) {
+        *changed_out = 0;
+    }
+    if (constant_out != 0) {
+        *constant_out = 0;
+    }
+
+    expr = ir_skip_spaces(expr != 0 ? expr : "");
+    if (state != 0 && ir_expr_has_side_effect_risk(expr)) {
+        cautious_state = *state;
+        cautious_state.local_value_count = 0;
+        effective_state = &cautious_state;
+    }
+    if (ir_copy_identifier(current,
+                           sizeof(current),
+                           expr,
+                           ir_trim_trailing_spaces(expr, expr + rt_strlen(expr))) != 0) {
+        return -1;
+    }
+
+    do {
+        local_change = 0;
+
+        if (ir_evaluate_constant_expression(current, effective_state, value_out) == 0) {
+            ir_format_signed_value(*value_out, buffer, buffer_size);
+            if (changed_out != 0) {
+                *changed_out = 1;
+            }
+            if (constant_out != 0) {
+                *constant_out = 1;
+            }
+            return 0;
+        }
+
+        {
+            char simplified[COMPILER_IR_LINE_CAPACITY];
+            int result = ir_strip_outer_parens(current, simplified, sizeof(simplified));
+            if (result < 0) {
+                return -1;
+            }
+            if (result > 0) {
+                rt_copy_string(current, sizeof(current), simplified);
+                changed = 1;
+                local_change = 1;
+                continue;
+            }
+        }
+
+        {
+            char simplified[COMPILER_IR_LINE_CAPACITY];
+            int result = ir_try_simplify_identity_expr(current, effective_state, simplified, sizeof(simplified));
+            if (result < 0) {
+                return -1;
+            }
+            if (result > 0) {
+                rt_copy_string(current, sizeof(current), simplified);
+                changed = 1;
+                local_change = 1;
+            }
+        }
+    } while (local_change);
+
+    rt_copy_string(buffer, buffer_size, current);
+    if (changed_out != 0) {
+        *changed_out = changed;
+    }
+    return 0;
+}
+
 static void ir_clear_local_values(IrOptimizerState *state) {
     state->local_value_count = 0;
 }
@@ -812,6 +1259,22 @@ static int ir_rewrite_expr_line(CompilerIr *ir, size_t index, const char *prefix
     return 0;
 }
 
+static int ir_rewrite_branch_line(CompilerIr *ir, size_t index, const char *expr, const char *label) {
+    size_t offset = 0;
+    char line[COMPILER_IR_LINE_CAPACITY];
+
+    line[0] = '\0';
+    if (append_text(line, sizeof(line), &offset, "brfalse ") != 0 ||
+        append_text(line, sizeof(line), &offset, expr) != 0 ||
+        append_text(line, sizeof(line), &offset, " -> ") != 0 ||
+        append_text(line, sizeof(line), &offset, label) != 0) {
+        set_error(ir, "IR instruction text exceeded line capacity");
+        return -1;
+    }
+    rt_copy_string(ir->lines[index], sizeof(ir->lines[index]), line);
+    return 0;
+}
+
 static int ir_rewrite_jump_line(CompilerIr *ir, size_t index, const char *label) {
     return ir_rewrite_expr_line(ir, index, "jump ", label);
 }
@@ -827,6 +1290,49 @@ static void ir_remove_line(CompilerIr *ir, size_t index) {
     }
     if (ir->count > 0) {
         ir->count -= 1U;
+    }
+}
+
+static const char *ir_find_separator_outside_quotes(const char *text, const char *separator) {
+    const char *last = 0;
+    int in_string = 0;
+    int in_char = 0;
+    size_t i = 0;
+    size_t separator_length = rt_strlen(separator);
+
+    while (text[i] != '\0') {
+        if ((in_string || in_char) && text[i] == '\\' && text[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && text[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && text[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char) {
+            size_t j = 0;
+            while (j < separator_length && text[i + j] == separator[j]) {
+                j += 1U;
+            }
+            if (j == separator_length) {
+                last = text + i;
+            }
+        }
+        i += 1U;
+    }
+
+    return last;
+}
+
+static void ir_remove_unreachable_after_terminator(CompilerIr *ir, size_t index) {
+    while (index + 1U < ir->count && !ir_starts_block_boundary(ir->lines[index + 1U])) {
+        ir_remove_line(ir, index + 1U);
     }
 }
 
@@ -852,19 +1358,16 @@ static int ir_extract_store_parts(const char *line, char *name, size_t name_size
 
 static int ir_extract_branch_parts(const char *line, char *label, size_t label_size, char *expr, size_t expr_size) {
     const char *expr_start = line + 8;
-    const char *arrow = line + 8;
+    const char *arrow = ir_find_separator_outside_quotes(expr_start, " -> ");
 
-    while (*arrow != '\0') {
-        if (arrow[0] == ' ' && arrow[1] == '-' && arrow[2] == '>' && arrow[3] == ' ') {
-            if (ir_copy_identifier(label, label_size, arrow + 4, arrow + 4 + rt_strlen(arrow + 4)) != 0) {
-                return -1;
-            }
-            if (ir_copy_identifier(expr, expr_size, expr_start, arrow) != 0) {
-                return -1;
-            }
-            return 0;
+    if (arrow != 0) {
+        if (ir_copy_identifier(label, label_size, arrow + 4, arrow + 4 + rt_strlen(arrow + 4)) != 0) {
+            return -1;
         }
-        arrow += 1;
+        if (ir_copy_identifier(expr, expr_size, expr_start, arrow) != 0) {
+            return -1;
+        }
+        return 0;
     }
 
     return -1;
@@ -929,8 +1432,27 @@ int compiler_ir_optimize(CompilerIr *ir) {
     while (i < ir->count) {
         char *line = ir->lines[i];
 
+        if (ir_starts_with(line, "label ")) {
+            if (i > 0U && ir_is_terminator_line(ir->lines[i - 1U])) {
+                char label[COMPILER_IR_NAME_CAPACITY];
+                if (ir_copy_identifier(label,
+                                       sizeof(label),
+                                       line + 6,
+                                       ir_trim_trailing_spaces(line + 6, line + rt_strlen(line))) == 0 &&
+                    !ir_label_is_referenced(ir, label, i)) {
+                    ir_remove_line(ir, i);
+                    while (i < ir->count && !ir_starts_block_boundary(ir->lines[i])) {
+                        ir_remove_line(ir, i);
+                    }
+                    continue;
+                }
+            }
+            ir_clear_local_values(&state);
+            i += 1U;
+            continue;
+        }
+
         if (ir_starts_with(line, "func ") || ir_starts_with(line, "endfunc ") ||
-            ir_starts_with(line, "label ") || ir_starts_with(line, "jump ") ||
             ir_starts_with(line, "switch ") || ir_starts_with(line, "case ") ||
             ir_text_equals(line, "default") || ir_starts_with(line, "endswitch")) {
             ir_clear_local_values(&state);
@@ -981,9 +1503,14 @@ int compiler_ir_optimize(CompilerIr *ir) {
             char name[COMPILER_IR_NAME_CAPACITY];
             const char *expr = 0;
             long long value = 0;
+            char optimized_expr[COMPILER_IR_LINE_CAPACITY];
+            int expr_changed = 0;
+            int expr_constant = 0;
             int parsed_store = ir_extract_store_parts(line, name, sizeof(name), &expr) == 0;
 
-            if (parsed_store && ir_evaluate_constant_expression(expr, &state, &value) == 0) {
+            if (parsed_store &&
+                ir_optimize_expr_text(expr, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0 &&
+                expr_constant) {
                 char number[32];
                 char rewritten[COMPILER_IR_LINE_CAPACITY];
                 size_t offset = 0;
@@ -1002,8 +1529,25 @@ int compiler_ir_optimize(CompilerIr *ir) {
                     set_error(ir, "IR optimizer tracking capacity exceeded");
                     return -1;
                 }
+            } else if (parsed_store && expr_changed) {
+                char rewritten[COMPILER_IR_LINE_CAPACITY];
+                size_t offset = 0;
+
+                rewritten[0] = '\0';
+                if (append_text(rewritten, sizeof(rewritten), &offset, "store ") != 0 ||
+                    append_text(rewritten, sizeof(rewritten), &offset, name) != 0 ||
+                    append_text(rewritten, sizeof(rewritten), &offset, " <- ") != 0 ||
+                    append_text(rewritten, sizeof(rewritten), &offset, optimized_expr) != 0) {
+                    set_error(ir, "IR instruction text exceeded line capacity");
+                    return -1;
+                }
+                rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                ir_invalidate_local_value(&state, name);
             } else if (parsed_store) {
                 ir_invalidate_local_value(&state, name);
+            }
+            if (parsed_store && expr != 0 && ir_expr_has_side_effect_risk(expr)) {
+                ir_clear_local_values(&state);
             }
             i += 1U;
             continue;
@@ -1015,10 +1559,14 @@ int compiler_ir_optimize(CompilerIr *ir) {
             const char *expr = line + 5;
             const char *rhs = 0;
             long long value = 0;
+            char optimized_expr[COMPILER_IR_LINE_CAPACITY];
+            int expr_changed = 0;
+            int expr_constant = 0;
 
             if (ir_extract_assignment_parts(expr, name, sizeof(name), op, sizeof(op), &rhs) == 0) {
                 if (ir_text_equals(op, "=")) {
-                    if (ir_evaluate_constant_expression(rhs, &state, &value) == 0) {
+                    if (ir_optimize_expr_text(rhs, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0 &&
+                        expr_constant) {
                         char number[32];
                         char rewritten[COMPILER_IR_LINE_CAPACITY];
                         size_t offset = 0;
@@ -1039,6 +1587,19 @@ int compiler_ir_optimize(CompilerIr *ir) {
                         }
                         i += 1U;
                         continue;
+                    } else if (expr_changed) {
+                        char rewritten[COMPILER_IR_LINE_CAPACITY];
+                        size_t offset = 0;
+
+                        rewritten[0] = '\0';
+                        if (append_text(rewritten, sizeof(rewritten), &offset, "eval ") != 0 ||
+                            append_text(rewritten, sizeof(rewritten), &offset, name) != 0 ||
+                            append_text(rewritten, sizeof(rewritten), &offset, " = ") != 0 ||
+                            append_text(rewritten, sizeof(rewritten), &offset, optimized_expr) != 0) {
+                            set_error(ir, "IR instruction text exceeded line capacity");
+                            return -1;
+                        }
+                        rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
                     }
                 } else {
                     long long lhs = 0;
@@ -1082,31 +1643,52 @@ int compiler_ir_optimize(CompilerIr *ir) {
                 }
                 ir_invalidate_local_value(&state, name);
                 i += 1U;
+                if (ir_expr_has_side_effect_risk(expr)) {
+                    ir_clear_local_values(&state);
+                }
                 continue;
             }
 
-            if (ir_evaluate_constant_expression(expr, &state, &value) == 0) {
-                char number[32];
-                ir_format_signed_value(value, number, sizeof(number));
-                if (ir_rewrite_expr_line(ir, i, "eval ", number) != 0) {
+            if (ir_optimize_expr_text(expr, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0) {
+                if (expr_constant) {
+                    char number[32];
+                    ir_format_signed_value(value, number, sizeof(number));
+                    if (ir_rewrite_expr_line(ir, i, "eval ", number) != 0) {
+                        return -1;
+                    }
+                } else if (expr_changed && ir_rewrite_expr_line(ir, i, "eval ", optimized_expr) != 0) {
                     return -1;
                 }
             } else {
+                ir_clear_local_values(&state);
+            }
+            if (ir_expr_has_side_effect_risk(expr)) {
                 ir_clear_local_values(&state);
             }
             i += 1U;
             continue;
         }
 
-        if (ir_starts_with(line, "ret ")) {
+        if (ir_text_equals(line, "ret") || ir_starts_with(line, "ret ")) {
             long long value = 0;
-            if (ir_evaluate_constant_expression(line + 4, &state, &value) == 0) {
-                char number[32];
-                ir_format_signed_value(value, number, sizeof(number));
-                if (ir_rewrite_expr_line(ir, i, "ret ", number) != 0) {
+            char optimized_expr[COMPILER_IR_LINE_CAPACITY];
+            int expr_changed = 0;
+            int expr_constant = 0;
+
+            if (ir_starts_with(line, "ret ") &&
+                ir_optimize_expr_text(line + 4, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0) {
+                if (expr_constant) {
+                    char number[32];
+                    ir_format_signed_value(value, number, sizeof(number));
+                    if (ir_rewrite_expr_line(ir, i, "ret ", number) != 0) {
+                        return -1;
+                    }
+                } else if (expr_changed && ir_rewrite_expr_line(ir, i, "ret ", optimized_expr) != 0) {
                     return -1;
                 }
             }
+            ir_clear_local_values(&state);
+            ir_remove_unreachable_after_terminator(ir, i);
             i += 1U;
             continue;
         }
@@ -1115,19 +1697,27 @@ int compiler_ir_optimize(CompilerIr *ir) {
             char label[COMPILER_IR_NAME_CAPACITY];
             char expr[COMPILER_IR_LINE_CAPACITY];
             long long value = 0;
+            char optimized_expr[COMPILER_IR_LINE_CAPACITY];
+            int expr_changed = 0;
+            int expr_constant = 0;
 
             if (ir_extract_branch_parts(line, label, sizeof(label), expr, sizeof(expr)) == 0 &&
-                ir_evaluate_constant_expression(expr, &state, &value) == 0) {
-                if (value == 0) {
-                    if (ir_rewrite_jump_line(ir, i, label) != 0) {
-                        return -1;
+                ir_optimize_expr_text(expr, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0) {
+                if (expr_constant) {
+                    if (value == 0) {
+                        if (ir_rewrite_jump_line(ir, i, label) != 0) {
+                            return -1;
+                        }
+                        ir_clear_local_values(&state);
+                        i += 1U;
+                        continue;
                     }
-                    ir_clear_local_values(&state);
-                    i += 1U;
+                    ir_remove_line(ir, i);
                     continue;
                 }
-                ir_remove_line(ir, i);
-                continue;
+                if (expr_changed && ir_rewrite_branch_line(ir, i, optimized_expr, label) != 0) {
+                    return -1;
+                }
             }
 
             ir_clear_local_values(&state);

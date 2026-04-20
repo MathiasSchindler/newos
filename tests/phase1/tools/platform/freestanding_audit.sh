@@ -64,7 +64,8 @@ EOF
 if [ "$(uname -s)" = 'Linux' ] && [ "$(uname -m)" = 'x86_64' ]; then
     note "phase1 platform: native freestanding build"
     assert_command_succeeds make -C "$ROOT_DIR" --no-print-directory freestanding
-    [ -x "$ROOT_DIR/build/linux-x86_64/echo" ] || fail "linux/x86-64 freestanding echo binary was not built"
-    "$ROOT_DIR/build/linux-x86_64/echo" freestanding > "$WORK_DIR/freestanding_echo.out"
+    FREESTANDING_ECHO="$ROOT_DIR/build/freestanding-linux-x86_64/echo"
+    [ -x "$FREESTANDING_ECHO" ] || fail "linux/x86-64 freestanding echo binary was not built"
+    "$FREESTANDING_ECHO" freestanding > "$WORK_DIR/freestanding_echo.out"
     assert_file_contains "$WORK_DIR/freestanding_echo.out" '^freestanding$' "linux/x86-64 freestanding echo did not run correctly"
 fi

@@ -20,7 +20,8 @@ On a Mac, the normal build outputs are native Mach-O executables for the local
 machine.
 
 - `make` builds the local hosted tool set by default
-- `make host` builds the same hosted local binaries under `build/`
+- `make host` builds the same hosted local binaries under
+  `build/host-macos-aarch64/` with compatibility symlinks in `build/`
 - `make freestanding` currently resolves to the local hosted build on macOS by
   default rather than producing a separate libc-free target tree
 
