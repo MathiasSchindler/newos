@@ -108,19 +108,30 @@ const char *skip_spaces(const char *text) {
 }
 
 int backend_is_aarch64(const BackendState *state) {
-    return state->backend->target == COMPILER_BACKEND_TARGET_LINUX_AARCH64 ||
-           state->backend->target == COMPILER_BACKEND_TARGET_MACOS_AARCH64;
+    return compiler_target_is_aarch64(state->backend->target);
 }
 
 int backend_is_darwin(const BackendState *state) {
-    return state->backend->target == COMPILER_BACKEND_TARGET_MACOS_AARCH64;
+    return compiler_target_is_darwin(state->backend->target);
+}
+
+int backend_stack_slot_size(const BackendState *state) {
+    const CompilerTargetInfo *info = compiler_target_get_info(state->backend->target);
+    return info != 0 ? (int)info->stack_slot_size : 8;
+}
+
+int backend_register_arg_limit(const BackendState *state) {
+    const CompilerTargetInfo *info = compiler_target_get_info(state->backend->target);
+    return info != 0 ? (int)info->register_arg_limit : 6;
 }
 
 void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size) {
-    if (backend_is_darwin(state)) {
-        rt_copy_string(buffer, buffer_size, "_");
-        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), name);
-    } else {
+    const CompilerTargetInfo *info = compiler_target_get_info(state->backend->target);
+    const char *prefix = (info != 0 && info->global_symbol_prefix != 0) ? info->global_symbol_prefix : "";
+
+    rt_copy_string(buffer, buffer_size, prefix);
+    rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), name);
+    if (prefix[0] == '\0') {
         rt_copy_string(buffer, buffer_size, name);
     }
 }
@@ -339,7 +350,7 @@ int allocate_local(BackendState *state, const char *name, int is_array, int pref
     char line[96];
     char offset_text[32];
     int existing = find_local(state, name);
-    int slot_size = is_array ? BACKEND_ARRAY_STACK_BYTES : (backend_is_aarch64(state) ? 16 : 8);
+    int slot_size = is_array ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state);
 
     if (existing >= 0) {
         if (is_array) {
@@ -383,8 +394,12 @@ int allocate_local(BackendState *state, const char *name, int is_array, int pref
     }
 }
 
-int write_label_name(char *buffer, size_t buffer_size, const char *label) {
+int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label) {
     rt_copy_string(buffer, buffer_size, ".L");
+    if (state != 0 && state->current_function[0] != '\0') {
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), state->current_function);
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "_");
+    }
     rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), label);
     return 0;
 }
@@ -530,6 +545,28 @@ int add_string_literal(BackendState *state, const char *text) {
     return (int)(state->string_count - 1U);
 }
 
+static int emit_darwin_global_address(BackendState *state, const char *symbol, const char *dst_reg) {
+    char line[128];
+
+    rt_copy_string(line, sizeof(line), "adrp ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "@GOTPAGE");
+    if (emit_instruction(state, line) != 0) {
+        return -1;
+    }
+
+    rt_copy_string(line, sizeof(line), "ldr ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "@GOTPAGEOFF]");
+    return emit_instruction(state, line);
+}
+
 int emit_address_of_name(BackendState *state, const char *name) {
     char line[128];
     int local_index = find_local(state, name);
@@ -543,6 +580,9 @@ int emit_address_of_name(BackendState *state, const char *name) {
         char symbol[COMPILER_IR_NAME_CAPACITY];
         format_symbol_name(state, name, symbol, sizeof(symbol));
         if (backend_is_aarch64(state)) {
+            if (backend_is_darwin(state)) {
+                return emit_darwin_global_address(state, symbol, "x0");
+            }
             rt_copy_string(line, sizeof(line), "adrp x0, ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
@@ -652,6 +692,10 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
         }
         format_symbol_name(state, name, symbol, sizeof(symbol));
         if (backend_is_aarch64(state)) {
+            if (backend_is_darwin(state)) {
+                return emit_darwin_global_address(state, symbol, dst_reg) == 0 &&
+                       emit_load_from_address_into_register(state, dst_reg, dst_reg, 0) == 0 ? 0 : -1;
+            }
             const char *base_reg = names_equal(dst_reg, "x9") ? "x10" : "x9";
             rt_copy_string(line, sizeof(line), "adrp ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), base_reg);
@@ -722,6 +766,10 @@ int emit_load_name(BackendState *state, const char *name) {
         }
         format_symbol_name(state, name, symbol, sizeof(symbol));
         if (backend_is_aarch64(state)) {
+            if (backend_is_darwin(state)) {
+                return emit_darwin_global_address(state, symbol, "x9") == 0 &&
+                       emit_instruction(state, "ldr x0, [x9]") == 0 ? 0 : -1;
+            }
             rt_copy_string(line, sizeof(line), "adrp x9, ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
@@ -781,6 +829,10 @@ int emit_store_name(BackendState *state, const char *name) {
         char symbol[COMPILER_IR_NAME_CAPACITY];
         format_symbol_name(state, name, symbol, sizeof(symbol));
         if (backend_is_aarch64(state)) {
+            if (backend_is_darwin(state)) {
+                return emit_darwin_global_address(state, symbol, "x9") == 0 &&
+                       emit_instruction(state, "str x0, [x9]") == 0 ? 0 : -1;
+            }
             rt_copy_string(line, sizeof(line), "adrp x9, ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
@@ -932,14 +984,17 @@ int emit_set_condition(BackendState *state, const char *condition) {
 
 int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *label) {
     char asm_label[96];
+    char scoped_label[64];
+
+    write_label_name(state, scoped_label, sizeof(scoped_label), label);
 
     if (backend_is_aarch64(state)) {
         rt_copy_string(asm_label, sizeof(asm_label), mnemonic);
-        rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), " .L");
+        rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), " ");
     } else {
         rt_copy_string(asm_label, sizeof(asm_label), mnemonic);
-        rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), " .L");
+        rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), " ");
     }
-    rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), label);
+    rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), scoped_label);
     return emit_instruction(state, asm_label);
 }

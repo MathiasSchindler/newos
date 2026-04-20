@@ -48,6 +48,15 @@ typedef struct {
     unsigned short sequence;
 } PosixIcmpPacket;
 
+#ifdef __APPLE__
+static const unsigned char *posix_sockaddr_dl_addr(const struct sockaddr_dl *sdl) {
+    if (sdl == NULL || sdl->sdl_alen <= 0 || sdl->sdl_nlen < 0) {
+        return NULL;
+    }
+    return (const unsigned char *)(sdl->sdl_data + sdl->sdl_nlen);
+}
+#endif
+
 static void posix_fd_zero(void *set_ptr) {
     memset(set_ptr, 0, 128U);
 }
@@ -982,9 +991,11 @@ int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_c
         if (current->ifa_addr != NULL && current->ifa_addr->sa_family == AF_LINK && !entries_out[index].has_mac) {
             const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)current->ifa_addr;
             if (sdl->sdl_alen > 0) {
-                const unsigned char *addr = (const unsigned char *)LLADDR(sdl);
-                posix_format_mac_address(addr, (size_t)sdl->sdl_alen, entries_out[index].mac, sizeof(entries_out[index].mac));
-                entries_out[index].has_mac = 1;
+                const unsigned char *addr = posix_sockaddr_dl_addr(sdl);
+                if (addr != NULL) {
+                    posix_format_mac_address(addr, (size_t)sdl->sdl_alen, entries_out[index].mac, sizeof(entries_out[index].mac));
+                    entries_out[index].has_mac = 1;
+                }
             }
         }
 #endif

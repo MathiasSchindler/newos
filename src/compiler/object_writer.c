@@ -1649,7 +1649,7 @@ void compiler_object_writer_init(CompilerObjectWriter *writer) {
 
 static int emit_backend_assembly_to_temp(
     CompilerObjectWriter *writer,
-    CompilerBackendTarget target,
+    CompilerTarget target,
     const CompilerIr *ir,
     char *temp_path,
     size_t temp_path_size
@@ -1684,7 +1684,7 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
     rt_memset(&assembler, 0, sizeof(assembler));
     assembler.writer = writer;
 
-    if (emit_backend_assembly_to_temp(writer, COMPILER_BACKEND_TARGET_LINUX_X86_64, ir, temp_path, sizeof(temp_path)) != 0) {
+    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_LINUX_X86_64, ir, temp_path, sizeof(temp_path)) != 0) {
         return -1;
     }
 
@@ -1724,7 +1724,7 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
 
     compiler_object_writer_init(writer);
 
-    if (emit_backend_assembly_to_temp(writer, COMPILER_BACKEND_TARGET_MACOS_AARCH64, ir, asm_path, sizeof(asm_path)) != 0) {
+    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_MACOS_AARCH64, ir, asm_path, sizeof(asm_path)) != 0) {
         return -1;
     }
 
@@ -1769,6 +1769,25 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
     }
 
     return 0;
+}
+
+int compiler_object_write_target(CompilerObjectWriter *writer, CompilerTarget target, const CompilerIr *ir, int fd) {
+    const CompilerTargetInfo *info = compiler_target_get_info(target);
+
+    if (info == 0) {
+        set_error(writer, "unknown compilation target");
+        return -1;
+    }
+
+    if (info->object_format == COMPILER_OBJECT_FORMAT_ELF64 && !info->is_aarch64) {
+        return compiler_object_write_elf64_x86_64(writer, ir, fd);
+    }
+    if (info->object_format == COMPILER_OBJECT_FORMAT_MACHO64 && info->is_aarch64) {
+        return compiler_object_write_macho64_aarch64(writer, ir, fd);
+    }
+
+    set_error(writer, "object emission is not implemented yet for this target");
+    return -1;
 }
 
 const char *compiler_object_writer_error_message(const CompilerObjectWriter *writer) {

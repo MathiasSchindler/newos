@@ -42,7 +42,8 @@
     X("src/compiler/preprocessor.c") \
     X("src/compiler/semantic.c") \
     X("src/compiler/source.c") \
-    X("src/compiler/lexer.c")
+    X("src/compiler/lexer.c") \
+    X("src/compiler/targets/target_info.c")
 
 /* ── shared runtime / utilities (all tools) ─────────────────────────────── */
 

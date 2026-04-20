@@ -18,6 +18,11 @@ supported host targets produce a runnable executable. The focus remains the
 project's own codebase and self-hosting workflows rather than full GCC/Clang
 compatibility.
 
+The compiler is structured so the lexer, parser, semantic analysis, and IR stay
+target-neutral while target-specific ABI, symbol-format, and object-format
+choices are isolated in the backend and target-description layers under
+`src/compiler`.
+
 ## CURRENT CAPABILITIES
 
 - preprocessing with `-E` and additional include or define options
@@ -25,6 +30,10 @@ compatibility.
 - assembly output with `-S` and object output with `-c`
 - default executable output on supported targets when linking succeeds
 - target selection for `linux-x86_64`, `linux-aarch64`, and `macos-aarch64`
+- target-specific ABI and object-format details are routed through explicit
+  compiler target descriptors instead of being hard-coded across the frontend
+- common warning-style compatibility flags such as `-Wall`, `-Wextra`, and
+  `-Wno-pedantic` are accepted so existing project make rules keep working
 
 ## OPTIONS
 
@@ -48,6 +57,8 @@ compatibility.
 - final executable linking currently relies on the host `clang` toolchain
 - Linux x86-64 is the best-supported target today; Linux AArch64 output and
   linking still report "not implemented yet"
+- macOS/AArch64 hosted self-builds are progressing, but some real-world sources
+  may still expose unsupported C constructs or backend gaps
 
 ## EXAMPLES
 

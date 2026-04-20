@@ -15,12 +15,6 @@
 #define COMPILER_MAX_INPUT_FILES 256
 #define COMPILER_MAX_LINK_ARGS (COMPILER_MAX_INPUT_FILES * 4 + 32)
 
-typedef enum {
-    COMPILER_TARGET_LINUX_X86_64 = 0,
-    COMPILER_TARGET_LINUX_AARCH64,
-    COMPILER_TARGET_MACOS_AARCH64
-} CompilerTarget;
-
 typedef struct {
     const char *program_name;
     const char *input_path;
@@ -83,9 +77,7 @@ static int ends_with(const char *text, const char *suffix) {
 }
 
 static int is_ignored_option(const char *arg) {
-    if (text_equals(arg, "-Wall") ||
-        text_equals(arg, "-Wextra") ||
-        text_equals(arg, "-Wpedantic") ||
+    if (starts_with(arg, "-W") ||
         text_equals(arg, "-ffreestanding") ||
         text_equals(arg, "-fno-builtin") ||
         text_equals(arg, "-fno-stack-protector") ||
@@ -124,65 +116,15 @@ static int looks_like_ncc_driver(const char *path) {
 }
 
 static CompilerTarget default_target(void) {
-#if defined(__linux__) && defined(__x86_64__)
-    return COMPILER_TARGET_LINUX_X86_64;
-#elif defined(__linux__) && (defined(__aarch64__) || defined(__arm64__))
-    return COMPILER_TARGET_LINUX_AARCH64;
-#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
-    return COMPILER_TARGET_MACOS_AARCH64;
-#else
-    char sysname[64];
-    char nodename[64];
-    char release[64];
-    char version[64];
-    char machine[64];
-
-    if (platform_get_uname(sysname, sizeof(sysname), nodename, sizeof(nodename), release, sizeof(release), version, sizeof(version), machine, sizeof(machine)) != 0) {
-        return COMPILER_TARGET_MACOS_AARCH64;
-    }
-
-    (void)nodename;
-    (void)release;
-    (void)version;
-
-    if (text_equals(sysname, "Linux")) {
-        if (text_equals(machine, "x86_64")) {
-            return COMPILER_TARGET_LINUX_X86_64;
-        }
-        return COMPILER_TARGET_LINUX_AARCH64;
-    }
-
-    return COMPILER_TARGET_MACOS_AARCH64;
-#endif
+    return compiler_target_default();
 }
 
 static const char *target_name(CompilerTarget target) {
-    switch (target) {
-        case COMPILER_TARGET_LINUX_X86_64:
-            return "linux-x86_64";
-        case COMPILER_TARGET_LINUX_AARCH64:
-            return "linux-aarch64";
-        case COMPILER_TARGET_MACOS_AARCH64:
-            return "macos-aarch64";
-    }
-
-    return "unknown";
+    return compiler_target_name(target);
 }
 
 static int parse_target(const char *text, CompilerTarget *target_out) {
-    if (text_equals(text, "linux-x86_64") || text_equals(text, "linux-x64") || text_equals(text, "x86_64-linux-none") || text_equals(text, "x86_64-linux-gnu")) {
-        *target_out = COMPILER_TARGET_LINUX_X86_64;
-        return 0;
-    }
-    if (text_equals(text, "linux-aarch64") || text_equals(text, "linux-arm64") || text_equals(text, "aarch64-linux-none") || text_equals(text, "aarch64-linux-gnu")) {
-        *target_out = COMPILER_TARGET_LINUX_AARCH64;
-        return 0;
-    }
-    if (text_equals(text, "macos-aarch64") || text_equals(text, "macos-arm64") || text_equals(text, "darwin-aarch64") || text_equals(text, "darwin-arm64")) {
-        *target_out = COMPILER_TARGET_MACOS_AARCH64;
-        return 0;
-    }
-    return -1;
+    return compiler_target_parse(text, target_out);
 }
 
 static void write_usage(const char *program_name) {
@@ -567,11 +509,6 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
 
 static int configure_preprocessor(CompilerPreprocessor *preprocessor, const CompilerOptions *options) {
     size_t i;
-    const char *arch_include_dir = "src/arch/x86_64/linux";
-
-    if (options->target != COMPILER_TARGET_LINUX_X86_64) {
-        arch_include_dir = "src/arch/aarch64/linux";
-    }
 
     compiler_preprocessor_init(preprocessor);
     if (compiler_preprocessor_add_include_dir(preprocessor, ".") != 0 ||
@@ -579,33 +516,9 @@ static int configure_preprocessor(CompilerPreprocessor *preprocessor, const Comp
         compiler_preprocessor_add_include_dir(preprocessor, "src/compiler") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/platform/posix") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/platform/linux") != 0 ||
-        compiler_preprocessor_add_include_dir(preprocessor, arch_include_dir) != 0) {
+        compiler_preprocessor_define(preprocessor, "__STDC_HOSTED__", options->freestanding ? "0" : "1") != 0 ||
+        compiler_target_apply_preprocessor_defaults(preprocessor, options->target, options->freestanding) != 0) {
         return -1;
-    }
-
-    if (compiler_preprocessor_define(preprocessor, "__STDC_HOSTED__", options->freestanding ? "0" : "1") != 0) {
-        return -1;
-    }
-
-    switch (options->target) {
-        case COMPILER_TARGET_LINUX_X86_64:
-            if (compiler_preprocessor_define(preprocessor, "__linux__", "1") != 0 ||
-                compiler_preprocessor_define(preprocessor, "__x86_64__", "1") != 0) {
-                return -1;
-            }
-            break;
-        case COMPILER_TARGET_LINUX_AARCH64:
-            if (compiler_preprocessor_define(preprocessor, "__linux__", "1") != 0 ||
-                compiler_preprocessor_define(preprocessor, "__aarch64__", "1") != 0) {
-                return -1;
-            }
-            break;
-        case COMPILER_TARGET_MACOS_AARCH64:
-            if (compiler_preprocessor_define(preprocessor, "__APPLE__", "1") != 0 ||
-                compiler_preprocessor_define(preprocessor, "__aarch64__", "1") != 0) {
-                return -1;
-            }
-            break;
     }
 
     for (i = 0; i < options->include_dir_count; ++i) {
@@ -811,7 +724,6 @@ static int parse_translation_unit(const CompilerOptions *options) {
     static CompilerSource source;
     char derived_output_path[COMPILER_PATH_CAPACITY];
     const char *output_path;
-    CompilerBackendTarget backend_target = COMPILER_BACKEND_TARGET_LINUX_X86_64;
     int out_fd = 1;
     int should_close = 0;
 
@@ -876,25 +788,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
     }
 
     if (options->emit_assembly) {
-        switch (options->target) {
-            case COMPILER_TARGET_LINUX_X86_64:
-                backend_target = COMPILER_BACKEND_TARGET_LINUX_X86_64;
-                break;
-            case COMPILER_TARGET_LINUX_AARCH64:
-                backend_target = COMPILER_BACKEND_TARGET_LINUX_AARCH64;
-                break;
-            case COMPILER_TARGET_MACOS_AARCH64:
-                backend_target = COMPILER_BACKEND_TARGET_MACOS_AARCH64;
-                break;
-            default:
-                if (should_close) {
-                    (void)platform_close(out_fd);
-                }
-                tool_write_error(options->program_name, "assembly backend is not implemented for target ", target_name(options->target));
-                return 1;
-        }
-
-        compiler_backend_init(&backend, backend_target);
+        compiler_backend_init(&backend, options->target);
         if (compiler_backend_emit_assembly(&backend, &parser.ir, out_fd) != 0) {
             if (should_close) {
                 (void)platform_close(out_fd);
@@ -906,32 +800,13 @@ static int parse_translation_unit(const CompilerOptions *options) {
 
     if (options->compile_only) {
         compiler_object_writer_init(&object_writer);
-        switch (options->target) {
-            case COMPILER_TARGET_LINUX_X86_64:
-                if (compiler_object_write_elf64_x86_64(&object_writer, &parser.ir, out_fd) != 0) {
-                    if (should_close) {
-                        (void)platform_close(out_fd);
-                    }
-                    tool_write_error(options->program_name, "failed while writing object output: ", compiler_object_writer_error_message(&object_writer));
-                    return 1;
-                }
-                break;
-            case COMPILER_TARGET_MACOS_AARCH64:
-                if (compiler_object_write_macho64_aarch64(&object_writer, &parser.ir, out_fd) != 0) {
-                    if (should_close) {
-                        (void)platform_close(out_fd);
-                    }
-                    tool_write_error(options->program_name, "failed while writing object output: ", compiler_object_writer_error_message(&object_writer));
-                    return 1;
-                }
-                break;
-            default:
-                if (should_close) {
-                    (void)platform_close(out_fd);
-                }
-                tool_write_error(options->program_name, "object emission is not implemented yet for target ", target_name(options->target));
-                return 1;
+        if (compiler_object_write_target(&object_writer, options->target, &parser.ir, out_fd) != 0) {
+            if (should_close) {
+                (void)platform_close(out_fd);
             }
+            tool_write_error(options->program_name, "failed while writing object output: ", compiler_object_writer_error_message(&object_writer));
+            return 1;
+        }
     }
 
     if (should_close) {

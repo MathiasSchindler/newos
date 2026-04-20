@@ -458,7 +458,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         }
         {
             int local_index = find_local(state, name);
-            int max_register_params = backend_is_aarch64(state) ? 8 : 6;
+            int max_register_params = backend_register_arg_limit(state);
             char offset_text[32];
             rt_unsigned_to_string((unsigned long long)state->locals[local_index].offset, offset_text, sizeof(offset_text));
             if (index < max_register_params) {
@@ -537,7 +537,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     return 0;
 }
 
-void compiler_backend_init(CompilerBackend *backend, CompilerBackendTarget target) {
+void compiler_backend_init(CompilerBackend *backend, CompilerTarget target) {
     rt_memset(backend, 0, sizeof(*backend));
     backend->target = target;
 }
@@ -699,7 +699,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
         if (starts_with(line, "label ")) {
             char asm_label[96];
-            write_label_name(asm_label, sizeof(asm_label), line + 6);
+            write_label_name(&state, asm_label, sizeof(asm_label), line + 6);
             rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
             if (emit_line(&state, asm_label) != 0) {
                 backend_set_error(backend, "failed to emit branch label");

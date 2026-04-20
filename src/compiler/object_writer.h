@@ -10,6 +10,7 @@ typedef struct {
 } CompilerObjectWriter;
 
 void compiler_object_writer_init(CompilerObjectWriter *writer);
+int compiler_object_write_target(CompilerObjectWriter *writer, CompilerTarget target, const CompilerIr *ir, int fd);
 int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd);
 int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd);
 const char *compiler_object_writer_error_message(const CompilerObjectWriter *writer);

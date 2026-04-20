@@ -383,7 +383,7 @@ static int name_prefers_word_index(const BackendState *state, const char *name) 
 static int identifier_looks_like_type(const char *name) {
     size_t length = rt_strlen(name);
 
-    if (name[0] >= 'A' && name[0] <= 'Z') {
+    if ((name[0] >= 'A' && name[0] <= 'Z') && !name_looks_like_macro_constant(name)) {
         return 1;
     }
     if (names_equal(name, "void") || names_equal(name, "char") || names_equal(name, "short") ||
@@ -891,9 +891,9 @@ static int expr_parse_primary(ExprParser *parser) {
             static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
             static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
             int arg_count = 0;
-            int register_arg_count = backend_is_aarch64(parser->state) ? 8 : 6;
+            int register_arg_count = backend_register_arg_limit(parser->state);
             int stack_arg_count = 0;
-            int stack_slot_size = backend_is_aarch64(parser->state) ? 16 : 8;
+            int stack_slot_size = backend_stack_slot_size(parser->state);
 
             (void)expr_match_punct(parser, "(");
             if (!(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
@@ -987,7 +987,7 @@ static int expr_parse_primary(ExprParser *parser) {
                         return -1;
                     }
                 }
-                return 0;
+                return expr_parse_postfix_suffixes(parser, 0, 0, 0);
             }
 
             if (emit_load_name_into_register(parser->state, name, backend_is_aarch64(parser->state) ? "x16" : "%r11") != 0) {
@@ -1015,7 +1015,7 @@ static int expr_parse_primary(ExprParser *parser) {
                     return -1;
                 }
             }
-            return 0;
+            return expr_parse_postfix_suffixes(parser, 0, 0, 0);
         }
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
@@ -1426,12 +1426,12 @@ static int expr_parse_logical_and(ExprParser *parser) {
         if (emit_jump_to_label(parser->state, asm_label, end_label) != 0) {
             return -1;
         }
-        write_label_name(asm_label, sizeof(asm_label), false_label);
+        write_label_name(parser->state, asm_label, sizeof(asm_label), false_label);
         rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
         if (emit_line(parser->state, asm_label) != 0 || emit_load_immediate(parser->state, 0) != 0) {
             return -1;
         }
-        write_label_name(asm_label, sizeof(asm_label), end_label);
+        write_label_name(parser->state, asm_label, sizeof(asm_label), end_label);
         rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
         if (emit_line(parser->state, asm_label) != 0) {
             return -1;
@@ -1473,12 +1473,12 @@ static int expr_parse_logical_or(ExprParser *parser) {
         if (emit_jump_to_label(parser->state, asm_label, end_label) != 0) {
             return -1;
         }
-        write_label_name(asm_label, sizeof(asm_label), true_label);
+        write_label_name(parser->state, asm_label, sizeof(asm_label), true_label);
         rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
         if (emit_line(parser->state, asm_label) != 0 || emit_load_immediate(parser->state, 1) != 0) {
             return -1;
         }
-        write_label_name(asm_label, sizeof(asm_label), end_label);
+        write_label_name(parser->state, asm_label, sizeof(asm_label), end_label);
         rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
         if (emit_line(parser->state, asm_label) != 0) {
             return -1;
@@ -1513,12 +1513,12 @@ static int expr_parse_conditional(ExprParser *parser) {
             expr_expect_punct(parser, ":") != 0) {
             return -1;
         }
-        write_label_name(asm_label, sizeof(asm_label), false_label);
+        write_label_name(parser->state, asm_label, sizeof(asm_label), false_label);
         rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
         if (emit_line(parser->state, asm_label) != 0 || expr_parse_assignment(parser) != 0) {
             return -1;
         }
-        write_label_name(asm_label, sizeof(asm_label), end_label);
+        write_label_name(parser->state, asm_label, sizeof(asm_label), end_label);
         rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
         if (emit_line(parser->state, asm_label) != 0) {
             return -1;

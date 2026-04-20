@@ -18,6 +18,7 @@ assert_file_contains "$WORK_DIR/sample_linux.s" 'movq \$42, %rax' "compiler x86_
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos.s"
 assert_file_contains "$WORK_DIR/sample_macos.s" '^\.globl _main$' "compiler macOS AArch64 backend missing Darwin global symbol"
 assert_file_contains "$WORK_DIR/sample_macos.s" 'movz x0, #42' "compiler macOS AArch64 backend missing immediate return code"
+assert_command_succeeds "$ROOT_DIR/build/ncc" -Wno-pedantic -S --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_warn_macos.s"
 
 "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/sample_linux.o" > "$WORK_DIR/sample_linux_hex.out"
@@ -63,6 +64,30 @@ EOF
 
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/backend_expr.c" -o "$WORK_DIR/backend_expr_macos.s"
 assert_file_contains "$WORK_DIR/backend_expr_macos.s" '^\.Lstr[0-9][0-9]*:$' "compiler backend missing string literal emission"
+
+cat > "$WORK_DIR/call_index_expr.c" <<'EOF'
+const char *pick(void) {
+    return "ok";
+}
+
+int main(void) {
+    return pick()[1] == 'k' ? 0 : 1;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/call_index_expr.c" -o "$WORK_DIR/call_index_expr_macos.s"
+assert_file_contains "$WORK_DIR/call_index_expr_macos.s" 'bl _pick' "compiler backend did not preserve postfix indexing after a function call"
+
+cat > "$WORK_DIR/extern_data.c" <<'EOF'
+extern char **environ;
+
+int main(void) {
+    return environ != 0 ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/extern_data.c" -o "$WORK_DIR/extern_data_macos.s"
+assert_file_contains "$WORK_DIR/extern_data_macos.s" '@GOTPAGE' "compiler macOS backend missing GOT-based global data access"
 
 cat > "$WORK_DIR/long_expr.c" <<'EOF'
 int main(void) {
