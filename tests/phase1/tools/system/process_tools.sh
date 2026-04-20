@@ -25,6 +25,11 @@ if ! grep -Eq '(^|[[:space:]])(\|- |`- )' "$WORK_DIR/pstree.out"; then
     fail "pstree -A did not use ASCII branch markers"
 fi
 
+assert_command_succeeds "$ROOT_DIR/build/top" -b -n 5 -p $$ > "$WORK_DIR/top.out"
+assert_file_contains "$WORK_DIR/top.out" '^top - ' "top did not print the expected summary banner"
+assert_file_contains "$WORK_DIR/top.out" '^PID[[:space:]][[:space:]]*USER[[:space:]][[:space:]]*STATE[[:space:]][[:space:]]*RSS' "top did not print the process table header"
+assert_file_contains "$WORK_DIR/top.out" "^$$[[:space:]]" "top did not include the current shell pid"
+
 kill_term=$("$ROOT_DIR/build/kill" -l TERM | tr -d '\r\n')
 assert_text_equals "$kill_term" '15' "kill -l TERM did not resolve to SIGTERM"
 
