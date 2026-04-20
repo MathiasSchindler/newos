@@ -1131,6 +1131,10 @@ int platform_list_network_routes(
         }
 
         if (!any_success) {
+            if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+                *count_out = 0U;
+                return 0;
+            }
             errno = ENOTSUP;
             return -1;
         }
@@ -1144,8 +1148,8 @@ int platform_list_network_routes(
     int header_seen = 0;
     size_t count = 0;
     if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
-        errno = ENOTSUP;
-        return -1;
+        *count_out = 0U;
+        return 0;
     }
 
     file = fopen("/proc/net/route", "r");

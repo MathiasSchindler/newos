@@ -350,6 +350,26 @@ static int route_matches_filter(const PlatformRouteEntry *route, const char *fil
     return streq(filter, destination);
 }
 
+static int link_exists(const char *dev_name) {
+    PlatformNetworkLink links[IP_MAX_LINKS];
+    size_t count = 0U;
+    size_t i;
+
+    if (dev_name == 0) {
+        return 1;
+    }
+    if (platform_list_network_links(links, IP_MAX_LINKS, &count) != 0) {
+        return 0;
+    }
+
+    for (i = 0U; i < count; ++i) {
+        if (rt_strcmp(dev_name, links[i].name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int show_routes(const char *dev_name, int family_filter, const char *route_filter) {
     PlatformRouteEntry routes[IP_MAX_ROUTES];
     size_t count = 0U;
@@ -391,8 +411,11 @@ static int show_routes(const char *dev_name, int family_filter, const char *rout
     }
 
     if (!matched && dev_name != 0) {
-        tool_write_error("ip", "unknown device: ", dev_name);
-        return 1;
+        if (!link_exists(dev_name)) {
+            tool_write_error("ip", "unknown device: ", dev_name);
+            return 1;
+        }
+        return 0;
     }
 
     return 0;

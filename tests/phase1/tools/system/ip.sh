@@ -37,6 +37,13 @@ if [ -s "$WORK_DIR/route_dev.out" ]; then
     assert_file_contains "$WORK_DIR/route_dev.out" " dev $dev_name" "ip route show dev did not preserve the device filter"
 fi
 
+if "$ROOT_DIR/build/ip" link show dev lo > "$WORK_DIR/lo_link.out" 2>/dev/null; then
+    assert_command_succeeds "$ROOT_DIR/build/ip" route show dev lo > "$WORK_DIR/route_lo.out"
+    if [ -s "$WORK_DIR/route_lo.out" ]; then
+        assert_file_contains "$WORK_DIR/route_lo.out" ' dev lo' "ip route show dev lo did not preserve the loopback device filter"
+    fi
+fi
+
 assert_command_succeeds "$ROOT_DIR/build/ip" -6 route show > "$WORK_DIR/route6.out"
 if [ -s "$WORK_DIR/route6.out" ]; then
     assert_file_contains "$WORK_DIR/route6.out" ':' "ip -6 route show did not produce IPv6-style route output"
