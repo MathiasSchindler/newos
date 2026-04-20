@@ -1758,13 +1758,21 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
         (void)platform_remove_file(temp_path);
         return fallback_status;
     }
-    (void)platform_remove_file(temp_path);
 
     if (assemble_from_source(&assembler, &source) != 0) {
-        return -1;
+        int fallback_status = write_external_elf_object(writer, temp_path, fd);
+        (void)platform_remove_file(temp_path);
+        return fallback_status;
     }
 
-    return build_elf_object(&assembler, fd);
+    if (build_elf_object(&assembler, fd) != 0) {
+        int fallback_status = write_external_elf_object(writer, temp_path, fd);
+        (void)platform_remove_file(temp_path);
+        return fallback_status;
+    }
+
+    (void)platform_remove_file(temp_path);
+    return 0;
 }
 
 int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd) {

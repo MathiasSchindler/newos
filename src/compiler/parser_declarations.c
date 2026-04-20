@@ -25,9 +25,17 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
 
     parameter_type = type;
     parameter_type.pointer_depth += declarator.pointer_depth;
-    parameter_type.is_function = declarator.is_function;
-    parameter_type.is_array = declarator.is_array;
-    parameter_type.array_length = declarator.array_length;
+    parameter_type.is_function = 0;
+    parameter_type.is_array = 0;
+    parameter_type.array_length = 0ULL;
+    if (declarator.is_function) {
+        parameter_type.pointer_depth += 1;
+    }
+    if (declarator.is_array) {
+        parameter_type.pointer_depth += 1;
+    } else {
+        parameter_type.array_length = declarator.array_length;
+    }
 
     if (owner != 0 &&
         declarator.name[0] != '\0' &&

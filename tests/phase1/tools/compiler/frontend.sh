@@ -76,7 +76,7 @@ int main(void) {
 EOF
 
 "$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/typedef_struct_local.c" > "$WORK_DIR/typedef_struct_local_ir.out"
-assert_file_contains "$WORK_DIR/typedef_struct_local_ir.out" '^decl local obj struct state$' "compiler lost a typedef-backed struct local and lowered it as a plain scalar"
+assert_file_contains "$WORK_DIR/typedef_struct_local_ir.out" '^decl local obj struct:State state$' "compiler lost a typedef-backed struct local and lowered it as a plain scalar"
 
 cat > "$WORK_DIR/local.h" <<'EOF'
 #ifndef LOCAL_H
@@ -139,6 +139,22 @@ EOF
 
 assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/for_scope.c" > "$WORK_DIR/for_scope.out"
 assert_file_contains "$WORK_DIR/for_scope.out" '^function main$' "compiler did not keep for-loop declarations scoped to the loop"
+
+cat > "$WORK_DIR/array_param_decay.c" <<'EOF'
+static int first_char(char *argv[]) {
+    return argv[0][0];
+}
+
+int main(void) {
+    char *argv[2];
+    argv[0] = "ok";
+    argv[1] = 0;
+    return first_char(argv) == 'o' ? 0 : 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/array_param_decay.c" > "$WORK_DIR/array_param_decay_ir.out"
+assert_file_contains "$WORK_DIR/array_param_decay_ir.out" '^decl param obj char\*\* argv$' "compiler did not decay an array parameter to a pointer parameter in IR"
 
 cat > "$WORK_DIR/invalid.c" <<'EOF'
 int main(void) {

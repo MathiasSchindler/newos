@@ -471,6 +471,8 @@ static int emit_globals(BackendState *state) {
         char digits[32];
         char line[128];
         char symbol[COMPILER_IR_NAME_CAPACITY];
+        int storage_bytes = decl_slot_size(state, state->globals[i].type_text);
+        int needs_object_storage = decl_requires_object_storage(state->globals[i].type_text);
         format_symbol_name(state, state->globals[i].name, symbol, sizeof(symbol));
 
         if (!state->globals[i].has_storage) {
@@ -486,6 +488,20 @@ static int emit_globals(BackendState *state) {
         if (emit_text(state, symbol) != 0 || emit_line(state, ":") != 0) {
             backend_set_error(state->backend, "failed to emit global symbol");
             return -1;
+        }
+
+        if (needs_object_storage) {
+            if (storage_bytes <= 0) {
+                storage_bytes = backend_stack_slot_size(state);
+            }
+            rt_copy_string(line, sizeof(line), "    .zero ");
+            rt_unsigned_to_string((unsigned long long)storage_bytes, digits, sizeof(digits));
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            if (emit_line(state, line) != 0) {
+                backend_set_error(state->backend, "failed to emit global object storage");
+                return -1;
+            }
+            continue;
         }
 
         rt_copy_string(line, sizeof(line), "    .quad ");

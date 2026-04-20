@@ -487,21 +487,8 @@ static int member_prefers_word_index(const char *name) {
     return 0;
 }
 
-static int member_decays_to_address(const char *name) {
-    if (names_equal(name, "name") || names_equal(name, "path") || names_equal(name, "self_dir") ||
-         names_equal(name, "text") || names_equal(name, "pattern") || names_equal(name, "pattern_text") ||
-         names_equal(name, "buffer") || names_equal(name, "line") || names_equal(name, "data") ||
-          names_equal(name, "bytes") ||
-         names_equal(name, "value") || names_equal(name, "body") || names_equal(name, "argv") ||
-         names_equal(name, "envp") || names_equal(name, "input_path") || names_equal(name, "output_path") ||
-         names_equal(name, "commands") || names_equal(name, "jobs") || names_equal(name, "aliases") ||
-         names_equal(name, "functions") || names_equal(name, "entries") || names_equal(name, "fields") ||
-         names_equal(name, "pids") || names_equal(name, "no_expand") || names_equal(name, "owner") ||
-         names_equal(name, "group") || names_equal(name, "command") || names_equal(name, "user") ||
-         names_equal(name, "state")) {
-        return 1;
-    }
-    return 0;
+static int member_result_decays_to_address(const char *type_text) {
+    return type_text != 0 && text_contains(type_text, "[");
 }
 
 static int type_matches_named_aggregate(const char *base_type, const char *name) {
@@ -576,6 +563,15 @@ static const char *member_result_type(const char *base_type, const char *member_
     if (type_matches_named_aggregate(base_type, "PlatformDirEntry")) {
         if (names_equal(member_name, "name")) return "char[256]";
         if (names_equal(member_name, "owner") || names_equal(member_name, "group")) return "char[32]";
+    }
+    if (names_equal(member_name, "bytes") || names_equal(member_name, "data") ||
+        names_equal(member_name, "text") || names_equal(member_name, "buffer") ||
+        names_equal(member_name, "line") || names_equal(member_name, "pattern") ||
+        names_equal(member_name, "name") || names_equal(member_name, "value") ||
+        names_equal(member_name, "body") || names_equal(member_name, "command") ||
+        names_equal(member_name, "user") || names_equal(member_name, "owner") ||
+        names_equal(member_name, "group") || names_equal(member_name, "state")) {
+        return "char[4096]";
     }
     return base_type;
 }
@@ -836,8 +832,14 @@ static int emit_address_incdec(BackendState *state, int byte_sized, int delta, i
     if (emit_load_from_address_register(state, result_register, byte_sized) != 0) {
         return -1;
     }
-    if (return_old && emit_push_value(state) != 0) {
-        return -1;
+    if (return_old) {
+        if (backend_is_aarch64(state)) {
+            if (emit_instruction(state, "mov x11, x0") != 0) {
+                return -1;
+            }
+        } else if (emit_instruction(state, "movq %rax, %r11") != 0) {
+            return -1;
+        }
     }
     if (emit_push_value(state) != 0) {
         return -1;
@@ -852,7 +854,8 @@ static int emit_address_incdec(BackendState *state, int byte_sized, int delta, i
         return -1;
     }
     if (return_old) {
-        return emit_pop_to_register(state, result_register);
+        return backend_is_aarch64(state) ? emit_instruction(state, "mov x0, x11")
+                                         : emit_instruction(state, "movq %r11, %rax");
     }
     return 0;
 }
@@ -980,7 +983,7 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
             base_type = member_result_type(base_type, member_name);
             word_index = member_prefers_word_index(member_name);
             byte_sized = word_index ? 0 : 1;
-            load_final_address = member_decays_to_address(member_name) ? 0 : 1;
+            load_final_address = member_result_decays_to_address(base_type) ? 0 : 1;
             current_is_address = 1;
             expr_next(parser);
             continue;
@@ -1254,6 +1257,10 @@ static int expr_parse_primary(ExprParser *parser) {
                 char symbol[COMPILER_IR_NAME_CAPACITY];
                 int call_result;
                 format_symbol_name(parser->state, name, symbol, sizeof(symbol));
+                if (!backend_is_aarch64(parser->state) &&
+                    emit_instruction(parser->state, "xor %eax, %eax") != 0) {
+                    return -1;
+                }
                 rt_copy_string(line, sizeof(line), backend_is_aarch64(parser->state) ? "bl " : "call ");
                 rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
                 call_result = emit_instruction(parser->state, line);
@@ -1283,6 +1290,10 @@ static int expr_parse_primary(ExprParser *parser) {
             }
 
             if (emit_load_name_into_register(parser->state, name, backend_is_aarch64(parser->state) ? "x16" : "%r11") != 0) {
+                return -1;
+            }
+            if (!backend_is_aarch64(parser->state) &&
+                emit_instruction(parser->state, "xor %eax, %eax") != 0) {
                 return -1;
             }
             if (emit_instruction(parser->state, backend_is_aarch64(parser->state) ? "blr x16" : "call *%r11") != 0) {
@@ -2044,7 +2055,7 @@ int emit_expression(BackendState *state, const char *expr) {
 
 static int emit_array_element_address(BackendState *state,
                                       const char *name,
-                                      int word_index,
+                                      int element_scale,
                                       unsigned long long index) {
     if (emit_address_of_name(state, name) != 0) {
         return -1;
@@ -2055,7 +2066,7 @@ static int emit_array_element_address(BackendState *state,
     if (emit_load_immediate(state, (long long)index) != 0) {
         return -1;
     }
-    if (emit_index_address(state, word_index) != 0) {
+    if (emit_index_address(state, element_scale) != 0) {
         return -1;
     }
     return emit_push_value(state);
@@ -2064,7 +2075,7 @@ static int emit_array_element_address(BackendState *state,
 static int emit_flat_initializer_store(ExprParser *parser,
                                       BackendState *state,
                                       const char *name,
-                                      int word_index,
+                                      int element_scale,
                                       int byte_sized,
                                       unsigned long long *index_inout,
                                       unsigned long long slot_limit) {
@@ -2072,7 +2083,7 @@ static int emit_flat_initializer_store(ExprParser *parser,
         expr_next(parser);
         while (parser->current.kind != EXPR_TOKEN_EOF &&
                !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "}"))) {
-            if (emit_flat_initializer_store(parser, state, name, word_index, byte_sized, index_inout, slot_limit) != 0) {
+            if (emit_flat_initializer_store(parser, state, name, element_scale, byte_sized, index_inout, slot_limit) != 0) {
                 return -1;
             }
             if (!expr_match_punct(parser, ",")) {
@@ -2087,7 +2098,7 @@ static int emit_flat_initializer_store(ExprParser *parser,
     }
 
     if (*index_inout < slot_limit) {
-        if (emit_array_element_address(state, name, word_index, *index_inout) != 0) {
+        if (emit_array_element_address(state, name, element_scale, *index_inout) != 0) {
             return -1;
         }
         if (expr_parse_assignment(parser) != 0) {
@@ -2111,6 +2122,7 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
     unsigned long long index = 0;
     unsigned long long slot_limit;
     int word_index = 0;
+    int element_scale;
     int byte_sized;
 
     if (!lookup_array_storage(state, name, &word_index)) {
@@ -2121,15 +2133,16 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
     parser.cursor = expr;
     parser.state = state;
     expr_next(&parser);
-    byte_sized = word_index ? 0 : 1;
-    slot_limit = word_index ? (BACKEND_ARRAY_STACK_BYTES / 8U) : BACKEND_ARRAY_STACK_BYTES;
+    element_scale = array_index_scale(state, lookup_name_type_text(state, name), word_index);
+    byte_sized = element_scale == 1 ? 1 : 0;
+    slot_limit = element_scale > 1 ? (BACKEND_ARRAY_STACK_BYTES / (unsigned long long)element_scale) : BACKEND_ARRAY_STACK_BYTES;
 
     if (parser.current.kind == EXPR_TOKEN_STRING) {
         size_t i;
         size_t length = rt_strlen(parser.current.text);
 
         for (i = 0; i <= length; ++i) {
-            if (emit_array_element_address(state, name, word_index, index) != 0) {
+            if (emit_array_element_address(state, name, element_scale, index) != 0) {
                 return -1;
             }
             if (emit_load_immediate(state, (long long)(unsigned char)parser.current.text[i]) != 0) {
@@ -2148,7 +2161,7 @@ int emit_array_initializer_store(BackendState *state, const char *name, const ch
         return 0;
     }
 
-    if (emit_flat_initializer_store(&parser, state, name, word_index, byte_sized, &index, slot_limit) != 0) {
+    if (emit_flat_initializer_store(&parser, state, name, element_scale, byte_sized, &index, slot_limit) != 0) {
         return -1;
     }
 

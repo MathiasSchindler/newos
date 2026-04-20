@@ -278,6 +278,60 @@ EOF
 
 compile_and_check_native "$WORK_DIR/typedef_struct_copy_assignment.c" "$WORK_DIR/typedef_struct_copy_assignment_bin" "0" "compiler failed to copy a typedef-backed struct by value"
 
+cat > "$WORK_DIR/loop_continue.c" <<'EOF'
+int main(void) {
+    int total = 0;
+    int i;
+
+    for (i = 0; i < 4; i += 1) {
+        if (i == 1 || i == 2) {
+            continue;
+        }
+        total += i;
+    }
+
+    return total == 3 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/loop_continue.c" "$WORK_DIR/loop_continue_bin" "0" "compiler miscompiled continue control flow in a for-loop"
+
+cat > "$WORK_DIR/second_pipeline_command.c" <<'EOF'
+#include <string.h>
+#include <stddef.h>
+
+typedef struct {
+    char *argv[64 + 1];
+    int argc;
+    char *input_path;
+    char *output_path;
+    int output_append;
+    int no_expand[64];
+} ShCommand;
+
+typedef struct {
+    ShCommand commands[8];
+    size_t count;
+} ShPipeline;
+
+int main(void) {
+    ShPipeline pipeline;
+    ShCommand *current;
+
+    memset(&pipeline, 0, sizeof(pipeline));
+    pipeline.count = 1;
+    current = &pipeline.commands[pipeline.count++];
+    current->argv[0] = "cat";
+    current->argc = 1;
+
+    return (pipeline.count == 2 &&
+            pipeline.commands[1].argc == 1 &&
+            strcmp(pipeline.commands[1].argv[0], "cat") == 0) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/second_pipeline_command.c" "$WORK_DIR/second_pipeline_command_bin" "0" "compiler miscompiled second-element access in a struct array"
+
 cat > "$WORK_DIR/typedef_struct_return_assignment.c" <<'EOF'
 typedef struct {
     unsigned char bytes[2];
