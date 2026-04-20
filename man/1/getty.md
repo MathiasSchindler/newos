@@ -29,6 +29,8 @@ traditional serial line manager.
 - run an inline shell command with `-c`
 - pass additional arguments through to the launched program
 - export `GETTY_TTY`, `TERM`, and optionally `GETTY_USER`/`USER`/`LOGNAME`
+- sanitize the default `PATH` to `/bin:/usr/bin` and require absolute direct
+  program paths for the launched session helper
 - prompt for a simple login name with `-p`
 - load a custom issue file with `-f`
 - respawn the child after exit unless `-n` is used

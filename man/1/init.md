@@ -26,6 +26,8 @@ rather than a full service manager.
 - run a shell command string with `-c`
 - attach the supervised program to a chosen console or stdio path with `-t`
 - export child environment overrides with repeated `-e NAME=VALUE`
+- sanitize the default `PATH` to `/bin:/usr/bin` and require absolute direct
+  program paths to reduce command-hijack risk
 - restart the managed child after exit
 - bound crash loops with `-m`
 - disable respawning for one-shot use with `-n`
@@ -60,7 +62,7 @@ rather than a full service manager.
 
 ```sh
 init
-init -n sh -c 'echo boot smoke test'
+init -n /bin/sh -c 'echo boot smoke test'
 init -r 500ms /bin/sh
 init -t /dev/console -e TERM=linux -e PATH=/bin:/usr/bin /bin/sh
 init -m 3 -r 1s -c 'echo booting; exit 1'

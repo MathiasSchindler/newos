@@ -297,6 +297,103 @@ static int tar_path_is_unsafe(const char *path) {
     return 0;
 }
 
+static int tar_append_path_component(char *buffer,
+                                     size_t buffer_size,
+                                     size_t *used_io,
+                                     const char *component,
+                                     size_t component_length) {
+    size_t used;
+
+    if (buffer == 0 || used_io == 0 || component == 0) {
+        return -1;
+    }
+    used = *used_io;
+    if (used > 0U && buffer[used - 1U] != '/') {
+        if (used + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[used++] = '/';
+    }
+    if (used + component_length + 1U > buffer_size) {
+        return -1;
+    }
+    memcpy(buffer + used, component, component_length);
+    used += component_length;
+    buffer[used] = '\0';
+    *used_io = used;
+    return 0;
+}
+
+static int tar_validate_extract_target(const char *path, int expect_directory) {
+    char prefix[TAR_PATH_CAPACITY];
+    char link_target[TAR_PATH_CAPACITY];
+    PlatformDirEntry entry;
+    size_t used = 0U;
+    size_t i = 0U;
+
+    if (path == 0 || path[0] == '\0') {
+        tool_write_error("tar", "invalid extraction path", 0);
+        return -1;
+    }
+
+    prefix[0] = '\0';
+    if (path[0] == '/') {
+        prefix[0] = '/';
+        prefix[1] = '\0';
+        used = 1U;
+        i = 1U;
+    }
+
+    while (path[i] != '\0') {
+        size_t start;
+        size_t length;
+        int is_final;
+        int need_directory;
+
+        while (path[i] == '/') {
+            i += 1U;
+        }
+        if (path[i] == '\0') {
+            break;
+        }
+
+        start = i;
+        while (path[i] != '\0' && path[i] != '/') {
+            i += 1U;
+        }
+        length = i - start;
+        if (length == 0U) {
+            continue;
+        }
+        if (tar_append_path_component(prefix, sizeof(prefix), &used, path + start, length) != 0) {
+            tool_write_error("tar", "path too long during extract: ", path);
+            return -1;
+        }
+
+        if (platform_read_symlink(prefix, link_target, sizeof(link_target)) == 0) {
+            tool_write_error("tar", "refusing to extract through symlink: ", prefix);
+            return -1;
+        }
+
+        if (platform_get_path_info(prefix, &entry) != 0) {
+            continue;
+        }
+
+        is_final = (path[i] == '\0');
+        need_directory = !is_final || expect_directory;
+        if (need_directory && !entry.is_dir) {
+            tool_write_error("tar", "non-directory blocks extraction path: ", prefix);
+            return -1;
+        }
+        if (is_final && !expect_directory && entry.is_dir) {
+            tool_write_error("tar", "cannot overwrite directory with non-directory: ", prefix);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int tar_strip_components(const char *path, unsigned int strip_components, char *buffer, size_t buffer_size) {
     size_t i = 0;
     unsigned int stripped = 0;
@@ -873,14 +970,20 @@ static int extract_archive(int archive_fd,
             continue;
         }
 
-        ensure_parent_dirs(output_path);
-
         if (is_directory) {
+            if (tar_validate_extract_target(output_path, 1) != 0) {
+                return -1;
+            }
+            ensure_parent_dirs(output_path);
             (void)platform_make_directory(output_path, 0755U);
             continue;
         }
 
         if (typeflag == '2') {
+            if (tar_validate_extract_target(output_path, 0) != 0) {
+                return -1;
+            }
+            ensure_parent_dirs(output_path);
             (void)platform_remove_file(output_path);
             if (platform_create_symbolic_link(link_target, output_path) != 0) {
                 return -1;
@@ -904,6 +1007,10 @@ static int extract_archive(int archive_fd,
                 }
                 link_path = stripped_link;
             }
+            if (tar_validate_extract_target(output_path, 0) != 0) {
+                return -1;
+            }
+            ensure_parent_dirs(output_path);
             (void)platform_remove_file(output_path);
             if (platform_create_hard_link(link_path, output_path) != 0) {
                 return -1;
@@ -915,10 +1022,15 @@ static int extract_archive(int archive_fd,
         }
 
         {
-            int out_fd = platform_open_write(output_path, 0644U);
+            int out_fd;
             unsigned char data[4096];
             unsigned long long remaining = size;
 
+            if (tar_validate_extract_target(output_path, 0) != 0) {
+                return -1;
+            }
+            ensure_parent_dirs(output_path);
+            out_fd = platform_open_write(output_path, 0644U);
             if (out_fd < 0) {
                 return -1;
             }

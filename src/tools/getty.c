@@ -6,6 +6,7 @@
 #define GETTY_DEFAULT_DELAY_MS 1000ULL
 #define GETTY_DEFAULT_TERM "linux"
 #define GETTY_MAX_LOGIN_NAME 64U
+#define GETTY_SAFE_PATH "/bin:/usr/bin"
 
 static int starts_with(const char *text, const char *prefix) {
     size_t i = 0U;
@@ -22,6 +23,14 @@ static int starts_with(const char *text, const char *prefix) {
 
 static int is_stdio_path(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
+}
+
+static int validate_program_path(const char *path) {
+    if (path == 0 || path[0] != '/') {
+        tool_write_error("getty", "refusing non-absolute program path: ", path != 0 ? path : "(null)");
+        return -1;
+    }
+    return 0;
 }
 
 static void resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size) {
@@ -370,7 +379,9 @@ int main(int argc, char **argv) {
     (void)platform_ignore_signal(2);
     (void)platform_ignore_signal(3);
     (void)platform_ignore_signal(13);
-    if (platform_setenv("TERM", term_name, 1) != 0 || platform_setenv("GETTY_TTY", tty_path, 1) != 0) {
+    if (platform_setenv("PATH", GETTY_SAFE_PATH, 1) != 0 ||
+        platform_setenv("TERM", term_name, 1) != 0 ||
+        platform_setenv("GETTY_TTY", tty_path, 1) != 0) {
         tool_write_error("getty", "failed to initialize session environment", 0);
         return 1;
     }
@@ -407,6 +418,9 @@ int main(int argc, char **argv) {
 
         spawn_argv = (char **)child_argv;
         resolved_program[0] = '\0';
+        if (validate_program_path(spawn_argv[0]) != 0) {
+            return 1;
+        }
         resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));
 
         if (platform_spawn_process((char *const *)spawn_argv,

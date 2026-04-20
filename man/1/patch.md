@@ -22,6 +22,8 @@ patch reads a unified-format diff and applies it to the corresponding source fil
 - validating applicability with `--dry-run`
 - writing patched output to a separate file with `-o`
 - refusing already-applied hunks with a clearer safety error
+- rejecting patch target paths that would escape the current tree via absolute or
+  parent-traversing headers
 
 ## OPTIONS
 

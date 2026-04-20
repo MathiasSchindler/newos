@@ -6,6 +6,7 @@
 #define INIT_USAGE "[-nq] [-r DELAY] [-m COUNT] [-t PATH] [-e NAME=VALUE] [-c COMMAND] [PROGRAM [ARG ...]]"
 #define INIT_MAX_ENV_SETTINGS 16U
 #define INIT_MAX_ENV_NAME_LENGTH 64U
+#define INIT_SAFE_PATH "/bin:/usr/bin"
 
 typedef struct {
     char        name[INIT_MAX_ENV_NAME_LENGTH];
@@ -27,6 +28,14 @@ static int starts_with(const char *text, const char *prefix) {
 
 static int is_stdio_path(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
+}
+
+static int validate_program_path(const char *path) {
+    if (path == 0 || path[0] != '/') {
+        tool_write_error("init", "refusing non-absolute program path: ", path != 0 ? path : "(null)");
+        return -1;
+    }
+    return 0;
 }
 
 static void resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size) {
@@ -254,6 +263,10 @@ int main(int argc, char **argv) {
     (void)platform_ignore_signal(2);
     (void)platform_ignore_signal(3);
     (void)platform_ignore_signal(13);
+    if (platform_setenv("PATH", INIT_SAFE_PATH, 1) != 0) {
+        tool_write_error("init", "failed to set PATH", 0);
+        return 1;
+    }
     if (apply_env_settings(env_settings, env_count) != 0) {
         return 1;
     }
@@ -272,6 +285,9 @@ int main(int argc, char **argv) {
         }
 
         resolved_program[0] = '\0';
+        if (validate_program_path(spawn_argv[0]) != 0) {
+            return 1;
+        }
         resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));
 
         if (platform_spawn_process((char *const *)spawn_argv,

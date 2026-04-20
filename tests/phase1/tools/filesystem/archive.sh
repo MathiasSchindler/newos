@@ -107,6 +107,25 @@ if command -v tar >/dev/null 2>&1; then
     fi
 fi
 
+mkdir -p "$WORK_DIR/tar_escape_src/dir" "$WORK_DIR/tar_escape_outside" "$WORK_DIR/tar_escape_extract"
+printf 'escape-data\n' > "$WORK_DIR/tar_escape_src/dir/file.txt"
+(
+    cd "$WORK_DIR"
+    assert_command_succeeds "$ROOT_DIR/build/tar" -cf symlink_escape.tar tar_escape_src
+)
+ln -s "$WORK_DIR/tar_escape_outside" "$WORK_DIR/tar_escape_extract/tar_escape_src"
+tar_escape_status=0
+(
+    cd "$WORK_DIR/tar_escape_extract"
+    "$ROOT_DIR/build/tar" -xf "$WORK_DIR/symlink_escape.tar"
+) >/dev/null 2>&1 || tar_escape_status=$?
+if [ "$tar_escape_status" -eq 0 ]; then
+    fail "tar should refuse extraction through a pre-existing symlink"
+fi
+if [ -e "$WORK_DIR/tar_escape_outside/dir/file.txt" ]; then
+    fail "tar wrote outside the extraction tree via a symlink"
+fi
+
 printf 'one\n' > "$WORK_DIR/a.txt"
 printf 'two\n' > "$WORK_DIR/b.txt"
 assert_command_succeeds "$ROOT_DIR/build/ar" rc "$WORK_DIR/test.a" "$WORK_DIR/a.txt" "$WORK_DIR/b.txt"

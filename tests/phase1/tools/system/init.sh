@@ -18,3 +18,11 @@ assert_file_contains "$WORK_DIR/init_console.log" '^rescue$' "init --setenv did 
 
 restart_lines=$(grep -c '^rescue$' "$WORK_DIR/init_console.log")
 [ "$restart_lines" -eq 3 ] || fail "init did not run the child the expected number of times with --max-restarts"
+
+mkdir -p "$WORK_DIR/init_fakebin"
+printf '#!/bin/sh\nprintf hijacked\\n\n' > "$WORK_DIR/init_fakebin/true"
+chmod +x "$WORK_DIR/init_fakebin/true"
+init_path_status=0
+PATH="$WORK_DIR/init_fakebin:$PATH" "$ROOT_DIR/build/init" -n -q true >"$WORK_DIR/init_path.out" 2>"$WORK_DIR/init_path.err" || init_path_status=$?
+assert_exit_code "$init_path_status" '1' "init should reject non-absolute program paths"
+assert_file_contains "$WORK_DIR/init_path.err" 'refusing non-absolute program path' "init did not explain the path hardening failure"

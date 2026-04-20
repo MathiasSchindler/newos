@@ -33,6 +33,7 @@ external runtime dependencies.
 - read common GNU/PAX path metadata from archives produced by host tar tools
 - refuse unsafe extraction paths such as absolute names or `..` traversal unless
   `-P` / `--absolute-names` is given
+- refuse to write through pre-existing symlinks in the extraction destination
 
 ## OPTIONS
 

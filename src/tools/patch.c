@@ -90,6 +90,44 @@ static int build_backup_path(const char *path, char *buffer, size_t buffer_size)
     return 0;
 }
 
+static int patch_path_is_unsafe(const char *path) {
+    size_t i = 0U;
+
+    if (path == 0 || path[0] == '\0' || path[0] == '/') {
+        return 1;
+    }
+
+    while (path[i] != '\0') {
+        size_t start;
+        size_t length;
+
+        while (path[i] == '/') {
+            i += 1U;
+        }
+        start = i;
+        while (path[i] != '\0' && path[i] != '/') {
+            i += 1U;
+        }
+        length = i - start;
+        if (length == 2U && path[start] == '.' && path[start + 1U] == '.') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int validate_patch_header_path(const char *path) {
+    if (rt_strcmp(path, "/dev/null") == 0) {
+        return 0;
+    }
+    if (patch_path_is_unsafe(path)) {
+        tool_write_error("patch", "refusing unsafe path in patch: ", path);
+        return -1;
+    }
+    return 0;
+}
+
 static int parse_path_header(const char *text, int strip_components, char *out, size_t out_size) {
     char raw[PATCH_PATH_CAPACITY];
     size_t raw_len = 0;
@@ -490,6 +528,9 @@ int main(int argc, char **argv) {
             tool_write_error("patch", "invalid old file header", 0);
             return 1;
         }
+        if (validate_patch_header_path(old_path) != 0) {
+            return 1;
+        }
         i += 1U;
 
         if (i >= line_count || !starts_with(patch_lines[i], "+++ ")) {
@@ -499,6 +540,9 @@ int main(int argc, char **argv) {
 
         if (parse_path_header(patch_lines[i] + 4, strip_components, new_path, sizeof(new_path)) != 0) {
             tool_write_error("patch", "invalid new file header", 0);
+            return 1;
+        }
+        if (validate_patch_header_path(new_path) != 0) {
             return 1;
         }
         i += 1U;

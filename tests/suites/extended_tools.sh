@@ -62,6 +62,26 @@ assert_file_contains "$WORK_DIR/patch_target.txt" '^beta$' "patch reverse apply 
 )
 assert_file_contains "$WORK_DIR/patch_preview.txt" '^gamma$' "patch -o did not write the patched preview output"
 
+printf 'outside\n' > "$WORK_DIR/outside.txt"
+mkdir -p "$WORK_DIR/patch_guard"
+cat > "$WORK_DIR/unsafe.patch" <<'EOF'
+--- a/../outside.txt
++++ b/../outside.txt
+@@ -1 +1 @@
+-outside
++owned
+EOF
+patch_unsafe_status=0
+(
+    cd "$WORK_DIR/patch_guard"
+    "$ROOT_DIR/build/patch" -p1 -i "$WORK_DIR/unsafe.patch"
+) > "$WORK_DIR/patch_unsafe.out" 2>&1 || patch_unsafe_status=$?
+if [ "$patch_unsafe_status" -eq 0 ]; then
+    fail "patch should refuse a parent-traversing target path"
+fi
+assert_file_contains "$WORK_DIR/patch_unsafe.out" 'refusing unsafe path' "patch did not explain the unsafe-path refusal"
+assert_file_contains "$WORK_DIR/outside.txt" '^outside$' "patch modified a file outside the working tree"
+
 printf 'alpha\nbeta\nGamma\n' > "$WORK_DIR/pager.txt"
 "$ROOT_DIR/build/less" -N -p gamma "$WORK_DIR/pager.txt" > "$WORK_DIR/less_search.out"
 assert_file_contains "$WORK_DIR/less_search.out" '^3[[:space:]][[:space:]]*Gamma$' "less -p did not jump to the requested match"

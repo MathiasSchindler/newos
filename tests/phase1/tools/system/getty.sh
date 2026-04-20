@@ -31,3 +31,11 @@ printf 'Custom issue banner\n' > "$WORK_DIR/issue.txt"
 : > "$WORK_DIR/getty_tty.log"
 assert_command_succeeds "$ROOT_DIR/build/getty" -n -q --issue-file "$WORK_DIR/issue.txt" "$WORK_DIR/getty_tty.log" "$ROOT_DIR/build/true"
 assert_file_contains "$WORK_DIR/getty_tty.log" 'Custom issue banner' "getty did not write the custom issue file to the tty path"
+
+mkdir -p "$WORK_DIR/getty_fakebin"
+printf '#!/bin/sh\nprintf hijacked\\n\n' > "$WORK_DIR/getty_fakebin/true"
+chmod +x "$WORK_DIR/getty_fakebin/true"
+getty_path_status=0
+PATH="$WORK_DIR/getty_fakebin:$PATH" "$ROOT_DIR/build/getty" -n -q -i /dev/null true >"$WORK_DIR/getty_path.out" 2>"$WORK_DIR/getty_path.err" || getty_path_status=$?
+assert_exit_code "$getty_path_status" '1' "getty should reject non-absolute program paths"
+assert_file_contains "$WORK_DIR/getty_path.err" 'refusing non-absolute program path' "getty did not explain the path hardening failure"
