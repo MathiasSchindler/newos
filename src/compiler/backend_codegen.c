@@ -989,7 +989,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             char type_text[128];
             char name[COMPILER_IR_NAME_CAPACITY];
             int has_global_linkage;
-            int global_index;
+            int global_index = -1;
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
             has_global_linkage = names_equal(storage, "global");
