@@ -487,14 +487,14 @@ static int write_spaces(unsigned int count) {
     return 0;
 }
 
-static int write_text_cell(const char *text, unsigned int width, int is_last) {
+static int write_text_cell(const char *text, unsigned int width, int is_last, int compact_output) {
     size_t len = rt_strlen(text);
 
     if (rt_write_cstr(1, text) != 0) {
         return -1;
     }
     if (!is_last) {
-        if (width > len && write_spaces(width - (unsigned int)len) != 0) {
+        if (!compact_output && width > len && write_spaces(width - (unsigned int)len) != 0) {
             return -1;
         }
         if (rt_write_char(1, ' ') != 0) {
@@ -504,29 +504,29 @@ static int write_text_cell(const char *text, unsigned int width, int is_last) {
     return 0;
 }
 
-static int write_entry_field(const PlatformProcessEntry *entry, PsField field, int is_last) {
+static int write_entry_field(const PlatformProcessEntry *entry, PsField field, int is_last, int compact_output) {
     char number_buffer[32];
 
     switch (field) {
         case PS_FIELD_PID:
             rt_unsigned_to_string((unsigned long long)entry->pid, number_buffer, sizeof(number_buffer));
-            return write_text_cell(number_buffer, field_width(field), is_last);
+            return write_text_cell(number_buffer, field_width(field), is_last, compact_output);
         case PS_FIELD_PPID:
             rt_unsigned_to_string((unsigned long long)entry->ppid, number_buffer, sizeof(number_buffer));
-            return write_text_cell(number_buffer, field_width(field), is_last);
+            return write_text_cell(number_buffer, field_width(field), is_last, compact_output);
         case PS_FIELD_UID:
             rt_unsigned_to_string((unsigned long long)entry->uid, number_buffer, sizeof(number_buffer));
-            return write_text_cell(number_buffer, field_width(field), is_last);
+            return write_text_cell(number_buffer, field_width(field), is_last, compact_output);
         case PS_FIELD_USER:
-            return write_text_cell(entry->user[0] != '\0' ? entry->user : "?", field_width(field), is_last);
+            return write_text_cell(entry->user[0] != '\0' ? entry->user : "?", field_width(field), is_last, compact_output);
         case PS_FIELD_STAT:
-            return write_text_cell(entry->state[0] != '\0' ? entry->state : "?", field_width(field), is_last);
+            return write_text_cell(entry->state[0] != '\0' ? entry->state : "?", field_width(field), is_last, compact_output);
         case PS_FIELD_RSS:
             rt_unsigned_to_string(entry->rss_kb, number_buffer, sizeof(number_buffer));
-            return write_text_cell(number_buffer, field_width(field), is_last);
+            return write_text_cell(number_buffer, field_width(field), is_last, compact_output);
         case PS_FIELD_COMMAND:
         default:
-            return write_text_cell(entry->name[0] != '\0' ? entry->name : "?", 0U, is_last);
+            return write_text_cell(entry->name[0] != '\0' ? entry->name : "?", 0U, is_last, compact_output);
     }
 }
 
@@ -565,6 +565,7 @@ int main(int argc, char **argv) {
     size_t i;
     PsSortKey sort_key = PS_SORT_PID;
     int reverse_sort = 0;
+    int compact_output = 0;
 
     columns[column_count].field = PS_FIELD_PID;
     rt_copy_string(columns[column_count++].header, PS_HEADER_CAPACITY, field_header(PS_FIELD_PID));
@@ -688,6 +689,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
+            compact_output = 1;
             continue;
         }
 
@@ -713,7 +715,7 @@ int main(int argc, char **argv) {
 
         if (has_visible_header) {
             for (i = 0; i < column_count; ++i) {
-                if (write_text_cell(columns[i].header, field_width(columns[i].field), i + 1 == column_count) != 0) {
+                if (write_text_cell(columns[i].header, field_width(columns[i].field), i + 1 == column_count, compact_output) != 0) {
                     return 1;
                 }
             }
@@ -733,7 +735,7 @@ int main(int argc, char **argv) {
         }
 
         for (j = 0; j < column_count; ++j) {
-            if (write_entry_field(&entries[i], columns[j].field, j + 1 == column_count) != 0) {
+            if (write_entry_field(&entries[i], columns[j].field, j + 1 == column_count, compact_output) != 0) {
                 return 1;
             }
         }
