@@ -553,6 +553,16 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
     return 0;
 }
 
+static void write_preprocessor_error(const char *program_name, const CompilerPreprocessor *preprocessor) {
+    rt_write_cstr(2, program_name);
+    rt_write_cstr(2, ": ");
+    rt_write_cstr(2, compiler_preprocessor_error_path(preprocessor));
+    rt_write_char(2, ':');
+    rt_write_uint(2, compiler_preprocessor_error_line(preprocessor));
+    rt_write_cstr(2, ": ");
+    rt_write_line(2, compiler_preprocessor_error_message(preprocessor));
+}
+
 static int configure_preprocessor(CompilerPreprocessor *preprocessor, const CompilerOptions *options) {
     size_t i;
 
@@ -606,13 +616,7 @@ static int emit_preprocessed_output(const CompilerOptions *options) {
         if (should_close) {
             (void)platform_close(out_fd);
         }
-        rt_write_cstr(2, options->program_name);
-        rt_write_cstr(2, ": ");
-        rt_write_cstr(2, compiler_preprocessor_error_path(&preprocessor));
-        rt_write_char(2, ':');
-        rt_write_uint(2, compiler_preprocessor_error_line(&preprocessor));
-        rt_write_cstr(2, ": ");
-        rt_write_line(2, compiler_preprocessor_error_message(&preprocessor));
+        write_preprocessor_error(options->program_name, &preprocessor);
         return 1;
     }
 
@@ -715,13 +719,7 @@ static int dump_tokens(const CompilerOptions *options) {
         if (should_close) {
             (void)platform_close(out_fd);
         }
-        rt_write_cstr(2, options->program_name);
-        rt_write_cstr(2, ": ");
-        rt_write_cstr(2, compiler_preprocessor_error_path(&preprocessor));
-        rt_write_char(2, ':');
-        rt_write_uint(2, compiler_preprocessor_error_line(&preprocessor));
-        rt_write_cstr(2, ": ");
-        rt_write_line(2, compiler_preprocessor_error_message(&preprocessor));
+        write_preprocessor_error(options->program_name, &preprocessor);
         return 1;
     }
 
@@ -798,13 +796,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         if (should_close) {
             (void)platform_close(out_fd);
         }
-        rt_write_cstr(2, options->program_name);
-        rt_write_cstr(2, ": ");
-        rt_write_cstr(2, compiler_preprocessor_error_path(&preprocessor));
-        rt_write_char(2, ':');
-        rt_write_uint(2, compiler_preprocessor_error_line(&preprocessor));
-        rt_write_cstr(2, ": ");
-        rt_write_line(2, compiler_preprocessor_error_message(&preprocessor));
+        write_preprocessor_error(options->program_name, &preprocessor);
         return 1;
     }
 

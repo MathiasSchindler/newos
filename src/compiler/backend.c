@@ -742,23 +742,7 @@ static const char *x86_reg32_name(const char *reg) {
 }
 
 static int scalar_type_access_size(const char *type_text, int word_index) {
-    const char *type = skip_spaces(type_text != 0 ? type_text : "");
-    int is_unsigned = text_contains(type, "unsigned");
-
-    if (type[0] == '\0') {
-        return word_index ? 0 : -1;
-    }
-    if (text_contains(type, "char") && !text_contains(type, "*") &&
-        !starts_with(type, "struct") && !starts_with(type, "union") && !starts_with(type, "enum")) {
-        return is_unsigned ? 1 : -1;
-    }
-    if (text_contains(type, "short") && !text_contains(type, "*")) {
-        return is_unsigned ? 2 : -2;
-    }
-    if ((text_contains(type, "int") || starts_with(type, "enum")) && !text_contains(type, "*")) {
-        return is_unsigned ? 4 : -4;
-    }
-    return 0;
+    return backend_type_access_size(type_text, word_index);
 }
 
 int emit_load_from_address_into_register(BackendState *state, const char *address_reg, const char *dst_reg, int byte_value) {

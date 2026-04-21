@@ -1454,24 +1454,23 @@ static void ir_remove_unreachable_after_terminator(CompilerIr *ir, size_t index)
     }
 }
 
-static int ir_extract_store_parts(const char *line, char *name, size_t name_size, const char **expr_out) {
-    const char *cursor = line + 6;
+static int ir_extract_name_after_prefix(const char *cursor, char *name, size_t name_size, const char *separator, const char **expr_out) {
     const char *name_end = cursor;
-
-    while ((*name_end >= 'a' && *name_end <= 'z') ||
-           (*name_end >= 'A' && *name_end <= 'Z') ||
-           (*name_end >= '0' && *name_end <= '9') ||
-           *name_end == '_') {
+    while (ir_is_identifier_char(*name_end)) {
         name_end += 1;
     }
     if (ir_copy_identifier(name, name_size, cursor, name_end) != 0) {
         return -1;
     }
-    if (!ir_starts_with(name_end, " <- ")) {
+    if (!ir_starts_with(name_end, separator)) {
         return -1;
     }
-    *expr_out = name_end + 4;
+    *expr_out = name_end + rt_strlen(separator);
     return 0;
+}
+
+static int ir_extract_store_parts(const char *line, char *name, size_t name_size, const char **expr_out) {
+    return ir_extract_name_after_prefix(line + 6, name, name_size, " <- ", expr_out);
 }
 
 static int ir_extract_branch_parts(const char *line, char *label, size_t label_size, char *expr, size_t expr_size) {
@@ -1499,23 +1498,7 @@ static int ir_extract_jump_target(const char *line, char *label, size_t label_si
 }
 
 static int ir_extract_const_parts(const char *line, char *name, size_t name_size, const char **expr_out) {
-    const char *cursor = line + 6;
-    const char *name_end = cursor;
-
-    while ((*name_end >= 'a' && *name_end <= 'z') ||
-           (*name_end >= 'A' && *name_end <= 'Z') ||
-           (*name_end >= '0' && *name_end <= '9') ||
-           *name_end == '_') {
-        name_end += 1;
-    }
-    if (ir_copy_identifier(name, name_size, cursor, name_end) != 0) {
-        return -1;
-    }
-    if (!ir_starts_with(name_end, " = ")) {
-        return -1;
-    }
-    *expr_out = name_end + 3;
-    return 0;
+    return ir_extract_name_after_prefix(line + 6, name, name_size, " = ", expr_out);
 }
 
 static int ir_extract_assignment_parts(const char *expr, char *name, size_t name_size, char *op, size_t op_size, const char **rhs_out) {
@@ -1967,14 +1950,7 @@ int compiler_ir_emit_function_end(CompilerIr *ir, const char *name) {
 
 int compiler_ir_emit_constant(CompilerIr *ir, const char *name, long long value) {
     char number_text[32];
-
-    if (value < 0) {
-        number_text[0] = '-';
-        rt_unsigned_to_string((unsigned long long)(-value), number_text + 1, sizeof(number_text) - 1);
-    } else {
-        rt_unsigned_to_string((unsigned long long)value, number_text, sizeof(number_text));
-    }
-
+    ir_format_signed_value(value, number_text, sizeof(number_text));
     return emit_line(ir, "const ", name, " = ", number_text);
 }
 

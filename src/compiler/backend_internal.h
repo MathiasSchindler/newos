@@ -185,6 +185,20 @@ int emit_move_value_register(BackendState *state, const char *dst_reg);
 int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value);
 int emit_pop_address_and_store(BackendState *state, int byte_value);
 int backend_type_access_size(const char *type_text, int word_index);
+char backend_decode_escaped_char(const char **cursor_inout);
+int backend_member_prefers_word_index(const char *name, const char *type_text);
+int backend_member_result_decays_to_address(const char *type_text);
+int backend_member_byte_offset(const BackendState *state, const char *base_type, const char *member_name);
+void backend_copy_member_result_type(const BackendState *state,
+                                     const char *base_type,
+                                     const char *member_name,
+                                     char *buffer,
+                                     size_t buffer_size);
+int backend_type_is_pointer_like(const char *base_type);
+void backend_copy_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size);
+void backend_copy_dereferenced_type_text(const char *base_type, char *buffer, size_t buffer_size);
+long long backend_type_storage_bytes(const BackendState *state, const char *type_text);
+int backend_array_index_scale(const BackendState *state, const char *base_type, int word_index);
 int find_string_literal(const BackendState *state, const char *text);
 int add_string_literal(BackendState *state, const char *text);
 int emit_address_of_name(BackendState *state, const char *name);

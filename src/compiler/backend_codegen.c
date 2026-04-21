@@ -4,71 +4,6 @@
 
 #include <limits.h>
 
-static int hex_digit_value(char ch) {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
-    if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
-    return -1;
-}
-
-static char decode_escaped_char(const char **cursor_inout) {
-    const char *cursor = *cursor_inout;
-    unsigned int value = 0U;
-    int digits = 0;
-    int hex = 0;
-
-    if (*cursor == 'n') {
-        *cursor_inout = cursor + 1;
-        return '\n';
-    }
-    if (*cursor == 't') {
-        *cursor_inout = cursor + 1;
-        return '\t';
-    }
-    if (*cursor == 'r') {
-        *cursor_inout = cursor + 1;
-        return '\r';
-    }
-    if (*cursor == 'v') {
-        *cursor_inout = cursor + 1;
-        return '\v';
-    }
-    if (*cursor == 'f') {
-        *cursor_inout = cursor + 1;
-        return '\f';
-    }
-    if (*cursor == 'a') {
-        *cursor_inout = cursor + 1;
-        return '\a';
-    }
-    if (*cursor == 'b') {
-        *cursor_inout = cursor + 1;
-        return '\b';
-    }
-    if (*cursor == 'x' || *cursor == 'X') {
-        cursor += 1;
-        while ((hex = hex_digit_value(*cursor)) >= 0) {
-            value = (value * 16U) + (unsigned int)hex;
-            cursor += 1;
-            digits += 1;
-        }
-        *cursor_inout = cursor;
-        return digits > 0 ? (char)(unsigned char)value : 'x';
-    }
-    if (*cursor >= '0' && *cursor <= '7') {
-        while (digits < 3 && *cursor >= '0' && *cursor <= '7') {
-            value = (value * 8U) + (unsigned int)(*cursor - '0');
-            cursor += 1;
-            digits += 1;
-        }
-        *cursor_inout = cursor;
-        return (char)(unsigned char)value;
-    }
-
-    *cursor_inout = cursor + (*cursor != '\0' ? 1 : 0);
-    return *cursor;
-}
-
 static int parse_decl_line(const char *line,
                            char *storage,
                            size_t storage_size,
@@ -291,7 +226,7 @@ static void global_init_next(GlobalInitParser *parser) {
         while (*cursor != '\0' && *cursor != quote && length + 1 < sizeof(parser->text)) {
             if (*cursor == '\\' && cursor[1] != '\0') {
                 cursor += 1;
-                parser->text[length++] = decode_escaped_char(&cursor);
+                parser->text[length++] = backend_decode_escaped_char(&cursor);
                 continue;
             }
             parser->text[length++] = *cursor++;
@@ -390,71 +325,19 @@ static void copy_aggregate_name_from_type_text(const char *type_text, char *buff
 }
 
 static void copy_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size) {
-    size_t i = 0;
-    size_t out = 0;
-    const char *suffix = 0;
-
-    if (buffer_size == 0) {
-        return;
-    }
-    if (base_type == 0) {
-        buffer[0] = '\0';
-        return;
-    }
-    while (base_type[i] != '\0' && base_type[i] != '[' && out + 1 < buffer_size) {
-        buffer[out++] = base_type[i++];
-    }
-    while (base_type[i] != '\0' && base_type[i] != ']') {
-        i += 1U;
-    }
-    if (base_type[i] == ']') {
-        suffix = base_type + i + 1U;
-    }
-    while (out > 0U && buffer[out - 1U] == ' ') {
-        out -= 1U;
-    }
-    buffer[out] = '\0';
-    if (suffix != 0 && suffix[0] != '\0') {
-        rt_copy_string(buffer + out, buffer_size - out, suffix);
-    }
+    backend_copy_indexed_type_text(base_type, buffer, buffer_size);
 }
 
 static int global_type_storage_bytes(const BackendState *state, const char *type_text) {
-    const char *type = skip_spaces(type_text != 0 ? type_text : "");
-    unsigned long long length = 0ULL;
-    char element_type[128];
-    int aggregate_size;
-    int element_size;
+    long long size = backend_type_storage_bytes(state, type_text);
 
-    if (type[0] == '\0') {
+    if (size <= 0) {
         return backend_stack_slot_size(state);
     }
-    if (text_contains(type, "[")) {
-        copy_indexed_type_text(type, element_type, sizeof(element_type));
-        if (parse_array_length_text(type, &length) != 0 || length == 0ULL) {
-            length = 1ULL;
-        }
-        element_size = global_type_storage_bytes(state, element_type);
-        return (int)clamp_array_product(length,
-                                        (unsigned long long)(element_size > 0 ? element_size : 1),
-                                        (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES);
+    if ((unsigned long long)size > (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES) {
+        return BACKEND_MAX_OBJECT_STACK_BYTES;
     }
-    if (text_contains(type, "*")) {
-        return backend_stack_slot_size(state);
-    }
-    if (starts_with(type, "struct:") || starts_with(type, "union:")) {
-        aggregate_size = lookup_aggregate_size(state, type);
-        if (aggregate_size > 0) {
-            return aggregate_size;
-        }
-        return BACKEND_STRUCT_STACK_BYTES;
-    }
-    if (text_contains(type, "char")) return 1;
-    if (text_contains(type, "short")) return 2;
-    if (text_contains(type, "__int128")) return 16;
-    if (text_contains(type, "long") || text_contains(type, "double")) return 8;
-    if (starts_with(type, "enum") || text_contains(type, "int")) return 4;
-    return backend_stack_slot_size(state);
+    return (int)size;
 }
 
 static int emit_zero_fill(BackendState *state, unsigned long long size) {
@@ -499,12 +382,13 @@ static int emit_data_symbol_ref(BackendState *state, const char *symbol_text) {
 
 static int emit_char_array_contents(BackendState *state, const char *text, unsigned long long total_size) {
     unsigned long long i;
+    size_t text_length = text != 0 ? rt_strlen(text) : 0U;
 
     for (i = 0; i < total_size; ++i) {
         unsigned char value = 0;
-        if (text != 0 && i < (unsigned long long)rt_strlen(text)) {
+        if (text != 0 && i < (unsigned long long)text_length) {
             value = (unsigned char)text[i];
-        } else if (text != 0 && i == (unsigned long long)rt_strlen(text)) {
+        } else if (text != 0 && i == (unsigned long long)text_length) {
             value = 0;
         }
         if (emit_data_integer(state, 1, (long long)value) != 0) {
@@ -906,7 +790,7 @@ static unsigned long long count_string_initializer_bytes(const char *expr) {
     while (*cursor != '\0' && *cursor != '"') {
         if (*cursor == '\\') {
             cursor += 1;
-            (void)decode_escaped_char(&cursor);
+            (void)backend_decode_escaped_char(&cursor);
         } else {
             cursor += 1;
         }

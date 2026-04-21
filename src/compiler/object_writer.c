@@ -545,29 +545,30 @@ static int parse_immediate_operand(const char *text, long long *value_out) {
     return parse_signed_value(buffer, value_out);
 }
 
-static int encode_mov_mem_reg(ObjectAssembler *assembler, int base_reg, int disp, int dst_reg) {
-    if (append_rex(assembler, 1, dst_reg, 0, base_reg) != 0 ||
-        append_byte(assembler, OBJECT_SECTION_TEXT, 0x8BU) != 0) {
-        return -1;
-    }
-
+static int append_mem_disp(ObjectAssembler *assembler, unsigned int reg, int base_reg, int disp) {
     if (disp == 0 && base_reg != 5) {
-        return append_mem_modrm(assembler, 0U, (unsigned int)dst_reg, base_reg);
+        return append_mem_modrm(assembler, 0U, reg, base_reg);
     }
-
     if (disp >= -128 && disp <= 127) {
-        if (append_mem_modrm(assembler, 1U, (unsigned int)dst_reg, base_reg) != 0 ||
+        if (append_mem_modrm(assembler, 1U, reg, base_reg) != 0 ||
             append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
             return -1;
         }
         return 0;
     }
-
-    if (append_mem_modrm(assembler, 2U, (unsigned int)dst_reg, base_reg) != 0 ||
+    if (append_mem_modrm(assembler, 2U, reg, base_reg) != 0 ||
         append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
         return -1;
     }
     return 0;
+}
+
+static int encode_mov_mem_reg(ObjectAssembler *assembler, int base_reg, int disp, int dst_reg) {
+    if (append_rex(assembler, 1, dst_reg, 0, base_reg) != 0 ||
+        append_byte(assembler, OBJECT_SECTION_TEXT, 0x8BU) != 0) {
+        return -1;
+    }
+    return append_mem_disp(assembler, (unsigned int)dst_reg, base_reg, disp);
 }
 
 static int encode_mov_reg_mem(ObjectAssembler *assembler, int src_reg, int base_reg, int disp) {
@@ -575,24 +576,7 @@ static int encode_mov_reg_mem(ObjectAssembler *assembler, int src_reg, int base_
         append_byte(assembler, OBJECT_SECTION_TEXT, 0x89U) != 0) {
         return -1;
     }
-
-    if (disp == 0 && base_reg != 5) {
-        return append_mem_modrm(assembler, 0U, (unsigned int)src_reg, base_reg);
-    }
-
-    if (disp >= -128 && disp <= 127) {
-        if (append_mem_modrm(assembler, 1U, (unsigned int)src_reg, base_reg) != 0 ||
-            append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
-            return -1;
-        }
-        return 0;
-    }
-
-    if (append_mem_modrm(assembler, 2U, (unsigned int)src_reg, base_reg) != 0 ||
-        append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
-        return -1;
-    }
-    return 0;
+    return append_mem_disp(assembler, (unsigned int)src_reg, base_reg, disp);
 }
 
 static int encode_movzx_mem_reg(ObjectAssembler *assembler, int base_reg, int disp, int dst_reg) {
@@ -601,24 +585,7 @@ static int encode_movzx_mem_reg(ObjectAssembler *assembler, int base_reg, int di
         append_byte(assembler, OBJECT_SECTION_TEXT, 0xB6U) != 0) {
         return -1;
     }
-
-    if (disp == 0 && base_reg != 5) {
-        return append_mem_modrm(assembler, 0U, (unsigned int)dst_reg, base_reg);
-    }
-
-    if (disp >= -128 && disp <= 127) {
-        if (append_mem_modrm(assembler, 1U, (unsigned int)dst_reg, base_reg) != 0 ||
-            append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
-            return -1;
-        }
-        return 0;
-    }
-
-    if (append_mem_modrm(assembler, 2U, (unsigned int)dst_reg, base_reg) != 0 ||
-        append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
-        return -1;
-    }
-    return 0;
+    return append_mem_disp(assembler, (unsigned int)dst_reg, base_reg, disp);
 }
 
 static int encode_mov_reg_mem_byte(ObjectAssembler *assembler, int src_reg, int base_reg, int disp) {
@@ -626,24 +593,7 @@ static int encode_mov_reg_mem_byte(ObjectAssembler *assembler, int src_reg, int 
         append_byte(assembler, OBJECT_SECTION_TEXT, 0x88U) != 0) {
         return -1;
     }
-
-    if (disp == 0 && base_reg != 5) {
-        return append_mem_modrm(assembler, 0U, (unsigned int)src_reg, base_reg);
-    }
-
-    if (disp >= -128 && disp <= 127) {
-        if (append_mem_modrm(assembler, 1U, (unsigned int)src_reg, base_reg) != 0 ||
-            append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)disp)) != 0) {
-            return -1;
-        }
-        return 0;
-    }
-
-    if (append_mem_modrm(assembler, 2U, (unsigned int)src_reg, base_reg) != 0 ||
-        append_u32(assembler, OBJECT_SECTION_TEXT, (uint32_t)(int32_t)disp) != 0) {
-        return -1;
-    }
-    return 0;
+    return append_mem_disp(assembler, (unsigned int)src_reg, base_reg, disp);
 }
 
 static int parse_indexed_mem(const char *operand, int *base_reg_out, int *index_reg_out, int *scale_out) {

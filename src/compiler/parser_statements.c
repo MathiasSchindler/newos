@@ -404,6 +404,7 @@ for_cleanup:
 
 int parse_compound_statement(CompilerParser *parser) {
     int entered_function_scope = 0;
+    int status = 0;
     size_t i;
 
     if (expect_punct(parser, "{") != 0) {
@@ -427,14 +428,12 @@ int parse_compound_statement(CompilerParser *parser) {
                     &parser->pending_parameter_types[i],
                     1
                 ) != 0) {
-                compiler_semantic_end_function(&parser->semantic);
-                compiler_semantic_exit_scope(&parser->semantic);
-                return semantic_error(parser);
+                status = semantic_error(parser);
+                goto compound_exit;
             }
             if (emit_ir_status(parser, compiler_ir_emit_decl(&parser->ir, "param", 0, &parser->pending_parameter_types[i], parser->pending_parameter_names[i])) != 0) {
-                compiler_semantic_end_function(&parser->semantic);
-                compiler_semantic_exit_scope(&parser->semantic);
-                return -1;
+                status = -1;
+                goto compound_exit;
             }
         }
         parser->pending_parameter_count = 0;
@@ -443,40 +442,36 @@ int parse_compound_statement(CompilerParser *parser) {
     while (!current_is_punct(parser, "}") && parser->current.kind != COMPILER_TOKEN_EOF) {
         if (looks_like_declaration(parser)) {
             if (parse_declaration_or_function(parser, 0, 0) != 0) {
-                if (entered_function_scope) {
-                    compiler_semantic_end_function(&parser->semantic);
-                }
-                compiler_semantic_exit_scope(&parser->semantic);
-                return -1;
+                status = -1;
+                goto compound_exit;
             }
         } else if (parse_statement(parser) != 0) {
-            if (entered_function_scope) {
-                compiler_semantic_end_function(&parser->semantic);
-            }
-            compiler_semantic_exit_scope(&parser->semantic);
-            return -1;
+            status = -1;
+            goto compound_exit;
         }
     }
 
     if (expect_punct(parser, "}") != 0) {
-        if (entered_function_scope) {
-            compiler_semantic_end_function(&parser->semantic);
-        }
-        compiler_semantic_exit_scope(&parser->semantic);
-        return -1;
+        status = -1;
+        goto compound_exit;
     }
 
     if (entered_function_scope) {
         if (emit_ir_status(parser, compiler_ir_emit_function_end(&parser->ir, parser->pending_function_name)) != 0) {
-            compiler_semantic_end_function(&parser->semantic);
-            compiler_semantic_exit_scope(&parser->semantic);
-            return -1;
+            status = -1;
+            goto compound_exit;
         }
         compiler_semantic_end_function(&parser->semantic);
         parser->pending_function_name[0] = '\0';
+        entered_function_scope = 0;
+    }
+
+compound_exit:
+    if (entered_function_scope) {
+        compiler_semantic_end_function(&parser->semantic);
     }
     compiler_semantic_exit_scope(&parser->semantic);
-    return 0;
+    return status;
 }
 
 void compiler_parser_init(CompilerParser *parser, const CompilerSource *source, int dump_ast, int dump_ir, int output_fd) {

@@ -241,6 +241,21 @@ static int parse_cast_expression(CompilerParser *parser) {
     return parse_unary_expression(parser);
 }
 
+static int parse_level_operand(CompilerParser *parser, int level) {
+    switch (level) {
+        case 0: return parse_cast_expression(parser);
+        case 1: return parse_multiplicative_expression(parser);
+        case 2: return parse_additive_expression(parser);
+        case 3: return parse_shift_expression(parser);
+        case 4: return parse_relational_expression(parser);
+        case 5: return parse_equality_expression(parser);
+        case 6: return parse_bitand_expression(parser);
+        case 7: return parse_bitxor_expression(parser);
+        case 8: return parse_bitor_expression(parser);
+        default: return parse_logical_and_expression(parser);
+    }
+}
+
 static int current_matches_binary_level(const CompilerParser *parser, int level) {
     switch (level) {
         case 0:
@@ -269,114 +284,16 @@ static int current_matches_binary_level(const CompilerParser *parser, int level)
 }
 
 static int parse_binary_chain(CompilerParser *parser, int level) {
-    switch (level) {
-        case 0:
-            if (parse_cast_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 1:
-            if (parse_multiplicative_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 2:
-            if (parse_additive_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 3:
-            if (parse_shift_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 4:
-            if (parse_relational_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 5:
-            if (parse_equality_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 6:
-            if (parse_bitand_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 7:
-            if (parse_bitxor_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        case 8:
-            if (parse_bitor_expression(parser) != 0) {
-                return -1;
-            }
-            break;
-        default:
-            if (parse_logical_and_expression(parser) != 0) {
-                return -1;
-            }
-            break;
+    if (parse_level_operand(parser, level) != 0) {
+        return -1;
     }
 
     while (current_matches_binary_level(parser, level)) {
         if (advance(parser) != 0) {
             return -1;
         }
-        switch (level) {
-            case 0:
-                if (parse_cast_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 1:
-                if (parse_multiplicative_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 2:
-                if (parse_additive_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 3:
-                if (parse_shift_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 4:
-                if (parse_relational_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 5:
-                if (parse_equality_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 6:
-                if (parse_bitand_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 7:
-                if (parse_bitxor_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            case 8:
-                if (parse_bitor_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
-            default:
-                if (parse_logical_and_expression(parser) != 0) {
-                    return -1;
-                }
-                break;
+        if (parse_level_operand(parser, level) != 0) {
+            return -1;
         }
     }
 

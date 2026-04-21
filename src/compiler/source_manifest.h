@@ -29,6 +29,7 @@
 
 #define FOREACH_COMPILER_SOURCE(X) \
     X("src/compiler/backend.c") \
+    X("src/compiler/backend_types.c") \
     X("src/compiler/backend_expressions.c") \
     X("src/compiler/backend_codegen.c") \
     X("src/compiler/driver.c") \
