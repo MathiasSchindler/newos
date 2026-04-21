@@ -11,11 +11,12 @@ TARGET_CC := $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/
 endif
 HOST_OS := $(shell uname -s 2>/dev/null || echo unknown)
 HOST_ARCH := $(shell uname -m 2>/dev/null || echo unknown)
+COMMA := ,
 TARGET_ARCH ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_64,$(HOST_ARCH)),x86_64,aarch64),aarch64)
 TARGET_ARCH_DIR := src/arch/$(TARGET_ARCH)/linux
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -I$(TARGET_ARCH_DIR)
 HOST_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
-HOST_GC_LDFLAGS ?= -Wl,--gc-sections
+HOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(COMMA)--gc-sections)
 FREESTANDING_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS)
 FREESTANDING_DEBUG ?= 0
@@ -29,7 +30,7 @@ else
 FREESTANDING_STRIP_LDFLAGS ?= -Wl,-s
 endif
 SELFHOST_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
-SELFHOST_GC_LDFLAGS ?= -Wl,--gc-sections
+SELFHOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(COMMA)--gc-sections)
 SELFHOST_STRIP_LDFLAGS ?= -Wl,-s
 SELFHOST_SIZE_FLAGS ?= $(SELFHOST_SECTION_CFLAGS) $(SELFHOST_GC_LDFLAGS) $(SELFHOST_STRIP_LDFLAGS)
 TARGET_LDFLAGS ?= -nostdlib -static $(TARGET_LINKER_FLAG) $(FREESTANDING_GC_LDFLAGS) $(FREESTANDING_STRIP_LDFLAGS) $(TARGET_BUILTINS_LIB)
@@ -155,7 +156,7 @@ $(TARGET_BUILD_DIR)/ping6: $(TARGET_BUILD_DIR)/ping | $(TARGET_BUILD_DIR)
 	rm -f $@ && ln -sfn ping $@
 
 $(BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
+	mkdir -p $(dir $@) && $(CC) $(CFLAGS) $(HOST_SECTION_CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@
 
 $(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CORE_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -fsyntax-only $(SSH_CORE_SOURCES) && : > $@

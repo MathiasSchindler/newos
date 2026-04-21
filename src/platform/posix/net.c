@@ -950,6 +950,24 @@ static void posix_parse_route_destination(const char *token, int family, const c
     rt_copy_string(entry->destination, sizeof(entry->destination), destination);
 }
 
+static FILE *posix_open_netstat_pipe(const char *family) {
+    const char *selected_family = "inet";
+    char command[64];
+    int written;
+
+    if (family != NULL && rt_strcmp(family, "inet6") == 0) {
+        selected_family = "inet6";
+    }
+
+    written = snprintf(command, sizeof(command), "netstat -rn -f %s 2>/dev/null", selected_family);
+    if (written < 0 || (size_t)written >= sizeof(command)) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    return popen(command, "r");
+}
+
 static int posix_parse_netstat_routes(
     FILE *file,
     int family,
