@@ -490,6 +490,8 @@ For example, an HTTP daemon instance should live under:
 - `services/httpd/config/` for daemon and supervisor config files
 - `services/httpd/log/` for instance-local logs
 
+Only deliberately public assets should live under `www-root/`. Configuration, pidfiles, logs, and any privilege-drop settings should remain outside that tree and must not be published from it.
+
 The same pattern should apply to future daemons:
 
 - `services/sshd/`
@@ -529,7 +531,7 @@ A realistic first version can own:
 - signal-based shutdown
 - basic crash backoff
 - log redirection
-- privilege-drop hooks once the identity substrate exists
+- privilege-drop configuration through service-managed user and group settings
 
 ### Explicitly deferred features
 

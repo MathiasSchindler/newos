@@ -3,8 +3,6 @@
 #include "platform.h"
 #include "runtime.h"
 
-#include <errno.h>
-
 int service_read_pidfile(const char *path, int *pid_out) {
     char buffer[64];
     int fd;
@@ -12,7 +10,6 @@ int service_read_pidfile(const char *path, int *pid_out) {
     int pid;
 
     if (path == NULL || pid_out == NULL) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -24,7 +21,6 @@ int service_read_pidfile(const char *path, int *pid_out) {
     bytes = platform_read(fd, buffer, sizeof(buffer) - 1U);
     (void)platform_close(fd);
     if (bytes <= 0) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -32,7 +28,6 @@ int service_read_pidfile(const char *path, int *pid_out) {
     rt_trim_newline(buffer);
     pid = rt_parse_pid_value(buffer);
     if (pid <= 0) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -45,7 +40,6 @@ int service_write_pidfile(const char *path, int pid) {
     int fd;
 
     if (path == NULL || pid <= 0) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -65,8 +59,8 @@ int service_remove_pidfile(const char *path) {
     if (path == NULL || path[0] == '\0') {
         return 0;
     }
-    if (platform_remove_file(path) != 0 && errno != ENOENT) {
-        return -1;
+    if (platform_remove_file(path) != 0) {
+        return 0;
     }
     return 0;
 }
@@ -78,5 +72,5 @@ int service_pid_is_running(int pid) {
     if (platform_send_signal(pid, 0) == 0) {
         return 1;
     }
-    return errno == EPERM ? 1 : 0;
+    return 0;
 }

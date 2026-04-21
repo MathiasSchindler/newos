@@ -78,7 +78,9 @@ int httpd_parse_request(const char *buffer, HttpRequest *request, char *detail, 
     size_t index = 0U;
     size_t method_length = 0U;
     size_t target_length = 0U;
+    size_t version_length = 0U;
     char target[HTTPD_PATH_CAPACITY];
+    char version[16];
 
     if (detail != NULL && detail_size > 0U) {
         detail[0] = '\0';
@@ -104,6 +106,10 @@ int httpd_parse_request(const char *buffer, HttpRequest *request, char *detail, 
         request->method[method_length++] = line[index++];
     }
     request->method[method_length] = '\0';
+    if (line[index] != '\0' && line[index] != ' ' && line[index] != '\t') {
+        rt_copy_string(detail, detail_size, "method token too long");
+        return 400;
+    }
     while (line[index] == ' ' || line[index] == '\t') {
         index += 1U;
     }
@@ -111,9 +117,27 @@ int httpd_parse_request(const char *buffer, HttpRequest *request, char *detail, 
         target[target_length++] = line[index++];
     }
     target[target_length] = '\0';
+    if (line[index] != '\0' && line[index] != ' ' && line[index] != '\t') {
+        rt_copy_string(detail, detail_size, "request target too long");
+        return 400;
+    }
+    while (line[index] == ' ' || line[index] == '\t') {
+        index += 1U;
+    }
+    while (line[index] != '\0' && line[index] != ' ' && line[index] != '\t' && version_length + 1U < sizeof(version)) {
+        version[version_length++] = line[index++];
+    }
+    version[version_length] = '\0';
+    while (line[index] == ' ' || line[index] == '\t') {
+        index += 1U;
+    }
 
-    if (request->method[0] == '\0' || target[0] == '\0') {
-        rt_copy_string(detail, detail_size, "missing method or path");
+    if (request->method[0] == '\0' || target[0] == '\0' || version[0] == '\0') {
+        rt_copy_string(detail, detail_size, "missing method, path, or version");
+        return 400;
+    }
+    if ((rt_strcmp(version, "HTTP/1.1") != 0 && rt_strcmp(version, "HTTP/1.0") != 0) || line[index] != '\0') {
+        rt_copy_string(detail, detail_size, "unsupported or malformed HTTP version");
         return 400;
     }
 

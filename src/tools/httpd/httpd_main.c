@@ -4,8 +4,6 @@
 #include "simple_config.h"
 #include "tool_util.h"
 
-#include <errno.h>
-
 typedef struct {
     HttpServerOptions *options;
 } HttpdConfigContext;
@@ -46,9 +44,16 @@ static int httpd_apply_config_value(const char *key, const char *value, void *co
         rt_copy_string(options->index_name, sizeof(options->index_name), value);
         return 0;
     }
+    if (rt_strcmp(key, "user") == 0) {
+        rt_copy_string(options->drop_user, sizeof(options->drop_user), value);
+        return 0;
+    }
+    if (rt_strcmp(key, "group") == 0) {
+        rt_copy_string(options->drop_group, sizeof(options->drop_group), value);
+        return 0;
+    }
     if (rt_strcmp(key, "port") == 0) {
         if (rt_parse_uint(value, &number) != 0 || number == 0ULL || number > 65535ULL) {
-            errno = EINVAL;
             return -1;
         }
         options->port = (unsigned int)number;
@@ -56,7 +61,6 @@ static int httpd_apply_config_value(const char *key, const char *value, void *co
     }
     if (rt_strcmp(key, "max_connections") == 0) {
         if (rt_parse_uint(value, &number) != 0 || number == 0ULL) {
-            errno = EINVAL;
             return -1;
         }
         options->max_connections = (unsigned int)number;
@@ -71,14 +75,12 @@ static int httpd_apply_config_value(const char *key, const char *value, void *co
     }
     if (rt_strcmp(key, "quiet") == 0) {
         if (httpd_parse_boolean(value, &enabled) != 0) {
-            errno = EINVAL;
             return -1;
         }
         options->quiet = enabled;
         return 0;
     }
 
-    errno = EINVAL;
     return -1;
 }
 
@@ -212,6 +214,11 @@ int httpd_main(int argc, char **argv) {
     }
     if (httpd_open_listener(&options, &listener_fd) != 0) {
         tool_write_error("httpd", "failed to open listener", 0);
+        return 1;
+    }
+    if (platform_drop_privileges(options.drop_user, options.drop_group) != 0) {
+        tool_write_error("httpd", "failed to drop privileges", 0);
+        (void)platform_close(listener_fd);
         return 1;
     }
 

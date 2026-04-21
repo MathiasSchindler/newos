@@ -13,6 +13,8 @@ typedef struct {
     char stdout_path[SERVICE_PATH_CAPACITY];
     char stderr_path[SERVICE_PATH_CAPACITY];
     char workdir[SERVICE_PATH_CAPACITY];
+    char drop_user[SERVICE_PATH_CAPACITY];
+    char drop_group[SERVICE_PATH_CAPACITY];
     unsigned long long stop_timeout_ms;
 } ServiceConfig;
 

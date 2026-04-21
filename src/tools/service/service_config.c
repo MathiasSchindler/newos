@@ -4,15 +4,12 @@
 #include "simple_config.h"
 #include "tool_util.h"
 
-#include <errno.h>
-
 enum {
     SERVICE_DEFAULT_STOP_TIMEOUT_MS = 3000
 };
 
 static int service_copy_value(char *buffer, size_t buffer_size, const char *value) {
     if (buffer == NULL || value == NULL || rt_strlen(value) + 1U > buffer_size) {
-        errno = EINVAL;
         return -1;
     }
     rt_copy_string(buffer, buffer_size, value);
@@ -37,11 +34,16 @@ static int service_config_visitor(const char *key, const char *value, void *cont
     if (rt_strcmp(key, "workdir") == 0) {
         return service_copy_value(config->workdir, sizeof(config->workdir), value);
     }
+    if (rt_strcmp(key, "user") == 0) {
+        return service_copy_value(config->drop_user, sizeof(config->drop_user), value);
+    }
+    if (rt_strcmp(key, "group") == 0) {
+        return service_copy_value(config->drop_group, sizeof(config->drop_group), value);
+    }
     if (rt_strcmp(key, "stop_timeout") == 0) {
         return tool_parse_duration_ms(value, &config->stop_timeout_ms);
     }
 
-    errno = EINVAL;
     return -1;
 }
 
@@ -52,13 +54,11 @@ static int service_set_default_pidfile(const char *config_path, ServiceConfig *c
         return 0;
     }
     if (config_path == NULL) {
-        errno = EINVAL;
         return -1;
     }
 
     used = rt_strlen(config_path);
     if (used + 5U > sizeof(config->pidfile)) {
-        errno = EINVAL;
         return -1;
     }
     rt_copy_string(config->pidfile, sizeof(config->pidfile), config_path);
@@ -68,7 +68,6 @@ static int service_set_default_pidfile(const char *config_path, ServiceConfig *c
 
 int service_load_config(const char *config_path, ServiceConfig *config_out) {
     if (config_path == NULL || config_out == NULL) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -79,7 +78,6 @@ int service_load_config(const char *config_path, ServiceConfig *config_out) {
         return -1;
     }
     if (config_out->command[0] == '\0') {
-        errno = EINVAL;
         return -1;
     }
     return service_set_default_pidfile(config_path, config_out);

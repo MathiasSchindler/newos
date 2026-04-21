@@ -14,6 +14,8 @@ typedef struct {
     char bind_host[PLATFORM_NETWORK_TEXT_CAPACITY];
     char root[HTTPD_PATH_CAPACITY];
     char index_name[HTTPD_INDEX_CAPACITY];
+    char drop_user[PLATFORM_NAME_CAPACITY];
+    char drop_group[PLATFORM_NAME_CAPACITY];
     unsigned int port;
     unsigned int max_connections;
     unsigned int idle_timeout_ms;

@@ -2,11 +2,25 @@
 
 #include "platform.h"
 #include "runtime.h"
-
-#include <errno.h>
+#include "tool_util.h"
 
 static int service_is_quote(char ch) {
     return ch == '\'' || ch == '"';
+}
+
+static int service_has_explicit_program_path(const char *text) {
+    size_t index = 0U;
+
+    if (text == NULL || text[0] == '\0' || text[0] == '-') {
+        return 0;
+    }
+    while (text[index] != '\0') {
+        if (text[index] == '/') {
+            return 1;
+        }
+        index += 1U;
+    }
+    return 0;
 }
 
 int service_split_command(const char *command, char *storage, size_t storage_size, char *argv_out[], size_t argv_capacity) {
@@ -15,7 +29,6 @@ int service_split_command(const char *command, char *storage, size_t storage_siz
     size_t index = 0U;
 
     if (command == NULL || storage == NULL || argv_out == NULL || argv_capacity < 2U) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -29,7 +42,6 @@ int service_split_command(const char *command, char *storage, size_t storage_siz
             break;
         }
         if (argc + 1U >= argv_capacity) {
-            errno = E2BIG;
             return -1;
         }
 
@@ -59,7 +71,6 @@ int service_split_command(const char *command, char *storage, size_t storage_siz
                 ch = command[index];
             }
             if (used + 1U >= storage_size) {
-                errno = E2BIG;
                 return -1;
             }
             storage[used++] = ch;
@@ -67,11 +78,9 @@ int service_split_command(const char *command, char *storage, size_t storage_siz
         }
 
         if (quote != '\0') {
-            errno = EINVAL;
             return -1;
         }
         if (used + 1U >= storage_size) {
-            errno = E2BIG;
             return -1;
         }
         storage[used++] = '\0';
@@ -83,18 +92,49 @@ int service_split_command(const char *command, char *storage, size_t storage_siz
 
 int service_start_process(const ServiceConfig *config, int *pid_out) {
     char storage[SERVICE_COMMAND_CAPACITY];
+    char path_candidate[SERVICE_PATH_CAPACITY];
+    char resolved_program[SERVICE_PATH_CAPACITY];
     char *argv[SERVICE_MAX_ARGS];
     const char *output_path = NULL;
+    const char *workdir = NULL;
+    const char *drop_user = NULL;
+    const char *drop_group = NULL;
     int pid = -1;
 
     if (config == NULL || pid_out == NULL) {
-        errno = EINVAL;
         return -1;
     }
 
     if (service_split_command(config->command, storage, sizeof(storage), argv, SERVICE_MAX_ARGS) != 0) {
         return -1;
     }
+    if (!service_has_explicit_program_path(argv[0])) {
+        return -1;
+    }
+
+    if (config->workdir[0] != '\0') {
+        workdir = config->workdir;
+    }
+    if (config->drop_user[0] != '\0') {
+        drop_user = config->drop_user;
+    }
+    if (config->drop_group[0] != '\0') {
+        drop_group = config->drop_group;
+    }
+
+    if (argv[0][0] != '/' && workdir != NULL) {
+        if (tool_join_path(workdir, argv[0], path_candidate, sizeof(path_candidate)) != 0) {
+            return -1;
+        }
+        if (tool_canonicalize_path(path_candidate, 1, 0, resolved_program, sizeof(resolved_program)) != 0) {
+            return -1;
+        }
+    } else {
+        if (tool_canonicalize_path(argv[0], 1, 0, resolved_program, sizeof(resolved_program)) != 0) {
+            return -1;
+        }
+    }
+    argv[0] = resolved_program;
 
     if (config->stdout_path[0] != '\0') {
         output_path = config->stdout_path;
@@ -102,11 +142,22 @@ int service_start_process(const ServiceConfig *config, int *pid_out) {
         output_path = config->stderr_path;
     }
 
-    if (platform_spawn_process(argv, -1, -1, NULL, output_path, 1, &pid) != 0) {
+    if (platform_spawn_process_ex(argv, -1, -1, NULL, output_path, 1, workdir, drop_user, drop_group, &pid) != 0) {
         return -1;
     }
     if (service_write_pidfile(config->pidfile, pid) != 0) {
         return -1;
+    }
+
+    (void)platform_sleep_milliseconds(150ULL);
+    {
+        int finished = 0;
+        int exit_status = 0;
+
+        if (platform_poll_process_exit(pid, &finished, &exit_status) == 0 && finished) {
+            (void)service_remove_pidfile(config->pidfile);
+            return -1;
+        }
     }
 
     *pid_out = pid;

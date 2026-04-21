@@ -303,6 +303,7 @@ int platform_dhcp_request(
 );
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds);
 int platform_create_pipe(int pipe_fds[2]);
+int platform_drop_privileges(const char *username, const char *groupname);
 int platform_spawn_process(
     char *const argv[],
     int stdin_fd,
@@ -312,7 +313,20 @@ int platform_spawn_process(
     int output_append,
     int *pid_out
 );
+int platform_spawn_process_ex(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    const char *working_directory,
+    const char *drop_user,
+    const char *drop_group,
+    int *pid_out
+);
 int platform_wait_process(int pid, int *exit_status_out);
+int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out);
 int platform_wait_process_timeout(
     int pid,
     unsigned long long timeout_milliseconds,

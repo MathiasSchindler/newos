@@ -3,8 +3,6 @@
 #include "platform.h"
 #include "runtime.h"
 
-#include <errno.h>
-
 #define SIMPLE_CONFIG_CAPACITY 8192U
 
 static int simple_config_is_space(char ch) {
@@ -39,7 +37,6 @@ static int simple_config_parse_buffer(char *buffer, SimpleConfigVisitor visitor,
     char *cursor = buffer;
 
     if (buffer == NULL || visitor == NULL) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -68,7 +65,6 @@ static int simple_config_parse_buffer(char *buffer, SimpleConfigVisitor visitor,
             equals += 1;
         }
         if (*equals != '=') {
-            errno = EINVAL;
             return -1;
         }
 
@@ -76,7 +72,6 @@ static int simple_config_parse_buffer(char *buffer, SimpleConfigVisitor visitor,
         simple_config_trim(line);
         simple_config_trim(equals + 1);
         if (line[0] == '\0') {
-            errno = EINVAL;
             return -1;
         }
 
@@ -94,7 +89,6 @@ int simple_config_parse_file(const char *path, SimpleConfigVisitor visitor, void
     int fd;
 
     if (path == NULL || visitor == NULL) {
-        errno = EINVAL;
         return -1;
     }
 
@@ -117,7 +111,6 @@ int simple_config_parse_file(const char *path, SimpleConfigVisitor visitor, void
     (void)platform_close(fd);
 
     if (used + 1U >= sizeof(buffer)) {
-        errno = E2BIG;
         return -1;
     }
 

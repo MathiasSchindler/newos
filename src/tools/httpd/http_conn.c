@@ -80,6 +80,9 @@ void httpd_send_response(int fd, const HttpResponse *response) {
     used = httpd_append_uint(header, sizeof(header), used, response->content_length);
     used = httpd_append_text(header, sizeof(header), used, "\r\nContent-Type: ");
     used = httpd_append_text(header, sizeof(header), used, response->content_type[0] != '\0' ? response->content_type : "text/plain; charset=utf-8");
+    used = httpd_append_text(header, sizeof(header), used, "\r\nX-Content-Type-Options: nosniff");
+    used = httpd_append_text(header, sizeof(header), used, "\r\nX-Frame-Options: DENY");
+    used = httpd_append_text(header, sizeof(header), used, "\r\nReferrer-Policy: no-referrer");
     used = httpd_append_text(header, sizeof(header), used, "\r\nConnection: close\r\n\r\n");
 
     (void)rt_write_all(fd, header, used);

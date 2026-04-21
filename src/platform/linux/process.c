@@ -485,13 +485,62 @@ int platform_create_pipe(int pipe_fds[2]) {
     return linux_syscall2(LINUX_SYS_PIPE2, (long)pipe_fds, 0) < 0 ? -1 : 0;
 }
 
-int platform_spawn_process(
+int platform_drop_privileges(const char *username, const char *groupname) {
+    unsigned long long current_uid = (unsigned long long)linux_syscall1(LINUX_SYS_GETUID, 0);
+    unsigned long long current_gid = (unsigned long long)linux_syscall1(LINUX_SYS_GETGID, 0);
+    unsigned long long target_uid = current_uid;
+    unsigned long long target_gid = current_gid;
+    unsigned int lookup_gid = 0U;
+    PlatformIdentity identity;
+
+    if ((username == 0 || username[0] == '\0') && (groupname == 0 || groupname[0] == '\0')) {
+        return 0;
+    }
+
+    if (groupname != 0 && groupname[0] != '\0') {
+        if (platform_lookup_group(groupname, &lookup_gid) != 0) {
+            return -1;
+        }
+        target_gid = (unsigned long long)lookup_gid;
+    }
+
+    if (username != 0 && username[0] != '\0') {
+        if (platform_lookup_identity(username, &identity) != 0) {
+            return -1;
+        }
+        target_uid = (unsigned long long)identity.uid;
+        if (groupname == 0 || groupname[0] == '\0') {
+            target_gid = (unsigned long long)identity.gid;
+        }
+    }
+
+    if (target_gid != current_gid) {
+        if (current_uid == 0ULL) {
+            (void)linux_syscall2(LINUX_SYS_SETGROUPS, 0, 0);
+        }
+        if (linux_syscall1(LINUX_SYS_SETGID, (long)target_gid) < 0) {
+            return -1;
+        }
+    }
+    if (target_uid != current_uid) {
+        if (linux_syscall1(LINUX_SYS_SETUID, (long)target_uid) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int platform_spawn_process_ex(
     char *const argv[],
     int stdin_fd,
     int stdout_fd,
     const char *input_path,
     const char *output_path,
     int output_append,
+    const char *working_directory,
+    const char *drop_user,
+    const char *drop_group,
     int *pid_out
 ) {
     long pid;
@@ -506,6 +555,12 @@ int platform_spawn_process(
     }
 
     if (pid == 0) {
+        if (working_directory != 0 && working_directory[0] != '\0') {
+            if (linux_syscall1(LINUX_SYS_CHDIR, (long)working_directory) < 0) {
+                linux_child_exit(126);
+            }
+        }
+
         if (input_path != 0) {
             long fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)input_path, LINUX_O_RDONLY, 0);
             if (fd < 0) {
@@ -554,6 +609,10 @@ int platform_spawn_process(
             linux_syscall1(LINUX_SYS_CLOSE, stdout_fd);
         }
 
+        if (platform_drop_privileges(drop_user, drop_group) != 0) {
+            linux_child_exit(126);
+        }
+
         if (linux_path_has_slash(argv[0])) {
             linux_try_exec(argv[0], argv);
         } else {
@@ -573,6 +632,18 @@ int platform_spawn_process(
 
     *pid_out = (int)pid;
     return 0;
+}
+
+int platform_spawn_process(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    int *pid_out
+) {
+    return platform_spawn_process_ex(argv, stdin_fd, stdout_fd, input_path, output_path, output_append, 0, 0, 0, pid_out);
 }
 
 int platform_send_signal(int pid, int signal_number) {
@@ -614,6 +685,29 @@ int platform_wait_process(int pid, int *exit_status_out) {
         return -1;
     }
 
+    *exit_status_out = linux_decode_wait_status(status);
+    return 0;
+}
+
+int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {
+    int status = 0;
+    long waited;
+
+    if (finished_out == 0 || exit_status_out == 0) {
+        return -1;
+    }
+
+    waited = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, LINUX_WNOHANG, 0);
+    if (waited == 0) {
+        *finished_out = 0;
+        *exit_status_out = 0;
+        return 0;
+    }
+    if (waited < 0) {
+        return -1;
+    }
+
+    *finished_out = 1;
     *exit_status_out = linux_decode_wait_status(status);
     return 0;
 }

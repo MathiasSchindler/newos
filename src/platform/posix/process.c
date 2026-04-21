@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
@@ -24,6 +25,9 @@
 #ifdef __linux__
 #include <sys/klog.h>
 #include <sys/reboot.h>
+#endif
+#if defined(__APPLE__)
+int initgroups(const char *name, int basegid);
 #endif
 
 extern char **environ;
@@ -505,13 +509,83 @@ int platform_create_pipe(int pipe_fds[2]) {
     return 0;
 }
 
-int platform_spawn_process(
+int platform_drop_privileges(const char *username, const char *groupname) {
+    uid_t current_uid = getuid();
+    gid_t current_gid = getgid();
+    uid_t target_uid = current_uid;
+    gid_t target_gid = current_gid;
+    const char *group_user_name = NULL;
+    unsigned int lookup_gid = 0U;
+    unsigned long long numeric = 0ULL;
+
+    if ((username == NULL || username[0] == '\0') && (groupname == NULL || groupname[0] == '\0')) {
+        return 0;
+    }
+
+    if (groupname != NULL && groupname[0] != '\0') {
+        if (platform_lookup_group(groupname, &lookup_gid) != 0) {
+            return -1;
+        }
+        target_gid = (gid_t)lookup_gid;
+    }
+
+    if (username != NULL && username[0] != '\0') {
+        if (rt_parse_uint(username, &numeric) == 0) {
+            struct passwd *pw = getpwuid((uid_t)numeric);
+            target_uid = (uid_t)numeric;
+            if (groupname == NULL || groupname[0] == '\0') {
+                if (pw == NULL) {
+                    errno = ENOENT;
+                    return -1;
+                }
+                target_gid = pw->pw_gid;
+            }
+            if (pw != NULL && pw->pw_name != NULL && pw->pw_name[0] != '\0') {
+                group_user_name = pw->pw_name;
+            }
+        } else {
+            PlatformIdentity identity;
+            if (platform_lookup_identity(username, &identity) != 0) {
+                return -1;
+            }
+            target_uid = (uid_t)identity.uid;
+            if (groupname == NULL || groupname[0] == '\0') {
+                target_gid = (gid_t)identity.gid;
+            }
+            group_user_name = username;
+        }
+    }
+
+    if (target_gid != current_gid) {
+        if (group_user_name != NULL && current_uid == 0U) {
+            if (initgroups(group_user_name, target_gid) != 0) {
+                return -1;
+            }
+        }
+        if (setgid(target_gid) != 0) {
+            return -1;
+        }
+    }
+
+    if (target_uid != current_uid) {
+        if (setuid(target_uid) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int platform_spawn_process_ex(
     char *const argv[],
     int stdin_fd,
     int stdout_fd,
     const char *input_path,
     const char *output_path,
     int output_append,
+    const char *working_directory,
+    const char *drop_user,
+    const char *drop_group,
     int *pid_out
 ) {
     pid_t pid;
@@ -528,6 +602,12 @@ int platform_spawn_process(
 
     if (pid == 0) {
         int fd;
+
+        if (working_directory != NULL && working_directory[0] != '\0') {
+            if (chdir(working_directory) != 0) {
+                _exit(126);
+            }
+        }
 
         if (input_path != NULL) {
             fd = open(input_path, O_RDONLY);
@@ -577,12 +657,28 @@ int platform_spawn_process(
             close(stdout_fd);
         }
 
+        if (platform_drop_privileges(drop_user, drop_group) != 0) {
+            _exit(126);
+        }
+
         execvp(argv[0], argv);
         _exit(127);
     }
 
     *pid_out = (int)pid;
     return 0;
+}
+
+int platform_spawn_process(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    int *pid_out
+) {
+    return platform_spawn_process_ex(argv, stdin_fd, stdout_fd, input_path, output_path, output_append, NULL, NULL, NULL, pid_out);
 }
 
 int platform_send_signal(int pid, int signal_number) {
@@ -634,6 +730,30 @@ int platform_wait_process(int pid, int *exit_status_out) {
 
     *exit_status_out = decode_wait_status(status);
 
+    return 0;
+}
+
+int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {
+    int status = 0;
+    pid_t waited;
+
+    if (finished_out == NULL || exit_status_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    waited = waitpid((pid_t)pid, &status, WNOHANG);
+    if (waited == 0) {
+        *finished_out = 0;
+        *exit_status_out = 0;
+        return 0;
+    }
+    if (waited < 0) {
+        return -1;
+    }
+
+    *finished_out = 1;
+    *exit_status_out = decode_wait_status(status);
     return 0;
 }
 

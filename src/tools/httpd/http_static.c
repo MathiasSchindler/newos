@@ -20,6 +20,23 @@ static int httpd_path_is_within_root(const char *root, const char *path) {
     return path[root_len] == '\0' || path[root_len] == '/';
 }
 
+static int httpd_path_has_hidden_component(const char *path) {
+    size_t index = 0U;
+
+    while (path != NULL && path[index] != '\0') {
+        while (path[index] == '/') {
+            index += 1U;
+        }
+        if (path[index] == '.') {
+            return 1;
+        }
+        while (path[index] != '\0' && path[index] != '/') {
+            index += 1U;
+        }
+    }
+    return 0;
+}
+
 static const char *httpd_content_type_for_path(const char *path) {
     const char *cursor = path;
     const char *dot = NULL;
@@ -88,6 +105,10 @@ int httpd_build_static_response(const HttpServerOptions *options, const HttpRequ
         rt_copy_string(relative, sizeof(relative), request->path + 1U);
     }
 
+    if (httpd_path_has_hidden_component(relative)) {
+        rt_copy_string(detail, detail_size, "hidden paths are not served");
+        return 403;
+    }
     if (tool_join_path(options->root, relative, joined, sizeof(joined)) != 0) {
         rt_copy_string(detail, detail_size, "path too long");
         return 400;
@@ -103,6 +124,10 @@ int httpd_build_static_response(const HttpServerOptions *options, const HttpRequ
     }
     if (entry.is_dir) {
         rt_copy_string(detail, detail_size, "directory listing disabled");
+        return 403;
+    }
+    if (entry.nlink > 1UL) {
+        rt_copy_string(detail, detail_size, "multiply linked files are not served");
         return 403;
     }
     if (entry.size > (1024ULL * 1024ULL)) {
