@@ -41,7 +41,10 @@ The repository already contains the following relevant building blocks:
 - hosted POSIX networking and process support in `src/platform/posix/`
 - freestanding Linux networking and process support in `src/platform/linux/`
 - a working SSH client under `src/tools/ssh/`
+- a small hosted static HTTP daemon under `src/tools/httpd/`
+- a small config-driven service supervisor under `src/tools/service/`
 - shared crypto code in `src/shared/crypto/`
+- shared server-oriented config and log helpers under `src/shared/`
 - hosted macOS compatibility through the POSIX backend, as described in `platform(7)` and `project-layout(7)`
 
 In practical terms, this means the project already has enough runtime and platform surface to support client networking, polling, subprocess management, and a substantial portion of the cryptographic groundwork.
@@ -54,9 +57,8 @@ The following are still design targets rather than finished repository subsystem
 - no `sshd` daemon yet
 - no shared `src/shared/tls/` subsystem yet
 - no shared `src/shared/http/` subsystem yet
-- no shared `src/shared/log/` subsystem yet
 - no small server-oriented account database layer yet
-- no standalone `service` or `sv` supervisor tool yet
+- no full standalone `sv`-style dependency manager, launchd integration layer, or richer service-control stack yet
 
 The rest of this page should be read in that light: some sections describe current reality, while others define the intended shape of the next implementation steps.
 
@@ -333,7 +335,7 @@ That is a deliberate trade-off, not an accident.
 
 ### Recommended placement
 
-A dedicated HTTPS daemon should dock into the tree roughly like this:
+The repository now contains a plain hosted `httpd` that follows the same ownership and layering rules for a version-one static server. A dedicated HTTPS daemon should extend that shape and dock into the tree roughly like this:
 
 - `src/tools/httpsd.c` - public entry point, CLI, config loading, startup
 - `src/tools/httpsd/httpsd_main.c` - listener setup and main event loop
@@ -477,6 +479,27 @@ If multiple daemons are added, they should converge on one small declarative for
 
 A simple key/value or sectioned format is preferable to a heavy framework-style configuration stack. If it proves reusable, the parser belongs in `src/shared/`.
 
+### Hosted service tree convention
+
+For actual hosted daemon instances, the repository now adopts a dedicated `services/` tree.
+The convention is that the tool name determines the instance directory name.
+
+For example, an HTTP daemon instance should live under:
+
+- `services/httpd/www-root/` for the served static content such as `index.html`
+- `services/httpd/config/` for daemon and supervisor config files
+- `services/httpd/log/` for instance-local logs
+
+The same pattern should apply to future daemons:
+
+- `services/sshd/`
+- `services/ircd/`
+- `services/apid/`
+
+and so on, with `www-root/` present only where the daemon actually serves a document tree.
+
+This keeps deployment-facing assets out of `src/` while preserving the ownership rule that implementation code still lives under `src/tools/<tool>/`.
+
 ---
 
 ## SERVICE SUPERVISION
@@ -490,12 +513,12 @@ The current tree already provides related building blocks in:
 - `src/tools/shutdown.c`
 - `src/platform/*/process.c`
 
-A small supervisor can therefore dock as:
+A first small supervisor now docks as:
 
-- `src/tools/service.c` or `src/tools/sv.c`
+- `src/tools/service.c`
 - with private logic under `src/tools/service/`
 
-At the moment, this is still planned architecture rather than an already existing tool.
+It currently provides the version-one responsibilities described below and remains intentionally small in scope.
 
 ### Version-one responsibilities
 

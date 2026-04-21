@@ -439,6 +439,74 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     return 0;
 }
 
+int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int sock = -1;
+    int reuse = 1;
+    const char *bind_host = NULL;
+
+    if (socket_fd_out == NULL || port == 0U || port > 65535U) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (host != NULL && host[0] != '\0') {
+        bind_host = host;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_PASSIVE;
+    (void)snprintf(port_text, sizeof(port_text), "%u", port);
+
+    if (getaddrinfo(bind_host, port_text, &hints, &results) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        sock = posix_socket_open(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sock < 0) {
+            continue;
+        }
+        (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        if (bind(sock, current->ai_addr, current->ai_addrlen) == 0 && listen(sock, 16) == 0) {
+            break;
+        }
+        close(sock);
+        sock = -1;
+    }
+
+    freeaddrinfo(results);
+    if (sock < 0) {
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+int platform_accept_tcp(int listener_fd, int *client_fd_out) {
+    int client;
+
+    if (listener_fd < 0 || client_fd_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    client = posix_socket_accept(listener_fd);
+    if (client < 0) {
+        return -1;
+    }
+    *client_fd_out = client;
+    return 0;
+}
+
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
     struct pollfd stack_fds[16];
     struct pollfd *poll_fds = stack_fds;

@@ -183,3 +183,30 @@ assert_file_contains "$WORK_DIR/netcat_keep_server.out" 'hello keep two' "netcat
 
 "$ROOT_DIR/build/shutdown" --help > "$WORK_DIR/shutdown_help.out" 2>&1
 assert_file_contains "$WORK_DIR/shutdown_help.out" 'shutdown' "shutdown help output missing"
+
+mkdir -p "$WORK_DIR/http_root"
+printf 'hello from httpd\n' > "$WORK_DIR/http_root/index.txt"
+"$ROOT_DIR/build/httpd" -p 24684 -r "$WORK_DIR/http_root" > "$WORK_DIR/httpd.log" 2>&1 &
+httpd_pid=$!
+trap 'kill "$httpd_pid" 2>/dev/null || true' EXIT INT TERM
+"$ROOT_DIR/build/sleep" 1
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_fetch.txt" "http://127.0.0.1:24684/index.txt"
+assert_file_contains "$WORK_DIR/http_fetch.txt" '^hello from httpd$' "httpd did not serve the requested static file"
+kill "$httpd_pid" 2>/dev/null || true
+wait "$httpd_pid" 2>/dev/null || true
+trap - EXIT INT TERM
+
+cat > "$WORK_DIR/httpd.conf" <<EOF
+command=$ROOT_DIR/build/httpd -p 24685 -r $WORK_DIR/http_root
+pidfile=$WORK_DIR/httpd.pid
+stdout=$WORK_DIR/service-httpd.out
+stderr=$WORK_DIR/service-httpd.err
+EOF
+"$ROOT_DIR/build/service" start "$WORK_DIR/httpd.conf" > "$WORK_DIR/service_start.out"
+"$ROOT_DIR/build/sleep" 1
+"$ROOT_DIR/build/service" status "$WORK_DIR/httpd.conf" > "$WORK_DIR/service_status.out"
+assert_file_contains "$WORK_DIR/service_status.out" 'running' "service status did not report the daemon as running"
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_service_fetch.txt" "http://127.0.0.1:24685/index.txt"
+assert_file_contains "$WORK_DIR/http_service_fetch.txt" '^hello from httpd$' "service-managed httpd did not serve the requested static file"
+"$ROOT_DIR/build/service" stop "$WORK_DIR/httpd.conf" > "$WORK_DIR/service_stop.out"
+assert_file_contains "$WORK_DIR/service_stop.out" 'stopped' "service stop did not report a clean shutdown"

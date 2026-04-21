@@ -264,6 +264,8 @@ int platform_set_hostname(const char *name);
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options);
 int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);
 int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out);
+int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out);
+int platform_accept_tcp(int listener_fd, int *client_fd_out);
 int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_list_network_addresses(
     PlatformNetworkAddress *entries_out,

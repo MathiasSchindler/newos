@@ -59,6 +59,8 @@
     X("src/shared/tool_regex.c") \
     X("src/shared/tool_path.c") \
     X("src/shared/tool_fs.c") \
+    X("src/shared/simple_config.c") \
+    X("src/shared/server_log.c") \
     X("src/shared/archive_util.c") \
     X("src/shared/bignum.c")
 

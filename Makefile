@@ -59,14 +59,14 @@ DEFAULT_ALL_TARGETS := host
 ifeq ($(LOCAL_PLATFORM_ONLY),0)
 DEFAULT_ALL_TARGETS += freestanding
 endif
-TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown uname hostname init getty dmesg touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill shutdown wc head tail ps top sort cut tr grep ping ping6 ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat dhcp nslookup ssh ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev
+TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown uname hostname init getty dmesg touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill shutdown wc head tail ps top sort cut tr grep ping ping6 ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat dhcp nslookup ssh ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join split csplit shuf fold fmt tsort sync truncate timeout expand unexpand printenv ed bc pstree free uptime who users groups column rev httpd service
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 COMPILER_IMPL_INCLUDES := \
 	src/compiler/backend_internal.h \
 	src/compiler/parser_internal.h \
 	src/compiler/targets/target_info.h
-SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util|bignum)\.c"' src/compiler/source_manifest.h | tr -d '"')
+SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util|bignum|simple_config|server_log)\.c"' src/compiler/source_manifest.h | tr -d '"')
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HASH_SOURCES := \
 	$(shell grep -oE '"src/shared/hash_util\.c"' src/compiler/source_manifest.h | tr -d '"') \
@@ -187,6 +187,8 @@ $(TARGET_BUILD_DIR)/ssh: src/tools/ssh.c $(SHARED_SOURCES) $(SSH_CORE_SOURCES) $
 
 MAKE_TOOL_SOURCES := src/tools/make/make_parse.c src/tools/make/make_exec.c
 AWK_TOOL_SOURCES  := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c
+SERVICE_TOOL_SOURCES := src/tools/service/service_main.c src/tools/service/service_pidfile.c src/tools/service/service_spawn.c src/tools/service/service_signal.c src/tools/service/service_config.c
+HTTPD_TOOL_SOURCES := src/tools/httpd/httpd_main.c src/tools/httpd/http_listener.c src/tools/httpd/http_conn.c src/tools/httpd/http_parse.c src/tools/httpd/http_route.c src/tools/httpd/http_static.c src/tools/httpd/http_log.c
 
 $(BUILD_DIR)/make: src/tools/make.c $(MAKE_TOOL_SOURCES) src/tools/make/make_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) src/tools/make.c $(MAKE_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
@@ -199,6 +201,18 @@ $(BUILD_DIR)/awk: src/tools/awk.c $(AWK_TOOL_SOURCES) src/tools/awk/awk_impl.h $
 
 $(TARGET_BUILD_DIR)/awk: src/tools/awk.c $(AWK_TOOL_SOURCES) src/tools/awk/awk_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) src/tools/awk.c $(AWK_TOOL_SOURCES) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
+$(BUILD_DIR)/httpd: src/tools/httpd.c $(HTTPD_TOOL_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h src/shared/server_log.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(HTTPD_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/httpd: src/tools/httpd.c $(HTTPD_TOOL_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h src/shared/server_log.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(HTTPD_TOOL_SOURCES) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
+$(BUILD_DIR)/service: src/tools/service.c $(SERVICE_TOOL_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SERVICE_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/service: src/tools/service.c $(SERVICE_TOOL_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(SERVICE_TOOL_SOURCES) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/bc: src/tools/bc.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -Wno-pedantic $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@

@@ -4,3 +4,4 @@ plans/
 tests/tmp/
 temporary/
 experimental/ 
+services/httpd/log/

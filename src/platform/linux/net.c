@@ -1185,6 +1185,52 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     return 0;
 }
 
+int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) {
+    LinuxInAddr address;
+    LinuxInAddr *bind_address = 0;
+    int sock;
+
+    if (socket_fd_out == 0 || port == 0U || port > 65535U) {
+        return -1;
+    }
+
+    if (host != 0 && host[0] != '\0' && rt_strcmp(host, "0.0.0.0") != 0 && rt_strcmp(host, "*") != 0) {
+        if (linux_resolve_ipv4_host(host, &address) != 0) {
+            return -1;
+        }
+        bind_address = &address;
+    }
+
+    sock = linux_open_inet_socket(LINUX_SOCK_STREAM, LINUX_IPPROTO_TCP);
+    if (sock < 0) {
+        return -1;
+    }
+    (void)linux_set_socket_int_option(sock, LINUX_SOL_SOCKET, LINUX_SO_REUSEADDR, 1);
+    if (linux_bind_ipv4(sock, bind_address, port) != 0 || linux_syscall2(LINUX_SYS_LISTEN, sock, 16) < 0) {
+        platform_close(sock);
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+int platform_accept_tcp(int listener_fd, int *client_fd_out) {
+    long accepted;
+
+    if (listener_fd < 0 || client_fd_out == 0) {
+        return -1;
+    }
+
+    accepted = linux_syscall3(LINUX_SYS_ACCEPT, listener_fd, 0, 0);
+    if (accepted < 0) {
+        return -1;
+    }
+
+    *client_fd_out = (int)accepted;
+    return 0;
+}
+
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
     struct linux_pollfd poll_fds[16];
     struct linux_timespec timeout;
