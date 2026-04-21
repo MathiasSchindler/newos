@@ -229,6 +229,14 @@ static void format_layout_type(const CompilerType *type, char *buffer, size_t bu
         base = "union";
     } else if (type->base == COMPILER_BASE_ENUM) {
         base = "enum";
+    } else if (type->base == COMPILER_BASE_INT) {
+        if (type->scalar_bytes >= 16U) {
+            base = "__int128";
+        } else if (type->scalar_bytes >= 8U) {
+            base = "long";
+        } else if (type->scalar_bytes == 2U) {
+            base = "short";
+        }
     }
 
     buffer[0] = '\0';
@@ -718,6 +726,9 @@ static int parse_number_token_value(const CompilerToken *token, long long *value
 
 static int parse_char_token_value(const CompilerToken *token, long long *value_out) {
     const char *text = token->start;
+    const char *cursor;
+    unsigned int value = 0U;
+    int digits = 0;
 
     if (token->length < 3 || text[0] != '\'') {
         return -1;
@@ -735,8 +746,32 @@ static int parse_char_token_value(const CompilerToken *token, long long *value_o
             *value_out = '\v';
         } else if (escaped == 'f') {
             *value_out = '\f';
-        } else if (escaped == '0') {
-            *value_out = '\0';
+        } else if (escaped == 'a') {
+            *value_out = '\a';
+        } else if (escaped == 'b') {
+            *value_out = '\b';
+        } else if (escaped == 'x' || escaped == 'X') {
+            int hex = 0;
+            cursor = text + 3;
+            while ((*cursor >= '0' && *cursor <= '9') ||
+                   (*cursor >= 'a' && *cursor <= 'f') ||
+                   (*cursor >= 'A' && *cursor <= 'F')) {
+                if (*cursor >= '0' && *cursor <= '9') hex = *cursor - '0';
+                else if (*cursor >= 'a' && *cursor <= 'f') hex = 10 + (*cursor - 'a');
+                else hex = 10 + (*cursor - 'A');
+                value = (value * 16U) + (unsigned int)hex;
+                cursor += 1;
+                digits += 1;
+            }
+            *value_out = digits > 0 ? (long long)(unsigned char)value : 'x';
+        } else if (escaped >= '0' && escaped <= '7') {
+            cursor = text + 2;
+            while (digits < 3 && *cursor >= '0' && *cursor <= '7') {
+                value = (value * 8U) + (unsigned int)(*cursor - '0');
+                cursor += 1;
+                digits += 1;
+            }
+            *value_out = (long long)(unsigned char)value;
         } else {
             *value_out = (unsigned char)escaped;
         }
@@ -769,7 +804,7 @@ static int apply_constant_binary_op(CompilerParser *parser, const char *op, long
     } else if (rt_strcmp(op, "<<") == 0) {
         *value_out = lhs << rhs;
     } else if (rt_strcmp(op, ">>") == 0) {
-        *value_out = lhs >> rhs;
+        *value_out = (long long)(((unsigned long long)lhs) >> (unsigned int)rhs);
     } else if (rt_strcmp(op, "<") == 0) {
         *value_out = lhs < rhs;
     } else if (rt_strcmp(op, ">") == 0) {

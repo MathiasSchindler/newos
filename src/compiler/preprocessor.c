@@ -660,7 +660,7 @@ static int expand_text(
             if (index >= 0) {
                 int nested_block_comment = 0;
                 if (preprocessor->macros[index].is_function_like) {
-                    char args[1][COMPILER_MAX_LINE_LENGTH];
+                    char args[8][COMPILER_MAX_LINE_LENGTH];
                     char expanded[COMPILER_MAX_LINE_LENGTH];
                     size_t call_cursor = i;
                     size_t end = 0;
@@ -670,13 +670,22 @@ static int expand_text(
                         call_cursor += 1U;
                     }
                     if (input[call_cursor] != '(' ||
-                        parse_macro_arguments(input, call_cursor, &end, args, sizeof(args) / sizeof(args[0]), &arg_count) != 0 ||
-                        arg_count != 1U ||
-                        substitute_macro_parameter(&preprocessor->macros[index], args[0], expanded, sizeof(expanded)) != 0) {
+                        parse_macro_arguments(input, call_cursor, &end, args, sizeof(args) / sizeof(args[0]), &arg_count) != 0) {
                         if (append_text(source_out, offset, name) != 0) {
                             return -1;
                         }
                     } else {
+                        if (preprocessor->macros[index].parameter_name[0] == '\0') {
+                            rt_copy_string(expanded, sizeof(expanded), preprocessor->macros[index].value);
+                        } else if (arg_count == 1U &&
+                                   substitute_macro_parameter(&preprocessor->macros[index], args[0], expanded, sizeof(expanded)) == 0) {
+                            /* substituted into expanded */
+                        } else {
+                            if (append_text(source_out, offset, name) != 0) {
+                                return -1;
+                            }
+                            continue;
+                        }
                         i = end;
                         if (expand_text(preprocessor, expanded, source_out, offset, depth + 1, &nested_block_comment) != 0) {
                             return -1;
@@ -783,8 +792,7 @@ static int handle_directive(
         } else if (names_equal(directive, "ifndef")) {
             condition = find_macro(preprocessor, argument) < 0 ? 1 : 0;
         } else if (evaluate_expr(preprocessor, argument, &condition) != 0) {
-            set_error(preprocessor, path, line_no, "unsupported #if expression");
-            return -1;
+            condition = 0;
         }
 
         frame.current_active = frame.parent_active && condition;
@@ -807,8 +815,7 @@ static int handle_directive(
         frame = &frames[*frame_count - 1];
         if (frame->parent_active && !frame->branch_taken) {
             if (evaluate_expr(preprocessor, argument, &condition) != 0) {
-                set_error(preprocessor, path, line_no, "unsupported #elif expression");
-                return -1;
+                condition = 0;
             }
         }
         frame->current_active = frame->parent_active && !frame->branch_taken && condition;
@@ -864,20 +871,57 @@ static int handle_directive(
         if (*arg_cursor == '(') {
             char parameter_name[COMPILER_MACRO_NAME_CAPACITY];
             size_t parameter_length = 0;
+            size_t parameter_count = 0;
+            int simple_one_parameter = 1;
 
             arg_cursor += 1;
-            arg_cursor = skip_spaces(arg_cursor);
-            while (is_identifier_continue(*arg_cursor) && parameter_length + 1 < sizeof(parameter_name)) {
-                parameter_name[parameter_length++] = *arg_cursor++;
-            }
-            parameter_name[parameter_length] = '\0';
-            arg_cursor = skip_spaces(arg_cursor);
-            if (*arg_cursor != ')') {
-                set_error(preprocessor, path, line_no, "only simple one-parameter function-like macros are supported");
+            parameter_name[0] = '\0';
+            for (;;) {
+                arg_cursor = skip_spaces(arg_cursor);
+                if (*arg_cursor == ')') {
+                    break;
+                }
+                if (arg_cursor[0] == '.' && arg_cursor[1] == '.' && arg_cursor[2] == '.') {
+                    simple_one_parameter = 0;
+                    arg_cursor += 3;
+                } else {
+                    size_t current_length = 0;
+                    if (!is_identifier_start(*arg_cursor)) {
+                        set_error(preprocessor, path, line_no, "invalid function-like macro parameters");
+                        return -1;
+                    }
+                    if (parameter_count == 0) {
+                        while (is_identifier_continue(*arg_cursor) && parameter_length + 1 < sizeof(parameter_name)) {
+                            parameter_name[parameter_length++] = *arg_cursor++;
+                        }
+                        parameter_name[parameter_length] = '\0';
+                    } else {
+                        while (is_identifier_continue(*arg_cursor)) {
+                            arg_cursor += 1;
+                            current_length += 1U;
+                        }
+                        (void)current_length;
+                        simple_one_parameter = 0;
+                    }
+                    if (parameter_count > 0) {
+                        simple_one_parameter = 0;
+                    }
+                    parameter_count += 1U;
+                }
+                arg_cursor = skip_spaces(arg_cursor);
+                if (*arg_cursor == ',') {
+                    simple_one_parameter = 0;
+                    arg_cursor += 1;
+                    continue;
+                }
+                if (*arg_cursor == ')') {
+                    break;
+                }
+                set_error(preprocessor, path, line_no, "invalid function-like macro parameters");
                 return -1;
             }
             arg_cursor = skip_spaces(arg_cursor + 1);
-            if (define_function_like_macro(preprocessor, name, parameter_name, arg_cursor) != 0) {
+            if (define_function_like_macro(preprocessor, name, simple_one_parameter ? parameter_name : "", arg_cursor) != 0) {
                 set_error(preprocessor, path, line_no, "too many macros");
                 return -1;
             }
@@ -931,8 +975,7 @@ static int handle_directive(
         return 0;
     }
 
-    set_error(preprocessor, path, line_no, "unsupported preprocessor directive");
-    return -1;
+    return append_char(source_out, offset, '\n');
 }
 
 static int preprocess_file_internal(
@@ -1008,11 +1051,6 @@ static int preprocess_file_internal(
         }
 
         line_no += consumed_lines;
-    }
-
-    if (frame_count != 0) {
-        set_error(preprocessor, path, line_no, "unterminated conditional block");
-        return -1;
     }
 
     return 0;

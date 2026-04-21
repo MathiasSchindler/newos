@@ -7,10 +7,12 @@
 
 typedef struct {
     CompilerTarget target;
+    int function_sections;
+    int data_sections;
     char error_message[COMPILER_ERROR_CAPACITY];
 } CompilerBackend;
 
-void compiler_backend_init(CompilerBackend *backend, CompilerTarget target);
+void compiler_backend_init(CompilerBackend *backend, CompilerTarget target, int function_sections, int data_sections);
 int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *ir, int fd);
 const char *compiler_backend_error_message(const CompilerBackend *backend);
 

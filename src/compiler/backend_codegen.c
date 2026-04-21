@@ -4,6 +4,71 @@
 
 #include <limits.h>
 
+static int hex_digit_value(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+    if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+    return -1;
+}
+
+static char decode_escaped_char(const char **cursor_inout) {
+    const char *cursor = *cursor_inout;
+    unsigned int value = 0U;
+    int digits = 0;
+    int hex = 0;
+
+    if (*cursor == 'n') {
+        *cursor_inout = cursor + 1;
+        return '\n';
+    }
+    if (*cursor == 't') {
+        *cursor_inout = cursor + 1;
+        return '\t';
+    }
+    if (*cursor == 'r') {
+        *cursor_inout = cursor + 1;
+        return '\r';
+    }
+    if (*cursor == 'v') {
+        *cursor_inout = cursor + 1;
+        return '\v';
+    }
+    if (*cursor == 'f') {
+        *cursor_inout = cursor + 1;
+        return '\f';
+    }
+    if (*cursor == 'a') {
+        *cursor_inout = cursor + 1;
+        return '\a';
+    }
+    if (*cursor == 'b') {
+        *cursor_inout = cursor + 1;
+        return '\b';
+    }
+    if (*cursor == 'x' || *cursor == 'X') {
+        cursor += 1;
+        while ((hex = hex_digit_value(*cursor)) >= 0) {
+            value = (value * 16U) + (unsigned int)hex;
+            cursor += 1;
+            digits += 1;
+        }
+        *cursor_inout = cursor;
+        return digits > 0 ? (char)(unsigned char)value : 'x';
+    }
+    if (*cursor >= '0' && *cursor <= '7') {
+        while (digits < 3 && *cursor >= '0' && *cursor <= '7') {
+            value = (value * 8U) + (unsigned int)(*cursor - '0');
+            cursor += 1;
+            digits += 1;
+        }
+        *cursor_inout = cursor;
+        return (char)(unsigned char)value;
+    }
+
+    *cursor_inout = cursor + (*cursor != '\0' ? 1 : 0);
+    return *cursor;
+}
+
 static int parse_decl_line(const char *line,
                            char *storage,
                            size_t storage_size,
@@ -226,14 +291,7 @@ static void global_init_next(GlobalInitParser *parser) {
         while (*cursor != '\0' && *cursor != quote && length + 1 < sizeof(parser->text)) {
             if (*cursor == '\\' && cursor[1] != '\0') {
                 cursor += 1;
-                if (*cursor == 'n') parser->text[length++] = '\n';
-                else if (*cursor == 't') parser->text[length++] = '\t';
-                else if (*cursor == 'r') parser->text[length++] = '\r';
-                else if (*cursor == 'v') parser->text[length++] = '\v';
-                else if (*cursor == 'f') parser->text[length++] = '\f';
-                else if (*cursor == '0') parser->text[length++] = '\0';
-                else parser->text[length++] = *cursor;
-                cursor += 1;
+                parser->text[length++] = decode_escaped_char(&cursor);
                 continue;
             }
             parser->text[length++] = *cursor++;
@@ -381,15 +439,15 @@ static int global_type_storage_bytes(const BackendState *state, const char *type
                                         (unsigned long long)(element_size > 0 ? element_size : 1),
                                         (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES);
     }
+    if (text_contains(type, "*")) {
+        return backend_stack_slot_size(state);
+    }
     if (starts_with(type, "struct:") || starts_with(type, "union:")) {
         aggregate_size = lookup_aggregate_size(state, type);
         if (aggregate_size > 0) {
             return aggregate_size;
         }
         return BACKEND_STRUCT_STACK_BYTES;
-    }
-    if (text_contains(type, "*")) {
-        return backend_stack_slot_size(state);
     }
     if (text_contains(type, "char")) return 1;
     if (text_contains(type, "short")) return 2;
@@ -460,6 +518,68 @@ static int emit_global_initializer_value(BackendState *state,
                                          const char *type_text,
                                          GlobalInitParser *parser,
                                          unsigned long long *bytes_out);
+
+static int word_is_type_keyword(const char *word) {
+    return names_equal(word, "char") ||
+           names_equal(word, "short") ||
+           names_equal(word, "int") ||
+           names_equal(word, "long") ||
+           names_equal(word, "void") ||
+           names_equal(word, "struct") ||
+           names_equal(word, "union") ||
+           names_equal(word, "enum") ||
+           names_equal(word, "unsigned") ||
+           names_equal(word, "signed") ||
+           names_equal(word, "const") ||
+           names_equal(word, "volatile") ||
+           names_equal(word, "float") ||
+           names_equal(word, "double") ||
+           names_equal(word, "size_t") ||
+           names_equal(word, "ssize_t");
+}
+
+static void skip_global_initializer_casts(GlobalInitParser *parser) {
+    while (parser->kind == GLOBAL_INIT_PUNCT && names_equal(parser->text, "(")) {
+        const char *cursor = skip_spaces(parser->cursor);
+        int saw_type = 0;
+        int saw_star = 0;
+
+        while (*cursor != '\0') {
+            char word[32];
+            size_t out = 0;
+
+            cursor = skip_spaces(cursor);
+            if (*cursor == '*') {
+                saw_star = 1;
+                cursor += 1;
+                continue;
+            }
+            if (*cursor == ')') {
+                if (saw_type || saw_star) {
+                    parser->cursor = cursor + 1;
+                    global_init_next(parser);
+                }
+                return;
+            }
+            if (!( (*cursor >= 'a' && *cursor <= 'z') ||
+                   (*cursor >= 'A' && *cursor <= 'Z') ||
+                   *cursor == '_')) {
+                return;
+            }
+            while (((*cursor >= 'a' && *cursor <= 'z') ||
+                    (*cursor >= 'A' && *cursor <= 'Z') ||
+                    (*cursor >= '0' && *cursor <= '9') ||
+                    *cursor == '_') &&
+                   out + 1 < sizeof(word)) {
+                word[out++] = *cursor++;
+            }
+            word[out] = '\0';
+            if (word_is_type_keyword(word)) {
+                saw_type = 1;
+            }
+        }
+    }
+}
 
 static int emit_global_initializer_aggregate(BackendState *state,
                                              const char *type_text,
@@ -583,6 +703,8 @@ static int emit_global_initializer_value(BackendState *state,
     const char *type = skip_spaces(type_text != 0 ? type_text : "");
     int size_bytes = global_type_storage_bytes(state, type);
 
+    skip_global_initializer_casts(parser);
+
     if (text_contains(type, "[")) {
         return emit_global_initializer_array(state, type, parser, bytes_out);
     }
@@ -690,7 +812,7 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
         const char *cursor = open + 1;
         copy_indexed_type_text(type, element_type, sizeof(element_type));
         if (element_type[0] != '\0' && rt_strcmp(element_type, type) != 0) {
-            int nested_size = decl_slot_size(state, element_type);
+            int nested_size = global_type_storage_bytes(state, element_type);
             if (nested_size > 0) {
                 element_size = (unsigned long long)nested_size;
             }
@@ -714,6 +836,207 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
         return aggregate_size > 0 ? aggregate_size : BACKEND_STRUCT_STACK_BYTES;
     }
     return backend_stack_slot_size(state);
+}
+
+static int type_text_has_unsized_first_array(const char *type_text) {
+    const char *cursor = skip_spaces(type_text != 0 ? type_text : "");
+
+    while (*cursor != '\0' && *cursor != '[') {
+        cursor += 1;
+    }
+    if (*cursor != '[') {
+        return 0;
+    }
+    cursor += 1;
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor += 1;
+    }
+    return *cursor == ']';
+}
+
+static void set_first_array_length_text(char *type_text, size_t type_text_size, unsigned long long length) {
+    const char *open;
+    const char *close;
+    char updated[128];
+    char digits[32];
+    size_t prefix_len;
+    size_t out = 0;
+
+    if (type_text == 0 || type_text_size == 0 || length == 0ULL || !type_text_has_unsized_first_array(type_text)) {
+        return;
+    }
+
+    open = type_text;
+    while (*open != '\0' && *open != '[') {
+        open += 1;
+    }
+    close = open;
+    while (*close != '\0' && *close != ']') {
+        close += 1;
+    }
+    if (*open != '[' || *close != ']') {
+        return;
+    }
+
+    updated[0] = '\0';
+    prefix_len = (size_t)(open - type_text) + 1U;
+    if (prefix_len >= sizeof(updated)) {
+        return;
+    }
+    while (out < prefix_len && out + 1 < sizeof(updated)) {
+        updated[out] = type_text[out];
+        out += 1U;
+    }
+    updated[out] = '\0';
+    rt_unsigned_to_string(length, digits, sizeof(digits));
+    rt_copy_string(updated + out, sizeof(updated) - out, digits);
+    out = rt_strlen(updated);
+    rt_copy_string(updated + out, sizeof(updated) - out, close);
+    rt_copy_string(type_text, type_text_size, updated);
+}
+
+static unsigned long long count_string_initializer_bytes(const char *expr) {
+    const char *cursor = skip_spaces(expr != 0 ? expr : "");
+    unsigned long long count = 0ULL;
+
+    if (*cursor != '"') {
+        return 0ULL;
+    }
+    cursor += 1;
+    while (*cursor != '\0' && *cursor != '"') {
+        if (*cursor == '\\') {
+            cursor += 1;
+            (void)decode_escaped_char(&cursor);
+        } else {
+            cursor += 1;
+        }
+        count += 1ULL;
+    }
+    return count + 1ULL;
+}
+
+static unsigned long long count_top_level_initializer_items(const char *expr) {
+    const char *cursor = skip_spaces(expr != 0 ? expr : "");
+    unsigned long long count = 0ULL;
+    int brace_depth = 0;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int saw_item = 0;
+
+    if (*cursor != '{') {
+        return 0ULL;
+    }
+    brace_depth = 1;
+    cursor += 1;
+    while (*cursor != '\0' && brace_depth > 0) {
+        if (*cursor == '"') {
+            saw_item = 1;
+            cursor += 1;
+            while (*cursor != '\0' && *cursor != '"') {
+                if (*cursor == '\\' && cursor[1] != '\0') {
+                    cursor += 2;
+                } else {
+                    cursor += 1;
+                }
+            }
+            if (*cursor == '"') {
+                cursor += 1;
+            }
+            continue;
+        }
+        if (*cursor == '\'') {
+            saw_item = 1;
+            cursor += 1;
+            while (*cursor != '\0' && *cursor != '\'') {
+                if (*cursor == '\\' && cursor[1] != '\0') {
+                    cursor += 2;
+                } else {
+                    cursor += 1;
+                }
+            }
+            if (*cursor == '\'') {
+                cursor += 1;
+            }
+            continue;
+        }
+
+        if (brace_depth == 1 && paren_depth == 0 && bracket_depth == 0 && *cursor == ',') {
+            if (saw_item) {
+                count += 1ULL;
+                saw_item = 0;
+            }
+            cursor += 1;
+            continue;
+        }
+        if (*cursor == '{') {
+            saw_item = 1;
+            brace_depth += 1;
+            cursor += 1;
+            continue;
+        }
+        if (*cursor == '}') {
+            brace_depth -= 1;
+            if (brace_depth == 0) {
+                if (saw_item) {
+                    count += 1ULL;
+                }
+                break;
+            }
+            saw_item = 1;
+            cursor += 1;
+            continue;
+        }
+        if (*cursor == '(') {
+            saw_item = 1;
+            paren_depth += 1;
+            cursor += 1;
+            continue;
+        }
+        if (*cursor == ')' && paren_depth > 0) {
+            paren_depth -= 1;
+            cursor += 1;
+            continue;
+        }
+        if (*cursor == '[') {
+            saw_item = 1;
+            bracket_depth += 1;
+            cursor += 1;
+            continue;
+        }
+        if (*cursor == ']' && bracket_depth > 0) {
+            bracket_depth -= 1;
+            cursor += 1;
+            continue;
+        }
+        if (!rt_is_space(*cursor)) {
+            saw_item = 1;
+        }
+        cursor += 1;
+    }
+
+    return count;
+}
+
+static void maybe_apply_array_initializer_length(char *type_text, size_t type_text_size, const char *expr) {
+    const char *type = skip_spaces(type_text != 0 ? type_text : "");
+    const char *value = skip_spaces(expr != 0 ? expr : "");
+    unsigned long long length = 0ULL;
+
+    if (!type_text_has_unsized_first_array(type) || value[0] == '\0') {
+        return;
+    }
+
+    if (value[0] == '"' && starts_with(type, "char[")) {
+        length = count_string_initializer_bytes(value);
+    } else if (value[0] == '{') {
+        length = count_top_level_initializer_items(value);
+    } else {
+        length = 1ULL;
+    }
+
+    if (length > 0ULL) {
+        set_first_array_length_text(type_text, type_text_size, length);
+    }
 }
 
 static int decl_requires_object_storage(const char *type_text) {
@@ -895,7 +1218,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                 name[out++] = line[j++];
             }
             name[out] = '\0';
-            if (add_function_name(state, name, 0) != 0) {
+            if (add_function_name(state, name, 0, "") != 0) {
                 return -1;
             }
         }
@@ -972,18 +1295,16 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             size_t function_index;
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
-            if (!names_equal(storage, "param") && !names_equal(storage, "local")) {
+            if (names_equal(storage, "param") || names_equal(storage, "local")) {
+                slot_size = decl_slot_size(state, type_text);
+                for (function_index = 0; function_index < state->function_count; ++function_index) {
+                    if (names_equal(state->functions[function_index].name, current_function)) {
+                        state->functions[function_index].stack_bytes += slot_size;
+                        break;
+                    }
+                }
                 continue;
             }
-
-            slot_size = decl_slot_size(state, type_text);
-            for (function_index = 0; function_index < state->function_count; ++function_index) {
-                if (names_equal(state->functions[function_index].name, current_function)) {
-                    state->functions[function_index].stack_bytes += slot_size;
-                    break;
-                }
-            }
-            continue;
         }
 
         if (in_function && current_function[0] != '\0') {
@@ -1011,37 +1332,49 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             continue;
         }
 
-        if (!in_function && starts_with(line, "decl ")) {
+        if (starts_with(line, "decl ")) {
             char storage[16];
             char kind[16];
             char type_text[128];
             char name[COMPILER_IR_NAME_CAPACITY];
             int has_global_linkage;
             int global_index = -1;
+            int is_local_static;
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
+            is_local_static = names_equal(storage, "local_static");
             has_global_linkage = names_equal(storage, "global");
 
             if (names_equal(kind, "func")) {
-                if (add_function_name(state, name, has_global_linkage) != 0) {
+                if (add_function_name(state, name, has_global_linkage, type_text) != 0) {
                     return -1;
                 }
                 continue;
             }
 
-            if ((names_equal(storage, "global") || names_equal(storage, "static") || names_equal(storage, "extern")) &&
+            if ((names_equal(storage, "global") || names_equal(storage, "static") || names_equal(storage, "extern") || is_local_static) &&
                 names_equal(kind, "obj") &&
-                !is_function_name(state, name) &&
-                (global_index = add_global(state,
-                                           name,
-                                           type_text,
-                                           decl_requires_object_storage(type_text),
-                                           decl_pointer_depth(type_text),
-                                           decl_char_based(type_text),
-                                           should_prefer_word_index(name, type_text),
-                                           has_global_linkage,
-                                           names_equal(storage, "global") || names_equal(storage, "static"))) < 0) {
-                return -1;
+                !is_function_name(state, name)) {
+                char static_symbol[COMPILER_IR_NAME_CAPACITY];
+                const char *global_name = name;
+                int has_storage = names_equal(storage, "global") || names_equal(storage, "static") || is_local_static;
+
+                if (is_local_static) {
+                    build_static_local_symbol_name(state, current_function, name, static_symbol, sizeof(static_symbol));
+                    global_name = static_symbol;
+                }
+                global_index = add_global(state,
+                                          global_name,
+                                          type_text,
+                                          decl_requires_object_storage(type_text),
+                                          decl_pointer_depth(type_text),
+                                          decl_char_based(type_text),
+                                          should_prefer_word_index(name, type_text),
+                                          has_global_linkage,
+                                          has_storage);
+                if (global_index < 0) {
+                    return -1;
+                }
             }
             if (names_equal(kind, "obj") && global_index >= 0 && i + 1U < ir->count && starts_with(ir->lines[i + 1U], "store ")) {
                 const char *next = ir->lines[i + 1U] + 6;
@@ -1062,6 +1395,9 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                         rt_copy_string(state->globals[global_index].init_text,
                                        sizeof(state->globals[global_index].init_text),
                                        next);
+                        maybe_apply_array_initializer_length(state->globals[global_index].type_text,
+                                                             sizeof(state->globals[global_index].type_text),
+                                                             next);
                         state->globals[global_index].initialized = 1;
                     }
                 }
@@ -1090,6 +1426,9 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                     rt_copy_string(state->globals[global_index].init_text,
                                    sizeof(state->globals[global_index].init_text),
                                    expr);
+                    maybe_apply_array_initializer_length(state->globals[global_index].type_text,
+                                                         sizeof(state->globals[global_index].type_text),
+                                                         expr);
                     state->globals[global_index].initialized = 1;
                 }
             }
@@ -1099,16 +1438,58 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
     return 0;
 }
 
+static int backend_supports_named_sections(const BackendState *state) {
+    const CompilerTargetInfo *info = compiler_target_get_info(state->backend->target);
+
+    return info != 0 && info->object_format == COMPILER_OBJECT_FORMAT_ELF64;
+}
+
+static int emit_named_section(BackendState *state,
+                              const char *section_name,
+                              const char *flags,
+                              const char *section_type,
+                              const char *error_message) {
+    char line[256];
+
+    rt_copy_string(line, sizeof(line), ".section ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), section_name);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ",\"");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), flags);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "\",@");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), section_type);
+    if (emit_line(state, line) != 0) {
+        backend_set_error(state->backend, error_message);
+        return -1;
+    }
+    return 0;
+}
+
+static int emit_global_storage_section(BackendState *state, int use_bss, const char *symbol) {
+    if (state->backend->data_sections && backend_supports_named_sections(state) && symbol != 0 && symbol[0] != '\0') {
+        char section_name[256];
+
+        rt_copy_string(section_name, sizeof(section_name), use_bss ? ".bss." : ".data.");
+        rt_copy_string(section_name + rt_strlen(section_name), sizeof(section_name) - rt_strlen(section_name), symbol);
+        return emit_named_section(state,
+                                  section_name,
+                                  use_bss ? "aw" : "aw",
+                                  use_bss ? "nobits" : "progbits",
+                                  use_bss ? "failed to emit bss section" : "failed to emit data section");
+    }
+
+    if (emit_line(state, use_bss ? ".bss" : ".data") != 0) {
+        backend_set_error(state->backend, use_bss ? "failed to emit bss section" : "failed to emit data section");
+        return -1;
+    }
+    return 0;
+}
+
 static int emit_globals(BackendState *state) {
     size_t i;
+    int current_section = -1;
 
     if (state->global_count == 0) {
         return 0;
-    }
-
-    if (emit_line(state, ".data") != 0) {
-        backend_set_error(state->backend, "failed to emit data section");
-        return -1;
     }
 
     for (i = 0; i < state->global_count; ++i) {
@@ -1117,10 +1498,28 @@ static int emit_globals(BackendState *state) {
         char symbol[COMPILER_IR_NAME_CAPACITY];
         int storage_bytes = decl_slot_size(state, state->globals[i].type_text);
         int needs_object_storage = decl_requires_object_storage(state->globals[i].type_text);
+        const char *init_expr = state->globals[i].init_text[0] != '\0'
+                                    ? state->globals[i].init_text
+                                    : find_global_initializer_expr(state, state->globals[i].name);
+        int use_bss = 0;
         format_symbol_name(state, state->globals[i].name, symbol, sizeof(symbol));
 
         if (!state->globals[i].has_storage) {
             continue;
+        }
+
+        if (needs_object_storage) {
+            use_bss = init_expr == 0 || init_expr[0] == '\0';
+        } else if (state->globals[i].init_text[0] == '\0' &&
+                   (!state->globals[i].initialized || state->globals[i].init_value == 0)) {
+            use_bss = 1;
+        }
+
+        if ((state->backend->data_sections && backend_supports_named_sections(state)) || current_section != use_bss) {
+            if (emit_global_storage_section(state, use_bss, symbol) != 0) {
+                return -1;
+            }
+            current_section = use_bss;
         }
 
         if (state->globals[i].global) {
@@ -1135,10 +1534,7 @@ static int emit_globals(BackendState *state) {
         }
 
         if (needs_object_storage) {
-            const char *init_expr = state->globals[i].init_text[0] != '\0'
-                                        ? state->globals[i].init_text
-                                        : find_global_initializer_expr(state, state->globals[i].name);
-            if (init_expr != 0 && init_expr[0] != '\0') {
+            if (!use_bss && init_expr != 0 && init_expr[0] != '\0') {
                 GlobalInitParser parser;
                 unsigned long long bytes_written = 0ULL;
 
@@ -1164,6 +1560,20 @@ static int emit_globals(BackendState *state) {
                     backend_set_error(state->backend, "failed to emit global object storage");
                     return -1;
                 }
+            }
+            continue;
+        }
+
+        if (use_bss) {
+            if (storage_bytes <= 0) {
+                storage_bytes = 8;
+            }
+            rt_copy_string(line, sizeof(line), "    .zero ");
+            rt_unsigned_to_string((unsigned long long)storage_bytes, digits, sizeof(digits));
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            if (emit_line(state, line) != 0) {
+                backend_set_error(state->backend, "failed to emit zero-initialized global storage");
+                return -1;
             }
             continue;
         }
@@ -1277,7 +1687,7 @@ static int emit_string_literals(BackendState *state) {
     if (state->string_count == 0) {
         return 0;
     }
-    if (emit_line(state, ".data") != 0) {
+    if (!(state->backend->data_sections && backend_supports_named_sections(state)) && emit_line(state, ".data") != 0) {
         backend_set_error(state->backend, "failed to emit string literal section");
         return -1;
     }
@@ -1285,6 +1695,16 @@ static int emit_string_literals(BackendState *state) {
         char line[COMPILER_IR_LINE_CAPACITY];
         size_t out = 0;
         size_t j;
+
+        if (state->backend->data_sections && backend_supports_named_sections(state)) {
+            char section_name[256];
+
+            rt_copy_string(section_name, sizeof(section_name), ".rodata.");
+            rt_copy_string(section_name + rt_strlen(section_name), sizeof(section_name) - rt_strlen(section_name), state->strings[i].label);
+            if (emit_named_section(state, section_name, "a", "progbits", "failed to emit string literal section") != 0) {
+                return -1;
+            }
+        }
 
         rt_copy_string(line, sizeof(line), ".L");
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), state->strings[i].label);
@@ -1340,16 +1760,31 @@ static int function_has_global_linkage(const BackendState *state, const char *na
 static int begin_function(BackendState *state, const char *name) {
     char symbol[COMPILER_IR_NAME_CAPACITY];
     int export_symbol = function_has_global_linkage(state, name);
+    int returns_object = function_returns_object(state, name);
+    const char *return_type = function_return_type(state, name);
     state->in_function = 1;
     state->local_count = 0;
-    state->param_count = 0;
+    state->param_count = returns_object ? 1 : 0;
     state->saw_return_in_function = 0;
     state->stack_size = 0;
     state->reserved_stack_size = lookup_function_stack_bytes(state, name);
+    state->reserved_stack_size += BACKEND_ARRAY_STACK_BYTES;
+    if (returns_object) {
+        state->reserved_stack_size += backend_stack_slot_size(state);
+        state->reserved_stack_size += decl_slot_size(state, return_type);
+    }
     rt_copy_string(state->current_function, sizeof(state->current_function), name);
     format_symbol_name(state, name, symbol, sizeof(symbol));
 
-    if (emit_line(state, ".text") != 0) {
+    if (state->backend->function_sections && backend_supports_named_sections(state)) {
+        char section_name[256];
+
+        rt_copy_string(section_name, sizeof(section_name), ".text.");
+        rt_copy_string(section_name + rt_strlen(section_name), sizeof(section_name) - rt_strlen(section_name), symbol);
+        if (emit_named_section(state, section_name, "ax", "progbits", "failed to emit text section") != 0) {
+            return -1;
+        }
+    } else if (emit_line(state, ".text") != 0) {
         backend_set_error(state->backend, "failed to emit text section");
         return -1;
     }
@@ -1402,6 +1837,49 @@ static int begin_function(BackendState *state, const char *name) {
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), size_text);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rsp");
         if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+
+    if (allocate_local(state, "__callret", "char[4096]", BACKEND_ARRAY_STACK_BYTES, 1, 0, 1, 0) != 0) {
+        return -1;
+    }
+
+    if (returns_object) {
+        int retbuf_index;
+        char offset_text[32];
+        char asm_line[128];
+
+        if (allocate_local(state, "__retbuf", "void*", backend_stack_slot_size(state), 0, 1, 0, 1) != 0 ||
+            allocate_local(state,
+                           "__retobj",
+                           return_type,
+                           decl_slot_size(state, return_type),
+                           decl_requires_object_storage(return_type),
+                           decl_pointer_depth(return_type),
+                           decl_char_based(return_type),
+                           should_prefer_word_index("__retobj", return_type)) != 0) {
+            return -1;
+        }
+        retbuf_index = find_local(state, "__retbuf");
+        rt_unsigned_to_string((unsigned long long)state->locals[retbuf_index].offset, offset_text, sizeof(offset_text));
+        if (backend_is_aarch64(state)) {
+            if (state->locals[retbuf_index].offset <= 255) {
+                rt_copy_string(asm_line, sizeof(asm_line), "stur x0, [x29, #-");
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
+            } else {
+                if (emit_local_address(state, state->locals[retbuf_index].offset, "x10") != 0) {
+                    return -1;
+                }
+                rt_copy_string(asm_line, sizeof(asm_line), "str x0, [x10]");
+            }
+        } else {
+            rt_copy_string(asm_line, sizeof(asm_line), "movq %rdi, -");
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "(%rbp)");
+        }
+        if (emit_instruction(state, asm_line) != 0) {
             return -1;
         }
     }
@@ -1640,17 +2118,24 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     if (names_equal(storage, "local")) {
         return allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index);
     }
+    if (names_equal(storage, "local_static")) {
+        char static_symbol[COMPILER_IR_NAME_CAPACITY];
+        build_static_local_symbol_name(state, state->current_function, name, static_symbol, sizeof(static_symbol));
+        return allocate_static_local(state, name, static_symbol, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index);
+    }
 
     if (names_equal(kind, "func")) {
-        return add_function_name(state, name, !names_equal(storage, "static"));
+        return add_function_name(state, name, !names_equal(storage, "static"), type_text);
     }
 
     return 0;
 }
 
-void compiler_backend_init(CompilerBackend *backend, CompilerTarget target) {
+void compiler_backend_init(CompilerBackend *backend, CompilerTarget target, int function_sections, int data_sections) {
     rt_memset(backend, 0, sizeof(*backend));
     backend->target = target;
+    backend->function_sections = function_sections;
+    backend->data_sections = data_sections;
 }
 
 int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *ir, int fd) {
@@ -1719,6 +2204,21 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
             {
                 int array_word_index = 0;
+                int local_index = find_local(&state, name);
+                int global_index = find_global(&state, name);
+
+                if (local_index >= 0) {
+                    maybe_apply_array_initializer_length(state.locals[local_index].type_text,
+                                                         sizeof(state.locals[local_index].type_text),
+                                                         expr);
+                    state.locals[local_index].stack_bytes = decl_slot_size(&state, state.locals[local_index].type_text);
+                }
+                if (global_index >= 0) {
+                    maybe_apply_array_initializer_length(state.globals[global_index].type_text,
+                                                         sizeof(state.globals[global_index].type_text),
+                                                         expr);
+                }
+
                 int is_array_target = lookup_array_storage(&state, name, &array_word_index);
                 const char *target_type = lookup_name_type_text(&state, name);
                 const char *target_base = skip_spaces(target_type);
@@ -1777,7 +2277,17 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
         if (starts_with(line, "ret")) {
             const char *expr = skip_spaces(line + 3);
-            if (expr[0] == '\0') {
+            if (function_returns_object(&state, state.current_function)) {
+                if (expr[0] != '\0') {
+                    if (emit_object_copy_store(&state, "__retobj", expr) != 0) {
+                        backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                        return -1;
+                    }
+                }
+                if (emit_copy_name_to_pointer_name(&state, "__retobj", "__retbuf") != 0) {
+                    return -1;
+                }
+            } else if (expr[0] == '\0') {
                 if (emit_load_immediate(&state, 0) != 0) {
                     return -1;
                 }

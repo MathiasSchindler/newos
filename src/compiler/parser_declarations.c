@@ -385,10 +385,10 @@ static int declare_symbol(
     if (declarator->name[0] != '\0') {
         const char *storage = "local";
 
-        if (!parser->semantic.in_function) {
-            if (is_static) {
-                storage = "static";
-            } else if (is_extern && !is_definition) {
+        if (is_static) {
+            storage = parser->semantic.in_function ? "local_static" : "static";
+        } else if (!parser->semantic.in_function) {
+            if (is_extern && !is_definition) {
                 storage = "extern";
             } else {
                 storage = "global";

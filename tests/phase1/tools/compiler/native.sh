@@ -56,6 +56,40 @@ EOF
 
 compile_and_check_native "$WORK_DIR/static_local_string_array.c" "$WORK_DIR/static_local_string_array_bin" "0" "compiler failed on a function-local static string array initializer"
 
+cat > "$WORK_DIR/u64_constant_compare.c" <<'EOF'
+static const unsigned long long expected = 0x1122334455667788ULL;
+
+int main(void) {
+    return expected == 0x1122334455667788ULL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u64_constant_compare.c" "$WORK_DIR/u64_constant_compare_bin" "0" "compiler miscompiled a 64-bit immediate constant on x86_64"
+
+cat > "$WORK_DIR/u64_global_array.c" <<'EOF'
+static const unsigned long long values[2] = {
+    0x1122334455667788ULL,
+    0x99aabbccddeeff00ULL
+};
+
+int main(void) {
+    return (values[0] == 0x1122334455667788ULL &&
+            values[1] == 0x99aabbccddeeff00ULL) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u64_global_array.c" "$WORK_DIR/u64_global_array_bin" "0" "compiler mis-sized a global 64-bit array on x86_64"
+
+cat > "$WORK_DIR/u64_unsigned_shift.c" <<'EOF'
+int main(void) {
+    volatile unsigned long long x = 0x8000000000000000ULL;
+    volatile unsigned long long y = x >> 8;
+    return y == 0x0080000000000000ULL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u64_unsigned_shift.c" "$WORK_DIR/u64_unsigned_shift_bin" "0" "compiler miscompiled an unsigned 64-bit right shift on x86_64"
+
 cat > "$WORK_DIR/local_struct_init.c" <<'EOF'
 typedef struct {
     int first;

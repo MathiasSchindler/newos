@@ -13,7 +13,8 @@
 
 #define COMPILER_MAX_OPTION_DEFINES 32
 #define COMPILER_MAX_INPUT_FILES 256
-#define COMPILER_MAX_LINK_ARGS (COMPILER_MAX_INPUT_FILES * 4 + 32)
+#define COMPILER_MAX_EXTRA_LINK_ARGS 32
+#define COMPILER_MAX_LINK_ARGS (COMPILER_MAX_INPUT_FILES * 4 + 64)
 
 typedef struct {
     const char *program_name;
@@ -32,8 +33,12 @@ typedef struct {
     int freestanding;
     int no_stdlib;
     int static_link;
+    int function_sections;
+    int data_sections;
     char include_dirs[COMPILER_MAX_INCLUDE_DIRS][COMPILER_PATH_CAPACITY];
     size_t include_dir_count;
+    const char *extra_link_args[COMPILER_MAX_EXTRA_LINK_ARGS];
+    size_t extra_link_arg_count;
     char define_names[COMPILER_MAX_OPTION_DEFINES][COMPILER_MACRO_NAME_CAPACITY];
     char define_values[COMPILER_MAX_OPTION_DEFINES][COMPILER_MACRO_VALUE_CAPACITY];
     size_t define_count;
@@ -77,7 +82,7 @@ static int ends_with(const char *text, const char *suffix) {
 }
 
 static int is_ignored_option(const char *arg) {
-    if (starts_with(arg, "-W") ||
+    if ((starts_with(arg, "-W") && !starts_with(arg, "-Wl,")) ||
         text_equals(arg, "-ffreestanding") ||
         text_equals(arg, "-fno-builtin") ||
         text_equals(arg, "-fno-stack-protector") ||
@@ -85,8 +90,7 @@ static int is_ignored_option(const char *arg) {
         text_equals(arg, "-fno-asynchronous-unwind-tables") ||
         text_equals(arg, "-nostdlib") ||
         text_equals(arg, "-static") ||
-        text_equals(arg, "-fsyntax-only") ||
-        text_equals(arg, "-fuse-ld=lld")) {
+        text_equals(arg, "-fsyntax-only")) {
         return 1;
     }
 
@@ -94,6 +98,15 @@ static int is_ignored_option(const char *arg) {
         return 1;
     }
 
+    return 0;
+}
+
+static int add_extra_link_arg(CompilerOptions *options, const char *value) {
+    if (options->extra_link_arg_count >= COMPILER_MAX_EXTRA_LINK_ARGS) {
+        return -1;
+    }
+
+    options->extra_link_args[options->extra_link_arg_count++] = value;
     return 0;
 }
 
@@ -281,6 +294,9 @@ static int link_executable_output(const CompilerOptions *options) {
     if (options->static_link) {
         append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-static");
     }
+    for (i = 0; i < options->extra_link_arg_count; ++i) {
+        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), options->extra_link_args[i]);
+    }
 
     for (i = 0; i < options->input_count; ++i) {
         const char *input_path = options->input_paths[i];
@@ -423,12 +439,42 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
             options->freestanding = 1;
             continue;
         }
+        if (text_equals(arg, "-ffunction-sections")) {
+            options->function_sections = 1;
+            continue;
+        }
+        if (text_equals(arg, "-fdata-sections")) {
+            options->data_sections = 1;
+            continue;
+        }
+        if (text_equals(arg, "-fno-function-sections")) {
+            options->function_sections = 0;
+            continue;
+        }
+        if (text_equals(arg, "-fno-data-sections")) {
+            options->data_sections = 0;
+            continue;
+        }
         if (text_equals(arg, "-nostdlib")) {
             options->no_stdlib = 1;
             continue;
         }
         if (text_equals(arg, "-static")) {
             options->static_link = 1;
+            continue;
+        }
+        if (starts_with(arg, "-Wl,")) {
+            if (add_extra_link_arg(options, arg) != 0) {
+                tool_write_error(options->program_name, "too many linker options; last one was ", arg);
+                return -1;
+            }
+            continue;
+        }
+        if (starts_with(arg, "-fuse-ld=")) {
+            if (add_extra_link_arg(options, arg) != 0) {
+                tool_write_error(options->program_name, "too many linker options; last one was ", arg);
+                return -1;
+            }
             continue;
         }
         if (text_equals(arg, "-I")) {
@@ -796,7 +842,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
     }
 
     if (options->emit_assembly) {
-        compiler_backend_init(&backend, options->target);
+        compiler_backend_init(&backend, options->target, options->function_sections, options->data_sections);
         if (compiler_backend_emit_assembly(&backend, &parser.ir, out_fd) != 0) {
             if (should_close) {
                 (void)platform_close(out_fd);
@@ -808,7 +854,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
 
     if (options->compile_only) {
         compiler_object_writer_init(&object_writer);
-        if (compiler_object_write_target(&object_writer, options->target, &parser.ir, out_fd) != 0) {
+        if (compiler_object_write_target(&object_writer, options->target, &parser.ir, out_fd, options->function_sections, options->data_sections) != 0) {
             if (should_close) {
                 (void)platform_close(out_fd);
             }

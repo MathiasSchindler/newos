@@ -5,6 +5,15 @@
 
 _Static_assert(sizeof(struct linux_termios) <= PLATFORM_TERMINAL_STATE_CAPACITY, "PlatformTerminalState is too small");
 
+#define LINUX_ENV_MAX_ENTRIES 256
+#define LINUX_ENV_ENTRY_CAPACITY 1024
+
+static char linux_env_storage[LINUX_ENV_MAX_ENTRIES][LINUX_ENV_ENTRY_CAPACITY];
+static char linux_env_raw[LINUX_ENV_MAX_ENTRIES * LINUX_ENV_ENTRY_CAPACITY];
+static char *linux_env_entries[LINUX_ENV_MAX_ENTRIES + 1];
+static size_t linux_env_count = 0U;
+static int linux_env_initialized = 0;
+
 static int linux_path_has_slash(const char *path) {
     unsigned long i = 0;
 
@@ -18,6 +27,120 @@ static int linux_path_has_slash(const char *path) {
     return 0;
 }
 
+static int linux_is_valid_env_name(const char *name) {
+    size_t i = 0U;
+
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    if (!((name[0] >= 'A' && name[0] <= 'Z') ||
+          (name[0] >= 'a' && name[0] <= 'z') ||
+          name[0] == '_')) {
+        return 0;
+    }
+    while (name[i] != '\0') {
+        if (!((name[i] >= 'A' && name[i] <= 'Z') ||
+              (name[i] >= 'a' && name[i] <= 'z') ||
+              (name[i] >= '0' && name[i] <= '9') ||
+              name[i] == '_')) {
+            return 0;
+        }
+        i += 1U;
+    }
+    return 1;
+}
+
+static int linux_env_name_matches(const char *entry, const char *name) {
+    size_t i = 0U;
+
+    if (entry == 0 || name == 0) {
+        return 0;
+    }
+    while (name[i] != '\0' && entry[i] == name[i]) {
+        i += 1U;
+    }
+    return name[i] == '\0' && entry[i] == '=';
+}
+
+static int linux_write_env_entry(size_t index, const char *name, const char *value) {
+    size_t name_len;
+    size_t value_len;
+
+    if (index >= LINUX_ENV_MAX_ENTRIES || name == 0) {
+        return -1;
+    }
+    name_len = rt_strlen(name);
+    value_len = value != 0 ? rt_strlen(value) : 0U;
+    if (name_len + 1U + value_len + 1U > sizeof(linux_env_storage[index])) {
+        return -1;
+    }
+    memcpy(linux_env_storage[index], name, name_len);
+    linux_env_storage[index][name_len] = '=';
+    if (value_len > 0U) {
+        memcpy(linux_env_storage[index] + name_len + 1U, value, value_len);
+    }
+    linux_env_storage[index][name_len + 1U + value_len] = '\0';
+    linux_env_entries[index] = linux_env_storage[index];
+    return 0;
+}
+
+static void linux_env_ensure_loaded(void) {
+    long fd;
+    long bytes;
+    size_t start = 0U;
+    size_t i;
+
+    if (linux_env_initialized) {
+        return;
+    }
+    linux_env_initialized = 1;
+    linux_env_count = 0U;
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/proc/self/environ", LINUX_O_RDONLY, 0);
+    if (fd < 0) {
+        linux_env_entries[0] = 0;
+        return;
+    }
+    bytes = linux_syscall3(LINUX_SYS_READ, fd, (long)linux_env_raw, (long)(sizeof(linux_env_raw) - 1U));
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    if (bytes <= 0) {
+        linux_env_entries[0] = 0;
+        return;
+    }
+    linux_env_raw[bytes] = '\0';
+    for (i = 0U; i < (size_t)bytes && linux_env_count < LINUX_ENV_MAX_ENTRIES; ++i) {
+        if (linux_env_raw[i] == '\0') {
+            if (i > start) {
+                rt_copy_string(linux_env_storage[linux_env_count],
+                               sizeof(linux_env_storage[linux_env_count]),
+                               linux_env_raw + start);
+                linux_env_entries[linux_env_count] = linux_env_storage[linux_env_count];
+                linux_env_count += 1U;
+            }
+            start = i + 1U;
+        }
+    }
+    if (start < (size_t)bytes && linux_env_count < LINUX_ENV_MAX_ENTRIES) {
+        rt_copy_string(linux_env_storage[linux_env_count],
+                       sizeof(linux_env_storage[linux_env_count]),
+                       linux_env_raw + start);
+        linux_env_entries[linux_env_count] = linux_env_storage[linux_env_count];
+        linux_env_count += 1U;
+    }
+    linux_env_entries[linux_env_count] = 0;
+}
+
+static int linux_find_env_index(const char *name) {
+    size_t i;
+
+    linux_env_ensure_loaded();
+    for (i = 0U; i < linux_env_count; ++i) {
+        if (linux_env_name_matches(linux_env_entries[i], name)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static void linux_child_exit(int status) {
     linux_syscall1(LINUX_SYS_EXIT, status);
     for (;;) {
@@ -25,8 +148,8 @@ static void linux_child_exit(int status) {
 }
 
 static void linux_try_exec(const char *path, char *const argv[]) {
-    char *const envp[] = { 0 };
-    linux_syscall3(LINUX_SYS_EXECVE, (long)path, (long)argv, (long)envp);
+    linux_env_ensure_loaded();
+    linux_syscall3(LINUX_SYS_EXECVE, (long)path, (long)argv, (long)linux_env_entries);
 }
 
 typedef struct {
@@ -113,28 +236,80 @@ void platform_write_signal_list(int fd) {
 }
 
 const char *platform_getenv(const char *name) {
-    (void)name;
-    return 0;
+    int index;
+    char *entry;
+
+    if (!linux_is_valid_env_name(name)) {
+        return 0;
+    }
+    index = linux_find_env_index(name);
+    if (index < 0) {
+        return 0;
+    }
+    entry = linux_env_entries[index];
+    while (*entry != '\0' && *entry != '=') {
+        entry += 1;
+    }
+    return *entry == '=' ? entry + 1 : 0;
 }
 
 const char *platform_getenv_entry(size_t index) {
-    (void)index;
-    return 0;
+    linux_env_ensure_loaded();
+    return index < linux_env_count ? linux_env_entries[index] : 0;
 }
 
 int platform_setenv(const char *name, const char *value, int overwrite) {
-    (void)name;
-    (void)value;
-    (void)overwrite;
+    int index;
+
+    if (!linux_is_valid_env_name(name)) {
+        return -1;
+    }
+    linux_env_ensure_loaded();
+    index = linux_find_env_index(name);
+    if (index >= 0) {
+        if (!overwrite) {
+            return 0;
+        }
+        return linux_write_env_entry((size_t)index, name, value != 0 ? value : "");
+    }
+    if (linux_env_count >= LINUX_ENV_MAX_ENTRIES) {
+        return -1;
+    }
+    if (linux_write_env_entry(linux_env_count, name, value != 0 ? value : "") != 0) {
+        return -1;
+    }
+    linux_env_count += 1U;
+    linux_env_entries[linux_env_count] = 0;
     return 0;
 }
 
 int platform_unsetenv(const char *name) {
-    (void)name;
+    int index;
+    size_t i;
+
+    if (!linux_is_valid_env_name(name)) {
+        return -1;
+    }
+    index = linux_find_env_index(name);
+    if (index < 0) {
+        return 0;
+    }
+    for (i = (size_t)index; i + 1U < linux_env_count; ++i) {
+        rt_copy_string(linux_env_storage[i], sizeof(linux_env_storage[i]), linux_env_entries[i + 1U]);
+        linux_env_entries[i] = linux_env_storage[i];
+    }
+    if (linux_env_count > 0U) {
+        linux_env_count -= 1U;
+        linux_env_storage[linux_env_count][0] = '\0';
+        linux_env_entries[linux_env_count] = 0;
+    }
     return 0;
 }
 
 int platform_clearenv(void) {
+    linux_env_ensure_loaded();
+    linux_env_count = 0U;
+    linux_env_entries[0] = 0;
     return 0;
 }
 

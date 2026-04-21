@@ -452,7 +452,7 @@ static int ir_apply_binary_op(const char *op, long long lhs, long long rhs, long
     } else if (ir_text_equals(op, "<<")) {
         *value_out = lhs << rhs;
     } else if (ir_text_equals(op, ">>")) {
-        *value_out = lhs >> rhs;
+        *value_out = (long long)(((unsigned long long)lhs) >> (unsigned int)rhs);
     } else if (ir_text_equals(op, "<")) {
         *value_out = lhs < rhs;
     } else if (ir_text_equals(op, ">")) {
@@ -819,6 +819,14 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
         base = "union";
     } else if (type->base == COMPILER_BASE_ENUM) {
         base = "enum";
+    } else if (type->base == COMPILER_BASE_INT) {
+        if (type->scalar_bytes >= 16U) {
+            base = "__int128";
+        } else if (type->scalar_bytes >= 8U) {
+            base = "long";
+        } else if (type->scalar_bytes == 2U) {
+            base = "short";
+        }
     }
 
     buffer[0] = '\0';

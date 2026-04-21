@@ -4,9 +4,9 @@
 #include "backend.h"
 #include "runtime.h"
 
-#define COMPILER_BACKEND_MAX_FUNCTIONS 256
-#define COMPILER_BACKEND_MAX_GLOBALS 256
-#define COMPILER_BACKEND_MAX_LOCALS 256
+#define COMPILER_BACKEND_MAX_FUNCTIONS 1024
+#define COMPILER_BACKEND_MAX_GLOBALS 1024
+#define COMPILER_BACKEND_MAX_LOCALS 1024
 #define COMPILER_BACKEND_MAX_STRINGS 1024
 #define COMPILER_BACKEND_MAX_CONSTANTS 512
 #define COMPILER_BACKEND_MAX_AGGREGATES 256
@@ -18,8 +18,10 @@
 
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
+    char return_type[128];
     int global;
     int stack_bytes;
+    int returns_object;
 } BackendFunctionName;
 
 typedef struct {
@@ -39,12 +41,14 @@ typedef struct {
 typedef struct {
     char name[COMPILER_IR_NAME_CAPACITY];
     char type_text[128];
+    char symbol_name[COMPILER_IR_NAME_CAPACITY];
     int offset;
     int stack_bytes;
     int is_array;
     int pointer_depth;
     int char_based;
     int prefers_word_index;
+    int static_storage;
 } BackendLocal;
 
 typedef struct {
@@ -150,9 +154,11 @@ int backend_register_arg_limit(const BackendState *state);
 void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size);
 void copy_last_word(const char *text, char *buffer, size_t buffer_size);
 int parse_signed_value(const char *text, long long *value_out);
-int add_function_name(BackendState *state, const char *name, int global);
+int add_function_name(BackendState *state, const char *name, int global, const char *return_type);
 int should_prefer_word_index(const char *name, const char *type_text);
 int is_function_name(const BackendState *state, const char *name);
+int function_returns_object(const BackendState *state, const char *name);
+const char *function_return_type(const BackendState *state, const char *name);
 int find_global(const BackendState *state, const char *name);
 int find_constant(const BackendState *state, const char *name);
 int add_constant(BackendState *state, const char *name, long long value);
@@ -167,6 +173,8 @@ int lookup_aggregate_member(const BackendState *state,
 int add_global(BackendState *state, const char *name, const char *type_text, int is_array, int pointer_depth, int char_based, int prefers_word_index, int global, int has_storage);
 int find_local(const BackendState *state, const char *name);
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
+int allocate_static_local(BackendState *state, const char *name, const char *symbol_name, const char *type_text, int storage_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
+void build_static_local_symbol_name(const BackendState *state, const char *function_name, const char *name, char *buffer, size_t buffer_size);
 const char *lookup_name_type_text(const BackendState *state, const char *name);
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label);
 int emit_pop_to_register(BackendState *state, const char *reg);
@@ -176,6 +184,7 @@ int emit_load_from_address_register(BackendState *state, const char *reg, int by
 int emit_move_value_register(BackendState *state, const char *dst_reg);
 int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value);
 int emit_pop_address_and_store(BackendState *state, int byte_value);
+int backend_type_access_size(const char *type_text, int word_index);
 int find_string_literal(const BackendState *state, const char *text);
 int add_string_literal(BackendState *state, const char *text);
 int emit_address_of_name(BackendState *state, const char *name);
@@ -184,6 +193,8 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
 int emit_load_name(BackendState *state, const char *name);
 int emit_store_name(BackendState *state, const char *name);
 int emit_copy_object_to_name(BackendState *state, const char *name);
+int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, const char *dst_pointer_name);
+int emit_copy_object_to_pushed_address(BackendState *state, int bytes);
 int lookup_array_storage(const BackendState *state, const char *name, int *word_index_out);
 int emit_load_immediate_register(BackendState *state, const char *reg, long long value);
 int emit_load_immediate(BackendState *state, long long value);

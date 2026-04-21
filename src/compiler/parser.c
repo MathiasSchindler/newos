@@ -138,6 +138,8 @@ int emit_ir_status(CompilerParser *parser, int status) {
 void copy_normalized_span(const char *start, const char *end, char *buffer, size_t buffer_size, const char *fallback) {
     size_t out = 0;
     int in_space = 1;
+    int in_string = 0;
+    int in_char = 0;
 
     if (buffer_size == 0) {
         return;
@@ -157,6 +159,28 @@ void copy_normalized_span(const char *start, const char *end, char *buffer, size
 
     while (start < end && out + 1 < buffer_size) {
         char ch = *start++;
+
+        if ((in_string || in_char) && ch == '\\' && start < end && out + 2 < buffer_size) {
+            buffer[out++] = ch;
+            buffer[out++] = *start++;
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+            in_space = 0;
+            buffer[out++] = ch;
+            continue;
+        }
+        if (!in_string && ch == '\'') {
+            in_char = !in_char;
+            in_space = 0;
+            buffer[out++] = ch;
+            continue;
+        }
+        if (in_string || in_char) {
+            buffer[out++] = ch;
+            continue;
+        }
 
         if (ch == '\n' || ch == '\r' || ch == '\t' || ch == '\v' || ch == '\f') {
             ch = ' ';

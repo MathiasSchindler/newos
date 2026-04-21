@@ -30,6 +30,7 @@ typedef long long int64_t;
 #define SHT_SYMTAB 2U
 #define SHT_STRTAB 3U
 #define SHT_RELA 4U
+#define SHT_NOBITS 8U
 
 #define SHF_WRITE 0x1ULL
 #define SHF_ALLOC 0x2ULL
@@ -48,7 +49,8 @@ typedef long long int64_t;
 typedef enum {
     OBJECT_SECTION_NONE = 0,
     OBJECT_SECTION_TEXT = 1,
-    OBJECT_SECTION_DATA = 2
+    OBJECT_SECTION_DATA = 2,
+    OBJECT_SECTION_BSS = 3
 } ObjectSection;
 
 typedef struct {
@@ -88,6 +90,7 @@ typedef struct {
     unsigned char data[OBJECT_WRITER_MAX_DATA];
     size_t text_size;
     size_t data_size;
+    size_t bss_size;
     ObjectSymbol symbols[OBJECT_WRITER_MAX_SYMBOLS];
     size_t symbol_count;
     ObjectLabel labels[OBJECT_WRITER_MAX_LABELS];
@@ -212,6 +215,16 @@ static int append_bytes(unsigned char *buffer, size_t *size, size_t capacity, co
     return 0;
 }
 
+static size_t current_section_size(const ObjectAssembler *assembler, ObjectSection section) {
+    if (section == OBJECT_SECTION_TEXT) {
+        return assembler->text_size;
+    }
+    if (section == OBJECT_SECTION_BSS) {
+        return assembler->bss_size;
+    }
+    return assembler->data_size;
+}
+
 static int append_byte(ObjectAssembler *assembler, ObjectSection section, unsigned char byte) {
     if (section == OBJECT_SECTION_TEXT) {
         return append_bytes(assembler->text, &assembler->text_size, sizeof(assembler->text), &byte, 1U);
@@ -222,28 +235,47 @@ static int append_byte(ObjectAssembler *assembler, ObjectSection section, unsign
     return -1;
 }
 
+static int append_zero_fill(ObjectAssembler *assembler, ObjectSection section, size_t count) {
+    if (section == OBJECT_SECTION_BSS) {
+        if (assembler->bss_size + count < assembler->bss_size) {
+            return -1;
+        }
+        assembler->bss_size += count;
+        return 0;
+    }
+
+    while (count > 0U) {
+        if (append_byte(assembler, section, 0U) != 0) {
+            return -1;
+        }
+        count -= 1U;
+    }
+
+    return 0;
+}
+
 static int append_u32(ObjectAssembler *assembler, ObjectSection section, uint32_t value) {
     unsigned char bytes[4];
     write_u32_le(bytes, value);
-    return append_bytes(
-        section == OBJECT_SECTION_TEXT ? assembler->text : assembler->data,
-        section == OBJECT_SECTION_TEXT ? &assembler->text_size : &assembler->data_size,
-        section == OBJECT_SECTION_TEXT ? sizeof(assembler->text) : sizeof(assembler->data),
-        bytes,
-        sizeof(bytes)
-    );
+    if (section == OBJECT_SECTION_TEXT) {
+        return append_bytes(assembler->text, &assembler->text_size, sizeof(assembler->text), bytes, sizeof(bytes));
+    }
+    if (section == OBJECT_SECTION_DATA) {
+        return append_bytes(assembler->data, &assembler->data_size, sizeof(assembler->data), bytes, sizeof(bytes));
+    }
+    return -1;
 }
 
 static int append_u64(ObjectAssembler *assembler, ObjectSection section, uint64_t value) {
     unsigned char bytes[8];
     write_u64_le(bytes, value);
-    return append_bytes(
-        section == OBJECT_SECTION_TEXT ? assembler->text : assembler->data,
-        section == OBJECT_SECTION_TEXT ? &assembler->text_size : &assembler->data_size,
-        section == OBJECT_SECTION_TEXT ? sizeof(assembler->text) : sizeof(assembler->data),
-        bytes,
-        sizeof(bytes)
-    );
+    if (section == OBJECT_SECTION_TEXT) {
+        return append_bytes(assembler->text, &assembler->text_size, sizeof(assembler->text), bytes, sizeof(bytes));
+    }
+    if (section == OBJECT_SECTION_DATA) {
+        return append_bytes(assembler->data, &assembler->data_size, sizeof(assembler->data), bytes, sizeof(bytes));
+    }
+    return -1;
 }
 
 static int find_symbol(const ObjectAssembler *assembler, const char *name) {
@@ -1236,6 +1268,10 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             assembler->current_section = OBJECT_SECTION_DATA;
             continue;
         }
+        if (names_equal(line, ".bss")) {
+            assembler->current_section = OBJECT_SECTION_BSS;
+            continue;
+        }
         if (starts_with(line, ".globl ")) {
             int symbol_index = get_symbol(assembler, line + 7);
             if (symbol_index < 0) {
@@ -1249,7 +1285,7 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             if (line_len > 0 && line[line_len - 1] == ':') {
                 char name[COMPILER_IR_NAME_CAPACITY];
                 size_t i;
-                size_t offset = (assembler->current_section == OBJECT_SECTION_TEXT) ? assembler->text_size : assembler->data_size;
+                size_t offset = current_section_size(assembler, assembler->current_section);
 
                 for (i = 0; i + 1 < line_len && i + 1 < sizeof(name); ++i) {
                     name[i] = line[i];
@@ -1258,13 +1294,14 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
                 if (add_label(assembler, name, assembler->current_section, offset) != 0) {
                     return -1;
                 }
-                if (assembler->current_section == OBJECT_SECTION_DATA) {
+                if (assembler->current_section != OBJECT_SECTION_TEXT &&
+                    assembler->current_section != OBJECT_SECTION_NONE) {
                     int symbol_index = get_symbol(assembler, name);
                     if (symbol_index < 0) {
                         return -1;
                     }
-                    assembler->symbols[symbol_index].section = OBJECT_SECTION_DATA;
-                    assembler->symbols[symbol_index].offset = assembler->data_size;
+                    assembler->symbols[symbol_index].section = assembler->current_section;
+                    assembler->symbols[symbol_index].offset = current_section_size(assembler, assembler->current_section);
                     assembler->symbols[symbol_index].defined = 1;
                     assembler->symbols[symbol_index].is_function = 0;
                 }
@@ -1287,9 +1324,19 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
                 return -1;
             }
             assembler->symbols[symbol_index].section = assembler->current_section;
-            assembler->symbols[symbol_index].offset = (assembler->current_section == OBJECT_SECTION_TEXT) ? assembler->text_size : assembler->data_size;
+            assembler->symbols[symbol_index].offset = current_section_size(assembler, assembler->current_section);
             assembler->symbols[symbol_index].defined = 1;
             assembler->symbols[symbol_index].is_function = assembler->current_section == OBJECT_SECTION_TEXT;
+            continue;
+        }
+        if (starts_with(line, ".zero ")) {
+            unsigned long long count = 0ULL;
+            if ((assembler->current_section != OBJECT_SECTION_DATA && assembler->current_section != OBJECT_SECTION_BSS) ||
+                rt_parse_uint(skip_spaces(line + 6), &count) != 0 ||
+                append_zero_fill(assembler, assembler->current_section, (size_t)count) != 0) {
+                set_error(assembler->writer, "unsupported .zero initializer");
+                return -1;
+            }
             continue;
         }
         if (starts_with(line, ".quad ")) {
@@ -1397,6 +1444,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     size_t rela_size = 0;
     size_t text_offset;
     size_t data_offset;
+    size_t bss_offset;
     size_t rela_offset;
     size_t symtab_offset;
     size_t strtab_offset;
@@ -1404,14 +1452,15 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     size_t shoff;
     uint32_t sh_name_text;
     uint32_t sh_name_data;
+    uint32_t sh_name_bss;
     uint32_t sh_name_rela;
     uint32_t sh_name_symtab;
     uint32_t sh_name_strtab;
     uint32_t sh_name_shstrtab;
     size_t i;
-    unsigned int sym_index = 3U;
-    unsigned int local_symbol_count = 3U;
-    const size_t section_count = 7U;
+    unsigned int sym_index = 4U;
+    unsigned int local_symbol_count = 4U;
+    const size_t section_count = 8U;
 
     file[0] = 0U;
     strtab[0] = 0U;
@@ -1422,6 +1471,10 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
         return -1;
     }
     if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".data", &sh_name_data) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".bss", &sh_name_bss) != 0) {
         set_error(assembler->writer, "failed to build ELF string tables");
         return -1;
     }
@@ -1465,6 +1518,11 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     rt_memset(symtab + symtab_size, 0, 24U);
     symtab[symtab_size + 4] = (unsigned char)((STB_LOCAL << 4) | STT_SECTION);
     write_u16_le(symtab + symtab_size + 6, 2U);
+    symtab_size += 24U;
+    /* .bss section symbol */
+    rt_memset(symtab + symtab_size, 0, 24U);
+    symtab[symtab_size + 4] = (unsigned char)((STB_LOCAL << 4) | STT_SECTION);
+    write_u16_le(symtab + symtab_size + 6, 3U);
     symtab_size += 24U;
 
     for (i = 0; i < assembler->symbol_count; ++i) {
@@ -1533,6 +1591,8 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
         return -1;
     }
 
+    bss_offset = align_up(file_size, 8U);
+
     rela_offset = align_up(file_size, 8U);
     while (file_size < rela_offset) file[file_size++] = 0U;
     if (append_bytes(file, &file_size, sizeof(file), rela, rela_size) != 0) {
@@ -1584,7 +1644,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     write_u16_le(file + 56, 0U);
     write_u16_le(file + 58, 64U);
     write_u16_le(file + 60, (uint16_t)section_count);
-    write_u16_le(file + 62, 6U);
+    write_u16_le(file + 62, 7U);
 
     /* section headers */
     for (i = 0; i < section_count; ++i) {
@@ -1607,39 +1667,47 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     write_u64_le(file + shoff + 128U + 32, (uint64_t)assembler->data_size);
     write_u64_le(file + shoff + 128U + 48, 8U);
 
-    /* .rela.text */
-    write_u32_le(file + shoff + 192U + 0, sh_name_rela);
-    write_u32_le(file + shoff + 192U + 4, SHT_RELA);
-    write_u64_le(file + shoff + 192U + 24, (uint64_t)rela_offset);
-    write_u64_le(file + shoff + 192U + 32, (uint64_t)rela_size);
-    write_u32_le(file + shoff + 192U + 40, 4U);
-    write_u32_le(file + shoff + 192U + 44, 1U);
+    /* .bss */
+    write_u32_le(file + shoff + 192U + 0, sh_name_bss);
+    write_u32_le(file + shoff + 192U + 4, SHT_NOBITS);
+    write_u64_le(file + shoff + 192U + 8, SHF_ALLOC | SHF_WRITE);
+    write_u64_le(file + shoff + 192U + 24, (uint64_t)bss_offset);
+    write_u64_le(file + shoff + 192U + 32, (uint64_t)assembler->bss_size);
     write_u64_le(file + shoff + 192U + 48, 8U);
-    write_u64_le(file + shoff + 192U + 56, 24U);
 
-    /* .symtab */
-    write_u32_le(file + shoff + 256U + 0, sh_name_symtab);
-    write_u32_le(file + shoff + 256U + 4, SHT_SYMTAB);
-    write_u64_le(file + shoff + 256U + 24, (uint64_t)symtab_offset);
-    write_u64_le(file + shoff + 256U + 32, (uint64_t)symtab_size);
+    /* .rela.text */
+    write_u32_le(file + shoff + 256U + 0, sh_name_rela);
+    write_u32_le(file + shoff + 256U + 4, SHT_RELA);
+    write_u64_le(file + shoff + 256U + 24, (uint64_t)rela_offset);
+    write_u64_le(file + shoff + 256U + 32, (uint64_t)rela_size);
     write_u32_le(file + shoff + 256U + 40, 5U);
-    write_u32_le(file + shoff + 256U + 44, local_symbol_count);
+    write_u32_le(file + shoff + 256U + 44, 1U);
     write_u64_le(file + shoff + 256U + 48, 8U);
     write_u64_le(file + shoff + 256U + 56, 24U);
 
+    /* .symtab */
+    write_u32_le(file + shoff + 320U + 0, sh_name_symtab);
+    write_u32_le(file + shoff + 320U + 4, SHT_SYMTAB);
+    write_u64_le(file + shoff + 320U + 24, (uint64_t)symtab_offset);
+    write_u64_le(file + shoff + 320U + 32, (uint64_t)symtab_size);
+    write_u32_le(file + shoff + 320U + 40, 6U);
+    write_u32_le(file + shoff + 320U + 44, local_symbol_count);
+    write_u64_le(file + shoff + 320U + 48, 8U);
+    write_u64_le(file + shoff + 320U + 56, 24U);
+
     /* .strtab */
-    write_u32_le(file + shoff + 320U + 0, sh_name_strtab);
-    write_u32_le(file + shoff + 320U + 4, SHT_STRTAB);
-    write_u64_le(file + shoff + 320U + 24, (uint64_t)strtab_offset);
-    write_u64_le(file + shoff + 320U + 32, (uint64_t)strtab_size);
-    write_u64_le(file + shoff + 320U + 48, 1U);
+    write_u32_le(file + shoff + 384U + 0, sh_name_strtab);
+    write_u32_le(file + shoff + 384U + 4, SHT_STRTAB);
+    write_u64_le(file + shoff + 384U + 24, (uint64_t)strtab_offset);
+    write_u64_le(file + shoff + 384U + 32, (uint64_t)strtab_size);
+    write_u64_le(file + shoff + 384U + 48, 1U);
 
     /* .shstrtab */
-    write_u32_le(file + shoff + 384U + 0, sh_name_shstrtab);
-    write_u32_le(file + shoff + 384U + 4, SHT_STRTAB);
-    write_u64_le(file + shoff + 384U + 24, (uint64_t)shstrtab_offset);
-    write_u64_le(file + shoff + 384U + 32, (uint64_t)shstrtab_size);
-    write_u64_le(file + shoff + 384U + 48, 1U);
+    write_u32_le(file + shoff + 448U + 0, sh_name_shstrtab);
+    write_u32_le(file + shoff + 448U + 4, SHT_STRTAB);
+    write_u64_le(file + shoff + 448U + 24, (uint64_t)shstrtab_offset);
+    write_u64_le(file + shoff + 448U + 32, (uint64_t)shstrtab_size);
+    write_u64_le(file + shoff + 448U + 48, 1U);
 
     file_size = shoff + (section_count * 64U);
     return rt_write_all(fd, file, file_size);
@@ -1654,12 +1722,14 @@ static int emit_backend_assembly_to_temp(
     CompilerTarget target,
     const CompilerIr *ir,
     char *temp_path,
-    size_t temp_path_size
+    size_t temp_path_size,
+    int function_sections,
+    int data_sections
 ) {
     CompilerBackend backend;
     int temp_fd;
 
-    compiler_backend_init(&backend, target);
+    compiler_backend_init(&backend, target, function_sections, data_sections);
     temp_fd = platform_create_temp_file(temp_path, temp_path_size, "/tmp/newos-ncc-asm-", 0600U);
     if (temp_fd < 0) {
         set_error(writer, "failed to create temporary assembly file");
@@ -1742,7 +1812,7 @@ static int write_external_elf_object(CompilerObjectWriter *writer, const char *a
     return 0;
 }
 
-int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd) {
+int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd, int function_sections, int data_sections) {
     static CompilerSource source;
     ObjectAssembler assembler;
     char temp_path[COMPILER_PATH_CAPACITY];
@@ -1751,7 +1821,7 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
     rt_memset(&assembler, 0, sizeof(assembler));
     assembler.writer = writer;
 
-    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_LINUX_X86_64, ir, temp_path, sizeof(temp_path)) != 0) {
+    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_LINUX_X86_64, ir, temp_path, sizeof(temp_path), function_sections, data_sections) != 0) {
         return -1;
     }
 
@@ -1777,7 +1847,7 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
     return 0;
 }
 
-int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd) {
+int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd, int function_sections, int data_sections) {
     static CompilerSource object_source;
     char asm_path[COMPILER_PATH_CAPACITY];
     char object_path[COMPILER_PATH_CAPACITY];
@@ -1799,7 +1869,10 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
 
     compiler_object_writer_init(writer);
 
-    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_MACOS_AARCH64, ir, asm_path, sizeof(asm_path)) != 0) {
+    (void)function_sections;
+    (void)data_sections;
+
+    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_MACOS_AARCH64, ir, asm_path, sizeof(asm_path), 0, 0) != 0) {
         return -1;
     }
 
@@ -1846,7 +1919,7 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
     return 0;
 }
 
-int compiler_object_write_target(CompilerObjectWriter *writer, CompilerTarget target, const CompilerIr *ir, int fd) {
+int compiler_object_write_target(CompilerObjectWriter *writer, CompilerTarget target, const CompilerIr *ir, int fd, int function_sections, int data_sections) {
     const CompilerTargetInfo *info = compiler_target_get_info(target);
 
     if (info == 0) {
@@ -1855,10 +1928,10 @@ int compiler_object_write_target(CompilerObjectWriter *writer, CompilerTarget ta
     }
 
     if (info->object_format == COMPILER_OBJECT_FORMAT_ELF64 && !info->is_aarch64) {
-        return compiler_object_write_elf64_x86_64(writer, ir, fd);
+        return compiler_object_write_elf64_x86_64(writer, ir, fd, function_sections, data_sections);
     }
     if (info->object_format == COMPILER_OBJECT_FORMAT_MACHO64 && info->is_aarch64) {
-        return compiler_object_write_macho64_aarch64(writer, ir, fd);
+        return compiler_object_write_macho64_aarch64(writer, ir, fd, function_sections, data_sections);
     }
 
     set_error(writer, "object emission is not implemented yet for this target");

@@ -24,6 +24,26 @@ if [ "$(uname -s)" = "Linux" ]; then
     "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux.o"
     "$ROOT_DIR/build/hexdump" "$WORK_DIR/sample_linux.o" > "$WORK_DIR/sample_linux_hex.out"
     assert_file_contains "$WORK_DIR/sample_linux_hex.out" '7f 45 4c 46' "compiler object writer did not emit ELF magic"
+
+    "$ROOT_DIR/build/ncc" -S --target linux-x86_64 -ffunction-sections -fdata-sections "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux_sections.s"
+    assert_file_contains "$WORK_DIR/sample_linux_sections.s" '^\.section \.text\.main,"ax",@progbits$' "compiler should emit one text section per function when requested"
+    assert_command_succeeds "$ROOT_DIR/build/ncc" --target linux-x86_64 -ffunction-sections -fdata-sections -Wl,--gc-sections "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_gc_bin"
+
+    cat > "$WORK_DIR/bss_globals.c" <<'EOF'
+static char huge[1048576];
+static long long counter;
+
+int main(void) {
+    huge[0] = 'o';
+    huge[1] = 'k';
+    counter = counter + huge[1];
+    return counter == 'k' ? 0 : 1;
+}
+EOF
+
+    "$ROOT_DIR/build/ncc" -S --target linux-x86_64 -ffunction-sections -fdata-sections "$WORK_DIR/bss_globals.c" -o "$WORK_DIR/bss_globals_linux.s"
+    assert_file_contains "$WORK_DIR/bss_globals_linux.s" '^\.section \.bss\.huge,"aw",@nobits$' "compiler should place zero-initialized globals in dedicated BSS sections when requested"
+    assert_file_contains "$WORK_DIR/bss_globals_linux.s" '^[[:space:]]*\.zero [1-9][0-9]*$' "compiler should emit zero-filled global storage without file-backed data bloat"
 fi
 
 "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos.o"
