@@ -1,6 +1,5 @@
 #include "platform.h"
 #include "common.h"
-#include "syscall.h"
 
 struct linux_statfs {
     long f_type;

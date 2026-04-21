@@ -212,4 +212,9 @@ $(TARGET_BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) src/shared/runtime.h src/
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 clean:
+	@for path in $(BUILD_ROOT) tests/tmp; do \
+		if [ -e "$$path" ]; then \
+			chmod -R u+rwX "$$path" 2>/dev/null || true; \
+		fi; \
+	done
 	rm -rf $(BUILD_ROOT) tests/tmp

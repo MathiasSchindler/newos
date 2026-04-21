@@ -1,6 +1,5 @@
 #include "platform.h"
 #include "common.h"
-#include "syscall.h"
 #include "proc_util.h"
 
 static int linux_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {

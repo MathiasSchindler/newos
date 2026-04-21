@@ -1,6 +1,5 @@
 #include "platform.h"
 #include "common.h"
-#include "syscall.h"
 
 struct linux_utsname_identity {
     char sysname[65];

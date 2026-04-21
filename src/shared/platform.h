@@ -241,6 +241,7 @@ int platform_setenv(const char *name, const char *value, int overwrite);
 int platform_unsetenv(const char *name);
 int platform_clearenv(void);
 int platform_isatty(int fd);
+int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *columns_out);
 int platform_get_process_id(void);
 long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_read);
 int platform_clear_kernel_log(void);

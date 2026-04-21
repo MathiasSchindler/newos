@@ -17,6 +17,7 @@
 #include <string.h>
 #include <termios.h>
 #include <time.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -246,6 +247,24 @@ int platform_isatty(int fd) {
     return isatty(fd) ? 1 : 0;
 }
 
+int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *columns_out) {
+    struct winsize winsize;
+
+    if (ioctl(fd, TIOCGWINSZ, &winsize) != 0 || (winsize.ws_row == 0 && winsize.ws_col == 0)) {
+        errno = ENOTTY;
+        return -1;
+    }
+
+    if (rows_out != NULL) {
+        *rows_out = (unsigned int)winsize.ws_row;
+    }
+    if (columns_out != NULL) {
+        *columns_out = (unsigned int)winsize.ws_col;
+    }
+
+    return 0;
+}
+
 int platform_get_process_id(void) {
     return (int)getpid();
 }
@@ -393,9 +412,6 @@ static void platform_make_raw_termios(struct termios *raw) {
         IXON |
 #endif
         0);
-#ifdef OPOST
-    raw->c_oflag &= (tcflag_t)~OPOST;
-#endif
     raw->c_lflag &= ~(tcflag_t)(
 #ifdef ECHO
         ECHO |

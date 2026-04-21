@@ -1,7 +1,6 @@
 #include "platform.h"
 #include "runtime.h"
 #include "common.h"
-#include "syscall.h"
 
 #define LINUX_AF_INET 2
 #define LINUX_AF_INET6 10

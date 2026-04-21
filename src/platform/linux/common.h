@@ -4,6 +4,14 @@
 #include "platform.h"
 #include "runtime.h"
 
+#if defined(__x86_64__)
+#include "../../arch/x86_64/linux/syscall.h"
+#elif defined(__aarch64__)
+#include "../../arch/aarch64/linux/syscall.h"
+#else
+#error "Unsupported Linux architecture for syscall definitions"
+#endif
+
 #define LINUX_AT_FDCWD (-100)
 #define LINUX_AT_SYMLINK_NOFOLLOW 0x100
 #define LINUX_AT_REMOVEDIR 0x200

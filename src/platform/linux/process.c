@@ -1,6 +1,5 @@
 #include "platform.h"
 #include "common.h"
-#include "syscall.h"
 #include "signal_util.h"
 
 _Static_assert(sizeof(struct linux_termios) <= PLATFORM_TERMINAL_STATE_CAPACITY, "PlatformTerminalState is too small");
@@ -364,6 +363,24 @@ int platform_isatty(int fd) {
     return linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCGWINSZ, (long)&winsize) < 0 ? 0 : 1;
 }
 
+int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *columns_out) {
+    struct linux_winsize winsize;
+
+    if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCGWINSZ, (long)&winsize) < 0 ||
+        (winsize.ws_row == 0U && winsize.ws_col == 0U)) {
+        return -1;
+    }
+
+    if (rows_out != 0) {
+        *rows_out = (unsigned int)winsize.ws_row;
+    }
+    if (columns_out != 0) {
+        *columns_out = (unsigned int)winsize.ws_col;
+    }
+
+    return 0;
+}
+
 int platform_get_process_id(void) {
     long pid = linux_syscall0(LINUX_SYS_GETPID);
     return pid < 0 ? -1 : (int)pid;
@@ -445,7 +462,6 @@ int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) 
 
     raw = saved;
     raw.c_iflag &= ~(LINUX_BRKINT | LINUX_ICRNL | LINUX_INPCK | LINUX_ISTRIP | LINUX_IXON);
-    raw.c_oflag &= ~LINUX_OPOST;
     raw.c_cflag |= LINUX_CS8;
     raw.c_lflag &= ~(LINUX_ECHO | LINUX_ICANON | LINUX_IEXTEN | LINUX_ISIG);
     raw.c_cc[LINUX_VMIN] = 1;

@@ -46,9 +46,14 @@ static int text_starts_with(const char *text, const char *prefix) {
 static unsigned int pager_page_lines(void) {
     const char *text = platform_getenv("LINES");
     unsigned long long value = 0;
+    unsigned int rows = 0U;
 
     if (text != 0 && rt_parse_uint(text, &value) == 0 && value > 1 && value < 1000) {
         return (unsigned int)(value - 1);
+    }
+
+    if (platform_get_terminal_size(1, &rows, 0) == 0 && rows > 1U && rows < 1000U) {
+        return rows - 1U;
     }
 
     return DEFAULT_PAGE_LINES;

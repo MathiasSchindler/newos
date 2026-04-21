@@ -43,8 +43,22 @@ EOF
 assert_file_contains "$WORK_DIR/man_render.out" '^  [|] quoted note$' "man did not render block quotes cleanly"
 assert_file_contains "$WORK_DIR/man_render.out" '^    echo hi$' "man did not preserve fenced code blocks as indented text"
 assert_file_contains "$WORK_DIR/man_render.out" '^Literal flag: --color\[=WHEN\]$' "man did not preserve literal bracketed option syntax"
-assert_file_contains "$WORK_DIR/man_render.out" '^[+].*[+]$' "man did not render markdown tables with ASCII borders"
-assert_file_contains "$WORK_DIR/man_render.out" '^[|] Flag .* [|]$' "man did not render the table header row cleanly"
+assert_file_contains "$WORK_DIR/man_render.out" '^┌.*┐$' "man did not render markdown tables with Unicode borders"
+assert_file_contains "$WORK_DIR/man_render.out" '^│ Flag .* │$' "man did not render the table header row cleanly"
+
+cat > "$WORK_DIR/man_wrap.md" <<'EOF'
+# WRAP
+
+| Col1 | Col2 |
+|------|------|
+| Value 1 Separate | Value 2 cols |
+| This is a row with only one cell |
+EOF
+COLUMNS=28 "$ROOT_DIR/build/man" -l "$WORK_DIR/man_wrap.md" > "$WORK_DIR/man_wrap.out"
+assert_file_contains "$WORK_DIR/man_wrap.out" '^┌.*┐$' "man did not keep the wrapped table framed"
+assert_file_contains "$WORK_DIR/man_wrap.out" 'Separate' "man did not wrap long first-column content"
+assert_file_contains "$WORK_DIR/man_wrap.out" 'cols' "man did not wrap long second-column content"
+assert_file_contains "$WORK_DIR/man_wrap.out" 'only one' "man did not keep a single-cell row visible after wrapping"
 
 "$ROOT_DIR/build/man" --color=always -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_color.out"
 if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/man_color.out"; then
