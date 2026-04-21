@@ -7,11 +7,12 @@ _Static_assert(sizeof(struct linux_termios) <= PLATFORM_TERMINAL_STATE_CAPACITY,
 
 #define LINUX_ENV_MAX_ENTRIES 256
 #define LINUX_ENV_ENTRY_CAPACITY 1024
+#define LINUX_ENV_RAW_CAPACITY (LINUX_ENV_MAX_ENTRIES * LINUX_ENV_ENTRY_CAPACITY)
 
-static char linux_env_storage[LINUX_ENV_MAX_ENTRIES][LINUX_ENV_ENTRY_CAPACITY];
-static char linux_env_raw[LINUX_ENV_MAX_ENTRIES * LINUX_ENV_ENTRY_CAPACITY];
+static char linux_env_raw[LINUX_ENV_RAW_CAPACITY];
 static char *linux_env_entries[LINUX_ENV_MAX_ENTRIES + 1];
 static size_t linux_env_count = 0U;
+static size_t linux_env_raw_used = 0U;
 static int linux_env_initialized = 0;
 static int linux_random_fd = -2;
 
@@ -63,25 +64,68 @@ static int linux_env_name_matches(const char *entry, const char *name) {
     return name[i] == '\0' && entry[i] == '=';
 }
 
+static int linux_compact_env_entries(void) {
+    size_t used = 0U;
+    size_t i;
+
+    for (i = 0U; i < linux_env_count; ++i) {
+        char *entry = linux_env_entries[i];
+        size_t entry_len;
+
+        if (entry == 0 || entry[0] == '\0') {
+            continue;
+        }
+
+        entry_len = rt_strlen(entry) + 1U;
+        if (used + entry_len > sizeof(linux_env_raw)) {
+            return -1;
+        }
+
+        memmove(linux_env_raw + used, entry, entry_len);
+        linux_env_entries[i] = linux_env_raw + used;
+        used += entry_len;
+    }
+
+    linux_env_raw_used = used;
+    if (linux_env_raw_used < sizeof(linux_env_raw)) {
+        linux_env_raw[linux_env_raw_used] = '\0';
+        linux_env_raw_used += 1U;
+    }
+    linux_env_entries[linux_env_count] = 0;
+    return 0;
+}
+
 static int linux_write_env_entry(size_t index, const char *name, const char *value) {
     size_t name_len;
     size_t value_len;
+    size_t total_len;
+    char *entry;
 
     if (index >= LINUX_ENV_MAX_ENTRIES || name == 0) {
         return -1;
     }
     name_len = rt_strlen(name);
     value_len = value != 0 ? rt_strlen(value) : 0U;
-    if (name_len + 1U + value_len + 1U > sizeof(linux_env_storage[index])) {
+    total_len = name_len + 1U + value_len + 1U;
+
+    if (total_len > sizeof(linux_env_raw)) {
         return -1;
     }
-    memcpy(linux_env_storage[index], name, name_len);
-    linux_env_storage[index][name_len] = '=';
-    if (value_len > 0U) {
-        memcpy(linux_env_storage[index] + name_len + 1U, value, value_len);
+    if (linux_env_raw_used + total_len > sizeof(linux_env_raw)) {
+        if (linux_compact_env_entries() != 0 || linux_env_raw_used + total_len > sizeof(linux_env_raw)) {
+            return -1;
+        }
     }
-    linux_env_storage[index][name_len + 1U + value_len] = '\0';
-    linux_env_entries[index] = linux_env_storage[index];
+
+    entry = linux_env_raw + linux_env_raw_used;
+    memcpy(entry, name, name_len);
+    entry[name_len] = '=';
+    if (value_len > 0U) {
+        memcpy(entry + name_len + 1U, value, value_len);
+    }
+    entry[name_len + 1U + value_len] = '\0';
+    linux_env_entries[index] = entry;
+    linux_env_raw_used += total_len;
     return 0;
 }
 
@@ -96,6 +140,7 @@ static void linux_env_ensure_loaded(void) {
     }
     linux_env_initialized = 1;
     linux_env_count = 0U;
+    linux_env_raw_used = 0U;
     fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/proc/self/environ", LINUX_O_RDONLY, 0);
     if (fd < 0) {
         linux_env_entries[0] = 0;
@@ -108,23 +153,18 @@ static void linux_env_ensure_loaded(void) {
         return;
     }
     linux_env_raw[bytes] = '\0';
+    linux_env_raw_used = (size_t)bytes + 1U;
     for (i = 0U; i < (size_t)bytes && linux_env_count < LINUX_ENV_MAX_ENTRIES; ++i) {
         if (linux_env_raw[i] == '\0') {
             if (i > start) {
-                rt_copy_string(linux_env_storage[linux_env_count],
-                               sizeof(linux_env_storage[linux_env_count]),
-                               linux_env_raw + start);
-                linux_env_entries[linux_env_count] = linux_env_storage[linux_env_count];
+                linux_env_entries[linux_env_count] = linux_env_raw + start;
                 linux_env_count += 1U;
             }
             start = i + 1U;
         }
     }
     if (start < (size_t)bytes && linux_env_count < LINUX_ENV_MAX_ENTRIES) {
-        rt_copy_string(linux_env_storage[linux_env_count],
-                       sizeof(linux_env_storage[linux_env_count]),
-                       linux_env_raw + start);
-        linux_env_entries[linux_env_count] = linux_env_storage[linux_env_count];
+        linux_env_entries[linux_env_count] = linux_env_raw + start;
         linux_env_count += 1U;
     }
     linux_env_entries[linux_env_count] = 0;
@@ -296,13 +336,15 @@ int platform_unsetenv(const char *name) {
         return 0;
     }
     for (i = (size_t)index; i + 1U < linux_env_count; ++i) {
-        rt_copy_string(linux_env_storage[i], sizeof(linux_env_storage[i]), linux_env_entries[i + 1U]);
-        linux_env_entries[i] = linux_env_storage[i];
+        linux_env_entries[i] = linux_env_entries[i + 1U];
     }
     if (linux_env_count > 0U) {
         linux_env_count -= 1U;
-        linux_env_storage[linux_env_count][0] = '\0';
         linux_env_entries[linux_env_count] = 0;
+    }
+    if (linux_env_count == 0U) {
+        linux_env_raw_used = 0U;
+        linux_env_raw[0] = '\0';
     }
     return 0;
 }
@@ -310,6 +352,8 @@ int platform_unsetenv(const char *name) {
 int platform_clearenv(void) {
     linux_env_ensure_loaded();
     linux_env_count = 0U;
+    linux_env_raw_used = 0U;
+    linux_env_raw[0] = '\0';
     linux_env_entries[0] = 0;
     return 0;
 }
@@ -624,6 +668,125 @@ int platform_wait_process_timeout(
     }
 }
 
+static void linux_lookup_username(unsigned int uid, char *buffer, size_t buffer_size) {
+    char passwd_buf[4096];
+    long passwd_fd;
+    long bytes;
+    size_t i;
+
+    linux_unsigned_to_string((unsigned long long)uid, buffer, buffer_size);
+
+    passwd_fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/etc/passwd", LINUX_O_RDONLY, 0);
+    if (passwd_fd < 0) {
+        return;
+    }
+    bytes = linux_syscall3(LINUX_SYS_READ, passwd_fd, (long)passwd_buf, (long)(sizeof(passwd_buf) - 1));
+    linux_syscall1(LINUX_SYS_CLOSE, passwd_fd);
+    if (bytes <= 0) {
+        return;
+    }
+    passwd_buf[bytes] = '\0';
+
+    i = 0;
+    while (i < (size_t)bytes) {
+        const char *line = passwd_buf + i;
+        const char *p = line;
+        size_t name_len;
+        unsigned long long file_uid;
+
+        while (i < (size_t)bytes && passwd_buf[i] != '\n') {
+            i++;
+        }
+        passwd_buf[i] = '\0';
+        i++;
+
+        while (*p && *p != ':') p++;
+        if (!*p) continue;
+        name_len = (size_t)(p - line);
+        p++;
+        while (*p && *p != ':') p++;
+        if (!*p) continue;
+        p++;
+        file_uid = 0;
+        while (*p >= '0' && *p <= '9') {
+            file_uid = file_uid * 10 + (unsigned long long)(*p - '0');
+            p++;
+        }
+        if (file_uid == (unsigned long long)uid && *p == ':' && name_len > 0 && name_len < buffer_size) {
+            memcpy(buffer, line, name_len);
+            buffer[name_len] = '\0';
+            return;
+        }
+    }
+}
+
+static void linux_load_process_status(const char *status_path, PlatformProcessEntry *entry) {
+    char buf[2048];
+    long status_fd;
+    long bytes;
+    size_t i;
+
+    status_fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)status_path, LINUX_O_RDONLY, 0);
+    if (status_fd < 0) {
+        return;
+    }
+    bytes = linux_syscall3(LINUX_SYS_READ, status_fd, (long)buf, (long)(sizeof(buf) - 1));
+    linux_syscall1(LINUX_SYS_CLOSE, status_fd);
+    if (bytes <= 0) {
+        return;
+    }
+    buf[bytes] = '\0';
+
+    i = 0;
+    while (i < (size_t)bytes) {
+        const char *line = buf + i;
+        const char *p;
+        size_t j = i;
+
+        while (j < (size_t)bytes && buf[j] != '\n') {
+            j++;
+        }
+        buf[j] = '\0';
+
+        if (rt_strncmp(line, "Name:", 5) == 0) {
+            p = line + 5;
+            while (*p == ' ' || *p == '\t') p++;
+            linux_copy_string(entry->name, sizeof(entry->name), p);
+        } else if (rt_strncmp(line, "State:", 6) == 0) {
+            char state_buf[16];
+            size_t k = 0;
+            p = line + 6;
+            while (*p == ' ' || *p == '\t') p++;
+            while (*p && *p != ' ' && *p != '\t' && k < sizeof(state_buf) - 1) {
+                state_buf[k++] = *p++;
+            }
+            state_buf[k] = '\0';
+            linux_copy_string(entry->state, sizeof(entry->state), state_buf);
+        } else if (rt_strncmp(line, "PPid:", 5) == 0) {
+            unsigned long long ppid = 0;
+            p = line + 5;
+            while (*p == ' ' || *p == '\t') p++;
+            rt_parse_uint(p, &ppid);
+            entry->ppid = (int)ppid;
+        } else if (rt_strncmp(line, "Uid:", 4) == 0) {
+            unsigned long long uid = 0;
+            p = line + 4;
+            while (*p == ' ' || *p == '\t') p++;
+            rt_parse_uint(p, &uid);
+            entry->uid = (unsigned int)uid;
+            linux_lookup_username(entry->uid, entry->user, sizeof(entry->user));
+        } else if (rt_strncmp(line, "VmRSS:", 6) == 0) {
+            unsigned long long rss = 0;
+            p = line + 6;
+            while (*p == ' ' || *p == '\t') p++;
+            rt_parse_uint(p, &rss);
+            entry->rss_kb = rss;
+        }
+
+        i = j + 1;
+    }
+}
+
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out) {
     long fd;
     size_t count = 0;
@@ -657,9 +820,7 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
 
             if (linux_is_digit_string(name)) {
                 char proc_dir[1024];
-                char comm_path[1024];
-                long comm_fd;
-                long read_result;
+                char status_path[1024];
 
                 entries_out[count].pid = linux_parse_pid_value(name);
                 entries_out[count].ppid = 0;
@@ -670,16 +831,8 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
                 linux_copy_string(entries_out[count].name, sizeof(entries_out[count].name), name);
 
                 if (linux_join_path("/proc", name, proc_dir, sizeof(proc_dir)) == 0 &&
-                    linux_join_path(proc_dir, "comm", comm_path, sizeof(comm_path)) == 0) {
-                    comm_fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)comm_path, LINUX_O_RDONLY, 0);
-                    if (comm_fd >= 0) {
-                        read_result = linux_syscall3(LINUX_SYS_READ, comm_fd, (long)entries_out[count].name, sizeof(entries_out[count].name) - 1);
-                        if (read_result > 0) {
-                            entries_out[count].name[read_result] = '\0';
-                            linux_trim_newline(entries_out[count].name);
-                        }
-                        linux_syscall1(LINUX_SYS_CLOSE, comm_fd);
-                    }
+                    linux_join_path(proc_dir, "status", status_path, sizeof(status_path)) == 0) {
+                    linux_load_process_status(status_path, &entries_out[count]);
                 }
 
                 count += 1;

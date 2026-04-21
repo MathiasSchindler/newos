@@ -1382,7 +1382,7 @@ int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_c
         rt_memset(&ifr, 0, sizeof(ifr));
         rt_copy_string(ifr.ifr_name, sizeof(ifr.ifr_name), names[i]);
         if (linux_syscall3(LINUX_SYS_IOCTL, sock, LINUX_SIOCGIFHWADDR, (long)&ifr) >= 0) {
-            linux_format_mac_address(ifr.data.hwaddr.sa_data, 6U, entry->mac, sizeof(entry->mac));
+            linux_format_mac_address(((const unsigned char *)&ifr.data.hwaddr) + 2, 6U, entry->mac, sizeof(entry->mac));
             entry->has_mac = entry->mac[0] != '\0';
         }
 
@@ -1853,7 +1853,7 @@ static int linux_select_mac_address(const char *ifname, unsigned char mac_out[6]
         rt_memset(&ifr, 0, sizeof(ifr));
         rt_copy_string(ifr.ifr_name, sizeof(ifr.ifr_name), ifname);
         if (linux_syscall3(LINUX_SYS_IOCTL, sock, LINUX_SIOCGIFHWADDR, (long)&ifr) >= 0) {
-            memcpy(mac_out, ifr.data.hwaddr.sa_data, 6U);
+            memcpy(mac_out, ((const unsigned char *)&ifr.data.hwaddr) + 2, 6U);
             platform_close(sock);
             return 0;
         }
@@ -1878,7 +1878,7 @@ static int linux_select_mac_address(const char *ifname, unsigned char mac_out[6]
         rt_memset(&ifr, 0, sizeof(ifr));
         rt_copy_string(ifr.ifr_name, sizeof(ifr.ifr_name), names[i]);
         if (linux_syscall3(LINUX_SYS_IOCTL, sock, LINUX_SIOCGIFHWADDR, (long)&ifr) >= 0) {
-            memcpy(mac_out, ifr.data.hwaddr.sa_data, 6U);
+            memcpy(mac_out, ((const unsigned char *)&ifr.data.hwaddr) + 2, 6U);
             platform_close(sock);
             return 0;
         }
