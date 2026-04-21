@@ -205,30 +205,6 @@ static int posix_ifname_is_valid(const char *ifname) {
     return 1;
 }
 
-static FILE *posix_open_netstat_pipe(const char *family_name) {
-    static const char *const candidates[] = { "/usr/sbin/netstat", "/bin/netstat" };
-    char command[96];
-    size_t i;
-
-    if (family_name == NULL || family_name[0] == '\0') {
-        errno = EINVAL;
-        return NULL;
-    }
-
-    for (i = 0U; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
-        if (access(candidates[i], X_OK) != 0) {
-            continue;
-        }
-        if (snprintf(command, sizeof(command), "%s -rn -f %s 2>/dev/null", candidates[i], family_name) < 0) {
-            return NULL;
-        }
-        return popen(command, "r");
-    }
-
-    errno = ENOENT;
-    return NULL;
-}
-
 static unsigned short compute_icmp_checksum(const void *data, size_t length) {
     const unsigned short *words = (const unsigned short *)data;
     unsigned int sum = 0;

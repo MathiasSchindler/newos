@@ -13,6 +13,7 @@ static char linux_env_raw[LINUX_ENV_MAX_ENTRIES * LINUX_ENV_ENTRY_CAPACITY];
 static char *linux_env_entries[LINUX_ENV_MAX_ENTRIES + 1];
 static size_t linux_env_count = 0U;
 static int linux_env_initialized = 0;
+static int linux_random_fd = -2;
 
 static int linux_path_has_slash(const char *path) {
     unsigned long i = 0;
@@ -361,21 +362,25 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
         return 0;
     }
 
-    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/dev/urandom", LINUX_O_RDONLY, 0);
+    fd = (long)linux_random_fd;
     if (fd < 0) {
-        return -1;
+        fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/dev/urandom", LINUX_O_RDONLY, 0);
+        if (fd < 0) {
+            return -1;
+        }
+        linux_random_fd = (int)fd;
     }
 
     while (offset < count) {
         long bytes = linux_syscall3(LINUX_SYS_READ, fd, (long)(buffer + offset), (long)(count - offset));
         if (bytes <= 0) {
             linux_syscall1(LINUX_SYS_CLOSE, fd);
+            linux_random_fd = -2;
             return -1;
         }
         offset += (size_t)bytes;
     }
 
-    linux_syscall1(LINUX_SYS_CLOSE, fd);
     return 0;
 }
 

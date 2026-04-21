@@ -1114,6 +1114,17 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser,
             *byte_sized = type_access_size(base_type, word_index);
             current_is_address = 1;
             expr_next(parser);
+            if (parser->current.kind == EXPR_TOKEN_PUNCT &&
+                is_index_or_arrow_text(parser->current.text) &&
+                type_is_pointer_like(base_type) &&
+                !member_result_decays_to_address(base_type)) {
+                if (emit_load_from_address_register(parser->state,
+                                                    backend_is_aarch64(parser->state) ? "x0" : "%rax",
+                                                    *byte_sized) != 0) {
+                    return -1;
+                }
+                current_is_address = 0;
+            }
             continue;
         }
         break;

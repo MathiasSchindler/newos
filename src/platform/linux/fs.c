@@ -174,6 +174,7 @@ int platform_open_append(const char *path, unsigned int mode) {
 }
 
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
+    static const char hex_digits[] = "0123456789abcdef";
     const char *base = (prefix != 0 && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
     unsigned long long seed = (unsigned long long)(platform_get_epoch_time() < 0 ? 0 : platform_get_epoch_time());
     unsigned int attempt;
@@ -187,8 +188,20 @@ int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char 
         size_t base_len = string_length(base);
         size_t suffix_len;
         long fd;
+        unsigned char random_bytes[6];
 
-        unsigned_to_string(seed + next_temp_path_id + (unsigned long long)attempt, suffix, sizeof(suffix));
+        if (platform_random_bytes(random_bytes, sizeof(random_bytes)) == 0) {
+            size_t i;
+
+            for (i = 0U; i < sizeof(random_bytes); ++i) {
+                suffix[i * 2U] = hex_digits[random_bytes[i] >> 4];
+                suffix[i * 2U + 1U] = hex_digits[random_bytes[i] & 0x0fU];
+            }
+            suffix[sizeof(random_bytes) * 2U] = '\0';
+        } else {
+            unsigned_to_string(seed + next_temp_path_id + (unsigned long long)attempt, suffix, sizeof(suffix));
+        }
+
         suffix_len = string_length(suffix);
         if (base_len + suffix_len + 1 > buffer_size) {
             return -1;

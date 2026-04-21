@@ -36,6 +36,11 @@ int platform_get_hostname(char *buffer, size_t buffer_size) {
 }
 
 int platform_set_hostname(const char *name) {
+    if (name == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
     return sethostname(name, (int)rt_strlen(name));
 }
 

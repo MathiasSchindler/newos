@@ -181,6 +181,42 @@ static int maybe_capture_array_length(CompilerParser *parser, unsigned long long
                     term = value;
                 }
             }
+        } else if (parser->current.kind == COMPILER_TOKEN_IDENTIFIER) {
+            char ident[64];
+            long long const_value = 0;
+            long long next_sum;
+
+            copy_token_text(&parser->current, ident, sizeof(ident));
+            if (compiler_semantic_lookup_constant(&parser->semantic, ident, &const_value) == 0 &&
+                const_value > 0) {
+                if (!saw_value) {
+                    term = const_value;
+                    saw_value = 1;
+                } else if (pending_op == '*') {
+                    if (checked_multiply_long_long(term, const_value, &term) != 0) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
+                } else if (pending_op == '/') {
+                    if (const_value != 0) {
+                        term /= const_value;
+                    }
+                } else if (pending_op == '-') {
+                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
+                    sum = next_sum;
+                    term = -const_value;
+                } else {
+                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
+                    sum = next_sum;
+                    term = const_value;
+                }
+            }
         } else if (parser->current.kind == COMPILER_TOKEN_PUNCTUATOR &&
                    parser->current.length == 1U) {
             char op = parser->current.start[0];

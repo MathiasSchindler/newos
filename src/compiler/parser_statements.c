@@ -250,6 +250,7 @@ for_cleanup:
     }
 
     if (current_is_keyword(parser, "switch")) {
+        char end_label[COMPILER_IR_NAME_CAPACITY];
         char cond_text[COMPILER_IR_LINE_CAPACITY];
         const char *cond_start;
         const char *cond_end;
@@ -266,11 +267,15 @@ for_cleanup:
             return -1;
         }
         copy_normalized_span(cond_start, cond_end, cond_text, sizeof(cond_text), "0");
-        if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "switch", cond_text)) != 0 ||
+        if (emit_ir_status(parser, compiler_ir_make_label(&parser->ir, "switchend", end_label, sizeof(end_label))) != 0 ||
+            push_loop_labels(parser, 0, end_label) != 0 ||
+            emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "switch", cond_text)) != 0 ||
             parse_statement(parser) != 0 ||
-            emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "endswitch", "")) != 0) {
+            emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "endswitch", "")) != 0 ||
+            emit_ir_status(parser, compiler_ir_emit_label(&parser->ir, end_label)) != 0) {
             return -1;
         }
+        pop_loop_labels(parser);
         return 0;
     }
 

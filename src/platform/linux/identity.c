@@ -24,6 +24,10 @@ int platform_get_hostname(char *buffer, size_t buffer_size) {
 }
 
 int platform_set_hostname(const char *name) {
+    if (name == 0) {
+        return -1;
+    }
+
     return linux_syscall2(LINUX_SYS_SETHOSTNAME, (long)name, (long)linux_string_length(name)) < 0 ? -1 : 0;
 }
 
