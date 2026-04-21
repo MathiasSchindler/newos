@@ -2359,15 +2359,40 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
     }
 
     if (expr_looks_like_cast(parser)) {
+        char cast_base_type[128];
+        int cast_is_pointer = 0;
+        cast_base_type[0] = '\0';
         expr_next(parser);
+        if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
+            char probe[128];
+            size_t tlen = rt_strlen(parser->current.text);
+            if (tlen + 8 < sizeof(probe)) {
+                rt_copy_string(probe, sizeof(probe), "struct:");
+                rt_copy_string(probe + 7, sizeof(probe) - 7, parser->current.text);
+                if (lookup_aggregate_size(parser->state, probe) > 0) {
+                    rt_copy_string(cast_base_type, sizeof(cast_base_type), probe);
+                }
+            }
+        }
         while (parser->current.kind != EXPR_TOKEN_EOF &&
                !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
+            if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*")) {
+                cast_is_pointer = 1;
+            }
             expr_next(parser);
+        }
+        if (cast_base_type[0] != '\0' && cast_is_pointer) {
+            size_t blen = rt_strlen(cast_base_type);
+            if (blen + 1 < sizeof(cast_base_type)) {
+                cast_base_type[blen] = '*';
+                cast_base_type[blen + 1] = '\0';
+            }
         }
         if (expr_expect_punct(parser, ")") != 0 || expr_parse_unary(parser) != 0) {
             return -1;
         }
-        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0, 0);
+        return expr_parse_lvalue_suffixes(parser, byte_sized, 0, 0,
+                                          cast_base_type[0] != '\0' ? cast_base_type : 0);
     }
 
     if (expr_match_punct(parser, "(")) {
@@ -2549,7 +2574,7 @@ static int expr_parse_assignment(ExprParser *parser) {
             }
         }
 
-        if (target_is_object && names_equal(op, "=")) {
+        if (target_is_object && byte_sized == 0 && names_equal(op, "=")) {
             int rhs_byte_sized = 0;
 
             if (expr_may_be_object_lvalue_source(parser)) {

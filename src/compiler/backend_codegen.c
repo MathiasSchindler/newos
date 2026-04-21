@@ -1678,15 +1678,15 @@ static int begin_function(BackendState *state, const char *name) {
         char offset_text[32];
         char asm_line[128];
 
-        if (allocate_local(state, "__retbuf", "void*", backend_stack_slot_size(state), 0, 1, 0, 1) != 0 ||
-            allocate_local(state,
+        if (allocate_local(state,
                            "__retobj",
                            return_type,
                            decl_slot_size(state, return_type),
                            decl_requires_object_storage(return_type),
                            decl_pointer_depth(return_type),
                            decl_char_based(return_type),
-                           should_prefer_word_index("__retobj", return_type)) != 0) {
+                           should_prefer_word_index("__retobj", return_type)) != 0 ||
+            allocate_local(state, "__retbuf", "void*", backend_stack_slot_size(state), 0, 1, 0, 1) != 0) {
             return -1;
         }
         retbuf_index = find_local(state, "__retbuf");

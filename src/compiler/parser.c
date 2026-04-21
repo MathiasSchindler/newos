@@ -275,16 +275,14 @@ int add_typedef_name(CompilerParser *parser, const char *name) {
 }
 
 int is_typedef_name(const CompilerParser *parser, const CompilerToken *token) {
-    char name[COMPILER_TYPEDEF_NAME_CAPACITY];
     size_t i;
 
     if (token->kind != COMPILER_TOKEN_IDENTIFIER) {
         return 0;
     }
 
-    copy_token_text(token, name, sizeof(name));
     for (i = 0; i < parser->typedef_count; ++i) {
-        if (rt_strcmp(parser->typedef_names[i], name) == 0) {
+        if (token_text_equals(token, parser->typedef_names[i])) {
             return 1;
         }
     }
@@ -294,7 +292,6 @@ int is_typedef_name(const CompilerParser *parser, const CompilerToken *token) {
 
 int maybe_type_identifier(const CompilerParser *parser, int allow_unknown_identifiers) {
     CompilerToken next;
-    char name[COMPILER_TYPEDEF_NAME_CAPACITY];
     size_t length;
 
     if (!current_is_identifier(parser)) {
@@ -309,9 +306,10 @@ int maybe_type_identifier(const CompilerParser *parser, int allow_unknown_identi
         return 0;
     }
 
-    copy_token_text(&parser->current, name, sizeof(name));
-    length = rt_strlen(name);
-    if (length > 2 && name[length - 2] == '_' && name[length - 1] == 't') {
+    length = parser->current.length;
+    if (length > 2 &&
+        parser->current.start[length - 2] == '_' &&
+        parser->current.start[length - 1] == 't') {
         return 1;
     }
 

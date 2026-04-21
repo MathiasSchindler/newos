@@ -181,12 +181,11 @@ static int maybe_capture_array_length(CompilerParser *parser, unsigned long long
                     term = value;
                 }
             }
-        } else if (parser->current.kind == COMPILER_TOKEN_PUNCTUATOR) {
-            char punct[8];
-            copy_token_text(&parser->current, punct, sizeof(punct));
-            if (rt_strcmp(punct, "+") == 0 || rt_strcmp(punct, "-") == 0 ||
-                rt_strcmp(punct, "*") == 0 || rt_strcmp(punct, "/") == 0) {
-                pending_op = punct[0];
+        } else if (parser->current.kind == COMPILER_TOKEN_PUNCTUATOR &&
+                   parser->current.length == 1U) {
+            char op = parser->current.start[0];
+            if (op == '+' || op == '-' || op == '*' || op == '/') {
+                pending_op = op;
             }
         }
 
