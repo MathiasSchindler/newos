@@ -7,6 +7,8 @@ int tool_open_input(const char *path, int *fd_out, int *should_close_out);
 void tool_close_input(int fd, int should_close);
 void tool_write_usage(const char *program_name, const char *usage_suffix);
 void tool_write_error(const char *tool_name, const char *message, const char *detail);
+int tool_write_visible(int fd, const char *text, size_t length);
+int tool_write_visible_line(int fd, const char *text);
 
 typedef enum {
     TOOL_COLOR_NEVER = 0,

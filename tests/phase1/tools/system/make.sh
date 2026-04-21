@@ -109,3 +109,17 @@ EOF
 )
 always_runs=$(wc -l < "$WORK_DIR/stamp.txt" | tr -d '[:space:]')
 assert_text_equals "$always_runs" '2' "make -B did not force the target recipe to run again"
+
+cat > "$WORK_DIR/Recursive.mk" <<'EOF'
+A = $(B)
+B = $(A)
+all:
+	@printf '%s\n' "$(A)" > recursive.txt
+EOF
+(
+    cd "$WORK_DIR"
+    if "$ROOT_DIR/build/make" -f Recursive.mk > recursive.out 2> recursive.err; then
+        fail "make did not reject recursive variable expansion"
+    fi
+)
+assert_file_contains "$WORK_DIR/recursive.err" 'recursive variable expansion' "make did not report the recursive expansion guard"

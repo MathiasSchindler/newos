@@ -25,3 +25,8 @@ assert_text_equals "$expr_sum" '5' "expr arithmetic failed"
 
 expr_len=$("$ROOT_DIR/build/expr" length system | tr -d '\r\n')
 assert_text_equals "$expr_len" '6' "expr length failed"
+
+expr_invalid_status=0
+"$ROOT_DIR/build/expr" substr system 999999999999999999999999 1 >/dev/null 2>"$WORK_DIR/expr_invalid.err" || expr_invalid_status=$?
+assert_exit_code "$expr_invalid_status" '2' "expr should reject out-of-range numeric inputs"
+assert_file_contains "$WORK_DIR/expr_invalid.err" '^expr: syntax error$' "expr did not report the invalid numeric input cleanly"

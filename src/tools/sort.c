@@ -9,6 +9,8 @@
 #define SORT_HOSTED_DYNAMIC 0
 #endif
 
+#include <limits.h>
+
 #define SORT_FREESTANDING_MAX_LINES 8192U
 #define SORT_FREESTANDING_MAX_INPUTS 8U
 #define SORT_FREESTANDING_STORAGE_CAPACITY (2U * 1024U * 1024U)
@@ -98,7 +100,11 @@ static int parse_key_spec(const char *text, SortOptions *options) {
     }
 
     while (text[index] >= '0' && text[index] <= '9') {
-        start = start * 10ULL + (unsigned long long)(text[index] - '0');
+        unsigned long long digit = (unsigned long long)(text[index] - '0');
+        if (start > (ULLONG_MAX - digit) / 10ULL) {
+            return -1;
+        }
+        start = start * 10ULL + digit;
         index += 1U;
     }
 
@@ -115,7 +121,11 @@ static int parse_key_spec(const char *text, SortOptions *options) {
 
         end = 0ULL;
         while (text[index] >= '0' && text[index] <= '9') {
-            end = end * 10ULL + (unsigned long long)(text[index] - '0');
+            unsigned long long digit = (unsigned long long)(text[index] - '0');
+            if (end > (ULLONG_MAX - digit) / 10ULL) {
+                return -1;
+            }
+            end = end * 10ULL + digit;
             index += 1U;
         }
 

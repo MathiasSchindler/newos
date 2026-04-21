@@ -20,3 +20,9 @@ assert_command_succeeds "$ROOT_DIR/build/sha512sum" "$WORK_DIR/sample.txt" > "$W
 assert_file_contains "$WORK_DIR/sha512.out" '^[0-9a-f]\{128\}  .*/sample.txt$' "sha512sum did not print a 128-hex digest"
 assert_command_succeeds "$ROOT_DIR/build/sha512sum" -c "$WORK_DIR/sha512.out" > "$WORK_DIR/sha512_check.out"
 assert_file_contains "$WORK_DIR/sha512_check.out" 'OK$' "sha512sum -c did not verify the checksum file"
+
+printf 'broken-manifest\n' > "$WORK_DIR/invalid_manifest.txt"
+if "$ROOT_DIR/build/md5sum" -c "$WORK_DIR/invalid_manifest.txt" > "$WORK_DIR/invalid_check.out" 2> "$WORK_DIR/invalid_check.err"; then
+    fail "md5sum accepted a malformed checksum list"
+fi
+assert_file_contains "$WORK_DIR/invalid_check.err" 'invalid checksum line' "md5sum did not reject the malformed checksum list cleanly"

@@ -2,16 +2,18 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 static int parse_signed_value(const char *text, long long *value_out) {
-    long long value = 0;
-    long long sign = 1;
+    unsigned long long magnitude = 0;
+    int negative = 0;
 
     if (text == 0 || text[0] == '\0' || value_out == 0) {
         return -1;
     }
 
     if (*text == '-') {
-        sign = -1;
+        negative = 1;
         text += 1;
     } else if (*text == '+') {
         text += 1;
@@ -21,15 +23,23 @@ static int parse_signed_value(const char *text, long long *value_out) {
         return -1;
     }
 
-    while (*text != '\0') {
-        if (*text < '0' || *text > '9') {
-            return -1;
-        }
-        value = (value * 10) + (long long)(*text - '0');
-        text += 1;
+    if (rt_parse_uint(text, &magnitude) != 0) {
+        return -1;
     }
 
-    *value_out = value * sign;
+    if (!negative) {
+        if (magnitude > (unsigned long long)LLONG_MAX) {
+            return -1;
+        }
+        *value_out = (long long)magnitude;
+    } else if (magnitude == (unsigned long long)LLONG_MAX + 1ULL) {
+        *value_out = LLONG_MIN;
+    } else {
+        if (magnitude > (unsigned long long)LLONG_MAX) {
+            return -1;
+        }
+        *value_out = -(long long)magnitude;
+    }
     return 0;
 }
 

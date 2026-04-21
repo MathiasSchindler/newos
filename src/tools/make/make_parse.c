@@ -626,12 +626,53 @@ static int run_shell_capture(const char *command, char *out, size_t out_size) {
     return normalize_whitespace_text(raw, out, out_size);
 }
 
+typedef struct {
+    char names[MAKE_MAX_VARS][MAKE_NAME_CAPACITY];
+    size_t count;
+} MakeExpansionStack;
+
+static int expansion_stack_contains(const MakeExpansionStack *stack, const char *name) {
+    size_t i;
+
+    if (stack == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+
+    for (i = 0U; i < stack->count; ++i) {
+        if (rt_strcmp(stack->names[i], name) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int expansion_stack_push(MakeExpansionStack *stack, const char *name) {
+    if (stack == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    if (stack->count >= MAKE_MAX_VARS) {
+        return -1;
+    }
+    rt_copy_string(stack->names[stack->count], sizeof(stack->names[stack->count]), name);
+    stack->count += 1U;
+    return 0;
+}
+
+static void expansion_stack_pop(MakeExpansionStack *stack) {
+    if (stack != 0 && stack->count > 0U) {
+        stack->count -= 1U;
+        stack->names[stack->count][0] = '\0';
+    }
+}
+
 static int expand_text_recursive(
     const MakeProgram *program,
     const MakeRule *rule,
     const char *text,
     char *out,
     size_t out_size,
+    MakeExpansionStack *stack,
     int depth
 );
 
@@ -642,6 +683,7 @@ static int evaluate_make_function(
     const char *args_text,
     char *out,
     size_t out_size,
+    MakeExpansionStack *stack,
     int depth
 ) {
     char args[3][MAKE_VALUE_CAPACITY];
@@ -654,7 +696,7 @@ static int evaluate_make_function(
         if (arg_count == 0U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), expanded, sizeof(expanded), depth + 1) != 0) {
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), expanded, sizeof(expanded), stack, depth + 1) != 0) {
             return -1;
         }
         return normalize_whitespace_text(expanded, out, out_size);
@@ -665,7 +707,7 @@ static int evaluate_make_function(
         if (arg_count == 0U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), expanded, sizeof(expanded), depth + 1) != 0) {
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), expanded, sizeof(expanded), stack, depth + 1) != 0) {
             return -1;
         }
         return run_shell_capture(expanded, out, out_size);
@@ -677,7 +719,7 @@ static int evaluate_make_function(
         if (arg_count == 0U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), expanded, sizeof(expanded), depth + 1) != 0) {
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), expanded, sizeof(expanded), stack, depth + 1) != 0) {
             return -1;
         }
         trimmed = trim_leading_whitespace(expanded);
@@ -694,7 +736,7 @@ static int evaluate_make_function(
         if (arg_count == 0U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), condition, sizeof(condition), depth + 1) != 0 ||
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), condition, sizeof(condition), stack, depth + 1) != 0 ||
             normalize_whitespace_text(condition, normalized, sizeof(normalized)) != 0) {
             return -1;
         }
@@ -707,7 +749,7 @@ static int evaluate_make_function(
             selected = trim_leading_whitespace(args[2]);
         }
 
-        return expand_text_recursive(program, rule, selected, out, out_size, depth + 1);
+        return expand_text_recursive(program, rule, selected, out, out_size, stack, depth + 1);
     }
 
     if (rt_strcmp(name, "filter") == 0) {
@@ -720,8 +762,8 @@ static int evaluate_make_function(
         if (arg_count < 2U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), patterns, sizeof(patterns), depth + 1) != 0 ||
-            expand_text_recursive(program, rule, trim_leading_whitespace(args[1]), text_words, sizeof(text_words), depth + 1) != 0 ||
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), patterns, sizeof(patterns), stack, depth + 1) != 0 ||
+            expand_text_recursive(program, rule, trim_leading_whitespace(args[1]), text_words, sizeof(text_words), stack, depth + 1) != 0 ||
             normalize_whitespace_text(text_words, normalized, sizeof(normalized)) != 0) {
             return -1;
         }
@@ -788,8 +830,8 @@ static int evaluate_make_function(
         if (arg_count < 2U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), affix, sizeof(affix), depth + 1) != 0 ||
-            expand_text_recursive(program, rule, trim_leading_whitespace(args[1]), words_text, sizeof(words_text), depth + 1) != 0 ||
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), affix, sizeof(affix), stack, depth + 1) != 0 ||
+            expand_text_recursive(program, rule, trim_leading_whitespace(args[1]), words_text, sizeof(words_text), stack, depth + 1) != 0 ||
             normalize_whitespace_text(words_text, normalized, sizeof(normalized)) != 0) {
             return -1;
         }
@@ -836,7 +878,7 @@ static int evaluate_make_function(
         if (arg_count == 0U) {
             return 0;
         }
-        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), words_text, sizeof(words_text), depth + 1) != 0 ||
+        if (expand_text_recursive(program, rule, trim_leading_whitespace(args[0]), words_text, sizeof(words_text), stack, depth + 1) != 0 ||
             normalize_whitespace_text(words_text, normalized, sizeof(normalized)) != 0) {
             return -1;
         }
@@ -894,6 +936,7 @@ static int evaluate_make_expression(
     const char *expression,
     char *out,
     size_t out_size,
+    MakeExpansionStack *stack,
     int depth
 ) {
     char expr_copy[MAKE_VALUE_CAPACITY];
@@ -922,15 +965,27 @@ static int evaluate_make_expression(
          rt_strcmp(name, "if") == 0 ||
          rt_strcmp(name, "origin") == 0 ||
          rt_strcmp(name, "dir") == 0) && cursor[name_len] != '\0') {
-        return evaluate_make_function(program, rule, name, trim_leading_whitespace((char *)(cursor + name_len)), out, out_size, depth + 1);
+        return evaluate_make_function(program, rule, name, trim_leading_whitespace((char *)(cursor + name_len)), out, out_size, stack, depth + 1);
     }
 
     {
         char expanded_name[MAKE_VALUE_CAPACITY];
-        if (expand_text_recursive(program, rule, cursor, expanded_name, sizeof(expanded_name), depth + 1) != 0) {
+        int status;
+
+        if (expand_text_recursive(program, rule, cursor, expanded_name, sizeof(expanded_name), stack, depth + 1) != 0) {
             return -1;
         }
-        return expand_text_recursive(program, rule, get_variable_value(program, expanded_name), out, out_size, depth + 1);
+        if (expansion_stack_contains(stack, expanded_name)) {
+            tool_write_error("make", "recursive variable expansion on ", expanded_name);
+            return -1;
+        }
+        if (expansion_stack_push(stack, expanded_name) != 0) {
+            tool_write_error("make", "variable expansion stack overflow on ", expanded_name);
+            return -1;
+        }
+        status = expand_text_recursive(program, rule, get_variable_value(program, expanded_name), out, out_size, stack, depth + 1);
+        expansion_stack_pop(stack);
+        return status;
     }
 }
 
@@ -940,12 +995,14 @@ static int expand_text_recursive(
     const char *text,
     char *out,
     size_t out_size,
+    MakeExpansionStack *stack,
     int depth
 ) {
     size_t used = 0;
     size_t pos = 0;
 
     if (depth > 32) {
+        tool_write_error("make", "variable expansion too deep", 0);
         return -1;
     }
 
@@ -1018,7 +1075,7 @@ static int expand_text_recursive(
                 expr[expr_len] = '\0';
                 pos += 1U;
 
-                if (evaluate_make_expression(program, rule, expr, value, sizeof(value), depth + 1) != 0 ||
+                if (evaluate_make_expression(program, rule, expr, value, sizeof(value), stack, depth + 1) != 0 ||
                     append_text(out, &used, out_size, value) != 0) {
                     return -1;
                 }
@@ -1040,7 +1097,10 @@ static int expand_text_recursive(
 }
 
 int expand_text(const MakeProgram *program, const MakeRule *rule, const char *text, char *out, size_t out_size) {
-    return expand_text_recursive(program, rule, text, out, out_size, 0);
+    MakeExpansionStack stack;
+
+    rt_memset(&stack, 0, sizeof(stack));
+    return expand_text_recursive(program, rule, text, out, out_size, &stack, 0);
 }
 
 static int add_dependency_tokens(MakeProgram *program, MakeRule *rule, char *deps_text) {

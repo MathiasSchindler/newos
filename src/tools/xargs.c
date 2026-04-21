@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 #define XARGS_MAX_ARGS 256
 #define XARGS_MAX_ARG_LENGTH 256
 #define XARGS_MAX_PROCESSES 64
@@ -74,7 +76,7 @@ static int append_item(
     }
 
     if (copy_len >= XARGS_MAX_ARG_LENGTH) {
-        copy_len = XARGS_MAX_ARG_LENGTH - 1U;
+        return -1;
     }
 
     memcpy(args[*count_io], current, copy_len);
@@ -83,9 +85,47 @@ static int append_item(
     return 0;
 }
 
-static void reset_token(size_t *current_len_io, int *token_started_io) {
+static void reset_token(size_t *current_len_io, int *token_started_io, int *token_overflow_io) {
     *current_len_io = 0U;
     *token_started_io = 0;
+    if (token_overflow_io != 0) {
+        *token_overflow_io = 0;
+    }
+}
+
+static void append_token_char(char *current,
+                              size_t *current_len_io,
+                              size_t current_size,
+                              char ch,
+                              int *token_overflow_io) {
+    if (*current_len_io + 1U < current_size) {
+        current[*current_len_io] = ch;
+        *current_len_io += 1U;
+    } else if (token_overflow_io != 0) {
+        *token_overflow_io = 1;
+    }
+}
+
+static int finish_token(char args[XARGS_MAX_ARGS][XARGS_MAX_ARG_LENGTH],
+                        int *count_io,
+                        const char *current,
+                        size_t current_len,
+                        int token_started,
+                        int preserve_empty,
+                        int token_overflow) {
+    if (token_overflow) {
+        rt_write_line(2, "xargs: input argument too long");
+        return -1;
+    }
+
+    if (current_len > 0U || token_started || preserve_empty) {
+        if (append_item(args, count_io, current, current_len) != 0) {
+            rt_write_line(2, "xargs: too many input arguments");
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
 static int collect_args(
@@ -101,6 +141,7 @@ static int collect_args(
     int simple_delimited = options->zero_terminated || options->replace_text != 0 || options->custom_delimiter;
     char delimiter = options->zero_terminated ? '\0' : (options->replace_text != 0 ? '\n' : options->delimiter);
     int token_started = 0;
+    int token_overflow = 0;
     int in_single = 0;
     int in_double = 0;
     int escape_next = 0;
@@ -116,12 +157,10 @@ static int collect_args(
                 int is_delimiter = (ch == delimiter);
 
                 if (is_delimiter) {
-                    if (current_len > 0U || token_started || preserve_empty) {
-                        if (append_item(args, &count, current, current_len) != 0) {
-                            return -1;
-                        }
+                    if (finish_token(args, &count, current, current_len, token_started, preserve_empty, token_overflow) != 0) {
+                        return -1;
                     }
-                    reset_token(&current_len, &token_started);
+                    reset_token(&current_len, &token_started, &token_overflow);
                     continue;
                 }
 
@@ -130,18 +169,14 @@ static int collect_args(
                 }
 
                 token_started = 1;
-                if (current_len + 1U < sizeof(current)) {
-                    current[current_len++] = ch;
-                }
+                append_token_char(current, &current_len, sizeof(current), ch, &token_overflow);
                 continue;
             }
 
             if (escape_next) {
                 token_started = 1;
                 escape_next = 0;
-                if (current_len + 1U < sizeof(current)) {
-                    current[current_len++] = ch;
-                }
+                append_token_char(current, &current_len, sizeof(current), ch, &token_overflow);
                 continue;
             }
 
@@ -149,8 +184,8 @@ static int collect_args(
                 token_started = 1;
                 if (ch == '\'') {
                     in_single = 0;
-                } else if (current_len + 1U < sizeof(current)) {
-                    current[current_len++] = ch;
+                } else {
+                    append_token_char(current, &current_len, sizeof(current), ch, &token_overflow);
                 }
                 continue;
             }
@@ -161,19 +196,17 @@ static int collect_args(
                     in_double = 0;
                 } else if (ch == '\\') {
                     escape_next = 1;
-                } else if (current_len + 1U < sizeof(current)) {
-                    current[current_len++] = ch;
+                } else {
+                    append_token_char(current, &current_len, sizeof(current), ch, &token_overflow);
                 }
                 continue;
             }
 
             if (rt_is_space(ch)) {
-                if (current_len > 0U || token_started) {
-                    if (append_item(args, &count, current, current_len) != 0) {
-                        return -1;
-                    }
+                if (finish_token(args, &count, current, current_len, token_started, 0, token_overflow) != 0) {
+                    return -1;
                 }
-                reset_token(&current_len, &token_started);
+                reset_token(&current_len, &token_started, &token_overflow);
                 continue;
             }
 
@@ -196,9 +229,7 @@ static int collect_args(
             }
 
             token_started = 1;
-            if (current_len + 1U < sizeof(current)) {
-                current[current_len++] = ch;
-            }
+            append_token_char(current, &current_len, sizeof(current), ch, &token_overflow);
         }
     }
 
@@ -211,10 +242,8 @@ static int collect_args(
         return -1;
     }
 
-    if (current_len > 0U || token_started) {
-        if (append_item(args, &count, current, current_len) != 0) {
-            return -1;
-        }
+    if (finish_token(args, &count, current, current_len, token_started, 0, token_overflow) != 0) {
+        return -1;
     }
 
     *count_out = count;
@@ -414,7 +443,12 @@ static void flush_active_commands(
 
 static unsigned long long batch_chars_after_add(unsigned long long current_chars, const char *value) {
     unsigned long long length = (unsigned long long)rt_strlen(value);
-    return current_chars + length + (current_chars > 0ULL ? 1ULL : 0ULL);
+    unsigned long long separator = current_chars > 0ULL ? 1ULL : 0ULL;
+
+    if (current_chars > ULLONG_MAX - separator || length > ULLONG_MAX - current_chars - separator) {
+        return ULLONG_MAX;
+    }
+    return current_chars + length + separator;
 }
 
 static int run_with_placeholder(
@@ -532,7 +566,12 @@ static int run_in_batches(
         while (start < input_count && used < batch_limit) {
             if (options->max_chars > 0ULL) {
                 unsigned long long next_chars = batch_chars_after_add(used_chars, input_args[start]);
-                if (used > 0ULL && next_chars > options->max_chars) {
+                if (next_chars > options->max_chars) {
+                    if (used == 0ULL) {
+                        rt_write_line(2, "xargs: input item exceeds -s limit");
+                        flush_active_commands(active_pids, &active_count, &exit_status);
+                        return exit_status != 0 ? exit_status : 1;
+                    }
                     break;
                 }
                 used_chars = next_chars;

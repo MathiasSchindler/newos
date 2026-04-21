@@ -18,3 +18,8 @@ printf 'reference\n' > "$WORK_DIR/reference.txt"
 touch -t 200001021234 "$WORK_DIR/reference.txt"
 date_reference_out=$("$ROOT_DIR/build/date" -l -r "$WORK_DIR/reference.txt" +%Y-%m-%d | tr -d '\r\n')
 assert_text_equals "$date_reference_out" '2000-01-02' "date -r did not read the file timestamp"
+
+date_invalid_status=0
+"$ROOT_DIR/build/date" -d @999999999999999999999999 >/dev/null 2>"$WORK_DIR/date_invalid.err" || date_invalid_status=$?
+assert_exit_code "$date_invalid_status" '1' "date should reject out-of-range epoch values"
+assert_file_contains "$WORK_DIR/date_invalid.err" '^date: unsupported date value:' "date did not report the invalid epoch cleanly"

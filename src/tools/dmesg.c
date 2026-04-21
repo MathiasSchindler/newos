@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 #define DMESG_USAGE "[-crwC] [-l LEVELS] [-n LEVEL]"
 #define DMESG_BUFFER_CAPACITY 65536U
 #define DMESG_LINE_CAPACITY 8192U
@@ -162,10 +164,16 @@ static int parse_decimal_value(const char *text, size_t start, size_t end, unsig
     }
 
     while (i < end) {
+        unsigned long long digit;
+
         if (text[i] < '0' || text[i] > '9') {
             return -1;
         }
-        value = (value * 10ULL) + (unsigned long long)(text[i] - '0');
+        digit = (unsigned long long)(text[i] - '0');
+        if (value > (ULLONG_MAX - digit) / 10ULL) {
+            return -1;
+        }
+        value = (value * 10ULL) + digit;
         i += 1U;
     }
 
@@ -181,10 +189,16 @@ static int parse_angle_level(const char *line, size_t length, unsigned int *leve
         return -1;
     }
     while (index < length && line[index] != '>') {
+        unsigned long long digit;
+
         if (line[index] < '0' || line[index] > '9') {
             return -1;
         }
-        value = (value * 10ULL) + (unsigned long long)(line[index] - '0');
+        digit = (unsigned long long)(line[index] - '0');
+        if (value > (ULLONG_MAX - digit) / 10ULL) {
+            return -1;
+        }
+        value = (value * 10ULL) + digit;
         index += 1U;
     }
     if (index >= length || line[index] != '>') {
@@ -270,12 +284,12 @@ static void write_formatted_record(unsigned int level,
     rt_write_cstr(1, "] ");
     rt_write_cstr(1, level_name(level));
     rt_write_cstr(1, ": ");
-    (void)platform_write(1, message, message_length);
+    (void)tool_write_visible(1, message, message_length);
     rt_write_char(1, '\n');
 }
 
 static void write_plain_line(const char *text, size_t length) {
-    (void)platform_write(1, text, length);
+    (void)tool_write_visible(1, text, length);
     rt_write_char(1, '\n');
 }
 

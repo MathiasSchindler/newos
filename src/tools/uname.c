@@ -14,7 +14,7 @@ static int write_selected_field(const char *text, int *printed_any) {
             return 1;
         }
     }
-    if (rt_write_cstr(1, text) != 0) {
+    if (tool_write_visible(1, text, rt_strlen(text)) != 0) {
         return 1;
     }
     *printed_any = 1;

@@ -22,7 +22,17 @@ int getgrouplist(const char *name, int basegid, gid_t *groups, int *ngroups);
 #endif
 
 int platform_get_hostname(char *buffer, size_t buffer_size) {
-    return gethostname(buffer, buffer_size);
+    if (buffer == NULL || buffer_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    buffer[0] = '\0';
+    if (gethostname(buffer, buffer_size) != 0) {
+        return -1;
+    }
+    buffer[buffer_size - 1U] = '\0';
+    return 0;
 }
 
 int platform_set_hostname(const char *name) {

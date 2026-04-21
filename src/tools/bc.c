@@ -8,6 +8,8 @@
 #define BC_MAX_VARS 128
 #define BC_NAME_CAPACITY 32
 #define BC_OUTPUT_CAPACITY 2048
+#define BC_MAX_PARSE_DEPTH 128
+#define BC_MAX_LOOP_ITERATIONS 1000000ULL
 
 typedef struct {
     Bignum mantissa;
@@ -72,6 +74,7 @@ typedef struct {
     BcEnv *env;
     BcToken token;
     int has_token;
+    unsigned int nesting_depth;
 } BcParser;
 
 static BcValue bc_make_value_bn(const Bignum *mantissa, int scale) {
@@ -100,6 +103,21 @@ static void bc_set_error(BcParser *parser, const char *message) {
     if (!parser->error) {
         parser->error = 1;
         parser->message = message;
+    }
+}
+
+static int bc_enter_nesting(BcParser *parser) {
+    if (parser->nesting_depth >= BC_MAX_PARSE_DEPTH) {
+        bc_set_error(parser, "nesting too deep");
+        return -1;
+    }
+    parser->nesting_depth += 1U;
+    return 0;
+}
+
+static void bc_leave_nesting(BcParser *parser) {
+    if (parser->nesting_depth > 0U) {
+        parser->nesting_depth -= 1U;
     }
 }
 
@@ -943,12 +961,14 @@ static void bc_read_token(BcParser *parser) {
                     break;
                 }
                 saw_digit = 1;
-                if (num_len < sizeof(num_buffer) - 1) {
-                    num_buffer[num_len++] = ch;
-                    if (saw_dot) {
-                        if (scale < BC_MAX_SCALE) {
-                            scale += 1;
-                        }
+                if (num_len + 1U >= sizeof(num_buffer)) {
+                    bc_set_error(parser, "numeric literal too long");
+                    return;
+                }
+                num_buffer[num_len++] = ch;
+                if (saw_dot) {
+                    if (scale < BC_MAX_SCALE) {
+                        scale += 1;
                     }
                 }
                 parser->pos += 1;
@@ -1149,48 +1169,67 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
 }
 
 static BcValue bc_parse_unary(BcParser *parser, int evaluate) {
+    BcValue value;
     BcTokenType type = bc_peek_token(parser)->type;
+
+    if (bc_enter_nesting(parser) != 0) {
+        return bc_make_int(0);
+    }
 
     if (type == BC_TOKEN_PLUS) {
         parser->has_token = 0;
-        return bc_parse_unary(parser, evaluate);
+        value = bc_parse_unary(parser, evaluate);
+        bc_leave_nesting(parser);
+        return value;
     }
     if (type == BC_TOKEN_MINUS) {
-        BcValue value;
-
         parser->has_token = 0;
         value = bc_parse_unary(parser, evaluate);
         if (evaluate && !parser->error) {
             bn_negate(&value.mantissa);
         }
+        bc_leave_nesting(parser);
         return value;
     }
     if (type == BC_TOKEN_NOT) {
-        BcValue value;
-
         parser->has_token = 0;
         value = bc_parse_unary(parser, evaluate);
         if (!evaluate) {
+            bc_leave_nesting(parser);
             return bc_make_int(0);
         }
-        return bc_make_int(!bc_value_truth(value));
+        value = bc_make_int(!bc_value_truth(value));
+        bc_leave_nesting(parser);
+        return value;
     }
 
-    return bc_parse_primary(parser, evaluate);
+    value = bc_parse_primary(parser, evaluate);
+    bc_leave_nesting(parser);
+    return value;
 }
 
 static BcValue bc_parse_power(BcParser *parser, int evaluate) {
-    BcValue value = bc_parse_unary(parser, evaluate);
+    BcValue value;
+
+    if (bc_enter_nesting(parser) != 0) {
+        return bc_make_int(0);
+    }
+
+    value = bc_parse_unary(parser, evaluate);
 
     if (bc_match(parser, BC_TOKEN_CARET)) {
         BcValue exponent = bc_parse_power(parser, evaluate);
 
         if (!evaluate) {
+            bc_leave_nesting(parser);
             return bc_make_int(0);
         }
-        return bc_pow_values(parser, value, exponent);
+        value = bc_pow_values(parser, value, exponent);
+        bc_leave_nesting(parser);
+        return value;
     }
 
+    bc_leave_nesting(parser);
     return value;
 }
 
@@ -1341,7 +1380,13 @@ static BcValue bc_parse_logical_or(BcParser *parser, int evaluate) {
 }
 
 static BcValue bc_parse_expression(BcParser *parser, int evaluate, int *assigned_out) {
-    BcParser snapshot = *parser;
+    BcParser snapshot;
+    BcValue value = bc_make_int(0);
+
+    if (bc_enter_nesting(parser) != 0) {
+        return value;
+    }
+    snapshot = *parser;
 
     if (assigned_out != 0) {
         *assigned_out = 0;
@@ -1359,12 +1404,15 @@ static BcValue bc_parse_expression(BcParser *parser, int evaluate, int *assigned
             if (assigned_out != 0) {
                 *assigned_out = 1;
             }
+            bc_leave_nesting(parser);
             return value;
         }
     }
 
     *parser = snapshot;
-    return bc_parse_logical_or(parser, evaluate);
+    value = bc_parse_logical_or(parser, evaluate);
+    bc_leave_nesting(parser);
+    return value;
 }
 
 static void bc_format_decimal(BcValue value, char *buffer, size_t buffer_size) {
@@ -1564,6 +1612,7 @@ static void bc_parse_if(BcParser *parser, int execute) {
 static void bc_parse_while(BcParser *parser, int execute) {
     size_t condition_pos;
     size_t body_end = parser->pos;
+    unsigned long long iterations = 0ULL;
 
     parser->has_token = 0;
     if (bc_expect(parser, BC_TOKEN_LPAREN, "missing '('") != 0) {
@@ -1582,6 +1631,12 @@ static void bc_parse_while(BcParser *parser, int execute) {
 
     for (;;) {
         BcValue condition;
+
+        iterations += 1ULL;
+        if (iterations > BC_MAX_LOOP_ITERATIONS) {
+            bc_set_error(parser, "loop iteration limit exceeded");
+            return;
+        }
 
         parser->pos = condition_pos;
         parser->has_token = 0;
@@ -1609,6 +1664,7 @@ static void bc_parse_for(BcParser *parser, int execute) {
     size_t body_end = parser->pos;
     int has_condition = 0;
     int has_step = 0;
+    unsigned long long iterations = 0ULL;
 
     parser->has_token = 0;
     if (bc_expect(parser, BC_TOKEN_LPAREN, "missing '('") != 0) {
@@ -1650,6 +1706,12 @@ static void bc_parse_for(BcParser *parser, int execute) {
     for (;;) {
         int condition_true = 1;
 
+        iterations += 1ULL;
+        if (iterations > BC_MAX_LOOP_ITERATIONS) {
+            bc_set_error(parser, "loop iteration limit exceeded");
+            return;
+        }
+
         if (has_condition) {
             BcValue condition;
 
@@ -1690,30 +1752,39 @@ static void bc_parse_for(BcParser *parser, int execute) {
 static void bc_parse_statement(BcParser *parser, int execute) {
     BcTokenType type;
 
+    if (bc_enter_nesting(parser) != 0) {
+        return;
+    }
+
     bc_skip_statement_separators(parser);
     type = bc_peek_token(parser)->type;
 
     if (type == BC_TOKEN_EOF || type == BC_TOKEN_RBRACE) {
+        bc_leave_nesting(parser);
         return;
     }
 
     if (type == BC_TOKEN_LBRACE) {
         bc_parse_block(parser, execute);
+        bc_leave_nesting(parser);
         return;
     }
 
     if (type == BC_TOKEN_IF) {
         bc_parse_if(parser, execute);
+        bc_leave_nesting(parser);
         return;
     }
 
     if (type == BC_TOKEN_WHILE) {
         bc_parse_while(parser, execute);
+        bc_leave_nesting(parser);
         return;
     }
 
     if (type == BC_TOKEN_FOR) {
         bc_parse_for(parser, execute);
+        bc_leave_nesting(parser);
         return;
     }
 
@@ -1725,6 +1796,7 @@ static void bc_parse_statement(BcParser *parser, int execute) {
         if (execute && !parser->error) {
             (void)bc_print_value(parser, value);
         }
+        bc_leave_nesting(parser);
         return;
     }
 
@@ -1737,6 +1809,8 @@ static void bc_parse_statement(BcParser *parser, int execute) {
             (void)bc_print_value(parser, value);
         }
     }
+
+    bc_leave_nesting(parser);
 }
 
 static int bc_read_stdin(char *buffer, size_t buffer_size) {
@@ -1835,6 +1909,7 @@ int main(int argc, char **argv) {
     parser.message = 0;
     parser.env = &env;
     parser.has_token = 0;
+    parser.nesting_depth = 0U;
 
     while (!parser.error) {
         bc_skip_statement_separators(&parser);

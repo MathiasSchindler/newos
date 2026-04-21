@@ -46,3 +46,16 @@ assert_files_equal "$WORK_DIR/delim.expected" "$WORK_DIR/delim.out" "xargs -d cu
 printf 'trace-me\n' | "$ROOT_DIR/build/xargs" -t -n 1 "$ROOT_DIR/build/echo" show > "$WORK_DIR/trace.out" 2> "$WORK_DIR/trace.err"
 assert_file_contains "$WORK_DIR/trace.err" 'show trace-me' "xargs -t did not trace the command invocation"
 assert_file_contains "$WORK_DIR/trace.out" '^show trace-me$' "xargs -t changed the executed command output"
+
+if awk 'BEGIN { for (i = 0; i < 300; ++i) printf "x"; printf "\n"; }' | \
+    "$ROOT_DIR/build/xargs" "$ROOT_DIR/build/echo" > "$WORK_DIR/long.out" 2> "$WORK_DIR/long.err"
+then
+    fail "xargs accepted an overlong input argument"
+fi
+assert_file_contains "$WORK_DIR/long.err" 'xargs: input argument too long' "xargs did not report overlong input safely"
+
+if printf 'abcdef\n' | "$ROOT_DIR/build/xargs" -s 3 "$ROOT_DIR/build/echo" > "$WORK_DIR/maxchars.out" 2> "$WORK_DIR/maxchars.err"
+then
+    fail "xargs ignored the -s max-chars limit for a single oversized item"
+fi
+assert_file_contains "$WORK_DIR/maxchars.err" 'xargs: input item exceeds -s limit' "xargs did not reject an item that exceeds -s"

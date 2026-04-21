@@ -16,3 +16,8 @@ assert_text_equals "$bc_pow_100" '1267650600228229401496703205376' "bc 2^100 fai
 
 bc_large_mul=$("$ROOT_DIR/build/bc" '999999999999 * 888888888888' | tr -d '\r\n')
 assert_text_equals "$bc_large_mul" '888888888887111111111112' "bc large multiplication failed"
+
+if "$ROOT_DIR/build/bc" 'while(1){}' > "$WORK_DIR/loop.out" 2> "$WORK_DIR/loop.err"; then
+    fail "bc did not reject a runaway loop"
+fi
+assert_file_contains "$WORK_DIR/loop.err" 'loop iteration limit exceeded' "bc did not report the loop guard"

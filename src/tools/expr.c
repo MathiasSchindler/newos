@@ -1,3 +1,5 @@
+#include <limits.h>
+
 #include "bignum.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -40,15 +42,16 @@ static ExprValue make_string_value(const char *value) {
 }
 
 static int parse_signed_value(const char *text, long long *value_out) {
-    long long value = 0;
-    long long sign = 1;
+    unsigned long long value = 0ULL;
+    int negative = 0;
+    unsigned long long limit;
 
     if (text == 0 || text[0] == '\0' || value_out == 0) {
         return -1;
     }
 
     if (*text == '-') {
-        sign = -1;
+        negative = 1;
         text += 1;
     } else if (*text == '+') {
         text += 1;
@@ -59,14 +62,30 @@ static int parse_signed_value(const char *text, long long *value_out) {
     }
 
     while (*text != '\0') {
+        unsigned int digit;
+
         if (*text < '0' || *text > '9') {
             return -1;
         }
-        value = (value * 10) + (long long)(*text - '0');
+        digit = (unsigned int)(*text - '0');
+        limit = negative ? ((unsigned long long)LLONG_MAX + 1ULL) : (unsigned long long)LLONG_MAX;
+        if (value > (limit / 10ULL) ||
+            (value == (limit / 10ULL) && (unsigned long long)digit > (limit % 10ULL))) {
+            return -1;
+        }
+        value = (value * 10ULL) + (unsigned long long)digit;
         text += 1;
     }
 
-    *value_out = value * sign;
+    if (negative) {
+        if (value == ((unsigned long long)LLONG_MAX + 1ULL)) {
+            *value_out = LLONG_MIN;
+        } else {
+            *value_out = -(long long)value;
+        }
+    } else {
+        *value_out = (long long)value;
+    }
     return 0;
 }
 

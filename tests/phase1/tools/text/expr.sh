@@ -15,3 +15,7 @@ assert_text_equals "$expr_big_add" '9223372036854775808' "expr arbitrary-precisi
 
 expr_big_mul=$("$ROOT_DIR/build/expr" 999999999999999999999999 '*' 9 | tr -d '\r\n')
 assert_text_equals "$expr_big_mul" '8999999999999999999999991' "expr arbitrary-precision multiplication regressed"
+
+if "$ROOT_DIR/build/expr" substr abc 999999999999999999999 1 > "$WORK_DIR/overflow.out" 2> "$WORK_DIR/overflow.err"; then
+    fail "expr accepted an out-of-range substring index"
+fi

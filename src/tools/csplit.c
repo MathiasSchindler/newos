@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 #define CSPLIT_MAX_LINES 4096
 #define CSPLIT_MAX_LINE_LENGTH 1024
 
@@ -142,7 +144,10 @@ static int make_output_name(const char *prefix,
     size_t prefix_len = rt_strlen(prefix);
     size_t i;
 
-    if (suffix_length == 0ULL || prefix_len + (size_t)suffix_length + 1U > buffer_size) {
+    if (suffix_length == 0ULL || prefix_len + 1U > buffer_size) {
+        return -1;
+    }
+    if (suffix_length > (unsigned long long)(buffer_size - prefix_len - 1U)) {
         return -1;
     }
 
@@ -250,7 +255,11 @@ static int parse_pattern_argument(const char *arg, CsplitPattern *pattern_out) {
 
         if (working[brace] == '{' && brace + 1U < len - 1U) {
             for (i = brace + 1U; i < len - 1U; ++i) {
-                repeat = repeat * 10ULL + (unsigned long long)(working[i] - '0');
+                unsigned long long digit = (unsigned long long)(working[i] - '0');
+                if (repeat > (ULLONG_MAX - digit) / 10ULL) {
+                    return -1;
+                }
+                repeat = repeat * 10ULL + digit;
             }
             working[brace] = '\0';
             pattern_out->repeat = repeat;

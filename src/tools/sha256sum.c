@@ -83,8 +83,14 @@ static int parse_check_record(const char *record, unsigned char *expected_digest
     }
 
     for (i = 0; i < HASH_SHA256_SIZE; ++i) {
-        int high = hex_value(record[index++]);
-        int low = hex_value(record[index++]);
+        int high;
+        int low;
+
+        if (record[index] == '\0' || record[index + 1U] == '\0') {
+            return -1;
+        }
+        high = hex_value(record[index++]);
+        low = hex_value(record[index++]);
         if (high < 0 || low < 0) {
             return -1;
         }

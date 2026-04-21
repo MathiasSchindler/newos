@@ -89,8 +89,16 @@ static int is_exported_shell_function(const char *name) {
         }
 
         cursor += matched;
-        if ((cursor[0] == '%' && cursor[1] == '%' && cursor[2] == '=') ||
-            (cursor[0] == '(' && cursor[1] == ')' && cursor[2] == '=')) {
+        if ((cursor[0] == '%' &&
+             cursor[1] != '\0' &&
+             cursor[1] == '%' &&
+             cursor[2] != '\0' &&
+             cursor[2] == '=') ||
+            (cursor[0] == '(' &&
+             cursor[1] != '\0' &&
+             cursor[1] == ')' &&
+             cursor[2] != '\0' &&
+             cursor[2] == '=')) {
             return 1;
         }
     }

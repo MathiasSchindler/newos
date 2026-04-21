@@ -46,6 +46,56 @@ void tool_write_error(const char *tool_name, const char *message, const char *de
     rt_write_char(2, '\n');
 }
 
+int tool_write_visible(int fd, const char *text, size_t length) {
+    static const char hex[] = "0123456789abcdef";
+    size_t i;
+
+    if (text == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < length; ++i) {
+        unsigned char ch = (unsigned char)text[i];
+
+        if (ch == '\n') {
+            if (rt_write_cstr(fd, "\\n") != 0) {
+                return -1;
+            }
+        } else if (ch == '\r') {
+            if (rt_write_cstr(fd, "\\r") != 0) {
+                return -1;
+            }
+        } else if (ch == '\t') {
+            if (rt_write_cstr(fd, "\\t") != 0) {
+                return -1;
+            }
+        } else if (ch < 0x20U || ch == 0x7fU) {
+            char escaped[4];
+
+            escaped[0] = '\\';
+            escaped[1] = 'x';
+            escaped[2] = hex[(ch >> 4) & 0x0fU];
+            escaped[3] = hex[ch & 0x0fU];
+            if (rt_write_all(fd, escaped, sizeof(escaped)) != 0) {
+                return -1;
+            }
+        } else if (rt_write_char(fd, (char)ch) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int tool_write_visible_line(int fd, const char *text) {
+    size_t length = text != 0 ? rt_strlen(text) : 0U;
+
+    if (tool_write_visible(fd, text, length) != 0) {
+        return -1;
+    }
+    return rt_write_char(fd, '\n');
+}
+
 int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out) {
     size_t in_index = 0;
     size_t out_index = 0;

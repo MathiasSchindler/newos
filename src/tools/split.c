@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 #define SPLIT_MODE_LINES 1
 #define SPLIT_MODE_BYTES 2
 #define SPLIT_MODE_LINE_BYTES 3
@@ -55,6 +57,10 @@ static int parse_size_value(const char *text, unsigned long long *value_out) {
         }
     }
 
+    if (value > ULLONG_MAX / multiplier) {
+        return -1;
+    }
+
     *value_out = value * multiplier;
     return 0;
 }
@@ -68,7 +74,10 @@ static int make_output_name(const char *prefix,
     size_t prefix_len = rt_strlen(prefix);
     size_t i;
 
-    if (suffix_length == 0ULL || prefix_len + (size_t)suffix_length + 1U > buffer_size) {
+    if (suffix_length == 0ULL || prefix_len + 1U > buffer_size) {
+        return -1;
+    }
+    if (suffix_length > (unsigned long long)(buffer_size - prefix_len - 1U)) {
         return -1;
     }
 

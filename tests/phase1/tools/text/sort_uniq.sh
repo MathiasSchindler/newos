@@ -91,3 +91,9 @@ printf 'beta\ngamma\n' > "$WORK_DIR/merge_b.txt"
 "$ROOT_DIR/build/sort" -m -u "$WORK_DIR/merge_a.txt" "$WORK_DIR/merge_b.txt" > "$WORK_DIR/merge.out"
 printf 'alpha\nbeta\ngamma\n' > "$WORK_DIR/merge.expected"
 assert_files_equal "$WORK_DIR/merge.expected" "$WORK_DIR/merge.out" "sort -m -u did not merge sorted inputs correctly"
+
+if "$ROOT_DIR/build/sort" -k 184467440737095516151 "$WORK_DIR/input.txt" > /dev/null 2> "$WORK_DIR/sort_key.err"
+then
+    fail "sort accepted an overflowing key specification"
+fi
+assert_file_contains "$WORK_DIR/sort_key.err" '^Usage: sort ' "sort did not reject an overflowing key specification"

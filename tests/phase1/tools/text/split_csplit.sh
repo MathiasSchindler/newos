@@ -40,3 +40,21 @@ printf 'abcdef\n' > "$WORK_DIR/split_bytes.txt"
 assert_file_contains "$WORK_DIR/part000" '^ab$' "split -b/-d did not create the first numeric chunk"
 assert_file_contains "$WORK_DIR/part001" '^cd$' "split -b/-d did not create the second numeric chunk"
 assert_file_contains "$WORK_DIR/part002" '^ef$' "split -b/-d did not create the third numeric chunk"
+
+if "$ROOT_DIR/build/split" -b 18446744073709551615g "$WORK_DIR/split.txt" "$WORK_DIR/overflow-" > /dev/null 2> "$WORK_DIR/split_overflow.err"
+then
+    fail "split accepted a byte size that overflowed its internal arithmetic"
+fi
+assert_file_contains "$WORK_DIR/split_overflow.err" '^Usage:' "split did not reject an overflowing -b size"
+
+if "$ROOT_DIR/build/split" -a 18446744073709551615 "$WORK_DIR/split.txt" "$WORK_DIR/overflow-" > /dev/null 2> "$WORK_DIR/split_suffix.err"
+then
+    fail "split accepted an absurdly large suffix length"
+fi
+assert_file_contains "$WORK_DIR/split_suffix.err" 'split: too many output files for prefix ' "split did not fail safely on a huge suffix length"
+
+if "$ROOT_DIR/build/csplit" -f "$WORK_DIR/repeat" "$WORK_DIR/csplit.txt" '/beta/{184467440737095516151}' > /dev/null 2> "$WORK_DIR/csplit_repeat.err"
+then
+    fail "csplit accepted a repeat count that overflowed"
+fi
+assert_file_contains "$WORK_DIR/csplit_repeat.err" 'csplit: invalid pattern ' "csplit did not reject an overflowing repeat count"
