@@ -68,7 +68,10 @@
     X("src/shared/crypto/crypto_util.c") \
     X("src/shared/crypto/md5.c") \
     X("src/shared/crypto/sha256.c") \
-    X("src/shared/crypto/sha512.c")
+    X("src/shared/crypto/sha512.c") \
+    X("src/shared/crypto/hmac_sha256.c") \
+    X("src/shared/crypto/hkdf_sha256.c") \
+    X("src/shared/crypto/rsa.c")
 
 /* ── hash utilities (hash_util + crypto) ────────────────────────────────── */
 

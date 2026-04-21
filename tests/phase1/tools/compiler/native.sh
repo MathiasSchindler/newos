@@ -90,6 +90,24 @@ EOF
 
 compile_and_check_native "$WORK_DIR/u64_unsigned_shift.c" "$WORK_DIR/u64_unsigned_shift_bin" "0" "compiler miscompiled an unsigned 64-bit right shift on x86_64"
 
+cat > "$WORK_DIR/shared_crypto_api.c" <<'EOF'
+#include "crypto/hmac_sha256.h"
+#include "crypto/hkdf_sha256.h"
+#include "crypto/rsa.h"
+
+int main(void) {
+    unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE];
+    unsigned char okm[CRYPTO_SHA256_DIGEST_SIZE];
+    CryptoRsaPrivateKey rsa_key;
+
+    (void)digest;
+    (void)okm;
+    return sizeof(rsa_key) > 0U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/shared_crypto_api.c" "$WORK_DIR/shared_crypto_api_bin" "0" "shared crypto headers or types were unavailable"
+
 cat > "$WORK_DIR/local_struct_init.c" <<'EOF'
 typedef struct {
     int first;
