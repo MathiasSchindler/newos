@@ -34,9 +34,15 @@ static int is_valid_hostname(const char *name) {
                 return 0;
             }
             label_length += 1U;
+            if (label_length > 63U) {
+                return 0;
+            }
             previous_was_hyphen = 1;
         } else {
             label_length += 1U;
+            if (label_length > 63U) {
+                return 0;
+            }
             previous_was_hyphen = 0;
         }
         i += 1U;

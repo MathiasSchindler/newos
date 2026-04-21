@@ -14,3 +14,9 @@ invalid_status=0
 "$ROOT_DIR/build/hostname" 'bad name' >/dev/null 2>"$WORK_DIR/invalid.err" || invalid_status=$?
 assert_exit_code "$invalid_status" '1' "hostname should reject invalid names before attempting the system call"
 assert_file_contains "$WORK_DIR/invalid.err" '^hostname: invalid hostname$' "hostname did not explain the invalid-name rejection"
+
+long_label=$(printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example')
+invalid_status=0
+"$ROOT_DIR/build/hostname" "$long_label" >/dev/null 2>"$WORK_DIR/long-label.err" || invalid_status=$?
+assert_exit_code "$invalid_status" '1' "hostname should reject labels longer than 63 bytes"
+assert_file_contains "$WORK_DIR/long-label.err" '^hostname: invalid hostname$' "hostname did not explain the overlong-label rejection"
