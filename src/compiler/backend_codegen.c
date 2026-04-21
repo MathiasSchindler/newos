@@ -4,6 +4,8 @@
 
 #include <limits.h>
 
+static const char *extract_store_name(const char *cursor, char *name, size_t name_size);
+
 static int parse_decl_line(const char *line,
                            char *storage,
                            size_t storage_size,
@@ -13,25 +15,14 @@ static int parse_decl_line(const char *line,
                            size_t type_size,
                            char *name,
                            size_t name_size) {
-    const char *cursor = line + 5;
-    size_t length = 0;
+    const char *cursor;
     const char *scan;
     const char *last = 0;
     size_t type_length = 0;
 
-    cursor = skip_spaces(cursor);
-    while (*cursor != '\0' && *cursor != ' ' && length + 1 < storage_size) {
-        storage[length++] = *cursor++;
-    }
-    storage[length] = '\0';
-    cursor = skip_spaces(cursor);
-
-    length = 0;
-    while (*cursor != '\0' && *cursor != ' ' && length + 1 < kind_size) {
-        kind[length++] = *cursor++;
-    }
-    kind[length] = '\0';
-    cursor = skip_spaces(cursor);
+    cursor = skip_spaces(line + 5);
+    cursor = copy_next_word(cursor, storage, storage_size);
+    cursor = copy_next_word(cursor, kind, kind_size);
 
     copy_last_word(cursor, name, name_size);
     scan = cursor;
@@ -78,37 +69,16 @@ static int parse_aggregate_line(const char *line,
                                 int *align_out) {
     const char *cursor = skip_spaces(line + 9);
     char number_text[32];
-    size_t out = 0;
     long long size_value = 0;
     long long align_value = 0;
 
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < kind_size) {
-        kind[out++] = *cursor++;
-    }
-    kind[out] = '\0';
-    cursor = skip_spaces(cursor);
-
-    out = 0;
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < name_size) {
-        name[out++] = *cursor++;
-    }
-    name[out] = '\0';
-    cursor = skip_spaces(cursor);
-
-    out = 0;
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < sizeof(number_text)) {
-        number_text[out++] = *cursor++;
-    }
-    number_text[out] = '\0';
+    cursor = copy_next_word(cursor, kind, kind_size);
+    cursor = copy_next_word(cursor, name, name_size);
+    cursor = copy_next_word(cursor, number_text, sizeof(number_text));
     if (number_text[0] == '\0' || parse_signed_value(number_text, &size_value) != 0) {
         return -1;
     }
-    cursor = skip_spaces(cursor);
-    out = 0;
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < sizeof(number_text)) {
-        number_text[out++] = *cursor++;
-    }
-    number_text[out] = '\0';
+    cursor = copy_next_word(cursor, number_text, sizeof(number_text));
     if (number_text[0] == '\0' || parse_signed_value(number_text, &align_value) != 0) {
         return -1;
     }
@@ -132,33 +102,16 @@ static int parse_member_line(const char *line,
                              size_t type_text_size) {
     const char *cursor = skip_spaces(line + 6);
     char number_text[32];
-    size_t out = 0;
     long long offset = 0;
     const char *type_start;
     size_t type_length = 0;
 
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < aggregate_name_size) {
-        aggregate_name[out++] = *cursor++;
-    }
-    aggregate_name[out] = '\0';
-    cursor = skip_spaces(cursor);
-
-    out = 0;
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < member_name_size) {
-        member_name[out++] = *cursor++;
-    }
-    member_name[out] = '\0';
-    cursor = skip_spaces(cursor);
-
-    out = 0;
-    while (*cursor != '\0' && *cursor != ' ' && out + 1 < sizeof(number_text)) {
-        number_text[out++] = *cursor++;
-    }
-    number_text[out] = '\0';
+    cursor = copy_next_word(cursor, aggregate_name, aggregate_name_size);
+    cursor = copy_next_word(cursor, member_name, member_name_size);
+    cursor = copy_next_word(cursor, number_text, sizeof(number_text));
     if (number_text[0] == '\0' || parse_signed_value(number_text, &offset) != 0) {
         return -1;
     }
-    cursor = skip_spaces(cursor);
     type_start = cursor;
     while (type_start[type_length] != '\0' && type_length + 1 < type_text_size) {
         type_text[type_length] = type_start[type_length];
@@ -1263,14 +1216,9 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             if (names_equal(kind, "obj") && global_index >= 0 && i + 1U < ir->count && starts_with(ir->lines[i + 1U], "store ")) {
                 const char *next = ir->lines[i + 1U] + 6;
                 char store_name[COMPILER_IR_NAME_CAPACITY];
-                size_t out = 0;
                 long long value = 0;
 
-                while (*next != '\0' && !(next[0] == ' ' && next[1] == '<') && out + 1 < sizeof(store_name)) {
-                    store_name[out++] = *next++;
-                }
-                store_name[out] = '\0';
-                next = skip_spaces(next + 4);
+                next = extract_store_name(next, store_name, sizeof(store_name));
                 if (names_equal(store_name, name)) {
                     if (resolve_static_value(state, next, &value) == 0) {
                         state->globals[global_index].init_value = value;
@@ -1291,18 +1239,13 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
 
         if (!in_function && starts_with(line, "store ")) {
             char name[COMPILER_IR_NAME_CAPACITY];
-            const char *arrow = line + 6;
-            size_t out = 0;
+            const char *expr = line + 6;
             long long value = 0;
             int global_index;
 
-            while (*arrow != '\0' && !(arrow[0] == ' ' && arrow[1] == '<') && out + 1 < sizeof(name)) {
-                name[out++] = *arrow++;
-            }
-            name[out] = '\0';
+            expr = extract_store_name(expr, name, sizeof(name));
             global_index = find_global(state, name);
             if (global_index >= 0) {
-                const char *expr = skip_spaces(arrow + 4);
                 if (resolve_static_value(state, expr, &value) == 0) {
                     state->globals[global_index].init_value = value;
                     state->globals[global_index].initialized = 1;
@@ -1479,6 +1422,16 @@ static int emit_globals(BackendState *state) {
     return 0;
 }
 
+static const char *extract_store_name(const char *cursor, char *name, size_t name_size) {
+    size_t length = 0;
+
+    while (*cursor != '\0' && !(cursor[0] == ' ' && cursor[1] == '<') && length + 1 < name_size) {
+        name[length++] = *cursor++;
+    }
+    name[length] = '\0';
+    return skip_spaces(cursor + 4);
+}
+
 static const char *find_global_initializer_expr(const BackendState *state, const char *name) {
     size_t i;
     int in_function = 0;
@@ -1491,7 +1444,6 @@ static const char *find_global_initializer_expr(const BackendState *state, const
         const char *line = state->ir->lines[i];
         const char *expr = line + 6;
         char store_name[COMPILER_IR_NAME_CAPACITY];
-        size_t out = 0;
 
         if (starts_with(line, "func ")) {
             in_function = 1;
@@ -1505,12 +1457,9 @@ static const char *find_global_initializer_expr(const BackendState *state, const
             continue;
         }
 
-        while (*expr != '\0' && !(expr[0] == ' ' && expr[1] == '<') && out + 1 < sizeof(store_name)) {
-            store_name[out++] = *expr++;
-        }
-        store_name[out] = '\0';
+        expr = extract_store_name(expr, store_name, sizeof(store_name));
         if (names_equal(store_name, name)) {
-            return skip_spaces(expr + 4);
+            return expr;
         }
     }
 
@@ -1539,15 +1488,10 @@ static void collect_global_initializers(BackendState *state, const CompilerIr *i
         {
             char name[COMPILER_IR_NAME_CAPACITY];
             const char *expr = line + 6;
-            size_t out = 0;
             int global_index;
             long long value = 0;
 
-            while (*expr != '\0' && !(expr[0] == ' ' && expr[1] == '<') && out + 1 < sizeof(name)) {
-                name[out++] = *expr++;
-            }
-            name[out] = '\0';
-            expr = skip_spaces(expr + 4);
+            expr = extract_store_name(expr, name, sizeof(name));
             global_index = find_global(state, name);
             if (global_index < 0) {
                 continue;
@@ -2078,13 +2022,8 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         if (starts_with(line, "store ")) {
             char name[COMPILER_IR_NAME_CAPACITY];
             const char *expr = line + 6;
-            size_t out = 0;
 
-            while (*expr != '\0' && !(expr[0] == ' ' && expr[1] == '<') && out + 1 < sizeof(name)) {
-                name[out++] = *expr++;
-            }
-            name[out] = '\0';
-            expr = skip_spaces(expr + 4);
+            expr = extract_store_name(expr, name, sizeof(name));
 
             {
                 int array_word_index = 0;

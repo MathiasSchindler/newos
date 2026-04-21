@@ -152,6 +152,7 @@ int backend_is_darwin(const BackendState *state);
 int backend_stack_slot_size(const BackendState *state);
 int backend_register_arg_limit(const BackendState *state);
 void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size);
+const char *copy_next_word(const char *cursor, char *buffer, size_t buffer_size);
 void copy_last_word(const char *text, char *buffer, size_t buffer_size);
 int parse_signed_value(const char *text, long long *value_out);
 int add_function_name(BackendState *state, const char *name, int global, const char *return_type);

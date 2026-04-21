@@ -144,6 +144,16 @@ void build_static_local_symbol_name(const BackendState *state, const char *funct
     rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), name != 0 ? name : "obj");
 }
 
+const char *copy_next_word(const char *cursor, char *buffer, size_t buffer_size) {
+    size_t length = 0;
+
+    while (*cursor != '\0' && *cursor != ' ' && length + 1 < buffer_size) {
+        buffer[length++] = *cursor++;
+    }
+    buffer[length] = '\0';
+    return skip_spaces(cursor);
+}
+
 void copy_last_word(const char *text, char *buffer, size_t buffer_size) {
     size_t start = 0;
     size_t end = rt_strlen(text);
