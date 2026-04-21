@@ -76,6 +76,10 @@ static const char *ir_trim_trailing_spaces(const char *start, const char *end);
 static int ir_strip_outer_parens(const char *expr, char *buffer, size_t buffer_size);
 static int ir_find_top_level_operator(const char *expr, const char *op, const char **position_out);
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size);
+static int ir_normalize_expr_text(const char *expr, char *buffer, size_t buffer_size);
+static int ir_expr_is_trivial_value(const char *expr);
+static int ir_expr_text_equals(const char *lhs, const char *rhs);
+static int ir_assignment_is_noop(const char *name, const char *expr);
 static int ir_optimize_expr_text(const char *expr,
                                  const IrOptimizerState *state,
                                  char *buffer,
@@ -83,6 +87,7 @@ static int ir_optimize_expr_text(const char *expr,
                                  int *changed_out,
                                  int *constant_out,
                                  long long *value_out);
+static int ir_assignment_op_is_noop(const char *op, const char *rhs, const IrOptimizerState *state);
 static int ir_rewrite_expr_line(CompilerIr *ir, size_t index, const char *prefix, const char *expr);
 static int ir_rewrite_branch_line(CompilerIr *ir, size_t index, const char *expr, const char *label);
 static int ir_rewrite_jump_line(CompilerIr *ir, size_t index, const char *label);
@@ -91,6 +96,7 @@ static void ir_remove_unreachable_after_terminator(CompilerIr *ir, size_t index)
 static int ir_extract_store_parts(const char *line, char *name, size_t name_size, const char **expr_out);
 static int ir_extract_assignment_parts(const char *expr, char *name, size_t name_size, char *op, size_t op_size, const char **rhs_out);
 static int ir_extract_branch_parts(const char *line, char *label, size_t label_size, char *expr, size_t expr_size);
+static int ir_extract_jump_target(const char *line, char *label, size_t label_size);
 static int ir_extract_const_parts(const char *line, char *name, size_t name_size, const char **expr_out);
 
 static void set_error(CompilerIr *ir, const char *message) {
@@ -886,7 +892,8 @@ static int ir_starts_block_boundary(const char *line) {
 
 static int ir_is_terminator_line(const char *line) {
     return ir_text_equals(line, "ret") ||
-           ir_starts_with(line, "ret ");
+           ir_starts_with(line, "ret ") ||
+           ir_starts_with(line, "jump ");
 }
 
 static int ir_label_is_referenced(const CompilerIr *ir, const char *label, size_t skip_index) {
@@ -1083,7 +1090,7 @@ static int ir_find_top_level_operator(const char *expr, const char *op, const ch
 }
 
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size) {
-    static const char *const ops[] = {"|", "^", "<<", ">>", "+", "-", "*", "/"};
+    static const char *const ops[] = {"&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
     size_t op_index;
 
     for (op_index = 0; op_index < sizeof(ops) / sizeof(ops[0]); ++op_index) {
@@ -1117,15 +1124,36 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
         lhs_is_constant = ir_evaluate_constant_expression(lhs, state, &lhs_value) == 0;
         rhs_is_constant = ir_evaluate_constant_expression(rhs, state, &rhs_value) == 0;
 
+        if (ir_expr_text_equals(lhs, rhs) && ir_expr_is_trivial_value(lhs)) {
+            if (ir_text_equals(op, "-") || ir_text_equals(op, "^")) {
+                rt_copy_string(buffer, buffer_size, "0");
+                return 1;
+            }
+            if (ir_text_equals(op, "&") || ir_text_equals(op, "|")) {
+                rt_copy_string(buffer, buffer_size, lhs);
+                return 1;
+            }
+        }
+
         if ((ir_text_equals(op, "+") || ir_text_equals(op, "|") || ir_text_equals(op, "^")) &&
             lhs_is_constant && lhs_value == 0) {
             rt_copy_string(buffer, buffer_size, rhs);
+            return 1;
+        }
+        if ((ir_text_equals(op, "*") || ir_text_equals(op, "&")) &&
+            lhs_is_constant && lhs_value == 0 && ir_expr_is_trivial_value(rhs)) {
+            rt_copy_string(buffer, buffer_size, "0");
             return 1;
         }
         if ((ir_text_equals(op, "+") || ir_text_equals(op, "-") || ir_text_equals(op, "|") ||
              ir_text_equals(op, "^") || ir_text_equals(op, "<<") || ir_text_equals(op, ">>")) &&
             rhs_is_constant && rhs_value == 0) {
             rt_copy_string(buffer, buffer_size, lhs);
+            return 1;
+        }
+        if ((ir_text_equals(op, "*") || ir_text_equals(op, "&")) &&
+            rhs_is_constant && rhs_value == 0 && ir_expr_is_trivial_value(lhs)) {
+            rt_copy_string(buffer, buffer_size, "0");
             return 1;
         }
         if (ir_text_equals(op, "*") && lhs_is_constant && lhs_value == 1) {
@@ -1143,6 +1171,67 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
     }
 
     return 0;
+}
+
+static int ir_normalize_expr_text(const char *expr, char *buffer, size_t buffer_size) {
+    const char *start = ir_skip_spaces(expr != 0 ? expr : "");
+    const char *end = ir_trim_trailing_spaces(start, start + rt_strlen(start));
+    char current[COMPILER_IR_LINE_CAPACITY];
+
+    if (start == end || ir_copy_identifier(current, sizeof(current), start, end) != 0) {
+        return -1;
+    }
+
+    for (;;) {
+        char simplified[COMPILER_IR_LINE_CAPACITY];
+        int result = ir_strip_outer_parens(current, simplified, sizeof(simplified));
+
+        if (result < 0) {
+            return -1;
+        }
+        if (result == 0) {
+            break;
+        }
+        rt_copy_string(current, sizeof(current), simplified);
+    }
+
+    rt_copy_string(buffer, buffer_size, current);
+    return 0;
+}
+
+static int ir_expr_is_trivial_value(const char *expr) {
+    char normalized[COMPILER_IR_LINE_CAPACITY];
+    IrConstParser parser;
+
+    if (ir_normalize_expr_text(expr, normalized, sizeof(normalized)) != 0) {
+        return 0;
+    }
+
+    parser.cursor = normalized;
+    parser.state = 0;
+    ir_const_next(&parser);
+    if (parser.current.kind != IR_CONST_TOKEN_IDENTIFIER &&
+        parser.current.kind != IR_CONST_TOKEN_NUMBER &&
+        parser.current.kind != IR_CONST_TOKEN_CHAR) {
+        return 0;
+    }
+    ir_const_next(&parser);
+    return parser.current.kind == IR_CONST_TOKEN_EOF;
+}
+
+static int ir_expr_text_equals(const char *lhs, const char *rhs) {
+    char left[COMPILER_IR_LINE_CAPACITY];
+    char right[COMPILER_IR_LINE_CAPACITY];
+
+    if (ir_normalize_expr_text(lhs, left, sizeof(left)) != 0 ||
+        ir_normalize_expr_text(rhs, right, sizeof(right)) != 0) {
+        return 0;
+    }
+    return ir_text_equals(left, right);
+}
+
+static int ir_assignment_is_noop(const char *name, const char *expr) {
+    return name != 0 && expr != 0 && ir_expr_text_equals(name, expr);
 }
 
 static int ir_optimize_expr_text(const char *expr,
@@ -1394,6 +1483,13 @@ static int ir_extract_branch_parts(const char *line, char *label, size_t label_s
     return -1;
 }
 
+static int ir_extract_jump_target(const char *line, char *label, size_t label_size) {
+    const char *start = ir_skip_spaces(line + 5);
+    const char *end = ir_trim_trailing_spaces(start, start + rt_strlen(start));
+
+    return ir_copy_identifier(label, label_size, start, end);
+}
+
 static int ir_extract_const_parts(const char *line, char *name, size_t name_size, const char **expr_out) {
     const char *cursor = line + 6;
     const char *name_end = cursor;
@@ -1444,6 +1540,26 @@ static int ir_extract_assignment_parts(const char *expr, char *name, size_t name
     return **rhs_out == '\0' ? -1 : 0;
 }
 
+static int ir_assignment_op_is_noop(const char *op, const char *rhs, const IrOptimizerState *state) {
+    long long value = 0;
+
+    if (op == 0 || rhs == 0 || ir_evaluate_constant_expression(rhs, state, &value) != 0) {
+        return 0;
+    }
+
+    if (value == 0 &&
+        (ir_text_equals(op, "+=") || ir_text_equals(op, "-=") ||
+         ir_text_equals(op, "|=") || ir_text_equals(op, "^=") ||
+         ir_text_equals(op, "<<=") || ir_text_equals(op, ">>="))) {
+        return 1;
+    }
+    if (value == 1 && (ir_text_equals(op, "*=") || ir_text_equals(op, "/="))) {
+        return 1;
+    }
+
+    return 0;
+}
+
 int compiler_ir_optimize(CompilerIr *ir) {
     IrOptimizerState state;
     size_t i = 0;
@@ -1454,15 +1570,33 @@ int compiler_ir_optimize(CompilerIr *ir) {
         char *line = ir->lines[i];
 
         if (ir_starts_with(line, "label ")) {
-            if (i > 0U && ir_is_terminator_line(ir->lines[i - 1U])) {
+            if (i > 0U && ir_starts_with(ir->lines[i - 1U], "jump ")) {
+                char current_label[COMPILER_IR_NAME_CAPACITY];
+                char previous_target[COMPILER_IR_NAME_CAPACITY];
+
+                if (ir_copy_identifier(current_label,
+                                       sizeof(current_label),
+                                       line + 6,
+                                       ir_trim_trailing_spaces(line + 6, line + rt_strlen(line))) == 0 &&
+                    ir_extract_jump_target(ir->lines[i - 1U], previous_target, sizeof(previous_target)) == 0 &&
+                    ir_text_equals(current_label, previous_target)) {
+                    ir_remove_line(ir, i - 1U);
+                    i -= 1U;
+                    continue;
+                }
+            }
+            {
                 char label[COMPILER_IR_NAME_CAPACITY];
+
                 if (ir_copy_identifier(label,
                                        sizeof(label),
                                        line + 6,
                                        ir_trim_trailing_spaces(line + 6, line + rt_strlen(line))) == 0 &&
                     !ir_label_is_referenced(ir, label, i)) {
                     ir_remove_line(ir, i);
-                    while (i < ir->count && !ir_starts_block_boundary(ir->lines[i])) {
+                    while (i > 0U && i < ir->count &&
+                           ir_is_terminator_line(ir->lines[i - 1U]) &&
+                           !ir_starts_block_boundary(ir->lines[i])) {
                         ir_remove_line(ir, i);
                     }
                     continue;
@@ -1528,10 +1662,19 @@ int compiler_ir_optimize(CompilerIr *ir) {
             int expr_changed = 0;
             int expr_constant = 0;
             int parsed_store = ir_extract_store_parts(line, name, sizeof(name), &expr) == 0;
+            int optimized_store = 0;
 
-            if (parsed_store &&
-                ir_optimize_expr_text(expr, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0 &&
-                expr_constant) {
+            if (parsed_store) {
+                optimized_store =
+                    ir_optimize_expr_text(expr, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0;
+            }
+
+            if (parsed_store && optimized_store && !expr_constant && ir_assignment_is_noop(name, optimized_expr)) {
+                ir_remove_line(ir, i);
+                continue;
+            }
+
+            if (parsed_store && optimized_store && expr_constant) {
                 char number[32];
                 char rewritten[COMPILER_IR_LINE_CAPACITY];
                 size_t offset = 0;
@@ -1550,7 +1693,7 @@ int compiler_ir_optimize(CompilerIr *ir) {
                     set_error(ir, "IR optimizer tracking capacity exceeded");
                     return -1;
                 }
-            } else if (parsed_store && expr_changed) {
+            } else if (parsed_store && optimized_store && expr_changed) {
                 char rewritten[COMPILER_IR_LINE_CAPACITY];
                 size_t offset = 0;
 
@@ -1586,8 +1729,10 @@ int compiler_ir_optimize(CompilerIr *ir) {
 
             if (ir_extract_assignment_parts(expr, name, sizeof(name), op, sizeof(op), &rhs) == 0) {
                 if (ir_text_equals(op, "=")) {
-                    if (ir_optimize_expr_text(rhs, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0 &&
-                        expr_constant) {
+                    int optimized_rhs =
+                        ir_optimize_expr_text(rhs, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0;
+
+                    if (optimized_rhs && expr_constant) {
                         char number[32];
                         char rewritten[COMPILER_IR_LINE_CAPACITY];
                         size_t offset = 0;
@@ -1608,7 +1753,10 @@ int compiler_ir_optimize(CompilerIr *ir) {
                         }
                         i += 1U;
                         continue;
-                    } else if (expr_changed) {
+                    } else if (optimized_rhs && ir_assignment_is_noop(name, optimized_expr)) {
+                        ir_remove_line(ir, i);
+                        continue;
+                    } else if (optimized_rhs && expr_changed) {
                         char rewritten[COMPILER_IR_LINE_CAPACITY];
                         size_t offset = 0;
 
@@ -1626,6 +1774,11 @@ int compiler_ir_optimize(CompilerIr *ir) {
                     long long lhs = 0;
                     long long rhs_value = 0;
                     const char *binary_op = 0;
+
+                    if (ir_assignment_op_is_noop(op, rhs, &state)) {
+                        ir_remove_line(ir, i);
+                        continue;
+                    }
                     if (ir_lookup_value(&state, name, &lhs) == 0 &&
                         ir_evaluate_constant_expression(rhs, &state, &rhs_value) == 0) {
                         if (ir_text_equals(op, "+=")) binary_op = "+";
@@ -1672,11 +1825,18 @@ int compiler_ir_optimize(CompilerIr *ir) {
 
             if (ir_optimize_expr_text(expr, &state, optimized_expr, sizeof(optimized_expr), &expr_changed, &expr_constant, &value) == 0) {
                 if (expr_constant) {
+                    if (!ir_expr_has_side_effect_risk(expr)) {
+                        ir_remove_line(ir, i);
+                        continue;
+                    }
                     char number[32];
                     ir_format_signed_value(value, number, sizeof(number));
                     if (ir_rewrite_expr_line(ir, i, "eval ", number) != 0) {
                         return -1;
                     }
+                } else if (!ir_expr_has_side_effect_risk(optimized_expr) && ir_expr_is_trivial_value(optimized_expr)) {
+                    ir_remove_line(ir, i);
+                    continue;
                 } else if (expr_changed && ir_rewrite_expr_line(ir, i, "eval ", optimized_expr) != 0) {
                     return -1;
                 }
@@ -1686,6 +1846,29 @@ int compiler_ir_optimize(CompilerIr *ir) {
             if (ir_expr_has_side_effect_risk(expr)) {
                 ir_clear_local_values(&state);
             }
+            i += 1U;
+            continue;
+        }
+
+        if (ir_starts_with(line, "jump ")) {
+            char label[COMPILER_IR_NAME_CAPACITY];
+            char next_label[COMPILER_IR_NAME_CAPACITY];
+
+            if (ir_extract_jump_target(line, label, sizeof(label)) == 0 &&
+                i + 1U < ir->count &&
+                ir_starts_with(ir->lines[i + 1U], "label ") &&
+                ir_copy_identifier(next_label,
+                                   sizeof(next_label),
+                                   ir->lines[i + 1U] + 6,
+                                   ir_trim_trailing_spaces(ir->lines[i + 1U] + 6,
+                                                           ir->lines[i + 1U] + rt_strlen(ir->lines[i + 1U]))) == 0 &&
+                ir_text_equals(label, next_label)) {
+                ir_remove_line(ir, i);
+                continue;
+            }
+
+            ir_clear_local_values(&state);
+            ir_remove_unreachable_after_terminator(ir, i);
             i += 1U;
             continue;
         }
@@ -1730,7 +1913,6 @@ int compiler_ir_optimize(CompilerIr *ir) {
                             return -1;
                         }
                         ir_clear_local_values(&state);
-                        i += 1U;
                         continue;
                     }
                     ir_remove_line(ir, i);

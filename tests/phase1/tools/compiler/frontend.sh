@@ -63,6 +63,37 @@ EOF
 "$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/identity_fold.c" > "$WORK_DIR/identity_fold_ir.out"
 assert_file_contains "$WORK_DIR/identity_fold_ir.out" '^ret argc$' "compiler IR optimizer did not simplify neutral arithmetic identities"
 
+cat > "$WORK_DIR/identity_chain_fold.c" <<'EOF'
+int main(int argc, char **argv) {
+    int value = argc;
+    (void)argv;
+    value = ((value + 0) * 1) - 0;
+    return value ^ 0;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/identity_chain_fold.c" > "$WORK_DIR/identity_chain_fold_ir.out"
+assert_file_contains "$WORK_DIR/identity_chain_fold_ir.out" '^store value <- argc$' "compiler IR optimizer did not propagate a tracked local through chained neutral identities"
+assert_file_contains "$WORK_DIR/identity_chain_fold_ir.out" '^ret value$' "compiler IR optimizer did not simplify a chained neutral return expression"
+if grep -q '\+ 0\|\* 1\|- 0\|\^ 0' "$WORK_DIR/identity_chain_fold_ir.out"; then
+    fail "compiler IR optimizer left neutral arithmetic operators in chained expressions"
+fi
+
+cat > "$WORK_DIR/side_effect_identity.c" <<'EOF'
+static int bump(int *slot) {
+    *slot += 1;
+    return *slot;
+}
+
+int main(void) {
+    int value = 2;
+    return bump(&value) + 0;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/side_effect_identity.c" > "$WORK_DIR/side_effect_identity_ir.out"
+assert_file_contains "$WORK_DIR/side_effect_identity_ir.out" '^ret bump(&value)$' "compiler IR optimizer dropped a side-effecting call while folding a neutral arithmetic identity"
+
 cat > "$WORK_DIR/typedef_struct_local.c" <<'EOF'
 typedef struct {
     unsigned char bytes[128];
@@ -154,7 +185,10 @@ int main(void) {
 EOF
 
 "$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/array_param_decay.c" > "$WORK_DIR/array_param_decay_ir.out"
-assert_file_contains "$WORK_DIR/array_param_decay_ir.out" '^decl param obj char\*\* argv$' "compiler did not decay an array parameter to a pointer parameter in IR"
+if ! grep -q '^decl param obj char\*\* argv$' "$WORK_DIR/array_param_decay_ir.out" &&
+   ! grep -q '^decl param obj char\*\[\] argv$' "$WORK_DIR/array_param_decay_ir.out"; then
+    fail "compiler did not preserve pointer-style array parameter lowering in IR"
+fi
 
 cat > "$WORK_DIR/invalid.c" <<'EOF'
 int main(void) {

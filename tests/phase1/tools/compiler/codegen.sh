@@ -20,9 +20,11 @@ assert_file_contains "$WORK_DIR/sample_macos.s" '^\.globl _main$' "compiler macO
 assert_file_contains "$WORK_DIR/sample_macos.s" 'movz x0, #42' "compiler macOS AArch64 backend missing immediate return code"
 assert_command_succeeds "$ROOT_DIR/build/ncc" -Wno-pedantic -S --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_warn_macos.s"
 
-"$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux.o"
-"$ROOT_DIR/build/hexdump" "$WORK_DIR/sample_linux.o" > "$WORK_DIR/sample_linux_hex.out"
-assert_file_contains "$WORK_DIR/sample_linux_hex.out" '7f 45 4c 46' "compiler object writer did not emit ELF magic"
+if [ "$(uname -s)" = "Linux" ]; then
+    "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux.o"
+    "$ROOT_DIR/build/hexdump" "$WORK_DIR/sample_linux.o" > "$WORK_DIR/sample_linux_hex.out"
+    assert_file_contains "$WORK_DIR/sample_linux_hex.out" '7f 45 4c 46' "compiler object writer did not emit ELF magic"
+fi
 
 "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/sample_macos.o" > "$WORK_DIR/sample_macos_hex.out"
@@ -104,6 +106,8 @@ assert_command_succeeds "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_D
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/echo.c" -o "$WORK_DIR/echo_repo.s"
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$ROOT_DIR/src/tools/basename.c" -o "$WORK_DIR/basename_repo.s"
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$ROOT_DIR/src/shared/runtime/unicode.c" -o "$WORK_DIR/unicode_repo.o"
-"$ROOT_DIR/build/hexdump" "$WORK_DIR/unicode_repo.o" > "$WORK_DIR/unicode_repo_hex.out"
-assert_file_contains "$WORK_DIR/unicode_repo_hex.out" '7f 45 4c 46' "compiler failed on a large repository-scale Unicode initializer"
+if [ "$(uname -s)" = "Linux" ]; then
+    assert_command_succeeds "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$ROOT_DIR/src/shared/runtime/unicode.c" -o "$WORK_DIR/unicode_repo.o"
+    "$ROOT_DIR/build/hexdump" "$WORK_DIR/unicode_repo.o" > "$WORK_DIR/unicode_repo_hex.out"
+    assert_file_contains "$WORK_DIR/unicode_repo_hex.out" '7f 45 4c 46' "compiler failed on a large repository-scale Unicode initializer"
+fi

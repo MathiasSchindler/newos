@@ -153,6 +153,23 @@ EOF
 
 compile_and_check_native "$WORK_DIR/logical_or_side_effect.c" "$WORK_DIR/logical_or_side_effect_bin" "0" "compiler IR optimization corrupted a logical-or expression after a pointer-mutating call"
 
+cat > "$WORK_DIR/constant_short_circuit.c" <<'EOF'
+static int bump(int *slot) {
+    *slot += 1;
+    return *slot;
+}
+
+int main(void) {
+    int value = 4;
+    if (((2 * 3) - 6) && bump(&value)) {
+        return 1;
+    }
+    return value == 4 ? 0 : 2;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/constant_short_circuit.c" "$WORK_DIR/constant_short_circuit_bin" "0" "compiler constant-folding broke short-circuit behavior for a side-effecting call"
+
 cat > "$WORK_DIR/multi_file_helper.c" <<'EOF'
 int helper_value(void) {
     return 41;
