@@ -7,6 +7,7 @@
 
 static unsigned long long shuf_rng_state = 1ULL;
 static int shuf_random_source_fd = -1;
+static char shuf_items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH];
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-n COUNT] [-r] [-z] [-o FILE] [--random-source=FILE] [file]");
@@ -141,7 +142,7 @@ static int parse_range_arg(const char *text, long long *low_out, long long *high
     return 0;
 }
 
-static int add_item(char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH], size_t *count, const char *text) {
+static int add_item(size_t *count, const char *text) {
     size_t len = rt_strlen(text);
 
     if (*count >= SHUF_MAX_ITEMS) {
@@ -152,14 +153,13 @@ static int add_item(char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH], size_t *co
         len = SHUF_MAX_ITEM_LENGTH - 1U;
     }
 
-    memcpy(items[*count], text, len);
-    items[*count][len] = '\0';
+    memcpy(shuf_items[*count], text, len);
+    shuf_items[*count][len] = '\0';
     *count += 1U;
     return 0;
 }
 
 static int collect_items_from_fd(int fd,
-                                 char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH],
                                  size_t *count_out,
                                  char delimiter) {
     char chunk[2048];
@@ -184,7 +184,7 @@ static int collect_items_from_fd(int fd,
 
             if (ch == delimiter) {
                 current[current_len] = '\0';
-                if (add_item(items, count_out, current) != 0) {
+                if (add_item(count_out, current) != 0) {
                     return -1;
                 }
                 current_len = 0U;
@@ -196,7 +196,7 @@ static int collect_items_from_fd(int fd,
 
     if (current_len > 0U) {
         current[current_len] = '\0';
-        if (add_item(items, count_out, current) != 0) {
+        if (add_item(count_out, current) != 0) {
             return -1;
         }
     }
@@ -204,16 +204,16 @@ static int collect_items_from_fd(int fd,
     return 0;
 }
 
-static void swap_items(char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH], size_t a, size_t b) {
+static void swap_items(size_t a, size_t b) {
     char tmp[SHUF_MAX_ITEM_LENGTH];
 
     if (a == b) {
         return;
     }
 
-    memcpy(tmp, items[a], sizeof(tmp));
-    memcpy(items[a], items[b], sizeof(tmp));
-    memcpy(items[b], tmp, sizeof(tmp));
+    memcpy(tmp, shuf_items[a], sizeof(tmp));
+    memcpy(shuf_items[a], shuf_items[b], sizeof(tmp));
+    memcpy(shuf_items[b], tmp, sizeof(tmp));
 }
 
 static int write_item(int fd, const char *text, char delimiter) {
@@ -226,7 +226,6 @@ static int write_item(int fd, const char *text, char delimiter) {
 }
 
 int main(int argc, char **argv) {
-    char items[SHUF_MAX_ITEMS][SHUF_MAX_ITEM_LENGTH];
     size_t item_count = 0U;
     unsigned long long limit = 0ULL;
     int have_limit = 0;
@@ -296,7 +295,7 @@ int main(int argc, char **argv) {
                     rt_unsigned_to_string((unsigned long long)value, text, sizeof(text));
                 }
 
-                if (add_item(items, &item_count, text) != 0) {
+                if (add_item(&item_count, text) != 0) {
                     tool_write_error("shuf", "too many items", 0);
                     return 1;
                 }
@@ -314,7 +313,7 @@ int main(int argc, char **argv) {
 
     if (mode == 1) {
         while (argi < argc) {
-            if (add_item(items, &item_count, argv[argi]) != 0) {
+            if (add_item(&item_count, argv[argi]) != 0) {
                 tool_write_error("shuf", "too many items", 0);
                 return 1;
             }
@@ -335,7 +334,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (collect_items_from_fd(fd, items, &item_count, zero_terminated ? '\0' : '\n') != 0) {
+        if (collect_items_from_fd(fd, &item_count, zero_terminated ? '\0' : '\n') != 0) {
             tool_close_input(fd, should_close);
             tool_write_error("shuf", "failed to read input", 0);
             return 1;
@@ -380,7 +379,7 @@ int main(int argc, char **argv) {
         unsigned long long i;
         for (i = 0ULL; i < limit; ++i) {
             size_t index = (size_t)(next_random() % (unsigned long long)item_count);
-            if (write_item(output_fd, items[index], zero_terminated ? '\0' : '\n') != 0) {
+            if (write_item(output_fd, shuf_items[index], zero_terminated ? '\0' : '\n') != 0) {
                 tool_write_error("shuf", "write error", 0);
                 if (output_fd != 1) {
                     platform_close(output_fd);
@@ -406,11 +405,11 @@ int main(int argc, char **argv) {
 
         for (i = item_count; i > 1U; --i) {
             size_t j = (size_t)(next_random() % (unsigned long long)i);
-            swap_items(items, i - 1U, j);
+            swap_items(i - 1U, j);
         }
 
         for (i = 0U; i < output_count; ++i) {
-            if (write_item(output_fd, items[i], zero_terminated ? '\0' : '\n') != 0) {
+            if (write_item(output_fd, shuf_items[i], zero_terminated ? '\0' : '\n') != 0) {
                 tool_write_error("shuf", "write error", 0);
                 if (output_fd != 1) {
                     platform_close(output_fd);
