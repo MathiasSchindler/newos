@@ -20,6 +20,7 @@
 #include <net/if.h>
 #include <net/route.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,38 +74,6 @@ static const unsigned char *posix_sockaddr_dl_addr(const struct sockaddr_dl *sdl
     return (const unsigned char *)(sdl->sdl_data + sdl->sdl_nlen);
 }
 #endif
-
-static void posix_fd_zero(void *set_ptr) {
-    memset(set_ptr, 0, 128U);
-}
-
-static void posix_fd_set_bit(void *set_ptr, int fd) {
-    unsigned long *bits = (unsigned long *)set_ptr;
-    unsigned int index;
-    unsigned int bit;
-
-    if (set_ptr == NULL || fd < 0 || fd >= 1024) {
-        return;
-    }
-
-    index = (unsigned int)fd / 64U;
-    bit = (unsigned int)fd % 64U;
-    bits[index] |= (1UL << bit);
-}
-
-static int posix_fd_is_set_bit(const void *set_ptr, int fd) {
-    const unsigned long *bits = (const unsigned long *)set_ptr;
-    unsigned int index;
-    unsigned int bit;
-
-    if (set_ptr == NULL || fd < 0 || fd >= 1024) {
-        return 0;
-    }
-
-    index = (unsigned int)fd / 64U;
-    bit = (unsigned int)fd % 64U;
-    return (bits[index] & (1UL << bit)) != 0 ? 1 : 0;
-}
 
 static int posix_mark_fd_cloexec(int fd) {
     int flags;
@@ -471,10 +440,9 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
 }
 
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
-    fd_set read_set;
-    struct timeval timeout;
-    struct timeval *timeout_ptr = NULL;
-    int max_fd = -1;
+    struct pollfd stack_fds[16];
+    struct pollfd *poll_fds = stack_fds;
+    int has_valid_fd = 0;
     size_t i;
     int rc;
 
@@ -483,40 +451,52 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
         return -1;
     }
 
-    posix_fd_zero(&read_set);
-    for (i = 0; i < fd_count; ++i) {
-        if (fds[i] < 0) {
-            continue;
-        }
-        posix_fd_set_bit(&read_set, fds[i]);
-        if (fds[i] > max_fd) {
-            max_fd = fds[i];
+    if (fd_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
+        poll_fds = (struct pollfd *)malloc(fd_count * sizeof(struct pollfd));
+        if (poll_fds == NULL) {
+            errno = ENOMEM;
+            return -1;
         }
     }
 
-    if (max_fd < 0) {
+    for (i = 0; i < fd_count; ++i) {
+        poll_fds[i].fd = fds[i];
+        poll_fds[i].events = (short)(POLLIN | POLLERR | POLLHUP | POLLOUT);
+        poll_fds[i].revents = 0;
+        if (fds[i] >= 0) {
+            has_valid_fd = 1;
+        }
+    }
+
+    if (!has_valid_fd) {
+        if (poll_fds != stack_fds) {
+            free(poll_fds);
+        }
         errno = EINVAL;
         return -1;
     }
 
-    if (timeout_milliseconds >= 0) {
-        timeout.tv_sec = (time_t)(timeout_milliseconds / 1000);
-        timeout.tv_usec = (suseconds_t)((timeout_milliseconds % 1000) * 1000);
-        timeout_ptr = &timeout;
-    }
-
-    rc = select(max_fd + 1, &read_set, NULL, NULL, timeout_ptr);
+    rc = poll(poll_fds, (nfds_t)fd_count, timeout_milliseconds);
     if (rc <= 0) {
+        if (poll_fds != stack_fds) {
+            free(poll_fds);
+        }
         return rc;
     }
 
     for (i = 0; i < fd_count; ++i) {
-        if (fds[i] >= 0 && posix_fd_is_set_bit(&read_set, fds[i])) {
+        if (poll_fds[i].fd >= 0 && (poll_fds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLOUT)) != 0) {
             *ready_index_out = i;
+            if (poll_fds != stack_fds) {
+                free(poll_fds);
+            }
             return 1;
         }
     }
 
+    if (poll_fds != stack_fds) {
+        free(poll_fds);
+    }
     return 0;
 }
 
