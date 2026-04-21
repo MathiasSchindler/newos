@@ -139,6 +139,23 @@ int platform_open_write(const char *path, unsigned int mode) {
     return platform_open_write_mode(path, mode, 1);
 }
 
+int platform_open_create_exclusive(const char *path, unsigned int mode) {
+    long fd;
+
+    if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
+        return -1;
+    }
+
+    fd = linux_syscall4(
+        LINUX_SYS_OPENAT,
+        LINUX_AT_FDCWD,
+        (long)path,
+        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL,
+        (long)mode
+    );
+    return fd < 0 ? -1 : (int)fd;
+}
+
 int platform_open_append(const char *path, unsigned int mode) {
     long fd;
 

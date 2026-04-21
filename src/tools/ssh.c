@@ -71,9 +71,15 @@ int main(int argc, char **argv) {
 
     if (ssh_parse_destination(destination, default_user, port_override == 0ULL ? SSH_DEFAULT_PORT : (unsigned int)port_override, &parsed) != 0) {
         tool_write_error("ssh", "invalid destination ", destination);
+        tool_write_usage("ssh", USAGE);
         return 1;
     }
     if (user_override != 0 && user_override[0] != '\0') {
+        if (!ssh_destination_user_is_safe(user_override)) {
+            tool_write_error("ssh", "invalid remote user ", user_override);
+            tool_write_usage("ssh", USAGE);
+            return 1;
+        }
         rt_copy_string(parsed.user, sizeof(parsed.user), user_override);
         parsed.has_user = 1;
     }

@@ -2,6 +2,8 @@
 
 #include "backend_internal.h"
 
+#include <limits.h>
+
 static int parse_decl_line(const char *line,
                            char *storage,
                            size_t storage_size,
@@ -285,11 +287,26 @@ static int parse_array_length_text(const char *type_text, unsigned long long *le
     }
     open += 1;
     while (*open >= '0' && *open <= '9') {
+        if (value > (ULLONG_MAX - (unsigned long long)(*open - '0')) / 10ULL) {
+            return -1;
+        }
         value = value * 10ULL + (unsigned long long)(*open - '0');
         open += 1;
     }
     *length_out = value;
     return 0;
+}
+
+static unsigned long long clamp_array_product(unsigned long long lhs,
+                                              unsigned long long rhs,
+                                              unsigned long long limit) {
+    if (lhs == 0ULL || rhs == 0ULL) {
+        return 0ULL;
+    }
+    if (lhs > limit / rhs) {
+        return limit;
+    }
+    return lhs * rhs;
 }
 
 static void copy_aggregate_name_from_type_text(const char *type_text, char *buffer, size_t buffer_size) {
@@ -360,7 +377,9 @@ static int global_type_storage_bytes(const BackendState *state, const char *type
             length = 1ULL;
         }
         element_size = global_type_storage_bytes(state, element_type);
-        return (int)(length * (unsigned long long)(element_size > 0 ? element_size : 1));
+        return (int)clamp_array_product(length,
+                                        (unsigned long long)(element_size > 0 ? element_size : 1),
+                                        (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES);
     }
     if (starts_with(type, "struct:") || starts_with(type, "union:")) {
         aggregate_size = lookup_aggregate_size(state, type);
@@ -511,7 +530,9 @@ static int emit_global_initializer_array(BackendState *state,
     element_size = (unsigned long long)global_type_storage_bytes(state, element_type);
 
     if (parser->kind == GLOBAL_INIT_STRING && starts_with(skip_spaces(type_text), "char[")) {
-        unsigned long long total = length > 0ULL ? length * element_size : ((unsigned long long)rt_strlen(parser->text) + 1ULL);
+        unsigned long long total = length > 0ULL
+                                       ? clamp_array_product(length, element_size, (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES)
+                                       : ((unsigned long long)rt_strlen(parser->text) + 1ULL);
         if (emit_char_array_contents(state, parser->text, total) != 0) {
             return -1;
         }
@@ -540,11 +561,17 @@ static int emit_global_initializer_array(BackendState *state,
     if (parser->kind == GLOBAL_INIT_PUNCT && names_equal(parser->text, "}")) {
         global_init_next(parser);
     }
-    if (length > count && emit_zero_fill(state, (length - count) * element_size) != 0) {
+    if (length > count &&
+        emit_zero_fill(state,
+                       clamp_array_product(length - count,
+                                           element_size,
+                                           (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES)) != 0) {
         return -1;
     }
     if (bytes_out != 0) {
-        *bytes_out = (length > 0ULL ? length : count) * element_size;
+        *bytes_out = clamp_array_product(length > 0ULL ? length : count,
+                                         element_size,
+                                         (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES);
     }
     return 0;
 }
@@ -669,16 +696,17 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
             }
         }
         while (*cursor >= '0' && *cursor <= '9') {
+            if (length > (ULLONG_MAX - (unsigned long long)(*cursor - '0')) / 10ULL) {
+                length = (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES;
+                break;
+            }
             length = length * 10ULL + (unsigned long long)(*cursor - '0');
             cursor += 1;
         }
         if (length == 0ULL) {
             return BACKEND_ARRAY_STACK_BYTES;
         }
-        total_size = length * element_size;
-        if (total_size > (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES) {
-            total_size = (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES;
-        }
+        total_size = clamp_array_product(length, element_size, (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES);
         return (int)total_size;
     }
 

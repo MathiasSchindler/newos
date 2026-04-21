@@ -31,6 +31,11 @@ printf 'export FOO=bar\necho $FOO\nfalse\necho $?\necho ${FOO}\n' | "$ROOT_DIR/b
 assert_file_contains "$WORK_DIR/sh.out" '^bar$' "shell variable expansion failed"
 assert_file_contains "$WORK_DIR/sh.out" '^1$' "shell status expansion failed"
 
+invalid_export_status=0
+printf 'export BAD-NAME=value\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/export_invalid.out" 2>&1 || invalid_export_status=$?
+[ "$invalid_export_status" -eq 1 ] || fail "shell export accepted an invalid environment name"
+assert_file_contains "$WORK_DIR/export_invalid.out" '^sh: export: invalid name: BAD-NAME$' "shell export did not reject an invalid environment name"
+
 printf 'echo first\necho second\nhistory\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/history.out"
 assert_file_contains "$WORK_DIR/history.out" '1  echo first' "shell history missing first command"
 assert_file_contains "$WORK_DIR/history.out" '2  echo second' "shell history missing second command"

@@ -215,3 +215,46 @@ if "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/semantic_error.c" > "$WORK_DIR/se
     fail "compiler semantic analysis unexpectedly accepted duplicate or undeclared symbols"
 fi
 assert_file_contains "$WORK_DIR/semantic_error.out" 'duplicate declaration in the same scope\|use of undeclared identifier' "compiler semantic analysis missing symbol-table diagnostic"
+
+cat > "$WORK_DIR/array_overflow.c" <<'EOF'
+int oversized[18446744073709551615ULL * 2ULL];
+EOF
+
+if "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/array_overflow.c" > "$WORK_DIR/array_overflow.out" 2>&1; then
+    fail "compiler unexpectedly accepted an overflowing array bound"
+fi
+assert_file_contains "$WORK_DIR/array_overflow.out" 'array bound is too large\|array size exceeds compiler limits' "compiler did not report an overflowing array bound cleanly"
+
+pointer_file="$WORK_DIR/pointer_depth_limit.c"
+printf 'int ' > "$pointer_file"
+i=0
+while [ "$i" -lt 80 ]; do
+    printf '*' >> "$pointer_file"
+    i=$((i + 1))
+done
+printf 'value;\n' >> "$pointer_file"
+
+if "$ROOT_DIR/build/ncc" --dump-ast "$pointer_file" > "$WORK_DIR/pointer_depth_limit.out" 2>&1; then
+    fail "compiler unexpectedly accepted excessive pointer nesting"
+fi
+assert_file_contains "$WORK_DIR/pointer_depth_limit.out" 'pointer depth exceeds compiler limit' "compiler did not stop excessive pointer nesting"
+
+deep_init_file="$WORK_DIR/deep_initializer.c"
+printf 'int nested = ' > "$deep_init_file"
+i=0
+while [ "$i" -lt 140 ]; do
+    printf '{' >> "$deep_init_file"
+    i=$((i + 1))
+done
+printf '0' >> "$deep_init_file"
+i=0
+while [ "$i" -lt 140 ]; do
+    printf '}' >> "$deep_init_file"
+    i=$((i + 1))
+done
+printf ';\n' >> "$deep_init_file"
+
+if "$ROOT_DIR/build/ncc" --dump-ast "$deep_init_file" > "$WORK_DIR/deep_initializer.out" 2>&1; then
+    fail "compiler unexpectedly accepted excessively deep initializer nesting"
+fi
+assert_file_contains "$WORK_DIR/deep_initializer.out" 'initializer nesting too deep' "compiler did not stop excessively deep initializer nesting"

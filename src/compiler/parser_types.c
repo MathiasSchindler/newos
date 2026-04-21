@@ -2,6 +2,8 @@
 
 #include "parser_internal.h"
 
+#include <limits.h>
+
 /* Forward declarations for mutually-recursive static helpers. */
 static int parse_constant_expression(CompilerParser *parser, long long *value_out);
 static int parse_constant_unary(CompilerParser *parser, long long *value_out);
@@ -20,7 +22,31 @@ static unsigned long long align_up(unsigned long long value, unsigned long long 
     if (alignment <= 1ULL) {
         return value;
     }
+    if (value > ULLONG_MAX - (alignment - 1ULL)) {
+        return ULLONG_MAX;
+    }
     return (value + alignment - 1ULL) & ~(alignment - 1ULL);
+}
+
+static int checked_size_product(const CompilerParser *parser,
+                                unsigned long long lhs,
+                                unsigned long long rhs,
+                                unsigned long long *result_out) {
+    if (result_out == 0) {
+        return -1;
+    }
+    if (lhs == 0ULL || rhs == 0ULL) {
+        *result_out = 0ULL;
+        return 0;
+    }
+    if (lhs > ULLONG_MAX / rhs) {
+        if (parser != 0) {
+            set_error((CompilerParser *)parser, "array size exceeds compiler limits");
+        }
+        return -1;
+    }
+    *result_out = lhs * rhs;
+    return 0;
 }
 
 static int find_aggregate_layout_by_name(const CompilerParser *parser, const char *name) {
@@ -155,7 +181,10 @@ static unsigned long long type_storage_bytes(const CompilerParser *parser, const
             element_size = 1ULL;
         }
         length = type->array_length > 0ULL ? type->array_length : 1ULL;
-        return element_size * length;
+        if (checked_size_product(parser, element_size, length, &element_size) != 0) {
+            return 0ULL;
+        }
+        return element_size;
     }
     if (type->pointer_depth > 0 || type->is_function) {
         return 8U;
@@ -348,7 +377,9 @@ static int parse_aggregate_definition(CompilerParser *parser, CompilerType *type
                 return -1;
             }
 
-            member_type.pointer_depth += declarator.pointer_depth;
+            if (parser_add_pointer_depth(parser, &member_type.pointer_depth, declarator.pointer_depth) != 0) {
+                return -1;
+            }
             member_type.is_function = declarator.is_function;
             member_type.is_array = declarator.is_array;
             member_type.array_length = declarator.array_length;
@@ -356,6 +387,9 @@ static int parse_aggregate_definition(CompilerParser *parser, CompilerType *type
 
             field_align = type_alignment_bytes(parser, &member_type);
             field_size = type_storage_bytes(parser, &member_type);
+            if (parser->error_message[0] != '\0') {
+                return -1;
+            }
             if (field_size == 0ULL) {
                 field_size = 1ULL;
             }
@@ -367,6 +401,10 @@ static int parse_aggregate_definition(CompilerParser *parser, CompilerType *type
                 }
             } else {
                 offset = align_up(layout->size_bytes, field_align);
+                if (offset == ULLONG_MAX || offset > ULLONG_MAX - field_size) {
+                    set_error(parser, "aggregate layout exceeds compiler limits");
+                    return -1;
+                }
                 layout->size_bytes = offset + field_size;
             }
             if (field_align > layout->align_bytes) {

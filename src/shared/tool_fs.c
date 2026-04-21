@@ -7,6 +7,10 @@ int tool_copy_file(const char *source_path, const char *dest_path) {
     int dst_fd;
     char buffer[4096];
 
+    if (tool_paths_equal(source_path, dest_path)) {
+        return -1;
+    }
+
     if (src_fd < 0) {
         return -1;
     }

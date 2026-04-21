@@ -180,6 +180,23 @@ void copy_normalized_span(const char *start, const char *end, char *buffer, size
     }
 }
 
+int parser_add_pointer_depth(CompilerParser *parser, int *depth_io, int extra) {
+    if (depth_io == 0 || extra < 0) {
+        if (parser != 0) {
+            set_error(parser, "pointer depth exceeds compiler limit");
+        }
+        return -1;
+    }
+    if (*depth_io < 0 || *depth_io > COMPILER_MAX_POINTER_DEPTH - extra) {
+        if (parser != 0) {
+            set_error(parser, "pointer depth exceeds compiler limit");
+        }
+        return -1;
+    }
+    *depth_io += extra;
+    return 0;
+}
+
 int advance(CompilerParser *parser) {
     if (compiler_lexer_next(&parser->lexer, &parser->current) != 0) {
         rt_copy_string(parser->error_message, sizeof(parser->error_message), compiler_lexer_error_message(&parser->lexer));

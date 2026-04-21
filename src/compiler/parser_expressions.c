@@ -15,9 +15,21 @@ static int parse_logical_and_expression(CompilerParser *parser);
 static int parse_logical_or_expression(CompilerParser *parser);
 
 int parse_initializer(CompilerParser *parser) {
+    int result = 0;
+
+    if (parser == 0) {
+        return -1;
+    }
+    if (parser->initializer_depth >= COMPILER_MAX_INITIALIZER_DEPTH) {
+        set_error(parser, "initializer nesting too deep");
+        return -1;
+    }
+    parser->initializer_depth += 1U;
+
     if (current_is_punct(parser, "{")) {
         if (advance(parser) != 0) {
-            return -1;
+            result = -1;
+            goto done;
         }
 
         if (!current_is_punct(parser, "}")) {
@@ -25,28 +37,33 @@ int parse_initializer(CompilerParser *parser) {
                 while (current_is_punct(parser, ".") || current_is_punct(parser, "[")) {
                     if (current_is_punct(parser, ".")) {
                         if (advance(parser) != 0 || expect_identifier(parser, 0, 0, 0) != 0) {
-                            return -1;
+                            result = -1;
+                            goto done;
                         }
                     } else {
                         if (advance(parser) != 0 || parse_expression(parser) != 0 || expect_punct(parser, "]") != 0) {
-                            return -1;
+                            result = -1;
+                            goto done;
                         }
                     }
                 }
 
                 if (current_is_punct(parser, "=") && advance(parser) != 0) {
-                    return -1;
+                    result = -1;
+                    goto done;
                 }
 
                 if (parse_initializer(parser) != 0) {
-                    return -1;
+                    result = -1;
+                    goto done;
                 }
 
                 if (!current_is_punct(parser, ",")) {
                     break;
                 }
                 if (advance(parser) != 0) {
-                    return -1;
+                    result = -1;
+                    goto done;
                 }
                 if (current_is_punct(parser, "}")) {
                     break;
@@ -54,10 +71,15 @@ int parse_initializer(CompilerParser *parser) {
             }
         }
 
-        return expect_punct(parser, "}");
+        result = expect_punct(parser, "}");
+        goto done;
     }
 
-    return parse_assignment_expression(parser);
+    result = parse_assignment_expression(parser);
+
+done:
+    parser->initializer_depth -= 1U;
+    return result;
 }
 
 static int parse_primary_expression(CompilerParser *parser) {

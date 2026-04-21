@@ -110,6 +110,15 @@ int platform_open_write(const char *path, unsigned int mode) {
     return platform_open_write_mode(path, mode, 1);
 }
 
+int platform_open_create_exclusive(const char *path, unsigned int mode) {
+    if (path == NULL || strcmp(path, "-") == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return open(path, O_WRONLY | O_CREAT | O_EXCL, (mode_t)mode);
+}
+
 int platform_open_append(const char *path, unsigned int mode) {
     if (path == NULL || strcmp(path, "-") == 0) {
         return STDOUT_FILENO;

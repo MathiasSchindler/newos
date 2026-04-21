@@ -32,6 +32,50 @@ typedef struct {
     int value;
 } PosixSignalEntry;
 
+static int posix_is_env_name_start(char ch) {
+    return ((ch >= 'A' && ch <= 'Z') ||
+            (ch >= 'a' && ch <= 'z') ||
+            ch == '_');
+}
+
+static int posix_is_env_name_char(char ch) {
+    return posix_is_env_name_start(ch) || (ch >= '0' && ch <= '9');
+}
+
+static int posix_is_valid_env_name(const char *name) {
+    size_t i = 0U;
+
+    if (name == NULL || !posix_is_env_name_start(name[0])) {
+        return 0;
+    }
+
+    for (i = 1U; name[i] != '\0'; ++i) {
+        if (!posix_is_env_name_char(name[i])) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int posix_mark_fd_cloexec(int fd) {
+    int flags;
+
+    if (fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    flags = fcntl(fd, F_GETFD);
+    if (flags < 0) {
+        return -1;
+    }
+    if ((flags & FD_CLOEXEC) != 0) {
+        return 0;
+    }
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 static const PosixSignalEntry POSIX_SIGNAL_TABLE[] = {
 #ifdef SIGHUP
     { "HUP", SIGHUP },
@@ -150,7 +194,7 @@ void platform_write_signal_list(int fd) {
 _Static_assert(sizeof(struct termios) <= PLATFORM_TERMINAL_STATE_CAPACITY, "PlatformTerminalState is too small");
 
 const char *platform_getenv(const char *name) {
-    if (name == NULL || name[0] == '\0') {
+    if (!posix_is_valid_env_name(name)) {
         errno = EINVAL;
         return NULL;
     }
@@ -174,7 +218,7 @@ const char *platform_getenv_entry(size_t index) {
 }
 
 int platform_setenv(const char *name, const char *value, int overwrite) {
-    if (name == NULL || name[0] == '\0') {
+    if (!posix_is_valid_env_name(name)) {
         errno = EINVAL;
         return -1;
     }
@@ -183,7 +227,7 @@ int platform_setenv(const char *name, const char *value, int overwrite) {
 }
 
 int platform_unsetenv(const char *name) {
-    if (name == NULL || name[0] == '\0') {
+    if (!posix_is_valid_env_name(name)) {
         errno = EINVAL;
         return -1;
     }
@@ -426,7 +470,23 @@ int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
 }
 
 int platform_create_pipe(int pipe_fds[2]) {
-    return pipe(pipe_fds);
+    if (pipe_fds == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (pipe(pipe_fds) != 0) {
+        return -1;
+    }
+    if (posix_mark_fd_cloexec(pipe_fds[0]) != 0 || posix_mark_fd_cloexec(pipe_fds[1]) != 0) {
+        int saved_errno = errno;
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        pipe_fds[0] = -1;
+        pipe_fds[1] = -1;
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
 }
 
 int platform_spawn_process(
@@ -711,9 +771,6 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
         FILE *pipe = popen("/bin/ps -axo pid=,ppid=,uid=,user=,state=,rss=,comm=", "r");
         char line[1024];
 
-        if (pipe == NULL) {
-            pipe = popen("ps -axo pid=,ppid=,uid=,user=,state=,rss=,comm=", "r");
-        }
         if (pipe == NULL) {
             return -1;
         }

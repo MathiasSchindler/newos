@@ -2,6 +2,54 @@
 
 #include "parser_internal.h"
 
+#include <limits.h>
+
+static int checked_add_long_long(long long lhs, long long rhs, long long *result_out) {
+    if (result_out == 0) {
+        return -1;
+    }
+    if ((rhs > 0 && lhs > LLONG_MAX - rhs) || (rhs < 0 && lhs < LLONG_MIN - rhs)) {
+        return -1;
+    }
+    *result_out = lhs + rhs;
+    return 0;
+}
+
+static int checked_multiply_long_long(long long lhs, long long rhs, long long *result_out) {
+    if (result_out == 0) {
+        return -1;
+    }
+    if (lhs == 0 || rhs == 0) {
+        *result_out = 0;
+        return 0;
+    }
+
+    if ((lhs == LLONG_MIN && rhs == -1) || (rhs == LLONG_MIN && lhs == -1)) {
+        return -1;
+    }
+
+    if (lhs > 0) {
+        if (rhs > 0) {
+            if (lhs > LLONG_MAX / rhs) {
+                return -1;
+            }
+        } else if (rhs < LLONG_MIN / lhs) {
+            return -1;
+        }
+    } else {
+        if (rhs > 0) {
+            if (lhs < LLONG_MIN / rhs) {
+                return -1;
+            }
+        } else if (rhs < LLONG_MAX / lhs) {
+            return -1;
+        }
+    }
+
+    *result_out = lhs * rhs;
+    return 0;
+}
+
 static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarator *owner) {
     CompilerType type;
     CompilerType parameter_type;
@@ -24,13 +72,17 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     }
 
     parameter_type = type;
-    parameter_type.pointer_depth += declarator.pointer_depth;
+    if (parser_add_pointer_depth(parser, &parameter_type.pointer_depth, declarator.pointer_depth) != 0) {
+        return -1;
+    }
     parameter_type.is_function = 0;
     parameter_type.is_array = declarator.is_array;
     parameter_type.array_length = declarator.array_length;
     parameter_type.array_stride = declarator.array_stride;
     if (declarator.is_function) {
-        parameter_type.pointer_depth += 1;
+        if (parser_add_pointer_depth(parser, &parameter_type.pointer_depth, 1) != 0) {
+            return -1;
+        }
     }
 
     if (owner != 0 &&
@@ -73,14 +125,19 @@ static int parse_array_length_token_value(const CompilerToken *token, unsigned l
     return -1;
 }
 
-static unsigned long long maybe_capture_array_length(CompilerParser *parser) {
+static int maybe_capture_array_length(CompilerParser *parser, unsigned long long *value_out) {
     long long sum = 0;
     long long term = 0;
     char pending_op = '+';
     int saw_value = 0;
 
+    if (value_out == 0) {
+        return -1;
+    }
+    *value_out = 0ULL;
+
     if (parser == 0) {
-        return 0ULL;
+        return 0;
     }
 
     while (parser->current.kind != COMPILER_TOKEN_EOF && !current_is_punct(parser, "]")) {
@@ -89,21 +146,38 @@ static unsigned long long maybe_capture_array_length(CompilerParser *parser) {
             long long value;
 
             if (parse_array_length_token_value(&parser->current, &parsed) == 0) {
+                long long next_sum;
+
+                if (parsed > (unsigned long long)LLONG_MAX) {
+                    set_error(parser, "array bound is too large");
+                    return -1;
+                }
                 value = (long long)parsed;
                 if (!saw_value) {
                     term = value;
                     saw_value = 1;
                 } else if (pending_op == '*') {
-                    term *= value;
+                    if (checked_multiply_long_long(term, value, &term) != 0) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
                 } else if (pending_op == '/') {
                     if (value != 0) {
                         term /= value;
                     }
                 } else if (pending_op == '-') {
-                    sum += term;
+                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
+                    sum = next_sum;
                     term = -value;
                 } else {
-                    sum += term;
+                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
+                    sum = next_sum;
                     term = value;
                 }
             }
@@ -117,17 +191,22 @@ static unsigned long long maybe_capture_array_length(CompilerParser *parser) {
         }
 
         if (advance(parser) != 0) {
-            return 0ULL;
+            return -1;
         }
     }
 
     if (saw_value) {
-        unsigned long long value = (unsigned long long)(sum + term);
-        if (value > 0ULL) {
-            return value;
+        long long total = 0;
+
+        if (checked_add_long_long(sum, term, &total) != 0) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+        if (total > 0) {
+            *value_out = (unsigned long long)total;
         }
     }
-    return 0ULL;
+    return 0;
 }
 
 static int parse_parameter_list(CompilerParser *parser, CompilerDeclarator *declarator) {
@@ -195,7 +274,11 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
             return -1;
         }
         if (!current_is_punct(parser, "]")) {
-            unsigned long long array_value = maybe_capture_array_length(parser);
+            unsigned long long array_value = 0ULL;
+
+            if (maybe_capture_array_length(parser, &array_value) != 0) {
+                return -1;
+            }
             if (array_value > 0ULL) {
                 if (!declarator->is_array && declarator->array_length == 0ULL) {
                     declarator->array_length = array_value;
@@ -204,6 +287,10 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
                 } else if (declarator->array_stride == 0ULL) {
                     declarator->array_stride = array_value;
                 } else {
+                    if (declarator->array_stride > ULLONG_MAX / array_value) {
+                        set_error(parser, "array bound is too large");
+                        return -1;
+                    }
                     declarator->array_stride *= array_value;
                 }
             }
@@ -221,7 +308,9 @@ int parse_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int
     rt_memset(declarator, 0, sizeof(*declarator));
 
     while (current_is_punct(parser, "*")) {
-        declarator->pointer_depth += 1;
+        if (parser_add_pointer_depth(parser, &declarator->pointer_depth, 1) != 0) {
+            return -1;
+        }
         if (advance(parser) != 0) {
             return -1;
         }
@@ -250,7 +339,9 @@ static int declare_symbol(
 ) {
     CompilerType symbol_type = *base_type;
 
-    symbol_type.pointer_depth += declarator->pointer_depth;
+    if (parser_add_pointer_depth(parser, &symbol_type.pointer_depth, declarator->pointer_depth) != 0) {
+        return -1;
+    }
     symbol_type.is_function = declarator->is_function;
     symbol_type.is_array = declarator->is_array;
     symbol_type.array_length = declarator->array_length;
@@ -358,7 +449,9 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
                 return -1;
             }
 
-            function_type.pointer_depth += declarator.pointer_depth;
+            if (parser_add_pointer_depth(parser, &function_type.pointer_depth, declarator.pointer_depth) != 0) {
+                return -1;
+            }
             function_type.is_function = 1;
             function_type.is_array = declarator.is_array;
             function_type.array_length = declarator.array_length;

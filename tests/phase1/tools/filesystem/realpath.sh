@@ -26,3 +26,8 @@ assert_text_equals "$realpath_physical" "$WORK_DIR/policy/base/real" "realpath -
 
 realpath_logical=$("$ROOT_DIR/build/realpath" -L "$WORK_DIR/policy/base/linksub/.." | tr -d '\r\n')
 assert_text_equals "$realpath_logical" "$WORK_DIR/policy/base" "realpath -L should honor logical traversal through .."
+
+long_component='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+realpath_long_status=0
+"$ROOT_DIR/build/realpath" -m "$WORK_DIR/$long_component/file.txt" >/dev/null 2>&1 || realpath_long_status=$?
+[ "$realpath_long_status" -ne 0 ] || fail "realpath should reject an overlong path component instead of truncating it"

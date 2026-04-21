@@ -120,6 +120,8 @@ int ssh_build_kexinit_payload(
 int ssh_parse_kexinit_payload(const unsigned char *payload, size_t payload_length, SshKexInitMessage *message_out);
 
 int ssh_validate_banner_line(const char *line);
+int ssh_destination_user_is_safe(const char *text);
+int ssh_destination_host_is_safe(const char *text);
 int ssh_parse_destination(const char *text, const char *default_user, unsigned int default_port, SshDestination *out);
 int ssh_format_destination(const SshDestination *destination, int include_user, char *buffer, size_t buffer_size);
 int ssh_name_list_contains(const SshStringView *list, const char *name);

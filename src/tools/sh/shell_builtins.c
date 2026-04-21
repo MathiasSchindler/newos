@@ -7,6 +7,20 @@ static const char *const SH_BUILTIN_NAMES[] = {
     "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias", "set", "shift"
 };
 
+static int sh_is_valid_env_name(const char *name) {
+    size_t i = 0U;
+
+    if (name == 0 || !sh_is_name_start_char(name[0])) {
+        return 0;
+    }
+    for (i = 1U; name[i] != '\0'; ++i) {
+        if (!sh_is_name_char(name[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 size_t sh_shell_builtin_count(void) {
     return sizeof(SH_BUILTIN_NAMES) / sizeof(SH_BUILTIN_NAMES[0]);
 }
@@ -123,6 +137,7 @@ static int builtin_exit_command(const ShCommand *cmd) {
 
 static int builtin_export_command(const ShCommand *cmd) {
     int i;
+    int status = 0;
 
     for (i = 1; i < cmd->argc; ++i) {
         char *arg = cmd->argv[i];
@@ -134,22 +149,35 @@ static int builtin_export_command(const ShCommand *cmd) {
 
         if (*eq == '=') {
             *eq = '\0';
-            (void)platform_setenv(arg, eq + 1, 1);
+            if (!sh_is_valid_env_name(arg) || platform_setenv(arg, eq + 1, 1) != 0) {
+                rt_write_cstr(2, "sh: export: invalid name: ");
+                rt_write_line(2, arg);
+                status = 1;
+            }
             *eq = '=';
+        } else if (!sh_is_valid_env_name(arg)) {
+            rt_write_cstr(2, "sh: export: invalid name: ");
+            rt_write_line(2, arg);
+            status = 1;
         }
     }
 
-    return 0;
+    return status;
 }
 
 static int builtin_unset_command(const ShCommand *cmd) {
     int i;
+    int status = 0;
 
     for (i = 1; i < cmd->argc; ++i) {
-        (void)platform_unsetenv(cmd->argv[i]);
+        if (!sh_is_valid_env_name(cmd->argv[i]) || platform_unsetenv(cmd->argv[i]) != 0) {
+            rt_write_cstr(2, "sh: unset: invalid name: ");
+            rt_write_line(2, cmd->argv[i]);
+            status = 1;
+        }
     }
 
-    return 0;
+    return status;
 }
 
 static int builtin_alias_command(const ShCommand *cmd) {

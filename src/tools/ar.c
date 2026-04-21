@@ -393,6 +393,39 @@ static int archive_contains_requested_name(const char *member_name, int argc, ch
     return member_selected(member_name, argc, argv, start_index);
 }
 
+static int member_name_is_unsafe(const char *name) {
+    size_t i = 0U;
+
+    if (name == 0 || name[0] == '\0' || name[0] == '/') {
+        return 1;
+    }
+    if (rt_strcmp(name, ".") == 0 || rt_strcmp(name, "..") == 0) {
+        return 1;
+    }
+
+    while (name[i] != '\0') {
+        size_t start = i;
+        size_t length;
+
+        while (name[i] == '/') {
+            return 1;
+        }
+        while (name[i] != '\0' && name[i] != '/') {
+            i += 1U;
+        }
+
+        length = i - start;
+        if (length == 2U && name[start] == '.' && name[start + 1U] == '.') {
+            return 1;
+        }
+        if (name[i] == '/') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static int list_or_extract_archive(const char *archive_path, int mode, int verbose, int argc, char **argv, int member_index) {
     int fd = platform_open_read(archive_path);
     char magic[8];
@@ -445,6 +478,12 @@ static int list_or_extract_archive(const char *archive_path, int mode, int verbo
                 break;
             }
         } else if (mode == 'x') {
+            if (member_name_is_unsafe(info.name)) {
+                rt_write_cstr(2, "ar: refusing unsafe member path ");
+                rt_write_line(2, info.name);
+                exit_code = 1;
+                continue;
+            }
             int out_fd = platform_open_write(info.name, info.mode == 0U ? 0644U : info.mode);
             if (out_fd < 0) {
                 rt_write_cstr(2, "ar: cannot extract ");

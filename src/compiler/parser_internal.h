@@ -69,6 +69,7 @@ int parser_is_typedef_name(const CompilerParser *parser, const CompilerToken *to
 int parser_maybe_type_identifier(const CompilerParser *parser, int allow_unknown_identifiers);
 int parser_token_starts_decl_specifier(const CompilerParser *parser);
 int parser_looks_like_declaration(const CompilerParser *parser);
+int parser_add_pointer_depth(CompilerParser *parser, int *depth_io, int extra);
 int parser_consume_punct(CompilerParser *parser, const char *text);
 int parser_expect_punct(CompilerParser *parser, const char *text);
 int parser_expect_identifier(CompilerParser *parser, char *name_out, size_t name_size, int allow_missing);

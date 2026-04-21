@@ -452,6 +452,55 @@ static int build_temp_path(const char *base_path, const char *suffix, char *buff
     return 0;
 }
 
+static int build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size) {
+    size_t slash = 0U;
+    size_t i = 0U;
+    size_t prefix_length;
+
+    if (target_path == 0 || stem == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    while (target_path[i] != '\0') {
+        if (target_path[i] == '/') {
+            slash = i + 1U;
+        }
+        i += 1U;
+    }
+
+    if (slash == 0U) {
+        rt_copy_string(buffer, buffer_size, "./");
+        prefix_length = rt_strlen(buffer);
+    } else {
+        prefix_length = slash < (buffer_size - 1U) ? slash : (buffer_size - 1U);
+        memcpy(buffer, target_path, prefix_length);
+        buffer[prefix_length] = '\0';
+    }
+
+    if (prefix_length >= buffer_size) {
+        return -1;
+    }
+    rt_copy_string(buffer + prefix_length, buffer_size - prefix_length, stem);
+    return 0;
+}
+
+static int create_temp_file_near_archive(const char *archive_path_name,
+                                         const char *stem,
+                                         char *path_buffer,
+                                         size_t buffer_size,
+                                         unsigned int mode,
+                                         int *fd_out) {
+    char prefix[TAR_PATH_CAPACITY];
+
+    if (fd_out == 0 || is_dash_path(archive_path_name) ||
+        build_temp_prefix(archive_path_name, stem, prefix, sizeof(prefix)) != 0) {
+        return -1;
+    }
+
+    *fd_out = platform_create_temp_file(path_buffer, buffer_size, prefix, mode);
+    return *fd_out < 0 ? -1 : 0;
+}
+
 static void get_program_dir(const char *argv0, char *buffer, size_t buffer_size) {
     size_t len;
     size_t i;
@@ -733,6 +782,7 @@ static int ensure_parent_dirs(char *path) {
 static int tar_read_text_payload(int archive_fd, unsigned long long size, char *buffer, size_t buffer_size) {
     unsigned char chunk[256];
     size_t used = 0;
+    int truncated = 0;
 
     if (buffer == 0 || buffer_size == 0U) {
         return -1;
@@ -749,11 +799,14 @@ static int tar_read_text_payload(int archive_fd, unsigned long long size, char *
             copy_length = piece;
             if (used + copy_length + 1U > buffer_size) {
                 copy_length = buffer_size - used - 1U;
+                truncated = 1;
             }
             if (copy_length > 0U) {
                 memcpy(buffer + used, chunk, copy_length);
                 used += copy_length;
             }
+        } else {
+            truncated = 1;
         }
         size -= (unsigned long long)piece;
     }
@@ -762,26 +815,24 @@ static int tar_read_text_payload(int archive_fd, unsigned long long size, char *
         used -= 1U;
     }
     buffer[used] = '\0';
-    return 0;
+    return truncated ? -1 : 0;
 }
 
-static void tar_copy_record_value(char *buffer, size_t buffer_size, const char *value, size_t value_length) {
-    if (buffer_size == 0U) {
-        return;
-    }
-    if (value_length + 1U > buffer_size) {
-        value_length = buffer_size - 1U;
+static int tar_copy_record_value(char *buffer, size_t buffer_size, const char *value, size_t value_length) {
+    if (buffer == 0 || buffer_size == 0U || value_length + 1U > buffer_size) {
+        return -1;
     }
     memcpy(buffer, value, value_length);
     buffer[value_length] = '\0';
+    return 0;
 }
 
-static void tar_parse_pax_payload(const char *data,
-                                  size_t data_length,
-                                  char *path_buffer,
-                                  size_t path_buffer_size,
-                                  char *link_buffer,
-                                  size_t link_buffer_size) {
+static int tar_parse_pax_payload(const char *data,
+                                 size_t data_length,
+                                 char *path_buffer,
+                                 size_t path_buffer_size,
+                                 char *link_buffer,
+                                 size_t link_buffer_size) {
     size_t index = 0U;
 
     while (index < data_length) {
@@ -814,13 +865,19 @@ static void tar_parse_pax_payload(const char *data,
             size_t value_length = payload_length - key_length - 1U;
 
             if (key_length == 4U && rt_strncmp(data + payload_start, "path", 4) == 0) {
-                tar_copy_record_value(path_buffer, path_buffer_size, value, value_length);
+                if (tar_copy_record_value(path_buffer, path_buffer_size, value, value_length) != 0) {
+                    return -1;
+                }
             } else if (key_length == 8U && rt_strncmp(data + payload_start, "linkpath", 8) == 0) {
-                tar_copy_record_value(link_buffer, link_buffer_size, value, value_length);
+                if (tar_copy_record_value(link_buffer, link_buffer_size, value, value_length) != 0) {
+                    return -1;
+                }
             }
         }
         index = record_start + (size_t)record_length;
     }
+
+    return 0;
 }
 
 static int tar_read_pax_attributes(int archive_fd,
@@ -835,8 +892,7 @@ static int tar_read_pax_attributes(int archive_fd,
     if (tar_read_text_payload(archive_fd, size, pax_data, sizeof(pax_data)) != 0) {
         return -1;
     }
-    tar_parse_pax_payload(pax_data, rt_strlen(pax_data), path_buffer, path_buffer_size, link_buffer, link_buffer_size);
-    return 0;
+    return tar_parse_pax_payload(pax_data, rt_strlen(pax_data), path_buffer, path_buffer_size, link_buffer, link_buffer_size);
 }
 
 static int extract_archive(int archive_fd,
@@ -1080,24 +1136,35 @@ static int compress_archive_file(const char *argv0, TarCompression compression, 
 
 static int prepare_archive_for_read(const char *argv0, TarCompression compression, const char *archive_path_name, char *temp_copy_path, size_t temp_copy_size, char *temp_plain_path, size_t temp_plain_size, const char **read_path_out) {
     char compressed_copy[TAR_PATH_CAPACITY];
+    int temp_fd;
 
     if (compression == TAR_COMPRESS_NONE) {
         *read_path_out = archive_path_name;
         return 0;
     }
 
-    if (build_temp_path(archive_path_name, ".newos-tmp", temp_plain_path, temp_plain_size) != 0 ||
-        build_temp_path(temp_plain_path, compression_suffix(compression), compressed_copy, sizeof(compressed_copy)) != 0) {
+    if (create_temp_file_near_archive(archive_path_name, ".newos-tar-read-", temp_plain_path, temp_plain_size, 0600U, &temp_fd) != 0) {
+        return -1;
+    }
+    if (platform_close(temp_fd) != 0) {
+        (void)platform_remove_file(temp_plain_path);
+        return -1;
+    }
+    (void)platform_remove_file(temp_plain_path);
+
+    if (build_temp_path(temp_plain_path, compression_suffix(compression), compressed_copy, sizeof(compressed_copy)) != 0) {
         return -1;
     }
 
     rt_copy_string(temp_copy_path, temp_copy_size, compressed_copy);
     if (tool_copy_file(archive_path_name, compressed_copy) != 0) {
+        (void)platform_remove_file(temp_plain_path);
         return -1;
     }
 
     if (run_helper_tool(argv0, decompressor_name(compression), compressed_copy) != 0) {
         (void)platform_remove_file(compressed_copy);
+        (void)platform_remove_file(temp_plain_path);
         return -1;
     }
 
@@ -1259,8 +1326,9 @@ int main(int argc, char **argv) {
     if (create_mode) {
         char plain_archive_path[TAR_PATH_CAPACITY];
         const char *write_path = archive_path_name;
-        int archive_fd;
+        int archive_fd = -1;
         int close_archive_fd = 1;
+        int temp_archive_created = 0;
         unsigned char zeros[TAR_BLOCK_SIZE * 2];
 
         if (path_start >= argc) {
@@ -1274,13 +1342,17 @@ int main(int argc, char **argv) {
         }
 
         if (compression != TAR_COMPRESS_NONE) {
-            if (build_temp_path(archive_path_name, ".newos-plain", plain_archive_path, sizeof(plain_archive_path)) != 0) {
+            if (create_temp_file_near_archive(archive_path_name,
+                                              ".newos-tar-write-",
+                                              plain_archive_path,
+                                              sizeof(plain_archive_path),
+                                              0600U,
+                                              &archive_fd) != 0) {
                 return 1;
             }
             write_path = plain_archive_path;
-        }
-
-        if (is_dash_path(write_path)) {
+            temp_archive_created = 1;
+        } else if (is_dash_path(write_path)) {
             archive_fd = 1;
             close_archive_fd = 0;
         } else {
@@ -1293,6 +1365,9 @@ int main(int argc, char **argv) {
         if (change_dir != 0 && platform_change_directory(change_dir) != 0) {
             if (close_archive_fd) {
                 platform_close(archive_fd);
+            }
+            if (temp_archive_created) {
+                (void)platform_remove_file(write_path);
             }
             rt_write_line(2, "tar: cannot change directory");
             return 1;
@@ -1308,6 +1383,9 @@ int main(int argc, char **argv) {
                 if (close_archive_fd) {
                     platform_close(archive_fd);
                 }
+                if (temp_archive_created) {
+                    (void)platform_remove_file(write_path);
+                }
                 return 1;
             }
         }
@@ -1315,6 +1393,9 @@ int main(int argc, char **argv) {
         if (rt_write_all(archive_fd, zeros, sizeof(zeros)) != 0) {
             if (close_archive_fd) {
                 platform_close(archive_fd);
+            }
+            if (temp_archive_created) {
+                (void)platform_remove_file(write_path);
             }
             return 1;
         }
@@ -1324,7 +1405,11 @@ int main(int argc, char **argv) {
         }
 
         if (compression != TAR_COMPRESS_NONE) {
-            return (compress_archive_file(argv[0], compression, write_path, archive_path_name) == 0) ? 0 : 1;
+            if (compress_archive_file(argv[0], compression, write_path, archive_path_name) != 0) {
+                (void)platform_remove_file(write_path);
+                return 1;
+            }
+            return 0;
         }
 
         return 0;

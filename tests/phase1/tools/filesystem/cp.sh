@@ -65,3 +65,10 @@ ODD_FILE="$WORK_DIR/odd name [v1] !.txt"
 printf 'odd-data\n' > "$ODD_FILE"
 assert_command_succeeds "$ROOT_DIR/build/cp" "$ODD_FILE" "$WORK_DIR/odd-copy.txt"
 assert_file_contains "$WORK_DIR/odd-copy.txt" '^odd-data$' "cp did not handle an odd filename safely"
+
+printf 'self-data\n' > "$WORK_DIR/self-target.txt"
+ln -sf self-target.txt "$WORK_DIR/self-link.txt"
+self_copy_status=0
+"$ROOT_DIR/build/cp" "$WORK_DIR/self-link.txt" "$WORK_DIR/self-target.txt" >/dev/null 2>&1 || self_copy_status=$?
+[ "$self_copy_status" -ne 0 ] || fail "cp should refuse to overwrite a file through a symlink to itself"
+assert_file_contains "$WORK_DIR/self-target.txt" '^self-data$' "cp self-copy protection corrupted the original file"

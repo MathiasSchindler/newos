@@ -1,5 +1,7 @@
 #include "runtime.h"
 
+#include <limits.h>
+
 int rt_is_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
 }
@@ -19,6 +21,9 @@ int rt_parse_uint(const char *text, unsigned long long *value_out) {
             return -1;
         }
 
+        if (value > (ULLONG_MAX - (unsigned long long)(ch - '0')) / 10ULL) {
+            return -1;
+        }
         value = (value * 10ULL) + (unsigned long long)(ch - '0');
         i += 1;
     }

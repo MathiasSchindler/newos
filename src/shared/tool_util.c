@@ -1589,14 +1589,13 @@ int tool_canonicalize_path_policy(
             break;
         }
 
-        while (pending[index] != '\0' && pending[index] != '/' && component_len + 1U < sizeof(component)) {
+        while (pending[index] != '\0' && pending[index] != '/') {
+            if (component_len + 1U >= sizeof(component)) {
+                return -1;
+            }
             component[component_len++] = pending[index++];
         }
         component[component_len] = '\0';
-
-        while (pending[index] != '\0' && pending[index] != '/') {
-            index += 1U;
-        }
 
         if (rt_strcmp(component, ".") == 0) {
             continue;
@@ -1694,12 +1693,32 @@ static void tool_normalize_for_compare(const char *path, char *buffer, size_t bu
     }
 }
 
+static int tool_paths_reference_same_entry(const char *left_path, const char *right_path) {
+    PlatformDirEntry left_entry;
+    PlatformDirEntry right_entry;
+
+    if (left_path == 0 || right_path == 0) {
+        return 0;
+    }
+
+    if (platform_get_path_info_follow(left_path, &left_entry) != 0 ||
+        platform_get_path_info_follow(right_path, &right_entry) != 0) {
+        return 0;
+    }
+
+    return left_entry.device == right_entry.device && left_entry.inode == right_entry.inode;
+}
+
 int tool_paths_equal(const char *left_path, const char *right_path) {
     char left[2048];
     char right[2048];
 
     if (left_path == 0 || right_path == 0) {
         return 0;
+    }
+
+    if (tool_paths_reference_same_entry(left_path, right_path)) {
+        return 1;
     }
 
     if (tool_canonicalize_path(left_path, 0, 1, left, sizeof(left)) == 0 &&
@@ -1731,6 +1750,10 @@ int tool_copy_file(const char *source_path, const char *dest_path) {
     int src_fd = platform_open_read(source_path);
     int dst_fd;
     char buffer[4096];
+
+    if (tool_paths_equal(source_path, dest_path)) {
+        return -1;
+    }
 
     if (src_fd < 0) {
         return -1;

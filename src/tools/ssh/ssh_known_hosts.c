@@ -22,6 +22,47 @@ static int ssh_copy_text(char *dst, size_t dst_size, const char *src, size_t src
     return 0;
 }
 
+static int ssh_known_hosts_algorithm_is_safe(const char *text) {
+    size_t i = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+
+    for (i = 0U; text[i] != '\0'; ++i) {
+        unsigned char ch = (unsigned char)text[i];
+
+        if (!((ch >= 'A' && ch <= 'Z') ||
+              (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') ||
+              ch == '-' || ch == '_' || ch == '.' || ch == '@' || ch == '+')) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int ssh_path_is_symbolic_link(const char *path) {
+    char target[SSH_KNOWN_HOSTS_PATH_CAPACITY];
+    return path != 0 && platform_read_symlink(path, target, sizeof(target)) == 0;
+}
+
+static int ssh_known_hosts_path_is_safe(const char *path) {
+    PlatformDirEntry entry;
+
+    if (path == 0 || path[0] == '\0') {
+        return -1;
+    }
+    if (platform_get_path_info(path, &entry) != 0) {
+        return 0;
+    }
+    if (entry.is_dir || ssh_path_is_symbolic_link(path)) {
+        return -1;
+    }
+    return 0;
+}
+
 static int ssh_line_host_matches(const char *field, const char *host, unsigned int port) {
     char expected[SSH_DESTINATION_CAPACITY];
     char token[SSH_DESTINATION_CAPACITY];
@@ -222,7 +263,11 @@ int ssh_known_hosts_lookup(
     char line[2048];
     unsigned char decoded[1024];
 
-    if (host == 0 || algorithm == 0 || (key_blob == 0 && key_blob_length != 0U) || status_out == 0) {
+    if (path == 0 || !ssh_destination_host_is_safe(host) || !ssh_known_hosts_algorithm_is_safe(algorithm) ||
+        (key_blob == 0 && key_blob_length != 0U) || status_out == 0) {
+        return -1;
+    }
+    if (ssh_known_hosts_path_is_safe(path) != 0) {
         return -1;
     }
 
@@ -292,7 +337,11 @@ int ssh_known_hosts_append(
     size_t used = 0U;
     SshDestination destination;
 
-    if (path == 0 || host == 0 || algorithm == 0 || (key_blob == 0 && key_blob_length != 0U)) {
+    if (path == 0 || !ssh_destination_host_is_safe(host) || !ssh_known_hosts_algorithm_is_safe(algorithm) ||
+        (key_blob == 0 && key_blob_length != 0U)) {
+        return -1;
+    }
+    if (ssh_known_hosts_path_is_safe(path) != 0) {
         return -1;
     }
     if (ssh_base64_encode(key_blob, key_blob_length, base64_key, sizeof(base64_key), 0) != 0) {

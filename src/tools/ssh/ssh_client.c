@@ -202,11 +202,44 @@ static int ssh_parse_ed25519_signature_blob(const SshStringView *blob, unsigned 
     return 0;
 }
 
+static int ssh_identity_path_is_symlink(const char *path) {
+    char target[SSH_IDENTITY_PATH_CAPACITY];
+    return path != 0 && platform_read_symlink(path, target, sizeof(target)) == 0;
+}
+
+static int ssh_identity_path_is_secure(const char *path) {
+    PlatformDirEntry entry;
+    PlatformIdentity identity;
+
+    if (path == 0 || path[0] == '\0') {
+        return -1;
+    }
+    if (platform_get_path_info(path, &entry) != 0) {
+        return 1;
+    }
+    if (entry.is_dir || ssh_identity_path_is_symlink(path)) {
+        return 0;
+    }
+    if ((entry.mode & 077U) != 0U) {
+        return 0;
+    }
+    if (platform_get_identity(&identity) == 0 &&
+        identity.uid != 0U &&
+        entry.uid != identity.uid) {
+        return 0;
+    }
+    return 1;
+}
+
 static int ssh_load_file(const char *path, unsigned char *buffer, size_t buffer_size, size_t *length_out) {
     int fd;
     size_t used = 0U;
 
     if (path == 0 || buffer == 0 || buffer_size == 0U || length_out == 0) {
+        return -1;
+    }
+    if (ssh_identity_path_is_secure(path) == 0) {
+        tool_write_error("ssh", "refusing insecure private key file ", path);
         return -1;
     }
 
@@ -225,6 +258,19 @@ static int ssh_load_file(const char *path, unsigned char *buffer, size_t buffer_
             break;
         }
         used += (size_t)bytes;
+    }
+
+    if (used == buffer_size) {
+        unsigned char extra = 0U;
+        long extra_bytes = platform_read(fd, &extra, 1U);
+        if (extra_bytes < 0) {
+            platform_close(fd);
+            return -1;
+        }
+        if (extra_bytes > 0) {
+            platform_close(fd);
+            return -1;
+        }
     }
 
     platform_close(fd);
@@ -1766,6 +1812,8 @@ int ssh_client_connect_and_run(const SshClientConfig *config) {
     if (config == 0 || config->host == 0 || config->user == 0 || config->port == 0U) {
         return -1;
     }
+
+    (void)platform_ignore_signal(13);
 
     if (platform_connect_tcp(config->host, config->port, &sock) != 0) {
         tool_write_error("ssh", "connect failed to ", config->host);

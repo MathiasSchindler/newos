@@ -14,6 +14,7 @@
 #include <sys/time.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <net/if.h>
@@ -103,6 +104,129 @@ static int posix_fd_is_set_bit(const void *set_ptr, int fd) {
     index = (unsigned int)fd / 64U;
     bit = (unsigned int)fd % 64U;
     return (bits[index] & (1UL << bit)) != 0 ? 1 : 0;
+}
+
+static int posix_mark_fd_cloexec(int fd) {
+    int flags;
+
+    if (fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    flags = fcntl(fd, F_GETFD);
+    if (flags < 0) {
+        return -1;
+    }
+    if ((flags & FD_CLOEXEC) != 0) {
+        return 0;
+    }
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static int posix_socket_finalize(int sock) {
+#ifdef SO_NOSIGPIPE
+    int enabled = 1;
+
+    if (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0) {
+        return -1;
+    }
+#endif
+    return posix_mark_fd_cloexec(sock);
+}
+
+static int posix_socket_open(int family, int type, int protocol) {
+    int sock;
+
+#ifdef SOCK_CLOEXEC
+    sock = socket(family, type | SOCK_CLOEXEC, protocol);
+    if (sock >= 0) {
+#ifdef SO_NOSIGPIPE
+        int enabled = 1;
+
+        if (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0) {
+            int saved_errno = errno;
+            close(sock);
+            errno = saved_errno;
+            return -1;
+        }
+#endif
+        return sock;
+    }
+    if (errno != EINVAL) {
+        return -1;
+    }
+#endif
+
+    sock = socket(family, type, protocol);
+    if (sock < 0) {
+        return -1;
+    }
+    if (posix_socket_finalize(sock) != 0) {
+        int saved_errno = errno;
+        close(sock);
+        errno = saved_errno;
+        return -1;
+    }
+    return sock;
+}
+
+static int posix_socket_accept(int sock) {
+    int client;
+
+    client = accept(sock, NULL, NULL);
+    if (client < 0) {
+        return -1;
+    }
+    if (posix_socket_finalize(client) != 0) {
+        int saved_errno = errno;
+        close(client);
+        errno = saved_errno;
+        return -1;
+    }
+    return client;
+}
+
+static int posix_ifname_is_valid(const char *ifname) {
+    size_t i;
+
+    if (ifname == NULL || ifname[0] == '\0') {
+        return 0;
+    }
+    if (rt_strlen(ifname) >= IFNAMSIZ) {
+        return 0;
+    }
+    for (i = 0U; ifname[i] != '\0'; ++i) {
+        unsigned char ch = (unsigned char)ifname[i];
+        if (ch <= ' ' || ch == '/' || ch == '\\') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static FILE *posix_open_netstat_pipe(const char *family_name) {
+    static const char *const candidates[] = { "/usr/sbin/netstat", "/bin/netstat" };
+    char command[96];
+    size_t i;
+
+    if (family_name == NULL || family_name[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    for (i = 0U; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        if (access(candidates[i], X_OK) != 0) {
+            continue;
+        }
+        if (snprintf(command, sizeof(command), "%s -rn -f %s 2>/dev/null", candidates[i], family_name) < 0) {
+            return NULL;
+        }
+        return popen(command, "r");
+    }
+
+    errno = ENOENT;
+    return NULL;
 }
 
 static unsigned short compute_icmp_checksum(const void *data, size_t length) {
@@ -199,7 +323,13 @@ static int write_socket_all(int fd, const char *buffer, size_t count) {
     size_t offset = 0;
 
     while (offset < count) {
-        ssize_t written = send(fd, buffer + offset, count - offset, 0);
+        ssize_t written = send(fd, buffer + offset, count - offset,
+#ifdef MSG_NOSIGNAL
+                               MSG_NOSIGNAL
+#else
+                               0
+#endif
+        );
         if (written <= 0) {
             return -1;
         }
@@ -344,7 +474,7 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     }
 
     for (current = results; current != 0; current = current->ai_next) {
-        sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        sock = posix_socket_open(current->ai_family, current->ai_socktype, current->ai_protocol);
         if (sock < 0) {
             continue;
         }
@@ -453,7 +583,7 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         for (current = results; current != 0; current = current->ai_next) {
             int reuse = 1;
 
-            sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+            sock = posix_socket_open(current->ai_family, current->ai_socktype, current->ai_protocol);
             if (sock < 0) {
                 continue;
             }
@@ -500,7 +630,7 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
                 return -1;
             }
 
-            int client = accept(sock, NULL, NULL);
+            int client = posix_socket_accept(sock);
             close(sock);
             if (client < 0) {
                 return -1;
@@ -545,7 +675,7 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         }
 
         for (current = results; current != 0; current = current->ai_next) {
-            sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+            sock = posix_socket_open(current->ai_family, current->ai_socktype, current->ai_protocol);
             if (sock < 0) {
                 continue;
             }
@@ -978,7 +1108,7 @@ int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_c
         return -1;
     }
 
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    sock = posix_socket_open(AF_INET, SOCK_DGRAM, 0);
     for (current = entries; current != NULL; current = current->ifa_next) {
         int index;
 
@@ -1137,7 +1267,7 @@ int platform_list_network_routes(
         int any_success = 0;
 
         if (family_filter != PLATFORM_NETWORK_FAMILY_IPV6) {
-            FILE *file = popen("netstat -rn -f inet 2>/dev/null", "r");
+            FILE *file = posix_open_netstat_pipe("inet");
             if (file != NULL) {
                 any_success = 1;
                 if (posix_parse_netstat_routes(file,
@@ -1154,7 +1284,7 @@ int platform_list_network_routes(
         }
 
         if (family_filter != PLATFORM_NETWORK_FAMILY_IPV4 && count < entry_capacity) {
-            FILE *file = popen("netstat -rn -f inet6 2>/dev/null", "r");
+            FILE *file = posix_open_netstat_pipe("inet6");
             if (file != NULL) {
                 any_success = 1;
                 if (posix_parse_netstat_routes(file,
@@ -1314,12 +1444,12 @@ int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_
     int sock;
     struct ifreq ifr;
 
-    if (ifname == NULL) {
+    if (!posix_ifname_is_valid(ifname)) {
         errno = EINVAL;
         return -1;
     }
 
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    sock = posix_socket_open(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
         return -1;
     }
@@ -1369,7 +1499,7 @@ int platform_network_address_change(const char *ifname, const char *cidr, int ad
     struct in_addr mask;
     unsigned int prefix = 0U;
 
-    if (ifname == NULL || cidr == NULL) {
+    if (!posix_ifname_is_valid(ifname) || cidr == NULL) {
         errno = EINVAL;
         return -1;
     }
@@ -1386,7 +1516,7 @@ int platform_network_address_change(const char *ifname, const char *cidr, int ad
         struct in_addr zero_address;
 
         zero_address.s_addr = 0U;
-        sock = socket(AF_INET, SOCK_DGRAM, 0);
+        sock = posix_socket_open(AF_INET, SOCK_DGRAM, 0);
         if (sock < 0) {
             return -1;
         }
@@ -1421,7 +1551,7 @@ int platform_network_address_change(const char *ifname, const char *cidr, int ad
         struct sockaddr_in *addr_ptr;
         struct sockaddr_in *mask_ptr;
 
-        sock = socket(AF_INET, SOCK_DGRAM, 0);
+        sock = posix_socket_open(AF_INET, SOCK_DGRAM, 0);
         if (sock < 0) {
             return -1;
         }
@@ -1473,6 +1603,10 @@ int platform_network_route_change(const char *destination, const char *gateway, 
         errno = EINVAL;
         return -1;
     }
+    if (ifname != NULL && ifname[0] != '\0' && !posix_ifname_is_valid(ifname)) {
+        errno = EINVAL;
+        return -1;
+    }
 
     memset(&destination_addr, 0, sizeof(destination_addr));
     memset(&gateway_addr, 0, sizeof(gateway_addr));
@@ -1513,7 +1647,7 @@ int platform_network_route_change(const char *destination, const char *gateway, 
     (void)ifname;
 #endif
 
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    sock = posix_socket_open(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
         return -1;
     }
@@ -1633,7 +1767,7 @@ int platform_dns_lookup(
             query[used++] = 0x01U;
         }
 
-        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        sock = posix_socket_open(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock < 0) {
             return -1;
         }
@@ -1985,14 +2119,14 @@ int platform_dhcp_request(
     unsigned char server_id[4];
     int have_server_id = 0;
 
-    (void)ifname;
-
-    if (lease_out == NULL || posix_select_mac_address(ifname, mac) != 0) {
+    if (lease_out == NULL ||
+        ((ifname != NULL && ifname[0] != '\0') && !posix_ifname_is_valid(ifname)) ||
+        posix_select_mac_address(ifname, mac) != 0) {
         return -1;
     }
     memset(lease_out, 0, sizeof(*lease_out));
 
-    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sock = posix_socket_open(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         return -1;
     }
@@ -2110,9 +2244,9 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
             return 1;
         }
 
-        sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+        sock = posix_socket_open(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
         if (sock < 0) {
-            sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+            sock = posix_socket_open(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
         }
         if (sock < 0) {
             tool_write_error("ping", "unable to create ICMPv6 socket", 0);
@@ -2285,9 +2419,9 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         return 1;
     }
 
-    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+    sock = posix_socket_open(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
     if (sock < 0) {
-        sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+        sock = posix_socket_open(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     }
     if (sock < 0) {
         tool_write_error("ping", "unable to create ICMP socket", 0);

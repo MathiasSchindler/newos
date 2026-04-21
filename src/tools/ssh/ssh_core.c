@@ -49,6 +49,51 @@ static int ssh_contains_colon(const char *text) {
     return 0;
 }
 
+static int ssh_is_restricted_text_char(unsigned char ch) {
+    return ch < 33U || ch > 126U;
+}
+
+int ssh_destination_user_is_safe(const char *text) {
+    size_t i = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+
+    for (i = 0U; text[i] != '\0'; ++i) {
+        unsigned char ch = (unsigned char)text[i];
+
+        if (ssh_is_restricted_text_char(ch) ||
+            ch == '@' || ch == ':' || ch == '/' || ch == '\\' ||
+            ch == '[' || ch == ']' || ch == ',' || ch == '|' || ch == '!') {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int ssh_destination_host_is_safe(const char *text) {
+    size_t i = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+
+    for (i = 0U; text[i] != '\0'; ++i) {
+        unsigned char ch = (unsigned char)text[i];
+
+        if (ssh_is_restricted_text_char(ch) ||
+            ch == '@' || ch == '/' || ch == '\\' ||
+            ch == '[' || ch == ']' || ch == ',' || ch == '|' ||
+            ch == '!' || ch == '*' || ch == '?') {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 void ssh_cursor_init(SshCursor *cursor, const void *data, size_t length) {
     if (cursor == 0) {
         return;
@@ -321,6 +366,9 @@ int ssh_parse_destination(const char *text, const char *default_user, unsigned i
 
     memset(out, 0, sizeof(*out));
     if (default_user != 0 && default_user[0] != '\0') {
+        if (!ssh_destination_user_is_safe(default_user)) {
+            return -1;
+        }
         rt_copy_string(out->user, sizeof(out->user), default_user);
         out->has_user = 1;
     }
@@ -338,6 +386,9 @@ int ssh_parse_destination(const char *text, const char *default_user, unsigned i
         if (ssh_copy_range(out->user, sizeof(out->user), text, (size_t)(at - text)) != 0) {
             return -1;
         }
+        if (!ssh_destination_user_is_safe(out->user)) {
+            return -1;
+        }
         out->has_user = 1;
         host_text = at + 1;
     }
@@ -351,6 +402,9 @@ int ssh_parse_destination(const char *text, const char *default_user, unsigned i
             return -1;
         }
         host_length = (size_t)(closing - (host_text + 1));
+        if (host_length == 0U) {
+            return -1;
+        }
         if (ssh_copy_range(out->host, sizeof(out->host), host_text + 1, host_length) != 0) {
             return -1;
         }
@@ -380,6 +434,9 @@ int ssh_parse_destination(const char *text, const char *default_user, unsigned i
         if (host_length == 0U || ssh_copy_range(out->host, sizeof(out->host), host_text, host_length) != 0) {
             return -1;
         }
+    }
+    if (!ssh_destination_host_is_safe(out->host)) {
+        return -1;
     }
 
     if (port_text != 0 && port_text[0] != '\0') {

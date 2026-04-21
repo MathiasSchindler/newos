@@ -140,3 +140,18 @@ mkdir -p "$WORK_DIR/ar_extract"
 )
 assert_file_contains "$WORK_DIR/ar_extract/a.txt" '^one$' "ar x did not restore the first file"
 assert_file_contains "$WORK_DIR/ar_extract/b.txt" '^two$' "ar x did not restore the second file"
+
+mkdir -p "$WORK_DIR/ar_escape/extract" "$WORK_DIR/ar_escape/outside"
+{
+    printf '!<arch>\n'
+    printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' '../outside.txt/' '0' '0' '0' '644' '5'
+    printf 'evil\n'
+    printf '\n'
+} > "$WORK_DIR/ar_escape/evil.a"
+ar_escape_status=0
+(
+    cd "$WORK_DIR/ar_escape/extract"
+    "$ROOT_DIR/build/ar" x "$WORK_DIR/ar_escape/evil.a"
+) >/dev/null 2>&1 || ar_escape_status=$?
+[ "$ar_escape_status" -ne 0 ] || fail "ar should reject a member that escapes the extraction directory"
+[ ! -e "$WORK_DIR/ar_escape/outside.txt" ] || fail "ar extracted a file outside the current directory"

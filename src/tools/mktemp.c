@@ -110,16 +110,13 @@ static int resolve_template_path(const char *directory, const char *templ, char 
 static int create_file_path(const char *path) {
     int fd;
 
-    if (path_exists(path)) {
-        return -1;
-    }
-
-    fd = platform_open_write(path, 0600U);
+    fd = platform_open_create_exclusive(path, 0600U);
     if (fd < 0) {
         return -1;
     }
 
     if (platform_close(fd) != 0) {
+        (void)platform_remove_file(path);
         return -1;
     }
 
@@ -127,10 +124,6 @@ static int create_file_path(const char *path) {
 }
 
 static int create_directory_path(const char *path) {
-    if (path_exists(path)) {
-        return -1;
-    }
-
     return platform_make_directory(path, 0700U);
 }
 

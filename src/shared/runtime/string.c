@@ -1,5 +1,7 @@
 #include "runtime.h"
 
+#include <limits.h>
+
 size_t rt_strlen(const char *text) {
     size_t len = 0;
 
@@ -112,15 +114,13 @@ int rt_is_digit_string(const char *text) {
 }
 
 int rt_parse_pid_value(const char *text) {
-    int value = 0;
-    size_t i = 0;
+    unsigned long long value = 0;
 
-    while (text[i] != '\0') {
-        value = (value * 10) + (text[i] - '0');
-        i += 1;
+    if (text == 0 || rt_parse_uint(text, &value) != 0 || value > (unsigned long long)INT_MAX) {
+        return -1;
     }
 
-    return value;
+    return (int)value;
 }
 
 void rt_trim_newline(char *text) {
