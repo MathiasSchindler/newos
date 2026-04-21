@@ -38,6 +38,8 @@ services tree.
 - emit conservative hardening headers such as nosniff and frame denial
 - optionally drop privileges after opening the listening socket when user or group is configured in the daemon config
 - load a small key/value config file
+- reject conflicting values when both the CLI and the config file specify the same setting differently
+- reject request-body framing headers such as Content-Length and Transfer-Encoding for the version-one GET and HEAD server model
 
 ## OPTIONS
 
@@ -47,7 +49,7 @@ services tree.
 - -i INDEX, --index INDEX - use INDEX as the default file for /
 - -m MAX, --max-connections MAX - cap the active connection table
 - -t TIMEOUT, --idle-timeout TIMEOUT - idle connection timeout; accepts values such as 500ms, 2s, or 1m
-- -c CONFIG, --config CONFIG - read settings from a small key=value config file
+- -c CONFIG, --config CONFIG - read settings from a small key=value config file; if both the CLI and the config set the same key differently, httpd refuses to start rather than silently choosing one
 - -q, --quiet - reduce informational request logging
 - -h, --help - print the usage summary
 
@@ -68,6 +70,8 @@ The config file uses a simple key=value format. Supported keys today are:
 This post-bind drop model is appropriate for daemon-style execution when the process needs to open its listener first and then continue in a reduced-privilege state.
 
 For hosted deployments, keep root pointed at a public content directory such as a tree under services/httpd/www-root and keep config and log files outside that served tree.
+
+If a request presents body-framing headers such as Content-Length or Transfer-Encoding, the current server rejects it with a bad-request response because only simple GET and HEAD request handling is in scope.
 
 ## LIMITATIONS
 

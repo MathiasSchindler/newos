@@ -98,6 +98,7 @@ int simple_config_parse_file(const char *path, SimpleConfigVisitor visitor, void
     }
 
     while (used + 1U < sizeof(buffer)) {
+        size_t index;
         long bytes = platform_read(fd, buffer + used, sizeof(buffer) - used - 1U);
         if (bytes < 0) {
             (void)platform_close(fd);
@@ -105,6 +106,12 @@ int simple_config_parse_file(const char *path, SimpleConfigVisitor visitor, void
         }
         if (bytes == 0) {
             break;
+        }
+        for (index = used; index < used + (size_t)bytes; ++index) {
+            if (buffer[index] == '\0') {
+                (void)platform_close(fd);
+                return -1;
+            }
         }
         used += (size_t)bytes;
     }

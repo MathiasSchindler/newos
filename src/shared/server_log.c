@@ -62,8 +62,8 @@ int server_log_escape_text(const char *input, char *buffer, size_t buffer_size) 
 }
 
 int server_log_write(int fd, const char *component, const char *level, const char *message, const char *detail) {
-    char line[1024];
-    char escaped[512];
+    char line[2048];
+    char escaped[1536];
     char time_text[64];
     size_t used = 0U;
 

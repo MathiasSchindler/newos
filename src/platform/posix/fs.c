@@ -29,6 +29,24 @@
 #include <sys/mount.h>
 #endif
 
+static int posix_mark_fd_cloexec(int fd) {
+    int flags;
+
+    if (fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    flags = fcntl(fd, F_GETFD);
+    if (flags < 0) {
+        return -1;
+    }
+    if ((flags & FD_CLOEXEC) != 0) {
+        return 0;
+    }
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 static void copy_identity_names(uid_t uid, gid_t gid, PlatformDirEntry *entry) {
     struct passwd *pw = getpwuid(uid);
     struct group *gr = getgrgid(gid);
@@ -46,6 +64,24 @@ static void copy_identity_names(uid_t uid, gid_t gid, PlatformDirEntry *entry) {
     }
 }
 
+static void fill_entry_from_stat(const char *display_name, const struct stat *st, PlatformDirEntry *entry) {
+    memset(entry, 0, sizeof(*entry));
+    posix_copy_string(entry->name, sizeof(entry->name), display_name != NULL ? display_name : "");
+    entry->device = (unsigned long long)st->st_dev;
+    entry->mode = (unsigned int)st->st_mode;
+    entry->uid = (unsigned int)st->st_uid;
+    entry->gid = (unsigned int)st->st_gid;
+    entry->size = (unsigned long long)st->st_size;
+    entry->inode = (unsigned long long)st->st_ino;
+    entry->nlink = (unsigned long)st->st_nlink;
+    entry->atime = (long long)st->st_atime;
+    entry->mtime = (long long)st->st_mtime;
+    entry->ctime = (long long)st->st_ctime;
+    entry->is_dir = S_ISDIR(st->st_mode) ? 1 : 0;
+    entry->is_hidden = (display_name != NULL && display_name[0] == '.') ? 1 : 0;
+    copy_identity_names(st->st_uid, st->st_gid, entry);
+}
+
 static int fill_entry_mode(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
     struct stat st;
 
@@ -53,22 +89,7 @@ static int fill_entry_mode(const char *display_name, const char *full_path, Plat
         return -1;
     }
 
-    memset(entry, 0, sizeof(*entry));
-    posix_copy_string(entry->name, sizeof(entry->name), display_name);
-    entry->device = (unsigned long long)st.st_dev;
-    entry->mode = (unsigned int)st.st_mode;
-    entry->uid = (unsigned int)st.st_uid;
-    entry->gid = (unsigned int)st.st_gid;
-    entry->size = (unsigned long long)st.st_size;
-    entry->inode = (unsigned long long)st.st_ino;
-    entry->nlink = (unsigned long)st.st_nlink;
-    entry->atime = (long long)st.st_atime;
-    entry->mtime = (long long)st.st_mtime;
-    entry->ctime = (long long)st.st_ctime;
-    entry->is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
-    entry->is_hidden = (display_name[0] == '.') ? 1 : 0;
-
-    copy_identity_names(st.st_uid, st.st_gid, entry);
+    fill_entry_from_stat(display_name, &st, entry);
     return 0;
 }
 
@@ -85,11 +106,58 @@ long platform_read(int fd, void *buffer, size_t count) {
 }
 
 int platform_open_read(const char *path) {
+    int fd;
+
     if (path == NULL || strcmp(path, "-") == 0) {
         return STDIN_FILENO;
     }
 
-    return open(path, O_RDONLY);
+#ifdef O_CLOEXEC
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd >= 0 || errno != EINVAL) {
+        return fd;
+    }
+#endif
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        (void)posix_mark_fd_cloexec(fd);
+    }
+    return fd;
+}
+
+int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out) {
+    struct stat st;
+    int fd;
+
+    if (path == NULL || entry_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+#ifdef O_NOFOLLOW
+#ifdef O_CLOEXEC
+    fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+#else
+    fd = open(path, O_RDONLY | O_NOFOLLOW);
+#endif
+    if (fd < 0) {
+        return -1;
+    }
+#else
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        return -1;
+    }
+#endif
+
+    if (fstat(fd, &st) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    fill_entry_from_stat(path, &st, entry_out);
+    return fd;
 }
 
 int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing) {
@@ -103,6 +171,9 @@ int platform_open_write_mode(const char *path, unsigned int mode, int truncate_e
         flags |= O_TRUNC;
     }
 
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
     return open(path, flags, (mode_t)mode);
 }
 
@@ -116,7 +187,17 @@ int platform_open_create_exclusive(const char *path, unsigned int mode) {
         return -1;
     }
 
-    return open(path, O_WRONLY | O_CREAT | O_EXCL, (mode_t)mode);
+#ifdef O_CLOEXEC
+    return open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, (mode_t)mode);
+#else
+    {
+        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, (mode_t)mode);
+        if (fd >= 0) {
+            (void)posix_mark_fd_cloexec(fd);
+        }
+        return fd;
+    }
+#endif
 }
 
 int platform_open_append(const char *path, unsigned int mode) {
@@ -124,7 +205,17 @@ int platform_open_append(const char *path, unsigned int mode) {
         return STDOUT_FILENO;
     }
 
-    return open(path, O_WRONLY | O_CREAT | O_APPEND, (mode_t)mode);
+#ifdef O_CLOEXEC
+    return open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, (mode_t)mode);
+#else
+    {
+        int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, (mode_t)mode);
+        if (fd >= 0) {
+            (void)posix_mark_fd_cloexec(fd);
+        }
+        return fd;
+    }
+#endif
 }
 
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {

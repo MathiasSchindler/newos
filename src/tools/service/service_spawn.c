@@ -23,6 +23,56 @@ static int service_has_explicit_program_path(const char *text) {
     return 0;
 }
 
+static void service_parent_directory(const char *path, char *buffer, size_t buffer_size) {
+    size_t length;
+
+    if (buffer == NULL || buffer_size == 0U) {
+        return;
+    }
+    if (path == NULL || path[0] == '\0') {
+        rt_copy_string(buffer, buffer_size, ".");
+        return;
+    }
+
+    rt_copy_string(buffer, buffer_size, path);
+    length = rt_strlen(buffer);
+    while (length > 0U && buffer[length - 1U] != '/') {
+        buffer[length - 1U] = '\0';
+        length -= 1U;
+    }
+    while (length > 1U && buffer[length - 1U] == '/') {
+        buffer[length - 1U] = '\0';
+        length -= 1U;
+    }
+    if (buffer[0] == '\0') {
+        rt_copy_string(buffer, buffer_size, ".");
+    }
+}
+
+static int service_validate_path_target(const char *path) {
+    char symlink_target[SERVICE_PATH_CAPACITY];
+    char parent[SERVICE_PATH_CAPACITY];
+    PlatformDirEntry entry;
+
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    if (platform_read_symlink(path, symlink_target, sizeof(symlink_target)) == 0) {
+        return -1;
+    }
+    service_parent_directory(path, parent, sizeof(parent));
+    if (tool_canonicalize_path(parent, 1, 0, parent, sizeof(parent)) != 0) {
+        return -1;
+    }
+    if (platform_get_path_info(parent, &entry) != 0 || !entry.is_dir) {
+        return -1;
+    }
+    if (platform_get_path_info(path, &entry) == 0 && entry.is_dir) {
+        return -1;
+    }
+    return 0;
+}
+
 int service_split_command(const char *command, char *storage, size_t storage_size, char *argv_out[], size_t argv_capacity) {
     size_t used = 0U;
     size_t argc = 0U;
@@ -66,7 +116,7 @@ int service_split_command(const char *command, char *storage, size_t storage_siz
                 }
             }
 
-            if (ch == '\\' && command[index + 1U] != '\0') {
+            if (ch == '\\' && command[index + 1U] != '\0' && quote != '\'') {
                 index += 1U;
                 ch = command[index];
             }
@@ -94,6 +144,7 @@ int service_start_process(const ServiceConfig *config, int *pid_out) {
     char storage[SERVICE_COMMAND_CAPACITY];
     char path_candidate[SERVICE_PATH_CAPACITY];
     char resolved_program[SERVICE_PATH_CAPACITY];
+    char resolved_workdir[SERVICE_PATH_CAPACITY];
     char *argv[SERVICE_MAX_ARGS];
     const char *output_path = NULL;
     const char *workdir = NULL;
@@ -113,7 +164,10 @@ int service_start_process(const ServiceConfig *config, int *pid_out) {
     }
 
     if (config->workdir[0] != '\0') {
-        workdir = config->workdir;
+        if (tool_canonicalize_path(config->workdir, 1, 0, resolved_workdir, sizeof(resolved_workdir)) != 0) {
+            return -1;
+        }
+        workdir = resolved_workdir;
     }
     if (config->drop_user[0] != '\0') {
         drop_user = config->drop_user;
@@ -141,11 +195,16 @@ int service_start_process(const ServiceConfig *config, int *pid_out) {
     } else if (config->stderr_path[0] != '\0') {
         output_path = config->stderr_path;
     }
+    if (service_validate_path_target(config->pidfile) != 0 || service_validate_path_target(output_path) != 0) {
+        return -1;
+    }
 
     if (platform_spawn_process_ex(argv, -1, -1, NULL, output_path, 1, workdir, drop_user, drop_group, &pid) != 0) {
         return -1;
     }
-    if (service_write_pidfile(config->pidfile, pid) != 0) {
+    if (service_write_pidfile(config->pidfile, pid, argv[0]) != 0) {
+        (void)platform_send_signal(pid, 15);
+        (void)platform_wait_process_timeout(pid, 500ULL, 500ULL, 15, 0, &pid);
         return -1;
     }
 

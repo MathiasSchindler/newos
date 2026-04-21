@@ -608,6 +608,9 @@ int platform_spawn_process_ex(
                 _exit(126);
             }
         }
+        if (platform_drop_privileges(drop_user, drop_group) != 0) {
+            _exit(126);
+        }
 
         if (input_path != NULL) {
             fd = open(input_path, O_RDONLY);
@@ -655,10 +658,6 @@ int platform_spawn_process_ex(
         }
         if (stdout_fd > STDERR_FILENO) {
             close(stdout_fd);
-        }
-
-        if (platform_drop_privileges(drop_user, drop_group) != 0) {
-            _exit(126);
         }
 
         execvp(argv[0], argv);

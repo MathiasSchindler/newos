@@ -560,6 +560,9 @@ int platform_spawn_process_ex(
                 linux_child_exit(126);
             }
         }
+        if (platform_drop_privileges(drop_user, drop_group) != 0) {
+            linux_child_exit(126);
+        }
 
         if (input_path != 0) {
             long fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)input_path, LINUX_O_RDONLY, 0);
@@ -607,10 +610,6 @@ int platform_spawn_process_ex(
         }
         if (stdout_fd > 1) {
             linux_syscall1(LINUX_SYS_CLOSE, stdout_fd);
-        }
-
-        if (platform_drop_privileges(drop_user, drop_group) != 0) {
-            linux_child_exit(126);
         }
 
         if (linux_path_has_slash(argv[0])) {

@@ -5,6 +5,15 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$ROOT_DIR/tests/lib/assert.sh"
 
 WORK_DIR="$ROOT_DIR/tests/tmp/extended_tools"
+HTTP_PORT_BASE=$((28000 + ($$ % 1000) * 10))
+HTTP_PORT_STATIC=$HTTP_PORT_BASE
+HTTP_PORT_CLI_CONFLICT=$((HTTP_PORT_BASE + 1))
+HTTP_PORT_SERVICE=$((HTTP_PORT_BASE + 2))
+HTTP_PORT_DIRECT_DROP=$((HTTP_PORT_BASE + 3))
+HTTP_PORT_SERVICE_DROP=$((HTTP_PORT_BASE + 4))
+HTTP_PORT_BAD_ID=$((HTTP_PORT_BASE + 5))
+HTTP_PORT_LOG_SYMLINK=$((HTTP_PORT_BASE + 6))
+HTTP_PORT_STALE_PIDFILE=$((HTTP_PORT_BASE + 7))
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 
@@ -189,30 +198,43 @@ printf 'hello from httpd\n' > "$WORK_DIR/http_root/index.txt"
 printf 'hidden\n' > "$WORK_DIR/http_root/.secret"
 printf 'outside root\n' > "$WORK_DIR/outside_root.txt"
 ln "$WORK_DIR/outside_root.txt" "$WORK_DIR/http_root/hardlink.txt"
-"$ROOT_DIR/build/httpd" -p 24684 -r "$WORK_DIR/http_root" > "$WORK_DIR/httpd.log" 2>&1 &
+"$ROOT_DIR/build/httpd" -p "$HTTP_PORT_STATIC" -r "$WORK_DIR/http_root" > "$WORK_DIR/httpd.log" 2>&1 &
 httpd_pid=$!
 trap 'kill "$httpd_pid" 2>/dev/null || true' EXIT INT TERM
 "$ROOT_DIR/build/sleep" 1
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_fetch.txt" "http://127.0.0.1:24684/index.txt"
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_fetch.txt" "http://127.0.0.1:$HTTP_PORT_STATIC/index.txt"
 assert_file_contains "$WORK_DIR/http_fetch.txt" '^hello from httpd$' "httpd did not serve the requested static file"
 http_hidden_status=0
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_hidden.txt" "http://127.0.0.1:24684/.secret" > "$WORK_DIR/http_hidden.out" 2>&1 || http_hidden_status=$?
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_hidden.txt" "http://127.0.0.1:$HTTP_PORT_STATIC/.secret" > "$WORK_DIR/http_hidden.out" 2>&1 || http_hidden_status=$?
 if [ "$http_hidden_status" -eq 0 ]; then
     fail "httpd should refuse to serve dotfiles from the document root"
 fi
 http_link_status=0
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_hardlink.txt" "http://127.0.0.1:24684/hardlink.txt" > "$WORK_DIR/http_hardlink.out" 2>&1 || http_link_status=$?
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_hardlink.txt" "http://127.0.0.1:$HTTP_PORT_STATIC/hardlink.txt" > "$WORK_DIR/http_hardlink.out" 2>&1 || http_link_status=$?
 if [ "$http_link_status" -eq 0 ]; then
     fail "httpd should refuse multiply linked files from the document root"
 fi
-printf 'GET /index.txt\r\n\r\n' | "$ROOT_DIR/build/netcat" -4 -n -w 1 127.0.0.1 24684 > "$WORK_DIR/http_bad_request.out"
+printf 'GET /index.txt\r\n\r\n' | "$ROOT_DIR/build/netcat" -4 -n -w 1 127.0.0.1 "$HTTP_PORT_STATIC" > "$WORK_DIR/http_bad_request.out"
 assert_file_contains "$WORK_DIR/http_bad_request.out" '^HTTP/1\.1 400 Bad Request' "httpd should reject malformed requests without an HTTP version"
+printf 'GET /index.txt HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\nTEST' | "$ROOT_DIR/build/netcat" -4 -n -w 1 127.0.0.1 "$HTTP_PORT_STATIC" > "$WORK_DIR/http_body_header.out"
+assert_file_contains "$WORK_DIR/http_body_header.out" '^HTTP/1\.1 400 Bad Request' "httpd should reject GET requests with a request body framing header"
 kill "$httpd_pid" 2>/dev/null || true
 wait "$httpd_pid" 2>/dev/null || true
 trap - EXIT INT TERM
 
+cat > "$WORK_DIR/httpd_cli_conflict.conf" <<EOF
+bind=127.0.0.1
+port=$HTTP_PORT_CLI_CONFLICT
+root=$WORK_DIR/http_root
+EOF
+http_conflict_rc=0
+"$ROOT_DIR/build/timeout" 1s "$ROOT_DIR/build/httpd" -p "$HTTP_PORT_SERVICE" -c "$WORK_DIR/httpd_cli_conflict.conf" > "$WORK_DIR/httpd_cli_conflict.out" 2>&1 || http_conflict_rc=$?
+if [ "$http_conflict_rc" -eq 0 ] || [ "$http_conflict_rc" -eq 124 ]; then
+    fail "httpd should refuse conflicting CLI and config values rather than silently choosing one"
+fi
+
 cat > "$WORK_DIR/httpd.conf" <<EOF
-command=$ROOT_DIR/build/httpd -p 24685 -r $WORK_DIR/http_root
+command=$ROOT_DIR/build/httpd -p $HTTP_PORT_SERVICE -r $WORK_DIR/http_root
 pidfile=$WORK_DIR/httpd.pid
 stdout=$WORK_DIR/service-httpd.out
 stderr=$WORK_DIR/service-httpd.err
@@ -221,10 +243,10 @@ EOF
 "$ROOT_DIR/build/sleep" 1
 "$ROOT_DIR/build/service" status "$WORK_DIR/httpd.conf" > "$WORK_DIR/service_status.out"
 assert_file_contains "$WORK_DIR/service_status.out" 'running' "service status did not report the daemon as running"
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_service_fetch.txt" "http://127.0.0.1:24685/index.txt"
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_service_fetch.txt" "http://127.0.0.1:$HTTP_PORT_SERVICE/index.txt"
 assert_file_contains "$WORK_DIR/http_service_fetch.txt" '^hello from httpd$' "service-managed httpd did not serve the requested static file"
 cat > "$WORK_DIR/httpd_conflict.conf" <<EOF
-command=$ROOT_DIR/build/httpd -p 24685 -r $WORK_DIR/http_root
+command=$ROOT_DIR/build/httpd -p $HTTP_PORT_SERVICE -r $WORK_DIR/http_root
 pidfile=$WORK_DIR/httpd-conflict.pid
 stdout=$WORK_DIR/service-httpd-conflict.out
 stderr=$WORK_DIR/service-httpd-conflict.err
@@ -241,7 +263,7 @@ service_user=$(id -un 2>/dev/null || whoami)
 service_group=$(id -gn 2>/dev/null || echo staff)
 cat > "$WORK_DIR/httpd_direct_drop.conf" <<EOF
 bind=127.0.0.1
-port=24686
+port=$HTTP_PORT_DIRECT_DROP
 root=$WORK_DIR/http_root
 index=index.txt
 user=$service_user
@@ -251,14 +273,14 @@ EOF
 httpd_drop_pid=$!
 trap 'kill "$httpd_drop_pid" 2>/dev/null || true' EXIT INT TERM
 "$ROOT_DIR/build/sleep" 1
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_direct_drop_fetch.txt" "http://127.0.0.1:24686/index.txt"
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_direct_drop_fetch.txt" "http://127.0.0.1:$HTTP_PORT_DIRECT_DROP/index.txt"
 assert_file_contains "$WORK_DIR/http_direct_drop_fetch.txt" '^hello from httpd$' "httpd with configured post-bind privilege drop did not serve the requested static file"
 kill "$httpd_drop_pid" 2>/dev/null || true
 wait "$httpd_drop_pid" 2>/dev/null || true
 trap - EXIT INT TERM
 
 cat > "$WORK_DIR/httpd_drop.conf" <<EOF
-command=$ROOT_DIR/build/httpd -p 24687 -r $WORK_DIR/http_root
+command=$ROOT_DIR/build/httpd -p $HTTP_PORT_SERVICE_DROP -r $WORK_DIR/http_root
 pidfile=$WORK_DIR/httpd-drop.pid
 stdout=$WORK_DIR/service-httpd-drop.out
 stderr=$WORK_DIR/service-httpd-drop.err
@@ -267,12 +289,12 @@ group=$service_group
 EOF
 "$ROOT_DIR/build/service" start "$WORK_DIR/httpd_drop.conf" > "$WORK_DIR/service_drop_start.out"
 "$ROOT_DIR/build/sleep" 1
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_drop_fetch.txt" "http://127.0.0.1:24687/index.txt"
+"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_drop_fetch.txt" "http://127.0.0.1:$HTTP_PORT_SERVICE_DROP/index.txt"
 assert_file_contains "$WORK_DIR/http_drop_fetch.txt" '^hello from httpd$' "service-managed httpd with configured privilege drop did not serve the requested static file"
 "$ROOT_DIR/build/service" stop "$WORK_DIR/httpd_drop.conf" > "$WORK_DIR/service_drop_stop.out"
 
 cat > "$WORK_DIR/httpd_bad_identity.conf" <<EOF
-command=$ROOT_DIR/build/httpd -p 24688 -r $WORK_DIR/http_root
+command=$ROOT_DIR/build/httpd -p $HTTP_PORT_BAD_ID -r $WORK_DIR/http_root
 pidfile=$WORK_DIR/httpd-bad-identity.pid
 stdout=$WORK_DIR/service-httpd-bad-identity.out
 stderr=$WORK_DIR/service-httpd-bad-identity.err
@@ -297,6 +319,49 @@ pidfile=$WORK_DIR/unsafe.pid
 stdout=$WORK_DIR/unsafe.log
 stderr=$WORK_DIR/unsafe.log
 EOF
+mkdir -p "$WORK_DIR/service_quote"
+cat > "$WORK_DIR/quoted_service.conf" <<EOF
+command=/bin/sh -c 'printf "%s\\n" "it'\''s ok" > "$WORK_DIR/service_quote/quoted.out"; while :; do sleep 1; done'
+pidfile=$WORK_DIR/quoted.pid
+stdout=$WORK_DIR/quoted.log
+stderr=$WORK_DIR/quoted.log
+EOF
+"$ROOT_DIR/build/service" start "$WORK_DIR/quoted_service.conf" > "$WORK_DIR/quoted_service_start.out"
+"$ROOT_DIR/build/sleep" 1
+assert_file_contains "$WORK_DIR/service_quote/quoted.out" "^it's ok$" "service command parsing should preserve standard single-quote shell escaping"
+"$ROOT_DIR/build/service" stop "$WORK_DIR/quoted_service.conf" > "$WORK_DIR/quoted_service_stop.out"
+
+ln -sf "$WORK_DIR/real_service.log" "$WORK_DIR/symlink_service.log"
+cat > "$WORK_DIR/symlink_log_service.conf" <<EOF
+command=$ROOT_DIR/build/httpd -p $HTTP_PORT_LOG_SYMLINK -r $WORK_DIR/http_root
+pidfile=$WORK_DIR/symlink-log.pid
+stdout=$WORK_DIR/symlink_service.log
+stderr=$WORK_DIR/symlink_service.log
+EOF
+symlink_log_status=0
+"$ROOT_DIR/build/service" start "$WORK_DIR/symlink_log_service.conf" > "$WORK_DIR/symlink_log_service.out" 2>&1 || symlink_log_status=$?
+if [ "$symlink_log_status" -eq 0 ]; then
+    "$ROOT_DIR/build/service" stop "$WORK_DIR/symlink_log_service.conf" > /dev/null 2>&1 || true
+    fail "service should reject symlinked log output targets"
+fi
+
+"$ROOT_DIR/build/sleep" 30 &
+stray_pid=$!
+printf '%s\n' "$stray_pid" > "$WORK_DIR/stray.pid"
+cat > "$WORK_DIR/stray_service.conf" <<EOF
+command=$ROOT_DIR/build/httpd -p $HTTP_PORT_STALE_PIDFILE -r $WORK_DIR/http_root
+pidfile=$WORK_DIR/stray.pid
+stdout=$WORK_DIR/stray.log
+stderr=$WORK_DIR/stray.log
+EOF
+stray_stop_status=0
+"$ROOT_DIR/build/service" stop "$WORK_DIR/stray_service.conf" > "$WORK_DIR/stray_stop.out" 2>&1 || stray_stop_status=$?
+if ! kill -0 "$stray_pid" 2>/dev/null; then
+    fail "service should not kill an unrelated process referenced only by a stale pidfile"
+fi
+kill "$stray_pid" 2>/dev/null || true
+wait "$stray_pid" 2>/dev/null || true
+
 unsafe_status=0
 PATH="$WORK_DIR/bin:$PATH" "$ROOT_DIR/build/service" start "$WORK_DIR/unsafe_service.conf" > "$WORK_DIR/unsafe_service.out" 2>&1 || unsafe_status=$?
 if [ "$unsafe_status" -eq 0 ]; then

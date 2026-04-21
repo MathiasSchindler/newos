@@ -2,7 +2,7 @@
 
 #include "platform.h"
 
-int service_stop_process(const ServiceConfig *config, int pid) {
+int service_stop_process(const ServiceConfig *config, int pid, const char *expected_name) {
     unsigned long long waited = 0ULL;
 
     if (config == NULL || pid <= 0) {
@@ -11,7 +11,7 @@ int service_stop_process(const ServiceConfig *config, int pid) {
 
     (void)platform_send_signal(pid, 15);
     while (waited < config->stop_timeout_ms) {
-        if (!service_pid_is_running(pid)) {
+        if (!service_pid_is_running(pid, expected_name)) {
             (void)service_remove_pidfile(config->pidfile);
             return 0;
         }
@@ -22,7 +22,7 @@ int service_stop_process(const ServiceConfig *config, int pid) {
     (void)platform_send_signal(pid, 9);
     waited = 0ULL;
     while (waited < 1000ULL) {
-        if (!service_pid_is_running(pid)) {
+        if (!service_pid_is_running(pid, expected_name)) {
             (void)service_remove_pidfile(config->pidfile);
             return 0;
         }

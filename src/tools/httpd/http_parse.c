@@ -58,6 +58,43 @@ static int httpd_decode_path(const char *source, char *dest, size_t dest_size) {
     return 0;
 }
 
+static int httpd_ascii_tolower(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (int)(ch - 'A' + 'a');
+    }
+    return (int)ch;
+}
+
+static int httpd_header_name_equals(const char *header, const char *expected) {
+    size_t index = 0U;
+
+    while (header[index] != '\0' && expected[index] != '\0') {
+        if (httpd_ascii_tolower(header[index]) != httpd_ascii_tolower(expected[index])) {
+            return 0;
+        }
+        index += 1U;
+    }
+    return header[index] == '\0' && expected[index] == '\0';
+}
+
+static void httpd_trim_spaces(char *text) {
+    size_t start = 0U;
+    size_t end = rt_strlen(text);
+    size_t out = 0U;
+
+    while (text[start] == ' ' || text[start] == '\t') {
+        start += 1U;
+    }
+    while (end > start && (text[end - 1U] == ' ' || text[end - 1U] == '\t')) {
+        end -= 1U;
+    }
+    while (start + out < end) {
+        text[out] = text[start + out];
+        out += 1U;
+    }
+    text[out] = '\0';
+}
+
 static int httpd_path_has_parent_reference(const char *path) {
     size_t index = 0U;
 
@@ -157,6 +194,65 @@ int httpd_parse_request(const char *buffer, HttpRequest *request, char *detail, 
     if (httpd_path_has_parent_reference(request->path)) {
         rt_copy_string(detail, detail_size, "path traversal rejected");
         return 403;
+    }
+
+    {
+        const char *cursor = buffer;
+
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor += 1U;
+        }
+        if (*cursor == '\n') {
+            cursor += 1U;
+        }
+
+        while (*cursor != '\0') {
+            char header_line[512];
+            size_t header_length = 0U;
+            size_t raw_length = 0U;
+            char *colon;
+
+            while (cursor[raw_length] != '\0' && cursor[raw_length] != '\n' && raw_length + 1U < sizeof(header_line)) {
+                header_line[raw_length] = cursor[raw_length];
+                raw_length += 1U;
+            }
+            if (cursor[raw_length] != '\0' && cursor[raw_length] != '\n') {
+                rt_copy_string(detail, detail_size, "header line too long");
+                return 400;
+            }
+            header_length = raw_length;
+            if (header_length > 0U && header_line[header_length - 1U] == '\r') {
+                header_length -= 1U;
+            }
+            header_line[header_length] = '\0';
+            cursor += raw_length;
+            if (*cursor == '\n') {
+                cursor += 1U;
+            }
+
+            if (header_line[0] == '\0') {
+                break;
+            }
+
+            colon = header_line;
+            while (*colon != '\0' && *colon != ':') {
+                colon += 1U;
+            }
+            if (*colon != ':') {
+                rt_copy_string(detail, detail_size, "malformed header line");
+                return 400;
+            }
+            *colon = '\0';
+            httpd_trim_spaces(header_line);
+            httpd_trim_spaces(colon + 1U);
+
+            if (httpd_header_name_equals(header_line, "Content-Length") ||
+                httpd_header_name_equals(header_line, "Transfer-Encoding") ||
+                httpd_header_name_equals(header_line, "Expect")) {
+                rt_copy_string(detail, detail_size, "request body framing is not supported");
+                return 400;
+            }
+        }
     }
 
     return 0;

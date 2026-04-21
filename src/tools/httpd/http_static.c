@@ -118,27 +118,29 @@ int httpd_build_static_response(const HttpServerOptions *options, const HttpRequ
         return 403;
     }
 
-    if (platform_get_path_info(canonical, &entry) != 0) {
-        rt_copy_string(detail, detail_size, "file not found");
-        return 404;
+    fd = platform_open_read_secure(canonical, &entry);
+    if (fd < 0) {
+        if (platform_get_path_info(canonical, &entry) != 0) {
+            rt_copy_string(detail, detail_size, "file not found");
+            return 404;
+        }
+        rt_copy_string(detail, detail_size, "failed to open file");
+        return 500;
     }
     if (entry.is_dir) {
+        (void)platform_close(fd);
         rt_copy_string(detail, detail_size, "directory listing disabled");
         return 403;
     }
     if (entry.nlink > 1UL) {
+        (void)platform_close(fd);
         rt_copy_string(detail, detail_size, "multiply linked files are not served");
         return 403;
     }
     if (entry.size > (1024ULL * 1024ULL)) {
+        (void)platform_close(fd);
         rt_copy_string(detail, detail_size, "file too large for version one server");
         return 413;
-    }
-
-    fd = platform_open_read(canonical);
-    if (fd < 0) {
-        rt_copy_string(detail, detail_size, "failed to open file");
-        return 500;
     }
 
     rt_memset(response, 0, sizeof(*response));

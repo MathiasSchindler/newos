@@ -39,12 +39,15 @@ The config file uses simple key=value lines. Supported keys today are:
 
 When user or group is configured, the service supervisor drops privileges in the child before executing the daemon.
 
+For safer hosted operation, pidfile and log targets must resolve through existing directories and may not point at symlinks.
+
 ## CURRENT CAPABILITIES
 
 - start a configured daemon in the background
 - require an explicit executable path to avoid accidental or malicious PATH-based command hijacking
 - optionally change into a configured working directory before exec
 - optionally drop to a configured user and group before exec on hosted POSIX and freestanding Linux builds
+- create pidfiles exclusively and refuse stale or mismatched process identities more defensively during status, stop, and restart
 - fail the start operation if the child exits immediately during early setup, such as when a port is already in use
 - stop it with a polite TERM signal followed by a bounded wait
 - escalate to KILL if the process ignores the stop timeout

@@ -38,6 +38,24 @@ struct linux_statfs {
 #define LINUX_MNT_FORCE  0x00000001
 #define LINUX_MNT_DETACH 0x00000002
 
+static void fill_entry_from_stat(const char *display_name, const struct linux_stat *st, PlatformDirEntry *entry) {
+    copy_string(entry->name, sizeof(entry->name), display_name != 0 ? display_name : "");
+    entry->device = (unsigned long long)st->st_dev;
+    entry->mode = st->st_mode;
+    entry->uid = (unsigned int)st->st_uid;
+    entry->gid = (unsigned int)st->st_gid;
+    entry->size = (unsigned long long)st->st_size;
+    entry->inode = (unsigned long long)st->st_ino;
+    entry->nlink = (unsigned long)st->st_nlink;
+    entry->atime = (long long)st->st_atime;
+    entry->mtime = (long long)st->st_mtime;
+    entry->ctime = (long long)st->st_ctime;
+    entry->is_dir = ((st->st_mode & LINUX_S_IFMT) == LINUX_S_IFDIR) ? 1 : 0;
+    entry->is_hidden = (display_name != 0 && display_name[0] == '.') ? 1 : 0;
+    unsigned_to_string((unsigned long long)st->st_uid, entry->owner, sizeof(entry->owner));
+    unsigned_to_string((unsigned long long)st->st_gid, entry->group, sizeof(entry->group));
+}
+
 static int fill_entry_mode(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
     struct linux_stat st;
     long result;
@@ -53,21 +71,7 @@ static int fill_entry_mode(const char *display_name, const char *full_path, Plat
         return -1;
     }
 
-    copy_string(entry->name, sizeof(entry->name), display_name);
-    entry->device = (unsigned long long)st.st_dev;
-    entry->mode = st.st_mode;
-    entry->uid = (unsigned int)st.st_uid;
-    entry->gid = (unsigned int)st.st_gid;
-    entry->size = (unsigned long long)st.st_size;
-    entry->inode = (unsigned long long)st.st_ino;
-    entry->nlink = (unsigned long)st.st_nlink;
-    entry->atime = (long long)st.st_atime;
-    entry->mtime = (long long)st.st_mtime;
-    entry->ctime = (long long)st.st_ctime;
-    entry->is_dir = ((st.st_mode & LINUX_S_IFMT) == LINUX_S_IFDIR) ? 1 : 0;
-    entry->is_hidden = (display_name[0] == '.') ? 1 : 0;
-    unsigned_to_string((unsigned long long)st.st_uid, entry->owner, sizeof(entry->owner));
-    unsigned_to_string((unsigned long long)st.st_gid, entry->group, sizeof(entry->group));
+    fill_entry_from_stat(display_name, &st, entry);
     return 0;
 }
 
@@ -108,13 +112,35 @@ int platform_open_read(const char *path) {
         return 0;
     }
 
-    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY, 0);
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY | LINUX_O_CLOEXEC, 0);
     return fd < 0 ? -1 : (int)fd;
+}
+
+int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out) {
+    struct linux_stat st;
+    long fd;
+    long rc;
+
+    if (path == 0 || entry_out == 0) {
+        return -1;
+    }
+
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY | LINUX_O_CLOEXEC | LINUX_O_NOFOLLOW, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    rc = linux_syscall4(LINUX_SYS_NEWFSTATAT, fd, (long)"", (long)&st, LINUX_AT_EMPTY_PATH);
+    if (rc < 0) {
+        linux_syscall1(LINUX_SYS_CLOSE, fd);
+        return -1;
+    }
+    fill_entry_from_stat(path, &st, entry_out);
+    return (int)fd;
 }
 
 int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing) {
     long fd;
-    long flags = LINUX_O_WRONLY | LINUX_O_CREAT;
+    long flags = LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_CLOEXEC;
 
     if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
         return 1;
@@ -149,7 +175,7 @@ int platform_open_create_exclusive(const char *path, unsigned int mode) {
         LINUX_SYS_OPENAT,
         LINUX_AT_FDCWD,
         (long)path,
-        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL,
+        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL | LINUX_O_CLOEXEC,
         (long)mode
     );
     return fd < 0 ? -1 : (int)fd;
@@ -166,7 +192,7 @@ int platform_open_append(const char *path, unsigned int mode) {
         LINUX_SYS_OPENAT,
         LINUX_AT_FDCWD,
         (long)path,
-        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_APPEND,
+        LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_APPEND | LINUX_O_CLOEXEC,
         (long)mode
     );
     return fd < 0 ? -1 : (int)fd;

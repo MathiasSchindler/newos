@@ -4,8 +4,22 @@
 #include "simple_config.h"
 #include "tool_util.h"
 
+enum {
+    HTTPD_FLAG_BIND = 1 << 0,
+    HTTPD_FLAG_ROOT = 1 << 1,
+    HTTPD_FLAG_INDEX = 1 << 2,
+    HTTPD_FLAG_PORT = 1 << 3,
+    HTTPD_FLAG_MAX = 1 << 4,
+    HTTPD_FLAG_IDLE = 1 << 5,
+    HTTPD_FLAG_QUIET = 1 << 6,
+    HTTPD_FLAG_USER = 1 << 7,
+    HTTPD_FLAG_GROUP = 1 << 8
+};
+
 typedef struct {
     HttpServerOptions *options;
+    unsigned int cli_mask;
+    char conflict_key[32];
 } HttpdConfigContext;
 
 static void httpd_print_usage(const char *program_name) {
@@ -28,32 +42,57 @@ static int httpd_parse_boolean(const char *text, int *value_out) {
 }
 
 static int httpd_apply_config_value(const char *key, const char *value, void *context) {
-    HttpServerOptions *options = ((HttpdConfigContext *)context)->options;
+    HttpdConfigContext *config = (HttpdConfigContext *)context;
+    HttpServerOptions *options = config->options;
     unsigned long long number = 0ULL;
     int enabled = 0;
 
     if (rt_strcmp(key, "bind") == 0) {
+        if ((config->cli_mask & HTTPD_FLAG_BIND) != 0U && rt_strcmp(options->bind_host, value) != 0) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "bind");
+            return -1;
+        }
         rt_copy_string(options->bind_host, sizeof(options->bind_host), value);
         return 0;
     }
     if (rt_strcmp(key, "root") == 0) {
+        if ((config->cli_mask & HTTPD_FLAG_ROOT) != 0U && rt_strcmp(options->root, value) != 0) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "root");
+            return -1;
+        }
         rt_copy_string(options->root, sizeof(options->root), value);
         return 0;
     }
     if (rt_strcmp(key, "index") == 0) {
+        if ((config->cli_mask & HTTPD_FLAG_INDEX) != 0U && rt_strcmp(options->index_name, value) != 0) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "index");
+            return -1;
+        }
         rt_copy_string(options->index_name, sizeof(options->index_name), value);
         return 0;
     }
     if (rt_strcmp(key, "user") == 0) {
+        if ((config->cli_mask & HTTPD_FLAG_USER) != 0U && rt_strcmp(options->drop_user, value) != 0) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "user");
+            return -1;
+        }
         rt_copy_string(options->drop_user, sizeof(options->drop_user), value);
         return 0;
     }
     if (rt_strcmp(key, "group") == 0) {
+        if ((config->cli_mask & HTTPD_FLAG_GROUP) != 0U && rt_strcmp(options->drop_group, value) != 0) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "group");
+            return -1;
+        }
         rt_copy_string(options->drop_group, sizeof(options->drop_group), value);
         return 0;
     }
     if (rt_strcmp(key, "port") == 0) {
         if (rt_parse_uint(value, &number) != 0 || number == 0ULL || number > 65535ULL) {
+            return -1;
+        }
+        if ((config->cli_mask & HTTPD_FLAG_PORT) != 0U && options->port != (unsigned int)number) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "port");
             return -1;
         }
         options->port = (unsigned int)number;
@@ -63,11 +102,22 @@ static int httpd_apply_config_value(const char *key, const char *value, void *co
         if (rt_parse_uint(value, &number) != 0 || number == 0ULL) {
             return -1;
         }
+        if ((config->cli_mask & HTTPD_FLAG_MAX) != 0U && options->max_connections != (unsigned int)number) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "max_connections");
+            return -1;
+        }
         options->max_connections = (unsigned int)number;
+        if (options->max_connections > HTTPD_MAX_CONNECTIONS) {
+            options->max_connections = HTTPD_MAX_CONNECTIONS;
+        }
         return 0;
     }
     if (rt_strcmp(key, "idle_timeout") == 0) {
         if (tool_parse_duration_ms(value, &number) != 0) {
+            return -1;
+        }
+        if ((config->cli_mask & HTTPD_FLAG_IDLE) != 0U && options->idle_timeout_ms != (unsigned int)number) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "idle_timeout");
             return -1;
         }
         options->idle_timeout_ms = (unsigned int)number;
@@ -75,6 +125,10 @@ static int httpd_apply_config_value(const char *key, const char *value, void *co
     }
     if (rt_strcmp(key, "quiet") == 0) {
         if (httpd_parse_boolean(value, &enabled) != 0) {
+            return -1;
+        }
+        if ((config->cli_mask & HTTPD_FLAG_QUIET) != 0U && options->quiet != enabled) {
+            rt_copy_string(config->conflict_key, sizeof(config->conflict_key), "quiet");
             return -1;
         }
         options->quiet = enabled;
@@ -135,6 +189,8 @@ int httpd_main(int argc, char **argv) {
     options.idle_timeout_ms = 5000U;
     options.quiet = 0;
     config_context.options = &options;
+    config_context.cli_mask = 0U;
+    config_context.conflict_key[0] = '\0';
 
     tool_opt_init(&opt, argc, argv, tool_base_name(argv[0]), "[-q] [-b HOST] [-p PORT] [-r ROOT] [-i INDEX] [-m MAX] [-t TIMEOUT] [-c CONFIG]");
     while ((parse_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
@@ -142,6 +198,7 @@ int httpd_main(int argc, char **argv) {
 
         if (rt_strcmp(opt.flag, "-q") == 0 || rt_strcmp(opt.flag, "--quiet") == 0) {
             options.quiet = 1;
+            config_context.cli_mask |= HTTPD_FLAG_QUIET;
         } else if (rt_strcmp(opt.flag, "-c") == 0 || rt_strcmp(opt.flag, "--config") == 0) {
             if (tool_opt_require_value(&opt) != 0) {
                 httpd_print_usage(argv[0]);
@@ -154,36 +211,42 @@ int httpd_main(int argc, char **argv) {
                 return 1;
             }
             rt_copy_string(options.bind_host, sizeof(options.bind_host), opt.value);
+            config_context.cli_mask |= HTTPD_FLAG_BIND;
         } else if (rt_strcmp(opt.flag, "-r") == 0 || rt_strcmp(opt.flag, "--root") == 0) {
             if (tool_opt_require_value(&opt) != 0) {
                 httpd_print_usage(argv[0]);
                 return 1;
             }
             rt_copy_string(options.root, sizeof(options.root), opt.value);
+            config_context.cli_mask |= HTTPD_FLAG_ROOT;
         } else if (rt_strcmp(opt.flag, "-i") == 0 || rt_strcmp(opt.flag, "--index") == 0) {
             if (tool_opt_require_value(&opt) != 0) {
                 httpd_print_usage(argv[0]);
                 return 1;
             }
             rt_copy_string(options.index_name, sizeof(options.index_name), opt.value);
+            config_context.cli_mask |= HTTPD_FLAG_INDEX;
         } else if (rt_strcmp(opt.flag, "-p") == 0 || rt_strcmp(opt.flag, "--port") == 0) {
             if (tool_opt_require_value(&opt) != 0 || rt_parse_uint(opt.value, &number) != 0 || number == 0ULL || number > 65535ULL) {
                 httpd_print_usage(argv[0]);
                 return 1;
             }
             options.port = (unsigned int)number;
+            config_context.cli_mask |= HTTPD_FLAG_PORT;
         } else if (rt_strcmp(opt.flag, "-m") == 0 || rt_strcmp(opt.flag, "--max-connections") == 0) {
             if (tool_opt_require_value(&opt) != 0 || rt_parse_uint(opt.value, &number) != 0 || number == 0ULL) {
                 httpd_print_usage(argv[0]);
                 return 1;
             }
             options.max_connections = (unsigned int)number;
+            config_context.cli_mask |= HTTPD_FLAG_MAX;
         } else if (rt_strcmp(opt.flag, "-t") == 0 || rt_strcmp(opt.flag, "--idle-timeout") == 0) {
             if (tool_opt_require_value(&opt) != 0 || tool_parse_duration_ms(opt.value, &number) != 0) {
                 httpd_print_usage(argv[0]);
                 return 1;
             }
             options.idle_timeout_ms = (unsigned int)number;
+            config_context.cli_mask |= HTTPD_FLAG_IDLE;
         } else {
             tool_write_error("httpd", "unknown option: ", opt.flag);
             httpd_print_usage(argv[0]);
@@ -198,7 +261,11 @@ int httpd_main(int argc, char **argv) {
     }
 
     if (config_path != NULL && simple_config_parse_file(config_path, httpd_apply_config_value, &config_context) != 0) {
-        tool_write_error("httpd", "failed to parse config: ", config_path);
+        if (config_context.conflict_key[0] != '\0') {
+            tool_write_error("httpd", "config conflicts with CLI for key: ", config_context.conflict_key);
+        } else {
+            tool_write_error("httpd", "failed to parse config: ", config_path);
+        }
         return 1;
     }
 

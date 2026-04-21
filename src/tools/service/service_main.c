@@ -19,6 +19,9 @@ static void service_write_message(const char *message, int pid) {
 
 int service_main(int argc, char **argv) {
     ServiceConfig config;
+    char expected_name[SERVICE_PATH_CAPACITY];
+    char command_storage[SERVICE_COMMAND_CAPACITY];
+    char *command_argv[SERVICE_MAX_ARGS];
     const char *command;
     const char *config_path;
     int pid = -1;
@@ -35,15 +38,27 @@ int service_main(int argc, char **argv) {
 
     command = argv[1];
     config_path = argv[2];
+    expected_name[0] = '\0';
     if (service_load_config(config_path, &config) != 0) {
         tool_write_error("service", "failed to load config: ", config_path);
         return 1;
     }
+    if (service_split_command(config.command, command_storage, sizeof(command_storage), command_argv, SERVICE_MAX_ARGS) == 0 &&
+        command_argv[0] != NULL) {
+        rt_copy_string(expected_name, sizeof(expected_name), tool_base_name(command_argv[0]));
+    }
 
     if (rt_strcmp(command, "start") == 0) {
-        if (service_read_pidfile(config.pidfile, &pid) == 0 && service_pid_is_running(pid)) {
-            service_write_message("already running", pid);
-            return 0;
+        char pid_name[SERVICE_PATH_CAPACITY];
+
+        pid_name[0] = '\0';
+        if (service_read_pidfile_info(config.pidfile, &pid, pid_name, sizeof(pid_name)) == 0) {
+            const char *match_name = pid_name[0] != '\0' ? pid_name : expected_name;
+            if (service_pid_is_running(pid, match_name)) {
+                service_write_message("already running", pid);
+                return 0;
+            }
+            (void)service_remove_pidfile(config.pidfile);
         }
         if (service_start_process(&config, &pid) != 0) {
             tool_write_error("service", "failed to start service", 0);
@@ -54,12 +69,22 @@ int service_main(int argc, char **argv) {
     }
 
     if (rt_strcmp(command, "stop") == 0) {
-        if (service_read_pidfile(config.pidfile, &pid) != 0 || !service_pid_is_running(pid)) {
+        char pid_name[SERVICE_PATH_CAPACITY];
+        const char *match_name;
+
+        pid_name[0] = '\0';
+        if (service_read_pidfile_info(config.pidfile, &pid, pid_name, sizeof(pid_name)) != 0) {
             (void)service_remove_pidfile(config.pidfile);
             service_write_message("stopped", -1);
             return 0;
         }
-        if (service_stop_process(&config, pid) != 0) {
+        match_name = pid_name[0] != '\0' ? pid_name : expected_name;
+        if (!service_pid_is_running(pid, match_name)) {
+            (void)service_remove_pidfile(config.pidfile);
+            service_write_message("stopped", -1);
+            return 0;
+        }
+        if (service_stop_process(&config, pid, match_name) != 0) {
             tool_write_error("service", "failed to stop service", 0);
             return 1;
         }
@@ -68,10 +93,19 @@ int service_main(int argc, char **argv) {
     }
 
     if (rt_strcmp(command, "restart") == 0) {
-        if (service_read_pidfile(config.pidfile, &pid) == 0 && service_pid_is_running(pid)) {
-            if (service_stop_process(&config, pid) != 0) {
-                tool_write_error("service", "failed to stop service for restart", 0);
-                return 1;
+        char pid_name[SERVICE_PATH_CAPACITY];
+        const char *match_name;
+
+        pid_name[0] = '\0';
+        if (service_read_pidfile_info(config.pidfile, &pid, pid_name, sizeof(pid_name)) == 0) {
+            match_name = pid_name[0] != '\0' ? pid_name : expected_name;
+            if (service_pid_is_running(pid, match_name)) {
+                if (service_stop_process(&config, pid, match_name) != 0) {
+                    tool_write_error("service", "failed to stop service for restart", 0);
+                    return 1;
+                }
+            } else {
+                (void)service_remove_pidfile(config.pidfile);
             }
         }
         if (service_start_process(&config, &pid) != 0) {
@@ -83,9 +117,16 @@ int service_main(int argc, char **argv) {
     }
 
     if (rt_strcmp(command, "status") == 0) {
-        if (service_read_pidfile(config.pidfile, &pid) == 0 && service_pid_is_running(pid)) {
-            service_write_message("running", pid);
-            return 0;
+        char pid_name[SERVICE_PATH_CAPACITY];
+        const char *match_name;
+
+        pid_name[0] = '\0';
+        if (service_read_pidfile_info(config.pidfile, &pid, pid_name, sizeof(pid_name)) == 0) {
+            match_name = pid_name[0] != '\0' ? pid_name : expected_name;
+            if (service_pid_is_running(pid, match_name)) {
+                service_write_message("running", pid);
+                return 0;
+            }
         }
         (void)service_remove_pidfile(config.pidfile);
         service_write_message("stopped", -1);
