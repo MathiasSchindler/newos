@@ -1133,7 +1133,11 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
             if (names_equal(storage, "param") || names_equal(storage, "local")) {
-                slot_size = decl_slot_size(state, type_text);
+                if (names_equal(storage, "param") && text_contains(type_text, "[")) {
+                    slot_size = backend_stack_slot_size(state);
+                } else {
+                    slot_size = decl_slot_size(state, type_text);
+                }
                 for (function_index = 0; function_index < state->function_count; ++function_index) {
                     if (names_equal(state->functions[function_index].name, current_function)) {
                         state->functions[function_index].stack_bytes += slot_size;

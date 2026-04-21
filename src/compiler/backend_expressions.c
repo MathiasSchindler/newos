@@ -1256,6 +1256,7 @@ static int expr_parse_sizeof(ExprParser *parser) {
             int deref_count = 0;
             int had_deref = 0;
             int saw_suffix = 0;
+            int known_type_found = 0;
 
             type_text[0] = '\0';
             identifier_name[0] = '\0';
@@ -1266,8 +1267,9 @@ static int expr_parse_sizeof(ExprParser *parser) {
             }
             if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
                 const char *known_type = lookup_name_type_text(parser->state, parser->current.text);
+                known_type_found = known_type != 0 && known_type[0] != '\0';
                 rt_copy_string(identifier_name, sizeof(identifier_name), parser->current.text);
-                if (known_type != 0 && known_type[0] != '\0') {
+                if (known_type_found) {
                     rt_copy_string(type_text, sizeof(type_text), known_type);
                 } else {
                     rt_copy_string(type_text, sizeof(type_text), parser->current.text);
@@ -1306,7 +1308,7 @@ static int expr_parse_sizeof(ExprParser *parser) {
                 rt_copy_string(type_text, sizeof(type_text), deref_type);
                 deref_count -= 1;
             }
-            if (type_text[0] != '\0' && identifier_name[0] != '\0' && !saw_suffix && !had_deref) {
+            if (type_text[0] != '\0' && identifier_name[0] != '\0' && !saw_suffix && !had_deref && known_type_found) {
                 size = guess_identifier_size(parser->state, identifier_name);
             } else if (type_text[0] != '\0') {
                 size = type_storage_bytes_text(parser->state, type_text);
