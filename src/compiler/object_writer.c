@@ -1880,10 +1880,7 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
 
     compiler_object_writer_init(writer);
 
-    (void)function_sections;
-    (void)data_sections;
-
-    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_MACOS_AARCH64, ir, asm_path, sizeof(asm_path), 0, 0) != 0) {
+    if (emit_backend_assembly_to_temp(writer, COMPILER_TARGET_MACOS_AARCH64, ir, asm_path, sizeof(asm_path), function_sections, data_sections) != 0) {
         return -1;
     }
 

@@ -81,6 +81,10 @@ phase1_wait_for_any() {
         while [ "$idx" -le "$max_index" ]; do
             if [ ! -f "$job_dir/$idx.done" ] && [ -f "$job_dir/$idx.pid" ]; then
                 pid=$(cat "$job_dir/$idx.pid")
+                display_name=
+                if [ -f "$job_dir/$idx.name" ]; then
+                    display_name=$(cat "$job_dir/$idx.name")
+                fi
                 if ! kill -0 "$pid" 2>/dev/null; then
                     if wait "$pid"; then
                         rc=0
@@ -90,6 +94,13 @@ phase1_wait_for_any() {
                     printf '%s\n' "$rc" > "$job_dir/$idx.status"
                     : > "$job_dir/$idx.done"
                     phase1_done_count=$((phase1_done_count + 1))
+                    if [ -n "$display_name" ]; then
+                        if [ "$rc" -eq 0 ]; then
+                            note "Phase 1 completed [$phase1_done_count]: $display_name"
+                        else
+                            note "Phase 1 completed [$phase1_done_count]: $display_name (failed)"
+                        fi
+                    fi
                     return 0
                 fi
             fi
@@ -165,6 +176,7 @@ run_phase1_tests() {
                 phase1_run_script "$rel_path"
             ) > "$job_dir/$selected.log" 2>&1 &
             printf '%s\n' "$!" > "$job_dir/$selected.pid"
+            printf '%s\n' "$display_name" > "$job_dir/$selected.name"
 
             while [ $((selected - phase1_done_count)) -ge "$max_jobs" ]; do
                 phase1_wait_for_any "$job_dir" "$selected"

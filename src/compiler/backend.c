@@ -115,6 +115,16 @@ int backend_is_darwin(const BackendState *state) {
     return compiler_target_is_darwin(state->backend->target);
 }
 
+const char *backend_private_label_prefix(const BackendState *state) {
+    if (state != 0 &&
+        state->backend != 0 &&
+        backend_is_darwin(state) &&
+        (state->backend->function_sections || state->backend->data_sections)) {
+        return "L";
+    }
+    return ".L";
+}
+
 int backend_stack_slot_size(const BackendState *state) {
     const CompilerTargetInfo *info = compiler_target_get_info(state->backend->target);
     return info != 0 ? (int)info->stack_slot_size : 8;
@@ -684,7 +694,7 @@ const char *lookup_name_type_text(const BackendState *state, const char *name) {
 }
 
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label) {
-    rt_copy_string(buffer, buffer_size, ".L");
+    rt_copy_string(buffer, buffer_size, backend_private_label_prefix(state));
     if (state != 0 && state->current_function[0] != '\0') {
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), state->current_function);
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "_");
@@ -1092,7 +1102,8 @@ int emit_load_string_literal(BackendState *state, const char *text) {
     }
     label = state->strings[index].label;
     if (backend_is_aarch64(state)) {
-        rt_copy_string(line, sizeof(line), "adrp x0, .L");
+        rt_copy_string(line, sizeof(line), "adrp x0, ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), backend_private_label_prefix(state));
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), label);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
                        backend_is_darwin(state) ? "@PAGE" : "");
@@ -1100,8 +1111,11 @@ int emit_load_string_literal(BackendState *state, const char *text) {
             return -1;
         }
         rt_copy_string(line, sizeof(line), "add x0, x0, ");
-        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
-                       backend_is_darwin(state) ? ".L" : ":lo12:.L");
+        if (backend_is_darwin(state)) {
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), backend_private_label_prefix(state));
+        } else {
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ":lo12:.L");
+        }
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), label);
         if (backend_is_darwin(state)) {
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "@PAGEOFF");

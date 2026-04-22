@@ -554,7 +554,7 @@ static int emit_global_initializer_value(BackendState *state,
         if (string_index < 0) {
             return -1;
         }
-        rt_copy_string(symbol, sizeof(symbol), ".L");
+        rt_copy_string(symbol, sizeof(symbol), backend_private_label_prefix(state));
         rt_copy_string(symbol + rt_strlen(symbol), sizeof(symbol) - rt_strlen(symbol), state->strings[string_index].label);
         if (emit_data_symbol_ref(state, symbol) != 0) {
             return -1;
@@ -1316,6 +1316,10 @@ static int backend_supports_named_sections(const BackendState *state) {
     return info != 0 && info->object_format == COMPILER_OBJECT_FORMAT_ELF64;
 }
 
+static int backend_supports_subsections_via_symbols(const BackendState *state) {
+    return backend_is_darwin(state);
+}
+
 static int emit_named_section(BackendState *state,
                               const char *section_name,
                               const char *flags,
@@ -1595,7 +1599,7 @@ static int emit_string_literals(BackendState *state) {
             }
         }
 
-        rt_copy_string(line, sizeof(line), ".L");
+        rt_copy_string(line, sizeof(line), backend_private_label_prefix(state));
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), state->strings[i].label);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ":");
         if (emit_line(state, line) != 0) {
@@ -2037,6 +2041,12 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
     state.fd = fd;
 
     if (prescan_ir(&state, ir) != 0) {
+        return -1;
+    }
+    if ((backend->function_sections || backend->data_sections) &&
+        backend_supports_subsections_via_symbols(&state) &&
+        emit_line(&state, ".subsections_via_symbols") != 0) {
+        backend_set_error(backend, "failed to enable Mach-O dead-strip subsections");
         return -1;
     }
     collect_global_initializers(&state, ir);

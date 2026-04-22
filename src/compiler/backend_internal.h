@@ -149,6 +149,7 @@ int name_looks_like_macro_constant(const char *name);
 const char *skip_spaces(const char *text);
 int backend_is_aarch64(const BackendState *state);
 int backend_is_darwin(const BackendState *state);
+const char *backend_private_label_prefix(const BackendState *state);
 int backend_stack_slot_size(const BackendState *state);
 int backend_register_arg_limit(const BackendState *state);
 void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size);

@@ -12,6 +12,7 @@ wget_stdout=$("$ROOT_DIR/build/wget" -q -O - "file://$WORK_DIR/source.txt" | tr 
 assert_text_equals "$wget_stdout" 'wget sample' "wget -O - did not stream the fetched content"
 
 redirect_port=24684
+redirect_pid=
 printf 'redirect secret\n' > "$WORK_DIR/redirect_secret.txt"
 cat > "$WORK_DIR/redirect_server.c" <<'EOF'
 #include <arpa/inet.h>
@@ -68,12 +69,23 @@ int main(int argc, char **argv) {
 }
 EOF
 "${CC:-cc}" -O2 "$WORK_DIR/redirect_server.c" -o "$WORK_DIR/redirect_server"
+
+cleanup_redirect_server() {
+    if [ -n "${redirect_pid:-}" ]; then
+        kill "$redirect_pid" 2>/dev/null || true
+        wait "$redirect_pid" 2>/dev/null || true
+        redirect_pid=
+    fi
+}
+
+trap 'cleanup_redirect_server' EXIT HUP INT TERM
 "$WORK_DIR/redirect_server" "$redirect_port" "$WORK_DIR/redirect_secret.txt" > "$WORK_DIR/redirect_server.out" 2>&1 &
 redirect_pid=$!
 "$ROOT_DIR/build/sleep" 1
 redirect_status=0
-"$ROOT_DIR/build/wget" -q -O "$WORK_DIR/redirect_copy.txt" "http://127.0.0.1:$redirect_port/redirect" > "$WORK_DIR/redirect_fetch.out" 2>&1 || redirect_status=$?
-wait "$redirect_pid" 2>/dev/null || true
+"$ROOT_DIR/build/wget" -q -T 2s -O "$WORK_DIR/redirect_copy.txt" "http://127.0.0.1:$redirect_port/redirect" > "$WORK_DIR/redirect_fetch.out" 2>&1 || redirect_status=$?
+cleanup_redirect_server
+trap - EXIT HUP INT TERM
 if [ "$redirect_status" -eq 0 ]; then
     fail "wget should reject redirects from HTTP to file:// URLs"
 fi

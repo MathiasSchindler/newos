@@ -19,6 +19,8 @@ assert_file_contains "$WORK_DIR/sample_linux.s" 'movq \$42, %rax' "compiler x86_
 assert_file_contains "$WORK_DIR/sample_macos.s" '^\.globl _main$' "compiler macOS AArch64 backend missing Darwin global symbol"
 assert_file_contains "$WORK_DIR/sample_macos.s" 'movz x0, #42' "compiler macOS AArch64 backend missing immediate return code"
 assert_command_succeeds "$ROOT_DIR/build/ncc" -Wno-pedantic -S --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_warn_macos.s"
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 -ffunction-sections -fdata-sections "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos_sections.s"
+assert_file_contains "$WORK_DIR/sample_macos_sections.s" '^\.subsections_via_symbols$' "compiler should enable Mach-O dead-strip subsections when requested"
 
 if [ "$(uname -s)" = "Linux" ]; then
     "$ROOT_DIR/build/ncc" -c --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux.o"
