@@ -81,10 +81,21 @@ static int linux_append_year(char *buffer, size_t buffer_size, size_t *length_io
 
 int platform_sleep_milliseconds(unsigned long long milliseconds) {
     struct linux_timespec req;
+    struct linux_timespec rem;
+    long result;
 
     req.tv_sec = (long)(milliseconds / 1000ULL);
     req.tv_nsec = (long)((milliseconds % 1000ULL) * 1000000ULL);
-    return linux_syscall2(LINUX_SYS_NANOSLEEP, (long)&req, 0) < 0 ? -1 : 0;
+    for (;;) {
+        result = linux_syscall2(LINUX_SYS_NANOSLEEP, (long)&req, (long)&rem);
+        if (result == 0) {
+            return 0;
+        }
+        if (result != -LINUX_EINTR) {
+            return -1;
+        }
+        req = rem;
+    }
 }
 
 int platform_sleep_seconds(unsigned int seconds) {

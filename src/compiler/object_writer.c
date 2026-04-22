@@ -43,6 +43,9 @@ typedef long long int64_t;
 #define STT_FUNC 2U
 #define STT_SECTION 3U
 
+#define ELF64_SYMBOL_SIZE 24U
+#define ELF64_SECTION_HEADER_SIZE 64U
+
 #define R_X86_64_PC32 2U
 #define R_X86_64_PLT32 4U
 
@@ -195,6 +198,37 @@ static void write_u64_le(unsigned char *buffer, uint64_t value) {
 
 static void write_i64_le(unsigned char *buffer, int64_t value) {
     write_u64_le(buffer, (uint64_t)value);
+}
+
+static void write_symbol_entry(unsigned char *entry, const ObjectSymbol *symbol, unsigned int binding) {
+    rt_memset(entry, 0, ELF64_SYMBOL_SIZE);
+    write_u32_le(entry + 0, symbol->name_offset);
+    entry[4] = (unsigned char)((binding << 4) | (symbol->is_function ? STT_FUNC : STT_OBJECT));
+    write_u16_le(entry + 6, symbol->defined ? (uint16_t)symbol->section : 0U);
+    write_u64_le(entry + 8, (uint64_t)symbol->offset);
+}
+
+static void write_section_header(
+    unsigned char *entry,
+    uint32_t name,
+    uint32_t type,
+    uint64_t flags,
+    uint64_t offset,
+    uint64_t size,
+    uint32_t link,
+    uint32_t info,
+    uint64_t align,
+    uint64_t entsize
+) {
+    write_u32_le(entry + 0, name);
+    write_u32_le(entry + 4, type);
+    write_u64_le(entry + 8, flags);
+    write_u64_le(entry + 24, offset);
+    write_u64_le(entry + 32, size);
+    write_u32_le(entry + 40, link);
+    write_u32_le(entry + 44, info);
+    write_u64_le(entry + 48, align);
+    write_u64_le(entry + 56, entsize);
 }
 
 static void patch_i32_le(unsigned char *buffer, int32_t value) {
@@ -1410,6 +1444,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     size_t i;
     unsigned int sym_index = 4U;
     unsigned int local_symbol_count = 4U;
+    unsigned int pass;
     const size_t section_count = 8U;
 
     file[0] = 0U;
@@ -1457,56 +1492,42 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     }
 
     /* null symbol */
-    rt_memset(symtab + symtab_size, 0, 24U);
-    symtab_size += 24U;
+    rt_memset(symtab + symtab_size, 0, ELF64_SYMBOL_SIZE);
+    symtab_size += ELF64_SYMBOL_SIZE;
     /* .text section symbol */
-    rt_memset(symtab + symtab_size, 0, 24U);
+    rt_memset(symtab + symtab_size, 0, ELF64_SYMBOL_SIZE);
     symtab[symtab_size + 4] = (unsigned char)((STB_LOCAL << 4) | STT_SECTION);
     write_u16_le(symtab + symtab_size + 6, 1U);
-    symtab_size += 24U;
+    symtab_size += ELF64_SYMBOL_SIZE;
     /* .data section symbol */
-    rt_memset(symtab + symtab_size, 0, 24U);
+    rt_memset(symtab + symtab_size, 0, ELF64_SYMBOL_SIZE);
     symtab[symtab_size + 4] = (unsigned char)((STB_LOCAL << 4) | STT_SECTION);
     write_u16_le(symtab + symtab_size + 6, 2U);
-    symtab_size += 24U;
+    symtab_size += ELF64_SYMBOL_SIZE;
     /* .bss section symbol */
-    rt_memset(symtab + symtab_size, 0, 24U);
+    rt_memset(symtab + symtab_size, 0, ELF64_SYMBOL_SIZE);
     symtab[symtab_size + 4] = (unsigned char)((STB_LOCAL << 4) | STT_SECTION);
     write_u16_le(symtab + symtab_size + 6, 3U);
-    symtab_size += 24U;
+    symtab_size += ELF64_SYMBOL_SIZE;
 
-    for (i = 0; i < assembler->symbol_count; ++i) {
-        if (!assembler->symbols[i].global) {
-            unsigned char *entry = symtab + symtab_size;
+    for (pass = 0; pass < 2U; ++pass) {
+        int want_global = pass != 0U;
+        unsigned int binding = want_global ? STB_GLOBAL : STB_LOCAL;
+
+        for (i = 0; i < assembler->symbol_count; ++i) {
             ObjectSymbol *symbol = &assembler->symbols[i];
+
+            if (symbol->global != want_global) {
+                continue;
+            }
 
             symbol->sym_index = sym_index;
             sym_index += 1U;
-            local_symbol_count += 1U;
-            rt_memset(entry, 0, 24U);
-            write_u32_le(entry + 0, symbol->name_offset);
-            entry[4] = (unsigned char)((STB_LOCAL << 4) | (symbol->is_function ? STT_FUNC : STT_OBJECT));
-            write_u16_le(entry + 6, symbol->defined ? (uint16_t)symbol->section : 0U);
-            write_u64_le(entry + 8, (uint64_t)symbol->offset);
-            write_u64_le(entry + 16, 0U);
-            symtab_size += 24U;
-        }
-    }
-
-    for (i = 0; i < assembler->symbol_count; ++i) {
-        if (assembler->symbols[i].global) {
-            unsigned char *entry = symtab + symtab_size;
-            ObjectSymbol *symbol = &assembler->symbols[i];
-
-            symbol->sym_index = sym_index;
-            sym_index += 1U;
-            rt_memset(entry, 0, 24U);
-            write_u32_le(entry + 0, symbol->name_offset);
-            entry[4] = (unsigned char)((STB_GLOBAL << 4) | (symbol->is_function ? STT_FUNC : STT_OBJECT));
-            write_u16_le(entry + 6, symbol->defined ? (uint16_t)symbol->section : 0U);
-            write_u64_le(entry + 8, (uint64_t)symbol->offset);
-            write_u64_le(entry + 16, 0U);
-            symtab_size += 24U;
+            if (!want_global) {
+                local_symbol_count += 1U;
+            }
+            write_symbol_entry(symtab + symtab_size, symbol, binding);
+            symtab_size += ELF64_SYMBOL_SIZE;
         }
     }
 
@@ -1598,68 +1619,108 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
 
     /* section headers */
     for (i = 0; i < section_count; ++i) {
-        rt_memset(file + shoff + (i * 64U), 0, 64U);
+        rt_memset(file + shoff + (i * ELF64_SECTION_HEADER_SIZE), 0, ELF64_SECTION_HEADER_SIZE);
     }
 
     /* .text */
-    write_u32_le(file + shoff + 64U + 0, sh_name_text);
-    write_u32_le(file + shoff + 64U + 4, SHT_PROGBITS);
-    write_u64_le(file + shoff + 64U + 8, SHF_ALLOC | SHF_EXECINSTR);
-    write_u64_le(file + shoff + 64U + 24, (uint64_t)text_offset);
-    write_u64_le(file + shoff + 64U + 32, (uint64_t)assembler->text_size);
-    write_u64_le(file + shoff + 64U + 48, 16U);
+    write_section_header(
+        file + shoff + ELF64_SECTION_HEADER_SIZE,
+        sh_name_text,
+        SHT_PROGBITS,
+        SHF_ALLOC | SHF_EXECINSTR,
+        (uint64_t)text_offset,
+        (uint64_t)assembler->text_size,
+        0U,
+        0U,
+        16U,
+        0U
+    );
 
     /* .data */
-    write_u32_le(file + shoff + 128U + 0, sh_name_data);
-    write_u32_le(file + shoff + 128U + 4, SHT_PROGBITS);
-    write_u64_le(file + shoff + 128U + 8, SHF_ALLOC | SHF_WRITE);
-    write_u64_le(file + shoff + 128U + 24, (uint64_t)data_offset);
-    write_u64_le(file + shoff + 128U + 32, (uint64_t)assembler->data_size);
-    write_u64_le(file + shoff + 128U + 48, 8U);
+    write_section_header(
+        file + shoff + (2U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_data,
+        SHT_PROGBITS,
+        SHF_ALLOC | SHF_WRITE,
+        (uint64_t)data_offset,
+        (uint64_t)assembler->data_size,
+        0U,
+        0U,
+        8U,
+        0U
+    );
 
     /* .bss */
-    write_u32_le(file + shoff + 192U + 0, sh_name_bss);
-    write_u32_le(file + shoff + 192U + 4, SHT_NOBITS);
-    write_u64_le(file + shoff + 192U + 8, SHF_ALLOC | SHF_WRITE);
-    write_u64_le(file + shoff + 192U + 24, (uint64_t)bss_offset);
-    write_u64_le(file + shoff + 192U + 32, (uint64_t)assembler->bss_size);
-    write_u64_le(file + shoff + 192U + 48, 8U);
+    write_section_header(
+        file + shoff + (3U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_bss,
+        SHT_NOBITS,
+        SHF_ALLOC | SHF_WRITE,
+        (uint64_t)bss_offset,
+        (uint64_t)assembler->bss_size,
+        0U,
+        0U,
+        8U,
+        0U
+    );
 
     /* .rela.text */
-    write_u32_le(file + shoff + 256U + 0, sh_name_rela);
-    write_u32_le(file + shoff + 256U + 4, SHT_RELA);
-    write_u64_le(file + shoff + 256U + 24, (uint64_t)rela_offset);
-    write_u64_le(file + shoff + 256U + 32, (uint64_t)rela_size);
-    write_u32_le(file + shoff + 256U + 40, 5U);
-    write_u32_le(file + shoff + 256U + 44, 1U);
-    write_u64_le(file + shoff + 256U + 48, 8U);
-    write_u64_le(file + shoff + 256U + 56, 24U);
+    write_section_header(
+        file + shoff + (4U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_rela,
+        SHT_RELA,
+        0U,
+        (uint64_t)rela_offset,
+        (uint64_t)rela_size,
+        5U,
+        1U,
+        8U,
+        24U
+    );
 
     /* .symtab */
-    write_u32_le(file + shoff + 320U + 0, sh_name_symtab);
-    write_u32_le(file + shoff + 320U + 4, SHT_SYMTAB);
-    write_u64_le(file + shoff + 320U + 24, (uint64_t)symtab_offset);
-    write_u64_le(file + shoff + 320U + 32, (uint64_t)symtab_size);
-    write_u32_le(file + shoff + 320U + 40, 6U);
-    write_u32_le(file + shoff + 320U + 44, local_symbol_count);
-    write_u64_le(file + shoff + 320U + 48, 8U);
-    write_u64_le(file + shoff + 320U + 56, 24U);
+    write_section_header(
+        file + shoff + (5U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_symtab,
+        SHT_SYMTAB,
+        0U,
+        (uint64_t)symtab_offset,
+        (uint64_t)symtab_size,
+        6U,
+        local_symbol_count,
+        8U,
+        24U
+    );
 
     /* .strtab */
-    write_u32_le(file + shoff + 384U + 0, sh_name_strtab);
-    write_u32_le(file + shoff + 384U + 4, SHT_STRTAB);
-    write_u64_le(file + shoff + 384U + 24, (uint64_t)strtab_offset);
-    write_u64_le(file + shoff + 384U + 32, (uint64_t)strtab_size);
-    write_u64_le(file + shoff + 384U + 48, 1U);
+    write_section_header(
+        file + shoff + (6U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_strtab,
+        SHT_STRTAB,
+        0U,
+        (uint64_t)strtab_offset,
+        (uint64_t)strtab_size,
+        0U,
+        0U,
+        1U,
+        0U
+    );
 
     /* .shstrtab */
-    write_u32_le(file + shoff + 448U + 0, sh_name_shstrtab);
-    write_u32_le(file + shoff + 448U + 4, SHT_STRTAB);
-    write_u64_le(file + shoff + 448U + 24, (uint64_t)shstrtab_offset);
-    write_u64_le(file + shoff + 448U + 32, (uint64_t)shstrtab_size);
-    write_u64_le(file + shoff + 448U + 48, 1U);
+    write_section_header(
+        file + shoff + (7U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_shstrtab,
+        SHT_STRTAB,
+        0U,
+        (uint64_t)shstrtab_offset,
+        (uint64_t)shstrtab_size,
+        0U,
+        0U,
+        1U,
+        0U
+    );
 
-    file_size = shoff + (section_count * 64U);
+    file_size = shoff + (section_count * ELF64_SECTION_HEADER_SIZE);
     return rt_write_all(fd, file, file_size);
 }
 

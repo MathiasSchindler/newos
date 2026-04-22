@@ -17,18 +17,6 @@ static int token_equals(const char *text, size_t text_length, const char *token)
     return i == text_length && token[i] == '\0';
 }
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0U;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-    return 1;
-}
-
 static int mount_is_octal_digit(char ch) {
     return ch >= '0' && ch <= '7';
 }
@@ -390,7 +378,7 @@ int main(int argc, char **argv) {
                 tool_write_error("mount", "invalid option list", 0);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--options=")) {
+        } else if (tool_starts_with(options.flag, "--options=")) {
             if (parse_mount_options(options.flag + 10, &flags, mount_data, sizeof(mount_data)) != 0) {
                 tool_write_error("mount", "invalid option list", 0);
                 return 1;

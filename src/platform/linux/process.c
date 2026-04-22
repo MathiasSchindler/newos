@@ -221,6 +221,24 @@ static const LinuxSignalEntry LINUX_SIGNAL_TABLE[] = {
     { "TTOU", LINUX_SIGTTOU },
 };
 
+static int linux_set_signal_disposition(int signal_number, unsigned long handler) {
+    struct linux_sigaction action;
+
+    memset(&action, 0, sizeof(action));
+    action.handler = handler;
+    return linux_syscall4(LINUX_SYS_RT_SIGACTION,
+                          signal_number,
+                          (long)&action,
+                          0,
+                          (long)sizeof(action.mask)) < 0 ? -1 : 0;
+}
+
+static void linux_reset_child_signals(void) {
+    (void)linux_set_signal_disposition(LINUX_SIGINT, LINUX_SIG_DFL);
+    (void)linux_set_signal_disposition(LINUX_SIGQUIT, LINUX_SIG_DFL);
+    (void)linux_set_signal_disposition(LINUX_SIGPIPE, LINUX_SIG_DFL);
+}
+
 static int linux_decode_wait_status(int status) {
     if ((status & 0x7f) == 0) {
         return (status >> 8) & 0xff;
@@ -463,7 +481,8 @@ int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) 
     raw = saved;
     raw.c_iflag &= ~(LINUX_BRKINT | LINUX_ICRNL | LINUX_INPCK | LINUX_ISTRIP | LINUX_IXON);
     raw.c_cflag |= LINUX_CS8;
-    raw.c_lflag &= ~(LINUX_ECHO | LINUX_ICANON | LINUX_IEXTEN | LINUX_ISIG);
+    /* Keep ISIG enabled so Ctrl+C still interrupts interactive tools. */
+    raw.c_lflag &= ~(LINUX_ECHO | LINUX_ICANON | LINUX_IEXTEN);
     raw.c_cc[LINUX_VMIN] = 1;
     raw.c_cc[LINUX_VTIME] = 0;
 
@@ -555,6 +574,8 @@ int platform_spawn_process_ex(
     }
 
     if (pid == 0) {
+        linux_reset_child_signals();
+
         if (working_directory != 0 && working_directory[0] != '\0') {
             if (linux_syscall1(LINUX_SYS_CHDIR, (long)working_directory) < 0) {
                 linux_child_exit(126);
@@ -650,8 +671,7 @@ int platform_send_signal(int pid, int signal_number) {
 }
 
 int platform_ignore_signal(int signal_number) {
-    (void)signal_number;
-    return 0;
+    return linux_set_signal_disposition(signal_number, LINUX_SIG_IGN);
 }
 
 int platform_shutdown_system(int action) {
@@ -679,7 +699,9 @@ int platform_wait_process(int pid, int *exit_status_out) {
         return -1;
     }
 
-    result = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, 0, 0);
+    do {
+        result = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, 0, 0);
+    } while (result == -LINUX_EINTR);
     if (result < 0) {
         return -1;
     }
@@ -696,7 +718,9 @@ int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out)
         return -1;
     }
 
-    waited = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, LINUX_WNOHANG, 0);
+    do {
+        waited = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, LINUX_WNOHANG, 0);
+    } while (waited == -LINUX_EINTR);
     if (waited == 0) {
         *finished_out = 0;
         *exit_status_out = 0;
@@ -730,7 +754,11 @@ int platform_wait_process_timeout(
 
     for (;;) {
         int status = 0;
-        long waited = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, LINUX_WNOHANG, 0);
+        long waited;
+
+        do {
+            waited = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, LINUX_WNOHANG, 0);
+        } while (waited == -LINUX_EINTR);
 
         if (waited == pid) {
             *exit_status_out = (timed_out && !preserve_status) ? 124 : linux_decode_wait_status(status);

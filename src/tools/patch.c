@@ -15,19 +15,6 @@ static char patch_result_lines[PATCH_MAX_LINES][PATCH_LINE_CAPACITY];
 static char patch_hunk_lines[PATCH_MAX_HUNK_LINES][PATCH_LINE_CAPACITY];
 static char patch_hunk_kinds[PATCH_MAX_HUNK_LINES];
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
-
 static int load_patch_text(const char *path) {
     int fd;
     int should_close = 0;
@@ -294,7 +281,7 @@ static int parse_hunk_header(
     unsigned long long new_start;
     unsigned long long parsed_new_count;
 
-    if (!starts_with(line, "@@ -")) {
+    if (!tool_starts_with(line, "@@ -")) {
         return -1;
     }
 
@@ -517,7 +504,7 @@ int main(int argc, char **argv) {
         int deleting_file = 0;
         int have_changes = 0;
 
-        while (i < line_count && !starts_with(patch_lines[i], "--- ")) {
+        while (i < line_count && !tool_starts_with(patch_lines[i], "--- ")) {
             i += 1U;
         }
         if (i >= line_count) {
@@ -533,7 +520,7 @@ int main(int argc, char **argv) {
         }
         i += 1U;
 
-        if (i >= line_count || !starts_with(patch_lines[i], "+++ ")) {
+        if (i >= line_count || !tool_starts_with(patch_lines[i], "+++ ")) {
             tool_write_error("patch", "missing new file header", 0);
             return 1;
         }
@@ -574,8 +561,8 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        while (i < line_count && !starts_with(patch_lines[i], "--- ")) {
-            if (starts_with(patch_lines[i], "@@ ")) {
+        while (i < line_count && !tool_starts_with(patch_lines[i], "--- ")) {
+            if (tool_starts_with(patch_lines[i], "@@ ")) {
                 unsigned long long old_start = 0;
                 unsigned long long old_count = 0;
                 unsigned long long new_start = 0;
@@ -646,7 +633,7 @@ int main(int argc, char **argv) {
                     }
                 }
                 have_changes = 1;
-            } else if (starts_with(patch_lines[i], "diff --git ")) {
+            } else if (tool_starts_with(patch_lines[i], "diff --git ")) {
                 break;
             } else {
                 i += 1U;

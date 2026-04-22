@@ -1254,10 +1254,14 @@ static int ssh_confirm_host_key(
         return -1;
     }
     if (ssh_known_hosts_default_path(known_hosts_path, sizeof(known_hosts_path)) != 0) {
+        rt_write_cstr(2, "ssh: refusing to use a missing or non-absolute HOME for known_hosts\n");
         return -1;
     }
     if (ssh_known_hosts_lookup(known_hosts_path, host, port, "ssh-ed25519",
                                host_key_blob->data, host_key_blob->length, &status) != 0) {
+        rt_write_cstr(2, "ssh: refusing insecure known_hosts file ");
+        rt_write_cstr(2, known_hosts_path);
+        rt_write_char(2, '\n');
         return -1;
     }
     if (status == SSH_KNOWN_HOST_MATCH) {

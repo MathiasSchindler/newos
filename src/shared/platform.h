@@ -17,6 +17,12 @@
 #define PLATFORM_NETWORK_FAMILY_ANY 0
 #define PLATFORM_NETWORK_FAMILY_IPV4 4
 #define PLATFORM_NETWORK_FAMILY_IPV6 6
+#define PLATFORM_DNS_RECORD_A 1U
+#define PLATFORM_DNS_RECORD_NS 2U
+#define PLATFORM_DNS_RECORD_CNAME 5U
+#define PLATFORM_DNS_RECORD_MX 15U
+#define PLATFORM_DNS_RECORD_TXT 16U
+#define PLATFORM_DNS_RECORD_AAAA 28U
 #define PLATFORM_NETWORK_FLAG_UP        (1U << 0)
 #define PLATFORM_NETWORK_FLAG_BROADCAST (1U << 1)
 #define PLATFORM_NETWORK_FLAG_LOOPBACK  (1U << 2)
@@ -182,9 +188,12 @@ typedef struct {
 
 typedef struct {
     int family;
+    unsigned short record_type;
+    unsigned short preference;
     unsigned int ttl;
     char name[PLATFORM_NAME_CAPACITY];
     char address[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char data[PLATFORM_NAME_CAPACITY];
 } PlatformDnsEntry;
 
 typedef struct {
@@ -290,6 +299,15 @@ int platform_dns_lookup(
     unsigned int port,
     const char *name,
     int family_filter,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+);
+int platform_dns_query(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short record_type,
     PlatformDnsEntry *entries_out,
     size_t entry_capacity,
     size_t *count_out

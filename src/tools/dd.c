@@ -16,17 +16,6 @@ typedef struct {
     int status_mode;
 } DdOptions;
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-    return 1;
-}
-
 static int parse_number_arg(const char *text, unsigned long long *value_out, const char *what) {
     char digits[32];
     size_t length = 0U;
@@ -264,44 +253,44 @@ int main(int argc, char **argv) {
     long long last_progress_report = 0;
 
     for (i = 1; i < argc; ++i) {
-        if (starts_with(argv[i], "if=")) {
+        if (tool_starts_with(argv[i], "if=")) {
             input_path = argv[i] + 3;
-        } else if (starts_with(argv[i], "of=")) {
+        } else if (tool_starts_with(argv[i], "of=")) {
             output_path = argv[i] + 3;
-        } else if (starts_with(argv[i], "bs=")) {
+        } else if (tool_starts_with(argv[i], "bs=")) {
             if (parse_number_arg(argv[i] + 3, &input_block_size, "block size") != 0 || input_block_size == 0ULL) {
                 tool_write_error("dd", "invalid ", "block size");
                 return 1;
             }
             output_block_size = input_block_size;
-        } else if (starts_with(argv[i], "ibs=")) {
+        } else if (tool_starts_with(argv[i], "ibs=")) {
             if (parse_number_arg(argv[i] + 4, &input_block_size, "input block size") != 0 || input_block_size == 0ULL) {
                 tool_write_error("dd", "invalid ", "input block size");
                 return 1;
             }
-        } else if (starts_with(argv[i], "obs=")) {
+        } else if (tool_starts_with(argv[i], "obs=")) {
             if (parse_number_arg(argv[i] + 4, &output_block_size, "output block size") != 0 || output_block_size == 0ULL) {
                 tool_write_error("dd", "invalid ", "output block size");
                 return 1;
             }
-        } else if (starts_with(argv[i], "count=")) {
+        } else if (tool_starts_with(argv[i], "count=")) {
             if (parse_number_arg(argv[i] + 6, &count, "count") != 0) {
                 return 1;
             }
-        } else if (starts_with(argv[i], "skip=")) {
+        } else if (tool_starts_with(argv[i], "skip=")) {
             if (parse_number_arg(argv[i] + 5, &skip, "skip") != 0) {
                 return 1;
             }
-        } else if (starts_with(argv[i], "seek=")) {
+        } else if (tool_starts_with(argv[i], "seek=")) {
             if (parse_number_arg(argv[i] + 5, &seek, "seek") != 0) {
                 return 1;
             }
-        } else if (starts_with(argv[i], "conv=")) {
+        } else if (tool_starts_with(argv[i], "conv=")) {
             if (parse_keyword_list(argv[i] + 5, &options) != 0) {
                 tool_write_error("dd", "invalid ", "conversion");
                 return 1;
             }
-        } else if (starts_with(argv[i], "status=")) {
+        } else if (tool_starts_with(argv[i], "status=")) {
             if (parse_status_arg(argv[i] + 7, &options) != 0) {
                 tool_write_error("dd", "invalid ", "status");
                 return 1;

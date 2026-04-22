@@ -4,19 +4,6 @@
 
 #define WATCH_DEFAULT_INTERVAL_MS 2000ULL
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t index = 0;
-
-    while (prefix[index] != '\0') {
-        if (text[index] != prefix[index]) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return 1;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-n INTERVAL] [-c COUNT] [-t] COMMAND [ARG ...]");
 }
@@ -110,7 +97,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--interval=")) {
+        } else if (tool_starts_with(options.flag, "--interval=")) {
             if (tool_parse_duration_ms(options.flag + 11, &interval_ms) != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -120,7 +107,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--count=")) {
+        } else if (tool_starts_with(options.flag, "--count=")) {
             if (tool_parse_uint_arg(options.flag + 8, &repeat_count, "watch", "count") != 0 || repeat_count == 0ULL) {
                 print_usage(argv[0]);
                 return 1;

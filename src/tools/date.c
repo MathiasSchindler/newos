@@ -43,19 +43,6 @@ static int parse_signed_value(const char *text, long long *value_out) {
     return 0;
 }
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
-
 static int parse_date_value(const char *text, long long *epoch_out) {
     long long now;
 
@@ -110,7 +97,7 @@ int main(int argc, char **argv) {
             argi += 1;
             continue;
         }
-        if (starts_with(argv[argi], "--date=")) {
+        if (tool_starts_with(argv[argi], "--date=")) {
             if (date_value != 0) {
                 tool_write_usage(argv[0], "[-u|-l] [-d TEXT|-r FILE] [+FORMAT]");
                 return 1;
@@ -127,7 +114,7 @@ int main(int argc, char **argv) {
             argi += 1;
             continue;
         }
-        if (starts_with(argv[argi], "--reference=")) {
+        if (tool_starts_with(argv[argi], "--reference=")) {
             if (reference_path != 0) {
                 tool_write_usage(argv[0], "[-u|-l] [-d TEXT|-r FILE] [+FORMAT]");
                 return 1;

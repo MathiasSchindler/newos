@@ -39,22 +39,67 @@ static int same_text_n(const char *text, const char *candidate, size_t length) {
 }
 
 static int is_keyword(const char *text, size_t length) {
-    static const char *const keywords[] = {
-        "auto", "break", "case", "char", "const", "continue", "default", "do",
-        "double", "else", "enum", "extern", "float", "for", "goto", "if", "inline",
-        "int", "long", "register", "restrict", "return", "short", "signed", "sizeof",
-        "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-        "volatile", "while"
-    };
-    size_t i;
-
-    for (i = 0; i < sizeof(keywords) / sizeof(keywords[0]); ++i) {
-        if (same_text_n(text, keywords[i], length)) {
-            return 1;
-        }
+    if (text == 0 || length == 0U) {
+        return 0;
     }
 
-    return 0;
+    switch (length) {
+        case 2U:
+            return (text[0] == 'd' && same_text_n(text, "do", length)) ||
+                   (text[0] == 'i' && same_text_n(text, "if", length));
+        case 3U:
+            return (text[0] == 'f' && same_text_n(text, "for", length)) ||
+                   (text[0] == 'i' && same_text_n(text, "int", length));
+        case 4U:
+            switch (text[0]) {
+                case 'a': return same_text_n(text, "auto", length);
+                case 'c': return same_text_n(text, "case", length) || same_text_n(text, "char", length);
+                case 'e': return same_text_n(text, "else", length) || same_text_n(text, "enum", length);
+                case 'g': return same_text_n(text, "goto", length);
+                case 'l': return same_text_n(text, "long", length);
+                case 'v': return same_text_n(text, "void", length);
+                default: return 0;
+            }
+        case 5U:
+            switch (text[0]) {
+                case 'b': return same_text_n(text, "break", length);
+                case 'c': return same_text_n(text, "const", length);
+                case 'f': return same_text_n(text, "float", length);
+                case 's': return same_text_n(text, "short", length);
+                case 'u': return same_text_n(text, "union", length);
+                case 'w': return same_text_n(text, "while", length);
+                default: return 0;
+            }
+        case 6U:
+            switch (text[0]) {
+                case 'd': return same_text_n(text, "double", length);
+                case 'e': return same_text_n(text, "extern", length);
+                case 'i': return same_text_n(text, "inline", length);
+                case 'r': return same_text_n(text, "return", length);
+                case 's':
+                    return same_text_n(text, "signed", length) ||
+                           same_text_n(text, "sizeof", length) ||
+                           same_text_n(text, "static", length) ||
+                           same_text_n(text, "struct", length) ||
+                           same_text_n(text, "switch", length);
+                default: return 0;
+            }
+        case 7U:
+            return (text[0] == 'd' && same_text_n(text, "default", length)) ||
+                   (text[0] == 't' && same_text_n(text, "typedef", length));
+        case 8U:
+            switch (text[0]) {
+                case 'c': return same_text_n(text, "continue", length);
+                case 'r':
+                    return same_text_n(text, "register", length) ||
+                           same_text_n(text, "restrict", length);
+                case 'u': return same_text_n(text, "unsigned", length);
+                case 'v': return same_text_n(text, "volatile", length);
+                default: return 0;
+            }
+        default:
+            return 0;
+    }
 }
 
 static void set_error(CompilerLexer *lexer, const char *message) {
@@ -124,34 +169,60 @@ static int skip_ignored(CompilerLexer *lexer) {
 }
 
 static size_t match_punctuator(const char *text) {
-    static const char *const multi_char[] = {
-        "<<=", ">>=", "...", "->", "++", "--", "<<", ">>",
-        "<=", ">=", "==", "!=", "&&", "||",
-        "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "##"
-    };
-    static const char single_char[] = "{}[]()#;:,?~+-*/%&|^!<>=.";
-    size_t i;
-
-    for (i = 0; i < sizeof(multi_char) / sizeof(multi_char[0]); ++i) {
-        size_t j = 0;
-        if (multi_char[i] == 0) {
-            break;
-        }
-        while (multi_char[i][j] != '\0' && text[j] == multi_char[i][j]) {
-            j += 1;
-        }
-        if (multi_char[i][j] == '\0') {
-            return j;
-        }
-    }
-
-    for (i = 0; single_char[i] != '\0'; ++i) {
-        if (text[0] == single_char[i]) {
+    switch (text[0]) {
+        case '{':
+        case '}':
+        case '[':
+        case ']':
+        case '(':
+        case ')':
+        case ';':
+        case ':':
+        case ',':
+        case '?':
+        case '~':
             return 1U;
-        }
+        case '#':
+            return text[1] == '#' ? 2U : 1U;
+        case '.':
+            return (text[1] == '.' && text[2] == '.') ? 3U : 1U;
+        case '+':
+            if (text[1] == '+' || text[1] == '=') {
+                return 2U;
+            }
+            return 1U;
+        case '-':
+            if (text[1] == '>' || text[1] == '-' || text[1] == '=') {
+                return 2U;
+            }
+            return 1U;
+        case '*':
+        case '/':
+        case '%':
+        case '^':
+            return text[1] == '=' ? 2U : 1U;
+        case '&':
+        case '|':
+            if (text[1] == text[0] || text[1] == '=') {
+                return 2U;
+            }
+            return 1U;
+        case '!':
+        case '=':
+            return text[1] == '=' ? 2U : 1U;
+        case '<':
+            if (text[1] == '<') {
+                return text[2] == '=' ? 3U : 2U;
+            }
+            return text[1] == '=' ? 2U : 1U;
+        case '>':
+            if (text[1] == '>') {
+                return text[2] == '=' ? 3U : 2U;
+            }
+            return text[1] == '=' ? 2U : 1U;
+        default:
+            return 0U;
     }
-
-    return 0;
 }
 
 void compiler_lexer_init(CompilerLexer *lexer, const CompilerSource *source) {

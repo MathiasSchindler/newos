@@ -16,19 +16,6 @@ typedef enum {
     TOP_SORT_COMMAND
 } TopSortKey;
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-b] [-n ROWS] [-p PID[,PID...]] [-o FIELD] [-r]");
 }
@@ -486,7 +473,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--lines=")) {
+        } else if (tool_starts_with(options.flag, "--lines=")) {
             if (tool_parse_uint_arg(options.flag + 8, &row_limit, "top", "rows") != 0 || row_limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -496,7 +483,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--pid=")) {
+        } else if (tool_starts_with(options.flag, "--pid=")) {
             if (parse_pid_filters(options.flag + 6, pid_filters, &pid_filter_count) != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -506,7 +493,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--sort=")) {
+        } else if (tool_starts_with(options.flag, "--sort=")) {
             if (parse_sort_key(options.flag + 7, &sort_key) != 0) {
                 print_usage(argv[0]);
                 return 1;

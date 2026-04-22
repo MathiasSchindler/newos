@@ -8,19 +8,6 @@
 #define GETTY_MAX_LOGIN_NAME 64U
 #define GETTY_SAFE_PATH "/bin:/usr/bin"
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0U;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
-
 static int is_stdio_path(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
 }
@@ -31,31 +18,6 @@ static int validate_program_path(const char *path) {
         return -1;
     }
     return 0;
-}
-
-static void resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size) {
-    PlatformDirEntry entry;
-    const char *base_name;
-
-    if (argv_exec == 0 || argv_exec[0] == 0 || buffer == 0 || buffer_size == 0U) {
-        return;
-    }
-    if (argv_exec[0][0] != '/' || !starts_with(argv_exec[0], "/bin/")) {
-        return;
-    }
-    if (platform_get_path_info(argv_exec[0], &entry) == 0) {
-        return;
-    }
-
-    base_name = tool_base_name(argv_exec[0]);
-    if (tool_join_path("/usr/bin", base_name, buffer, buffer_size) != 0) {
-        return;
-    }
-    if (platform_get_path_info(buffer, &entry) != 0 || entry.is_dir) {
-        return;
-    }
-
-    argv_exec[0] = buffer;
 }
 
 static void print_help(const char *program_name) {
@@ -141,24 +103,6 @@ static void write_banner(const char *tty_path,
     (void)platform_close(fd);
 }
 
-static void trim_whitespace(char *text) {
-    size_t start = 0U;
-    size_t length;
-
-    while (text[start] != '\0' && rt_is_space(text[start])) {
-        start += 1U;
-    }
-    if (start > 0U) {
-        memmove(text, text + start, rt_strlen(text + start) + 1U);
-    }
-
-    length = rt_strlen(text);
-    while (length > 0U && rt_is_space(text[length - 1U])) {
-        length -= 1U;
-        text[length] = '\0';
-    }
-}
-
 static int prompt_for_login_name(const char *tty_path, const char *prompt_text, char *buffer, size_t buffer_size) {
     int input_fd;
     int output_fd;
@@ -201,7 +145,7 @@ static int prompt_for_login_name(const char *tty_path, const char *prompt_text, 
 
     buffer[length] = '\0';
     (void)platform_close(input_fd);
-    trim_whitespace(buffer);
+    tool_trim_whitespace(buffer);
 
     output_fd = platform_open_append(tty_path, 0600U);
     if (output_fd >= 0) {
@@ -262,7 +206,7 @@ int main(int argc, char **argv) {
                 print_help(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--restart-delay=")) {
+        } else if (tool_starts_with(options.flag, "--restart-delay=")) {
             if (tool_parse_duration_ms(options.flag + 16, &restart_delay_ms) != 0) {
                 print_help(argv[0]);
                 return 1;
@@ -273,7 +217,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             login_program = options.value;
-        } else if (starts_with(options.flag, "--login=")) {
+        } else if (tool_starts_with(options.flag, "--login=")) {
             login_program = options.flag + 8;
         } else if (rt_strcmp(options.flag, "-c") == 0 || rt_strcmp(options.flag, "--command") == 0) {
             if (tool_opt_require_value(&options) != 0) {
@@ -281,7 +225,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             command_text = options.value;
-        } else if (starts_with(options.flag, "--command=")) {
+        } else if (tool_starts_with(options.flag, "--command=")) {
             command_text = options.flag + 10;
         } else if (rt_strcmp(options.flag, "-t") == 0 || rt_strcmp(options.flag, "--term") == 0) {
             if (tool_opt_require_value(&options) != 0) {
@@ -289,7 +233,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             term_name = options.value;
-        } else if (starts_with(options.flag, "--term=")) {
+        } else if (tool_starts_with(options.flag, "--term=")) {
             term_name = options.flag + 7;
         } else if (rt_strcmp(options.flag, "-f") == 0 || rt_strcmp(options.flag, "--issue-file") == 0) {
             if (tool_opt_require_value(&options) != 0) {
@@ -298,7 +242,7 @@ int main(int argc, char **argv) {
             }
             issue_path = options.value;
             no_issue = 0;
-        } else if (starts_with(options.flag, "--issue-file=")) {
+        } else if (tool_starts_with(options.flag, "--issue-file=")) {
             issue_path = options.flag + 13;
             no_issue = 0;
         } else if (rt_strcmp(options.flag, "-p") == 0 || rt_strcmp(options.flag, "--prompt") == 0) {
@@ -307,7 +251,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             prompt_text = options.value;
-        } else if (starts_with(options.flag, "--prompt=")) {
+        } else if (tool_starts_with(options.flag, "--prompt=")) {
             prompt_text = options.flag + 9;
         } else {
             tool_write_error("getty", "unknown option: ", options.flag);
@@ -421,7 +365,7 @@ int main(int argc, char **argv) {
         if (validate_program_path(spawn_argv[0]) != 0) {
             return 1;
         }
-        resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));
+        tool_resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));
 
         if (platform_spawn_process((char *const *)spawn_argv,
                                    -1,

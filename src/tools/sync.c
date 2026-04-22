@@ -13,10 +13,6 @@ int main(int argc, char **argv) {
     int path_count = 0;
     int i;
 
-    if (argc == 1) {
-        return platform_sync_all() == 0 ? 0 : 1;
-    }
-
     for (i = 1; i < argc; ++i) {
         int result;
 
@@ -50,11 +46,14 @@ int main(int argc, char **argv) {
     }
 
     if (path_count == 0) {
-        if (data_only || verbose) {
-            print_usage(argv[0]);
+        if (platform_sync_all() != 0) {
             return 1;
         }
-        return platform_sync_all() == 0 ? 0 : 1;
+        if (verbose) {
+            rt_write_line(1, "synced all filesystems");
+        }
+        (void)data_only;
+        return 0;
     }
 
     return exit_code;

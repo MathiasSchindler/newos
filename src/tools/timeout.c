@@ -4,19 +4,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[--preserve-status] [-s SIGNAL|--signal SIGNAL] [-k DURATION|--kill-after DURATION] DURATION COMMAND [ARG ...]");
 }
@@ -58,7 +45,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (starts_with(arg, "--signal=")) {
+        if (tool_starts_with(arg, "--signal=")) {
             if (tool_parse_signal_name(arg + 9, &signal_number) != 0) {
                 tool_write_error("timeout", "invalid signal: ", arg + 9);
                 return 125;
@@ -82,7 +69,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (starts_with(arg, "--kill-after=")) {
+        if (tool_starts_with(arg, "--kill-after=")) {
             if (tool_parse_duration_ms(arg + 13, &kill_after_milliseconds) != 0) {
                 print_usage(argv[0]);
                 return 125;

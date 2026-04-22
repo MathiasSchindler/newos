@@ -4,6 +4,9 @@
 #include "runtime.h"
 #include "ssh_core.h"
 
+#define SSH_FILE_TYPE_MASK 0170000U
+#define SSH_FILE_TYPE_REGULAR 0100000U
+
 static int ssh_local_is_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
 }
@@ -48,6 +51,30 @@ static int ssh_path_is_symbolic_link(const char *path) {
     return path != 0 && platform_read_symlink(path, target, sizeof(target)) == 0;
 }
 
+static int ssh_known_hosts_entry_is_secure(const PlatformDirEntry *entry) {
+    PlatformIdentity identity;
+    unsigned int file_type;
+
+    if (entry == 0 || entry->is_dir) {
+        return 0;
+    }
+
+    file_type = entry->mode & SSH_FILE_TYPE_MASK;
+    if (file_type != 0U && file_type != SSH_FILE_TYPE_REGULAR) {
+        return 0;
+    }
+    if ((entry->mode & 022U) != 0U) {
+        return 0;
+    }
+    if (platform_get_identity(&identity) == 0 &&
+        identity.uid != 0U &&
+        entry->uid != identity.uid) {
+        return 0;
+    }
+
+    return 1;
+}
+
 static int ssh_known_hosts_path_is_safe(const char *path) {
     PlatformDirEntry entry;
 
@@ -57,7 +84,7 @@ static int ssh_known_hosts_path_is_safe(const char *path) {
     if (platform_get_path_info(path, &entry) != 0) {
         return 0;
     }
-    if (entry.is_dir || ssh_path_is_symbolic_link(path)) {
+    if (ssh_path_is_symbolic_link(path) || !ssh_known_hosts_entry_is_secure(&entry)) {
         return -1;
     }
     return 0;
@@ -239,7 +266,7 @@ int ssh_known_hosts_default_path(char *buffer, size_t buffer_size) {
         return -1;
     }
 
-    if (home != 0 && home[0] != '\0') {
+    if (home != 0 && home[0] == '/') {
         if (rt_join_path(home, ".ssh", ssh_dir, sizeof(ssh_dir)) != 0 ||
             rt_join_path(ssh_dir, "known_hosts", buffer, buffer_size) != 0) {
             return -1;
@@ -247,7 +274,7 @@ int ssh_known_hosts_default_path(char *buffer, size_t buffer_size) {
         return 0;
     }
 
-    return ssh_copy_text(buffer, buffer_size, "known_hosts", sizeof("known_hosts") - 1U);
+    return -1;
 }
 
 int ssh_known_hosts_lookup(
@@ -262,6 +289,7 @@ int ssh_known_hosts_lookup(
     int fd;
     char line[2048];
     unsigned char decoded[1024];
+    PlatformDirEntry entry;
 
     if (path == 0 || !ssh_destination_host_is_safe(host) || !ssh_known_hosts_algorithm_is_safe(algorithm) ||
         (key_blob == 0 && key_blob_length != 0U) || status_out == 0) {
@@ -272,9 +300,13 @@ int ssh_known_hosts_lookup(
     }
 
     *status_out = SSH_KNOWN_HOST_UNKNOWN;
-    fd = platform_open_read(path);
+    fd = platform_open_read_secure(path, &entry);
     if (fd < 0) {
         return 0;
+    }
+    if (!ssh_known_hosts_entry_is_secure(&entry)) {
+        platform_close(fd);
+        return -1;
     }
 
     for (;;) {

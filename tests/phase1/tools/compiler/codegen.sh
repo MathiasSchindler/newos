@@ -103,6 +103,17 @@ EOF
 assert_command_succeeds "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/call_index_expr.c" -o "$WORK_DIR/call_index_expr_macos.s"
 assert_file_contains "$WORK_DIR/call_index_expr_macos.s" 'bl _pick' "compiler backend did not preserve postfix indexing after a function call"
 
+cat > "$WORK_DIR/termios_mask.c" <<'EOF'
+#include <termios.h>
+
+int update_flags(struct termios *raw) {
+    raw->c_oflag &= ~(tcflag_t)(OPOST);
+    return 0;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/termios_mask.c" -o "$WORK_DIR/termios_mask_macos.s"
+
 cat > "$WORK_DIR/extern_data.c" <<'EOF'
 extern char **environ;
 

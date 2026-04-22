@@ -35,18 +35,6 @@ static int path_exists_as_file(const char *path) {
            platform_path_access(path, PLATFORM_ACCESS_EXECUTE) == 0;
 }
 
-static int text_starts_with(const char *text, const char *prefix) {
-    while (*prefix != '\0') {
-        if (*text != *prefix) {
-            return 0;
-        }
-        text += 1;
-        prefix += 1;
-    }
-
-    return 1;
-}
-
 static int is_shell_builtin(const char *name) {
     static const char *builtins[] = {
         "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias"
@@ -76,7 +64,7 @@ static int is_exported_shell_function(const char *name) {
         }
         index += 1U;
 
-        if (!text_starts_with(entry, "BASH_FUNC_")) {
+        if (!tool_starts_with(entry, "BASH_FUNC_")) {
             continue;
         }
 

@@ -2,36 +2,9 @@
 
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define SIMPLE_CONFIG_CAPACITY 8192U
-
-static int simple_config_is_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
-}
-
-static void simple_config_trim(char *text) {
-    size_t start = 0U;
-    size_t end;
-    size_t out = 0U;
-
-    if (text == NULL) {
-        return;
-    }
-
-    end = rt_strlen(text);
-    while (text[start] != '\0' && simple_config_is_space(text[start])) {
-        start += 1U;
-    }
-    while (end > start && simple_config_is_space(text[end - 1U])) {
-        end -= 1U;
-    }
-
-    while (start + out < end) {
-        text[out] = text[start + out];
-        out += 1U;
-    }
-    text[out] = '\0';
-}
 
 static int simple_config_parse_buffer(char *buffer, SimpleConfigVisitor visitor, void *context) {
     char *cursor = buffer;
@@ -55,7 +28,7 @@ static int simple_config_parse_buffer(char *buffer, SimpleConfigVisitor visitor,
             cursor = line_end;
         }
 
-        simple_config_trim(line);
+        tool_trim_whitespace(line);
         if (line[0] == '\0' || line[0] == '#') {
             continue;
         }
@@ -69,8 +42,8 @@ static int simple_config_parse_buffer(char *buffer, SimpleConfigVisitor visitor,
         }
 
         *equals = '\0';
-        simple_config_trim(line);
-        simple_config_trim(equals + 1);
+        tool_trim_whitespace(line);
+        tool_trim_whitespace(equals + 1);
         if (line[0] == '\0') {
             return -1;
         }

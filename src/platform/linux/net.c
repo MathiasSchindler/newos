@@ -771,8 +771,10 @@ static int linux_add_dns_entry(
     size_t *count_io,
     const char *name,
     int family,
-    const char *address,
-    unsigned int ttl
+    unsigned short record_type,
+    const char *data,
+    unsigned int ttl,
+    unsigned short preference
 ) {
     PlatformDnsEntry *entry;
     size_t i;
@@ -781,7 +783,11 @@ static int linux_add_dns_entry(
         return -1;
     }
     for (i = 0U; i < *count_io; ++i) {
-        if (entries_out[i].family == family && rt_strcmp(entries_out[i].address, address) == 0) {
+        if (entries_out[i].family == family &&
+            entries_out[i].record_type == record_type &&
+            entries_out[i].preference == preference &&
+            rt_strcmp(entries_out[i].name, name) == 0 &&
+            rt_strcmp(entries_out[i].data, data) == 0) {
             return 0;
         }
     }
@@ -789,9 +795,12 @@ static int linux_add_dns_entry(
     entry = &entries_out[*count_io];
     rt_memset(entry, 0, sizeof(*entry));
     entry->family = family;
+    entry->record_type = record_type;
+    entry->preference = preference;
     entry->ttl = ttl;
     rt_copy_string(entry->name, sizeof(entry->name), name);
-    rt_copy_string(entry->address, sizeof(entry->address), address);
+    rt_copy_string(entry->address, sizeof(entry->address), data);
+    rt_copy_string(entry->data, sizeof(entry->data), data);
     *count_io += 1U;
     return 0;
 }
@@ -835,11 +844,31 @@ static int linux_lookup_hosts_file(
 
                     if ((family_filter == PLATFORM_NETWORK_FAMILY_ANY || family_filter == PLATFORM_NETWORK_FAMILY_IPV4) &&
                         linux_parse_ipv4_text(ip_text, &ipv4) == 0) {
-                        (void)linux_add_dns_entry(entries_out, entry_capacity, count_io, host, PLATFORM_NETWORK_FAMILY_IPV4, ip_text, 0U);
+                        (void)linux_add_dns_entry(
+                            entries_out,
+                            entry_capacity,
+                            count_io,
+                            host,
+                            PLATFORM_NETWORK_FAMILY_IPV4,
+                            PLATFORM_DNS_RECORD_A,
+                            ip_text,
+                            0U,
+                            0U
+                        );
                     }
                     if ((family_filter == PLATFORM_NETWORK_FAMILY_ANY || family_filter == PLATFORM_NETWORK_FAMILY_IPV6) &&
                         linux_parse_ipv6_text(ip_text, &ipv6) == 0) {
-                        (void)linux_add_dns_entry(entries_out, entry_capacity, count_io, host, PLATFORM_NETWORK_FAMILY_IPV6, ip_text, 0U);
+                        (void)linux_add_dns_entry(
+                            entries_out,
+                            entry_capacity,
+                            count_io,
+                            host,
+                            PLATFORM_NETWORK_FAMILY_IPV6,
+                            PLATFORM_DNS_RECORD_AAAA,
+                            ip_text,
+                            0U,
+                            0U
+                        );
                     }
                 }
             }
@@ -939,6 +968,119 @@ static int linux_dns_skip_name(const unsigned char *message, size_t message_leng
     return -1;
 }
 
+static int linux_dns_read_name(
+    const unsigned char *message,
+    size_t message_length,
+    size_t start_offset,
+    size_t *next_offset_out,
+    char *buffer,
+    size_t buffer_size
+) {
+    size_t offset = start_offset;
+    size_t next_offset = start_offset;
+    size_t used = 0U;
+    unsigned int jumps = 0U;
+    int jumped = 0;
+
+    if (message == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    while (offset < message_length) {
+        unsigned char length = message[offset];
+        if (length == 0U) {
+            if (!jumped) {
+                next_offset = offset + 1U;
+            }
+            if (used == 0U) {
+                if (buffer_size < 2U) {
+                    return -1;
+                }
+                buffer[0] = '.';
+                buffer[1] = '\0';
+            } else {
+                buffer[used] = '\0';
+            }
+            if (next_offset_out != 0) {
+                *next_offset_out = next_offset;
+            }
+            return 0;
+        }
+        if ((length & 0xc0U) == 0xc0U) {
+            unsigned short pointer;
+            if (offset + 1U >= message_length) {
+                return -1;
+            }
+            pointer = (unsigned short)((((unsigned short)length & 0x3fU) << 8) | (unsigned short)message[offset + 1U]);
+            if (!jumped) {
+                next_offset = offset + 2U;
+                jumped = 1;
+            }
+            jumps += 1U;
+            if (jumps > 16U || (size_t)pointer >= message_length) {
+                return -1;
+            }
+            offset = (size_t)pointer;
+            continue;
+        }
+        offset += 1U;
+        if (offset + (size_t)length > message_length) {
+            return -1;
+        }
+        if (used != 0U) {
+            if (used + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[used++] = '.';
+        }
+        if (used + (size_t)length >= buffer_size) {
+            return -1;
+        }
+        memcpy(buffer + used, message + offset, (size_t)length);
+        used += (size_t)length;
+        offset += (size_t)length;
+        if (!jumped) {
+            next_offset = offset;
+        }
+    }
+
+    return -1;
+}
+
+static int linux_dns_format_txt(const unsigned char *data, size_t length, char *buffer, size_t buffer_size) {
+    size_t offset = 0U;
+    size_t used = 0U;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    while (offset < length) {
+        unsigned char part_length = data[offset++];
+        size_t copy_length;
+        if (offset + (size_t)part_length > length) {
+            return -1;
+        }
+        if (used != 0U) {
+            if (used + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[used++] = ' ';
+        }
+        copy_length = (size_t)part_length;
+        if (used + copy_length >= buffer_size) {
+            copy_length = buffer_size - used - 1U;
+        }
+        if (copy_length > 0U) {
+            memcpy(buffer + used, data + offset, copy_length);
+            used += copy_length;
+        }
+        offset += (size_t)part_length;
+    }
+    buffer[used] = '\0';
+    return 0;
+}
+
 static int linux_dns_query(
     const char *server,
     unsigned int port,
@@ -1018,20 +1160,34 @@ static int linux_dns_query(
         return -1;
     }
 
-    answer_count = ((unsigned int)reply[6] << 8) | (unsigned int)reply[7];
-    offset = 12U;
-    if (linux_dns_skip_name(reply, (size_t)reply_bytes, &offset) != 0 || offset + 4U > (size_t)reply_bytes) {
+    if ((reply[3] & 0x0fU) != 0U) {
         return -1;
     }
-    offset += 4U;
+    answer_count = ((unsigned int)reply[6] << 8) | (unsigned int)reply[7];
+    offset = 12U;
+    {
+        unsigned int question_count = ((unsigned int)reply[4] << 8) | (unsigned int)reply[5];
+        for (i = 0U; i < question_count; ++i) {
+            if (linux_dns_skip_name(reply, (size_t)reply_bytes, &offset) != 0 || offset + 4U > (size_t)reply_bytes) {
+                return -1;
+            }
+            offset += 4U;
+        }
+    }
 
     for (i = 0U; i < answer_count; ++i) {
+        char owner_name[PLATFORM_NAME_CAPACITY];
         unsigned short type;
         unsigned short class_code;
         unsigned int ttl;
         unsigned short rdlength;
+        int family = PLATFORM_NETWORK_FAMILY_ANY;
+        char data_text[PLATFORM_NAME_CAPACITY];
+        unsigned short preference = 0U;
+        int keep_record = 0;
 
-        if (linux_dns_skip_name(reply, (size_t)reply_bytes, &offset) != 0 || offset + 10U > (size_t)reply_bytes) {
+        if (linux_dns_read_name(reply, (size_t)reply_bytes, offset, &offset, owner_name, sizeof(owner_name)) != 0 ||
+            offset + 10U > (size_t)reply_bytes) {
             break;
         }
         type = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
@@ -1046,7 +1202,8 @@ static int linux_dns_query(
             break;
         }
 
-        if (class_code == 1U && type == 1U && rdlength == 4U) {
+        data_text[0] = '\0';
+        if (class_code == 1U && type == PLATFORM_DNS_RECORD_A && rdlength == 4U) {
             char address_text[PLATFORM_NETWORK_TEXT_CAPACITY];
             LinuxInAddr address;
             address.bytes[0] = reply[offset];
@@ -1054,13 +1211,47 @@ static int linux_dns_query(
             address.bytes[2] = reply[offset + 2U];
             address.bytes[3] = reply[offset + 3U];
             linux_ipv4_to_text(&address, address_text, sizeof(address_text));
-            (void)linux_add_dns_entry(entries_out, entry_capacity, count_io, name, PLATFORM_NETWORK_FAMILY_IPV4, address_text, ttl);
-        } else if (class_code == 1U && type == 28U && rdlength == 16U) {
+            family = PLATFORM_NETWORK_FAMILY_IPV4;
+            rt_copy_string(data_text, sizeof(data_text), address_text);
+            keep_record = 1;
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_AAAA && rdlength == 16U) {
             char address_text[PLATFORM_NETWORK_TEXT_CAPACITY];
             LinuxIn6Addr address6;
             memcpy(address6.bytes, reply + offset, 16U);
             linux_ipv6_to_text(&address6, address_text, sizeof(address_text));
-            (void)linux_add_dns_entry(entries_out, entry_capacity, count_io, name, PLATFORM_NETWORK_FAMILY_IPV6, address_text, ttl);
+            family = PLATFORM_NETWORK_FAMILY_IPV6;
+            rt_copy_string(data_text, sizeof(data_text), address_text);
+            keep_record = 1;
+        } else if (class_code == 1U && (type == PLATFORM_DNS_RECORD_NS || type == PLATFORM_DNS_RECORD_CNAME)) {
+            if (linux_dns_read_name(reply, (size_t)reply_bytes, offset, 0, data_text, sizeof(data_text)) == 0) {
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_MX && rdlength >= 3U) {
+            preference = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
+            if (linux_dns_read_name(reply, (size_t)reply_bytes, offset + 2U, 0, data_text, sizeof(data_text)) == 0) {
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_TXT) {
+            if (linux_dns_format_txt(reply + offset, rdlength, data_text, sizeof(data_text)) == 0) {
+                keep_record = 1;
+            }
+        }
+        if (keep_record &&
+            (type == query_type ||
+             type == PLATFORM_DNS_RECORD_CNAME ||
+             (query_type == PLATFORM_DNS_RECORD_A && type == PLATFORM_DNS_RECORD_A) ||
+             (query_type == PLATFORM_DNS_RECORD_AAAA && type == PLATFORM_DNS_RECORD_AAAA))) {
+            (void)linux_add_dns_entry(
+                entries_out,
+                entry_capacity,
+                count_io,
+                owner_name[0] == '\0' ? name : owner_name,
+                family,
+                type,
+                data_text,
+                ttl,
+                preference
+            );
         }
         offset += rdlength;
     }
@@ -1859,11 +2050,31 @@ int platform_dns_lookup(
 
     if ((family_filter == PLATFORM_NETWORK_FAMILY_ANY || family_filter == PLATFORM_NETWORK_FAMILY_IPV4) &&
         linux_parse_ipv4_text(name, &ipv4) == 0) {
-        (void)linux_add_dns_entry(entries_out, entry_capacity, &count, name, PLATFORM_NETWORK_FAMILY_IPV4, name, 0U);
+        (void)linux_add_dns_entry(
+            entries_out,
+            entry_capacity,
+            &count,
+            name,
+            PLATFORM_NETWORK_FAMILY_IPV4,
+            PLATFORM_DNS_RECORD_A,
+            name,
+            0U,
+            0U
+        );
     }
     if ((family_filter == PLATFORM_NETWORK_FAMILY_ANY || family_filter == PLATFORM_NETWORK_FAMILY_IPV6) &&
         linux_parse_ipv6_text(name, &ipv6) == 0) {
-        (void)linux_add_dns_entry(entries_out, entry_capacity, &count, name, PLATFORM_NETWORK_FAMILY_IPV6, name, 0U);
+        (void)linux_add_dns_entry(
+            entries_out,
+            entry_capacity,
+            &count,
+            name,
+            PLATFORM_NETWORK_FAMILY_IPV6,
+            PLATFORM_DNS_RECORD_AAAA,
+            name,
+            0U,
+            0U
+        );
     }
 
     (void)linux_lookup_hosts_file(name, family_filter, entries_out, entry_capacity, &count);
@@ -1874,6 +2085,61 @@ int platform_dns_lookup(
         (void)linux_dns_query(server, port, name, 28U, entries_out, entry_capacity, &count);
     }
 
+    *count_out = count;
+    return count > 0U ? 0 : -1;
+}
+
+int platform_dns_query(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short record_type,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    size_t count = 0U;
+    LinuxInAddr ipv4;
+    LinuxIn6Addr ipv6;
+
+    if (entries_out == 0 || count_out == 0 || name == 0) {
+        return -1;
+    }
+    *count_out = 0U;
+
+    if (record_type == PLATFORM_DNS_RECORD_A && linux_parse_ipv4_text(name, &ipv4) == 0) {
+        (void)linux_add_dns_entry(
+            entries_out,
+            entry_capacity,
+            &count,
+            name,
+            PLATFORM_NETWORK_FAMILY_IPV4,
+            PLATFORM_DNS_RECORD_A,
+            name,
+            0U,
+            0U
+        );
+    } else if (record_type == PLATFORM_DNS_RECORD_AAAA && linux_parse_ipv6_text(name, &ipv6) == 0) {
+        (void)linux_add_dns_entry(
+            entries_out,
+            entry_capacity,
+            &count,
+            name,
+            PLATFORM_NETWORK_FAMILY_IPV6,
+            PLATFORM_DNS_RECORD_AAAA,
+            name,
+            0U,
+            0U
+        );
+    }
+
+    if ((server == 0 || server[0] == '\0') && record_type == PLATFORM_DNS_RECORD_A) {
+        (void)linux_lookup_hosts_file(name, PLATFORM_NETWORK_FAMILY_IPV4, entries_out, entry_capacity, &count);
+    } else if ((server == 0 || server[0] == '\0') && record_type == PLATFORM_DNS_RECORD_AAAA) {
+        (void)linux_lookup_hosts_file(name, PLATFORM_NETWORK_FAMILY_IPV6, entries_out, entry_capacity, &count);
+    }
+
+    (void)linux_dns_query(server, port, name, record_type, entries_out, entry_capacity, &count);
     *count_out = count;
     return count > 0U ? 0 : -1;
 }

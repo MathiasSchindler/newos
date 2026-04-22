@@ -633,7 +633,7 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
     int aggregate_size = named_aggregate_stack_bytes(state, type);
 
     if (has_pointer) {
-        element_size = (unsigned long long)backend_stack_slot_size(state);
+        element_size = 8ULL;
     } else if (text_contains(type, "char")) {
         element_size = 1ULL;
     } else if ((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*")) {
@@ -671,6 +671,42 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
 
     if (((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*"))) {
         return aggregate_size > 0 ? aggregate_size : BACKEND_STRUCT_STACK_BYTES;
+    }
+    return backend_stack_slot_size(state);
+}
+
+static int decl_alignment_bytes(const BackendState *state, const char *type_text) {
+    const char *type = skip_spaces(type_text != 0 ? type_text : "");
+    const char *open = type;
+    char element_type[128];
+
+    while (*open != '\0' && *open != '[') {
+        open += 1;
+    }
+    if (*open == '[') {
+        copy_indexed_type_text(type, element_type, sizeof(element_type));
+        if (element_type[0] != '\0' && rt_strcmp(element_type, type) != 0) {
+            return decl_alignment_bytes(state, element_type);
+        }
+    }
+
+    if (text_contains(type, "*")) {
+        return 8;
+    }
+    if (text_contains(type, "char")) {
+        return 1;
+    }
+    if (text_contains(type, "short")) {
+        return 2;
+    }
+    if (text_contains(type, "int") || starts_with(type, "enum")) {
+        return 4;
+    }
+    if (text_contains(type, "long") || text_contains(type, "double")) {
+        return backend_stack_slot_size(state);
+    }
+    if (starts_with(type, "struct") || starts_with(type, "union")) {
+        return backend_stack_slot_size(state);
     }
     return backend_stack_slot_size(state);
 }
@@ -1025,6 +1061,11 @@ static int resolve_static_value(const BackendState *state, const char *expr, lon
         return -1;
     }
 
+    if (names_equal(name, "NULL")) {
+        *value_out = 0;
+        return 0;
+    }
+
     index = find_constant(state, name);
     if (index < 0) {
         return -1;
@@ -1328,6 +1369,7 @@ static int emit_globals(BackendState *state) {
         char line[128];
         char symbol[COMPILER_IR_NAME_CAPACITY];
         int storage_bytes = decl_slot_size(state, state->globals[i].type_text);
+        int align_bytes = decl_alignment_bytes(state, state->globals[i].type_text);
         int needs_object_storage = decl_requires_object_storage(state->globals[i].type_text);
         const char *init_expr = state->globals[i].init_text[0] != '\0'
                                     ? state->globals[i].init_text
@@ -1356,6 +1398,21 @@ static int emit_globals(BackendState *state) {
         if (state->globals[i].global) {
             if (emit_text(state, ".globl ") != 0 || emit_line(state, symbol) != 0) {
                 backend_set_error(state->backend, "failed to emit global symbol");
+                return -1;
+            }
+        }
+        if (align_bytes > 1) {
+            int shift = 0;
+            unsigned int value = (unsigned int)align_bytes;
+            rt_copy_string(line, sizeof(line), ".p2align ");
+            while (value > 1U) {
+                value >>= 1U;
+                shift += 1;
+            }
+            rt_unsigned_to_string((unsigned long long)shift, digits, sizeof(digits));
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            if (emit_line(state, line) != 0) {
+                backend_set_error(state->backend, "failed to emit global alignment");
                 return -1;
             }
         }
@@ -1909,21 +1966,21 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
                 unsigned long long stack_offset = 16ULL + (unsigned long long)(index - max_register_params) * 16ULL;
                 char stack_text[32];
                 rt_unsigned_to_string(stack_offset, stack_text, sizeof(stack_text));
-                rt_copy_string(asm_line, sizeof(asm_line), "ldr x9, [x29, #");
+                rt_copy_string(asm_line, sizeof(asm_line), "ldr x11, [x29, #");
                 rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), stack_text);
                 rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
                 if (emit_instruction(state, asm_line) != 0) {
                     return -1;
                 }
                 if (state->locals[local_index].offset <= 255) {
-                    rt_copy_string(asm_line, sizeof(asm_line), "stur x9, [x29, #-");
+                    rt_copy_string(asm_line, sizeof(asm_line), "stur x11, [x29, #-");
                     rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
                     rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
                 } else {
                     if (emit_local_address(state, state->locals[local_index].offset, "x10") != 0) {
                         return -1;
                     }
-                    rt_copy_string(asm_line, sizeof(asm_line), "str x9, [x10]");
+                    rt_copy_string(asm_line, sizeof(asm_line), "str x11, [x10]");
                 }
             } else {
                 unsigned long long stack_offset = 16ULL + (unsigned long long)(index - max_register_params) * 8ULL;

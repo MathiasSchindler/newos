@@ -121,10 +121,169 @@ static int type_matches_named_aggregate(const char *base_type, const char *name)
            text_contains(base_type, name);
 }
 
+static int lookup_darwin_posix_member_info(const BackendState *state,
+                                           const char *base_type,
+                                           const char *member_name,
+                                           int *offset_out,
+                                           const char **type_out) {
+    int offset = 0;
+    const char *type_text = 0;
+
+    if (state == 0 || !backend_is_darwin(state) || base_type == 0 || member_name == 0) {
+        return 0;
+    }
+
+    if (type_matches_named_aggregate(base_type, "addrinfo")) {
+        if (names_equal(member_name, "ai_flags")) {
+            offset = 0;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_family")) {
+            offset = 4;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_socktype")) {
+            offset = 8;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_protocol")) {
+            offset = 12;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_addrlen")) {
+            offset = 16;
+            type_text = "unsigned int";
+        } else if (names_equal(member_name, "ai_canonname")) {
+            offset = 24;
+            type_text = "char*";
+        } else if (names_equal(member_name, "ai_addr")) {
+            offset = 32;
+            type_text = "struct:sockaddr*";
+        } else if (names_equal(member_name, "ai_next")) {
+            offset = 40;
+            type_text = "struct:addrinfo*";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "sockaddr_in6")) {
+        if (names_equal(member_name, "sin6_len")) {
+            offset = 0;
+            type_text = "unsigned char";
+        } else if (names_equal(member_name, "sin6_family")) {
+            offset = 1;
+            type_text = "unsigned char";
+        } else if (names_equal(member_name, "sin6_port")) {
+            offset = 2;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sin6_flowinfo")) {
+            offset = 4;
+            type_text = "unsigned int";
+        } else if (names_equal(member_name, "sin6_addr")) {
+            offset = 8;
+            type_text = "struct:in6_addr";
+        } else if (names_equal(member_name, "sin6_scope_id")) {
+            offset = 24;
+            type_text = "unsigned int";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "sockaddr_in")) {
+        if (names_equal(member_name, "sin_len")) {
+            offset = 0;
+            type_text = "unsigned char";
+        } else if (names_equal(member_name, "sin_family")) {
+            offset = 1;
+            type_text = "unsigned char";
+        } else if (names_equal(member_name, "sin_port")) {
+            offset = 2;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sin_addr")) {
+            offset = 4;
+            type_text = "struct:in_addr";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "sockaddr")) {
+        if (names_equal(member_name, "sa_len")) {
+            offset = 0;
+            type_text = "unsigned char";
+        } else if (names_equal(member_name, "sa_family")) {
+            offset = 1;
+            type_text = "unsigned char";
+        } else if (names_equal(member_name, "sa_data")) {
+            offset = 2;
+            type_text = "char[14]";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "in6_addr")) {
+        if (names_equal(member_name, "s6_addr")) {
+            offset = 0;
+            type_text = "unsigned char[16]";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "in_addr")) {
+        if (names_equal(member_name, "s_addr")) {
+            offset = 0;
+            type_text = "unsigned int";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "termios")) {
+        if (names_equal(member_name, "c_iflag")) {
+            offset = 0;
+            type_text = "unsigned long";
+        } else if (names_equal(member_name, "c_oflag")) {
+            offset = 8;
+            type_text = "unsigned long";
+        } else if (names_equal(member_name, "c_cflag")) {
+            offset = 16;
+            type_text = "unsigned long";
+        } else if (names_equal(member_name, "c_lflag")) {
+            offset = 24;
+            type_text = "unsigned long";
+        } else if (names_equal(member_name, "c_cc")) {
+            offset = 32;
+            type_text = "unsigned char[24]";
+        } else if (names_equal(member_name, "c_ispeed")) {
+            offset = 56;
+            type_text = "unsigned long";
+        } else if (names_equal(member_name, "c_ospeed")) {
+            offset = 64;
+            type_text = "unsigned long";
+        } else {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+
+    if (offset_out != 0) {
+        *offset_out = offset;
+    }
+    if (type_out != 0) {
+        *type_out = type_text;
+    }
+    return 1;
+}
+
+static int lookup_named_aggregate_fallback_size(const BackendState *state, const char *base_type) {
+    if (state != 0 && backend_is_darwin(state)) {
+        if (type_matches_named_aggregate(base_type, "addrinfo")) return 48;
+        if (type_matches_named_aggregate(base_type, "sockaddr_in6")) return 28;
+        if (type_matches_named_aggregate(base_type, "sockaddr_in")) return 16;
+        if (type_matches_named_aggregate(base_type, "sockaddr")) return 16;
+        if (type_matches_named_aggregate(base_type, "in6_addr")) return 16;
+        if (type_matches_named_aggregate(base_type, "in_addr")) return 4;
+        if (type_matches_named_aggregate(base_type, "termios")) return 72;
+    }
+    return 0;
+}
+
 int backend_member_byte_offset(const BackendState *state, const char *base_type, const char *member_name) {
     int offset = 0;
 
     if (lookup_aggregate_member(state, base_type, member_name, &offset, 0) == 0) {
+        return offset;
+    }
+    if (lookup_darwin_posix_member_info(state, base_type, member_name, &offset, 0)) {
         return offset;
     }
 
@@ -180,6 +339,11 @@ void backend_copy_member_result_type(const BackendState *state,
     }
 
     if (lookup_aggregate_member(state, base_type, member_name, 0, &member_type) == 0 &&
+        member_type != 0 && member_type[0] != '\0') {
+        rt_copy_string(buffer, buffer_size, member_type);
+        return;
+    }
+    if (lookup_darwin_posix_member_info(state, base_type, member_name, 0, &member_type) &&
         member_type != 0 && member_type[0] != '\0') {
         rt_copy_string(buffer, buffer_size, member_type);
         return;
@@ -255,7 +419,7 @@ void backend_copy_member_result_type(const BackendState *state,
 }
 
 int backend_type_is_pointer_like(const char *base_type) {
-    return base_type != 0 && text_contains(base_type, "*");
+    return base_type != 0 && text_contains(base_type, "*") && !text_contains(base_type, "[");
 }
 
 void backend_copy_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size) {
@@ -310,6 +474,10 @@ void backend_copy_indexed_type_text(const char *base_type, char *buffer, size_t 
 static int named_aggregate_element_size(const BackendState *state, const char *base_type) {
     int generic_size = lookup_aggregate_size(state, base_type);
 
+    if (generic_size > 0) {
+        return generic_size;
+    }
+    generic_size = lookup_named_aggregate_fallback_size(state, base_type);
     if (generic_size > 0) {
         return generic_size;
     }
@@ -404,7 +572,7 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
         return BACKEND_STRUCT_STACK_BYTES;
     }
     if (text_contains(type, "*")) {
-        return backend_stack_slot_size(state);
+        return 8;
     }
     if (names_equal(type, "size_t") || names_equal(type, "ssize_t") || names_equal(type, "ptrdiff_t") ||
         names_equal(type, "intptr_t") || names_equal(type, "uintptr_t") || names_equal(type, "usize") ||
@@ -459,5 +627,5 @@ int backend_array_index_scale(const BackendState *state, const char *base_type, 
             return (int)element_size;
         }
     }
-    return word_index ? backend_stack_slot_size(state) : 1;
+    return word_index ? 8 : 1;
 }

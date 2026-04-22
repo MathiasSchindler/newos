@@ -22,10 +22,17 @@ static size_t rt_utf8_sequence_length(unsigned char lead) {
 }
 
 static int codepoint_in_ranges(unsigned int codepoint, const UnicodeRange *ranges, size_t range_count) {
-    size_t i;
+    size_t low = 0U;
+    size_t high = range_count;
 
-    for (i = 0; i < range_count; ++i) {
-        if (codepoint >= ranges[i].first && codepoint <= ranges[i].last) {
+    while (low < high) {
+        size_t mid = low + (high - low) / 2U;
+
+        if (codepoint < ranges[mid].first) {
+            high = mid;
+        } else if (codepoint > ranges[mid].last) {
+            low = mid + 1U;
+        } else {
             return 1;
         }
     }

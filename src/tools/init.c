@@ -13,19 +13,6 @@ typedef struct {
     const char *value;
 } InitEnvSetting;
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
-
 static int is_stdio_path(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
 }
@@ -36,31 +23,6 @@ static int validate_program_path(const char *path) {
         return -1;
     }
     return 0;
-}
-
-static void resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size) {
-    PlatformDirEntry entry;
-    const char *base_name;
-
-    if (argv_exec == 0 || argv_exec[0] == 0 || buffer == 0 || buffer_size == 0U) {
-        return;
-    }
-    if (argv_exec[0][0] != '/' || !starts_with(argv_exec[0], "/bin/")) {
-        return;
-    }
-    if (platform_get_path_info(argv_exec[0], &entry) == 0) {
-        return;
-    }
-
-    base_name = tool_base_name(argv_exec[0]);
-    if (tool_join_path("/usr/bin", base_name, buffer, buffer_size) != 0) {
-        return;
-    }
-    if (platform_get_path_info(buffer, &entry) != 0 || entry.is_dir) {
-        return;
-    }
-
-    argv_exec[0] = buffer;
 }
 
 static void print_usage(const char *program_name) {
@@ -183,7 +145,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             restart_limit_enabled = 1;
-        } else if (starts_with(options.flag, "--max-restarts=")) {
+        } else if (tool_starts_with(options.flag, "--max-restarts=")) {
             if (tool_parse_uint_arg(options.flag + 15, &max_restarts, "init", "max-restarts") != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -195,7 +157,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--restart-delay=")) {
+        } else if (tool_starts_with(options.flag, "--restart-delay=")) {
             if (tool_parse_duration_ms(options.flag + 16, &restart_delay_ms) != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -206,7 +168,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             command_text = options.value;
-        } else if (starts_with(options.flag, "--command=")) {
+        } else if (tool_starts_with(options.flag, "--command=")) {
             command_text = options.flag + 10;
         } else if (rt_strcmp(options.flag, "-t") == 0 || rt_strcmp(options.flag, "--console") == 0) {
             if (tool_opt_require_value(&options) != 0) {
@@ -214,7 +176,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             console_path = options.value;
-        } else if (starts_with(options.flag, "--console=")) {
+        } else if (tool_starts_with(options.flag, "--console=")) {
             console_path = options.flag + 10;
         } else if (rt_strcmp(options.flag, "-e") == 0 || rt_strcmp(options.flag, "--setenv") == 0) {
             if (tool_opt_require_value(&options) != 0 ||
@@ -222,7 +184,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options.flag, "--setenv=")) {
+        } else if (tool_starts_with(options.flag, "--setenv=")) {
             if (add_env_setting(env_settings, INIT_MAX_ENV_SETTINGS, &env_count, options.flag + 9) != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -288,7 +250,7 @@ int main(int argc, char **argv) {
         if (validate_program_path(spawn_argv[0]) != 0) {
             return 1;
         }
-        resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));
+        tool_resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));
 
         if (platform_spawn_process((char *const *)spawn_argv,
                                    -1,

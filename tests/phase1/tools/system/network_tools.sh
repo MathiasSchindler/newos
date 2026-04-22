@@ -24,6 +24,27 @@ assert_exit_code "$lookup_status" 0 "nslookup localhost should succeed"
 assert_file_contains "$WORK_DIR/nslookup.out" '^Name:[[:space:]]*localhost$' "nslookup did not print the queried name"
 assert_file_contains "$WORK_DIR/nslookup.out" '127\.0\.0\.1' "nslookup did not report a loopback address"
 
+assert_command_succeeds "$ROOT_DIR/build/dig" --help > "$WORK_DIR/dig_help.out" 2>&1
+assert_file_contains "$WORK_DIR/dig_help.out" 'A, AAAA, MX, NS, TXT' "dig --help did not describe the supported record types"
+
+dig_status=0
+"$ROOT_DIR/build/dig" localhost > "$WORK_DIR/dig.out" 2>&1 || dig_status=$?
+assert_exit_code "$dig_status" 0 "dig localhost should succeed"
+assert_file_contains "$WORK_DIR/dig.out" '^;; QUESTION SECTION:$' "dig did not print a question section"
+assert_file_contains "$WORK_DIR/dig.out" '^;; ANSWER SECTION:$' "dig did not print an answer section"
+assert_file_contains "$WORK_DIR/dig.out" '127\.0\.0\.1' "dig did not report the IPv4 localhost answer"
+
+dig6_status=0
+"$ROOT_DIR/build/dig" -t AAAA localhost > "$WORK_DIR/dig_aaaa.out" 2>&1 || dig6_status=$?
+assert_exit_code "$dig6_status" 0 "dig AAAA localhost should succeed"
+assert_file_contains "$WORK_DIR/dig_aaaa.out" '^; <<>> dig <<>> localhost AAAA$' "dig -t AAAA did not show the requested record type"
+assert_file_contains "$WORK_DIR/dig_aaaa.out" '::1' "dig -t AAAA did not report the IPv6 loopback answer"
+
+dig_bad_status=0
+"$ROOT_DIR/build/dig" -t BOGUS localhost > "$WORK_DIR/dig_bad.out" 2>&1 || dig_bad_status=$?
+assert_exit_code "$dig_bad_status" 1 "dig should reject unsupported record types"
+assert_file_contains "$WORK_DIR/dig_bad.out" 'unsupported type' "dig did not report an unsupported record type error"
+
 assert_command_succeeds "$ROOT_DIR/build/ping6" --help > "$WORK_DIR/ping6_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping6_help.out" 'IPv6' "ping6 --help did not describe IPv6 probing"
 

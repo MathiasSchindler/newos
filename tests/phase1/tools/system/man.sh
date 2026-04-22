@@ -18,6 +18,13 @@ assert_file_contains "$WORK_DIR/man_unicode.out" 'implementation roadmap for ful
 assert_file_contains "$WORK_DIR/man_env.out" '^ENV$' "man did not open the env manual page"
 assert_file_contains "$WORK_DIR/man_env.out" 'emit NUL-delimited output with -0' "man output missed env option details"
 
+"$ROOT_DIR/build/man" touch > "$WORK_DIR/man_touch.out"
+assert_file_contains "$WORK_DIR/man_touch.out" 'GNU-style long aliases' "man output missed documented touch long-option support"
+assert_file_contains "$WORK_DIR/man_touch.out" 'access/atime/use or modify/mtime' "man output missed touch time-selector details"
+
+"$ROOT_DIR/build/man" sync > "$WORK_DIR/man_sync.out"
+assert_file_contains "$WORK_DIR/man_sync.out" 'single confirmation when syncing all filesystems' "man output missed sync global verbose behavior"
+
 "$ROOT_DIR/build/man" -k compiler > "$WORK_DIR/man_search.out"
 assert_file_contains "$WORK_DIR/man_search.out" '^ncc (1)$' "man -k did not find the compiler page"
 

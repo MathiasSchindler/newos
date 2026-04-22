@@ -737,6 +737,53 @@ int emit_local_address(BackendState *state, int offset, const char *reg) {
     return emit_instruction(state, line);
 }
 
+static int emit_aarch64_offset_address(BackendState *state,
+                                       const char *dst_reg,
+                                       const char *base_reg,
+                                       int offset,
+                                       const char *scratch_reg) {
+    char line[128];
+    char offset_text[32];
+
+    if (!backend_is_aarch64(state)) {
+        return 0;
+    }
+    if (offset == 0) {
+        if (names_equal(dst_reg, base_reg)) {
+            return 0;
+        }
+        rt_copy_string(line, sizeof(line), "mov ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), base_reg);
+        return emit_instruction(state, line);
+    }
+
+    rt_unsigned_to_string((unsigned long long)offset, offset_text, sizeof(offset_text));
+    if (offset <= 4095) {
+        rt_copy_string(line, sizeof(line), "add ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), base_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", #");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+        return emit_instruction(state, line);
+    }
+
+    if (emit_load_immediate_register(state, scratch_reg != 0 ? scratch_reg : "x13", offset) != 0) {
+        return -1;
+    }
+    rt_copy_string(line, sizeof(line), "add ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), base_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+    rt_copy_string(line + rt_strlen(line),
+                   sizeof(line) - rt_strlen(line),
+                   scratch_reg != 0 ? scratch_reg : "x13");
+    return emit_instruction(state, line);
+}
+
 static const char *x86_reg32_name(const char *reg) {
     if (names_equal(reg, "%rax")) return "%eax";
     if (names_equal(reg, "%rbx")) return "%ebx";
@@ -1344,30 +1391,23 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
     }
 
     if (backend_is_aarch64(state)) {
-        if (emit_instruction(state, "mov x10, x0") != 0 ||
-            (state->locals[local_index].static_storage ? emit_address_of_name(state, name) : emit_local_address(state, offset, "x9")) != 0) {
+        if (emit_instruction(state, "mov x12, x0") != 0 ||
+            (state->locals[local_index].static_storage ? emit_address_of_name(state, name)
+                                                       : emit_local_address(state, offset, "x13")) != 0) {
             return -1;
         }
-        if (state->locals[local_index].static_storage && emit_instruction(state, "mov x9, x0") != 0) {
+        if (state->locals[local_index].static_storage && emit_instruction(state, "mov x13, x0") != 0) {
             return -1;
         }
         for (chunk = 0; chunk < bytes; chunk += 8) {
-            char load_line[64];
-            char store_line[64];
-            char chunk_text[32];
-
-            rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
-            rt_copy_string(load_line, sizeof(load_line), "ldr x11, [x10, #");
-            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
-            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "]");
-            rt_copy_string(store_line, sizeof(store_line), "str x11, [x9, #");
-            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
-            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "]");
-            if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+            if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
+                emit_instruction(state, "ldr x11, [x14]") != 0 ||
+                emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
+                emit_instruction(state, "str x11, [x14]") != 0) {
                 return -1;
             }
         }
-        return emit_instruction(state, "mov x0, x9");
+        return emit_instruction(state, "mov x0, x13");
     }
 
     if (emit_instruction(state, "movq %rax, %rdx") != 0 ||
@@ -1415,31 +1455,23 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
     }
 
     if (backend_is_aarch64(state)) {
-        if (emit_load_name_into_register(state, dst_pointer_name, "x9") != 0 ||
+        if (emit_load_name_into_register(state, dst_pointer_name, "x13") != 0 ||
             (state->locals[local_index].static_storage ? emit_address_of_name(state, src_name)
-                                                       : emit_local_address(state, offset, "x10")) != 0) {
+                                                       : emit_local_address(state, offset, "x12")) != 0) {
             return -1;
         }
-        if (state->locals[local_index].static_storage && emit_instruction(state, "mov x10, x0") != 0) {
+        if (state->locals[local_index].static_storage && emit_instruction(state, "mov x12, x0") != 0) {
             return -1;
         }
         for (chunk = 0; chunk < bytes; chunk += 8) {
-            char load_line[64];
-            char store_line[64];
-            char chunk_text[32];
-
-            rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
-            rt_copy_string(load_line, sizeof(load_line), "ldr x11, [x10, #");
-            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
-            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "]");
-            rt_copy_string(store_line, sizeof(store_line), "str x11, [x9, #");
-            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
-            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "]");
-            if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+            if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
+                emit_instruction(state, "ldr x11, [x14]") != 0 ||
+                emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
+                emit_instruction(state, "str x11, [x14]") != 0) {
                 return -1;
             }
         }
-        return emit_instruction(state, "mov x0, x9");
+        return emit_instruction(state, "mov x0, x13");
     }
 
     if (emit_load_name_into_register(state, dst_pointer_name, "%rcx") != 0 ||
@@ -1477,28 +1509,20 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
     }
 
     if (backend_is_aarch64(state)) {
-        if (emit_instruction(state, "mov x10, x0") != 0 ||
-            emit_instruction(state, "ldr x9, [sp]") != 0 ||
+        if (emit_instruction(state, "mov x12, x0") != 0 ||
+            emit_instruction(state, "ldr x13, [sp]") != 0 ||
             emit_instruction(state, "add sp, sp, #16") != 0) {
             return -1;
         }
         for (chunk = 0; chunk < bytes; chunk += 8) {
-            char load_line[64];
-            char store_line[64];
-            char chunk_text[32];
-
-            rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
-            rt_copy_string(load_line, sizeof(load_line), "ldr x11, [x10, #");
-            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
-            rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "]");
-            rt_copy_string(store_line, sizeof(store_line), "str x11, [x9, #");
-            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
-            rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "]");
-            if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+            if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
+                emit_instruction(state, "ldr x11, [x14]") != 0 ||
+                emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
+                emit_instruction(state, "str x11, [x14]") != 0) {
                 return -1;
             }
         }
-        return emit_instruction(state, "mov x0, x9");
+        return emit_instruction(state, "mov x0, x13");
     }
 
     if (emit_instruction(state, "movq %rax, %rdx") != 0 ||

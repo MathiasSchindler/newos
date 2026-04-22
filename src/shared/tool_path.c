@@ -24,6 +24,31 @@ int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t 
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }
 
+void tool_resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size) {
+    PlatformDirEntry entry;
+    const char *base_name;
+
+    if (argv_exec == 0 || argv_exec[0] == 0 || buffer == 0 || buffer_size == 0U) {
+        return;
+    }
+    if (argv_exec[0][0] != '/' || !tool_starts_with(argv_exec[0], "/bin/")) {
+        return;
+    }
+    if (platform_get_path_info(argv_exec[0], &entry) == 0) {
+        return;
+    }
+
+    base_name = tool_base_name(argv_exec[0]);
+    if (tool_join_path("/usr/bin", base_name, buffer, buffer_size) != 0) {
+        return;
+    }
+    if (platform_get_path_info(buffer, &entry) != 0 || entry.is_dir) {
+        return;
+    }
+
+    argv_exec[0] = buffer;
+}
+
 int tool_resolve_destination(const char *source_path, const char *dest_path, char *buffer, size_t buffer_size) {
     int is_directory = 0;
     size_t path_len;

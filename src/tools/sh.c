@@ -1218,6 +1218,8 @@ static int process_stream(int fd, int interactive_requested) {
     int last_status = 0;
 
     if (interactive_requested || sh_shell_is_interactive(fd)) {
+        (void)platform_ignore_signal(2);
+        (void)platform_ignore_signal(3);
         return sh_process_interactive_stream(run_line);
     }
 

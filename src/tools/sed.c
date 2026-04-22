@@ -59,25 +59,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
 }
 
-static void trim_whitespace(char *text) {
-    size_t start = 0;
-    size_t end = rt_strlen(text);
-
-    while (text[start] == ' ' || text[start] == '\t' || text[start] == '\r') {
-        start += 1;
-    }
-
-    while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r')) {
-        end -= 1;
-    }
-
-    if (start > 0) {
-        memmove(text, text + start, end - start);
-    }
-
-    text[end - start] = '\0';
-}
-
 static int line_contains(const char *text, const char *pattern) {
     size_t start = 0;
     size_t end = 0;
@@ -223,7 +204,7 @@ static int add_command_expression(const char *expr, SedProgram *program) {
     }
 
     rt_copy_string(buffer, sizeof(buffer), expr);
-    trim_whitespace(buffer);
+    tool_trim_whitespace(buffer);
 
     if (buffer[0] == '\0' || buffer[0] == '#') {
         return 0;

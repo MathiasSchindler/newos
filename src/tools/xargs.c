@@ -250,17 +250,6 @@ static int collect_args(
     return 0;
 }
 
-static int text_starts_with(const char *text, const char *prefix) {
-    while (*prefix != '\0') {
-        if (*text != *prefix) {
-            return 0;
-        }
-        text += 1;
-        prefix += 1;
-    }
-    return 1;
-}
-
 static int replace_placeholder(
     const char *template_text,
     const char *placeholder,
@@ -282,7 +271,7 @@ static int replace_placeholder(
     }
 
     while (*template_text != '\0') {
-        if (text_starts_with(template_text, placeholder)) {
+        if (tool_starts_with(template_text, placeholder)) {
             size_t i = 0;
             changed = 1;
             while (value[i] != '\0') {

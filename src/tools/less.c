@@ -36,17 +36,6 @@ static unsigned int pager_page_lines(void) {
     return DEFAULT_PAGE_LINES;
 }
 
-static int text_starts_with(const char *text, const char *prefix) {
-    while (*prefix != '\0') {
-        if (*text != *prefix) {
-            return 0;
-        }
-        text += 1;
-        prefix += 1;
-    }
-    return 1;
-}
-
 static int contains_case_insensitive(const char *text, const char *needle) {
     size_t text_len = rt_strlen(text);
     size_t needle_len = rt_strlen(needle);
@@ -484,7 +473,7 @@ int main(int argc, char **argv) {
             arg_index += 1;
             continue;
         }
-        if (text_starts_with(argv[arg_index], "--color=")) {
+        if (tool_starts_with(argv[arg_index], "--color=")) {
             if (tool_parse_color_mode(argv[arg_index] + 8, &color_mode) != 0) {
                 tool_write_error("less", "invalid color mode: ", argv[arg_index] + 8);
                 return 1;
@@ -492,7 +481,7 @@ int main(int argc, char **argv) {
             arg_index += 1;
             continue;
         }
-        if (text_starts_with(argv[arg_index], "+/")) {
+        if (tool_starts_with(argv[arg_index], "+/")) {
             search_pattern = argv[arg_index] + 2;
             arg_index += 1;
             continue;

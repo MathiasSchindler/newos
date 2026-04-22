@@ -445,6 +445,7 @@ static int expr_operand_prefers_byte_load(ExprParser *parser) {
 
 static int expr_may_be_object_lvalue_source(ExprParser *parser) {
     ExprParser snapshot = *parser;
+    char type_text[128];
 
     while (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "(")) {
         expr_next(&snapshot);
@@ -455,8 +456,14 @@ static int expr_may_be_object_lvalue_source(ExprParser *parser) {
     }
 
     if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
-        expr_next(&snapshot);
-        return !(snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "("));
+        type_text[0] = '\0';
+        expr_infer_result_type(&snapshot, type_text, sizeof(type_text));
+        type_text[sizeof(type_text) - 1] = '\0';
+        return type_text[0] != '\0' &&
+               !text_contains(type_text, "*") &&
+               (text_contains(type_text, "[") ||
+                starts_with(skip_spaces(type_text), "struct:") ||
+                starts_with(skip_spaces(type_text), "union:"));
     }
 
     return 0;

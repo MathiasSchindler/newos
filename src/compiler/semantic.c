@@ -52,21 +52,7 @@ static void set_error(CompilerSemantic *semantic, const char *message) {
     rt_copy_string(semantic->error_message, sizeof(semantic->error_message), message != 0 ? message : "semantic error");
 }
 
-static int find_symbol(const CompilerSemantic *semantic, const char *name) {
-    size_t i = semantic->symbol_count;
-
-    while (i > 0) {
-        i -= 1U;
-        if (names_equal(semantic->symbols[i].name, name)) {
-            return (int)i;
-        }
-    }
-
-    return -1;
-}
-
-static int find_symbol_in_current_scope(const CompilerSemantic *semantic, const char *name) {
-    size_t start = semantic->scope_markers[semantic->scope_count - 1U];
+static int find_symbol_from(const CompilerSemantic *semantic, const char *name, size_t start) {
     size_t i = semantic->symbol_count;
 
     while (i > start) {
@@ -77,6 +63,14 @@ static int find_symbol_in_current_scope(const CompilerSemantic *semantic, const 
     }
 
     return -1;
+}
+
+static int find_symbol(const CompilerSemantic *semantic, const char *name) {
+    return find_symbol_from(semantic, name, 0U);
+}
+
+static int find_symbol_in_current_scope(const CompilerSemantic *semantic, const char *name) {
+    return find_symbol_from(semantic, name, semantic->scope_markers[semantic->scope_count - 1U]);
 }
 
 void compiler_type_init(CompilerType *type) {
@@ -182,21 +176,26 @@ int compiler_semantic_declare(
 
 int compiler_semantic_declare_constant(CompilerSemantic *semantic, const char *name, long long value) {
     CompilerType type;
-    int index;
+    CompilerSymbol *symbol;
 
     compiler_type_init(&type);
     if (compiler_semantic_declare(semantic, name, COMPILER_SYMBOL_ENUM_CONSTANT, &type, 1) != 0) {
         return -1;
     }
 
-    index = find_symbol_in_current_scope(semantic, name);
-    if (index < 0) {
+    if (name == 0 || name[0] == '\0' || semantic->symbol_count == 0U) {
         set_error(semantic, "failed to register constant");
         return -1;
     }
 
-    semantic->symbols[index].constant_value = value;
-    semantic->symbols[index].has_constant_value = 1;
+    symbol = &semantic->symbols[semantic->symbol_count - 1U];
+    if (!names_equal(symbol->name, name) || symbol->kind != COMPILER_SYMBOL_ENUM_CONSTANT) {
+        set_error(semantic, "failed to register constant");
+        return -1;
+    }
+
+    symbol->constant_value = value;
+    symbol->has_constant_value = 1;
     return 0;
 }
 

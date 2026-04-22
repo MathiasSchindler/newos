@@ -1,22 +1,10 @@
 #include "runtime.h"
+#include "tool_util.h"
 
 #define BASENAME_BUFFER_CAPACITY 1024
 
 static void print_usage(void) {
     rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
-}
-
-static int starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
 }
 
 static int write_result(const char *text, int zero_terminated) {
@@ -99,7 +87,7 @@ int main(int argc, char **argv) {
             }
             suffix = argv[++argi];
             multi_arg = 1;
-        } else if (starts_with(argv[argi], "--suffix=")) {
+        } else if (tool_starts_with(argv[argi], "--suffix=")) {
             suffix = argv[argi] + 9;
             multi_arg = 1;
         } else {

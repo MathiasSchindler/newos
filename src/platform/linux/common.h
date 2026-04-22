@@ -51,6 +51,10 @@
 #define LINUX_SIGTSTP 20
 #define LINUX_SIGTTIN 21
 #define LINUX_SIGTTOU 22
+#define LINUX_SIG_DFL 0UL
+#define LINUX_SIG_IGN 1UL
+
+#define LINUX_EINTR 4
 
 #define LINUX_WNOHANG 1
 #define LINUX_TCGETS 0x5401
@@ -169,6 +173,13 @@ struct linux_termios {
     unsigned int c_lflag;
     unsigned char c_line;
     unsigned char c_cc[19];
+};
+
+struct linux_sigaction {
+    unsigned long handler;
+    unsigned long flags;
+    unsigned long restorer;
+    unsigned long mask;
 };
 
 #define linux_copy_string rt_copy_string

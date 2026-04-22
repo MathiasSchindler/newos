@@ -73,3 +73,44 @@ int tool_opt_require_value(ToolOptState *s) {
     s->argi += 1;
     return 0;
 }
+
+int tool_starts_with(const char *text, const char *prefix) {
+    size_t index = 0U;
+
+    if (text == 0 || prefix == 0) {
+        return 0;
+    }
+
+    while (prefix[index] != '\0') {
+        if (text[index] != prefix[index]) {
+            return 0;
+        }
+        index += 1U;
+    }
+
+    return 1;
+}
+
+void tool_trim_whitespace(char *text) {
+    size_t start = 0U;
+    size_t end;
+    size_t out = 0U;
+
+    if (text == 0) {
+        return;
+    }
+
+    end = rt_strlen(text);
+    while (text[start] != '\0' && rt_is_space(text[start])) {
+        start += 1U;
+    }
+    while (end > start && rt_is_space(text[end - 1U])) {
+        end -= 1U;
+    }
+
+    while (start + out < end) {
+        text[out] = text[start + out];
+        out += 1U;
+    }
+    text[out] = '\0';
+}

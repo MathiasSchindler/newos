@@ -122,6 +122,37 @@ EOF
 
 compile_and_check_native "$WORK_DIR/local_struct_init.c" "$WORK_DIR/local_struct_init_bin" "0" "compiler failed on a function-local aggregate initializer"
 
+cat > "$WORK_DIR/posix_addrinfo_fields.c" <<'EOF'
+#include <netdb.h>
+#include <sys/socket.h>
+
+int main(void) {
+    struct addrinfo hints;
+
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    return (hints.ai_flags == AI_PASSIVE &&
+            hints.ai_family == AF_INET &&
+            hints.ai_socktype == SOCK_STREAM &&
+            hints.ai_protocol == IPPROTO_TCP) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/posix_addrinfo_fields.c" "$WORK_DIR/posix_addrinfo_fields_bin" "0" "compiler mis-lowered host addrinfo field stores"
+
+cat > "$WORK_DIR/null_static_pointer.c" <<'EOF'
+static const char *items[] = { NULL, "ok" };
+
+int main(void) {
+    return (items[0] == 0 && items[1][0] == 'o') ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/null_static_pointer.c" "$WORK_DIR/null_static_pointer_bin" "0" "compiler failed to lower a NULL pointer global initializer"
+
 cat > "$WORK_DIR/escaped_char_literal.c" <<'EOF'
 int main(void) {
     char quote = '\'';

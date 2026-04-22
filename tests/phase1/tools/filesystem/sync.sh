@@ -10,3 +10,8 @@ note "phase1 filesystem sync"
 printf 'sync\n' > "$WORK_DIR/target.txt"
 "$ROOT_DIR/build/sync" -d -v "$WORK_DIR/target.txt" > "$WORK_DIR/out"
 assert_file_contains "$WORK_DIR/out" 'synced .*target.txt' "sync -v did not report the synced path"
+
+"$ROOT_DIR/build/sync" -v > "$WORK_DIR/out_all"
+assert_file_contains "$WORK_DIR/out_all" 'synced all filesystems' "sync -v without paths did not confirm the global sync"
+
+assert_command_succeeds "$ROOT_DIR/build/sync" -d

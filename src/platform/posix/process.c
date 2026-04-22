@@ -147,6 +147,18 @@ static const PosixSignalEntry POSIX_SIGNAL_TABLE[] = {
 #endif
 };
 
+static void posix_reset_child_signals(void) {
+#ifdef SIGINT
+    (void)signal(SIGINT, SIG_DFL);
+#endif
+#ifdef SIGQUIT
+    (void)signal(SIGQUIT, SIG_DFL);
+#endif
+#ifdef SIGPIPE
+    (void)signal(SIGPIPE, SIG_DFL);
+#endif
+}
+
 int platform_parse_signal_name(const char *text, int *signal_out) {
     unsigned long long numeric = 0;
     size_t i;
@@ -426,9 +438,6 @@ static void platform_make_raw_termios(struct termios *raw) {
 #ifdef ICANON
         ICANON |
 #endif
-#ifdef ISIG
-        ISIG |
-#endif
 #ifdef IEXTEN
         IEXTEN |
 #endif
@@ -602,6 +611,8 @@ int platform_spawn_process_ex(
 
     if (pid == 0) {
         int fd;
+
+        posix_reset_child_signals();
 
         if (working_directory != NULL && working_directory[0] != '\0') {
             if (chdir(working_directory) != 0) {

@@ -286,17 +286,6 @@ static int pager_write_repeated_char(ManPager *pager, int style, char ch, unsign
     return 0;
 }
 
-static int text_starts_with(const char *text, const char *prefix) {
-    while (*prefix != '\0') {
-        if (*text != *prefix) {
-            return 0;
-        }
-        text += 1;
-        prefix += 1;
-    }
-    return 1;
-}
-
 static int text_ends_with(const char *text, const char *suffix) {
     size_t text_len = rt_strlen(text);
     size_t suffix_len = rt_strlen(suffix);
@@ -1140,7 +1129,7 @@ static int render_plain_line(const char *line, ManRenderState *state, ManPager *
     char rendered[MAN_LINE_CAPACITY];
     int result;
 
-    if (text_starts_with(text, "```")) {
+    if (tool_starts_with(text, "```")) {
         state->in_code_block = !state->in_code_block;
         return 0;
     }
@@ -1193,7 +1182,7 @@ static int render_plain_line(const char *line, ManRenderState *state, ManPager *
         }
         return pager_write_char(pager, '\n');
     }
-    if (text_starts_with(text, "> ") || *text == '>') {
+    if (tool_starts_with(text, "> ") || *text == '>') {
         if (*text == '>') {
             text += 1;
             if (*text == ' ') {
@@ -1214,7 +1203,7 @@ static int render_plain_line(const char *line, ManRenderState *state, ManPager *
         return pager_write_char(pager, '\n');
     }
 
-    if (text_starts_with(text, "- ") || text_starts_with(text, "* ")) {
+    if (tool_starts_with(text, "- ") || tool_starts_with(text, "* ")) {
         result = pager_write_styled_cstr(pager, TOOL_STYLE_BOLD_YELLOW, "  * ");
         if (result != 0) {
             return result;
@@ -1588,7 +1577,7 @@ int main(int argc, char **argv) {
         } else if (rt_strcmp(argv[argi], "--color") == 0) {
             tool_set_global_color_mode(TOOL_COLOR_ALWAYS);
             argi += 1;
-        } else if (text_starts_with(argv[argi], "--color=")) {
+        } else if (tool_starts_with(argv[argi], "--color=")) {
             int color_mode = TOOL_COLOR_AUTO;
             if (tool_parse_color_mode(argv[argi] + 8, &color_mode) != 0) {
                 tool_write_error("man", "invalid color mode: ", argv[argi] + 8);

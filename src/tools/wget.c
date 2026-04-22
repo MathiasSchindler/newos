@@ -26,19 +26,6 @@ typedef struct {
 
 static int open_output_for_url(const WgetOptions *options, const WgetUrl *url, char *path_out, size_t path_out_size, int *fd_out);
 
-static int starts_with(const char *text, const char *prefix) {
-    size_t index = 0;
-
-    while (prefix[index] != '\0') {
-        if (text[index] != prefix[index]) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return 1;
-}
-
 static char to_lower_ascii(char ch) {
     if (ch >= 'A' && ch <= 'Z') {
         return (char)(ch - 'A' + 'a');
@@ -264,16 +251,16 @@ static int parse_url(const char *text, WgetUrl *url_out) {
         return -1;
     }
 
-    if (starts_with(text, "http://")) {
+    if (tool_starts_with(text, "http://")) {
         return parse_http_url(text + 7, 80U, WGET_SCHEME_HTTP, url_out);
     }
-    if (starts_with(text, "https://")) {
+    if (tool_starts_with(text, "https://")) {
         return parse_http_url(text + 8, 443U, WGET_SCHEME_HTTPS, url_out);
     }
-    if (starts_with(text, "file://")) {
+    if (tool_starts_with(text, "file://")) {
         const char *path = text + 7;
 
-        if (starts_with(path, "localhost/")) {
+        if (tool_starts_with(path, "localhost/")) {
             path += 9;
         }
         rt_memset(url_out, 0, sizeof(*url_out));
@@ -309,24 +296,61 @@ static int stream_fd_to_output(int input_fd, int output_fd) {
     return bytes_read < 0 ? -1 : 0;
 }
 
+static int looks_like_absolute_uri(const char *text) {
+    size_t index = 0U;
+
+    if (text == 0 || text[0] == '\0' ||
+        !((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z'))) {
+        return 0;
+    }
+
+    for (index = 1U; text[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)text[index];
+
+        if (ch == ':') {
+            return 1;
+        }
+        if (!((ch >= 'A' && ch <= 'Z') ||
+              (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') ||
+              ch == '+' || ch == '-' || ch == '.')) {
+            return 0;
+        }
+    }
+
+    return 0;
+}
+
 static int compose_redirect_url(const WgetUrl *base, const char *location, char *buffer, size_t buffer_size) {
     size_t length = 0;
     char port_text[16];
     char base_dir[1024];
     size_t index = 0;
 
-    if (starts_with(location, "http://") || starts_with(location, "https://") || starts_with(location, "file://")) {
-        rt_copy_string(buffer, buffer_size, location);
-        return 0;
-    }
-
-    if (base == 0 || base->scheme != WGET_SCHEME_HTTP) {
+    if (location == 0 || buffer == 0 || buffer_size == 0U || location[0] == '\0') {
         return -1;
     }
 
-    length = buffer_append_cstr(buffer, buffer_size, length, "http://");
+    if (tool_starts_with(location, "file://")) {
+        return -1;
+    }
+
+    if (tool_starts_with(location, "http://") || tool_starts_with(location, "https://")) {
+        rt_copy_string(buffer, buffer_size, location);
+        return 0;
+    }
+    if (looks_like_absolute_uri(location)) {
+        return -1;
+    }
+
+    if (base == 0 || (base->scheme != WGET_SCHEME_HTTP && base->scheme != WGET_SCHEME_HTTPS)) {
+        return -1;
+    }
+
+    length = buffer_append_cstr(buffer, buffer_size, length, base->scheme == WGET_SCHEME_HTTPS ? "https://" : "http://");
     length = buffer_append_cstr(buffer, buffer_size, length, base->host);
-    if (base->port != 80U) {
+    if ((base->scheme == WGET_SCHEME_HTTP && base->port != 80U) ||
+        (base->scheme == WGET_SCHEME_HTTPS && base->port != 443U)) {
         rt_unsigned_to_string(base->port, port_text, sizeof(port_text));
         length = buffer_append_char(buffer, buffer_size, length, ':');
         length = buffer_append_cstr(buffer, buffer_size, length, port_text);
@@ -694,14 +718,14 @@ int main(int argc, char **argv) {
                 return 1;
             }
             options.output_path = options_state.value;
-        } else if (starts_with(options_state.flag, "-O") && options_state.flag[2] != '\0') {
+        } else if (tool_starts_with(options_state.flag, "-O") && options_state.flag[2] != '\0') {
             options.output_path = options_state.flag + 2;
         } else if (rt_strcmp(options_state.flag, "-T") == 0 || rt_strcmp(options_state.flag, "--timeout") == 0) {
             if (tool_opt_require_value(&options_state) != 0 || tool_parse_duration_ms(options_state.value, &options.timeout_ms) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }
-        } else if (starts_with(options_state.flag, "--timeout=")) {
+        } else if (tool_starts_with(options_state.flag, "--timeout=")) {
             if (tool_parse_duration_ms(options_state.flag + 10, &options.timeout_ms) != 0) {
                 print_usage(argv[0]);
                 return 1;

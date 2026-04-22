@@ -1710,13 +1710,236 @@ int platform_network_route_change(const char *destination, const char *gateway, 
 #endif
 }
 
+static int posix_find_default_nameserver(char *buffer_out, size_t buffer_size) {
+    char file_buffer[2048];
+    const char *cursor;
+    int fd;
+    long read_length;
+
+    if (buffer_out == NULL || buffer_size == 0U) {
+        return -1;
+    }
+    fd = platform_open_read("/etc/resolv.conf");
+    if (fd < 0) {
+        return -1;
+    }
+    read_length = platform_read(fd, file_buffer, sizeof(file_buffer) - 1U);
+    close(fd);
+    if (read_length <= 0) {
+        return -1;
+    }
+    file_buffer[read_length] = '\0';
+
+    cursor = file_buffer;
+    while (*cursor != '\0') {
+        while (*cursor != '\0' && rt_is_space(*cursor) && *cursor != '\n') {
+            cursor += 1;
+        }
+        if (*cursor == '#' || *cursor == ';') {
+            while (*cursor != '\0' && *cursor != '\n') {
+                cursor += 1;
+            }
+        } else if (rt_strncmp(cursor, "nameserver", 10U) == 0 && rt_is_space(cursor[10])) {
+            size_t length = 0U;
+            cursor += 10;
+            while (*cursor != '\0' && rt_is_space(*cursor) && *cursor != '\n') {
+                cursor += 1;
+            }
+            while (cursor[length] != '\0' && !rt_is_space(cursor[length])) {
+                length += 1U;
+            }
+            if (length > 0U && length < buffer_size) {
+                memcpy(buffer_out, cursor, length);
+                buffer_out[length] = '\0';
+                return 0;
+            }
+        }
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor += 1;
+        }
+        if (*cursor == '\n') {
+            cursor += 1;
+        }
+    }
+    return -1;
+}
+
+static int posix_dns_encode_name(const char *name, unsigned char *buffer, size_t buffer_size, size_t *offset_io) {
+    const char *label = name;
+
+    if (name == NULL || buffer == NULL || offset_io == NULL) {
+        return -1;
+    }
+    while (*label != '\0') {
+        const char *end = label;
+        size_t length;
+        while (*end != '\0' && *end != '.') {
+            end += 1;
+        }
+        length = (size_t)(end - label);
+        if (length == 0U || length > 63U || *offset_io + length + 2U > buffer_size) {
+            errno = EINVAL;
+            return -1;
+        }
+        buffer[(*offset_io)++] = (unsigned char)length;
+        memcpy(buffer + *offset_io, label, length);
+        *offset_io += length;
+        label = (*end == '.') ? (end + 1) : end;
+    }
+    if (*offset_io + 1U > buffer_size) {
+        errno = EINVAL;
+        return -1;
+    }
+    buffer[(*offset_io)++] = 0U;
+    return 0;
+}
+
+static int posix_dns_skip_name(const unsigned char *message, size_t message_length, size_t *offset_io) {
+    size_t offset = *offset_io;
+
+    if (message == NULL || offset_io == NULL) {
+        return -1;
+    }
+    while (offset < message_length) {
+        unsigned char length = message[offset];
+        if (length == 0U) {
+            *offset_io = offset + 1U;
+            return 0;
+        }
+        if ((length & 0xc0U) == 0xc0U) {
+            if (offset + 1U >= message_length) {
+                return -1;
+            }
+            *offset_io = offset + 2U;
+            return 0;
+        }
+        offset += 1U + (size_t)length;
+    }
+    return -1;
+}
+
+static int posix_dns_read_name(
+    const unsigned char *message,
+    size_t message_length,
+    size_t start_offset,
+    size_t *next_offset_out,
+    char *buffer,
+    size_t buffer_size
+) {
+    size_t offset = start_offset;
+    size_t next_offset = start_offset;
+    size_t used = 0U;
+    unsigned int jumps = 0U;
+    int jumped = 0;
+
+    if (message == NULL || buffer == NULL || buffer_size == 0U) {
+        return -1;
+    }
+
+    while (offset < message_length) {
+        unsigned char length = message[offset];
+        if (length == 0U) {
+            if (!jumped) {
+                next_offset = offset + 1U;
+            }
+            if (used == 0U) {
+                if (buffer_size < 2U) {
+                    return -1;
+                }
+                buffer[0] = '.';
+                buffer[1] = '\0';
+            } else {
+                buffer[used] = '\0';
+            }
+            if (next_offset_out != NULL) {
+                *next_offset_out = next_offset;
+            }
+            return 0;
+        }
+        if ((length & 0xc0U) == 0xc0U) {
+            unsigned short pointer;
+            if (offset + 1U >= message_length) {
+                return -1;
+            }
+            pointer = (unsigned short)((((unsigned short)length & 0x3fU) << 8) | (unsigned short)message[offset + 1U]);
+            if (!jumped) {
+                next_offset = offset + 2U;
+                jumped = 1;
+            }
+            jumps += 1U;
+            if (jumps > 16U || (size_t)pointer >= message_length) {
+                return -1;
+            }
+            offset = (size_t)pointer;
+            continue;
+        }
+        offset += 1U;
+        if (offset + (size_t)length > message_length) {
+            return -1;
+        }
+        if (used != 0U) {
+            if (used + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[used++] = '.';
+        }
+        if (used + (size_t)length >= buffer_size) {
+            return -1;
+        }
+        memcpy(buffer + used, message + offset, (size_t)length);
+        used += (size_t)length;
+        offset += (size_t)length;
+        if (!jumped) {
+            next_offset = offset;
+        }
+    }
+    return -1;
+}
+
+static int posix_dns_format_txt(const unsigned char *data, size_t length, char *buffer, size_t buffer_size) {
+    size_t offset = 0U;
+    size_t used = 0U;
+
+    if (buffer == NULL || buffer_size == 0U) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    while (offset < length) {
+        unsigned char part_length = data[offset++];
+        size_t copy_length;
+        if (offset + (size_t)part_length > length) {
+            return -1;
+        }
+        if (used != 0U) {
+            if (used + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[used++] = ' ';
+        }
+        copy_length = (size_t)part_length;
+        if (used + copy_length >= buffer_size) {
+            copy_length = buffer_size - used - 1U;
+        }
+        if (copy_length > 0U) {
+            memcpy(buffer + used, data + offset, copy_length);
+            used += copy_length;
+        }
+        offset += (size_t)part_length;
+    }
+    buffer[used] = '\0';
+    return 0;
+}
+
 static int posix_add_dns_entry(
     PlatformDnsEntry *entries_out,
     size_t entry_capacity,
     size_t *count_io,
     const char *name,
     int family,
-    const char *address
+    unsigned short record_type,
+    const char *data,
+    unsigned int ttl,
+    unsigned short preference
 ) {
     PlatformDnsEntry *entry;
     size_t i;
@@ -1725,17 +1948,193 @@ static int posix_add_dns_entry(
         return -1;
     }
     for (i = 0U; i < *count_io; ++i) {
-        if (entries_out[i].family == family && rt_strcmp(entries_out[i].address, address) == 0) {
+        if (entries_out[i].family == family &&
+            entries_out[i].record_type == record_type &&
+            entries_out[i].preference == preference &&
+            rt_strcmp(entries_out[i].name, name) == 0 &&
+            rt_strcmp(entries_out[i].data, data) == 0) {
             return 0;
         }
     }
     entry = &entries_out[*count_io];
     memset(entry, 0, sizeof(*entry));
     entry->family = family;
+    entry->record_type = record_type;
+    entry->preference = preference;
+    entry->ttl = ttl;
     rt_copy_string(entry->name, sizeof(entry->name), name);
-    rt_copy_string(entry->address, sizeof(entry->address), address);
+    rt_copy_string(entry->address, sizeof(entry->address), data);
+    rt_copy_string(entry->data, sizeof(entry->data), data);
     *count_io += 1U;
     return 0;
+}
+
+static int posix_dns_query_records(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short query_type,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_io
+) {
+    int sock;
+    struct sockaddr_in server_addr;
+    struct pollfd pfd;
+    unsigned char query[512];
+    unsigned char reply[512];
+    long reply_length;
+    size_t used = 12U;
+    unsigned short query_id = (unsigned short)(((unsigned int)platform_get_process_id() & 0xffffU) ^ 0x5a5aU);
+    size_t offset;
+    unsigned int answer_count;
+    unsigned int question_count;
+    unsigned int i;
+    char server_text[PLATFORM_NETWORK_TEXT_CAPACITY];
+
+    if (name == NULL || entries_out == NULL || count_io == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (server == NULL || server[0] == '\0') {
+        if (posix_find_default_nameserver(server_text, sizeof(server_text)) != 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        server = server_text;
+    } else if (rt_strcmp(server, "localhost") == 0) {
+        server = "127.0.0.1";
+    }
+
+    memset(query, 0, sizeof(query));
+    query[0] = (unsigned char)(query_id >> 8);
+    query[1] = (unsigned char)(query_id & 0xffU);
+    query[2] = 0x01U;
+    query[5] = 0x01U;
+    if (posix_dns_encode_name(name, query, sizeof(query), &used) != 0 || used + 4U > sizeof(query)) {
+        return -1;
+    }
+    query[used++] = (unsigned char)(query_type >> 8);
+    query[used++] = (unsigned char)(query_type & 0xffU);
+    query[used++] = 0x00U;
+    query[used++] = 0x01U;
+
+    sock = posix_socket_open(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        return -1;
+    }
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons((unsigned short)(port == 0U ? 53U : port));
+    if (inet_pton(AF_INET, server, &server_addr.sin_addr) != 1) {
+        close(sock);
+        errno = EINVAL;
+        return -1;
+    }
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0 || send(sock, query, used, 0) < 0) {
+        close(sock);
+        return -1;
+    }
+    pfd.fd = sock;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    if (poll(&pfd, 1U, 2000) <= 0) {
+        close(sock);
+        return -1;
+    }
+    reply_length = recv(sock, reply, sizeof(reply), 0);
+    close(sock);
+    if (reply_length < 12) {
+        return -1;
+    }
+    if (((unsigned short)reply[0] << 8 | (unsigned short)reply[1]) != query_id || (reply[3] & 0x0fU) != 0U) {
+        return -1;
+    }
+
+    answer_count = ((unsigned int)reply[6] << 8) | (unsigned int)reply[7];
+    question_count = ((unsigned int)reply[4] << 8) | (unsigned int)reply[5];
+    offset = 12U;
+    for (i = 0U; i < question_count; ++i) {
+        if (posix_dns_skip_name(reply, (size_t)reply_length, &offset) != 0 || offset + 4U > (size_t)reply_length) {
+            return -1;
+        }
+        offset += 4U;
+    }
+
+    for (i = 0U; i < answer_count && offset + 10U <= (size_t)reply_length; ++i) {
+        char owner_name[PLATFORM_NAME_CAPACITY];
+        char data_text[PLATFORM_NAME_CAPACITY];
+        unsigned short type;
+        unsigned short class_code;
+        unsigned int ttl;
+        unsigned short rdlength;
+        unsigned short preference = 0U;
+        int family = PLATFORM_NETWORK_FAMILY_ANY;
+        int keep_record = 0;
+
+        if (posix_dns_read_name(reply, (size_t)reply_length, offset, &offset, owner_name, sizeof(owner_name)) != 0 ||
+            offset + 10U > (size_t)reply_length) {
+            break;
+        }
+        type = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
+        class_code = (unsigned short)(((unsigned int)reply[offset + 2U] << 8) | (unsigned int)reply[offset + 3U]);
+        ttl = ((unsigned int)reply[offset + 4U] << 24) |
+              ((unsigned int)reply[offset + 5U] << 16) |
+              ((unsigned int)reply[offset + 6U] << 8) |
+              (unsigned int)reply[offset + 7U];
+        rdlength = (unsigned short)(((unsigned int)reply[offset + 8U] << 8) | (unsigned int)reply[offset + 9U]);
+        offset += 10U;
+        if (offset + rdlength > (size_t)reply_length) {
+            break;
+        }
+
+        data_text[0] = '\0';
+        if (class_code == 1U && type == PLATFORM_DNS_RECORD_A && rdlength == 4U) {
+            char address[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, reply + offset, address, sizeof(address)) != NULL) {
+                family = PLATFORM_NETWORK_FAMILY_IPV4;
+                rt_copy_string(data_text, sizeof(data_text), address);
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_AAAA && rdlength == 16U) {
+            char address[INET6_ADDRSTRLEN];
+            if (inet_ntop(AF_INET6, reply + offset, address, sizeof(address)) != NULL) {
+                family = PLATFORM_NETWORK_FAMILY_IPV6;
+                rt_copy_string(data_text, sizeof(data_text), address);
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && (type == PLATFORM_DNS_RECORD_NS || type == PLATFORM_DNS_RECORD_CNAME)) {
+            if (posix_dns_read_name(reply, (size_t)reply_length, offset, NULL, data_text, sizeof(data_text)) == 0) {
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_MX && rdlength >= 3U) {
+            preference = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
+            if (posix_dns_read_name(reply, (size_t)reply_length, offset + 2U, NULL, data_text, sizeof(data_text)) == 0) {
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_TXT) {
+            if (posix_dns_format_txt(reply + offset, rdlength, data_text, sizeof(data_text)) == 0) {
+                keep_record = 1;
+            }
+        }
+
+        if (keep_record && (type == query_type || type == PLATFORM_DNS_RECORD_CNAME)) {
+            (void)posix_add_dns_entry(
+                entries_out,
+                entry_capacity,
+                count_io,
+                owner_name[0] == '\0' ? name : owner_name,
+                family,
+                type,
+                data_text,
+                ttl,
+                preference
+            );
+        }
+        offset += rdlength;
+    }
+
+    return *count_io > 0U ? 0 : -1;
 }
 
 int platform_dns_lookup(
@@ -1767,116 +2166,12 @@ int platform_dns_lookup(
     }
 
     if (server != NULL && server[0] != '\0') {
-        int sock;
-        struct sockaddr_in server_addr;
-        unsigned char query[512];
-        unsigned char reply[512];
-        long reply_length;
-        size_t used = 12U;
-        unsigned short query_id = (unsigned short)(((unsigned int)platform_get_process_id() & 0xffffU) ^ 0x5a5aU);
-        size_t offset;
-        unsigned int answer_count;
-        unsigned int i;
-
-        memset(query, 0, sizeof(query));
-        query[0] = (unsigned char)(query_id >> 8);
-        query[1] = (unsigned char)(query_id & 0xffU);
-        query[2] = 0x01U;
-        query[5] = 0x01U;
-
-        {
-            const char *label = name;
-            while (*label != '\0') {
-                const char *end = label;
-                size_t length;
-                while (*end != '\0' && *end != '.') {
-                    end += 1;
-                }
-                length = (size_t)(end - label);
-                if (length == 0U || length > 63U || used + length + 2U >= sizeof(query)) {
-                    errno = EINVAL;
-                    return -1;
-                }
-                query[used++] = (unsigned char)length;
-                memcpy(query + used, label, length);
-                used += length;
-                label = (*end == '.') ? (end + 1) : end;
-            }
-            query[used++] = 0U;
-            query[used++] = 0x00U;
-            query[used++] = (unsigned char)(family_filter == PLATFORM_NETWORK_FAMILY_IPV6 ? 28U : 1U);
-            query[used++] = 0x00U;
-            query[used++] = 0x01U;
+        if (family_filter == PLATFORM_NETWORK_FAMILY_IPV4 || family_filter == PLATFORM_NETWORK_FAMILY_ANY) {
+            (void)posix_dns_query_records(server, port, name, PLATFORM_DNS_RECORD_A, entries_out, entry_capacity, &count);
         }
-
-        sock = posix_socket_open(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock < 0) {
-            return -1;
+        if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6 || family_filter == PLATFORM_NETWORK_FAMILY_ANY) {
+            (void)posix_dns_query_records(server, port, name, PLATFORM_DNS_RECORD_AAAA, entries_out, entry_capacity, &count);
         }
-        memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons((unsigned short)(port == 0U ? 53U : port));
-        if (inet_pton(AF_INET, server, &server_addr.sin_addr) != 1) {
-            close(sock);
-            errno = EINVAL;
-            return -1;
-        }
-        if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0 || send(sock, query, used, 0) < 0) {
-            close(sock);
-            return -1;
-        }
-        reply_length = recv(sock, reply, sizeof(reply), 0);
-        if (reply_length < 12) {
-            close(sock);
-            return -1;
-        }
-        close(sock);
-
-        answer_count = ((unsigned int)reply[6] << 8) | (unsigned int)reply[7];
-        offset = 12U;
-        while (offset < (size_t)reply_length && reply[offset] != 0U) {
-            if ((reply[offset] & 0xc0U) == 0xc0U) {
-                offset += 2U;
-                break;
-            }
-            offset += 1U + (size_t)reply[offset];
-        }
-        offset += 5U;
-
-        for (i = 0U; i < answer_count && offset + 12U <= (size_t)reply_length; ++i) {
-            unsigned short type;
-            unsigned short rdlength;
-            if ((reply[offset] & 0xc0U) == 0xc0U) {
-                offset += 2U;
-            } else {
-                while (offset < (size_t)reply_length && reply[offset] != 0U) {
-                    offset += 1U + (size_t)reply[offset];
-                }
-                offset += 1U;
-            }
-            if (offset + 10U > (size_t)reply_length) {
-                break;
-            }
-            type = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
-            rdlength = (unsigned short)(((unsigned int)reply[offset + 8U] << 8) | (unsigned int)reply[offset + 9U]);
-            offset += 10U;
-            if (offset + rdlength > (size_t)reply_length) {
-                break;
-            }
-            if (type == 1U && rdlength == 4U) {
-                char address[INET_ADDRSTRLEN];
-                if (inet_ntop(AF_INET, reply + offset, address, sizeof(address)) != NULL) {
-                    (void)posix_add_dns_entry(entries_out, entry_capacity, &count, name, PLATFORM_NETWORK_FAMILY_IPV4, address);
-                }
-            } else if (type == 28U && rdlength == 16U) {
-                char address[INET6_ADDRSTRLEN];
-                if (inet_ntop(AF_INET6, reply + offset, address, sizeof(address)) != NULL) {
-                    (void)posix_add_dns_entry(entries_out, entry_capacity, &count, name, PLATFORM_NETWORK_FAMILY_IPV6, address);
-                }
-            }
-            offset += rdlength;
-        }
-
         *count_out = count;
         return count > 0U ? 0 : -1;
     }
@@ -1914,11 +2209,61 @@ int platform_dns_lookup(
         }
 
         if (inet_ntop(current->ai_family, addr_ptr, address, sizeof(address)) != NULL) {
-            (void)posix_add_dns_entry(entries_out, entry_capacity, &count, name, result_family, address);
+            (void)posix_add_dns_entry(
+                entries_out,
+                entry_capacity,
+                &count,
+                name,
+                result_family,
+                result_family == PLATFORM_NETWORK_FAMILY_IPV6 ? PLATFORM_DNS_RECORD_AAAA : PLATFORM_DNS_RECORD_A,
+                address,
+                0U,
+                0U
+            );
         }
     }
 
     freeaddrinfo(results);
+    *count_out = count;
+    return count > 0U ? 0 : -1;
+}
+
+int platform_dns_query(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short record_type,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    size_t count = 0U;
+    int family_filter = PLATFORM_NETWORK_FAMILY_ANY;
+
+    if (name == NULL || entries_out == NULL || count_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *count_out = 0U;
+
+    if (record_type == PLATFORM_DNS_RECORD_A) {
+        family_filter = PLATFORM_NETWORK_FAMILY_IPV4;
+    } else if (record_type == PLATFORM_DNS_RECORD_AAAA) {
+        family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
+    }
+
+    if ((record_type == PLATFORM_DNS_RECORD_A || record_type == PLATFORM_DNS_RECORD_AAAA) &&
+        (server == NULL || server[0] == '\0') &&
+        platform_dns_lookup(NULL, port, name, family_filter, entries_out, entry_capacity, &count) == 0 &&
+        count > 0U) {
+        *count_out = count;
+        return 0;
+    }
+
+    count = 0U;
+    if (posix_dns_query_records(server, port, name, record_type, entries_out, entry_capacity, &count) != 0) {
+        return -1;
+    }
     *count_out = count;
     return count > 0U ? 0 : -1;
 }

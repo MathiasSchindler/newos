@@ -91,10 +91,13 @@ int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size
 int tool_parse_signal_name(const char *text, int *signal_out);
 const char *tool_signal_name(int signal_number);
 void tool_write_signal_list(int fd);
+int tool_starts_with(const char *text, const char *prefix);
+void tool_trim_whitespace(char *text);
 int tool_prompt_yes_no(const char *message, const char *path);
 const char *tool_base_name(const char *path);
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size);
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size);
+void tool_resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size);
 int tool_wildcard_match(const char *pattern, const char *text);
 int tool_regex_search(const char *pattern, const char *text, int ignore_case, size_t search_start, size_t *start_out, size_t *end_out);
 int tool_regex_replace(const char *pattern, const char *replacement, const char *input, int ignore_case, int global, char *output, size_t output_size, int *changed_out);
