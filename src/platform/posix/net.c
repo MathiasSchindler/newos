@@ -529,7 +529,7 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
 
     for (i = 0; i < fd_count; ++i) {
         poll_fds[i].fd = fds[i];
-        poll_fds[i].events = (short)(POLLIN | POLLERR | POLLHUP | POLLOUT);
+        poll_fds[i].events = (short)(POLLIN | POLLERR | POLLHUP);
         poll_fds[i].revents = 0;
         if (fds[i] >= 0) {
             has_valid_fd = 1;
@@ -553,7 +553,7 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
     }
 
     for (i = 0; i < fd_count; ++i) {
-        if (poll_fds[i].fd >= 0 && (poll_fds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLOUT)) != 0) {
+        if (poll_fds[i].fd >= 0 && (poll_fds[i].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
             *ready_index_out = i;
             if (poll_fds != stack_fds) {
                 free(poll_fds);

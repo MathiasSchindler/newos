@@ -218,6 +218,19 @@ printf 'GET /index.txt\r\n\r\n' | "$ROOT_DIR/build/netcat" -4 -n -w 1 127.0.0.1 
 assert_file_contains "$WORK_DIR/http_bad_request.out" '^HTTP/1\.1 400 Bad Request' "httpd should reject malformed requests without an HTTP version"
 printf 'GET /index.txt HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\nTEST' | "$ROOT_DIR/build/netcat" -4 -n -w 1 127.0.0.1 "$HTTP_PORT_STATIC" > "$WORK_DIR/http_body_header.out"
 assert_file_contains "$WORK_DIR/http_body_header.out" '^HTTP/1\.1 400 Bad Request' "httpd should reject GET requests with a request body framing header"
+mkfifo "$WORK_DIR/http_idle_pipe"
+"$ROOT_DIR/build/netcat" -4 -n 127.0.0.1 "$HTTP_PORT_STATIC" < "$WORK_DIR/http_idle_pipe" > "$WORK_DIR/http_idle_hold.out" 2>&1 &
+httpd_idle_pid=$!
+exec 9> "$WORK_DIR/http_idle_pipe"
+"$ROOT_DIR/build/sleep" 1
+http_idle_status=0
+"$ROOT_DIR/build/timeout" 3s "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_idle_fetch.txt" "http://127.0.0.1:$HTTP_PORT_STATIC/index.txt" > "$WORK_DIR/http_idle_fetch.out" 2>&1 || http_idle_status=$?
+exec 9>&-
+wait "$httpd_idle_pid" 2>/dev/null || true
+if [ "$http_idle_status" -ne 0 ]; then
+    fail "httpd should continue serving new clients while another connection stays idle"
+fi
+assert_file_contains "$WORK_DIR/http_idle_fetch.txt" '^hello from httpd$' "httpd should still serve static files while an idle client is connected"
 kill "$httpd_pid" 2>/dev/null || true
 wait "$httpd_pid" 2>/dev/null || true
 trap - EXIT INT TERM

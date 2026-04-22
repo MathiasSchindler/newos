@@ -300,6 +300,8 @@ int httpd_main(int argc, char **argv) {
         size_t ready_index = 0U;
         int poll_result;
 
+        httpd_close_idle_connections(connections, options.max_connections, options.idle_timeout_ms);
+
         fds[0] = listener_fd;
         connection_map[0] = -1;
         for (index = 0U; index < options.max_connections; ++index) {
@@ -310,7 +312,6 @@ int httpd_main(int argc, char **argv) {
             }
         }
 
-        httpd_close_idle_connections(connections, options.max_connections, options.idle_timeout_ms);
         poll_result = platform_poll_fds(fds, fd_count, &ready_index, 250);
         if (poll_result <= 0) {
             continue;

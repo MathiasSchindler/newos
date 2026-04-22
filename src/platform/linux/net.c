@@ -1451,7 +1451,7 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
     }
 
     for (i = 0U; i < fd_count; ++i) {
-        if ((poll_fds[i].revents & (LINUX_POLLIN | LINUX_POLLERR | LINUX_POLLHUP | LINUX_POLLOUT)) != 0) {
+        if ((poll_fds[i].revents & (LINUX_POLLIN | LINUX_POLLERR | LINUX_POLLHUP)) != 0) {
             *ready_index_out = i;
             return 1;
         }
