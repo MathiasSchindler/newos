@@ -237,6 +237,14 @@ int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char 
         return -1;
     }
 
+    if (posix_mark_fd_cloexec(fd) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(templ);
+        errno = saved_errno;
+        return -1;
+    }
+
     if (fchmod(fd, (mode_t)mode) != 0) {
         int saved_errno = errno;
         close(fd);

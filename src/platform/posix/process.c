@@ -1,6 +1,9 @@
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE 1
 #endif
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE 1
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform.h"
@@ -19,6 +22,9 @@
 #include <termios.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -79,6 +85,40 @@ static int posix_mark_fd_cloexec(int fd) {
         return 0;
     }
     return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static void posix_close_child_fds(void) {
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    int fd;
+
+#if defined(__linux__) && defined(SYS_close_range)
+    if (syscall(SYS_close_range, (unsigned int)(STDERR_FILENO + 1), ~0U, 0) == 0) {
+        return;
+    }
+#elif defined(__FreeBSD__)
+    closefrom(STDERR_FILENO + 1);
+    return;
+#endif
+
+    if (max_fd < 0 || max_fd > 65536L) {
+        max_fd = 1024L;
+    }
+
+    for (fd = STDERR_FILENO + 1; fd < max_fd; ++fd) {
+        (void)close(fd);
+    }
+}
+
+static int posix_clear_supplementary_groups(const char *username, gid_t target_gid) {
+    if (username != NULL && username[0] != '\0') {
+        return initgroups(username, target_gid);
+    }
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
+    return setgroups(0, NULL);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
 }
 
 static const PosixSignalEntry POSIX_SIGNAL_TABLE[] = {
@@ -378,10 +418,17 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
         return 0;
     }
 
+#ifdef O_CLOEXEC
+    fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+#else
     fd = open("/dev/urandom", O_RDONLY);
+#endif
     if (fd < 0) {
         return -1;
     }
+#ifndef O_CLOEXEC
+    (void)posix_mark_fd_cloexec(fd);
+#endif
 
     while (offset < count) {
         ssize_t bytes = read(fd, buffer + offset, count - offset);
@@ -503,6 +550,14 @@ int platform_create_pipe(int pipe_fds[2]) {
         errno = EINVAL;
         return -1;
     }
+#if defined(__linux__)
+    if (pipe2(pipe_fds, O_CLOEXEC) == 0) {
+        return 0;
+    }
+    if (errno != ENOSYS && errno != EINVAL) {
+        return -1;
+    }
+#endif
     if (pipe(pipe_fds) != 0) {
         return -1;
     }
@@ -565,12 +620,12 @@ int platform_drop_privileges(const char *username, const char *groupname) {
         }
     }
 
-    if (target_gid != current_gid) {
-        if (group_user_name != NULL && current_uid == 0U) {
-            if (initgroups(group_user_name, target_gid) != 0) {
-                return -1;
-            }
+    if (current_uid == 0U) {
+        if (posix_clear_supplementary_groups(group_user_name, target_gid) != 0) {
+            return -1;
         }
+    }
+    if (target_gid != current_gid) {
         if (setgid(target_gid) != 0) {
             return -1;
         }
@@ -582,7 +637,7 @@ int platform_drop_privileges(const char *username, const char *groupname) {
         }
     }
 
-    return 0;
+    return getuid() == target_uid && getgid() == target_gid ? 0 : -1;
 }
 
 int platform_spawn_process_ex(
@@ -670,6 +725,8 @@ int platform_spawn_process_ex(
         if (stdout_fd > STDERR_FILENO) {
             close(stdout_fd);
         }
+
+        posix_close_child_fds();
 
         execvp(argv[0], argv);
         _exit(127);

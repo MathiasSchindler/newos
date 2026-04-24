@@ -1,5 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#ifdef __linux__
+#define _GNU_SOURCE
+#endif
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE
 #endif
@@ -142,6 +145,26 @@ static int posix_socket_open(int family, int type, int protocol) {
 
 static int posix_socket_accept(int sock) {
     int client;
+
+#if defined(__linux__) && defined(SOCK_CLOEXEC)
+    client = accept4(sock, NULL, NULL, SOCK_CLOEXEC);
+    if (client >= 0) {
+#ifdef SO_NOSIGPIPE
+        int enabled = 1;
+
+        if (setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0) {
+            int saved_errno = errno;
+            close(client);
+            errno = saved_errno;
+            return -1;
+        }
+#endif
+        return client;
+    }
+    if (errno != ENOSYS && errno != EINVAL) {
+        return -1;
+    }
+#endif
 
     client = accept(sock, NULL, NULL);
     if (client < 0) {

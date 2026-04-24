@@ -282,6 +282,9 @@ int tool_canonicalize_path_policy(
         return tool_canonicalize_path_policy(resolved, 1, allow_missing, 0, buffer, buffer_size);
     }
 
+    if (rt_strlen(resolved) + 1U > buffer_size) {
+        return -1;
+    }
     rt_copy_string(buffer, buffer_size, resolved);
     return 0;
 }
