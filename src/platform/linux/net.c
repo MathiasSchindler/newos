@@ -507,7 +507,16 @@ static int linux_collect_interface_names(char names[][PLATFORM_NAME_CAPACITY], s
 }
 
 static int linux_open_socket(int family, int type, int protocol) {
-    long fd = linux_syscall3(LINUX_SYS_SOCKET, family, type, protocol);
+    long fd = linux_syscall3(LINUX_SYS_SOCKET, family, type | LINUX_SOCK_CLOEXEC, protocol);
+
+    if (fd == -LINUX_EINVAL) {
+        fd = linux_syscall3(LINUX_SYS_SOCKET, family, type, protocol);
+        if (fd >= 0 && linux_mark_fd_cloexec((int)fd) != 0) {
+            linux_syscall1(LINUX_SYS_CLOSE, fd);
+            return -1;
+        }
+    }
+
     return fd < 0 ? -1 : (int)fd;
 }
 
@@ -1413,7 +1422,14 @@ int platform_accept_tcp(int listener_fd, int *client_fd_out) {
         return -1;
     }
 
-    accepted = linux_syscall3(LINUX_SYS_ACCEPT, listener_fd, 0, 0);
+    accepted = linux_syscall4(LINUX_SYS_ACCEPT4, listener_fd, 0, 0, LINUX_SOCK_CLOEXEC);
+    if (accepted == -LINUX_EINVAL || accepted == -LINUX_ENOSYS) {
+        accepted = linux_syscall3(LINUX_SYS_ACCEPT, listener_fd, 0, 0);
+        if (accepted >= 0 && linux_mark_fd_cloexec((int)accepted) != 0) {
+            linux_syscall1(LINUX_SYS_CLOSE, accepted);
+            return -1;
+        }
+    }
     if (accepted < 0) {
         return -1;
     }
@@ -1505,7 +1521,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
             return -1;
         }
 
-        accepted = linux_syscall3(LINUX_SYS_ACCEPT, sock, 0, 0);
+        accepted = linux_syscall4(LINUX_SYS_ACCEPT4, sock, 0, 0, LINUX_SOCK_CLOEXEC);
+        if (accepted == -LINUX_EINVAL || accepted == -LINUX_ENOSYS) {
+            accepted = linux_syscall3(LINUX_SYS_ACCEPT, sock, 0, 0);
+            if (accepted >= 0 && linux_mark_fd_cloexec((int)accepted) != 0) {
+                linux_syscall1(LINUX_SYS_CLOSE, accepted);
+                accepted = -1;
+            }
+        }
         platform_close(sock);
         if (accepted < 0) {
             return -1;

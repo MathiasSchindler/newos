@@ -23,6 +23,7 @@
 #define LINUX_SYS_SETHOSTNAME 161
 #define LINUX_SYS_UTIMENSAT 88
 #define LINUX_SYS_DUP3 24
+#define LINUX_SYS_FCNTL 25
 #define LINUX_SYS_IOCTL 29
 #define LINUX_SYS_RT_SIGACTION 134
 #define LINUX_SYS_MKDIRAT 34
@@ -57,7 +58,10 @@
 #define LINUX_SYS_SHUTDOWN 210
 #define LINUX_SYS_CLONE 220
 #define LINUX_SYS_EXECVE 221
+#define LINUX_SYS_ACCEPT4 242
 #define LINUX_SYS_WAIT4 260
+#define LINUX_SYS_GETRANDOM 278
+#define LINUX_SYS_CLOSE_RANGE 436
 
 static inline long linux_syscall1(long number, long arg0) {
     register long x8 __asm__("x8") = number;

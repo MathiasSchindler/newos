@@ -105,6 +105,7 @@
     X("src/platform/linux/process.c") \
     X("src/platform/linux/identity.c") \
     X("src/platform/linux/net.c") \
+    X("src/platform/linux/stack_guard.c") \
     X("src/platform/linux/time.c") \
     X("src/arch/x86_64/linux/syscall_stubs.S")
 

@@ -55,6 +55,12 @@
 #define LINUX_SIG_IGN 1UL
 
 #define LINUX_EINTR 4
+#define LINUX_EINVAL 22
+#define LINUX_ENOSYS 38
+
+#define LINUX_F_GETFD 1
+#define LINUX_F_SETFD 2
+#define LINUX_FD_CLOEXEC 1
 
 #define LINUX_WNOHANG 1
 #define LINUX_TCGETS 0x5401
@@ -89,6 +95,8 @@
 #define LINUX_S_IFREG  0100000U
 #define LINUX_S_IFLNK  0120000U
 #define LINUX_S_IFSOCK 0140000U
+
+#define LINUX_SOCK_CLOEXEC LINUX_O_CLOEXEC
 
 #define LINUX_S_IRUSR 0400U
 #define LINUX_S_IWUSR 0200U
@@ -197,5 +205,22 @@ struct linux_sigaction {
 #define is_digit_string rt_is_digit_string
 #define parse_pid_value rt_parse_pid_value
 #define trim_newline rt_trim_newline
+
+static inline int linux_mark_fd_cloexec(int fd) {
+    long flags;
+
+    if (fd < 0) {
+        return -1;
+    }
+
+    flags = linux_syscall2(LINUX_SYS_FCNTL, fd, LINUX_F_GETFD);
+    if (flags < 0) {
+        return -1;
+    }
+    if ((flags & LINUX_FD_CLOEXEC) != 0) {
+        return 0;
+    }
+    return linux_syscall3(LINUX_SYS_FCNTL, fd, LINUX_F_SETFD, flags | LINUX_FD_CLOEXEC) < 0 ? -1 : 0;
+}
 
 #endif

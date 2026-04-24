@@ -2,6 +2,6 @@ build/
 plans/
 .DS_Store
 tests/tmp/
-temporary/
+temporary-please-ignore-for-now/
 experimental/ 
 services/httpd/log/

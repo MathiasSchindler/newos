@@ -246,6 +246,19 @@ static int linux_decode_wait_status(int status) {
     return 128 + (status & 0x7f);
 }
 
+static void linux_close_child_fds(void) {
+    long result = linux_syscall3(LINUX_SYS_CLOSE_RANGE, 3, ~0UL, 0);
+    int fd;
+
+    if (result >= 0) {
+        return;
+    }
+
+    for (fd = 3; fd < 1024; ++fd) {
+        (void)linux_syscall1(LINUX_SYS_CLOSE, fd);
+    }
+}
+
 int platform_parse_signal_name(const char *text, int *signal_out) {
     unsigned long long numeric = 0;
     size_t i;
@@ -441,9 +454,27 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
         return 0;
     }
 
+    while (offset < count) {
+        long bytes = linux_syscall3(LINUX_SYS_GETRANDOM, (long)(buffer + offset), (long)(count - offset), 0);
+
+        if (bytes == -LINUX_EINTR) {
+            continue;
+        }
+        if (bytes == -LINUX_ENOSYS || bytes == -LINUX_EINVAL) {
+            break;
+        }
+        if (bytes <= 0) {
+            return -1;
+        }
+        offset += (size_t)bytes;
+    }
+    if (offset == count) {
+        return 0;
+    }
+
     fd = (long)linux_random_fd;
     if (fd < 0) {
-        fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/dev/urandom", LINUX_O_RDONLY, 0);
+        fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)"/dev/urandom", LINUX_O_RDONLY | LINUX_O_CLOEXEC, 0);
         if (fd < 0) {
             return -1;
         }
@@ -501,7 +532,7 @@ int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
 }
 
 int platform_create_pipe(int pipe_fds[2]) {
-    return linux_syscall2(LINUX_SYS_PIPE2, (long)pipe_fds, 0) < 0 ? -1 : 0;
+    return linux_syscall2(LINUX_SYS_PIPE2, (long)pipe_fds, LINUX_O_CLOEXEC) < 0 ? -1 : 0;
 }
 
 int platform_drop_privileges(const char *username, const char *groupname) {
@@ -533,10 +564,10 @@ int platform_drop_privileges(const char *username, const char *groupname) {
         }
     }
 
+    if (current_uid == 0ULL) {
+        (void)linux_syscall2(LINUX_SYS_SETGROUPS, 0, 0);
+    }
     if (target_gid != current_gid) {
-        if (current_uid == 0ULL) {
-            (void)linux_syscall2(LINUX_SYS_SETGROUPS, 0, 0);
-        }
         if (linux_syscall1(LINUX_SYS_SETGID, (long)target_gid) < 0) {
             return -1;
         }
@@ -545,6 +576,10 @@ int platform_drop_privileges(const char *username, const char *groupname) {
         if (linux_syscall1(LINUX_SYS_SETUID, (long)target_uid) < 0) {
             return -1;
         }
+    }
+    if ((unsigned long long)linux_syscall1(LINUX_SYS_GETUID, 0) != target_uid ||
+        (unsigned long long)linux_syscall1(LINUX_SYS_GETGID, 0) != target_gid) {
+        return -1;
     }
 
     return 0;
@@ -632,6 +667,8 @@ int platform_spawn_process_ex(
         if (stdout_fd > 1) {
             linux_syscall1(LINUX_SYS_CLOSE, stdout_fd);
         }
+
+        linux_close_child_fds();
 
         if (linux_path_has_slash(argv[0])) {
             linux_try_exec(argv[0], argv);

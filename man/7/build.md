@@ -11,11 +11,10 @@ freestanding target. The same tools are compiled in both modes where practical,
 but they are linked against different backends and start-up paths.
 
 For most contributors, the usual loop is `make host` followed by `make test`.
-On Linux, `make freestanding` is the cross-compilation path for the libc-free
-Linux target and is mainly used to keep the syscall-only environment healthy and
-to catch regressions that do not show up in the hosted build. On macOS, the
-local default remains the hosted build unless an explicit alternative target is
-requested.
+On Linux, `make test` also builds and exercises the libc-free freestanding
+target so syscall-only regressions do not wait for a separate manual check. On
+macOS, the local default remains the hosted build unless an explicit
+alternative target is requested.
 
 ## HOSTED BUILD
 
@@ -39,6 +38,7 @@ The freestanding build is the Linux target without libc.
 - writes binaries to `build/freestanding-linux-$(TARGET_ARCH)/`
 - uses `src/platform/linux/` plus `src/arch/$(TARGET_ARCH)/linux/`
 - links with the minimal `crt0.S` entry path and direct syscalls
+- defaults to static PIE output with stack protector instrumentation
 - is where ABI, start-up, and portability mistakes become visible
 
 ## SELF-HOSTED BUILD
@@ -59,7 +59,7 @@ and anything that adds new low-level dependencies.
     make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
     make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
-    make test          — build host binaries and run tests/run_smoke_tests.sh
+    make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
     make clean         — remove build output
 
@@ -80,11 +80,11 @@ A common contributor sequence is:
 
     make host
     make test
-    make freestanding
     make selfhost
 
-Use the hosted build for quick iteration, then rerun the freestanding path when
-a change touches runtime code, platform code, startup code, or the compiler.
+Use the hosted build for quick iteration. `make test` is the broad regression
+gate; it now includes the freestanding smoke suite on platforms where
+freestanding Linux builds are available.
 
 ## SELF-HOSTED HOST BUILD STATUS
 
@@ -129,7 +129,6 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 - The Linux freestanding build currently assumes Clang plus `lld`
 - On macOS, the default build behavior favors local runnable binaries over a
   separate fully freestanding Darwin userland target
-- `make test` exercises the hosted binaries only
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but
   separate checks
