@@ -285,6 +285,9 @@ static void expression_to_string(const AwkExpression *expression,
                 rt_copy_string(buffer, buffer_size, state->filename);
             }
             break;
+        case AWK_EXPR_ARGC:
+            rt_unsigned_to_string(state != 0 ? state->argc : 0ULL, buffer, buffer_size);
+            break;
         case AWK_EXPR_VARIABLE:
             if (state != 0) {
                 rt_copy_string(buffer, buffer_size, lookup_variable_value(state, expression->text));
@@ -319,6 +322,9 @@ static unsigned long long expression_to_unsigned(const AwkExpression *expression
     if (expression->type == AWK_EXPR_FNR) {
         return record->fnr;
     }
+    if (expression->type == AWK_EXPR_ARGC) {
+        return state != 0 ? state->argc : 0ULL;
+    }
 
     expression_to_string(expression, record, state, buffer, sizeof(buffer));
     if (buffer[0] == '\0' || rt_parse_uint(buffer, &value) != 0) {
@@ -342,6 +348,9 @@ static long long expression_to_signed(const AwkExpression *expression, const Awk
     }
     if (expression->type == AWK_EXPR_FNR) {
         return (long long)record->fnr;
+    }
+    if (expression->type == AWK_EXPR_ARGC) {
+        return (long long)(state != 0 ? state->argc : 0ULL);
     }
 
     expression_to_string(expression, record, state, buffer, sizeof(buffer));

@@ -1111,14 +1111,20 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
     if (token.type == BC_TOKEN_IDENT) {
         if (bc_match(parser, BC_TOKEN_LPAREN)) {
             BcValue arg = bc_make_int(0);
+            BcValue second_arg = bc_make_int(0);
             int has_arg = 0;
+            int has_second_arg = 0;
 
             if (bc_peek_token(parser)->type != BC_TOKEN_RPAREN) {
                 has_arg = 1;
                 arg = bc_parse_expression(parser, evaluate, 0);
                 if (bc_match(parser, BC_TOKEN_COMMA)) {
-                    bc_set_error(parser, "too many function arguments");
-                    return bc_make_int(0);
+                    has_second_arg = 1;
+                    second_arg = bc_parse_expression(parser, evaluate, 0);
+                    if (bc_match(parser, BC_TOKEN_COMMA)) {
+                        bc_set_error(parser, "too many function arguments");
+                        return bc_make_int(0);
+                    }
                 }
             }
             if (bc_expect(parser, BC_TOKEN_RPAREN, "missing ')'") != 0) {
@@ -1130,6 +1136,25 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
             }
             if (!has_arg) {
                 bc_set_error(parser, "missing function argument");
+                return bc_make_int(0);
+            }
+            if (rt_strcmp(token.text, "min") == 0 || rt_strcmp(token.text, "max") == 0) {
+                int compare_result;
+                if (!has_second_arg) {
+                    bc_set_error(parser, "missing function argument");
+                    return bc_make_int(0);
+                }
+                compare_result = bc_compare_values(parser, arg, second_arg);
+                if (parser->error) {
+                    return bc_make_int(0);
+                }
+                if (rt_strcmp(token.text, "min") == 0) {
+                    return compare_result <= 0 ? arg : second_arg;
+                }
+                return compare_result >= 0 ? arg : second_arg;
+            }
+            if (has_second_arg) {
+                bc_set_error(parser, "too many function arguments");
                 return bc_make_int(0);
             }
             if (rt_strcmp(token.text, "sqrt") == 0) {

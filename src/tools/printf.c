@@ -251,6 +251,29 @@ static int write_padded_numeric_text(const char *text, int width, int left_align
     return write_padded_chunk(text, length, width, left_align, pad);
 }
 
+static int shell_quote_argument(const char *text, char *buffer, size_t buffer_size) {
+    size_t out = 0U;
+    size_t i = 0U;
+
+    if (buffer_size == 0U) {
+        return -1;
+    }
+    if (append_char_to_buffer(buffer, buffer_size, &out, '\'') != 0) {
+        return -1;
+    }
+    while (text != 0 && text[i] != '\0') {
+        if (text[i] == '\'') {
+            if (append_text_to_buffer(buffer, buffer_size, &out, "'\\''") != 0) {
+                return -1;
+            }
+        } else if (append_char_to_buffer(buffer, buffer_size, &out, text[i]) != 0) {
+            return -1;
+        }
+        i += 1U;
+    }
+    return append_char_to_buffer(buffer, buffer_size, &out, '\'');
+}
+
 static int parse_escape_sequence(const char *text, char *out_char, size_t *consumed_out, int *stop_output) {
     unsigned int value = 0U;
     size_t consumed = 1U;
@@ -755,6 +778,20 @@ int main(int argc, char **argv) {
                     }
                     if (stop_output) {
                         return 0;
+                    }
+                } else if (spec == 'q') {
+                    char quoted[512];
+                    size_t length;
+
+                    if (shell_quote_argument(arg, quoted, sizeof(quoted)) != 0) {
+                        return 1;
+                    }
+                    length = text_length(quoted);
+                    if (precision >= 0 && (size_t)precision < length) {
+                        length = (size_t)precision;
+                    }
+                    if (write_padded_chunk(quoted, length, width, left_align, pad) != 0) {
+                        return 1;
                     }
                 } else if (spec == 'd' || spec == 'i') {
                     long long signed_value = 0;

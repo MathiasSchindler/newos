@@ -7,7 +7,7 @@ od - dump file contents in octal
 ## SYNOPSIS
 
 ```
-od [file ...]
+od [-A d|o|x|n] [-t x1|o1|d1|u1|c] [-j SKIP] [-N COUNT] [-w WIDTH] [file ...]
 ```
 
 ## DESCRIPTION
@@ -20,25 +20,35 @@ value of each byte in the 16-byte row.
 
 - Reads from standard input when no files are given
 - Processes multiple files sequentially
-- Outputs byte offset (7-digit octal) followed by per-byte octal values
+- Outputs byte offsets in octal, decimal, hexadecimal, or no address column
+- Supports octal, hexadecimal, signed/unsigned decimal byte, and character views
+- Can skip an initial byte count, limit the number of bytes dumped, and adjust
+  bytes per output row
 - Prints a final line with the total byte count
 
 ## OPTIONS
 
-None. The current implementation does not accept format flags.
+| Flag | Description |
+|------|-------------|
+| `-A d|o|x|n` | Select decimal, octal, hexadecimal, or omitted addresses. |
+| `-t x1|o1|d1|u1|c` | Select one-byte hex, octal, decimal, unsigned decimal, or character output. |
+| `-j SKIP` | Skip SKIP bytes before dumping. |
+| `-N COUNT` | Dump at most COUNT bytes. |
+| `-w WIDTH` | Emit WIDTH bytes per output row. |
 
 ## LIMITATIONS
 
-- No `-t` (type string for output format: `x`, `d`, `u`, `c`, etc.).
-- No `-A` (address base selection).
-- No `-j` (skip bytes), `-N` (limit bytes), `-v` (no squeezing), `-w`
-  (words per line) options.
-- Output is always octal bytes, 16 per line; no multi-byte word grouping.
+- Type strings are limited to one-byte forms (`x1`, `o1`, `d1`, `u1`, `c`);
+  multi-byte word grouping and endian-aware numeric formats are not implemented.
+- No duplicate-line squeezing is performed, so `-v` is unnecessary and not
+  accepted.
 
 ## EXAMPLES
 
 ```
 od file.bin
+od -A x -t x1 -j 16 -N 32 file.bin
+od -A n -t c file.txt
 od < /dev/urandom | head -5
 echo "hello" | od
 ```

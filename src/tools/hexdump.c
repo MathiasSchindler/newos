@@ -32,13 +32,53 @@ static void write_hex_padded(unsigned long long value, unsigned int width) {
     }
 }
 
-static int hexdump_stream(int fd) {
+typedef struct {
+    unsigned long long skip;
+    unsigned long long limit;
+    int has_limit;
+} HexdumpOptions;
+
+static int discard_bytes(int fd, unsigned long long count) {
+    unsigned char buffer[256];
+
+    while (count > 0ULL) {
+        size_t want = count > sizeof(buffer) ? sizeof(buffer) : (size_t)count;
+        long got = platform_read(fd, buffer, want);
+        if (got < 0) {
+            return -1;
+        }
+        if (got == 0) {
+            return 0;
+        }
+        count -= (unsigned long long)got;
+    }
+    return 0;
+}
+
+static int hexdump_stream(int fd, const HexdumpOptions *options) {
     unsigned char buffer[16];
-    unsigned long long offset = 0ULL;
+    unsigned long long offset = options->skip;
+    unsigned long long remaining = options->limit;
     long bytes_read;
 
-    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+    if (discard_bytes(fd, options->skip) != 0) {
+        return -1;
+    }
+
+    while (!options->has_limit || remaining > 0ULL) {
+        size_t want = sizeof(buffer);
         long i;
+
+        if (options->has_limit && remaining < (unsigned long long)want) {
+            want = (size_t)remaining;
+        }
+        bytes_read = platform_read(fd, buffer, want);
+        if (bytes_read < 0) {
+            return -1;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
 
         write_hex_padded(offset, 8U);
         rt_write_cstr(1, "  ");
@@ -60,10 +100,9 @@ static int hexdump_stream(int fd) {
         }
         rt_write_line(1, "|");
         offset += (unsigned long long)bytes_read;
-    }
-
-    if (bytes_read < 0) {
-        return -1;
+        if (options->has_limit) {
+            remaining -= (unsigned long long)bytes_read;
+        }
     }
 
     write_hex_padded(offset, 8U);
@@ -71,15 +110,73 @@ static int hexdump_stream(int fd) {
     return 0;
 }
 
+static int parse_number(const char *text, unsigned long long *value_out) {
+    return rt_parse_uint(text, value_out);
+}
+
+static int parse_options(int argc, char **argv, HexdumpOptions *options, int *first_file) {
+    int i = 1;
+
+    options->skip = 0ULL;
+    options->limit = 0ULL;
+    options->has_limit = 0;
+
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        const char *arg = argv[i];
+        const char *value = 0;
+
+        if (rt_strcmp(arg, "--") == 0) {
+            i += 1;
+            break;
+        }
+        if (rt_strcmp(arg, "-C") == 0 || rt_strcmp(arg, "-v") == 0) {
+            i += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "-n") == 0 || rt_strcmp(arg, "-s") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            value = argv[++i];
+        } else if (arg[1] == 'n' || arg[1] == 's') {
+            value = arg + 2;
+        } else {
+            break;
+        }
+
+        if (arg[1] == 'n') {
+            if (parse_number(value, &options->limit) != 0) {
+                return -1;
+            }
+            options->has_limit = 1;
+        } else if (arg[1] == 's') {
+            if (parse_number(value, &options->skip) != 0) {
+                return -1;
+            }
+        }
+        i += 1;
+    }
+
+    *first_file = i;
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    HexdumpOptions options;
+    int first_file;
     int exit_code = 0;
     int i;
 
-    if (argc == 1) {
-        return hexdump_stream(0) == 0 ? 0 : 1;
+    if (parse_options(argc, argv, &options, &first_file) != 0) {
+        rt_write_line(2, "Usage: hexdump [-C] [-v] [-s OFFSET] [-n LENGTH] [file ...]");
+        return 1;
     }
 
-    for (i = 1; i < argc; ++i) {
+    if (first_file == argc) {
+        return hexdump_stream(0, &options) == 0 ? 0 : 1;
+    }
+
+    for (i = first_file; i < argc; ++i) {
         int fd;
         int should_close;
 
@@ -90,7 +187,7 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (hexdump_stream(fd) != 0) {
+        if (hexdump_stream(fd, &options) != 0) {
             rt_write_cstr(2, "hexdump: read error on ");
             rt_write_line(2, argv[i]);
             exit_code = 1;

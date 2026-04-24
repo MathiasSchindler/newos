@@ -23,3 +23,13 @@ assert_files_equal "$WORK_DIR/printf.expected" "$WORK_DIR/printf.out" "printf fo
 
 printf_cycle=$("$ROOT_DIR/build/printf" '%s:' A B C | tr -d '\r\n')
 assert_text_equals "$printf_cycle" 'A:B:C:' "printf format cycling failed"
+
+"$ROOT_DIR/build/printf" '%b' 'one\ntwo\n' > "$WORK_DIR/printf_b.out"
+printf 'one\ntwo\n' > "$WORK_DIR/printf_b.expected"
+assert_files_equal "$WORK_DIR/printf_b.expected" "$WORK_DIR/printf_b.out" "printf %b escape decoding failed"
+
+printf_stop=$("$ROOT_DIR/build/printf" '%b%s' 'stop\c' tail | tr -d '\r\n')
+assert_text_equals "$printf_stop" 'stop' "printf %b \\c did not stop output"
+
+printf_q=$("$ROOT_DIR/build/printf" '%q' "can't stop" | tr -d '\r\n')
+assert_text_equals "$printf_q" "'can'\''t stop'" "printf %q shell quoting failed"

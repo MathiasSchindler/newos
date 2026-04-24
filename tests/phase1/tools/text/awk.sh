@@ -40,6 +40,9 @@ records|3
 EOF
 assert_files_equal "$WORK_DIR/script.expected" "$WORK_DIR/script.out" "awk -F/-v/-f or FNR/FILENAME handling regressed"
 
+"$ROOT_DIR/build/awk" 'BEGIN { print ARGC }' "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/argc.out"
+assert_file_contains "$WORK_DIR/argc.out" '^3$' "awk ARGC did not include awk plus input files"
+
 printf 'alpha--beta--gamma' > "$WORK_DIR/records.txt"
 "$ROOT_DIR/build/awk" -v RS='--' -v ORS='|' '{ print $0 }' "$WORK_DIR/records.txt" > "$WORK_DIR/records.out"
 records_out=$(cat "$WORK_DIR/records.out")

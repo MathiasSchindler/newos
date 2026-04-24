@@ -7,7 +7,7 @@ hexdump - display file contents in hexadecimal
 ## SYNOPSIS
 
 ```
-hexdump [file ...]
+hexdump [-C] [-v] [-s OFFSET] [-n LENGTH] [file ...]
 ```
 
 ## DESCRIPTION
@@ -22,17 +22,24 @@ non-printable bytes replaced by `.`.
 - Reads from standard input when no files are given
 - Processes multiple files sequentially
 - Canonical format: offset, 16 hex bytes, ASCII panel
+- `-s OFFSET` skips bytes before dumping
+- `-n LENGTH` limits the number of bytes dumped
+- `-C` selects the canonical format explicitly; `-v` is accepted for
+  compatibility because this implementation never squeezes duplicate lines
 - Prints a final line with the total byte offset
 
 ## OPTIONS
 
-None. The current implementation outputs the canonical format only.
+| Flag | Description |
+|------|-------------|
+| `-C` | Use canonical hex+ASCII output. This is also the default. |
+| `-s OFFSET` | Skip OFFSET bytes before dumping. |
+| `-n LENGTH` | Dump at most LENGTH bytes. |
+| `-v` | Accepted for compatibility; duplicate lines are always shown. |
 
 ## LIMITATIONS
 
-- No `-C` / `-x` / `-d` / `-o` format selection flags.
-- No `-n LENGTH` (limit bytes), `-s OFFSET` (skip bytes), or `-v` (no
-  squeezing identical lines).
+- No `-x` / `-d` / `-o` alternate format selection flags.
 - Output format is fixed at canonical hex+ASCII (equivalent to `hexdump -C`
   in many systems).
 
@@ -40,6 +47,7 @@ None. The current implementation outputs the canonical format only.
 
 ```
 hexdump file.bin
+hexdump -C -s 128 -n 64 file.bin
 hexdump < /dev/urandom | head -4
 dd if=file.bin bs=1 skip=0 count=64 | hexdump
 ```

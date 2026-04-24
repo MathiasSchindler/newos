@@ -56,7 +56,8 @@ typedef enum {
     AWK_EXPR_FILENAME = 9,
     AWK_EXPR_RS = 10,
     AWK_EXPR_ORS = 11,
-    AWK_EXPR_VARIABLE = 12
+    AWK_EXPR_VARIABLE = 12,
+    AWK_EXPR_ARGC = 13
 } AwkExprType;
 
 typedef enum {
@@ -126,6 +127,7 @@ typedef struct {
     char rs[AWK_MAX_TEXT];
     char ors[AWK_MAX_TEXT];
     char filename[AWK_MAX_TEXT];
+    unsigned long long argc;
     unsigned long long fnr;
     AwkVariable variables[AWK_MAX_VARIABLES];
 } AwkState;

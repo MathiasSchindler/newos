@@ -192,6 +192,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    state.argc = (unsigned long long)(argc - argi + 1);
     init_record(&edge_record, "", 0, &state);
     if (execute_clauses(&program, AWK_CLAUSE_BEGIN, &edge_record, &state) != 0) {
         return 1;

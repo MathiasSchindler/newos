@@ -21,7 +21,8 @@ covers common field-processing tasks without pulling in a heavyweight runtime.
 - `BEGIN` and `END` blocks
 - Regex pattern matching with `/regex/` and `expr ~ /regex/`
 - Record and field access via `$0`, `$1` ... `$NF`
-- Built-in variables: `FS`, `OFS`, `RS`, `ORS`, `NR`, `FNR`, `NF`, `FILENAME`
+- Built-in variables: `FS`, `OFS`, `RS`, `ORS`, `NR`, `FNR`, `NF`, `FILENAME`,
+  `ARGC`
 - Simple variable assignment in the program and via `-v var=value`
 - `print` and `printf`
 - Inline programs or one/more `-f` program files
@@ -37,7 +38,7 @@ covers common field-processing tasks without pulling in a heavyweight runtime.
 ## LIMITATIONS
 
 - This is still a focused awk subset rather than full POSIX/GNU awk.
-- No user-defined functions, range patterns, `ARGC`/`ARGV`, or the full awk
+- No user-defined functions, range patterns, `ARGV`, or the full awk
   expression/control-flow language are implemented.
 - `RS` is treated as a literal record separator string rather than full awk
   regex/paragraph-mode semantics.
@@ -49,6 +50,7 @@ covers common field-processing tasks without pulling in a heavyweight runtime.
 awk '{ print $1 }' file.txt
 awk -F: '{ print $1 }' /etc/passwd
 awk -v prefix=tag 'FNR == 1 { print FILENAME } { print prefix, $1 }' file1 file2
+awk 'BEGIN { print ARGC }' file1 file2
 awk -f script.awk input.txt
 ```
 

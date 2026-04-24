@@ -285,6 +285,12 @@ static int parse_expression(const char *text, size_t *index, AwkExpression *expr
         return 0;
     }
 
+    if (starts_with_keyword(text, *index, "ARGC")) {
+        expression->type = AWK_EXPR_ARGC;
+        *index += 4;
+        return 0;
+    }
+
     if (starts_with_keyword(text, *index, "FS")) {
         expression->type = AWK_EXPR_FS;
         *index += 2;

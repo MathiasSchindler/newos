@@ -33,7 +33,8 @@ and `/* ... */` comments are ignored.
 - variable assignment and reuse within the current input
 - the special variables `scale` (division precision) and `last` (previous result)
 - base conversion via `ibase` and `obase` (2 through 16)
-- built-in functions `sqrt(x)`, `length(x)`, and `scale(x)`
+- built-in functions `sqrt(x)`, `length(x)`, `scale(x)`, `abs(x)`,
+  `min(x, y)`, and `max(x, y)`
 - `if`, `while`, and `for` statements with `{}` blocks
 - explicit output with the `print` keyword
 - multiple expressions via standard input, separated by newline or `;`
@@ -69,7 +70,7 @@ printf '5 + 7; last * 2\n' | bc
 printf '999999999999999999999999999999 + 1\n' | bc
 printf 'sum=0; for (i=0; i<4; i=i+1) sum=sum+i; sum\n' | bc
 printf 'obase=16; 255\n' | bc
-printf 'sqrt(81); 5 <= 3\n' | bc
+printf 'sqrt(81); abs(-12.5); max(3, 7); 5 <= 3\n' | bc
 bc -l 'pi > 3 && e > 2'
 ```
 
