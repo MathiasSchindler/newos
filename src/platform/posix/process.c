@@ -1,8 +1,13 @@
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#endif
+#if defined(__linux__)
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE 1
 #endif
-#if defined(__linux__) && !defined(_GNU_SOURCE)
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
+#endif
 #endif
 #define _POSIX_C_SOURCE 200809L
 
