@@ -26,7 +26,6 @@ for rel in $hosted_guard_files; do
         src/tools/mktemp.c|\
         src/tools/more.c|\
         src/tools/printenv.c|\
-        src/tools/sort.c|\
         src/tools/sh.c|\
         src/tools/test_impl.h|\
         src/tools/timeout.c|\

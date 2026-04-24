@@ -2,19 +2,12 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
-#include <stdlib.h>
-#define SORT_HOSTED_DYNAMIC 1
-#else
-#define SORT_HOSTED_DYNAMIC 0
-#endif
-
 #include <limits.h>
 
-#define SORT_FREESTANDING_MAX_LINES 8192U
-#define SORT_FREESTANDING_MAX_INPUTS 8U
-#define SORT_FREESTANDING_STORAGE_CAPACITY (2U * 1024U * 1024U)
-#define SORT_FREESTANDING_LINE_CAPACITY (64U * 1024U)
+#define SORT_MAX_LINES 8192U
+#define SORT_MAX_INPUTS 8U
+#define SORT_STORAGE_CAPACITY (2U * 1024U * 1024U)
+#define SORT_LINE_CAPACITY (64U * 1024U)
 
 #define SORT_COLLECT_READ_ERROR (-1)
 #define SORT_COLLECT_MEMORY_ERROR (-2)
@@ -45,9 +38,7 @@ typedef struct {
     char *data;
     size_t length;
     size_t capacity;
-#if !SORT_HOSTED_DYNAMIC
-    char fixed_data[SORT_FREESTANDING_LINE_CAPACITY];
-#endif
+    char fixed_data[SORT_LINE_CAPACITY];
 } SortLineBuilder;
 
 typedef struct {
@@ -68,13 +59,11 @@ typedef struct {
     SortLine **scratch;
     size_t count;
     size_t capacity;
-#if !SORT_HOSTED_DYNAMIC
-    SortLine fixed_lines[SORT_FREESTANDING_MAX_LINES];
-    SortLine *fixed_order[SORT_FREESTANDING_MAX_LINES];
-    SortLine *fixed_scratch[SORT_FREESTANDING_MAX_LINES];
-    char fixed_storage[SORT_FREESTANDING_STORAGE_CAPACITY];
+    SortLine fixed_lines[SORT_MAX_LINES];
+    SortLine *fixed_order[SORT_MAX_LINES];
+    SortLine *fixed_scratch[SORT_MAX_LINES];
+    char fixed_storage[SORT_STORAGE_CAPACITY];
     size_t storage_used;
-#endif
 } SortCollection;
 
 typedef struct {
@@ -146,10 +135,8 @@ static int parse_key_spec(const char *text, SortOptions *options) {
 
 static void line_builder_init(SortLineBuilder *builder) {
     rt_memset(builder, 0, sizeof(*builder));
-#if !SORT_HOSTED_DYNAMIC
     builder->data = builder->fixed_data;
     builder->capacity = sizeof(builder->fixed_data);
-#endif
 }
 
 static void line_builder_reset(SortLineBuilder *builder) {
@@ -157,35 +144,7 @@ static void line_builder_reset(SortLineBuilder *builder) {
 }
 
 static int line_builder_ensure_capacity(SortLineBuilder *builder, size_t needed) {
-#if SORT_HOSTED_DYNAMIC
-    size_t new_capacity;
-    char *resized;
-
-    if (needed <= builder->capacity) {
-        return 0;
-    }
-
-    new_capacity = builder->capacity > 0U ? builder->capacity : 256U;
-    while (new_capacity < needed) {
-        if (new_capacity > ((size_t)-1) / 2U) {
-            new_capacity = needed;
-            break;
-        }
-        new_capacity *= 2U;
-    }
-
-    resized = (char *)realloc(builder->data, new_capacity);
-    if (resized == 0) {
-        return -1;
-    }
-
-    builder->data = resized;
-    builder->capacity = new_capacity;
-    return 0;
-#else
-    (void)builder;
-    return needed <= SORT_FREESTANDING_LINE_CAPACITY ? 0 : -1;
-#endif
+    return needed <= builder->capacity ? 0 : -1;
 }
 
 static int line_builder_append_char(SortLineBuilder *builder, char ch) {
@@ -199,11 +158,7 @@ static int line_builder_append_char(SortLineBuilder *builder, char ch) {
 }
 
 static void line_builder_free(SortLineBuilder *builder) {
-#if SORT_HOSTED_DYNAMIC
-    free(builder->data);
-#else
     (void)builder;
-#endif
 }
 
 static int line_builder_copy_text(SortLineBuilder *builder, const char *text, size_t length) {
@@ -288,81 +243,31 @@ static int sort_input_read_next(SortInput *input) {
 
 static void sort_collection_init(SortCollection *collection) {
     rt_memset(collection, 0, sizeof(*collection));
-#if !SORT_HOSTED_DYNAMIC
     collection->lines = collection->fixed_lines;
     collection->order = collection->fixed_order;
     collection->scratch = collection->fixed_scratch;
-    collection->capacity = SORT_FREESTANDING_MAX_LINES;
-#endif
+    collection->capacity = SORT_MAX_LINES;
 }
 
 static int sort_collection_reserve(SortCollection *collection, size_t needed) {
-#if SORT_HOSTED_DYNAMIC
-    size_t new_capacity;
-    SortLine *new_lines;
-    SortLine **new_order;
-    SortLine **new_scratch;
-
-    if (needed <= collection->capacity) {
-        return 0;
-    }
-
-    new_capacity = collection->capacity > 0U ? collection->capacity : 256U;
-    while (new_capacity < needed) {
-        if (new_capacity > ((size_t)-1) / 2U) {
-            new_capacity = needed;
-            break;
-        }
-        new_capacity *= 2U;
-    }
-
-    new_lines = (SortLine *)realloc(collection->lines, new_capacity * sizeof(SortLine));
-    if (new_lines == 0) {
-        return -1;
-    }
-
-    new_order = (SortLine **)realloc(collection->order, new_capacity * sizeof(SortLine *));
-    if (new_order == 0) {
-        collection->lines = new_lines;
-        return -1;
-    }
-
-    new_scratch = (SortLine **)realloc(collection->scratch, new_capacity * sizeof(SortLine *));
-    if (new_scratch == 0) {
-        collection->lines = new_lines;
-        collection->order = new_order;
-        return -1;
-    }
-
-    collection->lines = new_lines;
-    collection->order = new_order;
-    collection->scratch = new_scratch;
-    collection->capacity = new_capacity;
-    return 0;
-#else
     return needed <= collection->capacity ? 0 : -1;
-#endif
 }
 
 static int sort_collection_store_line(SortCollection *collection, const char *text, size_t length) {
     char *stored_text;
+    size_t remaining;
 
-    if (sort_collection_reserve(collection, collection->count + 1U) != 0) {
+    if (collection->count >= collection->capacity ||
+        sort_collection_reserve(collection, collection->count + 1U) != 0) {
         return -1;
     }
 
-#if SORT_HOSTED_DYNAMIC
-    stored_text = (char *)malloc(length + 1U);
-    if (stored_text == 0) {
-        return -1;
-    }
-#else
-    if (collection->storage_used + length + 1U > sizeof(collection->fixed_storage)) {
+    remaining = sizeof(collection->fixed_storage) - collection->storage_used;
+    if (length >= remaining) {
         return -1;
     }
     stored_text = collection->fixed_storage + collection->storage_used;
     collection->storage_used += length + 1U;
-#endif
 
     if (length > 0U) {
         memcpy(stored_text, text, length);
@@ -376,18 +281,7 @@ static int sort_collection_store_line(SortCollection *collection, const char *te
 }
 
 static void sort_collection_free(SortCollection *collection) {
-#if SORT_HOSTED_DYNAMIC
-    size_t i;
-
-    for (i = 0; i < collection->count; ++i) {
-        free(collection->lines[i].text);
-    }
-    free(collection->lines);
-    free(collection->order);
-    free(collection->scratch);
-#else
     (void)collection;
-#endif
 }
 
 static int collect_lines_from_fd(int fd, SortCollection *collection) {
@@ -912,31 +806,18 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
     int i;
     SortLineBuilder previous_builder;
     SortLine previous_line;
-#if SORT_HOSTED_DYNAMIC
-    SortInput *inputs = 0;
-#else
-    SortInput fixed_inputs[SORT_FREESTANDING_MAX_INPUTS];
+    SortInput fixed_inputs[SORT_MAX_INPUTS];
     SortInput *inputs = fixed_inputs;
-#endif
     int have_previous = 0;
 
     rt_memset(&previous_line, 0, sizeof(previous_line));
     line_builder_init(&previous_builder);
 
-#if SORT_HOSTED_DYNAMIC
-    inputs = (SortInput *)calloc((size_t)input_count, sizeof(SortInput));
-    if (inputs == 0) {
-        line_builder_free(&previous_builder);
-        rt_write_line(2, "sort: input too large for available memory");
-        return 1;
-    }
-#else
-    if ((size_t)input_count > SORT_FREESTANDING_MAX_INPUTS) {
+    if ((size_t)input_count > SORT_MAX_INPUTS) {
         line_builder_free(&previous_builder);
         rt_write_line(2, "sort: too many inputs for merge mode");
         return 1;
     }
-#endif
 
     for (i = 0; i < input_count; ++i) {
         const char *path = (argi == argc) ? "-" : argv[argi + i];
@@ -959,9 +840,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
             rt_write_line(2, path);
             sort_input_close(&inputs[i]);
             line_builder_free(&previous_builder);
-#if SORT_HOSTED_DYNAMIC
-            free(inputs);
-#endif
             return 1;
         }
         if (status == SORT_COLLECT_MEMORY_ERROR) {
@@ -969,9 +847,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
             rt_write_line(2, path);
             sort_input_close(&inputs[i]);
             line_builder_free(&previous_builder);
-#if SORT_HOSTED_DYNAMIC
-            free(inputs);
-#endif
             return 1;
         }
     }
@@ -999,9 +874,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                 for (i = 0; i < input_count; ++i) {
                     sort_input_close(&inputs[i]);
                 }
-#if SORT_HOSTED_DYNAMIC
-                free(inputs);
-#endif
                 return 1;
             }
             if (copy_sort_line(&previous_builder, &previous_line, &inputs[best_index].current) != 0) {
@@ -1010,9 +882,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                 for (i = 0; i < input_count; ++i) {
                     sort_input_close(&inputs[i]);
                 }
-#if SORT_HOSTED_DYNAMIC
-                free(inputs);
-#endif
                 return 1;
             }
             have_previous = 1;
@@ -1028,9 +897,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                     for (i = 0; i < input_count; ++i) {
                         sort_input_close(&inputs[i]);
                     }
-#if SORT_HOSTED_DYNAMIC
-                    free(inputs);
-#endif
                     return 1;
                 }
                 if (status == SORT_COLLECT_MEMORY_ERROR) {
@@ -1040,9 +906,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                     for (i = 0; i < input_count; ++i) {
                         sort_input_close(&inputs[i]);
                     }
-#if SORT_HOSTED_DYNAMIC
-                    free(inputs);
-#endif
                     return 1;
                 }
                 inputs[best_index].have_current = 0;
@@ -1055,9 +918,6 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
     for (i = 0; i < input_count; ++i) {
         sort_input_close(&inputs[i]);
     }
-#if SORT_HOSTED_DYNAMIC
-    free(inputs);
-#endif
     return *exit_code;
 }
 
@@ -1078,10 +938,11 @@ static int output_conflicts_with_inputs(const char *output_path, int argc, char 
 }
 
 int main(int argc, char **argv) {
-    SortCollection collection;
+    static SortCollection collection;
     int exit_code = 0;
     int argi = 1;
     int i;
+    size_t line_index;
     SortOptions options;
     int output_fd = 1;
     int close_output = 0;
@@ -1232,8 +1093,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    for (i = 0; i < (int)collection.count; ++i) {
-        collection.order[i] = &collection.lines[i];
+    for (line_index = 0U; line_index < collection.count; ++line_index) {
+        collection.order[line_index] = &collection.lines[line_index];
     }
 
     sort_lines(&collection, &options);

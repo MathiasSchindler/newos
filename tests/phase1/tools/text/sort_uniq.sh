@@ -97,3 +97,28 @@ then
     fail "sort accepted an overflowing key specification"
 fi
 assert_file_contains "$WORK_DIR/sort_key.err" '^Usage: sort ' "sort did not reject an overflowing key specification"
+
+: > "$WORK_DIR/too_many_lines.txt"
+value=8193
+while [ "$value" -ge 1 ]; do
+    printf '%s\n' "$value" >> "$WORK_DIR/too_many_lines.txt"
+    value=$((value - 1))
+done
+if "$ROOT_DIR/build/sort" "$WORK_DIR/too_many_lines.txt" > "$WORK_DIR/too_many_lines.out" 2> "$WORK_DIR/too_many_lines.err"
+then
+    fail "sort accepted more buffered lines than its bounded storage allows"
+fi
+assert_file_contains "$WORK_DIR/too_many_lines.err" '^sort: input too large while reading ' "sort did not report bounded storage exhaustion"
+
+merge_args=""
+value=1
+while [ "$value" -le 9 ]; do
+    printf '%s\n' "$value" > "$WORK_DIR/merge_limit_$value.txt"
+    merge_args="$merge_args $WORK_DIR/merge_limit_$value.txt"
+    value=$((value + 1))
+done
+if "$ROOT_DIR/build/sort" -m $merge_args > "$WORK_DIR/merge_limit.out" 2> "$WORK_DIR/merge_limit.err"
+then
+    fail "sort -m accepted more inputs than its bounded merge state allows"
+fi
+assert_file_contains "$WORK_DIR/merge_limit.err" '^sort: too many inputs for merge mode$' "sort -m did not report bounded merge input exhaustion"

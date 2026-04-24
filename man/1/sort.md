@@ -51,6 +51,10 @@ memory-friendlier merge operation for already sorted inputs.
   `uniq` when you need adjacent-group counts.
 - Normal sorting still buffers input in memory before writing output, although
   `-m` and `-c` now avoid that for common streaming workflows.
+- Buffered sorting is intentionally bounded to keep hosted and freestanding
+  behavior identical; very large inputs fail with an "input too large" error.
+- Merge mode keeps fixed per-input state and currently accepts up to eight input
+  files at a time.
 - No `--parallel`, month sort, locale collation, or GNU-style human-numeric sort
   modes are implemented.
 
