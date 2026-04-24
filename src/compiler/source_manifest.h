@@ -64,6 +64,11 @@
     X("src/shared/archive_util.c") \
     X("src/shared/bignum.c")
 
+/* ── image metadata utilities ───────────────────────────────────────────── */
+
+#define FOREACH_IMAGE_SOURCE(X) \
+    X("src/shared/image/image.c")
+
 /* ── crypto primitives ───────────────────────────────────────────────────── */
 
 #define FOREACH_CRYPTO_SOURCE(X) \
