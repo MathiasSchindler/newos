@@ -34,6 +34,8 @@ static void copy_member_result_type(const BackendState *state,
                                     size_t buffer_size);
 static void copy_dereferenced_type(const char *base_type, char *buffer, size_t buffer_size);
 static int emit_named_call(ExprParser *parser, const char *name, const char *object_target_name);
+static int emit_move_call_arguments(BackendState *state, int arg_count);
+static int emit_cleanup_call_arguments(BackendState *state, int arg_count);
 static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size);
 static int emit_scale_current_value(BackendState *state, int scale);
 static int emit_scale_top_of_stack(BackendState *state, int scale);
@@ -1477,14 +1479,78 @@ static int expr_parse_call_arguments(ExprParser *parser, int *arg_count_out, int
     return 0;
 }
 
-static int emit_named_call(ExprParser *parser, const char *name, const char *object_target_name) {
+static int emit_move_call_arguments(BackendState *state, int arg_count) {
     static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
+    int register_arg_count = backend_register_arg_limit(state);
+    int stack_arg_count;
+    int stack_slot_size = backend_stack_slot_size(state);
+    int reg_index;
+
+    if (arg_count < register_arg_count) {
+        register_arg_count = arg_count;
+    }
+    stack_arg_count = arg_count - register_arg_count;
+
+    for (reg_index = 0; reg_index < register_arg_count; ++reg_index) {
+        char line[64];
+        unsigned long long offset_bytes =
+            (unsigned long long)(stack_arg_count + (register_arg_count - 1 - reg_index)) *
+            (unsigned long long)stack_slot_size;
+        char offset_text[32];
+        const char *reg = backend_is_aarch64(state) ? aarch64_arg_regs[reg_index] : x86_arg_regs[reg_index];
+
+        rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
+        if (backend_is_aarch64(state)) {
+            rt_copy_string(line, sizeof(line), "ldr ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp, #");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
+        } else {
+            rt_copy_string(line, sizeof(line), "movq ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rsp), ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+        }
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int emit_cleanup_call_arguments(BackendState *state, int arg_count) {
+    char cleanup[64];
+    int register_arg_count = backend_register_arg_limit(state);
+    int stack_arg_count;
+    unsigned long long cleanup_bytes;
+    char digits[32];
+
+    if (arg_count <= 0) {
+        return 0;
+    }
+    if (arg_count < register_arg_count) {
+        register_arg_count = arg_count;
+    }
+    stack_arg_count = arg_count - register_arg_count;
+    cleanup_bytes = (unsigned long long)(arg_count + (backend_is_aarch64(state) ? 0 : stack_arg_count)) *
+                    (unsigned long long)backend_stack_slot_size(state);
+    rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
+    if (backend_is_aarch64(state)) {
+        rt_copy_string(cleanup, sizeof(cleanup), "add sp, sp, #");
+        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
+    } else {
+        rt_copy_string(cleanup, sizeof(cleanup), "addq $");
+        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
+        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), ", %rsp");
+    }
+    return emit_instruction(state, cleanup);
+}
+
+static int emit_named_call(ExprParser *parser, const char *name, const char *object_target_name) {
     int arg_count = 0;
     int hidden_arg_count = 0;
-    int register_arg_count = backend_register_arg_limit(parser->state);
-    int stack_arg_count = 0;
-    int stack_slot_size = backend_stack_slot_size(parser->state);
     int returns_object = function_returns_object(parser->state, name);
     const char *return_type = function_return_type(parser->state, name);
     const char *result_object = object_target_name;
@@ -1516,52 +1582,33 @@ static int emit_named_call(ExprParser *parser, const char *name, const char *obj
     }
 
     arg_count += hidden_arg_count;
-    if (arg_count < register_arg_count) {
-        register_arg_count = arg_count;
+    if (emit_move_call_arguments(parser->state, arg_count) != 0) {
+        return -1;
     }
-    stack_arg_count = arg_count - register_arg_count;
-
-    {
-        int reg_index;
-        for (reg_index = 0; reg_index < register_arg_count; ++reg_index) {
-            char line[64];
-            unsigned long long offset_bytes =
-                (unsigned long long)(stack_arg_count + (register_arg_count - 1 - reg_index)) *
-                (unsigned long long)stack_slot_size;
-            char offset_text[32];
-            const char *reg = backend_is_aarch64(parser->state) ? aarch64_arg_regs[reg_index] : x86_arg_regs[reg_index];
-            rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
-            if (backend_is_aarch64(parser->state)) {
-                rt_copy_string(line, sizeof(line), "ldr ");
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp, #");
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
-            } else {
-                rt_copy_string(line, sizeof(line), "movq ");
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rsp), ");
-                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-            }
-            if (emit_instruction(parser->state, line) != 0) {
-                return -1;
-            }
-        }
-    }
-    if (!backend_is_aarch64(parser->state) && stack_arg_count > 0) {
+    if (!backend_is_aarch64(parser->state)) {
         int stack_index;
-        for (stack_index = 0; stack_index < stack_arg_count; ++stack_index) {
-            char reload[64];
-            char offset_text[32];
-            unsigned long long offset_bytes = (unsigned long long)(stack_index * 2) *
-                                              (unsigned long long)stack_slot_size;
-            rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
-            rt_copy_string(reload, sizeof(reload), "movq ");
-            rt_copy_string(reload + rt_strlen(reload), sizeof(reload) - rt_strlen(reload), offset_text);
-            rt_copy_string(reload + rt_strlen(reload), sizeof(reload) - rt_strlen(reload), "(%rsp), %rax");
-            if (emit_instruction(parser->state, reload) != 0 ||
-                emit_instruction(parser->state, "pushq %rax") != 0) {
-                return -1;
+        int register_arg_count = backend_register_arg_limit(parser->state);
+        int stack_arg_count;
+        int stack_slot_size = backend_stack_slot_size(parser->state);
+
+        if (arg_count < register_arg_count) {
+            register_arg_count = arg_count;
+        }
+        stack_arg_count = arg_count - register_arg_count;
+        if (stack_arg_count > 0) {
+            for (stack_index = 0; stack_index < stack_arg_count; ++stack_index) {
+                char reload[64];
+                char offset_text[32];
+                unsigned long long offset_bytes = (unsigned long long)(stack_index * 2) *
+                                                  (unsigned long long)stack_slot_size;
+                rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
+                rt_copy_string(reload, sizeof(reload), "movq ");
+                rt_copy_string(reload + rt_strlen(reload), sizeof(reload) - rt_strlen(reload), offset_text);
+                rt_copy_string(reload + rt_strlen(reload), sizeof(reload) - rt_strlen(reload), "(%rsp), %rax");
+                if (emit_instruction(parser->state, reload) != 0 ||
+                    emit_instruction(parser->state, "pushq %rax") != 0) {
+                    return -1;
+                }
             }
         }
     }
@@ -1581,24 +1628,8 @@ static int emit_named_call(ExprParser *parser, const char *name, const char *obj
         }
     }
 
-    if (arg_count > 0) {
-        char cleanup[64];
-        unsigned long long cleanup_bytes =
-            (unsigned long long)(arg_count + (backend_is_aarch64(parser->state) ? 0 : stack_arg_count)) *
-            (unsigned long long)stack_slot_size;
-        char digits[32];
-        rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
-        if (backend_is_aarch64(parser->state)) {
-            rt_copy_string(cleanup, sizeof(cleanup), "add sp, sp, #");
-            rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
-        } else {
-            rt_copy_string(cleanup, sizeof(cleanup), "addq $");
-            rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
-            rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), ", %rsp");
-        }
-        if (emit_instruction(parser->state, cleanup) != 0) {
-            return -1;
-        }
+    if (emit_cleanup_call_arguments(parser->state, arg_count) != 0) {
+        return -1;
     }
 
     if (returns_object) {
@@ -1648,11 +1679,6 @@ static int expr_parse_primary(ExprParser *parser) {
 
             {
                 int arg_count = 0;
-                int register_arg_count = backend_register_arg_limit(parser->state);
-                int stack_arg_count = 0;
-                int stack_slot_size = backend_stack_slot_size(parser->state);
-                static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-                static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
 
                 (void)expr_match_punct(parser, "(");
                 if (!(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
@@ -1664,37 +1690,8 @@ static int expr_parse_primary(ExprParser *parser) {
                     return -1;
                 }
 
-                if (arg_count < register_arg_count) {
-                    register_arg_count = arg_count;
-                }
-                stack_arg_count = arg_count - register_arg_count;
-
-                {
-                    int reg_index;
-                    for (reg_index = 0; reg_index < register_arg_count; ++reg_index) {
-                        char line[64];
-                        unsigned long long offset_bytes =
-                            (unsigned long long)(stack_arg_count + (register_arg_count - 1 - reg_index)) *
-                            (unsigned long long)stack_slot_size;
-                        char offset_text[32];
-                        const char *reg = backend_is_aarch64(parser->state) ? aarch64_arg_regs[reg_index] : x86_arg_regs[reg_index];
-                        rt_unsigned_to_string(offset_bytes, offset_text, sizeof(offset_text));
-                        if (backend_is_aarch64(parser->state)) {
-                            rt_copy_string(line, sizeof(line), "ldr ");
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp, #");
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
-                        } else {
-                            rt_copy_string(line, sizeof(line), "movq ");
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rsp), ");
-                            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
-                        }
-                        if (emit_instruction(parser->state, line) != 0) {
-                            return -1;
-                        }
-                    }
+                if (emit_move_call_arguments(parser->state, arg_count) != 0) {
+                    return -1;
                 }
 
                 if (emit_load_name_into_register(parser->state, name, backend_is_aarch64(parser->state) ? "x16" : "%r11") != 0) {
@@ -1707,24 +1704,8 @@ static int expr_parse_primary(ExprParser *parser) {
                 if (emit_instruction(parser->state, backend_is_aarch64(parser->state) ? "blr x16" : "call *%r11") != 0) {
                     return -1;
                 }
-                if (arg_count > 0) {
-                    char cleanup[64];
-                    unsigned long long cleanup_bytes =
-                        (unsigned long long)(arg_count + (backend_is_aarch64(parser->state) ? 0 : stack_arg_count)) *
-                        (unsigned long long)stack_slot_size;
-                    char digits[32];
-                    rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
-                    if (backend_is_aarch64(parser->state)) {
-                        rt_copy_string(cleanup, sizeof(cleanup), "add sp, sp, #");
-                        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
-                    } else {
-                        rt_copy_string(cleanup, sizeof(cleanup), "addq $");
-                        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), digits);
-                        rt_copy_string(cleanup + rt_strlen(cleanup), sizeof(cleanup) - rt_strlen(cleanup), ", %rsp");
-                    }
-                    if (emit_instruction(parser->state, cleanup) != 0) {
-                        return -1;
-                    }
+                if (emit_cleanup_call_arguments(parser->state, arg_count) != 0) {
+                    return -1;
                 }
             }
 

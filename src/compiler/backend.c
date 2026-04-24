@@ -447,6 +447,42 @@ static void remember_local_index(BackendState *state, const char *name, unsigned
     }
 }
 
+static int find_string_indexed(const BackendState *state, const char *text) {
+    size_t bucket = backend_index_bucket(backend_hash_text(text), COMPILER_BACKEND_STRING_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_STRING_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->string_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->string_count && names_equal(state->strings[index].text, text)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_STRING_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_string_index(BackendState *state, const char *text, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_text(text), COMPILER_BACKEND_STRING_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_STRING_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->string_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < state->string_count && names_equal(state->strings[existing].text, text))) {
+            state->string_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_STRING_INDEX_CAPACITY - 1U);
+    }
+}
+
 static int find_aggregate_member_indexed(const BackendState *state, const char *aggregate_name, const char *member_name) {
     size_t bucket = backend_index_bucket(backend_hash_pair(aggregate_name, member_name), COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY);
     size_t probe;
@@ -1287,7 +1323,12 @@ int emit_pop_address_and_store(BackendState *state, int byte_value) {
 }
 
 int find_string_literal(const BackendState *state, const char *text) {
+    int indexed = find_string_indexed(state, text);
     size_t i;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
     for (i = 0; i < state->string_count; ++i) {
         if (names_equal(state->strings[i].text, text)) {
             return (int)i;
@@ -1298,6 +1339,7 @@ int find_string_literal(const BackendState *state, const char *text) {
 
 int add_string_literal(BackendState *state, const char *text) {
     char digits[32];
+    unsigned int index;
     int existing = find_string_literal(state, text);
 
     if (existing >= 0) {
@@ -1308,14 +1350,16 @@ int add_string_literal(BackendState *state, const char *text) {
         return -1;
     }
 
-    rt_copy_string(state->strings[state->string_count].label, sizeof(state->strings[state->string_count].label), "str");
-    rt_unsigned_to_string((unsigned long long)state->string_count, digits, sizeof(digits));
-    rt_copy_string(state->strings[state->string_count].label + rt_strlen(state->strings[state->string_count].label),
-                   sizeof(state->strings[state->string_count].label) - rt_strlen(state->strings[state->string_count].label),
+    index = (unsigned int)state->string_count;
+    rt_copy_string(state->strings[index].label, sizeof(state->strings[index].label), "str");
+    rt_unsigned_to_string((unsigned long long)index, digits, sizeof(digits));
+    rt_copy_string(state->strings[index].label + 3U,
+                   sizeof(state->strings[index].label) - 3U,
                    digits);
-    rt_copy_string(state->strings[state->string_count].text, sizeof(state->strings[state->string_count].text), text);
+    rt_copy_string(state->strings[index].text, sizeof(state->strings[index].text), text);
+    remember_string_index(state, text, index);
     state->string_count += 1U;
-    return (int)(state->string_count - 1U);
+    return (int)index;
 }
 
 static int emit_darwin_global_address(BackendState *state, const char *symbol, const char *dst_reg) {

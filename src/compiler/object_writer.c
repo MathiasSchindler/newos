@@ -14,6 +14,7 @@ typedef long long int64_t;
 #define OBJECT_WRITER_MAX_TEXT 262144
 #define OBJECT_WRITER_MAX_DATA 65536
 #define OBJECT_WRITER_MAX_SYMBOLS 1024
+#define OBJECT_WRITER_SYMBOL_INDEX_CAPACITY 2048
 #define OBJECT_WRITER_MAX_LABELS 2048
 #define OBJECT_WRITER_MAX_FIXUPS 4096
 #define OBJECT_WRITER_MAX_RELOCS 4096
@@ -95,6 +96,7 @@ typedef struct {
     size_t data_size;
     size_t bss_size;
     ObjectSymbol symbols[OBJECT_WRITER_MAX_SYMBOLS];
+    unsigned int symbol_index[OBJECT_WRITER_SYMBOL_INDEX_CAPACITY];
     size_t symbol_count;
     ObjectLabel labels[OBJECT_WRITER_MAX_LABELS];
     size_t label_count;
@@ -312,8 +314,63 @@ static int append_u64(ObjectAssembler *assembler, ObjectSection section, uint64_
     return -1;
 }
 
+static unsigned int object_hash_text(const char *text) {
+    unsigned int hash = 2166136261U;
+
+    while (text != 0 && *text != '\0') {
+        hash ^= (unsigned int)(unsigned char)*text++;
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+static size_t object_index_bucket(unsigned int hash, size_t capacity) {
+    return (size_t)(hash & (unsigned int)(capacity - 1U));
+}
+
+static int find_symbol_indexed(const ObjectAssembler *assembler, const char *name) {
+    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_SYMBOL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < OBJECT_WRITER_SYMBOL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = assembler->symbol_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < assembler->symbol_count && names_equal(assembler->symbols[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (OBJECT_WRITER_SYMBOL_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_symbol_index(ObjectAssembler *assembler, const char *name, unsigned int index) {
+    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_SYMBOL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < OBJECT_WRITER_SYMBOL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = assembler->symbol_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < assembler->symbol_count && names_equal(assembler->symbols[existing].name, name))) {
+            assembler->symbol_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (OBJECT_WRITER_SYMBOL_INDEX_CAPACITY - 1U);
+    }
+}
+
 static int find_symbol(const ObjectAssembler *assembler, const char *name) {
+    int indexed = find_symbol_indexed(assembler, name);
     size_t i;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
 
     for (i = 0; i < assembler->symbol_count; ++i) {
         if (names_equal(assembler->symbols[i].name, name)) {
@@ -326,6 +383,7 @@ static int find_symbol(const ObjectAssembler *assembler, const char *name) {
 
 static int get_symbol(ObjectAssembler *assembler, const char *name) {
     int existing = find_symbol(assembler, name);
+    unsigned int index;
 
     if (existing >= 0) {
         return existing;
@@ -335,16 +393,18 @@ static int get_symbol(ObjectAssembler *assembler, const char *name) {
         return -1;
     }
 
-    rt_copy_string(assembler->symbols[assembler->symbol_count].name, sizeof(assembler->symbols[assembler->symbol_count].name), name);
-    assembler->symbols[assembler->symbol_count].section = OBJECT_SECTION_NONE;
-    assembler->symbols[assembler->symbol_count].offset = 0;
-    assembler->symbols[assembler->symbol_count].defined = 0;
-    assembler->symbols[assembler->symbol_count].global = 0;
-    assembler->symbols[assembler->symbol_count].is_function = 0;
-    assembler->symbols[assembler->symbol_count].name_offset = 0U;
-    assembler->symbols[assembler->symbol_count].sym_index = 0;
+    index = (unsigned int)assembler->symbol_count;
+    rt_copy_string(assembler->symbols[index].name, sizeof(assembler->symbols[index].name), name);
+    assembler->symbols[index].section = OBJECT_SECTION_NONE;
+    assembler->symbols[index].offset = 0;
+    assembler->symbols[index].defined = 0;
+    assembler->symbols[index].global = 0;
+    assembler->symbols[index].is_function = 0;
+    assembler->symbols[index].name_offset = 0U;
+    assembler->symbols[index].sym_index = 0;
+    remember_symbol_index(assembler, name, index);
     assembler->symbol_count += 1U;
-    return (int)(assembler->symbol_count - 1U);
+    return (int)index;
 }
 
 static int add_label(ObjectAssembler *assembler, const char *name, ObjectSection section, size_t offset) {
