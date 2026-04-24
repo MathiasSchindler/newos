@@ -121,4 +121,9 @@
     X("src/tools/ssh/ssh_client_channel.c") \
     X("src/tools/ssh/ssh_client.c")
 
+/* ── SSH server private implementation ───────────────────────────────────── */
+
+#define FOREACH_SSHD_SOURCE(X) \
+    X("src/tools/sshd/sshd_server.c")
+
 #endif /* SOURCE_MANIFEST_H */

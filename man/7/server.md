@@ -41,6 +41,7 @@ The repository already contains the following relevant building blocks:
 - hosted POSIX networking and process support in `src/platform/posix/`
 - freestanding Linux networking and process support in `src/platform/linux/`
 - a working SSH client under `src/tools/ssh/`
+- a minimal SSH daemon under `src/tools/sshd/` with password-authenticated exec sessions
 - a small hosted static HTTP daemon under `src/tools/httpd/`
 - a small config-driven service supervisor under `src/tools/service/`
 - shared crypto code in `src/shared/crypto/`
@@ -54,7 +55,7 @@ In practical terms, this means the project already has enough runtime and platfo
 The following are still design targets rather than finished repository subsystems:
 
 - no `httpsd` daemon yet
-- no `sshd` daemon yet
+- no PTY-backed SSH session subsystem yet
 - no shared `src/shared/tls/` subsystem yet
 - no shared `src/shared/http/` subsystem yet
 - no small server-oriented account database layer yet

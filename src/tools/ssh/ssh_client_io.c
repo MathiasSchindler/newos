@@ -1,6 +1,6 @@
 /* ssh_client_io.c - low-level I/O helpers and binary packet transport */
 
-#include "ssh_client_internal.h"
+#include "ssh_transport.h"
 
 int ssh_write_all(int fd, const void *buffer, size_t count) {
     const unsigned char *data = (const unsigned char *)buffer;
