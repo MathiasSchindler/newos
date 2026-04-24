@@ -20,13 +20,15 @@ The project already has working coverage across several major tool families:
 
 - shell and scripting: `sh`, `test`, the bracket alias for `test`, `env`,
   `printenv`, and `timeout`
-- filesystem and paths: `ls`, `cp`, `mv`, `rm`, `mkdir`, `ln`, `chmod`,
-  `chown`, `stat`, `du`, `df`, `touch`, `realpath`, `readlink`
+- filesystem and paths: `ls`, `cp`, `mv`, `rm`, `mkdir`, `mknod`, `ln`,
+  `chmod`, `chown`, `stat`, `du`, `df`, `touch`, `realpath`, `readlink`
 - text and streams: `cat`, `grep`, `sed`, `awk`, `sort`, `cut`, `tr`, `wc`,
   `head`, `tail`, `join`, `split`, `xargs`, `tee`, `fmt`, `column`
-- system and reporting: `ps`, `pstree`, `free`, `uptime`, `who`, `users`,
-  `groups`, `id`, `hostname`, `uname`, `date`, `sleep`, `watch`
-- network and transfer: `ping`, `netcat`, `ssh`, `wget`
+- system and reporting: `init`, `getty`, `login`, `dmesg`, `logger`, `stty`,
+  `ps`, `pstree`, `free`, `uptime`, `who`, `users`, `groups`, `id`,
+  `hostname`, `uname`, `date`, `sleep`, `watch`
+- network and transfer: `ping`, `ping6`, `ip`, `dhcp`, `nslookup`, `dig`,
+  `netcat`, `ssh`, `wget`, `httpd`, `service`
 - archive, patching, and build: `tar`, `gzip`, `gunzip`, `patch`, `make`, `ncc`
 
 That means the repo is already well beyond a bootstrap shell and a handful of
@@ -74,12 +76,11 @@ regex, path manipulation, and shell infrastructure.
 For a fuller self-hosted or stand-alone OS environment, the most valuable
 missing tools are now concentrated in system bringup and administration:
 
-- `init` or a tiny early-userspace launcher
-- `mount` and `umount`
-- `dmesg`
-- a small `ip` tool for links, addresses, and routes
-- `getty` and possibly `login`
-- richer DHCP/DNS/autoconfiguration beyond the newly added small clients
+- account-management tools such as `passwd`, `su`, and shadow-file helpers
+- richer service supervision and boot orchestration around `init` and `service`
+- deeper DHCP renewal, IPv6 address changes, and network autoconfiguration
+- package/archive maintenance tools beyond the current tar/gzip/patch base
+- auditing and diagnostics around permissions, sessions, and startup logs
 
 Those are now more strategically important than adding yet another text filter,
 because they unlock more of the "boot into the project and live there" story.
@@ -89,11 +90,10 @@ because they unlock more of the "boot into the project and live there" story.
 If the goal is to move toward a more self-sufficient operating environment, a
 practical order is:
 
-1. `mount`, `umount`, and a small `init`
-2. `dmesg`, `getty`, and console/session plumbing
-3. deeper IPv6, DHCP renewal, and richer DNS/network diagnostics
-4. later account-management and multi-user tools such as `login`, `passwd`, and
-   `su`
+1. add password/account management around the new `login` helper
+2. deepen console/session tracking so `who` and `login` can share records
+3. improve service supervision, restart policy, and boot orchestration
+4. extend networking with DHCP renewal, IPv6 mutation, and richer diagnostics
 
 ## LIMITATIONS
 

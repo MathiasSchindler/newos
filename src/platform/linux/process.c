@@ -494,6 +494,89 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
     return 0;
 }
 
+int platform_terminal_get_mode(int fd, PlatformTerminalMode *mode_out) {
+    struct linux_termios term;
+    struct linux_winsize window_size;
+
+    if (mode_out == 0) {
+        return -1;
+    }
+    if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TCGETS, (long)&term) < 0) {
+        return -1;
+    }
+
+    memset(mode_out, 0, sizeof(*mode_out));
+    mode_out->echo = (term.c_lflag & LINUX_ECHO) != 0U ? 1 : 0;
+    mode_out->icanon = (term.c_lflag & LINUX_ICANON) != 0U ? 1 : 0;
+    mode_out->isig = (term.c_lflag & LINUX_ISIG) != 0U ? 1 : 0;
+    mode_out->ixon = (term.c_iflag & LINUX_IXON) != 0U ? 1 : 0;
+    mode_out->opost = (term.c_oflag & LINUX_OPOST) != 0U ? 1 : 0;
+
+    memset(&window_size, 0, sizeof(window_size));
+    if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCGWINSZ, (long)&window_size) == 0) {
+        mode_out->rows = (unsigned int)window_size.ws_row;
+        mode_out->columns = (unsigned int)window_size.ws_col;
+    }
+
+    return 0;
+}
+
+int platform_terminal_set_mode(int fd, const PlatformTerminalMode *mode, unsigned int change_mask) {
+    struct linux_termios term;
+
+    if (mode == 0) {
+        return -1;
+    }
+
+    if ((change_mask & (PLATFORM_TERMINAL_ECHO |
+                        PLATFORM_TERMINAL_ICANON |
+                        PLATFORM_TERMINAL_ISIG |
+                        PLATFORM_TERMINAL_IXON |
+                        PLATFORM_TERMINAL_OPOST)) != 0U) {
+        if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TCGETS, (long)&term) < 0) {
+            return -1;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ECHO) != 0U) {
+            term.c_lflag = mode->echo ? (term.c_lflag | LINUX_ECHO) : (term.c_lflag & ~LINUX_ECHO);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ICANON) != 0U) {
+            term.c_lflag = mode->icanon ? (term.c_lflag | LINUX_ICANON) : (term.c_lflag & ~LINUX_ICANON);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ISIG) != 0U) {
+            term.c_lflag = mode->isig ? (term.c_lflag | LINUX_ISIG) : (term.c_lflag & ~LINUX_ISIG);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_IXON) != 0U) {
+            term.c_iflag = mode->ixon ? (term.c_iflag | LINUX_IXON) : (term.c_iflag & ~LINUX_IXON);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_OPOST) != 0U) {
+            term.c_oflag = mode->opost ? (term.c_oflag | LINUX_OPOST) : (term.c_oflag & ~LINUX_OPOST);
+        }
+        if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TCSETS, (long)&term) < 0) {
+            return -1;
+        }
+    }
+
+    if ((change_mask & (PLATFORM_TERMINAL_ROWS | PLATFORM_TERMINAL_COLUMNS)) != 0U) {
+        struct linux_winsize window_size;
+
+        memset(&window_size, 0, sizeof(window_size));
+        if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCGWINSZ, (long)&window_size) < 0) {
+            return -1;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ROWS) != 0U) {
+            window_size.ws_row = (unsigned short)mode->rows;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_COLUMNS) != 0U) {
+            window_size.ws_col = (unsigned short)mode->columns;
+        }
+        if (linux_syscall3(LINUX_SYS_IOCTL, fd, LINUX_TIOCSWINSZ, (long)&window_size) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
     struct linux_termios saved;
     struct linux_termios raw;

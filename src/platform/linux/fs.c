@@ -97,6 +97,16 @@ static unsigned int linux_permission_bits_from_mode(unsigned int mode, unsigned 
 
 static unsigned long long next_temp_path_id = 1;
 
+static unsigned long long linux_make_device(unsigned int major, unsigned int minor) {
+    unsigned long long major_value = (unsigned long long)major;
+    unsigned long long minor_value = (unsigned long long)minor;
+
+    return (minor_value & 0xffULL) |
+           ((major_value & 0xfffULL) << 8) |
+           ((minor_value & ~0xffULL) << 12) |
+           ((major_value & ~0xfffULL) << 32);
+}
+
 long platform_write(int fd, const void *buffer, size_t count) {
     return linux_syscall3(LINUX_SYS_WRITE, fd, (long)buffer, (long)count);
 }
@@ -198,6 +208,23 @@ int platform_open_append(const char *path, unsigned int mode) {
     return fd < 0 ? -1 : (int)fd;
 }
 
+int platform_open_append_existing(const char *path) {
+    long fd;
+
+    if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
+        return 1;
+    }
+
+    fd = linux_syscall4(
+        LINUX_SYS_OPENAT,
+        LINUX_AT_FDCWD,
+        (long)path,
+        LINUX_O_WRONLY | LINUX_O_APPEND | LINUX_O_CLOEXEC,
+        0
+    );
+    return fd < 0 ? -1 : (int)fd;
+}
+
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
     static const char hex_digits[] = "0123456789abcdef";
     const char *base = (prefix != 0 && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
@@ -272,6 +299,33 @@ int platform_remove_file(const char *path) {
 
 int platform_remove_directory(const char *path) {
     return linux_syscall3(LINUX_SYS_UNLINKAT, LINUX_AT_FDCWD, (long)path, LINUX_AT_REMOVEDIR) < 0 ? -1 : 0;
+}
+
+int platform_create_node(const char *path, unsigned int node_type, unsigned int mode, unsigned int major, unsigned int minor) {
+    unsigned int native_mode = mode & 07777U;
+    unsigned long long device = 0ULL;
+
+    if (path == 0 || path[0] == '\0') {
+        return -1;
+    }
+
+    if (node_type == PLATFORM_NODE_FIFO) {
+        native_mode |= LINUX_S_IFIFO;
+    } else if (node_type == PLATFORM_NODE_CHAR) {
+        native_mode |= LINUX_S_IFCHR;
+        device = linux_make_device(major, minor);
+    } else if (node_type == PLATFORM_NODE_BLOCK) {
+        native_mode |= LINUX_S_IFBLK;
+        device = linux_make_device(major, minor);
+    } else {
+        return -1;
+    }
+
+    return linux_syscall4(LINUX_SYS_MKNODAT,
+                          LINUX_AT_FDCWD,
+                          (long)path,
+                          (long)native_mode,
+                          (long)device) < 0 ? -1 : 0;
 }
 
 static unsigned long linux_mount_flags_from_platform(unsigned long long flags) {

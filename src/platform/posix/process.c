@@ -508,6 +508,96 @@ static void platform_make_raw_termios(struct termios *raw) {
 #endif
 }
 
+int platform_terminal_get_mode(int fd, PlatformTerminalMode *mode_out) {
+    struct termios term;
+    struct winsize window_size;
+
+    if (mode_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (tcgetattr(fd, &term) != 0) {
+        return -1;
+    }
+
+    memset(mode_out, 0, sizeof(*mode_out));
+    mode_out->echo = (term.c_lflag & ECHO) != 0 ? 1 : 0;
+    mode_out->icanon = (term.c_lflag & ICANON) != 0 ? 1 : 0;
+    mode_out->isig = (term.c_lflag & ISIG) != 0 ? 1 : 0;
+    mode_out->ixon = (term.c_iflag & IXON) != 0 ? 1 : 0;
+    mode_out->opost = (term.c_oflag & OPOST) != 0 ? 1 : 0;
+
+    memset(&window_size, 0, sizeof(window_size));
+    if (ioctl(fd, TIOCGWINSZ, &window_size) == 0) {
+        mode_out->rows = (unsigned int)window_size.ws_row;
+        mode_out->columns = (unsigned int)window_size.ws_col;
+    }
+
+    return 0;
+}
+
+int platform_terminal_set_mode(int fd, const PlatformTerminalMode *mode, unsigned int change_mask) {
+    struct termios term;
+
+    if (mode == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if ((change_mask & (PLATFORM_TERMINAL_ECHO |
+                        PLATFORM_TERMINAL_ICANON |
+                        PLATFORM_TERMINAL_ISIG |
+                        PLATFORM_TERMINAL_IXON |
+                        PLATFORM_TERMINAL_OPOST)) != 0U) {
+        if (tcgetattr(fd, &term) != 0) {
+            return -1;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ECHO) != 0U) {
+            term.c_lflag = mode->echo ? (term.c_lflag | ECHO) : (term.c_lflag & ~(tcflag_t)ECHO);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ICANON) != 0U) {
+            term.c_lflag = mode->icanon ? (term.c_lflag | ICANON) : (term.c_lflag & ~(tcflag_t)ICANON);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ISIG) != 0U) {
+            term.c_lflag = mode->isig ? (term.c_lflag | ISIG) : (term.c_lflag & ~(tcflag_t)ISIG);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_IXON) != 0U) {
+            term.c_iflag = mode->ixon ? (term.c_iflag | IXON) : (term.c_iflag & ~(tcflag_t)IXON);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_OPOST) != 0U) {
+            term.c_oflag = mode->opost ? (term.c_oflag | OPOST) : (term.c_oflag & ~(tcflag_t)OPOST);
+        }
+        if (tcsetattr(fd, TCSANOW, &term) != 0) {
+            return -1;
+        }
+    }
+
+    if ((change_mask & (PLATFORM_TERMINAL_ROWS | PLATFORM_TERMINAL_COLUMNS)) != 0U) {
+#ifdef TIOCSWINSZ
+        struct winsize window_size;
+
+        memset(&window_size, 0, sizeof(window_size));
+        if (ioctl(fd, TIOCGWINSZ, &window_size) != 0) {
+            return -1;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ROWS) != 0U) {
+            window_size.ws_row = (unsigned short)mode->rows;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_COLUMNS) != 0U) {
+            window_size.ws_col = (unsigned short)mode->columns;
+        }
+        if (ioctl(fd, TIOCSWINSZ, &window_size) != 0) {
+            return -1;
+        }
+#else
+        errno = ENOTSUP;
+        return -1;
+#endif
+    }
+
+    return 0;
+}
+
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
     unsigned char saved_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];
     unsigned char raw_bytes[PLATFORM_TERMINAL_STATE_CAPACITY];

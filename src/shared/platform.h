@@ -52,6 +52,18 @@
 #define PLATFORM_MOUNT_STRICTATIME (1ULL << 14)
 #define PLATFORM_MOUNT_LAZYTIME   (1ULL << 15)
 
+#define PLATFORM_NODE_FIFO  1U
+#define PLATFORM_NODE_CHAR  2U
+#define PLATFORM_NODE_BLOCK 3U
+
+#define PLATFORM_TERMINAL_ECHO    (1U << 0)
+#define PLATFORM_TERMINAL_ICANON  (1U << 1)
+#define PLATFORM_TERMINAL_ISIG    (1U << 2)
+#define PLATFORM_TERMINAL_IXON    (1U << 3)
+#define PLATFORM_TERMINAL_OPOST   (1U << 4)
+#define PLATFORM_TERMINAL_ROWS    (1U << 5)
+#define PLATFORM_TERMINAL_COLUMNS (1U << 6)
+
 #define PLATFORM_SHUTDOWN_HALT 0
 #define PLATFORM_SHUTDOWN_POWEROFF 1
 #define PLATFORM_SHUTDOWN_REBOOT 2
@@ -157,6 +169,16 @@ typedef struct {
 } PlatformTerminalState;
 
 typedef struct {
+    int echo;
+    int icanon;
+    int isig;
+    int ixon;
+    int opost;
+    unsigned int rows;
+    unsigned int columns;
+} PlatformTerminalMode;
+
+typedef struct {
     unsigned int index;
     unsigned int flags;
     unsigned int mtu;
@@ -214,6 +236,7 @@ int platform_open_write(const char *path, unsigned int mode);
 int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing);
 int platform_open_create_exclusive(const char *path, unsigned int mode);
 int platform_open_append(const char *path, unsigned int mode);
+int platform_open_append_existing(const char *path);
 long long platform_seek(int fd, long long offset, int whence);
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode);
 int platform_close(int fd);
@@ -231,6 +254,7 @@ int platform_unmount_filesystem(const char *target, int force, int lazy);
 int platform_rename_path(const char *old_path, const char *new_path);
 int platform_create_hard_link(const char *target_path, const char *link_path);
 int platform_create_symbolic_link(const char *target_path, const char *link_path);
+int platform_create_node(const char *path, unsigned int node_type, unsigned int mode, unsigned int major, unsigned int minor);
 int platform_change_mode(const char *path, unsigned int mode);
 int platform_change_owner_ex(const char *path, unsigned int uid, unsigned int gid, int follow_symlinks);
 int platform_change_owner(const char *path, unsigned int uid, unsigned int gid);
@@ -257,6 +281,8 @@ long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_
 int platform_clear_kernel_log(void);
 int platform_set_console_log_level(int level);
 int platform_random_bytes(unsigned char *buffer, size_t count);
+int platform_terminal_get_mode(int fd, PlatformTerminalMode *mode_out);
+int platform_terminal_set_mode(int fd, const PlatformTerminalMode *mode, unsigned int change_mask);
 int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out);
 int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state);
 int platform_sleep_milliseconds(unsigned long long milliseconds);

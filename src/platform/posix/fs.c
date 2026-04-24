@@ -25,6 +25,9 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#if defined(__linux__)
+#include <sys/sysmacros.h>
+#endif
 #if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/mount.h>
 #endif
@@ -218,6 +221,24 @@ int platform_open_append(const char *path, unsigned int mode) {
 #endif
 }
 
+int platform_open_append_existing(const char *path) {
+    if (path == NULL || strcmp(path, "-") == 0) {
+        return STDOUT_FILENO;
+    }
+
+#ifdef O_CLOEXEC
+    return open(path, O_WRONLY | O_APPEND | O_CLOEXEC);
+#else
+    {
+        int fd = open(path, O_WRONLY | O_APPEND);
+        if (fd >= 0) {
+            (void)posix_mark_fd_cloexec(fd);
+        }
+        return fd;
+    }
+#endif
+}
+
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
     char templ[1024];
     const char *base = (prefix != NULL && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
@@ -280,6 +301,35 @@ int platform_remove_file(const char *path) {
 
 int platform_remove_directory(const char *path) {
     return rmdir(path);
+}
+
+int platform_create_node(const char *path, unsigned int node_type, unsigned int mode, unsigned int major, unsigned int minor) {
+    mode_t native_mode = (mode_t)(mode & 07777U);
+    dev_t device = 0;
+
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (node_type == PLATFORM_NODE_FIFO) {
+        return mkfifo(path, native_mode);
+    }
+    if (node_type == PLATFORM_NODE_CHAR) {
+        native_mode |= S_IFCHR;
+    } else if (node_type == PLATFORM_NODE_BLOCK) {
+        native_mode |= S_IFBLK;
+    } else {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(makedev) || defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
+    device = makedev((unsigned int)major, (unsigned int)minor);
+#else
+    device = (dev_t)(((major & 0xffU) << 8) | (minor & 0xffU));
+#endif
+    return mknod(path, native_mode, device);
 }
 
 #if defined(__linux__)
