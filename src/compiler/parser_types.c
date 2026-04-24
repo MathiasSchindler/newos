@@ -475,6 +475,16 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
     while (token_starts_decl_specifier(parser)) {
         saw_any = 1;
 
+        {
+            int skipped_attributes = skip_gnu_attributes(parser);
+            if (skipped_attributes < 0) {
+                return -1;
+            }
+            if (skipped_attributes > 0) {
+                continue;
+            }
+        }
+
         if (current_is_keyword(parser, "typedef") && is_typedef_out != 0) {
             *is_typedef_out = 1;
         } else if (current_is_keyword(parser, "extern") && is_extern_out != 0) {

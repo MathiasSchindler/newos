@@ -44,6 +44,7 @@ typedef struct {
 #define expect_punct parser_expect_punct
 #define expect_identifier parser_expect_identifier
 #define skip_balanced_group parser_skip_balanced_group
+#define skip_gnu_attributes parser_skip_gnu_attributes
 
 int parser_token_text_equals(const CompilerToken *token, const char *text);
 int parser_current_is_punct(const CompilerParser *parser, const char *text);
@@ -74,6 +75,7 @@ int parser_consume_punct(CompilerParser *parser, const char *text);
 int parser_expect_punct(CompilerParser *parser, const char *text);
 int parser_expect_identifier(CompilerParser *parser, char *name_out, size_t name_size, int allow_missing);
 int parser_skip_balanced_group(CompilerParser *parser, const char *open_text, const char *close_text);
+int parser_skip_gnu_attributes(CompilerParser *parser);
 
 int parse_expression(CompilerParser *parser);
 int parse_assignment_expression(CompilerParser *parser);

@@ -329,6 +329,10 @@ int maybe_type_identifier(const CompilerParser *parser, int allow_unknown_identi
 }
 
 int token_starts_decl_specifier(const CompilerParser *parser) {
+    if (current_is_identifier(parser) && token_text_equals(&parser->current, "__attribute__")) {
+        return 1;
+    }
+
     if (current_is_storage_class_keyword(parser) ||
         current_is_type_qualifier_keyword(parser) ||
         current_is_arithmetic_type_keyword(parser) ||
@@ -408,6 +412,23 @@ int skip_balanced_group(CompilerParser *parser, const char *open_text, const cha
 
     return 0;
 }
+
+int skip_gnu_attributes(CompilerParser *parser) {
+    int skipped = 0;
+
+    while (current_is_identifier(parser) && token_text_equals(&parser->current, "__attribute__")) {
+        skipped = 1;
+        if (advance(parser) != 0 ||
+            expect_punct(parser, "(") != 0 ||
+            skip_balanced_group(parser, "(", ")") != 0 ||
+            expect_punct(parser, ")") != 0) {
+            return -1;
+        }
+    }
+
+    return skipped;
+}
+
 int compiler_parse_translation_unit(CompilerParser *parser) {
     while (parser->current.kind != COMPILER_TOKEN_EOF) {
         if (parse_declaration_or_function(parser, 1, 1) != 0) {

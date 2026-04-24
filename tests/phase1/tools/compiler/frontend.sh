@@ -158,6 +158,29 @@ EOF
 assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/extern_redecl.c" > "$WORK_DIR/extern_redecl.out"
 assert_file_contains "$WORK_DIR/extern_redecl.out" '^function main$' "compiler rejected a compatible extern redeclaration"
 
+cat > "$WORK_DIR/gnu_attribute.c" <<'EOF'
+static __attribute__((no_stack_protector))
+int guarded_read(unsigned long *slot) {
+    *slot = 7;
+    return 0;
+}
+
+__attribute__((noreturn, no_stack_protector))
+void stop_now(void) {
+    for (;;) {
+    }
+}
+
+int main(void) {
+    unsigned long value = 0;
+    return guarded_read(&value) == 0 && value == 7 ? 0 : 1;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/gnu_attribute.c" > "$WORK_DIR/gnu_attribute.out"
+assert_file_contains "$WORK_DIR/gnu_attribute.out" '^function guarded_read$' "compiler rejected GNU attributes before a function declarator"
+assert_file_contains "$WORK_DIR/gnu_attribute.out" '^function stop_now$' "compiler rejected GNU attributes before declaration specifiers"
+
 cat > "$WORK_DIR/for_scope.c" <<'EOF'
 int main(void) {
     for (int i = 0; i < 2; i += 1) {

@@ -64,6 +64,10 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
         return -1;
     }
 
+    if (skip_gnu_attributes(parser) < 0) {
+        return -1;
+    }
+
     rt_memset(&declarator, 0, sizeof(declarator));
     if (!current_is_punct(parser, ",") && !current_is_punct(parser, ")")) {
         if (parse_declarator(parser, &declarator, 1) != 0) {
@@ -342,6 +346,10 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
 int parse_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int allow_abstract) {
     rt_memset(declarator, 0, sizeof(*declarator));
 
+    if (skip_gnu_attributes(parser) < 0) {
+        return -1;
+    }
+
     while (current_is_punct(parser, "*")) {
         if (parser_add_pointer_depth(parser, &declarator->pointer_depth, 1) != 0) {
             return -1;
@@ -359,7 +367,11 @@ int parse_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int
         }
     }
 
-    return parse_direct_declarator(parser, declarator, allow_abstract);
+    if (parse_direct_declarator(parser, declarator, allow_abstract) != 0) {
+        return -1;
+    }
+
+    return skip_gnu_attributes(parser) < 0 ? -1 : 0;
 }
 
 static int declare_symbol(
@@ -453,6 +465,10 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
         return 0;
     }
 
+    if (skip_gnu_attributes(parser) < 0) {
+        return -1;
+    }
+
     compiler_type_init(&declared_type);
     saw = parse_declaration_specifiers(parser, &is_typedef, &is_extern, &is_static, &declared_type);
 
@@ -472,7 +488,15 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
         CompilerDeclarator declarator;
         int is_definition;
 
+        if (skip_gnu_attributes(parser) < 0) {
+            return -1;
+        }
+
         if (parse_declarator(parser, &declarator, 0) != 0) {
+            return -1;
+        }
+
+        if (skip_gnu_attributes(parser) < 0) {
             return -1;
         }
 
