@@ -46,24 +46,14 @@ printf 'tag Alpha\nTAG alpha\nkeep beta\nKEEP beta\n' > "$WORK_DIR/uniq_controls
 printf 'tag Alpha\nkeep beta\n' > "$WORK_DIR/uniq_controls.expected"
 assert_files_equal "$WORK_DIR/uniq_controls.expected" "$WORK_DIR/uniq_controls.out" "uniq comparison controls failed"
 
-: > "$WORK_DIR/large_numbers.txt"
-value=1500
-while [ "$value" -ge 1 ]; do
-    printf '%s\n' "$value" >> "$WORK_DIR/large_numbers.txt"
-    value=$((value - 1))
-done
+awk 'BEGIN { for (value = 1500; value >= 1; --value) print value }' > "$WORK_DIR/large_numbers.txt"
 "$ROOT_DIR/build/sort" -n "$WORK_DIR/large_numbers.txt" > "$WORK_DIR/large_sorted.out"
 first_sorted=$(head -n 1 "$WORK_DIR/large_sorted.out" | tr -d '\r\n')
 last_sorted=$(tail -n 1 "$WORK_DIR/large_sorted.out" | tr -d '\r\n')
 assert_text_equals "$first_sorted" '1' "sort -n did not place the lowest value first on a large input"
 assert_text_equals "$last_sorted" '1500' "sort -n did not place the highest value last on a large input"
 
-: > "$WORK_DIR/huge_numbers.txt"
-value=3005
-while [ "$value" -ge 1 ]; do
-    printf '%s\n' "$value" >> "$WORK_DIR/huge_numbers.txt"
-    value=$((value - 1))
-done
+awk 'BEGIN { for (value = 3005; value >= 1; --value) print value }' > "$WORK_DIR/huge_numbers.txt"
 "$ROOT_DIR/build/sort" -n "$WORK_DIR/huge_numbers.txt" > "$WORK_DIR/huge_sorted.out"
 huge_first=$(head -n 1 "$WORK_DIR/huge_sorted.out" | tr -d '\r\n')
 huge_last=$(tail -n 1 "$WORK_DIR/huge_sorted.out" | tr -d '\r\n')
@@ -257,12 +247,7 @@ then
 fi
 assert_file_contains "$WORK_DIR/sort_key.err" '^Usage: sort ' "sort did not reject an overflowing key specification"
 
-: > "$WORK_DIR/max_lines.txt"
-value=8192
-while [ "$value" -ge 1 ]; do
-    printf '%04d\n' "$value" >> "$WORK_DIR/max_lines.txt"
-    value=$((value - 1))
-done
+awk 'BEGIN { for (value = 8192; value >= 1; --value) printf "%04d\n", value }' > "$WORK_DIR/max_lines.txt"
 "$ROOT_DIR/build/sort" "$WORK_DIR/max_lines.txt" > "$WORK_DIR/max_lines.out"
 max_lines_count=$(wc -l < "$WORK_DIR/max_lines.out" | tr -d ' \r\n')
 max_lines_first=$(head -n 1 "$WORK_DIR/max_lines.out" | tr -d '\r\n')
@@ -271,12 +256,7 @@ assert_text_equals "$max_lines_count" '8192' "sort dropped lines at its maximum 
 assert_text_equals "$max_lines_first" '0001' "sort did not order the first line at its maximum buffered line count"
 assert_text_equals "$max_lines_last" '8192' "sort did not order the final line at its maximum buffered line count"
 
-: > "$WORK_DIR/external_lines.txt"
-value=20000
-while [ "$value" -ge 1 ]; do
-    printf '%05d\n' "$value" >> "$WORK_DIR/external_lines.txt"
-    value=$((value - 1))
-done
+awk 'BEGIN { for (value = 20000; value >= 1; --value) printf "%05d\n", value }' > "$WORK_DIR/external_lines.txt"
 "$ROOT_DIR/build/sort" "$WORK_DIR/external_lines.txt" > "$WORK_DIR/external_lines.out"
 external_lines_count=$(wc -l < "$WORK_DIR/external_lines.out" | tr -d ' \r\n')
 external_lines_first=$(head -n 1 "$WORK_DIR/external_lines.out" | tr -d '\r\n')
@@ -285,12 +265,7 @@ assert_text_equals "$external_lines_count" '20000' "sort dropped lines while usi
 assert_text_equals "$external_lines_first" '00001' "sort did not order the first external-sort line"
 assert_text_equals "$external_lines_last" '20000' "sort did not order the final external-sort line"
 
-: > "$WORK_DIR/external_duplicates.txt"
-value=12000
-while [ "$value" -ge 1 ]; do
-    printf '%04d\n' $((value % 300)) >> "$WORK_DIR/external_duplicates.txt"
-    value=$((value - 1))
-done
+awk 'BEGIN { for (value = 12000; value >= 1; --value) printf "%04d\n", value % 300 }' > "$WORK_DIR/external_duplicates.txt"
 "$ROOT_DIR/build/sort" -nu "$WORK_DIR/external_duplicates.txt" > "$WORK_DIR/external_duplicates.out"
 external_unique_count=$(wc -l < "$WORK_DIR/external_duplicates.out" | tr -d ' \r\n')
 external_unique_first=$(head -n 1 "$WORK_DIR/external_duplicates.out" | tr -d '\r\n')

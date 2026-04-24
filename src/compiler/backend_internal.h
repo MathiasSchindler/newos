@@ -12,6 +12,12 @@
 #define COMPILER_BACKEND_MAX_AGGREGATES 256
 #define COMPILER_BACKEND_MAX_AGGREGATE_MEMBERS 4096
 #define COMPILER_BACKEND_MAX_SWITCH_DEPTH 64
+#define COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY 2048
+#define COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY 2048
+#define COMPILER_BACKEND_LOCAL_INDEX_CAPACITY 2048
+#define COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY 1024
+#define COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY 512
+#define COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY 8192
 #define BACKEND_ARRAY_STACK_BYTES 4096
 #define BACKEND_STRUCT_STACK_BYTES 16384
 #define BACKEND_MAX_OBJECT_STACK_BYTES (4 * 1024 * 1024)
@@ -89,18 +95,24 @@ typedef struct {
     const CompilerIr *ir;
     int fd;
     BackendFunctionName functions[COMPILER_BACKEND_MAX_FUNCTIONS];
+    unsigned int function_index[COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY];
     size_t function_count;
     BackendGlobal globals[COMPILER_BACKEND_MAX_GLOBALS];
+    unsigned int global_index[COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY];
     size_t global_count;
     BackendStringLiteral strings[COMPILER_BACKEND_MAX_STRINGS];
     size_t string_count;
     BackendConstant constants[COMPILER_BACKEND_MAX_CONSTANTS];
+    unsigned int constant_index[COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY];
     size_t constant_count;
     BackendAggregate aggregates[COMPILER_BACKEND_MAX_AGGREGATES];
+    unsigned int aggregate_index[COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY];
     size_t aggregate_count;
     BackendAggregateMember aggregate_members[COMPILER_BACKEND_MAX_AGGREGATE_MEMBERS];
+    unsigned int aggregate_member_index[COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY];
     size_t aggregate_member_count;
     BackendLocal locals[COMPILER_BACKEND_MAX_LOCALS];
+    unsigned int local_index[COMPILER_BACKEND_LOCAL_INDEX_CAPACITY];
     size_t local_count;
     BackendSwitchContext switch_stack[COMPILER_BACKEND_MAX_SWITCH_DEPTH];
     size_t switch_depth;
@@ -174,6 +186,7 @@ int lookup_aggregate_member(const BackendState *state,
                             const char **type_text_out);
 int add_global(BackendState *state, const char *name, const char *type_text, int is_array, int pointer_depth, int char_based, int prefers_word_index, int global, int has_storage);
 int find_local(const BackendState *state, const char *name);
+void reset_local_index(BackendState *state);
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 int allocate_static_local(BackendState *state, const char *name, const char *symbol_name, const char *type_text, int storage_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 void build_static_local_symbol_name(const BackendState *state, const char *function_name, const char *name, char *buffer, size_t buffer_size);

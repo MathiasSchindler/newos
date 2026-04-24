@@ -1058,6 +1058,11 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser,
                                       int word_index,
                                       int current_is_address,
                                       const char *base_type) {
+    char current_type[128];
+
+    rt_copy_string(current_type, sizeof(current_type), base_type != 0 ? base_type : "");
+    base_type = current_type;
+
     while (parser->current.kind == EXPR_TOKEN_PUNCT) {
         if (names_equal(parser->current.text, "[")) {
             int element_scale = array_index_scale(parser->state, base_type, word_index);
@@ -1083,7 +1088,8 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser,
             *byte_sized = type_access_size(element_type, 0);
             word_index = 0;
             current_is_address = 1;
-            base_type = element_type;
+            rt_copy_string(current_type, sizeof(current_type), element_type);
+            base_type = current_type;
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
                 is_index_or_arrow_text(parser->current.text) &&
                 type_is_pointer_like(element_type) &&
@@ -1116,11 +1122,17 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser,
                 }
             }
             copy_member_result_type(parser->state, base_type, member_name, member_type, sizeof(member_type));
-            base_type = member_type;
+            rt_copy_string(current_type, sizeof(current_type), member_type);
+            base_type = current_type;
             word_index = member_prefers_word_index(member_name, base_type);
             *byte_sized = type_access_size(base_type, word_index);
             current_is_address = 1;
             expr_next(parser);
+            if (parser->current.kind == EXPR_TOKEN_PUNCT &&
+                names_equal(parser->current.text, "[") &&
+                text_contains(member_type, "[")) {
+                continue;
+            }
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
                 is_index_or_arrow_text(parser->current.text) &&
                 type_is_pointer_like(base_type) &&
@@ -1141,6 +1153,10 @@ static int expr_parse_lvalue_suffixes(ExprParser *parser,
 
 static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int current_is_address, int load_final_address, const char *base_type) {
     int byte_sized = type_access_size(base_type, word_index);
+    char current_type[128];
+
+    rt_copy_string(current_type, sizeof(current_type), base_type != 0 ? base_type : "");
+    base_type = current_type;
 
     for (;;) {
         if (expr_match_punct(parser, "[")) {
@@ -1171,7 +1187,8 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
             current_is_address = 1;
             byte_sized = type_access_size(element_type, 0);
             word_index = 0;
-            base_type = element_type;
+            rt_copy_string(current_type, sizeof(current_type), element_type);
+            base_type = current_type;
             load_final_address = member_result_decays_to_address(element_type) ? 0 : 1;
 
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
@@ -1207,12 +1224,18 @@ static int expr_parse_postfix_suffixes(ExprParser *parser, int word_index, int c
                 }
             }
             copy_member_result_type(parser->state, base_type, member_name, member_type, sizeof(member_type));
-            base_type = member_type;
+            rt_copy_string(current_type, sizeof(current_type), member_type);
+            base_type = current_type;
             word_index = member_prefers_word_index(member_name, base_type);
             byte_sized = type_access_size(base_type, word_index);
             load_final_address = member_result_decays_to_address(base_type) ? 0 : 1;
             current_is_address = 1;
             expr_next(parser);
+            if (parser->current.kind == EXPR_TOKEN_PUNCT &&
+                names_equal(parser->current.text, "[") &&
+                text_contains(member_type, "[")) {
+                continue;
+            }
             if (parser->current.kind == EXPR_TOKEN_PUNCT &&
                 is_index_or_arrow_text(parser->current.text) &&
                 type_is_pointer_like(base_type) &&

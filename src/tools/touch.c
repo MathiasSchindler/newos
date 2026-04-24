@@ -640,8 +640,8 @@ int main(int argc, char **argv) {
                 desired_atime,
                 desired_mtime,
                 options.no_create ? 0 : 1,
-                options.update_access,
-                options.update_modify
+                1,
+                1
             ) != 0) {
             rt_write_cstr(2, "touch: cannot touch ");
             rt_write_line(2, argv[i]);

@@ -243,9 +243,258 @@ int parse_signed_value(const char *text, long long *value_out) {
     return 0;
 }
 
+static unsigned int backend_hash_text(const char *text) {
+    unsigned int hash = 2166136261U;
+
+    while (text != 0 && *text != '\0') {
+        hash ^= (unsigned int)(unsigned char)*text++;
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+static unsigned int backend_hash_pair(const char *left, const char *right) {
+    unsigned int hash = backend_hash_text(left);
+
+    hash ^= 0xffU;
+    hash *= 16777619U;
+    hash ^= backend_hash_text(right);
+    hash *= 16777619U;
+    return hash;
+}
+
+static size_t backend_index_bucket(unsigned int hash, size_t capacity) {
+    return (size_t)(hash & (unsigned int)(capacity - 1U));
+}
+
+static int find_function_indexed(const BackendState *state, const char *name) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->function_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->function_count && names_equal(state->functions[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_function_index(BackendState *state, const char *name, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->function_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < state->function_count && names_equal(state->functions[existing].name, name))) {
+            state->function_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_FUNCTION_INDEX_CAPACITY - 1U);
+    }
+}
+
+static int find_global_indexed(const BackendState *state, const char *name) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->global_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->global_count && names_equal(state->globals[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_global_index(BackendState *state, const char *name, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->global_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < state->global_count && names_equal(state->globals[existing].name, name))) {
+            state->global_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_GLOBAL_INDEX_CAPACITY - 1U);
+    }
+}
+
+static int find_constant_indexed(const BackendState *state, const char *name) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->constant_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->constant_count && names_equal(state->constants[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_constant_index(BackendState *state, const char *name, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->constant_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < state->constant_count && names_equal(state->constants[existing].name, name))) {
+            state->constant_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_CONSTANT_INDEX_CAPACITY - 1U);
+    }
+}
+
+static int find_aggregate_indexed(const BackendState *state, const char *name) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->aggregate_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->aggregate_count && names_equal(state->aggregates[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_aggregate_index(BackendState *state, const char *name, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->aggregate_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < state->aggregate_count && names_equal(state->aggregates[existing].name, name))) {
+            state->aggregate_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_AGGREGATE_INDEX_CAPACITY - 1U);
+    }
+}
+
+static int find_local_indexed(const BackendState *state, const char *name) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_LOCAL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_LOCAL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->local_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->local_count && names_equal(state->locals[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_LOCAL_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_local_index(BackendState *state, const char *name, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_text(name), COMPILER_BACKEND_LOCAL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_LOCAL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->local_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < state->local_count && names_equal(state->locals[existing].name, name))) {
+            state->local_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_LOCAL_INDEX_CAPACITY - 1U);
+    }
+}
+
+static int find_aggregate_member_indexed(const BackendState *state, const char *aggregate_name, const char *member_name) {
+    size_t bucket = backend_index_bucket(backend_hash_pair(aggregate_name, member_name), COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->aggregate_member_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < state->aggregate_member_count &&
+            names_equal(state->aggregate_members[index].aggregate_name, aggregate_name) &&
+            names_equal(state->aggregate_members[index].name, member_name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_aggregate_member_index(BackendState *state, const char *aggregate_name, const char *member_name, unsigned int index) {
+    size_t bucket = backend_index_bucket(backend_hash_pair(aggregate_name, member_name), COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = state->aggregate_member_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U ||
+            (existing >= 0 && (size_t)existing < state->aggregate_member_count &&
+             names_equal(state->aggregate_members[existing].aggregate_name, aggregate_name) &&
+             names_equal(state->aggregate_members[existing].name, member_name))) {
+            state->aggregate_member_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_BACKEND_AGGREGATE_MEMBER_INDEX_CAPACITY - 1U);
+    }
+}
+
 static int find_function_index(const BackendState *state, const char *name) {
+    int indexed = find_function_indexed(state, name);
     size_t i;
 
+    if (indexed >= 0) {
+        return indexed;
+    }
     for (i = 0; i < state->function_count; ++i) {
         if (names_equal(state->functions[i].name, name)) {
             return (int)i;
@@ -340,8 +589,12 @@ static int copy_aggregate_name_from_type(const char *type_text, char *buffer, si
 }
 
 static int find_aggregate_index(const BackendState *state, const char *name) {
+    int indexed = find_aggregate_indexed(state, name);
     size_t i;
 
+    if (indexed >= 0) {
+        return indexed;
+    }
     for (i = 0; i < state->aggregate_count; ++i) {
         if (names_equal(state->aggregates[i].name, name)) {
             return (int)i;
@@ -378,6 +631,7 @@ int add_function_name(BackendState *state, const char *name, int global, const c
     state->functions[state->function_count].global = global ? 1 : 0;
     state->functions[state->function_count].stack_bytes = 0;
     state->functions[state->function_count].returns_object = function_type_returns_object(return_type);
+    remember_function_index(state, name, (unsigned int)state->function_count);
     state->function_count += 1U;
     return 0;
 }
@@ -413,7 +667,12 @@ const char *function_return_type(const BackendState *state, const char *name) {
 }
 
 int find_global(const BackendState *state, const char *name) {
+    int indexed = find_global_indexed(state, name);
     size_t i;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
     for (i = 0; i < state->global_count; ++i) {
         if (names_equal(state->globals[i].name, name)) {
             return (int)i;
@@ -423,7 +682,12 @@ int find_global(const BackendState *state, const char *name) {
 }
 
 int find_constant(const BackendState *state, const char *name) {
+    int indexed = find_constant_indexed(state, name);
     size_t i;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
     for (i = 0; i < state->constant_count; ++i) {
         if (names_equal(state->constants[i].name, name)) {
             return (int)i;
@@ -447,6 +711,7 @@ int add_constant(BackendState *state, const char *name, long long value) {
 
     rt_copy_string(state->constants[state->constant_count].name, sizeof(state->constants[state->constant_count].name), name);
     state->constants[state->constant_count].value = value;
+    remember_constant_index(state, name, (unsigned int)state->constant_count);
     state->constant_count += 1U;
     return 0;
 }
@@ -481,15 +746,28 @@ int add_aggregate_layout(BackendState *state, const char *name, int is_union, in
     state->aggregates[state->aggregate_count].is_union = is_union ? 1 : 0;
     state->aggregates[state->aggregate_count].size_bytes = size_bytes;
     state->aggregates[state->aggregate_count].align_bytes = align_bytes;
+    remember_aggregate_index(state, name, (unsigned int)state->aggregate_count);
     state->aggregate_count += 1U;
     return (int)(state->aggregate_count - 1U);
 }
 
 int add_aggregate_member(BackendState *state, const char *aggregate_name, const char *name, const char *type_text, int offset_bytes) {
+    int existing;
     size_t i;
 
     if (aggregate_name == 0 || aggregate_name[0] == '\0' || name == 0 || name[0] == '\0') {
         return -1;
+    }
+
+    existing = find_aggregate_member_indexed(state, aggregate_name, name);
+    if (existing >= 0) {
+        state->aggregate_members[existing].offset_bytes = offset_bytes;
+        if (type_text != 0 && type_text[0] != '\0') {
+            rt_copy_string(state->aggregate_members[existing].type_text,
+                           sizeof(state->aggregate_members[existing].type_text),
+                           type_text);
+        }
+        return existing;
     }
 
     for (i = 0; i < state->aggregate_member_count; ++i) {
@@ -520,6 +798,7 @@ int add_aggregate_member(BackendState *state, const char *aggregate_name, const 
                    sizeof(state->aggregate_members[state->aggregate_member_count].type_text),
                    type_text != 0 ? type_text : "");
     state->aggregate_members[state->aggregate_member_count].offset_bytes = offset_bytes;
+    remember_aggregate_member_index(state, aggregate_name, name, (unsigned int)state->aggregate_member_count);
     state->aggregate_member_count += 1U;
     return (int)(state->aggregate_member_count - 1U);
 }
@@ -544,10 +823,22 @@ int lookup_aggregate_member(const BackendState *state,
                             int *offset_out,
                             const char **type_text_out) {
     char aggregate_name[COMPILER_IR_NAME_CAPACITY];
+    int indexed;
     size_t i;
 
     if (copy_aggregate_name_from_type(base_type, aggregate_name, sizeof(aggregate_name)) != 0) {
         return -1;
+    }
+
+    indexed = find_aggregate_member_indexed(state, aggregate_name, member_name);
+    if (indexed >= 0) {
+        if (offset_out != 0) {
+            *offset_out = state->aggregate_members[indexed].offset_bytes;
+        }
+        if (type_text_out != 0) {
+            *type_text_out = state->aggregate_members[indexed].type_text;
+        }
+        return 0;
     }
 
     for (i = 0; i < state->aggregate_member_count; ++i) {
@@ -614,12 +905,18 @@ int add_global(
     state->globals[state->global_count].prefers_word_index = prefers_word_index;
     state->globals[state->global_count].global = global ? 1 : 0;
     state->globals[state->global_count].has_storage = has_storage ? 1 : 0;
+    remember_global_index(state, name, (unsigned int)state->global_count);
     state->global_count += 1U;
     return (int)(state->global_count - 1U);
 }
 
 int find_local(const BackendState *state, const char *name) {
+    int indexed = find_local_indexed(state, name);
     size_t i = state->local_count;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
     while (i > 0) {
         i -= 1U;
         if (names_equal(state->locals[i].name, name)) {
@@ -627,6 +924,10 @@ int find_local(const BackendState *state, const char *name) {
         }
     }
     return -1;
+}
+
+void reset_local_index(BackendState *state) {
+    rt_memset(state->local_index, 0, sizeof(state->local_index));
 }
 
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index) {
@@ -648,6 +949,7 @@ int allocate_local(BackendState *state, const char *name, const char *type_text,
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 0;
     state->stack_size += slot_size;
+    remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
 
     if (state->reserved_stack_size > 0 && state->stack_size > state->reserved_stack_size) {
@@ -676,6 +978,7 @@ int allocate_static_local(BackendState *state, const char *name, const char *sym
     state->locals[state->local_count].char_based = char_based;
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 1;
+    remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
     return 0;
 }
@@ -792,6 +1095,45 @@ static int emit_aarch64_offset_address(BackendState *state,
                    sizeof(line) - rt_strlen(line),
                    scratch_reg != 0 ? scratch_reg : "x13");
     return emit_instruction(state, line);
+}
+
+static int aarch64_object_copy_chunk_size(int remaining) {
+    if (remaining >= 8) return 8;
+    if (remaining >= 4) return 4;
+    if (remaining >= 2) return 2;
+    return 1;
+}
+
+static int emit_aarch64_load_copy_chunk(BackendState *state, int chunk_size) {
+    const char *load_op;
+
+    if (chunk_size == 8) {
+        load_op = "ldr x11, [x14]";
+    } else if (chunk_size == 4) {
+        load_op = "ldr w11, [x14]";
+    } else if (chunk_size == 2) {
+        load_op = "ldrh w11, [x14]";
+    } else {
+        load_op = "ldrb w11, [x14]";
+    }
+
+    return emit_instruction(state, load_op);
+}
+
+static int emit_aarch64_store_copy_chunk(BackendState *state, int chunk_size) {
+    const char *store_op;
+
+    if (chunk_size == 8) {
+        store_op = "str x11, [x14]";
+    } else if (chunk_size == 4) {
+        store_op = "str w11, [x14]";
+    } else if (chunk_size == 2) {
+        store_op = "strh w11, [x14]";
+    } else {
+        store_op = "strb w11, [x14]";
+    }
+
+    return emit_instruction(state, store_op);
 }
 
 static const char *x86_reg32_name(const char *reg) {
@@ -1413,11 +1755,12 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
         if (state->locals[local_index].static_storage && emit_instruction(state, "mov x13, x0") != 0) {
             return -1;
         }
-        for (chunk = 0; chunk < bytes; chunk += 8) {
+        for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
+            int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
-                emit_instruction(state, "ldr x11, [x14]") != 0 ||
+                emit_aarch64_load_copy_chunk(state, chunk_size) != 0 ||
                 emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
-                emit_instruction(state, "str x11, [x14]") != 0) {
+                emit_aarch64_store_copy_chunk(state, chunk_size) != 0) {
                 return -1;
             }
         }
@@ -1477,11 +1820,12 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
         if (state->locals[local_index].static_storage && emit_instruction(state, "mov x12, x0") != 0) {
             return -1;
         }
-        for (chunk = 0; chunk < bytes; chunk += 8) {
+        for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
+            int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
-                emit_instruction(state, "ldr x11, [x14]") != 0 ||
+                emit_aarch64_load_copy_chunk(state, chunk_size) != 0 ||
                 emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
-                emit_instruction(state, "str x11, [x14]") != 0) {
+                emit_aarch64_store_copy_chunk(state, chunk_size) != 0) {
                 return -1;
             }
         }
@@ -1528,11 +1872,12 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
             emit_instruction(state, "add sp, sp, #16") != 0) {
             return -1;
         }
-        for (chunk = 0; chunk < bytes; chunk += 8) {
+        for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
+            int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
-                emit_instruction(state, "ldr x11, [x14]") != 0 ||
+                emit_aarch64_load_copy_chunk(state, chunk_size) != 0 ||
                 emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
-                emit_instruction(state, "str x11, [x14]") != 0) {
+                emit_aarch64_store_copy_chunk(state, chunk_size) != 0) {
                 return -1;
             }
         }

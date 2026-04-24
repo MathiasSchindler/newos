@@ -11,8 +11,8 @@ assert_files_equal "$WORK_DIR/source.txt" "$WORK_DIR/copy.txt" "wget file:// dow
 wget_stdout=$("$ROOT_DIR/build/wget" -q -O - "file://$WORK_DIR/source.txt" | tr -d '\r\n')
 assert_text_equals "$wget_stdout" 'wget sample' "wget -O - did not stream the fetched content"
 
-redirect_port=24684
 redirect_pid=
+redirect_port_file="$WORK_DIR/redirect_port.txt"
 printf 'redirect secret\n' > "$WORK_DIR/redirect_secret.txt"
 cat > "$WORK_DIR/redirect_server.c" <<'EOF'
 #include <arpa/inet.h>
@@ -28,6 +28,8 @@ int main(int argc, char **argv) {
     int client_fd;
     int opt = 1;
     struct sockaddr_in addr;
+    socklen_t addr_len;
+    FILE *port_file;
     char response[2048];
 
     if (argc != 3) {
@@ -43,7 +45,7 @@ int main(int argc, char **argv) {
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)atoi(argv[1]));
+    addr.sin_port = htons(0);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(listen_fd);
@@ -53,6 +55,18 @@ int main(int argc, char **argv) {
         close(listen_fd);
         return 6;
     }
+    addr_len = sizeof(addr);
+    if (getsockname(listen_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+        close(listen_fd);
+        return 8;
+    }
+    port_file = fopen(argv[1], "w");
+    if (port_file == NULL) {
+        close(listen_fd);
+        return 9;
+    }
+    fprintf(port_file, "%u\n", (unsigned int)ntohs(addr.sin_port));
+    fclose(port_file);
     client_fd = accept(listen_fd, NULL, NULL);
     if (client_fd < 0) {
         close(listen_fd);
@@ -79,9 +93,15 @@ cleanup_redirect_server() {
 }
 
 trap 'cleanup_redirect_server' EXIT HUP INT TERM
-"$WORK_DIR/redirect_server" "$redirect_port" "$WORK_DIR/redirect_secret.txt" > "$WORK_DIR/redirect_server.out" 2>&1 &
+"$WORK_DIR/redirect_server" "$redirect_port_file" "$WORK_DIR/redirect_secret.txt" > "$WORK_DIR/redirect_server.out" 2>&1 &
 redirect_pid=$!
-"$ROOT_DIR/build/sleep" 1
+redirect_waits=0
+while [ ! -s "$redirect_port_file" ] && [ "$redirect_waits" -lt 5 ]; do
+    "$ROOT_DIR/build/sleep" 1
+    redirect_waits=$((redirect_waits + 1))
+done
+[ -s "$redirect_port_file" ] || fail "redirect test server did not publish a port"
+redirect_port=$(cat "$redirect_port_file" | tr -d ' \r\n')
 redirect_status=0
 "$ROOT_DIR/build/wget" -q -T 2s -O "$WORK_DIR/redirect_copy.txt" "http://127.0.0.1:$redirect_port/redirect" > "$WORK_DIR/redirect_fetch.out" 2>&1 || redirect_status=$?
 cleanup_redirect_server

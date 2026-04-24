@@ -1657,6 +1657,7 @@ static int begin_function(BackendState *state, const char *name) {
     const char *return_type = function_return_type(state, name);
     state->in_function = 1;
     state->local_count = 0;
+    reset_local_index(state);
     state->param_count = returns_object ? 1 : 0;
     state->saw_return_in_function = 0;
     state->stack_size = 0;
@@ -1666,6 +1667,7 @@ static int begin_function(BackendState *state, const char *name) {
         state->reserved_stack_size += backend_stack_slot_size(state);
         state->reserved_stack_size += decl_slot_size(state, return_type);
     }
+    state->reserved_stack_size = aligned_function_stack_bytes(state->reserved_stack_size);
     rt_copy_string(state->current_function, sizeof(state->current_function), name);
     format_symbol_name(state, name, symbol, sizeof(symbol));
 

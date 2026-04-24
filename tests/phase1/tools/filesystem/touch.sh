@@ -18,7 +18,8 @@ fi
 
 touch_target="$touch_data_dir/flags.txt"
 printf 'touch\n' > "$touch_target"
-touch_original_m=$("$ROOT_DIR/build/stat" -c '%Y' "$touch_target" | tr -d '\r\n')
+assert_command_succeeds "$ROOT_DIR/build/touch" -d @1770000000 "$touch_target"
+touch_original_m=1770000000
 
 assert_command_succeeds "$ROOT_DIR/build/touch" -a -d @1111111111 "$touch_target"
 touch_after_a_only=$("$ROOT_DIR/build/stat" -c '%X %Y' "$touch_target" | tr -d '\r\n')
