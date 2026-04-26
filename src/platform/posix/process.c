@@ -1066,7 +1066,7 @@ int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capa
 
 #ifdef __APPLE__
     {
-        FILE *pipe = popen("/bin/ps -axo pid=,ppid=,uid=,user=,state=,rss=,comm=", "r");
+        FILE *pipe = popen("/bin/ps -ww -axo pid=,ppid=,uid=,user=,state=,rss=,comm=", "r");
         char line[1024];
 
         if (pipe == NULL) {
