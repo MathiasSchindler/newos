@@ -73,4 +73,4 @@ grep -o "[0-9]\+" file.txt
 
 ## SEE ALSO
 
-sed, awk, find, output-style
+sed, awk, find, ripgrep, rg, output-style

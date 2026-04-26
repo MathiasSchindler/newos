@@ -19,6 +19,22 @@ mkdir -p "$WORK_DIR"
 
 note "extended workflows"
 
+mkdir -p "$WORK_DIR/rg_tree/src" "$WORK_DIR/rg_tree/.hidden"
+printf 'alpha\nneedle one\n' > "$WORK_DIR/rg_tree/src/a.c"
+printf 'NEEDLE two\n' > "$WORK_DIR/rg_tree/src/b.md"
+printf 'needle hidden\n' > "$WORK_DIR/rg_tree/.hidden/secret.c"
+"$ROOT_DIR/build/rg" needle "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_basic.out"
+assert_file_contains "$WORK_DIR/rg_basic.out" 'src/a\.c:2:needle one' "rg recursive search did not find a visible match"
+if grep -q 'secret\.c' "$WORK_DIR/rg_basic.out"; then
+    fail "rg should skip hidden files by default"
+fi
+"$ROOT_DIR/build/rg" --hidden needle "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_hidden.out"
+assert_file_contains "$WORK_DIR/rg_hidden.out" '\.hidden/secret\.c:1:needle hidden' "rg --hidden did not include hidden files"
+"$ROOT_DIR/build/rg" -i -t md needle "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_type.out"
+assert_file_contains "$WORK_DIR/rg_type.out" 'src/b\.md:1:NEEDLE two' "rg -t md -i did not find the Markdown match"
+"$ROOT_DIR/build/rg" --files -g '*.md' "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_files.out"
+assert_file_contains "$WORK_DIR/rg_files.out" 'src/b\.md$' "rg --files -g did not list the Markdown file"
+
 printf 'streamed-data\n' | "$ROOT_DIR/build/gzip" -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_stream.txt"
 assert_file_contains "$WORK_DIR/gzip_stream.txt" '^streamed-data$' "gzip/gunzip streaming pipeline failed"
 
