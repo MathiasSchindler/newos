@@ -6,7 +6,10 @@ nl - number lines of files
 
 ## SYNOPSIS
 
-nl [-ba|-bt|-bn] [-h STYLE] [-b STYLE] [-f STYLE] [-d CC] [-n FORMAT] [-v START] [-i INCREMENT] [-w WIDTH] [-s SEP] [file ...]
+```
+nl [-ba|-bt|-bn] [-h STYLE] [-b STYLE] [-f STYLE] [-d CC]
+	[-n FORMAT] [-v START] [-i INCREMENT] [-w WIDTH] [-s SEP] [file ...]
+```
 
 ## DESCRIPTION
 

@@ -6,8 +6,9 @@ rm - remove files and directories
 
 ## SYNOPSIS
 
-```text
-rm [-f] [-i] [-I] [-v] [-d] [-r] [--interactive=WHEN] [--preserve-root|--no-preserve-root] path ...
+```
+rm [-f] [-i] [-I] [-v] [-d] [-r] [--interactive=WHEN]
+  [--preserve-root|--no-preserve-root] path ...
 ```
 
 ## DESCRIPTION
@@ -38,12 +39,11 @@ of interactive and safety-oriented behaviors.
 ## LIMITATIONS
 
 - removals are permanent; there is no trash or undelete layer
-- interactive handling is intentionally simpler than full GNU `rm` in edge
-  cases involving many write-protected files or deep directory trees
+- interactive handling is intentionally simpler than full GNU `rm` in edge cases involving many write-protected files or deep directory trees
 
 ## EXAMPLES
 
-```text
+```
 rm file.txt
 rm -r build/tmp
 rm -iv old-config

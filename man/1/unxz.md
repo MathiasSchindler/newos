@@ -6,7 +6,9 @@ unxz - decompress an xz file
 
 ## SYNOPSIS
 
+```
 unxz file.xz
+```
 
 ## DESCRIPTION
 
@@ -29,7 +31,9 @@ None.
 
 ## EXAMPLES
 
-- `unxz image.raw.xz`
+```
+unxz image.raw.xz
+```
 
 ## SEE ALSO
 

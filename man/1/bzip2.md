@@ -6,7 +6,7 @@ bzip2 - compress a file with the repository's bzip2 support
 
 ## SYNOPSIS
 
-```text
+```
 bzip2 file
 ```
 
@@ -32,7 +32,7 @@ The current interface is intentionally minimal and takes a single file operand.
 
 ## EXAMPLES
 
-```text
+```
 bzip2 notes.txt
 ```
 

@@ -6,7 +6,9 @@ sync - flush filesystem caches to disk
 
 ## SYNOPSIS
 
+```
 sync [-d] [-v] [file ...]
+```
 
 ## DESCRIPTION
 

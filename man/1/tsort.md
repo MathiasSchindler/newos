@@ -6,7 +6,9 @@ tsort - topological sort
 
 ## SYNOPSIS
 
+```
 tsort [file]
+```
 
 ## DESCRIPTION
 

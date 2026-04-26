@@ -6,7 +6,9 @@ more - page through text one screen at a time (forward only)
 
 ## SYNOPSIS
 
+```
 more [-N] [-p PATTERN] [--color[=WHEN]] [+/PATTERN] [file ...]
+```
 
 ## DESCRIPTION
 
@@ -34,10 +36,8 @@ navigation conveniences.
 ## LIMITATIONS
 
 - no backward navigation (use less for that)
-- the search/navigation feature set is intentionally small compared with full
-  GNU/BSD pagers
-- no compatibility implementation for the wider collection of GNU/BSD `more`
-  flags
+- the search/navigation feature set is intentionally small compared with full GNU/BSD pagers
+- no compatibility implementation for the wider collection of GNU/BSD `more` flags
 
 ## EXAMPLES
 

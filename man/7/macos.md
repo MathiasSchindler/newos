@@ -30,18 +30,13 @@ contributors usually want runnable local binaries first.
 
 ## LIMITATIONS
 
-The project does not currently treat macOS as a true freestanding userland
-execution target in the Linux sense.
+The project does not currently treat macOS as a true freestanding userland execution target in the Linux sense.
 
-- normal macOS executables are expected to follow Mach-O conventions and use
-  the system runtime
-- fully static, libc-free user executables are not the primary supported model
-  on modern macOS/AArch64
-- the raw-syscall freestanding environment in this repository is therefore a
-  Linux target, not a Darwin one
+- normal macOS executables are expected to follow Mach-O conventions and use the system runtime
+- fully static, libc-free user executables are not the primary supported model on modern macOS/AArch64
+- the raw-syscall freestanding environment in this repository is therefore a Linux target, not a Darwin one
 
-When the manuals say "freestanding" without further qualification, they should
-usually be read as referring to the Linux syscall-only build.
+When the manuals say "freestanding" without further qualification, they should usually be read as referring to the Linux syscall-only build.
 
 ## TECHNICAL DECISIONS
 

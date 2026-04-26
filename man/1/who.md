@@ -6,7 +6,9 @@ who - show who is logged in
 
 ## SYNOPSIS
 
+```
 who [-H] [-b] [-q]
+```
 
 ## DESCRIPTION
 

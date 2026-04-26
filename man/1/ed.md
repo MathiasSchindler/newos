@@ -6,7 +6,9 @@ ed - line-oriented text editor
 
 ## SYNOPSIS
 
+```
 ed [file]
+```
 
 ## DESCRIPTION
 

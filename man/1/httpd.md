@@ -6,8 +6,10 @@ httpd - small static HTTP server for hosted newos development and service bring-
 
 ## SYNOPSIS
 
+```
 httpd [-q] [-b HOST] [-p PORT] [-r ROOT] [-i INDEX] [-m MAX]
       [-t TIMEOUT] [-c CONFIG]
+```
 
 ## DESCRIPTION
 

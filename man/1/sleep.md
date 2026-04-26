@@ -6,7 +6,9 @@ sleep - delay execution
 
 ## SYNOPSIS
 
+```
 sleep DURATION...
+```
 
 ## DESCRIPTION
 
@@ -31,9 +33,11 @@ The sleep tool pauses execution for the requested amount of time. Multiple durat
 
 ## EXAMPLES
 
-- `sleep 1`
-- `sleep 250ms`
-- `sleep 1m 30s`
+```
+sleep 1
+sleep 250ms
+sleep 1m 30s
+```
 
 ## SEE ALSO
 

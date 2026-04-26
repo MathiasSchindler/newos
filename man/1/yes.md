@@ -6,7 +6,9 @@ yes - repeatedly output a string
 
 ## SYNOPSIS
 
+```
 yes [STRING ...]
+```
 
 ## DESCRIPTION
 

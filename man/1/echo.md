@@ -6,7 +6,7 @@ echo - write arguments to standard output
 
 ## SYNOPSIS
 
-```text
+```
 echo [ARG ...]
 ```
 
@@ -31,12 +31,11 @@ arguments rather than a large option surface. Tokens such as `-n`, `-e`, and
 ## LIMITATIONS
 
 - there is no option to suppress the trailing newline
-- backslash escapes are not interpreted; use `printf` when exact formatting or
-  portability matters
+- backslash escapes are not interpreted; use `printf` when exact formatting or portability matters
 
 ## EXAMPLES
 
-```text
+```
 echo hello
 echo build complete
 echo "-n is literal here"

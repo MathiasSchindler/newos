@@ -6,7 +6,9 @@ kill - send signals to processes
 
 ## SYNOPSIS
 
+```
 kill [-l [SIGNAL]] [-L] [-s SIGNAL | --signal SIGNAL | -SIGNAL] [--] PID...
+```
 
 ## DESCRIPTION
 
@@ -37,15 +39,16 @@ The kill tool sends signals to running processes. By default it sends
 - Process-group syntax with negative PIDs may not work on all platforms.
 - The known signal-name list is fixed at build time.
 - No process-name matching or pattern-based selection is provided.
-- When several PIDs are given, `kill` continues attempting later ones even if an
-  earlier signal delivery fails.
+- When several PIDs are given, `kill` continues attempting later ones even if an earlier signal delivery fails.
 
 ## EXAMPLES
 
-- `kill 1234`
-- `kill --signal TERM 1234 1235`
-- `kill -9 1234`
-- `kill -l TERM`
+```
+kill 1234
+kill --signal TERM 1234 1235
+kill -9 1234
+kill -l TERM
+```
 
 ## SEE ALSO
 

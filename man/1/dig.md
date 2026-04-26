@@ -6,7 +6,7 @@ dig - inspect a small subset of DNS records in a dig-style format
 
 ## SYNOPSIS
 
-```text
+```
 dig [-4|-6] [-t TYPE] [-s SERVER|@SERVER] [-p PORT] NAME [TYPE]
 ```
 
@@ -42,7 +42,7 @@ for quick inspection and troubleshooting, not for full protocol analysis.
 
 ## EXAMPLES
 
-```text
+```
 dig localhost
 dig -t AAAA localhost
 dig @1.1.1.1 example.com MX

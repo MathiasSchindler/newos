@@ -6,7 +6,7 @@ touch - update file timestamps and create empty files
 
 ## SYNOPSIS
 
-```text
+```
 touch [-acm] [--no-create]
       [-d DATETIME | --date[=DATETIME] | -t STAMP]
       [-r FILE | --reference[=FILE]] [--time=WORD] path ...
@@ -43,7 +43,7 @@ yet exist.
 
 ## EXAMPLES
 
-```text
+```
 touch file.txt
 touch -r template.txt copy.txt
 touch -t 202604182300 note.txt

@@ -6,7 +6,7 @@ chown - change file ownership
 
 ## SYNOPSIS
 
-```text
+```
 chown [-R] [-h] [--reference=FILE | OWNER[:GROUP]] PATH...
 ```
 
@@ -35,7 +35,7 @@ also copy ownership from a reference file.
 
 ## EXAMPLES
 
-```text
+```
 chown root:root path
 chown -R builduser build/
 chown --reference=template.txt target.txt

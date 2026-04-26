@@ -54,12 +54,9 @@ implementation files they live in a same-named subdirectory owned by that tool.
 ## LIMITATIONS
 
 - The freestanding path currently targets Linux/AArch64 and Linux/x86-64
-- macOS is a first-class hosted development platform, but not yet a separate
-  freestanding runtime target in the same sense
-- Hosted development assumes a POSIX-like system; Windows is not a supported
-  contributor platform
-- Manual pages are kept in-tree and may lag very recent behavior changes until
-  they are refreshed alongside the code
+- macOS is a first-class hosted development platform, but not yet a separate freestanding runtime target in the same sense
+- Hosted development assumes a POSIX-like system; Windows is not a supported contributor platform
+- Manual pages are kept in-tree and may lag very recent behavior changes until they are refreshed alongside the code
 
 ## SEE ALSO
 

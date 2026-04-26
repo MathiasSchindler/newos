@@ -6,7 +6,9 @@ wget - fetch data from HTTP or local file URLs
 
 ## SYNOPSIS
 
+```
 wget [-q] [-S] [-T TIMEOUT] [-O FILE] URL...
+```
 
 ## DESCRIPTION
 
@@ -44,10 +46,12 @@ dependencies or a hosted libc requirement in the tool itself.
 
 ## EXAMPLES
 
-- `wget http://example.com/`
-- `wget -O page.html http://example.com/index.html`
-- `wget -q -O - file:///tmp/data.txt`
-- `wget -S -T 2s http://127.0.0.1:8080/status`
+```
+wget http://example.com/
+wget -O page.html http://example.com/index.html
+wget -q -O - file:///tmp/data.txt
+wget -S -T 2s http://127.0.0.1:8080/status
+```
 
 ## SEE ALSO
 

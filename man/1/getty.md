@@ -6,7 +6,7 @@ getty - attach a shell or login-style program to a tty path
 
 ## SYNOPSIS
 
-```sh
+```
 getty [-nqi] [-r DELAY] [-l PROGRAM | -c COMMAND] [-t TERM]
       [-f ISSUE] [-p PROMPT] TTY [ARG ...]
 ```
@@ -55,18 +55,14 @@ traditional serial line manager.
 
 ## LIMITATIONS
 
-- expects a tty-like device path; it does not probe serial settings or manage
-  modem control lines
-- no baud-rate parsing, `agetty`-style line discipline setup, or automatic
-  serial configuration
-- authentication is delegated entirely to the program you launch with `-l` or as
-  the positional command; the built-in prompt only collects a user name
-- respawn management is intentionally simple and only supervises one foreground
-  child
+- expects a tty-like device path; it does not probe serial settings or manage modem control lines
+- no baud-rate parsing, `agetty`-style line discipline setup, or automatic serial configuration
+- authentication is delegated entirely to the program you launch with `-l` or as the positional command; the built-in prompt only collects a user name
+- respawn management is intentionally simple and only supervises one foreground child
 
 ## EXAMPLES
 
-```sh
+```
 getty /dev/tty1
 getty -n /dev/ttyS0 /bin/sh
 getty -l /bin/login -p 'login: ' /dev/tty1

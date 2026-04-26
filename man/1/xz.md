@@ -6,7 +6,9 @@ xz - compress a single file with LZMA2
 
 ## SYNOPSIS
 
+```
 xz file
+```
 
 ## DESCRIPTION
 
@@ -29,7 +31,9 @@ None.
 
 ## EXAMPLES
 
-- `xz image.raw`
+```
+xz image.raw
+```
 
 ## SEE ALSO
 

@@ -6,7 +6,9 @@ free - display memory usage
 
 ## SYNOPSIS
 
+```
 free [-b|-k|-m|-g|-h] [-w] [-t]
+```
 
 ## DESCRIPTION
 

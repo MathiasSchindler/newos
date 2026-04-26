@@ -6,7 +6,9 @@ fmt - simple optimal text formatter
 
 ## SYNOPSIS
 
+```
 fmt [-w WIDTH] [-s] [-u] [-c] [-p PREFIX] [file ...]
+```
 
 ## DESCRIPTION
 

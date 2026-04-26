@@ -6,7 +6,9 @@ head - output the first part of files
 
 ## SYNOPSIS
 
+```
 head [-n [+|-]COUNT | -c [+|-]COUNT] [-qv] [file ...]
+```
 
 ## DESCRIPTION
 
@@ -35,9 +37,11 @@ The head tool prints the beginning of files by line count or byte count. It supp
 
 ## EXAMPLES
 
-- `head file.txt`
-- `head -n 20 log.txt`
-- `head -c 128 data.bin`
+```
+head file.txt
+head -n 20 log.txt
+head -c 128 data.bin
+```
 
 ## SEE ALSO
 

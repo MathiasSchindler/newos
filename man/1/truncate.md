@@ -6,7 +6,9 @@ truncate - shrink or extend the size of files
 
 ## SYNOPSIS
 
+```
 truncate [-c] [-o] -s SIZE file...
+```
 
 ## DESCRIPTION
 

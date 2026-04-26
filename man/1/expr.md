@@ -69,8 +69,7 @@ operations and logical operators work as documented without numeric limits.
 
 - No `match` or `:` (regex match) operator.
 - No floating-point arithmetic.
-- Numeric values exceeding the bignum capacity (approximately 1150 digits) will
-  trigger an overflow error.
+- Numeric values exceeding the bignum capacity (approximately 1150 digits) will trigger an overflow error.
 - Each operator and operand must be a separate shell argument.
 
 ## EXAMPLES

@@ -6,11 +6,13 @@ tar - create or extract tar archives
 
 ## SYNOPSIS
 
+```
 tar [-v] [-P] [-C dir] [--exclude PATTERN] -cf archive.tar paths...
 
 tar [-v] [-P] [-C dir] [--strip-components N] -xf archive.tar [members...]
 
 tar [-v] [--strip-components N] -tf archive.tar [members...]
+```
 
 ## DESCRIPTION
 
@@ -56,18 +58,18 @@ external runtime dependencies.
 
 - No append/update/delete modes (`-r`, `-u`, `--delete`) are supported.
 - Sparse files and device/special-file recreation are still not implemented.
-- Only the most common GNU/PAX metadata fields are honored; richer ownership or
-  extended-attribute preservation is intentionally minimal.
-- Compressed streaming to or from standard input/output is still limited compared
-  with a full GNU tar implementation.
+- Only the most common GNU/PAX metadata fields are honored; richer ownership or extended-attribute preservation is intentionally minimal.
+- Compressed streaming to or from standard input/output is still limited compared with a full GNU tar implementation.
 
 ## EXAMPLES
 
-- `tar -cf backup.tar src docs`
-- `tar -czf backup.tar.gz src docs`
-- `tar -tf backup.tar 'src/*.c'`
-- `tar --exclude='build/*' -cf source.tar src build`
-- `tar -C out --strip-components=1 -xf backup.tar docs/readme.txt`
+```
+tar -cf backup.tar src docs
+tar -czf backup.tar.gz src docs
+tar -tf backup.tar 'src/*.c'
+tar --exclude='build/*' -cf source.tar src build
+tar -C out --strip-components=1 -xf backup.tar docs/readme.txt
+```
 
 ## SEE ALSO
 

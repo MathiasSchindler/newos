@@ -6,7 +6,7 @@ sh - command shell for the newos userland
 
 ## SYNOPSIS
 
-```text
+```
 sh
 sh -c COMMAND
 sh SCRIPT [ARG ...]
@@ -52,16 +52,13 @@ script path it runs the file non-interactively.
 ## LIMITATIONS
 
 - it is not a full drop-in replacement for a mature POSIX shell
-- job control and interactive convenience features remain basic compared with
-  `bash` or `dash`
-- positional parameter handling is intentionally compact and does not yet match
-  every quoting edge case of a full POSIX shell
-- shell invocation options are intentionally minimal; login-shell startup,
-  rc-file loading, and broader compatibility modes are not implemented yet
+- job control and interactive convenience features remain basic compared with `bash` or `dash`
+- positional parameter handling is intentionally compact and does not yet match every quoting edge case of a full POSIX shell
+- shell invocation options are intentionally minimal; login-shell startup, rc-file loading, and broader compatibility modes are not implemented yet
 
 ## EXAMPLES
 
-```text
+```
 sh
 sh -c 'echo hello | wc -c'
 sh build-script.sh

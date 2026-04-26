@@ -127,11 +127,9 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 ## LIMITATIONS
 
 - The Linux freestanding build currently assumes Clang plus `lld`
-- On macOS, the default build behavior favors local runnable binaries over a
-  separate fully freestanding Darwin userland target
+- On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
 - There is no install or staging-prefix workflow yet
-- Hosted success and freestanding success should be treated as related but
-  separate checks
+- Hosted success and freestanding success should be treated as related but separate checks
 
 ## SEE ALSO
 

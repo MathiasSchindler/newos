@@ -6,7 +6,9 @@ csplit - split a file based on context (patterns)
 
 ## SYNOPSIS
 
+```
 csplit [-f PREFIX] [-n DIGITS] [-s|-q] [-k] [-z] file PATTERN...
+```
 
 ## DESCRIPTION
 

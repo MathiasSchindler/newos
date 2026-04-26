@@ -36,8 +36,7 @@ time instead of the current time.
 ## LIMITATIONS
 
 - The `-s` (set system time) option is not implemented.
-- Date arithmetic in `-d` expressions may be limited to what the platform
-  `strptime` supports.
+- Date arithmetic in `-d` expressions may be limited to what the platform `strptime` supports.
 - No `--iso-8601` or `--rfc-3339` convenience flags.
 
 ## EXAMPLES

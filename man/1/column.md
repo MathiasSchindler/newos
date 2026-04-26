@@ -6,7 +6,9 @@ column - format input into columns
 
 ## SYNOPSIS
 
+```
 column [-t] [-x] [-s SEP] [-o OUTSEP] [-c WIDTH] [file ...]
+```
 
 ## DESCRIPTION
 

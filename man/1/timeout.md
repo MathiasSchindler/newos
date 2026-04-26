@@ -6,7 +6,10 @@ timeout - run a command with a time limit
 
 ## SYNOPSIS
 
-timeout [--preserve-status] [-s SIGNAL|--signal SIGNAL] [-k DURATION|--kill-after DURATION] DURATION COMMAND [ARG ...]
+```
+timeout [--preserve-status] [-s SIGNAL|--signal SIGNAL]
+	[-k DURATION|--kill-after DURATION] DURATION COMMAND [ARG ...]
+```
 
 ## DESCRIPTION
 

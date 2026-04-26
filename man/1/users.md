@@ -6,7 +6,9 @@ users - print usernames of logged-in users
 
 ## SYNOPSIS
 
+```
 users [-s] [-u] [-c]
+```
 
 ## DESCRIPTION
 

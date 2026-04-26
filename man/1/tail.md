@@ -6,7 +6,9 @@ tail - output the last part of files
 
 ## SYNOPSIS
 
+```
 tail [-n [+|-]COUNT | -c [+|-]COUNT] [-fFqv] [file ...]
+```
 
 ## DESCRIPTION
 
@@ -39,9 +41,11 @@ The tail tool prints the end of files by line count or byte count and can option
 
 ## EXAMPLES
 
-- `tail file.txt`
-- `tail -n 50 server.log`
-- `tail -f app.log`
+```
+tail file.txt
+tail -n 50 server.log
+tail -f app.log
+```
 
 ## SEE ALSO
 

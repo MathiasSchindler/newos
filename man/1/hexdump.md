@@ -40,8 +40,7 @@ non-printable bytes replaced by `.`.
 ## LIMITATIONS
 
 - No `-x` / `-d` / `-o` alternate format selection flags.
-- Output format is fixed at canonical hex+ASCII (equivalent to `hexdump -C`
-  in many systems).
+- Output format is fixed at canonical hex+ASCII (equivalent to `hexdump -C` in many systems).
 
 ## EXAMPLES
 

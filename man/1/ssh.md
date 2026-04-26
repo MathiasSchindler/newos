@@ -6,7 +6,7 @@ ssh - minimal interactive SSH client
 
 ## SYNOPSIS
 
-```sh
+```
 ssh [-v] [-i IDENTITY] [-l USER] [-p PORT] HOST
 ssh [-v] [-i IDENTITY] [-l USER] [-p PORT] USER@HOST[:PORT] [PASSWORD]
 ```
@@ -61,16 +61,14 @@ instead of silently updating the trust record.
   - host keys: `ssh-ed25519`
   - transport cipher: `chacha20-poly1305@openssh.com`
   - compression: `none`
-- No `ssh_config` parsing, `~/.ssh/config`, or command-line compatibility
-  beyond the listed flags
+- No `ssh_config` parsing, `~/.ssh/config`, or command-line compatibility beyond the listed flags
 - No agent support, passphrase-protected private keys, or RSA/ECDSA client keys
-- No remote command execution mode, port forwarding, X11 forwarding, or file
-  transfer support
+- No remote command execution mode, port forwarding, X11 forwarding, or file transfer support
 - Intended as a small native `newos` client, not a full `ssh(1)` replacement
 
 ## EXAMPLES
 
-```sh
+```
 ssh demo@example.com
 ssh -p 2222 demo@127.0.0.1
 ssh -i ~/.ssh/id_ed25519 git@github.com

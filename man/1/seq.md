@@ -6,7 +6,9 @@ seq - print a sequence of numbers
 
 ## SYNOPSIS
 
+```
 seq [-w] [-s SEP] [-f FORMAT] [FIRST [STEP]] LAST
+```
 
 ## DESCRIPTION
 

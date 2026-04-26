@@ -28,8 +28,7 @@ the full path of the first (or all, with `-a`) matching executable.
 
 ## LIMITATIONS
 
-- Shell aliases and functions are not resolved (only executables and
-  built-ins are reported).
+- Shell aliases and functions are not resolved (only executables and built-ins are reported).
 - `PATH` lookup only; no support for hash tables or per-shell caches.
 
 ## EXAMPLES

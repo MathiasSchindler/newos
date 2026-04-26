@@ -6,7 +6,7 @@ mkdir - create directories
 
 ## SYNOPSIS
 
-```text
+```
 mkdir [-p] [-v] [-m mode] directory ...
 ```
 
@@ -31,14 +31,12 @@ parents and apply an explicit octal mode.
 
 ## LIMITATIONS
 
-- symbolic mode strings are not guaranteed; `-m` is intended for numeric/octal
-  modes
-- when `-m` is not supplied, final permissions still depend on the current
-  process umask
+- symbolic mode strings are not guaranteed; `-m` is intended for numeric/octal modes
+- when `-m` is not supplied, final permissions still depend on the current process umask
 
 ## EXAMPLES
 
-```text
+```
 mkdir work
 mkdir -p build/tmp/cache
 mkdir -m 700 private-dir

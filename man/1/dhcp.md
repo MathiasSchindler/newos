@@ -6,7 +6,7 @@ dhcp - acquire a small IPv4 DHCP lease
 
 ## SYNOPSIS
 
-```text
+```
 dhcp [-A] [-i IFACE] [-s SERVER] [-p SERVER_PORT] [-P CLIENT_PORT] [-t TIMEOUT]
 ```
 
@@ -37,14 +37,13 @@ the leased address and default route to the chosen interface.
 ## LIMITATIONS
 
 - this is currently a small IPv4 DHCP client rather than a full lease manager
-- renew, release, background daemon mode, and persistent lease storage are not
-  implemented yet
+- renew, release, background daemon mode, and persistent lease storage are not implemented yet
 - automatic resolver-file updates are not written by the tool today
 - applying a lease usually requires elevated privileges and a usable interface
 
 ## EXAMPLES
 
-```text
+```
 dhcp
 
 # print a lease without changing interface state

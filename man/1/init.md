@@ -6,7 +6,7 @@ init - tiny init-style process supervisor
 
 ## SYNOPSIS
 
-```sh
+```
 init [-nq] [-r DELAY] [-m COUNT] [-t PATH] [-e NAME=VALUE] [-c COMMAND]
      [PROGRAM [ARG ...]]
 ```
@@ -60,7 +60,7 @@ rather than a full service manager.
 
 ## EXAMPLES
 
-```sh
+```
 init
 init -n /bin/sh -c 'echo boot smoke test'
 init -r 500ms /bin/sh

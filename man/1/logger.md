@@ -6,7 +6,7 @@ logger - write messages to the system log stream
 
 ## SYNOPSIS
 
-```sh
+```
 logger [-s] [-t TAG] [-p PRIORITY] [-f FILE] [MESSAGE...]
 ```
 
@@ -30,7 +30,7 @@ a Linux severity prefix such as `<6>`.
 
 ## EXAMPLES
 
-```sh
+```
 logger system is ready
 logger -t init -p notice entered multi-user mode
 logger -s -p err service failed

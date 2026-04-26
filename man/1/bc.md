@@ -49,20 +49,16 @@ and `/* ... */` comments are ignored.
 
 ## LIMITATIONS
 
-- arithmetic is backed by the shared signed big-number primitives in
-  `src/shared/bignum.{c,h}`, so integer precision is large but still bounded by
-  the fixed-capacity implementation (roughly 1150 decimal digits)
-- decimal precision is controlled by `scale` and currently capped at 18
-  fractional digits
+- arithmetic is backed by the shared signed big-number primitives in `src/shared/bignum.{c,h}`, so integer precision is large but still bounded by the fixed-capacity implementation (roughly 1150 decimal digits)
+- decimal precision is controlled by `scale` and currently capped at 18 fractional digits
 - remainder is primarily useful with whole-number operands
-- `-l` does not yet provide the full traditional POSIX math library function
-  set; it mainly enables higher default precision and useful constants
+- `-l` does not yet provide the full traditional POSIX math library function set; it mainly enables higher default precision and useful constants
 - no `define`, `auto`, arrays, or string values
 - no `break` or `continue` flow-control statements
 
 ## EXAMPLES
 
-```sh
+```
 echo "3 * (4 + 5)" | bc
 printf 'scale=4; 22 / 7\n' | bc
 printf 'radius=12; radius^2\n' | bc

@@ -6,7 +6,9 @@ tac - concatenate files in reverse
 
 ## SYNOPSIS
 
+```
 tac [-s SEP|-0] [file ...]
+```
 
 ## DESCRIPTION
 

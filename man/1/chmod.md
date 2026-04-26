@@ -6,7 +6,7 @@ chmod - change file mode bits
 
 ## SYNOPSIS
 
-```text
+```
 chmod [-R] [-h] [-H|-L|-P] MODE path ...
 ```
 
@@ -36,7 +36,7 @@ operation and both numeric and symbolic mode specifications.
 
 ## EXAMPLES
 
-```text
+```
 chmod 755 script.sh
 chmod -R u+rwX,go-rwx private-dir
 ```

@@ -6,7 +6,9 @@ fold - wrap long lines to a specified width
 
 ## SYNOPSIS
 
+```
 fold [-bcs] [-w WIDTH] [file ...]
+```
 
 ## DESCRIPTION
 

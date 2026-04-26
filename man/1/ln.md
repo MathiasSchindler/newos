@@ -6,7 +6,7 @@ ln - create hard links and symbolic links
 
 ## SYNOPSIS
 
-```text
+```
 ln [OPTION ...] TARGET [LINK_NAME]
 ln [OPTION ...] TARGET ... DIRECTORY
 ```
@@ -42,12 +42,11 @@ existing directory.
 
 - `-r`/`--relative` only applies to symbolic links and fails without `-s`
 - `-f` refuses to replace an existing directory
-- platform filesystem semantics and permissions still determine what kinds of
-  links are allowed
+- platform filesystem semantics and permissions still determine what kinds of links are allowed
 
 ## EXAMPLES
 
-```text
+```
 ln file.txt
 ln target.txt link.txt
 ln -s ../bin/tool tool-link

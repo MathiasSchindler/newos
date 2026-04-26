@@ -6,7 +6,9 @@ sha512sum - compute or verify SHA-512 checksums
 
 ## SYNOPSIS
 
+```
 sha512sum [-c] [-q] [-s] [-z] [FILE ...]
+```
 
 ## DESCRIPTION
 
@@ -34,8 +36,10 @@ The sha512sum tool computes SHA-512 digests for files or standard input and veri
 
 ## EXAMPLES
 
-- `sha512sum backup.tar`
-- `sha512sum -c checksums.sha512`
+```
+sha512sum backup.tar
+sha512sum -c checksums.sha512
+```
 
 ## SEE ALSO
 

@@ -1,12 +1,14 @@
-# shutdown
+# SHUTDOWN
 
 Request an immediate system power state change.
 
-## Synopsis
+## SYNOPSIS
 
+```
 shutdown [options] [now]
+```
 
-## Options
+## OPTIONS
 
 - `-r`, `--reboot` reboot the system (default)
 - `-p`, `-P`, `--poweroff` request power-off

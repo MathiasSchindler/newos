@@ -37,8 +37,7 @@ Recognises the following types by magic bytes or content inspection:
 ## LIMITATIONS
 
 - No magic database (`/etc/magic`, `magic.mgc`); recognition is compiled-in.
-- Many file types are not recognised and fall back to
-  `application/octet-stream`.
+- Many file types are not recognised and fall back to `application/octet-stream`.
 - No `-z` (decompress before testing).
 
 ## EXAMPLES

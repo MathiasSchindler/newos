@@ -6,7 +6,7 @@ rmdir - remove empty directories
 
 ## SYNOPSIS
 
-```text
+```
 rmdir [-p] [-v] [--ignore-fail-on-non-empty] directory ...
 ```
 
@@ -35,7 +35,7 @@ parents when requested.
 
 ## EXAMPLES
 
-```text
+```
 rmdir empty-dir
 rmdir -p a/b/c
 ```

@@ -1,12 +1,17 @@
-# objdump(1)
+# OBJDUMP
 
-## Name
+## NAME
+
 **objdump** - summarize and dump ELF object contents
 
-## Synopsis
-**objdump** [**-f**] [**-h**] [**-s**] [**-t**] FILE ...
+## SYNOPSIS
 
-## Description
+```
+objdump [-f] [-h] [-s] [-t] FILE ...
+```
+
+## DESCRIPTION
+
 `objdump` provides a compact view of ELF files. On hosted macOS builds it also
 reports basic Mach-O file summaries so the inspection workflow remains usable.
 
@@ -19,13 +24,13 @@ Supported output modes:
 
 If no mode is selected, the file summary and section table are shown.
 
-## Examples
-```sh
+## EXAMPLES
+
+```
 objdump -f -h kernel.o
 objdump -s -t app
 ```
 
-## Limitations
-Full section, symbol, and content dumping is centered on ELF64 little-endian
-inputs. Mach-O handling is currently limited to file-summary reporting rather
-than deep disassembly or section decoding.
+## LIMITATIONS
+
+Full section, symbol, and content dumping is centered on ELF64 little-endian inputs. Mach-O handling is currently limited to file-summary reporting rather than deep disassembly or section decoding.

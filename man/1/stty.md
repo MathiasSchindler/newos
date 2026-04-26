@@ -6,7 +6,7 @@ stty - inspect or change a terminal mode subset
 
 ## SYNOPSIS
 
-```sh
+```
 stty [-a]
 stty size
 stty raw|sane|echo|-echo|icanon|-icanon|isig|-isig|ixon|-ixon|opost|-opost ...
@@ -37,7 +37,7 @@ processing, and terminal row/column size.
 
 ## EXAMPLES
 
-```sh
+```
 stty -a
 stty size
 stty raw -echo

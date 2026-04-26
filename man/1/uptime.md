@@ -6,7 +6,9 @@ uptime - show how long the system has been running
 
 ## SYNOPSIS
 
+```
 uptime [-p|--pretty] [-s|--since]
+```
 
 ## DESCRIPTION
 

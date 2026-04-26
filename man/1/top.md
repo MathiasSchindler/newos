@@ -6,7 +6,9 @@ top - display a live-style summary of the busiest processes
 
 ## SYNOPSIS
 
+```
 top [-b] [-n ROWS] [-p PID[,PID...]] [-o FIELD] [-r]
+```
 
 ## DESCRIPTION
 

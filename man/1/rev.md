@@ -6,7 +6,9 @@ rev - reverse the characters in each line
 
 ## SYNOPSIS
 
+```
 rev [-0] [file ...]
+```
 
 ## DESCRIPTION
 

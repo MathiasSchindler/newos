@@ -6,7 +6,9 @@ printenv - print environment variables
 
 ## SYNOPSIS
 
+```
 printenv [-0] [-n] [-q] [NAME ...]
+```
 
 ## DESCRIPTION
 

@@ -6,7 +6,7 @@ gzip - compress files in gzip format
 
 ## SYNOPSIS
 
-```text
+```
 gzip [-c] [-d] [-f] [-k] [file ...]
 ```
 
@@ -34,13 +34,12 @@ support. It can also act in decompression mode.
 ## LIMITATIONS
 
 - only gzip streams are handled; this is not a general `.zip` extractor
-- no recursive directory compression mode, test mode (`-t`), or listing mode
-  (`-l`) is implemented
+- no recursive directory compression mode, test mode (`-t`), or listing mode (`-l`) is implemented
 - directory trees usually need to be packed first with `tar`
 
 ## EXAMPLES
 
-```text
+```
 gzip file.txt
 gzip -c file.txt > file.txt.gz
 gzip -d archive.gz

@@ -6,7 +6,7 @@ dmesg - inspect the kernel message buffer
 
 ## SYNOPSIS
 
-```sh
+```
 dmesg
 dmesg [-crwC] [-l LEVELS] [-n LEVEL]
 ```
@@ -47,16 +47,13 @@ inspection, and early userspace debugging.
 ## LIMITATIONS
 
 - live follow mode depends on Linux-style `/dev/kmsg` or `/proc/kmsg`
-- reading or clearing the kernel log may require elevated privileges, depending
-  on kernel policy
-- non-Linux hosted platforms may only expose a boot log snapshot, or no kernel
-  log at all
-- no colorization, pager integration, human timestamp conversion, or JSON output
-  yet
+- reading or clearing the kernel log may require elevated privileges, depending on kernel policy
+- non-Linux hosted platforms may only expose a boot log snapshot, or no kernel log at all
+- no colorization, pager integration, human timestamp conversion, or JSON output yet
 
 ## EXAMPLES
 
-```sh
+```
 dmesg
 dmesg -l err,warn
 dmesg -w

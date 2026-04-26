@@ -6,7 +6,9 @@ unexpand - convert spaces to tabs
 
 ## SYNOPSIS
 
+```
 unexpand [-a] [-i] [-t TABSTOP[,TABSTOP...]] [file ...]
+```
 
 ## DESCRIPTION
 

@@ -6,7 +6,7 @@ hostname - display or set the system hostname
 
 ## SYNOPSIS
 
-```text
+```
 hostname [NAME]
 ```
 
@@ -32,7 +32,7 @@ flag set.
 
 ## EXAMPLES
 
-```text
+```
 hostname
 hostname newos-dev
 ```

@@ -6,7 +6,7 @@ ip - inspect and adjust network links, addresses, and routes
 
 ## SYNOPSIS
 
-```sh
+```
 ip [-4|-6] [-br|-brief|-o|--oneline] address [show [IFACE|dev IFACE]]
 ip [-4|-6] address {add|del} ADDRESS/PREFIX dev IFACE
 ip [-4|-6] address flush dev IFACE
@@ -64,7 +64,7 @@ network settings. It focuses on the most common day-to-day tasks:
 
 ## EXAMPLES
 
-```sh
+```
 ip addr
 ip -br addr
 ip -4 addr show dev eth0

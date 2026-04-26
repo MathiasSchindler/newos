@@ -6,7 +6,9 @@ uniq - report or filter adjacent duplicate lines
 
 ## SYNOPSIS
 
+```
 uniq [-cduiz] [-f FIELDS] [-s CHARS] [-w CHARS] [file]
+```
 
 ## DESCRIPTION
 

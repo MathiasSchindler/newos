@@ -6,7 +6,7 @@ ping6 - IPv6 echo-request compatibility alias for ping
 
 ## SYNOPSIS
 
-```text
+```
 ping6 [PING OPTIONS] HOST
 ```
 
@@ -28,7 +28,7 @@ running `ping -6` and accepts the same options.
 
 ## EXAMPLES
 
-```text
+```
 ping6 ::1
 ping6 -c 3 host.example
 ```

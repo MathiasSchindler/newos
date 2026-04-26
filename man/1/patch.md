@@ -6,7 +6,9 @@ patch - apply a unified diff patch to files
 
 ## SYNOPSIS
 
+```
 patch [-pN] [-R] [-b] [--dry-run] [-o outfile] [-i patchfile] [patchfile]
+```
 
 ## DESCRIPTION
 
@@ -38,8 +40,7 @@ patch reads a unified-format diff and applies it to the corresponding source fil
 
 - only unified diff format (`--- / +++` headers, `@@ ... @@` hunks) is supported; context and ed-script formats are not
 - binary patches are not supported
-- hunk matching is conservative; patches generated against substantially changed
-  files may fail instead of applying with large fuzz
+- hunk matching is conservative; patches generated against substantially changed files may fail instead of applying with large fuzz
 
 ## EXAMPLES
 

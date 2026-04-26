@@ -6,7 +6,7 @@ pwd - print the current working directory
 
 ## SYNOPSIS
 
-```text
+```
 pwd [-L|-P]
 ```
 
@@ -33,7 +33,7 @@ physical path resolution depending on the selected mode.
 
 ## EXAMPLES
 
-```text
+```
 pwd
 pwd -P
 ```

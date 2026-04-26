@@ -6,9 +6,11 @@ ps - list running processes
 
 ## SYNOPSIS
 
+```
 ps [-f] [-e|-A|-a|-x] [aux] [-h|--no-headers]
    [-p PID[,PID...]] [-u USER[,USER...]] [-s STATE[,STATE...]]
    [-o FIELD[,FIELD...]] [--sort FIELD] [-r]
+```
 
 ## DESCRIPTION
 
@@ -44,18 +46,18 @@ layer. The default output includes `pid`, `ppid`, `user`, `stat`, `rss`, and
 
 ## LIMITATIONS
 
-- The available columns are intentionally compact; terminal, elapsed time, and
-  full argument-vector display are not yet exposed through the shared platform
-  interface.
+- The available columns are intentionally compact; terminal, elapsed time, and full argument-vector display are not yet exposed through the shared platform interface.
 - RSS values are reported in kilobytes.
 
 ## EXAMPLES
 
-- `ps`
-- `ps aux`
-- `ps --no-headers -p 1`
-- `ps -u root -o pid,uid,user,command`
-- `ps --sort=-rss -o pid,user,rss,command`
+```
+ps
+ps aux
+ps --no-headers -p 1
+ps -u root -o pid,uid,user,command
+ps --sort=-rss -o pid,user,rss,command
+```
 
 ## SEE ALSO
 

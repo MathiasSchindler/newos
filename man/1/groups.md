@@ -6,7 +6,9 @@ groups - print the groups a user belongs to
 
 ## SYNOPSIS
 
+```
 groups [-n] [-d] [-p] [USER ...]
+```
 
 ## DESCRIPTION
 

@@ -6,7 +6,9 @@ wc - count lines, words, characters, and bytes
 
 ## SYNOPSIS
 
+```
 wc [-lwcmL] [file ...]
+```
 
 ## DESCRIPTION
 
@@ -36,9 +38,11 @@ The wc tool counts lines, words, bytes, characters, and maximum line length. Wit
 
 ## EXAMPLES
 
-- `wc file.txt`
-- `wc -l *.log`
-- `wc -m unicode.txt`
+```
+wc file.txt
+wc -l *.log
+wc -m unicode.txt
+```
 
 ## SEE ALSO
 

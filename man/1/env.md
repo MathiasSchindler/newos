@@ -6,7 +6,9 @@ env - set environment and run a command
 
 ## SYNOPSIS
 
+```
 env [-i] [-0] [-u NAME] [NAME=VALUE ...] [COMMAND [ARG ...]]
+```
 
 ## DESCRIPTION
 
@@ -36,9 +38,11 @@ The env tool prints the current environment or runs a command with modified envi
 
 ## EXAMPLES
 
-- `env`
-- `env -i PATH=/bin sh -c "echo $PATH"`
-- `env -u HOME printenv`
+```
+env
+env -i PATH=/bin sh -c "echo $PATH"
+env -u HOME printenv
+```
 
 ## NOTES
 

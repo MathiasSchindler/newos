@@ -6,7 +6,7 @@ mount - list mounted file systems or attach a file system at a target path
 
 ## SYNOPSIS
 
-```sh
+```
 mount
 mount [-rvwBp] [-t TYPE] [-o OPTIONS] [SOURCE [TARGET]]
 ```
@@ -51,14 +51,12 @@ single-target cases such as `-t proc /proc`, `-t tmpfs /mnt`, or
 ## LIMITATIONS
 
 - mounting requires appropriate kernel privileges
-- current full mount operations are implemented for Linux; non-Linux hosted
-  platforms may compile the tool but not support real mounts
-- no `/etc/fstab` parsing, `-a`, label/UUID lookup, or automatic filesystem
-  probing yet
+- current full mount operations are implemented for Linux; non-Linux hosted platforms may compile the tool but not support real mounts
+- no `/etc/fstab` parsing, `-a`, label/UUID lookup, or automatic filesystem probing yet
 
 ## EXAMPLES
 
-```sh
+```
 mount
 mount -t proc proc /proc
 mount -t tmpfs -o ro,size=16m tmpfs /mnt

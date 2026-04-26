@@ -38,10 +38,8 @@ covers common field-processing tasks without pulling in a heavyweight runtime.
 ## LIMITATIONS
 
 - This is still a focused awk subset rather than full POSIX/GNU awk.
-- No user-defined functions, range patterns, `ARGV`, or the full awk
-  expression/control-flow language are implemented.
-- `RS` is treated as a literal record separator string rather than full awk
-  regex/paragraph-mode semantics.
+- No user-defined functions, range patterns, `ARGV`, or the full awk expression/control-flow language are implemented.
+- `RS` is treated as a literal record separator string rather than full awk regex/paragraph-mode semantics.
 - No `OFMT`/`CONVFMT`, locale-aware formatting, or advanced `getline` forms.
 
 ## EXAMPLES
@@ -49,7 +47,8 @@ covers common field-processing tasks without pulling in a heavyweight runtime.
 ```
 awk '{ print $1 }' file.txt
 awk -F: '{ print $1 }' /etc/passwd
-awk -v prefix=tag 'FNR == 1 { print FILENAME } { print prefix, $1 }' file1 file2
+awk -v prefix=tag 'FNR == 1 { print FILENAME } { print prefix, $1 }' \
+  file1 file2
 awk 'BEGIN { print ARGC }' file1 file2
 awk -f script.awk input.txt
 ```

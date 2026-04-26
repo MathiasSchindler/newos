@@ -6,10 +6,12 @@ service - small config-driven service supervisor for start, stop, restart, and s
 
 ## SYNOPSIS
 
+```
 service start CONFIG
 service stop CONFIG
 service restart CONFIG
 service status CONFIG
+```
 
 ## DESCRIPTION
 

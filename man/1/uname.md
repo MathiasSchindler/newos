@@ -6,8 +6,10 @@ uname - print system and kernel identity information
 
 ## SYNOPSIS
 
-```text
-uname [-asnrvmipo] [--all] [--kernel-name] [--nodename] [--kernel-release] [--kernel-version] [--machine] [--processor] [--hardware-platform] [--operating-system]
+```
+uname [-asnrvmipo] [--all] [--kernel-name] [--nodename]
+  [--kernel-release] [--kernel-version] [--machine] [--processor]
+  [--hardware-platform] [--operating-system]
 ```
 
 ## DESCRIPTION
@@ -35,13 +37,12 @@ project's platform abstraction layer.
 
 ## LIMITATIONS
 
-- some secondary fields intentionally map to the same underlying platform
-  information (`-m`, `-p`, and `-i` may match)
+- some secondary fields intentionally map to the same underlying platform information (`-m`, `-p`, and `-i` may match)
 - output reflects the current platform backend rather than host `uname` quirks
 
 ## EXAMPLES
 
-```text
+```
 uname
 uname -a
 uname -sm

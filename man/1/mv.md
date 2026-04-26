@@ -6,7 +6,7 @@ mv - move or rename files and directories
 
 ## SYNOPSIS
 
-```text
+```
 mv [-i] [-f] [-n] [-u] [-v] source... destination
 ```
 
@@ -39,7 +39,7 @@ common interactive, no-clobber, update-only, and verbose behaviors.
 
 ## EXAMPLES
 
-```text
+```
 mv old.txt new.txt
 mv -v src1 src2 destdir/
 ```

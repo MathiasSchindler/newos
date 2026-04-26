@@ -6,7 +6,9 @@ watch - run a command repeatedly at a fixed interval
 
 ## SYNOPSIS
 
+```
 watch [-n INTERVAL] [-c COUNT] [-t] COMMAND [ARG ...]
+```
 
 ## DESCRIPTION
 
@@ -36,14 +38,15 @@ that changes over time.
 
 - no difference highlighting between runs
 - no keyboard controls such as pause, quit, or on-change execution
-- no shell-style parsing of a single quoted command string; pass the command and
-  its arguments as separate argv entries
+- no shell-style parsing of a single quoted command string; pass the command and its arguments as separate argv entries
 
 ## EXAMPLES
 
-- `watch ps`
-- `watch -n 0.5 free`
-- `watch -c 5 -t sh -c "date"`
+```
+watch ps
+watch -n 0.5 free
+watch -c 5 -t sh -c "date"
+```
 
 ## SEE ALSO
 

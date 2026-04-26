@@ -6,7 +6,9 @@ pstree - display processes in a tree
 
 ## SYNOPSIS
 
+```
 pstree [-A] [-n] [-p] [-u] [PID]
+```
 
 ## DESCRIPTION
 

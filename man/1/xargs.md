@@ -44,8 +44,7 @@ passes them as arguments to COMMAND. If no COMMAND is given, `echo` is used.
 ## LIMITATIONS
 
 - No interactive prompting (`-p`) support.
-- `xargs` does not invoke a shell unless you explicitly run one, so wildcard
-  expansion, redirection, and pipelines are not interpreted automatically.
+- `xargs` does not invoke a shell unless you explicitly run one, so wildcard expansion, redirection, and pipelines are not interpreted automatically.
 
 ## EXAMPLES
 

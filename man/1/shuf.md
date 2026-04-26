@@ -6,9 +6,11 @@ shuf - shuffle lines or generate random permutations
 
 ## SYNOPSIS
 
+```
 shuf [-n COUNT] [-r] [-z] [-o FILE] [--random-source=FILE] [file]
 shuf -e [-n COUNT] [-r] [-z] [-o FILE] [--random-source=FILE] arg ...
 shuf -i LO-HI [-n COUNT] [-r] [-o FILE] [--random-source=FILE]
+```
 
 ## DESCRIPTION
 

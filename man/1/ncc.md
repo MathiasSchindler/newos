@@ -55,13 +55,10 @@ choices are isolated in the backend and target-description layers under
 ## LIMITATIONS
 
 - only one input source file is accepted per invocation
-- not a complete ISO C implementation; the supported subset is aimed at the
-  project's own code
+- not a complete ISO C implementation; the supported subset is aimed at the project's own code
 - final executable linking currently relies on the host `clang` toolchain
-- Linux x86-64 is the best-supported target today; Linux AArch64 output and
-  linking still report "not implemented yet"
-- macOS/AArch64 hosted self-builds are progressing, but some real-world sources
-  may still expose unsupported C constructs or backend gaps
+- Linux x86-64 is the best-supported target today; Linux AArch64 output and linking still report "not implemented yet"
+- macOS/AArch64 hosted self-builds are progressing, but some real-world sources may still expose unsupported C constructs or backend gaps
 
 ## EXAMPLES
 

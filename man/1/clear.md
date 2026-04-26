@@ -6,7 +6,7 @@ clear - clear the terminal screen
 
 ## SYNOPSIS
 
-```text
+```
 clear
 clear -h
 ```
@@ -30,15 +30,13 @@ extended clear sequence, it also requests clearing the scrollback buffer.
 
 ## LIMITATIONS
 
-- this is intentionally a small ANSI/VT100-style implementation rather than a
-  full terminfo-aware utility
-- behavior depends on terminal escape-sequence support; on very minimal or
-  non-ANSI consoles the screen may not clear fully
+- this is intentionally a small ANSI/VT100-style implementation rather than a full terminfo-aware utility
+- behavior depends on terminal escape-sequence support; on very minimal or non-ANSI consoles the screen may not clear fully
 - it does not provide compatibility options or alternate modes
 
 ## EXAMPLES
 
-```text
+```
 clear
 ```
 

@@ -1,4 +1,4 @@
-# server(7)
+# SERVER
 
 ## NAME
 

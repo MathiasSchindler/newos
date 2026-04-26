@@ -6,7 +6,9 @@ md5sum - compute or verify MD5 checksums
 
 ## SYNOPSIS
 
+```
 md5sum [-c] [-q] [-s] [-z] [FILE ...]
+```
 
 ## DESCRIPTION
 
@@ -35,8 +37,10 @@ The md5sum tool computes MD5 digests for files or standard input and can verify 
 
 ## EXAMPLES
 
-- `md5sum file.iso`
-- `md5sum -c checksums.txt`
+```
+md5sum file.iso
+md5sum -c checksums.txt
+```
 
 ## SEE ALSO
 

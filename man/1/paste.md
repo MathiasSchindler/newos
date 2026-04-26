@@ -6,7 +6,9 @@ paste - merge lines of files side by side
 
 ## SYNOPSIS
 
+```
 paste [-sz] [-d DELIMS] [file ...]
+```
 
 ## DESCRIPTION
 

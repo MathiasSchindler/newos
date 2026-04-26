@@ -6,8 +6,10 @@ cp - copy files and directory trees
 
 ## SYNOPSIS
 
+```
 cp [OPTIONS] SOURCE DEST
 cp [OPTIONS] SOURCE ... DIRECTORY
+```
 
 ## DESCRIPTION
 
@@ -46,9 +48,11 @@ The cp tool copies regular files and, when requested, entire directory trees. In
 
 ## EXAMPLES
 
-- `cp notes.txt notes.bak`
-- `cp -r src backup`
-- `cp -a tree dest`
+```
+cp notes.txt notes.bak
+cp -r src backup
+cp -a tree dest
+```
 
 ## SEE ALSO
 

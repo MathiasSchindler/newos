@@ -6,7 +6,9 @@ ls - list files and directories
 
 ## SYNOPSIS
 
+```
 ls [OPTIONS] [PATH ...]
+```
 
 ## DESCRIPTION
 
@@ -50,17 +52,18 @@ The ls tool lists directory entries from one or more paths. It supports the core
 ## LIMITATIONS
 
 - Extended attributes are not displayed.
-- Output is intentionally simpler than GNU/BSD `ls`; multi-column terminal layout
-  and some edge-case compatibility flags are not implemented.
+- Output is intentionally simpler than GNU/BSD `ls`; multi-column terminal layout and some edge-case compatibility flags are not implemented.
 - Column widths are best-effort rather than exact GNU/BSD matching.
 
 Color output follows the shared project behavior documented in `output-style`.
 
 ## EXAMPLES
 
-- `ls`
-- `ls -l`
-- `ls -la src`
+```
+ls
+ls -l
+ls -la src
+```
 
 ## SEE ALSO
 

@@ -6,7 +6,7 @@ cat - concatenate files and display them on standard output
 
 ## SYNOPSIS
 
-```text
+```
 cat [-n] [-b] [-s] [-u] [-v] [-E] [-T] [-A] [file ...]
 ```
 
@@ -38,7 +38,7 @@ input in more visible forms for inspection.
 
 ## EXAMPLES
 
-```text
+```
 cat file.txt
 cat -n notes.txt
 cat -A config.txt

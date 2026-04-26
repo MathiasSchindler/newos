@@ -26,8 +26,7 @@ None.
 ## LIMITATIONS
 
 - No options are accepted.
-- If the identity cannot be resolved, exits with status 1 and prints an error
-  to standard error.
+- If the identity cannot be resolved, exits with status 1 and prints an error to standard error.
 
 ## EXAMPLES
 

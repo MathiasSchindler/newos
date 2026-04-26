@@ -41,9 +41,7 @@ Unknown numeric fields are printed as `-` in plain output.
 
 ## LIMITATIONS
 
-- JPEG dimensions are found by scanning the beginning of the file for a SOF
-  marker; unusual files with very large metadata prefixes may report the format
-  without dimensions.
+- JPEG dimensions are found by scanning the beginning of the file for a SOF marker; unusual files with very large metadata prefixes may report the format without dimensions.
 - TIFF support is limited to classic TIFF, not BigTIFF.
 - Animated image frame counts are not currently reported.
 - The command does not perform full image validation or decompression.

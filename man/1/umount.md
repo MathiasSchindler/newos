@@ -6,7 +6,7 @@ umount - detach mounted file systems
 
 ## SYNOPSIS
 
-```sh
+```
 umount [-flv] TARGET...
 ```
 
@@ -36,13 +36,12 @@ resolved from the current mount table.
 ## LIMITATIONS
 
 - requires appropriate privileges
-- does not currently support `-a`, recursive unmount sets, or `/etc/fstab`
-  driven behavior
+- does not currently support `-a`, recursive unmount sets, or `/etc/fstab` driven behavior
 - lazy unmount support is Linux-oriented; other hosted platforms may reject it
 
 ## EXAMPLES
 
-```sh
+```
 umount /mnt
 umount -v /mnt/data
 umount -l /oldroot

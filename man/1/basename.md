@@ -30,8 +30,7 @@ trailing SUFFIX. With `-a`, multiple names are accepted and processed in order.
 
 ## LIMITATIONS
 
-- Without `-a`, only a single NAME argument is accepted; a suffix may follow
-  as a second positional argument (classic POSIX form: `basename name suffix`).
+- Without `-a`, only a single NAME argument is accepted; a suffix may follow as a second positional argument (classic POSIX form: `basename name suffix`).
 - No `-n` (no newline) option.
 
 ## EXAMPLES

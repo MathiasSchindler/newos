@@ -6,7 +6,7 @@ mknod - create FIFOs and device nodes
 
 ## SYNOPSIS
 
-```sh
+```
 mknod [-m MODE] NAME TYPE [MAJOR MINOR]
 ```
 
@@ -30,7 +30,7 @@ elevated privileges and a filesystem that permits device nodes.
 
 ## EXAMPLES
 
-```sh
+```
 mknod -m 600 /tmp/control p
 mknod /dev/console c 5 1
 mknod /dev/sda b 8 0

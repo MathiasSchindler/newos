@@ -1,14 +1,15 @@
-# sshd
+# SSHD
 
 `sshd` is a minimal newos-native SSH server.
 
-## Usage
+## SYNOPSIS
 
-```sh
-sshd [-v] [-1] [-p PORT] [-l ADDRESS] [-u USER] -P PASSWORD|@file|@@literal|- [-k HOSTKEY_SEED_FILE] [-s SHELL]
+```
+sshd [-v] [-1] [-p PORT] [-l ADDRESS] [-u USER]
+  -P PASSWORD|@file|@@literal|- [-k HOSTKEY_SEED_FILE] [-s SHELL]
 ```
 
-## Options
+## OPTIONS
 
 - `--help`, `-h`: show help.
 - `-v`: print basic connection diagnostics.
@@ -25,7 +26,7 @@ sshd [-v] [-1] [-p PORT] [-l ADDRESS] [-u USER] -P PASSWORD|@file|@@literal|- [-
 - `-s SHELL`: command runner used for exec requests as `SHELL -c COMMAND`.
   The default is `sh`.
 
-## Current scope
+## CURRENT SCOPE
 
 This first milestone implements SSH-2.0 transport using
 `curve25519-sha256`, `ssh-ed25519`, and

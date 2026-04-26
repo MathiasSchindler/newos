@@ -6,10 +6,13 @@ sort - sort text lines
 
 ## SYNOPSIS
 
+```
 sort [-bCcdfiMmnrsuV] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]
-sort --human-numeric-sort [-bCcfmnrsu] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]
+sort --human-numeric-sort [-bCcfmnrsu] [-o FILE] [-t CHAR]
+  [-k FIELD[,FIELD]] [file ...]
 sort -h
 sort --help
+```
 
 ## DESCRIPTION
 
@@ -80,38 +83,31 @@ by their first three letters after leading blanks.
 ## LIMITATIONS
 
 - Comparisons are bytewise rather than locale-aware.
-- `-u` removes duplicate output lines after sorting; it is not a replacement for
-  `uniq` when you need adjacent-group counts.
-- Normal sorting uses bounded in-memory chunks of up to 8192 lines, 64 KiB per
-  line, and 2 MiB of stored text, then spills additional sorted chunks to
-  temporary files under `/tmp` and merges them back. This keeps hosted and
-  freestanding behavior identical while allowing much larger inputs than one
-  chunk.
-- A single line is still limited to 64 KiB. The external sorter keeps up to 128
-  temporary runs before reporting "too many temporary runs".
-- Merge mode keeps fixed per-input state and currently accepts up to eight input
-  files at a time. If `-o FILE` names one of the input paths, sort buffers first
-  so the input is not truncated before it is read.
-- Human-size arithmetic saturates at the largest unsigned machine value for
-  extremely large scaled inputs.
+- `-u` removes duplicate output lines after sorting; it is not a replacement for `uniq` when you need adjacent-group counts.
+- Normal sorting uses bounded in-memory chunks of up to 8192 lines, 64 KiB per line, and 2 MiB of stored text, then spills additional sorted chunks to temporary files under `/tmp` and merges them back. This keeps hosted and freestanding behavior identical while allowing much larger inputs than one chunk.
+- A single line is still limited to 64 KiB. The external sorter keeps up to 128 temporary runs before reporting "too many temporary runs".
+- Merge mode keeps fixed per-input state and currently accepts up to eight input files at a time. If `-o FILE` names one of the input paths, sort buffers first so the input is not truncated before it is read.
+- Human-size arithmetic saturates at the largest unsigned machine value for extremely large scaled inputs.
 - No `--parallel` mode or locale collation is implemented.
 
 ## EXAMPLES
 
-- `sort names.txt`
-- `sort -n scores.txt`
-- `sort --human-numeric-sort sizes.txt`
-- `sort -c already.sorted`
-- `sort -f names.txt`
-- `sort -d dictionary.txt`
-- `sort -M months.txt`
-- `sort -V releases.txt`
-- `sort -u words.txt`
-- `sort large-input.txt > sorted.txt`
-- `sort -t : -k 3,3 /etc/passwd`
-- `sort -n -t : -k 3,3 /etc/passwd`
-- `sort -m part1.sorted part2.sorted`
-- `sort -o final.txt input.txt`
+```
+sort names.txt
+sort -n scores.txt
+sort --human-numeric-sort sizes.txt
+sort -c already.sorted
+sort -f names.txt
+sort -d dictionary.txt
+sort -M months.txt
+sort -V releases.txt
+sort -u words.txt
+sort large-input.txt > sorted.txt
+sort -t : -k 3,3 /etc/passwd
+sort -n -t : -k 3,3 /etc/passwd
+sort -m part1.sorted part2.sorted
+sort -o final.txt input.txt
+```
 
 ## SEE ALSO
 

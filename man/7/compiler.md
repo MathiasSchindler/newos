@@ -71,8 +71,7 @@ The practical progression looks like this:
 ## LIMITATIONS
 
 - `ncc` targets the project's C subset, not full ISO C11 compatibility
-- `linux-aarch64` assembly generation exists, but direct object emission is not
-  finished yet
+- `linux-aarch64` assembly generation exists, but direct object emission is not finished yet
 - Optimization, debug-info emission, and linker sophistication are still modest
 
 ## SEE ALSO

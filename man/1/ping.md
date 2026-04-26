@@ -7,7 +7,8 @@ ping - send ICMP ECHO_REQUEST packets to a host
 ## SYNOPSIS
 
 ```
-ping [-4|-6] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST
+ping [-4|-6] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS]
+  [-w DEADLINE] [-s BYTES] [-t TTL] HOST
 ```
 
 ## DESCRIPTION

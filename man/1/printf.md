@@ -32,8 +32,7 @@ None. FORMAT is always the first argument.
 
 ## LIMITATIONS
 
-- `%q` uses simple POSIX shell single-quote escaping; it does not attempt
-  locale-specific or shell-specific `$'...'` forms.
+- `%q` uses simple POSIX shell single-quote escaping; it does not attempt locale-specific or shell-specific `$'...'` forms.
 - No `-v VAR` assignment mode.
 
 ## EXAMPLES

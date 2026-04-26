@@ -6,7 +6,9 @@ mktemp - create a temporary file or directory
 
 ## SYNOPSIS
 
+```
 mktemp [-d] [-u] [-p DIR] [-t PREFIX] [TEMPLATE]
+```
 
 ## DESCRIPTION
 

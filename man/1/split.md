@@ -6,7 +6,10 @@ split - split a file into pieces
 
 ## SYNOPSIS
 
-split [-l COUNT | -b SIZE | -C SIZE | -n CHUNKS] [-a SUFFIX_LEN] [-d] [file [prefix]]
+```
+split [-l COUNT | -b SIZE | -C SIZE | -n CHUNKS]
+	[-a SUFFIX_LEN] [-d] [file [prefix]]
+```
 
 ## DESCRIPTION
 

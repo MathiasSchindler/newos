@@ -6,7 +6,7 @@ gunzip - decompress gzip-compressed files
 
 ## SYNOPSIS
 
-```text
+```
 gunzip [-c] [-f] [-k] [file.gz ...]
 ```
 
@@ -34,12 +34,11 @@ decoding the stream.
 
 - only gzip-formatted streams are accepted
 - no archive listing or test-only modes are implemented
-- unsupported or malformed deflate blocks are rejected explicitly rather than
-  guessed around
+- unsupported or malformed deflate blocks are rejected explicitly rather than guessed around
 
 ## EXAMPLES
 
-```text
+```
 gunzip logs.gz
 gunzip -c logs.gz > logs.txt
 gunzip -k backup.tar.gz

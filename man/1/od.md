@@ -38,10 +38,8 @@ value of each byte in the 16-byte row.
 
 ## LIMITATIONS
 
-- Type strings are limited to one-byte forms (`x1`, `o1`, `d1`, `u1`, `c`);
-  multi-byte word grouping and endian-aware numeric formats are not implemented.
-- No duplicate-line squeezing is performed, so `-v` is unnecessary and not
-  accepted.
+- Type strings are limited to one-byte forms (`x1`, `o1`, `d1`, `u1`, `c`); multi-byte word grouping and endian-aware numeric formats are not implemented.
+- No duplicate-line squeezing is performed, so `-v` is unnecessary and not accepted.
 
 ## EXAMPLES
 

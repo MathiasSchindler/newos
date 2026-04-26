@@ -57,13 +57,10 @@ readable terminal layout.
 
 ## LIMITATIONS
 
-- only covers pages found in the repository `man/` tree or `MANPATH`; it does
-  not consult system-installed manuals
+- only covers pages found in the repository `man/` tree or `MANPATH`; it does not consult system-installed manuals
 - the source format is Markdown, not traditional roff macros
-- table rendering is intentionally simple ASCII framing; complex spanning/layout
-  features are not implemented
-- no roff macro compatibility, external pager handoff, hyperlink activation, or
-  rich terminal widgets
+- table rendering is intentionally simple ASCII framing; complex spanning/layout features are not implemented
+- no roff macro compatibility, external pager handoff, hyperlink activation, or rich terminal widgets
 
 ## EXAMPLES
 
@@ -81,4 +78,4 @@ When the built-in pager is active, `Space` or `f` advances a page, `Enter` or
 
 ## SEE ALSO
 
-less, ls, cp, ncc, output-style
+less, ls, cp, ncc, manual, output-style

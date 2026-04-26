@@ -1,4 +1,4 @@
-# syscall-table(7)
+# SYSCALL-TABLE
 
 ## NAME
 

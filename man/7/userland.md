@@ -102,11 +102,9 @@ practical order is:
 
 ## LIMITATIONS
 
-- Many existing tools still intentionally implement the practical subset rather
-  than full POSIX or GNU parity
+- Many existing tools still intentionally implement the practical subset rather than full POSIX or GNU parity
 - The system-management layer is thinner than the text/filter/file tool layer
-- Networking, packaging, and boot orchestration remain less complete than the
-  day-to-day development userland
+- Networking, packaging, and boot orchestration remain less complete than the day-to-day development userland
 
 ## SEE ALSO
 

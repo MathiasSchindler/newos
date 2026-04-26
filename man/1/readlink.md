@@ -40,8 +40,7 @@ flags (`-f`, `-e`, `-m`) it resolves the full canonical path similarly to
 
 ## LIMITATIONS
 
-- Without a canonicalisation flag, returns only the direct symlink target
-  (one level); it does not recursively resolve chains.
+- Without a canonicalisation flag, returns only the direct symlink target (one level); it does not recursively resolve chains.
 - No `--no-newline` long-form alias for `-n` in this implementation.
 
 ## EXAMPLES

@@ -6,8 +6,10 @@ make - build targets described in a Makefile
 
 ## SYNOPSIS
 
+```
 make [-n] [-s] [-B] [-f makefile] [-C dir] [-j [jobs]]
      [VAR=value ...] [target ...]
+```
 
 ## DESCRIPTION
 

@@ -6,7 +6,7 @@ bunzip2 - decompress a bzip2-compressed file
 
 ## SYNOPSIS
 
-```text
+```
 bunzip2 file.bz2
 ```
 
@@ -31,7 +31,7 @@ The current interface is a single-file form without additional flags.
 
 ## EXAMPLES
 
-```text
+```
 bunzip2 archive.txt.bz2
 ```
 

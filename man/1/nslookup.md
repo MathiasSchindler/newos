@@ -6,7 +6,7 @@ nslookup - look up IPv4 and IPv6 addresses for a host name
 
 ## SYNOPSIS
 
-```text
+```
 nslookup [-4|-6] [-s SERVER] [-p PORT] NAME
 ```
 
@@ -37,12 +37,11 @@ than a full diagnostic suite.
 - this is a small address-lookup tool, not a full `dig` replacement
 - output currently focuses on address answers rather than the full DNS message
 - advanced record types, reverse lookups, and detailed flags are not yet shown
-- freestanding lookups work best with numeric name servers or the guest's
-  default resolver configuration
+- freestanding lookups work best with numeric name servers or the guest's default resolver configuration
 
 ## EXAMPLES
 
-```text
+```
 nslookup localhost
 nslookup -6 example.com
 nslookup -s 1.1.1.1 example.com

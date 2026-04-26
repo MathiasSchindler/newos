@@ -6,7 +6,9 @@ less - page through text one screen at a time
 
 ## SYNOPSIS
 
+```
 less [-N] [-p PATTERN] [--color[=WHEN]] [+/PATTERN] [file ...]
+```
 
 ## DESCRIPTION
 
@@ -34,8 +36,7 @@ that common pager navigation works without external dependencies.
 
 ## LIMITATIONS
 
-- interactive search and navigation are intentionally compact rather than a
-  full clone of GNU less
+- interactive search and navigation are intentionally compact rather than a full clone of GNU less
 - no syntax highlighting or arbitrary terminal-widget support
 - very large inputs may fall back to simpler streaming behavior
 

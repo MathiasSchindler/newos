@@ -74,14 +74,10 @@ and does not depend on libc.
 
 ## LIMITATIONS
 
-- Hosted development assumes a POSIX environment; the true freestanding target
-  currently focuses on Linux/AArch64 and Linux/x86-64
-- On macOS, the project currently favors local hosted binaries over a separate
-  Darwin syscall-only userland target
-- The abstraction is intentionally small; there is no threading or async event
-  layer
-- Networking support is practical but still basic compared with a full libc or
-  shell environment
+- Hosted development assumes a POSIX environment; the true freestanding target currently focuses on Linux/AArch64 and Linux/x86-64
+- On macOS, the project currently favors local hosted binaries over a separate Darwin syscall-only userland target
+- The abstraction is intentionally small; there is no threading or async event layer
+- Networking support is practical but still basic compared with a full libc or shell environment
 
 ## SEE ALSO
 

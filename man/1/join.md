@@ -6,7 +6,11 @@ join - join lines of two files on a common field
 
 ## SYNOPSIS
 
-join [-i] [-a1|-a 1] [-a2|-a 2] [-v1|-v 1] [-v2|-v 2] [-1 FIELD] [-2 FIELD] [-j FIELD] [-t CHAR] [-e EMPTY] [-o LIST] file1 file2
+```
+join [-i] [-a1|-a 1] [-a2|-a 2] [-v1|-v 1] [-v2|-v 2]
+	[-1 FIELD] [-2 FIELD] [-j FIELD] [-t CHAR] [-e EMPTY] [-o LIST]
+	file1 file2
+```
 
 ## DESCRIPTION
 

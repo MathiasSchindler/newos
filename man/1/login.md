@@ -6,7 +6,7 @@ login - start a user session or command
 
 ## SYNOPSIS
 
-```sh
+```
 login [-fp] [-h HOST] [-s SHELL] [USER [COMMAND...]]
 ```
 
@@ -38,7 +38,7 @@ Unless `-p` is used, `login` clears the environment and sets `HOME`, `SHELL`,
 
 ## EXAMPLES
 
-```sh
+```
 login
 login mathias
 login -f root /bin/sh

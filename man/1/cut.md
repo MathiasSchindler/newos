@@ -6,7 +6,9 @@ cut - extract fields or columns from lines
 
 ## SYNOPSIS
 
+```
 cut [--complement] (-b LIST | -c LIST | -f LIST [-d DELIM]) [file ...]
+```
 
 ## DESCRIPTION
 
@@ -38,9 +40,11 @@ The cut tool extracts selected bytes, character positions, or delimited fields f
 
 ## EXAMPLES
 
-- `cut -f1 data.tsv`
-- `cut -d : -f1,7 /etc/passwd`
-- `cut --complement -c1-8 text.txt`
+```
+cut -f1 data.tsv
+cut -d : -f1,7 /etc/passwd
+cut --complement -c1-8 text.txt
+```
 
 ## SEE ALSO
 

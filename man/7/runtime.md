@@ -38,12 +38,9 @@ hosted and freestanding builds.
 
 ## LIMITATIONS
 
-- This is a focused internal support layer, not a general-purpose standard
-  library
-- There is no `FILE *`/stdio abstraction, locale support, wide-character
-  support, or threading API
-- Formatting and parsing support cover the project's needs, not every libc edge
-  case
+- This is a focused internal support layer, not a general-purpose standard library
+- There is no `FILE *`/stdio abstraction, locale support, wide-character support, or threading API
+- Formatting and parsing support cover the project's needs, not every libc edge case
 
 ## SEE ALSO
 
