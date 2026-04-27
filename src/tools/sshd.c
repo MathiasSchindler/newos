@@ -166,6 +166,7 @@ int main(int argc, char **argv) {
     int r;
 
     rt_memset(&config, 0, sizeof(config));
+    (void)platform_ignore_signal(13);
     rt_copy_string(config.address, sizeof(config.address), "0.0.0.0");
     rt_copy_string(config.user, sizeof(config.user), "ssh-lab");
     rt_copy_string(config.shell_path, sizeof(config.shell_path), "sh");

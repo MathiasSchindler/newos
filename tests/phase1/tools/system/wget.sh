@@ -76,7 +76,11 @@ int main(int argc, char **argv) {
              sizeof(response),
              "HTTP/1.1 302 Found\r\nLocation: file://%s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
              argv[2]);
-    (void)write(client_fd, response, strlen(response));
+    if (write(client_fd, response, strlen(response)) < 0) {
+        close(client_fd);
+        close(listen_fd);
+        return 10;
+    }
     close(client_fd);
     close(listen_fd);
     return 0;

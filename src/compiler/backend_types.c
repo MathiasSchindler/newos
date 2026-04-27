@@ -264,6 +264,115 @@ static int lookup_darwin_posix_member_info(const BackendState *state,
     return 1;
 }
 
+static int lookup_linux_posix_member_info(const BackendState *state,
+                                          const char *base_type,
+                                          const char *member_name,
+                                          int *offset_out,
+                                          const char **type_out) {
+    int offset = 0;
+    const char *type_text = 0;
+
+    if (state == 0 || state->backend == 0 || backend_is_darwin(state) || base_type == 0 || member_name == 0) {
+        return 0;
+    }
+
+    if (type_matches_named_aggregate(base_type, "addrinfo")) {
+        if (names_equal(member_name, "ai_flags")) {
+            offset = 0;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_family")) {
+            offset = 4;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_socktype")) {
+            offset = 8;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_protocol")) {
+            offset = 12;
+            type_text = "int";
+        } else if (names_equal(member_name, "ai_addrlen")) {
+            offset = 16;
+            type_text = "unsigned int";
+        } else if (names_equal(member_name, "ai_addr")) {
+            offset = 24;
+            type_text = "struct:sockaddr*";
+        } else if (names_equal(member_name, "ai_canonname")) {
+            offset = 32;
+            type_text = "char*";
+        } else if (names_equal(member_name, "ai_next")) {
+            offset = 40;
+            type_text = "struct:addrinfo*";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "sockaddr_in6")) {
+        if (names_equal(member_name, "sin6_family")) {
+            offset = 0;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sin6_port")) {
+            offset = 2;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sin6_flowinfo")) {
+            offset = 4;
+            type_text = "unsigned int";
+        } else if (names_equal(member_name, "sin6_addr")) {
+            offset = 8;
+            type_text = "struct:in6_addr";
+        } else if (names_equal(member_name, "sin6_scope_id")) {
+            offset = 24;
+            type_text = "unsigned int";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "sockaddr_in")) {
+        if (names_equal(member_name, "sin_family")) {
+            offset = 0;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sin_port")) {
+            offset = 2;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sin_addr")) {
+            offset = 4;
+            type_text = "struct:in_addr";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "sockaddr")) {
+        if (names_equal(member_name, "sa_family")) {
+            offset = 0;
+            type_text = "unsigned short";
+        } else if (names_equal(member_name, "sa_data")) {
+            offset = 2;
+            type_text = "char[14]";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "in6_addr")) {
+        if (names_equal(member_name, "s6_addr")) {
+            offset = 0;
+            type_text = "unsigned char[16]";
+        } else {
+            return 0;
+        }
+    } else if (type_matches_named_aggregate(base_type, "in_addr")) {
+        if (names_equal(member_name, "s_addr")) {
+            offset = 0;
+            type_text = "unsigned int";
+        } else {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+
+    if (offset_out != 0) {
+        *offset_out = offset;
+    }
+    if (type_out != 0) {
+        *type_out = type_text;
+    }
+    return 1;
+}
+
 static int lookup_named_aggregate_fallback_size(const BackendState *state, const char *base_type) {
     if (state != 0 && backend_is_darwin(state)) {
         if (type_matches_named_aggregate(base_type, "addrinfo")) return 48;
@@ -273,6 +382,14 @@ static int lookup_named_aggregate_fallback_size(const BackendState *state, const
         if (type_matches_named_aggregate(base_type, "in6_addr")) return 16;
         if (type_matches_named_aggregate(base_type, "in_addr")) return 4;
         if (type_matches_named_aggregate(base_type, "termios")) return 72;
+    }
+    if (state != 0 && state->backend != 0 && !backend_is_darwin(state)) {
+        if (type_matches_named_aggregate(base_type, "addrinfo")) return 48;
+        if (type_matches_named_aggregate(base_type, "sockaddr_in6")) return 28;
+        if (type_matches_named_aggregate(base_type, "sockaddr_in")) return 16;
+        if (type_matches_named_aggregate(base_type, "sockaddr")) return 16;
+        if (type_matches_named_aggregate(base_type, "in6_addr")) return 16;
+        if (type_matches_named_aggregate(base_type, "in_addr")) return 4;
     }
     return 0;
 }
@@ -284,6 +401,9 @@ int backend_member_byte_offset(const BackendState *state, const char *base_type,
         return offset;
     }
     if (lookup_darwin_posix_member_info(state, base_type, member_name, &offset, 0)) {
+        return offset;
+    }
+    if (lookup_linux_posix_member_info(state, base_type, member_name, &offset, 0)) {
         return offset;
     }
 
@@ -344,6 +464,11 @@ void backend_copy_member_result_type(const BackendState *state,
         return;
     }
     if (lookup_darwin_posix_member_info(state, base_type, member_name, 0, &member_type) &&
+        member_type != 0 && member_type[0] != '\0') {
+        rt_copy_string(buffer, buffer_size, member_type);
+        return;
+    }
+    if (lookup_linux_posix_member_info(state, base_type, member_name, 0, &member_type) &&
         member_type != 0 && member_type[0] != '\0') {
         rt_copy_string(buffer, buffer_size, member_type);
         return;

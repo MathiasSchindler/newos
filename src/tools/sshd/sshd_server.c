@@ -413,6 +413,26 @@ static int sshd_send_exit_and_close(SshdTransport *t, unsigned int recipient, in
     return 0;
 }
 
+static void sshd_drain_pending_channel_input(SshdTransport *t) {
+    unsigned char payload[SSH_PACKET_BUFFER_CAPACITY];
+    size_t len = 0U;
+    unsigned int drained = 0U;
+
+    while (drained < 8U) {
+        size_t ready = 0U;
+        if (platform_poll_fds(&t->fd, 1U, &ready, 0) <= 0) {
+            return;
+        }
+        if (sshd_read_encrypted(t, payload, sizeof(payload), &len) != 0 || len < 1U) {
+            return;
+        }
+        drained += 1U;
+        if (payload[0] == SSH_MSG_CHANNEL_CLOSE) {
+            return;
+        }
+    }
+}
+
 static int sshd_copy_command(const SshStringView *view, char *buffer, size_t buffer_size) {
     size_t i;
 
@@ -432,6 +452,7 @@ static int sshd_copy_command(const SshStringView *view, char *buffer, size_t buf
 
 static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned int remote_channel, const char *command) {
     int pipe_fds[2];
+    int stdin_fd = -1;
     int pid = -1;
     int exit_status = 255;
     int finished = 0;
@@ -442,14 +463,21 @@ static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned in
     if (platform_create_pipe(pipe_fds) != 0) {
         return -1;
     }
+    stdin_fd = platform_open_read("/dev/null");
     argv_exec[0] = (char *)config->shell_path;
     argv_exec[1] = (char *)"-c";
     argv_exec[2] = (char *)command;
     argv_exec[3] = 0;
-    if (platform_spawn_process(argv_exec, -1, pipe_fds[1], 0, 0, 0, &pid) != 0) {
+    if (platform_spawn_process(argv_exec, stdin_fd, pipe_fds[1], 0, 0, 0, &pid) != 0) {
+        if (stdin_fd >= 0) {
+            platform_close(stdin_fd);
+        }
         platform_close(pipe_fds[0]);
         platform_close(pipe_fds[1]);
         return -1;
+    }
+    if (stdin_fd >= 0) {
+        platform_close(stdin_fd);
     }
     platform_close(pipe_fds[1]);
 
@@ -494,6 +522,7 @@ static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned in
     } else {
         (void)platform_wait_process(pid, &exit_status);
     }
+    sshd_drain_pending_channel_input(t);
     return sshd_send_exit_and_close(t, remote_channel, exit_status);
 }
 

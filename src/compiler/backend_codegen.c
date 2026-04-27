@@ -604,6 +604,23 @@ static int named_aggregate_stack_bytes(const BackendState *state, const char *ty
         return generic_size;
     }
 
+    if (backend_is_darwin(state)) {
+        if (text_contains(type, "addrinfo")) return 48;
+        if (text_contains(type, "sockaddr_in6")) return 28;
+        if (text_contains(type, "sockaddr_in")) return 16;
+        if (text_contains(type, "sockaddr")) return 16;
+        if (text_contains(type, "in6_addr")) return 16;
+        if (text_contains(type, "in_addr")) return 4;
+        if (text_contains(type, "termios")) return 72;
+    } else {
+        if (text_contains(type, "addrinfo")) return 48;
+        if (text_contains(type, "sockaddr_in6")) return 28;
+        if (text_contains(type, "sockaddr_in")) return 16;
+        if (text_contains(type, "sockaddr")) return 16;
+        if (text_contains(type, "in6_addr")) return 16;
+        if (text_contains(type, "in_addr")) return 4;
+    }
+
     if (text_contains(type, "ShCommand")) {
         return 808;
     }
