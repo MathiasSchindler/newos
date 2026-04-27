@@ -33,6 +33,9 @@ timeout executes COMMAND with its ARGs and sends it a signal if it has not exite
 
 - no `--foreground` option for use in shell pipelines
 - timeout accuracy depends on the platform timer resolution; sub-millisecond durations are not guaranteed
+- no `--preserve-status` or `--kill-after` compatibility options are
+  implemented
+- signal delivery and child cleanup depend on platform process-group support
 
 ## EXAMPLES
 

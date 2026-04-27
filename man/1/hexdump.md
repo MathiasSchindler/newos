@@ -41,6 +41,9 @@ non-printable bytes replaced by `.`.
 
 - No `-x` / `-d` / `-o` alternate format selection flags.
 - Output format is fixed at canonical hex+ASCII (equivalent to `hexdump -C` in many systems).
+- No custom format strings (`-e`, `-f`) or endian-aware multi-byte numeric
+  decoding are implemented.
+- Duplicate-line squeezing and address-base controls are intentionally absent.
 
 ## EXAMPLES
 

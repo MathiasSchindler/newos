@@ -28,6 +28,10 @@ The current interface is a single-file form without additional flags.
 
 - the implementation is intentionally narrow compared with full host bzip2 suites
 - unsupported or malformed streams fail explicitly
+- concatenated bzip2 streams, test-only mode, keep/delete policy flags, and
+  stdout streaming options are not implemented yet
+- multi-file workflows and recursive directory handling are outside the current
+  interface
 
 ## EXAMPLES
 

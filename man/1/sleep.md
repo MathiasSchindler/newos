@@ -30,6 +30,10 @@ The sleep tool pauses execution for the requested amount of time. Multiple durat
 
 - The special values `inf` and `infinity` are not supported.
 - Timing precision is limited to milliseconds.
+- multiple operands and compound durations are handled only as documented by
+  this command, not every shell/coreutils extension.
+- sleep can return early if interrupted by a signal; no restart policy is
+  provided by the tool itself.
 
 ## EXAMPLES
 

@@ -35,6 +35,9 @@ decoding the stream.
 - only gzip-formatted streams are accepted
 - no archive listing or test-only modes are implemented
 - unsupported or malformed deflate blocks are rejected explicitly rather than guessed around
+- concatenated gzip members, name/timestamp restoration controls, recursive
+  operation, and force/keep policy combinations are narrower than GNU gzip
+- `zcat`/`gzcat` compatibility entry points are not provided yet
 
 ## EXAMPLES
 

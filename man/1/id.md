@@ -37,6 +37,9 @@ current process or for the named USER.
 - `-n` cannot be used without one of `-u`, `-g`, or `-G`.
 - Supplementary group list is capped at 256 entries.
 - No `-r` (real ID) or `-e` (effective ID) distinction flags.
+- SELinux context output (`-Z`) and alternate user databases are not supported.
+- Name resolution depends on the platform identity backend and may be numeric
+  only in minimal freestanding environments.
 
 ## EXAMPLES
 

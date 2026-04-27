@@ -31,6 +31,9 @@ groups prints the names (or GIDs) of all groups the specified user(s) belong to.
 
 - group membership is read from the system group database; supplementary groups assigned at login session level may not always appear
 - no support for reading from an alternate group file
+- no network directory service, NSS module, or cache integration is provided
+- output is intentionally compact and does not include numeric IDs unless the
+  platform name lookup already exposes them elsewhere
 
 ## EXAMPLES
 

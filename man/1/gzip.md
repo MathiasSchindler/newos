@@ -36,6 +36,11 @@ support. It can also act in decompression mode.
 - only gzip streams are handled; this is not a general `.zip` extractor
 - no recursive directory compression mode, test mode (`-t`), or listing mode (`-l`) is implemented
 - directory trees usually need to be packed first with `tar`
+- compression-level flags are accepted only where documented by this command;
+  strategy tuning, rsyncable mode, and name/timestamp policy flags are not
+  implemented
+- concatenated-member workflows and `zcat`/`gzcat` compatibility entry points
+  are not provided yet
 
 ## EXAMPLES
 

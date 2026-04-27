@@ -37,6 +37,10 @@ split divides a file (or standard input) into smaller pieces. Output files are n
 
 - no `-t` record-separator option
 - no `--additional-suffix` option
+- numeric and generated suffix handling covers the documented forms, not every
+  GNU suffix-length and filter-command combination
+- line and byte counts are parsed as simple sizes; locale-specific or
+  block-device-aware behavior is not implemented
 
 ## EXAMPLES
 

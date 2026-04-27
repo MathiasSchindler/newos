@@ -40,6 +40,9 @@ of interactive and safety-oriented behaviors.
 
 - removals are permanent; there is no trash or undelete layer
 - interactive handling is intentionally simpler than full GNU `rm` in edge cases involving many write-protected files or deep directory trees
+- no `--preserve-root`, `--one-file-system`, or backup mode is implemented
+- recursive deletion does not provide transactional rollback; partial removals
+  may remain if a later path fails
 
 ## EXAMPLES
 

@@ -30,6 +30,10 @@ the full path of the first (or all, with `-a`) matching executable.
 
 - Shell aliases and functions are not resolved (only executables and built-ins are reported).
 - `PATH` lookup only; no support for hash tables or per-shell caches.
+- no `type`-style classification for keywords, reserved words, or shell
+  functions
+- executable checks depend on platform permission semantics and may differ on
+  non-POSIX filesystems
 
 ## EXAMPLES
 

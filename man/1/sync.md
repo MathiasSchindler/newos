@@ -32,6 +32,9 @@ filesystems are synced.
 
 - success of the underlying sync is determined by the operating system; sync merely requests the flush
 - not all platforms distinguish between data-only and full sync; `-d` may behave identically to a full sync on some systems
+- no per-filesystem progress, writeback status, or durability guarantee is
+  reported
+- directory fsync and metadata-only policy controls are not exposed separately
 
 ## EXAMPLES
 

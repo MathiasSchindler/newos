@@ -30,6 +30,9 @@ expand reads files (or standard input) and writes them with tab characters repla
 
 - tab stop positions are 1-based column numbers
 - no support for tab stop specification via repeated `-t` flags (a single `-t` argument is required)
+- display width is byte/column based and does not account for wide Unicode,
+  combining marks, or ANSI escape sequences
+- no NUL-delimited mode or locale-specific tab semantics are implemented
 
 ## EXAMPLES
 

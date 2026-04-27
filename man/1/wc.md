@@ -35,6 +35,10 @@ The wc tool counts lines, words, bytes, characters, and maximum line length. Wit
 
 - Character counting with `-m` is UTF-8-based and may be wrong for other encodings.
 - No `-0` mode is implemented.
+- display width (`-L`) is byte/Unicode-codepoint oriented and does not fully
+  model terminal column width for combining or wide characters.
+- no NUL-delimited filename input mode or locale-specific word boundary rules
+  are implemented.
 
 ## EXAMPLES
 

@@ -32,6 +32,9 @@ printenv prints the values of the environment variables named by its arguments. 
 
 - does not support the `env`-style `VAR=value COMMAND` invocation
 - no `-u` (unset) flag
+- no NUL-delimited output mode is implemented
+- variable names are matched exactly; shell pattern matching or prefix queries
+  are not provided
 
 ## EXAMPLES
 

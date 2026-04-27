@@ -32,6 +32,8 @@ paste reads corresponding lines from multiple files and writes them joined by a 
 
 - maximum number of open files and line length are bounded by internal static buffers
 - no support for multi-byte delimiter sequences (each character in DELIMS is a single-byte delimiter)
+- no NUL-delimited input/output mode is implemented
+- delimiter escape handling is intentionally smaller than GNU/BSD `paste`
 
 ## EXAMPLES
 

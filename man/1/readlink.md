@@ -42,6 +42,10 @@ flags (`-f`, `-e`, `-m`) it resolves the full canonical path similarly to
 
 - Without a canonicalisation flag, returns only the direct symlink target (one level); it does not recursively resolve chains.
 - No `--no-newline` long-form alias for `-n` in this implementation.
+- no relative-path rewriting options such as `--relative-to` or
+  `--relative-base`
+- canonicalisation depends on platform path resolution and may differ around
+  missing components, mount points, or permission-denied directories
 
 ## EXAMPLES
 

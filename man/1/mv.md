@@ -36,6 +36,10 @@ common interactive, no-clobber, update-only, and verbose behaviors.
 
 - semantics are focused on common project usage rather than exhaustive GNU compatibility
 - some metadata-preservation behavior can vary by platform backend
+- no backup suffix, strip-trailing-slashes, exchange, or reflink-style
+  optimizations are implemented.
+- cross-filesystem moves fall back to copy/remove behavior only for the common
+  cases supported by `cp`; ACLs, xattrs, and sparse-file details may be lost.
 
 ## EXAMPLES
 

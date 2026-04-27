@@ -28,6 +28,8 @@ None.
 
 - Single-file operation only.
 - No additional options or streaming mode are implemented.
+- No integrity-check selection, memory-limit controls, concatenated stream
+  handling, or `.txz`/tar integration is provided.
 
 ## EXAMPLES
 

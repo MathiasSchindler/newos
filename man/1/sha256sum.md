@@ -33,6 +33,9 @@ The sha256sum tool computes SHA-256 digests for files or standard input and can 
 ## LIMITATIONS
 
 - BSD-style `--tag` output is not implemented.
+- Check-file parsing is focused on standard `sha256sum` lines; escaped
+  filenames, binary/text mode markers, and GNU warning modes are limited.
+- No recursive directory mode or automatic manifest discovery is provided.
 
 ## EXAMPLES
 

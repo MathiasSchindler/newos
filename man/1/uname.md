@@ -39,6 +39,9 @@ project's platform abstraction layer.
 
 - some secondary fields intentionally map to the same underlying platform information (`-m`, `-p`, and `-i` may match)
 - output reflects the current platform backend rather than host `uname` quirks
+- no custom kernel build metadata database is maintained by the project
+- hardware-platform and operating-system fields may be generic in freestanding
+  builds until richer platform probing exists
 
 ## EXAMPLES
 

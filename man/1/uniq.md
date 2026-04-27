@@ -39,6 +39,9 @@ uniq reads lines from a file or standard input and filters out or annotates adja
 
 - operates on adjacent lines only; sorting is the caller's responsibility
 - no support for `-D` (print all duplicate lines) found in some GNU versions
+- comparisons are bytewise rather than locale-aware
+- no NUL-delimited mode, grouping separators, or case-folding option is
+  implemented
 
 ## EXAMPLES
 

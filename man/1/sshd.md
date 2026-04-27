@@ -36,3 +36,16 @@ and bounded `exec` requests. It does not implement a generic PTY API, so
 
 This tool is experimental and does not provide privilege separation, sandboxing,
 account lookup, public-key authentication, or rekeying.
+
+## LIMITATIONS
+
+- The supported SSH profile is intentionally narrow: one modern key exchange,
+  Ed25519 host keys, Chacha20-Poly1305 transport encryption, and password
+  authentication.
+- No public-key authentication, authorized-keys files, account database lookup,
+  PAM, privilege separation, chroot, sandboxing, or per-user environment policy
+  is implemented yet.
+- Interactive PTYs, shell sessions, subsystem requests such as SFTP, port
+  forwarding, agent forwarding, X11 forwarding, and rekeying are not supported.
+- Host-key management is seed-file based; there is no `sshd_config` parser,
+  multi-key host identity set, or automatic host-key generation workflow.

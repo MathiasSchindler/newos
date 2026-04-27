@@ -35,6 +35,9 @@ printable characters that are at least MIN bytes long (default: 4).
 
 - No ELF section filtering (always scans the full file byte-by-byte).
 - No `-a` / `--all` option (the entire file is always scanned).
+- no Unicode decoding, wide-string mode, or encoding auto-detection beyond the
+  documented byte-oriented scan
+- no radix/address formatting modes beyond the documented offset support
 
 ## EXAMPLES
 

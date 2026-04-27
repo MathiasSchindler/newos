@@ -29,6 +29,9 @@ uptime prints the current time, how long the system has been running, and option
 
 - load average display depends on platform availability; may be absent on some systems
 - user count reflects active login sessions; may differ from the reference `uptime` on some systems
+- boot-time reporting depends on platform support and may be approximate in
+  minimal environments
+- no machine-readable, JSON, or custom-format output is implemented
 
 ## EXAMPLES
 

@@ -29,6 +29,9 @@ simultaneously, allowing a pipeline to be observed at an intermediate stage.
 ## LIMITATIONS
 
 - No `-p` (ignore write errors to files while still writing to stdout).
+- No GNU `--output-error=MODE` policy control.
+- The command does not create parent directories or perform atomic file
+  replacement; normal append/truncate semantics apply.
 
 ## EXAMPLES
 

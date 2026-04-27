@@ -33,4 +33,10 @@ readelf -S -s hello.o
 
 ## LIMITATIONS
 
-Detailed section and symbol inspection currently targets ELF64 little-endian files, which covers the project's Linux outputs on x86_64 and AArch64. Mach-O support is currently limited to basic header reporting for hosted compatibility.
+- Detailed section and symbol inspection currently targets ELF64 little-endian
+  files, which covers the project's Linux outputs on x86_64 and AArch64.
+- Mach-O support is currently limited to basic header reporting for hosted
+  compatibility.
+- Relocation, dynamic-section, note, versioning, DWARF, and archive-member
+  views are not complete.
+- Output formatting is diagnostic-oriented and not a full GNU readelf clone.

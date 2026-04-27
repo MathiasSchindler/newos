@@ -36,4 +36,11 @@ ar x libdemo.a foo.o
 
 ## LIMITATIONS
 
-This implementation focuses on the common archive workflow used for static libraries and does not yet provide the full GNU `ar` option surface.
+- This implementation focuses on the common archive workflow used for static
+  libraries and does not yet provide the full GNU `ar` option surface.
+- Thin archives, MRI scripts, deterministic timestamp controls, member move
+  operations, and plugin-aware archive handling are not implemented.
+- The `s` modifier is accepted for compatibility, but full symbol-index
+  maintenance is still narrower than mature `ar`/`ranlib` toolchains.
+- Archive metadata preservation is intentionally basic; ownership, timestamps,
+  and long-name edge cases may not match every host implementation.

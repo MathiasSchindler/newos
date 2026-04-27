@@ -31,6 +31,9 @@ seq prints a sequence of numbers from FIRST to LAST, incrementing by STEP. FIRST
 
 - floating-point range is limited to fixed-decimal representation; scientific notation is not supported
 - no support for arbitrary-precision arithmetic
+- locale-specific decimal separators and thousands grouping are not supported.
+- formatting is intentionally smaller than GNU `seq`; complex `%` formats may
+  need `printf` or `awk` instead.
 
 ## EXAMPLES
 

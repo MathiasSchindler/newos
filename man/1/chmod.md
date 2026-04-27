@@ -33,6 +33,12 @@ operation and both numeric and symbolic mode specifications.
 
 - the command focuses on standard permission bits rather than every extended host feature
 - support for symlink mode changes depends on platform behavior
+- ACLs, file flags, SELinux labels, capabilities, and extended attributes are
+  not modified.
+- Symbolic modes cover the common `ugo+-=rwxX` style forms but not every GNU
+  extension or host-specific permission bit.
+- Recursive traversal does not provide `--preserve-root`, `--reference`, or
+  filesystem-boundary controls.
 
 ## EXAMPLES
 

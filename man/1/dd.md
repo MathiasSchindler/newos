@@ -48,6 +48,12 @@ commonly used for low-level copying, device I/O, and data extraction.
 
 - `conv=` keywords beyond `sync`, `noerror`, `notrunc` are not supported.
 - No `iflag=...` or `oflag=...` support yet.
+- Progress reporting, direct I/O, sparse output, byte-swap conversions, and
+  character-set conversions are not implemented.
+- Size parsing is focused on the documented block forms and does not cover the
+  full GNU suffix grammar.
+- Error recovery is simpler than mature `dd`; use caution around partial block
+  reads or device failures.
 
 ## EXAMPLES
 

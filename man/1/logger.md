@@ -28,6 +28,17 @@ a Linux severity prefix such as `<6>`.
 - `-f FILE` - append log records to `FILE` instead of `/dev/kmsg`
 - `-h`, `--help` - show usage information
 
+## LIMITATIONS
+
+- Writes to `/dev/kmsg` or a chosen file; it does not speak syslog over UDP,
+  TCP, TLS, or a Unix-domain `/dev/log` socket.
+- Facility names in `-p facility.level` are accepted for familiar syntax, but
+  output still maps to the simple severity prefix used by the current backend.
+- No structured logging fields, RFC 5424 formatting, journald integration, or
+  remote log forwarding are implemented yet.
+- Log rotation, rate limiting, and durable queueing are outside this tool's
+  current scope.
+
 ## EXAMPLES
 
 ```

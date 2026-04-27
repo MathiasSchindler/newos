@@ -27,6 +27,9 @@ yes accepts no flags.
 
 - no built-in output rate limiting
 - no way to specify a finite repeat count (use `head -n N` or a shell loop for that)
+- output continues until the pipe or terminal write fails; there is no
+  interactive stop condition inside the tool
+- no NUL-delimited or random-content mode is implemented
 
 ## EXAMPLES
 

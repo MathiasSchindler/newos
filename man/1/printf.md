@@ -34,6 +34,10 @@ None. FORMAT is always the first argument.
 
 - `%q` uses simple POSIX shell single-quote escaping; it does not attempt locale-specific or shell-specific `$'...'` forms.
 - No `-v VAR` assignment mode.
+- Floating-point formatting depends on the project's supported conversion
+  subset and may not match libc for every width, precision, or locale case.
+- Unicode escape processing is intentionally limited; shell-specific extensions
+  should be handled by the caller's shell or another formatter.
 
 ## EXAMPLES
 

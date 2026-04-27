@@ -32,6 +32,9 @@ arguments rather than a large option surface. Tokens such as `-n`, `-e`, and
 
 - there is no option to suppress the trailing newline
 - backslash escapes are not interpreted; use `printf` when exact formatting or portability matters
+- `-n`, `-e`, and `-E` are treated as ordinary text rather than options.
+- Behavior is intentionally simpler than shell builtins whose `echo` semantics
+  vary across POSIX, BSD, GNU, and historical systems.
 
 ## EXAMPLES
 

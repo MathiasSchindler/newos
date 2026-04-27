@@ -35,6 +35,10 @@ input in more visible forms for inspection.
 
 - the implementation focuses on the currently supported visibility and numbering modes
 - compatibility with every GNU/BSD flag combination is not guaranteed
+- no long-option aliases such as `--show-all`, `--number`, or
+  `--squeeze-blank` are provided yet
+- output transformation is byte-oriented; it does not understand terminal
+  display width, combining characters, or locale-specific printable classes
 
 ## EXAMPLES
 

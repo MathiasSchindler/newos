@@ -55,6 +55,10 @@ targets. If `-f` is not used it looks for `Makefile`, `makefile`, or
 
 - parallel scheduling is intentionally smaller than full GNU `make`: it batches independent goals and prerequisite sub-builds, but does not implement the full jobserver protocol
 - some advanced GNU make features (e.g. `$(eval ...)`, load directives) are not implemented
+- implicit-rule search, archive-member targets, secondary expansion, and many
+  built-in GNU variables/functions remain intentionally incomplete.
+- diagnostics and dry-run output are useful for project builds but are not
+  byte-for-byte compatible with GNU make.
 
 Color output follows the shared project behavior documented in `output-style`.
 

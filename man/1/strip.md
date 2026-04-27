@@ -26,4 +26,9 @@ strip -o hello.small hello
 
 ## LIMITATIONS
 
-ELF64 little-endian executables and shared objects receive real stripping. Relocatable object files are still rejected for safety. Non-ELF hosted formats such as Mach-O currently fall back to a safe copy/no-op behavior instead of failing.
+- ELF64 little-endian executables and shared objects receive real stripping.
+- Relocatable object files are still rejected for safety.
+- Non-ELF hosted formats such as Mach-O currently fall back to a safe
+  copy/no-op behavior instead of failing.
+- Fine-grained symbol selection, debug-only stripping, section removal, and
+  archive-member processing are not implemented yet.

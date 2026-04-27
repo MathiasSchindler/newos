@@ -34,6 +34,10 @@ The head tool prints the beginning of files by line count or byte count. It supp
 
 - No NUL-delimited `-z` mode is implemented.
 - The internal buffer size is finite.
+- No quiet/verbose header-control long options beyond the documented flags.
+- Negative counts such as GNU `head -n -5` are not implemented.
+- Very long lines are streamed for normal output, but some byte-count and
+  multi-file edge cases remain simpler than GNU/BSD behavior.
 
 ## EXAMPLES
 

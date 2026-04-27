@@ -32,6 +32,12 @@ also copy ownership from a reference file.
 
 - ownership changes depend on the host or target platform permissions
 - advanced ACL or extended attribute behavior is outside the current scope
+- Recursive traversal does not provide `--preserve-root`, filesystem-boundary
+  controls, or the full GNU symlink traversal matrix.
+- Name lookup depends on the platform identity backend; alternate passwd/group
+  files, NSS modules, and directory-service integrations are not implemented.
+- SELinux contexts, file capabilities, and other security labels are not
+  changed.
 
 ## EXAMPLES
 

@@ -42,6 +42,12 @@ it reports total sizes in bytes for each directory in the tree.
 
 - No `--exclude` or `--exclude-from` patterns.
 - No `-x` (one file system only).
+- Hard-link accounting is simpler than GNU/BSD `du`; repeated links may not be
+  de-duplicated in every traversal shape.
+- Apparent-size, inode-count, threshold, and time-filter modes are not
+  implemented.
+- Block allocation and sparse-file reporting depend on what the platform
+  backend exposes.
 
 ## EXAMPLES
 

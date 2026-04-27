@@ -35,6 +35,10 @@ truncate sets the length of each file to SIZE bytes. If a file is shorter it is 
 ## LIMITATIONS
 
 - no `--reference` option to copy size from another file
+- sparse-file behavior depends on the platform filesystem; the tool does not
+  inspect or preserve hole layout explicitly.
+- size parsing is limited to the documented suffixes and does not implement the
+  full GNU relative-size grammar.
 
 ## EXAMPLES
 

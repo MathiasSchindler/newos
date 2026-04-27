@@ -28,6 +28,16 @@ elevated privileges and a filesystem that permits device nodes.
   device, and `b` or `block` for a block device
 - `MAJOR MINOR` - device numbers required for character and block devices
 
+## LIMITATIONS
+
+- Symbolic mode strings are not accepted for `-m`; use octal permissions.
+- No `--reference`, SELinux context, ACL, or extended-attribute support is
+  implemented.
+- Device creation depends on kernel, filesystem, container, and privilege
+  policy; the tool does not virtualize or emulate missing device-node support.
+- It does not consult `/proc/devices` or validate whether a major/minor pair
+  corresponds to a real driver.
+
 ## EXAMPLES
 
 ```

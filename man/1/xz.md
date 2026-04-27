@@ -28,6 +28,8 @@ None.
 
 - Single-file operation only.
 - No decompression flags, streaming mode, or compression-level selection are implemented.
+- No integrity-check selection, memory-limit controls, threaded compression, or
+  `.txz`/tar integration is provided.
 
 ## EXAMPLES
 

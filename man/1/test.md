@@ -71,6 +71,9 @@ None.
 
 - No `-N FILE` (file was modified since last read).
 - Complex nested parenthesised expressions may hit parser edge cases.
+- string, integer, and file tests cover the common POSIX set but not every
+  shell-specific extension.
+- locale-aware string ordering and pattern matching are not implemented.
 
 ## EXAMPLES
 

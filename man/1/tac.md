@@ -30,6 +30,9 @@ tac reads one or more files (or standard input) and writes their contents with t
 
 - the entire file content must fit within the internal buffer; very large files may fail
 - no `-r` (treat separator as a regex) as in GNU tac
+- separator handling is byte-oriented and does not understand multibyte
+  delimiters or locale collation
+- no streaming reverse mode is implemented for inputs larger than memory
 
 ## EXAMPLES
 

@@ -45,6 +45,18 @@ stty sane
 stty rows 40 cols 120
 ```
 
+## LIMITATIONS
+
+- Only the listed mode names are understood; common flags such as `intr`,
+  `erase`, `kill`, `parenb`, `cs8`, baud-rate changes, and `-g` snapshots are
+  not implemented.
+- Operates on standard input only; there is no `-F DEVICE`/`-f DEVICE` option
+  to inspect or change another terminal.
+- Terminal-size updates depend on platform support and may be rejected for
+  pseudo-terminals or hosted backends that do not expose `TIOCSWINSZ`.
+- Output is compact and project-specific rather than byte-for-byte compatible
+  with GNU, BSD, or BusyBox `stty -a`.
+
 ## SEE ALSO
 
 getty, login, sh

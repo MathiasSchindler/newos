@@ -29,6 +29,10 @@ The current interface is intentionally minimal and takes a single file operand.
 
 - no broad GNU-style flag surface is implemented yet
 - multi-file and streaming workflows are narrower than host tools
+- compression-level selection, keep/delete policy flags, test mode, and stdout
+  output are not implemented yet
+- this command compresses regular files; use `tar` first when preserving
+  directory structure, ownership, or multiple paths matters
 
 ## EXAMPLES
 

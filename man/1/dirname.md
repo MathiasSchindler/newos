@@ -27,6 +27,9 @@ including the last `/`. If no `/` is present, `.` is printed.
 ## LIMITATIONS
 
 - No `-n` (suppress trailing newline) option.
+- No long-option compatibility beyond `--zero`.
+- Path handling is lexical; it does not resolve symlinks, normalize `..`, or
+  consult the filesystem. Use `realpath` for canonical paths.
 
 ## EXAMPLES
 

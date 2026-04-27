@@ -33,6 +33,9 @@ The sha512sum tool computes SHA-512 digests for files or standard input and veri
 ## LIMITATIONS
 
 - BSD-style `--tag` output is not implemented.
+- Check-file parsing is focused on standard `sha512sum` lines; escaped
+  filenames, binary/text mode markers, and GNU warning modes are limited.
+- No recursive directory mode or automatic manifest discovery is provided.
 
 ## EXAMPLES
 

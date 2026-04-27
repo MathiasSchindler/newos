@@ -31,6 +31,9 @@ fold reads files (or standard input) and wraps lines that exceed WIDTH character
 
 - multi-byte UTF-8 characters are counted as multiple bytes unless byte mode is in effect; display width of wide characters is not considered
 - no colour-sequence awareness (ANSI escape codes count toward column width)
+- no locale-aware grapheme cluster handling or East Asian width support
+- the command does not preserve overstrikes, backspaces, or terminal control
+  sequences as display-width-neutral content
 
 ## EXAMPLES
 

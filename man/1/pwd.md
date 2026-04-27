@@ -30,6 +30,10 @@ physical path resolution depending on the selected mode.
 
 - the command is intentionally small and only implements the core path modes
 - behavior depends on the platform layer's current directory support
+- logical `-L` output depends on a trustworthy `PWD` environment value; unusual
+  directory renames or symlink changes may require `-P`.
+- no shell-builtin state is shared with `sh`; this external command only sees
+  its process environment and platform cwd.
 
 ## EXAMPLES
 

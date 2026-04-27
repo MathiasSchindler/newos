@@ -32,6 +32,10 @@ trailing SUFFIX. With `-a`, multiple names are accepted and processed in order.
 
 - Without `-a`, only a single NAME argument is accepted; a suffix may follow as a second positional argument (classic POSIX form: `basename name suffix`).
 - No `-n` (no newline) option.
+- Path handling is lexical; it does not resolve symlinks, normalize `..`, or
+  inspect whether the path exists.
+- Suffix removal is simple string matching and does not support pattern or
+  extension-list forms.
 
 ## EXAMPLES
 

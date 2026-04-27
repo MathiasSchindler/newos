@@ -34,6 +34,9 @@ The md5sum tool computes MD5 digests for files or standard input and can verify 
 
 - MD5 is not cryptographically secure; prefer `sha256sum` or `sha512sum` for security-sensitive uses.
 - BSD-style `--tag` output is not implemented.
+- Check-file parsing is focused on standard `md5sum` lines; escaped filenames,
+  binary/text mode markers, and GNU warning modes are limited.
+- No recursive directory mode or automatic manifest discovery is provided.
 
 ## EXAMPLES
 

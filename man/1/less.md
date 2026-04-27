@@ -39,6 +39,10 @@ that common pager navigation works without external dependencies.
 - interactive search and navigation are intentionally compact rather than a full clone of GNU less
 - no syntax highlighting or arbitrary terminal-widget support
 - very large inputs may fall back to simpler streaming behavior
+- no mark/register commands, horizontal scrolling modes, follow mode, or
+  external editor integration are implemented
+- terminal control is intentionally lightweight and may not handle every
+  terminfo capability or resize edge case
 
 ## EXAMPLES
 

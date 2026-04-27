@@ -38,6 +38,10 @@ navigation conveniences.
 - no backward navigation (use less for that)
 - the search/navigation feature set is intentionally small compared with full GNU/BSD pagers
 - no compatibility implementation for the wider collection of GNU/BSD `more` flags
+- no terminal capability database is consulted; display control is simple
+  ANSI-style output.
+- very large files and non-seekable streams use straightforward forward paging
+  rather than a rich screen buffer.
 
 ## EXAMPLES
 

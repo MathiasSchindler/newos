@@ -25,6 +25,10 @@ running `ping -6` and accepts the same options.
 
 - capability and privilege requirements are the same as for `ping -6`
 - this is an alias-style entry point, not a separate implementation
+- IPv6 support depends on the selected platform backend and may be less complete
+  than IPv4 in freestanding environments.
+- advanced IPv6 controls such as flow labels, interface scopes, and extension
+  header options are not implemented.
 
 ## EXAMPLES
 

@@ -31,6 +31,10 @@ users prints the usernames of all users currently logged in to the system, deriv
 
 - no arguments accepted; cannot query users for a different host or time
 - session data depends on the platform login record interface
+- duplicate sessions are printed as reported; no idle time, terminal, host, or
+  login-time fields are available
+- results may be sparse until `login` and the platform session database grow
+  fuller accounting support
 
 ## EXAMPLES
 

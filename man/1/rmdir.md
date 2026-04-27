@@ -32,6 +32,9 @@ parents when requested.
 
 - it is specifically for empty-directory removal; use `rm -r` for trees
 - behavior is intentionally focused on the core Unix workflow
+- no verbose parent-by-parent compatibility quirks beyond the documented flags
+- no transactional rollback if `-p` removes some parents and then a later parent
+  cannot be removed
 
 ## EXAMPLES
 

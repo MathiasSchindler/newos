@@ -40,6 +40,10 @@ nl reads files (or standard input) and writes them to standard output with line 
 
 - logical page restart on each new page section header (`\:\:\:`) is honoured but resets only when explicitly present
 - no `-p` flag to suppress page restarts as in GNU nl
+- regular-expression body/footer/header numbering styles are not implemented
+  beyond the documented simple forms.
+- number-format and separator handling cover common uses, not every GNU/BSD
+  padding and locale combination.
 
 ## EXAMPLES
 

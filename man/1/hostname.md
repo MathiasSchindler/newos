@@ -29,6 +29,10 @@ flag set.
 
 - changing the hostname usually requires suitable system privileges
 - behavior depends on the current platform backend and host permissions
+- domain, FQDN, alias, and DNS lookup modes from GNU/BSD `hostname` are not
+  implemented.
+- no persistent configuration file is updated; setting the name only asks the
+  running platform to change its current hostname.
 
 ## EXAMPLES
 

@@ -48,6 +48,10 @@ layer. The default output includes `pid`, `ppid`, `user`, `stat`, `rss`, and
 
 - The available columns are intentionally compact; terminal, elapsed time, and full argument-vector display are not yet exposed through the shared platform interface.
 - RSS values are reported in kilobytes.
+- no custom `-o` format selection, tree view, thread view, or sort controls are
+  implemented
+- process visibility and fields depend on the platform backend; minimal
+  freestanding environments may expose fewer details than hosted Linux
 
 ## EXAMPLES
 

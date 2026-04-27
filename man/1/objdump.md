@@ -33,4 +33,11 @@ objdump -s -t app
 
 ## LIMITATIONS
 
-Full section, symbol, and content dumping is centered on ELF64 little-endian inputs. Mach-O handling is currently limited to file-summary reporting rather than deep disassembly or section decoding.
+- Full section, symbol, and content dumping is centered on ELF64 little-endian
+  inputs.
+- Mach-O handling is currently limited to file-summary reporting rather than
+  deep disassembly or section decoding.
+- Instruction disassembly, relocation decoding, DWARF display, archive member
+  traversal, and target-selection options are not implemented yet.
+- Output is intended for project diagnostics and may not match GNU binutils
+  formatting or option compatibility.

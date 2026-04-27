@@ -35,6 +35,10 @@ position where they differ and exits 0 if identical, 1 if different.
 
 - `-l` and `-s` cannot be combined.
 - No verbose (`-v`) flag.
+- No `--ignore-initial=SKIP1:SKIP2` long-option spelling or human-readable
+  size suffixes are implemented.
+- Diagnostics are intentionally compact; byte numbering and EOF messages may not
+  exactly match GNU or BSD wording.
 
 ## EXAMPLES
 

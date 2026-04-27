@@ -33,6 +33,10 @@ parents and apply an explicit octal mode.
 
 - symbolic mode strings are not guaranteed; `-m` is intended for numeric/octal modes
 - when `-m` is not supplied, final permissions still depend on the current process umask
+- SELinux context options, verbose parent-by-parent reporting quirks, and
+  GNU-specific long options beyond the documented set are not implemented.
+- `-p` handles ordinary parent creation but does not provide transactional
+  rollback if a later component fails.
 
 ## EXAMPLES
 

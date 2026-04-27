@@ -33,6 +33,10 @@ mktemp creates a uniquely named temporary file or directory. The TEMPLATE must c
 
 - the template may only contain `X` characters in a contiguous trailing run; non-trailing `X` patterns are not substituted
 - no `-q` quiet flag
+- no suffix option or GNU-style `--tmpdir[=DIR]` spelling beyond the documented
+  flags
+- security still depends on creating the result on a filesystem with suitable
+  permissions; the tool does not create private parent directories
 
 ## EXAMPLES
 

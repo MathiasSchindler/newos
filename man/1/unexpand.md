@@ -32,6 +32,9 @@ unexpand reads files (or standard input) and converts runs of spaces back to tab
 
 - mixed space-and-tab indentation may not be fully collapsed in all cases
 - tab stop positions are 1-based column numbers
+- display width is byte/column based and does not account for wide Unicode,
+  combining marks, or ANSI escape sequences
+- no NUL-delimited mode or locale-specific tab semantics are implemented
 
 ## EXAMPLES
 

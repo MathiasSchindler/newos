@@ -35,6 +35,10 @@ The env tool prints the current environment or runs a command with modified envi
 
 - At most 64 `-u NAME` unsets are supported per invocation.
 - The GNU `-S` / `--split-string` option is not implemented.
+- No `-C DIR`, signal-disposition controls, or NUL-delimited environment output
+  are implemented.
+- Assignment parsing is intentionally simple; shell quoting and expansion must
+  be performed by the caller's shell before `env` runs.
 
 ## EXAMPLES
 

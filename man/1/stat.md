@@ -41,6 +41,9 @@ instead of file metadata.
 
 - The default (non-format) output layout may differ from GNU `stat`.
 - No `--terse` mode.
+- format escapes cover the documented subset and do not include every GNU/BSD
+  `%` sequence.
+- birth time, file flags, ACLs, xattrs, and security labels are not exposed.
 
 ## EXAMPLES
 

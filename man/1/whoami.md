@@ -27,6 +27,10 @@ None.
 
 - No options are accepted.
 - If the identity cannot be resolved, exits with status 1 and prints an error to standard error.
+- Output depends on the platform identity backend; minimal freestanding
+  environments may only know numeric IDs or a small static account set.
+- It reports the effective user identity only; use `id` for group lists or
+  broader identity details.
 
 ## EXAMPLES
 

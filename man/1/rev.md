@@ -28,6 +28,9 @@ rev reads lines from files or standard input and writes each line with its chara
 
 - combining characters (Unicode code points that modify a preceding base character) are reversed in sequence; composed grapheme clusters are not preserved as atomic units
 - no support for right-to-left text aware reversal
+- terminal escape sequences are reversed as bytes/code points and are not
+  treated as invisible control spans
+- no NUL-delimited mode or locale-specific collation behavior is implemented
 
 ## EXAMPLES
 

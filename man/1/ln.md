@@ -43,6 +43,10 @@ existing directory.
 - `-r`/`--relative` only applies to symbolic links and fails without `-s`
 - `-f` refuses to replace an existing directory
 - platform filesystem semantics and permissions still determine what kinds of links are allowed
+- no backup suffix, interactive prompt, or `--no-target-directory` long-option
+  compatibility is implemented beyond the documented flags
+- hard-linking directories, crossing filesystems, and linking special files are
+  left to platform policy and may fail differently across backends
 
 ## EXAMPLES
 

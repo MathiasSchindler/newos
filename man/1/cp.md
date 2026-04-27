@@ -45,6 +45,12 @@ The cp tool copies regular files and, when requested, entire directory trees. In
 
 - ACLs, xattrs, and other extended metadata are not preserved.
 - No copy-on-write or reflink optimization is implemented.
+- Sparse-file detection, clone-on-write preservation, and filesystem-specific
+  copy accelerators are not implemented yet.
+- Backup suffixes, `--parents`, `--one-file-system`, and SELinux context
+  handling are outside the current option surface.
+- Special-file behavior is intentionally conservative; device nodes, FIFOs, and
+  sockets may not be recreated with full `cp -a` fidelity.
 
 ## EXAMPLES
 

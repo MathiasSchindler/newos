@@ -40,6 +40,9 @@ yet exist.
 
 - time parsing is focused on the supported project formats
 - nanosecond-level or locale-specific host behavior is not the main target
+- no symbolic reference to timezone databases beyond what the platform exposes
+  for the documented date forms
+- birth/creation time and extended metadata timestamps are not updated
 
 ## EXAMPLES
 
