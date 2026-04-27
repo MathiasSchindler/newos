@@ -40,6 +40,11 @@ assert_file_contains "$WORK_DIR/jpeg-details.txt" 'properties: exif, orientation
 assert_file_contains "$WORK_DIR/webp-details.txt" 'variant: extended WebP' "imginfo --details did not print WebP variant"
 assert_file_contains "$WORK_DIR/webp-details.txt" 'properties: alpha' "imginfo --details did not print WebP alpha property"
 
+cp "$WORK_DIR/sample.png" "$WORK_DIR/misleading.jpg"
+"$ROOT_DIR/build/imginfo" "$WORK_DIR/misleading.jpg" > "$WORK_DIR/mismatch-out.txt" 2> "$WORK_DIR/mismatch-err.txt"
+assert_file_contains "$WORK_DIR/mismatch-out.txt" 'PNG image' "imginfo mismatch warning should not suppress normal output"
+assert_file_contains "$WORK_DIR/mismatch-err.txt" 'warning: file extension .jpg does not match detected png' "imginfo did not warn about mismatched extension"
+
 if "$ROOT_DIR/build/imginfo" "$WORK_DIR/not-image.txt" >/dev/null 2>&1; then
     fail "imginfo should reject unsupported image data"
 fi

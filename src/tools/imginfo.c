@@ -82,6 +82,93 @@ static int write_property_list(unsigned int property_flags) {
     return wrote;
 }
 
+static int ascii_lower(int ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return ch - 'A' + 'a';
+    }
+    return ch;
+}
+
+static const char *path_extension(const char *path) {
+    const char *last_slash = 0;
+    const char *last_dot = 0;
+    const char *p;
+
+    if (path == 0) {
+        return 0;
+    }
+    for (p = path; *p != '\0'; ++p) {
+        if (*p == '/') {
+            last_slash = p;
+            last_dot = 0;
+        } else if (*p == '.') {
+            last_dot = p;
+        }
+    }
+    if (last_dot == 0 || last_dot[1] == '\0') {
+        return 0;
+    }
+    if (last_slash != 0 && last_dot == last_slash + 1) {
+        return 0;
+    }
+    if (last_slash == 0 && last_dot == path) {
+        return 0;
+    }
+    return last_dot + 1;
+}
+
+static int extension_equals(const char *extension, const char *expected) {
+    size_t i = 0U;
+
+    if (extension == 0 || expected == 0) {
+        return 0;
+    }
+    while (extension[i] != '\0' && expected[i] != '\0') {
+        if (ascii_lower((unsigned char)extension[i]) != ascii_lower((unsigned char)expected[i])) {
+            return 0;
+        }
+        i += 1U;
+    }
+    return extension[i] == '\0' && expected[i] == '\0';
+}
+
+static int extension_matches_format(const char *extension, ImageFormat format) {
+    switch (format) {
+        case IMAGE_FORMAT_PNG:
+            return extension_equals(extension, "png");
+        case IMAGE_FORMAT_JPEG:
+            return extension_equals(extension, "jpg") ||
+                   extension_equals(extension, "jpeg") ||
+                   extension_equals(extension, "jpe");
+        case IMAGE_FORMAT_GIF:
+            return extension_equals(extension, "gif");
+        case IMAGE_FORMAT_TIFF:
+            return extension_equals(extension, "tif") ||
+                   extension_equals(extension, "tiff");
+        case IMAGE_FORMAT_WEBP:
+            return extension_equals(extension, "webp");
+        case IMAGE_FORMAT_BMP:
+            return extension_equals(extension, "bmp") ||
+                   extension_equals(extension, "dib");
+        default:
+            return 1;
+    }
+}
+
+static void warn_extension_mismatch(const char *path, const ImageInfo *info) {
+    const char *extension = path_extension(path);
+
+    if (extension == 0 || extension_matches_format(extension, info->format)) {
+        return;
+    }
+    rt_write_cstr(2, "imginfo: warning: file extension .");
+    rt_write_cstr(2, extension);
+    rt_write_cstr(2, " does not match detected ");
+    rt_write_cstr(2, image_format_extension(info->format));
+    rt_write_cstr(2, ": ");
+    rt_write_line(2, path);
+}
+
 static int write_machine_line(const char *label, const ImageInfo *info) {
     rt_write_cstr(1, label);
     rt_write_char(1, '\t');
@@ -266,6 +353,7 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
         tool_write_error("imginfo", "unsupported image format: ", label);
         return -1;
     }
+    warn_extension_mismatch(path, &info);
     if (options->mime_only) {
         rt_write_cstr(1, label);
         rt_write_cstr(1, ": ");

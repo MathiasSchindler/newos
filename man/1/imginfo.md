@@ -21,6 +21,10 @@ large image buffers, or validate full image contents.
 
 When no file is provided, `imginfo` reads from standard input.
 
+If an input path has a filename extension that does not match the detected image
+format, `imginfo` prints a warning to standard error. The warning does not
+change the exit status and does not alter standard output.
+
 ## SUPPORTED FORMATS
 
 - PNG
@@ -80,6 +84,8 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
   summarized rather than fully decoded into individual fields.
 - EXIF orientation is read from the first TIFF-style image file directory only;
   maker notes and deeper metadata trees are not interpreted.
+- Filename-extension checks are heuristic. Extension mismatches are warnings
+  only, and files without an extension are not treated as errors.
 
 ## EXAMPLES
 
