@@ -7,9 +7,9 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 phase1_setup imginfo
 tab=$(printf '\t')
 
-printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\002\000\000\000\003\010\006\000\000\000\000\000\000\000' > "$WORK_DIR/sample.png"
+printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\002\000\000\000\003\010\006\000\000\000\000\000\000\000\000\000\000\011pHYs\000\000\016\304\000\000\016\304\001\000\000\000\000' > "$WORK_DIR/sample.png"
 printf 'GIF89a\004\000\005\000\200\000\000' > "$WORK_DIR/sample.gif"
-printf '\377\330\377\340\000\004\000\000\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\331' > "$WORK_DIR/sample.jpg"
+printf '\377\330\377\341\000\042Exif\000\000II\052\000\010\000\000\000\001\000\022\001\003\000\001\000\000\000\006\000\000\000\000\000\000\000\377\340\000\020JFIF\000\001\001\001\000\110\000\110\000\000\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\331' > "$WORK_DIR/sample.jpg"
 printf 'II\052\000\010\000\000\000\004\000\000\001\004\000\001\000\000\000\011\000\000\000\001\001\004\000\001\000\000\000\012\000\000\000\002\001\003\000\001\000\000\000\010\000\000\000\025\001\003\000\001\000\000\000\003\000\000\000\000\000\000\000' > "$WORK_DIR/sample.tiff"
 printf 'RIFF\036\000\000\000WEBPVP8X\012\000\000\000\020\000\000\000\013\000\000\014\000\000' > "$WORK_DIR/sample.webp"
 printf 'BM\000\000\000\000\000\000\000\000\032\000\000\000\014\000\000\000\015\000\016\000\001\000\030\000' > "$WORK_DIR/sample.bmp"
@@ -23,6 +23,22 @@ assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.webp")" 
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}13${tab}14${tab}24${tab}3${tab}image/bmp" "imginfo did not parse BMP metadata"
 assert_text_equals "$($ROOT_DIR/build/imginfo --mime "$WORK_DIR/sample.png")" "$WORK_DIR/sample.png: image/png" "imginfo --mime did not print PNG MIME type"
 assert_file_contains "$WORK_DIR/sample.png" 'PNG' "test fixture sanity check failed"
+
+"$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.png" > "$WORK_DIR/png-details.txt"
+assert_file_contains "$WORK_DIR/png-details.txt" 'variant: PNG' "imginfo --details did not print PNG variant"
+assert_file_contains "$WORK_DIR/png-details.txt" 'color: truecolor-alpha' "imginfo --details did not print PNG color model"
+assert_file_contains "$WORK_DIR/png-details.txt" 'compression: deflate' "imginfo --details did not print PNG compression"
+assert_file_contains "$WORK_DIR/png-details.txt" 'density: 3780x3780 pixels/meter' "imginfo --details did not print PNG density"
+assert_file_contains "$WORK_DIR/png-details.txt" 'properties: alpha' "imginfo --details did not print PNG properties"
+
+"$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.jpg" > "$WORK_DIR/jpeg-details.txt"
+assert_file_contains "$WORK_DIR/jpeg-details.txt" 'density: 72x72 dpi' "imginfo --details did not print JPEG JFIF density"
+assert_file_contains "$WORK_DIR/jpeg-details.txt" 'orientation: 6 (rotated 90 clockwise)' "imginfo --details did not print JPEG EXIF orientation"
+assert_file_contains "$WORK_DIR/jpeg-details.txt" 'properties: exif, orientation' "imginfo --details did not print JPEG metadata properties"
+
+"$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.webp" > "$WORK_DIR/webp-details.txt"
+assert_file_contains "$WORK_DIR/webp-details.txt" 'variant: extended WebP' "imginfo --details did not print WebP variant"
+assert_file_contains "$WORK_DIR/webp-details.txt" 'properties: alpha' "imginfo --details did not print WebP alpha property"
 
 if "$ROOT_DIR/build/imginfo" "$WORK_DIR/not-image.txt" >/dev/null 2>&1; then
     fail "imginfo should reject unsupported image data"
