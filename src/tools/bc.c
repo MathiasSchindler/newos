@@ -4,10 +4,11 @@
 #include "bignum.h"
 
 #define BC_INPUT_CAPACITY 16384
-#define BC_MAX_SCALE 18
+#define BC_MAX_SCALE 72
 #define BC_MAX_VARS 128
 #define BC_NAME_CAPACITY 32
-#define BC_OUTPUT_CAPACITY 2048
+#define BC_OUTPUT_CAPACITY 4096
+#define BC_NUMERIC_TEXT_CAPACITY 4096
 #define BC_MAX_PARSE_DEPTH 128
 #define BC_MAX_LOOP_ITERATIONS 1000000ULL
 
@@ -57,8 +58,16 @@ typedef enum {
     BC_TOKEN_ELSE,
     BC_TOKEN_WHILE,
     BC_TOKEN_FOR,
+    BC_TOKEN_BREAK,
+    BC_TOKEN_CONTINUE,
     BC_TOKEN_PRINT
 } BcTokenType;
+
+typedef enum {
+    BC_FLOW_NONE = 0,
+    BC_FLOW_BREAK,
+    BC_FLOW_CONTINUE
+} BcFlowSignal;
 
 typedef struct {
     BcTokenType type;
@@ -75,6 +84,8 @@ typedef struct {
     BcToken token;
     int has_token;
     unsigned int nesting_depth;
+    BcFlowSignal flow_signal;
+    unsigned int loop_depth;
 } BcParser;
 
 static BcValue bc_make_value_bn(const Bignum *mantissa, int scale) {
@@ -423,10 +434,13 @@ static BcValue bc_div_values(BcParser *parser, BcValue left, BcValue right) {
 }
 
 static BcValue bc_mod_values(BcParser *parser, BcValue left, BcValue right) {
-    BcValue a = bc_rescale(parser, left, 0);
-    BcValue b = bc_rescale(parser, right, 0);
+    int scale = left.scale > right.scale ? left.scale : right.scale;
+    BcValue a = bc_rescale(parser, left, scale);
+    BcValue b = bc_rescale(parser, right, scale);
     Bignum quotient;
     Bignum remainder;
+    Bignum product;
+    Bignum result;
 
     if (parser->error) {
         return bc_make_int(0);
@@ -440,8 +454,13 @@ static BcValue bc_mod_values(BcParser *parser, BcValue left, BcValue right) {
         bc_set_error(parser, "modulo error");
         return bc_make_int(0);
     }
-    
-    return bc_normalize_value(bc_make_value_bn(&remainder, 0));
+
+    if (bn_multiply(&quotient, &b.mantissa, &product) != 0 || bn_subtract(&a.mantissa, &product, &result) != 0) {
+        bc_set_error(parser, "modulo error");
+        return bc_make_int(0);
+    }
+
+    return bc_normalize_value(bc_make_value_bn(&result, scale));
 }
 
 static int bc_compare_values(BcParser *parser, BcValue left, BcValue right) {
@@ -560,10 +579,10 @@ static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
     Bignum guess;
     Bignum two;
     int i;
-    char buffer[256];
+    char buffer[BC_NUMERIC_TEXT_CAPACITY];
     size_t len;
     size_t half_len;
-    char guess_str[256];
+    char guess_str[BC_NUMERIC_TEXT_CAPACITY];
     size_t j;
 
     if (value.mantissa.is_negative) {
@@ -771,7 +790,7 @@ static void bc_env_init(BcEnv *env, int math_mode) {
     env->var_count = 0;
 
     rt_copy_string(env->vars[0].name, sizeof(env->vars[0].name), "scale");
-    env->vars[0].value = bc_make_int(math_mode ? 18 : 6);
+    env->vars[0].value = bc_make_int(math_mode ? 32 : 6);
     rt_copy_string(env->vars[1].name, sizeof(env->vars[1].name), "ibase");
     env->vars[1].value = bc_make_int(10);
     rt_copy_string(env->vars[2].name, sizeof(env->vars[2].name), "obase");
@@ -783,11 +802,11 @@ static void bc_env_init(BcEnv *env, int math_mode) {
     if (math_mode) {
         Bignum pi_mantissa, e_mantissa;
         rt_copy_string(env->vars[4].name, sizeof(env->vars[4].name), "pi");
-        bn_from_string(&pi_mantissa, "3141592653589793238");
-        env->vars[4].value = bc_make_value_bn(&pi_mantissa, 18);
+        bn_from_string(&pi_mantissa, "3141592653589793238462643383279502884197169399375105820974944592307816406");
+        env->vars[4].value = bc_make_value_bn(&pi_mantissa, 72);
         rt_copy_string(env->vars[5].name, sizeof(env->vars[5].name), "e");
-        bn_from_string(&e_mantissa, "2718281828459045235");
-        env->vars[5].value = bc_make_value_bn(&e_mantissa, 18);
+        bn_from_string(&e_mantissa, "2718281828459045235360287471352662497757247093699959574966967627724076630");
+        env->vars[5].value = bc_make_value_bn(&e_mantissa, 72);
         env->var_count = 6;
     }
 }
@@ -933,7 +952,7 @@ static void bc_read_token(BcParser *parser) {
     } else if ((ch >= '0' && ch <= '9') ||
                (base > 10 && ch >= 'A' && ch <= 'F') ||
                (ch == '.' && parser->text[parser->pos + 1] >= '0' && parser->text[parser->pos + 1] <= '9')) {
-        char num_buffer[512];
+        char num_buffer[BC_NUMERIC_TEXT_CAPACITY];
         size_t num_len = 0;
         int scale = 0;
         int saw_digit = 0;
@@ -1036,6 +1055,10 @@ static void bc_read_token(BcParser *parser) {
             parser->token.type = BC_TOKEN_WHILE;
         } else if (rt_strcmp(parser->token.text, "for") == 0) {
             parser->token.type = BC_TOKEN_FOR;
+        } else if (rt_strcmp(parser->token.text, "break") == 0) {
+            parser->token.type = BC_TOKEN_BREAK;
+        } else if (rt_strcmp(parser->token.text, "continue") == 0) {
+            parser->token.type = BC_TOKEN_CONTINUE;
         } else if (rt_strcmp(parser->token.text, "print") == 0) {
             parser->token.type = BC_TOKEN_PRINT;
         } else {
@@ -1529,7 +1552,7 @@ static void bc_format_decimal(BcValue value, char *buffer, size_t buffer_size) {
 }
 
 static void bc_format_based(BcParser *parser, BcValue value, char *buffer, size_t buffer_size) {
-    char reverse_digits[256];
+    char reverse_digits[BC_OUTPUT_CAPACITY];
     int base = bc_get_obase_setting(parser->env);
     size_t rev_len = 0;
     size_t len = 0;
@@ -1611,7 +1634,7 @@ static void bc_parse_block(BcParser *parser, int execute) {
             bc_set_error(parser, "missing '}'");
             return;
         }
-        bc_parse_statement(parser, execute);
+        bc_parse_statement(parser, execute && parser->flow_signal == BC_FLOW_NONE);
     }
 }
 
@@ -1674,8 +1697,19 @@ static void bc_parse_while(BcParser *parser, int execute) {
             body_end = parser->pos;
             break;
         }
+        parser->loop_depth += 1U;
         bc_parse_statement(parser, 1);
+        parser->loop_depth -= 1U;
         body_end = parser->pos;
+
+        if (parser->flow_signal == BC_FLOW_BREAK) {
+            parser->flow_signal = BC_FLOW_NONE;
+            break;
+        }
+        if (parser->flow_signal == BC_FLOW_CONTINUE) {
+            parser->flow_signal = BC_FLOW_NONE;
+            continue;
+        }
     }
 
     parser->pos = body_end;
@@ -1757,8 +1791,19 @@ static void bc_parse_for(BcParser *parser, int execute) {
             break;
         }
 
+        parser->loop_depth += 1U;
         bc_parse_statement(parser, 1);
+        parser->loop_depth -= 1U;
         body_end = parser->pos;
+
+        if (parser->flow_signal == BC_FLOW_BREAK) {
+            parser->flow_signal = BC_FLOW_NONE;
+            break;
+        }
+
+        if (parser->flow_signal == BC_FLOW_CONTINUE) {
+            parser->flow_signal = BC_FLOW_NONE;
+        }
 
         if (has_step) {
             parser->pos = step_pos;
@@ -1809,6 +1854,19 @@ static void bc_parse_statement(BcParser *parser, int execute) {
 
     if (type == BC_TOKEN_FOR) {
         bc_parse_for(parser, execute);
+        bc_leave_nesting(parser);
+        return;
+    }
+
+    if (type == BC_TOKEN_BREAK || type == BC_TOKEN_CONTINUE) {
+        parser->has_token = 0;
+        if (execute) {
+            if (parser->loop_depth == 0U) {
+                bc_set_error(parser, type == BC_TOKEN_BREAK ? "break outside loop" : "continue outside loop");
+            } else {
+                parser->flow_signal = type == BC_TOKEN_BREAK ? BC_FLOW_BREAK : BC_FLOW_CONTINUE;
+            }
+        }
         bc_leave_nesting(parser);
         return;
     }
@@ -1935,6 +1993,8 @@ int main(int argc, char **argv) {
     parser.env = &env;
     parser.has_token = 0;
     parser.nesting_depth = 0U;
+    parser.flow_signal = BC_FLOW_NONE;
+    parser.loop_depth = 0U;
 
     while (!parser.error) {
         bc_skip_statement_separators(&parser);
@@ -1946,6 +2006,10 @@ int main(int argc, char **argv) {
             break;
         }
         bc_parse_statement(&parser, 1);
+        if (!parser.error && parser.flow_signal != BC_FLOW_NONE) {
+            bc_set_error(&parser, parser.flow_signal == BC_FLOW_BREAK ? "break outside loop" : "continue outside loop");
+            break;
+        }
     }
 
     if (parser.error) {

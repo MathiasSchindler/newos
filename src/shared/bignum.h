@@ -29,13 +29,14 @@
  *   bn_from_string(&a, "12345678901234567890");
  *   bn_from_string(&b, "98765432109876543210");
  *   bn_add(&a, &b, &result);
- *   char buffer[512];
+ *   char buffer[4096];
  *   bn_to_string(&result, buffer, sizeof(buffer));
  */
 
 #define BN_DIGIT_BASE 1000000000U
 #define BN_DIGIT_DECIMALS 9
-#define BN_MAX_DIGITS 128
+#define BN_MAX_DIGITS 256
+#define BN_MAX_DECIMAL_DIGITS (BN_MAX_DIGITS * BN_DIGIT_DECIMALS)
 
 typedef struct {
     unsigned int digits[BN_MAX_DIGITS];

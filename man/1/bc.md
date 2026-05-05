@@ -31,7 +31,8 @@ and `/* ... */` comments are ignored.
 - parentheses for grouping
 - unary `+` and unary `-`
 - variable assignment and reuse within the current input
-- the special variables `scale` (division precision) and `last` (previous result)
+- the special variables `scale` (division precision, 0 through 72) and `last`
+  (previous result)
 - base conversion via `ibase` and `obase` (2 through 16)
 - built-in functions `sqrt(x)`, `length(x)`, `scale(x)`, `abs(x)`,
   `min(x, y)`, and `max(x, y)`
@@ -44,17 +45,15 @@ and `/* ... */` comments are ignored.
 
 `bc` accepts an optional `-l` mode plus an expression argument and `--help`.
 
-- `-l` enables higher-precision math mode and predefines the constants `pi` and
-  `e`
+- `-l` enables higher-precision math mode with `scale=32` and predefines the
+  constants `pi` and `e` to 72 fractional digits
 
 ## LIMITATIONS
 
-- arithmetic is backed by the shared signed big-number primitives in `src/shared/bignum.{c,h}`, so integer precision is large but still bounded by the fixed-capacity implementation (roughly 1150 decimal digits)
-- decimal precision is controlled by `scale` and currently capped at 18 fractional digits
-- remainder is primarily useful with whole-number operands
+- arithmetic is backed by the shared signed big-number primitives in `src/shared/bignum.{c,h}`, so integer precision is large but still bounded by the fixed-capacity implementation (2304 decimal digits)
+- decimal precision is controlled by `scale` and currently capped at 72 fractional digits
 - `-l` does not yet provide the full traditional POSIX math library function set; it mainly enables higher default precision and useful constants
 - no `define`, `auto`, arrays, or string values
-- no `break` or `continue` flow-control statements
 
 ## EXAMPLES
 
@@ -65,6 +64,7 @@ printf 'radius=12; radius^2\n' | bc
 printf '5 + 7; last * 2\n' | bc
 printf '999999999999999999999999999999 + 1\n' | bc
 printf 'sum=0; for (i=0; i<4; i=i+1) sum=sum+i; sum\n' | bc
+printf 'sum=0; for (i=0; i<10; i=i+1) { if (i==3) continue; if (i==6) break; sum=sum+i }; sum\n' | bc
 printf 'obase=16; 255\n' | bc
 printf 'sqrt(81); abs(-12.5); max(3, 7); 5 <= 3\n' | bc
 bc -l 'pi > 3 && e > 2'

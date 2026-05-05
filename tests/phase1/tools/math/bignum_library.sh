@@ -16,7 +16,8 @@ int main(int argc, char **argv) {
 
     Bignum a, b, result;
     Bignum remainder;
-    char buffer[512];
+    char buffer[4096];
+    char long_text[1301];
     int status;
 
     bn_zero(&a);
@@ -54,6 +55,21 @@ int main(int argc, char **argv) {
     bn_to_string(&a, buffer, sizeof(buffer));
     if (rt_strcmp(buffer, "123456789012345678901234567890") != 0) {
         rt_write_line(2, "FAIL: bn_from_string round-trip");
+        return 1;
+    }
+
+    for (int i = 0; i < 1300; ++i) {
+        long_text[i] = (char)('0' + ((i % 9) + 1));
+    }
+    long_text[1300] = '\0';
+    status = bn_from_string(&a, long_text);
+    if (status != 0) {
+        rt_write_line(2, "FAIL: bn_from_string extended capacity");
+        return 1;
+    }
+    bn_to_string(&a, buffer, sizeof(buffer));
+    if (rt_strcmp(buffer, long_text) != 0) {
+        rt_write_line(2, "FAIL: bn extended capacity round-trip");
         return 1;
     }
 

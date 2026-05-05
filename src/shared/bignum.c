@@ -58,6 +58,9 @@ int bn_from_string(Bignum *bn, const char *text) {
         bn->is_negative = 0;
         return 0;
     }
+    if (text_len > BN_MAX_DECIMAL_DIGITS) {
+        return -1;
+    }
     
     for (size_t i = 0; i < text_len; i++) {
         if (p[i] < '0' || p[i] > '9') {
