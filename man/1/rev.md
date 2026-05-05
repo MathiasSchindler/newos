@@ -18,6 +18,9 @@ rev reads lines from files or standard input and writes each line with its chara
 
 - reversing characters in each line of a file or standard input
 - UTF-8-aware reversal (multi-byte sequences are not split)
+- combining marks, variation selectors, and simple zero-width-joiner clusters
+  stay attached to their base characters during reversal
+- ANSI escape/control sequences are preserved as atomic spans
 - NUL-delimited record mode
 
 ## OPTIONS
@@ -26,11 +29,8 @@ rev reads lines from files or standard input and writes each line with its chara
 
 ## LIMITATIONS
 
-- combining characters (Unicode code points that modify a preceding base character) are reversed in sequence; composed grapheme clusters are not preserved as atomic units
 - no support for right-to-left text aware reversal
-- terminal escape sequences are reversed as bytes/code points and are not
-  treated as invisible control spans
-- no NUL-delimited mode or locale-specific collation behavior is implemented
+- full Unicode grapheme segmentation and locale-specific collation are not implemented
 
 ## EXAMPLES
 
