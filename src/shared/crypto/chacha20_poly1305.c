@@ -8,17 +8,12 @@ typedef unsigned char u8;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 
-#define SSHLAB_ENABLE_CRYPTO_TUNING 0
 #define SSHLAB_FORCE_INLINE inline
 #define SSHLAB_CRYPTO_VECTOR
 #define SSHLAB_CRYPTO_SPEED
 #define ssh_chachapoly_decrypt_length crypto_ssh_chachapoly_decrypt_length
 #define ssh_chachapoly_encrypt_packet crypto_ssh_chachapoly_encrypt_packet
 #define ssh_chachapoly_decrypt_packet crypto_ssh_chachapoly_decrypt_packet
-
-#if SSHLAB_ENABLE_CRYPTO_TUNING && defined(__x86_64__)
-#include <immintrin.h>
-#endif
 
 static SSHLAB_FORCE_INLINE u32 load32_le(const u8 *p) {
     return (u32)p[0]
@@ -48,164 +43,6 @@ static SSHLAB_FORCE_INLINE void chacha20_quarter_round(u32 *a, u32 *b, u32 *c, u
     *a += *b; *d ^= *a; *d = rotl32(*d, 8);
     *c += *d; *b ^= *c; *b = rotl32(*b, 7);
 }
-
-#if SSHLAB_ENABLE_CRYPTO_TUNING && defined(__x86_64__)
-static SSHLAB_CRYPTO_VECTOR __m256i rotl32_256(__m256i x, int n) {
-    return _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - n));
-}
-
-static SSHLAB_CRYPTO_VECTOR void chacha20_quarter_round_256(__m256i *a, __m256i *b, __m256i *c, __m256i *d) {
-    *a = _mm256_add_epi32(*a, *b);
-    *d = _mm256_xor_si256(*d, *a);
-    *d = rotl32_256(*d, 16);
-
-    *c = _mm256_add_epi32(*c, *d);
-    *b = _mm256_xor_si256(*b, *c);
-    *b = rotl32_256(*b, 12);
-
-    *a = _mm256_add_epi32(*a, *b);
-    *d = _mm256_xor_si256(*d, *a);
-    *d = rotl32_256(*d, 8);
-
-    *c = _mm256_add_epi32(*c, *d);
-    *b = _mm256_xor_si256(*b, *c);
-    *b = rotl32_256(*b, 7);
-}
-
-static SSHLAB_CRYPTO_VECTOR void chacha20_blocks8(u8 out[512], const u8 key[32], u64 counter, u32 seqnr) {
-    u32 ctr_lo[8];
-    u32 ctr_hi[8];
-    u32 words[16][8];
-    u8 iv[8];
-    __m256i x0;
-    __m256i x1;
-    __m256i x2;
-    __m256i x3;
-    __m256i x4;
-    __m256i x5;
-    __m256i x6;
-    __m256i x7;
-    __m256i x8;
-    __m256i x9;
-    __m256i x10;
-    __m256i x11;
-    __m256i x12;
-    __m256i x13;
-    __m256i x14;
-    __m256i x15;
-    __m256i y0;
-    __m256i y1;
-    __m256i y2;
-    __m256i y3;
-    __m256i y4;
-    __m256i y5;
-    __m256i y6;
-    __m256i y7;
-    __m256i y8;
-    __m256i y9;
-    __m256i y10;
-    __m256i y11;
-    __m256i y12;
-    __m256i y13;
-    __m256i y14;
-    __m256i y15;
-    u32 i;
-    u32 lane;
-
-    iv[0] = 0u;
-    iv[1] = 0u;
-    iv[2] = 0u;
-    iv[3] = 0u;
-    iv[4] = (u8)(seqnr >> 24);
-    iv[5] = (u8)(seqnr >> 16);
-    iv[6] = (u8)(seqnr >> 8);
-    iv[7] = (u8)seqnr;
-
-    for (lane = 0; lane < 8u; lane++) {
-        u64 ctr = counter + (u64)lane;
-        ctr_lo[lane] = (u32)ctr;
-        ctr_hi[lane] = (u32)(ctr >> 32);
-    }
-
-    x0 = _mm256_set1_epi32(0x61707865u);
-    x1 = _mm256_set1_epi32(0x3320646eu);
-    x2 = _mm256_set1_epi32(0x79622d32u);
-    x3 = _mm256_set1_epi32(0x6b206574u);
-    x4 = _mm256_set1_epi32((int)load32_le(key + 0u));
-    x5 = _mm256_set1_epi32((int)load32_le(key + 4u));
-    x6 = _mm256_set1_epi32((int)load32_le(key + 8u));
-    x7 = _mm256_set1_epi32((int)load32_le(key + 12u));
-    x8 = _mm256_set1_epi32((int)load32_le(key + 16u));
-    x9 = _mm256_set1_epi32((int)load32_le(key + 20u));
-    x10 = _mm256_set1_epi32((int)load32_le(key + 24u));
-    x11 = _mm256_set1_epi32((int)load32_le(key + 28u));
-    x12 = _mm256_loadu_si256((const __m256i *)ctr_lo);
-    x13 = _mm256_loadu_si256((const __m256i *)ctr_hi);
-    x14 = _mm256_set1_epi32((int)load32_le(iv + 0u));
-    x15 = _mm256_set1_epi32((int)load32_le(iv + 4u));
-
-    y0 = x0; y1 = x1; y2 = x2; y3 = x3;
-    y4 = x4; y5 = x5; y6 = x6; y7 = x7;
-    y8 = x8; y9 = x9; y10 = x10; y11 = x11;
-    y12 = x12; y13 = x13; y14 = x14; y15 = x15;
-
-    for (i = 0; i < 10u; i++) {
-        chacha20_quarter_round_256(&x0, &x4, &x8, &x12);
-        chacha20_quarter_round_256(&x1, &x5, &x9, &x13);
-        chacha20_quarter_round_256(&x2, &x6, &x10, &x14);
-        chacha20_quarter_round_256(&x3, &x7, &x11, &x15);
-        chacha20_quarter_round_256(&x0, &x5, &x10, &x15);
-        chacha20_quarter_round_256(&x1, &x6, &x11, &x12);
-        chacha20_quarter_round_256(&x2, &x7, &x8, &x13);
-        chacha20_quarter_round_256(&x3, &x4, &x9, &x14);
-    }
-
-    x0 = _mm256_add_epi32(x0, y0);
-    x1 = _mm256_add_epi32(x1, y1);
-    x2 = _mm256_add_epi32(x2, y2);
-    x3 = _mm256_add_epi32(x3, y3);
-    x4 = _mm256_add_epi32(x4, y4);
-    x5 = _mm256_add_epi32(x5, y5);
-    x6 = _mm256_add_epi32(x6, y6);
-    x7 = _mm256_add_epi32(x7, y7);
-    x8 = _mm256_add_epi32(x8, y8);
-    x9 = _mm256_add_epi32(x9, y9);
-    x10 = _mm256_add_epi32(x10, y10);
-    x11 = _mm256_add_epi32(x11, y11);
-    x12 = _mm256_add_epi32(x12, y12);
-    x13 = _mm256_add_epi32(x13, y13);
-    x14 = _mm256_add_epi32(x14, y14);
-    x15 = _mm256_add_epi32(x15, y15);
-
-    _mm256_storeu_si256((__m256i *)words[0], x0);
-    _mm256_storeu_si256((__m256i *)words[1], x1);
-    _mm256_storeu_si256((__m256i *)words[2], x2);
-    _mm256_storeu_si256((__m256i *)words[3], x3);
-    _mm256_storeu_si256((__m256i *)words[4], x4);
-    _mm256_storeu_si256((__m256i *)words[5], x5);
-    _mm256_storeu_si256((__m256i *)words[6], x6);
-    _mm256_storeu_si256((__m256i *)words[7], x7);
-    _mm256_storeu_si256((__m256i *)words[8], x8);
-    _mm256_storeu_si256((__m256i *)words[9], x9);
-    _mm256_storeu_si256((__m256i *)words[10], x10);
-    _mm256_storeu_si256((__m256i *)words[11], x11);
-    _mm256_storeu_si256((__m256i *)words[12], x12);
-    _mm256_storeu_si256((__m256i *)words[13], x13);
-    _mm256_storeu_si256((__m256i *)words[14], x14);
-    _mm256_storeu_si256((__m256i *)words[15], x15);
-
-    for (lane = 0; lane < 8u; lane++) {
-        for (i = 0; i < 16u; i++) {
-            store32_le(out + (usize)lane * 64u + (usize)i * 4u, words[i][lane]);
-        }
-    }
-
-    secure_bzero(iv, sizeof(iv));
-    secure_bzero(ctr_lo, sizeof(ctr_lo));
-    secure_bzero(ctr_hi, sizeof(ctr_hi));
-    secure_bzero(words, sizeof(words));
-}
-#endif
 
 static SSHLAB_CRYPTO_VECTOR void chacha20_block(u8 out[64], const u8 key[32], u64 counter, u32 seqnr) {
     u32 state[16];
@@ -262,26 +99,11 @@ static SSHLAB_CRYPTO_VECTOR void chacha20_block(u8 out[64], const u8 key[32], u6
 }
 
 static SSHLAB_CRYPTO_VECTOR void chacha20_xor(u8 *out, const u8 *in, usize len, const u8 key[32], u64 counter, u32 seqnr) {
-#if SSHLAB_ENABLE_CRYPTO_TUNING && defined(__x86_64__)
-    u8 blocks8[512];
-#endif
     u8 block[64];
     usize done = 0;
     usize i;
 
     while (done < len) {
-#if SSHLAB_ENABLE_CRYPTO_TUNING && defined(__x86_64__)
-        if (len - done >= sizeof(blocks8)) {
-            chacha20_blocks8(blocks8, key, counter, seqnr);
-            for (i = 0; i < sizeof(blocks8); i++) {
-                u8 src = in != (const u8 *)0 ? in[done + i] : 0u;
-                out[done + i] = src ^ blocks8[i];
-            }
-            done += sizeof(blocks8);
-            counter += 8u;
-            continue;
-        }
-#endif
         {
             usize take = len - done;
             if (take > sizeof(block)) {
@@ -299,9 +121,6 @@ static SSHLAB_CRYPTO_VECTOR void chacha20_xor(u8 *out, const u8 *in, usize len, 
         }
     }
 
-#if SSHLAB_ENABLE_CRYPTO_TUNING && defined(__x86_64__)
-    secure_bzero(blocks8, sizeof(blocks8));
-#endif
     secure_bzero(block, sizeof(block));
 }
 
