@@ -43,3 +43,19 @@ chown_status=0
 "$ROOT_DIR/build/chown" nosuchuser "$WORK_DIR/mode.txt" > "$WORK_DIR/chown.out" 2>&1 || chown_status=$?
 assert_text_equals "$chown_status" '1' "chown with an invalid owner should fail"
 assert_file_contains "$WORK_DIR/chown.out" 'invalid owner spec' "chown did not explain the invalid owner failure"
+
+current_gid=$(id -g)
+assert_command_succeeds "$ROOT_DIR/build/chgrp" "$current_gid" "$WORK_DIR/mode.txt"
+group_out=$("$ROOT_DIR/build/stat" -c '%g' "$WORK_DIR/mode.txt" | tr -d '\r\n')
+assert_text_equals "$group_out" "$current_gid" "chgrp did not set the expected group"
+
+mkdir "$WORK_DIR/groupdir"
+touch "$WORK_DIR/groupdir/nested.txt"
+assert_command_succeeds "$ROOT_DIR/build/chgrp" -R --reference="$WORK_DIR/mode.txt" "$WORK_DIR/groupdir"
+nested_group_out=$("$ROOT_DIR/build/stat" -c '%g' "$WORK_DIR/groupdir/nested.txt" | tr -d '\r\n')
+assert_text_equals "$nested_group_out" "$current_gid" "chgrp -R --reference did not update a nested file"
+
+chgrp_status=0
+"$ROOT_DIR/build/chgrp" nosuchgroup "$WORK_DIR/mode.txt" > "$WORK_DIR/chgrp.out" 2>&1 || chgrp_status=$?
+assert_text_equals "$chgrp_status" '1' "chgrp with an invalid group should fail"
+assert_file_contains "$WORK_DIR/chgrp.out" 'invalid group' "chgrp did not explain the invalid group failure"

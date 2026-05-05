@@ -36,6 +36,35 @@ assert_text_equals "$kill_term" '15' "kill -l TERM did not resolve to SIGTERM"
 kill_name=$("$ROOT_DIR/build/kill" -l 15 | tr -d '\r\n')
 assert_text_equals "$kill_name" 'TERM' "kill -l 15 did not resolve to the TERM name"
 
+"$ROOT_DIR/build/sleep" 1 &
+sleep_pid=$!
+assert_command_succeeds "$ROOT_DIR/build/pgrep" -P $$ -x sleep > "$WORK_DIR/pgrep.out"
+assert_file_contains "$WORK_DIR/pgrep.out" "^$sleep_pid$" "pgrep did not find the child sleep process"
+
+assert_command_succeeds "$ROOT_DIR/build/pgrep" -l -P $$ -x sleep > "$WORK_DIR/pgrep_list.out"
+assert_file_contains "$WORK_DIR/pgrep_list.out" "^$sleep_pid[[:space:]].*sleep" "pgrep -l did not print the process name"
+
+pgrep_count=$("$ROOT_DIR/build/pgrep" -c -P $$ -x sleep | tr -d '\r\n')
+case "$pgrep_count" in
+    ''|*[!0-9]*) fail "pgrep -c did not print a numeric count" ;;
+    *) [ "$pgrep_count" -ge 1 ] || fail "pgrep -c did not count the child sleep process" ;;
+esac
+
+assert_command_succeeds "$ROOT_DIR/build/pkill" -0 -P $$ -x sleep
+wait "$sleep_pid"
+
+pgrep_none_status=0
+"$ROOT_DIR/build/pgrep" -P $$ -x sleep > /dev/null 2>&1 || pgrep_none_status=$?
+assert_exit_code "$pgrep_none_status" '1' "pgrep should return 1 when no process matches"
+
+assert_command_succeeds "$ROOT_DIR/build/time" "$ROOT_DIR/build/true" > "$WORK_DIR/time.out" 2> "$WORK_DIR/time.err"
+assert_file_contains "$WORK_DIR/time.err" '^real[[:space:]][[:digit:]]' "time did not report real elapsed time"
+
+time_false_status=0
+"$ROOT_DIR/build/time" "$ROOT_DIR/build/false" > /dev/null 2> "$WORK_DIR/time_false.err" || time_false_status=$?
+assert_exit_code "$time_false_status" '1' "time should preserve the wrapped command status"
+assert_file_contains "$WORK_DIR/time_false.err" '^real[[:space:]][[:digit:]]' "time did not report timing for a failing command"
+
 assert_command_succeeds "$ROOT_DIR/build/timeout" 1 "$ROOT_DIR/build/true"
 
 timeout_status=0
