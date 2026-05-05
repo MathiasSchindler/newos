@@ -16,6 +16,11 @@ typedef struct {
 } EditorBuffer;
 
 typedef struct {
+    EditorBuffer buffer;
+    int valid;
+} UndoState;
+
+typedef struct {
     char data[ED_INPUT_CAPACITY];
     size_t start;
     size_t end;
@@ -105,6 +110,24 @@ static int ed_append_line(char lines[ED_MAX_LINES][ED_LINE_CAPACITY], size_t *co
     return 0;
 }
 
+static void ed_save_undo(UndoState *undo, const EditorBuffer *buffer) {
+    undo->buffer = *buffer;
+    undo->valid = 1;
+}
+
+static int ed_restore_undo(UndoState *undo, EditorBuffer *buffer) {
+    EditorBuffer current;
+
+    if (!undo->valid) {
+        return -1;
+    }
+    current = *buffer;
+    *buffer = undo->buffer;
+    undo->buffer = current;
+    undo->valid = 1;
+    return 0;
+}
+
 static int ed_load_file(EditorBuffer *buffer, const char *path) {
     int fd;
     char chunk[512];
@@ -160,6 +183,77 @@ static int ed_load_file(EditorBuffer *buffer, const char *path) {
     if (buffer->count > 0) {
         buffer->current = buffer->count;
     }
+    return 0;
+}
+
+static int ed_read_file_after(EditorBuffer *buffer, size_t index, const char *path, unsigned long long *bytes_read_out) {
+    int fd;
+    char chunk[512];
+    char line[ED_LINE_CAPACITY];
+    size_t line_len = 0;
+    size_t insert_at = index;
+    long bytes_read;
+    unsigned long long total_bytes = 0ULL;
+
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        return -1;
+    }
+
+    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
+        long i;
+
+        total_bytes += (unsigned long long)bytes_read;
+        for (i = 0; i < bytes_read; ++i) {
+            char ch = chunk[i];
+
+            if (ch == '\n') {
+                line[line_len] = '\0';
+                if (buffer->count >= ED_MAX_LINES || insert_at > buffer->count) {
+                    platform_close(fd);
+                    return -1;
+                }
+                if (insert_at < buffer->count) {
+                    memmove(buffer->lines[insert_at + 1U], buffer->lines[insert_at], (buffer->count - insert_at) * sizeof(buffer->lines[0]));
+                }
+                rt_copy_string(buffer->lines[insert_at], sizeof(buffer->lines[insert_at]), line);
+                buffer->count += 1U;
+                buffer->current = insert_at + 1U;
+                insert_at += 1U;
+                line_len = 0;
+            } else if (line_len + 1U < sizeof(line)) {
+                line[line_len++] = ch;
+            } else {
+                platform_close(fd);
+                return -1;
+            }
+        }
+    }
+
+    if (bytes_read < 0) {
+        platform_close(fd);
+        return -1;
+    }
+
+    if (line_len > 0U) {
+        line[line_len] = '\0';
+        if (buffer->count >= ED_MAX_LINES || insert_at > buffer->count) {
+            platform_close(fd);
+            return -1;
+        }
+        if (insert_at < buffer->count) {
+            memmove(buffer->lines[insert_at + 1U], buffer->lines[insert_at], (buffer->count - insert_at) * sizeof(buffer->lines[0]));
+        }
+        rt_copy_string(buffer->lines[insert_at], sizeof(buffer->lines[insert_at]), line);
+        buffer->count += 1U;
+        buffer->current = insert_at + 1U;
+    }
+
+    platform_close(fd);
+    if (bytes_read_out != 0) {
+        *bytes_read_out = total_bytes;
+    }
+    buffer->modified = 1;
     return 0;
 }
 
@@ -298,6 +392,30 @@ static int ed_parse_single_address(const char *text, size_t *pos, const EditorBu
     return 0;
 }
 
+static int ed_parse_step_address(const char *text, size_t *pos, const EditorBuffer *buffer, size_t start, size_t *value_out) {
+    unsigned long long step = 0ULL;
+
+    if (text[*pos] != '~') {
+        return 0;
+    }
+    *pos += 1U;
+    while (text[*pos] >= '0' && text[*pos] <= '9') {
+        step = step * 10ULL + (unsigned long long)(text[*pos] - '0');
+        *pos += 1U;
+    }
+    if (step == 0ULL) {
+        return -1;
+    }
+    *value_out = start;
+    while (*value_out < buffer->count && (*value_out % (size_t)step) != 0U) {
+        *value_out += 1U;
+    }
+    if (*value_out > buffer->count) {
+        *value_out = buffer->count;
+    }
+    return 1;
+}
+
 static int ed_parse_range(const char *text, const EditorBuffer *buffer, size_t *pos, size_t *start_out, size_t *end_out, int *has_range_out) {
     size_t first = 0;
     size_t second = 0;
@@ -328,7 +446,13 @@ static int ed_parse_range(const char *text, const EditorBuffer *buffer, size_t *
             first = 1;
             has_first = 1;
         }
-        if (ed_parse_single_address(text, pos, buffer, &second, &has_second) != 0) {
+        if (text[*pos] == '~') {
+            int step_status = ed_parse_step_address(text, pos, buffer, first, &second);
+            if (step_status < 0) {
+                return -1;
+            }
+            has_second = step_status > 0;
+        } else if (ed_parse_single_address(text, pos, buffer, &second, &has_second) != 0) {
             return -1;
         }
         if (!has_second) {
@@ -349,14 +473,44 @@ static int ed_parse_range(const char *text, const EditorBuffer *buffer, size_t *
     return 0;
 }
 
+static int ed_parse_delimited(const char *text, size_t *pos, char delimiter, char *out, size_t out_size) {
+    size_t length = 0U;
+
+    while (text[*pos] != '\0' && text[*pos] != delimiter) {
+        if (text[*pos] == '\\' && text[*pos + 1U] != '\0') {
+            if (text[*pos + 1U] != delimiter) {
+                if (length + 1U >= out_size) {
+                    return -1;
+                }
+                out[length++] = text[*pos];
+            }
+            if (length + 1U >= out_size) {
+                return -1;
+            }
+            out[length++] = text[*pos + 1U];
+            *pos += 2U;
+            continue;
+        }
+        if (length + 1U >= out_size) {
+            return -1;
+        }
+        out[length++] = text[*pos];
+        *pos += 1U;
+    }
+    if (text[*pos] != delimiter) {
+        return -1;
+    }
+    out[length] = '\0';
+    *pos += 1U;
+    return 0;
+}
+
 static int ed_apply_substitute(EditorBuffer *buffer, size_t start, size_t end, const char *expr) {
     char delimiter;
     char old_text[ED_LINE_CAPACITY];
     char new_text[ED_LINE_CAPACITY];
     char replaced[ED_LINE_CAPACITY];
     size_t pos = 1;
-    size_t old_len = 0;
-    size_t new_len = 0;
     int global = 0;
     size_t i;
 
@@ -365,23 +519,12 @@ static int ed_apply_substitute(EditorBuffer *buffer, size_t start, size_t end, c
     }
 
     delimiter = expr[pos++];
-    while (expr[pos] != '\0' && expr[pos] != delimiter && old_len + 1U < sizeof(old_text)) {
-        old_text[old_len++] = expr[pos++];
-    }
-    if (expr[pos] != delimiter) {
+    if (ed_parse_delimited(expr, &pos, delimiter, old_text, sizeof(old_text)) != 0) {
         return -1;
     }
-    old_text[old_len] = '\0';
-    pos += 1U;
-
-    while (expr[pos] != '\0' && expr[pos] != delimiter && new_len + 1U < sizeof(new_text)) {
-        new_text[new_len++] = expr[pos++];
-    }
-    if (expr[pos] != delimiter) {
+    if (ed_parse_delimited(expr, &pos, delimiter, new_text, sizeof(new_text)) != 0) {
         return -1;
     }
-    new_text[new_len] = '\0';
-    pos += 1U;
 
     if (expr[pos] == 'g') {
         global = 1;
@@ -411,16 +554,78 @@ static int ed_apply_substitute(EditorBuffer *buffer, size_t start, size_t end, c
     return 0;
 }
 
+static int ed_apply_global(EditorBuffer *buffer, size_t start, size_t end, const char *expr) {
+    char delimiter;
+    char pattern[ED_LINE_CAPACITY];
+    size_t pos = 1U;
+    char command[ED_INPUT_CAPACITY];
+    size_t command_len = 0U;
+    size_t i;
+
+    if (expr[0] != 'g' || expr[1] == '\0') {
+        return -1;
+    }
+    delimiter = expr[pos++];
+    if (ed_parse_delimited(expr, &pos, delimiter, pattern, sizeof(pattern)) != 0) {
+        return -1;
+    }
+    while (expr[pos] == ' ' || expr[pos] == '\t') {
+        pos += 1U;
+    }
+    if (expr[pos] == '\0') {
+        command[command_len++] = 'p';
+    } else {
+        while (expr[pos] != '\0' && command_len + 1U < sizeof(command)) {
+            command[command_len++] = expr[pos++];
+        }
+    }
+    command[command_len] = '\0';
+
+    i = start;
+    while (i <= end && i <= buffer->count) {
+        size_t match_start = 0U;
+        size_t match_end = 0U;
+
+        if (tool_regex_search(pattern, buffer->lines[i - 1U], 0, 0U, &match_start, &match_end)) {
+            if (command[0] == 'p' && command[1] == '\0') {
+                ed_print_range(buffer, i - 1U, i - 1U, 0);
+                buffer->current = i;
+            } else if (command[0] == 'n' && command[1] == '\0') {
+                ed_print_range(buffer, i - 1U, i - 1U, 1);
+                buffer->current = i;
+            } else if (command[0] == 'd' && command[1] == '\0') {
+                if (ed_delete_range(buffer, i - 1U, i - 1U) != 0) {
+                    return -1;
+                }
+                if (end > 0U) {
+                    end -= 1U;
+                }
+                continue;
+            } else if (command[0] == 's') {
+                if (ed_apply_substitute(buffer, i, i, command) != 0) {
+                    return -1;
+                }
+            } else {
+                return -1;
+            }
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
 static void ed_print_error(void) {
     rt_write_line(2, "?");
 }
 
 int main(int argc, char **argv) {
     EditorBuffer buffer;
+    UndoState undo;
     InputReader reader;
     char command[ED_LINE_CAPACITY];
 
     rt_memset(&buffer, 0, sizeof(buffer));
+    rt_memset(&undo, 0, sizeof(undo));
     rt_memset(&reader, 0, sizeof(reader));
 
     if (argc > 2) {
@@ -464,14 +669,29 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if ((op == 'p' || op == 'n' || op == 'd' || op == 'c' || op == 's') && !has_range) {
+        if ((op == 'p' || op == 'n' || op == 'd' || op == 'c' || op == 's' || op == 'g') && !has_range) {
             if (buffer.current == 0 || buffer.current > buffer.count) {
-                ed_print_error();
-                continue;
+                if (op == 'g') {
+                    if (buffer.count == 0U) {
+                        ed_print_error();
+                        continue;
+                    }
+                    start = 1U;
+                    end = buffer.count;
+                    has_range = buffer.count > 0U;
+                } else {
+                    ed_print_error();
+                    continue;
+                }
+            } else if (op == 'g') {
+                start = 1U;
+                end = buffer.count;
+                has_range = buffer.count > 0U;
+            } else {
+                start = buffer.current;
+                end = buffer.current;
+                has_range = 1;
             }
-            start = buffer.current;
-            end = buffer.current;
-            has_range = 1;
         }
 
         if (has_range && (start == 0 || end == 0 || start > end || end > buffer.count)) {
@@ -486,6 +706,7 @@ int main(int argc, char **argv) {
             ed_print_range(&buffer, start - 1U, end - 1U, 1);
             buffer.current = end;
         } else if (op == 'd') {
+            ed_save_undo(&undo, &buffer);
             if (ed_delete_range(&buffer, start - 1U, end - 1U) != 0) {
                 ed_print_error();
             }
@@ -495,18 +716,46 @@ int main(int argc, char **argv) {
                 ed_print_error();
                 continue;
             }
+            ed_save_undo(&undo, &buffer);
             if (ed_insert_after(&buffer, insert_after, &reader) != 0) {
                 ed_print_error();
             }
         } else if (op == 'i') {
             size_t insert_before = has_range ? start - 1U : (buffer.current == 0 ? 0 : buffer.current - 1U);
+            ed_save_undo(&undo, &buffer);
             if (ed_insert_after(&buffer, insert_before, &reader) != 0) {
                 ed_print_error();
             }
         } else if (op == 'c') {
             size_t insert_at = start - 1U;
+            ed_save_undo(&undo, &buffer);
             if (ed_delete_range(&buffer, start - 1U, end - 1U) != 0 || ed_insert_after(&buffer, insert_at, &reader) != 0) {
                 ed_print_error();
+            }
+        } else if (op == 'r') {
+            const char *path = buffer.path;
+            unsigned long long bytes_read = 0ULL;
+            size_t insert_after = has_range ? end : buffer.current;
+
+            while (command[pos] != '\0' && command[pos] != ' ' && command[pos] != '\t') {
+                pos += 1U;
+            }
+            while (command[pos] == ' ' || command[pos] == '\t') {
+                pos += 1U;
+            }
+            if (command[pos] != '\0') {
+                path = command + pos;
+            }
+            if (insert_after > buffer.count || path[0] == '\0') {
+                ed_print_error();
+                continue;
+            }
+            ed_save_undo(&undo, &buffer);
+            if (ed_read_file_after(&buffer, insert_after, path, &bytes_read) != 0) {
+                ed_print_error();
+            } else {
+                rt_write_uint(1, bytes_read);
+                rt_write_char(1, '\n');
             }
         } else if (op == 'w') {
             const char *path = buffer.path;
@@ -528,11 +777,21 @@ int main(int argc, char **argv) {
         } else if (op == 'q' || op == 'Q') {
             return 0;
         } else if (op == 's') {
+            ed_save_undo(&undo, &buffer);
             if (ed_apply_substitute(&buffer, start, end, command + pos) != 0) {
                 ed_print_error();
             }
+        } else if (op == 'g') {
+            ed_save_undo(&undo, &buffer);
+            if (ed_apply_global(&buffer, start, end, command + pos) != 0) {
+                ed_print_error();
+            }
+        } else if (op == 'u') {
+            if (ed_restore_undo(&undo, &buffer) != 0) {
+                ed_print_error();
+            }
         } else if (ed_starts_with(command + pos, "H")) {
-            rt_write_line(1, "p n a i c d s w q");
+            rt_write_line(1, "p n a i c d s g r u w q");
         } else {
             ed_print_error();
         }

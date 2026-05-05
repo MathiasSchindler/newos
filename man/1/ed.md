@@ -24,7 +24,12 @@ ed is a line-oriented text editor. It reads commands from standard input and ope
 - writing the buffer to a file (`w`)
 - quitting with and without saving (`q`, `Q`)
 - substitution with `s/old/new/` and `s/old/new/g`
+- regex character classes, groups, alternation, quantifiers, and replacement
+  back-references through the shared project regex engine
 - line address ranges (`1,5p`, `.,+3d`, `%p`)
+- stepped address ranges (`addr,~step`)
+- global commands (`g/pattern/command`) for `p`, `n`, `d`, and `s`
+- undoing the previous buffer-changing command (`u`)
 - reading additional content into the buffer (`r`)
 
 ## OPTIONS
@@ -33,10 +38,10 @@ ed accepts no flags other than an optional filename argument. `--help` prints us
 
 ## LIMITATIONS
 
-- no support for regex character classes, back-references, or ERE syntax in search/substitute patterns
-- no `g` (global) command for applying commands to matching lines
-- no undo (`u`) command
-- no extended address forms such as `addr,~step`
+- the in-memory buffer remains fixed-size and line-oriented
+- global commands support the common scripted edit operations `p`, `n`, `d`,
+  and `s`; nested command lists are not implemented
+- full interactive diagnostics and recovery behavior are intentionally compact
 
 ## EXAMPLES
 
@@ -44,6 +49,8 @@ ed accepts no flags other than an optional filename argument. `--help` prints us
 - `1,$p` — print all lines
 - `3,5d` — delete lines 3 through 5
 - `1,$ s/foo/bar/g` — replace all occurrences of foo with bar
+- `g/^#/d` — delete all comment lines
+- `u` — undo the previous buffer-changing command
 - `w` — write the buffer back to disk
 
 ## SEE ALSO
