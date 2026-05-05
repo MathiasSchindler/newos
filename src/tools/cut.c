@@ -2,19 +2,13 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define CUT_MAX_RANGES 32
-#define CUT_LINE_CAPACITY 8192
+#include <limits.h>
 
 typedef struct {
     unsigned long long start;
     unsigned long long end;
     int open_end;
 } CutRange;
-
-typedef struct {
-    CutRange ranges[CUT_MAX_RANGES];
-    size_t count;
-} CutRangeList;
 
 typedef enum {
     CUT_MODE_NONE,
@@ -25,151 +19,149 @@ typedef enum {
 
 typedef struct {
     CutMode mode;
-    CutRangeList selections;
+    const char *selections;
     char delimiter;
+    char line_delimiter;
     int complement;
 } CutOptions;
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program_name);
-    rt_write_line(2, " [--complement] (-b LIST | -c LIST | -f LIST [-d DELIM]) [file ...]");
+    rt_write_line(2, " [--complement] [-z] (-b LIST | -c LIST | -f LIST [-d DELIM]) [file ...]");
 }
 
-static int parse_single_range(const char *text, CutRange *range) {
-    const char *dash = 0;
+static int parse_uint_span(const char *text, size_t length, unsigned long long *value_out) {
     size_t i = 0;
-    char left[32];
-    char right[32];
-    size_t left_len = 0;
-    size_t right_len = 0;
+    unsigned long long value = 0ULL;
+
+    if (length == 0U) {
+        return -1;
+    }
+
+    while (i < length) {
+        unsigned long long digit;
+
+        if (text[i] < '0' || text[i] > '9') {
+            return -1;
+        }
+        digit = (unsigned long long)(text[i] - '0');
+        if (value > (ULLONG_MAX - digit) / 10ULL) {
+            return -1;
+        }
+        value = value * 10ULL + digit;
+        i += 1U;
+    }
+
+    *value_out = value;
+    return 0;
+}
+
+static int parse_range_token(const char *text, size_t length, CutRange *range) {
+    size_t i = 0;
+    size_t dash_index = length;
 
     rt_memset(range, 0, sizeof(*range));
 
-    while (text[i] != '\0') {
+    while (i < length) {
         if (text[i] == '-') {
-            dash = text + i;
+            dash_index = i;
             break;
         }
-        i += 1;
+        i += 1U;
     }
 
-    if (dash == 0) {
-        if (rt_parse_uint(text, &range->start) != 0 || range->start == 0) {
+    if (dash_index == length) {
+        if (parse_uint_span(text, length, &range->start) != 0 || range->start == 0ULL) {
             return -1;
         }
         range->end = range->start;
         return 0;
     }
 
-    i = 0;
-    while (text[i] != '\0' && text[i] != '-' && left_len + 1 < sizeof(left)) {
-        left[left_len++] = text[i++];
-    }
-    left[left_len] = '\0';
-
-    if (text[i] == '-') {
-        i += 1;
-    }
-
-    while (text[i] != '\0' && right_len + 1 < sizeof(right)) {
-        right[right_len++] = text[i++];
-    }
-    right[right_len] = '\0';
-
-    if (left_len == 0) {
-        range->start = 1;
-    } else if (rt_parse_uint(left, &range->start) != 0 || range->start == 0) {
+    if (dash_index == 0U) {
+        range->start = 1ULL;
+    } else if (parse_uint_span(text, dash_index, &range->start) != 0 || range->start == 0ULL) {
         return -1;
     }
 
-    if (right_len == 0) {
+    if (dash_index + 1U == length) {
         range->open_end = 1;
-        range->end = 0;
-    } else if (rt_parse_uint(right, &range->end) != 0 || range->end < range->start) {
+        range->end = 0ULL;
+    } else if (parse_uint_span(text + dash_index + 1U, length - dash_index - 1U, &range->end) != 0 || range->end < range->start) {
         return -1;
     }
 
     return 0;
 }
 
-static int parse_range_list(const char *text, CutRangeList *list) {
-    char token[64];
-    size_t token_len = 0;
+static int validate_range_list(const char *text) {
     size_t i = 0;
+    size_t token_start = 0;
+    size_t count = 0;
 
-    rt_memset(list, 0, sizeof(*list));
+    if (text == 0 || text[0] == '\0') {
+        return -1;
+    }
 
     while (1) {
         char ch = text[i];
 
         if (ch == ',' || ch == '\0') {
-            if (token_len == 0 || list->count >= CUT_MAX_RANGES) {
+            CutRange range;
+            size_t token_len = i - token_start;
+
+            if (token_len == 0U || parse_range_token(text + token_start, token_len, &range) != 0) {
                 return -1;
             }
-            token[token_len] = '\0';
-            if (parse_single_range(token, &list->ranges[list->count]) != 0) {
-                return -1;
-            }
-            list->count += 1;
-            token_len = 0;
+            count += 1U;
 
             if (ch == '\0') {
                 break;
             }
-        } else if (token_len + 1 < sizeof(token)) {
-            token[token_len++] = ch;
-        } else {
-            return -1;
+            token_start = i + 1U;
         }
 
-        i += 1;
+        i += 1U;
     }
 
-    return list->count > 0 ? 0 : -1;
+    return count > 0U ? 0 : -1;
 }
 
-static int range_list_contains(unsigned long long position, const CutRangeList *list) {
-    size_t i;
+static int range_list_contains(unsigned long long position, const char *text) {
+    size_t i = 0;
+    size_t token_start = 0;
 
-    for (i = 0; i < list->count; ++i) {
-        const CutRange *range = &list->ranges[i];
+    while (1) {
+        char ch = text[i];
 
-        if (position < range->start) {
-            continue;
+        if (ch == ',' || ch == '\0') {
+            CutRange range;
+
+            if (parse_range_token(text + token_start, i - token_start, &range) == 0 &&
+                position >= range.start && (range.open_end || position <= range.end)) {
+                return 1;
+            }
+            if (ch == '\0') {
+                break;
+            }
+            token_start = i + 1U;
         }
-        if (!range->open_end && position > range->end) {
-            continue;
-        }
-        return 1;
+
+        i += 1U;
     }
 
     return 0;
 }
 
-static size_t cut_decode_codepoint(const char *text, size_t length, size_t start, unsigned int *codepoint_out) {
-    size_t index = start;
-    unsigned int local_codepoint = 0U;
-    unsigned int *target = codepoint_out != 0 ? codepoint_out : &local_codepoint;
-
-    if (start >= length) {
-        if (codepoint_out != 0) {
-            *codepoint_out = 0U;
-        }
-        return 0U;
-    }
-
-    if (rt_utf8_decode(text, length, &index, target) != 0 || index <= start) {
-        if (codepoint_out != 0) {
-            *codepoint_out = (unsigned char)text[start];
-        }
-        return 1U;
-    }
-
-    return index - start;
+static int cut_position_matches(unsigned long long position,
+                                const char *list,
+                                int complement) {
+    int included = range_list_contains(position, list);
+    return complement ? !included : included;
 }
 
-static int cut_byte_stream(int fd, const CutRangeList *list) {
+static int cut_byte_stream(int fd, const CutOptions *options) {
     char buffer[4096];
     long bytes_read;
     unsigned long long position = 1;
@@ -180,15 +172,15 @@ static int cut_byte_stream(int fd, const CutRangeList *list) {
         for (i = 0; i < bytes_read; ++i) {
             char ch = buffer[i];
 
-            if (ch == '\n') {
-                if (rt_write_char(1, '\n') != 0) {
+            if (ch == options->line_delimiter) {
+                if (rt_write_char(1, options->line_delimiter) != 0) {
                     return -1;
                 }
                 position = 1;
                 continue;
             }
 
-            if (range_list_contains(position, list) && rt_write_char(1, ch) != 0) {
+            if (cut_position_matches(position, options->selections, options->complement) && rt_write_char(1, ch) != 0) {
                 return -1;
             }
 
@@ -200,74 +192,71 @@ static int cut_byte_stream(int fd, const CutRangeList *list) {
 }
 
 static int selection_includes(unsigned long long position, const CutOptions *options) {
-    int included = range_list_contains(position, &options->selections);
+    int included = range_list_contains(position, options->selections);
     return options->complement ? !included : included;
 }
 
-static int cut_position_matches(unsigned long long position,
-                                const CutRangeList *list,
-                                int complement) {
-    int included = range_list_contains(position, list);
-    return complement ? !included : included;
-}
-
-static int cut_text_stream(int fd, const CutRangeList *list, int complement) {
-    char buffer[4096];
-    long bytes_read;
-    unsigned long long position = 1;
-
-    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
-
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = buffer[i];
-
-            if (ch == '\n') {
-                if (rt_write_char(1, '\n') != 0) {
-                    return -1;
-                }
-                position = 1;
-                continue;
-            }
-
-            if (cut_position_matches(position, list, complement) && rt_write_char(1, ch) != 0) {
-                return -1;
-            }
-
-            position += 1;
-        }
+static size_t utf8_expected_length(unsigned char ch) {
+    if (ch < 0x80U) {
+        return 1U;
     }
-
-    return bytes_read < 0 ? -1 : 0;
+    if (ch >= 0xc2U && ch <= 0xdfU) {
+        return 2U;
+    }
+    if (ch >= 0xe0U && ch <= 0xefU) {
+        return 3U;
+    }
+    if (ch >= 0xf0U && ch <= 0xf4U) {
+        return 4U;
+    }
+    return 1U;
 }
 
-static int write_selected_codepoints(const char *line, const CutRangeList *list, int complement, int end_with_newline) {
-    size_t length = rt_strlen(line);
-    size_t index = 0U;
-    unsigned long long position = 1ULL;
+static void remove_pending_prefix(char *pending, size_t *pending_len, size_t count) {
+    size_t i;
 
-    while (index < length) {
-        size_t advance = cut_decode_codepoint(line, length, index, 0);
+    for (i = count; i < *pending_len; ++i) {
+        pending[i - count] = pending[i];
+    }
+    *pending_len -= count;
+}
 
-        if (cut_position_matches(position, list, complement) && rt_write_all(1, line + index, advance) != 0) {
+static int consume_pending_codepoints(char *pending,
+                                      size_t *pending_len,
+                                      unsigned long long *position,
+                                      const CutOptions *options,
+                                      int force) {
+    while (*pending_len > 0U) {
+        size_t expected = utf8_expected_length((unsigned char)pending[0]);
+        size_t emit_len = 1U;
+
+        if (*pending_len < expected && !force) {
+            return 0;
+        }
+        if (*pending_len >= expected) {
+            size_t index = 0U;
+            unsigned int codepoint;
+
+            if (expected == 1U || (rt_utf8_decode(pending, expected, &index, &codepoint) == 0 && index == expected)) {
+                emit_len = expected;
+            }
+        }
+
+        if (cut_position_matches(*position, options->selections, options->complement) && rt_write_all(1, pending, emit_len) != 0) {
             return -1;
         }
-
-        index += advance;
-        position += 1ULL;
-    }
-
-    if (end_with_newline && rt_write_char(1, '\n') != 0) {
-        return -1;
+        remove_pending_prefix(pending, pending_len, emit_len);
+        *position += 1ULL;
     }
 
     return 0;
 }
 
-static int cut_codepoint_stream(int fd, const CutRangeList *list, int complement) {
+static int cut_codepoint_stream(int fd, const CutOptions *options) {
     char chunk[4096];
-    char line[CUT_LINE_CAPACITY];
-    size_t line_len = 0U;
+    char pending[4];
+    size_t pending_len = 0U;
+    unsigned long long position = 1ULL;
     long bytes_read;
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
@@ -276,14 +265,21 @@ static int cut_codepoint_stream(int fd, const CutRangeList *list, int complement
         for (i = 0; i < bytes_read; ++i) {
             char ch = chunk[i];
 
-            if (ch == '\n') {
-                line[line_len] = '\0';
-                if (write_selected_codepoints(line, list, complement, 1) != 0) {
+            if (ch == options->line_delimiter) {
+                if (consume_pending_codepoints(pending, &pending_len, &position, options, 1) != 0 ||
+                    rt_write_char(1, options->line_delimiter) != 0) {
                     return -1;
                 }
-                line_len = 0U;
-            } else if (line_len + 1U < sizeof(line)) {
-                line[line_len++] = ch;
+                pending_len = 0U;
+                position = 1ULL;
+            } else {
+                if (pending_len >= sizeof(pending) && consume_pending_codepoints(pending, &pending_len, &position, options, 1) != 0) {
+                    return -1;
+                }
+                pending[pending_len++] = ch;
+                if (consume_pending_codepoints(pending, &pending_len, &position, options, 0) != 0) {
+                    return -1;
+                }
             }
         }
     }
@@ -292,58 +288,38 @@ static int cut_codepoint_stream(int fd, const CutRangeList *list, int complement
         return -1;
     }
 
-    if (line_len > 0U) {
-        line[line_len] = '\0';
-        if (write_selected_codepoints(line, list, complement, 0) != 0) {
+    return consume_pending_codepoints(pending, &pending_len, &position, options, 1);
+}
+
+static int field_start_selected_output(int *wrote_field, int *field_output_started, const CutOptions *options) {
+    if (!*field_output_started) {
+        if (*wrote_field && rt_write_char(1, options->delimiter) != 0) {
             return -1;
         }
+        *wrote_field = 1;
+        *field_output_started = 1;
     }
-
     return 0;
 }
 
-static int write_selected_fields(const char *line, const CutOptions *options, int end_with_newline) {
-    unsigned long long field_no = 1;
-    size_t field_start = 0;
-    size_t i = 0;
-    int wrote_field = 0;
-
-    while (1) {
-        char ch = line[i];
-
-        if (ch == options->delimiter || ch == '\0') {
-            if (selection_includes(field_no, options)) {
-                if (wrote_field && rt_write_char(1, options->delimiter) != 0) {
-                    return -1;
-                }
-                if (i > field_start && rt_write_all(1, line + field_start, i - field_start) != 0) {
-                    return -1;
-                }
-                wrote_field = 1;
-            }
-
-            if (ch == '\0') {
-                break;
-            }
-
-            field_no += 1;
-            field_start = i + 1;
+static int finish_selected_empty_field(int selected, int *wrote_field, int *field_output_started, const CutOptions *options) {
+    if (selected && !*field_output_started) {
+        if (*wrote_field && rt_write_char(1, options->delimiter) != 0) {
+            return -1;
         }
-
-        i += 1;
-    }
-
-    if (end_with_newline && rt_write_char(1, '\n') != 0) {
-        return -1;
+        *wrote_field = 1;
     }
     return 0;
 }
 
 static int cut_field_stream(int fd, const CutOptions *options) {
     char chunk[4096];
-    char line[CUT_LINE_CAPACITY];
-    size_t line_len = 0;
     long bytes_read;
+    unsigned long long field_no = 1;
+    int wrote_field = 0;
+    int field_output_started = 0;
+    int selected = selection_includes(1ULL, options);
+    int have_record = 0;
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
         long i;
@@ -351,14 +327,32 @@ static int cut_field_stream(int fd, const CutOptions *options) {
         for (i = 0; i < bytes_read; ++i) {
             char ch = chunk[i];
 
-            if (ch == '\n') {
-                line[line_len] = '\0';
-                if (write_selected_fields(line, options, 1) != 0) {
+            if (ch == options->line_delimiter) {
+                if (finish_selected_empty_field(selected, &wrote_field, &field_output_started, options) != 0 ||
+                    rt_write_char(1, options->line_delimiter) != 0) {
                     return -1;
                 }
-                line_len = 0;
-            } else if (line_len + 1 < sizeof(line)) {
-                line[line_len++] = ch;
+                field_no = 1ULL;
+                wrote_field = 0;
+                field_output_started = 0;
+                selected = selection_includes(field_no, options);
+                have_record = 0;
+                continue;
+            }
+
+            have_record = 1;
+            if (ch == options->delimiter) {
+                if (finish_selected_empty_field(selected, &wrote_field, &field_output_started, options) != 0) {
+                    return -1;
+                }
+                field_no += 1ULL;
+                field_output_started = 0;
+                selected = selection_includes(field_no, options);
+            } else if (selected) {
+                if (field_start_selected_output(&wrote_field, &field_output_started, options) != 0 ||
+                    rt_write_char(1, ch) != 0) {
+                    return -1;
+                }
             }
         }
     }
@@ -367,11 +361,8 @@ static int cut_field_stream(int fd, const CutOptions *options) {
         return -1;
     }
 
-    if (line_len > 0) {
-        line[line_len] = '\0';
-        if (write_selected_fields(line, options, 0) != 0) {
-            return -1;
-        }
+    if (have_record && finish_selected_empty_field(selected, &wrote_field, &field_output_started, options) != 0) {
+        return -1;
     }
 
     return 0;
@@ -382,12 +373,9 @@ static int cut_stream(int fd, const CutOptions *options) {
         return cut_field_stream(fd, options);
     }
     if (options->mode == CUT_MODE_BYTES) {
-        if (!options->complement) {
-            return cut_byte_stream(fd, &options->selections);
-        }
-        return cut_text_stream(fd, &options->selections, options->complement);
+        return cut_byte_stream(fd, options);
     }
-    return cut_codepoint_stream(fd, &options->selections, options->complement);
+    return cut_codepoint_stream(fd, options);
 }
 
 static int parse_options(int argc, char **argv, CutOptions *options, int *arg_index_out) {
@@ -395,6 +383,7 @@ static int parse_options(int argc, char **argv, CutOptions *options, int *arg_in
 
     rt_memset(options, 0, sizeof(*options));
     options->delimiter = '\t';
+    options->line_delimiter = '\n';
 
     while (arg_index < argc && argv[arg_index][0] == '-' && argv[arg_index][1] != '\0') {
         if (rt_strcmp(argv[arg_index], "--") == 0) {
@@ -408,13 +397,20 @@ static int parse_options(int argc, char **argv, CutOptions *options, int *arg_in
             continue;
         }
 
+        if (rt_strcmp(argv[arg_index], "-z") == 0 || rt_strcmp(argv[arg_index], "--zero-terminated") == 0) {
+            options->line_delimiter = '\0';
+            arg_index += 1;
+            continue;
+        }
+
         if ((rt_strcmp(argv[arg_index], "-b") == 0 ||
              rt_strcmp(argv[arg_index], "-c") == 0 ||
              rt_strcmp(argv[arg_index], "-f") == 0) &&
             arg_index + 1 < argc) {
-            if (parse_range_list(argv[arg_index + 1], &options->selections) != 0) {
+            if (validate_range_list(argv[arg_index + 1]) != 0) {
                 return -1;
             }
+            options->selections = argv[arg_index + 1];
             if (argv[arg_index][1] == 'f') {
                 options->mode = CUT_MODE_FIELDS;
             } else if (argv[arg_index][1] == 'b') {

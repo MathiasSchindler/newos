@@ -7,7 +7,7 @@ cut - extract fields or columns from lines
 ## SYNOPSIS
 
 ```
-cut [--complement] (-b LIST | -c LIST | -f LIST [-d DELIM]) [file ...]
+cut [--complement] [-z|--zero-terminated] (-b LIST | -c LIST | -f LIST [-d DELIM]) [file ...]
 ```
 
 ## DESCRIPTION
@@ -17,8 +17,10 @@ The cut tool extracts selected bytes, character positions, or delimited fields f
 ## CURRENT CAPABILITIES
 
 - select byte or character ranges
+- select UTF-8 character positions with `-c`
 - extract delimited fields with `-f`
 - use a custom delimiter with `-d`
+- process NUL-terminated records with `-z`
 - invert the selection with `--complement`
 
 ## OPTIONS
@@ -29,20 +31,15 @@ The cut tool extracts selected bytes, character positions, or delimited fields f
 | `-c LIST` | Select character ranges. |
 | `-f LIST` | Select 1-based field ranges. |
 | `-d DELIM` | Use `DELIM` instead of tab as the field separator. |
+| `-z`, `--zero-terminated` | Use NUL instead of newline as the input and output record separator. |
 | `--complement` | Invert the selection. |
-
-## LIMITATIONS
-
-- At most 32 ranges are supported.
-- Maximum line length is 8192 bytes.
-- No NUL-delimited `-z` mode is implemented.
-- `-c` and `-b` currently behave the same and operate byte-by-byte.
 
 ## EXAMPLES
 
 ```
 cut -f1 data.tsv
 cut -d : -f1,7 /etc/passwd
+cut -z -d : -f2 records.bin
 cut --complement -c1-8 text.txt
 ```
 

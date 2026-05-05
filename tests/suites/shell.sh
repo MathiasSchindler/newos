@@ -13,17 +13,17 @@ note "shell"
 run_shell_tty() {
     input_path=$1
     output_path=$2
-    tty_cmd="\"$ROOT_DIR/build/sh\" -i"
-
     if ! command -v script >/dev/null 2>&1; then
         note "shell tty checks skipped: script(1) not available"
         return 0
     fi
 
     if script --version >/dev/null 2>&1; then
+        tty_cmd="\"$ROOT_DIR/build/sh\" -i"
         script -qfec "$tty_cmd" "$output_path" < "$input_path" > /dev/null 2>&1
     else
-        cat "$input_path" | script -q /dev/null /bin/sh -c "$tty_cmd" > "$output_path" 2>&1
+        tty_cmd="cat \"$input_path\" | \"$ROOT_DIR/build/sh\" -i"
+        script -q /dev/null /bin/sh -c "$tty_cmd" > "$output_path" 2>&1
     fi
 }
 
