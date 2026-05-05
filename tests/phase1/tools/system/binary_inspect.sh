@@ -28,6 +28,16 @@ assert_command_succeeds "$ROOT_DIR/build/hexdump" -C -s 6 -n 4 "$WORK_DIR/text.t
 assert_file_contains "$WORK_DIR/hexdump_slice.out" '^00000006  62 65 74 61' "hexdump -C/-s/-n did not dump the selected slice"
 assert_file_contains "$WORK_DIR/hexdump_slice.out" '^0000000a$' "hexdump -n did not report the expected final offset"
 
+printf '\001\002\003\004\377' > "$WORK_DIR/bytes.bin"
+assert_command_succeeds "$ROOT_DIR/build/hexdump" -x "$WORK_DIR/bytes.bin" > "$WORK_DIR/hexdump_x.out"
+assert_file_contains "$WORK_DIR/hexdump_x.out" '^00000000 0201 0403 00ff$' "hexdump -x did not render little-endian 16-bit hex words"
+
+assert_command_succeeds "$ROOT_DIR/build/hexdump" -d -A d -s 16 -n 4 "$WORK_DIR/text.txt" > "$WORK_DIR/hexdump_decimal_address.out"
+assert_file_contains "$WORK_DIR/hexdump_decimal_address.out" '^00000016$' "hexdump -A d did not print decimal final offsets after skipping past EOF"
+
+assert_command_succeeds "$ROOT_DIR/build/hexdump" -o -A n "$WORK_DIR/bytes.bin" > "$WORK_DIR/hexdump_o_no_address.out"
+assert_file_contains "$WORK_DIR/hexdump_o_no_address.out" '^001001 002003 000377$' "hexdump -o/-A n did not render octal words without addresses"
+
 cat > "$WORK_DIR/probe.c" <<'EOF'
 int main(void) {
     return 0;

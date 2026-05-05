@@ -7,21 +7,24 @@ hexdump - display file contents in hexadecimal
 ## SYNOPSIS
 
 ```
-hexdump [-C] [-v] [-s OFFSET] [-n LENGTH] [file ...]
+hexdump [-C | -x | -d | -o] [-A BASE] [-v] [-s OFFSET] [-n LENGTH] [file ...]
 ```
 
 ## DESCRIPTION
 
-`hexdump` displays the contents of each FILE (or standard input) as a
-canonical hex+ASCII dump. Each output line shows an 8-digit hexadecimal offset,
-16 bytes of hexadecimal values, and a printable ASCII representation with
-non-printable bytes replaced by `.`.
+`hexdump` displays the contents of each FILE (or standard input). The default
+is the canonical hex+ASCII dump: each output line shows an 8-digit hexadecimal
+offset, 16 bytes of hexadecimal values, and a printable ASCII representation
+with non-printable bytes replaced by `.`. Alternate 16-bit word views are also
+available.
 
 ## CURRENT CAPABILITIES
 
 - Reads from standard input when no files are given
 - Processes multiple files sequentially
 - Canonical format: offset, 16 hex bytes, ASCII panel
+- Alternate 16-bit little-endian word formats with `-x`, `-d`, and `-o`
+- Address-base selection with `-A x`, `-A d`, `-A o`, and `-A n`
 - `-s OFFSET` skips bytes before dumping
 - `-n LENGTH` limits the number of bytes dumped
 - `-C` selects the canonical format explicitly; `-v` is accepted for
@@ -33,23 +36,27 @@ non-printable bytes replaced by `.`.
 | Flag | Description |
 |------|-------------|
 | `-C` | Use canonical hex+ASCII output. This is also the default. |
+| `-x` | Display 16-bit little-endian words in hexadecimal. |
+| `-d` | Display 16-bit little-endian words in unsigned decimal. |
+| `-o` | Display 16-bit little-endian words in octal. |
+| `-A BASE` | Select the address base: `x` hex, `d` decimal, `o` octal, or `n` none. |
 | `-s OFFSET` | Skip OFFSET bytes before dumping. |
 | `-n LENGTH` | Dump at most LENGTH bytes. |
 | `-v` | Accepted for compatibility; duplicate lines are always shown. |
 
 ## LIMITATIONS
 
-- No `-x` / `-d` / `-o` alternate format selection flags.
-- Output format is fixed at canonical hex+ASCII (equivalent to `hexdump -C` in many systems).
-- No custom format strings (`-e`, `-f`) or endian-aware multi-byte numeric
-  decoding are implemented.
-- Duplicate-line squeezing and address-base controls are intentionally absent.
+- No custom format strings (`-e`, `-f`) are implemented.
+- Alternate numeric formats are limited to 16-bit little-endian words.
+- Duplicate-line squeezing is intentionally absent; `-v` is accepted as a no-op.
 
 ## EXAMPLES
 
 ```
 hexdump file.bin
 hexdump -C -s 128 -n 64 file.bin
+hexdump -x file.bin
+hexdump -d -A d file.bin
 hexdump < /dev/urandom | head -4
 dd if=file.bin bs=1 skip=0 count=64 | hexdump
 ```
