@@ -21,3 +21,7 @@ assert_file_contains "$WORK_DIR/who.out" '# users=[0-9][0-9]*' "who -q did not r
 
 assert_command_succeeds "$ROOT_DIR/build/users" -c > "$WORK_DIR/users_count.out"
 assert_file_contains "$WORK_DIR/users_count.out" '^[0-9][0-9]*$' "users -c did not print a numeric count"
+
+assert_command_succeeds "$ROOT_DIR/build/users" -l > "$WORK_DIR/users_long.out"
+assert_command_succeeds "$ROOT_DIR/build/users" --since 9999999999 -c > "$WORK_DIR/users_since_future.out"
+assert_file_contains "$WORK_DIR/users_since_future.out" '^0$' "users --since future filter did not exclude current sessions"

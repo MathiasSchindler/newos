@@ -7,7 +7,7 @@ users - print usernames of logged-in users
 ## SYNOPSIS
 
 ```
-users [-s] [-u] [-c]
+users [-s] [-u] [-c] [-l] [--host HOST] [--terminal TTY] [--since EPOCH] [USER ...]
 ```
 
 ## DESCRIPTION
@@ -20,19 +20,26 @@ users prints the usernames of all users currently logged in to the system, deriv
 - sorting the output alphabetically
 - deduplicating to show each user at most once
 - printing only the count of logged-in users
+- filtering sessions by username, host, terminal, or login time
+- showing terminal, host, and login-time fields in long output
 
 ## OPTIONS
 
 - `-s` — sort usernames alphabetically
 - `-u` — print only unique usernames (implies `-s`)
 - `-c` — print only the count of logged-in users
+- `-l` — long output with username, terminal, login time, and host
+- `--host HOST` — include only sessions from HOST
+- `--terminal TTY`, `--tty TTY` — include only sessions on TTY
+- `--since EPOCH` — include only sessions whose login time is at or after EPOCH
+- `USER ...` — include only sessions for the named users
 
 ## LIMITATIONS
 
-- no arguments accepted; cannot query users for a different host or time
 - session data depends on the platform login record interface
-- duplicate sessions are printed as reported; no idle time, terminal, host, or
-  login-time fields are available
+- no idle-time field is available through the shared platform interface
+- historical login database queries are not implemented; filters apply to the
+  current active session set
 - results may be sparse until `login` and the platform session database grow
   fuller accounting support
 
@@ -41,6 +48,8 @@ users prints the usernames of all users currently logged in to the system, deriv
 - `users` — list all logged-in usernames
 - `users -u` — list unique usernames
 - `users -c` — print the number of logged-in users
+- `users -l` — include terminal, login time, and host details
+- `users --since @0 alice` — show Alice's current sessions logged after epoch 0
 
 ## SEE ALSO
 
