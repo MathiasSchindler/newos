@@ -3,8 +3,8 @@
 #include "tool_util.h"
 
 #define PAGER_BUFFER_SIZE 4096
-#define LESS_BUFFER_CAPACITY 262144
-#define LESS_MAX_LINES 8192
+#define LESS_BUFFER_CAPACITY 1048576
+#define LESS_MAX_LINES 65536
 #define DEFAULT_PAGE_LINES 23
 #define PAGER_SEARCH_CAPACITY 256
 
@@ -314,7 +314,71 @@ static int render_page(const char *buffer,
     return 0;
 }
 
-static int page_buffered(int fd, int show_numbers, const char *search_pattern, int color_mode) {
+typedef enum {
+    LESS_INITIAL_NONE = 0,
+    LESS_INITIAL_LINE,
+    LESS_INITIAL_PERCENT
+} LessInitialJumpKind;
+
+typedef struct {
+    LessInitialJumpKind kind;
+    unsigned long long value;
+} LessInitialJump;
+
+static size_t clamp_top_line(size_t line_count, size_t requested_line) {
+    if (line_count == 0U) {
+        return 0U;
+    }
+    if (requested_line >= line_count) {
+        return line_count - 1U;
+    }
+    return requested_line;
+}
+
+static int parse_initial_jump(const char *text, LessInitialJump *jump) {
+    unsigned long long value = 0ULL;
+    size_t pos = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return -1;
+    }
+    while (text[pos] >= '0' && text[pos] <= '9') {
+        value = value * 10ULL + (unsigned long long)(text[pos] - '0');
+        pos += 1U;
+    }
+    if (pos == 0U) {
+        return -1;
+    }
+    if (text[pos] == '%' && text[pos + 1U] == '\0') {
+        if (value > 100ULL) {
+            value = 100ULL;
+        }
+        jump->kind = LESS_INITIAL_PERCENT;
+        jump->value = value;
+        return 0;
+    }
+    if (text[pos] == '\0') {
+        jump->kind = LESS_INITIAL_LINE;
+        jump->value = value;
+        return 0;
+    }
+    return -1;
+}
+
+static void apply_initial_jump(const LessInitialJump *jump, size_t line_count, size_t *top_line) {
+    if (jump == 0 || jump->kind == LESS_INITIAL_NONE || line_count == 0U) {
+        return;
+    }
+    if (jump->kind == LESS_INITIAL_LINE) {
+        unsigned long long requested = jump->value > 0ULL ? jump->value - 1ULL : 0ULL;
+        *top_line = clamp_top_line(line_count, requested > (unsigned long long)((size_t)-1) ? (size_t)-1 : (size_t)requested);
+    } else if (jump->kind == LESS_INITIAL_PERCENT) {
+        unsigned long long requested = ((unsigned long long)(line_count - 1U) * jump->value) / 100ULL;
+        *top_line = clamp_top_line(line_count, requested > (unsigned long long)((size_t)-1) ? (size_t)-1 : (size_t)requested);
+    }
+}
+
+static int page_buffered(int fd, int show_numbers, const char *search_pattern, const LessInitialJump *initial_jump, int color_mode) {
     static char buffer[LESS_BUFFER_CAPACITY];
     static size_t line_offsets[LESS_MAX_LINES];
     LessPager pager;
@@ -345,6 +409,8 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, i
         } else {
             rt_copy_string(status, sizeof(status), "\rPattern not found");
         }
+    } else {
+        apply_initial_jump(initial_jump, line_count, &top_line);
     }
 
     if (!pager.interactive) {
@@ -443,11 +509,14 @@ int main(int argc, char **argv) {
     int show_numbers = 0;
     int color_mode = TOOL_COLOR_AUTO;
     const char *search_pattern = 0;
+    LessInitialJump initial_jump;
     int path_count;
     int i;
     int exit_code = 0;
 
     tool_set_global_color_mode(TOOL_COLOR_AUTO);
+    initial_jump.kind = LESS_INITIAL_NONE;
+    initial_jump.value = 0ULL;
 
     while (arg_index < argc) {
         if (rt_strcmp(argv[arg_index], "--help") == 0) {
@@ -486,13 +555,24 @@ int main(int argc, char **argv) {
             arg_index += 1;
             continue;
         }
+        if (argv[arg_index][0] == '+' && argv[arg_index][1] != '\0') {
+            if (parse_initial_jump(argv[arg_index] + 1, &initial_jump) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            arg_index += 1;
+            continue;
+        }
         break;
     }
 
     tool_set_global_color_mode(color_mode);
     path_count = argc - arg_index;
     if (path_count <= 0) {
-        return page_buffered(0, show_numbers, search_pattern, color_mode) == 0 ? 0 : 1;
+        if (search_pattern == 0 && initial_jump.kind == LESS_INITIAL_NONE && !(platform_isatty(0) != 0 && platform_isatty(1) != 0)) {
+            return page_stream(0, 0, show_numbers) == 0 ? 0 : 1;
+        }
+        return page_buffered(0, show_numbers, search_pattern, &initial_jump, color_mode) == 0 ? 0 : 1;
     }
 
     for (i = arg_index; i < argc; ++i) {
@@ -514,11 +594,14 @@ int main(int argc, char **argv) {
             pager_write_text(1, color_mode, TOOL_STYLE_BOLD_CYAN, " <==\n");
         }
 
-        if (page_buffered(fd, show_numbers, search_pattern, color_mode) != 0) {
-            if (page_stream(fd, platform_isatty(0) != 0 && platform_isatty(1) != 0, show_numbers) != 0) {
+        if (search_pattern == 0 && initial_jump.kind == LESS_INITIAL_NONE && !(platform_isatty(0) != 0 && platform_isatty(1) != 0)) {
+            if (page_stream(fd, 0, show_numbers) != 0) {
                 tool_write_error("less", "read error on ", argv[i]);
                 exit_code = 1;
             }
+        } else if (page_buffered(fd, show_numbers, search_pattern, &initial_jump, color_mode) != 0) {
+            tool_write_error("less", "input too large or read error on ", argv[i]);
+            exit_code = 1;
         }
 
         tool_close_input(fd, should_close);

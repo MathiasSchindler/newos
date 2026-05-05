@@ -7,7 +7,7 @@ less - page through text one screen at a time
 ## SYNOPSIS
 
 ```
-less [-N] [-p PATTERN] [--color[=WHEN]] [+/PATTERN] [file ...]
+less [-N] [-p PATTERN] [--color[=WHEN]] [+/PATTERN] [+LINE] [+PERCENT%] [file ...]
 ```
 
 ## DESCRIPTION
@@ -21,6 +21,7 @@ that common pager navigation works without external dependencies.
 - forward and backward paging through files
 - optional line numbering
 - initial search-jump with `-p PATTERN` or `+/PATTERN`
+- initial line and percentage jumps with `+LINE` and `+PERCENT%`
 - repeated next-match search with `n` after an interactive `/pattern`
 - page and line navigation with `Space`, `Enter`, `j`, `k`, `b`, `g`, and `G`
 - reading from standard input when no files are given
@@ -31,6 +32,8 @@ that common pager navigation works without external dependencies.
 
 - `-N` — prefix each line with its line number
 - `-p PATTERN` or `+/PATTERN` — start near the first matching line
+- `+LINE` — start at the requested 1-based line number
+- `+PERCENT%` — start near the requested percentage of the input
 - `--color[=WHEN]` — control prompt and match styling with `auto`, `always`,
   or `never`
 
@@ -38,7 +41,8 @@ that common pager navigation works without external dependencies.
 
 - interactive search and navigation are intentionally compact rather than a full clone of GNU less
 - no syntax highlighting or arbitrary terminal-widget support
-- very large inputs may fall back to simpler streaming behavior
+- noninteractive unsearched input streams directly; searched or jumped input is
+  buffered and remains bounded by the in-memory pager index
 - no mark/register commands, horizontal scrolling modes, follow mode, or
   external editor integration are implemented
 - terminal control is intentionally lightweight and may not handle every
@@ -49,6 +53,8 @@ that common pager navigation works without external dependencies.
 - `less file.txt` — page through a file
 - `less -N file.txt` — page through a file with line numbers
 - `less -p error build.log` — open near the first matching line
+- `less +120 build.log` — open near line 120
+- `less +50% build.log` — open near the middle of the file
 - `cat long.log | less` — page through piped output
 
 ## SEE ALSO
