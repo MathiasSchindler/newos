@@ -12,28 +12,30 @@ fold [-bcs] [-w WIDTH] [file ...]
 
 ## DESCRIPTION
 
-fold reads files (or standard input) and wraps lines that exceed WIDTH characters (default 80) by inserting a newline.
+fold reads files (or standard input) and wraps lines that exceed WIDTH display columns (default 80) by inserting a newline.
 
 ## CURRENT CAPABILITIES
 
-- wrapping at a configurable column width
-- byte-based wrapping instead of character-based
-- breaking only at whitespace to avoid splitting words
+- wrapping at a configurable display-column width
+- UTF-8 decoding with wide and zero-width character display widths
+- byte-based wrapping with `-b`
+- character-count wrapping with `-c`
+- breaking only at Unicode whitespace to avoid splitting words
+- ANSI CSI and OSC escape sequences are preserved and treated as display-width-neutral in character and column modes
 
 ## OPTIONS
 
-- `-b` — count bytes instead of characters when measuring line width
-- `-c` — same as `-b` (alternative byte-mode flag)
+- `-b` — count bytes instead of display columns when measuring line width
+- `-c` — count UTF-8 characters instead of display columns when measuring line width
 - `-s` — break at the last whitespace at or before WIDTH rather than in the middle of a word
 - `-w WIDTH` — wrap at WIDTH columns (default 80)
 
 ## LIMITATIONS
 
-- multi-byte UTF-8 characters are counted as multiple bytes unless byte mode is in effect; display width of wide characters is not considered
-- no colour-sequence awareness (ANSI escape codes count toward column width)
-- no locale-aware grapheme cluster handling or East Asian width support
-- the command does not preserve overstrikes, backspaces, or terminal control
-  sequences as display-width-neutral content
+- byte mode may split inside multi-byte UTF-8 characters because it deliberately counts raw bytes
+- locale-specific East Asian ambiguous-width handling is not implemented
+- full grapheme-cluster shaping is not implemented, though combining and zero-width code points do not advance display width
+- terminal control handling is limited to common ANSI CSI and OSC escape sequences plus basic carriage-return/backspace width effects
 
 ## EXAMPLES
 

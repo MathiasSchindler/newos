@@ -61,11 +61,21 @@ static size_t utf8_expected_length(unsigned char lead) {
 }
 
 static unsigned long long next_display_width(unsigned long long current_width, unsigned int codepoint) {
-    if (codepoint == '\t') {
-        return current_width + (8ULL - (current_width % 8ULL));
-    }
+    RtTextSegment segment;
 
-    return current_width + (unsigned long long)rt_unicode_display_width(codepoint);
+    segment.start = 0U;
+    segment.end = 0U;
+    segment.codepoint = codepoint;
+    segment.display_width = codepoint == '\t' ? 0U : rt_unicode_display_width(codepoint);
+    segment.flags = 0U;
+    if (codepoint == '\b') {
+        segment.flags = RT_TEXT_SEGMENT_BACKSPACE;
+        segment.display_width = 0U;
+    } else if (codepoint == '\r') {
+        segment.flags = RT_TEXT_SEGMENT_CARRIAGE_RETURN;
+        segment.display_width = 0U;
+    }
+    return rt_text_apply_segment_width(current_width, &segment);
 }
 
 static void print_counts(const WcOptions *options, const WcStats *stats, const char *name) {

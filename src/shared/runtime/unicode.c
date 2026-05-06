@@ -336,9 +336,7 @@ static const UnicodeRange unicode_wide_ranges[] = {
     {0x1f18eU, 0x1f18eU}, {0x1f191U, 0x1f19aU}, {0x1f200U, 0x1f251U}, {0x1f300U, 0x1f64fU},
     {0x1f680U, 0x1f6ffU}, {0x1f700U, 0x1f773U}, {0x1f780U, 0x1f7d8U}, {0x1f7e0U, 0x1f7ebU},
     {0x1f800U, 0x1f80bU}, {0x1f810U, 0x1f847U}, {0x1f850U, 0x1f859U}, {0x1f860U, 0x1f887U},
-    {0x1f890U, 0x1f8adU}, {0x1f900U, 0x1f978U}, {0x1f97aU, 0x1f9cbU}, {0x1f9cdU, 0x1fa53U},
-    {0x1fa70U, 0x1fa7cU}, {0x1fa80U, 0x1fa88U}, {0x1fa90U, 0x1fabdU}, {0x1fabfU, 0x1fac5U},
-    {0x1faceU, 0x1fadbU}, {0x1fae0U, 0x1fae8U}, {0x1faf0U, 0x1faf8U}, {0x20000U, 0x2fffdU},
+    {0x1f890U, 0x1f8adU}, {0x1f900U, 0x1f9ffU}, {0x1fa70U, 0x1faffU}, {0x20000U, 0x2fffdU},
     {0x30000U, 0x3fffdU}
 };
 
@@ -357,4 +355,184 @@ unsigned int rt_unicode_display_width(unsigned int codepoint) {
     }
 
     return 1U;
+}
+
+static int rt_text_is_ansi_final_byte(unsigned char ch) {
+    return ch >= 0x40U && ch <= 0x7eU;
+}
+
+static int rt_text_ansi_escape_end(const char *text, size_t text_length, size_t start, size_t *end_out, int *incomplete_out) {
+    size_t index;
+
+    if (start >= text_length || text[start] != '\033') {
+        return 0;
+    }
+    *incomplete_out = 0;
+
+    if (start + 1U >= text_length) {
+        *end_out = text_length;
+        *incomplete_out = 1;
+        return 1;
+    }
+
+    if (text[start + 1U] == '[') {
+        index = start + 2U;
+        while (index < text_length) {
+            if (rt_text_is_ansi_final_byte((unsigned char)text[index])) {
+                *end_out = index + 1U;
+                return 1;
+            }
+            index += 1U;
+        }
+        *end_out = text_length;
+        *incomplete_out = 1;
+        return 1;
+    }
+
+    if (text[start + 1U] == ']') {
+        index = start + 2U;
+        while (index < text_length) {
+            if (text[index] == '\a') {
+                *end_out = index + 1U;
+                return 1;
+            }
+            if (text[index] == '\033' && index + 1U < text_length && text[index + 1U] == '\\') {
+                *end_out = index + 2U;
+                return 1;
+            }
+            index += 1U;
+        }
+        *end_out = text_length;
+        *incomplete_out = 1;
+        return 1;
+    }
+
+    *end_out = start + 2U;
+    return 1;
+}
+
+int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtTextSegment *segment_out) {
+    size_t end = start;
+    int incomplete = 0;
+    unsigned int codepoint = 0U;
+
+    if (text == 0 || segment_out == 0 || start >= text_length) {
+        return -1;
+    }
+
+    segment_out->start = start;
+    segment_out->end = start + 1U;
+    segment_out->codepoint = 0xfffdU;
+    segment_out->display_width = 1U;
+    segment_out->flags = 0U;
+
+    if (rt_text_ansi_escape_end(text, text_length, start, &end, &incomplete)) {
+        segment_out->end = end;
+        segment_out->codepoint = 0U;
+        segment_out->display_width = 0U;
+        segment_out->flags = RT_TEXT_SEGMENT_ANSI | (incomplete ? RT_TEXT_SEGMENT_INCOMPLETE : 0U);
+        return 0;
+    }
+
+    end = start;
+    if (rt_utf8_decode(text, text_length, &end, &codepoint) != 0) {
+        unsigned char lead = (unsigned char)text[start];
+        size_t expected_length = rt_utf8_sequence_length(lead);
+
+        segment_out->end = start + 1U;
+        segment_out->codepoint = 0xfffdU;
+        segment_out->display_width = 1U;
+        segment_out->flags = RT_TEXT_SEGMENT_INVALID;
+        if (expected_length > 1U && start + expected_length > text_length) {
+            segment_out->flags |= RT_TEXT_SEGMENT_INCOMPLETE;
+        }
+        return 0;
+    }
+
+    segment_out->end = end;
+    segment_out->codepoint = codepoint;
+    if (codepoint == '\b') {
+        segment_out->display_width = 0U;
+        segment_out->flags = RT_TEXT_SEGMENT_BACKSPACE;
+    } else if (codepoint == '\r') {
+        segment_out->display_width = 0U;
+        segment_out->flags = RT_TEXT_SEGMENT_CARRIAGE_RETURN;
+    } else if (codepoint == '\t') {
+        segment_out->display_width = 0U;
+    } else {
+        segment_out->display_width = rt_unicode_display_width(codepoint);
+    }
+    return 0;
+}
+
+int rt_text_has_incomplete_tail(const char *text, size_t text_length) {
+    size_t index = 0U;
+    RtTextSegment segment;
+
+    while (rt_text_next_segment(text, text_length, index, &segment) == 0) {
+        if ((segment.flags & RT_TEXT_SEGMENT_INCOMPLETE) != 0U) {
+            return 1;
+        }
+        index = segment.end;
+    }
+    return 0;
+}
+
+unsigned long long rt_text_apply_segment_width(unsigned long long current_width, const RtTextSegment *segment) {
+    if (segment == 0) {
+        return current_width;
+    }
+    if ((segment->flags & RT_TEXT_SEGMENT_BACKSPACE) != 0U) {
+        return current_width > 0ULL ? current_width - 1ULL : 0ULL;
+    }
+    if ((segment->flags & RT_TEXT_SEGMENT_CARRIAGE_RETURN) != 0U) {
+        return 0ULL;
+    }
+    if ((segment->flags & RT_TEXT_SEGMENT_ANSI) != 0U) {
+        return current_width;
+    }
+    if (segment->codepoint == '\t') {
+        return current_width + (8ULL - (current_width % 8ULL));
+    }
+    return current_width + (unsigned long long)segment->display_width;
+}
+
+unsigned long long rt_text_display_width_n(const char *text, size_t text_length, unsigned long long initial_width) {
+    size_t index = 0U;
+    unsigned long long width = initial_width;
+    RtTextSegment segment;
+
+    while (rt_text_next_segment(text, text_length, index, &segment) == 0) {
+        width = rt_text_apply_segment_width(width, &segment);
+        index = segment.end;
+    }
+    return width;
+}
+
+size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width) {
+    size_t index = 0U;
+    size_t last_complete = 0U;
+    unsigned long long width = initial_width;
+    RtTextSegment segment;
+
+    while (rt_text_next_segment(text, text_length, index, &segment) == 0) {
+        unsigned long long next_width = rt_text_apply_segment_width(width, &segment);
+
+        if (next_width > max_width && (segment.flags & (RT_TEXT_SEGMENT_ANSI | RT_TEXT_SEGMENT_BACKSPACE | RT_TEXT_SEGMENT_CARRIAGE_RETURN)) == 0U) {
+            break;
+        }
+        width = next_width;
+        last_complete = segment.end;
+        index = segment.end;
+    }
+    return last_complete;
+}
+
+int rt_text_segment_is_space(const char *text, size_t text_length, const RtTextSegment *segment) {
+    (void)text;
+    (void)text_length;
+    if (segment == 0 || (segment->flags & RT_TEXT_SEGMENT_ANSI) != 0U) {
+        return 0;
+    }
+    return rt_unicode_is_space(segment->codepoint);
 }

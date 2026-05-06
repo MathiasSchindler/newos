@@ -40,25 +40,7 @@ static int is_in_set(char ch, const char *set) {
 }
 
 static size_t utf8_display_width_n(const char *text, size_t length) {
-    size_t index = 0U;
-    size_t width = 0U;
-
-    while (index < length) {
-        size_t before = index;
-        unsigned int codepoint = 0;
-
-        if (rt_utf8_decode(text, length, &index, &codepoint) != 0) {
-            index = before + 1U;
-            codepoint = 0xfffdU;
-        }
-        if (codepoint == '\t') {
-            width += 8U - (width % 8U);
-        } else {
-            width += (size_t)rt_unicode_display_width(codepoint);
-        }
-    }
-
-    return width;
+    return (size_t)rt_text_display_width_n(text, length, 0ULL);
 }
 
 static size_t utf8_display_width(const char *text) {
@@ -67,35 +49,7 @@ static size_t utf8_display_width(const char *text) {
 
 static size_t utf8_prefix_bytes_for_width(const char *text, size_t max_width) {
     size_t length = rt_strlen(text);
-    size_t index = 0U;
-    size_t width = 0U;
-    size_t last_complete = 0U;
-
-    while (index < length) {
-        size_t before = index;
-        unsigned int codepoint = 0;
-        size_t codepoint_width;
-
-        if (rt_utf8_decode(text, length, &index, &codepoint) != 0) {
-            index = before + 1U;
-            codepoint = 0xfffdU;
-        }
-
-        if (codepoint == '\t') {
-            codepoint_width = 8U - (width % 8U);
-        } else {
-            codepoint_width = (size_t)rt_unicode_display_width(codepoint);
-        }
-
-        if (width + codepoint_width > max_width) {
-            break;
-        }
-
-        width += codepoint_width;
-        last_complete = index;
-    }
-
-    return last_complete;
+    return rt_text_prefix_bytes_for_width(text, length, (unsigned long long)max_width, 0ULL);
 }
 
 static int parse_row(const char *line, const char *separators, ColumnRow *row) {

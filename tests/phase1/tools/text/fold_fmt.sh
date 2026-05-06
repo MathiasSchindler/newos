@@ -22,6 +22,26 @@ printf '界界界a\n' > "$WORK_DIR/fold_unicode.txt"
 assert_file_contains "$WORK_DIR/fold_unicode.out" '^界界界$' "fold did not wrap on Unicode display-width boundaries"
 assert_file_contains "$WORK_DIR/fold_unicode.out" '^a$' "fold did not preserve the trailing character after Unicode wrapping"
 
+printf '🥹a\n' > "$WORK_DIR/fold_emoji.txt"
+"$ROOT_DIR/build/fold" -w 2 "$WORK_DIR/fold_emoji.txt" > "$WORK_DIR/fold_emoji.out"
+assert_file_contains "$WORK_DIR/fold_emoji.out" '^🥹$' "fold did not treat newer emoji as wide"
+assert_file_contains "$WORK_DIR/fold_emoji.out" '^a$' "fold did not preserve text after newer emoji wrapping"
+
+printf '\033[31mred\033[0mblue\n' > "$WORK_DIR/fold_ansi.txt"
+"$ROOT_DIR/build/fold" -w 3 "$WORK_DIR/fold_ansi.txt" > "$WORK_DIR/fold_ansi.out"
+printf '\033[31mred\033[0m\nblu\ne\n' > "$WORK_DIR/fold_ansi.expected"
+assert_files_equal "$WORK_DIR/fold_ansi.expected" "$WORK_DIR/fold_ansi.out" "fold counted ANSI escape sequences toward display width"
+
+printf 'aa　bb\n' > "$WORK_DIR/fold_unicode_space.txt"
+"$ROOT_DIR/build/fold" -s -w 4 "$WORK_DIR/fold_unicode_space.txt" > "$WORK_DIR/fold_unicode_space.out"
+printf 'aa　\nbb\n' > "$WORK_DIR/fold_unicode_space.expected"
+assert_files_equal "$WORK_DIR/fold_unicode_space.expected" "$WORK_DIR/fold_unicode_space.out" "fold -s did not break on Unicode whitespace"
+
+printf 'éé\n' > "$WORK_DIR/fold_byte.txt"
+"$ROOT_DIR/build/fold" -b -w 3 "$WORK_DIR/fold_byte.txt" > "$WORK_DIR/fold_byte.out"
+byte_lines=$("$ROOT_DIR/build/wc" -l "$WORK_DIR/fold_byte.out" | "$ROOT_DIR/build/awk" '{print $1}')
+assert_text_equals "$byte_lines" '2' "fold -b did not count raw bytes"
+
 printf 'äö aa\n' > "$WORK_DIR/fmt_unicode.txt"
 "$ROOT_DIR/build/fmt" -w 5 "$WORK_DIR/fmt_unicode.txt" > "$WORK_DIR/fmt_unicode.out"
 assert_file_contains "$WORK_DIR/fmt_unicode.out" '^äö aa$' "fmt did not keep a Unicode-width-fitting line intact"

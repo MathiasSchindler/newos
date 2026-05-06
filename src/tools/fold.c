@@ -50,73 +50,110 @@ static int flush_prefix(const char *buffer, size_t count) {
 }
 
 static unsigned long long measure_units(const char *buffer, size_t count, const FoldOptions *options) {
-    unsigned long long units = 0ULL;
-    size_t i = 0U;
-
-    while (i < count) {
-        size_t before = i;
-        unsigned int codepoint = 0;
-
-        if (rt_utf8_decode(buffer, count, &i, &codepoint) != 0) {
-            i = before + 1U;
-            codepoint = (unsigned char)buffer[before];
-        }
-
-        if (options->count_mode == FOLD_COUNT_COLUMNS) {
-            if (codepoint == '\t') {
-                units += 8ULL - (units % 8ULL);
-            } else if (codepoint == '\b') {
-                if (units > 0ULL) {
-                    units -= 1ULL;
-                }
-            } else if (codepoint == '\r') {
-                units = 0ULL;
-            } else {
-                units += (unsigned long long)rt_unicode_display_width(codepoint);
-            }
-        } else if (options->count_mode == FOLD_COUNT_CHARACTERS) {
-            units += 1ULL;
-        } else {
-            units += (unsigned long long)(i - before);
-        }
+    if (options->count_mode == FOLD_COUNT_BYTES) {
+        return (unsigned long long)count;
     }
+    if (options->count_mode == FOLD_COUNT_CHARACTERS) {
+        size_t index = 0U;
+        unsigned long long units = 0ULL;
+        RtTextSegment segment;
 
-    return units;
+        while (rt_text_next_segment(buffer, count, index, &segment) == 0) {
+            if ((segment.flags & RT_TEXT_SEGMENT_ANSI) == 0U) {
+                units += 1ULL;
+            }
+            index = segment.end;
+        }
+        return units;
+    }
+    return rt_text_display_width_n(buffer, count, 0ULL);
+}
+
+static int line_has_incomplete_tail(const char *buffer, size_t count, const FoldOptions *options) {
+    return options->count_mode == FOLD_COUNT_BYTES ? 0 : rt_text_has_incomplete_tail(buffer, count);
+}
+
+static int segment_is_space(const char *buffer, size_t count, const RtTextSegment *segment, const FoldOptions *options) {
+    if (options->count_mode == FOLD_COUNT_BYTES) {
+        return buffer[segment->start] == ' ' || buffer[segment->start] == '\t';
+    }
+    return rt_text_segment_is_space(buffer, count, segment);
+}
+
+static unsigned long long apply_segment_units(unsigned long long current, const RtTextSegment *segment, const FoldOptions *options) {
+    if (options->count_mode == FOLD_COUNT_BYTES) {
+        return current + (unsigned long long)(segment->end - segment->start);
+    }
+    if (options->count_mode == FOLD_COUNT_CHARACTERS) {
+        return current + (((segment->flags & RT_TEXT_SEGMENT_ANSI) == 0U) ? 1ULL : 0ULL);
+    }
+    return rt_text_apply_segment_width(current, segment);
 }
 
 static size_t find_split_point(const char *buffer, size_t count, const FoldOptions *options) {
-    size_t split = count;
+    size_t index = 0U;
+    size_t split = 0U;
+    size_t last_space_split = 0U;
+    unsigned long long units = 0ULL;
 
-    while (split > 0U && measure_units(buffer, split, options) > options->width) {
-        split -= 1U;
-        while (split > 0U && ((unsigned char)buffer[split] & 0xc0U) == 0x80U) {
-            split -= 1U;
+    while (index < count) {
+        RtTextSegment segment;
+        unsigned long long next_units;
+
+        if (options->count_mode == FOLD_COUNT_BYTES) {
+            segment.start = index;
+            segment.end = index + 1U;
+            segment.codepoint = (unsigned char)buffer[index];
+            segment.display_width = 1U;
+            segment.flags = 0U;
+        } else if (rt_text_next_segment(buffer, count, index, &segment) != 0) {
+            break;
         }
+
+        next_units = apply_segment_units(units, &segment, options);
+
+        if (next_units > options->width && split > 0U) {
+            break;
+        }
+        if (next_units > options->width) {
+            return segment.end;
+        }
+
+        split = segment.end;
+        units = next_units;
+        if (options->break_spaces && segment_is_space(buffer, count, &segment, options)) {
+            last_space_split = segment.end;
+        }
+        index = segment.end;
     }
 
-    if (split == 0U) {
-        split = 1U;
-        while (split < count && ((unsigned char)buffer[split] & 0xc0U) == 0x80U) {
-            split += 1U;
-        }
-    }
-
-    if (options->break_spaces) {
-        size_t space_split = split;
-
-        while (space_split > 0U && buffer[space_split - 1U] != ' ' && buffer[space_split - 1U] != '\t') {
-            space_split -= 1U;
-            while (space_split > 0U && ((unsigned char)buffer[space_split] & 0xc0U) == 0x80U) {
-                space_split -= 1U;
-            }
-        }
-
-        if (space_split > 0U) {
-            split = space_split;
-        }
+    if (options->break_spaces && last_space_split > 0U) {
+        split = last_space_split;
     }
 
     return split;
+}
+
+static int line_starts_with_space(const char *buffer, size_t count, const FoldOptions *options, size_t *space_len_out) {
+    RtTextSegment segment;
+
+    if (count == 0U) {
+        return 0;
+    }
+    if (options->count_mode == FOLD_COUNT_BYTES) {
+        segment.start = 0U;
+        segment.end = 1U;
+        segment.codepoint = (unsigned char)buffer[0];
+        segment.display_width = 1U;
+        segment.flags = 0U;
+    } else if (rt_text_next_segment(buffer, count, 0U, &segment) != 0) {
+        return 0;
+    }
+    if (segment_is_space(buffer, count, &segment, options)) {
+        *space_len_out = segment.end;
+        return 1;
+    }
+    return 0;
 }
 
 static int fold_stream(int fd, const FoldOptions *options) {
@@ -146,7 +183,9 @@ static int fold_stream(int fd, const FoldOptions *options) {
                 line[line_len++] = ch;
             }
 
-            while (line_len > 0U && measure_units(line, line_len, options) > options->width) {
+                        while (line_len > 0U &&
+                                     !line_has_incomplete_tail(line, line_len, options) &&
+                                     measure_units(line, line_len, options) > options->width) {
                 size_t split = find_split_point(line, line_len, options);
 
                 if (flush_prefix(line, split) != 0) {
@@ -165,12 +204,17 @@ static int fold_stream(int fd, const FoldOptions *options) {
                     line_len = 0;
                 }
 
-                while (options->break_spaces && line_len > 0U && (line[0] == ' ' || line[0] == '\t')) {
+                while (options->break_spaces && line_len > 0U) {
+                    size_t space_len = 0U;
                     size_t j;
-                    for (j = 1U; j < line_len; ++j) {
-                        line[j - 1U] = line[j];
+
+                    if (!line_starts_with_space(line, line_len, options, &space_len)) {
+                        break;
                     }
-                    line_len -= 1U;
+                    for (j = space_len; j < line_len; ++j) {
+                        line[j - space_len] = line[j];
+                    }
+                    line_len -= space_len;
                 }
             }
         }

@@ -64,8 +64,12 @@ multiple tools can reuse:
 
 - **platform.h** - OS abstraction for syscalls and platform-specific features
 
-- **runtime.{c,h}** - freestanding runtime helpers (string, memory, I/O) that
-  work without libc
+- **runtime.{c,h}** - freestanding runtime helpers (string, memory, I/O,
+  UTF-8, Unicode classification, display width, and terminal text segment
+  scanning) that work without libc. The text segment helpers keep ANSI CSI/OSC
+  escapes width-neutral and centralize tab, carriage-return, backspace,
+  invalid UTF-8, incomplete UTF-8, wide, and zero-width character handling for
+  wrapping and table-oriented tools.
 
 - **tool_util.h** - common tool argument parsing and error reporting
 
