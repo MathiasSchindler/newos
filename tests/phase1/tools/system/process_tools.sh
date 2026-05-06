@@ -36,7 +36,7 @@ assert_text_equals "$kill_term" '15' "kill -l TERM did not resolve to SIGTERM"
 kill_name=$("$ROOT_DIR/build/kill" -l 15 | tr -d '\r\n')
 assert_text_equals "$kill_name" 'TERM' "kill -l 15 did not resolve to the TERM name"
 
-"$ROOT_DIR/build/sleep" 1 &
+"$ROOT_DIR/build/sleep" 5 &
 sleep_pid=$!
 assert_command_succeeds "$ROOT_DIR/build/pgrep" -P $$ -x sleep > "$WORK_DIR/pgrep.out"
 assert_file_contains "$WORK_DIR/pgrep.out" "^$sleep_pid$" "pgrep did not find the child sleep process"

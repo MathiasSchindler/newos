@@ -1,6 +1,8 @@
 #ifndef NEWOS_TOOL_UTIL_H
 #define NEWOS_TOOL_UTIL_H
 
+#include "platform.h"
+
 #include <stddef.h>
 
 int tool_open_input(const char *path, int *fd_out, int *should_close_out);
@@ -110,5 +112,20 @@ int tool_path_is_root(const char *path);
 int tool_copy_file(const char *source_path, const char *dest_path);
 int tool_copy_path(const char *source_path, const char *dest_path, int recursive, int preserve_mode, int preserve_symlinks);
 int tool_remove_path(const char *path, int recursive);
+
+typedef struct {
+    int exact;
+    int ignore_case;
+    int has_uid;
+    unsigned int uid;
+    int has_parent;
+    int parent_pid;
+    int skip_pid;
+    const char *pattern;
+} ToolProcessMatchOptions;
+
+int tool_resolve_user_id(const char *text, unsigned int *uid_out);
+int tool_parse_pid(const char *text, int *pid_out);
+int tool_process_matches(const PlatformProcessEntry *entry, const ToolProcessMatchOptions *options);
 
 #endif

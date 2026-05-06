@@ -58,7 +58,7 @@ None.
 
 `expr` uses the shared signed big-number primitives from `src/shared/bignum.{c,h}`
 to provide arbitrary-precision integer arithmetic. The implementation supports
-integers up to approximately 1150 decimal digits (128 base-1000000000 digits),
+integers up to approximately 2300 decimal digits (256 base-1000000000 digits),
 well beyond the limits of native integer types.
 
 Arithmetic operations (`+`, `-`, `*`, `/`, `%`) and numeric comparisons (`<`,
@@ -69,7 +69,7 @@ operations and logical operators work as documented without numeric limits.
 
 - No `match` or `:` (regex match) operator.
 - No floating-point arithmetic.
-- Numeric values exceeding the bignum capacity (approximately 1150 digits) will trigger an overflow error.
+- Numeric values exceeding the bignum capacity (approximately 2300 digits) will trigger an overflow error.
 - Each operator and operand must be a separate shell argument.
 
 ## EXAMPLES

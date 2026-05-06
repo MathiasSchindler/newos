@@ -58,7 +58,7 @@ multiple tools can reuse:
 - **bignum.{c,h}** - freestanding arbitrary-precision signed integer arithmetic,
   used by `expr` and `bc` to provide high-range numeric support without libc or
   heap allocation. The implementation uses base-1000000000 representation with
-  up to 128 digits (approximately 1150 decimal digits capacity) and supports
+  up to 256 digits (approximately 2300 decimal digits capacity) and supports
   addition, subtraction, multiplication, division, modulo, comparisons, and
   power/scale operations.
 
