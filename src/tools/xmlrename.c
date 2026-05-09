@@ -86,7 +86,15 @@ static int rename_one(const char *selector, const char *new_name, const char *pa
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
             int match;
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlrename", xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); free_renamed(renamed, renamed_capacity); rt_free(attr_name); rt_free(element_selector);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlrename") != 0) {
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                free_renamed(renamed, renamed_capacity);
+                rt_free(attr_name);
+                rt_free(element_selector);
+                return 1;
+            }
             match = xml_name_stack_matches_token(&stack, &token, &compiled_selector);
             if (!want_attr && match) {
                 write_tag(&token, new_name, 1, 0, 0, 0);

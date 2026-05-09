@@ -53,14 +53,6 @@ void tool_xml_key_start(const ToolXmlKeySpec *spec, const XmlToken *token, unsig
 void tool_xml_key_text(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);
 void tool_xml_key_end(const ToolXmlKeySpec *spec, unsigned int depth, ToolXmlKeyState *state);
 
-#define TOOL_XML_NAME_STACK_PUSH_OR_RETURN(stack_ptr, name_value, tool_name, cleanup_code) \
-    do { \
-        if (tool_xml_name_stack_push((stack_ptr), (name_value), (tool_name)) != 0) { \
-            cleanup_code \
-            return 1; \
-        } \
-    } while (0);
-
 typedef enum {
     TOOL_COLOR_NEVER = 0,
     TOOL_COLOR_AUTO = 1,

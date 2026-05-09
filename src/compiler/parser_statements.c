@@ -28,6 +28,22 @@ int parse_statement(CompilerParser *parser) {
         return parse_compound_statement(parser);
     }
 
+    if (current_is_identifier(parser) &&
+        (token_text_equals(&parser->current, "__asm__") || token_text_equals(&parser->current, "__asm"))) {
+        if (advance(parser) != 0) {
+            return -1;
+        }
+        if (current_is_keyword(parser, "volatile")) {
+            if (advance(parser) != 0) {
+                return -1;
+            }
+        }
+        if (skip_balanced_group(parser, "(", ")") != 0 || expect_punct(parser, ";") != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
     if (current_is_keyword(parser, "if")) {
         char else_label[COMPILER_IR_NAME_CAPACITY];
         char end_label[COMPILER_IR_NAME_CAPACITY];

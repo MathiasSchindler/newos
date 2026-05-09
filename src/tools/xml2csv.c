@@ -136,7 +136,13 @@ static int csv_one(const XmlCsvOptions *options, const char *path) {
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
             size_t i;
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xml2csv", xml_free_document(input); rt_free(values); xml_selector_free(&row_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xml2csv") != 0) {
+                xml_free_document(input);
+                rt_free(values);
+                xml_selector_free(&row_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!in_row && xml_name_stack_matches_token(&stack, &token, &row_selector)) {
                 clear_values(values, options->col_count);
                 in_row = 1;

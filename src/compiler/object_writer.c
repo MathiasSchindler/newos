@@ -1919,7 +1919,6 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
 }
 
 int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd, int function_sections, int data_sections) {
-    static CompilerSource object_source;
     char asm_path[COMPILER_PATH_CAPACITY];
     char object_path[COMPILER_PATH_CAPACITY];
     char *argv[] = {
@@ -1936,6 +1935,8 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
     };
     int object_fd;
     int pid;
+    char buffer[4096];
+    long bytes_read;
     int exit_status = 0;
 
     compiler_object_writer_init(writer);
@@ -1972,15 +1973,24 @@ int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const Co
         return -1;
     }
 
-    if (compiler_load_source(object_path, &object_source) != 0) {
+    object_fd = platform_open_read(object_path);
+    if (object_fd < 0) {
         (void)platform_remove_file(object_path);
         set_error(writer, "failed to read generated Mach-O object");
         return -1;
     }
+    while ((bytes_read = platform_read(object_fd, buffer, sizeof(buffer))) > 0) {
+        if (rt_write_all(fd, buffer, (size_t)bytes_read) != 0) {
+            (void)platform_close(object_fd);
+            (void)platform_remove_file(object_path);
+            set_error(writer, "failed while writing Mach-O object output");
+            return -1;
+        }
+    }
+    (void)platform_close(object_fd);
     (void)platform_remove_file(object_path);
-
-    if (rt_write_all(fd, object_source.data, object_source.size) != 0) {
-        set_error(writer, "failed while writing Mach-O object output");
+    if (bytes_read < 0) {
+        set_error(writer, "failed while reading generated Mach-O object");
         return -1;
     }
 

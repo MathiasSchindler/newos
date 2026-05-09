@@ -242,16 +242,41 @@ int platform_open_append_existing(const char *path) {
 int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
     char templ[1024];
     const char *base = (prefix != NULL && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
+    const char *tmpdir = getenv("TMPDIR");
     size_t base_len = strlen(base);
+    size_t offset = 0;
     int fd;
 
-    if (path_buffer == NULL || buffer_size == 0 || base_len + 7 > sizeof(templ) || base_len + 7 > buffer_size) {
+    if (path_buffer == NULL || buffer_size == 0) {
         errno = EINVAL;
         return -1;
     }
 
-    memcpy(templ, base, base_len);
-    memcpy(templ + base_len, "XXXXXX", 7);
+    if (tmpdir != NULL && tmpdir[0] != '\0' && strncmp(base, "/tmp/", 5U) == 0) {
+        size_t tmpdir_len = strlen(tmpdir);
+        const char *name = base + 5;
+        size_t name_len = strlen(name);
+
+        if (tmpdir_len + 1U + name_len + 7U > sizeof(templ) || tmpdir_len + 1U + name_len + 7U > buffer_size) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(templ, tmpdir, tmpdir_len);
+        offset = tmpdir_len;
+        if (offset > 0U && templ[offset - 1U] != '/') {
+            templ[offset++] = '/';
+        }
+        memcpy(templ + offset, name, name_len);
+        offset += name_len;
+    } else {
+        if (base_len + 7U > sizeof(templ) || base_len + 7U > buffer_size) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(templ, base, base_len);
+        offset = base_len;
+    }
+    memcpy(templ + offset, "XXXXXX", 7);
 
     fd = mkstemp(templ);
     if (fd < 0) {

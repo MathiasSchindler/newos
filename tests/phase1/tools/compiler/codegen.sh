@@ -116,6 +116,23 @@ EOF
 
 assert_command_succeeds "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/termios_mask.c" -o "$WORK_DIR/termios_mask_macos.s"
 
+cat > "$WORK_DIR/prefix_member_incdec.c" <<'EOF'
+typedef struct {
+    int count;
+    int items[4];
+} Stack;
+
+int main(void) {
+    Stack stack;
+    stack.count = 2;
+    stack.items[0] = 11;
+    stack.items[1] = 22;
+    return stack.items[--stack.count] == 22 ? 0 : 1;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/prefix_member_incdec.c" -o "$WORK_DIR/prefix_member_incdec_macos.s"
+
 cat > "$WORK_DIR/extern_data.c" <<'EOF'
 extern char **environ;
 

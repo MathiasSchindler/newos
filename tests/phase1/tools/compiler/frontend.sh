@@ -133,6 +133,22 @@ if grep -q 'platform_value = 0' "$WORK_DIR/preprocess.out"; then
     fail "preprocessor kept an inactive conditional branch"
 fi
 
+mkdir -p "$WORK_DIR/include-chain"
+i=0
+while [ "$i" -lt 12 ]; do
+    next=$((i + 1))
+    printf '#include "chain%d.h"\n' "$next" > "$WORK_DIR/include-chain/chain$i.h"
+    i=$next
+done
+printf 'int include_chain_value = 12;\n' > "$WORK_DIR/include-chain/chain12.h"
+cat > "$WORK_DIR/include_chain.c" <<'EOF'
+#include "include-chain/chain0.h"
+int main(void) { return include_chain_value; }
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-tokens "$WORK_DIR/include_chain.c" > "$WORK_DIR/include_chain_tokens.out"
+assert_file_contains "$WORK_DIR/include_chain_tokens.out" 'identifier include_chain_value' "preprocessor should handle nested includes without exhausting the stack"
+
 assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$ROOT_DIR/src/tools/printf.c" > "$WORK_DIR/repo_ast.out"
 repo_ast=$(tr -d '\r' < "$WORK_DIR/repo_ast.out")
 case "$repo_ast" in
@@ -180,6 +196,17 @@ EOF
 assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/gnu_attribute.c" > "$WORK_DIR/gnu_attribute.out"
 assert_file_contains "$WORK_DIR/gnu_attribute.out" '^function guarded_read$' "compiler rejected GNU attributes before a function declarator"
 assert_file_contains "$WORK_DIR/gnu_attribute.out" '^function stop_now$' "compiler rejected GNU attributes before declaration specifiers"
+
+cat > "$WORK_DIR/gnu_asm.c" <<'EOF'
+int main(void) {
+    register long x0 __asm__("x0") = 0;
+    __asm__ volatile("" : "+r"(x0) : : "memory");
+    return (int)x0;
+}
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/gnu_asm.c" > "$WORK_DIR/gnu_asm.out"
+assert_file_contains "$WORK_DIR/gnu_asm.out" '^function main$' "compiler rejected GNU asm labels or asm statements"
 
 cat > "$WORK_DIR/for_scope.c" <<'EOF'
 int main(void) {

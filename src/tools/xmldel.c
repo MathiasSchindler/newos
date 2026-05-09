@@ -45,7 +45,14 @@ static int del_one(const char *selector, const char *path) {
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmldel", xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmldel") != 0) {
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                rt_free(attr_name);
+                rt_free(element_selector);
+                return 1;
+            }
             if (!want_attr && !deleting && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 if (token.type == XML_TOKEN_START) {
                     deleting = 1;

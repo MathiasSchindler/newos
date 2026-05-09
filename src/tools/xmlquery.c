@@ -236,7 +236,13 @@ static int query_one(const char *selector, const XmlQueryTextPredicates *text_pr
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START) {
             if (copying && text_predicates->count == 0U) tool_output_buffer_write(&output, token.raw, token.raw_length);
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlquery", text_capture_free(&text_capture); xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlquery") != 0) {
+                text_capture_free(&text_capture);
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!copying && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 copying = 1;
                 copy_depth = stack.count;
@@ -244,7 +250,13 @@ static int query_one(const char *selector, const XmlQueryTextPredicates *text_pr
                 else { candidate_start = token.raw; text_capture_reset(&text_capture); }
             }
         } else if (token.type == XML_TOKEN_EMPTY) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlquery", text_capture_free(&text_capture); xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlquery") != 0) {
+                text_capture_free(&text_capture);
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (copying) {
                 if (text_predicates->count == 0U) tool_output_buffer_write(&output, token.raw, token.raw_length);
             } else if (xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {

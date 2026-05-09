@@ -55,7 +55,10 @@ static int check_element_replacement_safe(const char *input, size_t length, cons
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlset", xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlset") != 0) {
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (replacement_depth > 0U && stack.count > replacement_depth) {
                 tool_write_error("xmlset", "selected element contains child elements; use --force: ", path == 0 ? "-" : path);
                 xml_name_stack_free(&stack);
@@ -122,7 +125,14 @@ static int set_one(const char *selector, const char *value, const char *path, in
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
             int match;
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlset", xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlset") != 0) {
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                rt_free(attr_name);
+                rt_free(element_selector);
+                return 1;
+            }
             match = xml_name_stack_matches_token(&stack, &token, &compiled_selector);
             if (want_attr && match) {
                 write_start_with_attr(&token, attr_name, value, 1);

@@ -29,14 +29,24 @@ static int cut_one(const char *selector, const char *path) {
             if (cutting) {
                 tool_output_buffer_write(&output, token.raw, token.raw_length);
             }
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlcut", xml_free_document(input_buffer); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlcut") != 0) {
+                xml_free_document(input_buffer);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!cutting && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 cutting = 1;
                 cut_depth = stack.count;
                 tool_output_buffer_write(&output, token.raw, token.raw_length);
             }
         } else if (token.type == XML_TOKEN_EMPTY) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlcut", xml_free_document(input_buffer); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlcut") != 0) {
+                xml_free_document(input_buffer);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (cutting || xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 tool_output_buffer_write(&output, token.raw, token.raw_length);
             }

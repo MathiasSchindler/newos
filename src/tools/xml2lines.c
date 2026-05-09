@@ -46,7 +46,11 @@ static int lines_one(const char *path) {
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
             size_t i;
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xml2lines", xml_free_document(input_buffer); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xml2lines") != 0) {
+                xml_free_document(input_buffer);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             for (i = 0U; i < token.attribute_count; ++i) {
                 write_attr_line(&stack, &token.attributes[i]);
             }

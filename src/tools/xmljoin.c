@@ -114,7 +114,11 @@ static int collect(const char *selector, const ToolXmlKeySpec *key_spec, const c
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmljoin", xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmljoin") != 0) {
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!capturing && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 capturing = 1;
                 capture_depth = stack.count;
@@ -125,7 +129,11 @@ static int collect(const char *selector, const ToolXmlKeySpec *key_spec, const c
                 tool_xml_key_start(key_spec, &token, stack.count, capture_depth, &key_state);
             }
         } else if (token.type == XML_TOKEN_EMPTY) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmljoin", xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmljoin") != 0) {
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!capturing && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 tool_xml_key_state_init(&key_state);
                 tool_xml_key_start(key_spec, &token, stack.count, stack.count, &key_state);

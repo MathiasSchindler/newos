@@ -82,7 +82,12 @@ static int split_one(const char *selector, const char *prefix, const char *path,
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlsplit", xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlsplit") != 0) {
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!capturing && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 if (options->max_count == 0ULL || index < options->max_count) {
                     capturing = 1;
@@ -91,7 +96,12 @@ static int split_one(const char *selector, const char *prefix, const char *path,
                 }
             }
         } else if (token.type == XML_TOKEN_EMPTY) {
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlsplit", xml_free_document(input); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlsplit") != 0) {
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             if (!capturing && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 if (options->max_count > 0ULL && index >= options->max_count) {
                     xml_name_stack_pop(&stack);

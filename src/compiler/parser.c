@@ -416,13 +416,22 @@ int skip_balanced_group(CompilerParser *parser, const char *open_text, const cha
 int skip_gnu_attributes(CompilerParser *parser) {
     int skipped = 0;
 
-    while (current_is_identifier(parser) && token_text_equals(&parser->current, "__attribute__")) {
-        skipped = 1;
-        if (advance(parser) != 0 ||
-            expect_punct(parser, "(") != 0 ||
-            skip_balanced_group(parser, "(", ")") != 0 ||
-            expect_punct(parser, ")") != 0) {
-            return -1;
+    while (current_is_identifier(parser)) {
+        if (token_text_equals(&parser->current, "__attribute__")) {
+            skipped = 1;
+            if (advance(parser) != 0 ||
+                expect_punct(parser, "(") != 0 ||
+                skip_balanced_group(parser, "(", ")") != 0 ||
+                expect_punct(parser, ")") != 0) {
+                return -1;
+            }
+        } else if (token_text_equals(&parser->current, "__asm__") || token_text_equals(&parser->current, "__asm")) {
+            skipped = 1;
+            if (advance(parser) != 0 || skip_balanced_group(parser, "(", ")") != 0) {
+                return -1;
+            }
+        } else {
+            break;
         }
     }
 

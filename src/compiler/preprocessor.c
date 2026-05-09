@@ -985,7 +985,7 @@ static int preprocess_file_internal(
     size_t *offset,
     int depth
 ) {
-    CompilerSource loaded;
+    CompilerSource *loaded;
     CompilerConditionalFrame frames[COMPILER_MAX_CONDITIONAL_DEPTH];
     char current_dir[COMPILER_PATH_CAPACITY];
     unsigned long long line_no = 1;
@@ -994,21 +994,29 @@ static int preprocess_file_internal(
     int in_block_comment = 0;
     size_t pos = 0;
     int load_result;
+    int result = 0;
 
     if (depth > COMPILER_MAX_PREPROCESS_DEPTH) {
         set_error(preprocessor, path, line_no, "include nesting too deep");
         return -1;
     }
 
-    load_result = compiler_load_source(path, &loaded);
+    loaded = (CompilerSource *)rt_malloc(sizeof(*loaded));
+    if (loaded == 0) {
+        set_error(preprocessor, path, line_no, "out of memory");
+        return -1;
+    }
+
+    load_result = compiler_load_source(path, loaded);
     if (load_result != 0) {
         set_error(preprocessor, path, line_no, load_result == -2 ? "source file too large" : "cannot read source file");
+        rt_free(loaded);
         return -1;
     }
 
     get_directory_name(path, current_dir, sizeof(current_dir));
 
-    while (pos < loaded.size) {
+    while (pos < loaded->size) {
         char line[COMPILER_MAX_LINE_LENGTH];
         const char *trimmed;
         size_t line_length = 0;
@@ -1017,10 +1025,10 @@ static int preprocess_file_internal(
 
         do {
             continued = 0;
-            while (pos < loaded.size && loaded.data[pos] != '\n' && line_length + 1 < sizeof(line)) {
-                line[line_length++] = loaded.data[pos++];
+            while (pos < loaded->size && loaded->data[pos] != '\n' && line_length + 1 < sizeof(line)) {
+                line[line_length++] = loaded->data[pos++];
             }
-            if (pos < loaded.size && loaded.data[pos] == '\n') {
+            if (pos < loaded->size && loaded->data[pos] == '\n') {
                 pos += 1;
                 consumed_lines += 1ULL;
             }
@@ -1028,7 +1036,7 @@ static int preprocess_file_internal(
                 line_length -= 1U;
                 continued = 1;
             }
-        } while (continued && pos < loaded.size);
+        } while (continued && pos < loaded->size);
         line[line_length] = '\0';
 
         if (consumed_lines == 0ULL) {
@@ -1038,22 +1046,26 @@ static int preprocess_file_internal(
         trimmed = skip_spaces(line);
         if (trimmed[0] == '#') {
             if (handle_directive(preprocessor, trimmed, path, current_dir, line_no, frames, &frame_count, &active, source_out, offset, depth) != 0) {
-                return -1;
+                result = -1;
+                break;
             }
         } else if (active) {
             if (expand_text(preprocessor, line, source_out, offset, 0, &in_block_comment) != 0 || append_char(source_out, offset, '\n') != 0) {
                 set_error(preprocessor, path, line_no, "preprocessed output exceeds stage0 capacity");
-                return -1;
+                result = -1;
+                break;
             }
         } else if (append_char(source_out, offset, '\n') != 0) {
             set_error(preprocessor, path, line_no, "preprocessed output exceeds stage0 capacity");
-            return -1;
+            result = -1;
+            break;
         }
 
         line_no += consumed_lines;
     }
 
-    return 0;
+    rt_free(loaded);
+    return result;
 }
 
 int compiler_preprocess_file(CompilerPreprocessor *preprocessor, const char *path, CompilerSource *source_out) {

@@ -175,7 +175,7 @@ static RtAllocBlock *rt_alloc_grow(size_t size) {
     return block;
 }
 
-static int rt_alloc_blocks_adjacent(const RtAllocBlock *left, const RtAllocBlock *right) {
+static int rt_alloc_blocks_adjacent(struct RtAllocBlock *left, struct RtAllocBlock *right) {
     return (const unsigned char *)(left + 1) + left->size == (const unsigned char *)right;
 }
 

@@ -46,7 +46,14 @@ static int get_one(const char *selector, const char *path) {
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
             size_t i;
-            TOOL_XML_NAME_STACK_PUSH_OR_RETURN(&stack, token.name, "xmlget", xml_free_document(input_buffer); xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector);)
+            if (tool_xml_name_stack_push(&stack, token.name, "xmlget") != 0) {
+                xml_free_document(input_buffer);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                rt_free(attr_name);
+                rt_free(element_selector);
+                return 1;
+            }
             if (want_attr && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) {
                 for (i = 0U; i < token.attribute_count; ++i) {
                     if (xml_name_equals(&token.attributes[i].name, attr_name)) {

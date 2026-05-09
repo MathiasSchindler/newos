@@ -485,6 +485,12 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
             }
         }
 
+        if (saw_explicit_base && current_is_identifier(parser) &&
+            !token_text_equals(&parser->current, "__int128") &&
+            !is_typedef_name(parser, &parser->current)) {
+            break;
+        }
+
         if (current_is_keyword(parser, "typedef") && is_typedef_out != 0) {
             *is_typedef_out = 1;
         } else if (current_is_keyword(parser, "extern") && is_extern_out != 0) {

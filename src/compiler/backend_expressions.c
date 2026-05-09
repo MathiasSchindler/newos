@@ -1800,16 +1800,12 @@ static int expr_parse_unary(ExprParser *parser) {
         }
 
         if (is_incdec_text(op)) {
+            int byte_sized = 0;
             int delta = names_equal(op, "++") ? 1 : -1;
-            if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
-                backend_set_error(parser->state->backend, "backend only supports ++/-- on identifiers");
+            if (expr_parse_lvalue_address(parser, &byte_sized) != 0) {
                 return -1;
             }
-            if (emit_identifier_incdec(parser->state, parser->current.text, delta, 0) != 0) {
-                return -1;
-            }
-            expr_next(parser);
-            return 0;
+            return emit_address_incdec(parser->state, byte_sized, delta, 0);
         }
 
         if (names_equal(op, "&")) {
