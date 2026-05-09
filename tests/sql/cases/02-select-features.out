@@ -1,0 +1,19 @@
+ok
+ok
+ok
+ok
+ok
+region	item	amount
+East	beta	10
+East	alpha	2
+West	gamma	30
+West	delta	4
+item
+delta
+beta
+region
+East
+West
+place	rows	filled	total	avg_amount	low	high
+East	2	2	12	6	2	10
+West	2	1	34	17	4	30

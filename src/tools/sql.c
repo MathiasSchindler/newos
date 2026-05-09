@@ -1,0 +1,15 @@
+#include "sql/internal.h"
+
+/* Implementation fragments are unity-included to keep SQL helpers file-local while splitting the tool by subsystem. */
+#include "sql/core.c"
+#include "sql/lexer.c"
+#include "sql/values.c"
+#include "sql/conditions.c"
+#include "sql/runtime_cache.c"
+#include "sql/storage.c"
+#include "sql/import_export.c"
+#include "sql/row_conditions.c"
+#include "sql/create_insert.c"
+#include "sql/select.c"
+#include "sql/mutate.c"
+#include "sql/cli.c"

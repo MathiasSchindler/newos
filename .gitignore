@@ -5,3 +5,4 @@ tests/tmp/
 temporary-please-ignore-for-now/
 experimental/ 
 services/httpd/log/
+sequel/

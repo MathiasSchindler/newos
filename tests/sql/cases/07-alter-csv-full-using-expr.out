@@ -1,0 +1,20 @@
+2 rows
+ok
+ok
+ok
+id	full_name	qty_plus	qty_minus	memo
+1	Ada Lovelace	7	2	quote "ok"
+2	Bob Builder	7	2	plain
+2 rows
+2 rows
+id	name
+1	Ada Lovelace
+2	Bob Builder
+ok
+ok
+2 rows
+2 rows
+left_id	left_name	right_id	right_name
+2	left_two	2	right_two
+NULL	NULL	3	right_three
+1	left_one	NULL	NULL

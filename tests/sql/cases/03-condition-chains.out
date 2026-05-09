@@ -1,0 +1,20 @@
+ok
+ok
+ok
+ok
+ok
+id	name
+1	Ada
+2	Alan
+id	name
+1	Ada
+3	Grace
+4	Adele
+2 rows
+id	name	city
+1	Ada	UK
+2	Alan	UK
+4	Adele	Paris
+3 rows
+id	name
+4	Adele

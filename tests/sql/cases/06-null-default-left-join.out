@@ -1,0 +1,29 @@
+2 rows
+id	label
+1	red
+2	blue
+ok
+3 rows
+ok
+id	name	note	qty
+1	Ada	NULL	7
+2	Bob	NULL	7
+3	Cara	NULL	7
+4	Dana		0
+id
+1
+2
+2 rows
+id	note
+1	ready
+2	ready
+4	
+ok
+ok
+2 rows
+ok
+name	group_label
+Ada	admin
+Bob	NULL
+Cara	NULL
+Dana	NULL

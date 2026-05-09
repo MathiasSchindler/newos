@@ -1,0 +1,19 @@
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+customer	total
+Ada	20
+Ada	10
+customer	order_count	total
+Ada	2	30
+Alan	1	5
+customer	user_id	total
+Ada	1	10
+Ada	1	20
+Alan	2	5
+NULL	3	7

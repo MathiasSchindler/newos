@@ -1,0 +1,20 @@
+ok
+ok
+ok
+ok
+sum_amount	avg_amount	total_amount	min_amount	max_amount
+3.75	1.25	3.75	-1.5	3
+first_name	last_name	names
+refund	bonus	refund,sale,bonus
+ok
+ok
+ok
+ok
+ok
+ok
+name	city
+Ada	Zurich
+Alan	London
+CREATE TABLE metrics (name, amount REAL, qty INTEGER);
+CREATE TABLE users (id INTEGER PRIMARY KEY NOT NULL, name);
+CREATE TABLE visits (id INTEGER, city);

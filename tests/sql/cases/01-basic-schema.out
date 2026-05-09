@@ -1,0 +1,18 @@
+ok
+ok
+ok
+ok
+id	name	city
+1	Ada	
+2	Alan	London
+ok
+id	status
+1	
+2	
+2 rows
+id	status
+1	active
+2	active
+CREATE TABLE people (id, name, city, status);
+ok
+ok

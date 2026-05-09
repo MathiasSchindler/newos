@@ -1,0 +1,11 @@
+CREATE TABLE measurements(id INTEGER PRIMARY KEY, value REAL, label TEXT);
+INSERT INTO measurements VALUES (1, 2.5, low), (2, 10.25, high), (3, 2.5, twin), (4, 7, mid);
+SELECT id, value FROM measurements WHERE value = 2.5 ORDER BY id;
+SELECT label FROM measurements WHERE id = 2;
+UPDATE measurements SET value = 11.25 WHERE id = 2; SELECT label, value FROM measurements WHERE value = 11.25;
+SELECT SUM(value) AS total, AVG(value) AS average FROM measurements;
+SELECT id FROM measurements ORDER BY value ASC, id ASC LIMIT 4;
+CREATE TABLE tags(id INTEGER, tag TEXT);
+INSERT INTO tags VALUES (1, a), (2, b), (3, c);
+SELECT m.id AS id, t.tag AS tag FROM measurements m JOIN tags t ON m.id = t.id WHERE m.id = 3;
+DELETE FROM tags WHERE id = 3; SELECT m.id AS id, t.tag AS tag FROM measurements m LEFT JOIN tags t USING (id) WHERE m.id = 3;

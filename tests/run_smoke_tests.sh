@@ -22,6 +22,7 @@ run_suite() {
 
 run_suite extended_tools "$ROOT_DIR/tests/suites/extended_tools.sh"
 run_suite shell "$ROOT_DIR/tests/suites/shell.sh"
+run_suite sql "$ROOT_DIR/tests/sql/run-sql-tests.sh"
 
 if [ "${SKIP_PHASE1:-0}" != "1" ] && [ -f "$ROOT_DIR/tests/phase1/run_phase1_tests.sh" ]; then
     run_suite phase1 "$ROOT_DIR/tests/phase1/run_phase1_tests.sh"
