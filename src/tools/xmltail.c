@@ -56,7 +56,7 @@ static int tail_one(const char *selector, TailBuffer *buffer, const char *path) 
     int result;
 
     xml_name_stack_init(&stack);
-    if (xml_selector_compile(&compiled_selector, selector) != 0) { xml_name_stack_free(&stack); return 1; }
+    if (tool_xml_selector_compile(&compiled_selector, selector, "xmltail") != 0) { xml_name_stack_free(&stack); return 1; }
 
     if (xml_read_document(path, &input, &length, "xmltail") != 0) { xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); return 1; }
     xml_parser_init(&parser, input, length);
@@ -116,9 +116,8 @@ int main(int argc, char **argv) {
     tool_opt_init(&opt, argc, argv, "xmltail", "[-n COUNT] [--wrap NAME] SELECTOR [FILE ...]");
     while ((option_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(opt.flag, "-n") == 0 || rt_strcmp(opt.flag, "--count") == 0) {
-            if (tool_opt_require_value(&opt) != 0) return 1;
             unsigned long long parsed;
-            if (rt_parse_uint(opt.value, &parsed) != 0) return 1;
+            if (tool_opt_require_value(&opt) != 0 || tool_parse_uint_arg(opt.value, &parsed, "xmltail", "count") != 0) return 1;
             limit = (size_t)parsed;
         } else if (rt_strcmp(opt.flag, "--wrap") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 1;

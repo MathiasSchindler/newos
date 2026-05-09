@@ -38,6 +38,14 @@ int tool_xml_key_parse(const char *text, ToolXmlKeySpec *spec, const char *tool_
     return 0;
 }
 
+int tool_xml_selector_compile(XmlSelector *selector_out, const char *selector, const char *tool_name) {
+    if (xml_selector_compile(selector_out, selector) != 0) {
+        tool_write_error(tool_name, "invalid selector: ", selector);
+        return -1;
+    }
+    return 0;
+}
+
 void tool_xml_key_state_init(ToolXmlKeyState *state) {
     state->key = "";
     state->key_length = 0U;

@@ -76,7 +76,7 @@ static int split_one(const char *selector, const char *prefix, const char *path,
     int result;
 
     xml_name_stack_init(&stack);
-    if (xml_selector_compile(&compiled_selector, selector) != 0) { xml_name_stack_free(&stack); return 1; }
+    if (tool_xml_selector_compile(&compiled_selector, selector, "xmlsplit") != 0) { xml_name_stack_free(&stack); return 1; }
 
     if (xml_read_document(path, &input, &length, "xmlsplit") != 0) { xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); return 1; }
     xml_parser_init(&parser, input, length);

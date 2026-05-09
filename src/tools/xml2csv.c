@@ -116,7 +116,7 @@ static int csv_one(const XmlCsvOptions *options, const char *path) {
     int result;
 
     xml_name_stack_init(&stack);
-    if (xml_selector_compile(&row_selector, options->row_selector) != 0) { xml_name_stack_free(&stack); return 1; }
+    if (tool_xml_selector_compile(&row_selector, options->row_selector, "xml2csv") != 0) { xml_name_stack_free(&stack); return 1; }
 
     if (options->col_count > (size_t)(~(size_t)0 / sizeof(values[0]))) {
         xml_selector_free(&row_selector);

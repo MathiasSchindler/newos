@@ -80,7 +80,7 @@ static int rename_one(const char *selector, const char *new_name, const char *pa
         rt_free(element_selector);
         return 1;
     }
-    if (xml_selector_compile(&compiled_selector, want_attr ? element_selector : selector) != 0) { xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
+    if (tool_xml_selector_compile(&compiled_selector, want_attr ? element_selector : selector, "xmlrename") != 0) { xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
     if (xml_read_document(path, &input, &length, "xmlrename") != 0) { xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {

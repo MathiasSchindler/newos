@@ -224,7 +224,7 @@ static int query_one(const char *selector, const XmlQueryTextPredicates *text_pr
 
     xml_name_stack_init(&stack);
     text_capture_init(&text_capture);
-    if (xml_selector_compile(&compiled_selector, selector) != 0) {
+    if (tool_xml_selector_compile(&compiled_selector, selector, "xmlquery") != 0) {
         text_capture_free(&text_capture);
         xml_name_stack_free(&stack);
         return 1;

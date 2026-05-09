@@ -146,7 +146,7 @@ static int collect_one(const char *selector, const ToolXmlKeySpec *key_spec, con
     int result;
 
     xml_name_stack_init(&stack);
-    if (xml_selector_compile(&compiled_selector, selector) != 0) {
+    if (tool_xml_selector_compile(&compiled_selector, selector, "xmlsort") != 0) {
         xml_name_stack_free(&stack);
         return 1;
     }

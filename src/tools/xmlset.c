@@ -108,7 +108,7 @@ static int set_one(const char *selector, const char *value, const char *path, in
         rt_free(element_selector);
         return 1;
     }
-    if (xml_selector_compile(&compiled_selector, want_attr ? element_selector : selector) != 0) { xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
+    if (tool_xml_selector_compile(&compiled_selector, want_attr ? element_selector : selector, "xmlset") != 0) { xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
     if (xml_read_document(path, &input, &length, "xmlset") != 0) { xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
     if (!want_attr && !force && check_element_replacement_safe(input, length, &compiled_selector, path) != 0) {
         xml_free_document(input);

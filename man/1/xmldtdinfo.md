@@ -7,7 +7,8 @@ xmldtdinfo - print a summary of supported DTD declarations
 ## SYNOPSIS
 
 ```
-xmldtdinfo [--dtd FILE] [FILE ...]
+xmldtdinfo [FILE ...]
+xmldtdinfo --dtd FILE
 xmldtdinfo -h
 xmldtdinfo --help
 ```
@@ -25,7 +26,7 @@ The `xmldtdinfo` tool prints the supported DTD declarations known for an XML doc
 
 ## OPTIONS
 
-- `--dtd FILE` inspect declarations from FILE instead of reading declarations from XML input
+- `--dtd FILE` inspect declarations from FILE instead of reading declarations from XML input; positional XML inputs are not read in this mode
 - `FILE` read XML input from FILE, or from standard input when omitted or `-`
 - `-h`, `--help` print a short usage line
 

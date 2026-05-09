@@ -47,6 +47,7 @@ typedef struct {
 } ToolXmlKeyState;
 
 int tool_xml_key_parse(const char *text, ToolXmlKeySpec *spec, const char *tool_name);
+int tool_xml_selector_compile(XmlSelector *selector_out, const char *selector, const char *tool_name);
 void tool_xml_key_state_init(ToolXmlKeyState *state);
 void tool_xml_key_start(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);
 void tool_xml_key_text(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);

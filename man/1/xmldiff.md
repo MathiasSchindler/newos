@@ -38,6 +38,12 @@ The `xmldiff` tool compares two XML files as parser token streams. It reports wh
 - Entity references are not decoded before comparison.
 - Namespace URI comparison is not performed.
 
+## EXIT STATUS
+
+- `0` the files are equivalent under the comparison rules
+- `1` the files differ
+- `2` a usage, read, parse, or comparison error occurred
+
 ## EXAMPLES
 
 ```

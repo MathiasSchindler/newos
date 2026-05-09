@@ -1,18 +1,20 @@
 #include "runtime.h"
 
-#if !defined(NEWOS_FREESTANDING)
-void *malloc(size_t size);
-void *realloc(void *ptr, size_t size);
-void free(void *ptr);
+#define RT_PROT_READ 1
+#define RT_PROT_WRITE 2
+#define RT_MAP_PRIVATE 2
+
+#if defined(__APPLE__) && defined(__aarch64__)
+#define RT_SYS_MMAP 197
+#define RT_MAP_ANONYMOUS 0x1000
+#elif defined(__linux__) && defined(__x86_64__)
+#define RT_SYS_MMAP 9
+#define RT_MAP_ANONYMOUS 0x20
+#elif defined(__linux__) && defined(__aarch64__)
+#define RT_SYS_MMAP 222
+#define RT_MAP_ANONYMOUS 0x20
 #else
-#include "syscall.h"
-#if defined(__x86_64__)
-#define RT_LINUX_SYS_BRK 12
-#elif defined(__aarch64__)
-#define RT_LINUX_SYS_BRK 214
-#else
-#error "rt allocator needs a Linux brk syscall number for this architecture"
-#endif
+#error "rt allocator needs an mmap syscall for this platform"
 #endif
 
 /*
@@ -70,19 +72,6 @@ void rt_memset(void *buffer, int byte_value, size_t count) {
     (void)memset(buffer, byte_value, count);
 }
 
-#if !defined(NEWOS_FREESTANDING)
-void *rt_malloc(size_t size) {
-    return malloc(size);
-}
-
-void *rt_realloc(void *ptr, size_t size) {
-    return realloc(ptr, size);
-}
-
-void rt_free(void *ptr) {
-    free(ptr);
-}
-#else
 typedef struct RtAllocBlock RtAllocBlock;
 
 struct RtAllocBlock {
@@ -93,17 +82,56 @@ struct RtAllocBlock {
 
 static RtAllocBlock *rt_alloc_head;
 static RtAllocBlock *rt_alloc_tail;
-static unsigned long rt_alloc_break;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+static long rt_mmap_syscall(unsigned long length) {
+    register long x16 __asm__("x16") = RT_SYS_MMAP;
+    register long x0 __asm__("x0") = 0;
+    register long x1 __asm__("x1") = (long)length;
+    register long x2 __asm__("x2") = RT_PROT_READ | RT_PROT_WRITE;
+    register long x3 __asm__("x3") = RT_MAP_PRIVATE | RT_MAP_ANONYMOUS;
+    register long x4 __asm__("x4") = -1;
+    register long x5 __asm__("x5") = 0;
+
+    __asm__ volatile("svc #0x80" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x16) : "memory");
+    return x0;
+}
+#elif defined(__linux__) && defined(__x86_64__)
+static long rt_mmap_syscall(unsigned long length) {
+    register long rax __asm__("rax") = RT_SYS_MMAP;
+    register long rdi __asm__("rdi") = 0;
+    register long rsi __asm__("rsi") = (long)length;
+    register long rdx __asm__("rdx") = RT_PROT_READ | RT_PROT_WRITE;
+    register long r10 __asm__("r10") = RT_MAP_PRIVATE | RT_MAP_ANONYMOUS;
+    register long r8 __asm__("r8") = -1;
+    register long r9 __asm__("r9") = 0;
+
+    __asm__ volatile("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
+    return rax;
+}
+#elif defined(__linux__) && defined(__aarch64__)
+static long rt_mmap_syscall(unsigned long length) {
+    register long x8 __asm__("x8") = RT_SYS_MMAP;
+    register long x0 __asm__("x0") = 0;
+    register long x1 __asm__("x1") = (long)length;
+    register long x2 __asm__("x2") = RT_PROT_READ | RT_PROT_WRITE;
+    register long x3 __asm__("x3") = RT_MAP_PRIVATE | RT_MAP_ANONYMOUS;
+    register long x4 __asm__("x4") = -1;
+    register long x5 __asm__("x5") = 0;
+
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8) : "memory");
+    return x0;
+}
+#endif
 
 static size_t rt_alloc_align(size_t value) {
     const size_t alignment = sizeof(void *) * 2U;
     return (value + alignment - 1U) & ~(alignment - 1U);
 }
 
-static int rt_alloc_init_break(void) {
-    if (rt_alloc_break != 0UL) return 0;
-    rt_alloc_break = (unsigned long)linux_syscall1(RT_LINUX_SYS_BRK, 0);
-    return rt_alloc_break == 0UL ? -1 : 0;
+static size_t rt_alloc_page_align(size_t value) {
+    const size_t page_size = 4096U;
+    return (value + page_size - 1U) & ~(page_size - 1U);
 }
 
 static void rt_alloc_split(RtAllocBlock *block, size_t size) {
@@ -128,29 +156,33 @@ static RtAllocBlock *rt_alloc_find_free(size_t size) {
 }
 
 static RtAllocBlock *rt_alloc_grow(size_t size) {
-    unsigned long block_start;
-    unsigned long block_end;
+    size_t mapping_size;
+    long mapped;
     RtAllocBlock *block;
-    if (rt_alloc_init_break() != 0) return 0;
-    block_start = rt_alloc_align(rt_alloc_break);
-    block_end = block_start + sizeof(RtAllocBlock) + size;
-    if (block_end < block_start) return 0;
-    if ((unsigned long)linux_syscall1(RT_LINUX_SYS_BRK, (long)block_end) != block_end) return 0;
-    rt_alloc_break = block_end;
-    block = (RtAllocBlock *)block_start;
-    block->size = size;
+    if (size > ((size_t)-1) - sizeof(RtAllocBlock)) return 0;
+    mapping_size = rt_alloc_page_align(sizeof(RtAllocBlock) + size);
+    if (mapping_size < size) return 0;
+    mapped = rt_mmap_syscall((unsigned long)mapping_size);
+    if (mapped < 0) return 0;
+    block = (RtAllocBlock *)mapped;
+    block->size = mapping_size - sizeof(RtAllocBlock);
     block->free = 0;
     block->next = 0;
     if (rt_alloc_tail != 0) rt_alloc_tail->next = block;
     else rt_alloc_head = block;
     rt_alloc_tail = block;
+    rt_alloc_split(block, size);
     return block;
+}
+
+static int rt_alloc_blocks_adjacent(const RtAllocBlock *left, const RtAllocBlock *right) {
+    return (const unsigned char *)(left + 1) + left->size == (const unsigned char *)right;
 }
 
 static void rt_alloc_coalesce(void) {
     RtAllocBlock *block = rt_alloc_head;
     while (block != 0 && block->next != 0) {
-        if (block->free && block->next->free) {
+        if (block->free && block->next->free && rt_alloc_blocks_adjacent(block, block->next)) {
             block->size += sizeof(RtAllocBlock) + block->next->size;
             block->next = block->next->next;
             if (block->next == 0) rt_alloc_tail = block;
@@ -204,7 +236,6 @@ void rt_free(void *ptr) {
     block->free = 1;
     rt_alloc_coalesce();
 }
-#endif
 
 static void rt_sort_swap(unsigned char *left, unsigned char *right, size_t item_size) {
     size_t i;

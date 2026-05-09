@@ -40,7 +40,7 @@ static int del_one(const char *selector, const char *path) {
         xml_name_stack_free(&stack);
         return 1;
     }
-    if (xml_selector_compile(&compiled_selector, want_attr ? element_selector : selector) != 0) { xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
+    if (tool_xml_selector_compile(&compiled_selector, want_attr ? element_selector : selector, "xmldel") != 0) { xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
     if (xml_read_document(path, &input, &length, "xmldel") != 0) { xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); rt_free(attr_name); rt_free(element_selector); return 1; }
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {
