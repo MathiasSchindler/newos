@@ -20,7 +20,7 @@ HOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(
 FREESTANDING_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 FREESTANDING_STACK_CFLAGS ?= -fstack-protector-strong -mstack-protector-guard=global
 FREESTANDING_PIE_CFLAGS ?= -fPIE
-FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS)
+FREESTANDING_CFLAGS ?= -DNEWOS_FREESTANDING=1 -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS)
 FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
 TARGET_LINKER_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -fuse-ld=lld -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
@@ -62,14 +62,14 @@ DEFAULT_ALL_TARGETS := host
 ifeq ($(LOCAL_PLATFORM_ONLY),0)
 DEFAULT_ALL_TARGETS += freestanding
 endif
-TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown chgrp mknod uname hostname init getty login dmesg logger stty touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill pgrep pkill shutdown wc head tail ps top sort cut tr grep ripgrep rg ping ping6 ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat dhcp nslookup dig ssh sshd ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join comm split csplit shuf fold fmt tsort sync truncate timeout time expand unexpand printenv ed bc pstree free uptime who users groups column rev httpd service imginfo
+TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown chgrp mknod uname hostname init getty login dmesg logger stty touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill pgrep pkill shutdown wc head tail ps top sort cut tr grep ripgrep rg ping ping6 ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat dhcp nslookup dig ssh sshd ncc man test [ true false expr uniq seq mktemp yes less more watch wget patch make tac nl paste join comm split csplit shuf fold fmt tsort sync truncate timeout time expand unexpand printenv ed bc pstree free uptime who users groups column rev httpd service imginfo xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
 TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
 COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 COMPILER_IMPL_INCLUDES := \
 	src/compiler/backend_internal.h \
 	src/compiler/parser_internal.h \
 	src/compiler/targets/target_info.h
-SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util|bignum|simple_config|server_log)\.c"' src/compiler/source_manifest.h | tr -d '"')
+SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"')
 IMAGE_SOURCES := $(shell grep -oE '"src/shared/image/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HASH_SOURCES := \

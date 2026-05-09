@@ -2,6 +2,7 @@
 #define NEWOS_TOOL_UTIL_H
 
 #include "platform.h"
+#include "xml.h"
 
 #include <stddef.h>
 
@@ -11,6 +12,53 @@ void tool_write_usage(const char *program_name, const char *usage_suffix);
 void tool_write_error(const char *tool_name, const char *message, const char *detail);
 int tool_write_visible(int fd, const char *text, size_t length);
 int tool_write_visible_line(int fd, const char *text);
+int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool_name);
+
+#define TOOL_OUTPUT_BUFFER_SIZE 16384U
+
+typedef struct {
+    int fd;
+    size_t length;
+    char buffer[TOOL_OUTPUT_BUFFER_SIZE];
+} ToolOutputBuffer;
+
+void tool_output_buffer_init(ToolOutputBuffer *output, int fd);
+int tool_output_buffer_flush(ToolOutputBuffer *output);
+int tool_output_buffer_write(ToolOutputBuffer *output, const char *text, size_t length);
+int tool_output_buffer_write_char(ToolOutputBuffer *output, char ch);
+int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text);
+
+typedef enum {
+    TOOL_XML_KEY_ATTR = 1,
+    TOOL_XML_KEY_TEXT,
+    TOOL_XML_KEY_CHILD
+} ToolXmlKeyKind;
+
+typedef struct {
+    ToolXmlKeyKind kind;
+    const char *name;
+} ToolXmlKeySpec;
+
+typedef struct {
+    const char *key;
+    size_t key_length;
+    unsigned int active_child_depth;
+    int found;
+} ToolXmlKeyState;
+
+int tool_xml_key_parse(const char *text, ToolXmlKeySpec *spec, const char *tool_name);
+void tool_xml_key_state_init(ToolXmlKeyState *state);
+void tool_xml_key_start(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);
+void tool_xml_key_text(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);
+void tool_xml_key_end(const ToolXmlKeySpec *spec, unsigned int depth, ToolXmlKeyState *state);
+
+#define TOOL_XML_NAME_STACK_PUSH_OR_RETURN(stack_ptr, name_value, tool_name, cleanup_code) \
+    do { \
+        if (tool_xml_name_stack_push((stack_ptr), (name_value), (tool_name)) != 0) { \
+            cleanup_code \
+            return 1; \
+        } \
+    } while (0);
 
 typedef enum {
     TOOL_COLOR_NEVER = 0,

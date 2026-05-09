@@ -7,6 +7,11 @@ void *memcpy(void *dst, const void *src, size_t count);
 void *memmove(void *dst, const void *src, size_t count);
 void *memset(void *buffer, int byte_value, size_t count);
 
+void *rt_malloc(size_t size);
+void *rt_realloc(void *ptr, size_t size);
+void rt_free(void *ptr);
+void rt_sort(void *base, size_t count, size_t item_size, int (*compare)(const void *, const void *));
+
 size_t rt_strlen(const char *text);
 int rt_strcmp(const char *lhs, const char *rhs);
 int rt_strncmp(const char *lhs, const char *rhs, size_t count);

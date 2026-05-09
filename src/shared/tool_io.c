@@ -226,6 +226,50 @@ int tool_write_visible_line(int fd, const char *text) {
     return rt_write_char(fd, '\n');
 }
 
+void tool_output_buffer_init(ToolOutputBuffer *output, int fd) {
+    output->fd = fd;
+    output->length = 0U;
+}
+
+int tool_output_buffer_flush(ToolOutputBuffer *output) {
+    if (output->length == 0U) return 0;
+    if (rt_write_all(output->fd, output->buffer, output->length) != 0) return -1;
+    output->length = 0U;
+    return 0;
+}
+
+int tool_output_buffer_write(ToolOutputBuffer *output, const char *text, size_t length) {
+    size_t copied = 0U;
+    if (length == 0U) return 0;
+    if (text == 0) return -1;
+    if (length >= sizeof(output->buffer)) {
+        if (tool_output_buffer_flush(output) != 0) return -1;
+        return rt_write_all(output->fd, text, length);
+    }
+    while (copied < length) {
+        size_t available = sizeof(output->buffer) - output->length;
+        size_t chunk;
+        if (available == 0U) {
+            if (tool_output_buffer_flush(output) != 0) return -1;
+            available = sizeof(output->buffer);
+        }
+        chunk = length - copied;
+        if (chunk > available) chunk = available;
+        memcpy(output->buffer + output->length, text + copied, chunk);
+        output->length += chunk;
+        copied += chunk;
+    }
+    return 0;
+}
+
+int tool_output_buffer_write_char(ToolOutputBuffer *output, char ch) {
+    return tool_output_buffer_write(output, &ch, 1U);
+}
+
+int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text) {
+    return tool_output_buffer_write(output, text, rt_strlen(text));
+}
+
 int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out) {
     size_t in_index = 0;
     size_t out_index = 0;

@@ -11,34 +11,38 @@ The project has been written with the help of a finetuned version of GPT 5.4, wi
 The repository currently focuses on:
 
 - a broad and growing Unix-style userland of command-line programs
-- shell support and shared support code for strings, I/O, archives, and hashing
+- shell support and shared support code for strings, I/O, archives, hashing, crypto, regex, Unicode text handling, and common tool behavior
 - the self-hosting C compiler ncc and its supporting infrastructure
-- platform layers for hosted POSIX builds and freestanding Linux targets
+- platform layers for hosted POSIX builds, Linux freestanding targets, and self-hosted rebuilds through ncc where supported
 - a small in-tree manual system, with pages stored under [man](man) and viewable through the project's own man tool
 
 ## Current status
 
-The host-side build and smoke-test workflow are active and in regular use on macOS.
+The host-side build and test workflow are active and in regular use on macOS and Linux.
 
-The userland has expanded substantially, the hosted Linux workflow is now active alongside macOS, and the compiler is already capable of handling a large portion of the repository, though the newest additions still expose some remaining self-hosting gaps that are being closed incrementally.
+The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. The hosted Linux workflow is active alongside macOS, Linux freestanding builds exercise the libc-free syscall path where available, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
 
-The repository also now includes a lightweight manual browser and a growing set of manual pages for tools, subsystems, and design notes.
+The repository also includes a lightweight manual browser and a growing set of manual pages for tools, subsystems, and design notes.
 
 ## Testing
 
-The repository now includes a structured smoke-test suite under [tests](tests).
+The repository includes a structured shell-based test suite under [tests](tests).
 
-- the entry point is [tests/run_smoke_tests.sh](tests/run_smoke_tests.sh)
+- the main entry point is `make test`
+- Phase 1 per-tool checks live under [tests/phase1](tests/phase1)
+- higher-level smoke suites are run by [tests/run_smoke_tests.sh](tests/run_smoke_tests.sh)
 - shared helpers live in [tests/lib](tests/lib)
 - grouped suites live in [tests/suites](tests/suites)
 
-You can run the suite with make test.
+On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path.
 
 ## Documentation
 
 Manual pages live under [man](man), with user-facing commands typically documented in [man/1](man/1) and broader design notes in [man/7](man/7).
 
 The repository also includes its own man program at [src/tools/man.c](src/tools/man.c), so the same tree can provide and browse its own documentation after a build.
+
+Useful design pages include [man/7/userland.md](man/7/userland.md), [man/7/build.md](man/7/build.md), [man/7/testing.md](man/7/testing.md), [man/7/runtime.md](man/7/runtime.md), and [man/7/unicode.md](man/7/unicode.md).
 
 ## Benchmarks
 
