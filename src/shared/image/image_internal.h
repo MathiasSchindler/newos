@@ -40,5 +40,6 @@ int image_tiff_extract_metadata(const unsigned char *data,
                                 unsigned int *orientation_out);
 
 int image_validate_png(const unsigned char *data, size_t size, ImageValidation *validation);
+int image_validate_gif(const unsigned char *data, size_t size, ImageValidation *validation);
 
 #endif
