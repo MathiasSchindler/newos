@@ -1,6 +1,10 @@
 #ifndef NEWOS_STDINT_H
 #define NEWOS_STDINT_H
 
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__ && (defined(__GNUC__) || defined(__clang__))
+#include_next <stdint.h>
+#else
+
 #include <limits.h>
 
 #ifndef _INT8_T
@@ -86,5 +90,7 @@ typedef unsigned long long uintmax_t;
 #define INTMAX_MIN LLONG_MIN
 #define INTMAX_MAX LLONG_MAX
 #define UINTMAX_MAX ULLONG_MAX
+
+#endif
 
 #endif
