@@ -77,6 +77,10 @@ multiple tools can reuse:
   containers, currently used by `imginfo`, `imgcheck`, and `imgmeta` without
   decoding pixels or allocating image-sized buffers for normal metadata probes.
 
+- **compression/** - reusable compression-adjacent primitives shared by archive,
+  compression, and media tools. CRC32 lives here so gzip/xz/bzip-style checks and
+  PNG chunk validation/editing use the same implementation.
+
 Other shared components include archive utilities, crypto, hash functions,
 regex, path manipulation, and shell infrastructure.
 

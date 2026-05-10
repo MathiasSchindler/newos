@@ -21,6 +21,7 @@ printf '\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021
 printf 'II\052\000\010\000\000\000\004\000\000\001\004\000\001\000\000\000\011\000\000\000\001\001\004\000\001\000\000\000\012\000\000\000\002\001\003\000\001\000\000\000\010\000\000\000\025\001\003\000\001\000\000\000\003\000\000\000\000\000\000\000' > "$WORK_DIR/sample.tiff"
 printf 'II\053\000\010\000\000\000\020\000\000\000\000\000\000\000\006\000\000\000\000\000\000\000\000\001\004\000\001\000\000\000\000\000\000\000\013\000\000\000\000\000\000\000\001\001\004\000\001\000\000\000\000\000\000\000\014\000\000\000\000\000\000\000\002\001\003\000\001\000\000\000\000\000\000\000\010\000\000\000\000\000\000\000\003\001\003\000\001\000\000\000\000\000\000\000\001\000\000\000\000\000\000\000\006\001\003\000\001\000\000\000\000\000\000\000\002\000\000\000\000\000\000\000\025\001\003\000\001\000\000\000\000\000\000\000\003\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/sample-bigtiff.tiff"
 printf 'RIFF\036\000\000\000WEBPVP8X\012\000\000\000\020\000\000\000\013\000\000\014\000\000' > "$WORK_DIR/sample.webp"
+printf 'RIFFF\000\000\000WEBPVP8X\012\000\000\000\002\000\000\000\013\000\000\014\000\000ANMF\020\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000ANMF\020\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/animated.webp"
 printf 'BM\000\000\000\000\000\000\000\000\032\000\000\000\014\000\000\000\015\000\016\000\001\000\030\000' > "$WORK_DIR/sample.bmp"
 printf 'not an image\n' > "$WORK_DIR/not-image.txt"
 
@@ -50,6 +51,10 @@ assert_file_contains "$WORK_DIR/jpeg-details.txt" 'properties: exif, orientation
 "$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.webp" > "$WORK_DIR/webp-details.txt"
 assert_file_contains "$WORK_DIR/webp-details.txt" 'variant: extended WebP' "imginfo --details did not print WebP variant"
 assert_file_contains "$WORK_DIR/webp-details.txt" 'properties: alpha' "imginfo --details did not print WebP alpha property"
+
+"$ROOT_DIR/build/imginfo" --details "$WORK_DIR/animated.webp" > "$WORK_DIR/animated-webp-details.txt"
+assert_file_contains "$WORK_DIR/animated-webp-details.txt" 'frames: 2' "imginfo --details did not count animated WebP frames"
+assert_file_contains "$WORK_DIR/animated-webp-details.txt" 'properties: animated' "imginfo --details did not report animated WebP property"
 
 cp "$WORK_DIR/sample.png" "$WORK_DIR/misleading.jpg"
 "$ROOT_DIR/build/imginfo" "$WORK_DIR/misleading.jpg" > "$WORK_DIR/mismatch-out.txt" 2> "$WORK_DIR/mismatch-err.txt"

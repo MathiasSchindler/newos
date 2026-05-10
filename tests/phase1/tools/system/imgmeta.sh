@@ -22,6 +22,13 @@ if "$ROOT_DIR/build/grep" -q 'comment' "$WORK_DIR/clean.png"; then
     fail "imgmeta strip should remove PNG text chunks"
 fi
 
+"$ROOT_DIR/build/imgmeta" edit --set-text comment=updated -o "$WORK_DIR/edited.png" "$WORK_DIR/meta.png"
+"$ROOT_DIR/build/imgcheck" --plain "$WORK_DIR/edited.png" > "$WORK_DIR/edited-png-check.out"
+assert_file_contains "$WORK_DIR/edited-png-check.out" 'valid PNG image' "imgmeta edit did not leave a valid PNG"
+if ! "$ROOT_DIR/build/strings" "$WORK_DIR/edited.png" | "$ROOT_DIR/build/grep" -q 'updated'; then
+    fail "imgmeta edit should write updated PNG text metadata"
+fi
+
 "$ROOT_DIR/build/imgmeta" strip -o "$WORK_DIR/clean.jpg" "$WORK_DIR/meta.jpg"
 "$ROOT_DIR/build/imgmeta" show "$WORK_DIR/clean.jpg" > "$WORK_DIR/show-clean-jpeg.out"
 if "$ROOT_DIR/build/grep" -q 'exif' "$WORK_DIR/show-clean-jpeg.out"; then
@@ -54,4 +61,8 @@ fi
 
 if "$ROOT_DIR/build/imgmeta" copy "$WORK_DIR/meta.jpg" >/dev/null 2>&1; then
     fail "imgmeta copy should require -o OUTPUT"
+fi
+
+if "$ROOT_DIR/build/imgmeta" edit --set-text bad -o "$WORK_DIR/bad.png" "$WORK_DIR/meta.png" >/dev/null 2>&1; then
+    fail "imgmeta edit should require KEY=VALUE text metadata"
 fi

@@ -1,4 +1,5 @@
 #include "image/image.h"
+#include "compression/crc32.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -6,7 +7,7 @@
 #define IMGMETA_INITIAL_CAPACITY (64U * 1024U)
 
 static void print_usage(void) {
-    tool_write_usage("imgmeta", "show FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE");
+    tool_write_usage("imgmeta", "show FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE | edit --set-text KEY=VALUE -o OUTPUT FILE");
 }
 
 static unsigned int read_u16_be(const unsigned char *bytes) {
@@ -32,6 +33,13 @@ static void write_u32_le(unsigned char *bytes, unsigned int value) {
     bytes[1] = (unsigned char)((value >> 8) & 0xffU);
     bytes[2] = (unsigned char)((value >> 16) & 0xffU);
     bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+}
+
+static void write_u32_be(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)((value >> 24) & 0xffU);
+    bytes[1] = (unsigned char)((value >> 16) & 0xffU);
+    bytes[2] = (unsigned char)((value >> 8) & 0xffU);
+    bytes[3] = (unsigned char)(value & 0xffU);
 }
 
 static int bytes_equal(const unsigned char *bytes, const char *text, size_t length) {
@@ -241,6 +249,114 @@ static int strip_png(const unsigned char *data, size_t size, unsigned char **out
     return 0;
 }
 
+static int png_text_key_matches(const unsigned char *payload, unsigned int length, const char *key, size_t key_length) {
+    if ((size_t)length == key_length) {
+        return bytes_equal(payload, key, key_length);
+    }
+    if ((size_t)length < key_length + 1U) {
+        return 0;
+    }
+    if (payload[key_length] != 0U) {
+        return 0;
+    }
+    return bytes_equal(payload, key, key_length);
+}
+
+static int png_text_key_is_valid(const char *key, size_t key_length) {
+    size_t index;
+
+    if (key_length == 0U || key_length > 79U) {
+        return 0;
+    }
+    for (index = 0U; index < key_length; ++index) {
+        unsigned char ch = (unsigned char)key[index];
+
+        if (ch == 0U || ch < 32U || ch > 126U) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void write_png_text_chunk(unsigned char *output, size_t offset, const char *key, size_t key_length, const char *value, size_t value_length) {
+    unsigned int crc;
+    unsigned int payload_length = (unsigned int)(key_length + 1U + value_length);
+
+    write_u32_be(output + offset, payload_length);
+    memcpy(output + offset + 4U, "tEXt", 4U);
+    memcpy(output + offset + 8U, key, key_length);
+    output[offset + 8U + key_length] = 0U;
+    memcpy(output + offset + 9U + key_length, value, value_length);
+    crc = compression_crc32(output + offset + 4U, (size_t)payload_length + 4U);
+    write_u32_be(output + offset + 8U + payload_length, crc);
+}
+
+static int edit_png_text(const unsigned char *data,
+                         size_t size,
+                         const char *key,
+                         size_t key_length,
+                         const char *value,
+                         size_t value_length,
+                         unsigned char **out_data,
+                         size_t *out_size) {
+    static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
+    unsigned char *output;
+    size_t input_offset = 8U;
+    size_t output_size = 8U;
+    size_t text_chunk_size = key_length + 1U + value_length + 12U;
+    int wrote_text = 0;
+
+    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
+        return -1;
+    }
+    if (text_chunk_size > 0xffffffffU || size > ((size_t)-1) - text_chunk_size) {
+        return -1;
+    }
+    output = (unsigned char *)rt_malloc(size + text_chunk_size);
+    if (output == 0) {
+        return -1;
+    }
+    memcpy(output, data, 8U);
+    while (input_offset + 12U <= size) {
+        unsigned int length = read_u32_be(data + input_offset);
+        const unsigned char *type = data + input_offset + 4U;
+        const unsigned char *payload = data + input_offset + 8U;
+        size_t chunk_size;
+
+        if ((size_t)length > size - input_offset - 12U) {
+            rt_free(output);
+            return -1;
+        }
+        chunk_size = (size_t)length + 12U;
+        if (!wrote_text && (bytes_equal(type, "IDAT", 4U) || bytes_equal(type, "IEND", 4U))) {
+            write_png_text_chunk(output, output_size, key, key_length, value, value_length);
+            output_size += text_chunk_size;
+            wrote_text = 1;
+        }
+        if (bytes_equal(type, "tEXt", 4U) && png_text_key_matches(payload, length, key, key_length)) {
+            if (!wrote_text) {
+                write_png_text_chunk(output, output_size, key, key_length, value, value_length);
+                output_size += text_chunk_size;
+                wrote_text = 1;
+            }
+        } else {
+            memcpy(output + output_size, data + input_offset, chunk_size);
+            output_size += chunk_size;
+        }
+        input_offset += chunk_size;
+        if (bytes_equal(type, "IEND", 4U)) {
+            break;
+        }
+    }
+    if (!wrote_text || input_offset > size) {
+        rt_free(output);
+        return -1;
+    }
+    *out_data = output;
+    *out_size = output_size;
+    return 0;
+}
+
 static int jpeg_segment_is_metadata(unsigned char marker, const unsigned char *segment, unsigned int segment_size) {
     if (marker == 0xfeU) {
         return 1;
@@ -423,6 +539,47 @@ static int copy_path(const char *input_path, const char *output_path) {
     return result;
 }
 
+static int edit_text_path(const char *input_path, const char *output_path, const char *assignment) {
+    unsigned char *data;
+    unsigned char *edited = 0;
+    size_t size;
+    size_t edited_size = 0U;
+    ImageInfo info;
+    const char *equals;
+    int result;
+
+    equals = assignment;
+    while (*equals != '\0' && *equals != '=') {
+        equals += 1;
+    }
+    if (*equals != '=') {
+        tool_write_error("imgmeta", "text metadata must be KEY=VALUE", 0);
+        return -1;
+    }
+    if (read_all_input(input_path, &data, &size) != 0) {
+        return -1;
+    }
+    if (image_probe(data, size, &info) != 0) {
+        tool_write_error("imgmeta", "unsupported image format: ", input_path);
+        rt_free(data);
+        return -1;
+    }
+    if (info.format != IMAGE_FORMAT_PNG) {
+        tool_write_error("imgmeta", "text editing is not implemented for: ", image_format_extension(info.format));
+        rt_free(data);
+        return -1;
+    }
+    result = edit_png_text(data, size, assignment, (size_t)(equals - assignment), equals + 1, rt_strlen(equals + 1), &edited, &edited_size);
+    rt_free(data);
+    if (result != 0 || edited == 0) {
+        tool_write_error("imgmeta", "could not edit PNG text metadata: ", input_path);
+        return -1;
+    }
+    result = write_file(output_path, edited, edited_size);
+    rt_free(edited);
+    return result;
+}
+
 static int run_show(int argc, char **argv, int arg_index) {
     int status = 0;
 
@@ -516,6 +673,51 @@ static int run_copy(int argc, char **argv, int arg_index) {
     return copy_path(input_path, output_path) == 0 ? 0 : 1;
 }
 
+static int run_edit(int argc, char **argv, int arg_index) {
+    const char *output_path = 0;
+    const char *input_path = 0;
+    const char *text_assignment = 0;
+
+    while (arg_index < argc) {
+        const char *arg = argv[arg_index];
+
+        if ((rt_strcmp(arg, "-o") == 0 || rt_strcmp(arg, "--output") == 0) && arg_index + 1 < argc) {
+            output_path = argv[arg_index + 1];
+            arg_index += 2;
+            continue;
+        }
+        if (rt_strcmp(arg, "--set-text") == 0 && arg_index + 1 < argc) {
+            text_assignment = argv[arg_index + 1];
+            arg_index += 2;
+            continue;
+        }
+        if (rt_strcmp(arg, "--") == 0) {
+            arg_index += 1;
+            break;
+        }
+        if (arg[0] == '-' && arg[1] != '\0') {
+            tool_write_error("imgmeta", "unknown option: ", arg);
+            print_usage();
+            return 1;
+        }
+        if (input_path != 0) {
+            tool_write_error("imgmeta", "extra operand: ", arg);
+            return 1;
+        }
+        input_path = arg;
+        arg_index += 1;
+    }
+    if (input_path == 0 && arg_index < argc) {
+        input_path = argv[arg_index++];
+    }
+    if (input_path == 0 || output_path == 0 || text_assignment == 0) {
+        tool_write_error("imgmeta", "edit requires --set-text KEY=VALUE, -o OUTPUT, and one input file", 0);
+        print_usage();
+        return 1;
+    }
+    return edit_text_path(input_path, output_path, text_assignment) == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     const char *command;
 
@@ -536,6 +738,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(command, "copy") == 0) {
         return run_copy(argc, argv, 2);
+    }
+    if (rt_strcmp(command, "edit") == 0) {
+        return run_edit(argc, argv, 2);
     }
     tool_write_error("imgmeta", "unknown command: ", command);
     print_usage();

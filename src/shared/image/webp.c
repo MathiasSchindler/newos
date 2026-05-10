@@ -3,6 +3,8 @@
 int image_probe_webp(const unsigned char *data, size_t size, ImageInfo *info) {
     const unsigned char *chunk;
     unsigned int chunk_size;
+    size_t offset;
+    unsigned int frame_count = 0U;
 
     if (size < 20U || !image_bytes_equal(data, "RIFF", 4U) || !image_bytes_equal(data + 8U, "WEBP", 4U)) {
         return 0;
@@ -48,5 +50,19 @@ int image_probe_webp(const unsigned char *data, size_t size, ImageInfo *info) {
         image_set_channels(info, 4U);
         image_set_color_model(info, "rgba");
     }
+    offset = 12U;
+    while (offset + 8U <= size) {
+        unsigned int current_size = image_read_u32_le(data + offset + 4U);
+        size_t chunk_total = 8U + (size_t)current_size + ((current_size & 1U) != 0U ? 1U : 0U);
+
+        if (chunk_total < 8U || chunk_total > size - offset) {
+            break;
+        }
+        if (image_bytes_equal(data + offset, "ANMF", 4U)) {
+            frame_count += 1U;
+        }
+        offset += chunk_total;
+    }
+    image_set_frames(info, frame_count);
     return 1;
 }

@@ -22,7 +22,7 @@ assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/valid.png")" "
 assert_text_equals "$($ROOT_DIR/build/imgcheck --verbose "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png: OK (png): valid PNG image" "imgcheck --verbose did not describe valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}ok${tab}valid JPEG image" "imgcheck did not accept valid JPEG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}ok${tab}valid GIF image" "imgcheck did not accept valid GIF"
-assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}valid BMP image" "imgcheck did not accept valid BMP"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}valid BMP image and pixel array" "imgcheck did not accept valid BMP"
 
 if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/bad-crc.png" > "$WORK_DIR/bad-crc.out" 2>&1; then
     fail "imgcheck should reject PNG with bad CRC"

@@ -1,4 +1,5 @@
 #include "image_internal.h"
+#include "compression/crc32.h"
 
 static void image_validation_set(ImageValidation *validation, ImageFormat format, int valid, const char *message) {
     if (validation == 0) {
@@ -7,25 +8,6 @@ static void image_validation_set(ImageValidation *validation, ImageFormat format
     validation->format = format;
     validation->valid = valid;
     validation->message = message;
-}
-
-static unsigned int png_crc32(const unsigned char *data, size_t size) {
-    unsigned int crc = 0xffffffffU;
-    size_t offset;
-
-    for (offset = 0U; offset < size; ++offset) {
-        unsigned int byte_index;
-
-        crc ^= (unsigned int)data[offset];
-        for (byte_index = 0U; byte_index < 8U; ++byte_index) {
-            if ((crc & 1U) != 0U) {
-                crc = (crc >> 1U) ^ 0xedb88320U;
-            } else {
-                crc >>= 1U;
-            }
-        }
-    }
-    return crc ^ 0xffffffffU;
 }
 
 static int png_color_bit_depth_is_valid(unsigned char color_type, unsigned char bit_depth) {
@@ -77,7 +59,7 @@ int image_validate_png(const unsigned char *data, size_t size, ImageValidation *
         }
         crc_offset = payload + (size_t)length;
         expected_crc = image_read_u32_be(data + crc_offset);
-        actual_crc = png_crc32(type, (size_t)length + 4U);
+        actual_crc = compression_crc32(type, (size_t)length + 4U);
         if (actual_crc != expected_crc) {
             image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "chunk CRC mismatch");
             return -1;
@@ -626,6 +608,6 @@ int image_validate_bmp(const unsigned char *data, size_t size, ImageValidation *
         image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP DIB header size is unsupported");
         return -1;
     }
-    image_validation_set(validation, IMAGE_FORMAT_BMP, 1, "valid BMP image");
+    image_validation_set(validation, IMAGE_FORMAT_BMP, 1, "valid BMP image and pixel array");
     return 0;
 }

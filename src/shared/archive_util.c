@@ -1,29 +1,13 @@
 #include "archive_util.h"
+#include "compression/crc32.h"
 #include "platform.h"
 
 unsigned int archive_crc32_update(unsigned int crc, const unsigned char *data, size_t length) {
-    size_t i;
-
-    for (i = 0; i < length; ++i) {
-        unsigned int value = (crc ^ data[i]) & 0xffU;
-        int bit;
-
-        for (bit = 0; bit < 8; ++bit) {
-            if ((value & 1U) != 0U) {
-                value = (value >> 1) ^ 0xedb88320U;
-            } else {
-                value >>= 1;
-            }
-        }
-
-        crc = (crc >> 8) ^ value;
-    }
-
-    return crc;
+    return compression_crc32_update(crc, data, length);
 }
 
 unsigned int archive_crc32_finish(unsigned int crc) {
-    return crc ^ 0xffffffffU;
+    return compression_crc32_finish(crc);
 }
 
 int archive_read_exact(int fd, unsigned char *buffer, size_t count) {

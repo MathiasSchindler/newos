@@ -76,8 +76,8 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 
 - JPEG dimensions are found by scanning for a SOF marker. Path inputs that look like JPEGs but do not expose dimensions in the initial probe window are retried with a full-file probe; standard-input probes remain bounded and may still report the format without dimensions for unusual files with very large metadata prefixes.
 - TIFF support reads classic TIFF and BigTIFF first image directories, but does not follow nested IFD trees or offsets beyond the local addressable range.
-- Animated frame counts are reported only for formats whose lightweight header
-  metadata exposes them within the probe window.
+- Animated frame counts are reported for PNG APNG and WebP `ANMF` chunks when
+  those lightweight container records are visible within the probe window.
 - The command does not perform full image validation or decompression.
 - Metadata discovery is intentionally shallow; EXIF payloads, ICC profiles, XMP
   packets, PNG text chunks, and nested TIFF tag directories are detected or

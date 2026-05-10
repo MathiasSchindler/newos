@@ -23,7 +23,9 @@ hosted and freestanding builds.
 ### Shared utilities (`src/shared`)
 
 - `tool_util.*` — common CLI parsing, error reporting, path, regex, and copy/remove helpers
-- `archive_util.*` — tar archive support
+- `compression/` — reusable compression-adjacent primitives such as CRC32
+- `archive_util.*` — archive-format helpers and compatibility wrappers used by
+  tar and compression tools
 - `hash_util.*` — MD5, SHA-256, and SHA-512 implementations
 
 ## CONTRIBUTOR BOUNDARIES
