@@ -13,11 +13,14 @@ printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\001\000\000\000\
 printf 'not an image\n' > "$WORK_DIR/not-image.txt"
 printf 'GIF89a\001\000\001\000\200\000\000\000\000\000\377\377\377,\000\000\000\000\001\000\001\000\000\002\002D\001\000;' > "$WORK_DIR/sample.gif"
 printf 'GIF89a\001\000\001\000\200\000\000\000\000\000\377\377\377,\000\000\000\000\001\000\001\000\000\002\002D' > "$WORK_DIR/truncated.gif"
+printf '\377\330\377\340\000\020JFIF\000\001\001\001\000\110\000\110\000\000\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\332\000\014\003\001\000\002\021\003\021\000\077\000\377\331' > "$WORK_DIR/sample.jpg"
+printf '\377\330\377\340\377\377JFIF\000' > "$WORK_DIR/bad-segment.jpg"
 printf 'BM\072\000\000\000\000\000\000\000\066\000\000\000\050\000\000\000\001\000\000\000\001\000\000\000\001\000\030\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/sample.bmp"
 printf 'BM\066\000\000\000\000\000\000\000\066\000\000\000\050\000\000\000\001\000\000\000\001\000\000\000\001\000\030\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/truncated.bmp"
 
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png${tab}png${tab}ok${tab}valid PNG image" "imgcheck did not accept valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --verbose "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png: OK (png): valid PNG image" "imgcheck --verbose did not describe valid PNG"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}ok${tab}valid JPEG image" "imgcheck did not accept valid JPEG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}ok${tab}valid GIF image" "imgcheck did not accept valid GIF"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}valid BMP image" "imgcheck did not accept valid BMP"
 
@@ -30,6 +33,11 @@ if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/no-idat.png" > "$WORK_DIR/no-idat.out" 
     fail "imgcheck should reject PNG without IDAT"
 fi
 assert_file_contains "$WORK_DIR/no-idat.out" 'missing IDAT chunk' "imgcheck did not report missing IDAT"
+
+if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/bad-segment.jpg" > "$WORK_DIR/bad-jpeg.out" 2>&1; then
+    fail "imgcheck should reject JPEG with invalid segment length"
+fi
+assert_file_contains "$WORK_DIR/bad-jpeg.out" 'JPEG segment length exceeds file size' "imgcheck did not report invalid JPEG segment length"
 
 if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/truncated.gif" > "$WORK_DIR/truncated-gif.out" 2>&1; then
     fail "imgcheck should reject truncated GIF image data"

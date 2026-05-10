@@ -14,7 +14,7 @@ imgmeta copy -o OUTPUT FILE
 
 ## DESCRIPTION
 
-`imgmeta` works with metadata carried by supported image containers. It can show metadata-related properties reported by the shared image probe layer, write a metadata-stripped copy for PNG and JPEG inputs, or copy a recognized image while preserving its bytes and metadata.
+`imgmeta` works with metadata carried by supported image containers. It can show metadata-related properties reported by the shared image probe layer, write a metadata-stripped copy for PNG, JPEG, and WebP inputs, or copy a recognized image while preserving its bytes and metadata.
 
 The command does not decode pixels. Metadata stripping rewrites container structure only, preserving image data and unsupported segments where practical.
 
@@ -32,9 +32,11 @@ For PNG, `strip` removes metadata chunks such as `eXIf`, `iCCP`, `iTXt`, `tEXt`,
 
 For JPEG, `strip` removes EXIF APP1 segments, XMP APP1 segments, ICC APP2 segments, and COM comment segments before the scan data. The entropy-coded image stream is copied unchanged.
 
+For WebP, `strip` removes `EXIF`, `XMP `, and `ICCP` RIFF chunks and clears the corresponding extended WebP feature flags. Image chunks are copied unchanged.
+
 ## LIMITATIONS
 
-- `strip` is implemented for PNG and JPEG only.
+- `strip` is implemented for PNG, JPEG, and WebP only.
 - Metadata editing is not implemented yet.
 - Metadata copying is currently whole-image copying; selective transfer between two different image files is not implemented yet.
 - PNG stripping preserves existing chunk CRCs for retained chunks and does not recompress image data.
@@ -48,6 +50,7 @@ imgmeta show photo.jpg
 imgmeta show image.png image.gif
 imgmeta strip -o clean.png image.png
 imgmeta strip -o clean.jpg photo.jpg
+imgmeta strip -o clean.webp image.webp
 imgmeta copy -o preserved.jpg photo.jpg
 ```
 

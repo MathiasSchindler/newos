@@ -30,7 +30,7 @@ change the exit status and does not alter standard output.
 - PNG
 - JPEG
 - GIF
-- TIFF, classic TIFF headers and first image directory
+- TIFF, including classic TIFF and BigTIFF headers with the first image directory
 - WebP, including VP8, VP8L, and VP8X headers
 - BMP
 
@@ -75,7 +75,7 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 ## LIMITATIONS
 
 - JPEG dimensions are found by scanning for a SOF marker. Path inputs that look like JPEGs but do not expose dimensions in the initial probe window are retried with a full-file probe; standard-input probes remain bounded and may still report the format without dimensions for unusual files with very large metadata prefixes.
-- TIFF support is limited to classic TIFF, not BigTIFF.
+- TIFF support reads classic TIFF and BigTIFF first image directories, but does not follow nested IFD trees or offsets beyond the local addressable range.
 - Animated frame counts are reported only for formats whose lightweight header
   metadata exposes them within the probe window.
 - The command does not perform full image validation or decompression.

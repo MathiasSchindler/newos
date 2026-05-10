@@ -14,16 +14,17 @@ imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [file ...]
 
 `imgcheck` reads image files and reports whether each input is recognized and structurally valid according to the checks implemented by the shared image parser.
 
-The first validation passes perform real PNG, GIF, and BMP container checks. PNG checks include signature, required chunk order, IHDR fields, chunk lengths, CRC values, required IDAT data, and IEND termination. GIF checks include the header, logical screen descriptor, global and local color table bounds, extension blocks, image descriptors, image data sub-block termination, and trailer termination. BMP checks include file and DIB headers, dimensions, plane count, bit depth, compression compatibility, color-table bounds, pixel-data offsets, and uncompressed pixel-array length. Other recognized image formats currently use the shared probe path and are reported as recognized while deeper validators are still being added.
+The first validation passes perform real PNG, JPEG, GIF, and BMP container checks. PNG checks include signature, required chunk order, IHDR fields, chunk lengths, CRC values, required IDAT data, and IEND termination. JPEG checks include marker sequencing, segment lengths, SOF dimensions and component tables, SOS presence, scan-data marker escaping, EOI termination, and trailing data. GIF checks include the header, logical screen descriptor, global and local color table bounds, extension blocks, image descriptors, image data sub-block termination, and trailer termination. BMP checks include file and DIB headers, dimensions, plane count, bit depth, compression compatibility, color-table bounds, pixel-data offsets, and uncompressed pixel-array length. Other recognized image formats currently use the shared probe path and are reported as recognized while deeper validators are still being added.
 
 When no file is provided, `imgcheck` reads from standard input.
 
 ## SUPPORTED FORMATS
 
 - PNG, with structural chunk validation
+- JPEG, with structural marker and segment validation
 - GIF, with structural block validation
 - BMP, with structural header, palette, and pixel-array validation
-- JPEG, TIFF, and WebP, recognized through the shared image probe layer pending deeper validation
+- TIFF and WebP, recognized through the shared image probe layer pending deeper validation
 
 ## OPTIONS
 
@@ -38,8 +39,8 @@ When no file is provided, `imgcheck` reads from standard input.
 
 ## LIMITATIONS
 
-- PNG, GIF, and BMP validation is structural and does not inflate, decompress, or verify decoded pixel data.
-- JPEG, TIFF, and WebP currently receive recognition-level checks only; format-specific structural validators will be added incrementally.
+- PNG, JPEG, GIF, and BMP validation is structural and does not inflate, decompress, or verify decoded pixel data.
+- TIFF and WebP currently receive recognition-level checks only; format-specific structural validators will be added incrementally.
 - Metadata payloads such as EXIF, ICC profiles, XMP packets, and textual chunks are not fully interpreted by this command.
 - Very large inputs are read into memory before validation.
 

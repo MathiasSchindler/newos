@@ -20,6 +20,20 @@ static unsigned int read_u32_be(const unsigned char *bytes) {
            (unsigned int)bytes[3];
 }
 
+static unsigned int read_u32_le(const unsigned char *bytes) {
+    return (unsigned int)bytes[0] |
+           ((unsigned int)bytes[1] << 8) |
+           ((unsigned int)bytes[2] << 16) |
+           ((unsigned int)bytes[3] << 24);
+}
+
+static void write_u32_le(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)(value & 0xffU);
+    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
+    bytes[2] = (unsigned char)((value >> 16) & 0xffU);
+    bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+}
+
 static int bytes_equal(const unsigned char *bytes, const char *text, size_t length) {
     size_t index;
 
@@ -306,6 +320,53 @@ static int strip_jpeg(const unsigned char *data, size_t size, unsigned char **ou
     return 0;
 }
 
+static int webp_chunk_is_metadata(const unsigned char *type) {
+    return bytes_equal(type, "EXIF", 4U) ||
+           bytes_equal(type, "XMP ", 4U) ||
+           bytes_equal(type, "ICCP", 4U);
+}
+
+static int strip_webp(const unsigned char *data, size_t size, unsigned char **out_data, size_t *out_size) {
+    unsigned char *output;
+    size_t input_offset = 12U;
+    size_t output_size = 12U;
+
+    if (size < 20U || !bytes_equal(data, "RIFF", 4U) || !bytes_equal(data + 8U, "WEBP", 4U)) {
+        return -1;
+    }
+    output = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
+    if (output == 0) {
+        return -1;
+    }
+    memcpy(output, data, 12U);
+    while (input_offset + 8U <= size) {
+        const unsigned char *type = data + input_offset;
+        unsigned int chunk_length = read_u32_le(data + input_offset + 4U);
+        size_t chunk_total = 8U + (size_t)chunk_length + ((chunk_length & 1U) != 0U ? 1U : 0U);
+
+        if (chunk_total < 8U || chunk_total > size - input_offset) {
+            rt_free(output);
+            return -1;
+        }
+        if (!webp_chunk_is_metadata(type)) {
+            memcpy(output + output_size, data + input_offset, chunk_total);
+            if (bytes_equal(type, "VP8X", 4U) && chunk_length >= 10U) {
+                output[output_size + 8U] &= (unsigned char)~0x2cU;
+            }
+            output_size += chunk_total;
+        }
+        input_offset += chunk_total;
+    }
+    if (input_offset != size || output_size < 12U || output_size - 8U > 0xffffffffU) {
+        rt_free(output);
+        return -1;
+    }
+    write_u32_le(output + 4U, (unsigned int)(output_size - 8U));
+    *out_data = output;
+    *out_size = output_size;
+    return 0;
+}
+
 static int strip_path(const char *input_path, const char *output_path) {
     unsigned char *data;
     unsigned char *stripped = 0;
@@ -326,6 +387,8 @@ static int strip_path(const char *input_path, const char *output_path) {
         result = strip_png(data, size, &stripped, &stripped_size);
     } else if (info.format == IMAGE_FORMAT_JPEG) {
         result = strip_jpeg(data, size, &stripped, &stripped_size);
+    } else if (info.format == IMAGE_FORMAT_WEBP) {
+        result = strip_webp(data, size, &stripped, &stripped_size);
     } else {
         tool_write_error("imgmeta", "strip is not implemented for: ", image_format_extension(info.format));
         rt_free(data);

@@ -174,6 +174,148 @@ int image_validate_png(const unsigned char *data, size_t size, ImageValidation *
     return 0;
 }
 
+static int jpeg_is_sof_marker(unsigned char marker) {
+    return (marker >= 0xc0U && marker <= 0xc3U) ||
+           (marker >= 0xc5U && marker <= 0xc7U) ||
+           (marker >= 0xc9U && marker <= 0xcbU) ||
+           (marker >= 0xcdU && marker <= 0xcfU);
+}
+
+static int jpeg_marker_has_no_payload(unsigned char marker) {
+    return marker == 0x01U || (marker >= 0xd0U && marker <= 0xd9U);
+}
+
+static int jpeg_skip_scan_data(const unsigned char *data, size_t size, size_t *offset_io) {
+    size_t offset = *offset_io;
+
+    while (offset < size) {
+        unsigned char marker;
+
+        if (data[offset++] != 0xffU) {
+            continue;
+        }
+        while (offset < size && data[offset] == 0xffU) {
+            offset += 1U;
+        }
+        if (offset >= size) {
+            return -1;
+        }
+        marker = data[offset++];
+        if (marker == 0x00U || (marker >= 0xd0U && marker <= 0xd7U)) {
+            continue;
+        }
+        if (marker == 0xd9U) {
+            *offset_io = offset;
+            return 0;
+        }
+        return -2;
+    }
+    return -1;
+}
+
+int image_validate_jpeg(const unsigned char *data, size_t size, ImageValidation *validation) {
+    size_t offset = 2U;
+    int saw_sof = 0;
+    int saw_sos = 0;
+    int saw_eoi = 0;
+
+    if (size < 3U || data[0] != 0xffU || data[1] != 0xd8U || data[2] != 0xffU) {
+        image_validation_set(validation, IMAGE_FORMAT_UNKNOWN, 0, "not a JPEG image");
+        return -1;
+    }
+    image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "truncated JPEG stream");
+    while (offset < size) {
+        unsigned char marker;
+        unsigned int segment_size;
+
+        if (data[offset] != 0xffU) {
+            image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "expected JPEG marker");
+            return -1;
+        }
+        while (offset < size && data[offset] == 0xffU) {
+            offset += 1U;
+        }
+        if (offset >= size) {
+            return -1;
+        }
+        marker = data[offset++];
+        if (marker == 0x00U) {
+            image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "unexpected stuffed JPEG byte outside scan data");
+            return -1;
+        }
+        if (marker == 0xd9U) {
+            saw_eoi = 1;
+            break;
+        }
+        if (jpeg_marker_has_no_payload(marker)) {
+            continue;
+        }
+        if (offset + 2U > size) {
+            return -1;
+        }
+        segment_size = image_read_u16_be(data + offset);
+        if (segment_size < 2U || (size_t)segment_size > size - offset) {
+            image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG segment length exceeds file size");
+            return -1;
+        }
+        if (jpeg_is_sof_marker(marker)) {
+            if (segment_size < 8U) {
+                image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG SOF segment is too short");
+                return -1;
+            }
+            if (image_read_u16_be(data + offset + 3U) == 0U || image_read_u16_be(data + offset + 5U) == 0U ||
+                data[offset + 7U] == 0U) {
+                image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG SOF dimensions or component count are invalid");
+                return -1;
+            }
+            if ((unsigned int)(8U + 3U * data[offset + 7U]) > segment_size) {
+                image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG SOF component table is truncated");
+                return -1;
+            }
+            saw_sof = 1;
+        } else if (marker == 0xdaU) {
+            int scan_result;
+
+            if (segment_size < 6U) {
+                image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG SOS segment is too short");
+                return -1;
+            }
+            saw_sos = 1;
+            offset += (size_t)segment_size;
+            scan_result = jpeg_skip_scan_data(data, size, &offset);
+            if (scan_result == -2) {
+                image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "unexpected JPEG marker inside scan data");
+                return -1;
+            }
+            if (scan_result != 0) {
+                image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "missing JPEG EOI marker");
+                return -1;
+            }
+            saw_eoi = 1;
+            break;
+        }
+        offset += (size_t)segment_size;
+    }
+    if (!saw_sof) {
+        image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "missing JPEG SOF segment");
+        return -1;
+    }
+    if (!saw_sos) {
+        image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "missing JPEG SOS segment");
+        return -1;
+    }
+    if (!saw_eoi) {
+        image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "missing JPEG EOI marker");
+        return -1;
+    }
+    if (offset != size) {
+        image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "trailing data after JPEG EOI");
+        return -1;
+    }
+    image_validation_set(validation, IMAGE_FORMAT_JPEG, 1, "valid JPEG image");
+    return 0;
+}
+
 static int gif_color_table_size(unsigned char packed, size_t *size_out) {
     *size_out = (size_t)3U << ((packed & 0x07U) + 1U);
     return 0;
