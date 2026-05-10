@@ -53,4 +53,4 @@ cat image.png | imgcheck -q
 
 ## SEE ALSO
 
-imginfo, file, hexdump
+imginfo, imgmeta, file, hexdump
