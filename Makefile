@@ -24,6 +24,7 @@ FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) 
 FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
 TARGET_LINKER_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -fuse-ld=lld -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
+FREESTANDING_COMPACT_LDFLAGS ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -static-pie -Wl$(COMMA)-z$(COMMA)noseparate-code -x c - -o /tmp/newos-compact-link-check >/dev/null 2>&1 && echo -Wl$(COMMA)-z$(COMMA)noseparate-code; rm -f /tmp/newos-compact-link-check)
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
 FREESTANDING_PIE_LDFLAGS ?= -static-pie
 FREESTANDING_GC_LDFLAGS ?= -Wl,--gc-sections
@@ -36,7 +37,7 @@ SELFHOST_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 SELFHOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(COMMA)--gc-sections)
 SELFHOST_STRIP_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-x,-Wl$(COMMA)-s)
 SELFHOST_SIZE_FLAGS ?= $(SELFHOST_SECTION_CFLAGS) $(SELFHOST_GC_LDFLAGS) $(SELFHOST_STRIP_LDFLAGS)
-TARGET_LDFLAGS ?= -nostdlib $(FREESTANDING_PIE_LDFLAGS) $(TARGET_LINKER_FLAG) $(FREESTANDING_GC_LDFLAGS) $(FREESTANDING_STRIP_LDFLAGS) $(TARGET_BUILTINS_LIB)
+TARGET_LDFLAGS ?= -nostdlib $(FREESTANDING_PIE_LDFLAGS) $(TARGET_LINKER_FLAG) $(FREESTANDING_COMPACT_LDFLAGS) $(FREESTANDING_GC_LDFLAGS) $(FREESTANDING_STRIP_LDFLAGS) $(TARGET_BUILTINS_LIB)
 BUILD_ROOT ?= build
 HOST_OS_NAME := $(if $(filter Darwin,$(HOST_OS)),macos,$(shell printf '%s' "$(HOST_OS)" | tr A-Z a-z))
 HOST_ARCH_NAME := $(if $(filter arm64 aarch64,$(HOST_ARCH)),aarch64,$(HOST_ARCH))
