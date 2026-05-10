@@ -30,7 +30,7 @@ The project already has working coverage across several major tool families:
 - network and transfer: `ping`, `ping6`, `ip`, `dhcp`, `nslookup`, `dig`,
   `netcat`, `ssh`, `wget`, `httpd`, `service`
 - archive, patching, and build: `tar`, `gzip`, `gunzip`, `patch`, `make`, `ncc`
-- media metadata: `file` and `imginfo` for lightweight image/file inspection
+- media metadata: `file`, `imginfo`, and `imgcheck` for lightweight image/file inspection and validation
 
 That means the repo is already well beyond a bootstrap shell and a handful of
 toy commands: it has enough surface for real development, testing, and tool
@@ -73,9 +73,9 @@ multiple tools can reuse:
 
 - **tool_util.h** - common tool argument parsing and error reporting
 
-- **image/image.{c,h}** - safe metadata probing for common image containers,
-  currently used by `imginfo` without decoding pixels or allocating image-sized
-  buffers.
+- **image/** - safe metadata probing and structural validation for common image
+  containers, currently used by `imginfo` and `imgcheck` without decoding pixels
+  or allocating image-sized buffers for normal metadata probes.
 
 Other shared components include archive utilities, crypto, hash functions,
 regex, path manipulation, and shell infrastructure.

@@ -98,4 +98,4 @@ cat image.webp | imginfo
 
 ## SEE ALSO
 
-file, hexdump
+imgcheck, file, hexdump

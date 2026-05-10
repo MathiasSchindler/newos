@@ -54,8 +54,15 @@ typedef struct {
     const char *density_unit;
 } ImageInfo;
 
+typedef struct {
+    ImageFormat format;
+    int valid;
+    const char *message;
+} ImageValidation;
+
 void image_info_init(ImageInfo *info);
 int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out);
+int image_validate(const unsigned char *data, size_t size, ImageValidation *validation_out);
 const char *image_format_name(ImageFormat format);
 const char *image_format_extension(ImageFormat format);
 const char *image_format_mime(ImageFormat format);

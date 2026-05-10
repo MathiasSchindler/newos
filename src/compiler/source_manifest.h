@@ -72,7 +72,14 @@
 /* ── image metadata utilities ───────────────────────────────────────────── */
 
 #define FOREACH_IMAGE_SOURCE(X) \
-    X("src/shared/image/image.c")
+    X("src/shared/image/image.c") \
+    X("src/shared/image/png.c") \
+    X("src/shared/image/jpeg.c") \
+    X("src/shared/image/gif.c") \
+    X("src/shared/image/tiff.c") \
+    X("src/shared/image/webp.c") \
+    X("src/shared/image/bmp.c") \
+    X("src/shared/image/validate.c")
 
 /* ── crypto primitives ───────────────────────────────────────────────────── */
 
