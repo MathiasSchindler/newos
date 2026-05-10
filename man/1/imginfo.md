@@ -74,7 +74,7 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 
 ## LIMITATIONS
 
-- JPEG dimensions are found by scanning the beginning of the file for a SOF marker; unusual files with very large metadata prefixes may report the format without dimensions.
+- JPEG dimensions are found by scanning for a SOF marker. Path inputs that look like JPEGs but do not expose dimensions in the initial probe window are retried with a full-file probe; standard-input probes remain bounded and may still report the format without dimensions for unusual files with very large metadata prefixes.
 - TIFF support is limited to classic TIFF, not BigTIFF.
 - Animated frame counts are reported only for formats whose lightweight header
   metadata exposes them within the probe window.

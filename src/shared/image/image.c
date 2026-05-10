@@ -186,6 +186,12 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
     if (validation_out != 0 && validation_out->format == IMAGE_FORMAT_GIF) {
         return -1;
     }
+    if (image_validate_bmp(data, size, validation_out) == 0) {
+        return 0;
+    }
+    if (validation_out != 0 && validation_out->format == IMAGE_FORMAT_BMP) {
+        return -1;
+    }
     if (image_probe(data, size, &info) == 0) {
         if (validation_out != 0) {
             validation_out->format = info.format;

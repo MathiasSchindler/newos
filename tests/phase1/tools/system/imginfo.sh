@@ -10,6 +10,14 @@ tab=$(printf '\t')
 printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\002\000\000\000\003\010\006\000\000\000\000\000\000\000\000\000\000\011pHYs\000\000\016\304\000\000\016\304\001\000\000\000\000' > "$WORK_DIR/sample.png"
 printf 'GIF89a\004\000\005\000\200\000\000' > "$WORK_DIR/sample.gif"
 printf '\377\330\377\341\000\042Exif\000\000II\052\000\010\000\000\000\001\000\022\001\003\000\001\000\000\000\006\000\000\000\000\000\000\000\377\340\000\020JFIF\000\001\001\001\000\110\000\110\000\000\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\331' > "$WORK_DIR/sample.jpg"
+printf '\377\330' > "$WORK_DIR/large-prefix.jpg"
+i=0
+while [ "$i" -lt 5 ]; do
+    printf '\377\376\352\142' >> "$WORK_DIR/large-prefix.jpg"
+    "$ROOT_DIR/build/awk" 'BEGIN { for (i = 0; i < 60000; i++) printf "%c", 0 }' >> "$WORK_DIR/large-prefix.jpg"
+    i=$((i + 1))
+done
+printf '\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\331' >> "$WORK_DIR/large-prefix.jpg"
 printf 'II\052\000\010\000\000\000\004\000\000\001\004\000\001\000\000\000\011\000\000\000\001\001\004\000\001\000\000\000\012\000\000\000\002\001\003\000\001\000\000\000\010\000\000\000\025\001\003\000\001\000\000\000\003\000\000\000\000\000\000\000' > "$WORK_DIR/sample.tiff"
 printf 'RIFF\036\000\000\000WEBPVP8X\012\000\000\000\020\000\000\000\013\000\000\014\000\000' > "$WORK_DIR/sample.webp"
 printf 'BM\000\000\000\000\000\000\000\000\032\000\000\000\014\000\000\000\015\000\016\000\001\000\030\000' > "$WORK_DIR/sample.bmp"
@@ -18,6 +26,7 @@ printf 'not an image\n' > "$WORK_DIR/not-image.txt"
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.png")" "$WORK_DIR/sample.png${tab}png${tab}2${tab}3${tab}8${tab}4${tab}image/png" "imginfo did not parse PNG metadata"
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}4${tab}5${tab}1${tab}3${tab}image/gif" "imginfo did not parse GIF metadata"
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}6${tab}7${tab}8${tab}3${tab}image/jpeg" "imginfo did not parse JPEG metadata"
+assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/large-prefix.jpg")" "$WORK_DIR/large-prefix.jpg${tab}jpeg${tab}6${tab}7${tab}8${tab}3${tab}image/jpeg" "imginfo did not scan large JPEG metadata prefixes"
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.tiff")" "$WORK_DIR/sample.tiff${tab}tiff${tab}9${tab}10${tab}8${tab}3${tab}image/tiff" "imginfo did not parse TIFF metadata"
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.webp")" "$WORK_DIR/sample.webp${tab}webp${tab}12${tab}13${tab}-${tab}4${tab}image/webp" "imginfo did not parse WebP metadata"
 assert_text_equals "$($ROOT_DIR/build/imginfo --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}13${tab}14${tab}24${tab}3${tab}image/bmp" "imginfo did not parse BMP metadata"

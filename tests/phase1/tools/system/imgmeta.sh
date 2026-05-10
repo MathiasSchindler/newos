@@ -29,6 +29,17 @@ fi
 "$ROOT_DIR/build/imginfo" --plain "$WORK_DIR/clean.jpg" > "$WORK_DIR/clean-jpeg-info.out"
 assert_file_contains "$WORK_DIR/clean-jpeg-info.out" 'image/jpeg' "imgmeta strip did not leave a recognizable JPEG"
 
+"$ROOT_DIR/build/imgmeta" copy -o "$WORK_DIR/copied.jpg" "$WORK_DIR/meta.jpg"
+if ! "$ROOT_DIR/build/cmp" -s "$WORK_DIR/meta.jpg" "$WORK_DIR/copied.jpg"; then
+    fail "imgmeta copy should preserve image bytes"
+fi
+"$ROOT_DIR/build/imgmeta" show "$WORK_DIR/copied.jpg" > "$WORK_DIR/show-copied-jpeg.out"
+assert_file_contains "$WORK_DIR/show-copied-jpeg.out" 'metadata: exif, orientation' "imgmeta copy did not preserve JPEG metadata"
+
 if "$ROOT_DIR/build/imgmeta" strip "$WORK_DIR/meta.png" >/dev/null 2>&1; then
     fail "imgmeta strip should require -o OUTPUT"
+fi
+
+if "$ROOT_DIR/build/imgmeta" copy "$WORK_DIR/meta.jpg" >/dev/null 2>&1; then
+    fail "imgmeta copy should require -o OUTPUT"
 fi

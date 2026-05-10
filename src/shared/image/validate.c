@@ -305,3 +305,185 @@ int image_validate_gif(const unsigned char *data, size_t size, ImageValidation *
     image_validation_set(validation, IMAGE_FORMAT_GIF, 1, "valid GIF image");
     return 0;
 }
+
+static int bmp_bit_depth_is_valid(unsigned int bits) {
+    return bits == 1U || bits == 4U || bits == 8U || bits == 16U || bits == 24U || bits == 32U;
+}
+
+static int bmp_signed_u32_is_zero(unsigned int value) {
+    return value == 0U;
+}
+
+static unsigned int bmp_abs_i32_as_u32(unsigned int value) {
+    if ((value & 0x80000000U) == 0U) {
+        return value;
+    }
+    return 0U - value;
+}
+
+static int bmp_row_stride(unsigned int width, unsigned int bits, size_t *stride_out) {
+    size_t width_size = (size_t)width;
+    size_t bits_size = (size_t)bits;
+    size_t row_bits;
+
+    if (width_size != 0U && bits_size > (((size_t)-1) - 31U) / width_size) {
+        return -1;
+    }
+    row_bits = width_size * bits_size;
+    *stride_out = ((row_bits + 31U) / 32U) * 4U;
+    return 0;
+}
+
+static int bmp_validate_pixel_span(unsigned int width,
+                                   unsigned int height,
+                                   unsigned int bits,
+                                   size_t pixel_offset,
+                                   size_t size,
+                                   ImageValidation *validation) {
+    size_t stride;
+    size_t needed;
+
+    if (bmp_row_stride(width, bits, &stride) != 0 || height > ((size_t)-1) / stride) {
+        image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP pixel array size overflows");
+        return -1;
+    }
+    needed = stride * (size_t)height;
+    if (pixel_offset > size || needed > size - pixel_offset) {
+        image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP pixel array is truncated");
+        return -1;
+    }
+    return 0;
+}
+
+int image_validate_bmp(const unsigned char *data, size_t size, ImageValidation *validation) {
+    unsigned int file_size;
+    unsigned int pixel_offset;
+    unsigned int dib_size;
+    unsigned int bits;
+    unsigned int width;
+    unsigned int height;
+    size_t min_pixel_offset;
+    size_t color_table_entries = 0U;
+    size_t color_table_bytes = 0U;
+
+    if (size < 2U || data[0] != 'B' || data[1] != 'M') {
+        image_validation_set(validation, IMAGE_FORMAT_UNKNOWN, 0, "not a BMP image");
+        return -1;
+    }
+    image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "truncated BMP stream");
+    if (size < 26U) {
+        return -1;
+    }
+    file_size = image_read_u32_le(data + 2U);
+    pixel_offset = image_read_u32_le(data + 10U);
+    dib_size = image_read_u32_le(data + 14U);
+    if (file_size != 0U && (size_t)file_size != size) {
+        image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP file size field does not match input size");
+        return -1;
+    }
+    if (dib_size == 12U) {
+        unsigned int planes;
+
+        if (size < 26U) {
+            return -1;
+        }
+        width = image_read_u16_le(data + 18U);
+        height = image_read_u16_le(data + 20U);
+        planes = image_read_u16_le(data + 22U);
+        bits = image_read_u16_le(data + 24U);
+        if (width == 0U || height == 0U) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP dimensions must be nonzero");
+            return -1;
+        }
+        if (planes != 1U) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP plane count must be one");
+            return -1;
+        }
+        if (!bmp_bit_depth_is_valid(bits)) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP bit depth is unsupported");
+            return -1;
+        }
+        if (bits <= 8U) {
+            color_table_entries = (size_t)1U << bits;
+            color_table_bytes = color_table_entries * 3U;
+        }
+        min_pixel_offset = 14U + 12U + color_table_bytes;
+        if ((size_t)pixel_offset < min_pixel_offset || (size_t)pixel_offset > size) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP pixel offset is invalid");
+            return -1;
+        }
+        if (bmp_validate_pixel_span(width, height, bits, (size_t)pixel_offset, size, validation) != 0) {
+            return -1;
+        }
+    } else if (dib_size >= 40U) {
+        unsigned int planes;
+        unsigned int compression;
+        unsigned int image_size;
+        unsigned int colors_used = 0U;
+        size_t masks_size = 0U;
+
+        if (dib_size > size - 14U || size < 54U) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP DIB header is truncated");
+            return -1;
+        }
+        width = image_read_u32_le(data + 18U);
+        height = image_read_u32_le(data + 22U);
+        planes = image_read_u16_le(data + 26U);
+        bits = image_read_u16_le(data + 28U);
+        compression = image_read_u32_le(data + 30U);
+        image_size = image_read_u32_le(data + 34U);
+        if (dib_size >= 40U) {
+            colors_used = image_read_u32_le(data + 46U);
+        }
+        if (bmp_signed_u32_is_zero(width) || bmp_signed_u32_is_zero(height)) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP dimensions must be nonzero");
+            return -1;
+        }
+        width = bmp_abs_i32_as_u32(width);
+        height = bmp_abs_i32_as_u32(height);
+        if (planes != 1U) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP plane count must be one");
+            return -1;
+        }
+        if (!bmp_bit_depth_is_valid(bits)) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP bit depth is unsupported");
+            return -1;
+        }
+        if ((compression == 1U && bits != 8U) || (compression == 2U && bits != 4U) ||
+            (compression == 3U && bits != 16U && bits != 32U) || compression > 5U) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP compression is incompatible with bit depth");
+            return -1;
+        }
+        if (compression == 3U && dib_size == 40U) {
+            masks_size = 12U;
+        }
+        if (bits <= 8U) {
+            size_t maximum_entries = (size_t)1U << bits;
+
+            color_table_entries = colors_used == 0U ? maximum_entries : (size_t)colors_used;
+            if (color_table_entries > maximum_entries) {
+                image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP color table is too large for bit depth");
+                return -1;
+            }
+            color_table_bytes = color_table_entries * 4U;
+        }
+        min_pixel_offset = 14U + (size_t)dib_size + masks_size + color_table_bytes;
+        if ((size_t)pixel_offset < min_pixel_offset || (size_t)pixel_offset > size) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP pixel offset is invalid");
+            return -1;
+        }
+        if (compression == 0U || compression == 3U) {
+            if (bmp_validate_pixel_span(width, height, bits, (size_t)pixel_offset, size, validation) != 0) {
+                return -1;
+            }
+        } else if (image_size != 0U && ((size_t)pixel_offset > size || (size_t)image_size > size - (size_t)pixel_offset)) {
+            image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP compressed image data is truncated");
+            return -1;
+        }
+    } else {
+        image_validation_set(validation, IMAGE_FORMAT_BMP, 0, "BMP DIB header size is unsupported");
+        return -1;
+    }
+    image_validation_set(validation, IMAGE_FORMAT_BMP, 1, "valid BMP image");
+    return 0;
+}

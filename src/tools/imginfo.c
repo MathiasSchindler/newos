@@ -33,6 +33,65 @@ static int read_probe_data(const char *path, unsigned char *buffer, size_t buffe
     return 0;
 }
 
+static int read_all_input(const char *path, unsigned char **data_out, size_t *size_out) {
+    int fd;
+    int should_close;
+    unsigned char *buffer;
+    size_t capacity = IMGINFO_READ_LIMIT;
+    size_t used = 0U;
+
+    *data_out = 0;
+    *size_out = 0U;
+    if (tool_open_input(path, &fd, &should_close) != 0) {
+        return -1;
+    }
+    buffer = (unsigned char *)rt_malloc(capacity);
+    if (buffer == 0) {
+        tool_close_input(fd, should_close);
+        tool_write_error("imginfo", "out of memory: ", path ? path : "stdin");
+        return -1;
+    }
+    while (1) {
+        long bytes_read;
+
+        if (used == capacity) {
+            unsigned char *resized;
+            size_t next_capacity = capacity * 2U;
+
+            if (next_capacity <= capacity) {
+                rt_free(buffer);
+                tool_close_input(fd, should_close);
+                tool_write_error("imginfo", "input too large: ", path ? path : "stdin");
+                return -1;
+            }
+            resized = (unsigned char *)rt_realloc(buffer, next_capacity);
+            if (resized == 0) {
+                rt_free(buffer);
+                tool_close_input(fd, should_close);
+                tool_write_error("imginfo", "out of memory: ", path ? path : "stdin");
+                return -1;
+            }
+            buffer = resized;
+            capacity = next_capacity;
+        }
+        bytes_read = platform_read(fd, buffer + used, capacity - used);
+        if (bytes_read < 0) {
+            rt_free(buffer);
+            tool_close_input(fd, should_close);
+            tool_write_error("imginfo", "read failed: ", path ? path : "stdin");
+            return -1;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        used += (size_t)bytes_read;
+    }
+    tool_close_input(fd, should_close);
+    *data_out = buffer;
+    *size_out = used;
+    return 0;
+}
+
 static int write_unknown_field(void) {
     return rt_write_char(1, '-');
 }
@@ -352,6 +411,19 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
     if (image_probe(buffer, size, &info) != 0) {
         tool_write_error("imginfo", "unsupported image format: ", label);
         return -1;
+    }
+    if (path != 0 && info.format == IMAGE_FORMAT_JPEG &&
+        (info.flags & IMAGE_INFO_HAS_DIMENSIONS) == 0U && size == sizeof(buffer)) {
+        unsigned char *full_data;
+        size_t full_size;
+        ImageInfo full_info;
+
+        if (read_all_input(path, &full_data, &full_size) == 0) {
+            if (image_probe(full_data, full_size, &full_info) == 0) {
+                info = full_info;
+            }
+            rt_free(full_data);
+        }
     }
     warn_extension_mismatch(path, &info);
     if (options->mime_only) {

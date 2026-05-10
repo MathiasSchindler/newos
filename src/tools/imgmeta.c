@@ -6,7 +6,7 @@
 #define IMGMETA_INITIAL_CAPACITY (64U * 1024U)
 
 static void print_usage(void) {
-    tool_write_usage("imgmeta", "show FILE ... | strip -o OUTPUT FILE");
+    tool_write_usage("imgmeta", "show FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE");
 }
 
 static unsigned int read_u16_be(const unsigned char *bytes) {
@@ -341,6 +341,25 @@ static int strip_path(const char *input_path, const char *output_path) {
     return result;
 }
 
+static int copy_path(const char *input_path, const char *output_path) {
+    unsigned char *data;
+    size_t size;
+    ImageInfo info;
+    int result;
+
+    if (read_all_input(input_path, &data, &size) != 0) {
+        return -1;
+    }
+    if (image_probe(data, size, &info) != 0) {
+        tool_write_error("imgmeta", "unsupported image format: ", input_path);
+        rt_free(data);
+        return -1;
+    }
+    result = write_file(output_path, data, size);
+    rt_free(data);
+    return result;
+}
+
 static int run_show(int argc, char **argv, int arg_index) {
     int status = 0;
 
@@ -395,6 +414,45 @@ static int run_strip(int argc, char **argv, int arg_index) {
     return strip_path(input_path, output_path) == 0 ? 0 : 1;
 }
 
+static int run_copy(int argc, char **argv, int arg_index) {
+    const char *output_path = 0;
+    const char *input_path = 0;
+
+    while (arg_index < argc) {
+        const char *arg = argv[arg_index];
+
+        if ((rt_strcmp(arg, "-o") == 0 || rt_strcmp(arg, "--output") == 0) && arg_index + 1 < argc) {
+            output_path = argv[arg_index + 1];
+            arg_index += 2;
+            continue;
+        }
+        if (rt_strcmp(arg, "--") == 0) {
+            arg_index += 1;
+            break;
+        }
+        if (arg[0] == '-' && arg[1] != '\0') {
+            tool_write_error("imgmeta", "unknown option: ", arg);
+            print_usage();
+            return 1;
+        }
+        if (input_path != 0) {
+            tool_write_error("imgmeta", "extra operand: ", arg);
+            return 1;
+        }
+        input_path = arg;
+        arg_index += 1;
+    }
+    if (input_path == 0 && arg_index < argc) {
+        input_path = argv[arg_index++];
+    }
+    if (input_path == 0 || output_path == 0) {
+        tool_write_error("imgmeta", "copy requires -o OUTPUT and one input file", 0);
+        print_usage();
+        return 1;
+    }
+    return copy_path(input_path, output_path) == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     const char *command;
 
@@ -412,6 +470,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(command, "strip") == 0) {
         return run_strip(argc, argv, 2);
+    }
+    if (rt_strcmp(command, "copy") == 0) {
+        return run_copy(argc, argv, 2);
     }
     tool_write_error("imgmeta", "unknown command: ", command);
     print_usage();
