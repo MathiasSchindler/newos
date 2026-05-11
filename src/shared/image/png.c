@@ -12,6 +12,8 @@ int image_probe_png(const unsigned char *data, size_t size, ImageInfo *info) {
     unsigned char color_type;
     unsigned int channels = 0U;
     size_t offset;
+    unsigned int duration_ms = 0U;
+    int has_duration = 0;
 
     if (size < 8U || !image_byte_arrays_equal(data, signature, sizeof(signature))) {
         return 0;
@@ -72,8 +74,21 @@ int image_probe_png(const unsigned char *data, size_t size, ImageInfo *info) {
         } else if (image_bytes_equal(type, "acTL", 4U)) {
             if (payload + 8U <= png_payload_end(payload, length, size)) {
                 image_set_frames(info, image_read_u32_be(data + payload));
-                if (image_read_u32_be(data + payload + 4U) != 0U) {
-                    info->property_flags |= IMAGE_PROPERTY_LOOPING;
+                image_set_loop_count(info, image_read_u32_be(data + payload + 4U));
+            }
+        } else if (image_bytes_equal(type, "fcTL", 4U)) {
+            if (payload + 26U <= png_payload_end(payload, length, size)) {
+                unsigned int delay_num = image_read_u16_be(data + payload + 20U);
+                unsigned int delay_den = image_read_u16_be(data + payload + 22U);
+                unsigned int frame_duration;
+
+                if (delay_den == 0U) {
+                    delay_den = 100U;
+                }
+                frame_duration = (delay_num * 1000U) / delay_den;
+                if (duration_ms <= 0xffffffffU - frame_duration) {
+                    duration_ms += frame_duration;
+                    has_duration = 1;
                 }
             }
         } else if (image_bytes_equal(type, "IEND", 4U)) {
@@ -83,6 +98,9 @@ int image_probe_png(const unsigned char *data, size_t size, ImageInfo *info) {
             break;
         }
         offset += 12U + (size_t)length;
+    }
+    if (has_duration) {
+        image_set_duration_ms(info, duration_ms);
     }
     return 1;
 }

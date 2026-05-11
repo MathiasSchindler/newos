@@ -66,9 +66,14 @@ typedef struct {
     const char *message;
 } ImageValidation;
 
+typedef struct {
+    int strict;
+} ImageValidationOptions;
+
 void image_info_init(ImageInfo *info);
 int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out);
 int image_validate(const unsigned char *data, size_t size, ImageValidation *validation_out);
+int image_validate_ex(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation_out);
 const char *image_format_name(ImageFormat format);
 const char *image_format_extension(ImageFormat format);
 const char *image_format_mime(ImageFormat format);

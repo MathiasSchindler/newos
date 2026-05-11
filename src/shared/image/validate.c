@@ -42,7 +42,7 @@ static int png_color_bit_depth_is_valid(unsigned char color_type, unsigned char 
     return 0;
 }
 
-int image_validate_png(const unsigned char *data, size_t size, ImageValidation *validation) {
+int image_validate_png(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation) {
     static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
     size_t offset;
     int seen_ihdr = 0;
@@ -51,6 +51,7 @@ int image_validate_png(const unsigned char *data, size_t size, ImageValidation *
     int seen_non_idat_after_idat = 0;
     int seen_iend = 0;
     unsigned char color_type = 0U;
+    int strict = options != 0 && options->strict;
 
     if (size < 8U || !image_byte_arrays_equal(data, signature, sizeof(signature))) {
         image_validation_set(validation, IMAGE_FORMAT_UNKNOWN, 0, "not a PNG image");
@@ -140,6 +141,9 @@ int image_validate_png(const unsigned char *data, size_t size, ImageValidation *
             seen_iend = 1;
             offset = crc_offset + 4U;
             break;
+        } else if (strict && seen_idat) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "strict PNG rejects ancillary chunks after IDAT", offset + 4U);
+            return -1;
         } else if (seen_idat) {
             seen_non_idat_after_idat = 1;
         }
@@ -622,5 +626,263 @@ int image_validate_bmp(const unsigned char *data, size_t size, ImageValidation *
         return -1;
     }
     image_validation_set(validation, IMAGE_FORMAT_BMP, 1, "valid BMP image and pixel array");
+    return 0;
+}
+
+static size_t tiff_type_size(unsigned int type) {
+    switch (type) {
+        case 1U:
+        case 2U:
+        case 6U:
+        case 7U:
+            return 1U;
+        case 3U:
+        case 8U:
+            return 2U;
+        case 4U:
+        case 9U:
+        case 11U:
+            return 4U;
+        case 5U:
+        case 10U:
+        case 12U:
+        case 16U:
+        case 17U:
+        case 18U:
+            return 8U;
+        default:
+            return 0U;
+    }
+}
+
+static unsigned int tiff_validate_read_u16(const unsigned char *bytes, int little_endian) {
+    return little_endian ? image_read_u16_le(bytes) : image_read_u16_be(bytes);
+}
+
+static unsigned int tiff_validate_read_u32(const unsigned char *bytes, int little_endian) {
+    return little_endian ? image_read_u32_le(bytes) : image_read_u32_be(bytes);
+}
+
+static int tiff_validate_classic_ifd(const unsigned char *data, size_t size, int little_endian, size_t ifd_offset, ImageValidation *validation) {
+    unsigned int entry_count;
+    unsigned int index;
+    int has_width = 0;
+    int has_height = 0;
+
+    if (ifd_offset + 2U > size) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF first IFD offset exceeds file size", ifd_offset);
+        return -1;
+    }
+    entry_count = tiff_validate_read_u16(data + ifd_offset, little_endian);
+    if ((size_t)entry_count > (size - ifd_offset - 2U) / 12U) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF IFD entry table is truncated", ifd_offset);
+        return -1;
+    }
+    if (ifd_offset + 2U + (size_t)entry_count * 12U + 4U > size) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF next IFD pointer is truncated", ifd_offset + 2U + (size_t)entry_count * 12U);
+        return -1;
+    }
+    for (index = 0U; index < entry_count; ++index) {
+        const unsigned char *entry = data + ifd_offset + 2U + (size_t)index * 12U;
+        unsigned int tag = tiff_validate_read_u16(entry, little_endian);
+        unsigned int type = tiff_validate_read_u16(entry + 2U, little_endian);
+        unsigned int count = tiff_validate_read_u32(entry + 4U, little_endian);
+        size_t unit_size = tiff_type_size(type);
+        size_t value_size;
+
+        if (unit_size == 0U || count == 0U || (size_t)count > ((size_t)-1) / unit_size) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF IFD entry has invalid type or count", ifd_offset + 2U + (size_t)index * 12U);
+            return -1;
+        }
+        value_size = unit_size * (size_t)count;
+        if (value_size > 4U) {
+            unsigned int value_offset = tiff_validate_read_u32(entry + 8U, little_endian);
+
+            if ((size_t)value_offset > size || value_size > size - (size_t)value_offset) {
+                image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF IFD value offset exceeds file size", ifd_offset + 2U + (size_t)index * 12U + 8U);
+                return -1;
+            }
+        }
+        if (tag == 256U) {
+            has_width = 1;
+        } else if (tag == 257U) {
+            has_height = 1;
+        }
+    }
+    if (!has_width || !has_height) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF first IFD is missing image dimensions", ifd_offset);
+        return -1;
+    }
+    return 0;
+}
+
+static int tiff_u64_high_is_zero_for_validation(const unsigned char *bytes, int little_endian) {
+    return little_endian ? image_read_u32_le(bytes + 4U) == 0U : image_read_u32_be(bytes) == 0U;
+}
+
+static unsigned int tiff_read_u64_low_for_validation(const unsigned char *bytes, int little_endian) {
+    return little_endian ? image_read_u32_le(bytes) : image_read_u32_be(bytes + 4U);
+}
+
+static int tiff_validate_big_ifd(const unsigned char *data, size_t size, int little_endian, size_t ifd_offset, ImageValidation *validation) {
+    unsigned int entry_count;
+    unsigned int index;
+    int has_width = 0;
+    int has_height = 0;
+
+    if (ifd_offset + 8U > size) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF first IFD offset exceeds file size", ifd_offset);
+        return -1;
+    }
+    if (!tiff_u64_high_is_zero_for_validation(data + ifd_offset, little_endian)) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF IFD entry count exceeds supported range", ifd_offset);
+        return -1;
+    }
+    entry_count = tiff_read_u64_low_for_validation(data + ifd_offset, little_endian);
+    if ((size_t)entry_count > (size - ifd_offset - 8U) / 20U) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF IFD entry table is truncated", ifd_offset);
+        return -1;
+    }
+    if (ifd_offset + 8U + (size_t)entry_count * 20U + 8U > size) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF next IFD pointer is truncated", ifd_offset + 8U + (size_t)entry_count * 20U);
+        return -1;
+    }
+    for (index = 0U; index < entry_count; ++index) {
+        const unsigned char *entry = data + ifd_offset + 8U + (size_t)index * 20U;
+        unsigned int tag = tiff_validate_read_u16(entry, little_endian);
+        unsigned int type = tiff_validate_read_u16(entry + 2U, little_endian);
+        unsigned int count;
+        size_t unit_size = tiff_type_size(type);
+        size_t value_size;
+
+        if (!tiff_u64_high_is_zero_for_validation(entry + 4U, little_endian)) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF IFD entry count exceeds supported range", ifd_offset + 8U + (size_t)index * 20U + 4U);
+            return -1;
+        }
+        count = tiff_read_u64_low_for_validation(entry + 4U, little_endian);
+        if (unit_size == 0U || count == 0U || (size_t)count > ((size_t)-1) / unit_size) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF IFD entry has invalid type or count", ifd_offset + 8U + (size_t)index * 20U);
+            return -1;
+        }
+        value_size = unit_size * (size_t)count;
+        if (value_size > 8U) {
+            unsigned int value_offset;
+
+            if (!tiff_u64_high_is_zero_for_validation(entry + 12U, little_endian)) {
+                image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF IFD value offset exceeds supported range", ifd_offset + 8U + (size_t)index * 20U + 12U);
+                return -1;
+            }
+            value_offset = tiff_read_u64_low_for_validation(entry + 12U, little_endian);
+            if ((size_t)value_offset > size || value_size > size - (size_t)value_offset) {
+                image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF IFD value offset exceeds file size", ifd_offset + 8U + (size_t)index * 20U + 12U);
+                return -1;
+            }
+        }
+        if (tag == 256U) {
+            has_width = 1;
+        } else if (tag == 257U) {
+            has_height = 1;
+        }
+    }
+    if (!has_width || !has_height) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF first IFD is missing image dimensions", ifd_offset);
+        return -1;
+    }
+    return 0;
+}
+
+int image_validate_tiff(const unsigned char *data, size_t size, ImageValidation *validation) {
+    int little_endian;
+    unsigned int magic;
+    unsigned int ifd_offset;
+
+    if (size < 4U || !((data[0] == 'I' && data[1] == 'I') || (data[0] == 'M' && data[1] == 'M'))) {
+        image_validation_set(validation, IMAGE_FORMAT_UNKNOWN, 0, "not a TIFF image");
+        return -1;
+    }
+    little_endian = data[0] == 'I';
+    magic = tiff_validate_read_u16(data + 2U, little_endian);
+    if (magic == 43U) {
+        if (size < 16U || tiff_validate_read_u16(data + 4U, little_endian) != 8U || tiff_validate_read_u16(data + 6U, little_endian) != 0U) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF header fields are invalid", 4U);
+            return -1;
+        }
+        if (!tiff_u64_high_is_zero_for_validation(data + 8U, little_endian)) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "BigTIFF first IFD offset exceeds supported range", 8U);
+            return -1;
+        }
+        if (tiff_validate_big_ifd(data, size, little_endian, (size_t)tiff_read_u64_low_for_validation(data + 8U, little_endian), validation) != 0) {
+            return -1;
+        }
+        image_validation_set(validation, IMAGE_FORMAT_TIFF, 1, "valid BigTIFF header and first IFD");
+        return 0;
+    }
+    if (magic != 42U) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_TIFF, "TIFF magic number is invalid", 2U);
+        return -1;
+    }
+    if (size < 8U) {
+        image_validation_set(validation, IMAGE_FORMAT_TIFF, 0, "truncated TIFF header");
+        return -1;
+    }
+    ifd_offset = tiff_validate_read_u32(data + 4U, little_endian);
+    if (tiff_validate_classic_ifd(data, size, little_endian, (size_t)ifd_offset, validation) != 0) {
+        return -1;
+    }
+    image_validation_set(validation, IMAGE_FORMAT_TIFF, 1, "valid TIFF header and first IFD");
+    return 0;
+}
+
+int image_validate_webp(const unsigned char *data, size_t size, ImageValidation *validation) {
+    size_t offset = 12U;
+    unsigned int riff_size;
+    int saw_image_chunk = 0;
+
+    if (size < 12U || !image_bytes_equal(data, "RIFF", 4U) || !image_bytes_equal(data + 8U, "WEBP", 4U)) {
+        image_validation_set(validation, IMAGE_FORMAT_UNKNOWN, 0, "not a WebP image");
+        return -1;
+    }
+    riff_size = image_read_u32_le(data + 4U);
+    if ((size_t)riff_size + 8U != size) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_WEBP, "WebP RIFF size does not match input size", 4U);
+        return -1;
+    }
+    while (offset + 8U <= size) {
+        const unsigned char *type = data + offset;
+        unsigned int chunk_size = image_read_u32_le(data + offset + 4U);
+        size_t chunk_total = 8U + (size_t)chunk_size + ((chunk_size & 1U) != 0U ? 1U : 0U);
+
+        if (chunk_total < 8U || chunk_total > size - offset) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_WEBP, "WebP chunk length exceeds file size", offset);
+            return -1;
+        }
+        if (image_bytes_equal(type, "VP8X", 4U)) {
+            if (chunk_size < 10U) {
+                image_validation_set_offset(validation, IMAGE_FORMAT_WEBP, "WebP VP8X chunk is too short", offset);
+                return -1;
+            }
+        } else if (image_bytes_equal(type, "VP8 ", 4U) || image_bytes_equal(type, "VP8L", 4U)) {
+            saw_image_chunk = 1;
+        } else if (image_bytes_equal(type, "ANMF", 4U)) {
+            if (chunk_size < 16U) {
+                image_validation_set_offset(validation, IMAGE_FORMAT_WEBP, "WebP ANMF chunk is too short", offset);
+                return -1;
+            }
+            saw_image_chunk = 1;
+        } else if (image_bytes_equal(type, "ANIM", 4U) && chunk_size < 6U) {
+            image_validation_set_offset(validation, IMAGE_FORMAT_WEBP, "WebP ANIM chunk is too short", offset);
+            return -1;
+        }
+        offset += chunk_total;
+    }
+    if (offset != size) {
+        image_validation_set_offset(validation, IMAGE_FORMAT_WEBP, "WebP chunk table is truncated", offset);
+        return -1;
+    }
+    if (!saw_image_chunk) {
+        image_validation_set(validation, IMAGE_FORMAT_WEBP, 0, "WebP image chunk is missing");
+        return -1;
+    }
+    image_validation_set(validation, IMAGE_FORMAT_WEBP, 1, "valid WebP RIFF image");
     return 0;
 }

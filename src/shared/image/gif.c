@@ -3,6 +3,9 @@
 int image_probe_gif(const unsigned char *data, size_t size, ImageInfo *info) {
     size_t offset;
     unsigned int frames = 0U;
+    unsigned int duration_ms = 0U;
+    unsigned int pending_delay_cs = 0U;
+    int has_duration = 0;
 
     if (size < 13U || !image_bytes_equal(data, "GIF", 3U) || data[3] != '8' || (data[4] != '7' && data[4] != '9') || data[5] != 'a') {
         return 0;
@@ -29,6 +32,13 @@ int image_probe_gif(const unsigned char *data, size_t size, ImageInfo *info) {
                 break;
             }
             frames += 1U;
+            if (duration_ms <= 0xffffffffU - pending_delay_cs * 10U) {
+                duration_ms += pending_delay_cs * 10U;
+                if (pending_delay_cs != 0U) {
+                    has_duration = 1;
+                }
+            }
+            pending_delay_cs = 0U;
             if ((data[offset + 8U] & 0x40U) != 0U) {
                 info->property_flags |= IMAGE_PROPERTY_INTERLACED;
             }
@@ -64,9 +74,13 @@ int image_probe_gif(const unsigned char *data, size_t size, ImageInfo *info) {
                 if ((data[offset + 1U] & 0x01U) != 0U) {
                     info->property_flags |= IMAGE_PROPERTY_ALPHA;
                 }
+                pending_delay_cs = image_read_u16_le(data + offset + 2U);
             } else if (label == 0xffU && offset + 12U <= size && data[offset] == 11U &&
                        image_bytes_equal((const unsigned char *)(data + offset + 1U), "NETSCAPE2.0", 11U)) {
                 info->property_flags |= IMAGE_PROPERTY_LOOPING;
+                if (offset + 16U <= size && data[offset + 12U] == 3U && data[offset + 13U] == 1U) {
+                    image_set_loop_count(info, image_read_u16_le(data + offset + 14U));
+                }
             }
             while (offset < size) {
                 unsigned int sub_size = data[offset++];
@@ -86,5 +100,8 @@ int image_probe_gif(const unsigned char *data, size_t size, ImageInfo *info) {
         }
     }
     image_set_frames(info, frames);
+    if (has_duration) {
+        image_set_duration_ms(info, duration_ms);
+    }
     return 1;
 }

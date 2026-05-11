@@ -180,7 +180,7 @@ int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
     return -1;
 }
 
-int image_validate(const unsigned char *data, size_t size, ImageValidation *validation_out) {
+int image_validate_ex(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation_out) {
     ImageInfo info;
 
     if (validation_out != 0) {
@@ -193,7 +193,7 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
     if (data == 0) {
         return -1;
     }
-    if (image_validate_png(data, size, validation_out) == 0) {
+    if (image_validate_png(data, size, options, validation_out) == 0) {
         return 0;
     }
     if (validation_out != 0 && validation_out->format == IMAGE_FORMAT_PNG) {
@@ -217,6 +217,18 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
     if (validation_out != 0 && validation_out->format == IMAGE_FORMAT_BMP) {
         return -1;
     }
+    if (image_validate_tiff(data, size, validation_out) == 0) {
+        return 0;
+    }
+    if (validation_out != 0 && validation_out->format == IMAGE_FORMAT_TIFF) {
+        return -1;
+    }
+    if (image_validate_webp(data, size, validation_out) == 0) {
+        return 0;
+    }
+    if (validation_out != 0 && validation_out->format == IMAGE_FORMAT_WEBP) {
+        return -1;
+    }
     if (image_probe(data, size, &info) == 0) {
         if (validation_out != 0) {
             validation_out->format = info.format;
@@ -235,6 +247,10 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
         validation_out->message = "unsupported image format";
     }
     return -1;
+}
+
+int image_validate(const unsigned char *data, size_t size, ImageValidation *validation_out) {
+    return image_validate_ex(data, size, 0, validation_out);
 }
 
 const char *image_format_name(ImageFormat format) {

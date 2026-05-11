@@ -79,7 +79,9 @@ multiple tools can reuse:
 
 - **compression/** - reusable compression-adjacent primitives shared by archive,
   compression, and media tools. CRC32 lives here so gzip/xz/bzip-style checks and
-  PNG chunk validation/editing use the same implementation.
+  PNG chunk validation/editing use the same implementation; small zlib
+  stored-block encoding lives here for metadata writers that need a valid zlib
+  stream without full deflate compression.
 
 Other shared components include archive utilities, crypto, hash functions,
 regex, path manipulation, and shell infrastructure.

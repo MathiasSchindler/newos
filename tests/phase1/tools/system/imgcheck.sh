@@ -8,6 +8,7 @@ phase1_setup imgcheck
 tab=$(printf '\t')
 
 printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\001\000\000\000\001\010\006\000\000\000\037\025\304\211\000\000\000\012IDAT\170\234c\000\001\000\000\005\000\001\015\012-\264\000\000\000\000IEND\256B`\202' > "$WORK_DIR/valid.png"
+printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\001\000\000\000\001\010\006\000\000\000\037\025\304\211\000\000\000\012IDAT\170\234c\000\001\000\000\005\000\001\015\012-\264\000\000\000\007tIME\000\000\000\000\000\000\000\011\163\224\056\000\000\000\000IEND\256B`\202' > "$WORK_DIR/late-time.png"
 printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\001\000\000\000\001\010\006\000\000\000\000\000\000\000\000\000\000\000IEND\256B`\202' > "$WORK_DIR/bad-crc.png"
 printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\001\000\000\000\001\010\006\000\000\000\037\025\304\211\000\000\000\000IEND\256B`\202' > "$WORK_DIR/no-idat.png"
 printf 'not an image\n' > "$WORK_DIR/not-image.txt"
@@ -17,16 +18,36 @@ printf '\377\330\377\340\000\020JFIF\000\001\001\001\000\110\000\110\000\000\377
 printf '\377\330\377\340\377\377JFIF\000' > "$WORK_DIR/bad-segment.jpg"
 printf 'BM\072\000\000\000\000\000\000\000\066\000\000\000\050\000\000\000\001\000\000\000\001\000\000\000\001\000\030\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/sample.bmp"
 printf 'BM\066\000\000\000\000\000\000\000\066\000\000\000\050\000\000\000\001\000\000\000\001\000\000\000\001\000\030\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/truncated.bmp"
+printf 'II\052\000\010\000\000\000\004\000\000\001\004\000\001\000\000\000\011\000\000\000\001\001\004\000\001\000\000\000\012\000\000\000\002\001\003\000\001\000\000\000\010\000\000\000\025\001\003\000\001\000\000\000\003\000\000\000\000\000\000\000' > "$WORK_DIR/sample.tiff"
+printf 'II\053\000\010\000\000\000\020\000\000\000\000\000\000\000\006\000\000\000\000\000\000\000\000\001\004\000\001\000\000\000\000\000\000\000\013\000\000\000\000\000\000\000\001\001\004\000\001\000\000\000\000\000\000\000\014\000\000\000\000\000\000\000\002\001\003\000\001\000\000\000\000\000\000\000\010\000\000\000\000\000\000\000\003\001\003\000\001\000\000\000\000\000\000\000\001\000\000\000\000\000\000\000\006\001\003\000\001\000\000\000\000\000\000\000\002\000\000\000\000\000\000\000\025\001\003\000\001\000\000\000\000\000\000\000\003\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/sample-bigtiff.tiff"
+printf 'RIFF\056\000\000\000WEBPVP8X\012\000\000\000\002\000\000\000\000\000\000\000\000\000ANMF\020\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/sample.webp"
 
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png${tab}png${tab}ok${tab}-${tab}valid PNG image" "imgcheck did not accept valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --verbose "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png: OK (png): valid PNG image" "imgcheck --verbose did not describe valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}ok${tab}-${tab}valid JPEG image" "imgcheck did not accept valid JPEG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}ok${tab}-${tab}valid GIF image" "imgcheck did not accept valid GIF"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}-${tab}valid BMP image and pixel array" "imgcheck did not accept valid BMP"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.tiff")" "$WORK_DIR/sample.tiff${tab}tiff${tab}ok${tab}-${tab}valid TIFF header and first IFD" "imgcheck did not validate TIFF first IFD"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample-bigtiff.tiff")" "$WORK_DIR/sample-bigtiff.tiff${tab}tiff${tab}ok${tab}-${tab}valid BigTIFF header and first IFD" "imgcheck did not validate BigTIFF first IFD"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.webp")" "$WORK_DIR/sample.webp${tab}webp${tab}ok${tab}-${tab}valid WebP RIFF image" "imgcheck did not validate WebP RIFF image"
+
+assert_file_contains "$WORK_DIR/late-time.png" 'PNG' "strict-mode fixture sanity check failed"
+"$ROOT_DIR/build/imgcheck" --plain "$WORK_DIR/late-time.png" > "$WORK_DIR/late-time-default.out"
+assert_file_contains "$WORK_DIR/late-time-default.out" 'valid PNG image' "imgcheck default mode should accept late ancillary PNG chunks"
+if "$ROOT_DIR/build/imgcheck" --strict "$WORK_DIR/late-time.png" > "$WORK_DIR/late-time-strict.out" 2>&1; then
+    fail "imgcheck --strict should reject late ancillary PNG chunks"
+fi
+assert_file_contains "$WORK_DIR/late-time-strict.out" 'strict PNG rejects ancillary chunks after IDAT' "imgcheck --strict did not report late ancillary PNG chunks"
 
 "$ROOT_DIR/build/imgcheck" --json "$WORK_DIR/valid.png" > "$WORK_DIR/valid-json.out"
 assert_file_contains "$WORK_DIR/valid-json.out" '"valid":true' "imgcheck --json did not report success"
 assert_file_contains "$WORK_DIR/valid-json.out" '"failure_offset":null' "imgcheck --json did not report null success offset"
+
+mkdir "$WORK_DIR/nested"
+cp "$WORK_DIR/valid.png" "$WORK_DIR/nested/inner.png"
+"$ROOT_DIR/build/imgcheck" --recursive --json "$WORK_DIR/nested" > "$WORK_DIR/recursive-json.out"
+assert_file_contains "$WORK_DIR/recursive-json.out" 'inner.png' "imgcheck --recursive did not visit nested image"
+assert_file_contains "$WORK_DIR/recursive-json.out" '"valid":true' "imgcheck --recursive --json did not validate nested image"
 
 if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/bad-crc.png" > "$WORK_DIR/bad-crc.out" 2>&1; then
     fail "imgcheck should reject PNG with bad CRC"

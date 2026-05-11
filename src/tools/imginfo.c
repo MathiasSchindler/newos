@@ -531,14 +531,24 @@ static void write_json_info(const char *label, const ImageInfo *info) {
 
 static int describe_path(const char *path, const ImginfoOptions *options) {
     unsigned char buffer[IMGINFO_READ_LIMIT];
+    unsigned char *full_data = 0;
     size_t size = 0U;
+    const unsigned char *probe_data = buffer;
     ImageInfo info;
     const char *label = path ? path : "stdin";
 
-    if (read_probe_data(path, buffer, sizeof(buffer), &size) != 0) {
+    if (path == 0) {
+        if (read_all_input(path, &full_data, &size) != 0) {
+            return -1;
+        }
+        probe_data = full_data;
+    } else if (read_probe_data(path, buffer, sizeof(buffer), &size) != 0) {
         return -1;
     }
-    if (image_probe(buffer, size, &info) != 0) {
+    if (image_probe(probe_data, size, &info) != 0) {
+        if (full_data != 0) {
+            rt_free(full_data);
+        }
         tool_write_error("imginfo", "unsupported image format: ", label);
         return -1;
     }
@@ -556,6 +566,9 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
         }
     }
     warn_extension_mismatch(path, &info);
+    if (full_data != 0) {
+        rt_free(full_data);
+    }
     if (options->canonical_ext_only) {
         rt_write_line(1, image_format_extension(info.format));
         return 0;

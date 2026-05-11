@@ -41,9 +41,11 @@ int image_tiff_extract_metadata(const unsigned char *data,
                                 int *has_photometric_out,
                                 unsigned int *orientation_out);
 
-int image_validate_png(const unsigned char *data, size_t size, ImageValidation *validation);
+int image_validate_png(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation);
 int image_validate_jpeg(const unsigned char *data, size_t size, ImageValidation *validation);
 int image_validate_gif(const unsigned char *data, size_t size, ImageValidation *validation);
 int image_validate_bmp(const unsigned char *data, size_t size, ImageValidation *validation);
+int image_validate_tiff(const unsigned char *data, size_t size, ImageValidation *validation);
+int image_validate_webp(const unsigned char *data, size_t size, ImageValidation *validation);
 
 #endif

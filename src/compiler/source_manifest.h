@@ -65,6 +65,7 @@
     X("src/shared/server_log.c") \
     X("src/shared/archive_util.c") \
     X("src/shared/compression/crc32.c") \
+    X("src/shared/compression/zlib.c") \
     X("src/shared/bignum.c") \
     X("src/shared/xml.c") \
     X("src/shared/xml_stream.c") \

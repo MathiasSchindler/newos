@@ -7,14 +7,14 @@ imgcheck - validate image file structure
 ## SYNOPSIS
 
 ```
-imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [-R|--recursive] [file ...]
+imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [-R|--recursive] [file ...]
 ```
 
 ## DESCRIPTION
 
 `imgcheck` reads image files and reports whether each input is recognized and structurally valid according to the checks implemented by the shared image parser.
 
-The first validation passes perform real PNG, JPEG, GIF, and BMP container checks. PNG checks include signature, required chunk order, IHDR fields, chunk lengths, CRC values, required IDAT data, and IEND termination. JPEG checks include marker sequencing, segment lengths, SOF dimensions and component tables, SOS presence, scan-data marker escaping, EOI termination, and trailing data. GIF checks include the header, logical screen descriptor, global and local color table bounds, extension blocks, image descriptors, image data sub-block termination, and trailer termination. BMP checks include file and DIB headers, dimensions, plane count, bit depth, compression compatibility, color-table bounds, pixel-data offsets, and uncompressed pixel-array length. For uncompressed BMP files, the pixel-array span is verified against the decoded row layout. Other recognized image formats currently use the shared probe path and are reported as recognized while deeper validators are still being added.
+The first validation passes perform real PNG, JPEG, GIF, TIFF, WebP, and BMP container checks. PNG checks include signature, required chunk order, IHDR fields, chunk lengths, CRC values, required IDAT data, and IEND termination. JPEG checks include marker sequencing, segment lengths, SOF dimensions and component tables, SOS presence, scan-data marker escaping, EOI termination, and trailing data. GIF checks include the header, logical screen descriptor, global and local color table bounds, extension blocks, image descriptors, image data sub-block termination, and trailer termination. TIFF checks include byte order, magic number, first IFD bounds, value offsets, and required first-image dimensions for classic TIFF. WebP checks include RIFF sizing, chunk bounds, and required image chunks. BMP checks include file and DIB headers, dimensions, plane count, bit depth, compression compatibility, color-table bounds, pixel-data offsets, and uncompressed pixel-array length. For uncompressed BMP files, the pixel-array span is verified against the decoded row layout.
 
 When no file is provided, `imgcheck` reads from standard input.
 
@@ -24,7 +24,8 @@ When no file is provided, `imgcheck` reads from standard input.
 - JPEG, with structural marker and segment validation
 - GIF, with structural block validation
 - BMP, with structural header, palette, and pixel-array validation
-- TIFF and WebP, recognized through the shared image probe layer pending deeper validation
+- TIFF, with classic TIFF and BigTIFF first-IFD structural validation
+- WebP, with RIFF chunk validation
 
 ## OPTIONS
 
@@ -32,6 +33,7 @@ When no file is provided, `imgcheck` reads from standard input.
 - `-v`, `--verbose` - include the validation message for successful inputs
 - `-p`, `--plain` - print tab-separated fields for scripts: `path format status failure-offset message`
 - `--json` - print one JSON object per input with `path`, `format`, `valid`, `status`, `message`, and `failure_offset`
+- `--strict` - reject additional spec-discouraged constructs, currently including ancillary PNG chunks after IDAT
 - `-R`, `--recursive` - walk directory operands recursively
 - `-h`, `--help` - show usage
 
@@ -45,9 +47,9 @@ is available, plain output prints `-` and JSON prints `null`.
 
 ## LIMITATIONS
 
-- PNG, JPEG, and GIF validation is structural and does not inflate, decompress, or verify decoded pixel data. BMP validation verifies uncompressed pixel-array bounds against the decoded row layout, but does not interpret color values.
-- TIFF and WebP currently receive recognition-level checks only; format-specific structural validators will be added incrementally.
-- There is not yet a `--strict` mode for rejecting spec-discouraged but widely tolerated constructs such as late ancillary chunks, uncommon chunk ordering, or trailing compatibility data.
+- PNG, JPEG, GIF, TIFF, and WebP validation is structural and does not inflate, decompress, or verify decoded pixel data. BMP validation verifies uncompressed pixel-array bounds against the decoded row layout, but does not interpret color values.
+- TIFF and BigTIFF validation currently check the first image file directory only; nested or chained IFD trees are not followed.
+- `--strict` currently adds PNG ancillary-chunk ordering checks. Other strict policy checks will be added incrementally.
 - Metadata payloads such as EXIF, ICC profiles, XMP packets, and textual chunks are not fully interpreted by this command.
 - Very large inputs are read into memory before validation.
 
@@ -58,6 +60,7 @@ imgcheck picture.png
 imgcheck --verbose *.png
 imgcheck --plain image.png image.jpg
 imgcheck --json --recursive images/
+imgcheck --strict image.png
 cat image.png | imgcheck -q
 ```
 

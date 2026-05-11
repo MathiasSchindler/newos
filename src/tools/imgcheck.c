@@ -13,10 +13,11 @@ typedef struct {
     int plain;
     int json;
     int recursive;
+    int strict;
 } ImgcheckOptions;
 
 static void print_usage(void) {
-    tool_write_usage("imgcheck", "[-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [-R|--recursive] [file ...]");
+    tool_write_usage("imgcheck", "[-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [-R|--recursive] [file ...]");
 }
 
 static int read_all_input(const char *path, unsigned char **data_out, size_t *size_out) {
@@ -164,13 +165,15 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     unsigned char *data;
     size_t size;
     ImageValidation validation;
+    ImageValidationOptions validation_options;
     const char *label = path ? path : "stdin";
     int result;
 
     if (read_all_input(path, &data, &size) != 0) {
         return -1;
     }
-    result = image_validate(data, size, &validation);
+    validation_options.strict = options->strict;
+    result = image_validate_ex(data, size, &validation_options, &validation);
     rt_free(data);
     if (!options->quiet) {
         if (options->json) {
@@ -228,6 +231,7 @@ static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *a
     options->plain = 0;
     options->json = 0;
     options->recursive = 0;
+    options->strict = 0;
     while (arg_index < argc && argv[arg_index][0] == '-' && argv[arg_index][1] != '\0') {
         const char *arg = argv[arg_index];
 
@@ -256,6 +260,11 @@ static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *a
         }
         if (rt_strcmp(arg, "--json") == 0) {
             options->json = 1;
+            arg_index += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--strict") == 0) {
+            options->strict = 1;
             arg_index += 1;
             continue;
         }
