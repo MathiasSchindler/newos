@@ -62,6 +62,8 @@ void image_info_init(ImageInfo *info) {
     info->orientation = 0U;
     info->density_x = 0U;
     info->density_y = 0U;
+    info->duration_ms = 0U;
+    info->loop_count = 0U;
     info->property_flags = 0U;
     info->variant = 0;
     info->color_model = 0;
@@ -98,6 +100,21 @@ void image_set_frames(ImageInfo *info, unsigned int frame_count) {
         if (frame_count > 1U) {
             info->property_flags |= IMAGE_PROPERTY_ANIMATED;
         }
+    }
+}
+
+void image_set_duration_ms(ImageInfo *info, unsigned int duration_ms) {
+    if (duration_ms != 0U) {
+        info->duration_ms = duration_ms;
+        info->flags |= IMAGE_INFO_HAS_DURATION_MS;
+    }
+}
+
+void image_set_loop_count(ImageInfo *info, unsigned int loop_count) {
+    info->loop_count = loop_count;
+    info->flags |= IMAGE_INFO_HAS_LOOP_COUNT;
+    if (loop_count == 0U) {
+        info->property_flags |= IMAGE_PROPERTY_LOOPING;
     }
 }
 
@@ -169,6 +186,8 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
     if (validation_out != 0) {
         validation_out->format = IMAGE_FORMAT_UNKNOWN;
         validation_out->valid = 0;
+        validation_out->has_failure_offset = 0;
+        validation_out->failure_offset = 0U;
         validation_out->message = "unsupported image format";
     }
     if (data == 0) {
@@ -202,6 +221,8 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
         if (validation_out != 0) {
             validation_out->format = info.format;
             validation_out->valid = 1;
+            validation_out->has_failure_offset = 0;
+            validation_out->failure_offset = 0U;
             validation_out->message = "recognized; deep validation not implemented";
         }
         return 0;
@@ -209,6 +230,8 @@ int image_validate(const unsigned char *data, size_t size, ImageValidation *vali
     if (validation_out != 0) {
         validation_out->format = IMAGE_FORMAT_UNKNOWN;
         validation_out->valid = 0;
+        validation_out->has_failure_offset = 0;
+        validation_out->failure_offset = 0U;
         validation_out->message = "unsupported image format";
     }
     return -1;

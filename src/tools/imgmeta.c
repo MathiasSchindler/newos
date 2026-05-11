@@ -7,7 +7,7 @@
 #define IMGMETA_INITIAL_CAPACITY (64U * 1024U)
 
 static void print_usage(void) {
-    tool_write_usage("imgmeta", "show FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE | edit --set-text KEY=VALUE -o OUTPUT FILE");
+    tool_write_usage("imgmeta", "show FILE ... | list-text FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE | edit [--set-text KEY=VALUE|--remove-text KEY] -o OUTPUT FILE");
 }
 
 static unsigned int read_u16_be(const unsigned char *bytes) {
@@ -262,6 +262,17 @@ static int png_text_key_matches(const unsigned char *payload, unsigned int lengt
     return bytes_equal(payload, key, key_length);
 }
 
+static size_t png_text_key_length(const unsigned char *payload, unsigned int length) {
+    size_t index;
+
+    for (index = 0U; index < (size_t)length; ++index) {
+        if (payload[index] == 0U) {
+            return index;
+        }
+    }
+    return (size_t)length;
+}
+
 static int png_text_key_is_valid(const char *key, size_t key_length) {
     size_t index;
 
@@ -354,6 +365,102 @@ static int edit_png_text(const unsigned char *data,
     }
     *out_data = output;
     *out_size = output_size;
+    return 0;
+}
+
+static int remove_png_text(const unsigned char *data,
+                           size_t size,
+                           const char *key,
+                           size_t key_length,
+                           unsigned char **out_data,
+                           size_t *out_size) {
+    static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
+    unsigned char *output;
+    size_t input_offset = 8U;
+    size_t output_size = 8U;
+    int removed = 0;
+
+    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
+        return -1;
+    }
+    output = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
+    if (output == 0) {
+        return -1;
+    }
+    memcpy(output, data, 8U);
+    while (input_offset + 12U <= size) {
+        unsigned int length = read_u32_be(data + input_offset);
+        const unsigned char *type = data + input_offset + 4U;
+        const unsigned char *payload = data + input_offset + 8U;
+        size_t chunk_size;
+
+        if ((size_t)length > size - input_offset - 12U) {
+            rt_free(output);
+            return -1;
+        }
+        chunk_size = (size_t)length + 12U;
+        if (bytes_equal(type, "tEXt", 4U) && png_text_key_matches(payload, length, key, key_length)) {
+            removed = 1;
+        } else {
+            memcpy(output + output_size, data + input_offset, chunk_size);
+            output_size += chunk_size;
+        }
+        input_offset += chunk_size;
+        if (bytes_equal(type, "IEND", 4U)) {
+            break;
+        }
+    }
+    if (!removed) {
+        rt_free(output);
+        return -1;
+    }
+    *out_data = output;
+    *out_size = output_size;
+    return 0;
+}
+
+static int list_png_text(const unsigned char *data, size_t size, const char *label) {
+    static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
+    size_t offset = 8U;
+
+    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature))) {
+        tool_write_error("imgmeta", "text listing is implemented for PNG only: ", label);
+        return -1;
+    }
+    while (offset + 12U <= size) {
+        unsigned int length = read_u32_be(data + offset);
+        const unsigned char *type = data + offset + 4U;
+        const unsigned char *payload = data + offset + 8U;
+        size_t key_length;
+
+        if ((size_t)length > size - offset - 12U) {
+            tool_write_error("imgmeta", "truncated PNG chunk while listing text: ", label);
+            return -1;
+        }
+        if (bytes_equal(type, "tEXt", 4U)) {
+            key_length = png_text_key_length(payload, length);
+            rt_write_cstr(1, label);
+            rt_write_cstr(1, "\ttEXt\t");
+            rt_write_all(1, payload, key_length);
+            rt_write_char(1, '\t');
+            if (key_length + 1U < (size_t)length) {
+                rt_write_all(1, payload + key_length + 1U, (size_t)length - key_length - 1U);
+            }
+            rt_write_char(1, '\n');
+        } else if (bytes_equal(type, "iTXt", 4U) || bytes_equal(type, "zTXt", 4U)) {
+            key_length = png_text_key_length(payload, length);
+            rt_write_cstr(1, label);
+            rt_write_char(1, '\t');
+            rt_write_all(1, type, 4U);
+            rt_write_char(1, '\t');
+            rt_write_all(1, payload, key_length);
+            rt_write_cstr(1, "\t-");
+            rt_write_char(1, '\n');
+        } else if (bytes_equal(type, "IEND", 4U)) {
+            break;
+        }
+        offset += 12U + (size_t)length;
+    }
     return 0;
 }
 
@@ -580,6 +687,52 @@ static int edit_text_path(const char *input_path, const char *output_path, const
     return result;
 }
 
+static int remove_text_path(const char *input_path, const char *output_path, const char *key) {
+    unsigned char *data;
+    unsigned char *edited = 0;
+    size_t size;
+    size_t edited_size = 0U;
+    ImageInfo info;
+    int result;
+
+    if (read_all_input(input_path, &data, &size) != 0) {
+        return -1;
+    }
+    if (image_probe(data, size, &info) != 0) {
+        tool_write_error("imgmeta", "unsupported image format: ", input_path);
+        rt_free(data);
+        return -1;
+    }
+    if (info.format != IMAGE_FORMAT_PNG) {
+        tool_write_error("imgmeta", "text removal is not implemented for: ", image_format_extension(info.format));
+        rt_free(data);
+        return -1;
+    }
+    result = remove_png_text(data, size, key, rt_strlen(key), &edited, &edited_size);
+    rt_free(data);
+    if (result != 0 || edited == 0) {
+        tool_write_error("imgmeta", "could not remove PNG text metadata: ", input_path);
+        return -1;
+    }
+    result = write_file(output_path, edited, edited_size);
+    rt_free(edited);
+    return result;
+}
+
+static int list_text_path(const char *path) {
+    unsigned char *data;
+    size_t size;
+    const char *label = path ? path : "stdin";
+    int result;
+
+    if (read_all_input(path, &data, &size) != 0) {
+        return -1;
+    }
+    result = list_png_text(data, size, label);
+    rt_free(data);
+    return result;
+}
+
 static int run_show(int argc, char **argv, int arg_index) {
     int status = 0;
 
@@ -588,6 +741,21 @@ static int run_show(int argc, char **argv, int arg_index) {
     }
     while (arg_index < argc) {
         if (show_path(argv[arg_index]) != 0) {
+            status = 1;
+        }
+        arg_index += 1;
+    }
+    return status;
+}
+
+static int run_list_text(int argc, char **argv, int arg_index) {
+    int status = 0;
+
+    if (arg_index >= argc) {
+        return list_text_path(0) == 0 ? 0 : 1;
+    }
+    while (arg_index < argc) {
+        if (list_text_path(argv[arg_index]) != 0) {
             status = 1;
         }
         arg_index += 1;
@@ -677,6 +845,7 @@ static int run_edit(int argc, char **argv, int arg_index) {
     const char *output_path = 0;
     const char *input_path = 0;
     const char *text_assignment = 0;
+    const char *remove_text_key = 0;
 
     while (arg_index < argc) {
         const char *arg = argv[arg_index];
@@ -688,6 +857,11 @@ static int run_edit(int argc, char **argv, int arg_index) {
         }
         if (rt_strcmp(arg, "--set-text") == 0 && arg_index + 1 < argc) {
             text_assignment = argv[arg_index + 1];
+            arg_index += 2;
+            continue;
+        }
+        if (rt_strcmp(arg, "--remove-text") == 0 && arg_index + 1 < argc) {
+            remove_text_key = argv[arg_index + 1];
             arg_index += 2;
             continue;
         }
@@ -710,10 +884,14 @@ static int run_edit(int argc, char **argv, int arg_index) {
     if (input_path == 0 && arg_index < argc) {
         input_path = argv[arg_index++];
     }
-    if (input_path == 0 || output_path == 0 || text_assignment == 0) {
-        tool_write_error("imgmeta", "edit requires --set-text KEY=VALUE, -o OUTPUT, and one input file", 0);
+    if (input_path == 0 || output_path == 0 || (text_assignment == 0 && remove_text_key == 0) ||
+        (text_assignment != 0 && remove_text_key != 0)) {
+        tool_write_error("imgmeta", "edit requires one of --set-text KEY=VALUE or --remove-text KEY, -o OUTPUT, and one input file", 0);
         print_usage();
         return 1;
+    }
+    if (remove_text_key != 0) {
+        return remove_text_path(input_path, output_path, remove_text_key) == 0 ? 0 : 1;
     }
     return edit_text_path(input_path, output_path, text_assignment) == 0 ? 0 : 1;
 }
@@ -732,6 +910,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(command, "show") == 0) {
         return run_show(argc, argv, 2);
+    }
+    if (rt_strcmp(command, "list-text") == 0 || rt_strcmp(command, "--list-text") == 0) {
+        return run_list_text(argc, argv, 2);
     }
     if (rt_strcmp(command, "strip") == 0) {
         return run_strip(argc, argv, 2);

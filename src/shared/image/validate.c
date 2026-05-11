@@ -7,6 +7,19 @@ static void image_validation_set(ImageValidation *validation, ImageFormat format
     }
     validation->format = format;
     validation->valid = valid;
+    validation->has_failure_offset = 0;
+    validation->failure_offset = 0U;
+    validation->message = message;
+}
+
+static void image_validation_set_offset(ImageValidation *validation, ImageFormat format, const char *message, size_t failure_offset) {
+    if (validation == 0) {
+        return;
+    }
+    validation->format = format;
+    validation->valid = 0;
+    validation->has_failure_offset = 1;
+    validation->failure_offset = failure_offset;
     validation->message = message;
 }
 
@@ -54,74 +67,74 @@ int image_validate_png(const unsigned char *data, size_t size, ImageValidation *
         unsigned int actual_crc;
 
         if ((size_t)length > size - offset - 12U) {
-            image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "chunk length exceeds file size");
+            image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "chunk length exceeds file size", offset);
             return -1;
         }
         crc_offset = payload + (size_t)length;
         expected_crc = image_read_u32_be(data + crc_offset);
         actual_crc = compression_crc32(type, (size_t)length + 4U);
         if (actual_crc != expected_crc) {
-            image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "chunk CRC mismatch");
+            image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "chunk CRC mismatch", offset);
             return -1;
         }
         if (!seen_ihdr) {
             if (!image_bytes_equal(type, "IHDR", 4U)) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "first chunk is not IHDR");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "first chunk is not IHDR", offset + 4U);
                 return -1;
             }
             if (length != 13U) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "IHDR chunk has invalid length");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "IHDR chunk has invalid length", offset);
                 return -1;
             }
             if (image_read_u32_be(data + payload) == 0U || image_read_u32_be(data + payload + 4U) == 0U) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "IHDR dimensions must be nonzero");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "IHDR dimensions must be nonzero", payload);
                 return -1;
             }
             color_type = data[payload + 9U];
             if (!png_color_bit_depth_is_valid(color_type, data[payload + 8U])) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "invalid PNG color type and bit depth combination");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "invalid PNG color type and bit depth combination", payload + 8U);
                 return -1;
             }
             if (data[payload + 10U] != 0U || data[payload + 11U] != 0U || data[payload + 12U] > 1U) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "IHDR compression filter or interlace method is invalid");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "IHDR compression filter or interlace method is invalid", payload + 10U);
                 return -1;
             }
             seen_ihdr = 1;
         } else if (image_bytes_equal(type, "IHDR", 4U)) {
-            image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "duplicate IHDR chunk");
+            image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "duplicate IHDR chunk", offset + 4U);
             return -1;
         } else if (image_bytes_equal(type, "PLTE", 4U)) {
             if (seen_idat) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "PLTE chunk appears after IDAT");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "PLTE chunk appears after IDAT", offset + 4U);
                 return -1;
             }
             if (seen_plte) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "duplicate PLTE chunk");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "duplicate PLTE chunk", offset + 4U);
                 return -1;
             }
             if (length == 0U || (length % 3U) != 0U || length > 768U) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "PLTE chunk has invalid length");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "PLTE chunk has invalid length", offset);
                 return -1;
             }
             seen_plte = 1;
         } else if (image_bytes_equal(type, "IDAT", 4U)) {
             if (seen_non_idat_after_idat) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "IDAT chunks are not consecutive");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "IDAT chunks are not consecutive", offset + 4U);
                 return -1;
             }
             seen_idat = 1;
         } else if (image_bytes_equal(type, "tRNS", 4U)) {
             if (seen_idat) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "tRNS chunk appears after IDAT");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "tRNS chunk appears after IDAT", offset + 4U);
                 return -1;
             }
             if (color_type == 3U && !seen_plte) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "indexed tRNS chunk appears before PLTE");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "indexed tRNS chunk appears before PLTE", offset + 4U);
                 return -1;
             }
         } else if (image_bytes_equal(type, "IEND", 4U)) {
             if (length != 0U) {
-                image_validation_set(validation, IMAGE_FORMAT_PNG, 0, "IEND chunk has invalid length");
+                image_validation_set_offset(validation, IMAGE_FORMAT_PNG, "IEND chunk has invalid length", offset);
                 return -1;
             }
             seen_iend = 1;
@@ -211,7 +224,7 @@ int image_validate_jpeg(const unsigned char *data, size_t size, ImageValidation 
         unsigned int segment_size;
 
         if (data[offset] != 0xffU) {
-            image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "expected JPEG marker");
+            image_validation_set_offset(validation, IMAGE_FORMAT_JPEG, "expected JPEG marker", offset);
             return -1;
         }
         while (offset < size && data[offset] == 0xffU) {
@@ -222,7 +235,7 @@ int image_validate_jpeg(const unsigned char *data, size_t size, ImageValidation 
         }
         marker = data[offset++];
         if (marker == 0x00U) {
-            image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "unexpected stuffed JPEG byte outside scan data");
+            image_validation_set_offset(validation, IMAGE_FORMAT_JPEG, "unexpected stuffed JPEG byte outside scan data", offset - 1U);
             return -1;
         }
         if (marker == 0xd9U) {
@@ -237,7 +250,7 @@ int image_validate_jpeg(const unsigned char *data, size_t size, ImageValidation 
         }
         segment_size = image_read_u16_be(data + offset);
         if (segment_size < 2U || (size_t)segment_size > size - offset) {
-            image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG segment length exceeds file size");
+            image_validation_set_offset(validation, IMAGE_FORMAT_JPEG, "JPEG segment length exceeds file size", offset);
             return -1;
         }
         if (jpeg_is_sof_marker(marker)) {

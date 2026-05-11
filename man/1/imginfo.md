@@ -7,7 +7,7 @@ imginfo - show basic image metadata
 ## SYNOPSIS
 
 ```
-imginfo [-m|--mime] [-p|--plain] [-d|--details] [file ...]
+imginfo [-m|--mime] [-p|--plain] [-d|--details] [--json] [--canonical-ext] [-R|--recursive] [file ...]
 ```
 
 ## DESCRIPTION
@@ -40,8 +40,12 @@ change the exit status and does not alter standard output.
 - `-p`, `--plain` - print tab-separated fields for scripts:
   `path format width height bit-depth channels mime`
 - `-d`, `--details` - print one labeled metadata block per input, including
-  variant, color model, compression, density, orientation, frame count, and
-  properties when known
+  variant, color model, compression, density, orientation, frame count,
+  animation duration, loop count, and properties when known
+- `--json` - print one JSON object per input, including the canonical extension
+  and known metadata fields
+- `--canonical-ext` - print only the detected canonical extension for each input
+- `-R`, `--recursive` - walk directory operands recursively
 - `-h`, `--help` - show usage
 
 Unknown numeric fields are printed as `-` in plain output.
@@ -65,6 +69,8 @@ picture.png:
   density: 3780x3780 pixels/meter
   orientation: -
   frames: -
+  duration-ms: -
+  loop-count: -
   properties: alpha
 ```
 
@@ -77,7 +83,9 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 - JPEG dimensions are found by scanning for a SOF marker. Path inputs that look like JPEGs but do not expose dimensions in the initial probe window are retried with a full-file probe; standard-input probes remain bounded and may still report the format without dimensions for unusual files with very large metadata prefixes.
 - TIFF support reads classic TIFF and BigTIFF first image directories, but does not follow nested IFD trees or offsets beyond the local addressable range.
 - Animated frame counts are reported for PNG APNG and WebP `ANMF` chunks when
-  those lightweight container records are visible within the probe window.
+  those lightweight container records are visible within the probe window. WebP
+  `ANIM` loop counts and `ANMF` frame durations are also reported when present.
+- Deeper animation metadata, such as per-frame disposal/blend behavior and exact timing for formats that require decompression or full stream parsing, is not reported.
 - The command does not perform full image validation or decompression.
 - Metadata discovery is intentionally shallow; EXIF payloads, ICC profiles, XMP
   packets, PNG text chunks, and nested TIFF tag directories are detected or
@@ -93,6 +101,8 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 imginfo picture.png
 imginfo --details picture.png
 imginfo --plain *.jpg
+imginfo --json --recursive images/
+imginfo --canonical-ext picture.png
 cat image.webp | imginfo
 ```
 

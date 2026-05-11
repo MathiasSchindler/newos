@@ -7,7 +7,7 @@ imgcheck - validate image file structure
 ## SYNOPSIS
 
 ```
-imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [file ...]
+imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [-R|--recursive] [file ...]
 ```
 
 ## DESCRIPTION
@@ -30,8 +30,14 @@ When no file is provided, `imgcheck` reads from standard input.
 
 - `-q`, `--quiet` - suppress output and use only the exit status
 - `-v`, `--verbose` - include the validation message for successful inputs
-- `-p`, `--plain` - print tab-separated fields for scripts: `path format status message`
+- `-p`, `--plain` - print tab-separated fields for scripts: `path format status failure-offset message`
+- `--json` - print one JSON object per input with `path`, `format`, `valid`, `status`, `message`, and `failure_offset`
+- `-R`, `--recursive` - walk directory operands recursively
 - `-h`, `--help` - show usage
+
+When a validator can identify the byte position of the first failure, human,
+plain, and JSON output include that zero-based byte offset. If no precise offset
+is available, plain output prints `-` and JSON prints `null`.
 
 ## EXIT STATUS
 
@@ -41,6 +47,7 @@ When no file is provided, `imgcheck` reads from standard input.
 
 - PNG, JPEG, and GIF validation is structural and does not inflate, decompress, or verify decoded pixel data. BMP validation verifies uncompressed pixel-array bounds against the decoded row layout, but does not interpret color values.
 - TIFF and WebP currently receive recognition-level checks only; format-specific structural validators will be added incrementally.
+- There is not yet a `--strict` mode for rejecting spec-discouraged but widely tolerated constructs such as late ancillary chunks, uncommon chunk ordering, or trailing compatibility data.
 - Metadata payloads such as EXIF, ICC profiles, XMP packets, and textual chunks are not fully interpreted by this command.
 - Very large inputs are read into memory before validation.
 
@@ -50,6 +57,7 @@ When no file is provided, `imgcheck` reads from standard input.
 imgcheck picture.png
 imgcheck --verbose *.png
 imgcheck --plain image.png image.jpg
+imgcheck --json --recursive images/
 cat image.png | imgcheck -q
 ```
 

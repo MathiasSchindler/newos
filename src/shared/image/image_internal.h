@@ -15,6 +15,8 @@ void image_set_dimensions(ImageInfo *info, unsigned int width, unsigned int heig
 void image_set_bit_depth(ImageInfo *info, unsigned int bit_depth);
 void image_set_channels(ImageInfo *info, unsigned int channel_count);
 void image_set_frames(ImageInfo *info, unsigned int frame_count);
+void image_set_duration_ms(ImageInfo *info, unsigned int duration_ms);
+void image_set_loop_count(ImageInfo *info, unsigned int loop_count);
 void image_set_variant(ImageInfo *info, const char *variant);
 void image_set_color_model(ImageInfo *info, const char *color_model);
 void image_set_compression(ImageInfo *info, const char *compression);

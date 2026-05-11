@@ -4,15 +4,19 @@
 #include "tool_util.h"
 
 #define IMGCHECK_INITIAL_CAPACITY (64U * 1024U)
+#define IMGCHECK_ENTRY_CAPACITY 512U
+#define IMGCHECK_PATH_CAPACITY 2048U
 
 typedef struct {
     int quiet;
     int verbose;
     int plain;
+    int json;
+    int recursive;
 } ImgcheckOptions;
 
 static void print_usage(void) {
-    tool_write_usage("imgcheck", "[-q|--quiet] [-v|--verbose] [-p|--plain] [file ...]");
+    tool_write_usage("imgcheck", "[-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [-R|--recursive] [file ...]");
 }
 
 static int read_all_input(const char *path, unsigned char **data_out, size_t *size_out) {
@@ -81,7 +85,62 @@ static void write_plain_result(const char *label, const ImageValidation *validat
     rt_write_char(1, '\t');
     rt_write_cstr(1, validation->valid ? "ok" : "fail");
     rt_write_char(1, '\t');
+    if (validation->has_failure_offset) {
+        rt_write_uint(1, (unsigned long long)validation->failure_offset);
+    } else {
+        rt_write_char(1, '-');
+    }
+    rt_write_char(1, '\t');
     rt_write_line(1, validation->message);
+}
+
+static void write_json_string(const char *text) {
+    size_t index;
+
+    rt_write_char(1, '"');
+    if (text != 0) {
+        for (index = 0U; text[index] != '\0'; ++index) {
+            unsigned char ch = (unsigned char)text[index];
+
+            if (ch == '"' || ch == '\\') {
+                rt_write_char(1, '\\');
+                rt_write_char(1, (char)ch);
+            } else if (ch == '\n') {
+                rt_write_cstr(1, "\\n");
+            } else if (ch == '\r') {
+                rt_write_cstr(1, "\\r");
+            } else if (ch == '\t') {
+                rt_write_cstr(1, "\\t");
+            } else if (ch < 32U) {
+                rt_write_cstr(1, "\\u00");
+                rt_write_char(1, "0123456789abcdef"[(ch >> 4U) & 0x0fU]);
+                rt_write_char(1, "0123456789abcdef"[ch & 0x0fU]);
+            } else {
+                rt_write_char(1, (char)ch);
+            }
+        }
+    }
+    rt_write_char(1, '"');
+}
+
+static void write_json_result(const char *label, const ImageValidation *validation) {
+    rt_write_cstr(1, "{\"path\":");
+    write_json_string(label);
+    rt_write_cstr(1, ",\"format\":");
+    write_json_string(image_format_extension(validation->format));
+    rt_write_cstr(1, ",\"valid\":");
+    rt_write_cstr(1, validation->valid ? "true" : "false");
+    rt_write_cstr(1, ",\"status\":");
+    write_json_string(validation->valid ? "ok" : "fail");
+    rt_write_cstr(1, ",\"message\":");
+    write_json_string(validation->message);
+    rt_write_cstr(1, ",\"failure_offset\":");
+    if (validation->has_failure_offset) {
+        rt_write_uint(1, (unsigned long long)validation->failure_offset);
+    } else {
+        rt_write_cstr(1, "null");
+    }
+    rt_write_line(1, "}");
 }
 
 static void write_human_result(const char *label, const ImageValidation *validation, const ImgcheckOptions *options) {
@@ -93,6 +152,10 @@ static void write_human_result(const char *label, const ImageValidation *validat
     if (options->verbose || !validation->valid) {
         rt_write_cstr(1, ": ");
         rt_write_cstr(1, validation->message);
+        if (validation->has_failure_offset) {
+            rt_write_cstr(1, " at offset ");
+            rt_write_uint(1, (unsigned long long)validation->failure_offset);
+        }
     }
     rt_write_char(1, '\n');
 }
@@ -110,7 +173,9 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     result = image_validate(data, size, &validation);
     rt_free(data);
     if (!options->quiet) {
-        if (options->plain) {
+        if (options->json) {
+            write_json_result(label, &validation);
+        } else if (options->plain) {
             write_plain_result(label, &validation);
         } else {
             write_human_result(label, &validation, options);
@@ -119,12 +184,50 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     return result == 0 && validation.valid ? 0 : -1;
 }
 
+static int check_path_recursive(const char *path, const ImgcheckOptions *options) {
+    PlatformDirEntry entries[IMGCHECK_ENTRY_CAPACITY];
+    size_t count = 0U;
+    int is_directory = 0;
+    int status = 0;
+    size_t index;
+
+    if (!options->recursive || platform_collect_entries(path, 1, entries, IMGCHECK_ENTRY_CAPACITY, &count, &is_directory) != 0) {
+        return check_path(path, options);
+    }
+    if (!is_directory) {
+        platform_free_entries(entries, count);
+        return check_path(path, options);
+    }
+    for (index = 0U; index < count; ++index) {
+        char child_path[IMGCHECK_PATH_CAPACITY];
+
+        if (rt_strcmp(entries[index].name, ".") == 0 || rt_strcmp(entries[index].name, "..") == 0) {
+            continue;
+        }
+        if (tool_join_path(path, entries[index].name, child_path, sizeof(child_path)) != 0) {
+            status = 1;
+            continue;
+        }
+        if (entries[index].is_dir) {
+            if (check_path_recursive(child_path, options) != 0) {
+                status = 1;
+            }
+        } else if (check_path(child_path, options) != 0) {
+            status = 1;
+        }
+    }
+    platform_free_entries(entries, count);
+    return status == 0 ? 0 : -1;
+}
+
 static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *arg_index_out) {
     int arg_index = 1;
 
     options->quiet = 0;
     options->verbose = 0;
     options->plain = 0;
+    options->json = 0;
+    options->recursive = 0;
     while (arg_index < argc && argv[arg_index][0] == '-' && argv[arg_index][1] != '\0') {
         const char *arg = argv[arg_index];
 
@@ -148,6 +251,16 @@ static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *a
         }
         if (rt_strcmp(arg, "-p") == 0 || rt_strcmp(arg, "--plain") == 0) {
             options->plain = 1;
+            arg_index += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--json") == 0) {
+            options->json = 1;
+            arg_index += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "-R") == 0 || rt_strcmp(arg, "--recursive") == 0) {
+            options->recursive = 1;
             arg_index += 1;
             continue;
         }
@@ -176,7 +289,7 @@ int main(int argc, char **argv) {
         return check_path(0, &options) == 0 ? 0 : 1;
     }
     while (arg_index < argc) {
-        if (check_path(argv[arg_index], &options) != 0) {
+        if (check_path_recursive(argv[arg_index], &options) != 0) {
             status = 1;
         }
         arg_index += 1;

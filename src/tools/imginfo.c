@@ -4,15 +4,20 @@
 #include "tool_util.h"
 
 #define IMGINFO_READ_LIMIT (256U * 1024U)
+#define IMGINFO_ENTRY_CAPACITY 512U
+#define IMGINFO_PATH_CAPACITY 2048U
 
 typedef struct {
     int mime_only;
     int machine_output;
     int detailed_output;
+    int json_output;
+    int canonical_ext_only;
+    int recursive;
 } ImginfoOptions;
 
 static void print_usage(void) {
-    tool_write_usage("imginfo", "[-m|--mime] [-p|--plain] [-d|--details] [file ...]");
+    tool_write_usage("imginfo", "[-m|--mime] [-p|--plain] [-d|--details] [--json] [--canonical-ext] [-R|--recursive] [file ...]");
 }
 
 static int read_probe_data(const char *path, unsigned char *buffer, size_t buffer_size, size_t *size_out) {
@@ -139,6 +144,79 @@ static int write_property_list(unsigned int property_flags) {
         rt_write_char(1, '-');
     }
     return wrote;
+}
+
+static void write_json_string(const char *text) {
+    size_t index;
+
+    rt_write_char(1, '"');
+    if (text != 0) {
+        for (index = 0U; text[index] != '\0'; ++index) {
+            unsigned char ch = (unsigned char)text[index];
+
+            if (ch == '"' || ch == '\\') {
+                rt_write_char(1, '\\');
+                rt_write_char(1, (char)ch);
+            } else if (ch == '\n') {
+                rt_write_cstr(1, "\\n");
+            } else if (ch == '\r') {
+                rt_write_cstr(1, "\\r");
+            } else if (ch == '\t') {
+                rt_write_cstr(1, "\\t");
+            } else if (ch < 32U) {
+                rt_write_cstr(1, "\\u00");
+                rt_write_char(1, "0123456789abcdef"[(ch >> 4U) & 0x0fU]);
+                rt_write_char(1, "0123456789abcdef"[ch & 0x0fU]);
+            } else {
+                rt_write_char(1, (char)ch);
+            }
+        }
+    }
+    rt_write_char(1, '"');
+}
+
+static void write_json_uint_or_null(unsigned int value, int known) {
+    if (known) {
+        rt_write_uint(1, (unsigned long long)value);
+    } else {
+        rt_write_cstr(1, "null");
+    }
+}
+
+static void write_json_properties(unsigned int property_flags) {
+    static const unsigned int properties[] = {
+        IMAGE_PROPERTY_ALPHA,
+        IMAGE_PROPERTY_PALETTE,
+        IMAGE_PROPERTY_INTERLACED,
+        IMAGE_PROPERTY_ANIMATED,
+        IMAGE_PROPERTY_PROGRESSIVE,
+        IMAGE_PROPERTY_LOSSLESS,
+        IMAGE_PROPERTY_EXIF,
+        IMAGE_PROPERTY_ICC,
+        IMAGE_PROPERTY_XMP,
+        IMAGE_PROPERTY_TOP_DOWN,
+        IMAGE_PROPERTY_LOOPING,
+        IMAGE_PROPERTY_ORIENTATION
+    };
+    size_t index;
+    int wrote = 0;
+
+    rt_write_char(1, '[');
+    for (index = 0U; index < sizeof(properties) / sizeof(properties[0]); ++index) {
+        if ((property_flags & properties[index]) != 0U) {
+            const char *name = image_property_name(properties[index]);
+
+            if (name == 0) {
+                continue;
+            }
+            if (wrote) {
+                rt_write_char(1, ',');
+            }
+            write_json_string(name);
+            wrote = 1;
+        }
+    }
+    rt_write_char(1, ']');
 }
 
 static int ascii_lower(int ch) {
@@ -393,10 +471,62 @@ static int write_detail_block(const char *label, const ImageInfo *info) {
         write_unknown_value();
     }
     write_detail_uint("frames", info->frame_count, (info->flags & IMAGE_INFO_HAS_FRAMES) != 0U);
+    write_detail_uint("duration-ms", info->duration_ms, (info->flags & IMAGE_INFO_HAS_DURATION_MS) != 0U);
+    write_detail_uint("loop-count", info->loop_count, (info->flags & IMAGE_INFO_HAS_LOOP_COUNT) != 0U);
     rt_write_cstr(1, "  properties: ");
     write_property_list(info->property_flags);
     rt_write_char(1, '\n');
     return 0;
+}
+
+static void write_json_info(const char *label, const ImageInfo *info) {
+    rt_write_cstr(1, "{\"path\":");
+    write_json_string(label);
+    rt_write_cstr(1, ",\"format\":");
+    write_json_string(image_format_name(info->format));
+    rt_write_cstr(1, ",\"extension\":");
+    write_json_string(image_format_extension(info->format));
+    rt_write_cstr(1, ",\"canonical_extension\":");
+    write_json_string(image_format_extension(info->format));
+    rt_write_cstr(1, ",\"mime\":");
+    write_json_string(image_format_mime(info->format));
+    rt_write_cstr(1, ",\"width\":");
+    write_json_uint_or_null(info->width, (info->flags & IMAGE_INFO_HAS_DIMENSIONS) != 0U);
+    rt_write_cstr(1, ",\"height\":");
+    write_json_uint_or_null(info->height, (info->flags & IMAGE_INFO_HAS_DIMENSIONS) != 0U);
+    rt_write_cstr(1, ",\"bit_depth\":");
+    write_json_uint_or_null(info->bit_depth, (info->flags & IMAGE_INFO_HAS_BIT_DEPTH) != 0U);
+    rt_write_cstr(1, ",\"channels\":");
+    write_json_uint_or_null(info->channel_count, (info->flags & IMAGE_INFO_HAS_CHANNELS) != 0U);
+    rt_write_cstr(1, ",\"variant\":");
+    if ((info->flags & IMAGE_INFO_HAS_VARIANT) != 0U) write_json_string(info->variant); else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"color\":");
+    if ((info->flags & IMAGE_INFO_HAS_COLOR) != 0U) write_json_string(info->color_model); else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"compression\":");
+    if ((info->flags & IMAGE_INFO_HAS_COMPRESSION) != 0U) write_json_string(info->compression); else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"orientation\":");
+    write_json_uint_or_null(info->orientation, (info->flags & IMAGE_INFO_HAS_ORIENTATION) != 0U);
+    rt_write_cstr(1, ",\"frames\":");
+    write_json_uint_or_null(info->frame_count, (info->flags & IMAGE_INFO_HAS_FRAMES) != 0U);
+    rt_write_cstr(1, ",\"duration_ms\":");
+    write_json_uint_or_null(info->duration_ms, (info->flags & IMAGE_INFO_HAS_DURATION_MS) != 0U);
+    rt_write_cstr(1, ",\"loop_count\":");
+    write_json_uint_or_null(info->loop_count, (info->flags & IMAGE_INFO_HAS_LOOP_COUNT) != 0U);
+    rt_write_cstr(1, ",\"density\":");
+    if ((info->flags & IMAGE_INFO_HAS_DENSITY) != 0U) {
+        rt_write_cstr(1, "{\"x\":");
+        rt_write_uint(1, (unsigned long long)info->density_x);
+        rt_write_cstr(1, ",\"y\":");
+        rt_write_uint(1, (unsigned long long)info->density_y);
+        rt_write_cstr(1, ",\"unit\":");
+        write_json_string(info->density_unit);
+        rt_write_char(1, '}');
+    } else {
+        rt_write_cstr(1, "null");
+    }
+    rt_write_cstr(1, ",\"properties\":");
+    write_json_properties(info->property_flags);
+    rt_write_line(1, "}");
 }
 
 static int describe_path(const char *path, const ImginfoOptions *options) {
@@ -426,6 +556,10 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
         }
     }
     warn_extension_mismatch(path, &info);
+    if (options->canonical_ext_only) {
+        rt_write_line(1, image_format_extension(info.format));
+        return 0;
+    }
     if (options->mime_only) {
         rt_write_cstr(1, label);
         rt_write_cstr(1, ": ");
@@ -438,7 +572,47 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
     if (options->detailed_output) {
         return write_detail_block(label, &info);
     }
+    if (options->json_output) {
+        write_json_info(label, &info);
+        return 0;
+    }
     return write_human_line(label, &info);
+}
+
+static int describe_path_recursive(const char *path, const ImginfoOptions *options) {
+    PlatformDirEntry entries[IMGINFO_ENTRY_CAPACITY];
+    size_t count = 0U;
+    int is_directory = 0;
+    int status = 0;
+    size_t index;
+
+    if (!options->recursive || platform_collect_entries(path, 1, entries, IMGINFO_ENTRY_CAPACITY, &count, &is_directory) != 0) {
+        return describe_path(path, options);
+    }
+    if (!is_directory) {
+        platform_free_entries(entries, count);
+        return describe_path(path, options);
+    }
+    for (index = 0U; index < count; ++index) {
+        char child_path[IMGINFO_PATH_CAPACITY];
+
+        if (rt_strcmp(entries[index].name, ".") == 0 || rt_strcmp(entries[index].name, "..") == 0) {
+            continue;
+        }
+        if (tool_join_path(path, entries[index].name, child_path, sizeof(child_path)) != 0) {
+            status = 1;
+            continue;
+        }
+        if (entries[index].is_dir) {
+            if (describe_path_recursive(child_path, options) != 0) {
+                status = 1;
+            }
+        } else if (describe_path(child_path, options) != 0) {
+            status = 1;
+        }
+    }
+    platform_free_entries(entries, count);
+    return status == 0 ? 0 : -1;
 }
 
 static int parse_options(int argc, char **argv, ImginfoOptions *options, int *arg_index_out) {
@@ -447,6 +621,9 @@ static int parse_options(int argc, char **argv, ImginfoOptions *options, int *ar
     options->mime_only = 0;
     options->machine_output = 0;
     options->detailed_output = 0;
+    options->json_output = 0;
+    options->canonical_ext_only = 0;
+    options->recursive = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         const char *arg = argv[argi];
 
@@ -470,6 +647,21 @@ static int parse_options(int argc, char **argv, ImginfoOptions *options, int *ar
         }
         if (rt_strcmp(arg, "-d") == 0 || rt_strcmp(arg, "--details") == 0) {
             options->detailed_output = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--json") == 0) {
+            options->json_output = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--canonical-ext") == 0) {
+            options->canonical_ext_only = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "-R") == 0 || rt_strcmp(arg, "--recursive") == 0) {
+            options->recursive = 1;
             argi += 1;
             continue;
         }
@@ -498,7 +690,7 @@ int main(int argc, char **argv) {
         return describe_path(0, &options) == 0 ? 0 : 1;
     }
     while (argi < argc) {
-        if (describe_path(argv[argi], &options) != 0) {
+        if (describe_path_recursive(argv[argi], &options) != 0) {
             status = 1;
         }
         argi += 1;

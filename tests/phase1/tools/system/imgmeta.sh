@@ -29,6 +29,16 @@ if ! "$ROOT_DIR/build/strings" "$WORK_DIR/edited.png" | "$ROOT_DIR/build/grep" -
     fail "imgmeta edit should write updated PNG text metadata"
 fi
 
+"$ROOT_DIR/build/imgmeta" list-text "$WORK_DIR/edited.png" > "$WORK_DIR/list-text.out"
+assert_file_contains "$WORK_DIR/list-text.out" 'comment' "imgmeta list-text should report PNG text keys"
+assert_file_contains "$WORK_DIR/list-text.out" 'updated' "imgmeta list-text should report PNG text values"
+
+"$ROOT_DIR/build/imgmeta" edit --remove-text comment -o "$WORK_DIR/removed.png" "$WORK_DIR/edited.png"
+"$ROOT_DIR/build/imgmeta" list-text "$WORK_DIR/removed.png" > "$WORK_DIR/list-removed.out"
+if "$ROOT_DIR/build/grep" -q 'comment' "$WORK_DIR/list-removed.out"; then
+    fail "imgmeta edit --remove-text should remove PNG text metadata"
+fi
+
 "$ROOT_DIR/build/imgmeta" strip -o "$WORK_DIR/clean.jpg" "$WORK_DIR/meta.jpg"
 "$ROOT_DIR/build/imgmeta" show "$WORK_DIR/clean.jpg" > "$WORK_DIR/show-clean-jpeg.out"
 if "$ROOT_DIR/build/grep" -q 'exif' "$WORK_DIR/show-clean-jpeg.out"; then

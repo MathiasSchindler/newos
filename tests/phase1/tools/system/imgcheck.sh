@@ -18,16 +18,24 @@ printf '\377\330\377\340\377\377JFIF\000' > "$WORK_DIR/bad-segment.jpg"
 printf 'BM\072\000\000\000\000\000\000\000\066\000\000\000\050\000\000\000\001\000\000\000\001\000\000\000\001\000\030\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/sample.bmp"
 printf 'BM\066\000\000\000\000\000\000\000\066\000\000\000\050\000\000\000\001\000\000\000\001\000\000\000\001\000\030\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' > "$WORK_DIR/truncated.bmp"
 
-assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png${tab}png${tab}ok${tab}valid PNG image" "imgcheck did not accept valid PNG"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png${tab}png${tab}ok${tab}-${tab}valid PNG image" "imgcheck did not accept valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --verbose "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png: OK (png): valid PNG image" "imgcheck --verbose did not describe valid PNG"
-assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}ok${tab}valid JPEG image" "imgcheck did not accept valid JPEG"
-assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}ok${tab}valid GIF image" "imgcheck did not accept valid GIF"
-assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}valid BMP image and pixel array" "imgcheck did not accept valid BMP"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}ok${tab}-${tab}valid JPEG image" "imgcheck did not accept valid JPEG"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}ok${tab}-${tab}valid GIF image" "imgcheck did not accept valid GIF"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}-${tab}valid BMP image and pixel array" "imgcheck did not accept valid BMP"
+
+"$ROOT_DIR/build/imgcheck" --json "$WORK_DIR/valid.png" > "$WORK_DIR/valid-json.out"
+assert_file_contains "$WORK_DIR/valid-json.out" '"valid":true' "imgcheck --json did not report success"
+assert_file_contains "$WORK_DIR/valid-json.out" '"failure_offset":null' "imgcheck --json did not report null success offset"
 
 if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/bad-crc.png" > "$WORK_DIR/bad-crc.out" 2>&1; then
     fail "imgcheck should reject PNG with bad CRC"
 fi
 assert_file_contains "$WORK_DIR/bad-crc.out" 'chunk CRC mismatch' "imgcheck did not report bad PNG CRC"
+assert_file_contains "$WORK_DIR/bad-crc.out" 'offset 8' "imgcheck did not report bad PNG CRC offset"
+
+"$ROOT_DIR/build/imgcheck" --json "$WORK_DIR/bad-crc.png" > "$WORK_DIR/bad-crc-json.out" 2>&1 || true
+assert_file_contains "$WORK_DIR/bad-crc-json.out" '"failure_offset":8' "imgcheck --json did not report bad PNG CRC offset"
 
 if "$ROOT_DIR/build/imgcheck" "$WORK_DIR/no-idat.png" > "$WORK_DIR/no-idat.out" 2>&1; then
     fail "imgcheck should reject PNG without IDAT"

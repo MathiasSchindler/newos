@@ -5,6 +5,8 @@ int image_probe_webp(const unsigned char *data, size_t size, ImageInfo *info) {
     unsigned int chunk_size;
     size_t offset;
     unsigned int frame_count = 0U;
+    unsigned int duration_ms = 0U;
+    int has_duration = 0;
 
     if (size < 20U || !image_bytes_equal(data, "RIFF", 4U) || !image_bytes_equal(data + 8U, "WEBP", 4U)) {
         return 0;
@@ -60,9 +62,22 @@ int image_probe_webp(const unsigned char *data, size_t size, ImageInfo *info) {
         }
         if (image_bytes_equal(data + offset, "ANMF", 4U)) {
             frame_count += 1U;
+            if (current_size >= 16U) {
+                unsigned int frame_duration = image_read_u24_le(data + offset + 20U);
+
+                if (duration_ms <= 0xffffffffU - frame_duration) {
+                    duration_ms += frame_duration;
+                    has_duration = 1;
+                }
+            }
+        } else if (image_bytes_equal(data + offset, "ANIM", 4U) && current_size >= 6U) {
+            image_set_loop_count(info, image_read_u16_le(data + offset + 12U));
         }
         offset += chunk_total;
     }
     image_set_frames(info, frame_count);
+    if (has_duration) {
+        image_set_duration_ms(info, duration_ms);
+    }
     return 1;
 }

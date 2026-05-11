@@ -12,6 +12,8 @@
 #define IMAGE_INFO_HAS_COMPRESSION (1U << 6)
 #define IMAGE_INFO_HAS_ORIENTATION (1U << 7)
 #define IMAGE_INFO_HAS_DENSITY    (1U << 8)
+#define IMAGE_INFO_HAS_DURATION_MS (1U << 9)
+#define IMAGE_INFO_HAS_LOOP_COUNT (1U << 10)
 
 #define IMAGE_PROPERTY_ALPHA      (1U << 0)
 #define IMAGE_PROPERTY_PALETTE    (1U << 1)
@@ -47,6 +49,8 @@ typedef struct {
     unsigned int orientation;
     unsigned int density_x;
     unsigned int density_y;
+    unsigned int duration_ms;
+    unsigned int loop_count;
     unsigned int property_flags;
     const char *variant;
     const char *color_model;
@@ -57,6 +61,8 @@ typedef struct {
 typedef struct {
     ImageFormat format;
     int valid;
+    int has_failure_offset;
+    size_t failure_offset;
     const char *message;
 } ImageValidation;
 
