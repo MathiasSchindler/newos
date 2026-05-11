@@ -4,7 +4,7 @@
 #define REALPATH_PATH_CAPACITY 2048
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-e|-m] [-L|-P] path ...");
+    tool_write_usage(program_name, "[-ez|-m] [-L|-P] path ...");
 }
 
 int main(int argc, char **argv) {
@@ -12,6 +12,7 @@ int main(int argc, char **argv) {
     int allow_missing = 0;
     int logical_policy = 0;
     int quiet = 0;
+    int zero_terminated = 0;
     int argi = 1;
     int exit_code = 0;
     int i;
@@ -31,6 +32,8 @@ int main(int argc, char **argv) {
             logical_policy = 0;
         } else if (rt_strcmp(argv[argi], "--quiet") == 0 || rt_strcmp(argv[argi], "-q") == 0) {
             quiet = 1;
+        } else if (rt_strcmp(argv[argi], "--zero") == 0 || rt_strcmp(argv[argi], "-z") == 0) {
+            zero_terminated = 1;
         } else {
             print_usage(argv[0]);
             return 1;
@@ -52,7 +55,9 @@ int main(int argc, char **argv) {
             exit_code = 1;
             continue;
         }
-        rt_write_line(1, resolved);
+        if (rt_write_cstr(1, resolved) != 0 || rt_write_char(1, zero_terminated ? '\0' : '\n') != 0) {
+            return 1;
+        }
     }
 
     return exit_code;

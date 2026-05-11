@@ -19,8 +19,12 @@ enum {
     FIND_NODE_PATH,
     FIND_NODE_TYPE,
     FIND_NODE_MTIME,
+    FIND_NODE_NEWER,
     FIND_NODE_SIZE,
     FIND_NODE_EMPTY,
+    FIND_NODE_PERM,
+    FIND_NODE_USER,
+    FIND_NODE_GROUP,
     FIND_NODE_PRINT,
     FIND_NODE_PRINT0,
     FIND_NODE_PRUNE,
@@ -53,6 +57,11 @@ typedef struct {
 } FindOptions;
 
 typedef struct {
+    const FindOptions *options;
+    long long now;
+} FindWalkContext;
+
+typedef struct {
     int argc;
     char **argv;
     int index;
@@ -69,7 +78,7 @@ static void print_usage(void) {
     rt_write_line(
         2,
         "Usage: find [path ...] [expression]\n"
-        "  predicates: -name/-iname PATTERN -path PATTERN -type f|d|l -mtime N -size N[c|k|M] -empty\n"
+        "  predicates: -name/-iname PATTERN -path PATTERN -type b|c|d|f|l|p|s -mtime N -newer FILE -size N[c|k|M] -perm MODE -user USER -group GROUP -empty\n"
         "  operators: ! -not -a -and -o -or ( ... )\n"
         "  actions: -print -print0 -prune -exec CMD {} ;"
     );
@@ -138,6 +147,32 @@ static int parse_mtime_filter(const char *text, int *relation_out, unsigned long
     return rt_parse_uint(text, days_out);
 }
 
+static int parse_perm_filter(const char *text, int *relation_out, unsigned long long *mode_out) {
+    unsigned long long value = 0ULL;
+    size_t i = 0U;
+
+    *relation_out = 0;
+    if (text[0] == '-') {
+        *relation_out = -1;
+        text += 1;
+    } else if (text[0] == '/' || text[0] == '+') {
+        *relation_out = 1;
+        text += 1;
+    }
+    if (text[0] == '\0') {
+        return -1;
+    }
+    while (text[i] != '\0') {
+        if (text[i] < '0' || text[i] > '7') {
+            return -1;
+        }
+        value = (value << 3) | (unsigned long long)(text[i] - '0');
+        i += 1U;
+    }
+    *mode_out = value & 07777ULL;
+    return 0;
+}
+
 static int matches_numeric_filter(unsigned long long actual, int relation, unsigned long long expected) {
     if (relation < 0) {
         return actual < expected;
@@ -153,7 +188,7 @@ static int matches_type_filter(const PlatformDirEntry *entry, char type_filter) 
         return 1;
     }
     if (type_filter == 'f') {
-        return !entry->is_dir;
+        return (entry->mode & 0170000U) == 0100000U || (!entry->is_dir && (entry->mode & 0170000U) == 0U);
     }
     if (type_filter == 'd') {
         return entry->is_dir;
@@ -161,7 +196,32 @@ static int matches_type_filter(const PlatformDirEntry *entry, char type_filter) 
     if (type_filter == 'l') {
         return (entry->mode & 0170000U) == 0120000U;
     }
+    if (type_filter == 'b') {
+        return (entry->mode & 0170000U) == 0060000U;
+    }
+    if (type_filter == 'c') {
+        return (entry->mode & 0170000U) == 0020000U;
+    }
+    if (type_filter == 'p') {
+        return (entry->mode & 0170000U) == 0010000U;
+    }
+    if (type_filter == 's') {
+        return (entry->mode & 0170000U) == 0140000U;
+    }
     return 0;
+}
+
+static int matches_perm_filter(unsigned int mode, int relation, unsigned long long expected) {
+    unsigned int actual = mode & 07777U;
+    unsigned int mask = (unsigned int)(expected & 07777ULL);
+
+    if (relation < 0) {
+        return (actual & mask) == mask;
+    }
+    if (relation > 0) {
+        return mask == 0U ? actual == 0U : (actual & mask) != 0U;
+    }
+    return actual == mask;
 }
 
 static int add_node(FindOptions *options, int type) {
@@ -191,7 +251,8 @@ static int is_operator_token(const char *arg) {
 static int is_primary_token(const char *arg) {
     return is_operator_token(arg) || rt_strcmp(arg, "-name") == 0 || rt_strcmp(arg, "-iname") == 0 ||
            rt_strcmp(arg, "-path") == 0 || rt_strcmp(arg, "-type") == 0 || rt_strcmp(arg, "-mtime") == 0 ||
-           rt_strcmp(arg, "-size") == 0 || rt_strcmp(arg, "-empty") == 0 || rt_strcmp(arg, "-mindepth") == 0 ||
+            rt_strcmp(arg, "-newer") == 0 || rt_strcmp(arg, "-size") == 0 || rt_strcmp(arg, "-perm") == 0 ||
+            rt_strcmp(arg, "-user") == 0 || rt_strcmp(arg, "-group") == 0 || rt_strcmp(arg, "-empty") == 0 || rt_strcmp(arg, "-mindepth") == 0 ||
            rt_strcmp(arg, "-maxdepth") == 0 || rt_strcmp(arg, "-print") == 0 || rt_strcmp(arg, "-print0") == 0 ||
            rt_strcmp(arg, "-prune") == 0 || rt_strcmp(arg, "-exec") == 0;
 }
@@ -336,8 +397,16 @@ static int evaluate_node(
             }
             return matches_numeric_filter(age_days, node->relation, node->value);
         }
+        case FIND_NODE_NEWER:
+            return entry->mtime > (long long)node->value;
         case FIND_NODE_SIZE:
             return matches_numeric_filter(entry->size, node->relation, node->value);
+        case FIND_NODE_PERM:
+            return matches_perm_filter(entry->mode, node->relation, node->value);
+        case FIND_NODE_USER:
+            return entry->uid == (unsigned int)node->value;
+        case FIND_NODE_GROUP:
+            return entry->gid == (unsigned int)node->value;
         case FIND_NODE_EMPTY:
             return matches_empty_filter(path, entry);
         case FIND_NODE_PRINT:
@@ -408,6 +477,7 @@ static int parse_primary(FindParser *parser, int *node_out) {
 
     if (rt_strcmp(token, "-name") == 0 || rt_strcmp(token, "-iname") == 0 || rt_strcmp(token, "-path") == 0 ||
         rt_strcmp(token, "-type") == 0 || rt_strcmp(token, "-mtime") == 0 || rt_strcmp(token, "-size") == 0 ||
+        rt_strcmp(token, "-newer") == 0 || rt_strcmp(token, "-perm") == 0 || rt_strcmp(token, "-user") == 0 || rt_strcmp(token, "-group") == 0 ||
         rt_strcmp(token, "-mindepth") == 0 || rt_strcmp(token, "-maxdepth") == 0) {
         if (parser->index + 1 >= parser->argc) {
             rt_write_line(2, "find: missing argument");
@@ -438,7 +508,8 @@ static int parse_primary(FindParser *parser, int *node_out) {
     }
     if (rt_strcmp(token, "-type") == 0) {
         char type_filter = parser->argv[parser->index + 1][0];
-        if (type_filter != 'f' && type_filter != 'd' && type_filter != 'l') {
+        if ((type_filter != 'b' && type_filter != 'c' && type_filter != 'd' && type_filter != 'f' && type_filter != 'l' && type_filter != 'p' && type_filter != 's') ||
+            parser->argv[parser->index + 1][1] != '\0') {
             rt_write_line(2, "find: unsupported -type value");
             return -1;
         }
@@ -462,6 +533,18 @@ static int parse_primary(FindParser *parser, int *node_out) {
         *node_out = node_index;
         return 0;
     }
+    if (rt_strcmp(token, "-newer") == 0) {
+        PlatformDirEntry reference;
+        if (platform_get_path_info(parser->argv[parser->index + 1], &reference) != 0) {
+            rt_write_line(2, "find: cannot stat -newer reference");
+            return -1;
+        }
+        node_index = add_node(parser->options, FIND_NODE_NEWER);
+        parser->options->nodes[node_index].value = (unsigned long long)reference.mtime;
+        parser->index += 2;
+        *node_out = node_index;
+        return 0;
+    }
     if (rt_strcmp(token, "-size") == 0) {
         node_index = add_node(parser->options, FIND_NODE_SIZE);
         if (parse_size_filter(
@@ -472,6 +555,40 @@ static int parse_primary(FindParser *parser, int *node_out) {
             rt_write_line(2, "find: invalid -size value");
             return -1;
         }
+        parser->index += 2;
+        *node_out = node_index;
+        return 0;
+    }
+    if (rt_strcmp(token, "-perm") == 0) {
+        node_index = add_node(parser->options, FIND_NODE_PERM);
+        if (parse_perm_filter(parser->argv[parser->index + 1], &parser->options->nodes[node_index].relation, &parser->options->nodes[node_index].value) != 0) {
+            rt_write_line(2, "find: invalid -perm value");
+            return -1;
+        }
+        parser->index += 2;
+        *node_out = node_index;
+        return 0;
+    }
+    if (rt_strcmp(token, "-user") == 0) {
+        unsigned int uid = 0U;
+        if (tool_resolve_user_id(parser->argv[parser->index + 1], &uid) != 0) {
+            rt_write_line(2, "find: unknown user");
+            return -1;
+        }
+        node_index = add_node(parser->options, FIND_NODE_USER);
+        parser->options->nodes[node_index].value = uid;
+        parser->index += 2;
+        *node_out = node_index;
+        return 0;
+    }
+    if (rt_strcmp(token, "-group") == 0) {
+        unsigned int gid = 0U;
+        if (tool_resolve_group_id(parser->argv[parser->index + 1], &gid) != 0) {
+            rt_write_line(2, "find: unknown group");
+            return -1;
+        }
+        node_index = add_node(parser->options, FIND_NODE_GROUP);
+        parser->options->nodes[node_index].value = gid;
         parser->index += 2;
         *node_out = node_index;
         return 0;
@@ -639,26 +756,17 @@ static int parse_expression(FindParser *parser, int *node_out) {
     return 0;
 }
 
-static int find_walk(const char *path, const FindOptions *options, long long now, int depth) {
-    PlatformDirEntry current;
-    PlatformDirEntry entries[FIND_MAX_ENTRIES];
-    size_t count = 0;
-    int is_directory = 0;
+static int find_walk_callback(const char *path, const PlatformDirEntry *entry, int depth, ToolWalkControl *control, void *user_data) {
+    FindWalkContext *context = (FindWalkContext *)user_data;
+    const FindOptions *options = context->options;
     FindEvalState state;
-    size_t i;
-
-    if (platform_get_path_info(path, &current) != 0) {
-        rt_write_cstr(2, "find: cannot access ");
-        rt_write_line(2, path);
-        return -1;
-    }
 
     state.allow_action = (!options->has_mindepth || depth >= options->mindepth) &&
                          (!options->has_maxdepth || depth <= options->maxdepth);
     state.prune = 0;
     state.error = 0;
 
-    if (evaluate_node(options->root_node, path, &current, options, now, &state) &&
+    if (evaluate_node(options->root_node, path, entry, options, context->now, &state) &&
         !options->has_output_action && state.allow_action) {
         if (emit_path(path, 0) != 0) {
             return -1;
@@ -667,39 +775,7 @@ static int find_walk(const char *path, const FindOptions *options, long long now
     if (state.error) {
         return -1;
     }
-
-    if (!current.is_dir) {
-        return 0;
-    }
-    if ((options->has_maxdepth && depth >= options->maxdepth) || state.prune) {
-        return 0;
-    }
-    if (platform_collect_entries(path, 1, entries, FIND_MAX_ENTRIES, &count, &is_directory) != 0) {
-        rt_write_cstr(2, "find: cannot access ");
-        rt_write_line(2, path);
-        return -1;
-    }
-
-    for (i = 0; i < count; ++i) {
-        char child_path[FIND_PATH_CAPACITY];
-
-        if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
-            continue;
-        }
-
-        if (tool_join_path(path, entries[i].name, child_path, sizeof(child_path)) != 0) {
-            rt_write_line(2, "find: path too long");
-            platform_free_entries(entries, count);
-            return -1;
-        }
-
-        if (find_walk(child_path, options, now, depth + 1) != 0) {
-            platform_free_entries(entries, count);
-            return -1;
-        }
-    }
-
-    platform_free_entries(entries, count);
+    control->prune = state.prune;
     return 0;
 }
 
@@ -708,6 +784,8 @@ int main(int argc, char **argv) {
     int start_count = 0;
     FindOptions options;
     FindParser parser;
+    FindWalkContext walk_context;
+    ToolWalkOptions walk_options;
     long long now;
     int i;
 
@@ -748,8 +826,14 @@ int main(int argc, char **argv) {
     }
 
     now = platform_get_epoch_time();
+    walk_context.options = &options;
+    walk_context.now = now;
+    walk_options.min_depth = 0;
+    walk_options.max_depth = options.has_maxdepth ? options.maxdepth : -1;
     for (i = 0; i < start_count; ++i) {
-        if (find_walk(start_paths[i], &options, now, 0) != 0) {
+        if (tool_walk_path(start_paths[i], &walk_options, find_walk_callback, &walk_context) != 0) {
+            rt_write_cstr(2, "find: cannot access ");
+            rt_write_line(2, start_paths[i]);
             return 1;
         }
     }

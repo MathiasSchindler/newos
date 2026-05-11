@@ -34,6 +34,26 @@ assert_file_contains "$WORK_DIR/exec.out" 'found .*kept.txt' "find -exec did not
 assert_file_contains "$WORK_DIR/empty.out" 'empty.LOG' "find -empty did not report the empty file"
 assert_file_contains "$WORK_DIR/empty.out" 'emptydir' "find -empty did not report the empty directory"
 
+chmod 600 "$WORK_DIR/tree/keep/kept.txt"
+"$ROOT_DIR/build/find" "$WORK_DIR/tree" -type f -perm 600 > "$WORK_DIR/perm_exact.out"
+assert_file_contains "$WORK_DIR/perm_exact.out" 'kept.txt' "find -perm exact mode did not match the chmodded file"
+
+"$ROOT_DIR/build/find" "$WORK_DIR/tree" -type f -perm -600 > "$WORK_DIR/perm_all.out"
+assert_file_contains "$WORK_DIR/perm_all.out" 'kept.txt' "find -perm -MODE did not match required bits"
+
+"$ROOT_DIR/build/find" "$WORK_DIR/tree" -user "$(id -u)" -name kept.txt > "$WORK_DIR/user.out"
+assert_file_contains "$WORK_DIR/user.out" 'kept.txt' "find -user did not match the numeric owner"
+
+"$ROOT_DIR/build/find" "$WORK_DIR/tree" -group "$(id -g)" -name kept.txt > "$WORK_DIR/group.out"
+assert_file_contains "$WORK_DIR/group.out" 'kept.txt' "find -group did not match the numeric group"
+
+printf 'old\n' > "$WORK_DIR/tree/old.txt"
+printf 'new\n' > "$WORK_DIR/tree/new.txt"
+touch -t 202001010000 "$WORK_DIR/tree/old.txt"
+touch -t 202101010000 "$WORK_DIR/tree/new.txt"
+"$ROOT_DIR/build/find" "$WORK_DIR/tree" -newer "$WORK_DIR/tree/old.txt" -name new.txt > "$WORK_DIR/newer.out"
+assert_file_contains "$WORK_DIR/newer.out" 'new.txt' "find -newer did not match a newer file"
+
 "$ROOT_DIR/build/find" "$WORK_DIR/tree" -type d -name skip -prune -o -iname 'KEPT.TXT' -print > "$WORK_DIR/logic.out"
 assert_file_contains "$WORK_DIR/logic.out" 'kept.txt' "find logical operators or -iname matching failed"
 if grep 'skipped.txt' "$WORK_DIR/logic.out" >/dev/null 2>&1; then

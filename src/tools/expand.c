@@ -8,10 +8,11 @@ typedef struct {
     unsigned long long stops[EXPAND_MAX_TABSTOPS];
     size_t stop_count;
     int initial_only;
+    int zero_terminated;
 } ExpandOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-i] [-t TABSTOP[,TABSTOP...]] [file ...]");
+    tool_write_usage(program_name, "[-iz] [-t TABSTOP[,TABSTOP...]] [file ...]");
 }
 
 static int write_spaces(unsigned long long count) {
@@ -114,7 +115,7 @@ static int expand_stream(int fd, const ExpandOptions *options) {
                     return -1;
                 }
 
-                if (ch == '\n' || ch == '\r') {
+                if (ch == '\n' || ch == '\r' || (options->zero_terminated && ch == '\0')) {
                     column = 0ULL;
                     leading = 1;
                 } else if (ch == '\b') {
@@ -145,10 +146,14 @@ int main(int argc, char **argv) {
     options.stops[0] = 8ULL;
     options.stop_count = 1U;
     options.initial_only = 0;
+    options.zero_terminated = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-i") == 0) {
             options.initial_only = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-z") == 0 || rt_strcmp(argv[argi], "--zero-terminated") == 0) {
+            options.zero_terminated = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-t") == 0) {
             if (argi + 1 >= argc || parse_tabstop_list(argv[argi + 1], &options) != 0) {

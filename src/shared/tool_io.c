@@ -270,6 +270,58 @@ int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text) {
     return tool_output_buffer_write(output, text, rt_strlen(text));
 }
 
+void tool_record_reader_init(ToolRecordReader *reader, int fd, char delimiter) {
+    reader->fd = fd;
+    reader->delimiter = delimiter;
+    reader->chunk_len = 0;
+    reader->chunk_pos = 0;
+    reader->eof = 0;
+}
+
+int tool_record_reader_next(ToolRecordReader *reader, char *record, size_t record_size, int *has_record_out) {
+    size_t length = 0U;
+
+    if (record_size == 0U || has_record_out == 0) {
+        return -1;
+    }
+
+    while (!reader->eof) {
+        if (reader->chunk_pos >= reader->chunk_len) {
+            reader->chunk_len = platform_read(reader->fd, reader->chunk, sizeof(reader->chunk));
+            reader->chunk_pos = 0;
+            if (reader->chunk_len < 0) {
+                return -1;
+            }
+            if (reader->chunk_len == 0) {
+                reader->eof = 1;
+                break;
+            }
+        }
+
+        while (reader->chunk_pos < reader->chunk_len) {
+            char ch = reader->chunk[reader->chunk_pos++];
+            if (ch == reader->delimiter) {
+                record[length] = '\0';
+                *has_record_out = 1;
+                return 0;
+            }
+            if (length + 1U >= record_size) {
+                return -1;
+            }
+            record[length++] = ch;
+        }
+    }
+
+    if (length > 0U) {
+        record[length] = '\0';
+        *has_record_out = 1;
+        return 0;
+    }
+
+    *has_record_out = 0;
+    return 0;
+}
+
 int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out) {
     size_t in_index = 0;
     size_t out_index = 0;

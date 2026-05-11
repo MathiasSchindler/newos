@@ -1055,6 +1055,17 @@ int tool_regex_search(const char *pattern, const char *text, int ignore_case, si
     return tool_regex_search_internal(pattern, text, ignore_case, search_start, start_out, end_out, 0);
 }
 
+int tool_regex_search_ex(const char *pattern,
+                         const char *text,
+                         int ignore_case,
+                         int extended,
+                         size_t search_start,
+                         size_t *start_out,
+                         size_t *end_out) {
+    (void)extended;
+    return tool_regex_search_internal(pattern, text, ignore_case, search_start, start_out, end_out, 0);
+}
+
 static int tool_regex_append_text(char *buffer, size_t buffer_size, size_t *used, const char *text, size_t length) {
     if (*used + length + 1U > buffer_size) {
         return -1;
@@ -1187,6 +1198,19 @@ int tool_regex_replace(const char *pattern,
         *changed_out = changed;
     }
     return 0;
+}
+
+int tool_regex_replace_ex(const char *pattern,
+                          const char *replacement,
+                          const char *input,
+                          int ignore_case,
+                          int extended,
+                          int global,
+                          char *output,
+                          size_t output_size,
+                          int *changed_out) {
+    (void)extended;
+    return tool_regex_replace(pattern, replacement, input, ignore_case, global, output, output_size, changed_out);
 }
 
 int tool_wildcard_match(const char *pattern, const char *text) {

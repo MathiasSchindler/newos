@@ -43,6 +43,8 @@ typedef struct {
     SedCommand commands[SED_MAX_COMMANDS];
     size_t count;
     int suppress_default_output;
+    int extended_regex;
+    char record_delimiter;
 } SedProgram;
 
 typedef struct {
@@ -56,13 +58,13 @@ typedef struct {
 } SedExecutionResult;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
+    tool_write_usage(program_name, "[-Enrz] [-i[SUFFIX]] [-f script] [expression] [file ...]");
 }
 
-static int line_contains(const char *text, const char *pattern) {
+static int line_contains(const char *text, const char *pattern, int extended_regex) {
     size_t start = 0;
     size_t end = 0;
-    return tool_regex_search(pattern, text, 0, 0, &start, &end);
+    return tool_regex_search_ex(pattern, text, 0, extended_regex, 0, &start, &end);
 }
 
 static int parse_address(const char *expr, size_t *pos, SedAddress *address) {
@@ -292,28 +294,28 @@ static int load_script_file(const char *path, SedProgram *program) {
     return 0;
 }
 
-static int apply_substitution(const SedCommand *command, const char *input, char *output, size_t output_size) {
+static int apply_substitution(const SedProgram *program, const SedCommand *command, const char *input, char *output, size_t output_size) {
     int changed = 0;
-    if (tool_regex_replace(command->old_text, command->new_text, input, 0, command->global, output, output_size, &changed) != 0) {
+    if (tool_regex_replace_ex(command->old_text, command->new_text, input, 0, program->extended_regex, command->global, output, output_size, &changed) != 0) {
         return -1;
     }
     return 0;
 }
 
-static int address_matches(const SedAddress *address, unsigned long long line_no, const char *line) {
+static int address_matches(const SedProgram *program, const SedAddress *address, unsigned long long line_no, const char *line) {
     if (address->type == SED_ADDRESS_NONE) {
         return 1;
     }
     if (address->type == SED_ADDRESS_LINE) {
         return address->line_number == line_no;
     }
-    return line_contains(line, address->pattern);
+    return line_contains(line, address->pattern, program->extended_regex);
 }
 
-static int command_applies(SedCommand *command, unsigned long long line_no, const char *line) {
+static int command_applies(SedProgram *program, SedCommand *command, unsigned long long line_no, const char *line) {
     if (command->end.type != SED_ADDRESS_NONE) {
         if (command->range_active) {
-            int end_now = address_matches(&command->end, line_no, line);
+            int end_now = address_matches(program, &command->end, line_no, line);
 
             if (end_now) {
                 command->range_active = 0;
@@ -321,8 +323,8 @@ static int command_applies(SedCommand *command, unsigned long long line_no, cons
             return 1;
         }
 
-        if (address_matches(&command->start, line_no, line)) {
-            if (!address_matches(&command->end, line_no, line)) {
+        if (address_matches(program, &command->start, line_no, line)) {
+            if (!address_matches(program, &command->end, line_no, line)) {
                 command->range_active = 1;
             }
             return 1;
@@ -331,7 +333,7 @@ static int command_applies(SedCommand *command, unsigned long long line_no, cons
         return 0;
     }
 
-    return address_matches(&command->start, line_no, line);
+    return address_matches(program, &command->start, line_no, line);
 }
 
 static void reset_program_state(SedProgram *program) {
@@ -356,9 +358,9 @@ static int process_line(SedProgram *program,
     rt_copy_string(current, sizeof(current), input);
 
     for (i = 0; i < program->count; ++i) {
-        if (command_applies(&program->commands[i], line_no, current)) {
+        if (command_applies(program, &program->commands[i], line_no, current)) {
             if (program->commands[i].kind == SED_COMMAND_SUBSTITUTE) {
-                if (apply_substitution(&program->commands[i], current, scratch, sizeof(scratch)) != 0) {
+                if (apply_substitution(program, &program->commands[i], current, scratch, sizeof(scratch)) != 0) {
                     return -1;
                 }
                 rt_copy_string(current, sizeof(current), scratch);
@@ -399,29 +401,33 @@ static int process_line(SedProgram *program,
     return 0;
 }
 
+static int write_record(int output_fd, const char *text, char delimiter) {
+    return rt_write_cstr(output_fd, text) != 0 ? -1 : rt_write_char(output_fd, delimiter);
+}
+
 static int write_result_output(int output_fd, const SedProgram *program, const char *out, SedExecutionResult *result) {
     unsigned int i;
 
     for (i = 0U; i < result->before_count; ++i) {
-        if (rt_write_line(output_fd, result->before_texts[i]) != 0) {
+        if (write_record(output_fd, result->before_texts[i], program->record_delimiter) != 0) {
             return -1;
         }
     }
 
     if (!result->deleted) {
         while (result->explicit_prints > 0U) {
-            if (rt_write_line(output_fd, out) != 0) {
+            if (write_record(output_fd, out, program->record_delimiter) != 0) {
                 return -1;
             }
             result->explicit_prints -= 1U;
         }
-        if (!program->suppress_default_output && rt_write_line(output_fd, out) != 0) {
+        if (!program->suppress_default_output && write_record(output_fd, out, program->record_delimiter) != 0) {
             return -1;
         }
     }
 
     for (i = 0U; i < result->after_count; ++i) {
-        if (rt_write_line(output_fd, result->after_texts[i]) != 0) {
+        if (write_record(output_fd, result->after_texts[i], program->record_delimiter) != 0) {
             return -1;
         }
     }
@@ -430,56 +436,31 @@ static int write_result_output(int output_fd, const SedProgram *program, const c
 }
 
 static int sed_stream_to_fd(int input_fd, int output_fd, SedProgram *program) {
-    char chunk[4096];
     char line[SED_LINE_CAPACITY];
     char out[SED_LINE_CAPACITY];
     SedExecutionResult result;
-    size_t line_len = 0;
+    ToolRecordReader reader;
     unsigned long long line_no = 1;
-    long bytes_read;
+    int has_record = 0;
+    int read_status;
 
     reset_program_state(program);
+    tool_record_reader_init(&reader, input_fd, program->record_delimiter);
 
-    while ((bytes_read = platform_read(input_fd, chunk, sizeof(chunk))) > 0) {
-        long i;
-
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = chunk[i];
-
-            if (ch == '\n') {
-                line[line_len] = '\0';
-                if (process_line(program, line_no, line, out, sizeof(out), &result) != 0) {
-                    return -1;
-                }
-                if (write_result_output(output_fd, program, out, &result) != 0) {
-                    return -1;
-                }
-                line_len = 0;
-                line_no += 1;
-                if (result.quit) {
-                    return 0;
-                }
-            } else if (line_len + 1 < sizeof(line)) {
-                line[line_len++] = ch;
-            }
-        }
-    }
-
-    if (bytes_read < 0) {
-        return -1;
-    }
-
-    if (line_len > 0) {
-        line[line_len] = '\0';
+    while ((read_status = tool_record_reader_next(&reader, line, sizeof(line), &has_record)) == 0 && has_record) {
         if (process_line(program, line_no, line, out, sizeof(out), &result) != 0) {
             return -1;
         }
         if (write_result_output(output_fd, program, out, &result) != 0) {
             return -1;
         }
+        line_no += 1;
+        if (result.quit) {
+            return 0;
+        }
     }
 
-    return 0;
+    return read_status == 0 ? 0 : -1;
 }
 
 static int build_appended_path(const char *path, const char *suffix, char *buffer, size_t buffer_size) {
@@ -580,12 +561,17 @@ int main(int argc, char **argv) {
     const char *backup_suffix = 0;
 
     rt_memset(&program, 0, sizeof(program));
+    program.record_delimiter = '\n';
 
     tool_opt_init(&s, argc, argv, tool_base_name(argv[0]),
-                  "[-n] [-i[SUFFIX]] [-f script] [expression] [file ...]");
+                  "[-Enrz] [-i[SUFFIX]] [-f script] [expression] [file ...]");
     while ((r = tool_opt_next(&s)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(s.flag, "-n") == 0) {
             program.suppress_default_output = 1;
+        } else if (rt_strcmp(s.flag, "-E") == 0 || rt_strcmp(s.flag, "-r") == 0 || rt_strcmp(s.flag, "--regexp-extended") == 0) {
+            program.extended_regex = 1;
+        } else if (rt_strcmp(s.flag, "-z") == 0 || rt_strcmp(s.flag, "--null-data") == 0) {
+            program.record_delimiter = '\0';
         } else if (rt_strcmp(s.flag, "-i") == 0) {
             in_place = 1;
             backup_suffix = "";

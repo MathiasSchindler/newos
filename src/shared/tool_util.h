@@ -28,6 +28,20 @@ int tool_output_buffer_write(ToolOutputBuffer *output, const char *text, size_t 
 int tool_output_buffer_write_char(ToolOutputBuffer *output, char ch);
 int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text);
 
+#define TOOL_RECORD_READER_BUFFER_SIZE 4096U
+
+typedef struct {
+    int fd;
+    char delimiter;
+    long chunk_len;
+    long chunk_pos;
+    int eof;
+    char chunk[TOOL_RECORD_READER_BUFFER_SIZE];
+} ToolRecordReader;
+
+void tool_record_reader_init(ToolRecordReader *reader, int fd, char delimiter);
+int tool_record_reader_next(ToolRecordReader *reader, char *record, size_t record_size, int *has_record_out);
+
 typedef enum {
     TOOL_XML_KEY_ATTR = 1,
     TOOL_XML_KEY_TEXT,
@@ -144,6 +158,8 @@ void tool_resolve_host_program_path(char **argv_exec, char *buffer, size_t buffe
 int tool_wildcard_match(const char *pattern, const char *text);
 int tool_regex_search(const char *pattern, const char *text, int ignore_case, size_t search_start, size_t *start_out, size_t *end_out);
 int tool_regex_replace(const char *pattern, const char *replacement, const char *input, int ignore_case, int global, char *output, size_t output_size, int *changed_out);
+int tool_regex_search_ex(const char *pattern, const char *text, int ignore_case, int extended, size_t search_start, size_t *start_out, size_t *end_out);
+int tool_regex_replace_ex(const char *pattern, const char *replacement, const char *input, int ignore_case, int extended, int global, char *output, size_t output_size, int *changed_out);
 int tool_resolve_destination(const char *source_path, const char *dest_path, char *buffer, size_t buffer_size);
 int tool_canonicalize_path_policy(const char *path, int resolve_symlinks, int allow_missing, int logical_policy, char *buffer, size_t buffer_size);
 int tool_canonicalize_path(const char *path, int resolve_symlinks, int allow_missing, char *buffer, size_t buffer_size);
@@ -153,6 +169,19 @@ int tool_path_is_root(const char *path);
 int tool_copy_file(const char *source_path, const char *dest_path);
 int tool_copy_path(const char *source_path, const char *dest_path, int recursive, int preserve_mode, int preserve_symlinks);
 int tool_remove_path(const char *path, int recursive);
+
+typedef struct {
+    int min_depth;
+    int max_depth;
+} ToolWalkOptions;
+
+typedef struct {
+    int prune;
+} ToolWalkControl;
+
+typedef int (*ToolWalkCallback)(const char *path, const PlatformDirEntry *entry, int depth, ToolWalkControl *control, void *user_data);
+
+int tool_walk_path(const char *path, const ToolWalkOptions *options, ToolWalkCallback callback, void *user_data);
 
 typedef struct {
     int exact;
@@ -166,6 +195,7 @@ typedef struct {
 } ToolProcessMatchOptions;
 
 int tool_resolve_user_id(const char *text, unsigned int *uid_out);
+int tool_resolve_group_id(const char *text, unsigned int *gid_out);
 int tool_parse_pid(const char *text, int *pid_out);
 int tool_process_matches(const PlatformProcessEntry *entry, const ToolProcessMatchOptions *options);
 

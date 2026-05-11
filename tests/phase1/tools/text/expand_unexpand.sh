@@ -26,3 +26,11 @@ printf 'a   b\n' > "$WORK_DIR/all_spaces.txt"
 "$ROOT_DIR/build/unexpand" -a -t 4 "$WORK_DIR/all_spaces.txt" > "$WORK_DIR/unexpand_all.out"
 printf 'a\tb\n' > "$WORK_DIR/unexpand_all.expected"
 assert_files_equal "$WORK_DIR/unexpand_all.expected" "$WORK_DIR/unexpand_all.out" "unexpand -a -t 4 did not convert an interior aligned space run"
+
+printf 'a\tb\0c\td\0' | "$ROOT_DIR/build/expand" -z -t 4 | tr '\0' '\n' > "$WORK_DIR/expand_zero.out"
+printf 'a   b\nc   d\n' > "$WORK_DIR/expand_zero.expected"
+assert_files_equal "$WORK_DIR/expand_zero.expected" "$WORK_DIR/expand_zero.out" "expand -z did not reset columns at NUL records"
+
+printf 'a   b\0c   d\0' | "$ROOT_DIR/build/unexpand" -z -a -t 4 | tr '\0' '\n' > "$WORK_DIR/unexpand_zero.out"
+printf 'a\tb\nc\td\n' > "$WORK_DIR/unexpand_zero.expected"
+assert_files_equal "$WORK_DIR/unexpand_zero.expected" "$WORK_DIR/unexpand_zero.out" "unexpand -z did not reset columns at NUL records"

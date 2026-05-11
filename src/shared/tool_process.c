@@ -38,6 +38,19 @@ int tool_resolve_user_id(const char *text, unsigned int *uid_out) {
     return 0;
 }
 
+int tool_resolve_group_id(const char *text, unsigned int *gid_out) {
+    unsigned long long value = 0ULL;
+
+    if (text == 0 || gid_out == 0) {
+        return -1;
+    }
+    if (rt_parse_uint(text, &value) == 0) {
+        *gid_out = (unsigned int)value;
+        return 0;
+    }
+    return platform_lookup_group(text, gid_out);
+}
+
 int tool_parse_pid(const char *text, int *pid_out) {
     unsigned long long value = 0ULL;
 

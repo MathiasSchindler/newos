@@ -173,3 +173,64 @@ int tool_remove_path(const char *path, int recursive) {
     platform_free_entries(entries, count);
     return platform_remove_directory(path) == 0 ? 0 : -1;
 }
+
+static int tool_walk_path_impl(const char *path,
+                               const ToolWalkOptions *options,
+                               ToolWalkCallback callback,
+                               void *user_data,
+                               int depth) {
+    enum { TOOL_WALK_ENTRY_CAPACITY = 1024, TOOL_WALK_PATH_CAPACITY = 2048 };
+    PlatformDirEntry current;
+    ToolWalkControl control;
+    PlatformDirEntry entries[TOOL_WALK_ENTRY_CAPACITY];
+    size_t count = 0U;
+    size_t i;
+    int is_directory = 0;
+
+    if (platform_get_path_info(path, &current) != 0) {
+        return -1;
+    }
+
+    control.prune = 0;
+    if (depth >= options->min_depth && callback(path, &current, depth, &control, user_data) != 0) {
+        return -1;
+    }
+
+    if (!current.is_dir || control.prune || (options->max_depth >= 0 && depth >= options->max_depth)) {
+        return 0;
+    }
+
+    if (platform_collect_entries(path, 1, entries, TOOL_WALK_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
+        return -1;
+    }
+
+    for (i = 0U; i < count; ++i) {
+        char child_path[TOOL_WALK_PATH_CAPACITY];
+
+        if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
+            continue;
+        }
+        if (tool_join_path(path, entries[i].name, child_path, sizeof(child_path)) != 0 ||
+            tool_walk_path_impl(child_path, options, callback, user_data, depth + 1) != 0) {
+            platform_free_entries(entries, count);
+            return -1;
+        }
+    }
+
+    platform_free_entries(entries, count);
+    return 0;
+}
+
+int tool_walk_path(const char *path, const ToolWalkOptions *options, ToolWalkCallback callback, void *user_data) {
+    ToolWalkOptions default_options;
+
+    if (path == 0 || callback == 0) {
+        return -1;
+    }
+    if (options == 0) {
+        default_options.min_depth = 0;
+        default_options.max_depth = -1;
+        options = &default_options;
+    }
+    return tool_walk_path_impl(path, options, callback, user_data, 0);
+}

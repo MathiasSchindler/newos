@@ -8,10 +8,11 @@ typedef struct {
     unsigned long long stops[UNEXPAND_MAX_TABSTOPS];
     size_t stop_count;
     int convert_all;
+    int zero_terminated;
 } UnexpandOptions;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-a] [-i] [-t TABSTOP[,TABSTOP...]] [file ...]");
+    tool_write_usage(program_name, "[-aiz] [-t TABSTOP[,TABSTOP...]] [file ...]");
 }
 
 static int parse_tabstop_list(const char *text, UnexpandOptions *options) {
@@ -132,7 +133,7 @@ static int unexpand_stream(int fd, const UnexpandOptions *options) {
                 pending_spaces = 0ULL;
             }
 
-            if (ch == '\n' || ch == '\r') {
+            if (ch == '\n' || ch == '\r' || (options->zero_terminated && ch == '\0')) {
                 if (rt_write_char(1, ch) != 0) {
                     return -1;
                 }
@@ -180,6 +181,7 @@ int main(int argc, char **argv) {
     options.stops[0] = 8ULL;
     options.stop_count = 1U;
     options.convert_all = 0;
+    options.zero_terminated = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-a") == 0) {
@@ -187,6 +189,9 @@ int main(int argc, char **argv) {
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-i") == 0) {
             options.convert_all = 0;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-z") == 0 || rt_strcmp(argv[argi], "--zero-terminated") == 0) {
+            options.zero_terminated = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-t") == 0) {
             if (argi + 1 >= argc || parse_tabstop_list(argv[argi + 1], &options) != 0) {

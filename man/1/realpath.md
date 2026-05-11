@@ -7,7 +7,7 @@ realpath - resolve a path to its canonical absolute form
 ## SYNOPSIS
 
 ```
-realpath [-e|-m] [-L|-P] [-q] path ...
+realpath [-e|-m] [-L|-P] [-q] [-z] path ...
 ```
 
 ## DESCRIPTION
@@ -23,6 +23,7 @@ realpath [-e|-m] [-L|-P] [-q] path ...
 - Logical (no symlink resolution) mode with `-L`
 - Physical (resolve all symlinks) mode with `-P` (default)
 - Suppress error messages with `-q`
+- NUL-separated output with `-z`
 
 ## OPTIONS
 
@@ -31,12 +32,12 @@ realpath [-e|-m] [-L|-P] [-q] path ...
 - `-L`, `--logical` — resolve without following symlinks
 - `-P`, `--physical` — resolve following all symlinks (default)
 - `-q`, `--quiet` — suppress error messages on non-existent paths
+- `-z`, `--zero` — terminate each resolved path with NUL instead of newline
 
 ## LIMITATIONS
 
 - No `-s` (strip; do not resolve symlinks at all).
 - No `--relative-to` or `--relative-base` options.
-- No NUL-separated output mode.
 
 ## EXAMPLES
 
@@ -44,6 +45,7 @@ realpath [-e|-m] [-L|-P] [-q] path ...
 realpath ./some/../path
 realpath -e /proc/self
 realpath -m /nonexistent/path
+realpath -z file1 file2
 realpath -q missing
 ```
 

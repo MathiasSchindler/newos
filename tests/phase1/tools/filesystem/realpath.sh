@@ -27,6 +27,10 @@ assert_text_equals "$realpath_physical" "$WORK_DIR/policy/base/real" "realpath -
 realpath_logical=$("$ROOT_DIR/build/realpath" -L "$WORK_DIR/policy/base/linksub/.." | tr -d '\r\n')
 assert_text_equals "$realpath_logical" "$WORK_DIR/policy/base" "realpath -L should honor logical traversal through .."
 
+"$ROOT_DIR/build/realpath" -z "$WORK_DIR/dd.in" "$WORK_DIR/sub/../dd.in" | tr '\0' '\n' > "$WORK_DIR/realpath_zero.out"
+printf '%s\n%s\n' "$WORK_DIR/dd.in" "$WORK_DIR/dd.in" > "$WORK_DIR/realpath_zero.expected"
+assert_files_equal "$WORK_DIR/realpath_zero.expected" "$WORK_DIR/realpath_zero.out" "realpath -z did not emit NUL-separated paths"
+
 long_component='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 realpath_long_status=0
 "$ROOT_DIR/build/realpath" -m "$WORK_DIR/$long_component/file.txt" >/dev/null 2>&1 || realpath_long_status=$?
