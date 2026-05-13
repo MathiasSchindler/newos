@@ -1,5 +1,7 @@
 #include "crypto/x509.h"
 
+#include "crypto/p256.h"
+#include "crypto/p384.h"
 #include "crypto/rsa.h"
 #include "crypto/sha256.h"
 #include "crypto/sha512.h"
@@ -7,15 +9,24 @@
 
 #define X509_MAX_CERTS 8U
 #define X509_MAX_DER_SIZE 8192U
-#define X509_MAX_DNS_NAMES 16U
+#define X509_MAX_DNS_NAMES 64U
 #define X509_MAX_DNS_NAME_LEN 128U
 
 #define TLS_SIG_RSA_PSS_RSAE_SHA256 0x0804U
 #define TLS_SIG_RSA_PSS_RSAE_SHA384 0x0805U
+#define TLS_SIG_ECDSA_SECP256R1_SHA256 0x0403U
+
+#define X509_SIG_KEY_RSA 1
+#define X509_SIG_KEY_ECDSA 2
 
 static const unsigned char g_oid_rsa_encryption[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
 static const unsigned char g_oid_sha256_rsa[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b };
 static const unsigned char g_oid_sha384_rsa[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c };
+static const unsigned char g_oid_ec_public_key[] = { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01 };
+static const unsigned char g_oid_prime256v1[] = { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07 };
+static const unsigned char g_oid_secp384r1[] = { 0x2b, 0x81, 0x04, 0x00, 0x22 };
+static const unsigned char g_oid_ecdsa_sha256[] = { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02 };
+static const unsigned char g_oid_ecdsa_sha384[] = { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03 };
 static const unsigned char g_oid_subject_alt_name[] = { 0x55, 0x1d, 0x11 };
 static const unsigned char g_oid_basic_constraints[] = { 0x55, 0x1d, 0x13 };
 
@@ -39,10 +50,15 @@ typedef struct {
     const unsigned char *signature;
     size_t signature_len;
     int signature_hash_id;
+    int signature_key_type;
     unsigned char rsa_modulus[CRYPTO_RSA_MAX_MODULUS_SIZE];
     size_t rsa_modulus_len;
     unsigned char rsa_exponent[8];
     size_t rsa_exponent_len;
+    unsigned char p256_public_key[CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE];
+    unsigned char p384_public_key[CRYPTO_P384_UNCOMPRESSED_PUBLIC_KEY_SIZE];
+    int has_p256_public_key;
+    int has_p384_public_key;
     long long not_before;
     long long not_after;
     int is_ca;
@@ -86,7 +102,6 @@ static int der_read_length(const unsigned char *der, size_t der_len, size_t *pos
     *out_len = length;
     return 0;
 }
-
 static int der_read_tlv(const unsigned char *der, size_t der_len, size_t *pos, struct der_tlv *out) {
     size_t start;
     size_t length;
@@ -130,7 +145,7 @@ static int oid_is(const unsigned char *oid, size_t oid_len, const unsigned char 
     return oid_len == expected_len && memcmp(oid, expected, expected_len) == 0;
 }
 
-static int parse_algorithm_hash(const unsigned char *der, size_t der_len, int *hash_id_out) {
+static int parse_algorithm_hash(const unsigned char *der, size_t der_len, int *hash_id_out, int *key_type_out) {
     struct der_tlv seq;
     const unsigned char *oid;
     size_t oid_len;
@@ -143,10 +158,22 @@ static int parse_algorithm_hash(const unsigned char *der, size_t der_len, int *h
     }
     if (oid_is(oid, oid_len, g_oid_sha256_rsa, sizeof(g_oid_sha256_rsa))) {
         *hash_id_out = CRYPTO_RSA_HASH_SHA256;
+        *key_type_out = X509_SIG_KEY_RSA;
         return 0;
     }
     if (oid_is(oid, oid_len, g_oid_sha384_rsa, sizeof(g_oid_sha384_rsa))) {
         *hash_id_out = CRYPTO_RSA_HASH_SHA384;
+        *key_type_out = X509_SIG_KEY_RSA;
+        return 0;
+    }
+    if (oid_is(oid, oid_len, g_oid_ecdsa_sha256, sizeof(g_oid_ecdsa_sha256))) {
+        *hash_id_out = CRYPTO_RSA_HASH_SHA256;
+        *key_type_out = X509_SIG_KEY_ECDSA;
+        return 0;
+    }
+    if (oid_is(oid, oid_len, g_oid_ecdsa_sha384, sizeof(g_oid_ecdsa_sha384))) {
+        *hash_id_out = CRYPTO_RSA_HASH_SHA384;
+        *key_type_out = X509_SIG_KEY_ECDSA;
         return 0;
     }
     return -1;
@@ -199,6 +226,110 @@ static int parse_rsa_spki(X509Parsed *cert, const unsigned char *spki_der, size_
         return -1;
     }
     return rsa_pos == rsa_seq.value_len ? 0 : -1;
+}
+
+static int parse_p256_spki(X509Parsed *cert, const unsigned char *spki_der, size_t spki_len) {
+    struct der_tlv spki;
+    struct der_tlv alg;
+    struct der_tlv bit_string;
+    const unsigned char *oid;
+    size_t oid_len;
+    size_t pos = 0U;
+    size_t inner = 0U;
+    size_t alg_pos = 0U;
+
+    if (der_expect_tlv(spki_der, spki_len, &pos, 0x30U, &spki) != 0 || pos != spki_len ||
+        der_expect_tlv(spki.value, spki.value_len, &inner, 0x30U, &alg) != 0 ||
+        der_read_oid(alg.value, alg.value_len, &alg_pos, &oid, &oid_len) != 0 ||
+        !oid_is(oid, oid_len, g_oid_ec_public_key, sizeof(g_oid_ec_public_key)) ||
+        der_read_oid(alg.value, alg.value_len, &alg_pos, &oid, &oid_len) != 0 ||
+        !oid_is(oid, oid_len, g_oid_prime256v1, sizeof(g_oid_prime256v1)) ||
+        der_expect_tlv(spki.value, spki.value_len, &inner, 0x03U, &bit_string) != 0 ||
+        bit_string.value_len != 1U + CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE || bit_string.value[0] != 0U ||
+        bit_string.value[1] != 0x04U) {
+        return -1;
+    }
+    memcpy(cert->p256_public_key, bit_string.value + 1U, CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE);
+    cert->has_p256_public_key = 1;
+    return 0;
+}
+
+static int parse_p384_spki(X509Parsed *cert, const unsigned char *spki_der, size_t spki_len) {
+    struct der_tlv spki;
+    struct der_tlv alg;
+    struct der_tlv bit_string;
+    const unsigned char *oid;
+    size_t oid_len;
+    size_t pos = 0U;
+    size_t inner = 0U;
+    size_t alg_pos = 0U;
+
+    if (der_expect_tlv(spki_der, spki_len, &pos, 0x30U, &spki) != 0 || pos != spki_len ||
+        der_expect_tlv(spki.value, spki.value_len, &inner, 0x30U, &alg) != 0 ||
+        der_read_oid(alg.value, alg.value_len, &alg_pos, &oid, &oid_len) != 0 ||
+        !oid_is(oid, oid_len, g_oid_ec_public_key, sizeof(g_oid_ec_public_key)) ||
+        der_read_oid(alg.value, alg.value_len, &alg_pos, &oid, &oid_len) != 0 ||
+        !oid_is(oid, oid_len, g_oid_secp384r1, sizeof(g_oid_secp384r1)) ||
+        der_expect_tlv(spki.value, spki.value_len, &inner, 0x03U, &bit_string) != 0 ||
+        bit_string.value_len != 1U + CRYPTO_P384_UNCOMPRESSED_PUBLIC_KEY_SIZE || bit_string.value[0] != 0U ||
+        bit_string.value[1] != 0x04U) {
+        return -1;
+    }
+    memcpy(cert->p384_public_key, bit_string.value + 1U, CRYPTO_P384_UNCOMPRESSED_PUBLIC_KEY_SIZE);
+    cert->has_p384_public_key = 1;
+    return 0;
+}
+
+static int der_ecdsa_sig_to_raw_p256(const unsigned char *der, size_t der_len, unsigned char raw[CRYPTO_P256_ECDSA_SIGNATURE_SIZE]) {
+    struct der_tlv seq;
+    struct der_tlv integer;
+    size_t pos = 0U;
+    size_t offset;
+    size_t used;
+
+    memset(raw, 0, CRYPTO_P256_ECDSA_SIGNATURE_SIZE);
+    if (der_expect_tlv(der, der_len, &pos, 0x30U, &seq) != 0 || pos != der_len) return -1;
+    pos = 0U;
+    if (der_expect_tlv(seq.value, seq.value_len, &pos, 0x02U, &integer) != 0) return -1;
+    offset = 0U;
+    while (offset + 1U < integer.value_len && integer.value[offset] == 0U) offset += 1U;
+    used = integer.value_len - offset;
+    if (used == 0U || used > CRYPTO_P256_SCALAR_SIZE) return -1;
+    memcpy(raw + (CRYPTO_P256_SCALAR_SIZE - used), integer.value + offset, used);
+
+    if (der_expect_tlv(seq.value, seq.value_len, &pos, 0x02U, &integer) != 0 || pos != seq.value_len) return -1;
+    offset = 0U;
+    while (offset + 1U < integer.value_len && integer.value[offset] == 0U) offset += 1U;
+    used = integer.value_len - offset;
+    if (used == 0U || used > CRYPTO_P256_SCALAR_SIZE) return -1;
+    memcpy(raw + CRYPTO_P256_SCALAR_SIZE + (CRYPTO_P256_SCALAR_SIZE - used), integer.value + offset, used);
+    return 0;
+}
+
+static int der_ecdsa_sig_to_raw_p384(const unsigned char *der, size_t der_len, unsigned char raw[CRYPTO_P384_ECDSA_SIGNATURE_SIZE]) {
+    struct der_tlv seq;
+    struct der_tlv integer;
+    size_t pos = 0U;
+    size_t offset;
+    size_t used;
+
+    memset(raw, 0, CRYPTO_P384_ECDSA_SIGNATURE_SIZE);
+    if (der_expect_tlv(der, der_len, &pos, 0x30U, &seq) != 0 || pos != der_len) return -1;
+    pos = 0U;
+    if (der_expect_tlv(seq.value, seq.value_len, &pos, 0x02U, &integer) != 0) return -1;
+    offset = 0U;
+    while (offset + 1U < integer.value_len && integer.value[offset] == 0U) offset += 1U;
+    used = integer.value_len - offset;
+    if (used == 0U || used > CRYPTO_P384_SCALAR_SIZE) return -1;
+    memcpy(raw + (CRYPTO_P384_SCALAR_SIZE - used), integer.value + offset, used);
+
+    if (der_expect_tlv(seq.value, seq.value_len, &pos, 0x02U, &integer) != 0 || pos != seq.value_len) return -1;
+    offset = 0U;
+    while (offset + 1U < integer.value_len && integer.value[offset] == 0U) offset += 1U;
+    used = integer.value_len - offset;
+    if (used == 0U || used > CRYPTO_P384_SCALAR_SIZE) return -1;
+    memcpy(raw + CRYPTO_P384_SCALAR_SIZE + (CRYPTO_P384_SCALAR_SIZE - used), integer.value + offset, used);
+    return 0;
 }
 
 static int parse_digits(const unsigned char *p, size_t count, int *out) {
@@ -388,7 +519,9 @@ static int parse_certificate(X509Parsed *cert, const unsigned char *der, size_t 
     }
     cert->subject = field.tlv;
     cert->subject_len = field.tlv_len;
-    if (der_read_tlv(tbs.value, tbs.value_len, &tbs_pos, &field) != 0 || parse_rsa_spki(cert, field.tlv, field.tlv_len) != 0) {
+    if (der_read_tlv(tbs.value, tbs.value_len, &tbs_pos, &field) != 0 ||
+        (parse_rsa_spki(cert, field.tlv, field.tlv_len) != 0 && parse_p256_spki(cert, field.tlv, field.tlv_len) != 0 &&
+         parse_p384_spki(cert, field.tlv, field.tlv_len) != 0)) {
         return -1;
     }
     while (tbs_pos < tbs.value_len) {
@@ -398,7 +531,7 @@ static int parse_certificate(X509Parsed *cert, const unsigned char *der, size_t 
         }
     }
     if (der_read_tlv(cert_seq.value, cert_seq.value_len, &cert_pos, &sig_alg) != 0 ||
-        parse_algorithm_hash(sig_alg.tlv, sig_alg.tlv_len, &cert->signature_hash_id) != 0 ||
+        parse_algorithm_hash(sig_alg.tlv, sig_alg.tlv_len, &cert->signature_hash_id, &cert->signature_key_type) != 0 ||
         der_expect_tlv(cert_seq.value, cert_seq.value_len, &cert_pos, 0x03U, &sig_bits) != 0 ||
         sig_bits.value_len < 2U || sig_bits.value[0] != 0U || cert_pos != cert_seq.value_len) {
         return -1;
@@ -482,9 +615,22 @@ static int hash_tbs(const X509Parsed *cert, unsigned char *digest, size_t *diges
 
 static int verify_cert_signature(const X509Parsed *cert, const X509Parsed *issuer) {
     unsigned char digest[CRYPTO_SHA384_DIGEST_SIZE];
+    unsigned char raw_signature[CRYPTO_P256_ECDSA_SIGNATURE_SIZE];
+    unsigned char raw384_signature[CRYPTO_P384_ECDSA_SIGNATURE_SIZE];
     size_t digest_len = 0U;
 
     if (hash_tbs(cert, digest, &digest_len) != 0) {
+        return -1;
+    }
+    if (cert->signature_key_type == X509_SIG_KEY_ECDSA) {
+        if (digest_len == CRYPTO_SHA256_DIGEST_SIZE && issuer->has_p256_public_key &&
+            der_ecdsa_sig_to_raw_p256(cert->signature, cert->signature_len, raw_signature) == 0) {
+            return crypto_p256_ecdsa_sha256_verify(issuer->p256_public_key, digest, raw_signature) ? 0 : -1;
+        }
+        if (digest_len == CRYPTO_SHA384_DIGEST_SIZE && issuer->has_p384_public_key &&
+            der_ecdsa_sig_to_raw_p384(cert->signature, cert->signature_len, raw384_signature) == 0) {
+            return crypto_p384_ecdsa_sha384_verify(issuer->p384_public_key, digest, raw384_signature) ? 0 : -1;
+        }
         return -1;
     }
     return crypto_rsa_pkcs1_v15_verify_digest(
@@ -628,6 +774,7 @@ int crypto_x509_verify_tls13_certificate_verify(
 ) {
     X509Parsed leaf;
     unsigned char digest[CRYPTO_SHA384_DIGEST_SIZE];
+    unsigned char raw_signature[CRYPTO_P256_ECDSA_SIGNATURE_SIZE];
     int hash_id;
     size_t digest_len;
 
@@ -642,6 +789,12 @@ int crypto_x509_verify_tls13_certificate_verify(
         crypto_sha384_hash(signed_content, signed_content_length, digest);
         hash_id = CRYPTO_RSA_HASH_SHA384;
         digest_len = CRYPTO_SHA384_DIGEST_SIZE;
+    } else if (signature_scheme == TLS_SIG_ECDSA_SECP256R1_SHA256) {
+        if (!leaf.has_p256_public_key || der_ecdsa_sig_to_raw_p256(signature, signature_length, raw_signature) != 0) {
+            return -1;
+        }
+        crypto_sha256_hash(signed_content, signed_content_length, digest);
+        return crypto_p256_ecdsa_sha256_verify(leaf.p256_public_key, digest, raw_signature) ? 0 : -1;
     } else {
         return -1;
     }

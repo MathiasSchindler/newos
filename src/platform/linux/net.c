@@ -1271,6 +1271,7 @@ static int linux_dns_query(
 static int linux_resolve_ipv4_host(const char *host, LinuxInAddr *address_out) {
     PlatformDnsEntry entries[4];
     size_t count = 0U;
+    size_t i;
 
     if (host == 0 || address_out == 0) {
         return -1;
@@ -1286,12 +1287,18 @@ static int linux_resolve_ipv4_host(const char *host, LinuxInAddr *address_out) {
         return 0;
     }
     (void)linux_lookup_hosts_file(host, PLATFORM_NETWORK_FAMILY_IPV4, entries, sizeof(entries) / sizeof(entries[0]), &count);
-    if (count > 0U && linux_parse_ipv4_text(entries[0].address, address_out) == 0) {
-        return 0;
+    for (i = 0U; i < count; ++i) {
+        if (entries[i].record_type == PLATFORM_DNS_RECORD_A && linux_parse_ipv4_text(entries[i].address, address_out) == 0) {
+            return 0;
+        }
     }
     count = 0U;
     if (linux_dns_query(0, 53U, host, 1U, entries, sizeof(entries) / sizeof(entries[0]), &count) == 0 && count > 0U) {
-        return linux_parse_ipv4_text(entries[0].address, address_out);
+        for (i = 0U; i < count; ++i) {
+            if (entries[i].record_type == PLATFORM_DNS_RECORD_A && linux_parse_ipv4_text(entries[i].address, address_out) == 0) {
+                return 0;
+            }
+        }
     }
     return -1;
 }
@@ -1299,6 +1306,7 @@ static int linux_resolve_ipv4_host(const char *host, LinuxInAddr *address_out) {
 static int linux_resolve_ipv6_host(const char *host, LinuxIn6Addr *address_out) {
     PlatformDnsEntry entries[4];
     size_t count = 0U;
+    size_t i;
 
     if (host == 0 || address_out == 0) {
         return -1;
@@ -1312,12 +1320,18 @@ static int linux_resolve_ipv6_host(const char *host, LinuxIn6Addr *address_out) 
         return 0;
     }
     (void)linux_lookup_hosts_file(host, PLATFORM_NETWORK_FAMILY_IPV6, entries, sizeof(entries) / sizeof(entries[0]), &count);
-    if (count > 0U && linux_parse_ipv6_text(entries[0].address, address_out) == 0) {
-        return 0;
+    for (i = 0U; i < count; ++i) {
+        if (entries[i].record_type == PLATFORM_DNS_RECORD_AAAA && linux_parse_ipv6_text(entries[i].address, address_out) == 0) {
+            return 0;
+        }
     }
     count = 0U;
     if (linux_dns_query(0, 53U, host, 28U, entries, sizeof(entries) / sizeof(entries[0]), &count) == 0 && count > 0U) {
-        return linux_parse_ipv6_text(entries[0].address, address_out);
+        for (i = 0U; i < count; ++i) {
+            if (entries[i].record_type == PLATFORM_DNS_RECORD_AAAA && linux_parse_ipv6_text(entries[i].address, address_out) == 0) {
+                return 0;
+            }
+        }
     }
     return -1;
 }

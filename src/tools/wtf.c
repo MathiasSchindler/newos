@@ -21,7 +21,13 @@ typedef struct {
 
 typedef struct {
     const char *base_url;
+    char default_base_url[128];
+    char language[3];
     unsigned long long timeout_ms;
+    int color_mode;
+    int show_title;
+    int show_description;
+    int show_extract;
     int show_url;
 } WtfOptions;
 
@@ -34,7 +40,7 @@ typedef struct {
 } WtfSummary;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-T TIMEOUT] [--base-url URL] [--url] TERM...");
+    tool_write_usage(program_name, "[-l LANG] [-T TIMEOUT] [--base-url URL] [--url] [--color[=WHEN]] TERM...");
 }
 
 static void print_help(const char *program_name) {
@@ -42,9 +48,17 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "Look up a short Wikipedia-style summary for a term.");
     rt_write_line(1, "");
     rt_write_line(1, "Options:");
+    rt_write_line(1, "  -l LANG           use a two-letter Wikipedia language, such as de or fr");
     rt_write_line(1, "  -T TIMEOUT        set network timeout, such as 2s or 500ms");
     rt_write_line(1, "  --base-url URL    use an alternate REST summary endpoint base");
     rt_write_line(1, "  --url             print the page URL when present");
+    rt_write_line(1, "  --no-title        do not print the article title");
+    rt_write_line(1, "  --no-description  do not print the one-line description");
+    rt_write_line(1, "  --no-extract      do not print the introduction extract");
+    rt_write_line(1, "  --only-title      print only the article title");
+    rt_write_line(1, "  --only-description  print only the one-line description");
+    rt_write_line(1, "  --only-extract    print only the introduction extract");
+    rt_write_line(1, "  --color[=WHEN]    colorize/bolden output: auto, always, or never");
 }
 
 static char lower_ascii(char ch) {
@@ -215,6 +229,26 @@ static int compose_url(const char *base_url, const char *term, char *buffer, siz
     return rt_strlen(buffer) == length ? 0 : -1;
 }
 
+static int parse_language_code(const char *text, char out[3]) {
+    if (text == 0 || out == 0) return -1;
+    if (!((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z'))) return -1;
+    if (!((text[1] >= 'A' && text[1] <= 'Z') || (text[1] >= 'a' && text[1] <= 'z'))) return -1;
+    if (text[2] != '\0') return -1;
+    out[0] = lower_ascii(text[0]);
+    out[1] = lower_ascii(text[1]);
+    out[2] = '\0';
+    return 0;
+}
+
+static int compose_default_base_url(const char language[3], char *buffer, size_t buffer_size) {
+    size_t length = 0U;
+    if (language == 0 || language[0] == '\0') return -1;
+    length = append_cstr(buffer, buffer_size, length, "https://");
+    length = append_cstr(buffer, buffer_size, length, language);
+    length = append_cstr(buffer, buffer_size, length, ".wikipedia.org/api/rest_v1/page/summary");
+    return rt_strlen(buffer) == length ? 0 : -1;
+}
+
 static int find_header_end(const char *buffer, size_t length, size_t *offset_out) {
     size_t index;
     for (index = 0U; index + 3U < length; ++index) {
@@ -288,8 +322,36 @@ static int wait_socket(int fd, unsigned long long timeout_ms) {
     return platform_poll_fds(fds, 1U, &ready, (int)timeout_ms) > 0 ? 0 : -1;
 }
 
-static int fetch_http(const WtfUrl *url, unsigned long long timeout_ms, WtfBuffer *body, char *redirect, size_t redirect_size) {
+static void write_tls_error(const char *phase, const char *url) {
+    rt_write_cstr(2, "wtf: ");
+    rt_write_cstr(2, phase);
+    rt_write_cstr(2, " failed for ");
+    rt_write_cstr(2, url);
+    rt_write_cstr(2, ": ");
+    rt_write_cstr(2, platform_tls_last_error());
+    rt_write_cstr(2, " (");
+    rt_write_cstr(2, platform_tls_peer_verification_status());
+    rt_write_cstr(2, ")\n");
+}
+
+static int write_all_transport(int fd, PlatformTlsClient *tls, int use_tls, const char *data, size_t size) {
+    size_t done = 0U;
+    while (done < size) {
+        long written = use_tls ? platform_tls_write(tls, data + done, size - done) : platform_write(fd, data + done, size - done);
+        if (written <= 0) return -1;
+        done += (size_t)written;
+    }
+    return 0;
+}
+
+static long read_transport(int fd, PlatformTlsClient *tls, int use_tls, char *buffer, size_t size) {
+    return use_tls ? platform_tls_read(tls, buffer, size) : platform_read(fd, buffer, size);
+}
+
+static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long long timeout_ms, WtfBuffer *body, char *redirect, size_t redirect_size) {
     int fd = -1;
+    PlatformTlsClient tls;
+    int use_tls = url->https;
     char request[2048];
     char chunk[WTF_BUFFER_CHUNK];
     WtfBuffer response;
@@ -300,14 +362,22 @@ static int fetch_http(const WtfUrl *url, unsigned long long timeout_ms, WtfBuffe
     int result = -1;
 
     redirect[0] = '\0';
+    rt_memset(&tls, 0, sizeof(tls));
+    tls.socket_fd = -1;
     buffer_init(&response);
-    if (url->https || platform_connect_tcp(url->host, url->port, &fd) != 0) goto done;
+    if (use_tls) {
+        if (platform_tls_connect(&tls, url->host, url->port) != 0) {
+            write_tls_error("tls connect", request_url);
+            goto done;
+        }
+        fd = tls.socket_fd;
+    } else if (platform_connect_tcp(url->host, url->port, &fd) != 0) goto done;
 
     request_length = append_cstr(request, sizeof(request), request_length, "GET ");
     request_length = append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
-    request_length = append_cstr(request, sizeof(request), request_length, " HTTP/1.0\r\nHost: ");
+    request_length = append_cstr(request, sizeof(request), request_length, use_tls ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
     request_length = append_cstr(request, sizeof(request), request_length, url->host);
-    if (url->port != 80U) {
+    if ((!use_tls && url->port != 80U) || (use_tls && url->port != 443U)) {
         char port_text[16];
         rt_unsigned_to_string(url->port, port_text, sizeof(port_text));
         request_length = append_char(request, sizeof(request), request_length, ':');
@@ -315,12 +385,18 @@ static int fetch_http(const WtfUrl *url, unsigned long long timeout_ms, WtfBuffe
     }
     request_length = append_cstr(request, sizeof(request), request_length,
         "\r\nUser-Agent: newos-wtf/0.1\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
-    if (rt_write_all(fd, request, request_length) != 0) goto done;
+    if (write_all_transport(fd, &tls, use_tls, request, request_length) != 0) {
+        if (use_tls) write_tls_error("tls write", request_url);
+        goto done;
+    }
 
     for (;;) {
-        if (wait_socket(fd, timeout_ms) != 0) goto done;
-        bytes_read = platform_read(fd, chunk, sizeof(chunk));
-        if (bytes_read < 0) goto done;
+        if (!use_tls && wait_socket(fd, timeout_ms) != 0) goto done;
+        bytes_read = read_transport(fd, &tls, use_tls, chunk, sizeof(chunk));
+        if (bytes_read < 0) {
+            if (use_tls) write_tls_error("tls read", request_url);
+            goto done;
+        }
         if (bytes_read == 0) break;
         if (buffer_append(&response, chunk, (size_t)bytes_read) != 0 || response.size > 4U * 1024U * 1024U) goto done;
     }
@@ -335,7 +411,8 @@ static int fetch_http(const WtfUrl *url, unsigned long long timeout_ms, WtfBuffe
     if (status < 200 || status >= 300) goto done;
     result = buffer_append(body, response.data + body_offset, response.size - body_offset);
 done:
-    if (fd >= 0) (void)platform_close(fd);
+    if (use_tls) platform_tls_close(&tls);
+    else if (fd >= 0) (void)platform_close(fd);
     buffer_free(&response);
     return result;
 }
@@ -434,20 +511,42 @@ static int parse_summary(const char *json, WtfSummary *summary) {
     return summary->extract[0] != '\0' || summary->missing ? 0 : -1;
 }
 
-static void print_summary(const WtfSummary *summary, int show_url) {
-    if (summary->title[0] != '\0') {
-        rt_write_line(1, summary->title);
-        if (summary->description[0] != '\0') {
-            rt_write_cstr(1, "  ");
-            rt_write_line(1, summary->description);
-        }
+static void write_styled_line(int fd, int color_mode, int style, const char *text) {
+    tool_style_begin(fd, color_mode, style);
+    rt_write_line(fd, text);
+    tool_style_end(fd, color_mode);
+}
+
+static void print_summary(const WtfSummary *summary, const WtfOptions *options) {
+    int printed_heading = 0;
+
+    if (options->show_title && summary->title[0] != '\0') {
+        write_styled_line(1, options->color_mode, TOOL_STYLE_BOLD, summary->title);
+        printed_heading = 1;
+    }
+    if (options->show_description && summary->description[0] != '\0') {
+        if (options->show_title && summary->title[0] != '\0') rt_write_cstr(1, "  ");
+        rt_write_line(1, summary->description);
+        printed_heading = 1;
+    }
+    if (printed_heading && options->show_extract && summary->extract[0] != '\0') {
         rt_write_char(1, '\n');
     }
-    if (summary->extract[0] != '\0') rt_write_line(1, summary->extract);
-    if (show_url && summary->page_url[0] != '\0') {
-        rt_write_char(1, '\n');
+    if (options->show_extract && summary->extract[0] != '\0') rt_write_line(1, summary->extract);
+    if (options->show_url && summary->page_url[0] != '\0') {
+        if ((options->show_title && summary->title[0] != '\0') ||
+            (options->show_description && summary->description[0] != '\0') ||
+            (options->show_extract && summary->extract[0] != '\0')) {
+            rt_write_char(1, '\n');
+        }
         rt_write_line(1, summary->page_url);
     }
+}
+
+static void select_only(WtfOptions *options, int title, int description, int extract) {
+    options->show_title = title;
+    options->show_description = description;
+    options->show_extract = extract;
 }
 
 static int join_terms(int argc, char **argv, int argi, char *buffer, size_t buffer_size) {
@@ -472,12 +571,33 @@ int main(int argc, char **argv) {
     WtfSummary summary;
     int result;
 
-    options.base_url = "http://en.wikipedia.org/api/rest_v1/page/summary";
+    rt_copy_string(options.language, sizeof(options.language), "en");
+    if (compose_default_base_url(options.language, options.default_base_url, sizeof(options.default_base_url)) != 0) return 1;
+    options.base_url = options.default_base_url;
     options.timeout_ms = 5000ULL;
+    options.color_mode = TOOL_COLOR_AUTO;
+    options.show_title = 1;
+    options.show_description = 1;
+    options.show_extract = 1;
     options.show_url = 0;
-    tool_opt_init(&opt, argc, argv, argv[0], "[-T TIMEOUT] [--base-url URL] [--url] TERM...");
+    tool_opt_init(&opt, argc, argv, argv[0], "[-l LANG] [-T TIMEOUT] [--base-url URL] [--url] [--color[=WHEN]] TERM...");
     while ((parsed = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
-        if (rt_strcmp(opt.flag, "-T") == 0 || rt_strcmp(opt.flag, "--timeout") == 0) {
+        if (rt_strcmp(opt.flag, "-l") == 0 || rt_strcmp(opt.flag, "--language") == 0 || rt_strcmp(opt.flag, "--lang") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || parse_language_code(opt.value, options.language) != 0 ||
+                compose_default_base_url(options.language, options.default_base_url, sizeof(options.default_base_url)) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (options.base_url == options.default_base_url) options.base_url = options.default_base_url;
+        } else if (tool_starts_with(opt.flag, "--language=") || tool_starts_with(opt.flag, "--lang=")) {
+            const char *value = tool_starts_with(opt.flag, "--language=") ? opt.flag + 11 : opt.flag + 7;
+            if (parse_language_code(value, options.language) != 0 ||
+                compose_default_base_url(options.language, options.default_base_url, sizeof(options.default_base_url)) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (options.base_url == options.default_base_url) options.base_url = options.default_base_url;
+        } else if (rt_strcmp(opt.flag, "-T") == 0 || rt_strcmp(opt.flag, "--timeout") == 0) {
             if (tool_opt_require_value(&opt) != 0 || tool_parse_duration_ms(opt.value, &options.timeout_ms) != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -494,6 +614,26 @@ int main(int argc, char **argv) {
             options.base_url = opt.flag + 11;
         } else if (rt_strcmp(opt.flag, "--url") == 0) {
             options.show_url = 1;
+        } else if (rt_strcmp(opt.flag, "--no-title") == 0) {
+            options.show_title = 0;
+        } else if (rt_strcmp(opt.flag, "--no-description") == 0) {
+            options.show_description = 0;
+        } else if (rt_strcmp(opt.flag, "--no-extract") == 0) {
+            options.show_extract = 0;
+        } else if (rt_strcmp(opt.flag, "--only-title") == 0) {
+            select_only(&options, 1, 0, 0);
+        } else if (rt_strcmp(opt.flag, "--only-description") == 0) {
+            select_only(&options, 0, 1, 0);
+        } else if (rt_strcmp(opt.flag, "--only-extract") == 0) {
+            select_only(&options, 0, 0, 1);
+        } else if (rt_strcmp(opt.flag, "--color") == 0 || rt_strcmp(opt.flag, "--colour") == 0) {
+            options.color_mode = TOOL_COLOR_ALWAYS;
+        } else if (tool_starts_with(opt.flag, "--color=") || tool_starts_with(opt.flag, "--colour=")) {
+            const char *value = tool_starts_with(opt.flag, "--color=") ? opt.flag + 8 : opt.flag + 9;
+            if (tool_parse_color_mode(value, &options.color_mode) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
         } else {
             tool_write_error("wtf", "unknown option: ", opt.flag);
             print_usage(argv[0]);
@@ -513,15 +653,14 @@ int main(int argc, char **argv) {
         tool_write_error("wtf", "unsupported URL ", request_url);
         return 1;
     }
-    if (url.https) {
-        tool_write_error("wtf", "https is not yet supported for ", request_url);
+    if (!options.show_title && !options.show_description && !options.show_extract && !options.show_url) {
+        tool_write_error("wtf", "no output fields selected", 0);
         return 1;
     }
-
     buffer_init(&body);
-    result = fetch_http(&url, options.timeout_ms, &body, redirect, sizeof(redirect));
+    result = fetch_http(&url, request_url, options.timeout_ms, &body, redirect, sizeof(redirect));
     if (result == 1 && tool_starts_with(redirect, "https://")) {
-        tool_write_error("wtf", "Wikipedia requires HTTPS; TLS is not yet available in this build for ", redirect);
+        tool_write_error("wtf", "redirects are not yet followed for ", redirect);
         buffer_free(&body);
         return 1;
     }
@@ -540,7 +679,7 @@ int main(int argc, char **argv) {
         buffer_free(&body);
         return 1;
     }
-    print_summary(&summary, options.show_url);
+    print_summary(&summary, &options);
     buffer_free(&body);
     return 0;
 }

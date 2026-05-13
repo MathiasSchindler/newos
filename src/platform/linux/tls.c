@@ -30,7 +30,7 @@ static void linux_tls_set_peer_status(const char *message) {
 static unsigned char *linux_tls_read_file(const char *path, size_t *length_out) {
     unsigned char *buffer;
     size_t used = 0U;
-    size_t cap = 1024U * 1024U;
+    size_t cap = 4096U;
     int fd;
 
     if (path == 0 || length_out == 0) {
@@ -45,7 +45,8 @@ static unsigned char *linux_tls_read_file(const char *path, size_t *length_out) 
         (void)platform_close(fd);
         return 0;
     }
-    while (used < cap) {
+    for (;;) {
+        unsigned char *resized;
         long result = platform_read(fd, buffer + used, cap - used);
         if (result < 0) {
             rt_free(buffer);
@@ -56,29 +57,39 @@ static unsigned char *linux_tls_read_file(const char *path, size_t *length_out) 
             break;
         }
         used += (size_t)result;
+        if (used < cap) {
+            continue;
+        }
+        if (cap >= 1024U * 1024U) {
+            rt_free(buffer);
+            (void)platform_close(fd);
+            return 0;
+        }
+        resized = (unsigned char *)rt_realloc(buffer, cap * 2U);
+        if (resized == 0) {
+            rt_free(buffer);
+            (void)platform_close(fd);
+            return 0;
+        }
+        buffer = resized;
+        cap *= 2U;
     }
     (void)platform_close(fd);
-    if (used == cap) {
-        rt_free(buffer);
-        return 0;
-    }
     *length_out = used;
     return buffer;
 }
 
 static unsigned char *linux_tls_load_trust_pem(size_t *length_out) {
-    static const char *paths[] = {
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/ssl/cert.pem",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
-    };
-    size_t i;
+    unsigned char *buffer;
 
-    for (i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
-        unsigned char *buffer = linux_tls_read_file(paths[i], length_out);
-        if (buffer != 0) return buffer;
-    }
+    buffer = linux_tls_read_file("/etc/ssl/certs/ca-certificates.crt", length_out);
+    if (buffer != 0) return buffer;
+    buffer = linux_tls_read_file("/etc/ssl/cert.pem", length_out);
+    if (buffer != 0) return buffer;
+    buffer = linux_tls_read_file("/etc/pki/tls/certs/ca-bundle.crt", length_out);
+    if (buffer != 0) return buffer;
+    buffer = linux_tls_read_file("/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", length_out);
+    if (buffer != 0) return buffer;
     return 0;
 }
 

@@ -205,11 +205,18 @@ static int tls13_verify_certificate_verify(struct Tls13Client *c, const unsigned
 	scheme = load_u16(body);
 	signature_len = load_u16(body + 2U);
 	if ((size_t)signature_len + 4U != body_len) return -1;
+	if (c->debug) {
+		tlsdbg(c, "cert_verify_scheme ");
+		(void)rt_write_uint(2, (unsigned long long)scheme);
+		tlsdbg(c, " sig_len ");
+		(void)rt_write_uint(2, (unsigned long long)signature_len);
+		tlsdbg(c, "\n");
+	}
 	for (i = 0; i < 64U; ++i) signed_content[i] = 0x20U;
 	memcpy(signed_content + 64U, context, context_len);
 	signed_content[64U + context_len] = 0U;
 	memcpy(signed_content + 64U + context_len + 1U, transcript_hash, 32U);
-	return crypto_x509_verify_tls13_certificate_verify(
+	int result = crypto_x509_verify_tls13_certificate_verify(
 		c->peer_cert_der[0],
 		c->peer_cert_len[0],
 		scheme,
@@ -218,6 +225,12 @@ static int tls13_verify_certificate_verify(struct Tls13Client *c, const unsigned
 		body + 4U,
 		signature_len
 	);
+	if (c->debug) {
+		tlsdbg(c, "cert_verify_result ");
+		(void)rt_write_uint(2, result == 0 ? 0ULL : 1ULL);
+		tlsdbg(c, "\n");
+	}
+	return result;
 }
 
 void tls13_client_init(struct Tls13Client *c, int fd, unsigned int timeout_ms) {

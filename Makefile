@@ -262,6 +262,12 @@ $(BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SO
 $(TARGET_BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
+$(BUILD_DIR)/wtf: src/tools/wtf.c $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/wtf: src/tools/wtf.c $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_SOURCES) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
 $(addprefix $(BUILD_DIR)/,$(IMAGE_TOOLS)): $(BUILD_DIR)/%: src/tools/%.c $(IMAGE_SOURCES) src/shared/image/image.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(IMAGE_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
