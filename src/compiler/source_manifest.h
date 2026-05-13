@@ -56,6 +56,7 @@
     X("src/shared/runtime/io.c") \
     X("src/shared/runtime/unicode.c") \
     X("src/shared/tool_io.c") \
+    X("src/shared/tool_file.c") \
     X("src/shared/tool_cli.c") \
     X("src/shared/tool_regex.c") \
     X("src/shared/tool_xml.c") \
@@ -146,6 +147,7 @@
 
 #define FOREACH_TARGET_PLATFORM_SOURCE(X) \
     X("src/platform/linux/fs.c") \
+    X("src/platform/linux/io.c") \
     X("src/platform/linux/process.c") \
     X("src/platform/linux/identity.c") \
     X("src/platform/linux/net.c") \

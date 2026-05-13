@@ -131,28 +131,6 @@ void tool_write_styled(int fd, int mode, int style, const char *text) {
     }
 }
 
-int tool_open_input(const char *path, int *fd_out, int *should_close_out) {
-    if (path == 0 || (path[0] == '-' && path[1] == '\0')) {
-        *fd_out = 0;
-        *should_close_out = 0;
-        return 0;
-    }
-
-    *fd_out = platform_open_read(path);
-    if (*fd_out < 0) {
-        return -1;
-    }
-
-    *should_close_out = 1;
-    return 0;
-}
-
-void tool_close_input(int fd, int should_close) {
-    if (should_close) {
-        (void)platform_close(fd);
-    }
-}
-
 void tool_write_usage(const char *program_name, const char *usage_suffix) {
     tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_CYAN, "Usage:");
     rt_write_char(2, ' ');
