@@ -1098,7 +1098,7 @@ static int ir_find_top_level_operator(const char *expr, const char *op, const ch
 }
 
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size) {
-    const char ops[][3] = {"&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
+    const char ops[][3] = {"&&", "||", "&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
     size_t op_index;
 
     for (op_index = 0; op_index < sizeof(ops) / sizeof(ops[0]); ++op_index) {
@@ -1129,6 +1129,49 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
             continue;
         }
 
+        {
+            char optimized_lhs[COMPILER_IR_LINE_CAPACITY];
+            char optimized_rhs[COMPILER_IR_LINE_CAPACITY];
+            long long nested_value = 0;
+            int nested_changed = 0;
+            int nested_constant = 0;
+
+            if (ir_optimize_expr_text(lhs, state, optimized_lhs, sizeof(optimized_lhs), &nested_changed, &nested_constant, &nested_value) == 0 &&
+                (nested_changed || nested_constant) &&
+                !ir_expr_text_equals(lhs, optimized_lhs) &&
+                ir_expr_is_trivial_value(optimized_lhs)) {
+                size_t offset = 0;
+                buffer[0] = '\0';
+                if (append_text(buffer, buffer_size, &offset, optimized_lhs) != 0 ||
+                    append_text(buffer, buffer_size, &offset, " ") != 0 ||
+                    append_text(buffer, buffer_size, &offset, op) != 0 ||
+                    append_text(buffer, buffer_size, &offset, " ") != 0 ||
+                    append_text(buffer, buffer_size, &offset, rhs) != 0) {
+                    return -1;
+                }
+                return 1;
+            }
+
+            nested_changed = 0;
+            nested_constant = 0;
+            nested_value = 0;
+            if (ir_optimize_expr_text(rhs, state, optimized_rhs, sizeof(optimized_rhs), &nested_changed, &nested_constant, &nested_value) == 0 &&
+                (nested_changed || nested_constant) &&
+                !ir_expr_text_equals(rhs, optimized_rhs) &&
+                ir_expr_is_trivial_value(optimized_rhs)) {
+                size_t offset = 0;
+                buffer[0] = '\0';
+                if (append_text(buffer, buffer_size, &offset, lhs) != 0 ||
+                    append_text(buffer, buffer_size, &offset, " ") != 0 ||
+                    append_text(buffer, buffer_size, &offset, op) != 0 ||
+                    append_text(buffer, buffer_size, &offset, " ") != 0 ||
+                    append_text(buffer, buffer_size, &offset, optimized_rhs) != 0) {
+                    return -1;
+                }
+                return 1;
+            }
+        }
+
         lhs_is_constant = ir_evaluate_constant_expression(lhs, state, &lhs_value) == 0;
         rhs_is_constant = ir_evaluate_constant_expression(rhs, state, &rhs_value) == 0;
 
@@ -1143,6 +1186,14 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
             }
         }
 
+        if (ir_text_equals(op, "&&") && lhs_is_constant && lhs_value == 0) {
+            rt_copy_string(buffer, buffer_size, "0");
+            return 1;
+        }
+        if (ir_text_equals(op, "||") && lhs_is_constant && lhs_value != 0) {
+            rt_copy_string(buffer, buffer_size, "1");
+            return 1;
+        }
         if ((ir_text_equals(op, "+") || ir_text_equals(op, "|") || ir_text_equals(op, "^")) &&
             lhs_is_constant && lhs_value == 0) {
             rt_copy_string(buffer, buffer_size, rhs);
@@ -1152,6 +1203,16 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
             lhs_is_constant && lhs_value == 0 && ir_expr_is_trivial_value(rhs)) {
             rt_copy_string(buffer, buffer_size, "0");
             return 1;
+        }
+        if (ir_expr_is_trivial_value(lhs)) {
+            if (ir_text_equals(op, "&&") && rhs_is_constant && rhs_value == 0) {
+                rt_copy_string(buffer, buffer_size, "0");
+                return 1;
+            }
+            if (ir_text_equals(op, "||") && rhs_is_constant && rhs_value != 0) {
+                rt_copy_string(buffer, buffer_size, "1");
+                return 1;
+            }
         }
         if ((ir_text_equals(op, "+") || ir_text_equals(op, "-") || ir_text_equals(op, "|") ||
              ir_text_equals(op, "^") || ir_text_equals(op, "<<") || ir_text_equals(op, ">>")) &&

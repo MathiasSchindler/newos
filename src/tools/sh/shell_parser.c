@@ -88,17 +88,161 @@ static int parse_word(char **cursor, char **word_out, int *no_expand_out) {
     return 0;
 }
 
+static void sh_free_command(ShCommand *command) {
+    size_t i;
+
+    if (command == 0) {
+        return;
+    }
+    for (i = 0; i < command->owned_word_count; ++i) {
+        rt_free(command->owned_words[i]);
+    }
+    rt_free(command->owned_words);
+    rt_free(command->argv);
+    rt_free(command->no_expand);
+    rt_memset(command, 0, sizeof(*command));
+}
+
+void sh_free_pipeline(ShPipeline *pipeline) {
+    size_t i;
+
+    if (pipeline == 0) {
+        return;
+    }
+    for (i = 0; i < pipeline->count; ++i) {
+        sh_free_command(&pipeline->commands[i]);
+    }
+    rt_free(pipeline->commands);
+    rt_memset(pipeline, 0, sizeof(*pipeline));
+}
+
+static char *sh_duplicate_text(const char *text) {
+    size_t length = rt_strlen(text);
+    char *copy = (char *)rt_malloc(length + 1U);
+
+    if (copy == 0) {
+        return 0;
+    }
+    memcpy(copy, text, length + 1U);
+    return copy;
+}
+
+static int sh_command_ensure_arg_capacity(ShCommand *command, size_t needed) {
+    size_t next_capacity;
+    char **next_argv;
+    int *next_no_expand;
+
+    if (needed <= command->argv_capacity) {
+        return 0;
+    }
+
+    next_capacity = command->argv_capacity == 0U ? 8U : command->argv_capacity;
+    while (next_capacity < needed) {
+        next_capacity *= 2U;
+    }
+
+    next_argv = (char **)rt_realloc(command->argv, (next_capacity + 1U) * sizeof(*next_argv));
+    if (next_argv == 0) {
+        return -1;
+    }
+    command->argv = next_argv;
+
+    next_no_expand = (int *)rt_realloc(command->no_expand, next_capacity * sizeof(*next_no_expand));
+    if (next_no_expand == 0) {
+        return -1;
+    }
+    command->no_expand = next_no_expand;
+    command->argv_capacity = next_capacity;
+    return 0;
+}
+
+static int sh_command_append_arg(ShCommand *command, char *word, int no_expand) {
+    if (sh_command_ensure_arg_capacity(command, (size_t)command->argc + 1U) != 0) {
+        return -1;
+    }
+    command->argv[command->argc] = word;
+    command->no_expand[command->argc] = no_expand;
+    command->argc += 1;
+    command->argv[command->argc] = 0;
+    return 0;
+}
+
+static int sh_command_take_owned_word(ShCommand *command, char *word) {
+    char **next_words;
+    size_t next_capacity;
+
+    if (command->owned_word_count >= command->owned_word_capacity) {
+        next_capacity = command->owned_word_capacity == 0U ? 8U : command->owned_word_capacity * 2U;
+        next_words = (char **)rt_realloc(command->owned_words, next_capacity * sizeof(*next_words));
+        if (next_words == 0) {
+            return -1;
+        }
+        command->owned_words = next_words;
+        command->owned_word_capacity = next_capacity;
+    }
+    command->owned_words[command->owned_word_count++] = word;
+    return 0;
+}
+
+static int sh_pipeline_add_command(ShPipeline *pipeline, ShCommand **command_out) {
+    ShCommand *next_commands;
+    size_t next_capacity;
+
+    if (pipeline->count >= pipeline->capacity) {
+        next_capacity = pipeline->capacity == 0U ? 4U : pipeline->capacity * 2U;
+        next_commands = (ShCommand *)rt_realloc(pipeline->commands, next_capacity * sizeof(*next_commands));
+        if (next_commands == 0) {
+            return -1;
+        }
+        rt_memset(next_commands + pipeline->capacity, 0, (next_capacity - pipeline->capacity) * sizeof(*next_commands));
+        pipeline->commands = next_commands;
+        pipeline->capacity = next_capacity;
+    }
+    *command_out = &pipeline->commands[pipeline->count++];
+    rt_memset(*command_out, 0, sizeof(**command_out));
+    return 0;
+}
+
 static int expand_command_globs(ShCommand *command) {
-    char *expanded_argv[SH_MAX_ARGS + 1];
-    char storage[SH_MAX_ARGS][SH_MAX_LINE];
+    char **expanded_argv = 0;
+    int *expanded_no_expand = 0;
+    size_t expanded_capacity = 0U;
     int new_argc = 0;
     int arg_index;
+
+#define APPEND_EXPANDED_ARG(arg_text, no_expand_value) do { \
+        if ((size_t)new_argc >= expanded_capacity) { \
+            size_t next_capacity__ = expanded_capacity == 0U ? 8U : expanded_capacity * 2U; \
+            char **next_argv__ = (char **)rt_malloc((next_capacity__ + 1U) * sizeof(*next_argv__)); \
+            int *next_no_expand__ = (int *)rt_malloc(next_capacity__ * sizeof(*next_no_expand__)); \
+            if (next_argv__ == 0 || next_no_expand__ == 0) { \
+                rt_free(next_argv__); \
+                rt_free(next_no_expand__); \
+                rt_free(expanded_argv); \
+                rt_free(expanded_no_expand); \
+                return -1; \
+            } \
+            if (new_argc > 0) { \
+                memcpy(next_argv__, expanded_argv, (size_t)(new_argc + 1) * sizeof(*next_argv__)); \
+                memcpy(next_no_expand__, expanded_no_expand, (size_t)new_argc * sizeof(*next_no_expand__)); \
+            } \
+            rt_free(expanded_argv); \
+            rt_free(expanded_no_expand); \
+            expanded_argv = next_argv__; \
+            expanded_no_expand = next_no_expand__; \
+            expanded_capacity = next_capacity__; \
+        } \
+        expanded_argv[new_argc] = (arg_text); \
+        expanded_no_expand[new_argc] = (no_expand_value); \
+        new_argc += 1; \
+        expanded_argv[new_argc] = 0; \
+    } while (0)
 
     for (arg_index = 0; arg_index < command->argc; ++arg_index) {
         const char *arg = command->argv[arg_index];
 
         if (command->no_expand[arg_index] || !sh_contains_wildcards(arg)) {
-            expanded_argv[new_argc++] = command->argv[arg_index];
+            APPEND_EXPANDED_ARG(command->argv[arg_index], command->no_expand[arg_index]);
             continue;
         }
 
@@ -140,38 +284,50 @@ static int expand_command_globs(ShCommand *command) {
                         continue;
                     }
                     if (tool_wildcard_match(pattern, entries[entry_index].name)) {
-                        int slot;
+                        char matched_path[SH_MAX_LINE];
+                        char *owned_path;
 
-                        if (new_argc >= SH_MAX_ARGS) {
-                            return -1;
-                        }
-                        slot = new_argc;
                         if (slash != 0) {
-                            if (tool_join_path(dir_path, entries[entry_index].name, storage[slot], sizeof(storage[slot])) != 0) {
+                            if (tool_join_path(dir_path, entries[entry_index].name, matched_path, sizeof(matched_path)) != 0) {
                                 return -1;
                             }
                         } else {
-                            rt_copy_string(storage[slot], sizeof(storage[slot]), entries[entry_index].name);
+                            rt_copy_string(matched_path, sizeof(matched_path), entries[entry_index].name);
                         }
-                        expanded_argv[slot] = storage[slot];
-                        new_argc += 1;
+                        owned_path = sh_duplicate_text(matched_path);
+                        if (owned_path == 0 || sh_command_take_owned_word(command, owned_path) != 0) {
+                            rt_free(owned_path);
+                            rt_free(expanded_argv);
+                            rt_free(expanded_no_expand);
+                            return -1;
+                        }
+                        APPEND_EXPANDED_ARG(owned_path, 1);
                         matched = 1;
                     }
                 }
             }
 
             if (!matched) {
-                expanded_argv[new_argc++] = command->argv[arg_index];
+                APPEND_EXPANDED_ARG(command->argv[arg_index], command->no_expand[arg_index]);
             }
         }
     }
 
+    if (sh_command_ensure_arg_capacity(command, (size_t)new_argc) != 0) {
+        rt_free(expanded_argv);
+        rt_free(expanded_no_expand);
+        return -1;
+    }
     for (arg_index = 0; arg_index < new_argc; ++arg_index) {
         command->argv[arg_index] = expanded_argv[arg_index];
+        command->no_expand[arg_index] = expanded_no_expand[arg_index];
     }
+    rt_free(expanded_argv);
+    rt_free(expanded_no_expand);
     command->argv[new_argc] = 0;
     command->argc = new_argc;
     return 0;
+#undef APPEND_EXPANDED_ARG
 }
 
 void sh_cleanup_pipeline_temp_inputs(const ShPipeline *pipeline) {
@@ -201,8 +357,9 @@ int sh_parse_pipeline(char *line, ShPipeline *pipeline, int *empty_out) {
     size_t i;
 
     rt_memset(pipeline, 0, sizeof(*pipeline));
-    pipeline->count = 1;
-    current = &pipeline->commands[0];
+    if (sh_pipeline_add_command(pipeline, &current) != 0) {
+        return -1;
+    }
     *empty_out = 0;
 
     for (;;) {
@@ -220,10 +377,9 @@ int sh_parse_pipeline(char *line, ShPipeline *pipeline, int *empty_out) {
             }
             current->argv[current->argc] = 0;
             cursor += 1;
-            if (pipeline->count >= SH_MAX_COMMANDS) {
+            if (sh_pipeline_add_command(pipeline, &current) != 0) {
                 return -1;
             }
-            current = &pipeline->commands[pipeline->count++];
             continue;
         }
 
@@ -257,13 +413,9 @@ int sh_parse_pipeline(char *line, ShPipeline *pipeline, int *empty_out) {
             return -1;
         }
 
-        if (current->argc >= SH_MAX_ARGS) {
+        if (sh_command_append_arg(current, word, no_expand) != 0) {
             return -1;
         }
-
-        current->argv[current->argc] = word;
-        current->no_expand[current->argc] = no_expand;
-        current->argc += 1;
     }
 
     if (pipeline->count == 1 && current->argc == 0 && current->input_path == 0 && current->output_path == 0) {

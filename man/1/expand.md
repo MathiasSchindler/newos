@@ -19,6 +19,7 @@ expand reads files (or standard input) and writes them with tab characters repla
 - converting all tabs to spaces with default 8-column tab stops
 - expanding only leading tabs with `-i`
 - custom single or multiple tab stop positions
+- tab expansion based on shared UTF-8 display-width handling for common combining marks, ANSI escapes, and wide East Asian/emoji characters
 - NUL-delimited record mode with `-z`
 
 ## OPTIONS
@@ -32,8 +33,7 @@ expand reads files (or standard input) and writes them with tab characters repla
 
 - tab stop positions are 1-based column numbers
 - no support for tab stop specification via repeated `-t` flags (a single `-t` argument is required)
-- display width is byte/column based and does not account for wide Unicode,
-  combining marks, or ANSI escape sequences
+- display width uses compact Unicode/default-width tables, not locale-specific width data; ambiguous-width characters and full grapheme clusters may not match every terminal
 - locale-specific tab semantics are not implemented
 
 ## EXAMPLES

@@ -5,8 +5,9 @@
 #include "tool_util.h"
 #include "sh/shell_shared.h"
 
-#define SH_MAX_POSITIONAL_ARGS SH_MAX_ARGS
-#define SH_POSITIONAL_ARG_CAPACITY 256
+#define SH_POSITIONAL_INITIAL_CAPACITY 8U
+#define SH_ALIAS_INITIAL_CAPACITY 32U
+#define SH_FUNCTION_INITIAL_CAPACITY 32U
 
 static int run_line(char *line);
 
@@ -15,14 +16,49 @@ int shell_exit_status = 0;
 int shell_last_status = 0;
 int shell_next_job_id = 1;
 char shell_self_path[SH_MAX_LINE];
-char shell_history[SH_MAX_HISTORY][SH_MAX_LINE];
-int shell_history_count = 0;
-ShJob shell_jobs[SH_MAX_JOBS];
-ShAlias shell_aliases[SH_MAX_ALIASES];
-ShFunction shell_functions[SH_MAX_FUNCTIONS];
+char **shell_history = 0;
+size_t shell_history_count = 0;
+size_t shell_history_capacity = 0;
+ShJob *shell_jobs = 0;
+size_t shell_jobs_count = 0;
+size_t shell_jobs_capacity = 0;
+ShAlias *shell_aliases = 0;
+size_t shell_alias_count = 0;
+size_t shell_alias_capacity = 0;
+ShFunction *shell_functions = 0;
+size_t shell_function_count = 0;
+size_t shell_function_capacity = 0;
 static int shell_positional_argc = 0;
-static char shell_positional_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY];
-static char shell_parameter_zero[SH_POSITIONAL_ARG_CAPACITY];
+static char **shell_positional_args = 0;
+static size_t shell_positional_capacity = 0;
+static char shell_parameter_zero[SH_MAX_LINE];
+
+static char *shell_strdup(const char *text) {
+    size_t length = rt_strlen(text);
+    char *copy = (char *)rt_malloc(length + 1U);
+
+    if (copy == 0) {
+        return 0;
+    }
+    memcpy(copy, text, length + 1U);
+    return copy;
+}
+
+static int shell_grow_string_array(char ***items_io, size_t *capacity_io, size_t needed, size_t initial_capacity) {
+    char **next_items;
+    size_t next_capacity = *capacity_io == 0U ? initial_capacity : *capacity_io;
+
+    while (next_capacity < needed) {
+        next_capacity *= 2U;
+    }
+    next_items = (char **)rt_realloc(*items_io, next_capacity * sizeof(*next_items));
+    if (next_items == 0) {
+        return -1;
+    }
+    *items_io = next_items;
+    *capacity_io = next_capacity;
+    return 0;
+}
 
 int sh_is_name_start_char(char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
@@ -33,30 +69,28 @@ int sh_is_name_char(char ch) {
 }
 
 void sh_add_history_entry(const char *line) {
-    int index;
+    char *copy;
 
     if (line == 0 || line[0] == '\0') {
         return;
     }
 
-    if (shell_history_count > 0 && rt_strcmp(shell_history[shell_history_count - 1], line) == 0) {
+    if (shell_history_count > 0U && rt_strcmp(shell_history[shell_history_count - 1U], line) == 0) {
         return;
     }
 
-    if (shell_history_count < SH_MAX_HISTORY) {
-        rt_copy_string(shell_history[shell_history_count], sizeof(shell_history[0]), line);
-        shell_history_count += 1;
+    if (shell_grow_string_array(&shell_history, &shell_history_capacity, shell_history_count + 1U, 64U) != 0) {
         return;
     }
-
-    for (index = 1; index < SH_MAX_HISTORY; ++index) {
-        rt_copy_string(shell_history[index - 1], sizeof(shell_history[0]), shell_history[index]);
+    copy = shell_strdup(line);
+    if (copy == 0) {
+        return;
     }
-    rt_copy_string(shell_history[SH_MAX_HISTORY - 1], sizeof(shell_history[0]), line);
+    shell_history[shell_history_count++] = copy;
 }
 
 static const char *shell_get_positional_parameter(unsigned long long index) {
-    if (index == 0 || index > (unsigned long long)shell_positional_argc || index > SH_MAX_POSITIONAL_ARGS) {
+    if (index == 0 || index > (unsigned long long)shell_positional_argc) {
         return "";
     }
 
@@ -78,41 +112,96 @@ void sh_set_shell_invocation_name(const char *name) {
 static void shell_clear_positional_parameters(void) {
     int i;
 
-    shell_positional_argc = 0;
-    for (i = 0; i < SH_MAX_POSITIONAL_ARGS; ++i) {
-        shell_positional_args[i][0] = '\0';
+    for (i = 0; i < shell_positional_argc; ++i) {
+        rt_free(shell_positional_args[i]);
+        shell_positional_args[i] = 0;
     }
+    shell_positional_argc = 0;
+}
+
+static int shell_append_positional_parameter(const char *text) {
+    char *copy;
+
+    if ((size_t)shell_positional_argc >= shell_positional_capacity &&
+        shell_grow_string_array(&shell_positional_args,
+                                &shell_positional_capacity,
+                                (size_t)shell_positional_argc + 1U,
+                                SH_POSITIONAL_INITIAL_CAPACITY) != 0) {
+        return -1;
+    }
+
+    copy = shell_strdup(text);
+    if (copy == 0) {
+        return -1;
+    }
+    shell_positional_args[shell_positional_argc++] = copy;
+    return 0;
 }
 
 static void shell_set_positional_parameters(const ShCommand *cmd) {
     int i;
 
     shell_clear_positional_parameters();
-    for (i = 1; i < cmd->argc && shell_positional_argc < SH_MAX_POSITIONAL_ARGS; ++i) {
-        rt_copy_string(shell_positional_args[shell_positional_argc], sizeof(shell_positional_args[0]), cmd->argv[i]);
-        shell_positional_argc += 1;
+    for (i = 1; i < cmd->argc; ++i) {
+        if (shell_append_positional_parameter(cmd->argv[i]) != 0) {
+            return;
+        }
     }
 }
 
-static void shell_restore_positional_parameters(int saved_argc, char saved_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY]) {
+static void shell_free_positional_snapshot(char **args, int argc) {
     int i;
 
-    shell_positional_argc = saved_argc;
-    for (i = 0; i < saved_argc && i < SH_MAX_POSITIONAL_ARGS; ++i) {
-        rt_copy_string(shell_positional_args[i], sizeof(shell_positional_args[0]), saved_args[i]);
+    for (i = 0; i < argc; ++i) {
+        rt_free(args[i]);
     }
-    for (; i < SH_MAX_POSITIONAL_ARGS; ++i) {
-        shell_positional_args[i][0] = '\0';
+    rt_free(args);
+}
+
+static int shell_save_positional_parameters(char ***saved_args_out, int *saved_argc_out) {
+    char **saved_args = 0;
+    int i;
+
+    *saved_args_out = 0;
+    *saved_argc_out = shell_positional_argc;
+    if (shell_positional_argc == 0) {
+        return 0;
     }
+    saved_args = (char **)rt_malloc((size_t)shell_positional_argc * sizeof(*saved_args));
+    if (saved_args == 0) {
+        return -1;
+    }
+    for (i = 0; i < shell_positional_argc; ++i) {
+        saved_args[i] = shell_strdup(shell_positional_args[i]);
+        if (saved_args[i] == 0) {
+            shell_free_positional_snapshot(saved_args, i);
+            return -1;
+        }
+    }
+    *saved_args_out = saved_args;
+    return 0;
+}
+
+static void shell_restore_positional_parameters(int saved_argc, char **saved_args) {
+    int i;
+
+    shell_clear_positional_parameters();
+    for (i = 0; i < saved_argc; ++i) {
+        if (shell_append_positional_parameter(saved_args[i]) != 0) {
+            break;
+        }
+    }
+    shell_free_positional_snapshot(saved_args, saved_argc);
 }
 
 int sh_set_shell_positionals_from_argv(int argc, char *const *argv, int start_index) {
     int i;
 
     shell_clear_positional_parameters();
-    for (i = start_index; i < argc && shell_positional_argc < SH_MAX_POSITIONAL_ARGS; ++i) {
-        rt_copy_string(shell_positional_args[shell_positional_argc], sizeof(shell_positional_args[0]), argv[i]);
-        shell_positional_argc += 1;
+    for (i = start_index; i < argc; ++i) {
+        if (shell_append_positional_parameter(argv[i]) != 0) {
+            return -1;
+        }
     }
 
     return 0;
@@ -131,12 +220,15 @@ int sh_shift_shell_positionals(unsigned int count) {
         return 0;
     }
 
+    for (i = 0U; i < count; ++i) {
+        rt_free(shell_positional_args[i]);
+    }
     new_argc = (unsigned int)shell_positional_argc - count;
     for (i = 0U; i < new_argc; ++i) {
-        rt_copy_string(shell_positional_args[i], sizeof(shell_positional_args[0]), shell_positional_args[i + count]);
+        shell_positional_args[i] = shell_positional_args[i + count];
     }
-    for (i = new_argc; i < SH_MAX_POSITIONAL_ARGS; ++i) {
-        shell_positional_args[i][0] = '\0';
+    for (i = new_argc; i < (unsigned int)shell_positional_argc; ++i) {
+        shell_positional_args[i] = 0;
     }
     shell_positional_argc = (int)new_argc;
     return 0;
@@ -239,8 +331,8 @@ static int search_command_in_path_list(const char *path_list, const char *name, 
 }
 
 const char *sh_lookup_shell_alias(const char *name) {
-    int i;
-    for (i = 0; i < SH_MAX_ALIASES; ++i) {
+    size_t i;
+    for (i = 0; i < shell_alias_count; ++i) {
         if (shell_aliases[i].active && rt_strcmp(shell_aliases[i].name, name) == 0) {
             return shell_aliases[i].value;
         }
@@ -254,8 +346,8 @@ int sh_set_shell_alias(const char *assignment) {
     size_t i = 0;
     size_t name_len = 0;
     size_t value_len = 0;
-    int slot = -1;
-    int index;
+    size_t slot = (size_t)-1;
+    size_t index;
 
     while (assignment[i] != '\0' && assignment[i] != '=') {
         if (name_len + 1 < sizeof(name)) {
@@ -275,18 +367,28 @@ int sh_set_shell_alias(const char *assignment) {
     }
     value[value_len] = '\0';
 
-    for (index = 0; index < SH_MAX_ALIASES; ++index) {
+    for (index = 0; index < shell_alias_count; ++index) {
         if (shell_aliases[index].active && rt_strcmp(shell_aliases[index].name, name) == 0) {
             slot = index;
             break;
         }
-        if (!shell_aliases[index].active && slot < 0) {
+        if (!shell_aliases[index].active && slot == (size_t)-1) {
             slot = index;
         }
     }
 
-    if (slot < 0) {
-        return -1;
+    if (slot == (size_t)-1) {
+        if (shell_alias_count >= shell_alias_capacity) {
+            size_t next_capacity = shell_alias_capacity == 0U ? SH_ALIAS_INITIAL_CAPACITY : shell_alias_capacity * 2U;
+            ShAlias *next_aliases = (ShAlias *)rt_realloc(shell_aliases, next_capacity * sizeof(*next_aliases));
+            if (next_aliases == 0) {
+                return -1;
+            }
+            rt_memset(next_aliases + shell_alias_capacity, 0, (next_capacity - shell_alias_capacity) * sizeof(*next_aliases));
+            shell_aliases = next_aliases;
+            shell_alias_capacity = next_capacity;
+        }
+        slot = shell_alias_count++;
     }
 
     shell_aliases[slot].active = 1;
@@ -296,8 +398,8 @@ int sh_set_shell_alias(const char *assignment) {
 }
 
 const char *sh_lookup_shell_function(const char *name) {
-    int i;
-    for (i = 0; i < SH_MAX_FUNCTIONS; ++i) {
+    size_t i;
+    for (i = 0; i < shell_function_count; ++i) {
         if (shell_functions[i].active && rt_strcmp(shell_functions[i].name, name) == 0) {
             return shell_functions[i].body;
         }
@@ -306,21 +408,31 @@ const char *sh_lookup_shell_function(const char *name) {
 }
 
 int sh_set_shell_function(const char *name, const char *body) {
-    int slot = -1;
-    int i;
+    size_t slot = (size_t)-1;
+    size_t i;
 
-    for (i = 0; i < SH_MAX_FUNCTIONS; ++i) {
+    for (i = 0; i < shell_function_count; ++i) {
         if (shell_functions[i].active && rt_strcmp(shell_functions[i].name, name) == 0) {
             slot = i;
             break;
         }
-        if (!shell_functions[i].active && slot < 0) {
+        if (!shell_functions[i].active && slot == (size_t)-1) {
             slot = i;
         }
     }
 
-    if (slot < 0) {
-        return -1;
+    if (slot == (size_t)-1) {
+        if (shell_function_count >= shell_function_capacity) {
+            size_t next_capacity = shell_function_capacity == 0U ? SH_FUNCTION_INITIAL_CAPACITY : shell_function_capacity * 2U;
+            ShFunction *next_functions = (ShFunction *)rt_realloc(shell_functions, next_capacity * sizeof(*next_functions));
+            if (next_functions == 0) {
+                return -1;
+            }
+            rt_memset(next_functions + shell_function_capacity, 0, (next_capacity - shell_function_capacity) * sizeof(*next_functions));
+            shell_functions = next_functions;
+            shell_function_capacity = next_capacity;
+        }
+        slot = shell_function_count++;
     }
 
     shell_functions[slot].active = 1;
@@ -1091,11 +1203,13 @@ static int run_simple_command(char *segment, int background) {
     }
 
     if (sh_parse_pipeline(segment, &pipeline, &empty) != 0) {
+        sh_free_pipeline(&pipeline);
         rt_write_line(2, "sh: syntax error");
         return 2;
     }
 
     if (empty) {
+        sh_free_pipeline(&pipeline);
         return 0;
     }
 
@@ -1103,17 +1217,20 @@ static int run_simple_command(char *segment, int background) {
         const char *body = sh_lookup_shell_function(pipeline.commands[0].argv[0]);
         if (body != 0) {
             char body_copy[SH_MAX_LINE];
-            char saved_args[SH_MAX_POSITIONAL_ARGS][SH_POSITIONAL_ARG_CAPACITY];
+            char **saved_args = 0;
             int saved_argc = shell_positional_argc;
-            int i;
 
-            for (i = 0; i < saved_argc && i < SH_MAX_POSITIONAL_ARGS; ++i) {
-                rt_copy_string(saved_args[i], sizeof(saved_args[0]), shell_positional_args[i]);
+            if (shell_save_positional_parameters(&saved_args, &saved_argc) != 0) {
+                sh_cleanup_pipeline_temp_inputs(&pipeline);
+                sh_free_pipeline(&pipeline);
+                rt_write_line(2, "sh: out of memory");
+                return 1;
             }
 
             shell_set_positional_parameters(&pipeline.commands[0]);
             rt_copy_string(body_copy, sizeof(body_copy), body);
             sh_cleanup_pipeline_temp_inputs(&pipeline);
+            sh_free_pipeline(&pipeline);
             status = run_line(body_copy);
             shell_restore_positional_parameters(saved_argc, saved_args);
             return status;
@@ -1122,11 +1239,13 @@ static int run_simple_command(char *segment, int background) {
 
     if (sh_try_run_builtin(&pipeline, &status)) {
         sh_cleanup_pipeline_temp_inputs(&pipeline);
+        sh_free_pipeline(&pipeline);
         return status;
     }
 
     status = sh_execute_pipeline(&pipeline, background, segment);
     sh_cleanup_pipeline_temp_inputs(&pipeline);
+    sh_free_pipeline(&pipeline);
     return status;
 }
 

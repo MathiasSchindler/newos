@@ -53,6 +53,9 @@ script path it runs the file non-interactively.
 
 - it is not a full drop-in replacement for a mature POSIX shell
 - job control and interactive convenience features remain basic compared with `bash` or `dash`
+- parsed command lists, argument vectors, jobs, history, aliases, and functions
+  grow as needed, but each logical input line and stored alias/function/job text
+  must still fit within the shell line buffer
 - positional parameter handling is intentionally compact and does not yet match every quoting edge case of a full POSIX shell
 - shell invocation options are intentionally minimal; login-shell startup, rc-file loading, and broader compatibility modes are not implemented yet
 

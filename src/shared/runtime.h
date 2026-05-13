@@ -51,7 +51,9 @@ typedef struct {
 int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtTextSegment *segment_out);
 int rt_text_has_incomplete_tail(const char *text, size_t text_length);
 unsigned long long rt_text_apply_segment_width(unsigned long long current_width, const RtTextSegment *segment);
+unsigned long long rt_text_apply_segment_width_tabstop(unsigned long long current_width, const RtTextSegment *segment, unsigned int tab_width);
 unsigned long long rt_text_display_width_n(const char *text, size_t text_length, unsigned long long initial_width);
+unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width);
 size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width);
 int rt_text_segment_is_space(const char *text, size_t text_length, const RtTextSegment *segment);
 

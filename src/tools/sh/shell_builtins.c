@@ -42,9 +42,9 @@ const char *sh_shell_builtin_name_at(size_t index) {
 }
 
 static int builtin_jobs(void) {
-    int i;
+    size_t i;
 
-    for (i = 0; i < SH_MAX_JOBS; ++i) {
+    for (i = 0; i < shell_jobs_count; ++i) {
         if (shell_jobs[i].active) {
             rt_write_char(1, '[');
             rt_write_uint(1, (unsigned long long)shell_jobs[i].job_id);
@@ -57,7 +57,7 @@ static int builtin_jobs(void) {
 }
 
 static int builtin_history(void) {
-    int i;
+    size_t i;
 
     for (i = 0; i < shell_history_count; ++i) {
         rt_write_uint(1, (unsigned long long)(i + 1));
@@ -94,6 +94,9 @@ static int builtin_fg(int argc, char **argv) {
     }
 
     job->active = 0;
+    rt_free(job->pids);
+    job->pids = 0;
+    job->pid_count = 0;
     return last_status;
 }
 
@@ -190,10 +193,11 @@ static int builtin_unset_command(const ShCommand *cmd) {
 }
 
 static int builtin_alias_command(const ShCommand *cmd) {
-    int i;
+    size_t i;
+    int argi;
 
     if (cmd->argc == 1) {
-        for (i = 0; i < SH_MAX_ALIASES; ++i) {
+        for (i = 0; i < shell_alias_count; ++i) {
             if (shell_aliases[i].active) {
                 rt_write_cstr(1, shell_aliases[i].name);
                 rt_write_cstr(1, "='");
@@ -204,14 +208,14 @@ static int builtin_alias_command(const ShCommand *cmd) {
         return 0;
     }
 
-    for (i = 1; i < cmd->argc; ++i) {
-        if (sh_set_shell_alias(cmd->argv[i]) != 0) {
-            const char *value = sh_lookup_shell_alias(cmd->argv[i]);
+    for (argi = 1; argi < cmd->argc; ++argi) {
+        if (sh_set_shell_alias(cmd->argv[argi]) != 0) {
+            const char *value = sh_lookup_shell_alias(cmd->argv[argi]);
             if (value != 0) {
                 rt_write_line(1, value);
             } else {
                 rt_write_cstr(2, "sh: invalid alias: ");
-                rt_write_line(2, cmd->argv[i]);
+                rt_write_line(2, cmd->argv[argi]);
                 return 1;
             }
         }

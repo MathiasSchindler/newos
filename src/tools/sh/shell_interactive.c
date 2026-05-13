@@ -466,13 +466,13 @@ static void shell_collect_command_matches(const char *prefix, ShCompletionMatch 
         }
     }
 
-    for (i = 0; i < SH_MAX_ALIASES; ++i) {
+    for (i = 0; i < shell_alias_count; ++i) {
         if (shell_aliases[i].active && shell_starts_with(shell_aliases[i].name, prefix)) {
             shell_add_completion_match(matches, count_io, shell_aliases[i].name, 0);
         }
     }
 
-    for (i = 0; i < SH_MAX_FUNCTIONS; ++i) {
+    for (i = 0; i < shell_function_count; ++i) {
         if (shell_functions[i].active && shell_starts_with(shell_functions[i].name, prefix)) {
             shell_add_completion_match(matches, count_io, shell_functions[i].name, 0);
         }
@@ -610,7 +610,7 @@ static int read_interactive_line(char *line, size_t line_size, int *eof_out) {
     PlatformTerminalState saved;
     size_t length = 0;
     size_t cursor = 0;
-    int history_index = shell_history_count;
+    size_t history_index = shell_history_count;
     char saved_current[SH_MAX_LINE];
     char prompt[SH_MAX_LINE];
     int result = 0;

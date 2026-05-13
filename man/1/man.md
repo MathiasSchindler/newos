@@ -35,6 +35,7 @@ readable terminal layout.
 - search repository-local manuals without requiring roff or a system database
 - render headings, quotes, fenced code blocks, and Markdown tables in a cleaner
   terminal form
+- wrap and align rendered output using shared UTF-8 display-width handling for common combining marks, ANSI escapes, tabs, and wide East Asian/emoji characters
 - display tables with aligned ASCII borders instead of flattened pipe-separated rows
 - pause between terminal-sized screens in interactive use
 - accept pager-style help and single-line/page stepping keys during interactive viewing
@@ -61,6 +62,7 @@ readable terminal layout.
 - the source format is Markdown, not traditional roff macros
 - table rendering is intentionally simple ASCII framing; complex spanning/layout features are not implemented
 - no roff macro compatibility, external pager handoff, hyperlink activation, or rich terminal widgets
+- wrapping uses compact Unicode/default-width tables, not a locale database; ambiguous-width characters and full grapheme clusters may not match every terminal
 
 ## EXAMPLES
 

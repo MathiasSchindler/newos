@@ -94,6 +94,25 @@ EOF
 "$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/side_effect_identity.c" > "$WORK_DIR/side_effect_identity_ir.out"
 assert_file_contains "$WORK_DIR/side_effect_identity_ir.out" '^ret bump(&value)$' "compiler IR optimizer dropped a side-effecting call while folding a neutral arithmetic identity"
 
+
+cat > "$WORK_DIR/logical_short_circuit_fold.c" <<'EOF'
+static int bump(int *slot) {
+    *slot += 1;
+    return *slot;
+}
+
+int main(void) {
+    int value = 4;
+    return (0 && bump(&value)) || (1 || bump(&value));
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/logical_short_circuit_fold.c" > "$WORK_DIR/logical_short_circuit_fold_ir.out"
+assert_file_contains "$WORK_DIR/logical_short_circuit_fold_ir.out" '^ret 1$' "compiler IR optimizer did not fold constant short-circuit logical expressions"
+if grep -q 'bump(&value)' "$WORK_DIR/logical_short_circuit_fold_ir.out"; then
+    fail "compiler IR optimizer kept unreachable short-circuit calls"
+fi
+
 cat > "$WORK_DIR/typedef_struct_local.c" <<'EOF'
 typedef struct {
     unsigned char bytes[128];

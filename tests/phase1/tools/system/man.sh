@@ -67,6 +67,22 @@ assert_file_contains "$WORK_DIR/man_wrap.out" 'Separate' "man did not wrap long 
 assert_file_contains "$WORK_DIR/man_wrap.out" 'cols' "man did not wrap long second-column content"
 assert_file_contains "$WORK_DIR/man_wrap.out" 'only one' "man did not keep a single-cell row visible after wrapping"
 
+cat > "$WORK_DIR/man_unicode_width.md" <<'EOF'
+# WIDTH
+
+| Word | Meaning |
+|------|---------|
+| écho | combining mark |
+| 界界 | wide glyphs |
+
+wide: 界界abcdefghi
+EOF
+COLUMNS=16 "$ROOT_DIR/build/man" -l "$WORK_DIR/man_unicode_width.md" > "$WORK_DIR/man_unicode_width.out"
+assert_file_contains "$WORK_DIR/man_unicode_width.out" 'écho' "man table rendering dropped combining-mark text"
+assert_file_contains "$WORK_DIR/man_unicode_width.out" '界界' "man table rendering dropped wide-character text"
+assert_file_contains "$WORK_DIR/man_unicode_width.out" '^wide: 界界abcdef$' "man wrapping did not account for wide Unicode columns"
+assert_file_contains "$WORK_DIR/man_unicode_width.out" '^ghi$' "man wrapping did not continue after a wide Unicode line break"
+
 "$ROOT_DIR/build/man" --color=always -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_color.out"
 if ! LC_ALL=C grep -q "$(printf '\033')\\[" "$WORK_DIR/man_color.out"; then
     fail "man --color=always did not emit ANSI color sequences"

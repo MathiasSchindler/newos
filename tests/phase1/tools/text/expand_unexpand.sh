@@ -34,3 +34,18 @@ assert_files_equal "$WORK_DIR/expand_zero.expected" "$WORK_DIR/expand_zero.out" 
 printf 'a   b\0c   d\0' | "$ROOT_DIR/build/unexpand" -z -a -t 4 | tr '\0' '\n' > "$WORK_DIR/unexpand_zero.out"
 printf 'a\tb\nc\td\n' > "$WORK_DIR/unexpand_zero.expected"
 assert_files_equal "$WORK_DIR/unexpand_zero.expected" "$WORK_DIR/unexpand_zero.out" "unexpand -z did not reset columns at NUL records"
+
+printf '界\tz\n' > "$WORK_DIR/wide_tabs.txt"
+"$ROOT_DIR/build/expand" -t 4 "$WORK_DIR/wide_tabs.txt" > "$WORK_DIR/expand_wide.out"
+printf '界  z\n' > "$WORK_DIR/expand_wide.expected"
+assert_files_equal "$WORK_DIR/expand_wide.expected" "$WORK_DIR/expand_wide.out" "expand did not use wide Unicode display columns before a tab"
+
+printf 'é\tz\n' > "$WORK_DIR/combining_tabs.txt"
+"$ROOT_DIR/build/expand" -t 4 "$WORK_DIR/combining_tabs.txt" > "$WORK_DIR/expand_combining.out"
+printf 'é   z\n' > "$WORK_DIR/expand_combining.expected"
+assert_files_equal "$WORK_DIR/expand_combining.expected" "$WORK_DIR/expand_combining.out" "expand counted a combining mark as a tab column"
+
+printf '界  z\n' > "$WORK_DIR/unexpand_wide.txt"
+"$ROOT_DIR/build/unexpand" -a -t 4 "$WORK_DIR/unexpand_wide.txt" > "$WORK_DIR/unexpand_wide.out"
+printf '界\tz\n' > "$WORK_DIR/unexpand_wide.expected"
+assert_files_equal "$WORK_DIR/unexpand_wide.expected" "$WORK_DIR/unexpand_wide.out" "unexpand did not use wide Unicode display columns before spaces"

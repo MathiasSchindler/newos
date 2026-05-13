@@ -34,6 +34,13 @@ The cut tool extracts selected bytes, character positions, or delimited fields f
 | `-z`, `--zero-terminated` | Use NUL instead of newline as the input and output record separator. |
 | `--complement` | Invert the selection. |
 
+## LIMITATIONS
+
+- `-c` selects UTF-8 code points, not user-perceived grapheme clusters; a base letter plus combining mark counts as two character positions.
+- `-b` remains byte-oriented and can split a UTF-8 sequence by design.
+- field delimiters are single bytes; multibyte delimiters and locale-specific character classes are not implemented.
+- no locale database or normalization-aware matching is used.
+
 ## EXAMPLES
 
 ```

@@ -21,6 +21,7 @@ column reads lines from files or standard input and arranges them into a table. 
 - fill by column before rows with `-x`
 - custom input and output field separators
 - configurable output width
+- alignment based on shared UTF-8 display-width handling for common combining marks, ANSI escapes, and wide East Asian/emoji characters
 
 ## OPTIONS
 
@@ -35,6 +36,7 @@ column reads lines from files or standard input and arranges them into a table. 
 - maximum number of rows and fields per row is bounded by internal static buffers
 - no support for right-alignment or per-column width overrides
 - no `-J` (JSON output) or `-R` (right-align) flags found in util-linux column
+- display width uses compact Unicode/default-width tables, not locale-specific width data; ambiguous-width characters and full grapheme clusters may not match every terminal
 
 ## EXAMPLES
 

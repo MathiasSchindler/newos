@@ -253,6 +253,27 @@ EOF
 
 compile_and_check_native "$WORK_DIR/constant_short_circuit.c" "$WORK_DIR/constant_short_circuit_bin" "0" "compiler constant-folding broke short-circuit behavior for a side-effecting call"
 
+
+cat > "$WORK_DIR/logical_short_circuit_fold.c" <<'EOF'
+static int bump(int *slot) {
+    *slot += 1;
+    return *slot;
+}
+
+int main(void) {
+    int value = 4;
+    if (0 && bump(&value)) {
+        return 1;
+    }
+    if (1 || bump(&value)) {
+        return value == 4 ? 0 : 2;
+    }
+    return 3;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/logical_short_circuit_fold.c" "$WORK_DIR/logical_short_circuit_fold_bin" "0" "compiler short-circuit optimization changed side-effect semantics"
+
 cat > "$WORK_DIR/multi_file_helper.c" <<'EOF'
 int helper_value(void) {
     return 41;

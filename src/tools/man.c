@@ -157,9 +157,9 @@ static int pager_write_all(ManPager *pager, const char *text, size_t length) {
     size_t index = 0U;
 
     while (index < length) {
-        size_t next = index;
-        unsigned int codepoint = 0U;
-        unsigned int display_width;
+        RtTextSegment segment;
+        unsigned long long next_columns;
+        unsigned int display_width = 0U;
         int prompt_result;
 
         if (pager->interactive && pager->page_lines > 0U && pager->lines_seen >= pager->page_lines) {
@@ -169,38 +169,24 @@ static int pager_write_all(ManPager *pager, const char *text, size_t length) {
             }
         }
 
-        if (text[index] == '\033' && index + 1U < length && text[index + 1U] == '[') {
-            size_t escape_end = index + 2U;
-
-            while (escape_end < length) {
-                char ch = text[escape_end++];
-                if (ch >= '@' && ch <= '~') {
-                    break;
-                }
-            }
-            if (rt_write_all(1, text + index, escape_end - index) != 0) {
-                return -1;
-            }
-            index = escape_end;
-            continue;
+        if (rt_text_next_segment(text, length, index, &segment) != 0) {
+            break;
         }
 
-        if (rt_utf8_decode(text, length, &next, &codepoint) != 0 || next <= index) {
-            next = index + 1U;
-            codepoint = (unsigned char)text[index];
-        }
-
-        if (codepoint == '\n') {
-            if (rt_write_all(1, text + index, next - index) != 0) {
+        if (segment.codepoint == '\n') {
+            if (rt_write_all(1, text + segment.start, segment.end - segment.start) != 0) {
                 return -1;
             }
             pager->lines_seen += 1U;
             pager->columns_seen = 0U;
-            index = next;
+            index = segment.end;
             continue;
         }
 
-        display_width = (codepoint == '\t') ? (4U - (pager->columns_seen % 4U)) : rt_unicode_display_width(codepoint);
+        next_columns = rt_text_apply_segment_width_tabstop((unsigned long long)pager->columns_seen, &segment, 4U);
+        if (next_columns >= (unsigned long long)pager->columns_seen) {
+            display_width = (unsigned int)(next_columns - (unsigned long long)pager->columns_seen);
+        }
 
         if (pager->page_columns > 0U && pager->columns_seen > 0U && display_width > 0U &&
             pager->columns_seen + display_width > pager->page_columns) {
@@ -217,18 +203,19 @@ static int pager_write_all(ManPager *pager, const char *text, size_t length) {
                 }
             }
 
-            if (codepoint == ' ') {
-                index = next;
+            if (segment.codepoint == ' ') {
+                index = segment.end;
                 continue;
             }
+            next_columns = rt_text_apply_segment_width_tabstop(0ULL, &segment, 4U);
         }
 
-        if (rt_write_all(1, text + index, next - index) != 0) {
+        if (rt_write_all(1, text + segment.start, segment.end - segment.start) != 0) {
             return -1;
         }
 
-        pager->columns_seen += display_width;
-        index = next;
+        pager->columns_seen = (unsigned int)next_columns;
+        index = segment.end;
     }
 
     return 0;
@@ -556,27 +543,7 @@ static void trim_range(const char **start_io, const char **end_io) {
 }
 
 static unsigned int display_text_width(const char *text) {
-    size_t text_length = rt_strlen(text);
-    size_t index = 0U;
-    unsigned int width = 0U;
-
-    while (index < text_length) {
-        size_t next = index;
-        unsigned int codepoint = 0U;
-
-        if (rt_utf8_decode(text, text_length, &next, &codepoint) != 0 || next <= index) {
-            next = index + 1U;
-            codepoint = (unsigned char)text[index];
-        }
-        if (codepoint == '\t') {
-            width += 4U - (width % 4U);
-        } else {
-            width += rt_unicode_display_width(codepoint);
-        }
-        index = next;
-    }
-
-    return width;
+    return (unsigned int)rt_text_display_width_n_tabstop(text, rt_strlen(text), 0ULL, 4U);
 }
 
 static int is_table_separator_line(const char *text) {
@@ -809,7 +776,7 @@ static int cell_text_next_segment(const char *text,
                 break;
             }
             glyph_width = rt_unicode_display_width(codepoint);
-            word_width += glyph_width > 0U ? glyph_width : 1U;
+            word_width += glyph_width;
             word_end = next;
         }
 
@@ -837,9 +804,6 @@ static int cell_text_next_segment(const char *text,
                         codepoint = (unsigned char)text[index];
                     }
                     glyph_width = rt_unicode_display_width(codepoint);
-                    if (glyph_width == 0U) {
-                        glyph_width = 1U;
-                    }
                     if (width > 0U && width + glyph_width > max_width) {
                         break;
                     }

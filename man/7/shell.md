@@ -30,14 +30,18 @@ files live under `src/tools/sh/`:
 - `shell_execution.c` — process launching, pipelines, and job handling
 - `shell_builtins.c` — built-in commands and shell state updates
 - `shell_interactive.c` — line editing, prompt loop, and command history
-- `shell_shared.h` — shared limits and data structures
+- `shell_shared.h` — shared line-size constants and data structures
 
 ## CURRENT BOUNDARIES
 
 - The subsystem is private to `sh`; other tools should not depend on it
 - Interactive features only apply when the shell is attached to a terminal
-- Fixed ceilings remain in place: 8 commands per pipeline, 64 arguments per
-  command, 16 jobs, 64 history entries, and 32 aliases/functions
+- Pipelines, command arguments, jobs, history, aliases, and functions use
+  growable storage rather than small fixed entry counts; allocation failures
+  are reported as shell errors or leave optional state such as history unchanged
+- Input is still processed in fixed-size logical lines, so individual commands,
+  here-doc markers, function bodies, alias values, and stored job text must fit
+  within the shell line buffer
 - No process substitution, and shell-language compatibility is still narrower
   than `bash` or `dash`
 

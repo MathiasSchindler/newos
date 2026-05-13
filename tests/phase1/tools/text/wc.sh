@@ -27,3 +27,8 @@ printf '界界\n' > "$WORK_DIR/unicode_width.txt"
 "$ROOT_DIR/build/wc" -L "$WORK_DIR/unicode_width.txt" > "$WORK_DIR/unicode_width.out"
 unicode_width=$(awk '{print $1}' "$WORK_DIR/unicode_width.out" | tr -d '\r\n ')
 assert_text_equals "$unicode_width" '4' "wc did not account for wide Unicode characters in line width"
+
+printf 'éx\n' > "$WORK_DIR/combining_width.txt"
+"$ROOT_DIR/build/wc" -L "$WORK_DIR/combining_width.txt" > "$WORK_DIR/combining_width.out"
+combining_width=$(awk '{print $1}' "$WORK_DIR/combining_width.out" | tr -d '\r\n ')
+assert_text_equals "$combining_width" '2' "wc counted a combining mark as an extra display column"

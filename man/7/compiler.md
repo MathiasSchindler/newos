@@ -47,8 +47,9 @@ Compilation proceeds in these layers:
 
 The current optimization work should stay in the target-neutral layers when
 possible. A small IR cleanup pass already folds pure integer expressions,
-simplifies neutral arithmetic identities, and prunes unreachable instructions
-after constant control-flow before any backend-specific assembly is emitted.
+simplifies neutral arithmetic identities and safe short-circuit logical
+expressions, and prunes unreachable instructions after constant control-flow
+before any backend-specific assembly is emitted.
 
 ## SELF-HOSTING STAGES
 

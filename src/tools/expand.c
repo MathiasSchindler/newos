@@ -92,18 +92,31 @@ static unsigned long long next_tabstop(const ExpandOptions *options, unsigned lo
 }
 
 static int expand_stream(int fd, const ExpandOptions *options) {
-    char buffer[4096];
+    char buffer[4096 + 8];
+    size_t carry = 0U;
     unsigned long long column = 0ULL;
     int leading = 1;
     long bytes_read;
 
-    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
+    while ((bytes_read = platform_read(fd, buffer + carry, sizeof(buffer) - carry)) > 0) {
+        size_t total = carry + (size_t)bytes_read;
+        size_t index = 0U;
 
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = buffer[i];
+        carry = 0U;
+        while (index < total) {
+            RtTextSegment segment;
+            size_t before = index;
 
-            if (ch == '\t' && (!options->initial_only || leading)) {
+            if (rt_text_next_segment(buffer, total, index, &segment) != 0) {
+                break;
+            }
+            if ((segment.flags & RT_TEXT_SEGMENT_INCOMPLETE) != 0U) {
+                carry = total - index;
+                memmove(buffer, buffer + index, carry);
+                break;
+            }
+
+            if (segment.codepoint == '\t' && (!options->initial_only || leading)) {
                 unsigned long long stop = next_tabstop(options, column);
                 unsigned long long spaces = stop > column ? stop - column : 1ULL;
                 if (write_spaces(spaces) != 0) {
@@ -111,31 +124,70 @@ static int expand_stream(int fd, const ExpandOptions *options) {
                 }
                 column += spaces;
             } else {
-                if (rt_write_char(1, ch) != 0) {
+                if (rt_write_all(1, buffer + segment.start, segment.end - segment.start) != 0) {
                     return -1;
                 }
 
-                if (ch == '\n' || ch == '\r' || (options->zero_terminated && ch == '\0')) {
+                if (segment.codepoint == '\n' || segment.codepoint == '\r' || (options->zero_terminated && segment.codepoint == 0U)) {
                     column = 0ULL;
                     leading = 1;
-                } else if (ch == '\b') {
-                    if (column > 0ULL) {
-                        column -= 1ULL;
-                    }
-                } else if (ch == ' ') {
-                    column += 1ULL;
-                } else if (ch == '\t') {
+                } else if (segment.codepoint == '\t') {
                     unsigned long long stop = next_tabstop(options, column);
                     column = stop > column ? stop : column + 1ULL;
+                } else if ((segment.flags & RT_TEXT_SEGMENT_ANSI) != 0U) {
+                    column = rt_text_apply_segment_width_tabstop(column, &segment, 8U);
                 } else {
-                    column += 1ULL;
-                    leading = 0;
+                    column = rt_text_apply_segment_width_tabstop(column, &segment, 8U);
+                    if (!rt_text_segment_is_space(buffer, total, &segment)) {
+                        leading = 0;
+                    }
                 }
+            }
+            index = segment.end;
+            if (index <= before) {
+                index = before + 1U;
             }
         }
     }
 
-    return bytes_read < 0 ? -1 : 0;
+    if (bytes_read < 0) {
+        return -1;
+    }
+
+    while (carry > 0U) {
+        RtTextSegment segment;
+        size_t before = 0U;
+
+        if (rt_text_next_segment(buffer, carry, 0U, &segment) != 0) {
+            break;
+        }
+        segment.flags &= ~RT_TEXT_SEGMENT_INCOMPLETE;
+        if (segment.codepoint == '\t' && (!options->initial_only || leading)) {
+            unsigned long long stop = next_tabstop(options, column);
+            unsigned long long spaces = stop > column ? stop - column : 1ULL;
+            if (write_spaces(spaces) != 0) {
+                return -1;
+            }
+            column += spaces;
+        } else {
+            if (rt_write_all(1, buffer + segment.start, segment.end - segment.start) != 0) {
+                return -1;
+            }
+            column = rt_text_apply_segment_width_tabstop(column, &segment, 8U);
+            if (!rt_text_segment_is_space(buffer, carry, &segment)) {
+                leading = 0;
+            }
+        }
+        if (segment.end <= before) {
+            segment.end = before + 1U;
+        }
+        if (segment.end < carry) {
+            memmove(buffer, buffer + segment.end, carry - segment.end);
+        }
+        carry -= segment.end;
+    }
+
+    return 0;
 }
 
 int main(int argc, char **argv) {

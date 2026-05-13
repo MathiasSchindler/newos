@@ -478,7 +478,9 @@ int rt_text_has_incomplete_tail(const char *text, size_t text_length) {
     return 0;
 }
 
-unsigned long long rt_text_apply_segment_width(unsigned long long current_width, const RtTextSegment *segment) {
+unsigned long long rt_text_apply_segment_width_tabstop(unsigned long long current_width, const RtTextSegment *segment, unsigned int tab_width) {
+    unsigned long long tab;
+
     if (segment == 0) {
         return current_width;
     }
@@ -492,21 +494,30 @@ unsigned long long rt_text_apply_segment_width(unsigned long long current_width,
         return current_width;
     }
     if (segment->codepoint == '\t') {
-        return current_width + (8ULL - (current_width % 8ULL));
+        tab = tab_width == 0U ? 8ULL : (unsigned long long)tab_width;
+        return current_width + (tab - (current_width % tab));
     }
     return current_width + (unsigned long long)segment->display_width;
 }
 
-unsigned long long rt_text_display_width_n(const char *text, size_t text_length, unsigned long long initial_width) {
+unsigned long long rt_text_apply_segment_width(unsigned long long current_width, const RtTextSegment *segment) {
+    return rt_text_apply_segment_width_tabstop(current_width, segment, 8U);
+}
+
+unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width) {
     size_t index = 0U;
     unsigned long long width = initial_width;
     RtTextSegment segment;
 
     while (rt_text_next_segment(text, text_length, index, &segment) == 0) {
-        width = rt_text_apply_segment_width(width, &segment);
+        width = rt_text_apply_segment_width_tabstop(width, &segment, tab_width);
         index = segment.end;
     }
     return width;
+}
+
+unsigned long long rt_text_display_width_n(const char *text, size_t text_length, unsigned long long initial_width) {
+    return rt_text_display_width_n_tabstop(text, text_length, initial_width, 8U);
 }
 
 size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width) {

@@ -21,6 +21,7 @@ unexpand reads files (or standard input) and converts runs of spaces back to tab
 - skipping non-initial spaces with `-i`
 - custom single or multiple tab stop positions
 - NUL-delimited record mode with `-z`
+- space-to-tab conversion based on shared UTF-8 display-width handling for common combining marks, ANSI escapes, and wide East Asian/emoji characters
 
 ## OPTIONS
 
@@ -34,8 +35,7 @@ unexpand reads files (or standard input) and converts runs of spaces back to tab
 
 - mixed space-and-tab indentation may not be fully collapsed in all cases
 - tab stop positions are 1-based column numbers
-- display width is byte/column based and does not account for wide Unicode,
-  combining marks, or ANSI escape sequences
+- display width uses compact Unicode/default-width tables, not locale-specific width data; ambiguous-width characters and full grapheme clusters may not match every terminal
 - locale-specific tab semantics are not implemented
 
 ## EXAMPLES

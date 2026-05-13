@@ -40,6 +40,62 @@ printf 'echo first\necho second\nhistory\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/
 assert_file_contains "$WORK_DIR/history.out" '1  echo first' "shell history missing first command"
 assert_file_contains "$WORK_DIR/history.out" '2  echo second' "shell history missing second command"
 
+long_pipeline='echo pipeline-ok'
+i=1
+while [ "$i" -le 12 ]; do
+    long_pipeline="$long_pipeline | cat"
+    i=$((i + 1))
+done
+printf '%s\n' "$long_pipeline" | "$ROOT_DIR/build/sh" > "$WORK_DIR/long_pipeline.out"
+assert_file_contains "$WORK_DIR/long_pipeline.out" '^pipeline-ok$' "shell rejected a long pipeline"
+
+many_args='echo'
+i=1
+while [ "$i" -le 80 ]; do
+    many_args="$many_args arg$i"
+    i=$((i + 1))
+done
+printf '%s\n' "$many_args" | "$ROOT_DIR/build/sh" > "$WORK_DIR/many_args.out"
+assert_file_contains "$WORK_DIR/many_args.out" 'arg80$' "shell rejected a command with many arguments"
+
+{
+    i=1
+    while [ "$i" -le 70 ]; do
+        printf 'echo hist%d\n' "$i"
+        i=$((i + 1))
+    done
+    printf 'history\n'
+} | "$ROOT_DIR/build/sh" > "$WORK_DIR/long_history.out"
+assert_file_contains "$WORK_DIR/long_history.out" '70  echo hist70' "shell history still capped below 70 entries"
+assert_file_contains "$WORK_DIR/long_history.out" '71  history' "shell history did not retain the history command after many entries"
+
+{
+    i=1
+    while [ "$i" -le 20 ]; do
+        printf 'true &\n'
+        i=$((i + 1))
+    done
+    printf 'jobs\n'
+} | "$ROOT_DIR/build/sh" > "$WORK_DIR/many_jobs.out"
+assert_file_contains "$WORK_DIR/many_jobs.out" '^\[20\] running true$' "shell jobs still capped below 20 entries"
+
+{
+    i=1
+    while [ "$i" -le 40 ]; do
+        printf 'alias a%d="echo alias-%d"\n' "$i" "$i"
+        i=$((i + 1))
+    done
+    printf 'a40\n'
+    i=1
+    while [ "$i" -le 40 ]; do
+        printf 'f%d() { echo function-%d; }\n' "$i" "$i"
+        i=$((i + 1))
+    done
+    printf 'f40\n'
+} | "$ROOT_DIR/build/sh" > "$WORK_DIR/many_aliases_functions.out"
+assert_file_contains "$WORK_DIR/many_aliases_functions.out" '^alias-40$' "shell aliases still capped below 40 entries"
+assert_file_contains "$WORK_DIR/many_aliases_functions.out" '^function-40$' "shell functions still capped below 40 entries"
+
 printf 'echo interactive-flag-ok\n' | "$ROOT_DIR/build/sh" -i > "$WORK_DIR/interactive_flag.out"
 assert_file_contains "$WORK_DIR/interactive_flag.out" '^interactive-flag-ok$' "shell -i flag handling failed"
 

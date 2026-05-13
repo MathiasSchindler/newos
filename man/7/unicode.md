@@ -26,8 +26,8 @@ Visible tool-level improvements already landed include:
 - `wc` counting Unicode code points and display width more accurately
 - `rev` preserving UTF-8 sequences while reversing text
 - `grep` performing Stage 1 Unicode-aware ignore-case matching in both fixed-string and regex search paths
-- `man` performing Unicode-aware keyword lookup for manual pages
-- `column`, `fold`, and `fmt` using visual width instead of raw byte count for alignment and wrapping
+- `man` performing Unicode-aware keyword lookup plus display-width-aware wrapping and table alignment
+- `column`, `fold`, `fmt`, `expand`, and `unexpand` using visual width instead of raw byte count for alignment, wrapping, and tab stops
 - `cut` selecting character positions by UTF-8 code point in character mode
 - `join` matching keys with Unicode-aware ignore-case behavior and safer whitespace splitting
 - `awk` treating Unicode whitespace more consistently for default field splitting
@@ -59,10 +59,10 @@ This stage now provides:
 - validation of incoming byte streams
 - code-point iteration helpers
 - basic Unicode whitespace and word-character detection
-- display-width logic for combining marks and wide characters
+- display-width logic for combining marks, ANSI escapes, tabs, and wide East Asian/emoji characters
 - targeted adoption in the most visible text tools
 
-So far, Stage 1 work has reached `wc`, `rev`, `grep`, `man`, `column`, `fold`, `fmt`, `cut`, `join`, `awk`, `tr`, important `sed` paths, and the shell tokenizer/parser.
+So far, Stage 1 work has reached `wc`, `rev`, `grep`, `man`, `column`, `expand`, `unexpand`, `fold`, `fmt`, `cut`, `join`, `awk`, `tr`, important `sed` paths, and the shell tokenizer/parser.
 
 Remaining Stage 1 work is now mainly about broadening the same behavior across the rest of the text-processing layer and filling in a few remaining edge cases.
 

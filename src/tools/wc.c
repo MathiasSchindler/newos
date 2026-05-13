@@ -75,7 +75,7 @@ static unsigned long long next_display_width(unsigned long long current_width, u
         segment.flags = RT_TEXT_SEGMENT_CARRIAGE_RETURN;
         segment.display_width = 0U;
     }
-    return rt_text_apply_segment_width(current_width, &segment);
+    return rt_text_apply_segment_width_tabstop(current_width, &segment, 8U);
 }
 
 static void print_counts(const WcOptions *options, const WcStats *stats, const char *name) {
