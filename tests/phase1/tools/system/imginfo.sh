@@ -68,7 +68,7 @@ if [ -f /home/mathias/c2pa/2.2/image/good/jpeg/a.jpg ]; then
     assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-cbor-boxes: 20' "imginfo did not parse C2PA CBOR boxes from corpus JPEG"
     assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-cose-signatures: 4' "imginfo did not parse C2PA COSE signatures from corpus JPEG"
     assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-x509-certificates: 8' "imginfo did not count C2PA X.509 certificates from corpus JPEG"
-    assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-signature-verification: unsupported' "imginfo should report unsupported C2PA signature verification"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-signature-verification: valid' "imginfo should verify C2PA ES256 signatures from corpus JPEG"
 fi
 
 "$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.webp" > "$WORK_DIR/webp-details.txt"

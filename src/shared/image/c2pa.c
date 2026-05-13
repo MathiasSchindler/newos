@@ -1,4 +1,6 @@
 #include "image_internal.h"
+#include "runtime.h"
+#include "crypto/p256.h"
 #include "crypto/sha256.h"
 
 #define C2PA_MAX_EXCLUSIONS 16U
@@ -27,6 +29,20 @@ typedef struct {
     C2paRange exclusions[C2PA_MAX_EXCLUSIONS];
     unsigned int exclusion_count;
 } C2paHashAssertion;
+
+typedef struct {
+    long long alg;
+    const unsigned char *leaf_cert;
+    size_t leaf_cert_size;
+    int has_leaf_cert;
+} C2paCoseInfo;
+
+typedef struct {
+    const unsigned char *data;
+    size_t size;
+    size_t pos;
+    int valid;
+} Asn1Reader;
 
 typedef struct {
     const unsigned char *full_data;
@@ -327,6 +343,114 @@ static void c2pa_count_x509_blob(const unsigned char *data, size_t size, ImageC2
     }
 }
 
+static void asn1_init(Asn1Reader *reader, const unsigned char *data, size_t size) {
+    reader->data = data;
+    reader->size = size;
+    reader->pos = 0U;
+    reader->valid = 1;
+}
+
+static int asn1_read_tlv(Asn1Reader *reader, unsigned char *tag, const unsigned char **value, size_t *value_size) {
+    size_t length;
+    unsigned int length_count;
+    unsigned int index;
+
+    if (reader->pos + 2U > reader->size) {
+        reader->valid = 0;
+        return 0;
+    }
+    *tag = reader->data[reader->pos++];
+    length = (size_t)reader->data[reader->pos++];
+    if ((length & 0x80U) != 0U) {
+        length_count = (unsigned int)(length & 0x7fU);
+        if (length_count == 0U || length_count > 4U || reader->pos + (size_t)length_count > reader->size) {
+            reader->valid = 0;
+            return 0;
+        }
+        length = 0U;
+        for (index = 0U; index < length_count; ++index) {
+            length = (length << 8U) | (size_t)reader->data[reader->pos++];
+        }
+    }
+    if (length > reader->size - reader->pos) {
+        reader->valid = 0;
+        return 0;
+    }
+    *value = reader->data + reader->pos;
+    *value_size = length;
+    reader->pos += length;
+    return 1;
+}
+
+static int asn1_skip(Asn1Reader *reader) {
+    unsigned char tag;
+    const unsigned char *value;
+    size_t value_size;
+    return asn1_read_tlv(reader, &tag, &value, &value_size);
+}
+
+static int asn1_read_expected(Asn1Reader *reader, unsigned char expected_tag, Asn1Reader *child) {
+    unsigned char tag;
+    const unsigned char *value;
+    size_t value_size;
+
+    if (!asn1_read_tlv(reader, &tag, &value, &value_size) || tag != expected_tag) {
+        reader->valid = 0;
+        return 0;
+    }
+    asn1_init(child, value, value_size);
+    return 1;
+}
+
+static int c2pa_oid_equal(const unsigned char *value, size_t value_size, const unsigned char *oid, size_t oid_size) {
+    return value_size == oid_size && image_byte_arrays_equal(value, oid, oid_size);
+}
+
+static int c2pa_x509_extract_p256_public_key(const unsigned char *cert, size_t cert_size, unsigned char public_key[CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE]) {
+    static const unsigned char oid_ec_public_key[] = {0x2aU, 0x86U, 0x48U, 0xceU, 0x3dU, 0x02U, 0x01U};
+    static const unsigned char oid_prime256v1[] = {0x2aU, 0x86U, 0x48U, 0xceU, 0x3dU, 0x03U, 0x01U, 0x07U};
+    Asn1Reader cert_reader;
+    Asn1Reader cert_seq;
+    Asn1Reader tbs;
+    Asn1Reader spki;
+    Asn1Reader alg;
+    unsigned char tag;
+    const unsigned char *value;
+    size_t value_size;
+    int saw_ec_public_key = 0;
+    int saw_prime256v1 = 0;
+
+    asn1_init(&cert_reader, cert, cert_size);
+    if (!asn1_read_expected(&cert_reader, 0x30U, &cert_seq) || !asn1_read_expected(&cert_seq, 0x30U, &tbs)) {
+        return 0;
+    }
+    if (tbs.pos < tbs.size && tbs.data[tbs.pos] == 0xa0U) {
+        if (!asn1_skip(&tbs)) return 0;
+    }
+    if (!asn1_skip(&tbs) || !asn1_skip(&tbs) || !asn1_skip(&tbs) || !asn1_skip(&tbs) || !asn1_skip(&tbs)) {
+        return 0;
+    }
+    if (!asn1_read_expected(&tbs, 0x30U, &spki) || !asn1_read_expected(&spki, 0x30U, &alg)) {
+        return 0;
+    }
+    if (!asn1_read_tlv(&alg, &tag, &value, &value_size) || tag != 0x06U || !c2pa_oid_equal(value, value_size, oid_ec_public_key, sizeof(oid_ec_public_key))) {
+        return 0;
+    }
+    saw_ec_public_key = 1;
+    if (!asn1_read_tlv(&alg, &tag, &value, &value_size) || tag != 0x06U || !c2pa_oid_equal(value, value_size, oid_prime256v1, sizeof(oid_prime256v1))) {
+        return 0;
+    }
+    saw_prime256v1 = 1;
+    if (!asn1_read_tlv(&spki, &tag, &value, &value_size) || tag != 0x03U || value_size != 66U || value[0] != 0U || value[1] != 0x04U) {
+        return 0;
+    }
+    if (!saw_ec_public_key || !saw_prime256v1) {
+        return 0;
+    }
+    memcpy(public_key, value + 1U, CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE);
+    return 1;
+}
+
 static const char *c2pa_cose_alg_name(long long alg) {
     if (alg == C2PA_COSE_ALG_ES256) {
         return "ES256";
@@ -340,7 +464,15 @@ static const char *c2pa_cose_alg_name(long long alg) {
     return "unknown";
 }
 
-static void c2pa_scan_x5chain_value(CborReader *reader, ImageC2paInfo *info) {
+static void c2pa_remember_leaf_cert(C2paCoseInfo *cose, const unsigned char *bytes, size_t bytes_size) {
+    if (cose != 0 && !cose->has_leaf_cert) {
+        cose->leaf_cert = bytes;
+        cose->leaf_cert_size = bytes_size;
+        cose->has_leaf_cert = 1;
+    }
+}
+
+static void c2pa_scan_x5chain_value(CborReader *reader, ImageC2paInfo *info, C2paCoseInfo *cose) {
     size_t saved = reader->pos;
     unsigned char major;
     unsigned long long count;
@@ -354,6 +486,7 @@ static void c2pa_scan_x5chain_value(CborReader *reader, ImageC2paInfo *info) {
     if (major == 2U) {
         if (count <= (unsigned long long)(reader->size - reader->pos)) {
             c2pa_count_x509_blob(reader->data + reader->pos, (size_t)count, info);
+            c2pa_remember_leaf_cert(cose, reader->data + reader->pos, (size_t)count);
             reader->pos += (size_t)count;
             return;
         }
@@ -361,6 +494,7 @@ static void c2pa_scan_x5chain_value(CborReader *reader, ImageC2paInfo *info) {
         for (index = 0ULL; index < count; ++index) {
             if (cbor_read_bstr_ref(reader, &bytes, &bytes_size)) {
                 c2pa_count_x509_blob(bytes, bytes_size, info);
+                c2pa_remember_leaf_cert(cose, bytes, bytes_size);
             } else {
                 reader->pos = saved;
                 (void)cbor_skip(reader, 0U);
@@ -373,7 +507,7 @@ static void c2pa_scan_x5chain_value(CborReader *reader, ImageC2paInfo *info) {
     (void)cbor_skip(reader, 0U);
 }
 
-static void c2pa_parse_cose_protected(const unsigned char *data, size_t size, ImageC2paInfo *info) {
+static void c2pa_parse_cose_protected(const unsigned char *data, size_t size, ImageC2paInfo *info, C2paCoseInfo *cose) {
     CborReader reader;
     unsigned char major;
     unsigned long long pair_count;
@@ -393,12 +527,15 @@ static void c2pa_parse_cose_protected(const unsigned char *data, size_t size, Im
             if (!cbor_read_int(&reader, &alg)) {
                 return;
             }
+            if (cose != 0) {
+                cose->alg = alg;
+            }
             info->signature_algorithm = c2pa_cose_alg_name(alg);
             if (alg == C2PA_COSE_ALG_ES256 || alg == C2PA_COSE_ALG_EDDSA || alg == C2PA_COSE_ALG_PS256) {
                 info->signature_checked = 1;
             }
         } else if (key == 33LL) {
-            c2pa_scan_x5chain_value(&reader, info);
+            c2pa_scan_x5chain_value(&reader, info, cose);
         } else {
             if (!cbor_skip(&reader, 0U)) {
                 return;
@@ -407,12 +544,151 @@ static void c2pa_parse_cose_protected(const unsigned char *data, size_t size, Im
     }
 }
 
-static void c2pa_parse_cose_sign1(const unsigned char *data, size_t size, ImageC2paInfo *info) {
+static size_t c2pa_cbor_bstr_header_size(size_t size) {
+    if (size < 24U) return 1U;
+    if (size <= 0xffU) return 2U;
+    if (size <= 0xffffU) return 3U;
+    return 5U;
+}
+
+static size_t c2pa_write_cbor_bstr_header(unsigned char *out, size_t size) {
+    if (size < 24U) {
+        out[0] = (unsigned char)(0x40U | (unsigned char)size);
+        return 1U;
+    }
+    if (size <= 0xffU) {
+        out[0] = 0x58U;
+        out[1] = (unsigned char)size;
+        return 2U;
+    }
+    if (size <= 0xffffU) {
+        out[0] = 0x59U;
+        out[1] = (unsigned char)(size >> 8U);
+        out[2] = (unsigned char)size;
+        return 3U;
+    }
+    out[0] = 0x5aU;
+    out[1] = (unsigned char)(size >> 24U);
+    out[2] = (unsigned char)(size >> 16U);
+    out[3] = (unsigned char)(size >> 8U);
+    out[4] = (unsigned char)size;
+    return 5U;
+}
+
+static int c2pa_verify_cose_es256(const C2paCoseInfo *cose,
+                                  const unsigned char *protected_bytes,
+                                  size_t protected_size,
+                                  const unsigned char *payload_item,
+                                  size_t payload_item_size,
+                                  const unsigned char *signature,
+                                  size_t signature_size) {
+    static const unsigned char context[] = {'S', 'i', 'g', 'n', 'a', 't', 'u', 'r', 'e', '1'};
+    unsigned char public_key[CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE];
+    unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE];
+    unsigned char *sig_structure;
+    size_t total_size;
+    size_t offset = 0U;
+    size_t header_size;
+    int ok;
+
+    if (cose == 0 || cose->alg != C2PA_COSE_ALG_ES256 || !cose->has_leaf_cert || signature_size != CRYPTO_P256_ECDSA_SIGNATURE_SIZE) {
+        return 0;
+    }
+    if (!c2pa_x509_extract_p256_public_key(cose->leaf_cert, cose->leaf_cert_size, public_key)) {
+        return 0;
+    }
+    total_size = 1U + 1U + sizeof(context) +
+                 c2pa_cbor_bstr_header_size(protected_size) + protected_size +
+                 1U + payload_item_size;
+    sig_structure = (unsigned char *)rt_malloc(total_size == 0U ? 1U : total_size);
+    if (sig_structure == 0) {
+        return 0;
+    }
+    sig_structure[offset++] = 0x84U;
+    sig_structure[offset++] = 0x6aU;
+    memcpy(sig_structure + offset, context, sizeof(context));
+    offset += sizeof(context);
+    header_size = c2pa_write_cbor_bstr_header(sig_structure + offset, protected_size);
+    offset += header_size;
+    memcpy(sig_structure + offset, protected_bytes, protected_size);
+    offset += protected_size;
+    sig_structure[offset++] = 0x40U;
+    memcpy(sig_structure + offset, payload_item, payload_item_size);
+    offset += payload_item_size;
+    if (offset != total_size) {
+        rt_free(sig_structure);
+        return 0;
+    }
+    crypto_sha256_hash(sig_structure, total_size, digest);
+    ok = crypto_p256_ecdsa_sha256_verify(public_key, digest, signature);
+    rt_free(sig_structure);
+    return ok;
+}
+
+static int c2pa_verify_cose_es256_detached_claims(const C2paCoseInfo *cose,
+                                                  const unsigned char *protected_bytes,
+                                                  size_t protected_size,
+                                                  const unsigned char *signature,
+                                                  size_t signature_size,
+                                                  const C2paContext *ctx) {
+    size_t token_offset;
+
+    for (token_offset = 0U; token_offset + 10U < ctx->full_size; ++token_offset) {
+        size_t search;
+        if (!c2pa_text_starts_with(ctx->full_data + token_offset, ctx->full_size - token_offset, "c2pa.claim")) {
+            continue;
+        }
+        search = token_offset;
+        while (search + 8U <= ctx->full_size && search < token_offset + 256U) {
+            if (image_bytes_equal(ctx->full_data + search, "cbor", 4U) && search >= 4U) {
+                size_t box_start = search - 4U;
+                unsigned int box_size = image_read_u32_be(ctx->full_data + box_start);
+                size_t claim_size;
+                unsigned char header[5];
+                unsigned char *payload_item;
+                size_t header_size;
+                int ok;
+
+                if (box_size < 8U || box_start + (size_t)box_size > ctx->full_size) {
+                    break;
+                }
+                claim_size = (size_t)box_size - 8U;
+                header_size = c2pa_write_cbor_bstr_header(header, claim_size);
+                payload_item = (unsigned char *)rt_malloc(header_size + claim_size);
+                if (payload_item == 0) {
+                    return 0;
+                }
+                memcpy(payload_item, header, header_size);
+                memcpy(payload_item + header_size, ctx->full_data + box_start + 8U, claim_size);
+                ok = c2pa_verify_cose_es256(cose, protected_bytes, protected_size, payload_item, header_size + claim_size, signature, signature_size);
+                rt_free(payload_item);
+                if (ok) {
+                    return 1;
+                }
+                break;
+            }
+            search += 1U;
+        }
+    }
+    return 0;
+}
+
+static void c2pa_parse_cose_sign1(const unsigned char *data, size_t size, ImageC2paInfo *info, const C2paContext *ctx) {
     CborReader reader;
     unsigned char major;
     unsigned long long value;
     const unsigned char *protected_bytes;
     size_t protected_size;
+    const unsigned char *payload_item;
+    size_t payload_item_size;
+    const unsigned char *signature;
+    size_t signature_size;
+    C2paCoseInfo cose;
+
+    cose.alg = 0LL;
+    cose.leaf_cert = 0;
+    cose.leaf_cert_size = 0U;
+    cose.has_leaf_cert = 0;
 
     cbor_init(&reader, data, size);
     if (!cbor_read_type(&reader, &major, &value)) {
@@ -432,13 +708,29 @@ static void c2pa_parse_cose_sign1(const unsigned char *data, size_t size, ImageC
     if (!cbor_read_bstr_ref(&reader, &protected_bytes, &protected_size)) {
         return;
     }
-    c2pa_parse_cose_protected(protected_bytes, protected_size, info);
-    if (!cbor_skip(&reader, 0U) || !cbor_skip(&reader, 0U) || !cbor_skip(&reader, 0U)) {
+    c2pa_parse_cose_protected(protected_bytes, protected_size, info, &cose);
+    if (!cbor_skip(&reader, 0U)) {
+        return;
+    }
+    payload_item = reader.data + reader.pos;
+    if (!cbor_skip(&reader, 0U)) {
+        return;
+    }
+    payload_item_size = (size_t)(reader.data + reader.pos - payload_item);
+    if (!cbor_read_bstr_ref(&reader, &signature, &signature_size)) {
         return;
     }
     if (reader.valid && reader.pos == reader.size) {
         info->cose_signature_count += 1U;
         info->cose_valid = 1;
+        if (cose.alg == C2PA_COSE_ALG_ES256) {
+            info->signature_checked = 1;
+            info->signature_supported = 1;
+            if (c2pa_verify_cose_es256(&cose, protected_bytes, protected_size, payload_item, payload_item_size, signature, signature_size) ||
+                (ctx != 0 && c2pa_verify_cose_es256_detached_claims(&cose, protected_bytes, protected_size, signature, signature_size, ctx))) {
+                info->signature_valid = 1;
+            }
+        }
     }
 }
 
@@ -771,7 +1063,7 @@ static void c2pa_parse_boxes(const unsigned char *data,
                 info->cbor_valid = 1;
             }
             if (parent_label != 0 && c2pa_text_starts_with(parent_label, parent_label_size, "c2pa.signature")) {
-                c2pa_parse_cose_sign1(data + payload_offset, payload_size, info);
+                c2pa_parse_cose_sign1(data + payload_offset, payload_size, info, ctx);
             } else if (parent_label != 0 && c2pa_text_starts_with(parent_label, parent_label_size, "c2pa.hash.data")) {
                 C2paHashAssertion assertion;
                 if (c2pa_parse_hash_assertion(data + payload_offset, payload_size, &assertion)) {

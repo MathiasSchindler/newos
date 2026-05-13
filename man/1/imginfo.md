@@ -101,9 +101,9 @@ object.
 - C2PA support parses JUMBF boxes, validates definite-length CBOR structure,
   recognizes COSE_Sign1 signatures, reports embedded X.509 certificate blobs,
   and attempts SHA-256 content-hash checks for visible hash-data bindings.
-  Cryptographic verification of ES256/P-256 signatures, certificate chain
-  building, trust-anchor policy, and full claim conformance validation are not
-  implemented yet and are reported as unsupported.
+  ES256/P-256 COSE signatures can be verified against embedded P-256 leaf
+  certificates. Certificate chain building, trust-anchor policy, and full claim
+  conformance validation are not implemented yet and are reported as unsupported.
 - EXIF orientation is read from the first TIFF-style image file directory only;
   maker notes and deeper metadata trees are not interpreted.
 - Filename-extension checks are heuristic. Extension mismatches are warnings

@@ -83,6 +83,7 @@
     X("src/shared/image/bmp.c") \
     X("src/shared/image/c2pa.c") \
     X("src/shared/crypto/sha256.c") \
+    X("src/shared/crypto/p256.c") \
     X("src/shared/image/validate.c")
 
 /* ── crypto primitives ───────────────────────────────────────────────────── */
@@ -94,6 +95,7 @@
     X("src/shared/crypto/sha512.c") \
     X("src/shared/crypto/hmac_sha256.c") \
     X("src/shared/crypto/hkdf_sha256.c") \
+    X("src/shared/crypto/p256.c") \
     X("src/shared/crypto/rsa.c")
 
 /* ── hash utilities (hash_util + crypto) ────────────────────────────────── */

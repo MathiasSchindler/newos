@@ -54,10 +54,11 @@ is available, plain output prints `-` and JSON prints `null`.
 - C2PA checking parses JUMBF boxes, validates definite-length CBOR structure,
 	recognizes COSE_Sign1 signatures, reports embedded X.509 certificate blobs,
 	and attempts SHA-256 content-hash checks for visible hash-data bindings.
-	Cryptographic ES256/P-256 signature verification, certificate-chain building,
-	trust-anchor policy, and full C2PA claim conformance validation are not
-	implemented yet and are reported as unsupported. A manipulated image can
-	therefore still have a parseable C2PA manifest store.
+	ES256/P-256 COSE signatures can be verified against embedded P-256 leaf
+	certificates. Certificate-chain building, trust-anchor policy, and full C2PA
+	claim conformance validation are not implemented yet and are reported as
+	unsupported. A manipulated image can therefore still have a parseable C2PA
+	manifest store.
 - Very large inputs are read into memory before validation.
 
 ## EXAMPLES
