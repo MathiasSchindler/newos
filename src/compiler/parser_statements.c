@@ -496,13 +496,13 @@ compound_exit:
 }
 
 void compiler_parser_init(CompilerParser *parser, const CompilerSource *source, int dump_ast, int dump_ir, int output_fd) {
-    static const char *const builtin_types[] = {
+    static const char builtin_types[][16] = {
         "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
         "pid_t", "uid_t", "gid_t", "mode_t", "off_t", "time_t",
         "FILE", "DIR", "socklen_t", "sa_family_t", "in_addr_t",
         "nfds_t", "speed_t", "tcflag_t", "sigset_t"
     };
-    static const char *const builtin_objects[] = {
+    static const char builtin_objects[][8] = {
         "errno", "stdin", "stdout", "stderr", "environ"
     };
     size_t i;

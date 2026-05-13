@@ -43,6 +43,12 @@ assert_file_contains "$WORK_DIR/history.out" '2  echo second' "shell history mis
 printf 'echo interactive-flag-ok\n' | "$ROOT_DIR/build/sh" -i > "$WORK_DIR/interactive_flag.out"
 assert_file_contains "$WORK_DIR/interactive_flag.out" '^interactive-flag-ok$' "shell -i flag handling failed"
 
+printf 'echo one\\\n two\\\n three\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/continuation.out"
+assert_file_contains "$WORK_DIR/continuation.out" '^one two three$' "shell line continuation failed"
+
+printf 'echo tty-one\\\n tty-two\nexit\n' | "$ROOT_DIR/build/sh" -i > "$WORK_DIR/interactive_continuation.out"
+assert_file_contains "$WORK_DIR/interactive_continuation.out" '^tty-one tty-two$' "shell interactive line continuation failed"
+
 printf 'command -v ls\nalias hi="echo alias-ok"\nhi\nfn() { echo func-ok; }\nfn\ncat <<EOF\nheredoc-line\nEOF\n' | "$ROOT_DIR/build/sh" > "$WORK_DIR/features.out"
 assert_file_contains "$WORK_DIR/features.out" '/ls$' "shell command -v failed"
 assert_file_contains "$WORK_DIR/features.out" '^alias-ok$' "shell alias failed"
@@ -92,3 +98,7 @@ assert_file_contains "$WORK_DIR/tty_completion.out" 'tab-complete-ok' "shell int
 printf 'world\001echo hello \nexit\n' > "$WORK_DIR/tty_ctrl_a.input"
 run_shell_tty "$WORK_DIR/tty_ctrl_a.input" "$WORK_DIR/tty_ctrl_a.out"
 assert_file_contains "$WORK_DIR/tty_ctrl_a.out" 'hello world' "shell interactive Ctrl-A line editing failed"
+
+printf 'echo pasted-one\\\n pasted-two\nexit\n' > "$WORK_DIR/tty_continuation.input"
+run_shell_tty "$WORK_DIR/tty_continuation.input" "$WORK_DIR/tty_continuation.out"
+assert_file_contains "$WORK_DIR/tty_continuation.out" 'pasted-one pasted-two' "shell tty line continuation failed"

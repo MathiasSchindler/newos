@@ -17,10 +17,10 @@ typedef enum {
 
 typedef struct {
     CompilerTarget      target;
-    const char         *name;
-    const char         *clang_triple;
-    const char         *arch_include_dir;
-    const char         *global_symbol_prefix;
+    char                name[32];
+    char                clang_triple[32];
+    char                arch_include_dir[64];
+    char                global_symbol_prefix[4];
     CompilerObjectFormat object_format;
     unsigned int        register_arg_limit;
     unsigned int        stack_slot_size;

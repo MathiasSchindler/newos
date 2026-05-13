@@ -1949,8 +1949,8 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     }
 
     if (names_equal(storage, "param")) {
-        static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-        static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
+        const char x86_arg_regs[][5] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+        const char aarch64_arg_regs[][3] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
         char asm_line[128];
         int index = state->param_count;
 

@@ -87,6 +87,9 @@ int sh_set_shell_positionals_from_argv(int argc, char *const *argv, int start_in
 int sh_shift_shell_positionals(unsigned int count);
 int sh_resolve_shell_command_path(const char *name, char *buffer, size_t buffer_size);
 int sh_read_line_from_fd(int fd, char *buffer, size_t buffer_size, int *eof_out);
+int sh_read_logical_line_from_fd(int fd, char *buffer, size_t buffer_size, int *eof_out);
+int sh_line_ends_with_continuation(const char *line);
+int sh_append_continuation_line(char *line, size_t line_size, const char *next_line);
 int sh_prepare_heredoc_from_fd(int fd, char *line, size_t line_size);
 int sh_parse_pipeline(char *line, ShPipeline *pipeline, int *empty_out);
 void sh_cleanup_pipeline_temp_inputs(const ShPipeline *pipeline);

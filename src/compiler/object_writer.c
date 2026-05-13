@@ -154,6 +154,34 @@ static int starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
+static int parse_elf_section_directive(const char *line, ObjectSection *section_out) {
+    const char *name;
+
+    if (!starts_with(line, ".section ")) {
+        return 0;
+    }
+
+    name = skip_spaces(line + 9);
+    if (starts_with(name, ".text") && (name[5] == '\0' || name[5] == '.' || name[5] == ',')) {
+        *section_out = OBJECT_SECTION_TEXT;
+        return 1;
+    }
+    if (starts_with(name, ".data") && (name[5] == '\0' || name[5] == '.' || name[5] == ',')) {
+        *section_out = OBJECT_SECTION_DATA;
+        return 1;
+    }
+    if (starts_with(name, ".rodata") && (name[7] == '\0' || name[7] == '.' || name[7] == ',')) {
+        *section_out = OBJECT_SECTION_DATA;
+        return 1;
+    }
+    if (starts_with(name, ".bss") && (name[4] == '\0' || name[4] == '.' || name[4] == ',')) {
+        *section_out = OBJECT_SECTION_BSS;
+        return 1;
+    }
+
+    return -1;
+}
+
 static size_t string_length(const char *text) {
     return rt_strlen(text);
 }
@@ -509,6 +537,38 @@ static int parse_register(const char *text, int *reg_out, int *is_byte_reg_out, 
     return -1;
 }
 
+static int parse_register32(const char *text, int *reg_out, const char **rest_out) {
+    int is_byte = 0;
+
+    if (try_parse_register(text, "%eax", 0, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%ecx", 1, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%edx", 2, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%ebx", 3, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%esp", 4, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%ebp", 5, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%esi", 6, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%edi", 7, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%r8d", 8, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%r9d", 9, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%r10d", 10, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%r11d", 11, 0, reg_out, &is_byte, rest_out)) return 0;
+    return -1;
+}
+
+static int parse_register16(const char *text, int *reg_out, const char **rest_out) {
+    int is_byte = 0;
+
+    if (try_parse_register(text, "%ax", 0, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%cx", 1, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%dx", 2, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%bx", 3, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%sp", 4, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%bp", 5, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%si", 6, 0, reg_out, &is_byte, rest_out)) return 0;
+    if (try_parse_register(text, "%di", 7, 0, reg_out, &is_byte, rest_out)) return 0;
+    return -1;
+}
+
 static int append_rex(ObjectAssembler *assembler, int w, int reg, int index, int base) {
     unsigned char rex = 0x40U;
 
@@ -829,6 +889,31 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         return append_rex(assembler, 1, 0, 0, 0) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0x99U) == 0 ? 0 : -1;
     }
+    if (starts_with(line, "xor %")) {
+        const char *operands = line + 4;
+        const char *comma = find_top_level_comma(operands);
+        char left[32];
+        char right[32];
+        size_t i = 0;
+        int src_reg;
+        int dst_reg;
+        const char *rest;
+
+        if (comma != 0) {
+            while (operands + i < comma && i + 1U < sizeof(left)) {
+                left[i] = operands[i];
+                i += 1U;
+            }
+            left[i] = '\0';
+            rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+            if (parse_register32(left, &src_reg, &rest) == 0 && *rest == '\0' &&
+                parse_register32(right, &dst_reg, &rest) == 0 && *rest == '\0') {
+                return append_rex(assembler, 0, src_reg, 0, dst_reg) == 0 &&
+                       append_byte(assembler, OBJECT_SECTION_TEXT, 0x31U) == 0 &&
+                       append_modrm(assembler, 3U, (unsigned int)src_reg, (unsigned int)dst_reg) == 0 ? 0 : -1;
+            }
+        }
+    }
 
     if (starts_with(line, "pushq ") || starts_with(line, "popq ")) {
         int reg;
@@ -991,6 +1076,37 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         return -1;
     }
 
+    if (starts_with(line, "movabsq $")) {
+        char imm_text[64];
+        const char *operands = line + 9;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        long long imm = 0;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movabsq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1U < sizeof(imm_text)) {
+            imm_text[i] = operands[i];
+            i += 1U;
+        }
+        imm_text[i] = '\0';
+
+        if (parse_signed_value(imm_text, &imm) == 0 &&
+            parse_register(skip_spaces(comma + 1), &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return append_rex(assembler, 1, 0, 0, dst_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)(0xB8U + (dst_reg & 7))) == 0 &&
+                   append_u64(assembler, OBJECT_SECTION_TEXT, (uint64_t)imm) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movabsq instruction in object writer");
+        return -1;
+    }
+
     if (starts_with(line, "movb ")) {
         char left[64];
         char right[128];
@@ -1024,6 +1140,90 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         }
 
         set_error(assembler->writer, "unsupported movb instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "movl ")) {
+        char left[64];
+        char right[128];
+        const char *operands = line + 5;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int src_reg;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movl form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movl form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_register32(left, &src_reg, &rest) == 0 && *rest == '\0' && parse_local_mem(right, &disp, &base_reg) == 0) {
+            return append_rex(assembler, 0, src_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x89U) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)src_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        if (parse_local_mem(left, &disp, &base_reg) == 0 && parse_register32(right, &src_reg, &rest) == 0 && *rest == '\0') {
+            return append_rex(assembler, 0, src_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x8BU) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)src_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        rt_copy_string(assembler->writer->error_message,
+                       sizeof(assembler->writer->error_message),
+                       "unsupported movl instruction in object writer: ");
+        rt_copy_string(assembler->writer->error_message + rt_strlen(assembler->writer->error_message),
+                       sizeof(assembler->writer->error_message) - rt_strlen(assembler->writer->error_message),
+                       line);
+        return -1;
+    }
+
+    if (starts_with(line, "movw ")) {
+        char left[64];
+        char right[128];
+        const char *operands = line + 5;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int src_reg;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movw form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movw form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_register16(left, &src_reg, &rest) == 0 && *rest == '\0' && parse_local_mem(right, &disp, &base_reg) == 0) {
+            return append_byte(assembler, OBJECT_SECTION_TEXT, 0x66U) == 0 &&
+                   append_rex(assembler, 0, src_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x89U) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)src_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movw instruction in object writer");
         return -1;
     }
 
@@ -1067,6 +1267,161 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         }
 
         set_error(assembler->writer, "unsupported movzbq instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "movzwq ")) {
+        char left[128];
+        char right[64];
+        const char *operands = line + 7;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movzwq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movzwq form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_local_mem(left, &disp, &base_reg) == 0 &&
+            parse_register(right, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return append_rex(assembler, 1, dst_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0xB7U) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)dst_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movzwq instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "movslq ")) {
+        char left[128];
+        char right[64];
+        const char *operands = line + 7;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movslq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movslq form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_local_mem(left, &disp, &base_reg) == 0 &&
+            parse_register(right, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return append_rex(assembler, 1, dst_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x63U) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)dst_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movslq instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "movsbq ")) {
+        char left[128];
+        char right[64];
+        const char *operands = line + 7;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movsbq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movsbq form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_local_mem(left, &disp, &base_reg) == 0 &&
+            parse_register(right, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return append_rex(assembler, 1, dst_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0xBEU) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)dst_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movsbq instruction in object writer");
+        return -1;
+    }
+
+    if (starts_with(line, "movswq ")) {
+        char left[128];
+        char right[64];
+        const char *operands = line + 7;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported movswq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1 < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        if (*comma != ',') {
+            set_error(assembler->writer, "unsupported movswq form");
+            return -1;
+        }
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_local_mem(left, &disp, &base_reg) == 0 &&
+            parse_register(right, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            return append_rex(assembler, 1, dst_reg, 0, base_reg) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) == 0 &&
+                   append_byte(assembler, OBJECT_SECTION_TEXT, 0xBFU) == 0 &&
+                   append_mem_disp(assembler, (unsigned int)dst_reg, base_reg, disp) == 0 ? 0 : -1;
+        }
+
+        set_error(assembler->writer, "unsupported movswq instruction in object writer");
         return -1;
     }
 
@@ -1166,13 +1521,45 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     }
 
     if (starts_with(line, "imulq ")) {
+        if (starts_with(line + 6, "$")) {
+            char imm_text[32];
+            size_t imm_len = 0;
+            const char *cursor = line + 7;
+            long long imm = 0;
+            int src_reg;
+            int dst_reg;
+            int is_byte;
+            const char *rest;
+
+            while (*cursor != '\0' && *cursor != ',' && imm_len + 1U < sizeof(imm_text)) {
+                imm_text[imm_len++] = *cursor++;
+            }
+            imm_text[imm_len] = '\0';
+            if (*cursor == ',') {
+                cursor = skip_spaces(cursor + 1);
+            }
+            if (parse_signed_value(imm_text, &imm) == 0 && imm >= -128 && imm <= 127 &&
+                parse_register(cursor, &src_reg, &is_byte, &rest) == 0 && starts_with(rest, ", %") &&
+                parse_register(rest + 2, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+                return append_rex(assembler, 1, dst_reg, 0, src_reg) == 0 &&
+                       append_byte(assembler, OBJECT_SECTION_TEXT, 0x6BU) == 0 &&
+                       append_modrm(assembler, 3U, (unsigned int)dst_reg, (unsigned int)src_reg) == 0 &&
+                       append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)imm)) == 0 ? 0 : -1;
+            }
+        }
+
         int src_reg;
         int dst_reg;
         int is_byte;
         const char *rest;
         if (parse_register(line + 6, &src_reg, &is_byte, &rest) != 0 || !starts_with(rest, ", %") ||
             parse_register(rest + 2, &dst_reg, &is_byte, &rest) != 0 || *rest != '\0') {
-            set_error(assembler->writer, "unsupported imulq form");
+            rt_copy_string(assembler->writer->error_message,
+                           sizeof(assembler->writer->error_message),
+                           "unsupported imulq form: ");
+            rt_copy_string(assembler->writer->error_message + rt_strlen(assembler->writer->error_message),
+                           sizeof(assembler->writer->error_message) - rt_strlen(assembler->writer->error_message),
+                           line);
             return -1;
         }
         return append_rex(assembler, 1, dst_reg, 0, src_reg) == 0 &&
@@ -1193,6 +1580,12 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
                append_byte(assembler, OBJECT_SECTION_TEXT, 0xF8U) == 0 ? 0 : -1;
     }
 
+    if (starts_with(line, "shrq %cl, %rax")) {
+        return append_rex(assembler, 1, 0, 0, 0) == 0 &&
+               append_byte(assembler, OBJECT_SECTION_TEXT, 0xD3U) == 0 &&
+               append_byte(assembler, OBJECT_SECTION_TEXT, 0xE8U) == 0 ? 0 : -1;
+    }
+
     if (starts_with(line, "cmpq $")) {
         long long value;
         if (parse_immediate_operand(line + 6, &value) != 0) {
@@ -1203,6 +1596,47 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
                append_byte(assembler, OBJECT_SECTION_TEXT, 0x83U) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0xF8U) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)value)) == 0 ? 0 : -1;
+    }
+
+    if (starts_with(line, "cmpq %")) {
+        char left[64];
+        char right[128];
+        const char *operands = line + 5;
+        const char *comma = find_top_level_comma(operands);
+        size_t i = 0;
+        int src_reg;
+        int dst_reg;
+        int is_byte;
+        const char *rest;
+        int disp;
+        int base_reg;
+
+        if (comma == 0) {
+            set_error(assembler->writer, "unsupported cmpq form");
+            return -1;
+        }
+        while (operands + i < comma && i + 1U < sizeof(left)) {
+            left[i] = operands[i];
+            i += 1U;
+        }
+        left[i] = '\0';
+        rt_copy_string(right, sizeof(right), skip_spaces(comma + 1));
+
+        if (parse_register(left, &src_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+            if (parse_register(right, &dst_reg, &is_byte, &rest) == 0 && *rest == '\0') {
+                return append_rex(assembler, 1, src_reg, 0, dst_reg) == 0 &&
+                       append_byte(assembler, OBJECT_SECTION_TEXT, 0x39U) == 0 &&
+                       append_modrm(assembler, 3U, (unsigned int)src_reg, (unsigned int)dst_reg) == 0 ? 0 : -1;
+            }
+            if (parse_local_mem(right, &disp, &base_reg) == 0) {
+                return append_rex(assembler, 1, src_reg, 0, base_reg) == 0 &&
+                       append_byte(assembler, OBJECT_SECTION_TEXT, 0x39U) == 0 &&
+                       append_mem_disp(assembler, (unsigned int)src_reg, base_reg, disp) == 0 ? 0 : -1;
+            }
+        }
+
+        set_error(assembler->writer, "unsupported cmpq register form");
+        return -1;
     }
 
     if (names_equal(line, "cmpq %rcx, %rax")) {
@@ -1217,11 +1651,21 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     if (names_equal(line, "setle %al")) return encode_setcc_al(assembler, 0x9EU);
     if (names_equal(line, "setg %al")) return encode_setcc_al(assembler, 0x9FU);
     if (names_equal(line, "setge %al")) return encode_setcc_al(assembler, 0x9DU);
+    if (names_equal(line, "setb %al")) return encode_setcc_al(assembler, 0x92U);
+    if (names_equal(line, "setbe %al")) return encode_setcc_al(assembler, 0x96U);
+    if (names_equal(line, "seta %al")) return encode_setcc_al(assembler, 0x97U);
+    if (names_equal(line, "setae %al")) return encode_setcc_al(assembler, 0x93U);
 
     if (names_equal(line, "idivq %rcx")) {
         return append_rex(assembler, 1, 0, 0, 1) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0xF7U) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0xF9U) == 0 ? 0 : -1;
+    }
+
+    if (names_equal(line, "divq %rcx")) {
+        return append_rex(assembler, 1, 0, 0, 1) == 0 &&
+               append_byte(assembler, OBJECT_SECTION_TEXT, 0xF7U) == 0 &&
+               append_byte(assembler, OBJECT_SECTION_TEXT, 0xF1U) == 0 ? 0 : -1;
     }
 
     if (names_equal(line, "negq %rax")) {
@@ -1242,7 +1686,12 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
                append_byte(assembler, OBJECT_SECTION_TEXT, 0x00U) == 0 ? 0 : -1;
     }
 
-    set_error(assembler->writer, "unsupported assembly pattern in object writer");
+    rt_copy_string(assembler->writer->error_message,
+                   sizeof(assembler->writer->error_message),
+                   "unsupported assembly pattern in object writer: ");
+    rt_copy_string(assembler->writer->error_message + rt_strlen(assembler->writer->error_message),
+                   sizeof(assembler->writer->error_message) - rt_strlen(assembler->writer->error_message),
+                   line);
     return -1;
 }
 
@@ -1314,6 +1763,20 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
         }
         if (names_equal(line, ".bss")) {
             assembler->current_section = OBJECT_SECTION_BSS;
+            continue;
+        }
+        if (starts_with(line, ".p2align ")) {
+            continue;
+        }
+        if (starts_with(line, ".section ")) {
+            ObjectSection section = OBJECT_SECTION_NONE;
+            int section_status = parse_elf_section_directive(line, &section);
+
+            if (section_status <= 0) {
+                set_error(assembler->writer, "unsupported ELF section directive");
+                return -1;
+            }
+            assembler->current_section = section;
             continue;
         }
         if (starts_with(line, ".globl ")) {
@@ -1388,6 +1851,24 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             if (assembler->current_section != OBJECT_SECTION_DATA || parse_signed_value(line + 6, &value) != 0 ||
                 append_u64(assembler, OBJECT_SECTION_DATA, (uint64_t)value) != 0) {
                 set_error(assembler->writer, "unsupported .quad initializer");
+                return -1;
+            }
+            continue;
+        }
+        if (starts_with(line, ".long ")) {
+            long long value = 0;
+            if (assembler->current_section != OBJECT_SECTION_DATA || parse_signed_value(line + 6, &value) != 0 ||
+                append_u32(assembler, OBJECT_SECTION_DATA, (uint32_t)(int32_t)value) != 0) {
+                set_error(assembler->writer, "unsupported .long initializer");
+                return -1;
+            }
+            continue;
+        }
+        if (starts_with(line, ".byte ")) {
+            long long value = 0;
+            if (assembler->current_section != OBJECT_SECTION_DATA || parse_signed_value(line + 6, &value) != 0 ||
+                append_byte(assembler, OBJECT_SECTION_DATA, (unsigned char)value) != 0) {
+                set_error(assembler->writer, "unsupported .byte initializer");
                 return -1;
             }
             continue;
@@ -1887,6 +2368,7 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
     static CompilerSource source;
     ObjectAssembler assembler;
     char temp_path[COMPILER_PATH_CAPACITY];
+    char internal_error[COMPILER_ERROR_CAPACITY];
 
     compiler_object_writer_init(writer);
     rt_memset(&assembler, 0, sizeof(assembler));
@@ -1903,14 +2385,22 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
     }
 
     if (assemble_from_source(&assembler, &source) != 0) {
+        rt_copy_string(internal_error, sizeof(internal_error), writer->error_message);
         int fallback_status = write_external_elf_object(writer, temp_path, fd);
         (void)platform_remove_file(temp_path);
+        if (fallback_status != 0 && internal_error[0] != '\0') {
+            set_error(writer, internal_error);
+        }
         return fallback_status;
     }
 
     if (build_elf_object(&assembler, fd) != 0) {
+        rt_copy_string(internal_error, sizeof(internal_error), writer->error_message);
         int fallback_status = write_external_elf_object(writer, temp_path, fd);
         (void)platform_remove_file(temp_path);
+        if (fallback_status != 0 && internal_error[0] != '\0') {
+            set_error(writer, internal_error);
+        }
         return fallback_status;
     }
 

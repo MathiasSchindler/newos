@@ -1480,8 +1480,8 @@ static int expr_parse_call_arguments(ExprParser *parser, int *arg_count_out, int
 }
 
 static int emit_move_call_arguments(BackendState *state, int arg_count) {
-    static const char *const x86_arg_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-    static const char *const aarch64_arg_regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
+    const char x86_arg_regs[][5] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    const char aarch64_arg_regs[][3] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
     int register_arg_count = backend_register_arg_limit(state);
     int stack_arg_count;
     int stack_slot_size = backend_stack_slot_size(state);
@@ -1931,7 +1931,7 @@ static int emit_binary_op(BackendState *state, const char *op) {
     return emit_binary_op_mode(state, op, 0);
 }
 
-static int expr_parse_chain(ExprParser *parser, int level, const char *const *ops, size_t op_count) {
+static int expr_parse_chain(ExprParser *parser, int level, const char ops[][4], size_t op_count) {
     size_t i;
 
     switch (level) {
@@ -2150,7 +2150,7 @@ static int expr_parse_additive(ExprParser *parser) {
 }
 
 static int expr_parse_shift(ExprParser *parser) {
-    static const char *const ops[] = {"<<", ">>"};
+    const char ops[][4] = {"<<", ">>"};
     return expr_parse_chain(parser, 2, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
@@ -2194,22 +2194,22 @@ static int expr_parse_relational(ExprParser *parser) {
 }
 
 static int expr_parse_equality(ExprParser *parser) {
-    static const char *const ops[] = {"==", "!="};
+    const char ops[][4] = {"==", "!="};
     return expr_parse_chain(parser, 4, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_bitand(ExprParser *parser) {
-    static const char *const ops[] = {"&"};
+    const char ops[][4] = {"&"};
     return expr_parse_chain(parser, 5, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_bitxor(ExprParser *parser) {
-    static const char *const ops[] = {"^"};
+    const char ops[][4] = {"^"};
     return expr_parse_chain(parser, 6, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
 static int expr_parse_bitor(ExprParser *parser) {
-    static const char *const ops[] = {"|"};
+    const char ops[][4] = {"|"};
     return expr_parse_chain(parser, 7, ops, sizeof(ops) / sizeof(ops[0]));
 }
 

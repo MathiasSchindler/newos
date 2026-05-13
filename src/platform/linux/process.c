@@ -193,7 +193,7 @@ static void linux_try_exec(const char *path, char *const argv[]) {
 }
 
 typedef struct {
-    const char *name;
+    char name[8];
     int value;
 } LinuxSignalEntry;
 

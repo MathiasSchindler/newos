@@ -1098,7 +1098,7 @@ static int ir_find_top_level_operator(const char *expr, const char *op, const ch
 }
 
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size) {
-    static const char *const ops[] = {"&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
+    const char ops[][3] = {"&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
     size_t op_index;
 
     for (op_index = 0; op_index < sizeof(ops) / sizeof(ops[0]); ++op_index) {

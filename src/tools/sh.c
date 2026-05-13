@@ -388,6 +388,48 @@ int sh_read_line_from_fd(int fd, char *buffer, size_t buffer_size, int *eof_out)
     return 0;
 }
 
+int sh_line_ends_with_continuation(const char *line) {
+    size_t length = rt_strlen(line);
+    return length > 0U && line[length - 1U] == '\\';
+}
+
+int sh_append_continuation_line(char *line, size_t line_size, const char *next_line) {
+    size_t length = rt_strlen(line);
+    size_t next_length = rt_strlen(next_line);
+
+    if (length == 0U || line[length - 1U] != '\\') {
+        return 0;
+    }
+    if (length - 1U + next_length + 1U > line_size) {
+        return -1;
+    }
+
+    length -= 1U;
+    memcpy(line + length, next_line, next_length + 1U);
+    return 0;
+}
+
+int sh_read_logical_line_from_fd(int fd, char *buffer, size_t buffer_size, int *eof_out) {
+    int status = sh_read_line_from_fd(fd, buffer, buffer_size, eof_out);
+
+    if (status != 0) {
+        return status;
+    }
+
+    while (!*eof_out && sh_line_ends_with_continuation(buffer)) {
+        char next_line[SH_MAX_LINE];
+
+        if (sh_read_line_from_fd(fd, next_line, sizeof(next_line), eof_out) != 0) {
+            return -1;
+        }
+        if (sh_append_continuation_line(buffer, buffer_size, next_line) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int create_heredoc_temp_file(char *buffer, size_t buffer_size) {
     return platform_create_temp_file(buffer, buffer_size, SH_HEREDOC_PREFIX, 0600U);
 }
@@ -1226,7 +1268,7 @@ static int process_stream(int fd, int interactive_requested) {
     for (;;) {
         int eof = 0;
 
-        if (sh_read_line_from_fd(fd, line, sizeof(line), &eof) != 0) {
+        if (sh_read_logical_line_from_fd(fd, line, sizeof(line), &eof) != 0) {
             rt_write_line(2, "sh: read failed");
             return 1;
         }

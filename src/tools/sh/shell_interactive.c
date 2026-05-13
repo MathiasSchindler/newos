@@ -828,6 +828,22 @@ int sh_process_interactive_stream(int (*run_line_fn)(char *line)) {
             continue;
         }
 
+        while (sh_line_ends_with_continuation(line)) {
+            char next_line[SH_MAX_LINE];
+
+            if (read_interactive_line(next_line, sizeof(next_line), &eof) != 0) {
+                rt_write_line(2, "sh: interactive input failed");
+                return 2;
+            }
+            if (sh_append_continuation_line(line, sizeof(line), next_line) != 0) {
+                rt_write_line(2, "sh: interactive input too long");
+                return 2;
+            }
+            if (eof) {
+                break;
+            }
+        }
+
         if (sh_prepare_heredoc_from_fd(0, line, sizeof(line)) != 0) {
             rt_write_line(2, "sh: here-document failed");
             return 2;

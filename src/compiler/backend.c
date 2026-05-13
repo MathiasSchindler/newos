@@ -137,7 +137,7 @@ int backend_register_arg_limit(const BackendState *state) {
 
 void format_symbol_name(const BackendState *state, const char *name, char *buffer, size_t buffer_size) {
     const CompilerTargetInfo *info = compiler_target_get_info(state->backend->target);
-    const char *prefix = (info != 0 && info->global_symbol_prefix != 0) ? info->global_symbol_prefix : "";
+    const char *prefix = info != 0 ? info->global_symbol_prefix : "";
 
     rt_copy_string(buffer, buffer_size, prefix);
     rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), name);
