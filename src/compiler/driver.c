@@ -1,6 +1,7 @@
 #include "compiler.h"
 
 #include "backend.h"
+#include "linker.h"
 #include "lexer.h"
 #include "object_writer.h"
 #include "parser.h"
@@ -115,6 +116,10 @@ static int is_direct_link_input(const char *path) {
            ends_with(path, ".a") ||
            ends_with(path, ".s") ||
            ends_with(path, ".S");
+}
+
+static int is_assembly_input(const char *path) {
+    return ends_with(path, ".s") || ends_with(path, ".S");
 }
 
 static int looks_like_ncc_driver(const char *path) {
@@ -260,6 +265,94 @@ static int compile_input_to_object(
     return 0;
 }
 
+static int assemble_input_to_object(
+    const CompilerOptions *options,
+    const char *input_path,
+    char *path_buffer,
+    size_t path_buffer_size
+) {
+    CompilerObjectWriter writer;
+    int fd;
+
+    fd = platform_create_temp_file(path_buffer, path_buffer_size, "/tmp/newos-ncc-asmobj-", 0600U);
+    if (fd < 0) {
+        tool_write_error(options->program_name, "failed to create temporary assembly object for ", input_path);
+        return 1;
+    }
+
+    if (options->target != COMPILER_TARGET_LINUX_X86_64 || compiler_object_assemble_elf64_x86_64(&writer, input_path, fd) != 0) {
+        (void)platform_close(fd);
+        (void)platform_remove_file(path_buffer);
+        tool_write_error(options->program_name, compiler_object_writer_error_message(&writer), "");
+        return 1;
+    }
+    if (platform_close(fd) != 0) {
+        (void)platform_remove_file(path_buffer);
+        tool_write_error(options->program_name, "failed to finalize temporary assembly object for ", input_path);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int can_use_native_static_linker(const CompilerOptions *options) {
+    return options->target == COMPILER_TARGET_LINUX_X86_64 && options->no_stdlib && options->static_link;
+}
+
+static int link_executable_output_native(const CompilerOptions *options) {
+    char derived_output_path[COMPILER_PATH_CAPACITY];
+    char temp_paths[COMPILER_MAX_INPUT_FILES][COMPILER_PATH_CAPACITY];
+    const char *object_paths[COMPILER_MAX_INPUT_FILES];
+    size_t object_count = 0;
+    size_t temp_count = 0;
+    size_t i;
+    char error[COMPILER_ERROR_CAPACITY];
+    const char *output_path = pick_link_output_path(options, derived_output_path, sizeof(derived_output_path));
+
+    rt_memset(temp_paths, 0, sizeof(temp_paths));
+
+    for (i = 0; i < options->input_count; ++i) {
+        const char *input_path = options->input_paths[i];
+
+        if (ends_with(input_path, ".o")) {
+            object_paths[object_count++] = input_path;
+            continue;
+        }
+        if (ends_with(input_path, ".a")) {
+            cleanup_temp_paths(temp_paths, temp_count);
+            tool_write_error(options->program_name, "native linker does not support archives yet: ", input_path);
+            return 1;
+        }
+        if (is_assembly_input(input_path)) {
+            if (temp_count >= COMPILER_MAX_INPUT_FILES || assemble_input_to_object(options, input_path, temp_paths[temp_count], sizeof(temp_paths[temp_count])) != 0) {
+                cleanup_temp_paths(temp_paths, temp_count + 1U);
+                return 1;
+            }
+            object_paths[object_count++] = temp_paths[temp_count++];
+            continue;
+        }
+        if (!ends_with(input_path, ".c")) {
+            cleanup_temp_paths(temp_paths, temp_count);
+            tool_write_error(options->program_name, "unsupported native linker input ", input_path);
+            return 1;
+        }
+        if (temp_count >= COMPILER_MAX_INPUT_FILES || compile_input_to_object(options, input_path, temp_paths[temp_count], sizeof(temp_paths[temp_count])) != 0) {
+            cleanup_temp_paths(temp_paths, temp_count + 1U);
+            return 1;
+        }
+        object_paths[object_count++] = temp_paths[temp_count++];
+    }
+
+    if (compiler_link_elf64_x86_64_static(object_paths, object_count, output_path, error, sizeof(error)) != 0) {
+        cleanup_temp_paths(temp_paths, temp_count);
+        tool_write_error(options->program_name, error[0] != '\0' ? error : "native link failed", "");
+        return 1;
+    }
+
+    cleanup_temp_paths(temp_paths, temp_count);
+    return 0;
+}
+
 static int link_executable_output(const CompilerOptions *options) {
     char derived_output_path[COMPILER_PATH_CAPACITY];
     char temp_paths[COMPILER_MAX_INPUT_FILES][COMPILER_PATH_CAPACITY];
@@ -271,6 +364,10 @@ static int link_executable_output(const CompilerOptions *options) {
     size_t i;
     int pid = -1;
     int exit_status = 0;
+
+    if (can_use_native_static_linker(options)) {
+        return link_executable_output_native(options);
+    }
 
     rt_memset(temp_paths, 0, sizeof(temp_paths));
 

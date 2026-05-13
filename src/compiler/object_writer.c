@@ -885,6 +885,10 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
     if (names_equal(line, "popq %rax")) return encode_pop_reg(assembler, 0);
     if (names_equal(line, "leave")) return append_byte(assembler, OBJECT_SECTION_TEXT, 0xC9U);
     if (names_equal(line, "ret")) return append_byte(assembler, OBJECT_SECTION_TEXT, 0xC3U);
+    if (names_equal(line, "syscall")) {
+        return append_byte(assembler, OBJECT_SECTION_TEXT, 0x0FU) == 0 &&
+               append_byte(assembler, OBJECT_SECTION_TEXT, 0x05U) == 0 ? 0 : -1;
+    }
     if (names_equal(line, "cqto")) {
         return append_rex(assembler, 1, 0, 0, 0) == 0 &&
                append_byte(assembler, OBJECT_SECTION_TEXT, 0x99U) == 0 ? 0 : -1;
@@ -1009,10 +1013,10 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         return 0;
     }
 
-    if (starts_with(line, "movq ")) {
+    if (starts_with(line, "movq ") || starts_with(line, "mov ")) {
         char left[128];
         char right[128];
-        const char *operands = line + 5;
+        const char *operands = line + (starts_with(line, "movq ") ? 5 : 4);
         const char *comma = find_top_level_comma(operands);
         size_t i = 0;
         int src_reg;
@@ -1425,10 +1429,10 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         return -1;
     }
 
-    if (starts_with(line, "leaq ")) {
+    if (starts_with(line, "leaq ") || starts_with(line, "lea ")) {
         char left[128];
         char right[64];
-        const char *operands = line + 5;
+        const char *operands = line + (starts_with(line, "leaq ") ? 5 : 4);
         const char *comma = find_top_level_comma(operands);
         size_t i = 0;
         int dst_reg;
@@ -1779,8 +1783,16 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             assembler->current_section = section;
             continue;
         }
-        if (starts_with(line, ".globl ")) {
-            int symbol_index = get_symbol(assembler, line + 7);
+        if (starts_with(line, ".globl ") || starts_with(line, ".global ")) {
+            int symbol_index = get_symbol(assembler, line + (starts_with(line, ".globl ") ? 7 : 8));
+            if (symbol_index < 0) {
+                return -1;
+            }
+            assembler->symbols[symbol_index].global = 1;
+            continue;
+        }
+        if (starts_with(line, ".extern ")) {
+            int symbol_index = get_symbol(assembler, line + 8);
             if (symbol_index < 0) {
                 return -1;
             }
@@ -2406,6 +2418,24 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
 
     (void)platform_remove_file(temp_path);
     return 0;
+}
+
+int compiler_object_assemble_elf64_x86_64(CompilerObjectWriter *writer, const char *asm_path, int fd) {
+    static CompilerSource source;
+    ObjectAssembler assembler;
+
+    compiler_object_writer_init(writer);
+    rt_memset(&assembler, 0, sizeof(assembler));
+    assembler.writer = writer;
+
+    if (compiler_load_source(asm_path, &source) != 0) {
+        set_error(writer, "failed to read assembly source");
+        return -1;
+    }
+    if (assemble_from_source(&assembler, &source) != 0) {
+        return -1;
+    }
+    return build_elf_object(&assembler, fd);
 }
 
 int compiler_object_write_macho64_aarch64(CompilerObjectWriter *writer, const CompilerIr *ir, int fd, int function_sections, int data_sections) {

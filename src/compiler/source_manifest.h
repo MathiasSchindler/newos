@@ -34,6 +34,7 @@
     X("src/compiler/backend_codegen.c") \
     X("src/compiler/driver.c") \
     X("src/compiler/ir.c") \
+    X("src/compiler/linker.c") \
     X("src/compiler/object_writer.c") \
     X("src/compiler/parser.c") \
     X("src/compiler/parser_types.c") \
