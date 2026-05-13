@@ -69,8 +69,8 @@ For PNG, `edit --remove-text KEY` removes matching `tEXt`, `iTXt`, and `zTXt` ch
 	certificates, and every supported COSE signature is counted as verified or
 	invalid. With `show --c2pa-trust`, `imgmeta` runs a conservative policy check:
 	explicit hash mismatches, invalid signatures, malformed certificate blobs,
-	embedded validation failures, and timestamped manifests without implemented
-	timestamp validation report as untrusted. External trust anchors,
+	embedded validation failures report as untrusted. Timestamped manifests report
+	trust validation as unsupported until timestamp validation exists. External trust anchors,
 	certificate path building, TSA validation, and full C2PA claim conformance
 	are not implemented yet.
 - `show -v` decodes common C2PA fields for PNG `caBX` and JPEG APP11 JUMBF

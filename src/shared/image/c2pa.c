@@ -5,6 +5,7 @@
 
 #define C2PA_MAX_EXCLUSIONS 16U
 #define C2PA_MAX_DEPTH 16U
+#define C2PA_MAX_CLAIMS 32U
 
 #define C2PA_COSE_ALG_ES256 (-7)
 #define C2PA_COSE_ALG_EDDSA (-8)
@@ -48,7 +49,11 @@ typedef struct {
     const unsigned char *full_data;
     size_t full_size;
     C2paRange carrier_ranges[C2PA_MAX_EXCLUSIONS];
+    C2paRange claim_ranges[C2PA_MAX_CLAIMS];
     unsigned int carrier_range_count;
+    unsigned int claim_range_count;
+    unsigned int preferred_claim_index;
+    int claim_ranges_complete;
     unsigned int top_manifest_index;
     unsigned int active_manifest_depth;
     int in_active_manifest;
@@ -632,7 +637,57 @@ static int c2pa_verify_cose_es256_detached_claims(const C2paCoseInfo *cose,
                                                   const unsigned char *signature,
                                                   size_t signature_size,
                                                   const C2paContext *ctx) {
+    unsigned int claim_index;
     size_t token_offset;
+
+    if (ctx->claim_range_count > 0U) {
+        if (ctx->preferred_claim_index < ctx->claim_range_count) {
+            const C2paRange *range = &ctx->claim_ranges[ctx->preferred_claim_index];
+            unsigned char header[5];
+            unsigned char *payload_item;
+            size_t header_size = c2pa_write_cbor_bstr_header(header, range->length);
+            int ok;
+
+            payload_item = (unsigned char *)rt_malloc(header_size + range->length);
+            if (payload_item == 0) {
+                return 0;
+            }
+            memcpy(payload_item, header, header_size);
+            memcpy(payload_item + header_size, ctx->full_data + range->start, range->length);
+            ok = c2pa_verify_cose_es256(cose, protected_bytes, protected_size, payload_item, header_size + range->length, signature, signature_size);
+            rt_free(payload_item);
+            if (ok) {
+                return 1;
+            }
+        }
+        for (claim_index = 0U; claim_index < ctx->claim_range_count; ++claim_index) {
+            const C2paRange *range;
+            unsigned char header[5];
+            unsigned char *payload_item;
+            size_t header_size;
+            int ok;
+
+            if (claim_index == ctx->preferred_claim_index) {
+                continue;
+            }
+            range = &ctx->claim_ranges[claim_index];
+            header_size = c2pa_write_cbor_bstr_header(header, range->length);
+            payload_item = (unsigned char *)rt_malloc(header_size + range->length);
+            if (payload_item == 0) {
+                return 0;
+            }
+            memcpy(payload_item, header, header_size);
+            memcpy(payload_item + header_size, ctx->full_data + range->start, range->length);
+            ok = c2pa_verify_cose_es256(cose, protected_bytes, protected_size, payload_item, header_size + range->length, signature, signature_size);
+            rt_free(payload_item);
+            if (ok) {
+                return 1;
+            }
+        }
+        if (ctx->claim_ranges_complete) {
+            return 0;
+        }
+    }
 
     for (token_offset = 0U; token_offset + 10U < ctx->full_size; ++token_offset) {
         size_t search;
@@ -935,6 +990,53 @@ static void c2pa_context_add_range(C2paContext *ctx, size_t start, size_t length
     }
 }
 
+static void c2pa_context_add_claim_range(C2paContext *ctx, const unsigned char *data, size_t length) {
+    size_t start;
+    unsigned int index;
+
+    if (ctx == 0 || data == 0 || length == 0U || ctx->claim_range_count >= C2PA_MAX_CLAIMS ||
+        data < ctx->full_data || data > ctx->full_data + ctx->full_size || length > (size_t)(ctx->full_data + ctx->full_size - data)) {
+        return;
+    }
+    start = (size_t)(data - ctx->full_data);
+    for (index = 0U; index < ctx->claim_range_count; ++index) {
+        if (ctx->claim_ranges[index].start == start && ctx->claim_ranges[index].length == length) {
+            ctx->preferred_claim_index = index;
+            return;
+        }
+    }
+    ctx->claim_ranges[ctx->claim_range_count].start = start;
+    ctx->claim_ranges[ctx->claim_range_count].length = length;
+    ctx->preferred_claim_index = ctx->claim_range_count;
+    ctx->claim_range_count += 1U;
+}
+
+static void c2pa_precollect_claim_ranges(C2paContext *ctx) {
+    size_t token_offset;
+
+    for (token_offset = 0U; token_offset + 10U < ctx->full_size; ++token_offset) {
+        size_t search;
+        if (!c2pa_text_starts_with(ctx->full_data + token_offset, ctx->full_size - token_offset, "c2pa.claim")) {
+            continue;
+        }
+        search = token_offset;
+        while (search + 8U <= ctx->full_size && search < token_offset + 256U) {
+            if (image_bytes_equal(ctx->full_data + search, "cbor", 4U) && search >= 4U) {
+                size_t box_start = search - 4U;
+                unsigned int box_size = image_read_u32_be(ctx->full_data + box_start);
+
+                if (box_size >= 8U && box_start + (size_t)box_size <= ctx->full_size) {
+                    c2pa_context_add_claim_range(ctx, ctx->full_data + box_start + 8U, (size_t)box_size - 8U);
+                }
+                break;
+            }
+            search += 1U;
+        }
+    }
+    ctx->claim_ranges_complete = 1;
+    ctx->preferred_claim_index = C2PA_MAX_CLAIMS;
+}
+
 static int c2pa_digest_occurs(const unsigned char *data, size_t size, const unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE]) {
     size_t offset;
 
@@ -1098,11 +1200,13 @@ static void c2pa_parse_boxes(const unsigned char *data,
             }
             if (parent_label != 0 && c2pa_text_starts_with(parent_label, parent_label_size, "c2pa.signature")) {
                 c2pa_parse_cose_sign1(data + payload_offset, payload_size, info, ctx);
+            } else if (parent_label != 0 && c2pa_text_starts_with(parent_label, parent_label_size, "c2pa.claim")) {
+                c2pa_context_add_claim_range(ctx, data + payload_offset, payload_size);
             } else if (parent_label != 0 && c2pa_text_starts_with(parent_label, parent_label_size, "c2pa.hash.data")) {
                 C2paHashAssertion assertion;
                 if (c2pa_parse_hash_assertion(data + payload_offset, payload_size, &assertion)) {
                     info->content_hash_checked = 1;
-                    if (c2pa_hash_matches(&assertion, ctx->full_data, ctx->full_size)) {
+                    if (!info->content_hash_matched && c2pa_hash_matches(&assertion, ctx->full_data, ctx->full_size)) {
                         info->content_hash_matched = 1;
                     }
                 }
@@ -1285,10 +1389,15 @@ int image_c2pa_analyze_ex(const unsigned char *data, size_t size, const ImageC2p
     ctx.full_data = data;
     ctx.full_size = size;
     ctx.carrier_range_count = 0U;
+    ctx.claim_range_count = 0U;
+    ctx.preferred_claim_index = C2PA_MAX_CLAIMS;
+    ctx.claim_ranges_complete = 0;
     ctx.top_manifest_index = 0U;
     ctx.active_manifest_depth = 0U;
     ctx.in_active_manifest = 0;
     ctx.trust_validation_enabled = options != 0 && options->trust_validation;
+
+    c2pa_precollect_claim_ranges(&ctx);
 
     carrier_found = c2pa_scan_png_carriers(data, size, info, &ctx);
     carrier_found = c2pa_scan_jpeg_carriers(data, size, info, &ctx) || carrier_found;
@@ -1344,13 +1453,14 @@ int image_c2pa_analyze_ex(const unsigned char *data, size_t size, const ImageC2p
     }
     if (ctx.trust_validation_enabled) {
         info->trust_checked = 1;
-        info->trust_supported = 1;
-        info->trust_valid = info->signature_supported && info->signature_valid &&
-                            info->x509_cert_count > 0U &&
-                            info->x509_cert_count == info->x509_parseable_cert_count &&
-                            !info->content_hash_mismatched &&
-                            info->validation_failure_count == 0U &&
-                            c2pa_count_token(data, size, "timeStamp") == 0U;
+        if (c2pa_count_token(data, size, "timeStamp") == 0U) {
+            info->trust_supported = 1;
+            info->trust_valid = info->signature_supported && info->signature_valid &&
+                                info->x509_cert_count > 0U &&
+                                info->x509_cert_count == info->x509_parseable_cert_count &&
+                                !info->content_hash_mismatched &&
+                                info->validation_failure_count == 0U;
+        }
     }
     if (info->content_hash_mismatched) {
         info->status = "C2PA content hash mismatch";

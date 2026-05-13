@@ -349,7 +349,14 @@ static void p256_point_add_mixed(P256Jacobian *out, const P256Jacobian *point, c
     out->infinity = 0;
 }
 
-static int p256_scalar_mult_affine(P256Int *out_x, P256Int *out_y, const P256Int *scalar, const P256Int *base_x, const P256Int *base_y) {
+static int p256_double_scalar_mult_affine(P256Int *out_x,
+                                          P256Int *out_y,
+                                          const P256Int *left_scalar,
+                                          const P256Int *left_x,
+                                          const P256Int *left_y,
+                                          const P256Int *right_scalar,
+                                          const P256Int *right_x,
+                                          const P256Int *right_y) {
     P256Jacobian result;
     P256Jacobian next;
     P256Int z_inv;
@@ -361,8 +368,12 @@ static int p256_scalar_mult_affine(P256Int *out_x, P256Int *out_y, const P256Int
     for (bit = 255; bit >= 0; --bit) {
         p256_point_double(&next, &result);
         result = next;
-        if (p256_get_bit(scalar, (unsigned int)bit)) {
-            p256_point_add_mixed(&next, &result, base_x, base_y);
+        if (p256_get_bit(left_scalar, (unsigned int)bit)) {
+            p256_point_add_mixed(&next, &result, left_x, left_y);
+            result = next;
+        }
+        if (p256_get_bit(right_scalar, (unsigned int)bit)) {
+            p256_point_add_mixed(&next, &result, right_x, right_y);
             result = next;
         }
     }
@@ -374,38 +385,6 @@ static int p256_scalar_mult_affine(P256Int *out_x, P256Int *out_y, const P256Int
     field_mul(&z3, &z2, &z_inv);
     field_mul(out_x, &result.x, &z2);
     field_mul(out_y, &result.y, &z3);
-    return 1;
-}
-
-static int p256_affine_add(P256Int *out_x, P256Int *out_y, const P256Int *x1, const P256Int *y1, const P256Int *x2, const P256Int *y2) {
-    P256Int lambda;
-    P256Int numerator;
-    P256Int denominator;
-    P256Int denominator_inv;
-    P256Int tmp;
-
-    if (p256_int_equal(x1, x2)) {
-        field_add(&tmp, y1, y2);
-        if (p256_is_zero(&tmp)) {
-            return 0;
-        }
-        field_square(&tmp, x1);
-        field_mul(&numerator, &tmp, &P256_THREE);
-        field_sub(&numerator, &numerator, &P256_THREE);
-        field_add(&denominator, y1, y1);
-    } else {
-        field_sub(&numerator, y2, y1);
-        field_sub(&denominator, x2, x1);
-    }
-    field_inv(&denominator_inv, &denominator);
-    field_mul(&lambda, &numerator, &denominator_inv);
-    field_square(&tmp, &lambda);
-    field_sub(&tmp, &tmp, x1);
-    field_sub(&tmp, &tmp, x2);
-    p256_copy(out_x, &tmp);
-    field_sub(&tmp, x1, out_x);
-    field_mul(&tmp, &lambda, &tmp);
-    field_sub(out_y, &tmp, y1);
     return 1;
 }
 
@@ -422,10 +401,6 @@ int crypto_p256_ecdsa_sha256_verify(
     P256Int w;
     P256Int u1;
     P256Int u2;
-    P256Int p1x;
-    P256Int p1y;
-    P256Int p2x;
-    P256Int p2y;
     P256Int rx;
     P256Int ry;
 
@@ -449,13 +424,7 @@ int crypto_p256_ecdsa_sha256_verify(
     scalar_mul(&u1, &z, &w);
     scalar_mul(&u2, &r, &w);
 
-    if (!p256_scalar_mult_affine(&p1x, &p1y, &u1, &P256_GX, &P256_GY)) {
-        return 0;
-    }
-    if (!p256_scalar_mult_affine(&p2x, &p2y, &u2, &qx, &qy)) {
-        return 0;
-    }
-    if (!p256_affine_add(&rx, &ry, &p1x, &p1y, &p2x, &p2y)) {
+    if (!p256_double_scalar_mult_affine(&rx, &ry, &u1, &P256_GX, &P256_GY, &u2, &qx, &qy)) {
         return 0;
     }
     (void)ry;

@@ -108,8 +108,8 @@ and ingredient count. JSON output includes the same summary in a `c2pa` object.
   ES256/P-256 COSE signatures can be verified against embedded P-256 leaf
   certificates. With `--c2pa-trust`, `imginfo` runs a conservative policy check:
   explicit hash mismatches, invalid signatures, malformed certificate blobs,
-  embedded validation failures, and timestamped manifests without implemented
-  timestamp validation report as untrusted. External trust anchors, certificate
+  embedded validation failures report as untrusted. Timestamped manifests report
+  trust validation as unsupported until timestamp validation exists. External trust anchors, certificate
   path building, TSA validation, and full claim conformance are not implemented
   yet.
 - EXIF orientation is read from the first TIFF-style image file directory only;

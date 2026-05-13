@@ -61,8 +61,8 @@ is available, plain output prints `-` and JSON prints `null`.
 	certificates, and every supported COSE signature is counted as verified or
 	invalid. With `--c2pa-trust`, `imgcheck` runs a conservative policy check:
 	explicit hash mismatches, invalid signatures, malformed certificate blobs,
-	embedded validation failures, and timestamped manifests without implemented
-	timestamp validation report as untrusted. External trust anchors,
+	embedded validation failures report as untrusted. Timestamped manifests report
+	trust validation as unsupported until timestamp validation exists. External trust anchors,
 	certificate path building, TSA validation, and full C2PA claim conformance
 	are not implemented yet.
 - Very large inputs are read into memory before validation.
