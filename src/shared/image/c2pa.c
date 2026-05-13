@@ -726,8 +726,10 @@ static void c2pa_parse_cose_sign1(const unsigned char *data, size_t size, ImageC
         if (cose.alg == C2PA_COSE_ALG_ES256) {
             info->signature_checked = 1;
             info->signature_supported = 1;
-            if (c2pa_verify_cose_es256(&cose, protected_bytes, protected_size, payload_item, payload_item_size, signature, signature_size) ||
-                (ctx != 0 && c2pa_verify_cose_es256_detached_claims(&cose, protected_bytes, protected_size, signature, signature_size, ctx))) {
+            if (!info->signature_valid &&
+                ((!(payload_item_size == 1U && payload_item[0] == 0xf6U) &&
+                  c2pa_verify_cose_es256(&cose, protected_bytes, protected_size, payload_item, payload_item_size, signature, signature_size)) ||
+                 (ctx != 0 && c2pa_verify_cose_es256_detached_claims(&cose, protected_bytes, protected_size, signature, signature_size, ctx)))) {
                 info->signature_valid = 1;
             }
         }
