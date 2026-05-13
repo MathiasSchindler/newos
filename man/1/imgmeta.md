@@ -16,7 +16,7 @@ imgmeta edit [--set-text KEY=VALUE|--set-itxt KEY=VALUE|--remove-text KEY] [--la
 
 ## DESCRIPTION
 
-`imgmeta` works with metadata carried by supported image containers. It can show metadata-related properties reported by the shared image probe layer, list PNG text metadata, write a metadata-stripped copy for PNG, JPEG, WebP, and TIFF inputs, edit PNG text metadata, copy a recognized image while preserving its bytes and metadata, or copy PNG metadata chunks between PNG files.
+`imgmeta` works with metadata carried by supported image containers. It can show metadata-related properties reported by the shared image probe layer, list PNG text metadata, write a metadata-stripped copy for PNG, JPEG, WebP, and TIFF inputs, edit PNG text metadata, copy a recognized image while preserving its bytes and metadata, or copy PNG metadata chunks between PNG files. C2PA/JUMBF manifest-store carriers are reported as metadata when detected.
 
 The command does not decode pixels. Metadata stripping rewrites container structure only, preserving image data and unsupported segments where practical.
 
@@ -24,7 +24,7 @@ When `show` is used without a file, `imgmeta` reads from standard input. `strip`
 
 ## COMMANDS
 
-- `show` - print detected image format, metadata properties, orientation, and density when available
+- `show` - print detected image format, metadata properties, C2PA/JUMBF structural summary, orientation, and density when available
 - `list-text` - print tab-separated PNG text metadata records as `path type key value`; compressed text chunks are listed by key without decompression
 - `strip -o OUTPUT FILE` - write FILE to OUTPUT without supported metadata chunks or segments
 - `copy -o OUTPUT FILE` - write a recognized image to OUTPUT while preserving the original bytes and metadata
@@ -35,9 +35,9 @@ When `show` is used without a file, `imgmeta` reads from standard input. `strip`
 
 ## STRIP BEHAVIOR
 
-For PNG, `strip` removes metadata chunks such as `eXIf`, `iCCP`, `iTXt`, `tEXt`, `zTXt`, and `tIME`. Critical chunks and image data are preserved.
+For PNG, `strip` removes metadata chunks such as `eXIf`, `iCCP`, `iTXt`, `tEXt`, `zTXt`, `tIME`, and C2PA `caBX`. Critical chunks and image data are preserved.
 
-For JPEG, `strip` removes EXIF APP1 segments, XMP APP1 segments, ICC APP2 segments, and COM comment segments before the scan data. The entropy-coded image stream is copied unchanged.
+For JPEG, `strip` removes EXIF APP1 segments, XMP APP1 segments, ICC APP2 segments, APP11 C2PA/JUMBF segments, and COM comment segments before the scan data. The entropy-coded image stream is copied unchanged.
 
 For WebP, `strip` removes `EXIF`, `XMP `, and `ICCP` RIFF chunks and clears the corresponding extended WebP feature flags. Image chunks are copied unchanged.
 
@@ -47,7 +47,7 @@ For TIFF, `strip` removes common metadata IFD entries such as description, camer
 
 Without `--from`, `copy` preserves the complete recognized input image byte-for-byte.
 
-With `--from`, `copy` performs selective PNG metadata transfer. Metadata chunks from METADATA_SOURCE replace metadata chunks in FILE and are inserted before image data in OUTPUT. Image data and non-metadata chunks from FILE are preserved.
+With `--from`, `copy` performs selective PNG metadata transfer. Metadata chunks from METADATA_SOURCE replace metadata chunks in FILE and are inserted before image data in OUTPUT. This includes C2PA `caBX` chunks. Image data and non-metadata chunks from FILE are preserved.
 
 ## EDIT BEHAVIOR
 
@@ -62,6 +62,9 @@ For PNG, `edit --remove-text KEY` removes matching `tEXt`, `iTXt`, and `zTXt` ch
 - `strip` is implemented for PNG, JPEG, WebP, classic TIFF, and BigTIFF first IFDs.
 - Metadata editing currently supports PNG `tEXt` and PNG `iTXt` key/value entries. `zTXt` chunks can be listed by key and removed, but are not decompressed or edited yet.
 - Selective metadata copying currently supports PNG metadata chunks only.
+- C2PA support is structural metadata analysis. `imgmeta` can report and strip
+	PNG `caBX` and JPEG APP11 C2PA/JUMBF carriers, but it does not validate
+	C2PA signatures, certificates, claims, or content bindings.
 - PNG stripping preserves existing chunk CRCs for retained chunks and does not recompress image data.
 - JPEG stripping is segment-oriented and does not parse entropy-coded scan data.
 - Color-management metadata such as ICC profiles may affect visual interpretation; stripping it can change how other software displays the same pixels.

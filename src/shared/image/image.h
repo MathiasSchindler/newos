@@ -14,6 +14,7 @@
 #define IMAGE_INFO_HAS_DENSITY    (1U << 8)
 #define IMAGE_INFO_HAS_DURATION_MS (1U << 9)
 #define IMAGE_INFO_HAS_LOOP_COUNT (1U << 10)
+#define IMAGE_INFO_HAS_C2PA       (1U << 11)
 
 #define IMAGE_PROPERTY_ALPHA      (1U << 0)
 #define IMAGE_PROPERTY_PALETTE    (1U << 1)
@@ -27,6 +28,7 @@
 #define IMAGE_PROPERTY_TOP_DOWN   (1U << 9)
 #define IMAGE_PROPERTY_LOOPING    (1U << 10)
 #define IMAGE_PROPERTY_ORIENTATION (1U << 11)
+#define IMAGE_PROPERTY_C2PA       (1U << 12)
 
 typedef enum {
     IMAGE_FORMAT_UNKNOWN = 0,
@@ -37,6 +39,22 @@ typedef enum {
     IMAGE_FORMAT_WEBP,
     IMAGE_FORMAT_BMP
 } ImageFormat;
+
+typedef struct {
+    int present;
+    int has_manifest_store;
+    const char *carrier;
+    unsigned int carrier_count;
+    unsigned int recognized_carrier_count;
+    unsigned int jumbf_box_count;
+    unsigned int manifest_count;
+    unsigned int claim_count;
+    unsigned int assertion_store_count;
+    unsigned int assertion_count;
+    unsigned int signature_count;
+    unsigned int ingredient_count;
+    const char *status;
+} ImageC2paInfo;
 
 typedef struct {
     ImageFormat format;
@@ -56,6 +74,7 @@ typedef struct {
     const char *color_model;
     const char *compression;
     const char *density_unit;
+    ImageC2paInfo c2pa;
 } ImageInfo;
 
 typedef struct {
@@ -71,6 +90,8 @@ typedef struct {
 } ImageValidationOptions;
 
 void image_info_init(ImageInfo *info);
+void image_c2pa_info_init(ImageC2paInfo *info);
+int image_c2pa_analyze(const unsigned char *data, size_t size, ImageC2paInfo *info);
 int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out);
 int image_validate(const unsigned char *data, size_t size, ImageValidation *validation_out);
 int image_validate_ex(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation_out);

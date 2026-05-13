@@ -120,6 +120,7 @@ static int write_property_list(unsigned int property_flags) {
         IMAGE_PROPERTY_EXIF,
         IMAGE_PROPERTY_ICC,
         IMAGE_PROPERTY_XMP,
+        IMAGE_PROPERTY_C2PA,
         IMAGE_PROPERTY_TOP_DOWN,
         IMAGE_PROPERTY_LOOPING,
         IMAGE_PROPERTY_ORIENTATION
@@ -194,6 +195,7 @@ static void write_json_properties(unsigned int property_flags) {
         IMAGE_PROPERTY_EXIF,
         IMAGE_PROPERTY_ICC,
         IMAGE_PROPERTY_XMP,
+        IMAGE_PROPERTY_C2PA,
         IMAGE_PROPERTY_TOP_DOWN,
         IMAGE_PROPERTY_LOOPING,
         IMAGE_PROPERTY_ORIENTATION
@@ -476,6 +478,20 @@ static int write_detail_block(const char *label, const ImageInfo *info) {
     rt_write_cstr(1, "  properties: ");
     write_property_list(info->property_flags);
     rt_write_char(1, '\n');
+    rt_write_cstr(1, "  c2pa: ");
+    if ((info->flags & IMAGE_INFO_HAS_C2PA) != 0U) {
+        rt_write_line(1, info->c2pa.status);
+        write_detail_string("c2pa-carrier", info->c2pa.carrier, 1);
+        write_detail_uint("c2pa-carriers", info->c2pa.carrier_count, 1);
+        write_detail_uint("c2pa-jumbf-boxes", info->c2pa.jumbf_box_count, 1);
+        write_detail_uint("c2pa-manifests", info->c2pa.manifest_count, 1);
+        write_detail_uint("c2pa-claims", info->c2pa.claim_count, 1);
+        write_detail_uint("c2pa-assertion-stores", info->c2pa.assertion_store_count, 1);
+        write_detail_uint("c2pa-signatures", info->c2pa.signature_count, 1);
+        write_detail_uint("c2pa-ingredients", info->c2pa.ingredient_count, 1);
+    } else {
+        write_unknown_value();
+    }
     return 0;
 }
 
@@ -526,6 +542,32 @@ static void write_json_info(const char *label, const ImageInfo *info) {
     }
     rt_write_cstr(1, ",\"properties\":");
     write_json_properties(info->property_flags);
+    rt_write_cstr(1, ",\"c2pa\":");
+    if ((info->flags & IMAGE_INFO_HAS_C2PA) != 0U) {
+        rt_write_cstr(1, "{\"present\":true,\"status\":");
+        write_json_string(info->c2pa.status);
+        rt_write_cstr(1, ",\"carrier\":");
+        write_json_string(info->c2pa.carrier);
+        rt_write_cstr(1, ",\"carrier_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.carrier_count);
+        rt_write_cstr(1, ",\"recognized_carrier_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.recognized_carrier_count);
+        rt_write_cstr(1, ",\"jumbf_box_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.jumbf_box_count);
+        rt_write_cstr(1, ",\"manifest_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.manifest_count);
+        rt_write_cstr(1, ",\"claim_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.claim_count);
+        rt_write_cstr(1, ",\"assertion_store_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.assertion_store_count);
+        rt_write_cstr(1, ",\"signature_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.signature_count);
+        rt_write_cstr(1, ",\"ingredient_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.ingredient_count);
+        rt_write_char(1, '}');
+    } else {
+        rt_write_cstr(1, "{\"present\":false}");
+    }
     rt_write_line(1, "}");
 }
 
@@ -552,8 +594,9 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
         tool_write_error("imginfo", "unsupported image format: ", label);
         return -1;
     }
-    if (path != 0 && info.format == IMAGE_FORMAT_JPEG &&
-        (info.flags & IMAGE_INFO_HAS_DIMENSIONS) == 0U && size == sizeof(buffer)) {
+    if (path != 0 && size == sizeof(buffer) &&
+        (((info.format == IMAGE_FORMAT_JPEG) && (info.flags & IMAGE_INFO_HAS_DIMENSIONS) == 0U) ||
+         (info.flags & IMAGE_INFO_HAS_C2PA) == 0U)) {
         unsigned char *full_data;
         size_t full_size;
         ImageInfo full_info;

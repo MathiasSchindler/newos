@@ -14,7 +14,9 @@ imginfo [-m|--mime] [-p|--plain] [-d|--details] [--json] [--canonical-ext] [-R|-
 
 `imginfo` probes image files and prints their format, dimensions, bit depth,
 channel information, color model, compression family, feature properties, and
-MIME type when that metadata is available from the file header.
+MIME type when that metadata is available from the file header. It also reports
+embedded C2PA/JUMBF manifest-store carriers when they are visible in supported
+image containers.
 
 The command is intentionally metadata-only. It does not decode pixels, allocate
 large image buffers, or validate full image contents.
@@ -72,11 +74,17 @@ picture.png:
   duration-ms: -
   loop-count: -
   properties: alpha
+  c2pa: -
 ```
 
 Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 `progressive`, `lossless`, `exif`, `icc-profile`, `xmp`, `top-down`,
-`looping`, and `orientation`.
+`looping`, `orientation`, and `c2pa`.
+
+When C2PA metadata is present, `--details` prints a structural summary with the
+carrier, JUMBF box count, manifest token count, claim count, assertion-store
+count, signature count, and ingredient count. JSON output includes the same
+summary in a `c2pa` object.
 
 ## LIMITATIONS
 
@@ -88,6 +96,10 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 - Metadata discovery is intentionally shallow; EXIF payloads, ICC profiles, XMP
   packets, PNG text chunks, and nested TIFF tag directories are detected or
   summarized rather than fully decoded into individual fields.
+- C2PA support is structural metadata analysis. It recognizes PNG `caBX` chunks,
+  JPEG APP11 JUMBF C2PA segments, and embedded C2PA/JUMBF markers in other
+  recognized images, but it does not perform cryptographic signature, certificate,
+  claim, or content-binding validation.
 - EXIF orientation is read from the first TIFF-style image file directory only;
   maker notes and deeper metadata trees are not interpreted.
 - Filename-extension checks are heuristic. Extension mismatches are warnings

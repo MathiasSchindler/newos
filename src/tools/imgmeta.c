@@ -191,6 +191,7 @@ static void write_property_list(unsigned int property_flags) {
         IMAGE_PROPERTY_EXIF,
         IMAGE_PROPERTY_ICC,
         IMAGE_PROPERTY_XMP,
+        IMAGE_PROPERTY_C2PA,
         IMAGE_PROPERTY_ORIENTATION,
         IMAGE_PROPERTY_ALPHA,
         IMAGE_PROPERTY_PALETTE,
@@ -240,6 +241,21 @@ static int show_path(const char *path) {
     rt_write_cstr(1, "  metadata: ");
     write_property_list(info.property_flags);
     rt_write_char(1, '\n');
+    if ((info.flags & IMAGE_INFO_HAS_C2PA) != 0U) {
+        rt_write_cstr(1, "  c2pa: ");
+        rt_write_line(1, info.c2pa.status);
+        rt_write_cstr(1, "  c2pa-carrier: ");
+        rt_write_line(1, info.c2pa.carrier);
+        rt_write_cstr(1, "  c2pa-manifests: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.manifest_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-claims: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.claim_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-signatures: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.signature_count);
+        rt_write_char(1, '\n');
+    }
     if ((info.flags & IMAGE_INFO_HAS_ORIENTATION) != 0U) {
         rt_write_cstr(1, "  orientation: ");
         rt_write_uint(1, (unsigned long long)info.orientation);
@@ -260,6 +276,7 @@ static int show_path(const char *path) {
 
 static int png_chunk_is_metadata(const unsigned char *type) {
     return bytes_equal(type, "eXIf", 4U) ||
+           bytes_equal(type, "caBX", 4U) ||
            bytes_equal(type, "iCCP", 4U) ||
            bytes_equal(type, "iTXt", 4U) ||
            bytes_equal(type, "tEXt", 4U) ||
@@ -814,6 +831,12 @@ static int jpeg_segment_is_metadata(unsigned char marker, const unsigned char *s
         return 1;
     }
     if (marker == 0xe2U && segment_size >= 13U && bytes_equal(segment + 2U, "ICC_PROFILE", 11U)) {
+        return 1;
+    }
+    if (marker == 0xebU && segment_size >= 14U &&
+        bytes_equal(segment + 2U, "JP", 2U) &&
+        segment[4U] == 0U && segment[5U] == 1U &&
+        bytes_equal(segment + 10U, "jumb", 4U)) {
         return 1;
     }
     return 0;

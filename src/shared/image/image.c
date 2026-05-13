@@ -69,6 +69,7 @@ void image_info_init(ImageInfo *info) {
     info->color_model = 0;
     info->compression = 0;
     info->density_unit = 0;
+    image_c2pa_info_init(&info->c2pa);
 }
 
 void image_set_dimensions(ImageInfo *info, unsigned int width, unsigned int height) {
@@ -158,6 +159,14 @@ void image_set_density(ImageInfo *info, unsigned int density_x, unsigned int den
     }
 }
 
+void image_set_c2pa(ImageInfo *info, const ImageC2paInfo *c2pa) {
+    if (info != 0 && c2pa != 0 && c2pa->present) {
+        info->c2pa = *c2pa;
+        info->flags |= IMAGE_INFO_HAS_C2PA;
+        info->property_flags |= IMAGE_PROPERTY_C2PA;
+    }
+}
+
 int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
     ImageInfo info;
 
@@ -172,6 +181,10 @@ int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
         image_probe_tiff(data, size, &info) ||
         image_probe_webp(data, size, &info) ||
         image_probe_bmp(data, size, &info)) {
+        ImageC2paInfo c2pa;
+        if (image_c2pa_analyze(data, size, &c2pa) == 0) {
+            image_set_c2pa(&info, &c2pa);
+        }
         *info_out = info;
         return 0;
     }
@@ -325,6 +338,7 @@ const char *image_property_name(unsigned int property) {
         case IMAGE_PROPERTY_TOP_DOWN: return "top-down";
         case IMAGE_PROPERTY_LOOPING: return "looping";
         case IMAGE_PROPERTY_ORIENTATION: return "orientation";
+        case IMAGE_PROPERTY_C2PA: return "c2pa";
         default: return 0;
     }
 }

@@ -10,6 +10,7 @@ tab=$(printf '\t')
 printf '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\002\000\000\000\003\010\006\000\000\000\000\000\000\000\000\000\000\011pHYs\000\000\016\304\000\000\016\304\001\000\000\000\000' > "$WORK_DIR/sample.png"
 printf 'GIF89a\004\000\005\000\200\000\000' > "$WORK_DIR/sample.gif"
 printf '\377\330\377\341\000\042Exif\000\000II\052\000\010\000\000\000\001\000\022\001\003\000\001\000\000\000\006\000\000\000\000\000\000\000\377\340\000\020JFIF\000\001\001\001\000\110\000\110\000\000\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\331' > "$WORK_DIR/sample.jpg"
+printf '\377\330\377\353\000\056JP\000\001\000\000\000\014jumbjumdc2pac2pa.claimc2pa.signature\377\300\000\021\010\000\007\000\006\003\001\021\000\002\021\000\003\021\000\377\332\000\014\003\001\000\002\021\003\021\000\077\000\377\331' > "$WORK_DIR/c2pa.jpg"
 printf '\377\330' > "$WORK_DIR/large-prefix.jpg"
 i=0
 while [ "$i" -lt 5 ]; do
@@ -53,6 +54,14 @@ assert_file_contains "$WORK_DIR/png-details.txt" 'properties: alpha' "imginfo --
 assert_file_contains "$WORK_DIR/jpeg-details.txt" 'density: 72x72 dpi' "imginfo --details did not print JPEG JFIF density"
 assert_file_contains "$WORK_DIR/jpeg-details.txt" 'orientation: 6 (rotated 90 clockwise)' "imginfo --details did not print JPEG EXIF orientation"
 assert_file_contains "$WORK_DIR/jpeg-details.txt" 'properties: exif, orientation' "imginfo --details did not print JPEG metadata properties"
+
+"$ROOT_DIR/build/imginfo" --details "$WORK_DIR/c2pa.jpg" > "$WORK_DIR/c2pa-jpeg-details.txt"
+assert_file_contains "$WORK_DIR/c2pa-jpeg-details.txt" 'properties: c2pa' "imginfo --details did not report C2PA metadata"
+assert_file_contains "$WORK_DIR/c2pa-jpeg-details.txt" 'c2pa-carrier: JPEG APP11 JUMBF' "imginfo --details did not report JPEG C2PA carrier"
+assert_file_contains "$WORK_DIR/c2pa-jpeg-details.txt" 'c2pa-claims: 1' "imginfo --details did not count C2PA claims"
+"$ROOT_DIR/build/imginfo" --json "$WORK_DIR/c2pa.jpg" > "$WORK_DIR/c2pa-jpeg-json.txt"
+assert_file_contains "$WORK_DIR/c2pa-jpeg-json.txt" '"c2pa":{"present":true' "imginfo --json did not report C2PA presence"
+assert_file_contains "$WORK_DIR/c2pa-jpeg-json.txt" '"signature_count":1' "imginfo --json did not count C2PA signatures"
 
 "$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.webp" > "$WORK_DIR/webp-details.txt"
 assert_file_contains "$WORK_DIR/webp-details.txt" 'variant: extended WebP' "imginfo --details did not print WebP variant"

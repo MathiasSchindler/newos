@@ -79,7 +79,7 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
     return 0;
 }
 
-static void write_plain_result(const char *label, const ImageValidation *validation) {
+static void write_plain_result(const char *label, const ImageValidation *validation, const ImageC2paInfo *c2pa) {
     rt_write_cstr(1, label);
     rt_write_char(1, '\t');
     rt_write_cstr(1, image_format_extension(validation->format));
@@ -92,7 +92,12 @@ static void write_plain_result(const char *label, const ImageValidation *validat
         rt_write_char(1, '-');
     }
     rt_write_char(1, '\t');
-    rt_write_line(1, validation->message);
+    rt_write_cstr(1, validation->message);
+    if (c2pa != 0 && c2pa->present) {
+        rt_write_char(1, '\t');
+        rt_write_cstr(1, c2pa->status);
+    }
+    rt_write_char(1, '\n');
 }
 
 static void write_json_string(const char *text) {
@@ -124,7 +129,7 @@ static void write_json_string(const char *text) {
     rt_write_char(1, '"');
 }
 
-static void write_json_result(const char *label, const ImageValidation *validation) {
+static void write_json_result(const char *label, const ImageValidation *validation, const ImageC2paInfo *c2pa) {
     rt_write_cstr(1, "{\"path\":");
     write_json_string(label);
     rt_write_cstr(1, ",\"format\":");
@@ -141,10 +146,26 @@ static void write_json_result(const char *label, const ImageValidation *validati
     } else {
         rt_write_cstr(1, "null");
     }
+    rt_write_cstr(1, ",\"c2pa\":");
+    if (c2pa != 0 && c2pa->present) {
+        rt_write_cstr(1, "{\"present\":true,\"status\":");
+        write_json_string(c2pa->status);
+        rt_write_cstr(1, ",\"carrier\":");
+        write_json_string(c2pa->carrier);
+        rt_write_cstr(1, ",\"manifest_count\":");
+        rt_write_uint(1, (unsigned long long)c2pa->manifest_count);
+        rt_write_cstr(1, ",\"claim_count\":");
+        rt_write_uint(1, (unsigned long long)c2pa->claim_count);
+        rt_write_cstr(1, ",\"signature_count\":");
+        rt_write_uint(1, (unsigned long long)c2pa->signature_count);
+        rt_write_char(1, '}');
+    } else {
+        rt_write_cstr(1, "{\"present\":false}");
+    }
     rt_write_line(1, "}");
 }
 
-static void write_human_result(const char *label, const ImageValidation *validation, const ImgcheckOptions *options) {
+static void write_human_result(const char *label, const ImageValidation *validation, const ImgcheckOptions *options, const ImageC2paInfo *c2pa) {
     rt_write_cstr(1, label);
     rt_write_cstr(1, validation->valid ? ": OK" : ": FAIL");
     rt_write_cstr(1, " (");
@@ -158,6 +179,10 @@ static void write_human_result(const char *label, const ImageValidation *validat
             rt_write_uint(1, (unsigned long long)validation->failure_offset);
         }
     }
+    if (c2pa != 0 && c2pa->present && (options->verbose || !validation->valid)) {
+        rt_write_cstr(1, "; C2PA: ");
+        rt_write_cstr(1, c2pa->status);
+    }
     rt_write_char(1, '\n');
 }
 
@@ -166,6 +191,7 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     size_t size;
     ImageValidation validation;
     ImageValidationOptions validation_options;
+    ImageC2paInfo c2pa;
     const char *label = path ? path : "stdin";
     int result;
 
@@ -174,14 +200,15 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     }
     validation_options.strict = options->strict;
     result = image_validate_ex(data, size, &validation_options, &validation);
+    (void)image_c2pa_analyze(data, size, &c2pa);
     rt_free(data);
     if (!options->quiet) {
         if (options->json) {
-            write_json_result(label, &validation);
+            write_json_result(label, &validation, &c2pa);
         } else if (options->plain) {
-            write_plain_result(label, &validation);
+            write_plain_result(label, &validation, &c2pa);
         } else {
-            write_human_result(label, &validation, options);
+            write_human_result(label, &validation, options, &c2pa);
         }
     }
     return result == 0 && validation.valid ? 0 : -1;

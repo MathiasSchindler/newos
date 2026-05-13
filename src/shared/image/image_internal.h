@@ -22,6 +22,7 @@ void image_set_color_model(ImageInfo *info, const char *color_model);
 void image_set_compression(ImageInfo *info, const char *compression);
 void image_set_orientation(ImageInfo *info, unsigned int orientation);
 void image_set_density(ImageInfo *info, unsigned int density_x, unsigned int density_y, const char *unit);
+void image_set_c2pa(ImageInfo *info, const ImageC2paInfo *c2pa);
 
 int image_probe_png(const unsigned char *data, size_t size, ImageInfo *info);
 int image_probe_gif(const unsigned char *data, size_t size, ImageInfo *info);
