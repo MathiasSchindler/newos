@@ -32,6 +32,7 @@ implementation files they live in a same-named subdirectory owned by that tool.
   `tests/tmp/`
 - `man/` — repository-local manuals; `man/1` and `man/7` are the active home for
   current documentation and contributor-facing project notes
+- `services/` — hosted daemon instance data such as document roots, configs, and logs; implementation still belongs under `src/tools/`
 - `build/` — generated binaries and other build output
 
 ## LAYERING RULES

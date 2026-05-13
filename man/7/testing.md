@@ -36,7 +36,8 @@ changes.
 
 Current Phase 1 coverage spans the core filesystem and text utilities plus
 compiler, math, platform, archive/compression, checksum, ELF inspection,
-process-state, metadata, and basic local network/build contracts.
+process-state, metadata, image/C2PA, XML, daemon, service, TLS-backed network,
+and basic local network/build contracts.
 
 ## CONTRIBUTOR NOTES
 
@@ -58,8 +59,8 @@ process-state, metadata, and basic local network/build contracts.
 The hosted test path is the broadest behavior check because it is fast and
 exercises most user-visible behavior. The freestanding suite is intentionally
 smaller, but it verifies that representative tools still run with the raw-Linux
-backend, direct syscalls, static PIE linking, stack canaries, and the minimal
-startup path.
+backend, direct syscalls, static PIE linking, the freestanding stack-guard
+startup path, and any stack-protector instrumentation enabled for the build.
 
 A good rule of thumb is:
 

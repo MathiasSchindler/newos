@@ -49,19 +49,23 @@ local build path used by `make` and, by default, `make freestanding`.
 - `identity.c` — users, groups, sessions, and related lookups
 - `net.c` — sockets plus helpers for tools such as `ping` and `netcat`
 - `time.c` — clocks, formatting, uptime, and sleep helpers
+- `tls.c` — platform-facing TLS client glue backed by the shared TLS code
 
 ### Freestanding Linux layer (`src/platform/linux`)
 
 Used by `make freestanding`. This layer talks to the Linux kernel ABI directly
 and does not depend on libc.
 
-- `fs.c`, `process.c`, `identity.c`, `net.c`, `time.c` mirror the hosted
-  interface using syscalls
+- `fs.c`, `process.c`, `identity.c`, `net.c`, `time.c`, and `tls.c` mirror the
+  hosted interface using syscalls and freestanding shared code
+- `stack_guard.c` — stack-canary guard initialization and failure handling for
+  freestanding binaries when compiler instrumentation is enabled
 
 ### Architecture glue (`src/arch/*/linux`)
 
 - `crt0.S` — minimal process startup for the freestanding binaries
 - `syscall.h` — inline syscall helpers for the selected Linux target ABI
+- `syscall_stubs.S` — x86-64 out-of-line syscall entry helpers used by the freestanding platform layer
 
 ## CONTRIBUTOR BOUNDARIES
 
@@ -77,7 +81,7 @@ and does not depend on libc.
 - Hosted development assumes a POSIX environment; the true freestanding target currently focuses on Linux/AArch64 and Linux/x86-64
 - On macOS, the project currently favors local hosted binaries over a separate Darwin syscall-only userland target
 - The abstraction is intentionally small; there is no threading or async event layer
-- Networking support is practical but still basic compared with a full libc or shell environment
+- Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment
 
 ## SEE ALSO
 

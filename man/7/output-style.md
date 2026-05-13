@@ -6,10 +6,11 @@ output-style - shared terminal color and emphasis behavior for newos tools
 
 ## DESCRIPTION
 
-Several interactive tools in the project can now use a shared styling layer from
-`src/shared` to emit ANSI terminal colors and bold text when the output stream
-supports it. This keeps color behavior consistent across tools such as `ls`,
-`grep`, `diff`, and `make`.
+Several tools in the project can use the shared styling helpers in
+`src/shared/tool_util.h` to emit ANSI terminal colors and bold text when the
+output stream supports it. This keeps color behavior consistent across tools
+such as `ls`, `grep`, `diff`, `make`, and `wtf`, and also keeps common usage and
+error messages readable when color is disabled.
 
 The shared policy is:
 
@@ -41,4 +42,4 @@ The shared policy is:
 
 ## SEE ALSO
 
-ls, grep, diff, make, sh
+ls, grep, diff, make, sh, wtf

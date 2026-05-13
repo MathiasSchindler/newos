@@ -38,7 +38,8 @@ The freestanding build is the Linux target without libc.
 - writes binaries to `build/freestanding-linux-$(TARGET_ARCH)/`
 - uses `src/platform/linux/` plus `src/arch/$(TARGET_ARCH)/linux/`
 - links with the minimal `crt0.S` entry path and direct syscalls
-- defaults to static PIE output with stack protector instrumentation
+- defaults to static PIE output with section garbage collection and size-oriented optimization
+- includes freestanding stack-canary runtime support, with compiler stack-protector instrumentation controlled by `FREESTANDING_STACK_CFLAGS`
 - is where ABI, start-up, and portability mistakes become visible
 
 ## SELF-HOSTED BUILD
@@ -120,13 +121,14 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
   passing hosted build does not guarantee the syscall-only target is also
   healthy.
 - If a new shared runtime helper is added, make sure any explicit special-case
-  build rules and compiler-driver source lists stay in sync.
+  build rules and `src/compiler/source_manifest.h` stay in sync; the Makefile
+  derives several source groups from that manifest.
 - Header dependency tracking is lightweight. If shared headers or build flags
   change, prefer `make clean && make host`.
 
 ## LIMITATIONS
 
-- The Linux freestanding build currently assumes Clang plus `lld`
+- The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
 - On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks

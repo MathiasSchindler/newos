@@ -45,7 +45,8 @@ The repository already contains the following relevant building blocks:
 - a small hosted static HTTP daemon under `src/tools/httpd/`
 - a small config-driven service supervisor under `src/tools/service/`
 - shared crypto code in `src/shared/crypto/`
-- shared server-oriented config and log helpers under `src/shared/`
+- shared TLS client code in `src/shared/tls/`, surfaced through `src/platform/*/tls.c`
+- shared server-oriented config and escaped log helpers under `src/shared/`
 - hosted macOS compatibility through the POSIX backend, as described in `platform(7)` and `project-layout(7)`
 
 In practical terms, this means the project already has enough runtime and platform surface to support client networking, polling, subprocess management, and a substantial portion of the cryptographic groundwork.
@@ -54,9 +55,8 @@ In practical terms, this means the project already has enough runtime and platfo
 
 The following are still design targets rather than finished repository subsystems:
 
-- no `httpsd` daemon yet
+- no `httpsd` daemon yet and no server-side TLS acceptor yet
 - no PTY-backed SSH session subsystem yet
-- no shared `src/shared/tls/` subsystem yet
 - no shared `src/shared/http/` subsystem yet
 - no small server-oriented account database layer yet
 - no full standalone `sv`-style dependency manager, launchd integration layer, or richer service-control stack yet
@@ -89,6 +89,8 @@ The current repository already provides the core layers needed for server work:
 - `src/shared/runtime/` for memory, string, parse, and I/O support
 - `src/shared/tool_io.c`, `tool_cli.c`, `tool_fs.c`, and `tool_path.c` for cross-tool helper logic
 - `src/shared/crypto/` for reusable cryptographic primitives
+- `src/shared/tls/` for current client-side TLS state machines and records
+- `src/shared/simple_config.c` and `src/shared/server_log.c` for reusable daemon configuration and escaped logging
 - `src/shared/platform.h` for the platform boundary
 - `src/platform/posix/` for hosted development and testing
 - `src/platform/linux/` for freestanding Linux support
@@ -125,9 +127,11 @@ Anything that depends on OS interfaces still belongs behind `platform.h`, backed
 - `src/platform/posix/net.c`
 - `src/platform/posix/process.c`
 - `src/platform/posix/fs.c`
+- `src/platform/posix/tls.c`
 - `src/platform/linux/net.c`
 - `src/platform/linux/process.c`
 - `src/platform/linux/fs.c`
+- `src/platform/linux/tls.c`
 
 If a capability matters in both hosted and freestanding builds, add it to the platform surface and implement both backends, as described in `platform(7)`.
 
@@ -178,9 +182,11 @@ A key design decision is that some code should be treated as shared from the out
 
 ### TLS
 
-A shared TLS subsystem does **not** exist yet in the tree. If HTTPS is implemented, the TLS logic should live in a shared subsystem from day one, for example under `src/shared/tls/`.
+A shared TLS subsystem now exists in the tree under `src/shared/tls/`, currently focused on client-side TLS 1.2/1.3 use through the platform TLS interface. Tools such as `wtf` and `mail` build against it through the shared platform layer.
 
-That shared subsystem should present a narrow API and own:
+If HTTPS serving is implemented, it should extend this shared TLS area rather than creating daemon-private TLS code. The missing piece is not “TLS files exist at all”; it is the server-side acceptor, certificate/key loading path, and event-loop-friendly API surface needed by a daemon.
+
+That server-capable TLS surface should present a narrow API and own:
 
 - record parsing and emission
 - handshake state
@@ -208,7 +214,7 @@ On hosted POSIX and macOS builds, user and group lookup already exist through th
 
 ### Logging
 
-A shared server logging subsystem does not yet exist. Log escaping is a cross-daemon security property and should not be reimplemented independently inside each `*_log.c` file. A small shared logging layer under `src/shared/` is justified from day one if the first daemons are added, so that:
+A small shared server logging layer now exists as `src/shared/server_log.*`, and `httpd` already uses it for escaped log detail output. Future daemons should reuse and extend that layer rather than reimplementing ad-hoc escaping inside each `*_log.c` file, so that:
 
 - untrusted input is escaped consistently
 - log injection handling is uniform
@@ -293,15 +299,18 @@ Code currently present under `src/shared/crypto/` includes at least:
 - HMAC-SHA256
 - HKDF-SHA256
 - RSA
+- P-256 and P-384 ECDSA support used by certificate and C2PA/TLS paths
+- AES-128 and AES-128-GCM
 - Curve25519 / X25519
 - Ed25519
 - ChaCha20-Poly1305
+- X.509 certificate parsing and verification helpers
 - SSH-specific KDF support
 
 What is still missing is not “crypto exists at all”, but rather:
 
 - full server-facing TLS subsystem structure
-- any still-needed cipher or compatibility primitives such as AES-GCM if the chosen interoperability target requires them
+- any still-needed cipher or compatibility primitives for the chosen interoperability target beyond the current AES-GCM and ChaCha20-Poly1305 base
 - consistent build wiring so every primitive that should be generally reusable is actually included where needed
 - broader protocol-level verification and interop testing
 
@@ -313,7 +322,7 @@ For all such primitives, passing test vectors is necessary but not sufficient. T
 
 ## PLATFORM INTERFACE EXPECTATIONS
 
-The current `platform.h` boundary is the correct place for OS interaction, and it already provides useful server-adjacent pieces today, including TCP connect, polling, DNS, DHCP, ping, process spawning, waiting, environment handling, and basic file operations across the hosted POSIX and freestanding Linux backends.
+The current `platform.h` boundary is the correct place for OS interaction, and it already provides useful server-adjacent pieces today, including TCP connect, TLS client connection support, polling, DNS, DHCP, ping, process spawning, waiting, environment handling, and basic file operations across the hosted POSIX and freestanding Linux backends.
 
 What serious server work will likely still require is some platform growth.
 
@@ -381,16 +390,19 @@ The repository already contains an SSH client organized as:
 - `src/tools/ssh/ssh_client_auth.c`
 - `src/tools/ssh/ssh_client_channel.c`
 
-An SSH server should follow the same ownership rule, but as a separate daemon:
+The current SSH server follows the same ownership rule as a separate daemon, but is still compact:
 
 - `src/tools/sshd.c`
-- `src/tools/sshd/sshd_main.c`
-- `src/tools/sshd/sshd_transport.c`
-- `src/tools/sshd/sshd_kex.c`
-- `src/tools/sshd/sshd_auth.c`
-- `src/tools/sshd/sshd_channel.c`
-- `src/tools/sshd/sshd_keys.c`
-- optionally `src/tools/sshd/sshd_pty.c`
+- `src/tools/sshd/sshd_server.c`
+- `src/tools/sshd/sshd.h`
+
+If it grows PTY sessions, stronger privilege separation, richer auth, or more channel types, it should split along the previously intended boundaries:
+
+- transport and key exchange
+- authentication and authorization
+- channel/session management
+- key and account loading
+- PTY handling where supported
 
 ### Design commitment
 
@@ -559,7 +571,7 @@ The following outlines match the current repository style and can be used as the
 
 Public entry point:
 
-- `src/tools/service.c` or `src/tools/sv.c`
+- `src/tools/service.c`
 
 Private layout:
 
@@ -587,9 +599,9 @@ Private layout:
 
 Shared dependencies planned from the outset:
 
-- `src/shared/tls/` for TLS mechanics
+- `src/shared/tls/` for TLS mechanics, extended with server-side state where needed
 - `src/shared/http/` if generic request / header parsing becomes shared enough to justify it
-- `src/shared/log/` for escaping and common logging behavior
+- `src/shared/server_log.*` for escaping and common logging behavior
 
 ### SSH daemon skeleton
 
@@ -597,7 +609,12 @@ Public entry point:
 
 - `src/tools/sshd.c`
 
-Private layout:
+Current private layout:
+
+- `src/tools/sshd/sshd_server.c`
+- `src/tools/sshd/sshd.h`
+
+Possible larger private layout as the daemon grows:
 
 - `src/tools/sshd/sshd_main.c`
 - `src/tools/sshd/sshd_transport.c`
@@ -641,13 +658,13 @@ Private layout:
 The implementation order in the current repository should be:
 
 1. extend `platform.h` and `src/platform/*` only where server work genuinely requires it
-2. decide the account / identity story
-3. add a small shared logging and config foundation if multiple daemons are expected
-4. add a small service supervisor with explicit deferred scope
-5. add `sshd` with a clear auth and session-isolation model
-6. add shared TLS support as a first-class subsystem
+2. decide the account / identity story beyond the current minimal login and SSH daemon paths
+3. keep the existing shared config and server logging helpers small while extending them only for real daemon needs
+4. deepen the existing `service` supervisor with explicit deferred scope
+5. harden `sshd` with a clearer auth, key, PTY, and session-isolation model
+6. extend the existing shared TLS code with server-side state where HTTPS requires it
 7. budget the crypto engineering needed for modern TLS / SSH primitives and verification
-8. build `httpsd` on top of that shared TLS layer
+8. build `httpsd` on top of the shared TLS and server logging layers
 9. only after real reuse emerges, extract further shared HTTP or daemon helpers
 
 Testing and observability should be treated as deferred only in the sense of staging, not in the sense of being optional. Parser fuzzing, crypto vector coverage, protocol interop checks, and simple runtime counters are all part of making these daemons trustworthy.

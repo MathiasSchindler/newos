@@ -19,18 +19,33 @@ more complete stand-alone system.
 The project already has working coverage across several major tool families:
 
 - shell and scripting: `sh`, `test`, the bracket alias for `test`, `env`,
-  `printenv`, and `timeout`
+  `printenv`, `timeout`, `which`, `true`, `false`, and `expr`
 - filesystem and paths: `ls`, `cp`, `mv`, `rm`, `mkdir`, `mknod`, `ln`,
-  `chmod`, `chown`, `stat`, `du`, `df`, `touch`, `realpath`, `readlink`
+  `chmod`, `chown`, `chgrp`, `stat`, `du`, `df`, `touch`, `realpath`,
+  `readlink`, `basename`, `dirname`, `mktemp`, `sync`, and `truncate`
 - text and streams: `cat`, `grep`, `sed`, `awk`, `sort`, `cut`, `tr`, `wc`,
-  `head`, `tail`, `join`, `split`, `xargs`, `tee`, `fmt`, `column`
+  `head`, `tail`, `join`, `comm`, `paste`, `split`, `csplit`, `xargs`, `tee`,
+  `fmt`, `fold`, `column`, `nl`, `tac`, `rev`, `uniq`, `seq`, `shuf`, `expand`,
+  `unexpand`, `ed`, `bc`, `ripgrep`, and `rg`
 - system and reporting: `init`, `getty`, `login`, `dmesg`, `logger`, `stty`,
-  `ps`, `pstree`, `free`, `uptime`, `who`, `users`, `groups`, `id`,
-  `hostname`, `uname`, `date`, `sleep`, `watch`
+  `ps`, `pstree`, `top`, `free`, `uptime`, `who`, `users`, `groups`, `id`,
+  `whoami`, `hostname`, `uname`, `date`, `sleep`, `watch`, `time`, `kill`,
+  `pgrep`, `pkill`, `mount`, `umount`, and `shutdown`
 - network and transfer: `ping`, `ping6`, `ip`, `dhcp`, `nslookup`, `dig`,
-  `netcat`, `ssh`, `wget`, `httpd`, `service`
-- archive, patching, and build: `tar`, `gzip`, `gunzip`, `patch`, `make`, `ncc`
-- media metadata: `file`, `imginfo`, `imgcheck`, and `imgmeta` for lightweight image/file inspection, validation, and metadata handling
+  `netcat`, `ssh`, `sshd`, `wget`, `wtf`, `mail`, `httpd`, and `service`
+- archive, patching, and build: `tar`, `gzip`, `gunzip`, `bzip2`, `bunzip2`,
+  `xz`, `unxz`, `ar`, `patch`, `make`, and `ncc`
+- binary and file inspection: `file`, `strings`, `readelf`, `objdump`, `strip`,
+  `dd`, `od`, and `hexdump`
+- media metadata: `imginfo`, `imgcheck`, `imgmeta`, and `c2pa` for lightweight
+  image/file inspection, validation, metadata handling, and C2PA manifest checks
+- XML processing: `xmltokens`, `xmlcheck`, `xmlfmt`, `xmlmin`, `xmlget`,
+  `xmlcut`, `xmlgrep`, `xmlcount`, `xmlsafe`, `xmlstrip`, `xml2lines`,
+  `xmlcanon`, `xmlnscheck`, `xmlvalidate`, `xmlrename`, `xmldel`, `xmlset`,
+  `xml2json`, `xml2yaml`, `xml2csv`, `xmldiff`, `xmlstats`, `xmluniq`,
+  `xmlsort`, `xmljoin`, `xmlsplit`, `xmltail`, `xmlhead`, `xmlquery`,
+  `xmlrecode`, `xmldtdapply`, and `xmldtdinfo`
+- interactive tools: `less`, `more`, and `editor`
 
 That means the repo is already well beyond a bootstrap shell and a handful of
 toy commands: it has enough surface for real development, testing, and tool
@@ -73,9 +88,17 @@ multiple tools can reuse:
 
 - **tool_util.h** - common tool argument parsing and error reporting
 
+- **simple_config.{c,h}** and **server_log.{c,h}** - small shared config and
+  escaped logging helpers used by `httpd`, `service`, and related daemon-style
+  tools.
+
+- **tui.{c,h}** - terminal UI helpers for interactive full-screen and mail/editor
+  workflows.
+
 - **image/** - safe metadata probing and structural validation for common image
   containers, currently used by `imginfo`, `imgcheck`, and `imgmeta` without
   decoding pixels or allocating image-sized buffers for normal metadata probes.
+  C2PA helpers build on the same image and crypto base where appropriate.
 
 - **compression/** - reusable compression-adjacent primitives shared by archive,
   compression, and media tools. CRC32 lives here so gzip/xz/bzip-style checks and
@@ -83,8 +106,9 @@ multiple tools can reuse:
   stored-block encoding lives here for metadata writers that need a valid zlib
   stream without full deflate compression.
 
-Other shared components include archive utilities, crypto, hash functions,
-regex, path manipulation, and shell infrastructure.
+Other shared components include archive utilities, crypto, TLS, hash functions,
+regex, path manipulation, XML parsing/streaming/DTD support, and shell
+infrastructure.
 
 ## HIGH-VALUE REMAINING GAPS
 
@@ -92,10 +116,11 @@ For a fuller self-hosted or stand-alone OS environment, the most valuable
 missing tools are now concentrated in system bringup and administration:
 
 - account-management tools such as `passwd`, `su`, and shadow-file helpers
-- richer service supervision and boot orchestration around `init` and `service`
+- richer service supervision, dependency handling, and boot orchestration around `init` and `service`
 - deeper DHCP renewal, IPv6 address changes, and network autoconfiguration
-- package/archive maintenance tools beyond the current tar/gzip/patch base
+- package/archive maintenance tools beyond the current tar/compression/patch base
 - auditing and diagnostics around permissions, sessions, and startup logs
+- broader mail, TLS, SSH server, and service-management hardening for long-lived hosted or freestanding use
 
 Those are now more strategically important than adding yet another text filter,
 because they unlock more of the "boot into the project and live there" story.
