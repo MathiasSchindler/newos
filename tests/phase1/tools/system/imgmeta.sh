@@ -22,6 +22,13 @@ assert_file_contains "$WORK_DIR/show-jpeg.out" 'orientation: 6' "imgmeta show di
 assert_file_contains "$WORK_DIR/show-c2pa-jpeg.out" 'metadata: c2pa' "imgmeta show did not report C2PA metadata"
 assert_file_contains "$WORK_DIR/show-c2pa-jpeg.out" 'c2pa-carrier: JPEG APP11 JUMBF' "imgmeta show did not report JPEG C2PA carrier"
 
+if [ -f /home/mathias/c2pa/2.2/image/good/png/a.png ]; then
+    "$ROOT_DIR/build/imgmeta" show /home/mathias/c2pa/2.2/image/good/png/a.png > "$WORK_DIR/show-c2pa-corpus-png.out"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png.out" 'c2pa-cbor-boxes: 14' "imgmeta show did not parse C2PA CBOR boxes from corpus PNG"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png.out" 'c2pa-cose-signatures: 3' "imgmeta show did not parse C2PA COSE signatures from corpus PNG"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png.out" 'c2pa-x509-certificates: 6' "imgmeta show did not count C2PA X.509 certificates from corpus PNG"
+fi
+
 "$ROOT_DIR/build/imgmeta" strip -o "$WORK_DIR/clean.png" "$WORK_DIR/meta.png"
 "$ROOT_DIR/build/imgcheck" --plain "$WORK_DIR/clean.png" > "$WORK_DIR/clean-png-check.out"
 assert_file_contains "$WORK_DIR/clean-png-check.out" 'valid PNG image' "imgmeta strip did not leave a valid PNG"

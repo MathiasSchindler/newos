@@ -63,6 +63,14 @@ assert_file_contains "$WORK_DIR/c2pa-jpeg-details.txt" 'c2pa-claims: 1' "imginfo
 assert_file_contains "$WORK_DIR/c2pa-jpeg-json.txt" '"c2pa":{"present":true' "imginfo --json did not report C2PA presence"
 assert_file_contains "$WORK_DIR/c2pa-jpeg-json.txt" '"signature_count":1' "imginfo --json did not count C2PA signatures"
 
+if [ -f /home/mathias/c2pa/2.2/image/good/jpeg/a.jpg ]; then
+    "$ROOT_DIR/build/imginfo" --details /home/mathias/c2pa/2.2/image/good/jpeg/a.jpg > "$WORK_DIR/c2pa-corpus-jpeg-details.txt"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-cbor-boxes: 20' "imginfo did not parse C2PA CBOR boxes from corpus JPEG"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-cose-signatures: 4' "imginfo did not parse C2PA COSE signatures from corpus JPEG"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-x509-certificates: 8' "imginfo did not count C2PA X.509 certificates from corpus JPEG"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-jpeg-details.txt" 'c2pa-signature-verification: unsupported' "imginfo should report unsupported C2PA signature verification"
+fi
+
 "$ROOT_DIR/build/imginfo" --details "$WORK_DIR/sample.webp" > "$WORK_DIR/webp-details.txt"
 assert_file_contains "$WORK_DIR/webp-details.txt" 'variant: extended WebP' "imginfo --details did not print WebP variant"
 assert_file_contains "$WORK_DIR/webp-details.txt" 'properties: alpha' "imginfo --details did not print WebP alpha property"

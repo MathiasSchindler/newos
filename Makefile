@@ -77,7 +77,7 @@ COMPILER_IMPL_INCLUDES := \
 	src/compiler/targets/target_info.h
 SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"')
 SHARED_DEPS := $(SHARED_SOURCES) src/compiler/source_manifest.h
-IMAGE_SOURCES := $(shell grep -oE '"src/shared/image/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
+IMAGE_SOURCES := $(shell grep -oE '"src/shared/(image/[^"]+|crypto/sha256)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 IMAGE_TOOLS := imginfo imgcheck imgmeta
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HASH_SOURCES := \

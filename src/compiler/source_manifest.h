@@ -82,6 +82,7 @@
     X("src/shared/image/webp.c") \
     X("src/shared/image/bmp.c") \
     X("src/shared/image/c2pa.c") \
+    X("src/shared/crypto/sha256.c") \
     X("src/shared/image/validate.c")
 
 /* ── crypto primitives ───────────────────────────────────────────────────── */

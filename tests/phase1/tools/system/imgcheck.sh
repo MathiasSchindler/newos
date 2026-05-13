@@ -26,7 +26,7 @@ printf 'RIFF\056\000\000\000WEBPVP8X\012\000\000\000\002\000\000\000\000\000\000
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png${tab}png${tab}ok${tab}-${tab}valid PNG image" "imgcheck did not accept valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --verbose "$WORK_DIR/valid.png")" "$WORK_DIR/valid.png: OK (png): valid PNG image" "imgcheck --verbose did not describe valid PNG"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.jpg")" "$WORK_DIR/sample.jpg${tab}jpeg${tab}ok${tab}-${tab}valid JPEG image" "imgcheck did not accept valid JPEG"
-assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/c2pa.jpg")" "$WORK_DIR/c2pa.jpg${tab}jpeg${tab}ok${tab}-${tab}valid JPEG image${tab}recognized C2PA manifest store" "imgcheck did not report C2PA status"
+assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/c2pa.jpg")" "$WORK_DIR/c2pa.jpg${tab}jpeg${tab}ok${tab}-${tab}valid JPEG image${tab}C2PA markers found; manifest store not recognized" "imgcheck did not report C2PA status"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.gif")" "$WORK_DIR/sample.gif${tab}gif${tab}ok${tab}-${tab}valid GIF image" "imgcheck did not accept valid GIF"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.bmp")" "$WORK_DIR/sample.bmp${tab}bmp${tab}ok${tab}-${tab}valid BMP image and pixel array" "imgcheck did not accept valid BMP"
 assert_text_equals "$($ROOT_DIR/build/imgcheck --plain "$WORK_DIR/sample.tiff")" "$WORK_DIR/sample.tiff${tab}tiff${tab}ok${tab}-${tab}valid TIFF header and first IFD" "imgcheck did not validate TIFF first IFD"
@@ -46,6 +46,14 @@ assert_file_contains "$WORK_DIR/valid-json.out" '"valid":true' "imgcheck --json 
 assert_file_contains "$WORK_DIR/valid-json.out" '"failure_offset":null' "imgcheck --json did not report null success offset"
 "$ROOT_DIR/build/imgcheck" --json "$WORK_DIR/c2pa.jpg" > "$WORK_DIR/c2pa-json.out"
 assert_file_contains "$WORK_DIR/c2pa-json.out" '"c2pa":{"present":true' "imgcheck --json did not report C2PA presence"
+
+if [ -f /home/mathias/c2pa/2.2/image/good/jpeg/a.jpg ]; then
+    "$ROOT_DIR/build/imgcheck" --json /home/mathias/c2pa/2.2/image/good/jpeg/a.jpg > "$WORK_DIR/c2pa-corpus-json.out"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-json.out" '"cbor_valid":true' "imgcheck --json did not report valid C2PA CBOR"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-json.out" '"cose_valid":true' "imgcheck --json did not report valid C2PA COSE"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-json.out" '"signature_algorithm":"ES256"' "imgcheck --json did not report C2PA signature algorithm"
+    assert_file_contains "$WORK_DIR/c2pa-corpus-json.out" '"trust_validation_supported":false' "imgcheck --json should report unsupported C2PA trust validation"
+fi
 
 mkdir "$WORK_DIR/nested"
 cp "$WORK_DIR/valid.png" "$WORK_DIR/nested/inner.png"

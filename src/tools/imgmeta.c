@@ -246,6 +246,16 @@ static int show_path(const char *path) {
         rt_write_line(1, info.c2pa.status);
         rt_write_cstr(1, "  c2pa-carrier: ");
         rt_write_line(1, info.c2pa.carrier);
+        if (info.c2pa.signature_algorithm != 0) {
+            rt_write_cstr(1, "  c2pa-signature-algorithm: ");
+            rt_write_line(1, info.c2pa.signature_algorithm);
+        }
+        rt_write_cstr(1, "  c2pa-boxes: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.box_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-cbor-boxes: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.cbor_box_count);
+        rt_write_char(1, '\n');
         rt_write_cstr(1, "  c2pa-manifests: ");
         rt_write_uint(1, (unsigned long long)info.c2pa.manifest_count);
         rt_write_char(1, '\n');
@@ -255,6 +265,18 @@ static int show_path(const char *path) {
         rt_write_cstr(1, "  c2pa-signatures: ");
         rt_write_uint(1, (unsigned long long)info.c2pa.signature_count);
         rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-cose-signatures: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.cose_signature_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-x509-certificates: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.x509_cert_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-content-hash: ");
+        rt_write_line(1, info.c2pa.content_hash_matched ? "match" : (info.c2pa.content_hash_mismatched ? "mismatch" : (info.c2pa.content_hash_checked ? "checked" : "not checked")));
+        rt_write_cstr(1, "  c2pa-signature-verification: ");
+        rt_write_line(1, info.c2pa.signature_supported ? (info.c2pa.signature_valid ? "valid" : "invalid") : "unsupported");
+        rt_write_cstr(1, "  c2pa-trust-validation: ");
+        rt_write_line(1, info.c2pa.trust_supported ? (info.c2pa.trust_valid ? "trusted" : "untrusted") : "unsupported");
     }
     if ((info.flags & IMAGE_INFO_HAS_ORIENTATION) != 0U) {
         rt_write_cstr(1, "  orientation: ");

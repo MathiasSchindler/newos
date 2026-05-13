@@ -82,9 +82,11 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 `looping`, `orientation`, and `c2pa`.
 
 When C2PA metadata is present, `--details` prints a structural summary with the
-carrier, JUMBF box count, manifest token count, claim count, assertion-store
-count, signature count, and ingredient count. JSON output includes the same
-summary in a `c2pa` object.
+carrier, signature algorithm, JUMBF box count, CBOR box count, manifest count,
+claim count, assertion-store count, COSE signature count, X.509 certificate
+count, content-hash status, signature-verification status, trust-validation
+status, and ingredient count. JSON output includes the same summary in a `c2pa`
+object.
 
 ## LIMITATIONS
 
@@ -96,10 +98,12 @@ summary in a `c2pa` object.
 - Metadata discovery is intentionally shallow; EXIF payloads, ICC profiles, XMP
   packets, PNG text chunks, and nested TIFF tag directories are detected or
   summarized rather than fully decoded into individual fields.
-- C2PA support is structural metadata analysis. It recognizes PNG `caBX` chunks,
-  JPEG APP11 JUMBF C2PA segments, and embedded C2PA/JUMBF markers in other
-  recognized images, but it does not perform cryptographic signature, certificate,
-  claim, or content-binding validation.
+- C2PA support parses JUMBF boxes, validates definite-length CBOR structure,
+  recognizes COSE_Sign1 signatures, reports embedded X.509 certificate blobs,
+  and attempts SHA-256 content-hash checks for visible hash-data bindings.
+  Cryptographic verification of ES256/P-256 signatures, certificate chain
+  building, trust-anchor policy, and full claim conformance validation are not
+  implemented yet and are reported as unsupported.
 - EXIF orientation is read from the first TIFF-style image file directory only;
   maker notes and deeper metadata trees are not interpreted.
 - Filename-extension checks are heuristic. Extension mismatches are warnings
