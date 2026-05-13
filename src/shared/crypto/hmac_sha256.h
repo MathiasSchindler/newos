@@ -4,9 +4,18 @@
 #include <stddef.h>
 
 #include "crypto/sha256.h"
+#include "crypto/sha512.h"
 
 void crypto_hmac_sha256(
     unsigned char out[CRYPTO_SHA256_DIGEST_SIZE],
+    const unsigned char *key,
+    size_t key_len,
+    const unsigned char *data,
+    size_t data_len
+);
+
+void crypto_hmac_sha384(
+    unsigned char out[CRYPTO_SHA384_DIGEST_SIZE],
     const unsigned char *key,
     size_t key_len,
     const unsigned char *data,

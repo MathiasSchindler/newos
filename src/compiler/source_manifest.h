@@ -89,14 +89,33 @@
 /* ── crypto primitives ───────────────────────────────────────────────────── */
 
 #define FOREACH_CRYPTO_SOURCE(X) \
+    X("src/shared/crypto/aes128.c") \
+    X("src/shared/crypto/aes128_gcm.c") \
     X("src/shared/crypto/crypto_util.c") \
+    X("src/shared/crypto/curve25519.c") \
     X("src/shared/crypto/md5.c") \
     X("src/shared/crypto/sha256.c") \
     X("src/shared/crypto/sha512.c") \
     X("src/shared/crypto/hmac_sha256.c") \
     X("src/shared/crypto/hkdf_sha256.c") \
     X("src/shared/crypto/p256.c") \
-    X("src/shared/crypto/rsa.c")
+    X("src/shared/crypto/rsa.c") \
+    X("src/shared/crypto/x509.c")
+
+/* ── TLS client implementation ──────────────────────────────────────────── */
+
+#define FOREACH_TLS_SOURCE(X) \
+    X("src/shared/tls/tls12_client.c") \
+    X("src/shared/tls/tls13.c") \
+    X("src/shared/tls/tls13_client.c") \
+    X("src/shared/tls/tls13_handshake.c") \
+    X("src/shared/tls/tls13_record.c") \
+    X("src/shared/tls/tls13_transcript.c")
+
+/* ── terminal UI helpers ────────────────────────────────────────────────── */
+
+#define FOREACH_TUI_SOURCE(X) \
+    X("src/shared/tui.c")
 
 /* ── hash utilities (hash_util + crypto) ────────────────────────────────── */
 

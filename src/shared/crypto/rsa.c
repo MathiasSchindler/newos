@@ -1,8 +1,10 @@
 #include "crypto/rsa.h"
 #include "crypto/crypto_util.h"
 #include "crypto/sha256.h"
+#include "crypto/sha512.h"
+#include "runtime.h"
 
-#define RSA_BN_MAX_WORDS 80U
+#define RSA_BN_MAX_WORDS 320U
 
 typedef struct {
     unsigned int words[RSA_BN_MAX_WORDS];
@@ -516,6 +518,223 @@ static void rsa_mgf1_sha256(unsigned char *out, size_t out_len, const unsigned c
 
     crypto_secure_bzero(input, sizeof(input));
     crypto_secure_bzero(digest, sizeof(digest));
+}
+
+static void rsa_mgf1_hash(unsigned char *out, size_t out_len, const unsigned char *seed, size_t seed_len, int hash_id) {
+    unsigned char input[CRYPTO_SHA512_DIGEST_SIZE + 4U];
+    unsigned char digest[CRYPTO_SHA512_DIGEST_SIZE];
+    size_t digest_len = hash_id == CRYPTO_RSA_HASH_SHA384 ? CRYPTO_SHA384_DIGEST_SIZE : CRYPTO_SHA256_DIGEST_SIZE;
+    unsigned int counter = 0U;
+    size_t done = 0U;
+    size_t i;
+
+    if (seed_len > CRYPTO_SHA512_DIGEST_SIZE) {
+        return;
+    }
+    memcpy(input, seed, seed_len);
+    while (done < out_len) {
+        input[seed_len + 0U] = (unsigned char)(counter >> 24U);
+        input[seed_len + 1U] = (unsigned char)(counter >> 16U);
+        input[seed_len + 2U] = (unsigned char)(counter >> 8U);
+        input[seed_len + 3U] = (unsigned char)counter;
+        if (hash_id == CRYPTO_RSA_HASH_SHA384) {
+            crypto_sha384_hash(input, seed_len + 4U, digest);
+        } else {
+            crypto_sha256_hash(input, seed_len + 4U, digest);
+        }
+        for (i = 0; i < digest_len && done < out_len; ++i) {
+            out[done++] = digest[i];
+        }
+        counter += 1U;
+    }
+    crypto_secure_bzero(input, sizeof(input));
+    crypto_secure_bzero(digest, sizeof(digest));
+}
+
+static int rsa_public_apply(
+    unsigned char *encoded,
+    size_t encoded_cap,
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *signature,
+    size_t signature_len
+) {
+    CryptoRsaBigNum n;
+    CryptoRsaBigNum e;
+    CryptoRsaBigNum s;
+    CryptoRsaBigNum m;
+
+    if (encoded == 0 || modulus == 0 || exponent == 0 || signature == 0 ||
+        modulus_len == 0U || modulus_len > encoded_cap || modulus_len > CRYPTO_RSA_MAX_MODULUS_SIZE ||
+        exponent_len == 0U || signature_len != modulus_len) {
+        return -1;
+    }
+    bn_from_bytes(&n, modulus, modulus_len);
+    bn_from_bytes(&e, exponent, exponent_len);
+    bn_from_bytes(&s, signature, signature_len);
+    if (bn_compare(&s, &n) >= 0) {
+        return -1;
+    }
+    bn_modexp(&m, &s, &e, &n);
+    bn_to_bytes(encoded, modulus_len, &m);
+    crypto_secure_bzero(&n, sizeof(n));
+    crypto_secure_bzero(&e, sizeof(e));
+    crypto_secure_bzero(&s, sizeof(s));
+    crypto_secure_bzero(&m, sizeof(m));
+    return 0;
+}
+
+static const unsigned char g_sha256_digest_info_prefix[] = {
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+    0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+    0x00, 0x04, 0x20
+};
+
+static const unsigned char g_sha384_digest_info_prefix[] = {
+    0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+    0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05,
+    0x00, 0x04, 0x30
+};
+
+int crypto_rsa_pkcs1_v15_verify_digest(
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *signature,
+    size_t signature_len,
+    const unsigned char *digest,
+    size_t digest_len,
+    int hash_id
+) {
+    unsigned char encoded[CRYPTO_RSA_MAX_MODULUS_SIZE];
+    const unsigned char *prefix = hash_id == CRYPTO_RSA_HASH_SHA384 ? g_sha384_digest_info_prefix : g_sha256_digest_info_prefix;
+    size_t prefix_len = hash_id == CRYPTO_RSA_HASH_SHA384 ? sizeof(g_sha384_digest_info_prefix) : sizeof(g_sha256_digest_info_prefix);
+    size_t expected_digest_len = hash_id == CRYPTO_RSA_HASH_SHA384 ? CRYPTO_SHA384_DIGEST_SIZE : CRYPTO_SHA256_DIGEST_SIZE;
+    size_t ps_len;
+    size_t i;
+
+    if (digest == 0 || digest_len != expected_digest_len || rsa_public_apply(encoded, sizeof(encoded), modulus, modulus_len, exponent, exponent_len, signature, signature_len) != 0) {
+        return -1;
+    }
+    if (modulus_len < 3U + 8U + prefix_len + digest_len || encoded[0] != 0x00U || encoded[1] != 0x01U) {
+        return -1;
+    }
+    ps_len = modulus_len - 3U - prefix_len - digest_len;
+    if (ps_len < 8U) {
+        return -1;
+    }
+    for (i = 0; i < ps_len; ++i) {
+        if (encoded[2U + i] != 0xffU) {
+            return -1;
+        }
+    }
+    if (encoded[2U + ps_len] != 0x00U || memcmp(encoded + 3U + ps_len, prefix, prefix_len) != 0 ||
+        !crypto_constant_time_equal(encoded + 3U + ps_len + prefix_len, digest, digest_len)) {
+        return -1;
+    }
+    return 0;
+}
+
+int crypto_rsa_pkcs1_v15_encrypt(
+    unsigned char *ciphertext,
+    size_t ciphertext_cap,
+    size_t *ciphertext_len,
+    const unsigned char *message,
+    size_t message_len,
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len
+) {
+    unsigned char encoded[CRYPTO_RSA_MAX_MODULUS_SIZE];
+    size_t ps_len;
+    size_t i;
+
+    if (ciphertext == 0 || ciphertext_len == 0 || message == 0 || modulus == 0 || exponent == 0 ||
+        modulus_len == 0U || modulus_len > sizeof(encoded) || modulus_len > ciphertext_cap || exponent_len == 0U || message_len + 11U > modulus_len) {
+        return -1;
+    }
+    ps_len = modulus_len - message_len - 3U;
+    encoded[0] = 0x00U;
+    encoded[1] = 0x02U;
+    for (i = 0; i < ps_len; ++i) {
+        unsigned char value = 0U;
+        while (value == 0U) {
+            if (crypto_random_bytes(&value, 1U) != 0) {
+                crypto_secure_bzero(encoded, sizeof(encoded));
+                return -1;
+            }
+        }
+        encoded[2U + i] = value;
+    }
+    encoded[2U + ps_len] = 0x00U;
+    memcpy(encoded + 3U + ps_len, message, message_len);
+    if (rsa_public_apply(ciphertext, ciphertext_cap, modulus, modulus_len, exponent, exponent_len, encoded, modulus_len) != 0) {
+        crypto_secure_bzero(encoded, sizeof(encoded));
+        return -1;
+    }
+    *ciphertext_len = modulus_len;
+    crypto_secure_bzero(encoded, sizeof(encoded));
+    return 0;
+}
+
+int crypto_rsa_pss_verify_digest(
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *signature,
+    size_t signature_len,
+    const unsigned char *digest,
+    size_t digest_len,
+    int hash_id
+) {
+    unsigned char encoded[CRYPTO_RSA_MAX_MODULUS_SIZE];
+    unsigned char db_mask[CRYPTO_RSA_MAX_MODULUS_SIZE];
+    unsigned char mprime[8U + CRYPTO_SHA512_DIGEST_SIZE + CRYPTO_SHA512_DIGEST_SIZE];
+    unsigned char h2[CRYPTO_SHA512_DIGEST_SIZE];
+    size_t hash_len = hash_id == CRYPTO_RSA_HASH_SHA384 ? CRYPTO_SHA384_DIGEST_SIZE : CRYPTO_SHA256_DIGEST_SIZE;
+    size_t db_len;
+    size_t ps_len;
+    size_t i;
+
+    if (digest == 0 || digest_len != hash_len || modulus_len < hash_len * 2U + 2U ||
+        rsa_public_apply(encoded, sizeof(encoded), modulus, modulus_len, exponent, exponent_len, signature, signature_len) != 0) {
+        return -1;
+    }
+    if (encoded[modulus_len - 1U] != 0xbcU) {
+        return -1;
+    }
+    db_len = modulus_len - hash_len - 1U;
+    rsa_mgf1_hash(db_mask, db_len, encoded + db_len, hash_len, hash_id);
+    for (i = 0; i < db_len; ++i) {
+        encoded[i] ^= db_mask[i];
+    }
+    encoded[0] &= 0x7fU;
+    ps_len = db_len - hash_len - 1U;
+    for (i = 0; i < ps_len; ++i) {
+        if (encoded[i] != 0U) {
+            return -1;
+        }
+    }
+    if (encoded[ps_len] != 0x01U) {
+        return -1;
+    }
+    memset(mprime, 0, 8U);
+    memcpy(mprime + 8U, digest, hash_len);
+    memcpy(mprime + 8U + hash_len, encoded + ps_len + 1U, hash_len);
+    if (hash_id == CRYPTO_RSA_HASH_SHA384) {
+        crypto_sha384_hash(mprime, 8U + hash_len + hash_len, h2);
+    } else {
+        crypto_sha256_hash(mprime, 8U + hash_len + hash_len, h2);
+    }
+    if (!crypto_constant_time_equal(h2, encoded + db_len, hash_len)) {
+        return -1;
+    }
+    return 0;
 }
 
 int crypto_rsa2048_pss_sha256_sign(

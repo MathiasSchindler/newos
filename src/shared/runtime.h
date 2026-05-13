@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 void *memcpy(void *dst, const void *src, size_t count);
+int memcmp(const void *left, const void *right, size_t count);
 void *memmove(void *dst, const void *src, size_t count);
 void *memset(void *buffer, int byte_value, size_t count);
 

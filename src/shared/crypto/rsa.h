@@ -4,6 +4,9 @@
 #include <stddef.h>
 
 #define CRYPTO_RSA2048_MODULUS_SIZE 256
+#define CRYPTO_RSA_MAX_MODULUS_SIZE 512
+#define CRYPTO_RSA_HASH_SHA256 256
+#define CRYPTO_RSA_HASH_SHA384 384
 
 typedef struct {
     unsigned char p[128];
@@ -32,6 +35,42 @@ int crypto_rsa2048_pss_sha256_sign(
     const unsigned char *message,
     size_t message_len,
     const CryptoRsaPrivateKey *key
+);
+
+int crypto_rsa_pkcs1_v15_verify_digest(
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *signature,
+    size_t signature_len,
+    const unsigned char *digest,
+    size_t digest_len,
+    int hash_id
+);
+
+int crypto_rsa_pss_verify_digest(
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *signature,
+    size_t signature_len,
+    const unsigned char *digest,
+    size_t digest_len,
+    int hash_id
+);
+
+int crypto_rsa_pkcs1_v15_encrypt(
+    unsigned char *ciphertext,
+    size_t ciphertext_cap,
+    size_t *ciphertext_len,
+    const unsigned char *message,
+    size_t message_len,
+    const unsigned char *modulus,
+    size_t modulus_len,
+    const unsigned char *exponent,
+    size_t exponent_len
 );
 
 #endif

@@ -122,6 +122,24 @@ void crypto_sha512_init(CryptoSha512Context *ctx) {
     ctx->buffer_len = 0U;
 }
 
+void crypto_sha384_init(CryptoSha512Context *ctx) {
+    if (ctx == 0) {
+        return;
+    }
+
+    ctx->state[0] = 0xcbbb9d5dc1059ed8ULL;
+    ctx->state[1] = 0x629a292a367cd507ULL;
+    ctx->state[2] = 0x9159015a3070dd17ULL;
+    ctx->state[3] = 0x152fecd8f70e5939ULL;
+    ctx->state[4] = 0x67332667ffc00b31ULL;
+    ctx->state[5] = 0x8eb44a8768581511ULL;
+    ctx->state[6] = 0xdb0c2e0d64f98fa7ULL;
+    ctx->state[7] = 0x47b5481dbefa4fa4ULL;
+    ctx->bit_count_low = 0ULL;
+    ctx->bit_count_high = 0ULL;
+    ctx->buffer_len = 0U;
+}
+
 void crypto_sha512_update(CryptoSha512Context *ctx, const unsigned char *data, size_t len) {
     size_t i = 0;
 
@@ -179,10 +197,28 @@ void crypto_sha512_final(CryptoSha512Context *ctx, unsigned char out[CRYPTO_SHA5
     }
 }
 
+void crypto_sha384_final(CryptoSha512Context *ctx, unsigned char out[CRYPTO_SHA384_DIGEST_SIZE]) {
+    unsigned char full[CRYPTO_SHA512_DIGEST_SIZE];
+
+    if (ctx == 0 || out == 0) {
+        return;
+    }
+    crypto_sha512_final(ctx, full);
+    memcpy(out, full, CRYPTO_SHA384_DIGEST_SIZE);
+}
+
 void crypto_sha512_hash(const unsigned char *data, size_t len, unsigned char out[CRYPTO_SHA512_DIGEST_SIZE]) {
     CryptoSha512Context ctx;
 
     crypto_sha512_init(&ctx);
     crypto_sha512_update(&ctx, data, len);
     crypto_sha512_final(&ctx, out);
+}
+
+void crypto_sha384_hash(const unsigned char *data, size_t len, unsigned char out[CRYPTO_SHA384_DIGEST_SIZE]) {
+    CryptoSha512Context ctx;
+
+    crypto_sha384_init(&ctx);
+    crypto_sha512_update(&ctx, data, len);
+    crypto_sha384_final(&ctx, out);
 }

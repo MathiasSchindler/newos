@@ -36,11 +36,11 @@ The term is URL-encoded and spaces are written as underscores.
 
 ## LIMITATIONS
 
-Wikipedia currently redirects the public HTTP endpoint to HTTPS. This project
-does not yet provide a TLS client layer for tools, so direct live Wikipedia
-lookups report that HTTPS is required. The tool is otherwise functional with
-plain HTTP Wikipedia-compatible summary endpoints, such as a local mirror or test
-server.
+Wikipedia currently redirects the public HTTP endpoint to HTTPS. The imported TLS
+client is available to `mail`, but `wtf` has not been switched to it yet; direct
+live Wikipedia lookups report that HTTPS is required. The tool is otherwise
+functional with plain HTTP Wikipedia-compatible summary endpoints, such as a
+local mirror or test server.
 
 The JSON parser is intentionally narrow: it extracts the `title`, `description`,
 `extract`, and `page` string fields used by the REST summary response.

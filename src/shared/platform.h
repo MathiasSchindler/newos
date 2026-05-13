@@ -7,6 +7,7 @@
 #define PLATFORM_OWNER_CAPACITY 32
 #define PLATFORM_GROUP_CAPACITY 32
 #define PLATFORM_TERMINAL_STATE_CAPACITY 128
+#define PLATFORM_TLS_OPAQUE_WORDS 8
 #define PLATFORM_PING_DEFAULT_COUNT 4U
 #define PLATFORM_PING_DEFAULT_INTERVAL_SECONDS 1U
 #define PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS 1U
@@ -179,6 +180,12 @@ typedef struct {
 } PlatformTerminalMode;
 
 typedef struct {
+    void *opaque[PLATFORM_TLS_OPAQUE_WORDS];
+    int socket_fd;
+    int active;
+} PlatformTlsClient;
+
+typedef struct {
     unsigned int index;
     unsigned int flags;
     unsigned int mtu;
@@ -302,6 +309,12 @@ int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode);
 int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out);
 int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out);
 int platform_accept_tcp(int listener_fd, int *client_fd_out);
+int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port);
+const char *platform_tls_last_error(void);
+const char *platform_tls_peer_verification_status(void);
+long platform_tls_read(PlatformTlsClient *client, void *buffer, size_t count);
+long platform_tls_write(PlatformTlsClient *client, const void *buffer, size_t count);
+void platform_tls_close(PlatformTlsClient *client);
 int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_list_network_addresses(
     PlatformNetworkAddress *entries_out,

@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #define CRYPTO_SHA512_DIGEST_SIZE 64
+#define CRYPTO_SHA384_DIGEST_SIZE 48
 #define CRYPTO_SHA512_BLOCK_SIZE 128
 
 typedef struct sha512_ctx {
@@ -15,8 +16,11 @@ typedef struct sha512_ctx {
 } CryptoSha512Context;
 
 void crypto_sha512_init(CryptoSha512Context *ctx);
+void crypto_sha384_init(CryptoSha512Context *ctx);
 void crypto_sha512_update(CryptoSha512Context *ctx, const unsigned char *data, size_t len);
 void crypto_sha512_final(CryptoSha512Context *ctx, unsigned char out[CRYPTO_SHA512_DIGEST_SIZE]);
+void crypto_sha384_final(CryptoSha512Context *ctx, unsigned char out[CRYPTO_SHA384_DIGEST_SIZE]);
 void crypto_sha512_hash(const unsigned char *data, size_t len, unsigned char out[CRYPTO_SHA512_DIGEST_SIZE]);
+void crypto_sha384_hash(const unsigned char *data, size_t len, unsigned char out[CRYPTO_SHA384_DIGEST_SIZE]);
 
 #endif

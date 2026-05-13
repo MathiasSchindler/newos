@@ -34,6 +34,19 @@ void *memcpy(void *dst, const void *src, size_t count) {
     return dst;
 }
 
+int memcmp(const void *left, const void *right, size_t count) {
+    const unsigned char *left_bytes = (const unsigned char *)left;
+    const unsigned char *right_bytes = (const unsigned char *)right;
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        if (left_bytes[i] != right_bytes[i]) {
+            return (int)left_bytes[i] - (int)right_bytes[i];
+        }
+    }
+    return 0;
+}
+
 void *memset(void *buffer, int byte_value, size_t count) {
     volatile unsigned char *out = (volatile unsigned char *)buffer;
     unsigned char value = (unsigned char)byte_value;
