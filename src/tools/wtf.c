@@ -384,7 +384,7 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
         request_length = append_cstr(request, sizeof(request), request_length, port_text);
     }
     request_length = append_cstr(request, sizeof(request), request_length,
-        "\r\nUser-Agent: newos-wtf/0.1\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
+        "\r\nUser-Agent: Wikipedia Terminal Facts (https://github.com/MathiasSchindler/newos)\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
     if (write_all_transport(fd, &tls, use_tls, request, request_length) != 0) {
         if (use_tls) write_tls_error("tls write", request_url);
         goto done;
