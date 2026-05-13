@@ -47,6 +47,7 @@ typedef long long int64_t;
 #define ELF64_SYMBOL_SIZE 24U
 #define ELF64_SECTION_HEADER_SIZE 64U
 
+#define R_X86_64_64 1U
 #define R_X86_64_PC32 2U
 #define R_X86_64_PLT32 4U
 
@@ -83,6 +84,7 @@ typedef struct {
 
 typedef struct {
     size_t offset;
+    ObjectSection section;
     char name[COMPILER_IR_NAME_CAPACITY];
     uint32_t type;
     int64_t addend;
@@ -204,6 +206,27 @@ static int parse_signed_value(const char *text, long long *value_out) {
 
     *value_out = negative ? -(long long)magnitude : (long long)magnitude;
     return 0;
+}
+
+static int parse_symbol_operand(const char *text, char *name_out, size_t name_size) {
+    size_t length = 0U;
+
+    text = skip_spaces(text);
+    if (*text == '\0' || (*text >= '0' && *text <= '9') || *text == '-' || *text == '+') {
+        return -1;
+    }
+    while (text[length] != '\0' && text[length] != ' ' && text[length] != '\t') {
+        if (length + 1U >= name_size) {
+            return -1;
+        }
+        name_out[length] = text[length];
+        length += 1U;
+    }
+    name_out[length] = '\0';
+    while (text[length] == ' ' || text[length] == '\t') {
+        length += 1U;
+    }
+    return text[length] == '\0' && name_out[0] != '\0' ? 0 : -1;
 }
 
 static void write_u16_le(unsigned char *buffer, uint16_t value) {
@@ -483,13 +506,14 @@ static int add_fixup(ObjectAssembler *assembler, const char *name, size_t offset
     return 0;
 }
 
-static int add_relocation(ObjectAssembler *assembler, const char *name, size_t offset, uint32_t type, int64_t addend) {
+static int add_relocation(ObjectAssembler *assembler, ObjectSection section, const char *name, size_t offset, uint32_t type, int64_t addend) {
     if (assembler->reloc_count >= OBJECT_WRITER_MAX_RELOCS) {
         set_error(assembler->writer, "too many relocation entries for current object writer");
         return -1;
     }
 
     assembler->relocs[assembler->reloc_count].offset = offset;
+    assembler->relocs[assembler->reloc_count].section = section;
     assembler->relocs[assembler->reloc_count].type = type;
     assembler->relocs[assembler->reloc_count].addend = addend;
     rt_copy_string(assembler->relocs[assembler->reloc_count].name, sizeof(assembler->relocs[assembler->reloc_count].name), name);
@@ -1860,8 +1884,31 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
         }
         if (starts_with(line, ".quad ")) {
             long long value = 0;
-            if (assembler->current_section != OBJECT_SECTION_DATA || parse_signed_value(line + 6, &value) != 0 ||
-                append_u64(assembler, OBJECT_SECTION_DATA, (uint64_t)value) != 0) {
+            char name[COMPILER_IR_NAME_CAPACITY];
+
+            if (assembler->current_section != OBJECT_SECTION_DATA) {
+                set_error(assembler->writer, "unsupported .quad initializer");
+                return -1;
+            }
+            if (parse_signed_value(line + 6, &value) == 0) {
+                if (append_u64(assembler, OBJECT_SECTION_DATA, (uint64_t)value) != 0) {
+                    set_error(assembler->writer, "unsupported .quad initializer");
+                    return -1;
+                }
+            } else if (parse_symbol_operand(line + 6, name, sizeof(name)) == 0) {
+                int symbol_index = get_symbol(assembler, name);
+                size_t offset = assembler->data_size;
+
+                if (symbol_index < 0 || append_u64(assembler, OBJECT_SECTION_DATA, 0U) != 0) {
+                    return -1;
+                }
+                if (!assembler->symbols[symbol_index].defined) {
+                    assembler->symbols[symbol_index].global = 1;
+                }
+                if (add_relocation(assembler, OBJECT_SECTION_DATA, name, offset, R_X86_64_64, 0) != 0) {
+                    return -1;
+                }
+            } else {
                 set_error(assembler->writer, "unsupported .quad initializer");
                 return -1;
             }
@@ -1937,7 +1984,7 @@ static int resolve_fixups(ObjectAssembler *assembler) {
             assembler->symbols[symbol_index].global = 1;
         }
 
-        if (add_relocation(assembler, fixup->name, fixup->offset, fixup->type, fixup->addend) != 0) {
+        if (add_relocation(assembler, OBJECT_SECTION_TEXT, fixup->name, fixup->offset, fixup->type, fixup->addend) != 0) {
             return -1;
         }
     }
@@ -1973,16 +2020,19 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     unsigned char strtab[16384];
     unsigned char shstrtab[256];
     unsigned char symtab[OBJECT_WRITER_MAX_SYMBOLS * 24];
-    unsigned char rela[OBJECT_WRITER_MAX_RELOCS * 24];
+    unsigned char rela_text[OBJECT_WRITER_MAX_RELOCS * 24];
+    unsigned char rela_data[OBJECT_WRITER_MAX_RELOCS * 24];
     size_t file_size = 0;
     size_t strtab_size = 1;
     size_t shstrtab_size = 1;
     size_t symtab_size = 0;
-    size_t rela_size = 0;
+    size_t rela_text_size = 0;
+    size_t rela_data_size = 0;
     size_t text_offset;
     size_t data_offset;
     size_t bss_offset;
-    size_t rela_offset;
+    size_t rela_text_offset;
+    size_t rela_data_offset;
     size_t symtab_offset;
     size_t strtab_offset;
     size_t shstrtab_offset;
@@ -1990,7 +2040,8 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     uint32_t sh_name_text;
     uint32_t sh_name_data;
     uint32_t sh_name_bss;
-    uint32_t sh_name_rela;
+    uint32_t sh_name_rela_text;
+    uint32_t sh_name_rela_data;
     uint32_t sh_name_symtab;
     uint32_t sh_name_strtab;
     uint32_t sh_name_shstrtab;
@@ -1998,7 +2049,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     unsigned int sym_index = 4U;
     unsigned int local_symbol_count = 4U;
     unsigned int pass;
-    const size_t section_count = 8U;
+    const size_t section_count = 9U;
 
     file[0] = 0U;
     strtab[0] = 0U;
@@ -2016,7 +2067,11 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
         set_error(assembler->writer, "failed to build ELF string tables");
         return -1;
     }
-    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".rela.text", &sh_name_rela) != 0) {
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".rela.text", &sh_name_rela_text) != 0) {
+        set_error(assembler->writer, "failed to build ELF string tables");
+        return -1;
+    }
+    if (add_string(shstrtab, &shstrtab_size, sizeof(shstrtab), ".rela.data", &sh_name_rela_data) != 0) {
         set_error(assembler->writer, "failed to build ELF string tables");
         return -1;
     }
@@ -2086,18 +2141,32 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
 
     for (i = 0; i < assembler->reloc_count; ++i) {
         int symbol_index = find_symbol(assembler, assembler->relocs[i].name);
+        unsigned char *rela;
+        size_t *rela_size;
+
         if (symbol_index < 0) {
             set_error(assembler->writer, "relocation refers to unknown symbol");
             return -1;
         }
 
-        write_u64_le(rela + rela_size + 0, (uint64_t)assembler->relocs[i].offset);
+        if (assembler->relocs[i].section == OBJECT_SECTION_TEXT) {
+            rela = rela_text;
+            rela_size = &rela_text_size;
+        } else if (assembler->relocs[i].section == OBJECT_SECTION_DATA) {
+            rela = rela_data;
+            rela_size = &rela_data_size;
+        } else {
+            set_error(assembler->writer, "relocation refers to unsupported section");
+            return -1;
+        }
+
+        write_u64_le(rela + *rela_size + 0, (uint64_t)assembler->relocs[i].offset);
         write_u64_le(
-            rela + rela_size + 8,
+            rela + *rela_size + 8,
             (((uint64_t)assembler->symbols[symbol_index].sym_index) << 32U) | (uint64_t)assembler->relocs[i].type
         );
-        write_i64_le(rela + rela_size + 16, assembler->relocs[i].addend);
-        rela_size += 24U;
+        write_i64_le(rela + *rela_size + 16, assembler->relocs[i].addend);
+        *rela_size += 24U;
     }
 
     file_size = 64U;
@@ -2117,10 +2186,17 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
 
     bss_offset = align_up(file_size, 8U);
 
-    rela_offset = align_up(file_size, 8U);
-    while (file_size < rela_offset) file[file_size++] = 0U;
-    if (append_bytes(file, &file_size, sizeof(file), rela, rela_size) != 0) {
-        set_error(assembler->writer, "ELF relocation section exceeded object writer capacity");
+    rela_text_offset = align_up(file_size, 8U);
+    while (file_size < rela_text_offset) file[file_size++] = 0U;
+    if (append_bytes(file, &file_size, sizeof(file), rela_text, rela_text_size) != 0) {
+        set_error(assembler->writer, "ELF text relocation section exceeded object writer capacity");
+        return -1;
+    }
+
+    rela_data_offset = align_up(file_size, 8U);
+    while (file_size < rela_data_offset) file[file_size++] = 0U;
+    if (append_bytes(file, &file_size, sizeof(file), rela_data, rela_data_size) != 0) {
+        set_error(assembler->writer, "ELF data relocation section exceeded object writer capacity");
         return -1;
     }
 
@@ -2168,7 +2244,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     write_u16_le(file + 56, 0U);
     write_u16_le(file + 58, 64U);
     write_u16_le(file + 60, (uint16_t)section_count);
-    write_u16_le(file + 62, 7U);
+    write_u16_le(file + 62, 8U);
 
     /* section headers */
     for (i = 0; i < section_count; ++i) {
@@ -2220,26 +2296,40 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     /* .rela.text */
     write_section_header(
         file + shoff + (4U * ELF64_SECTION_HEADER_SIZE),
-        sh_name_rela,
+        sh_name_rela_text,
         SHT_RELA,
         0U,
-        (uint64_t)rela_offset,
-        (uint64_t)rela_size,
-        5U,
+        (uint64_t)rela_text_offset,
+        (uint64_t)rela_text_size,
+        6U,
         1U,
+        8U,
+        24U
+    );
+
+    /* .rela.data */
+    write_section_header(
+        file + shoff + (5U * ELF64_SECTION_HEADER_SIZE),
+        sh_name_rela_data,
+        SHT_RELA,
+        0U,
+        (uint64_t)rela_data_offset,
+        (uint64_t)rela_data_size,
+        6U,
+        2U,
         8U,
         24U
     );
 
     /* .symtab */
     write_section_header(
-        file + shoff + (5U * ELF64_SECTION_HEADER_SIZE),
+        file + shoff + (6U * ELF64_SECTION_HEADER_SIZE),
         sh_name_symtab,
         SHT_SYMTAB,
         0U,
         (uint64_t)symtab_offset,
         (uint64_t)symtab_size,
-        6U,
+        7U,
         local_symbol_count,
         8U,
         24U
@@ -2247,7 +2337,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
 
     /* .strtab */
     write_section_header(
-        file + shoff + (6U * ELF64_SECTION_HEADER_SIZE),
+        file + shoff + (7U * ELF64_SECTION_HEADER_SIZE),
         sh_name_strtab,
         SHT_STRTAB,
         0U,
@@ -2261,7 +2351,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
 
     /* .shstrtab */
     write_section_header(
-        file + shoff + (7U * ELF64_SECTION_HEADER_SIZE),
+        file + shoff + (8U * ELF64_SECTION_HEADER_SIZE),
         sh_name_shstrtab,
         SHT_STRTAB,
         0U,

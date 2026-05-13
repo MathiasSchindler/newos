@@ -7,6 +7,7 @@
 #define LINKER_MAX_OBJECTS 320
 #define LINKER_MAX_OBJECT_SIZE (1024U * 1024U)
 #define LINKER_MAX_OUTPUT (6U * 1024U * 1024U)
+#define LINKER_MAX_MEMORY (64U * 1024U * 1024U)
 #define LINKER_MAX_GLOBALS 8192
 #define LINKER_BASE_VADDR 0x400000ULL
 
@@ -25,6 +26,7 @@
 #define SHT_RELA 4U
 #define SHN_UNDEF 0U
 #define STB_GLOBAL 1U
+#define R_X86_64_64 1U
 #define R_X86_64_PC32 2U
 #define R_X86_64_PLT32 4U
 
@@ -54,6 +56,7 @@ typedef struct {
     uint16_t symtab_index;
     uint16_t strtab_index;
     uint16_t rela_text_index;
+    uint16_t rela_data_index;
     uint64_t text_offset;
     uint64_t text_size;
     uint64_t data_offset;
@@ -67,6 +70,9 @@ typedef struct {
     uint64_t rela_text_offset;
     uint64_t rela_text_size;
     uint64_t rela_text_entsize;
+    uint64_t rela_data_offset;
+    uint64_t rela_data_size;
+    uint64_t rela_data_entsize;
     uint64_t out_text_offset;
     uint64_t out_data_offset;
     uint64_t out_bss_offset;
@@ -220,6 +226,11 @@ static void remember_section(LinkObject *object, uint16_t index) {
         object->rela_text_offset = read_u64(section + 24);
         object->rela_text_size = read_u64(section + 32);
         object->rela_text_entsize = read_u64(section + 56);
+    } else if (type == SHT_RELA && section_is(object, index, ".rela.data")) {
+        object->rela_data_index = index;
+        object->rela_data_offset = read_u64(section + 24);
+        object->rela_data_size = read_u64(section + 32);
+        object->rela_data_entsize = read_u64(section + 56);
     }
 }
 
@@ -273,11 +284,16 @@ static int load_object(LinkObject *object, const char *path, char *error_out, si
         !range_valid(object->data_offset, object->data_size, object->size) ||
         !range_valid(object->symtab_offset, object->symtab_size, object->size) ||
         !range_valid(object->strtab_offset, object->strtab_size, object->size) ||
-        !range_valid(object->rela_text_offset, object->rela_text_size, object->size)) {
+        !range_valid(object->rela_text_offset, object->rela_text_size, object->size) ||
+        !range_valid(object->rela_data_offset, object->rela_data_size, object->size)) {
         set_link_error(error_out, error_size, "object section extends past end of file", path);
         return -1;
     }
     if (object->rela_text_index != 0 && object->rela_text_entsize < ELF64_RELA_SIZE) {
+        set_link_error(error_out, error_size, "unsupported relocation entry size", path);
+        return -1;
+    }
+    if (object->rela_data_index != 0 && object->rela_data_entsize < ELF64_RELA_SIZE) {
         set_link_error(error_out, error_size, "unsupported relocation entry size", path);
         return -1;
     }
@@ -359,6 +375,51 @@ static int find_defined_global_object(LinkObject *objects, size_t object_count, 
     return -1;
 }
 
+static int mark_relocation_dependencies(LinkObject *objects,
+                                        size_t object_count,
+                                        LinkObject *object,
+                                        uint64_t rela_offset,
+                                        uint64_t rela_size,
+                                        uint64_t rela_entsize,
+                                        int *changed_out,
+                                        char *error_out,
+                                        size_t error_size) {
+    uint64_t entry_count;
+    uint64_t reloc_index;
+
+    if (rela_size == 0) {
+        return 0;
+    }
+    entry_count = rela_size / rela_entsize;
+    for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
+        const unsigned char *reloc = object->file + rela_offset + (reloc_index * rela_entsize);
+        uint64_t info = read_u64(reloc + 8);
+        uint32_t symbol_index = (uint32_t)(info >> 32U);
+        const unsigned char *symbol = symbol_entry(object, symbol_index);
+        int owner_index;
+        const char *name;
+
+        if (symbol == 0) {
+            set_link_error(error_out, error_size, "invalid relocation in object", object->path);
+            return -1;
+        }
+        if (read_u16(symbol + 6) != SHN_UNDEF) {
+            continue;
+        }
+        name = symbol_name(object, symbol);
+        owner_index = find_defined_global_object(objects, object_count, name);
+        if (owner_index < 0) {
+            set_link_error(error_out, error_size, "undefined symbol", name);
+            return -1;
+        }
+        if (!objects[owner_index].live) {
+            objects[owner_index].live = 1;
+            *changed_out = 1;
+        }
+    }
+    return 0;
+}
+
 static int mark_live_objects(LinkObject *objects, size_t object_count, char *error_out, size_t error_size) {
     int root_index = find_defined_global_object(objects, object_count, "_start");
     int changed = 1;
@@ -375,38 +436,17 @@ static int mark_live_objects(LinkObject *objects, size_t object_count, char *err
         changed = 0;
         for (i = 0; i < object_count; ++i) {
             LinkObject *object = &objects[i];
-            uint64_t entry_count;
-            uint64_t reloc_index;
 
-            if (!object->live || object->rela_text_index == 0 || object->rela_text_size == 0) {
+            if (!object->live) {
                 continue;
             }
-            entry_count = object->rela_text_size / object->rela_text_entsize;
-            for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
-                const unsigned char *reloc = object->file + object->rela_text_offset + (reloc_index * object->rela_text_entsize);
-                uint64_t info = read_u64(reloc + 8);
-                uint32_t symbol_index = (uint32_t)(info >> 32U);
-                const unsigned char *symbol = symbol_entry(object, symbol_index);
-                int owner_index;
-                const char *name;
-
-                if (symbol == 0) {
-                    set_link_error(error_out, error_size, "invalid relocation in object", object->path);
-                    return -1;
-                }
-                if (read_u16(symbol + 6) != SHN_UNDEF) {
-                    continue;
-                }
-                name = symbol_name(object, symbol);
-                owner_index = find_defined_global_object(objects, object_count, name);
-                if (owner_index < 0) {
-                    set_link_error(error_out, error_size, "undefined symbol", name);
-                    return -1;
-                }
-                if (!objects[owner_index].live) {
-                    objects[owner_index].live = 1;
-                    changed = 1;
-                }
+            if (object->rela_text_index != 0 &&
+                mark_relocation_dependencies(objects, object_count, object, object->rela_text_offset, object->rela_text_size, object->rela_text_entsize, &changed, error_out, error_size) != 0) {
+                return -1;
+            }
+            if (object->rela_data_index != 0 &&
+                mark_relocation_dependencies(objects, object_count, object, object->rela_data_offset, object->rela_data_size, object->rela_data_entsize, &changed, error_out, error_size) != 0) {
+                return -1;
             }
         }
     }
@@ -485,50 +525,94 @@ static int collect_globals(LinkObject *objects, size_t object_count, char *error
     return 0;
 }
 
-static int apply_relocations(LinkObject *objects, size_t object_count, unsigned char *output, char *error_out, size_t error_size) {
-    size_t i;
+static int apply_relocation_table(LinkObject *object,
+                                  uint64_t rela_offset,
+                                  uint64_t rela_size,
+                                  uint64_t rela_entsize,
+                                  uint64_t target_size,
+                                  uint64_t out_target_offset,
+                                  int is_text,
+                                  unsigned char *output,
+                                  char *error_out,
+                                  size_t error_size) {
+    uint64_t entry_count;
+    uint64_t reloc_index;
 
-    for (i = 0; i < object_count; ++i) {
-        LinkObject *object = &objects[i];
-        uint64_t entry_count;
-        uint64_t reloc_index;
+    if (rela_size == 0) {
+        return 0;
+    }
+    entry_count = rela_size / rela_entsize;
+    for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
+        const unsigned char *reloc = object->file + rela_offset + (reloc_index * rela_entsize);
+        uint64_t offset = read_u64(reloc + 0);
+        uint64_t info = read_u64(reloc + 8);
+        int64_t addend = read_i64(reloc + 16);
+        uint32_t symbol_index = (uint32_t)(info >> 32U);
+        uint32_t type = (uint32_t)info;
+        const unsigned char *symbol = symbol_entry(object, symbol_index);
+        uint64_t symbol_addr;
+        uint64_t place_addr;
+        uint64_t patch_offset;
 
-        if (!object->live || object->rela_text_index == 0 || object->rela_text_size == 0) {
-            continue;
+        if (symbol == 0) {
+            set_link_error(error_out, error_size, "invalid relocation in object", object->path);
+            return -1;
         }
-        entry_count = object->rela_text_size / object->rela_text_entsize;
-        for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
-            const unsigned char *reloc = object->file + object->rela_text_offset + (reloc_index * object->rela_text_entsize);
-            uint64_t offset = read_u64(reloc + 0);
-            uint64_t info = read_u64(reloc + 8);
-            int64_t addend = read_i64(reloc + 16);
-            uint32_t symbol_index = (uint32_t)(info >> 32U);
-            uint32_t type = (uint32_t)info;
-            const unsigned char *symbol = symbol_entry(object, symbol_index);
-            uint64_t symbol_addr;
-            uint64_t place_addr;
+        if (type == R_X86_64_PC32 || type == R_X86_64_PLT32) {
             int64_t patched;
-            uint64_t patch_offset;
 
-            if (symbol == 0 || offset + 4ULL > object->text_size) {
+            if (!is_text || offset + 4ULL > target_size) {
                 set_link_error(error_out, error_size, "invalid relocation in object", object->path);
-                return -1;
-            }
-            if (type != R_X86_64_PC32 && type != R_X86_64_PLT32) {
-                set_link_error(error_out, error_size, "unsupported x86_64 relocation in object", object->path);
                 return -1;
             }
             if (symbol_value(object, symbol, &symbol_addr, error_out, error_size) != 0) {
                 return -1;
             }
-            place_addr = LINKER_BASE_VADDR + object->out_text_offset + offset;
+            place_addr = LINKER_BASE_VADDR + out_target_offset + offset;
             patched = (int64_t)symbol_addr + addend - (int64_t)place_addr;
             if (patched < -2147483648LL || patched > 2147483647LL) {
                 set_link_error(error_out, error_size, "relocation is out of range", object->path);
                 return -1;
             }
-            patch_offset = object->out_text_offset + offset;
+            patch_offset = out_target_offset + offset;
             write_u32(output + patch_offset, (uint32_t)(int32_t)patched);
+        } else if (type == R_X86_64_64) {
+            uint64_t patched;
+
+            if (offset + 8ULL > target_size) {
+                set_link_error(error_out, error_size, "invalid relocation in object", object->path);
+                return -1;
+            }
+            if (symbol_value(object, symbol, &symbol_addr, error_out, error_size) != 0) {
+                return -1;
+            }
+            patched = (uint64_t)((int64_t)symbol_addr + addend);
+            patch_offset = out_target_offset + offset;
+            write_u64(output + patch_offset, patched);
+        } else {
+            set_link_error(error_out, error_size, "unsupported x86_64 relocation in object", object->path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int apply_relocations(LinkObject *objects, size_t object_count, unsigned char *output, char *error_out, size_t error_size) {
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        LinkObject *object = &objects[i];
+
+        if (!object->live) {
+            continue;
+        }
+        if (object->rela_text_index != 0 &&
+            apply_relocation_table(object, object->rela_text_offset, object->rela_text_size, object->rela_text_entsize, object->text_size, object->out_text_offset, 1, output, error_out, error_size) != 0) {
+            return -1;
+        }
+        if (object->rela_data_index != 0 &&
+            apply_relocation_table(object, object->rela_data_offset, object->rela_data_size, object->rela_data_entsize, object->data_size, object->out_data_offset, 0, output, error_out, error_size) != 0) {
+            return -1;
         }
     }
     return 0;
@@ -651,7 +735,7 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     bss_vaddr_offset = align_u64(data_file_offset + data_size, 8U);
     file_size = data_file_offset + data_size;
     memory_size = bss_vaddr_offset + bss_size;
-    if (file_size > sizeof(linker_output) || memory_size > sizeof(linker_output) + (2U * 1024U * 1024U)) {
+    if (file_size > sizeof(linker_output) || memory_size > LINKER_MAX_MEMORY) {
         set_link_error(error_out, error_size, "linked executable exceeds native linker capacity", output_path);
         return -1;
     }
