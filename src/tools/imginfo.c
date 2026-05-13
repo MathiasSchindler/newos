@@ -14,10 +14,11 @@ typedef struct {
     int json_output;
     int canonical_ext_only;
     int recursive;
+    int c2pa_trust_validation;
 } ImginfoOptions;
 
 static void print_usage(void) {
-    tool_write_usage("imginfo", "[-m|--mime] [-p|--plain] [-d|--details] [--json] [--canonical-ext] [-R|--recursive] [file ...]");
+    tool_write_usage("imginfo", "[-m|--mime] [-p|--plain] [-d|--details] [--json] [--c2pa-trust] [--canonical-ext] [-R|--recursive] [file ...]");
 }
 
 static int read_probe_data(const char *path, unsigned char *buffer, size_t buffer_size, size_t *size_out) {
@@ -494,8 +495,11 @@ static int write_detail_block(const char *label, const ImageInfo *info) {
         write_detail_uint("c2pa-assertion-stores", info->c2pa.assertion_store_count, 1);
         write_detail_uint("c2pa-signatures", info->c2pa.signature_count, 1);
         write_detail_uint("c2pa-cose-signatures", info->c2pa.cose_signature_count, 1);
+        write_detail_uint("c2pa-verified-signatures", info->c2pa.signature_verified_count, 1);
+        write_detail_uint("c2pa-invalid-signatures", info->c2pa.signature_invalid_count, 1);
         write_detail_uint("c2pa-x509-certificates", info->c2pa.x509_cert_count, 1);
         write_detail_uint("c2pa-parseable-x509-certificates", info->c2pa.x509_parseable_cert_count, 1);
+        write_detail_uint("c2pa-validation-failures", info->c2pa.validation_failure_count, 1);
         write_detail_string("c2pa-content-hash", info->c2pa.content_hash_matched ? "match" : (info->c2pa.content_hash_mismatched ? "mismatch" : (info->c2pa.content_hash_checked ? "checked" : "not checked")), 1);
         write_detail_string("c2pa-signature-verification", info->c2pa.signature_supported ? (info->c2pa.signature_valid ? "valid" : "invalid") : "unsupported", 1);
         write_detail_string("c2pa-trust-validation", info->c2pa.trust_supported ? (info->c2pa.trust_valid ? "trusted" : "untrusted") : "unsupported", 1);
@@ -585,6 +589,10 @@ static void write_json_info(const char *label, const ImageInfo *info) {
         rt_write_uint(1, (unsigned long long)info->c2pa.signature_count);
         rt_write_cstr(1, ",\"cose_signature_count\":");
         rt_write_uint(1, (unsigned long long)info->c2pa.cose_signature_count);
+        rt_write_cstr(1, ",\"signature_verified_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.signature_verified_count);
+        rt_write_cstr(1, ",\"signature_invalid_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.signature_invalid_count);
         rt_write_cstr(1, ",\"x509_certificate_count\":");
         rt_write_uint(1, (unsigned long long)info->c2pa.x509_cert_count);
         rt_write_cstr(1, ",\"x509_parseable_certificate_count\":");
@@ -595,10 +603,14 @@ static void write_json_info(const char *label, const ImageInfo *info) {
         rt_write_cstr(1, info->c2pa.content_hash_matched ? "true" : "false");
         rt_write_cstr(1, ",\"content_hash_mismatched\":");
         rt_write_cstr(1, info->c2pa.content_hash_mismatched ? "true" : "false");
+        rt_write_cstr(1, ",\"validation_failure_count\":");
+        rt_write_uint(1, (unsigned long long)info->c2pa.validation_failure_count);
         rt_write_cstr(1, ",\"signature_verification_supported\":");
         rt_write_cstr(1, info->c2pa.signature_supported ? "true" : "false");
         rt_write_cstr(1, ",\"trust_validation_supported\":");
         rt_write_cstr(1, info->c2pa.trust_supported ? "true" : "false");
+        rt_write_cstr(1, ",\"trust_validation_valid\":");
+        rt_write_cstr(1, info->c2pa.trust_valid ? "true" : "false");
         rt_write_cstr(1, ",\"ingredient_count\":");
         rt_write_uint(1, (unsigned long long)info->c2pa.ingredient_count);
         rt_write_char(1, '}');
@@ -614,7 +626,10 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
     size_t size = 0U;
     const unsigned char *probe_data = buffer;
     ImageInfo info;
+    ImageProbeOptions probe_options;
     const char *label = path ? path : "stdin";
+
+    probe_options.c2pa_trust_validation = options->c2pa_trust_validation;
 
     if (path == 0) {
         if (read_all_input(path, &full_data, &size) != 0) {
@@ -624,22 +639,20 @@ static int describe_path(const char *path, const ImginfoOptions *options) {
     } else if (read_probe_data(path, buffer, sizeof(buffer), &size) != 0) {
         return -1;
     }
-    if (image_probe(probe_data, size, &info) != 0) {
+    if (image_probe_ex(probe_data, size, &probe_options, &info) != 0) {
         if (full_data != 0) {
             rt_free(full_data);
         }
         tool_write_error("imginfo", "unsupported image format: ", label);
         return -1;
     }
-    if (path != 0 && size == sizeof(buffer) &&
-        (((info.format == IMAGE_FORMAT_JPEG) && (info.flags & IMAGE_INFO_HAS_DIMENSIONS) == 0U) ||
-         (info.flags & IMAGE_INFO_HAS_C2PA) == 0U)) {
+    if (path != 0 && size == sizeof(buffer)) {
         unsigned char *full_data;
         size_t full_size;
         ImageInfo full_info;
 
         if (read_all_input(path, &full_data, &full_size) == 0) {
-            if (image_probe(full_data, full_size, &full_info) == 0) {
+            if (image_probe_ex(full_data, full_size, &probe_options, &full_info) == 0) {
                 info = full_info;
             }
             rt_free(full_data);
@@ -717,6 +730,7 @@ static int parse_options(int argc, char **argv, ImginfoOptions *options, int *ar
     options->json_output = 0;
     options->canonical_ext_only = 0;
     options->recursive = 0;
+    options->c2pa_trust_validation = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         const char *arg = argv[argi];
 
@@ -745,6 +759,11 @@ static int parse_options(int argc, char **argv, ImginfoOptions *options, int *ar
         }
         if (rt_strcmp(arg, "--json") == 0) {
             options->json_output = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--c2pa-trust") == 0 || rt_strcmp(arg, "--trust") == 0) {
+            options->c2pa_trust_validation = 1;
             argi += 1;
             continue;
         }

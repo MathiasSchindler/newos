@@ -28,8 +28,13 @@ if [ -f /home/mathias/c2pa/2.2/image/good/png/a.png ]; then
     assert_file_contains "$WORK_DIR/show-c2pa-corpus-png.out" 'c2pa-cose-signatures: 3' "imgmeta show did not parse C2PA COSE signatures from corpus PNG"
     assert_file_contains "$WORK_DIR/show-c2pa-corpus-png.out" 'c2pa-x509-certificates: 6' "imgmeta show did not count C2PA X.509 certificates from corpus PNG"
     "$ROOT_DIR/build/imgmeta" show -v /home/mathias/c2pa/2.2/image/good/png/a.png > "$WORK_DIR/show-c2pa-corpus-png-verbose.out"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'c2pa-manifest\[0\]:' "imgmeta show -v did not print C2PA manifest details"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'c2pa-signature\[0\]:' "imgmeta show -v did not print C2PA signature details"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'algorithm: ES256' "imgmeta show -v did not decode C2PA COSE algorithms"
     assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'c2pa-claim\[0\]:' "imgmeta show -v did not print C2PA claim details"
     assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'instance-id:' "imgmeta show -v did not print C2PA claim instance IDs"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'c2pa-assertion-store\[0\]:' "imgmeta show -v did not print C2PA assertion-store details"
+    assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'c2pa-assertion\[0\]:' "imgmeta show -v did not print C2PA assertion details"
     assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'created-assertions:' "imgmeta show -v did not print C2PA claim assertions"
     assert_file_contains "$WORK_DIR/show-c2pa-corpus-png-verbose.out" 'sha256=' "imgmeta show -v did not print C2PA assertion hashes"
 fi

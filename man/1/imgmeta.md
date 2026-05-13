@@ -7,7 +7,7 @@ imgmeta - show, edit, copy, and strip image metadata
 ## SYNOPSIS
 
 ```
-imgmeta show [-v|--verbose] [file ...]
+imgmeta show [-v|--verbose] [--c2pa-trust] [file ...]
 imgmeta list-text [file ...]
 imgmeta strip -o OUTPUT FILE
 imgmeta copy -o OUTPUT [--from METADATA_SOURCE] FILE
@@ -24,7 +24,7 @@ When `show` is used without a file, `imgmeta` reads from standard input. `strip`
 
 ## COMMANDS
 
-- `show` - print detected image format, metadata properties, C2PA/JUMBF/CBOR/COSE structural summary, orientation, and density when available; with `-v` or `--verbose`, also print decoded C2PA claim summaries for supported JUMBF carriers
+- `show` - print detected image format, metadata properties, C2PA/JUMBF/CBOR/COSE structural summary, orientation, and density when available; with `-v` or `--verbose`, also print decoded C2PA manifest, signature, claim, assertion-store, and assertion summaries for supported JUMBF carriers; with `--c2pa-trust` or `--trust`, enable conservative C2PA trust-policy reporting
 - `list-text` - print tab-separated PNG text metadata records as `path type key value`; compressed text chunks are listed by key without decompression
 - `strip -o OUTPUT FILE` - write FILE to OUTPUT without supported metadata chunks or segments
 - `copy -o OUTPUT FILE` - write a recognized image to OUTPUT while preserving the original bytes and metadata
@@ -66,12 +66,19 @@ For PNG, `edit --remove-text KEY` removes matching `tEXt`, `iTXt`, and `zTXt` ch
 	recognizes COSE_Sign1 signatures, reports embedded X.509 certificate blobs,
 	and attempts SHA-256 content-hash checks for visible hash-data bindings.
 	ES256/P-256 COSE signatures can be verified against embedded P-256 leaf
-	certificates. Certificate-chain validation, trust-anchor policy, and full
-	C2PA claim conformance are not implemented yet.
-- `show -v` decodes common C2PA claim fields such as instance IDs, generator
-	information, signature references, assertion hash algorithms, and assertion
-	URL/hash references for PNG `caBX` and JPEG APP11 JUMBF carriers. It is an
-	inspection view, not a complete generic CBOR or C2PA assertion decoder.
+	certificates, and every supported COSE signature is counted as verified or
+	invalid. With `show --c2pa-trust`, `imgmeta` runs a conservative policy check:
+	explicit hash mismatches, invalid signatures, malformed certificate blobs,
+	embedded validation failures, and timestamped manifests without implemented
+	timestamp validation report as untrusted. External trust anchors,
+	certificate path building, TSA validation, and full C2PA claim conformance
+	are not implemented yet.
+- `show -v` decodes common C2PA fields for PNG `caBX` and JPEG APP11 JUMBF
+	carriers, including manifest labels, COSE signature algorithm and certificate
+	counts, claim instance IDs and generator information, assertion stores,
+	content-hash assertions, action assertions, ingredient links, and assertion
+	URL/hash references. It is an inspection view, not a complete generic CBOR or
+	C2PA assertion decoder.
 - PNG stripping preserves existing chunk CRCs for retained chunks and does not recompress image data.
 - JPEG stripping is segment-oriented and does not parse entropy-coded scan data.
 - Color-management metadata such as ICC profiles may affect visual interpretation; stripping it can change how other software displays the same pixels.

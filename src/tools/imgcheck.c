@@ -14,10 +14,11 @@ typedef struct {
     int json;
     int recursive;
     int strict;
+    int c2pa_trust_validation;
 } ImgcheckOptions;
 
 static void print_usage(void) {
-    tool_write_usage("imgcheck", "[-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [-R|--recursive] [file ...]");
+    tool_write_usage("imgcheck", "[-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [--c2pa-trust] [-R|--recursive] [file ...]");
 }
 
 static int read_all_input(const char *path, unsigned char **data_out, size_t *size_out) {
@@ -168,6 +169,10 @@ static void write_json_result(const char *label, const ImageValidation *validati
         rt_write_uint(1, (unsigned long long)c2pa->signature_count);
         rt_write_cstr(1, ",\"cose_signature_count\":");
         rt_write_uint(1, (unsigned long long)c2pa->cose_signature_count);
+        rt_write_cstr(1, ",\"signature_verified_count\":");
+        rt_write_uint(1, (unsigned long long)c2pa->signature_verified_count);
+        rt_write_cstr(1, ",\"signature_invalid_count\":");
+        rt_write_uint(1, (unsigned long long)c2pa->signature_invalid_count);
         rt_write_cstr(1, ",\"x509_certificate_count\":");
         rt_write_uint(1, (unsigned long long)c2pa->x509_cert_count);
         rt_write_cstr(1, ",\"content_hash_checked\":");
@@ -176,10 +181,14 @@ static void write_json_result(const char *label, const ImageValidation *validati
         rt_write_cstr(1, c2pa->content_hash_matched ? "true" : "false");
         rt_write_cstr(1, ",\"content_hash_mismatched\":");
         rt_write_cstr(1, c2pa->content_hash_mismatched ? "true" : "false");
+        rt_write_cstr(1, ",\"validation_failure_count\":");
+        rt_write_uint(1, (unsigned long long)c2pa->validation_failure_count);
         rt_write_cstr(1, ",\"signature_verification_supported\":");
         rt_write_cstr(1, c2pa->signature_supported ? "true" : "false");
         rt_write_cstr(1, ",\"trust_validation_supported\":");
         rt_write_cstr(1, c2pa->trust_supported ? "true" : "false");
+        rt_write_cstr(1, ",\"trust_validation_valid\":");
+        rt_write_cstr(1, c2pa->trust_valid ? "true" : "false");
         rt_write_char(1, '}');
     } else {
         rt_write_cstr(1, "{\"present\":false}");
@@ -213,6 +222,7 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     size_t size;
     ImageValidation validation;
     ImageValidationOptions validation_options;
+    ImageC2paOptions c2pa_options;
     ImageC2paInfo c2pa;
     const char *label = path ? path : "stdin";
     int result;
@@ -221,8 +231,9 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
         return -1;
     }
     validation_options.strict = options->strict;
+    c2pa_options.trust_validation = options->c2pa_trust_validation;
     result = image_validate_ex(data, size, &validation_options, &validation);
-    (void)image_c2pa_analyze(data, size, &c2pa);
+    (void)image_c2pa_analyze_ex(data, size, &c2pa_options, &c2pa);
     rt_free(data);
     if (!options->quiet) {
         if (options->json) {
@@ -232,6 +243,9 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
         } else {
             write_human_result(label, &validation, options, &c2pa);
         }
+    }
+    if (c2pa.present && (c2pa.content_hash_mismatched || c2pa.signature_invalid_count > 0U || c2pa.validation_failure_count > 0U)) {
+        return -1;
     }
     return result == 0 && validation.valid ? 0 : -1;
 }
@@ -281,6 +295,7 @@ static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *a
     options->json = 0;
     options->recursive = 0;
     options->strict = 0;
+    options->c2pa_trust_validation = 0;
     while (arg_index < argc && argv[arg_index][0] == '-' && argv[arg_index][1] != '\0') {
         const char *arg = argv[arg_index];
 
@@ -309,6 +324,11 @@ static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *a
         }
         if (rt_strcmp(arg, "--json") == 0) {
             options->json = 1;
+            arg_index += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--c2pa-trust") == 0 || rt_strcmp(arg, "--trust") == 0) {
+            options->c2pa_trust_validation = 1;
             arg_index += 1;
             continue;
         }

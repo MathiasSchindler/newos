@@ -8,7 +8,7 @@
 #define IMGMETA_INITIAL_CAPACITY (64U * 1024U)
 
 static void print_usage(void) {
-    tool_write_usage("imgmeta", "show [-v|--verbose] FILE ... | list-text FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE | edit [--set-text KEY=VALUE|--set-itxt KEY=VALUE|--remove-text KEY] [--language TAG] [--compressed] -o OUTPUT FILE");
+    tool_write_usage("imgmeta", "show [-v|--verbose] [--c2pa-trust] FILE ... | list-text FILE ... | strip -o OUTPUT FILE | copy -o OUTPUT FILE | edit [--set-text KEY=VALUE|--set-itxt KEY=VALUE|--remove-text KEY] [--language TAG] [--compressed] -o OUTPUT FILE");
 }
 
 typedef struct {
@@ -27,6 +27,14 @@ typedef struct {
     const unsigned char *bytes;
     size_t size;
 } ImgmetaBytesRef;
+
+typedef struct {
+    unsigned int manifest_index;
+    unsigned int assertion_store_index;
+    unsigned int claim_index;
+    unsigned int assertion_index;
+    unsigned int signature_index;
+} ImgmetaC2paVerboseState;
 
 static unsigned int read_u16_be(const unsigned char *bytes) {
     return ((unsigned int)bytes[0] << 8) | (unsigned int)bytes[1];
@@ -385,6 +393,61 @@ static int imgmeta_cbor_read_bytes_ref(ImgmetaCborReader *reader, ImgmetaBytesRe
     return 1;
 }
 
+static int imgmeta_cbor_item_slice(ImgmetaCborReader *reader, const unsigned char **data, size_t *size) {
+    size_t start = reader->pos;
+
+    if (!imgmeta_cbor_skip(reader)) return 0;
+    *data = reader->data + start;
+    *size = reader->pos - start;
+    return 1;
+}
+
+static const char *imgmeta_cose_alg_name(long long alg) {
+    if (alg == -7LL) return "ES256";
+    return "unknown";
+}
+
+static void write_hash_ref_line(const char *prefix, ImgmetaTextRef url, ImgmetaBytesRef hash) {
+    if (url.text == 0 && hash.bytes == 0) return;
+    rt_write_cstr(1, prefix);
+    if (url.text != 0) {
+        write_c2pa_assertion_label(url);
+    } else {
+        rt_write_char(1, '-');
+    }
+    if (hash.bytes != 0) {
+        rt_write_cstr(1, " sha256=");
+        write_hex_bytes(1, hash.bytes, hash.size);
+    }
+    rt_write_char(1, '\n');
+}
+
+static int imgmeta_parse_url_hash_map(const unsigned char *data, size_t size, ImgmetaTextRef *url, ImgmetaBytesRef *hash) {
+    ImgmetaCborReader reader;
+    unsigned int major;
+    unsigned long long count;
+    unsigned long long index;
+
+    url->text = 0;
+    url->size = 0U;
+    hash->bytes = 0;
+    hash->size = 0U;
+    imgmeta_cbor_init(&reader, data, size);
+    if (!imgmeta_cbor_read_type(&reader, &major, &count) || major != 5U) return 0;
+    for (index = 0ULL; index < count && reader.valid; ++index) {
+        ImgmetaTextRef key;
+        if (!imgmeta_cbor_read_text_ref(&reader, &key)) return 0;
+        if (text_ref_equals(key, "url")) {
+            (void)imgmeta_cbor_read_text_ref(&reader, url);
+        } else if (text_ref_equals(key, "hash")) {
+            (void)imgmeta_cbor_read_bytes_ref(&reader, hash);
+        } else if (!imgmeta_cbor_skip(&reader)) {
+            return 0;
+        }
+    }
+    return reader.valid;
+}
+
 static void imgmeta_print_claim_generator(const unsigned char *data, size_t size) {
     ImgmetaCborReader reader;
     unsigned int major;
@@ -532,6 +595,383 @@ static void imgmeta_print_c2pa_claim(unsigned int claim_index, ImgmetaTextRef la
     }
 }
 
+static void imgmeta_print_c2pa_signature(unsigned int signature_index, ImgmetaTextRef label, const unsigned char *data, size_t size) {
+    ImgmetaCborReader reader;
+    unsigned int major;
+    unsigned long long value;
+    const unsigned char *protected_data = 0;
+    const unsigned char *unprotected_data = 0;
+    const unsigned char *payload_data = 0;
+    const unsigned char *signature_data = 0;
+    size_t protected_size = 0U;
+    size_t protected_content_size = 0U;
+    size_t unprotected_size = 0U;
+    size_t payload_size = 0U;
+    size_t signature_item_size = 0U;
+    ImgmetaBytesRef signature = {0, 0U};
+    long long cose_alg = 0LL;
+    unsigned long long x509_count = 0ULL;
+    unsigned long long timestamp_count = 0ULL;
+
+    rt_write_cstr(1, "  c2pa-signature[");
+    rt_write_uint(1, (unsigned long long)signature_index);
+    rt_write_line(1, "]:");
+    rt_write_cstr(1, "    label: ");
+    write_text_ref(1, label);
+    rt_write_char(1, '\n');
+
+    imgmeta_cbor_init(&reader, data, size);
+    if (!imgmeta_cbor_read_type(&reader, &major, &value)) return;
+    if (major == 6U) {
+        rt_write_cstr(1, "    cose-tag: ");
+        rt_write_uint(1, value);
+        rt_write_char(1, '\n');
+        if (!imgmeta_cbor_read_type(&reader, &major, &value)) return;
+    }
+    if (major != 4U || value != 4ULL) {
+        rt_write_line(1, "    parse: unsupported signature shape");
+        return;
+    }
+    if (!imgmeta_cbor_item_slice(&reader, &protected_data, &protected_size)) return;
+    if (!imgmeta_cbor_item_slice(&reader, &unprotected_data, &unprotected_size)) return;
+    if (!imgmeta_cbor_item_slice(&reader, &payload_data, &payload_size)) return;
+    signature_item_size = reader.pos;
+    if (!imgmeta_cbor_read_bytes_ref(&reader, &signature)) return;
+    signature_item_size = reader.pos - signature_item_size;
+
+    if (protected_data != 0) {
+        ImgmetaCborReader protected_reader;
+        ImgmetaBytesRef protected_bytes;
+        imgmeta_cbor_init(&protected_reader, protected_data, protected_size);
+        if (imgmeta_cbor_read_bytes_ref(&protected_reader, &protected_bytes)) {
+            ImgmetaCborReader map_reader;
+            imgmeta_cbor_init(&map_reader, protected_bytes.bytes, protected_bytes.size);
+            protected_content_size = protected_bytes.size;
+            if (imgmeta_cbor_read_type(&map_reader, &major, &value) && major == 5U) {
+                unsigned long long index;
+                for (index = 0ULL; index < value && map_reader.valid; ++index) {
+                    unsigned int key_major;
+                    unsigned long long key_value;
+                    if (!imgmeta_cbor_read_type(&map_reader, &key_major, &key_value)) break;
+                    if (key_major == 0U && key_value == 1ULL) {
+                        unsigned int value_major;
+                        unsigned long long alg_value;
+                        if (imgmeta_cbor_read_type(&map_reader, &value_major, &alg_value)) {
+                            if (value_major == 1U) cose_alg = -1LL - (long long)alg_value;
+                            else if (value_major == 0U) cose_alg = (long long)alg_value;
+                        }
+                    } else if (key_major == 0U && key_value == 33ULL) {
+                        unsigned int value_major;
+                        unsigned long long item_count;
+                        if (imgmeta_cbor_read_type(&map_reader, &value_major, &item_count)) {
+                            if (value_major == 2U) {
+                                x509_count = 1ULL;
+                                if (item_count <= (unsigned long long)(map_reader.size - map_reader.pos)) map_reader.pos += (size_t)item_count;
+                                else map_reader.valid = 0;
+                            } else if (value_major == 4U) {
+                                unsigned long long cert_index;
+                                x509_count = item_count;
+                                for (cert_index = 0ULL; cert_index < item_count && map_reader.valid; ++cert_index) {
+                                    if (!imgmeta_cbor_skip(&map_reader)) break;
+                                }
+                            } else if (!imgmeta_cbor_skip(&map_reader)) {
+                                break;
+                            }
+                        }
+                    } else if (!imgmeta_cbor_skip(&map_reader)) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (unprotected_data != 0) {
+        ImgmetaCborReader unprotected_reader;
+        imgmeta_cbor_init(&unprotected_reader, unprotected_data, unprotected_size);
+        if (imgmeta_cbor_read_type(&unprotected_reader, &major, &value) && major == 5U) {
+            unsigned long long index;
+            for (index = 0ULL; index < value && unprotected_reader.valid; ++index) {
+                ImgmetaTextRef key;
+                size_t value_start;
+                if (!imgmeta_cbor_read_text_ref(&unprotected_reader, &key)) break;
+                value_start = unprotected_reader.pos;
+                if (text_ref_equals(key, "sigTst2")) {
+                    ImgmetaCborReader tst_reader;
+                    imgmeta_cbor_init(&tst_reader, unprotected_reader.data + value_start, unprotected_reader.size - value_start);
+                    if (imgmeta_cbor_read_type(&tst_reader, &major, &value) && major == 5U) {
+                        unsigned long long map_index;
+                        for (map_index = 0ULL; map_index < value && tst_reader.valid; ++map_index) {
+                            ImgmetaTextRef tst_key;
+                            if (!imgmeta_cbor_read_text_ref(&tst_reader, &tst_key)) break;
+                            if (text_ref_equals(tst_key, "tstTokens")) {
+                                if (imgmeta_cbor_read_type(&tst_reader, &major, &timestamp_count) && major != 4U) tst_reader.valid = 0;
+                                break;
+                            } else if (!imgmeta_cbor_skip(&tst_reader)) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                unprotected_reader.pos = value_start;
+                if (!imgmeta_cbor_skip(&unprotected_reader)) break;
+            }
+        }
+    }
+
+    rt_write_cstr(1, "    type: COSE_Sign1\n    algorithm: ");
+    rt_write_line(1, imgmeta_cose_alg_name(cose_alg));
+    rt_write_cstr(1, "    protected: ");
+    rt_write_uint(1, (unsigned long long)(protected_content_size != 0U ? protected_content_size : protected_size));
+    rt_write_line(1, " bytes");
+    if (x509_count != 0ULL) {
+        rt_write_cstr(1, "    x509-certificates: ");
+        rt_write_uint(1, x509_count);
+        rt_write_char(1, '\n');
+    }
+    if (timestamp_count != 0ULL) {
+        rt_write_cstr(1, "    timestamp-tokens: ");
+        rt_write_uint(1, timestamp_count);
+        rt_write_char(1, '\n');
+    }
+    rt_write_cstr(1, "    unprotected: ");
+    rt_write_uint(1, (unsigned long long)unprotected_size);
+    rt_write_line(1, " bytes");
+    rt_write_cstr(1, "    payload: ");
+    if (payload_size == 1U && payload_data[0] == 0xf6U) {
+        rt_write_line(1, "detached");
+    } else {
+        rt_write_uint(1, (unsigned long long)payload_size);
+        rt_write_line(1, " encoded bytes");
+    }
+    rt_write_cstr(1, "    signature-bytes: ");
+    rt_write_uint(1, (unsigned long long)signature.size);
+    rt_write_char(1, '\n');
+    (void)signature_data;
+    (void)signature_item_size;
+}
+
+static void imgmeta_print_hash_assertion(unsigned int assertion_index, ImgmetaTextRef label, const unsigned char *data, size_t size) {
+    ImgmetaCborReader reader;
+    unsigned int major;
+    unsigned long long count;
+    unsigned long long index;
+    ImgmetaTextRef alg = {0, 0U};
+    ImgmetaBytesRef hash = {0, 0U};
+    unsigned long long exclusion_count = 0ULL;
+
+    rt_write_cstr(1, "  c2pa-assertion[");
+    rt_write_uint(1, (unsigned long long)assertion_index);
+    rt_write_line(1, "]:");
+    rt_write_cstr(1, "    label: ");
+    write_text_ref(1, label);
+    rt_write_char(1, '\n');
+
+    imgmeta_cbor_init(&reader, data, size);
+    if (!imgmeta_cbor_read_type(&reader, &major, &count) || major != 5U) return;
+    for (index = 0ULL; index < count && reader.valid; ++index) {
+        ImgmetaTextRef key;
+        size_t value_start;
+        if (!imgmeta_cbor_read_text_ref(&reader, &key)) return;
+        value_start = reader.pos;
+        if (text_ref_equals(key, "alg")) {
+            (void)imgmeta_cbor_read_text_ref(&reader, &alg);
+        } else if (text_ref_equals(key, "hash")) {
+            (void)imgmeta_cbor_read_bytes_ref(&reader, &hash);
+        } else if (text_ref_equals(key, "exclusions")) {
+            if (imgmeta_cbor_read_type(&reader, &major, &exclusion_count) && major != 4U) {
+                reader.valid = 0;
+            }
+            reader.pos = value_start;
+            if (!imgmeta_cbor_skip(&reader)) return;
+        } else if (!imgmeta_cbor_skip(&reader)) {
+            return;
+        }
+    }
+    if (alg.text != 0) {
+        rt_write_cstr(1, "    algorithm: ");
+        write_text_ref(1, alg);
+        rt_write_char(1, '\n');
+    }
+    if (hash.bytes != 0) {
+        rt_write_cstr(1, "    hash: ");
+        write_hex_bytes(1, hash.bytes, hash.size);
+        rt_write_char(1, '\n');
+    }
+    rt_write_cstr(1, "    exclusions: ");
+    rt_write_uint(1, exclusion_count);
+    rt_write_char(1, '\n');
+}
+
+static void imgmeta_print_action_item(ImgmetaCborReader *reader) {
+    unsigned int major;
+    unsigned long long count;
+    unsigned long long index;
+    ImgmetaTextRef action = {0, 0U};
+    ImgmetaTextRef description = {0, 0U};
+    ImgmetaTextRef digital_source = {0, 0U};
+
+    if (!imgmeta_cbor_read_type(reader, &major, &count) || major != 5U) {
+        reader->valid = 0;
+        return;
+    }
+    for (index = 0ULL; index < count && reader->valid; ++index) {
+        ImgmetaTextRef key;
+        if (!imgmeta_cbor_read_text_ref(reader, &key)) return;
+        if (text_ref_equals(key, "action")) {
+            (void)imgmeta_cbor_read_text_ref(reader, &action);
+        } else if (text_ref_equals(key, "description")) {
+            (void)imgmeta_cbor_read_text_ref(reader, &description);
+        } else if (text_ref_equals(key, "digitalSourceType")) {
+            (void)imgmeta_cbor_read_text_ref(reader, &digital_source);
+        } else if (!imgmeta_cbor_skip(reader)) {
+            return;
+        }
+    }
+    if (action.text != 0) {
+        rt_write_cstr(1, "      - ");
+        write_text_ref(1, action);
+        if (description.text != 0) {
+            rt_write_cstr(1, ": ");
+            write_text_ref(1, description);
+        }
+        if (digital_source.text != 0) {
+            rt_write_cstr(1, " [");
+            write_c2pa_assertion_label(digital_source);
+            rt_write_char(1, ']');
+        }
+        rt_write_char(1, '\n');
+    }
+}
+
+static void imgmeta_print_actions_assertion(unsigned int assertion_index, ImgmetaTextRef label, const unsigned char *data, size_t size) {
+    ImgmetaCborReader reader;
+    ImgmetaCborReader actions_reader;
+    unsigned int major;
+    unsigned long long count;
+    unsigned long long index;
+    const unsigned char *actions_data = 0;
+    size_t actions_size = 0U;
+
+    rt_write_cstr(1, "  c2pa-assertion[");
+    rt_write_uint(1, (unsigned long long)assertion_index);
+    rt_write_line(1, "]:");
+    rt_write_cstr(1, "    label: ");
+    write_text_ref(1, label);
+    rt_write_char(1, '\n');
+
+    imgmeta_cbor_init(&reader, data, size);
+    if (!imgmeta_cbor_read_type(&reader, &major, &count) || major != 5U) return;
+    for (index = 0ULL; index < count && reader.valid; ++index) {
+        ImgmetaTextRef key;
+        if (!imgmeta_cbor_read_text_ref(&reader, &key)) return;
+        if (text_ref_equals(key, "actions")) {
+            if (!imgmeta_cbor_item_slice(&reader, &actions_data, &actions_size)) return;
+        } else if (!imgmeta_cbor_skip(&reader)) {
+            return;
+        }
+    }
+    if (actions_data == 0) return;
+    imgmeta_cbor_init(&actions_reader, actions_data, actions_size);
+    if (!imgmeta_cbor_read_type(&actions_reader, &major, &count) || major != 4U) return;
+    rt_write_cstr(1, "    actions: ");
+    rt_write_uint(1, count);
+    rt_write_char(1, '\n');
+    for (index = 0ULL; index < count && actions_reader.valid; ++index) {
+        imgmeta_print_action_item(&actions_reader);
+    }
+}
+
+static void imgmeta_print_ingredient_assertion(unsigned int assertion_index, ImgmetaTextRef label, const unsigned char *data, size_t size) {
+    ImgmetaCborReader reader;
+    unsigned int major;
+    unsigned long long count;
+    unsigned long long index;
+    ImgmetaTextRef relationship = {0, 0U};
+    const unsigned char *active_manifest_data = 0;
+    const unsigned char *claim_signature_data = 0;
+    size_t active_manifest_size = 0U;
+    size_t claim_signature_size = 0U;
+
+    rt_write_cstr(1, "  c2pa-assertion[");
+    rt_write_uint(1, (unsigned long long)assertion_index);
+    rt_write_line(1, "]:");
+    rt_write_cstr(1, "    label: ");
+    write_text_ref(1, label);
+    rt_write_char(1, '\n');
+
+    imgmeta_cbor_init(&reader, data, size);
+    if (!imgmeta_cbor_read_type(&reader, &major, &count) || major != 5U) return;
+    for (index = 0ULL; index < count && reader.valid; ++index) {
+        ImgmetaTextRef key;
+        if (!imgmeta_cbor_read_text_ref(&reader, &key)) return;
+        if (text_ref_equals(key, "relationship")) {
+            (void)imgmeta_cbor_read_text_ref(&reader, &relationship);
+        } else if (text_ref_equals(key, "activeManifest")) {
+            if (!imgmeta_cbor_item_slice(&reader, &active_manifest_data, &active_manifest_size)) return;
+        } else if (text_ref_equals(key, "claimSignature")) {
+            if (!imgmeta_cbor_item_slice(&reader, &claim_signature_data, &claim_signature_size)) return;
+        } else if (!imgmeta_cbor_skip(&reader)) {
+            return;
+        }
+    }
+    if (relationship.text != 0) {
+        rt_write_cstr(1, "    relationship: ");
+        write_text_ref(1, relationship);
+        rt_write_char(1, '\n');
+    }
+    if (active_manifest_data != 0) {
+        ImgmetaTextRef url;
+        ImgmetaBytesRef hash;
+        if (imgmeta_parse_url_hash_map(active_manifest_data, active_manifest_size, &url, &hash)) {
+            write_hash_ref_line("    active-manifest: ", url, hash);
+        }
+    }
+    if (claim_signature_data != 0) {
+        ImgmetaTextRef url;
+        ImgmetaBytesRef hash;
+        if (imgmeta_parse_url_hash_map(claim_signature_data, claim_signature_size, &url, &hash)) {
+            write_hash_ref_line("    claim-signature: ", url, hash);
+        }
+    }
+}
+
+static void imgmeta_print_generic_assertion(unsigned int assertion_index, ImgmetaTextRef label, const unsigned char *data, size_t size) {
+    ImgmetaCborReader reader;
+    unsigned int major;
+    unsigned long long count;
+
+    rt_write_cstr(1, "  c2pa-assertion[");
+    rt_write_uint(1, (unsigned long long)assertion_index);
+    rt_write_line(1, "]:");
+    rt_write_cstr(1, "    label: ");
+    write_text_ref(1, label);
+    rt_write_char(1, '\n');
+    imgmeta_cbor_init(&reader, data, size);
+    if (imgmeta_cbor_read_type(&reader, &major, &count)) {
+        rt_write_cstr(1, "    cbor: ");
+        if (major == 4U) rt_write_cstr(1, "array ");
+        else if (major == 5U) rt_write_cstr(1, "map ");
+        else if (major == 2U) rt_write_cstr(1, "bytes ");
+        else if (major == 3U) rt_write_cstr(1, "text ");
+        else rt_write_cstr(1, "type ");
+        rt_write_uint(1, count);
+        rt_write_char(1, '\n');
+    }
+}
+
+static void imgmeta_print_c2pa_assertion(unsigned int assertion_index, ImgmetaTextRef label, const unsigned char *data, size_t size) {
+    if (text_ref_starts_with(label, "c2pa.hash.")) {
+        imgmeta_print_hash_assertion(assertion_index, label, data, size);
+    } else if (text_ref_starts_with(label, "c2pa.actions")) {
+        imgmeta_print_actions_assertion(assertion_index, label, data, size);
+    } else if (text_ref_starts_with(label, "c2pa.ingredient")) {
+        imgmeta_print_ingredient_assertion(assertion_index, label, data, size);
+    } else {
+        imgmeta_print_generic_assertion(assertion_index, label, data, size);
+    }
+}
+
 static int imgmeta_find_label_with_prefix(const unsigned char *data, size_t size, const char *prefix, ImgmetaTextRef *label) {
     size_t prefix_size = rt_strlen(prefix);
     size_t offset;
@@ -565,7 +1005,7 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
                                        size_t size,
                                        unsigned int depth,
                                        ImgmetaTextRef parent_label,
-                                       unsigned int *claim_index) {
+                                       ImgmetaC2paVerboseState *state) {
     size_t offset = 0U;
 
     if (depth > 16U) return;
@@ -595,16 +1035,39 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
                     (void)imgmeta_jumd_label(data + payload_offset + 8U, (size_t)jumd_size - 8U, &label);
                 }
             }
-            imgmeta_verbose_c2pa_boxes(data + payload_offset, payload_size, depth + 1U, label, claim_index);
-        } else if (bytes_equal(type, "cbor", 4U) && parent_label.text != 0 && text_ref_starts_with(parent_label, "c2pa.claim")) {
-            imgmeta_print_c2pa_claim(*claim_index, parent_label, data + payload_offset, payload_size);
-            *claim_index += 1U;
+            if (label.text != 0 && text_ref_starts_with(label, "urn:c2pa:")) {
+                rt_write_cstr(1, "  c2pa-manifest[");
+                rt_write_uint(1, (unsigned long long)state->manifest_index++);
+                rt_write_line(1, "]:");
+                rt_write_cstr(1, "    label: ");
+                write_text_ref(1, label);
+                rt_write_char(1, '\n');
+            } else if (label.text != 0 && text_ref_starts_with(label, "c2pa.assertions")) {
+                rt_write_cstr(1, "  c2pa-assertion-store[");
+                rt_write_uint(1, (unsigned long long)state->assertion_store_index++);
+                rt_write_line(1, "]:");
+                rt_write_cstr(1, "    label: ");
+                write_text_ref(1, label);
+                rt_write_char(1, '\n');
+            }
+            imgmeta_verbose_c2pa_boxes(data + payload_offset, payload_size, depth + 1U, label, state);
+        } else if (bytes_equal(type, "cbor", 4U) && parent_label.text != 0) {
+            if (text_ref_starts_with(parent_label, "c2pa.claim")) {
+                imgmeta_print_c2pa_claim(state->claim_index, parent_label, data + payload_offset, payload_size);
+                state->claim_index += 1U;
+            } else if (text_ref_starts_with(parent_label, "c2pa.signature")) {
+                imgmeta_print_c2pa_signature(state->signature_index, parent_label, data + payload_offset, payload_size);
+                state->signature_index += 1U;
+            } else if (text_ref_starts_with(parent_label, "c2pa.") && !text_ref_starts_with(parent_label, "c2pa.assertions")) {
+                imgmeta_print_c2pa_assertion(state->assertion_index, parent_label, data + payload_offset, payload_size);
+                state->assertion_index += 1U;
+            }
         }
         offset += (size_t)box_size;
     }
 }
 
-static void imgmeta_verbose_c2pa_png(const unsigned char *data, size_t size, unsigned int *claim_index) {
+static void imgmeta_verbose_c2pa_png(const unsigned char *data, size_t size, ImgmetaC2paVerboseState *state) {
     static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
     size_t offset = 8U;
 
@@ -615,13 +1078,13 @@ static void imgmeta_verbose_c2pa_png(const unsigned char *data, size_t size, uns
         size_t payload_offset = offset + 8U;
         if ((size_t)chunk_size > size - payload_offset || payload_offset + (size_t)chunk_size + 4U > size) return;
         if (bytes_equal(type, "caBX", 4U)) {
-            imgmeta_verbose_c2pa_boxes(data + payload_offset, (size_t)chunk_size, 0U, (ImgmetaTextRef){0, 0U}, claim_index);
+            imgmeta_verbose_c2pa_boxes(data + payload_offset, (size_t)chunk_size, 0U, (ImgmetaTextRef){0, 0U}, state);
         }
         offset = payload_offset + (size_t)chunk_size + 4U;
     }
 }
 
-static void imgmeta_verbose_c2pa_jpeg(const unsigned char *data, size_t size, unsigned int *claim_index) {
+static void imgmeta_verbose_c2pa_jpeg(const unsigned char *data, size_t size, ImgmetaC2paVerboseState *state) {
     size_t offset = 2U;
 
     if (size < 4U || data[0] != 0xffU || data[1] != 0xd8U) return;
@@ -646,7 +1109,7 @@ static void imgmeta_verbose_c2pa_jpeg(const unsigned char *data, size_t size, un
         if (marker == 0xebU && payload_size >= 8U && bytes_start_with_text(payload, payload_size, "JP")) {
             for (index = 4U; index + 4U <= payload_size; ++index) {
                 if (bytes_equal(payload + index, "jumb", 4U) && index >= 4U) {
-                    imgmeta_verbose_c2pa_boxes(payload + index - 4U, payload_size - (index - 4U), 0U, (ImgmetaTextRef){0, 0U}, claim_index);
+                    imgmeta_verbose_c2pa_boxes(payload + index - 4U, payload_size - (index - 4U), 0U, (ImgmetaTextRef){0, 0U}, state);
                     break;
                 }
             }
@@ -656,29 +1119,38 @@ static void imgmeta_verbose_c2pa_jpeg(const unsigned char *data, size_t size, un
 }
 
 static void imgmeta_show_c2pa_verbose(const unsigned char *data, size_t size, const ImageInfo *info) {
-    unsigned int claim_index = 0U;
+    ImgmetaC2paVerboseState state;
+
+    state.manifest_index = 0U;
+    state.assertion_store_index = 0U;
+    state.claim_index = 0U;
+    state.assertion_index = 0U;
+    state.signature_index = 0U;
 
     if ((info->flags & IMAGE_INFO_HAS_C2PA) == 0U) return;
     if (info->format == IMAGE_FORMAT_PNG) {
-        imgmeta_verbose_c2pa_png(data, size, &claim_index);
+        imgmeta_verbose_c2pa_png(data, size, &state);
     } else if (info->format == IMAGE_FORMAT_JPEG) {
-        imgmeta_verbose_c2pa_jpeg(data, size, &claim_index);
+        imgmeta_verbose_c2pa_jpeg(data, size, &state);
     }
-    if (claim_index == 0U && info->c2pa.claim_count > 0U) {
+    if (state.claim_index == 0U && info->c2pa.claim_count > 0U) {
         rt_write_line(1, "  c2pa-claims-detail: unavailable for this carrier");
     }
 }
 
-static int show_path(const char *path, int verbose) {
+static int show_path(const char *path, int verbose, int c2pa_trust_validation) {
     unsigned char *data;
     size_t size;
     ImageInfo info;
+    ImageProbeOptions probe_options;
     const char *label = path ? path : "stdin";
+
+    probe_options.c2pa_trust_validation = c2pa_trust_validation;
 
     if (read_all_input(path, &data, &size) != 0) {
         return -1;
     }
-    if (image_probe(data, size, &info) != 0) {
+    if (image_probe_ex(data, size, &probe_options, &info) != 0) {
         rt_free(data);
         tool_write_error("imgmeta", "unsupported image format: ", label);
         return -1;
@@ -717,8 +1189,17 @@ static int show_path(const char *path, int verbose) {
         rt_write_cstr(1, "  c2pa-cose-signatures: ");
         rt_write_uint(1, (unsigned long long)info.c2pa.cose_signature_count);
         rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-verified-signatures: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.signature_verified_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-invalid-signatures: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.signature_invalid_count);
+        rt_write_char(1, '\n');
         rt_write_cstr(1, "  c2pa-x509-certificates: ");
         rt_write_uint(1, (unsigned long long)info.c2pa.x509_cert_count);
+        rt_write_char(1, '\n');
+        rt_write_cstr(1, "  c2pa-validation-failures: ");
+        rt_write_uint(1, (unsigned long long)info.c2pa.validation_failure_count);
         rt_write_char(1, '\n');
         rt_write_cstr(1, "  c2pa-content-hash: ");
         rt_write_line(1, info.c2pa.content_hash_matched ? "match" : (info.c2pa.content_hash_mismatched ? "mismatch" : (info.c2pa.content_hash_checked ? "checked" : "not checked")));
@@ -1833,11 +2314,17 @@ static int list_text_path(const char *path) {
 static int run_show(int argc, char **argv, int arg_index) {
     int status = 0;
     int verbose = 0;
+    int c2pa_trust_validation = 0;
 
     while (arg_index < argc) {
         const char *arg = argv[arg_index];
         if (rt_strcmp(arg, "-v") == 0 || rt_strcmp(arg, "--verbose") == 0) {
             verbose = 1;
+            arg_index += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--c2pa-trust") == 0 || rt_strcmp(arg, "--trust") == 0) {
+            c2pa_trust_validation = 1;
             arg_index += 1;
             continue;
         }
@@ -1853,10 +2340,10 @@ static int run_show(int argc, char **argv, int arg_index) {
         break;
     }
     if (arg_index >= argc) {
-        return show_path(0, verbose) == 0 ? 0 : 1;
+        return show_path(0, verbose, c2pa_trust_validation) == 0 ? 0 : 1;
     }
     while (arg_index < argc) {
-        if (show_path(argv[arg_index], verbose) != 0) {
+        if (show_path(argv[arg_index], verbose, c2pa_trust_validation) != 0) {
             status = 1;
         }
         arg_index += 1;

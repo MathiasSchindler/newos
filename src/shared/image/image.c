@@ -167,7 +167,7 @@ void image_set_c2pa(ImageInfo *info, const ImageC2paInfo *c2pa) {
     }
 }
 
-int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
+int image_probe_ex(const unsigned char *data, size_t size, const ImageProbeOptions *options, ImageInfo *info_out) {
     ImageInfo info;
 
     if (data == 0 || info_out == 0) {
@@ -182,7 +182,10 @@ int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
         image_probe_webp(data, size, &info) ||
         image_probe_bmp(data, size, &info)) {
         ImageC2paInfo c2pa;
-        if (image_c2pa_analyze(data, size, &c2pa) == 0) {
+        ImageC2paOptions c2pa_options;
+
+        c2pa_options.trust_validation = options != 0 && options->c2pa_trust_validation;
+        if (image_c2pa_analyze_ex(data, size, &c2pa_options, &c2pa) == 0) {
             image_set_c2pa(&info, &c2pa);
         }
         *info_out = info;
@@ -191,6 +194,10 @@ int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
 
     *info_out = info;
     return -1;
+}
+
+int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out) {
+    return image_probe_ex(data, size, 0, info_out);
 }
 
 int image_validate_ex(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation_out) {

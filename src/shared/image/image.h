@@ -70,11 +70,22 @@ typedef struct {
     unsigned int assertion_count;
     unsigned int signature_count;
     unsigned int cose_signature_count;
+    unsigned int signature_verified_count;
+    unsigned int signature_invalid_count;
     unsigned int x509_cert_count;
     unsigned int x509_parseable_cert_count;
+    unsigned int validation_failure_count;
     unsigned int ingredient_count;
     const char *status;
 } ImageC2paInfo;
+
+typedef struct {
+    int trust_validation;
+} ImageC2paOptions;
+
+typedef struct {
+    int c2pa_trust_validation;
+} ImageProbeOptions;
 
 typedef struct {
     ImageFormat format;
@@ -112,7 +123,9 @@ typedef struct {
 void image_info_init(ImageInfo *info);
 void image_c2pa_info_init(ImageC2paInfo *info);
 int image_c2pa_analyze(const unsigned char *data, size_t size, ImageC2paInfo *info);
+int image_c2pa_analyze_ex(const unsigned char *data, size_t size, const ImageC2paOptions *options, ImageC2paInfo *info);
 int image_probe(const unsigned char *data, size_t size, ImageInfo *info_out);
+int image_probe_ex(const unsigned char *data, size_t size, const ImageProbeOptions *options, ImageInfo *info_out);
 int image_validate(const unsigned char *data, size_t size, ImageValidation *validation_out);
 int image_validate_ex(const unsigned char *data, size_t size, const ImageValidationOptions *options, ImageValidation *validation_out);
 const char *image_format_name(ImageFormat format);

@@ -7,7 +7,7 @@ imgcheck - validate image file structure
 ## SYNOPSIS
 
 ```
-imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [-R|--recursive] [file ...]
+imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [--c2pa-trust] [-R|--recursive] [file ...]
 ```
 
 ## DESCRIPTION
@@ -34,6 +34,9 @@ When no file is provided, `imgcheck` reads from standard input.
 - `-p`, `--plain` - print tab-separated fields for scripts: `path format status failure-offset message`, with an additional C2PA status field when C2PA metadata is present
 - `--json` - print one JSON object per input with `path`, `format`, `valid`, `status`, `message`, `failure_offset`, and a `c2pa` object
 - `--strict` - reject additional spec-discouraged constructs, currently including ancillary PNG chunks after IDAT
+- `--c2pa-trust`, `--trust` - enable conservative C2PA trust-policy reporting;
+	explicit C2PA hash mismatches, invalid C2PA signatures, embedded validation
+	failures cause a non-zero check result
 - `-R`, `--recursive` - walk directory operands recursively
 - `-h`, `--help` - show usage
 
@@ -55,10 +58,13 @@ is available, plain output prints `-` and JSON prints `null`.
 	recognizes COSE_Sign1 signatures, reports embedded X.509 certificate blobs,
 	and attempts SHA-256 content-hash checks for visible hash-data bindings.
 	ES256/P-256 COSE signatures can be verified against embedded P-256 leaf
-	certificates. Certificate-chain building, trust-anchor policy, and full C2PA
-	claim conformance validation are not implemented yet and are reported as
-	unsupported. A manipulated image can therefore still have a parseable C2PA
-	manifest store.
+	certificates, and every supported COSE signature is counted as verified or
+	invalid. With `--c2pa-trust`, `imgcheck` runs a conservative policy check:
+	explicit hash mismatches, invalid signatures, malformed certificate blobs,
+	embedded validation failures, and timestamped manifests without implemented
+	timestamp validation report as untrusted. External trust anchors,
+	certificate path building, TSA validation, and full C2PA claim conformance
+	are not implemented yet.
 - Very large inputs are read into memory before validation.
 
 ## EXAMPLES

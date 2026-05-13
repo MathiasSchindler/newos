@@ -7,7 +7,7 @@ imginfo - show basic image metadata
 ## SYNOPSIS
 
 ```
-imginfo [-m|--mime] [-p|--plain] [-d|--details] [--json] [--canonical-ext] [-R|--recursive] [file ...]
+imginfo [-m|--mime] [-p|--plain] [-d|--details] [--json] [--c2pa-trust] [--canonical-ext] [-R|--recursive] [file ...]
 ```
 
 ## DESCRIPTION
@@ -46,6 +46,10 @@ change the exit status and does not alter standard output.
   animation duration, loop count, and properties when known
 - `--json` - print one JSON object per input, including the canonical extension
   and known metadata fields
+- `--c2pa-trust`, `--trust` - enable conservative C2PA trust-policy reporting
+  based on verified signatures, parseable embedded certificates, explicit
+  content-hash mismatches, embedded validation failures, and unsupported
+  timestamp trust checks
 - `--canonical-ext` - print only the detected canonical extension for each input
 - `-R`, `--recursive` - walk directory operands recursively
 - `-h`, `--help` - show usage
@@ -83,10 +87,10 @@ Properties may include `alpha`, `palette`, `interlaced`, `animated`,
 
 When C2PA metadata is present, `--details` prints a structural summary with the
 carrier, signature algorithm, JUMBF box count, CBOR box count, manifest count,
-claim count, assertion-store count, COSE signature count, X.509 certificate
-count, content-hash status, signature-verification status, trust-validation
-status, and ingredient count. JSON output includes the same summary in a `c2pa`
-object.
+claim count, assertion-store count, COSE signature count, verified/invalid
+signature counts, X.509 certificate count, embedded validation-failure count,
+content-hash status, signature-verification status, trust-validation status,
+and ingredient count. JSON output includes the same summary in a `c2pa` object.
 
 ## LIMITATIONS
 
@@ -102,8 +106,12 @@ object.
   recognizes COSE_Sign1 signatures, reports embedded X.509 certificate blobs,
   and attempts SHA-256 content-hash checks for visible hash-data bindings.
   ES256/P-256 COSE signatures can be verified against embedded P-256 leaf
-  certificates. Certificate chain building, trust-anchor policy, and full claim
-  conformance validation are not implemented yet and are reported as unsupported.
+  certificates. With `--c2pa-trust`, `imginfo` runs a conservative policy check:
+  explicit hash mismatches, invalid signatures, malformed certificate blobs,
+  embedded validation failures, and timestamped manifests without implemented
+  timestamp validation report as untrusted. External trust anchors, certificate
+  path building, TSA validation, and full claim conformance are not implemented
+  yet.
 - EXIF orientation is read from the first TIFF-style image file directory only;
   maker notes and deeper metadata trees are not interpreted.
 - Filename-extension checks are heuristic. Extension mismatches are warnings
