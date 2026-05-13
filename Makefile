@@ -112,7 +112,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding selfhost inception test test-phase1 test-smoke test-freestanding benchmark clean
+.PHONY: all host freestanding selfhost inception test test-phase1 test-smoke test-freestanding test-inception benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -121,6 +121,9 @@ test-phase1: host
 
 test-smoke: host
 	SKIP_PHASE1=1 sh ./tests/run_smoke_tests.sh
+
+test-inception: inception
+	NEWOS_INCEPTION_BUILD_DIR="$(abspath $(INCEPTION_BUILD_DIR))" sh ./tests/suites/inception.sh
 
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 test-freestanding:

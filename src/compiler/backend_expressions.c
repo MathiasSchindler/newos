@@ -670,6 +670,91 @@ static void append_pointer_type(char *buffer, size_t buffer_size) {
     buffer[length] = '\0';
 }
 
+static void expr_copy_cast_type_text(ExprParser *parser, char *buffer, size_t buffer_size) {
+    char first_identifier[64];
+    int saw_unsigned = 0;
+    int saw_signed = 0;
+    int saw_pointer = 0;
+    int saw_tag_keyword = 0;
+
+    if (buffer_size == 0) {
+        return;
+    }
+    buffer[0] = '\0';
+    first_identifier[0] = '\0';
+
+    if (!expr_match_punct(parser, "(")) {
+        return;
+    }
+    while (parser->current.kind != EXPR_TOKEN_EOF &&
+           !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
+        if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "*")) {
+            saw_pointer = 1;
+            expr_next(parser);
+            continue;
+        }
+        if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
+            if (names_equal(parser->current.text, "const") || names_equal(parser->current.text, "volatile") ||
+                names_equal(parser->current.text, "register")) {
+                expr_next(parser);
+                continue;
+            }
+            if (names_equal(parser->current.text, "unsigned")) {
+                saw_unsigned = 1;
+                expr_next(parser);
+                continue;
+            }
+            if (names_equal(parser->current.text, "signed")) {
+                saw_signed = 1;
+                expr_next(parser);
+                continue;
+            }
+            if (names_equal(parser->current.text, "struct") || names_equal(parser->current.text, "union") ||
+                names_equal(parser->current.text, "enum")) {
+                saw_tag_keyword = 1;
+                rt_copy_string(buffer, buffer_size, names_equal(parser->current.text, "union") ? "union:" : "struct:");
+                expr_next(parser);
+                if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
+                    rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), parser->current.text);
+                    expr_next(parser);
+                }
+                continue;
+            }
+            if (first_identifier[0] == '\0') {
+                rt_copy_string(first_identifier, sizeof(first_identifier), parser->current.text);
+            }
+            expr_next(parser);
+            continue;
+        }
+        expr_next(parser);
+    }
+
+    if (buffer[0] == '\0' && first_identifier[0] != '\0') {
+        char aggregate_name[128];
+        rt_copy_string(aggregate_name, sizeof(aggregate_name), "struct:");
+        rt_copy_string(aggregate_name + rt_strlen(aggregate_name), sizeof(aggregate_name) - rt_strlen(aggregate_name), first_identifier);
+        if (lookup_aggregate_size(parser->state, aggregate_name) > 0) {
+            rt_copy_string(buffer, buffer_size, aggregate_name);
+        } else {
+            if (saw_unsigned) {
+                rt_copy_string(buffer, buffer_size, "unsigned ");
+                rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), first_identifier);
+            } else if (saw_signed) {
+                rt_copy_string(buffer, buffer_size, "signed ");
+                rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), first_identifier);
+            } else {
+                rt_copy_string(buffer, buffer_size, first_identifier);
+            }
+        }
+    }
+    if (!saw_tag_keyword && buffer[0] == '\0') {
+        rt_copy_string(buffer, buffer_size, saw_unsigned ? "unsigned int" : "int");
+    }
+    if (saw_pointer) {
+        append_pointer_type(buffer, buffer_size);
+    }
+}
+
 static void skip_inferred_parenthesized(ExprParser *parser) {
     int depth = 1;
 
@@ -715,6 +800,9 @@ static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buff
         }
     } else if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
         if (expr_looks_like_cast(parser)) {
+            ExprParser cast_parser = *parser;
+            char cast_type[128];
+            expr_copy_cast_type_text(&cast_parser, cast_type, sizeof(cast_type));
             expr_next(parser);
             while (parser->current.kind != EXPR_TOKEN_EOF &&
                    !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
@@ -723,7 +811,11 @@ static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buff
             if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")")) {
                 expr_next(parser);
             }
-            expr_infer_result_type(parser, buffer, buffer_size);
+            if (cast_type[0] != '\0') {
+                rt_copy_string(buffer, buffer_size, cast_type);
+            } else {
+                expr_infer_result_type(parser, buffer, buffer_size);
+            }
             return;
         }
         expr_next(parser);

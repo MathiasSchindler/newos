@@ -23,6 +23,18 @@ static void pop_loop_labels(CompilerParser *parser) {
     }
 }
 
+static int token_is_string_literal_text(const CompilerToken *token, const char *text) {
+    size_t text_length = rt_strlen(text);
+
+    if (token->kind != COMPILER_TOKEN_STRING || token->length != text_length + 2U) {
+        return 0;
+    }
+    if (token->start[0] != '"' || token->start[token->length - 1U] != '"') {
+        return 0;
+    }
+    return rt_strncmp(token->start + 1, text, text_length) == 0;
+}
+
 int parse_statement(CompilerParser *parser) {
     if (current_is_punct(parser, "{")) {
         return parse_compound_statement(parser);
@@ -30,6 +42,7 @@ int parse_statement(CompilerParser *parser) {
 
     if (current_is_identifier(parser) &&
         (token_text_equals(&parser->current, "__asm__") || token_text_equals(&parser->current, "__asm"))) {
+        int is_syscall_asm = 0;
         if (advance(parser) != 0) {
             return -1;
         }
@@ -38,7 +51,17 @@ int parse_statement(CompilerParser *parser) {
                 return -1;
             }
         }
+        if (current_is_punct(parser, "(")) {
+            CompilerToken template_token;
+            if (peek_token(parser, &template_token) != 0) {
+                return -1;
+            }
+            is_syscall_asm = token_is_string_literal_text(&template_token, "syscall");
+        }
         if (skip_balanced_group(parser, "(", ")") != 0 || expect_punct(parser, ";") != 0) {
+            return -1;
+        }
+        if (is_syscall_asm && emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "asm-syscall", "")) != 0) {
             return -1;
         }
         return 0;

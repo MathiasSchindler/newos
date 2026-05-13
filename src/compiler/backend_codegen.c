@@ -710,6 +710,7 @@ static int decl_alignment_bytes(const BackendState *state, const char *type_text
     if (text_contains(type, "*")) {
         return 8;
     }
+
     if (text_contains(type, "char")) {
         return 1;
     }
@@ -1818,6 +1819,25 @@ static int emit_function_return(BackendState *state) {
     return emit_instruction(state, "leave") == 0 && emit_instruction(state, "ret") == 0 ? 0 : -1;
 }
 
+static int emit_x86_64_syscall_inline_asm(BackendState *state) {
+    if (backend_is_aarch64(state)) {
+        backend_set_error(state->backend, "syscall inline asm is only supported on x86_64");
+        return -1;
+    }
+    if (emit_load_name_into_register(state, "rdi", "%rdi") != 0 ||
+        emit_load_name_into_register(state, "rsi", "%rsi") != 0 ||
+        emit_load_name_into_register(state, "rdx", "%rdx") != 0 ||
+        emit_load_name_into_register(state, "r10", "%r10") != 0 ||
+        emit_load_name_into_register(state, "r8", "%r8") != 0 ||
+        emit_load_name_into_register(state, "r9", "%r9") != 0 ||
+        emit_load_name_into_register(state, "rax", "%rax") != 0 ||
+        emit_instruction(state, "syscall") != 0 ||
+        emit_store_name(state, "rax") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static void make_switch_label(char *buffer,
                               size_t buffer_size,
                               unsigned int switch_id,
@@ -2182,6 +2202,14 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
         if (starts_with(line, "eval ")) {
             if (emit_expression(&state, line + 5) != 0) {
+                backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                return -1;
+            }
+            continue;
+        }
+
+        if (starts_with(line, "asm-syscall")) {
+            if (emit_x86_64_syscall_inline_asm(&state) != 0) {
                 backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
             }

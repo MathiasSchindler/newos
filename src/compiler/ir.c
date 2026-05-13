@@ -1606,6 +1606,12 @@ int compiler_ir_optimize(CompilerIr *ir) {
             continue;
         }
 
+        if (ir_starts_with(line, "asm-syscall")) {
+            ir_clear_local_values(&state);
+            i += 1U;
+            continue;
+        }
+
         if (ir_starts_with(line, "const ")) {
             char name[COMPILER_IR_NAME_CAPACITY];
             const char *expr = 0;
