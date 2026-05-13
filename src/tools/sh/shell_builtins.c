@@ -3,9 +3,7 @@
 #include "shell_shared.h"
 #include "runtime.h"
 
-static const char *const SH_BUILTIN_NAMES[] = {
-    "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias", "set", "shift"
-};
+#define SH_BUILTIN_COUNT 12U
 
 static int sh_is_valid_env_name(const char *name) {
     size_t i = 0U;
@@ -22,14 +20,25 @@ static int sh_is_valid_env_name(const char *name) {
 }
 
 size_t sh_shell_builtin_count(void) {
-    return sizeof(SH_BUILTIN_NAMES) / sizeof(SH_BUILTIN_NAMES[0]);
+    return SH_BUILTIN_COUNT;
 }
 
 const char *sh_shell_builtin_name_at(size_t index) {
-    if (index >= sh_shell_builtin_count()) {
-        return 0;
+    switch (index) {
+        case 0: return "cd";
+        case 1: return "exit";
+        case 2: return "jobs";
+        case 3: return "history";
+        case 4: return "fg";
+        case 5: return "bg";
+        case 6: return "export";
+        case 7: return "unset";
+        case 8: return "command";
+        case 9: return "alias";
+        case 10: return "set";
+        case 11: return "shift";
+        default: return 0;
     }
-    return SH_BUILTIN_NAMES[index];
 }
 
 static int builtin_jobs(void) {
@@ -259,15 +268,18 @@ static int builtin_shift_command(const ShCommand *cmd) {
 }
 
 int sh_is_shell_builtin_name(const char *name) {
-    size_t i;
-
-    for (i = 0; i < sh_shell_builtin_count(); ++i) {
-        if (rt_strcmp(name, SH_BUILTIN_NAMES[i]) == 0) {
-            return 1;
-        }
-    }
-
-    return 0;
+    return rt_strcmp(name, "cd") == 0 ||
+           rt_strcmp(name, "exit") == 0 ||
+           rt_strcmp(name, "jobs") == 0 ||
+           rt_strcmp(name, "history") == 0 ||
+           rt_strcmp(name, "fg") == 0 ||
+           rt_strcmp(name, "bg") == 0 ||
+           rt_strcmp(name, "export") == 0 ||
+           rt_strcmp(name, "unset") == 0 ||
+           rt_strcmp(name, "command") == 0 ||
+           rt_strcmp(name, "alias") == 0 ||
+           rt_strcmp(name, "set") == 0 ||
+           rt_strcmp(name, "shift") == 0;
 }
 
 int sh_try_run_builtin(const ShPipeline *pipeline, int *status_out) {

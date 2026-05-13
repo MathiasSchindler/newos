@@ -46,6 +46,7 @@ static void remember_job(const int *pids, size_t pid_count, const char *command_
 
 int sh_execute_pipeline(const ShPipeline *pipeline, int background, const char *command_text) {
     int pids[SH_MAX_COMMANDS];
+    char resolved_paths[SH_MAX_COMMANDS][SH_MAX_LINE];
     int prev_read_fd = -1;
     int exit_status = 0;
     size_t i;
@@ -54,6 +55,9 @@ int sh_execute_pipeline(const ShPipeline *pipeline, int background, const char *
         int pipe_fds[2] = { -1, -1 };
         int stdin_fd = prev_read_fd;
         int stdout_fd = -1;
+        char *argv_copy[SH_MAX_ARGS + 1];
+        char *original_argv0 = pipeline->commands[i].argv[0];
+        int argi;
 
         if (i + 1 < pipeline->count) {
             if (platform_create_pipe(pipe_fds) != 0) {
@@ -66,8 +70,28 @@ int sh_execute_pipeline(const ShPipeline *pipeline, int background, const char *
             stdout_fd = pipe_fds[1];
         }
 
+        if (sh_resolve_shell_command_path(original_argv0, resolved_paths[i], sizeof(resolved_paths[i])) != 0) {
+            if (stdin_fd >= 0) {
+                platform_close(stdin_fd);
+            }
+            if (pipe_fds[0] >= 0) {
+                platform_close(pipe_fds[0]);
+            }
+            if (pipe_fds[1] >= 0) {
+                platform_close(pipe_fds[1]);
+            }
+            rt_write_cstr(2, "sh: failed to execute ");
+            rt_write_line(2, original_argv0);
+            return 127;
+        }
+
+        for (argi = 0; argi <= pipeline->commands[i].argc && argi <= SH_MAX_ARGS; ++argi) {
+            argv_copy[argi] = pipeline->commands[i].argv[argi];
+        }
+        argv_copy[0] = resolved_paths[i];
+
         if (platform_spawn_process(
-                pipeline->commands[i].argv,
+                argv_copy,
                 stdin_fd,
                 stdout_fd,
                 pipeline->commands[i].input_path,
@@ -84,7 +108,7 @@ int sh_execute_pipeline(const ShPipeline *pipeline, int background, const char *
                 platform_close(pipe_fds[1]);
             }
             rt_write_cstr(2, "sh: failed to execute ");
-            rt_write_line(2, pipeline->commands[i].argv[0]);
+            rt_write_line(2, original_argv0);
             return 127;
         }
 

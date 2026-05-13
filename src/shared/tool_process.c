@@ -91,6 +91,6 @@ int tool_process_matches(const PlatformProcessEntry *entry, const ToolProcessMat
         return rt_strcmp(options->pattern, name) == 0 || rt_strcmp(options->pattern, base) == 0;
     }
 
-    return tool_regex_search(options->pattern, name, options->ignore_case, 0U, &start, &end) == 0 ||
-           tool_regex_search(options->pattern, base, options->ignore_case, 0U, &start, &end) == 0;
+        return tool_regex_search(options->pattern, name, options->ignore_case, 0U, &start, &end) != 0 ||
+            tool_regex_search(options->pattern, base, options->ignore_case, 0U, &start, &end) != 0;
 }

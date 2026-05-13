@@ -36,6 +36,27 @@ The repository includes a structured shell-based test suite under [tests](tests)
 
 On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path.
 
+## Userland shell
+
+On Linux, [run-userland.sh](run-userland.sh) starts an isolated terminal session backed by the freestanding build. It runs `make freestanding` by default, then execs the project `env` with an empty environment, `PATH` pointing only at `build/freestanding-linux-$(uname -m)`, `MANPATH` pointing at the repository manuals, and the project `sh` as the shell:
+
+```
+./run-userland.sh
+./run-userland.sh --no-build
+./run-userland.sh -- 'man ls'
+```
+
+This does not install files or change the host system; closing the shell returns to the normal Ubuntu environment.
+
+For a smoke test from inside that environment, run:
+
+```
+./test.sh
+./test.sh --no-build
+```
+
+The test enters the freestanding shell with the isolated `PATH` and checks core command lookup, text tools, filesystem operations, archive tools, shell behavior, manuals, SQL, and a bounded local `httpd`/`wget` round trip.
+
 ## Documentation
 
 Manual pages live under [man](man), with user-facing commands typically documented in [man/1](man/1) and broader design notes in [man/7](man/7).

@@ -69,6 +69,13 @@ assert_files_equal "$WORK_DIR/sort.expected" "$WORK_DIR/sort.out" "freestanding 
 printf 'alpha\nbeta\n' | "$BIN_DIR/grep" beta > "$WORK_DIR/grep.out"
 assert_file_contains "$WORK_DIR/grep.out" '^beta$' "freestanding grep did not match stdin"
 
+PATH="$BIN_DIR" "$BIN_DIR/which" ls sql > "$WORK_DIR/which.out"
+cat > "$WORK_DIR/which.expected" <<EOF
+$BIN_DIR/ls
+$BIN_DIR/sql
+EOF
+assert_files_equal "$WORK_DIR/which.expected" "$WORK_DIR/which.out" "freestanding which did not honor PATH"
+
 cat > "$WORK_DIR/script.sh" <<EOF
 $BIN_DIR/echo shell-ok
 $BIN_DIR/printf '%s\\n' pipe-ok | $BIN_DIR/tr a-z A-Z

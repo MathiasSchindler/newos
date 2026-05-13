@@ -36,18 +36,18 @@ static int path_exists_as_file(const char *path) {
 }
 
 static int is_shell_builtin(const char *name) {
-    static const char *builtins[] = {
-        "cd", "exit", "jobs", "history", "fg", "bg", "export", "unset", "command", "alias"
-    };
-    size_t i;
-
-    for (i = 0; i < sizeof(builtins) / sizeof(builtins[0]); ++i) {
-        if (rt_strcmp(name, builtins[i]) == 0) {
-            return 1;
-        }
-    }
-
-    return 0;
+    return rt_strcmp(name, "cd") == 0 ||
+           rt_strcmp(name, "exit") == 0 ||
+           rt_strcmp(name, "jobs") == 0 ||
+           rt_strcmp(name, "history") == 0 ||
+           rt_strcmp(name, "fg") == 0 ||
+           rt_strcmp(name, "bg") == 0 ||
+           rt_strcmp(name, "export") == 0 ||
+           rt_strcmp(name, "unset") == 0 ||
+           rt_strcmp(name, "command") == 0 ||
+           rt_strcmp(name, "alias") == 0 ||
+           rt_strcmp(name, "set") == 0 ||
+           rt_strcmp(name, "shift") == 0;
 }
 
 static int is_exported_shell_function(const char *name) {

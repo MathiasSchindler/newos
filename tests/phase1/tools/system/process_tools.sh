@@ -57,6 +57,16 @@ pgrep_none_status=0
 "$ROOT_DIR/build/pgrep" -P $$ -x sleep > /dev/null 2>&1 || pgrep_none_status=$?
 assert_exit_code "$pgrep_none_status" '1' "pgrep should return 1 when no process matches"
 
+pgrep_regex_none_status=0
+"$ROOT_DIR/build/pgrep" definitely_no_such_process_name > "$WORK_DIR/pgrep_regex_none.out" 2>&1 || pgrep_regex_none_status=$?
+assert_exit_code "$pgrep_regex_none_status" '1' "pgrep non-exact matching should return 1 when no process matches"
+[ ! -s "$WORK_DIR/pgrep_regex_none.out" ] || fail "pgrep non-exact no-match should not print unrelated processes"
+
+pkill_regex_none_status=0
+"$ROOT_DIR/build/pkill" -0 definitely_no_such_process_name > "$WORK_DIR/pkill_regex_none.out" 2>&1 || pkill_regex_none_status=$?
+assert_exit_code "$pkill_regex_none_status" '1' "pkill non-exact matching should return 1 when no process matches"
+[ ! -s "$WORK_DIR/pkill_regex_none.out" ] || fail "pkill non-exact no-match should not signal unrelated processes"
+
 assert_command_succeeds "$ROOT_DIR/build/time" "$ROOT_DIR/build/true" > "$WORK_DIR/time.out" 2> "$WORK_DIR/time.err"
 assert_file_contains "$WORK_DIR/time.err" '^real[[:space:]][[:digit:]]' "time did not report real elapsed time"
 
