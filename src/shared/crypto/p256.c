@@ -1,5 +1,7 @@
 #include "crypto/p256.h"
 #include "crypto/crypto_util.h"
+#include "crypto/sha256.h"
+#include "runtime.h"
 
 #include <stddef.h>
 
@@ -388,6 +390,42 @@ static int p256_double_scalar_mult_affine(P256Int *out_x,
     return 1;
 }
 
+static int p256_scalar_mult_affine(P256Int *out_x, P256Int *out_y, const P256Int *scalar, const P256Int *base_x, const P256Int *base_y) {
+    P256Jacobian result;
+    P256Jacobian next;
+    P256Int z_inv;
+    P256Int z2;
+    P256Int z3;
+    int bit;
+
+    p256_jacobian_set_infinity(&result);
+    for (bit = 255; bit >= 0; --bit) {
+        p256_point_double(&next, &result);
+        result = next;
+        if (p256_get_bit(scalar, (unsigned int)bit)) {
+            p256_point_add_mixed(&next, &result, base_x, base_y);
+            result = next;
+        }
+    }
+    if (result.infinity) {
+        return 0;
+    }
+    field_inv(&z_inv, &result.z);
+    field_square(&z2, &z_inv);
+    field_mul(&z3, &z2, &z_inv);
+    field_mul(out_x, &result.x, &z2);
+    field_mul(out_y, &result.y, &z3);
+    return 1;
+}
+
+static void p256_to_be(unsigned char bytes[32], const P256Int *value) {
+    size_t i;
+    for (i = 0U; i < 32U; ++i) {
+        size_t word_index = i >> 2U;
+        bytes[31U - i] = (unsigned char)(value->word[word_index] >> ((i & 3U) * 8U));
+    }
+}
+
 int crypto_p256_ecdsa_sha256_verify(
     const unsigned char public_key[CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE],
     const unsigned char digest[32],
@@ -434,4 +472,64 @@ int crypto_p256_ecdsa_sha256_verify(
         p256_copy(&rx, &reduced);
     }
     return p256_int_equal(&rx, &r);
+}
+
+int crypto_p256_ecdsa_sha256_sign(
+    const unsigned char private_key[CRYPTO_P256_SCALAR_SIZE],
+    const unsigned char digest[32],
+    unsigned char signature[CRYPTO_P256_ECDSA_SIGNATURE_SIZE]
+) {
+    P256Int d;
+    P256Int z;
+    P256Int k;
+    P256Int kinv;
+    P256Int rx;
+    P256Int ry;
+    P256Int r;
+    P256Int s;
+    P256Int rd;
+    P256Int sum;
+    unsigned char nonce_input[65];
+    unsigned char nonce_hash[CRYPTO_SHA256_DIGEST_SIZE];
+    unsigned int counter;
+
+    if (private_key == 0 || digest == 0 || signature == 0) {
+        return 0;
+    }
+    p256_from_be(&d, private_key);
+    p256_from_be(&z, digest);
+    if (p256_is_zero(&d) || p256_cmp(&d, &P256_N) >= 0) {
+        return 0;
+    }
+    memcpy(nonce_input, private_key, 32U);
+    memcpy(nonce_input + 32U, digest, 32U);
+    for (counter = 0U; counter < 64U; ++counter) {
+        nonce_input[64] = (unsigned char)counter;
+        crypto_sha256_hash(nonce_input, sizeof(nonce_input), nonce_hash);
+        p256_from_be(&k, nonce_hash);
+        p256_mod_reduce_once(&k, &P256_N);
+        if (p256_is_zero(&k)) {
+            continue;
+        }
+        if (!p256_scalar_mult_affine(&rx, &ry, &k, &P256_GX, &P256_GY)) {
+            continue;
+        }
+        (void)ry;
+        p256_copy(&r, &rx);
+        p256_mod_reduce_once(&r, &P256_N);
+        if (p256_is_zero(&r)) {
+            continue;
+        }
+        scalar_inv(&kinv, &k);
+        scalar_mul(&rd, &r, &d);
+        p256_mod_add(&sum, &z, &rd, &P256_N);
+        scalar_mul(&s, &kinv, &sum);
+        if (p256_is_zero(&s)) {
+            continue;
+        }
+        p256_to_be(signature, &r);
+        p256_to_be(signature + 32U, &s);
+        return 1;
+    }
+    return 0;
 }

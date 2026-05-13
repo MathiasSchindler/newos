@@ -14,4 +14,10 @@ int crypto_p256_ecdsa_sha256_verify(
     const unsigned char signature[CRYPTO_P256_ECDSA_SIGNATURE_SIZE]
 );
 
+int crypto_p256_ecdsa_sha256_sign(
+    const unsigned char private_key[CRYPTO_P256_SCALAR_SIZE],
+    const unsigned char digest[32],
+    unsigned char signature[CRYPTO_P256_ECDSA_SIGNATURE_SIZE]
+);
+
 #endif
