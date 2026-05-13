@@ -70,6 +70,7 @@ typedef struct {
     uint64_t out_text_offset;
     uint64_t out_data_offset;
     uint64_t out_bss_offset;
+    int live;
 } LinkObject;
 
 typedef struct {
@@ -337,6 +338,82 @@ static int add_global(const char *name, uint64_t value, char *error_out, size_t 
     return 0;
 }
 
+static int find_defined_global_object(LinkObject *objects, size_t object_count, const char *name) {
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        LinkObject *object = &objects[i];
+        uint32_t count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+        uint32_t symbol_index;
+
+        for (symbol_index = 0; symbol_index < count; ++symbol_index) {
+            const unsigned char *symbol = symbol_entry(object, symbol_index);
+            if (symbol == 0) {
+                continue;
+            }
+            if ((symbol[4] >> 4U) == STB_GLOBAL && read_u16(symbol + 6) != SHN_UNDEF && rt_strcmp(symbol_name(object, symbol), name) == 0) {
+                return (int)i;
+            }
+        }
+    }
+    return -1;
+}
+
+static int mark_live_objects(LinkObject *objects, size_t object_count, char *error_out, size_t error_size) {
+    int root_index = find_defined_global_object(objects, object_count, "_start");
+    int changed = 1;
+
+    if (root_index < 0) {
+        set_link_error(error_out, error_size, "undefined entry symbol", "_start");
+        return -1;
+    }
+    objects[root_index].live = 1;
+
+    while (changed) {
+        size_t i;
+
+        changed = 0;
+        for (i = 0; i < object_count; ++i) {
+            LinkObject *object = &objects[i];
+            uint64_t entry_count;
+            uint64_t reloc_index;
+
+            if (!object->live || object->rela_text_index == 0 || object->rela_text_size == 0) {
+                continue;
+            }
+            entry_count = object->rela_text_size / object->rela_text_entsize;
+            for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
+                const unsigned char *reloc = object->file + object->rela_text_offset + (reloc_index * object->rela_text_entsize);
+                uint64_t info = read_u64(reloc + 8);
+                uint32_t symbol_index = (uint32_t)(info >> 32U);
+                const unsigned char *symbol = symbol_entry(object, symbol_index);
+                int owner_index;
+                const char *name;
+
+                if (symbol == 0) {
+                    set_link_error(error_out, error_size, "invalid relocation in object", object->path);
+                    return -1;
+                }
+                if (read_u16(symbol + 6) != SHN_UNDEF) {
+                    continue;
+                }
+                name = symbol_name(object, symbol);
+                owner_index = find_defined_global_object(objects, object_count, name);
+                if (owner_index < 0) {
+                    set_link_error(error_out, error_size, "undefined symbol", name);
+                    return -1;
+                }
+                if (!objects[owner_index].live) {
+                    objects[owner_index].live = 1;
+                    changed = 1;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
 static int symbol_value(const LinkObject *object, const unsigned char *symbol, uint64_t *value_out, char *error_out, size_t error_size) {
     uint16_t shndx = read_u16(symbol + 6);
     uint64_t value = read_u64(symbol + 8);
@@ -379,6 +456,9 @@ static int collect_globals(LinkObject *objects, size_t object_count, char *error
         uint32_t symbol_count = (uint32_t)(object->symtab_size / object->symtab_entsize);
         uint32_t symbol_index;
 
+        if (!object->live) {
+            continue;
+        }
         for (symbol_index = 0; symbol_index < symbol_count; ++symbol_index) {
             const unsigned char *symbol = symbol_entry(object, symbol_index);
             unsigned int bind;
@@ -413,7 +493,7 @@ static int apply_relocations(LinkObject *objects, size_t object_count, unsigned 
         uint64_t entry_count;
         uint64_t reloc_index;
 
-        if (object->rela_text_index == 0 || object->rela_text_size == 0) {
+        if (!object->live || object->rela_text_index == 0 || object->rela_text_size == 0) {
             continue;
         }
         entry_count = object->rela_text_size / object->rela_text_entsize;
@@ -461,14 +541,23 @@ static void layout_objects(LinkObject *objects, size_t object_count, uint64_t *t
     size_t i;
 
     for (i = 0; i < object_count; ++i) {
+        if (!objects[i].live) {
+            continue;
+        }
         objects[i].out_text_offset = text_size;
         text_size = align_u64(text_size + objects[i].text_size, 16U);
     }
     for (i = 0; i < object_count; ++i) {
+        if (!objects[i].live) {
+            continue;
+        }
         objects[i].out_data_offset = data_size;
         data_size = align_u64(data_size + objects[i].data_size, 8U);
     }
     for (i = 0; i < object_count; ++i) {
+        if (!objects[i].live) {
+            continue;
+        }
         objects[i].out_bss_offset = bss_size;
         bss_size = align_u64(bss_size + objects[i].bss_size, 8U);
     }
@@ -481,6 +570,9 @@ static void copy_sections(LinkObject *objects, size_t object_count, unsigned cha
     size_t i;
 
     for (i = 0; i < object_count; ++i) {
+        if (!objects[i].live) {
+            continue;
+        }
         if (objects[i].text_size > 0) {
             memcpy(output + objects[i].out_text_offset, objects[i].file + objects[i].text_offset, (size_t)objects[i].text_size);
         }
@@ -549,6 +641,9 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
             return -1;
         }
     }
+    if (mark_live_objects(linker_objects, object_count, error_out, error_size) != 0) {
+        return -1;
+    }
 
     layout_objects(linker_objects, object_count, &text_size, &data_size, &bss_size);
     text_file_offset = align_u64(ELF64_EHDR_SIZE + ELF64_PHDR_SIZE, 16U);
@@ -561,6 +656,9 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         return -1;
     }
     for (i = 0; i < object_count; ++i) {
+        if (!linker_objects[i].live) {
+            continue;
+        }
         linker_objects[i].out_text_offset += text_file_offset;
         linker_objects[i].out_data_offset += data_file_offset;
         linker_objects[i].out_bss_offset += bss_vaddr_offset;
