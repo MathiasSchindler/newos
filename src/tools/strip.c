@@ -77,10 +77,10 @@ static int copy_prefix(int input_fd, int output_fd, unsigned long long count) {
 static int strip_one_file(const char *input_path, const char *output_path, int inplace) {
     PlatformDirEntry entry;
     unsigned char header[64];
-    unsigned short elf_type;
-    unsigned short phentsize;
-    unsigned short phnum;
-    unsigned long long phoff;
+    unsigned short elf_type = 0U;
+    unsigned short phentsize = 0U;
+    unsigned short phnum = 0U;
+    unsigned long long phoff = 0ULL;
     unsigned long long file_size;
     unsigned long long copy_size = 0ULL;
     int is_elf = 0;
