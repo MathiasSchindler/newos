@@ -7,12 +7,14 @@
 #define COMPILER_MAX_INCLUDE_DIRS 16
 #define COMPILER_MAX_MACROS 512
 #define COMPILER_MACRO_NAME_CAPACITY 64
-#define COMPILER_MACRO_VALUE_CAPACITY 256
+#define COMPILER_MACRO_VALUE_CAPACITY 2048
 
 typedef struct {
     char name[COMPILER_MACRO_NAME_CAPACITY];
     char value[COMPILER_MACRO_VALUE_CAPACITY];
     char parameter_name[COMPILER_MACRO_NAME_CAPACITY];
+    char parameter_names[8][COMPILER_MACRO_NAME_CAPACITY];
+    size_t parameter_count;
     int defined;
     int is_function_like;
 } CompilerMacro;

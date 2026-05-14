@@ -261,7 +261,8 @@ static int parse_macro_arguments(const char *input,
 }
 
 static int substitute_macro_parameter(const CompilerMacro *macro,
-                                      const char *argument,
+                                      char args[][COMPILER_MAX_LINE_LENGTH],
+                                      size_t arg_count,
                                       char *buffer,
                                       size_t buffer_size) {
     size_t in = 0;
@@ -278,14 +279,26 @@ static int substitute_macro_parameter(const CompilerMacro *macro,
             }
             identifier[length] = '\0';
 
-            if (names_equal(identifier, macro->parameter_name)) {
+            {
                 size_t arg_index = 0;
-                while (argument[arg_index] != '\0' && out + 1U < buffer_size) {
-                    buffer[out++] = argument[arg_index++];
+                size_t parameter_index;
+                int matched = 0;
+
+                for (parameter_index = 0U; parameter_index < macro->parameter_count && parameter_index < arg_count; ++parameter_index) {
+                    if (names_equal(identifier, macro->parameter_names[parameter_index])) {
+                        matched = 1;
+                        break;
+                    }
                 }
-            } else {
-                while (start < in && out + 1U < buffer_size) {
-                    buffer[out++] = macro->value[start++];
+
+                if (matched) {
+                    while (args[parameter_index][arg_index] != '\0' && out + 1U < buffer_size) {
+                        buffer[out++] = args[parameter_index][arg_index++];
+                    }
+                } else {
+                    while (start < in && out + 1U < buffer_size) {
+                        buffer[out++] = macro->value[start++];
+                    }
                 }
             }
             continue;
@@ -446,6 +459,7 @@ int compiler_preprocessor_define(CompilerPreprocessor *preprocessor, const char 
     rt_copy_string(preprocessor->macros[index].name, sizeof(preprocessor->macros[index].name), name);
     rt_copy_string(preprocessor->macros[index].value, sizeof(preprocessor->macros[index].value), value != 0 ? value : "");
     preprocessor->macros[index].parameter_name[0] = '\0';
+    preprocessor->macros[index].parameter_count = 0U;
     preprocessor->macros[index].defined = 1;
     preprocessor->macros[index].is_function_like = 0;
     return 0;
@@ -453,9 +467,11 @@ int compiler_preprocessor_define(CompilerPreprocessor *preprocessor, const char 
 
 static int define_function_like_macro(CompilerPreprocessor *preprocessor,
                                       const char *name,
-                                      const char *parameter_name,
+                                      char parameter_names[][COMPILER_MACRO_NAME_CAPACITY],
+                                      size_t parameter_count,
                                       const char *value) {
     int index = find_macro(preprocessor, name);
+    size_t parameter_index;
 
     if (index < 0) {
         if (preprocessor->macro_count >= COMPILER_MAX_MACROS) {
@@ -467,7 +483,18 @@ static int define_function_like_macro(CompilerPreprocessor *preprocessor,
 
     rt_copy_string(preprocessor->macros[index].name, sizeof(preprocessor->macros[index].name), name);
     rt_copy_string(preprocessor->macros[index].value, sizeof(preprocessor->macros[index].value), value != 0 ? value : "");
-    rt_copy_string(preprocessor->macros[index].parameter_name, sizeof(preprocessor->macros[index].parameter_name), parameter_name != 0 ? parameter_name : "");
+    preprocessor->macros[index].parameter_name[0] = '\0';
+    preprocessor->macros[index].parameter_count = parameter_count;
+    for (parameter_index = 0U; parameter_index < parameter_count && parameter_index < 8U; ++parameter_index) {
+        rt_copy_string(preprocessor->macros[index].parameter_names[parameter_index],
+                       sizeof(preprocessor->macros[index].parameter_names[parameter_index]),
+                       parameter_names[parameter_index]);
+        if (parameter_index == 0U) {
+            rt_copy_string(preprocessor->macros[index].parameter_name,
+                           sizeof(preprocessor->macros[index].parameter_name),
+                           parameter_names[parameter_index]);
+        }
+    }
     preprocessor->macros[index].defined = 1;
     preprocessor->macros[index].is_function_like = 1;
     return 0;
@@ -485,6 +512,7 @@ int compiler_preprocessor_undefine(CompilerPreprocessor *preprocessor, const cha
     preprocessor->macros[index].name[0] = '\0';
     preprocessor->macros[index].value[0] = '\0';
     preprocessor->macros[index].parameter_name[0] = '\0';
+    preprocessor->macros[index].parameter_count = 0U;
     return 0;
 }
 
@@ -689,10 +717,10 @@ static int expand_text(
                             return -1;
                         }
                     } else {
-                        if (preprocessor->macros[index].parameter_name[0] == '\0') {
+                        if (preprocessor->macros[index].parameter_count == 0U) {
                             rt_copy_string(expanded, sizeof(expanded), preprocessor->macros[index].value);
-                        } else if (arg_count == 1U &&
-                                   substitute_macro_parameter(&preprocessor->macros[index], args[0], expanded, sizeof(expanded)) == 0) {
+                        } else if (arg_count == preprocessor->macros[index].parameter_count &&
+                                   substitute_macro_parameter(&preprocessor->macros[index], args, arg_count, expanded, sizeof(expanded)) == 0) {
                             /* substituted into expanded */
                         } else {
                             if (append_text(source_out, offset, name) != 0) {
@@ -883,48 +911,42 @@ static int handle_directive(
             return -1;
         }
         if (*arg_cursor == '(') {
-            char parameter_name[COMPILER_MACRO_NAME_CAPACITY];
+            char parameter_names[8][COMPILER_MACRO_NAME_CAPACITY];
             size_t parameter_length = 0;
             size_t parameter_count = 0;
-            int simple_one_parameter = 1;
+            size_t parameter_index;
 
             arg_cursor += 1;
-            parameter_name[0] = '\0';
+            for (parameter_index = 0U; parameter_index < 8U; ++parameter_index) {
+                parameter_names[parameter_index][0] = '\0';
+            }
             for (;;) {
                 arg_cursor = skip_spaces(arg_cursor);
                 if (*arg_cursor == ')') {
                     break;
                 }
                 if (arg_cursor[0] == '.' && arg_cursor[1] == '.' && arg_cursor[2] == '.') {
-                    simple_one_parameter = 0;
+                    set_error(preprocessor, path, line_no, "variadic function-like macros are unsupported");
+                    return -1;
                     arg_cursor += 3;
                 } else {
-                    size_t current_length = 0;
                     if (!is_identifier_start(*arg_cursor)) {
                         set_error(preprocessor, path, line_no, "invalid function-like macro parameters");
                         return -1;
                     }
-                    if (parameter_count == 0) {
-                        while (is_identifier_continue(*arg_cursor) && parameter_length + 1 < sizeof(parameter_name)) {
-                            parameter_name[parameter_length++] = *arg_cursor++;
-                        }
-                        parameter_name[parameter_length] = '\0';
-                    } else {
-                        while (is_identifier_continue(*arg_cursor)) {
-                            arg_cursor += 1;
-                            current_length += 1U;
-                        }
-                        (void)current_length;
-                        simple_one_parameter = 0;
+                    if (parameter_count >= 8U) {
+                        set_error(preprocessor, path, line_no, "too many function-like macro parameters");
+                        return -1;
                     }
-                    if (parameter_count > 0) {
-                        simple_one_parameter = 0;
+                    parameter_length = 0U;
+                    while (is_identifier_continue(*arg_cursor) && parameter_length + 1 < sizeof(parameter_names[parameter_count])) {
+                        parameter_names[parameter_count][parameter_length++] = *arg_cursor++;
                     }
+                    parameter_names[parameter_count][parameter_length] = '\0';
                     parameter_count += 1U;
                 }
                 arg_cursor = skip_spaces(arg_cursor);
                 if (*arg_cursor == ',') {
-                    simple_one_parameter = 0;
                     arg_cursor += 1;
                     continue;
                 }
@@ -935,7 +957,7 @@ static int handle_directive(
                 return -1;
             }
             arg_cursor = skip_spaces(arg_cursor + 1);
-            if (define_function_like_macro(preprocessor, name, simple_one_parameter ? parameter_name : "", arg_cursor) != 0) {
+            if (define_function_like_macro(preprocessor, name, parameter_names, parameter_count, arg_cursor) != 0) {
                 set_error(preprocessor, path, line_no, "too many macros");
                 return -1;
             }

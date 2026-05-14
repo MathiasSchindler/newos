@@ -78,6 +78,7 @@ static int ir_find_top_level_operator(const char *expr, const char *op, const ch
 static int ir_find_top_level_conditional(const char *expr, const char **question_out, const char **colon_out);
 static int ir_try_simplify_conditional_expr(const char *expr, char *buffer, size_t buffer_size);
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size);
+static int ir_has_many_logical_operators(const char *expr);
 static int ir_normalize_expr_text(const char *expr, char *buffer, size_t buffer_size);
 static int ir_expr_is_trivial_value(const char *expr);
 static int ir_expr_text_equals(const char *lhs, const char *rhs);
@@ -155,8 +156,8 @@ static int ir_operator_is_embedded(const char *expr, size_t index, const char *o
             (op[0] == '&' && (prev == '&' || next == '&' || next == '=')) ||
             ((op[0] == '+' || op[0] == '-') && (prev == op[0] || next == op[0] || next == '=')) ||
             (op[0] == '-' && next == '>') ||
-            (op[0] == '<' && (next == '<' || next == '=')) ||
-            (op[0] == '>' && (next == '>' || next == '=')) ||
+            (op[0] == '<' && (prev == '<' || next == '<' || next == '=')) ||
+            (op[0] == '>' && (prev == '>' || prev == '-' || next == '>' || next == '=')) ||
             ((op[0] == '*' || op[0] == '/' || op[0] == '%' || op[0] == '^') && next == '=')) {
             return 1;
         }
@@ -272,6 +273,7 @@ static int ir_parse_unsigned_value(const char *text, int base, unsigned long lon
 static int ir_parse_number_value(const char *text, long long *value_out) {
     unsigned long long magnitude = 0;
     int negative = 0;
+    int base = 10;
 
     if (text == 0 || text[0] == '\0') {
         return -1;
@@ -284,8 +286,13 @@ static int ir_parse_number_value(const char *text, long long *value_out) {
         if (ir_parse_unsigned_value(text + 2, 16, &magnitude) != 0) {
             return -1;
         }
-    } else if (ir_parse_unsigned_value(text, 10, &magnitude) != 0) {
-        return -1;
+    } else {
+        if (text[0] == '0' && text[1] >= '0' && text[1] <= '7') {
+            base = 8;
+        }
+        if (ir_parse_unsigned_value(text, base, &magnitude) != 0) {
+            return -1;
+        }
     }
 
     *value_out = negative ? -(long long)magnitude : (long long)magnitude;
@@ -1219,9 +1226,18 @@ static int ir_try_simplify_conditional_expr(const char *expr, char *buffer, size
 
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size) {
     const char ops[][3] = {"&&", "||", "==", "!=", "<=", ">=", "<", ">", "&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
+    size_t op_count = sizeof(ops) / sizeof(ops[0]);
     size_t op_index;
 
-    for (op_index = 0; op_index < sizeof(ops) / sizeof(ops[0]); ++op_index) {
+    {
+        const char *logical_position = 0;
+        if (ir_find_top_level_operator(expr, "&&", &logical_position) == 0 ||
+            ir_find_top_level_operator(expr, "||", &logical_position) == 0) {
+            op_count = 2U;
+        }
+    }
+
+    for (op_index = 0; op_index < op_count; ++op_index) {
         const char *op = ops[op_index];
         const char *position = 0;
         const char *lhs_start;
@@ -1431,6 +1447,42 @@ static int ir_assignment_is_noop(const char *name, const char *expr) {
     return name != 0 && expr != 0 && ir_expr_text_equals(name, expr);
 }
 
+static int ir_has_many_logical_operators(const char *expr) {
+    size_t i = 0;
+    unsigned int count = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        if ((in_string || in_char) && expr[i] == '\\' && expr[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && expr[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && expr[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char &&
+            ((expr[i] == '|' && expr[i + 1U] == '|') || (expr[i] == '&' && expr[i + 1U] == '&'))) {
+            count += 1U;
+            if (count > 4U) {
+                return 1;
+            }
+            i += 2U;
+            continue;
+        }
+        i += 1U;
+    }
+
+    return 0;
+}
+
 static int ir_optimize_expr_text(const char *expr,
                                  const IrOptimizerState *state,
                                  char *buffer,
@@ -1508,7 +1560,11 @@ static int ir_optimize_expr_text(const char *expr,
 
         {
             char simplified[COMPILER_IR_LINE_CAPACITY];
-            int result = ir_try_simplify_identity_expr(current, effective_state, simplified, sizeof(simplified));
+            const char *conditional_question = 0;
+            const char *conditional_colon = 0;
+            int has_top_level_conditional = ir_find_top_level_conditional(current, &conditional_question, &conditional_colon) == 0;
+            int result = (has_top_level_conditional || ir_has_many_logical_operators(current)) ? 0 :
+                         ir_try_simplify_identity_expr(current, effective_state, simplified, sizeof(simplified));
             if (result < 0) {
                 return -1;
             }

@@ -722,6 +722,8 @@ static int parse_number_token_value(const CompilerToken *token, long long *value
     char text[64];
     size_t length;
     unsigned long long value = 0;
+    unsigned int base = 10U;
+    const char *digits;
 
     copy_token_text(token, text, sizeof(text));
     length = rt_strlen(text);
@@ -732,8 +734,30 @@ static int parse_number_token_value(const CompilerToken *token, long long *value
         length -= 1U;
     }
 
-    if (rt_parse_uint(text, &value) != 0) {
-        return -1;
+    digits = text;
+    if (digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X')) {
+        base = 16U;
+        digits += 2;
+    } else if (digits[0] == '0' && digits[1] >= '0' && digits[1] <= '7') {
+        base = 8U;
+    }
+
+    while (*digits != '\0') {
+        unsigned int digit;
+        if (*digits >= '0' && *digits <= '9') {
+            digit = (unsigned int)(*digits - '0');
+        } else if (*digits >= 'a' && *digits <= 'f') {
+            digit = 10U + (unsigned int)(*digits - 'a');
+        } else if (*digits >= 'A' && *digits <= 'F') {
+            digit = 10U + (unsigned int)(*digits - 'A');
+        } else {
+            return -1;
+        }
+        if (digit >= base) {
+            return -1;
+        }
+        value = value * (unsigned long long)base + (unsigned long long)digit;
+        digits += 1;
     }
 
     *value_out = (long long)value;

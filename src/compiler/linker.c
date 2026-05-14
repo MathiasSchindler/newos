@@ -6,8 +6,8 @@
 
 #define LINKER_MAX_OBJECTS 320
 #define LINKER_MAX_OBJECT_SIZE (1024U * 1024U)
-#define LINKER_MAX_OUTPUT (6U * 1024U * 1024U)
-#define LINKER_MAX_MEMORY (64U * 1024U * 1024U)
+#define LINKER_MAX_OUTPUT (64U * 1024U * 1024U)
+#define LINKER_MAX_MEMORY (128U * 1024U * 1024U)
 #define LINKER_MAX_GLOBALS 8192
 #define LINKER_BASE_VADDR 0x400000ULL
 
@@ -44,7 +44,7 @@ typedef int int32_t;
 
 typedef struct {
     char path[COMPILER_PATH_CAPACITY];
-    unsigned char file[LINKER_MAX_OBJECT_SIZE];
+    unsigned char *file;
     size_t size;
     uint64_t shoff;
     uint16_t shentsize;
@@ -84,10 +84,16 @@ typedef struct {
     uint64_t value;
 } LinkGlobal;
 
+typedef struct {
+    char name[COMPILER_PATH_CAPACITY];
+    size_t object_index;
+} LinkDefinedSymbol;
+
 static LinkObject linker_objects[LINKER_MAX_OBJECTS];
 static LinkGlobal linker_globals[LINKER_MAX_GLOBALS];
-static unsigned char linker_output[LINKER_MAX_OUTPUT];
+static LinkDefinedSymbol linker_defined_symbols[LINKER_MAX_GLOBALS];
 static size_t linker_global_count;
+static size_t linker_defined_symbol_count;
 
 static void set_link_error(char *error_out, size_t error_size, const char *message, const char *detail) {
     if (error_out == 0 || error_size == 0U) {
@@ -247,15 +253,25 @@ static int load_object(LinkObject *object, const char *path, char *error_out, si
         set_link_error(error_out, error_size, "failed to open object", path);
         return -1;
     }
-    while ((bytes_read = platform_read(fd, object->file + total, sizeof(object->file) - total)) > 0) {
+    object->file = (unsigned char *)rt_malloc(LINKER_MAX_OBJECT_SIZE);
+    if (object->file == 0) {
+        (void)platform_close(fd);
+        set_link_error(error_out, error_size, "failed to allocate object buffer", path);
+        return -1;
+    }
+    while ((bytes_read = platform_read(fd, object->file + total, LINKER_MAX_OBJECT_SIZE - total)) > 0) {
         total += (size_t)bytes_read;
-        if (total == sizeof(object->file)) {
+        if (total == LINKER_MAX_OBJECT_SIZE) {
             break;
         }
     }
     (void)platform_close(fd);
     if (bytes_read < 0) {
         set_link_error(error_out, error_size, "failed to read object", path);
+        return -1;
+    }
+    if (total == LINKER_MAX_OBJECT_SIZE) {
+        set_link_error(error_out, error_size, "object exceeds native linker capacity", path);
         return -1;
     }
     object->size = total;
@@ -354,8 +370,67 @@ static int add_global(const char *name, uint64_t value, char *error_out, size_t 
     return 0;
 }
 
-static int find_defined_global_object(LinkObject *objects, size_t object_count, const char *name) {
+static int find_defined_symbol_owner(const char *name) {
     size_t i;
+
+    for (i = 0; i < linker_defined_symbol_count; ++i) {
+        if (rt_strcmp(linker_defined_symbols[i].name, name) == 0) {
+            return (int)linker_defined_symbols[i].object_index;
+        }
+    }
+    return -1;
+}
+
+static int add_defined_symbol_owner(const char *name, size_t object_index, char *error_out, size_t error_size) {
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    if (find_defined_symbol_owner(name) >= 0) {
+        return 0;
+    }
+    if (linker_defined_symbol_count >= LINKER_MAX_GLOBALS) {
+        set_link_error(error_out, error_size, "too many global symbols", name);
+        return -1;
+    }
+    rt_copy_string(linker_defined_symbols[linker_defined_symbol_count].name,
+                   sizeof(linker_defined_symbols[linker_defined_symbol_count].name),
+                   name);
+    linker_defined_symbols[linker_defined_symbol_count].object_index = object_index;
+    linker_defined_symbol_count += 1U;
+    return 0;
+}
+
+static int collect_defined_symbol_owners(LinkObject *objects, size_t object_count, char *error_out, size_t error_size) {
+    size_t i;
+
+    linker_defined_symbol_count = 0;
+    for (i = 0; i < object_count; ++i) {
+        LinkObject *object = &objects[i];
+        uint32_t count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+        uint32_t symbol_index;
+
+        for (symbol_index = 0; symbol_index < count; ++symbol_index) {
+            const unsigned char *symbol = symbol_entry(object, symbol_index);
+            if (symbol == 0) {
+                set_link_error(error_out, error_size, "invalid symbol table", object->path);
+                return -1;
+            }
+            if ((symbol[4] >> 4U) == STB_GLOBAL && read_u16(symbol + 6) != SHN_UNDEF &&
+                add_defined_symbol_owner(symbol_name(object, symbol), i, error_out, error_size) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int find_defined_global_object(LinkObject *objects, size_t object_count, const char *name) {
+    int indexed = find_defined_symbol_owner(name);
+    size_t i;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
 
     for (i = 0; i < object_count; ++i) {
         LinkObject *object = &objects[i];
@@ -712,6 +787,7 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     int start_index;
     int fd;
     size_t i;
+    unsigned char *output;
 
     if (error_out != 0 && error_size > 0U) {
         error_out[0] = '\0';
@@ -725,6 +801,9 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
             return -1;
         }
     }
+    if (collect_defined_symbol_owners(linker_objects, object_count, error_out, error_size) != 0) {
+        return -1;
+    }
     if (mark_live_objects(linker_objects, object_count, error_out, error_size) != 0) {
         return -1;
     }
@@ -735,8 +814,13 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     bss_vaddr_offset = align_u64(data_file_offset + data_size, 8U);
     file_size = data_file_offset + data_size;
     memory_size = bss_vaddr_offset + bss_size;
-    if (file_size > sizeof(linker_output) || memory_size > LINKER_MAX_MEMORY) {
+    if (file_size > LINKER_MAX_OUTPUT || memory_size > LINKER_MAX_MEMORY) {
         set_link_error(error_out, error_size, "linked executable exceeds native linker capacity", output_path);
+        return -1;
+    }
+    output = (unsigned char *)rt_malloc((size_t)file_size);
+    if (output == 0) {
+        set_link_error(error_out, error_size, "failed to allocate linker output", output_path);
         return -1;
     }
     for (i = 0; i < object_count; ++i) {
@@ -748,36 +832,43 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         linker_objects[i].out_bss_offset += bss_vaddr_offset;
     }
 
-    rt_memset(linker_output, 0, (size_t)file_size);
-    copy_sections(linker_objects, object_count, linker_output);
+    rt_memset(output, 0, (size_t)file_size);
+    copy_sections(linker_objects, object_count, output);
     if (collect_globals(linker_objects, object_count, error_out, error_size) != 0) {
+        rt_free(output);
         return -1;
     }
     start_index = find_global("_start");
     if (start_index < 0) {
         set_link_error(error_out, error_size, "undefined entry symbol", "_start");
+        rt_free(output);
         return -1;
     }
     entry = linker_globals[start_index].value;
-    if (apply_relocations(linker_objects, object_count, linker_output, error_out, error_size) != 0) {
+    if (apply_relocations(linker_objects, object_count, output, error_out, error_size) != 0) {
+        rt_free(output);
         return -1;
     }
-    write_elf_header(linker_output, entry, file_size, memory_size);
+    write_elf_header(output, entry, file_size, memory_size);
 
     fd = platform_open_write(output_path, 0755U);
     if (fd < 0) {
         set_link_error(error_out, error_size, "failed to open output executable", output_path);
+        rt_free(output);
         return -1;
     }
-    if (rt_write_all(fd, linker_output, (size_t)file_size) != 0) {
+    if (rt_write_all(fd, output, (size_t)file_size) != 0) {
         (void)platform_close(fd);
         set_link_error(error_out, error_size, "failed to write output executable", output_path);
+        rt_free(output);
         return -1;
     }
     if (platform_close(fd) != 0) {
         set_link_error(error_out, error_size, "failed to close output executable", output_path);
+        rt_free(output);
         return -1;
     }
+    rt_free(output);
     (void)platform_change_mode(output_path, 0755U);
     return 0;
 }

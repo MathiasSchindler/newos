@@ -14,6 +14,40 @@ static int parse_bitor_expression(CompilerParser *parser);
 static int parse_logical_and_expression(CompilerParser *parser);
 static int parse_logical_or_expression(CompilerParser *parser);
 
+static int skip_braced_initializer(CompilerParser *parser) {
+    size_t depth = 0U;
+
+    if (parser == 0 || !current_is_punct(parser, "{")) {
+        return -1;
+    }
+
+    for (;;) {
+        if (parser->current.kind == COMPILER_TOKEN_EOF) {
+            set_error(parser, "expected } in initializer");
+            return -1;
+        }
+        if (current_is_punct(parser, "{")) {
+            depth += 1U;
+        } else if (current_is_punct(parser, "}")) {
+            if (depth == 0U) {
+                set_error(parser, "expected } in initializer");
+                return -1;
+            }
+            depth -= 1U;
+            if (advance(parser) != 0) {
+                return -1;
+            }
+            if (depth == 0U) {
+                return 0;
+            }
+            continue;
+        }
+        if (advance(parser) != 0) {
+            return -1;
+        }
+    }
+}
+
 int parse_initializer(CompilerParser *parser) {
     int result = 0;
 
@@ -27,51 +61,7 @@ int parse_initializer(CompilerParser *parser) {
     parser->initializer_depth += 1U;
 
     if (current_is_punct(parser, "{")) {
-        if (advance(parser) != 0) {
-            result = -1;
-            goto done;
-        }
-
-        if (!current_is_punct(parser, "}")) {
-            for (;;) {
-                while (current_is_punct(parser, ".") || current_is_punct(parser, "[")) {
-                    if (current_is_punct(parser, ".")) {
-                        if (advance(parser) != 0 || expect_identifier(parser, 0, 0, 0) != 0) {
-                            result = -1;
-                            goto done;
-                        }
-                    } else {
-                        if (advance(parser) != 0 || parse_expression(parser) != 0 || expect_punct(parser, "]") != 0) {
-                            result = -1;
-                            goto done;
-                        }
-                    }
-                }
-
-                if (current_is_punct(parser, "=") && advance(parser) != 0) {
-                    result = -1;
-                    goto done;
-                }
-
-                if (parse_initializer(parser) != 0) {
-                    result = -1;
-                    goto done;
-                }
-
-                if (!current_is_punct(parser, ",")) {
-                    break;
-                }
-                if (advance(parser) != 0) {
-                    result = -1;
-                    goto done;
-                }
-                if (current_is_punct(parser, "}")) {
-                    break;
-                }
-            }
-        }
-
-        result = expect_punct(parser, "}");
+        result = skip_braced_initializer(parser);
         goto done;
     }
 

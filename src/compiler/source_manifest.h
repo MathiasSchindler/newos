@@ -54,6 +54,7 @@
     X("src/shared/runtime/string.c") \
     X("src/shared/runtime/parse.c") \
     X("src/shared/runtime/io.c") \
+    X("src/shared/runtime/unicode_utf8.c") \
     X("src/shared/runtime/unicode.c") \
     X("src/shared/tool_io.c") \
     X("src/shared/tool_file.c") \

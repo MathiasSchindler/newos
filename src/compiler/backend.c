@@ -1773,6 +1773,62 @@ int emit_store_name(BackendState *state, const char *name) {
     return -1;
 }
 
+static int emit_copy_memory_call(BackendState *state, int bytes, const char *dst_reg, const char *src_reg) {
+    char line[96];
+    char symbol[COMPILER_IR_NAME_CAPACITY];
+
+    if (bytes <= 0) {
+        return 0;
+    }
+
+    format_symbol_name(state, "memcpy", symbol, sizeof(symbol));
+    if (backend_is_aarch64(state)) {
+        if (!names_equal(dst_reg, "x0")) {
+            rt_copy_string(line, sizeof(line), "mov x0, ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+        }
+        if (!names_equal(src_reg, "x1")) {
+            rt_copy_string(line, sizeof(line), "mov x1, ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src_reg);
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+        }
+        if (emit_load_immediate_register(state, "x2", bytes) != 0) {
+            return -1;
+        }
+        rt_copy_string(line, sizeof(line), "bl ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
+        return emit_instruction(state, line);
+    }
+
+    if (!names_equal(dst_reg, "%rdi")) {
+        rt_copy_string(line, sizeof(line), "movq ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rdi");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    if (!names_equal(src_reg, "%rsi")) {
+        rt_copy_string(line, sizeof(line), "movq ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rsi");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    if (emit_load_immediate_register(state, "%rdx", bytes) != 0) {
+        return -1;
+    }
+    rt_copy_string(line, sizeof(line), "call ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
+    return emit_instruction(state, line);
+}
+
 int emit_copy_object_to_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int bytes;
@@ -1799,6 +1855,9 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
         if (state->locals[local_index].static_storage && emit_instruction(state, "mov x13, x0") != 0) {
             return -1;
         }
+        if (bytes > 128) {
+            return emit_copy_memory_call(state, bytes, "x13", "x12");
+        }
         for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
             int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
@@ -1817,6 +1876,9 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
     }
     if (state->locals[local_index].static_storage && emit_instruction(state, "movq %rax, %rcx") != 0) {
         return -1;
+    }
+    if (bytes > 128) {
+        return emit_copy_memory_call(state, bytes, "%rcx", "%rdx");
     }
     for (chunk = 0; chunk < bytes; chunk += 8) {
         char load_line[64];
@@ -1864,6 +1926,9 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
         if (state->locals[local_index].static_storage && emit_instruction(state, "mov x12, x0") != 0) {
             return -1;
         }
+        if (bytes > 128) {
+            return emit_copy_memory_call(state, bytes, "x13", "x12");
+        }
         for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
             int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
@@ -1883,6 +1948,9 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
     }
     if (state->locals[local_index].static_storage && emit_instruction(state, "movq %rax, %rdx") != 0) {
         return -1;
+    }
+    if (bytes > 128) {
+        return emit_copy_memory_call(state, bytes, "%rcx", "%rdx");
     }
     for (chunk = 0; chunk < bytes; chunk += 8) {
         char load_line[64];
@@ -1916,6 +1984,9 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
             emit_instruction(state, "add sp, sp, #16") != 0) {
             return -1;
         }
+        if (bytes > 128) {
+            return emit_copy_memory_call(state, bytes, "x13", "x12");
+        }
         for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
             int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
@@ -1931,6 +2002,9 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
     if (emit_instruction(state, "movq %rax, %rdx") != 0 ||
         emit_instruction(state, "popq %rcx") != 0) {
         return -1;
+    }
+    if (bytes > 128) {
+        return emit_copy_memory_call(state, bytes, "%rcx", "%rdx");
     }
     for (chunk = 0; chunk < bytes; chunk += 8) {
         char load_line[64];

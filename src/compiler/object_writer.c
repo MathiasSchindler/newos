@@ -637,6 +637,11 @@ static int encode_pop_reg(ObjectAssembler *assembler, int reg) {
     return append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)(0x58U + (reg & 7)));
 }
 
+static int encode_push_imm8(ObjectAssembler *assembler, long long value) {
+    return append_byte(assembler, OBJECT_SECTION_TEXT, 0x6AU) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT, (unsigned char)((int8_t)value)) == 0 ? 0 : -1;
+}
+
 static int encode_mov_reg_reg(ObjectAssembler *assembler, int src, int dst) {
     return append_rex(assembler, 1, src, 0, dst) == 0 &&
            append_byte(assembler, OBJECT_SECTION_TEXT, 0x89U) == 0 &&
@@ -644,6 +649,10 @@ static int encode_mov_reg_reg(ObjectAssembler *assembler, int src, int dst) {
 }
 
 static int encode_mov_imm_reg(ObjectAssembler *assembler, long long value, int dst) {
+    if (value >= -128 && value <= 127) {
+        return encode_push_imm8(assembler, value) == 0 && encode_pop_reg(assembler, dst) == 0 ? 0 : -1;
+    }
+
     if (append_rex(assembler, 1, 0, 0, dst) != 0 ||
         append_byte(assembler, OBJECT_SECTION_TEXT, 0xC7U) != 0 ||
         append_modrm(assembler, 3U, 0U, (unsigned int)dst) != 0 ||

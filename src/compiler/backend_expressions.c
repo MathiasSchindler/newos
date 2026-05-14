@@ -604,6 +604,7 @@ static int expr_looks_like_cast(ExprParser *parser) {
     int saw_typeish = 0;
     int saw_token = 0;
     int nested_parens = 0;
+    int nested_brackets = 0;
     int expect_tag_name = 0;
 
     if (snapshot.current.kind != EXPR_TOKEN_PUNCT || !names_equal(snapshot.current.text, "(")) {
@@ -623,6 +624,29 @@ static int expr_looks_like_cast(ExprParser *parser) {
                 return 0;
             }
             return saw_token && saw_typeish;
+        }
+        if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "[")) {
+            if (!saw_typeish) {
+                return 0;
+            }
+            nested_brackets += 1;
+            saw_token = 1;
+            expr_next(&snapshot);
+            continue;
+        }
+        if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "]")) {
+            if (nested_brackets <= 0) {
+                return 0;
+            }
+            nested_brackets -= 1;
+            saw_token = 1;
+            expr_next(&snapshot);
+            continue;
+        }
+        if (nested_brackets > 0) {
+            saw_token = 1;
+            expr_next(&snapshot);
+            continue;
         }
         if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
             if (identifier_looks_like_type(snapshot.current.text) || expect_tag_name) {
@@ -802,13 +826,15 @@ static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buff
         if (expr_looks_like_cast(parser)) {
             ExprParser cast_parser = *parser;
             char cast_type[128];
+            int cast_depth = 1;
             expr_copy_cast_type_text(&cast_parser, cast_type, sizeof(cast_type));
             expr_next(parser);
-            while (parser->current.kind != EXPR_TOKEN_EOF &&
-                   !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
-                expr_next(parser);
-            }
-            if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")")) {
+            while (parser->current.kind != EXPR_TOKEN_EOF && cast_depth > 0) {
+                if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
+                    cast_depth += 1;
+                } else if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")")) {
+                    cast_depth -= 1;
+                }
                 expr_next(parser);
             }
             if (cast_type[0] != '\0') {
@@ -1919,12 +1945,18 @@ static int expr_parse_unary(ExprParser *parser) {
     char op[4];
 
     if (expr_looks_like_cast(parser)) {
+        int cast_depth = 1;
         expr_next(parser);
-        while (parser->current.kind != EXPR_TOKEN_EOF &&
-               !(parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")"))) {
+        while (parser->current.kind != EXPR_TOKEN_EOF && cast_depth > 0) {
+            if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
+                cast_depth += 1;
+            } else if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, ")")) {
+                cast_depth -= 1;
+            }
             expr_next(parser);
         }
-        if (expr_expect_punct(parser, ")") != 0) {
+        if (cast_depth != 0) {
+            backend_set_error(parser->state->backend, "unterminated cast expression in backend");
             return -1;
         }
         return expr_parse_unary(parser);
