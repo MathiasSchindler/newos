@@ -1,7 +1,10 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <grp.h>
+#include <ifaddrs.h>
 #include <netdb.h>
+#include <net/if.h>
+#include <net/if_dl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pwd.h>
@@ -10,6 +13,7 @@
 #include <sys/mount.h>
 #include <sys/proc.h>
 #include <sys/socket.h>
+#include <sys/sockio.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
@@ -38,6 +42,10 @@
 #define DARWIN_ACCESS_READ 4
 #define DARWIN_S_IFMT 0170000U
 #define DARWIN_S_IFDIR 0040000U
+#define MACOS_ICMP_ECHO_REPLY 0
+#define MACOS_ICMP_ECHO 8
+#define MACOS_ICMPV6_ECHO_REQUEST 128
+#define MACOS_ICMPV6_ECHO_REPLY 129
 
 typedef struct {
     long tv_sec;
@@ -48,6 +56,22 @@ typedef struct {
     const char *name;
     int value;
 } DarwinSignalEntry;
+
+typedef struct {
+    unsigned char type;
+    unsigned char code;
+    unsigned short checksum;
+    unsigned short identifier;
+    unsigned short sequence;
+} MacosIcmpPacket;
+
+typedef struct {
+    unsigned char type;
+    unsigned char code;
+    unsigned short checksum;
+    unsigned short identifier;
+    unsigned short sequence;
+} MacosIcmpv6Packet;
 
 static const DarwinSignalEntry DARWIN_SIGNAL_TABLE[] = {
     { "HUP", SIGHUP },
@@ -1714,6 +1738,1108 @@ int platform_dns_query(
         return -1;
     }
     return platform_dns_lookup(server, port, name, family_filter, entries_out, entry_capacity, count_out);
+}
+
+static int macos_network_family_matches(unsigned char family, int family_filter) {
+    if (family_filter == PLATFORM_NETWORK_FAMILY_ANY) {
+        return family == AF_INET || family == AF_INET6;
+    }
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV4) {
+        return family == AF_INET;
+    }
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+        return family == AF_INET6;
+    }
+    return 0;
+}
+
+static int macos_network_family_code(unsigned char family) {
+    if (family == AF_INET6) {
+        return PLATFORM_NETWORK_FAMILY_IPV6;
+    }
+    if (family == AF_INET) {
+        return PLATFORM_NETWORK_FAMILY_IPV4;
+    }
+    return PLATFORM_NETWORK_FAMILY_ANY;
+}
+
+static unsigned int macos_map_link_flags(unsigned int ifa_flags) {
+    unsigned int flags = 0U;
+
+    if ((ifa_flags & IFF_UP) != 0U) {
+        flags |= PLATFORM_NETWORK_FLAG_UP;
+    }
+    if ((ifa_flags & IFF_BROADCAST) != 0U) {
+        flags |= PLATFORM_NETWORK_FLAG_BROADCAST;
+    }
+    if ((ifa_flags & IFF_LOOPBACK) != 0U) {
+        flags |= PLATFORM_NETWORK_FLAG_LOOPBACK;
+    }
+    if ((ifa_flags & IFF_RUNNING) != 0U) {
+        flags |= PLATFORM_NETWORK_FLAG_RUNNING;
+    }
+    if ((ifa_flags & IFF_MULTICAST) != 0U) {
+        flags |= PLATFORM_NETWORK_FLAG_MULTICAST;
+    }
+    return flags;
+}
+
+static int macos_find_link_index(PlatformNetworkLink *entries_out, size_t count, const char *name) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (rt_strcmp(entries_out[index].name, name) == 0) {
+            return (int)index;
+        }
+    }
+    return -1;
+}
+
+static void macos_format_mac_address(const unsigned char *bytes, size_t count, char *buffer, size_t buffer_size) {
+    static const char hex[] = "0123456789abcdef";
+    size_t index;
+    size_t used = 0U;
+
+    if (buffer_size == 0U) {
+        return;
+    }
+    buffer[0] = '\0';
+    for (index = 0U; index < count; ++index) {
+        if (used + 4U > buffer_size) {
+            break;
+        }
+        if (index != 0U) {
+            buffer[used++] = ':';
+        }
+        buffer[used++] = hex[(bytes[index] >> 4) & 0x0fU];
+        buffer[used++] = hex[bytes[index] & 0x0fU];
+        buffer[used] = '\0';
+    }
+}
+
+static int macos_format_address_text(const struct sockaddr *address, char *buffer, size_t buffer_size) {
+    if (address == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    if (address->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)address;
+        return inet_ntop(AF_INET, &sin->sin_addr, buffer, buffer_size) == 0 ? -1 : 0;
+    }
+    if (address->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)address;
+        return inet_ntop(AF_INET6, &sin6->sin6_addr, buffer, buffer_size) == 0 ? -1 : 0;
+    }
+    return -1;
+}
+
+static unsigned int macos_count_mask_bits_v4(const struct sockaddr *mask) {
+    const struct sockaddr_in *sin;
+    unsigned int value;
+    unsigned int bits = 0U;
+
+    if (mask == 0 || mask->sa_family != AF_INET) {
+        return 0U;
+    }
+    sin = (const struct sockaddr_in *)mask;
+    value = ntohl(sin->sin_addr.s_addr);
+    while ((value & 0x80000000U) != 0U) {
+        bits += 1U;
+        value <<= 1U;
+    }
+    return bits;
+}
+
+static unsigned int macos_count_mask_bits_v6(const struct sockaddr *mask) {
+    const struct sockaddr_in6 *sin6;
+    unsigned int bits = 0U;
+    size_t index;
+
+    if (mask == 0 || mask->sa_family != AF_INET6) {
+        return 0U;
+    }
+    sin6 = (const struct sockaddr_in6 *)mask;
+    for (index = 0U; index < sizeof(sin6->sin6_addr.s6_addr); ++index) {
+        unsigned char value = sin6->sin6_addr.s6_addr[index];
+        while ((value & 0x80U) != 0U) {
+            bits += 1U;
+            value = (unsigned char)(value << 1U);
+        }
+        if (value != 0U) {
+            break;
+        }
+    }
+    return bits;
+}
+
+static const char *macos_address_scope_name(const char *ifname, const struct sockaddr *address) {
+    (void)ifname;
+    if (address != 0 && address->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)address;
+        if (IN6_IS_ADDR_LOOPBACK(&sin6->sin6_addr)) {
+            return "host";
+        }
+        if (IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr)) {
+            return "link";
+        }
+    }
+    if (address != 0 && address->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)address;
+        if ((ntohl(sin->sin_addr.s_addr) >> 24) == 127U) {
+            return "host";
+        }
+    }
+    return "global";
+}
+
+int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out) {
+    struct ifaddrs *entries = 0;
+    struct ifaddrs *current;
+    int sock = -1;
+    size_t count = 0U;
+
+    if (entries_out == 0 || count_out == 0) {
+        return -1;
+    }
+
+    *count_out = 0U;
+    if (getifaddrs(&entries) != 0) {
+        return -1;
+    }
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    for (current = entries; current != 0; current = current->ifa_next) {
+        int index;
+
+        if (current->ifa_name == 0 || current->ifa_name[0] == '\0') {
+            continue;
+        }
+
+        index = macos_find_link_index(entries_out, count, current->ifa_name);
+        if (index < 0) {
+            struct ifreq ifr;
+
+            if (count >= entry_capacity) {
+                break;
+            }
+
+            index = (int)count;
+            memset(&entries_out[index], 0, sizeof(entries_out[index]));
+            rt_copy_string(entries_out[index].name, sizeof(entries_out[index].name), current->ifa_name);
+            entries_out[index].index = if_nametoindex(current->ifa_name);
+            entries_out[index].flags = macos_map_link_flags((unsigned int)current->ifa_flags);
+            entries_out[index].mtu = 1500U;
+
+            if (sock >= 0) {
+                memset(&ifr, 0, sizeof(ifr));
+                rt_copy_string(ifr.ifr_name, sizeof(ifr.ifr_name), current->ifa_name);
+                if (ioctl(sock, SIOCGIFFLAGS, &ifr) == 0) {
+                    entries_out[index].flags = macos_map_link_flags((unsigned int)ifr.ifr_flags);
+                }
+                if (ioctl(sock, SIOCGIFMTU, &ifr) == 0 && ifr.ifr_mtu > 0) {
+                    entries_out[index].mtu = (unsigned int)ifr.ifr_mtu;
+                }
+            }
+            count += 1U;
+        }
+
+        if (current->ifa_addr != 0 && current->ifa_addr->sa_family == AF_LINK && !entries_out[index].has_mac) {
+            const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)current->ifa_addr;
+            if (sdl->sdl_alen > 0) {
+                const unsigned char *addr = (const unsigned char *)(sdl->sdl_data + sdl->sdl_nlen);
+                macos_format_mac_address(addr, (size_t)sdl->sdl_alen, entries_out[index].mac, sizeof(entries_out[index].mac));
+                entries_out[index].has_mac = 1;
+            }
+        }
+    }
+
+    if (sock >= 0) {
+        (void)platform_close(sock);
+    }
+    freeifaddrs(entries);
+    *count_out = count;
+    return 0;
+}
+
+int platform_list_network_addresses(
+    PlatformNetworkAddress *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+) {
+    struct ifaddrs *entries = 0;
+    struct ifaddrs *current;
+    size_t count = 0U;
+
+    if (entries_out == 0 || count_out == 0) {
+        return -1;
+    }
+
+    *count_out = 0U;
+    if (getifaddrs(&entries) != 0) {
+        return -1;
+    }
+
+    for (current = entries; current != 0; current = current->ifa_next) {
+        PlatformNetworkAddress *entry;
+
+        if (current->ifa_name == 0 || current->ifa_addr == 0) {
+            continue;
+        }
+        if (ifname_filter != 0 && rt_strcmp(current->ifa_name, ifname_filter) != 0) {
+            continue;
+        }
+        if (!macos_network_family_matches((unsigned char)current->ifa_addr->sa_family, family_filter)) {
+            continue;
+        }
+        if (count >= entry_capacity) {
+            break;
+        }
+
+        entry = &entries_out[count];
+        memset(entry, 0, sizeof(*entry));
+        rt_copy_string(entry->ifname, sizeof(entry->ifname), current->ifa_name);
+        entry->family = macos_network_family_code((unsigned char)current->ifa_addr->sa_family);
+        if (macos_format_address_text(current->ifa_addr, entry->address, sizeof(entry->address)) != 0) {
+            continue;
+        }
+
+        if (current->ifa_addr->sa_family == AF_INET) {
+            entry->prefix_length = macos_count_mask_bits_v4(current->ifa_netmask);
+            if (current->ifa_broadaddr != 0 && (current->ifa_flags & IFF_BROADCAST) != 0 &&
+                macos_format_address_text(current->ifa_broadaddr, entry->broadcast, sizeof(entry->broadcast)) == 0) {
+                entry->has_broadcast = 1;
+            }
+        } else {
+            entry->prefix_length = macos_count_mask_bits_v6(current->ifa_netmask);
+        }
+
+        rt_copy_string(entry->scope, sizeof(entry->scope), macos_address_scope_name(current->ifa_name, current->ifa_addr));
+        count += 1U;
+    }
+
+    freeifaddrs(entries);
+    *count_out = count;
+    return 0;
+}
+
+int platform_list_network_routes(
+    PlatformRouteEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)family_filter;
+    (void)ifname_filter;
+    if (count_out == 0) {
+        return -1;
+    }
+    *count_out = 0U;
+    return -1;
+}
+
+int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_value, int set_mtu) {
+    (void)ifname;
+    (void)want_up;
+    (void)mtu_value;
+    (void)set_mtu;
+    return -1;
+}
+
+int platform_network_address_change(const char *ifname, const char *cidr, int add) {
+    (void)ifname;
+    (void)cidr;
+    (void)add;
+    return -1;
+}
+
+int platform_network_route_change(const char *destination, const char *gateway, const char *ifname, int add) {
+    (void)destination;
+    (void)gateway;
+    (void)ifname;
+    (void)add;
+    return -1;
+}
+
+static int macos_memory_equal(const unsigned char *left, const unsigned char *right, size_t count) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (left[index] != right[index]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int macos_ifname_is_valid(const char *ifname) {
+    size_t index;
+
+    if (ifname == 0 || ifname[0] == '\0') {
+        return 0;
+    }
+    if (rt_strlen(ifname) >= IFNAMSIZ) {
+        return 0;
+    }
+    for (index = 0U; ifname[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)ifname[index];
+        if (ch <= ' ' || ch == '/' || ch == '\\') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int macos_select_mac_address(const char *ifname, unsigned char mac_out[6]) {
+    struct ifaddrs *ifaddr = 0;
+    struct ifaddrs *ifa;
+
+    if (mac_out == 0 || (ifname != 0 && ifname[0] != '\0' && !macos_ifname_is_valid(ifname))) {
+        return -1;
+    }
+    if (getifaddrs(&ifaddr) != 0) {
+        return -1;
+    }
+
+    for (ifa = ifaddr; ifa != 0; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == 0) {
+            continue;
+        }
+        if (ifname != 0 && ifname[0] != '\0' && rt_strcmp(ifname, ifa->ifa_name) != 0) {
+            continue;
+        }
+        if (ifa->ifa_addr->sa_family == AF_LINK) {
+            const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)ifa->ifa_addr;
+            const unsigned char *addr = (const unsigned char *)(sdl->sdl_data + sdl->sdl_nlen);
+            if ((ifa->ifa_flags & IFF_LOOPBACK) != 0 || sdl->sdl_alen < 6) {
+                continue;
+            }
+            memcpy(mac_out, addr, 6U);
+            freeifaddrs(ifaddr);
+            return 0;
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    return -1;
+}
+
+static void macos_store_be16(unsigned char *buffer, unsigned short value) {
+    buffer[0] = (unsigned char)(value >> 8);
+    buffer[1] = (unsigned char)(value & 0xffU);
+}
+
+static void macos_store_be32(unsigned char *buffer, unsigned int value) {
+    buffer[0] = (unsigned char)(value >> 24);
+    buffer[1] = (unsigned char)((value >> 16) & 0xffU);
+    buffer[2] = (unsigned char)((value >> 8) & 0xffU);
+    buffer[3] = (unsigned char)(value & 0xffU);
+}
+
+static unsigned int macos_load_be32(const unsigned char *buffer) {
+    return ((unsigned int)buffer[0] << 24) |
+           ((unsigned int)buffer[1] << 16) |
+           ((unsigned int)buffer[2] << 8) |
+           (unsigned int)buffer[3];
+}
+
+static int macos_build_dhcp_packet(
+    unsigned char *packet,
+    size_t packet_size,
+    unsigned int xid,
+    const unsigned char mac[6],
+    unsigned char message_type,
+    const unsigned char *requested_ip,
+    const unsigned char *server_id
+) {
+    size_t offset = 240U;
+    static const unsigned char param_request[] = { 1U, 3U, 6U, 15U, 51U, 54U };
+
+    if (packet == 0 || packet_size < 300U || mac == 0) {
+        return -1;
+    }
+    memset(packet, 0, packet_size);
+    packet[0] = 1U;
+    packet[1] = 1U;
+    packet[2] = 6U;
+    macos_store_be32(packet + 4, xid);
+    macos_store_be16(packet + 10, 0x8000U);
+    memcpy(packet + 28, mac, 6U);
+    macos_store_be32(packet + 236, 0x63825363U);
+
+    packet[offset++] = 53U;
+    packet[offset++] = 1U;
+    packet[offset++] = message_type;
+
+    packet[offset++] = 61U;
+    packet[offset++] = 7U;
+    packet[offset++] = 1U;
+    memcpy(packet + offset, mac, 6U);
+    offset += 6U;
+
+    if (requested_ip != 0) {
+        packet[offset++] = 50U;
+        packet[offset++] = 4U;
+        memcpy(packet + offset, requested_ip, 4U);
+        offset += 4U;
+    }
+    if (server_id != 0) {
+        packet[offset++] = 54U;
+        packet[offset++] = 4U;
+        memcpy(packet + offset, server_id, 4U);
+        offset += 4U;
+    }
+
+    packet[offset++] = 55U;
+    packet[offset++] = (unsigned char)sizeof(param_request);
+    memcpy(packet + offset, param_request, sizeof(param_request));
+    offset += sizeof(param_request);
+    packet[offset++] = 255U;
+    return (int)offset;
+}
+
+static int macos_mask_to_prefix(const unsigned char *mask) {
+    int prefix = 0;
+    int index;
+    int bit;
+
+    for (index = 0; index < 4; ++index) {
+        for (bit = 7; bit >= 0; --bit) {
+            if ((mask[index] & (1U << bit)) != 0U) {
+                prefix += 1;
+            } else {
+                return prefix;
+            }
+        }
+    }
+    return prefix;
+}
+
+static int macos_parse_dhcp_reply(
+    const unsigned char *packet,
+    size_t packet_length,
+    unsigned int xid,
+    const unsigned char mac[6],
+    unsigned char expected_message_type,
+    PlatformDhcpLease *lease_out
+) {
+    size_t offset = 240U;
+    unsigned char message_type = 0U;
+    struct in_addr addr;
+
+    if (packet == 0 || lease_out == 0 || packet_length < 240U || mac == 0) {
+        return -1;
+    }
+    if (packet[0] != 2U || macos_load_be32(packet + 4) != xid ||
+        !macos_memory_equal(packet + 28, mac, 6U) || macos_load_be32(packet + 236) != 0x63825363U) {
+        return -1;
+    }
+
+    memcpy(&addr, packet + 16, 4U);
+    if (inet_ntop(AF_INET, &addr, lease_out->address, sizeof(lease_out->address)) == 0) {
+        return -1;
+    }
+
+    while (offset < packet_length) {
+        unsigned char option = packet[offset++];
+        unsigned char length;
+
+        if (option == 0U) {
+            continue;
+        }
+        if (option == 255U) {
+            break;
+        }
+        if (offset >= packet_length) {
+            break;
+        }
+        length = packet[offset++];
+        if (offset + length > packet_length) {
+            break;
+        }
+
+        if (option == 53U && length >= 1U) {
+            message_type = packet[offset];
+        } else if (option == 1U && length == 4U) {
+            lease_out->prefix_length = (unsigned int)macos_mask_to_prefix(packet + offset);
+        } else if (option == 3U && length >= 4U) {
+            memcpy(&addr, packet + offset, 4U);
+            (void)inet_ntop(AF_INET, &addr, lease_out->router, sizeof(lease_out->router));
+        } else if (option == 6U && length >= 4U) {
+            memcpy(&addr, packet + offset, 4U);
+            (void)inet_ntop(AF_INET, &addr, lease_out->dns1, sizeof(lease_out->dns1));
+            if (length >= 8U) {
+                memcpy(&addr, packet + offset + 4U, 4U);
+                (void)inet_ntop(AF_INET, &addr, lease_out->dns2, sizeof(lease_out->dns2));
+            }
+        } else if (option == 51U && length == 4U) {
+            lease_out->lease_seconds = macos_load_be32(packet + offset);
+        } else if (option == 54U && length == 4U) {
+            memcpy(&addr, packet + offset, 4U);
+            (void)inet_ntop(AF_INET, &addr, lease_out->server, sizeof(lease_out->server));
+        }
+
+        offset += length;
+    }
+
+    if (message_type != expected_message_type) {
+        return -1;
+    }
+    if (lease_out->prefix_length == 0U) {
+        lease_out->prefix_length = 24U;
+    }
+    return 0;
+}
+
+int platform_dhcp_request(
+    const char *ifname,
+    const char *server,
+    unsigned int server_port,
+    unsigned int client_port,
+    unsigned int timeout_milliseconds,
+    PlatformDhcpLease *lease_out
+) {
+    unsigned char mac[6];
+    unsigned char packet[512];
+    unsigned char reply[512];
+    struct sockaddr_in server_addr;
+    struct sockaddr_in peer_addr;
+    struct sockaddr_in bind_addr;
+    socklen_t peer_len = sizeof(peer_addr);
+    int sock;
+    int packet_length;
+    unsigned int xid;
+    int broadcast = 1;
+    struct timeval timeout;
+    unsigned char requested_ip[4];
+    unsigned char server_id[4];
+    int have_server_id = 0;
+
+    if (lease_out == 0 || macos_select_mac_address(ifname, mac) != 0) {
+        return -1;
+    }
+    memset(lease_out, 0, sizeof(*lease_out));
+
+    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        return -1;
+    }
+
+    timeout.tv_sec = (time_t)((timeout_milliseconds == 0U ? 3000U : timeout_milliseconds) / 1000U);
+    timeout.tv_usec = (int)(((timeout_milliseconds == 0U ? 3000U : timeout_milliseconds) % 1000U) * 1000U);
+    if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
+        timeout.tv_usec = 1000;
+    }
+    (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    (void)setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast, sizeof(broadcast));
+    (void)setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = htons((unsigned short)(client_port == 0U ? 68U : client_port));
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0) {
+        (void)platform_close(sock);
+        return -1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons((unsigned short)(server_port == 0U ? 67U : server_port));
+    if (server == 0 || server[0] == '\0') {
+        server_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    } else if (inet_pton(AF_INET, server, &server_addr.sin_addr) != 1) {
+        (void)platform_close(sock);
+        return -1;
+    }
+
+    xid = ((unsigned int)platform_get_process_id() & 0xffffU) ^ 0x44480000U;
+    packet_length = macos_build_dhcp_packet(packet, sizeof(packet), xid, mac, 1U, 0, 0);
+    if (packet_length < 0 || sendto(sock, packet, (size_t)packet_length, 0, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        (void)platform_close(sock);
+        return -1;
+    }
+
+    {
+        ssize_t offer_bytes = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer_addr, &peer_len);
+        if (offer_bytes <= 0 || macos_parse_dhcp_reply(reply, (size_t)offer_bytes, xid, mac, 2U, lease_out) != 0) {
+            (void)platform_close(sock);
+            return -1;
+        }
+    }
+
+    memcpy(requested_ip, reply + 16, 4U);
+    if (lease_out->server[0] != '\0' && inet_pton(AF_INET, lease_out->server, server_id) == 1) {
+        have_server_id = 1;
+    }
+
+    packet_length = macos_build_dhcp_packet(packet, sizeof(packet), xid, mac, 3U, requested_ip, have_server_id ? server_id : 0);
+    if (packet_length < 0 || sendto(sock, packet, (size_t)packet_length, 0, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0) {
+        (void)platform_close(sock);
+        return -1;
+    }
+    {
+        ssize_t ack_bytes = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer_addr, &peer_len);
+        if (ack_bytes <= 0 || macos_parse_dhcp_reply(reply, (size_t)ack_bytes, xid, mac, 5U, lease_out) != 0) {
+            (void)platform_close(sock);
+            return -1;
+        }
+    }
+
+    (void)platform_close(sock);
+    return 0;
+}
+
+static unsigned short macos_icmp_checksum(const void *data, size_t length) {
+    const unsigned short *words = (const unsigned short *)data;
+    unsigned int sum = 0U;
+    size_t remaining = length;
+
+    while (remaining > 1U) {
+        sum += *words++;
+        remaining -= 2U;
+    }
+    if (remaining == 1U) {
+        sum += *(const unsigned char *)words;
+    }
+    while ((sum >> 16) != 0U) {
+        sum = (sum & 0xffffU) + (sum >> 16);
+    }
+    return (unsigned short)~sum;
+}
+
+static int macos_resolve_ping_host(const char *host, struct sockaddr_in *addr_out, char *ip_out, size_t ip_out_size) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    int result;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    result = getaddrinfo(host, 0, &hints, &results);
+    if (result != 0 || results == 0) {
+        return -1;
+    }
+    memcpy(addr_out, results->ai_addr, sizeof(*addr_out));
+    if (inet_ntop(AF_INET, &addr_out->sin_addr, ip_out, ip_out_size) == 0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+    freeaddrinfo(results);
+    return 0;
+}
+
+static int macos_resolve_ping_host6(const char *host, struct sockaddr_in6 *addr_out, char *ip_out, size_t ip_out_size) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    int result;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET6;
+    hints.ai_socktype = SOCK_DGRAM;
+    result = getaddrinfo(host, 0, &hints, &results);
+    if (result != 0 || results == 0) {
+        return -1;
+    }
+    memcpy(addr_out, results->ai_addr, sizeof(*addr_out));
+    if (inet_ntop(AF_INET6, &addr_out->sin6_addr, ip_out, ip_out_size) == 0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+    freeaddrinfo(results);
+    return 0;
+}
+
+static double macos_elapsed_milliseconds(const struct timeval *start, const struct timeval *end) {
+    long seconds = (long)(end->tv_sec - start->tv_sec);
+    long usec = (long)(end->tv_usec - start->tv_usec);
+    return (double)(seconds * 1000L) + (double)usec / 1000.0;
+}
+
+static void macos_write_milliseconds(double milliseconds) {
+    unsigned long long whole_ms = (unsigned long long)milliseconds;
+    unsigned long long frac_ms = (unsigned long long)((milliseconds - (double)whole_ms) * 1000.0);
+
+    rt_write_uint(1, whole_ms);
+    rt_write_char(1, '.');
+    if (frac_ms < 100ULL) {
+        rt_write_char(1, '0');
+    }
+    if (frac_ms < 10ULL) {
+        rt_write_char(1, '0');
+    }
+    rt_write_uint(1, frac_ms);
+}
+
+static void macos_ping_error(const char *message, const char *detail) {
+    rt_write_cstr(2, "ping: ");
+    rt_write_cstr(2, message);
+    if (detail != 0) {
+        rt_write_cstr(2, detail);
+    }
+    rt_write_char(2, '\n');
+}
+
+static void macos_ping_summary(const char *host, unsigned int transmitted, unsigned int received_count, double min_ms, double max_ms, double total_ms) {
+    rt_write_cstr(1, "--- ");
+    rt_write_cstr(1, host);
+    rt_write_line(1, " ping statistics ---");
+    rt_write_uint(1, transmitted);
+    rt_write_cstr(1, " packets transmitted, ");
+    rt_write_uint(1, received_count);
+    rt_write_cstr(1, " packets received, ");
+    if (transmitted > 0U) {
+        unsigned long long loss = ((unsigned long long)(transmitted - received_count) * 100ULL) / (unsigned long long)transmitted;
+        rt_write_uint(1, loss);
+    } else {
+        rt_write_uint(1, 0ULL);
+    }
+    rt_write_line(1, "% packet loss");
+    if (received_count > 0U) {
+        rt_write_cstr(1, "round-trip min/avg/max = ");
+        macos_write_milliseconds(min_ms);
+        rt_write_char(1, '/');
+        macos_write_milliseconds(total_ms / (double)received_count);
+        rt_write_char(1, '/');
+        macos_write_milliseconds(max_ms);
+        rt_write_line(1, " ms");
+    }
+}
+
+static int macos_contains_char(const char *text, char ch) {
+    size_t index = 0U;
+
+    while (text != 0 && text[index] != '\0') {
+        if (text[index] == ch) {
+            return 1;
+        }
+        index += 1U;
+    }
+    return 0;
+}
+
+int platform_ping_host(const char *host, const PlatformPingOptions *options) {
+    PlatformPingOptions effective_options;
+    struct timeval timeout;
+    unsigned int seq;
+    unsigned int transmitted = 0U;
+    unsigned int received_count = 0U;
+    unsigned short identifier;
+    int process_id = platform_get_process_id();
+    double min_ms = 0.0;
+    double max_ms = 0.0;
+    double total_ms = 0.0;
+    struct timeval overall_start;
+    int deadline_exceeded = 0;
+
+    if (options == 0) {
+        effective_options.count = PLATFORM_PING_DEFAULT_COUNT;
+        effective_options.interval_seconds = PLATFORM_PING_DEFAULT_INTERVAL_SECONDS;
+        effective_options.timeout_seconds = PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS;
+        effective_options.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
+        effective_options.ttl = 0U;
+        effective_options.deadline_seconds = 0U;
+        effective_options.quiet_output = 0;
+        effective_options.family = PLATFORM_NETWORK_FAMILY_ANY;
+        effective_options.numeric_only = 0;
+        options = &effective_options;
+    }
+
+    if (host == 0 || options->count == 0U || options->timeout_seconds == 0U ||
+        options->payload_size > PLATFORM_PING_MAX_PAYLOAD_SIZE || options->ttl > PLATFORM_PING_MAX_TTL) {
+        return 1;
+    }
+
+    if (options->family == PLATFORM_NETWORK_FAMILY_IPV6 ||
+        (options->family != PLATFORM_NETWORK_FAMILY_IPV4 && macos_contains_char(host, ':'))) {
+        struct sockaddr_in6 addr6;
+        char ip_text6[INET6_ADDRSTRLEN];
+        int sock;
+
+        if (macos_resolve_ping_host6(host, &addr6, ip_text6, sizeof(ip_text6)) != 0) {
+            macos_ping_error("unknown host ", host);
+            return 1;
+        }
+
+        sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+        if (sock < 0) {
+            sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+        }
+        if (sock < 0) {
+            macos_ping_error("unable to create ICMPv6 socket", 0);
+            return 1;
+        }
+
+        timeout.tv_sec = (time_t)options->timeout_seconds;
+        timeout.tv_usec = 0;
+        (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        if (options->ttl > 0U) {
+            int hops_value = (int)options->ttl;
+            (void)setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops_value, sizeof(hops_value));
+        }
+        if (connect(sock, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
+            (void)platform_close(sock);
+            macos_ping_error("cannot reach ", host);
+            return 1;
+        }
+
+        identifier = (unsigned short)((process_id > 0) ? process_id : 0x1234);
+        (void)gettimeofday(&overall_start, 0);
+        rt_write_cstr(1, "PING ");
+        rt_write_cstr(1, host);
+        rt_write_cstr(1, " (");
+        rt_write_cstr(1, ip_text6);
+        rt_write_cstr(1, ") ");
+        rt_write_uint(1, options->payload_size);
+        rt_write_line(1, " data bytes");
+
+        for (seq = 1U; seq <= options->count; ++seq) {
+            unsigned char packet[sizeof(MacosIcmpv6Packet) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+            unsigned char reply[sizeof(packet) + 128U];
+            MacosIcmpv6Packet *header = (MacosIcmpv6Packet *)packet;
+            struct timeval start_time;
+            struct timeval end_time;
+            struct timeval current_time;
+            ssize_t reply_size;
+            size_t packet_size = sizeof(MacosIcmpv6Packet) + options->payload_size;
+            int matched = 0;
+
+            if (options->deadline_seconds > 0U) {
+                (void)gettimeofday(&current_time, 0);
+                if (macos_elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                    deadline_exceeded = 1;
+                    break;
+                }
+            }
+
+            memset(packet, 0, packet_size);
+            header->type = MACOS_ICMPV6_ECHO_REQUEST;
+            header->identifier = htons(identifier);
+            header->sequence = htons((unsigned short)seq);
+            memset(packet + sizeof(MacosIcmpv6Packet), 0x42, options->payload_size);
+
+            (void)gettimeofday(&start_time, 0);
+            if (send(sock, packet, packet_size, 0) < 0) {
+                (void)platform_close(sock);
+                macos_ping_error("send failed to ", host);
+                return 1;
+            }
+            transmitted += 1U;
+
+            for (;;) {
+                reply_size = recv(sock, reply, sizeof(reply), 0);
+                if (reply_size < 0) {
+                    break;
+                }
+                {
+                    size_t offset = 0U;
+                    const MacosIcmpv6Packet *reply_header;
+                    if ((size_t)reply_size >= 40U && (reply[0] >> 4) == 6U) {
+                        offset = 40U;
+                    }
+                    if ((size_t)reply_size < offset + sizeof(MacosIcmpv6Packet)) {
+                        continue;
+                    }
+                    reply_header = (const MacosIcmpv6Packet *)(reply + offset);
+                    if (reply_header->type == MACOS_ICMPV6_ECHO_REPLY &&
+                        ntohs(reply_header->identifier) == identifier &&
+                        ntohs(reply_header->sequence) == (unsigned short)seq) {
+                        double rtt_ms;
+                        (void)gettimeofday(&end_time, 0);
+                        rtt_ms = macos_elapsed_milliseconds(&start_time, &end_time);
+                        if (received_count == 0U || rtt_ms < min_ms) {
+                            min_ms = rtt_ms;
+                        }
+                        if (received_count == 0U || rtt_ms > max_ms) {
+                            max_ms = rtt_ms;
+                        }
+                        total_ms += rtt_ms;
+                        received_count += 1U;
+                        if (!options->quiet_output) {
+                            rt_write_uint(1, (unsigned long long)((reply_size > (ssize_t)offset) ? (reply_size - (ssize_t)offset) : reply_size));
+                            rt_write_cstr(1, " bytes from ");
+                            rt_write_cstr(1, ip_text6);
+                            rt_write_cstr(1, ": icmp_seq=");
+                            rt_write_uint(1, seq);
+                            rt_write_cstr(1, " time=");
+                            macos_write_milliseconds(rtt_ms);
+                            rt_write_line(1, " ms");
+                        }
+                        matched = 1;
+                        break;
+                    }
+                }
+            }
+            if (!matched && !options->quiet_output) {
+                rt_write_cstr(1, "Request timeout for icmp_seq ");
+                rt_write_uint(1, seq);
+                rt_write_char(1, '\n');
+            }
+            if (seq < options->count && options->interval_seconds > 0U) {
+                if (options->deadline_seconds > 0U) {
+                    (void)gettimeofday(&current_time, 0);
+                    if (macos_elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                        deadline_exceeded = 1;
+                        break;
+                    }
+                }
+                (void)platform_sleep_seconds(options->interval_seconds);
+            }
+        }
+        (void)platform_close(sock);
+        if (deadline_exceeded && !options->quiet_output) {
+            rt_write_line(1, "ping: deadline reached");
+        }
+        macos_ping_summary(host, transmitted, received_count, min_ms, max_ms, total_ms);
+        return received_count > 0U ? 0 : 1;
+    }
+
+    {
+        struct sockaddr_in addr;
+        char ip_text[INET_ADDRSTRLEN];
+        int sock;
+
+        if (macos_resolve_ping_host(host, &addr, ip_text, sizeof(ip_text)) != 0) {
+            macos_ping_error("unknown host ", host);
+            return 1;
+        }
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+        if (sock < 0) {
+            sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+        }
+        if (sock < 0) {
+            macos_ping_error("unable to create ICMP socket", 0);
+            return 1;
+        }
+
+        timeout.tv_sec = (time_t)options->timeout_seconds;
+        timeout.tv_usec = 0;
+        (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        if (options->ttl > 0U) {
+            int ttl_value = (int)options->ttl;
+            (void)setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl_value, sizeof(ttl_value));
+        }
+
+        identifier = (unsigned short)((process_id > 0) ? process_id : 0x1234);
+        (void)gettimeofday(&overall_start, 0);
+        rt_write_cstr(1, "PING ");
+        rt_write_cstr(1, host);
+        rt_write_cstr(1, " (");
+        rt_write_cstr(1, ip_text);
+        rt_write_cstr(1, ") ");
+        rt_write_uint(1, options->payload_size);
+        rt_write_line(1, " data bytes");
+
+        for (seq = 1U; seq <= options->count; ++seq) {
+            unsigned char packet[sizeof(MacosIcmpPacket) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+            unsigned char reply[sizeof(packet) + 128U];
+            MacosIcmpPacket *header = (MacosIcmpPacket *)packet;
+            struct timeval start_time;
+            struct timeval end_time;
+            struct timeval current_time;
+            ssize_t reply_size;
+            size_t packet_size = sizeof(MacosIcmpPacket) + options->payload_size;
+            int matched = 0;
+
+            if (options->deadline_seconds > 0U) {
+                (void)gettimeofday(&current_time, 0);
+                if (macos_elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                    deadline_exceeded = 1;
+                    break;
+                }
+            }
+
+            memset(packet, 0, packet_size);
+            header->type = MACOS_ICMP_ECHO;
+            header->identifier = htons(identifier);
+            header->sequence = htons((unsigned short)seq);
+            memset(packet + sizeof(MacosIcmpPacket), 0x42, options->payload_size);
+            header->checksum = macos_icmp_checksum(packet, packet_size);
+
+            (void)gettimeofday(&start_time, 0);
+            if (sendto(sock, packet, packet_size, 0, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+                (void)platform_close(sock);
+                macos_ping_error("send failed to ", host);
+                return 1;
+            }
+            transmitted += 1U;
+
+            for (;;) {
+                reply_size = recvfrom(sock, reply, sizeof(reply), 0, 0, 0);
+                if (reply_size < 0) {
+                    break;
+                }
+                {
+                    size_t offset = 0U;
+                    const MacosIcmpPacket *reply_header;
+                    if ((size_t)reply_size >= 20U && (reply[0] >> 4) == 4U) {
+                        offset = (size_t)(reply[0] & 0x0fU) * 4U;
+                    }
+                    if ((size_t)reply_size < offset + sizeof(MacosIcmpPacket)) {
+                        continue;
+                    }
+                    reply_header = (const MacosIcmpPacket *)(reply + offset);
+                    if (reply_header->type == MACOS_ICMP_ECHO_REPLY &&
+                        ntohs(reply_header->identifier) == identifier &&
+                        ntohs(reply_header->sequence) == (unsigned short)seq) {
+                        double rtt_ms;
+                        unsigned int ttl = (offset >= 20U && (size_t)reply_size >= 9U) ? reply[8] : 0U;
+                        (void)gettimeofday(&end_time, 0);
+                        rtt_ms = macos_elapsed_milliseconds(&start_time, &end_time);
+                        if (received_count == 0U || rtt_ms < min_ms) {
+                            min_ms = rtt_ms;
+                        }
+                        if (received_count == 0U || rtt_ms > max_ms) {
+                            max_ms = rtt_ms;
+                        }
+                        total_ms += rtt_ms;
+                        received_count += 1U;
+                        if (!options->quiet_output) {
+                            rt_write_uint(1, (unsigned long long)((reply_size > (ssize_t)offset) ? (reply_size - (ssize_t)offset) : reply_size));
+                            rt_write_cstr(1, " bytes from ");
+                            rt_write_cstr(1, ip_text);
+                            rt_write_cstr(1, ": icmp_seq=");
+                            rt_write_uint(1, seq);
+                            if (ttl != 0U) {
+                                rt_write_cstr(1, " ttl=");
+                                rt_write_uint(1, (unsigned long long)ttl);
+                            }
+                            rt_write_cstr(1, " time=");
+                            macos_write_milliseconds(rtt_ms);
+                            rt_write_line(1, " ms");
+                        }
+                        matched = 1;
+                        break;
+                    }
+                }
+            }
+            if (!matched && !options->quiet_output) {
+                rt_write_cstr(1, "Request timeout for icmp_seq ");
+                rt_write_uint(1, seq);
+                rt_write_char(1, '\n');
+            }
+            if (seq < options->count && options->interval_seconds > 0U) {
+                if (options->deadline_seconds > 0U) {
+                    (void)gettimeofday(&current_time, 0);
+                    if (macos_elapsed_milliseconds(&overall_start, &current_time) >= (double)options->deadline_seconds * 1000.0) {
+                        deadline_exceeded = 1;
+                        break;
+                    }
+                }
+                (void)platform_sleep_seconds(options->interval_seconds);
+            }
+        }
+        (void)platform_close(sock);
+        if (deadline_exceeded && !options->quiet_output) {
+            rt_write_line(1, "ping: deadline reached");
+        }
+        macos_ping_summary(host, transmitted, received_count, min_ms, max_ms, total_ms);
+        return received_count > 0U ? 0 : 1;
+    }
 }
 
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {

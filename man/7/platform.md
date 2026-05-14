@@ -88,9 +88,10 @@ identity lookup, process spawning/waiting, process listing, terminal mode,
 basic TCP/TLS client networking for `wtf`, basic reporting, signal delivery,
 common filesystem mutation operations, archive/compression helpers, image
 metadata tools, object inspection tools, SQL, manual lookup, XML tooling, DNS
-lookups, simple TCP `netcat`, SSH/SSHD, and HTTP serving. The current set also
-includes the in-tree `ncc` compiler for object emission. The next steps are raw
-or administrative network primitives, more exact Darwin process state
+lookups, simple TCP `netcat`, ICMP ping, SSH/SSHD, HTTP serving, and read-only
+`ip` link/address inspection. The current set also includes the in-tree `ncc`
+compiler for object emission. The next steps are administrative network
+primitives, DHCP validation/apply support, route inspection, more exact Darwin process state
 accounting, and deeper reporting such as accurate uptime/session data.
 
 ### Architecture glue (`src/arch/*/linux`)

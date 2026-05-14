@@ -68,11 +68,11 @@ modern macOS requires for runnable executables.
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
   `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds 155 tools, including the core/text/filesystem/process set,
+- currently builds 158 tools, including the core/text/filesystem/process set,
   checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
   tools, object inspection tools, `awk`, `sql`, `man`, `pstree`, `wget`, `ncc`,
-  `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, and the XML tool
-  family
+  `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, `ping`, `ping6`,
+  read-only `ip`, and the XML tool family
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
   behavior
 - compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so

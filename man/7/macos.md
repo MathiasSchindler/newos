@@ -25,13 +25,14 @@ machine.
 - `make freestanding` on local macOS/aarch64 builds the freestanding-ish Darwin
   subset under `build/freestanding-macos-aarch64/`
 - `make freestanding-macos` builds that same target explicitly
-- the current subset contains 155 tools spanning small core commands, text and
+- the current subset contains 158 tools spanning small core commands, text and
   file filters, path metadata, symlink queries, checksums, `bc`, identity,
   directory listing, filesystem mutation, process spawning/listing, terminal
   mode, pagers, archive/compression, image metadata, object inspection, XML,
   `sql`, `man`, `pstree`, `wget`, `ncc`, `netcat`, DNS lookup/query tools,
-  `ssh`, `sshd`, `httpd`, basic TCP/TLS client networking for `wtf`, `free`,
-  `kill`, sleep, touch, truncate, sync, and basic `dd`
+  `ssh`, `sshd`, `httpd`, `ping`, `ping6`, read-only `ip` link/address
+  inspection, basic TCP/TLS client networking for `wtf`, `free`, `kill`, sleep,
+  touch, truncate, sync, and basic `dd`
 - `uptime`, `top`, `who`, and `users` are still excluded from the counted set
   until their Darwin session/process reporting is accurate enough to rely on
 
