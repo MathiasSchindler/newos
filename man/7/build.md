@@ -68,11 +68,12 @@ modern macOS requires for runnable executables.
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
   `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds 158 tools, including the core/text/filesystem/process set,
+- currently builds all 178 tools, including the core/text/filesystem/process set,
   checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
   tools, object inspection tools, `awk`, `sql`, `man`, `pstree`, `wget`, `ncc`,
   `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, `ping`, `ping6`,
-  read-only `ip`, and the XML tool family
+  DHCP probing, `dmesg`, `mknod`, mount/admin command front-ends, read-only
+  `ip`, `sh`, `editor`, `mail`, `service`, `make`, and the XML tool family
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
   behavior
 - compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so
@@ -82,9 +83,9 @@ modern macOS requires for runnable executables.
   default; LTO is enabled by default for the macOS freestanding-ish target and
   can be disabled with `MACOS_FREESTANDING_LTO=0`; XML tools and `ncc`
   currently opt out of LTO because they hit Apple-clang LTO-only crashes
-- is intentionally smaller than the Linux freestanding target until raw/admin
-  networking, richer process/session reporting, and larger
-  application-level tool dependencies are implemented
+- keeps privileged or host-mutating operations conservative on Darwin when the
+  project does not yet have a validated macOS implementation, so some admin
+  front-ends build and report unsupported operations instead of changing the host
 
 ## SELF-HOSTED BUILD
 

@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
+#include <sys/reboot.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/proc.h>
@@ -560,6 +561,56 @@ int platform_create_hard_link(const char *target_path, const char *link_path) {
 
 int platform_create_symbolic_link(const char *target_path, const char *link_path) {
     return symlink(target_path, link_path);
+}
+
+int platform_create_node(const char *path, unsigned int node_type, unsigned int mode, unsigned int major, unsigned int minor) {
+    mode_t node_mode = (mode_t)(mode & 07777U);
+
+    if (path == 0) {
+        return -1;
+    }
+    if (node_type == PLATFORM_NODE_FIFO) {
+        return mkfifo(path, node_mode);
+    }
+    if (node_type == PLATFORM_NODE_CHAR) {
+        node_mode |= S_IFCHR;
+    } else if (node_type == PLATFORM_NODE_BLOCK) {
+        node_mode |= S_IFBLK;
+    } else {
+        return -1;
+    }
+    return mknod(path, node_mode, makedev((int)major, (int)minor));
+}
+
+int platform_mount_filesystem(
+    const char *source,
+    const char *target,
+    const char *filesystem_type,
+    unsigned long long flags,
+    const char *data
+) {
+    (void)source;
+    (void)target;
+    (void)filesystem_type;
+    (void)flags;
+    (void)data;
+    return -1;
+}
+
+int platform_unmount_filesystem(const char *target, int force, int lazy) {
+    int flags = 0;
+
+    if (target == 0 || target[0] == '\0' || lazy) {
+        return -1;
+    }
+#ifdef MNT_FORCE
+    if (force) {
+        flags |= MNT_FORCE;
+    }
+#else
+    (void)force;
+#endif
+    return unmount(target, flags);
 }
 
 int platform_change_mode(const char *path, unsigned int mode) {
@@ -1125,6 +1176,42 @@ int platform_truncate_path(const char *path, unsigned long long size) {
 
 int platform_sync_all(void) {
     return darwin_syscall0(DARWIN_SYS_SYNC) < 0 ? -1 : 0;
+}
+
+long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_read) {
+    size_t needed = 0U;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    if (clear_after_read) {
+        return -1;
+    }
+    if (sysctlbyname("kern.msgbuf", 0, &needed, 0, 0) != 0 || needed == 0U) {
+        return -1;
+    }
+    if (needed > buffer_size - 1U) {
+        needed = buffer_size - 1U;
+    }
+    if (sysctlbyname("kern.msgbuf", buffer, &needed, 0, 0) != 0) {
+        return -1;
+    }
+    buffer[needed] = '\0';
+    return (long)needed;
+}
+
+int platform_clear_kernel_log(void) {
+    return -1;
+}
+
+int platform_set_console_log_level(int level) {
+    (void)level;
+    return -1;
+}
+
+int platform_shutdown_system(int action) {
+    (void)action;
+    return -1;
 }
 
 static int open_sync_fd(const char *path) {
