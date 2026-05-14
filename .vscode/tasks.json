@@ -216,6 +216,19 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
+		},
+		{
+			"label": "freestanding-windows-editor-mail-ncc-build",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
 		}
 	]
 }

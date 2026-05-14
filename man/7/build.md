@@ -126,14 +126,17 @@ If local PowerShell execution policy blocks scripts, use the command runner:
 `make freestanding` remains the main target: it builds Linux ABI binaries using
 the raw syscall backend under `src/platform/linux/` and `src/arch/*/linux/`.
 `make freestanding-windows` is the early native Windows path. It links PE
-executables directly against Kernel32 and currently covers only small tools that
-need startup, argument parsing, stdout/stderr, heap allocation, and basic file
-read/write/seek, path metadata, environment lookup, directory create/remove,
-truncate, and flush support, plus current-directory, hostname, and uname-style
-queries. The Windows backend also has enough Winsock and native TLS client
-support for `wtf` to fetch summaries. Certificate validation is not yet wired to
-the Windows trust store, so that path is useful for bring-up testing but should
-not be treated as a hardened HTTPS client yet.
+executables directly against Kernel32, Ws2_32, and Bcrypt where needed. The
+Windows subset now covers the small text/core tools, comparison/checksum/image,
+path/filesystem, regex/archive/awk/XML groups, plus `wtf`, `editor`, `mail`, and
+the `ncc` compiler executable. The backend has startup, argument parsing,
+stdout/stderr, heap allocation, file read/write/seek, path metadata, environment
+lookup, directory create/remove, truncate, flush support, current-directory,
+hostname, uname-style queries, basic Winsock, console raw mode, and native TLS
+client support. Certificate validation is not yet wired to the Windows trust
+store, so TLS tools are useful for bring-up testing but should not be treated as
+hardened HTTPS/IMAPS clients. The Windows-built `ncc` can target the existing
+Linux and macOS backends; emitting Windows PE executables remains future work.
 
 ## COMMON WORKFLOW
 

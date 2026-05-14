@@ -17,6 +17,12 @@
 #define WIN_FILE_ATTRIBUTE_DIRECTORY 0x00000010UL
 #define WIN_INVALID_FILE_ATTRIBUTES 0xffffffffUL
 #define WIN_FILE_TYPE_CHAR 0x0002UL
+#define WIN_ENABLE_ECHO_INPUT 0x0004UL
+#define WIN_ENABLE_LINE_INPUT 0x0002UL
+#define WIN_ENABLE_PROCESSED_INPUT 0x0001UL
+#define WIN_ENABLE_VIRTUAL_TERMINAL_INPUT 0x0200UL
+#define WIN_ENABLE_PROCESSED_OUTPUT 0x0001UL
+#define WIN_ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004UL
 #define WIN_FD_TABLE_CAPACITY 64
 #define WIN_FD_KIND_NONE 0
 #define WIN_FD_KIND_FILE 1
@@ -113,6 +119,7 @@ __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char *fil
 __declspec(dllimport) int __stdcall GetFileSizeEx(void *handle, long long *size_out);
 __declspec(dllimport) unsigned long __stdcall GetFileType(void *handle);
 __declspec(dllimport) int __stdcall GetConsoleMode(void *handle, unsigned long *mode_out);
+__declspec(dllimport) int __stdcall SetConsoleMode(void *handle, unsigned long mode);
 __declspec(dllimport) int __stdcall GetConsoleScreenBufferInfo(void *handle, WinConsoleScreenBufferInfo *info_out);
 __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(WinFileTime *file_time_out);
 __declspec(dllimport) int __stdcall FileTimeToSystemTime(const WinFileTime *file_time, WinSystemTime *system_time_out);
@@ -130,6 +137,8 @@ __declspec(dllimport) void *__stdcall CreateFileA(const char *file_name, unsigne
                                                    unsigned long flags_and_attributes, void *template_file);
 __declspec(dllimport) int __stdcall CreateDirectoryA(const char *path_name, void *security_attributes);
 __declspec(dllimport) int __stdcall DeleteFileA(const char *file_name);
+__declspec(dllimport) unsigned long __stdcall GetTempPathA(unsigned long buffer_length, char *buffer);
+__declspec(dllimport) unsigned int __stdcall GetTempFileNameA(const char *path_name, const char *prefix_string, unsigned int unique, char *temp_file_name);
 __declspec(dllimport) int __stdcall FlushFileBuffers(void *handle);
 __declspec(dllimport) int __stdcall RemoveDirectoryA(const char *path_name);
 __declspec(dllimport) void *__stdcall VirtualAlloc(void *address, size_t size, unsigned long allocation_type, unsigned long protect);
@@ -421,6 +430,48 @@ int platform_open_create_exclusive(const char *path, unsigned int mode) {
     return -1;
 }
 
+int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
+    char temp_dir[260];
+    char temp_path[260];
+    const char *actual_prefix = "nws";
+    unsigned long dir_length;
+    void *handle;
+    int fd;
+
+    (void)mode;
+    if (path_buffer == 0 || buffer_size == 0U) return -1;
+    if (prefix != 0 && prefix[0] != '\0') {
+        size_t length = rt_strlen(prefix);
+        while (length > 0U && (prefix[length - 1U] == '/' || prefix[length - 1U] == '\\')) length -= 1U;
+        while (length > 0U && prefix[length - 1U] != '/' && prefix[length - 1U] != '\\') length -= 1U;
+        if (prefix[length] != '\0') actual_prefix = prefix + length;
+    }
+
+    dir_length = GetTempPathA((unsigned long)sizeof(temp_dir), temp_dir);
+    if (dir_length == 0UL || dir_length >= (unsigned long)sizeof(temp_dir)) return -1;
+    if (GetTempFileNameA(temp_dir, actual_prefix, 0U, temp_path) == 0U) return -1;
+    if (rt_strlen(temp_path) + 1U > buffer_size) {
+        (void)DeleteFileA(temp_path);
+        return -1;
+    }
+
+    handle = CreateFileA(temp_path, WIN_GENERIC_READ | WIN_GENERIC_WRITE, 0, 0,
+                         WIN_OPEN_EXISTING, WIN_FILE_ATTRIBUTE_NORMAL, 0);
+    if (handle == 0 || handle == WIN_INVALID_HANDLE_VALUE) {
+        (void)DeleteFileA(temp_path);
+        return -1;
+    }
+
+    fd = windows_allocate_fd(handle, WIN_FD_KIND_FILE);
+    if (fd < 0) {
+        (void)CloseHandle(handle);
+        (void)DeleteFileA(temp_path);
+        return -1;
+    }
+    rt_copy_string(path_buffer, buffer_size, temp_path);
+    return fd;
+}
+
 int platform_open_append(const char *path, unsigned int mode) {
     int fd = platform_open_write_mode(path, mode, 0);
     if (fd >= 0 && platform_seek(fd, 0, PLATFORM_SEEK_END) < 0) {
@@ -517,6 +568,70 @@ int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *col
     *rows_out = (unsigned int)(info.window.bottom - info.window.top + 1);
     *columns_out = (unsigned int)(info.window.right - info.window.left + 1);
     return 0;
+}
+
+int platform_terminal_get_mode(int fd, PlatformTerminalMode *mode_out) {
+    void *handle = windows_handle_for_fd(fd);
+    unsigned long mode;
+
+    if (handle == 0 || mode_out == 0 || !GetConsoleMode(handle, &mode)) return -1;
+    rt_memset(mode_out, 0, sizeof(*mode_out));
+    mode_out->echo = (mode & WIN_ENABLE_ECHO_INPUT) != 0UL;
+    mode_out->icanon = (mode & WIN_ENABLE_LINE_INPUT) != 0UL;
+    mode_out->isig = (mode & WIN_ENABLE_PROCESSED_INPUT) != 0UL;
+    mode_out->ixon = 0;
+    mode_out->opost = 1;
+    (void)platform_get_terminal_size(fd, &mode_out->rows, &mode_out->columns);
+    return 0;
+}
+
+int platform_terminal_set_mode(int fd, const PlatformTerminalMode *mode_in, unsigned int change_mask) {
+    void *handle = windows_handle_for_fd(fd);
+    unsigned long mode;
+
+    if (handle == 0 || mode_in == 0 || !GetConsoleMode(handle, &mode)) return -1;
+    if ((change_mask & PLATFORM_TERMINAL_ECHO) != 0U) {
+        mode = mode_in->echo ? (mode | WIN_ENABLE_ECHO_INPUT) : (mode & ~WIN_ENABLE_ECHO_INPUT);
+    }
+    if ((change_mask & PLATFORM_TERMINAL_ICANON) != 0U) {
+        mode = mode_in->icanon ? (mode | WIN_ENABLE_LINE_INPUT) : (mode & ~WIN_ENABLE_LINE_INPUT);
+    }
+    if ((change_mask & PLATFORM_TERMINAL_ISIG) != 0U) {
+        mode = mode_in->isig ? (mode | WIN_ENABLE_PROCESSED_INPUT) : (mode & ~WIN_ENABLE_PROCESSED_INPUT);
+    }
+    return SetConsoleMode(handle, mode) != 0 ? 0 : -1;
+}
+
+int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
+    void *input_handle = windows_handle_for_fd(fd);
+    void *output_handle = windows_handle_for_fd(1);
+    unsigned long input_mode;
+    unsigned long output_mode;
+    unsigned long raw_mode;
+
+    if (input_handle == 0 || state_out == 0 || !GetConsoleMode(input_handle, &input_mode)) return -1;
+    rt_memset(state_out, 0, sizeof(*state_out));
+    memcpy(state_out->bytes, &input_mode, sizeof(input_mode));
+
+    raw_mode = input_mode;
+    raw_mode &= ~(WIN_ENABLE_ECHO_INPUT | WIN_ENABLE_LINE_INPUT);
+    raw_mode |= WIN_ENABLE_PROCESSED_INPUT | WIN_ENABLE_VIRTUAL_TERMINAL_INPUT;
+    if (!SetConsoleMode(input_handle, raw_mode)) return -1;
+
+    if (output_handle != 0 && GetConsoleMode(output_handle, &output_mode)) {
+        output_mode |= WIN_ENABLE_PROCESSED_OUTPUT | WIN_ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        (void)SetConsoleMode(output_handle, output_mode);
+    }
+    return 0;
+}
+
+int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
+    void *handle = windows_handle_for_fd(fd);
+    unsigned long mode;
+
+    if (handle == 0 || state == 0) return -1;
+    memcpy(&mode, state->bytes, sizeof(mode));
+    return SetConsoleMode(handle, mode) != 0 ? 0 : -1;
 }
 
 int platform_get_process_id(void) {
@@ -805,6 +920,17 @@ int platform_remove_directory(const char *path) {
     return RemoveDirectoryA(path) != 0 ? 0 : -1;
 }
 
+int platform_create_symbolic_link(const char *target_path, const char *link_path) {
+    (void)target_path;
+    (void)link_path;
+    return -1;
+}
+
+int platform_change_mode(const char *path, unsigned int mode) {
+    (void)mode;
+    return platform_path_access(path, 0) == 0 ? 0 : -1;
+}
+
 int platform_truncate_path(const char *path, unsigned long long size) {
     int fd;
     void *handle;
@@ -991,6 +1117,31 @@ int platform_list_sessions(PlatformSessionEntry *entries_out, size_t entry_capac
     if (count_out == 0) return -1;
     *count_out = 0U;
     return 0;
+}
+
+int platform_spawn_process(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    int *pid_out
+) {
+    (void)argv;
+    (void)stdin_fd;
+    (void)stdout_fd;
+    (void)input_path;
+    (void)output_path;
+    (void)output_append;
+    (void)pid_out;
+    return -1;
+}
+
+int platform_wait_process(int pid, int *exit_status_out) {
+    (void)pid;
+    (void)exit_status_out;
+    return -1;
 }
 
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {

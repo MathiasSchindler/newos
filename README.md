@@ -47,18 +47,14 @@ make freestanding-windows WINDOWS_TARGET_CC=clang
 ```
 
 `make freestanding` still emits Linux ABI binaries through the raw Linux
-syscall backend. `make freestanding-windows` is the initial native PE path; it
-currently builds a small no-libc Windows subset (`true`, `false`, `echo`,
-`printf`, `dirname`, `basename`, `cat`, `head`, `tail`, `nl`, `rev`, `fold`,
-`uniq`, `wc`, `cut`, `tr`, `expand`, `unexpand`, `pwd`, `hostname`, and
-`uname`), plus comparison, checksum, image, path, and basic filesystem tools
-such as `cmp`, `comm`, `join`, `paste`, `tac`, `sleep`, `file`, `readlink`,
-`realpath`, `strings`, `hexdump`, `od`, `md5sum`, `sha256sum`, `sha512sum`,
-`test`, `which`, `printenv`, `tee`, `mkdir`, `rmdir`, `truncate`, `sync`,
-`imgmeta`, `imginfo`, `imgcheck`, `bc`, `expr`, and `seq`. `wtf` builds and can
-fetch summaries through the native Winsock/TLS path; certificate validation is
-not wired to the Windows trust store yet, so treat it as an early bring-up check
-rather than a hardened HTTPS client.
+syscall backend. `make freestanding-windows` is the native no-CRT PE path. It
+now builds the small text/core tools, comparison/checksum/image/path/filesystem
+tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
+`editor`, `mail`, and the `ncc` compiler executable. `wtf` and `mail` use the
+native Winsock/TLS path; certificate validation is not wired to the Windows trust
+store yet, so treat network TLS on Windows as bring-up testing rather than a
+hardened HTTPS/IMAPS client. The Windows-built `ncc` can target the existing
+Linux and macOS backends; emitting Windows PE executables is still future work.
 To launch hosted MSYS tools directly from PowerShell or `cmd.exe`, keep the
 MSYS runtime on `PATH`, for example `C:\msys64\usr\bin`. Copying
 `msys-2.0.dll` beside the tools is not supported because it relocates the MSYS

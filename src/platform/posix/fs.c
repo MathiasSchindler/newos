@@ -28,7 +28,12 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
+#include <sys/mman.h>
 #include <unistd.h>
+
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 
 #if defined(__linux__)
 #include <sys/sysmacros.h>
@@ -36,6 +41,11 @@
 #if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/mount.h>
 #endif
+
+void *platform_allocate_pages(size_t size) {
+    void *mapped = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return mapped == MAP_FAILED ? 0 : mapped;
+}
 
 static int posix_mark_fd_cloexec(int fd) {
     int flags;

@@ -26,6 +26,8 @@ static const CompilerTargetInfo COMPILER_TARGETS[] = {
         "linux-x86_64",
         "x86_64-linux-none",
         "src/arch/x86_64/linux",
+        "src/platform/linux",
+        "src/platform/common",
         "",
         COMPILER_OBJECT_FORMAT_ELF64,
         6U,
@@ -38,6 +40,8 @@ static const CompilerTargetInfo COMPILER_TARGETS[] = {
         "linux-aarch64",
         "aarch64-linux-none",
         "src/arch/aarch64/linux",
+        "src/platform/linux",
+        "src/platform/common",
         "",
         COMPILER_OBJECT_FORMAT_ELF64,
         8U,
@@ -50,6 +54,8 @@ static const CompilerTargetInfo COMPILER_TARGETS[] = {
         "macos-aarch64",
         "arm64-apple-darwin",
         "src/arch/aarch64/linux",
+        "src/platform/posix",
+        "src/platform/common",
         "_",
         COMPILER_OBJECT_FORMAT_MACHO64,
         8U,
@@ -74,14 +80,17 @@ const char *compiler_target_name(CompilerTarget target) {
     return info != 0 ? info->name : "unknown";
 }
 
+void compiler_target_write_names(int fd) {
+    size_t index;
+    for (index = 0; index < sizeof(COMPILER_TARGETS) / sizeof(COMPILER_TARGETS[0]); ++index) {
+        if (index != 0U) {
+            rt_write_cstr(fd, ", ");
+        }
+        rt_write_cstr(fd, COMPILER_TARGETS[index].name);
+    }
+}
+
 CompilerTarget compiler_target_default(void) {
-#if defined(__linux__) && defined(__x86_64__)
-    return COMPILER_TARGET_LINUX_X86_64;
-#elif defined(__linux__) && (defined(__aarch64__) || defined(__arm64__))
-    return COMPILER_TARGET_LINUX_AARCH64;
-#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
-    return COMPILER_TARGET_MACOS_AARCH64;
-#else
     char sysname[64];
     char nodename[64];
     char release[64];
@@ -103,8 +112,15 @@ CompilerTarget compiler_target_default(void) {
         return COMPILER_TARGET_LINUX_AARCH64;
     }
 
+    if (target_text_equals(sysname, "Darwin")) {
+        return COMPILER_TARGET_MACOS_AARCH64;
+    }
+
+    if (target_text_equals(sysname, "Windows") && target_text_equals(machine, "x86_64")) {
+        return COMPILER_TARGET_LINUX_X86_64;
+    }
+
     return COMPILER_TARGET_MACOS_AARCH64;
-#endif
 }
 
 int compiler_target_parse(const char *text, CompilerTarget *target_out) {
@@ -147,7 +163,9 @@ int compiler_target_apply_preprocessor_defaults(CompilerPreprocessor *preprocess
     }
     (void)freestanding;
 
-    if (compiler_preprocessor_add_include_dir(preprocessor, info->arch_include_dir) != 0) {
+    if (compiler_preprocessor_add_include_dir(preprocessor, info->arch_include_dir) != 0 ||
+        compiler_preprocessor_add_include_dir(preprocessor, info->platform_include_dir) != 0 ||
+        compiler_preprocessor_add_include_dir(preprocessor, info->platform_common_include_dir) != 0) {
         return -1;
     }
 
