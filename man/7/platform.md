@@ -84,10 +84,11 @@ executables in the same way Linux runs static syscall-only binaries.
 The supported set has grown to small argument-only tools, stdin/file text
 filters, environment printing, current-directory printing, metadata and symlink
 queries, file inspection, checksums, math through `bc`, directory enumeration,
-identity lookup, basic reporting, signal delivery, and common filesystem
-mutation operations. The next steps are process spawning/waiting, terminal mode,
-network primitives, compression/archive helpers, and deeper reporting such as
-accurate uptime/session data.
+identity lookup, process spawning/waiting, process listing, terminal mode,
+basic TCP/TLS client networking for `wtf`, basic reporting, signal delivery,
+and common filesystem mutation operations. The next steps are broader network
+primitives, compression/archive helpers, more exact Darwin process state
+accounting, and deeper reporting such as accurate uptime/session data.
 
 ### Architecture glue (`src/arch/*/linux`)
 

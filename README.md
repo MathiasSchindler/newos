@@ -34,7 +34,7 @@ The repository includes a structured shell-based test suite under [tests](tests)
 - shared helpers live in [tests/lib](tests/lib)
 - grouped suites live in [tests/suites](tests/suites)
 
-On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path. On local macOS/aarch64, `make freestanding` now builds the macOS freestanding-ish target under `build/freestanding-macos-aarch64/`; it uses project runtime and tool code while linking only the system ABI library that macOS requires for launch. The current Darwin subset covers 73 small core, text, metadata, checksum, math, identity, reporting, and filesystem tools.
+On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path. On local macOS/aarch64, `make freestanding` now builds the macOS freestanding-ish target under `build/freestanding-macos-aarch64/`; it uses project runtime and tool code while linking only the system ABI library that macOS requires for launch. The current Darwin subset covers 95 small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, and filesystem tools.
 
 On Windows, install MSYS2 with the MSYS GCC package for the hosted POSIX build
 and the UCRT64 Clang/lld toolchain for freestanding output. The first useful

@@ -1,12 +1,19 @@
 #include <dirent.h>
 #include <grp.h>
+#include <netdb.h>
+#include <poll.h>
 #include <pwd.h>
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/proc.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -63,8 +70,13 @@ static const DarwinSignalEntry DARWIN_SIGNAL_TABLE[] = {
     { "TTOU", SIGTTOU }
 };
 
+static unsigned long long temp_path_counter;
+
 extern char **environ;
 int rename(const char *old_path, const char *new_path);
+int setenv(const char *name, const char *value, int overwrite);
+int unsetenv(const char *name);
+int getentropy(void *buffer, size_t size);
 
 #if defined(__APPLE__)
 int sethostname(const char *name, int namelen);
@@ -85,6 +97,57 @@ static int env_name_matches(const char *entry, const char *name) {
     }
 
     return entry[index] == '=';
+}
+
+static int is_valid_env_name(const char *name) {
+    size_t index = 0;
+
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    while (name[index] != '\0') {
+        if (name[index] == '=') {
+            return 0;
+        }
+        index += 1U;
+    }
+    return 1;
+}
+
+static void process_state_string(int state, char *buffer, size_t buffer_size) {
+    const char *text = "?";
+
+    switch (state) {
+        case SIDL: text = "I"; break;
+        case SRUN: text = "R"; break;
+        case SSLEEP: text = "S"; break;
+        case SSTOP: text = "T"; break;
+        case SZOMB: text = "Z"; break;
+        default: break;
+    }
+    rt_copy_string(buffer, buffer_size, text);
+}
+
+static void fill_process_user(char *buffer, size_t buffer_size, unsigned int uid) {
+    struct passwd *entry = getpwuid((uid_t)uid);
+
+    if (entry != 0 && entry->pw_name != 0 && entry->pw_name[0] != '\0') {
+        rt_copy_string(buffer, buffer_size, entry->pw_name);
+    } else {
+        rt_unsigned_to_string((unsigned long long)uid, buffer, buffer_size);
+    }
+}
+
+static void make_raw_termios(struct termios *raw) {
+    if (raw == 0) {
+        return;
+    }
+    raw->c_iflag &= ~(tcflag_t)(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    raw->c_lflag &= ~(tcflag_t)(ECHO | ECHONL | ICANON | IEXTEN);
+    raw->c_cflag &= ~(tcflag_t)(CSIZE | PARENB);
+    raw->c_cflag |= CS8;
+    raw->c_cc[VMIN] = 1;
+    raw->c_cc[VTIME] = 0;
 }
 
 static void fill_entry_from_stat(const char *display_name, const struct stat *stat_info, PlatformDirEntry *entry) {
@@ -283,6 +346,72 @@ int platform_open_create_exclusive(const char *path, unsigned int mode) {
     return fd < 0 ? -1 : (int)fd;
 }
 
+int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char *prefix, unsigned int mode) {
+    static const char hex_digits[] = "0123456789abcdef";
+    const char *base = (prefix != 0 && prefix[0] != '\0') ? prefix : "/tmp/newos-tmp-";
+    const char *tmpdir = platform_getenv("TMPDIR");
+    char local_base[512];
+    size_t base_len;
+    unsigned int attempt;
+
+    if (path_buffer == 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    if (tmpdir != 0 && tmpdir[0] != '\0' && base[0] == '/' && base[1] == 't' && base[2] == 'm' && base[3] == 'p' && base[4] == '/') {
+        size_t tmpdir_len = rt_strlen(tmpdir);
+        const char *name = base + 5;
+        size_t name_len = rt_strlen(name);
+        size_t offset = 0;
+
+        if (tmpdir_len + 1U + name_len + 1U > sizeof(local_base)) {
+            return -1;
+        }
+        rt_copy_string(local_base, sizeof(local_base), tmpdir);
+        offset = tmpdir_len;
+        if (offset > 0U && local_base[offset - 1U] != '/') {
+            local_base[offset++] = '/';
+            local_base[offset] = '\0';
+        }
+        rt_copy_string(local_base + offset, sizeof(local_base) - offset, name);
+        base = local_base;
+    }
+
+    base_len = rt_strlen(base);
+    for (attempt = 0; attempt < 64U; ++attempt) {
+        unsigned long long value = ((unsigned long long)platform_get_process_id() << 32) ^
+                                   ((unsigned long long)platform_get_epoch_time() << 12) ^
+                                   temp_path_counter ^ (unsigned long long)attempt;
+        char suffix[17];
+        size_t index;
+        long fd;
+
+        temp_path_counter += 0x9e3779b97f4a7c15ULL;
+        for (index = 0U; index < 16U; ++index) {
+            suffix[index] = hex_digits[(value >> ((15U - index) * 4U)) & 0x0fU];
+        }
+        suffix[16] = '\0';
+
+        if (base_len + 17U > buffer_size) {
+            return -1;
+        }
+        rt_copy_string(path_buffer, buffer_size, base);
+        rt_copy_string(path_buffer + base_len, buffer_size - base_len, suffix);
+
+        fd = darwin_syscall3(
+            DARWIN_SYS_OPEN,
+            (long)path_buffer,
+            DARWIN_O_WRONLY | DARWIN_O_CREAT | DARWIN_O_EXCL | DARWIN_O_TRUNC,
+            (long)mode
+        );
+        if (fd >= 0) {
+            return (int)fd;
+        }
+    }
+
+    return -1;
+}
+
 int platform_open_append(const char *path, unsigned int mode) {
     long fd;
 
@@ -333,6 +462,27 @@ const char *platform_getenv_entry(size_t index) {
     }
 
     return environ[index];
+}
+
+int platform_setenv(const char *name, const char *value, int overwrite) {
+    if (!is_valid_env_name(name)) {
+        return -1;
+    }
+    return setenv(name, value != 0 ? value : "", overwrite);
+}
+
+int platform_unsetenv(const char *name) {
+    if (!is_valid_env_name(name)) {
+        return -1;
+    }
+    return unsetenv(name);
+}
+
+int platform_clearenv(void) {
+    static char *empty_environment[] = { 0 };
+
+    environ = empty_environment;
+    return 0;
 }
 
 int platform_isatty(int fd) {
@@ -626,9 +776,9 @@ int platform_sleep_seconds(unsigned int seconds) {
 }
 
 long long platform_get_epoch_time(void) {
-    DarwinTimeval now;
+    struct timeval now;
 
-    if (darwin_syscall2(DARWIN_SYS_GETTIMEOFDAY, (long)&now, 0) < 0) {
+    if (gettimeofday(&now, 0) != 0) {
         return 0;
     }
 
@@ -954,4 +1104,480 @@ int platform_sync_path_data(const char *path) {
 int platform_get_process_id(void) {
     long pid = darwin_syscall0(DARWIN_SYS_GETPID);
     return pid < 0 ? -1 : (int)pid;
+}
+
+int platform_drop_privileges(const char *username, const char *groupname) {
+    (void)username;
+    (void)groupname;
+    return -1;
+}
+
+int platform_spawn_process_ex(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    const char *working_directory,
+    const char *drop_user,
+    const char *drop_group,
+    int *pid_out
+) {
+    int pid;
+
+    if (argv == 0 || argv[0] == 0 || pid_out == 0) {
+        return -1;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+
+    if (pid == 0) {
+        int fd;
+
+        if (working_directory != 0 && working_directory[0] != '\0' && chdir(working_directory) != 0) {
+            _exit(126);
+        }
+        if ((drop_user != 0 && drop_user[0] != '\0') || (drop_group != 0 && drop_group[0] != '\0')) {
+            _exit(126);
+        }
+
+        if (input_path != 0) {
+            fd = platform_open_read(input_path);
+            if (fd < 0) {
+                _exit(126);
+            }
+            if (fd != 0) {
+                if (dup2(fd, 0) < 0) {
+                    _exit(126);
+                }
+                (void)platform_close(fd);
+            }
+        } else if (stdin_fd >= 0 && stdin_fd != 0) {
+            if (dup2(stdin_fd, 0) < 0) {
+                _exit(126);
+            }
+        }
+
+        if (output_path != 0) {
+            fd = platform_open_write_mode(output_path, 0644U, output_append ? 0 : 1);
+            if (fd < 0) {
+                _exit(126);
+            }
+            if (fd != 1) {
+                if (dup2(fd, 1) < 0) {
+                    _exit(126);
+                }
+                (void)platform_close(fd);
+            }
+        } else if (stdout_fd >= 0 && stdout_fd != 1) {
+            if (dup2(stdout_fd, 1) < 0) {
+                _exit(126);
+            }
+        }
+
+        if (output_path != 0 || stdout_fd >= 0) {
+            if (dup2(1, 2) < 0) {
+                _exit(126);
+            }
+        }
+        if (stdin_fd > 2) {
+            (void)platform_close(stdin_fd);
+        }
+        if (stdout_fd > 2) {
+            (void)platform_close(stdout_fd);
+        }
+
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    *pid_out = pid;
+    return 0;
+}
+
+int platform_spawn_process(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    int *pid_out
+) {
+    return platform_spawn_process_ex(argv, stdin_fd, stdout_fd, input_path, output_path, output_append, 0, 0, 0, pid_out);
+}
+
+static int decode_wait_status(int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
+}
+
+int platform_wait_process(int pid, int *exit_status_out) {
+    int status = 0;
+
+    if (exit_status_out == 0) {
+        return -1;
+    }
+    if (waitpid(pid, &status, 0) < 0) {
+        return -1;
+    }
+    *exit_status_out = decode_wait_status(status);
+    return 0;
+}
+
+int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {
+    int status = 0;
+    int waited;
+
+    if (finished_out == 0 || exit_status_out == 0) {
+        return -1;
+    }
+    waited = waitpid(pid, &status, WNOHANG);
+    if (waited == 0) {
+        *finished_out = 0;
+        *exit_status_out = 0;
+        return 0;
+    }
+    if (waited < 0) {
+        return -1;
+    }
+    *finished_out = 1;
+    *exit_status_out = decode_wait_status(status);
+    return 0;
+}
+
+int platform_wait_process_timeout(
+    int pid,
+    unsigned long long timeout_milliseconds,
+    unsigned long long kill_after_milliseconds,
+    int signal_number,
+    int preserve_status,
+    int *exit_status_out
+) {
+    unsigned long long elapsed = 0;
+    unsigned long long after_signal = 0;
+    int timed_out = 0;
+
+    if (exit_status_out == 0) {
+        return -1;
+    }
+
+    for (;;) {
+        int finished = 0;
+        int status = 0;
+
+        if (platform_poll_process_exit(pid, &finished, &status) != 0) {
+            return -1;
+        }
+        if (finished) {
+            *exit_status_out = (timed_out && !preserve_status) ? 124 : status;
+            return 0;
+        }
+
+        if (!timed_out && elapsed >= timeout_milliseconds) {
+            (void)platform_send_signal(pid, signal_number);
+            timed_out = 1;
+            after_signal = 0;
+        } else if (timed_out && kill_after_milliseconds > 0 && after_signal >= kill_after_milliseconds) {
+            (void)platform_send_signal(pid, SIGKILL);
+            kill_after_milliseconds = 0;
+        }
+
+        if (platform_sleep_milliseconds(50ULL) != 0) {
+            return -1;
+        }
+        if (!timed_out) {
+            elapsed += 50ULL;
+        } else {
+            after_signal += 50ULL;
+        }
+    }
+}
+
+int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t buffer_size = 0;
+    struct kinfo_proc *processes;
+    size_t process_count;
+    size_t index;
+    size_t count = 0;
+
+    if (entries_out == 0 || count_out == 0) {
+        return -1;
+    }
+    if (sysctl(mib, 4U, 0, &buffer_size, 0, 0) != 0 || buffer_size == 0) {
+        return -1;
+    }
+
+    processes = (struct kinfo_proc *)platform_allocate_pages(buffer_size);
+    if (processes == 0) {
+        return -1;
+    }
+    if (sysctl(mib, 4U, processes, &buffer_size, 0, 0) != 0) {
+        return -1;
+    }
+
+    process_count = buffer_size / sizeof(processes[0]);
+    for (index = 0; index < process_count && count < entry_capacity; ++index) {
+        struct kinfo_proc *process = &processes[index];
+        PlatformProcessEntry *entry = &entries_out[count];
+        int pid = process->kp_proc.p_pid;
+        unsigned int uid = (unsigned int)process->kp_eproc.e_ucred.cr_uid;
+
+        if (pid <= 0) {
+            continue;
+        }
+
+        memset(entry, 0, sizeof(*entry));
+        entry->pid = pid;
+        entry->ppid = process->kp_eproc.e_ppid;
+        entry->uid = uid;
+        entry->rss_kb = 0;
+        process_state_string(process->kp_proc.p_stat, entry->state, sizeof(entry->state));
+        fill_process_user(entry->user, sizeof(entry->user), uid);
+        rt_copy_string(entry->name, sizeof(entry->name), process->kp_proc.p_comm[0] != '\0' ? process->kp_proc.p_comm : "?");
+        count += 1U;
+    }
+
+    *count_out = count;
+    return 0;
+}
+
+int platform_random_bytes(unsigned char *buffer, size_t count) {
+    size_t offset = 0;
+
+    if (buffer == 0) {
+        return -1;
+    }
+    while (offset < count) {
+        size_t chunk = count - offset;
+        if (chunk > 256U) {
+            chunk = 256U;
+        }
+        if (getentropy(buffer + offset, chunk) != 0) {
+            return -1;
+        }
+        offset += chunk;
+    }
+    return 0;
+}
+
+int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int sock = -1;
+
+    if (host == 0 || host[0] == '\0' || socket_fd_out == 0 || port == 0U || port > 65535U) {
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    rt_unsigned_to_string((unsigned long long)port, port_text, sizeof(port_text));
+
+    if (getaddrinfo(host, port_text, &hints, &results) != 0) {
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sock < 0) {
+            continue;
+        }
+        if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
+            break;
+        }
+        (void)platform_close(sock);
+        sock = -1;
+    }
+
+    freeaddrinfo(results);
+    if (sock < 0) {
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+    struct pollfd stack_fds[16];
+    struct pollfd *poll_fds = stack_fds;
+    size_t index;
+    int result;
+
+    if (fds == 0 || fd_count == 0U || ready_index_out == 0) {
+        return -1;
+    }
+    if (fd_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
+        poll_fds = (struct pollfd *)rt_malloc(fd_count * sizeof(poll_fds[0]));
+        if (poll_fds == 0) {
+            return -1;
+        }
+    }
+
+    for (index = 0; index < fd_count; ++index) {
+        poll_fds[index].fd = fds[index];
+        poll_fds[index].events = (short)(POLLIN | POLLERR | POLLHUP);
+        poll_fds[index].revents = 0;
+    }
+
+    result = poll(poll_fds, (nfds_t)fd_count, timeout_milliseconds);
+    if (result <= 0) {
+        if (poll_fds != stack_fds) {
+            rt_free(poll_fds);
+        }
+        return result;
+    }
+
+    for (index = 0; index < fd_count; ++index) {
+        if (poll_fds[index].revents != 0) {
+            *ready_index_out = index;
+            if (poll_fds != stack_fds) {
+                rt_free(poll_fds);
+            }
+            return result;
+        }
+    }
+
+    if (poll_fds != stack_fds) {
+        rt_free(poll_fds);
+    }
+    return 0;
+}
+
+int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *columns_out) {
+    struct winsize size;
+
+    memset(&size, 0, sizeof(size));
+    if (ioctl(fd, TIOCGWINSZ, &size) != 0 || (size.ws_row == 0 && size.ws_col == 0)) {
+        return -1;
+    }
+    if (rows_out != 0) {
+        *rows_out = (unsigned int)size.ws_row;
+    }
+    if (columns_out != 0) {
+        *columns_out = (unsigned int)size.ws_col;
+    }
+    return 0;
+}
+
+int platform_terminal_get_mode(int fd, PlatformTerminalMode *mode_out) {
+    struct termios term;
+    struct winsize size;
+
+    if (mode_out == 0) {
+        return -1;
+    }
+    if (tcgetattr(fd, &term) != 0) {
+        return -1;
+    }
+
+    memset(mode_out, 0, sizeof(*mode_out));
+    mode_out->echo = (term.c_lflag & ECHO) != 0 ? 1 : 0;
+    mode_out->icanon = (term.c_lflag & ICANON) != 0 ? 1 : 0;
+    mode_out->isig = (term.c_lflag & ISIG) != 0 ? 1 : 0;
+    mode_out->ixon = (term.c_iflag & IXON) != 0 ? 1 : 0;
+    mode_out->opost = (term.c_oflag & OPOST) != 0 ? 1 : 0;
+
+    memset(&size, 0, sizeof(size));
+    if (ioctl(fd, TIOCGWINSZ, &size) == 0) {
+        mode_out->rows = (unsigned int)size.ws_row;
+        mode_out->columns = (unsigned int)size.ws_col;
+    }
+    return 0;
+}
+
+int platform_terminal_set_mode(int fd, const PlatformTerminalMode *mode, unsigned int change_mask) {
+    struct termios term;
+
+    if (mode == 0) {
+        return -1;
+    }
+    if ((change_mask & (PLATFORM_TERMINAL_ECHO | PLATFORM_TERMINAL_ICANON | PLATFORM_TERMINAL_ISIG |
+                        PLATFORM_TERMINAL_IXON | PLATFORM_TERMINAL_OPOST)) != 0U) {
+        if (tcgetattr(fd, &term) != 0) {
+            return -1;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ECHO) != 0U) {
+            term.c_lflag = mode->echo ? (term.c_lflag | ECHO) : (term.c_lflag & ~(tcflag_t)ECHO);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ICANON) != 0U) {
+            term.c_lflag = mode->icanon ? (term.c_lflag | ICANON) : (term.c_lflag & ~(tcflag_t)ICANON);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ISIG) != 0U) {
+            term.c_lflag = mode->isig ? (term.c_lflag | ISIG) : (term.c_lflag & ~(tcflag_t)ISIG);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_IXON) != 0U) {
+            term.c_iflag = mode->ixon ? (term.c_iflag | IXON) : (term.c_iflag & ~(tcflag_t)IXON);
+        }
+        if ((change_mask & PLATFORM_TERMINAL_OPOST) != 0U) {
+            term.c_oflag = mode->opost ? (term.c_oflag | OPOST) : (term.c_oflag & ~(tcflag_t)OPOST);
+        }
+        if (tcsetattr(fd, TCSANOW, &term) != 0) {
+            return -1;
+        }
+    }
+
+    if ((change_mask & (PLATFORM_TERMINAL_ROWS | PLATFORM_TERMINAL_COLUMNS)) != 0U) {
+        struct winsize size;
+
+        memset(&size, 0, sizeof(size));
+        if (ioctl(fd, TIOCGWINSZ, &size) != 0) {
+            return -1;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_ROWS) != 0U) {
+            size.ws_row = (unsigned short)mode->rows;
+        }
+        if ((change_mask & PLATFORM_TERMINAL_COLUMNS) != 0U) {
+            size.ws_col = (unsigned short)mode->columns;
+        }
+        if (ioctl(fd, TIOCSWINSZ, &size) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int platform_terminal_enable_raw_mode(int fd, PlatformTerminalState *state_out) {
+    struct termios saved;
+    struct termios raw;
+
+    if (state_out == 0 || sizeof(saved) > PLATFORM_TERMINAL_STATE_CAPACITY) {
+        return -1;
+    }
+    if (tcgetattr(fd, &saved) != 0) {
+        return -1;
+    }
+
+    memset(state_out, 0, sizeof(*state_out));
+    memcpy(state_out->bytes, &saved, sizeof(saved));
+    memcpy(&raw, &saved, sizeof(raw));
+    make_raw_termios(&raw);
+
+    return tcsetattr(fd, TCSANOW, &raw);
+}
+
+int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
+    struct termios saved;
+
+    if (state == 0 || sizeof(saved) > PLATFORM_TERMINAL_STATE_CAPACITY) {
+        return -1;
+    }
+    memcpy(&saved, state->bytes, sizeof(saved));
+    return tcsetattr(fd, TCSANOW, &saved);
 }

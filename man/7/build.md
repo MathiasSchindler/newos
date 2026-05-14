@@ -68,22 +68,25 @@ modern macOS requires for runnable executables.
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
   `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds 73 tools: `true`, `false`, `echo`, `printf`, `basename`,
+- currently builds 95 tools: `true`, `false`, `echo`, `printf`, `basename`,
   `dirname`, `yes`, `rev`, `seq`, `expr`, `test`, `nl`, `tac`, `expand`,
-  `unexpand`, `fold`, `wc`, `head`, `cat`, `cut`, `tr`, `uniq`, `cmp`, `comm`,
+  `unexpand`, `fold`, `wc`, `head`, `tail`, `cat`, `cut`, `tr`, `uniq`, `cmp`, `comm`,
   `join`, `paste`, `printenv`, `pwd`, `mkdir`, `rmdir`, `tee`, `which`,
   `readlink`, `realpath`, `sleep`, `file`, `strings`, `hexdump`, `od`,
   `md5sum`, `sha256sum`, `sha512sum`, `dd`, `touch`, `truncate`, `sync`, `bc`,
   `split`, `shuf`, `fmt`, `column`, `tsort`, `mktemp`, `clear`, `date`,
   `uname`, `hostname`, `whoami`, `id`, `groups`, `ls`, `du`, `stat`, `df`,
-  `rm`, `cp`, `mv`, `ln`, `chmod`, `chown`, `chgrp`, `free`, and `kill`
+  `rm`, `cp`, `mv`, `ln`, `chmod`, `chown`, `chgrp`, `free`, `kill`, `csplit`,
+  `sort`, `env`, `time`, `timeout`, `watch`, `find`, `ps`, `pgrep`, `pkill`,
+  `stty`, `more`, `less`, `xargs`, `grep`, `sed`, `ed`, `patch`, `diff`,
+  `logger`, and `wtf`
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
   behavior
 - compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so
   the project code does not call the C standard library even though the binary
   has the unavoidable macOS system ABI dependency
-- is intentionally smaller than the Linux freestanding target until process,
-  terminal, networking, archive/compression, richer reporting, and larger
+- is intentionally smaller than the Linux freestanding target until broader
+  networking, archive/compression, richer process/session reporting, and larger
   application-level tool dependencies are implemented
 
 ## SELF-HOSTED BUILD
