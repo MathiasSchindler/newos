@@ -25,6 +25,9 @@ machine.
 - `make freestanding` on local macOS/aarch64 builds the freestanding-ish Darwin
   subset under `build/freestanding-macos-aarch64/`
 - `make freestanding-macos` builds that same target explicitly
+- the current subset contains 46 tools spanning small core commands, text and
+  file filters, path metadata, symlink queries, checksums, sleep, touch,
+  truncate, sync, and basic `dd`
 
 This policy exists because the repository is actively developed on macOS and
 contributors usually want runnable local binaries first, while still having a
@@ -54,6 +57,9 @@ The current macOS strategy is intentional.
   behavior, compiler work, and documentation updates
 - continue using the Linux freestanding build as the portability and minimal
   runtime check for syscall-only operation
+- keep growing the Darwin subset by adding platform primitives under
+  `src/platform/macos/` and `src/arch/aarch64/macos/`, rather than adding
+  platform branches to shared code or tools
 
 In short: macOS is the main developer workstation environment, while Linux is
 still the reference freestanding runtime target.

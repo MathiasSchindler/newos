@@ -68,18 +68,20 @@ modern macOS requires for runnable executables.
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
   `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds `true`, `false`, `echo`, `printf`, `basename`, `dirname`,
-  `yes`, `rev`, `seq`, `expr`, `nl`, `tac`, `expand`, `unexpand`, `fold`,
-  `wc`, `head`, `cat`, `cut`, `tr`, `uniq`, `cmp`, `comm`, `join`, `paste`,
-  `printenv`, `pwd`, `mkdir`, `rmdir`, and `tee`
+- currently builds 46 tools: `true`, `false`, `echo`, `printf`, `basename`,
+  `dirname`, `yes`, `rev`, `seq`, `expr`, `test`, `nl`, `tac`, `expand`,
+  `unexpand`, `fold`, `wc`, `head`, `cat`, `cut`, `tr`, `uniq`, `cmp`, `comm`,
+  `join`, `paste`, `printenv`, `pwd`, `mkdir`, `rmdir`, `tee`, `which`,
+  `readlink`, `realpath`, `sleep`, `file`, `strings`, `hexdump`, `od`,
+  `md5sum`, `sha256sum`, `sha512sum`, `dd`, `touch`, `truncate`, and `sync`
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
   behavior
 - compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so
   the project code does not call the C standard library even though the binary
   has the unavoidable macOS system ABI dependency
-- is intentionally smaller than the Linux freestanding target until full path
-  metadata, process, terminal, time, and network platform primitives are
-  implemented
+- is intentionally smaller than the Linux freestanding target until directory
+  enumeration, identity lookup, process, terminal, richer time formatting, and
+  network platform primitives are implemented
 
 ## SELF-HOSTED BUILD
 

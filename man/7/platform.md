@@ -75,15 +75,18 @@ the platform boundary owns the OS details, but the final executable still links
 executables in the same way Linux runs static syscall-only binaries.
 
 - `freestanding.c` — Darwin-backed read, write, close, open, seek,
-  environment, directory, process id, and page allocation primitives for the
-  current small tool subset
+  environment, metadata, symlink, sleep, checksum/file helper, basic filesystem
+  mutation, process id, and page allocation primitives for the current small
+  tool subset
 - `src/arch/aarch64/macos/syscall.h` — inline Darwin syscall helpers for the
   platform adapter
 
 The supported set has grown to small argument-only tools, stdin/file text
-filters, environment printing, current-directory printing, simple directory
-creation/removal, and `tee`. The next steps are real path metadata, symlink
-handling, time formatting, terminal mode, and process primitives.
+filters, environment printing, current-directory printing, metadata and symlink
+queries, file inspection, checksums, simple directory creation/removal, and
+basic write/sync/truncate operations. The next steps are directory enumeration,
+identity lookup, richer time formatting, terminal mode, process primitives, and
+network primitives.
 
 ### Architecture glue (`src/arch/*/linux`)
 
