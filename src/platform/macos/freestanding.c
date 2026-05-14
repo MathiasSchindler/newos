@@ -535,8 +535,14 @@ int platform_clearenv(void) {
 }
 
 int platform_isatty(int fd) {
-    (void)fd;
-    return 0;
+    struct termios term;
+    long result;
+
+    if (fd < 0) {
+        return 0;
+    }
+    result = darwin_syscall3(DARWIN_SYS_IOCTL, (long)fd, (long)TIOCGETA, (long)&term);
+    return result >= 0;
 }
 
 int platform_make_directory(const char *path, unsigned int mode) {
