@@ -16,6 +16,11 @@ target so syscall-only regressions do not wait for a separate manual check. On
 macOS, the local default remains the hosted build unless an explicit
 alternative target is requested.
 
+On Windows, the repository is expected to be built from an MSYS2 shell for now.
+The native Windows platform backend is not implemented yet, but MSYS2 provides
+the POSIX shell tools, GNU make, and Clang/lld toolchain needed to continue
+working on the existing Linux freestanding target from a Windows workstation.
+
 ## HOSTED BUILD
 
 The hosted build is the normal development path.
@@ -75,6 +80,39 @@ Typical examples:
     make freestanding TARGET_ARCH=x86_64
     make freestanding TARGET_ARCH=aarch64
 
+## WINDOWS BOOTSTRAP
+
+Windows support is currently a contributor-environment path, not a native
+Windows userland target. Install the MSYS GCC package for hosted POSIX builds
+and the UCRT64 Clang/lld packages for freestanding Linux output:
+
+  pacman -Syuu
+  pacman -S --needed base-devel gcc mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld
+
+Then start the MSYS shell for the hosted build, change to the repository, and
+use Clang for the Linux freestanding path:
+
+  cd /c/Users/Mathias\ Schindler/newos
+  make host CC=gcc
+  make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+
+`make host` is useful as an early compiler and shell sanity check, but it still
+uses the hosted POSIX backend and therefore depends on the MSYS2 POSIX runtime.
+To launch those tools directly from PowerShell or `cmd.exe`, keep the MSYS
+runtime directory, such as `C:\msys64\usr\bin`, on `PATH`. Do not copy
+`msys-2.0.dll` beside the tools: doing so makes the runtime treat the output
+directory as its installation root, which breaks paths such as `.` and `/etc`.
+In PowerShell, dot-source the helper once per terminal session:
+
+  . .\activate-host-msys.ps1
+
+If local PowerShell execution policy blocks scripts, use the command runner:
+
+  .\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
+
+`make freestanding` remains the main target: it builds Linux ABI binaries using
+the raw syscall backend under `src/platform/linux/` and `src/arch/*/linux/`.
+
 ## COMMON WORKFLOW
 
 A common contributor sequence is:
@@ -130,6 +168,7 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
 - On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
+- Windows native hosted binaries are not supported yet; use MSYS2 while a `src/platform/windows/` backend is being developed
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks
 

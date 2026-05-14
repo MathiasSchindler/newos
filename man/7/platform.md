@@ -11,6 +11,11 @@ tool code are expected to program against `src/shared/platform.h`, which is then
 backed by either the hosted POSIX implementation or the freestanding raw-Linux
 syscall implementation.
 
+Windows is being treated as a new contributor workstation environment first.
+Until a native `src/platform/windows/` backend exists, Windows builds should run
+inside MSYS2 and continue to use the existing POSIX hosted backend or the Linux
+freestanding backend.
+
 ## BUILD-MODE SUMMARY
 
 The platform abstraction exists so that most tool code can stay the same across
@@ -67,6 +72,14 @@ and does not depend on libc.
 - `syscall.h` — inline syscall helpers for the selected Linux target ABI
 - `syscall_stubs.S` — x86-64 out-of-line syscall entry helpers used by the freestanding platform layer
 
+### Future native Windows layer (`src/platform/windows`)
+
+A native Windows hosted backend should implement the same declarations from
+`src/shared/platform.h` without leaking Win32-specific details into tool code.
+The expected hard parts are process spawning and fd/handle mapping, terminal
+mode behavior, symlink/stat compatibility, identity and group reporting,
+Winsock initialization, and binary-mode stdin/stdout handling.
+
 ## CONTRIBUTOR BOUNDARIES
 
 - Shared code should call `platform_*` helpers rather than `open(2)`,
@@ -80,6 +93,7 @@ and does not depend on libc.
 
 - Hosted development assumes a POSIX environment; the true freestanding target currently focuses on Linux/AArch64 and Linux/x86-64
 - On macOS, the project currently favors local hosted binaries over a separate Darwin syscall-only userland target
+- Native Windows support is not implemented yet; MSYS2 is the current Windows bootstrap environment
 - The abstraction is intentionally small; there is no threading or async event layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment
 

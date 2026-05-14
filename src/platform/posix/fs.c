@@ -10,6 +10,11 @@
 #include "platform.h"
 #include "common.h"
 
+#include <limits.h>
+#ifndef NAME_MAX
+#define NAME_MAX 255
+#endif
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -920,8 +925,13 @@ int platform_truncate_path(const char *path, unsigned long long size) {
 }
 
 int platform_sync_all(void) {
+#if defined(__MSYS__)
+    errno = ENOSYS;
+    return -1;
+#else
     sync();
     return 0;
+#endif
 }
 
 static int open_sync_fd(const char *path) {

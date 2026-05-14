@@ -1,5 +1,9 @@
 #include "runtime.h"
 
+#if defined(__MSYS__) || defined(__CYGWIN__)
+#include <sys/mman.h>
+#endif
+
 #define RT_PROT_READ 1
 #define RT_PROT_WRITE 2
 #define RT_MAP_PRIVATE 2
@@ -13,7 +17,7 @@
 #elif defined(__linux__) && defined(__aarch64__)
 #define RT_SYS_MMAP 222
 #define RT_MAP_ANONYMOUS 0x20
-#else
+#elif !defined(__MSYS__) && !defined(__CYGWIN__)
 #error "rt allocator needs an mmap syscall for this platform"
 #endif
 
@@ -134,6 +138,11 @@ static long rt_mmap_syscall(unsigned long length) {
 
     __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8) : "memory");
     return x0;
+}
+#elif defined(__MSYS__) || defined(__CYGWIN__)
+static long rt_mmap_syscall(unsigned long length) {
+    void *mapped = mmap(0, (size_t)length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return mapped == MAP_FAILED ? -1 : (long)mapped;
 }
 #endif
 
