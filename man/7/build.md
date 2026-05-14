@@ -59,6 +59,35 @@ runtime or the Microsoft C runtime.
 - currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
+## MACOS FREESTANDING-ISH BUILD
+
+The macOS freestanding-ish build is the first native Darwin arm64 step. It keeps
+tool and shared runtime code on the same universal path as the other targets,
+but uses the system-provided Mach-O entry path and links only `libSystem`, which
+modern macOS requires for runnable executables.
+
+- built with `make freestanding` on local macOS/aarch64, or explicitly with
+  `make freestanding-macos`
+- writes binaries to `build/freestanding-macos-aarch64/`
+- currently builds all 178 tools, including the core/text/filesystem/process set,
+  checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
+  tools, object inspection tools, `awk`, `sql`, `man`, `pstree`, `wget`, `ncc`,
+  `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, `ping`, `ping6`,
+  DHCP probing, `dmesg`, `mknod`, mount/admin command front-ends, read-only
+  `ip`, `sh`, `editor`, `mail`, `service`, `make`, and the XML tool family
+- uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
+  behavior
+- compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so
+  the project code does not call the C standard library even though the binary
+  has the unavoidable macOS system ABI dependency
+- strips unused sections, local symbols, and Mach-O function-start metadata by
+  default; LTO is enabled by default for the macOS freestanding-ish target and
+  can be disabled with `MACOS_FREESTANDING_LTO=0`; XML tools and `ncc`
+  currently opt out of LTO because they hit Apple-clang LTO-only crashes
+- keeps privileged or host-mutating operations conservative on Darwin when the
+  project does not yet have a validated macOS implementation, so some admin
+  front-ends build and report unsupported operations instead of changing the host
+
 ## SELF-HOSTED BUILD
 
 The self-hosted build reuses the in-tree `ncc` compiler for the hosted tool set.
@@ -75,7 +104,8 @@ and anything that adds new low-level dependencies.
 
     make               — on macOS build the local hosted set; on Linux build host plus freestanding
     make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
-    make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
+    make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the freestanding-ish Darwin subset
+    make freestanding-macos — build the early native macOS arm64 freestanding-ish subset under build/freestanding-macos-aarch64/
     make freestanding-windows — build the native no-libc Windows PE subset under build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
@@ -207,8 +237,8 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 ## LIMITATIONS
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
-- On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
-- Windows native hosted binaries are not supported yet; use MSYS2 while the `src/platform/windows/` freestanding backend is being developed
+- On macOS, the default `make` behavior still favors local hosted binaries; `make freestanding` on local aarch64 routes to the early Darwin approximation, which still links the required system ABI library
+- Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `make freestanding-windows` for the native no-CRT PE backend
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks
 
