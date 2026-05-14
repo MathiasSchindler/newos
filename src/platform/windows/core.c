@@ -9,12 +9,14 @@
 #define WIN_GENERIC_WRITE 0x40000000UL
 #define WIN_FILE_SHARE_READ 0x00000001UL
 #define WIN_FILE_SHARE_WRITE 0x00000002UL
+#define WIN_CREATE_NEW 1UL
 #define WIN_CREATE_ALWAYS 2UL
 #define WIN_OPEN_ALWAYS 4UL
 #define WIN_OPEN_EXISTING 3UL
 #define WIN_FILE_ATTRIBUTE_NORMAL 0x00000080UL
 #define WIN_FILE_ATTRIBUTE_DIRECTORY 0x00000010UL
 #define WIN_INVALID_FILE_ATTRIBUTES 0xffffffffUL
+#define WIN_FILE_TYPE_CHAR 0x0002UL
 #define WIN_FD_TABLE_CAPACITY 64
 #define WIN_FD_KIND_NONE 0
 #define WIN_FD_KIND_FILE 1
@@ -51,14 +53,73 @@ typedef struct {
     long tv_usec;
 } WinTimeval;
 
+typedef struct {
+    unsigned long low;
+    unsigned long high;
+} WinFileTime;
+
+typedef struct {
+    unsigned short year;
+    unsigned short month;
+    unsigned short day_of_week;
+    unsigned short day;
+    unsigned short hour;
+    unsigned short minute;
+    unsigned short second;
+    unsigned short milliseconds;
+} WinSystemTime;
+
+typedef struct {
+    unsigned short x;
+    unsigned short y;
+} WinCoord;
+
+typedef struct {
+    short left;
+    short top;
+    short right;
+    short bottom;
+} WinSmallRect;
+
+typedef struct {
+    WinCoord size;
+    WinCoord cursor_position;
+    unsigned short attributes;
+    WinSmallRect window;
+    WinCoord maximum_window_size;
+} WinConsoleScreenBufferInfo;
+
+typedef struct {
+    unsigned long length;
+    unsigned long memory_load;
+    unsigned long long total_physical;
+    unsigned long long available_physical;
+    unsigned long long total_page_file;
+    unsigned long long available_page_file;
+    unsigned long long total_virtual;
+    unsigned long long available_virtual;
+    unsigned long long available_extended_virtual;
+} WinMemoryStatusEx;
+
 __declspec(dllimport) void __stdcall ExitProcess(unsigned int status);
 __declspec(dllimport) char *__stdcall GetCommandLineA(void);
 __declspec(dllimport) void *__stdcall GetStdHandle(unsigned long handle_id);
 __declspec(dllimport) unsigned long __stdcall GetCurrentDirectoryA(unsigned long buffer_length, char *buffer);
 __declspec(dllimport) int __stdcall GetComputerNameA(char *buffer, unsigned long *size_io);
+__declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buffer, unsigned long size);
+__declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char *file_name);
 __declspec(dllimport) int __stdcall GetFileSizeEx(void *handle, long long *size_out);
+__declspec(dllimport) unsigned long __stdcall GetFileType(void *handle);
+__declspec(dllimport) int __stdcall GetConsoleMode(void *handle, unsigned long *mode_out);
+__declspec(dllimport) int __stdcall GetConsoleScreenBufferInfo(void *handle, WinConsoleScreenBufferInfo *info_out);
+__declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(WinFileTime *file_time_out);
+__declspec(dllimport) int __stdcall FileTimeToSystemTime(const WinFileTime *file_time, WinSystemTime *system_time_out);
+__declspec(dllimport) int __stdcall FileTimeToLocalFileTime(const WinFileTime *file_time, WinFileTime *local_file_time_out);
+__declspec(dllimport) int __stdcall GlobalMemoryStatusEx(WinMemoryStatusEx *status_out);
+__declspec(dllimport) int __stdcall GetDiskFreeSpaceExA(const char *directory_name, unsigned long long *free_available_out, unsigned long long *total_out, unsigned long long *free_total_out);
+__declspec(dllimport) int __stdcall SetCurrentDirectoryA(const char *path_name);
 __declspec(dllimport) int __stdcall SetFilePointerEx(void *handle, long long distance_to_move,
                                                      long long *new_file_pointer, unsigned long move_method);
 __declspec(dllimport) int __stdcall SetEndOfFile(void *handle);
@@ -126,6 +187,44 @@ static int windows_copy_string(char *buffer, size_t buffer_size, const char *tex
     if (buffer == 0 || buffer_size == 0U || text == 0 || rt_strlen(text) + 1U > buffer_size) return -1;
     rt_copy_string(buffer, buffer_size, text);
     return 0;
+}
+
+static int windows_append_char(char *buffer, size_t buffer_size, size_t *used, char ch) {
+    if (buffer == 0 || used == 0 || *used + 1U >= buffer_size) return -1;
+    buffer[*used] = ch;
+    *used += 1U;
+    buffer[*used] = '\0';
+    return 0;
+}
+
+static int windows_append_text(char *buffer, size_t buffer_size, size_t *used, const char *text) {
+    size_t i = 0U;
+    while (text != 0 && text[i] != '\0') {
+        if (windows_append_char(buffer, buffer_size, used, text[i]) != 0) return -1;
+        i += 1U;
+    }
+    return 0;
+}
+
+static int windows_append_padded_uint(char *buffer, size_t buffer_size, size_t *used, unsigned int value, unsigned int width) {
+    char digits[16];
+    size_t length;
+    rt_unsigned_to_string(value, digits, sizeof(digits));
+    length = rt_strlen(digits);
+    while (length < width) {
+        if (windows_append_char(buffer, buffer_size, used, '0') != 0) return -1;
+        length += 1U;
+    }
+    return windows_append_text(buffer, buffer_size, used, digits);
+}
+
+static unsigned long long windows_file_time_to_ticks(const WinFileTime *file_time) {
+    return ((unsigned long long)file_time->high << 32) | (unsigned long long)file_time->low;
+}
+
+static void windows_ticks_to_file_time(unsigned long long ticks, WinFileTime *file_time) {
+    file_time->low = (unsigned long)(ticks & 0xffffffffULL);
+    file_time->high = (unsigned long)(ticks >> 32);
 }
 
 static int windows_is_space(char ch) {
@@ -304,6 +403,24 @@ int platform_open_write(const char *path, unsigned int mode) {
     return platform_open_write_mode(path, mode, 1);
 }
 
+int platform_open_create_exclusive(const char *path, unsigned int mode) {
+    void *handle;
+    int fd;
+
+    (void)mode;
+    if (path == 0 || path[0] == '\0') return -1;
+
+    handle = CreateFileA(path, WIN_GENERIC_WRITE, WIN_FILE_SHARE_READ, 0,
+                         WIN_CREATE_NEW, WIN_FILE_ATTRIBUTE_NORMAL, 0);
+    if (handle == 0 || handle == WIN_INVALID_HANDLE_VALUE) return -1;
+
+    fd = windows_allocate_fd(handle, WIN_FD_KIND_FILE);
+    if (fd >= 0) return fd;
+
+    (void)CloseHandle(handle);
+    return -1;
+}
+
 int platform_open_append(const char *path, unsigned int mode) {
     int fd = platform_open_write_mode(path, mode, 0);
     if (fd >= 0 && platform_seek(fd, 0, PLATFORM_SEEK_END) < 0) {
@@ -383,7 +500,135 @@ const char *platform_getenv_entry(size_t index) {
 }
 
 int platform_isatty(int fd) {
-    (void)fd;
+    void *handle = windows_handle_for_fd(fd);
+    unsigned long mode;
+
+    if (handle == 0) return 0;
+    if (GetFileType(handle) != WIN_FILE_TYPE_CHAR) return 0;
+    return GetConsoleMode(handle, &mode) != 0;
+}
+
+int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *columns_out) {
+    void *handle = windows_handle_for_fd(fd);
+    WinConsoleScreenBufferInfo info;
+
+    if (handle == 0 || rows_out == 0 || columns_out == 0) return -1;
+    if (!GetConsoleScreenBufferInfo(handle, &info)) return -1;
+    *rows_out = (unsigned int)(info.window.bottom - info.window.top + 1);
+    *columns_out = (unsigned int)(info.window.right - info.window.left + 1);
+    return 0;
+}
+
+int platform_get_process_id(void) {
+    return (int)GetCurrentProcessId();
+}
+
+long long platform_get_epoch_time(void) {
+    WinFileTime file_time;
+    unsigned long long ticks;
+
+    GetSystemTimeAsFileTime(&file_time);
+    ticks = windows_file_time_to_ticks(&file_time);
+    if (ticks < 116444736000000000ULL) return 0;
+    return (long long)((ticks - 116444736000000000ULL) / 10000000ULL);
+}
+
+int platform_get_memory_info(PlatformMemoryInfo *info_out) {
+    WinMemoryStatusEx status;
+
+    if (info_out == 0) return -1;
+    rt_memset(&status, 0, sizeof(status));
+    status.length = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) return -1;
+    rt_memset(info_out, 0, sizeof(*info_out));
+    info_out->total_bytes = status.total_physical;
+    info_out->free_bytes = status.available_physical;
+    info_out->available_bytes = status.available_physical;
+    info_out->swap_total_bytes = status.total_page_file > status.total_physical ? status.total_page_file - status.total_physical : 0ULL;
+    info_out->swap_free_bytes = status.available_page_file > status.available_physical ? status.available_page_file - status.available_physical : 0ULL;
+    return 0;
+}
+
+int platform_get_uptime_info(PlatformUptimeInfo *info_out) {
+    if (info_out == 0) return -1;
+    info_out->uptime_seconds = GetTickCount64() / 1000ULL;
+    windows_copy_string(info_out->load_average, sizeof(info_out->load_average), "0.00, 0.00, 0.00");
+    return 0;
+}
+
+static int windows_format_time_component(char token, const WinSystemTime *time, char *buffer, size_t buffer_size, size_t *used) {
+    static const char *short_months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    static const char *long_months[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+    static const char *short_days[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    static const char *long_days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+
+    switch (token) {
+        case '%': return windows_append_char(buffer, buffer_size, used, '%');
+        case 'n': return windows_append_char(buffer, buffer_size, used, '\n');
+        case 't': return windows_append_char(buffer, buffer_size, used, '\t');
+        case 'Y': return windows_append_padded_uint(buffer, buffer_size, used, time->year, 4U);
+        case 'y': return windows_append_padded_uint(buffer, buffer_size, used, time->year % 100U, 2U);
+        case 'm': return windows_append_padded_uint(buffer, buffer_size, used, time->month, 2U);
+        case 'd': return windows_append_padded_uint(buffer, buffer_size, used, time->day, 2U);
+        case 'e':
+            if (time->day < 10U && windows_append_char(buffer, buffer_size, used, ' ') != 0) return -1;
+            return windows_append_padded_uint(buffer, buffer_size, used, time->day, time->day < 10U ? 1U : 2U);
+        case 'H': return windows_append_padded_uint(buffer, buffer_size, used, time->hour, 2U);
+        case 'M': return windows_append_padded_uint(buffer, buffer_size, used, time->minute, 2U);
+        case 'S': return windows_append_padded_uint(buffer, buffer_size, used, time->second, 2U);
+        case 'F':
+            return windows_format_time_component('Y', time, buffer, buffer_size, used) == 0 &&
+                   windows_append_char(buffer, buffer_size, used, '-') == 0 &&
+                   windows_format_time_component('m', time, buffer, buffer_size, used) == 0 &&
+                   windows_append_char(buffer, buffer_size, used, '-') == 0 &&
+                   windows_format_time_component('d', time, buffer, buffer_size, used) == 0 ? 0 : -1;
+        case 'T':
+            return windows_format_time_component('H', time, buffer, buffer_size, used) == 0 &&
+                   windows_append_char(buffer, buffer_size, used, ':') == 0 &&
+                   windows_format_time_component('M', time, buffer, buffer_size, used) == 0 &&
+                   windows_append_char(buffer, buffer_size, used, ':') == 0 &&
+                   windows_format_time_component('S', time, buffer, buffer_size, used) == 0 ? 0 : -1;
+        case 'R':
+            return windows_format_time_component('H', time, buffer, buffer_size, used) == 0 &&
+                   windows_append_char(buffer, buffer_size, used, ':') == 0 &&
+                   windows_format_time_component('M', time, buffer, buffer_size, used) == 0 ? 0 : -1;
+        case 'b': return time->month >= 1U && time->month <= 12U ? windows_append_text(buffer, buffer_size, used, short_months[time->month - 1U]) : -1;
+        case 'B': return time->month >= 1U && time->month <= 12U ? windows_append_text(buffer, buffer_size, used, long_months[time->month - 1U]) : -1;
+        case 'a': return time->day_of_week < 7U ? windows_append_text(buffer, buffer_size, used, short_days[time->day_of_week]) : -1;
+        case 'A': return time->day_of_week < 7U ? windows_append_text(buffer, buffer_size, used, long_days[time->day_of_week]) : -1;
+        default:
+            if (windows_append_char(buffer, buffer_size, used, '%') != 0) return -1;
+            return windows_append_char(buffer, buffer_size, used, token);
+    }
+}
+
+int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size) {
+    const char *actual_format = (format != 0 && format[0] != '\0') ? format : "%Y-%m-%d %H:%M:%S";
+    unsigned long long ticks = (unsigned long long)epoch_seconds * 10000000ULL + 116444736000000000ULL;
+    WinFileTime utc_file_time;
+    WinFileTime local_file_time;
+    WinSystemTime system_time;
+    size_t used = 0U;
+    size_t i;
+
+    if (buffer == 0 || buffer_size == 0U || epoch_seconds < 0) return -1;
+    buffer[0] = '\0';
+    windows_ticks_to_file_time(ticks, &utc_file_time);
+    if (use_local_time) {
+        if (!FileTimeToLocalFileTime(&utc_file_time, &local_file_time)) return -1;
+    } else {
+        local_file_time = utc_file_time;
+    }
+    if (!FileTimeToSystemTime(&local_file_time, &system_time)) return -1;
+
+    for (i = 0U; actual_format[i] != '\0'; ++i) {
+        if (actual_format[i] == '%' && actual_format[i + 1U] != '\0') {
+            i += 1U;
+            if (windows_format_time_component(actual_format[i], &system_time, buffer, buffer_size, &used) != 0) return -1;
+        } else if (windows_append_char(buffer, buffer_size, &used, actual_format[i]) != 0) {
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -539,6 +784,11 @@ int platform_path_access(const char *path, int mode) {
     return attributes == WIN_INVALID_FILE_ATTRIBUTES ? -1 : 0;
 }
 
+int platform_change_directory(const char *path) {
+    if (path == 0 || path[0] == '\0') return -1;
+    return SetCurrentDirectoryA(path) != 0 ? 0 : -1;
+}
+
 int platform_make_directory(const char *path, unsigned int mode) {
     (void)mode;
     if (path == 0 || path[0] == '\0') return -1;
@@ -622,6 +872,32 @@ int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out)
     return platform_get_path_info(path, entry_out);
 }
 
+int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out) {
+    unsigned long long free_available = 0ULL;
+    unsigned long long total = 0ULL;
+    unsigned long long free_total = 0ULL;
+
+    if (path == 0 || info_out == 0) return -1;
+    if (!GetDiskFreeSpaceExA(path, &free_available, &total, &free_total)) return -1;
+    rt_memset(info_out, 0, sizeof(*info_out));
+    info_out->total_bytes = total;
+    info_out->free_bytes = free_total;
+    info_out->available_bytes = free_available;
+    windows_copy_string(info_out->type_name, sizeof(info_out->type_name), "windows");
+    return 0;
+}
+
+int platform_get_filesystem_usage(const char *path, unsigned long long *total_bytes_out, unsigned long long *free_bytes_out, unsigned long long *available_bytes_out) {
+    PlatformFilesystemInfo info;
+
+    if (total_bytes_out == 0 || free_bytes_out == 0 || available_bytes_out == 0) return -1;
+    if (platform_get_filesystem_info(path, &info) != 0) return -1;
+    *total_bytes_out = info.total_bytes;
+    *free_bytes_out = info.free_bytes;
+    *available_bytes_out = info.available_bytes;
+    return 0;
+}
+
 int platform_path_is_directory(const char *path, int *is_directory_out) {
     unsigned long attributes;
 
@@ -652,6 +928,69 @@ int platform_collect_entries(
 void platform_free_entries(PlatformDirEntry *entries, size_t count) {
     (void)entries;
     (void)count;
+}
+
+void platform_format_mode(unsigned int mode, char out[11]) {
+    out[0] = (mode & 0040000U) != 0U ? 'd' : '-';
+    out[1] = (mode & 0400U) != 0U ? 'r' : '-';
+    out[2] = (mode & 0200U) != 0U ? 'w' : '-';
+    out[3] = (mode & 0100U) != 0U ? 'x' : '-';
+    out[4] = (mode & 0040U) != 0U ? 'r' : '-';
+    out[5] = (mode & 0020U) != 0U ? 'w' : '-';
+    out[6] = (mode & 0010U) != 0U ? 'x' : '-';
+    out[7] = (mode & 0004U) != 0U ? 'r' : '-';
+    out[8] = (mode & 0002U) != 0U ? 'w' : '-';
+    out[9] = (mode & 0001U) != 0U ? 'x' : '-';
+    out[10] = '\0';
+}
+
+int platform_get_identity(PlatformIdentity *identity_out) {
+    const char *username;
+
+    if (identity_out == 0) return -1;
+    rt_memset(identity_out, 0, sizeof(*identity_out));
+    username = platform_getenv("USERNAME");
+    if (username == 0) username = platform_getenv("USER");
+    if (username == 0 || username[0] == '\0') username = "user";
+    identity_out->uid = 1000U;
+    identity_out->gid = 1000U;
+    if (windows_copy_string(identity_out->username, sizeof(identity_out->username), username) != 0) return -1;
+    return windows_copy_string(identity_out->groupname, sizeof(identity_out->groupname), "Users");
+}
+
+int platform_lookup_identity(const char *username, PlatformIdentity *identity_out) {
+    if (platform_get_identity(identity_out) != 0) return -1;
+    if (username == 0 || username[0] == '\0') return 0;
+    if (rt_strcmp(username, identity_out->username) != 0) {
+        if (windows_copy_string(identity_out->username, sizeof(identity_out->username), username) != 0) return -1;
+    }
+    return 0;
+}
+
+int platform_lookup_group(const char *groupname, unsigned int *gid_out) {
+    if (gid_out == 0) return -1;
+    (void)groupname;
+    *gid_out = 1000U;
+    return 0;
+}
+
+int platform_list_groups_for_identity(const PlatformIdentity *identity, PlatformGroupEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)identity;
+    if (count_out == 0) return -1;
+    *count_out = 0U;
+    if (entries_out == 0 || entry_capacity == 0U) return 0;
+    entries_out[0].gid = 1000U;
+    if (windows_copy_string(entries_out[0].name, sizeof(entries_out[0].name), "Users") != 0) return -1;
+    *count_out = 1U;
+    return 0;
+}
+
+int platform_list_sessions(PlatformSessionEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out == 0) return -1;
+    *count_out = 0U;
+    return 0;
 }
 
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {

@@ -1,0 +1,221 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "freestanding-windows-expanded-check",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"-lc",
+				"cd '/c/Users/Mathias Schindler/newos' && export PATH=/ucrt64/bin:/usr/bin:/bin:$PATH && make freestanding-windows WINDOWS_TARGET_CC=clang > build/win-expanded-build.log 2>&1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-smoke",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"-lc",
+				"cd '/c/Users/Mathias Schindler/newos' && { find build/freestanding-windows-x86_64 -maxdepth 1 -name '*.exe' | wc -l > build/win-expanded-count.txt; ./build/freestanding-windows-x86_64/true.exe; echo true=$? > build/win-expanded-smoke.txt; ./build/freestanding-windows-x86_64/false.exe; echo false=$? >> build/win-expanded-smoke.txt; ./build/freestanding-windows-x86_64/date.exe -u '+%Y' >> build/win-expanded-smoke.txt; printf 'a\\n' | ./build/freestanding-windows-x86_64/grep.exe a >> build/win-expanded-smoke.txt; printf 'x y\\n' | ./build/freestanding-windows-x86_64/awk.exe '{ print $2 }' >> build/win-expanded-smoke.txt; ./build/freestanding-windows-x86_64/whoami.exe >> build/win-expanded-smoke.txt; }"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "test"
+		},
+		{
+			"label": "freestanding-windows-expanded-script",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-smoke-script",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/smoke-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "test"
+		},
+		{
+			"label": "freestanding-windows-expanded-script-2",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-smoke-script-2",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/smoke-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "test"
+		},
+		{
+			"label": "inspect-defender-and-outputs",
+			"type": "shell",
+			"command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"C:\\Users\\MATHIA~1\\newos\\build\\inspect-defender-and-outputs.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "freestanding-windows-expanded-script-3",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-script-4",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-script-5",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-script-6",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "freestanding-windows-expanded-script-7",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/build-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "inspect-defender-and-outputs-2",
+			"type": "shell",
+			"command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"C:\\Users\\MATHIA~1\\newos\\build\\inspect-defender-and-outputs.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "freestanding-windows-expanded-smoke-script-3",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/smoke-win-expanded.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "test"
+		},
+		{
+			"label": "freestanding-windows-expanded-smoke-script-4",
+			"type": "shell",
+			"command": "C:\\msys64\\usr\\bin\\bash.exe",
+			"args": [
+				"C:/Users/MATHIA~1/newos/build/smoke-win-expanded2.sh"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "test"
+		},
+		{
+			"label": "inspect-defender-and-outputs-3",
+			"type": "shell",
+			"command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"C:\\Users\\MATHIA~1\\newos\\build\\inspect-defender-and-outputs.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}
