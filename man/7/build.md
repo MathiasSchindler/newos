@@ -17,9 +17,9 @@ macOS, the local default remains the hosted build unless an explicit
 alternative target is requested.
 
 On Windows, the repository is expected to be built from an MSYS2 shell for now.
-The native Windows platform backend is not implemented yet, but MSYS2 provides
-the POSIX shell tools, GNU make, and Clang/lld toolchain needed to continue
-working on the existing Linux freestanding target from a Windows workstation.
+MSYS2 provides the POSIX shell tools, GNU make, and hosted compiler path, while
+the UCRT64 Clang/lld toolchain can build both the existing Linux freestanding
+target and the first native Windows freestanding PE executables.
 
 ## HOSTED BUILD
 
@@ -47,6 +47,17 @@ The freestanding build is the Linux target without libc.
 - includes freestanding stack-canary runtime support, with compiler stack-protector instrumentation controlled by `FREESTANDING_STACK_CFLAGS`
 - is where ABI, start-up, and portability mistakes become visible
 
+## WINDOWS FREESTANDING BUILD
+
+The Windows freestanding build is the native PE target without the MSYS POSIX
+runtime or the Microsoft C runtime.
+
+- built with `make freestanding-windows WINDOWS_TARGET_CC=clang`
+- writes binaries to `build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/`
+- uses the minimal `src/platform/windows/` startup and Kernel32 imports
+- currently builds the small tool subset `true`, `false`, `echo`, `printf`, `dirname`, `basename`, `cat`, `head`, `tail`, `nl`, `rev`, `fold`, `uniq`, `wc`, `cut`, `tr`, `expand`, `unexpand`, `pwd`, `hostname`, and `uname`, plus comparison, checksum, image, path, and basic filesystem tools including `cmp`, `comm`, `join`, `paste`, `tac`, `sleep`, `file`, `readlink`, `realpath`, `strings`, `hexdump`, `od`, `md5sum`, `sha256sum`, `sha512sum`, `test`, `which`, `printenv`, `tee`, `mkdir`, `rmdir`, `truncate`, `sync`, `imgmeta`, `imginfo`, `imgcheck`, `bc`, `expr`, and `seq`, plus native Winsock/TLS-backed `wtf`
+- is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
+
 ## SELF-HOSTED BUILD
 
 The self-hosted build reuses the in-tree `ncc` compiler for the hosted tool set.
@@ -64,6 +75,7 @@ and anything that adds new low-level dependencies.
     make               — on macOS build the local hosted set; on Linux build host plus freestanding
     make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
     make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
+    make freestanding-windows — build the native no-libc Windows PE subset under build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
@@ -95,6 +107,7 @@ use Clang for the Linux freestanding path:
   cd /c/Users/Mathias\ Schindler/newos
   make host CC=gcc
   make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+  make freestanding-windows WINDOWS_TARGET_CC=clang
 
 `make host` is useful as an early compiler and shell sanity check, but it still
 uses the hosted POSIX backend and therefore depends on the MSYS2 POSIX runtime.
@@ -112,6 +125,15 @@ If local PowerShell execution policy blocks scripts, use the command runner:
 
 `make freestanding` remains the main target: it builds Linux ABI binaries using
 the raw syscall backend under `src/platform/linux/` and `src/arch/*/linux/`.
+`make freestanding-windows` is the early native Windows path. It links PE
+executables directly against Kernel32 and currently covers only small tools that
+need startup, argument parsing, stdout/stderr, heap allocation, and basic file
+read/write/seek, path metadata, environment lookup, directory create/remove,
+truncate, and flush support, plus current-directory, hostname, and uname-style
+queries. The Windows backend also has enough Winsock and native TLS client
+support for `wtf` to fetch summaries. Certificate validation is not yet wired to
+the Windows trust store, so that path is useful for bring-up testing but should
+not be treated as a hardened HTTPS client yet.
 
 ## COMMON WORKFLOW
 
@@ -168,7 +190,7 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
 - On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
-- Windows native hosted binaries are not supported yet; use MSYS2 while a `src/platform/windows/` backend is being developed
+- Windows native hosted binaries are not supported yet; use MSYS2 while the `src/platform/windows/` freestanding backend is being developed
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks
 

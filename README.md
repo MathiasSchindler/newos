@@ -37,16 +37,28 @@ The repository includes a structured shell-based test suite under [tests](tests)
 On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path.
 
 On Windows, install MSYS2 with the MSYS GCC package for the hosted POSIX build
-and the UCRT64 Clang/lld toolchain for freestanding Linux output. The first
-useful checks are:
+and the UCRT64 Clang/lld toolchain for freestanding output. The first useful
+checks are:
 
 ```
 make host CC=gcc
 make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+make freestanding-windows WINDOWS_TARGET_CC=clang
 ```
 
-The freestanding output is still Linux ABI output; native Windows executables
-will require a future `src/platform/windows/` backend.
+`make freestanding` still emits Linux ABI binaries through the raw Linux
+syscall backend. `make freestanding-windows` is the initial native PE path; it
+currently builds a small no-libc Windows subset (`true`, `false`, `echo`,
+`printf`, `dirname`, `basename`, `cat`, `head`, `tail`, `nl`, `rev`, `fold`,
+`uniq`, `wc`, `cut`, `tr`, `expand`, `unexpand`, `pwd`, `hostname`, and
+`uname`), plus comparison, checksum, image, path, and basic filesystem tools
+such as `cmp`, `comm`, `join`, `paste`, `tac`, `sleep`, `file`, `readlink`,
+`realpath`, `strings`, `hexdump`, `od`, `md5sum`, `sha256sum`, `sha512sum`,
+`test`, `which`, `printenv`, `tee`, `mkdir`, `rmdir`, `truncate`, `sync`,
+`imgmeta`, `imginfo`, `imgcheck`, `bc`, `expr`, and `seq`. `wtf` builds and can
+fetch summaries through the native Winsock/TLS path; certificate validation is
+not wired to the Windows trust store yet, so treat it as an early bring-up check
+rather than a hardened HTTPS client.
 To launch hosted MSYS tools directly from PowerShell or `cmd.exe`, keep the
 MSYS runtime on `PATH`, for example `C:\msys64\usr\bin`. Copying
 `msys-2.0.dll` beside the tools is not supported because it relocates the MSYS

@@ -1,5 +1,11 @@
 #include "runtime.h"
 
+#include <stdint.h>
+
+#if defined(_WIN32) && !defined(__MSYS__) && !defined(__CYGWIN__)
+#include "platform.h"
+#endif
+
 #if defined(__MSYS__) || defined(__CYGWIN__)
 #include <sys/mman.h>
 #endif
@@ -17,7 +23,7 @@
 #elif defined(__linux__) && defined(__aarch64__)
 #define RT_SYS_MMAP 222
 #define RT_MAP_ANONYMOUS 0x20
-#elif !defined(__MSYS__) && !defined(__CYGWIN__)
+#elif !defined(__MSYS__) && !defined(__CYGWIN__) && !defined(_WIN32)
 #error "rt allocator needs an mmap syscall for this platform"
 #endif
 
@@ -101,7 +107,7 @@ static RtAllocBlock *rt_alloc_head;
 static RtAllocBlock *rt_alloc_tail;
 
 #if defined(__APPLE__) && defined(__aarch64__)
-static long rt_mmap_syscall(unsigned long length) {
+static intptr_t rt_mmap_syscall(unsigned long length) {
     register long x16 __asm__("x16") = RT_SYS_MMAP;
     register long x0 __asm__("x0") = 0;
     register long x1 __asm__("x1") = (long)length;
@@ -140,9 +146,14 @@ static long rt_mmap_syscall(unsigned long length) {
     return x0;
 }
 #elif defined(__MSYS__) || defined(__CYGWIN__)
-static long rt_mmap_syscall(unsigned long length) {
+static intptr_t rt_mmap_syscall(unsigned long length) {
     void *mapped = mmap(0, (size_t)length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return mapped == MAP_FAILED ? -1 : (long)mapped;
+    return mapped == MAP_FAILED ? -1 : (intptr_t)mapped;
+}
+#elif defined(_WIN32)
+static intptr_t rt_mmap_syscall(unsigned long length) {
+    void *mapped = platform_allocate_pages((size_t)length);
+    return mapped == 0 ? -1 : (intptr_t)mapped;
 }
 #endif
 
@@ -179,7 +190,7 @@ static RtAllocBlock *rt_alloc_find_free(size_t size) {
 
 static RtAllocBlock *rt_alloc_grow(size_t size) {
     size_t mapping_size;
-    long mapped;
+    intptr_t mapped;
     RtAllocBlock *block;
     if (size > ((size_t)-1) - sizeof(RtAllocBlock)) return 0;
     mapping_size = rt_alloc_page_align(sizeof(RtAllocBlock) + size);
