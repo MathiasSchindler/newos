@@ -36,15 +36,28 @@ The repository includes a structured shell-based test suite under [tests](tests)
 
 On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path.
 
-On Windows, install MSYS2 with the MSYS GCC package for the hosted POSIX build
-and the UCRT64 Clang/lld toolchain for freestanding output. The first useful
-checks are:
+On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
+runtime, or the Microsoft C runtime. The important build-time tool is a C
+compiler/linker that can emit `x86_64-w64-windows-gnu` PE files; LLVM/Clang with
+lld is the preferred path. MSYS2 is currently only a convenient way to get
+`make`, a POSIX shell for the Makefile, and a packaged Clang/lld toolchain. The
+first useful checks are:
 
 ```
 make host CC=gcc
 make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
 make freestanding-windows WINDOWS_TARGET_CC=clang
 ```
+
+From PowerShell, the freestanding Windows build can also be launched with:
+
+```
+.\build-windows-freestanding.ps1
+```
+
+That wrapper prefers a regular `clang` on `PATH` and only falls back to MSYS2's
+`bash.exe` as a Makefile driver when native `make` is not available or only
+MSYS `make` is present.
 
 `make freestanding` still emits Linux ABI binaries through the raw Linux
 syscall backend. `make freestanding-windows` is the native no-CRT PE path. It

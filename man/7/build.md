@@ -53,9 +53,10 @@ The Windows freestanding build is the native PE target without the MSYS POSIX
 runtime or the Microsoft C runtime.
 
 - built with `make freestanding-windows WINDOWS_TARGET_CC=clang`
+- can be launched from PowerShell with `./build-windows-freestanding.ps1`
 - writes binaries to `build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/`
 - uses the minimal `src/platform/windows/` startup and Kernel32 imports
-- currently builds the small tool subset `true`, `false`, `echo`, `printf`, `dirname`, `basename`, `cat`, `head`, `tail`, `nl`, `rev`, `fold`, `uniq`, `wc`, `cut`, `tr`, `expand`, `unexpand`, `pwd`, `hostname`, and `uname`, plus comparison, checksum, image, path, and basic filesystem tools including `cmp`, `comm`, `join`, `paste`, `tac`, `sleep`, `file`, `readlink`, `realpath`, `strings`, `hexdump`, `od`, `md5sum`, `sha256sum`, `sha512sum`, `test`, `which`, `printenv`, `tee`, `mkdir`, `rmdir`, `truncate`, `sync`, `imgmeta`, `imginfo`, `imgcheck`, `bc`, `expr`, and `seq`, plus native Winsock/TLS-backed `wtf`
+- currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
 ## SELF-HOSTED BUILD
@@ -95,8 +96,9 @@ Typical examples:
 ## WINDOWS BOOTSTRAP
 
 Windows support is currently a contributor-environment path, not a native
-Windows userland target. Install the MSYS GCC package for hosted POSIX builds
-and the UCRT64 Clang/lld packages for freestanding Linux output:
+Windows userland target. For hosted POSIX builds, install the MSYS GCC package.
+For freestanding Windows PE output, use LLVM/Clang with lld from a regular LLVM
+install or from the UCRT64 packages:
 
   pacman -Syuu
   pacman -S --needed base-devel gcc mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld
@@ -108,6 +110,19 @@ use Clang for the Linux freestanding path:
   make host CC=gcc
   make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
   make freestanding-windows WINDOWS_TARGET_CC=clang
+
+For the Windows freestanding path, MSYS2 is a build convenience rather than a
+runtime requirement. The PE binaries do not link against the MSYS POSIX runtime
+or a C standard library. A regular LLVM/Clang installation is enough for the
+compiler/linker side as long as it can target `x86_64-w64-windows-gnu`; the
+current Makefile still needs `make` and a POSIX-style shell as build drivers.
+From PowerShell, use:
+
+  .\build-windows-freestanding.ps1
+
+The wrapper uses `clang` from `PATH` by default and falls back to MSYS2's
+`bash.exe` only to drive the existing Makefile when native `make` is missing or
+only MSYS `make` is present.
 
 `make host` is useful as an early compiler and shell sanity check, but it still
 uses the hosted POSIX backend and therefore depends on the MSYS2 POSIX runtime.
