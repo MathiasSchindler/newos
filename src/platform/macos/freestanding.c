@@ -1,6 +1,8 @@
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <grp.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
@@ -30,6 +32,7 @@
 #define DARWIN_O_CREAT 0x0200
 #define DARWIN_O_TRUNC 0x0400
 #define DARWIN_O_EXCL 0x0800
+#define DARWIN_O_NOFOLLOW 0x0100
 #define DARWIN_ACCESS_EXECUTE 1
 #define DARWIN_ACCESS_WRITE 2
 #define DARWIN_ACCESS_READ 4
@@ -315,6 +318,27 @@ int platform_open_read(const char *path) {
     return fd < 0 ? -1 : (int)fd;
 }
 
+int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out) {
+    struct stat stat_info;
+    long fd;
+
+    if (path == 0 || entry_out == 0) {
+        return -1;
+    }
+
+    fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, DARWIN_O_NOFOLLOW, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    if (fstat((int)fd, &stat_info) != 0) {
+        (void)platform_close((int)fd);
+        return -1;
+    }
+
+    fill_entry_from_stat(path, &stat_info, entry_out);
+    return (int)fd;
+}
+
 int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing) {
     long flags = DARWIN_O_WRONLY | DARWIN_O_CREAT;
     long fd;
@@ -572,6 +596,13 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
 
 int platform_path_access(const char *path, int mode) {
     return darwin_syscall2(DARWIN_SYS_ACCESS, (long)path, (long)access_mode_to_darwin(mode)) < 0 ? -1 : 0;
+}
+
+int platform_change_directory(const char *path) {
+    if (path == 0 || path[0] == '\0') {
+        return -1;
+    }
+    return chdir(path);
 }
 
 int platform_collect_entries(
@@ -1411,6 +1442,278 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
 
     *socket_fd_out = sock;
     return 0;
+}
+
+int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int sock = -1;
+    int reuse = 1;
+
+    if (socket_fd_out == 0 || port == 0U || port > 65535U) {
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_PASSIVE;
+    rt_unsigned_to_string((unsigned long long)port, port_text, sizeof(port_text));
+
+    if (getaddrinfo(host != 0 && host[0] != '\0' ? host : 0, port_text, &hints, &results) != 0) {
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sock < 0) {
+            continue;
+        }
+        (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        if (bind(sock, current->ai_addr, current->ai_addrlen) == 0 && listen(sock, 16) == 0) {
+            break;
+        }
+        (void)platform_close(sock);
+        sock = -1;
+    }
+
+    freeaddrinfo(results);
+    if (sock < 0) {
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+int platform_accept_tcp(int listener_fd, int *client_fd_out) {
+    int client;
+
+    if (listener_fd < 0 || client_fd_out == 0) {
+        return -1;
+    }
+
+    client = accept(listener_fd, 0, 0);
+    if (client < 0) {
+        return -1;
+    }
+    *client_fd_out = client;
+    return 0;
+}
+
+int platform_create_pipe(int pipe_fds[2]) {
+    if (pipe_fds == 0) {
+        return -1;
+    }
+    return pipe(pipe_fds);
+}
+
+static int macos_socket_to_fd(int socket_fd, int output_fd) {
+    char buffer[4096];
+    long amount;
+
+    for (;;) {
+        amount = recv(socket_fd, buffer, sizeof(buffer), 0);
+        if (amount < 0) {
+            return -1;
+        }
+        if (amount == 0) {
+            return 0;
+        }
+        if (rt_write_all(output_fd, buffer, (size_t)amount) != 0) {
+            return -1;
+        }
+    }
+}
+
+static int macos_fd_to_socket(int input_fd, int socket_fd) {
+    char buffer[4096];
+    long amount;
+
+    for (;;) {
+        amount = platform_read(input_fd, buffer, sizeof(buffer));
+        if (amount < 0) {
+            return -1;
+        }
+        if (amount == 0) {
+            return 0;
+        }
+        if (send(socket_fd, buffer, (size_t)amount, 0) != amount) {
+            return -1;
+        }
+    }
+}
+
+int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
+    PlatformNetcatOptions defaults;
+    int sock = -1;
+
+    if (options == 0) {
+        memset(&defaults, 0, sizeof(defaults));
+        options = &defaults;
+    }
+    if (options->use_udp) {
+        return -1;
+    }
+
+    if (options->listen_mode) {
+        int client = -1;
+        const char *bind_host = options->bind_host[0] != '\0' ? options->bind_host : host;
+        unsigned int listen_port = options->bind_port != 0U ? options->bind_port : port;
+
+        if (platform_open_tcp_listener(bind_host, listen_port, &sock) != 0) {
+            return -1;
+        }
+        if (platform_accept_tcp(sock, &client) != 0) {
+            (void)platform_close(sock);
+            return -1;
+        }
+        (void)platform_close(sock);
+        if (!options->scan_mode && macos_socket_to_fd(client, 1) != 0) {
+            (void)platform_close(client);
+            return -1;
+        }
+        (void)platform_close(client);
+        return 0;
+    }
+
+    if (platform_connect_tcp(host, port, &sock) != 0) {
+        return -1;
+    }
+    if (options->scan_mode) {
+        (void)platform_close(sock);
+        return 0;
+    }
+    if (!platform_isatty(0)) {
+        if (macos_fd_to_socket(0, sock) != 0) {
+            (void)platform_close(sock);
+            return -1;
+        }
+        (void)shutdown(sock, SHUT_WR);
+    }
+    if (macos_socket_to_fd(sock, 1) != 0) {
+        (void)platform_close(sock);
+        return -1;
+    }
+    (void)platform_close(sock);
+    return 0;
+}
+
+int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
+    PlatformNetcatOptions options;
+
+    memset(&options, 0, sizeof(options));
+    options.listen_mode = listen_mode;
+    return platform_netcat(host, port, &options);
+}
+
+static int macos_dns_family_matches(int ai_family, int family_filter) {
+    if (family_filter == PLATFORM_NETWORK_FAMILY_ANY) {
+        return ai_family == AF_INET || ai_family == AF_INET6;
+    }
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV4) {
+        return ai_family == AF_INET;
+    }
+    if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+        return ai_family == AF_INET6;
+    }
+    return 0;
+}
+
+static int macos_add_dns_entry(
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count,
+    const char *name,
+    int ai_family,
+    const void *address
+) {
+    PlatformDnsEntry *entry;
+
+    if (*count >= entry_capacity) {
+        return -1;
+    }
+    entry = &entries_out[*count];
+    memset(entry, 0, sizeof(*entry));
+    entry->record_type = ai_family == AF_INET6 ? PLATFORM_DNS_RECORD_AAAA : PLATFORM_DNS_RECORD_A;
+    rt_copy_string(entry->name, sizeof(entry->name), name);
+    if (inet_ntop(ai_family, address, entry->address, sizeof(entry->address)) == 0) {
+        return -1;
+    }
+    *count += 1U;
+    return 0;
+}
+
+int platform_dns_lookup(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    int family_filter,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    size_t count = 0U;
+
+    (void)server;
+    (void)port;
+    if (name == 0 || entries_out == 0 || count_out == 0) {
+        return -1;
+    }
+    *count_out = 0U;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = family_filter == PLATFORM_NETWORK_FAMILY_IPV4 ? AF_INET :
+        (family_filter == PLATFORM_NETWORK_FAMILY_IPV6 ? AF_INET6 : AF_UNSPEC);
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(name, 0, &hints, &results) != 0) {
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        if (!macos_dns_family_matches(current->ai_family, family_filter)) {
+            continue;
+        }
+        if (current->ai_family == AF_INET) {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)current->ai_addr;
+            (void)macos_add_dns_entry(entries_out, entry_capacity, &count, name, AF_INET, &sin->sin_addr);
+        } else if (current->ai_family == AF_INET6) {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)current->ai_addr;
+            (void)macos_add_dns_entry(entries_out, entry_capacity, &count, name, AF_INET6, &sin6->sin6_addr);
+        }
+    }
+
+    freeaddrinfo(results);
+    *count_out = count;
+    return count > 0U ? 0 : -1;
+}
+
+int platform_dns_query(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short record_type,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    int family_filter;
+
+    if (record_type == PLATFORM_DNS_RECORD_A) {
+        family_filter = PLATFORM_NETWORK_FAMILY_IPV4;
+    } else if (record_type == PLATFORM_DNS_RECORD_AAAA) {
+        family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
+    } else {
+        return -1;
+    }
+    return platform_dns_lookup(server, port, name, family_filter, entries_out, entry_capacity, count_out);
 }
 
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {

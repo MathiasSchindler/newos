@@ -23,6 +23,8 @@ MACOS_FREESTANDING_ARCH ?= aarch64
 MACOS_FREESTANDING_TRIPLE ?= arm64-apple-macos11
 MACOS_FREESTANDING_CC ?= $(shell xcrun --find clang 2>/dev/null || echo $(CC))
 MACOS_FREESTANDING_SDKROOT ?= $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+MACOS_FREESTANDING_LTO ?= 1
+MACOS_FREESTANDING_LTO_FLAGS ?= $(if $(filter 1 yes true,$(MACOS_FREESTANDING_LTO)),-flto)
 HOST_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 HOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(COMMA)--gc-sections)
 FREESTANDING_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
@@ -93,10 +95,18 @@ WINDOWS_FREESTANDING_TUI_TOOLS := editor
 WINDOWS_FREESTANDING_MAIL_TOOLS := mail
 WINDOWS_FREESTANDING_NCC_TOOLS := ncc
 WINDOWS_FREESTANDING_GENERIC_TOOLS := $(filter-out wtf $(WINDOWS_FREESTANDING_IMAGE_TOOLS) $(WINDOWS_FREESTANDING_BIGNUM_TOOLS) $(WINDOWS_FREESTANDING_HASH_TOOLS) $(WINDOWS_FREESTANDING_REGEX_TOOLS) $(WINDOWS_FREESTANDING_ARCHIVE_TOOLS) $(WINDOWS_FREESTANDING_AWK_TOOLS) $(WINDOWS_FREESTANDING_XML_TOOLS) $(WINDOWS_FREESTANDING_TUI_TOOLS) $(WINDOWS_FREESTANDING_MAIL_TOOLS) $(WINDOWS_FREESTANDING_NCC_TOOLS),$(WINDOWS_FREESTANDING_TOOLS))
-MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od md5sum sha256sum sha512sum dd touch truncate sync bc split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf
+MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test [ nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od md5sum sha256sum sha512sum dd touch truncate sync bc split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf awk gzip gunzip bzip2 bunzip2 xz unxz tar ar readelf objdump strip imgmeta imginfo imgcheck c2pa xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo wget sql man pstree ncc netcat nslookup dig ssh sshd httpd
 MACOS_FREESTANDING_HASH_TOOLS := md5sum sha256sum sha512sum
 MACOS_FREESTANDING_TLS_TOOLS := wtf
-MACOS_FREESTANDING_GENERIC_TOOLS := $(filter-out $(MACOS_FREESTANDING_HASH_TOOLS) $(MACOS_FREESTANDING_TLS_TOOLS),$(MACOS_FREESTANDING_TOOLS))
+MACOS_FREESTANDING_AWK_TOOLS := awk
+MACOS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
+MACOS_FREESTANDING_ARCHIVE_TOOLS := gzip gunzip bzip2 bunzip2 xz unxz tar ar readelf objdump strip
+MACOS_FREESTANDING_XML_TOOLS := xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
+MACOS_FREESTANDING_NCC_TOOLS := ncc
+MACOS_FREESTANDING_SSH_TOOLS := ssh
+MACOS_FREESTANDING_SSHD_TOOLS := sshd
+MACOS_FREESTANDING_HTTPD_TOOLS := httpd
+MACOS_FREESTANDING_GENERIC_TOOLS := $(filter-out $(MACOS_FREESTANDING_HASH_TOOLS) $(MACOS_FREESTANDING_TLS_TOOLS) $(MACOS_FREESTANDING_AWK_TOOLS) $(MACOS_FREESTANDING_IMAGE_TOOLS) $(MACOS_FREESTANDING_ARCHIVE_TOOLS) $(MACOS_FREESTANDING_XML_TOOLS) $(MACOS_FREESTANDING_NCC_TOOLS) $(MACOS_FREESTANDING_SSH_TOOLS) $(MACOS_FREESTANDING_SSHD_TOOLS) $(MACOS_FREESTANDING_HTTPD_TOOLS),$(MACOS_FREESTANDING_TOOLS))
 INCEPTION_BUILD_DIR ?= $(BUILD_ROOT)/inception-freestanding-$(TARGET_ARCH)
 INCEPTION_OBJECT_BUILD_DIR ?= $(INCEPTION_BUILD_DIR)/.obj
 FREESTANDING_OBJECT_BUILD_DIR ?= $(TARGET_BUILD_DIR)/.obj
@@ -148,8 +158,18 @@ WINDOWS_FREESTANDING_TLS_LDFLAGS ?= $(WINDOWS_FREESTANDING_LDFLAGS) -lbcrypt
 MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/bignum.c src/platform/macos/freestanding.c
 MACOS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 MACOS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/posix/tls.c
-MACOS_FREESTANDING_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -Isrc/shared -Isrc/platform/macos -Isrc/arch/aarch64/macos
-MACOS_FREESTANDING_LDFLAGS ?= -nodefaultlibs -lSystem -Wl$(COMMA)-dead_strip -Wl$(COMMA)-adhoc_codesign
+MACOS_FREESTANDING_AWK_SOURCES := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c
+MACOS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/compression/crc32.c src/shared/compression/zlib.c
+MACOS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c
+MACOS_FREESTANDING_XML_SOURCES := src/shared/xml.c src/shared/xml_stream.c src/shared/xml_dtd.c src/shared/tool_xml.c
+MACOS_FREESTANDING_NCC_SOURCES := $(COMPILER_SOURCES) $(SHARED_SOURCES)
+MACOS_FREESTANDING_SSH_SOURCES := $(SSH_CLIENT_SOURCES) $(SSH_CRYPTO_SOURCES) $(SHARED_SOURCES)
+MACOS_FREESTANDING_SSHD_SOURCES := $(SSHD_TOOL_SOURCES) $(SSH_TRANSPORT_SOURCES) $(SSH_CRYPTO_SOURCES) $(SHARED_SOURCES)
+MACOS_FREESTANDING_HTTPD_SOURCES = $(HTTPD_TOOL_SOURCES) $(SHARED_SOURCES)
+MACOS_FREESTANDING_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections $(MACOS_FREESTANDING_LTO_FLAGS) -Isrc/shared -Isrc/platform/macos -Isrc/arch/aarch64/macos
+MACOS_FREESTANDING_LDFLAGS ?= -nodefaultlibs -lSystem -Wl$(COMMA)-dead_strip -Wl$(COMMA)-x -Wl$(COMMA)-no_function_starts -Wl$(COMMA)-adhoc_codesign $(MACOS_FREESTANDING_LTO_FLAGS)
+MACOS_FREESTANDING_NO_LTO_CFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_CFLAGS))
+MACOS_FREESTANDING_NO_LTO_LDFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_LDFLAGS))
 # Keep this shell extraction comma-free for compatibility with older GNU make on macOS.
 TARGET_PLATFORM_MANIFEST_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(filter src/platform/linux/% $(TARGET_ARCH_DIR)/%,$(TARGET_PLATFORM_MANIFEST_SOURCES))
@@ -337,6 +357,30 @@ $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_HASH_TOOLS)): 
 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_TLS_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_TLS_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_TLS_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_AWK_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_AWK_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_AWK_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_ARCHIVE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_IMAGE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_XML_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_XML_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_NO_LTO_CFLAGS) $< $(MACOS_FREESTANDING_XML_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_NO_LTO_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_NCC_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_NCC_SOURCES) src/compiler/source_manifest.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_NO_LTO_CFLAGS) -Isrc/compiler $< $(MACOS_FREESTANDING_NCC_SOURCES) src/platform/macos/freestanding.c $(MACOS_FREESTANDING_NO_LTO_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_SSH_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_SSH_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_SSH_SOURCES) src/platform/macos/freestanding.c $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_SSHD_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_SSHD_SOURCES) src/tools/sshd/sshd.h src/tools/ssh/ssh_core.h src/tools/ssh/ssh_transport.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_SSHD_SOURCES) src/platform/macos/freestanding.c $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_HTTPD_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_HTTPD_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h src/shared/server_log.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_HTTPD_SOURCES) src/platform/macos/freestanding.c $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_GENERIC_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@

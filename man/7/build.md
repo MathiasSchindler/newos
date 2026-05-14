@@ -68,25 +68,22 @@ modern macOS requires for runnable executables.
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
   `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds 95 tools: `true`, `false`, `echo`, `printf`, `basename`,
-  `dirname`, `yes`, `rev`, `seq`, `expr`, `test`, `nl`, `tac`, `expand`,
-  `unexpand`, `fold`, `wc`, `head`, `tail`, `cat`, `cut`, `tr`, `uniq`, `cmp`, `comm`,
-  `join`, `paste`, `printenv`, `pwd`, `mkdir`, `rmdir`, `tee`, `which`,
-  `readlink`, `realpath`, `sleep`, `file`, `strings`, `hexdump`, `od`,
-  `md5sum`, `sha256sum`, `sha512sum`, `dd`, `touch`, `truncate`, `sync`, `bc`,
-  `split`, `shuf`, `fmt`, `column`, `tsort`, `mktemp`, `clear`, `date`,
-  `uname`, `hostname`, `whoami`, `id`, `groups`, `ls`, `du`, `stat`, `df`,
-  `rm`, `cp`, `mv`, `ln`, `chmod`, `chown`, `chgrp`, `free`, `kill`, `csplit`,
-  `sort`, `env`, `time`, `timeout`, `watch`, `find`, `ps`, `pgrep`, `pkill`,
-  `stty`, `more`, `less`, `xargs`, `grep`, `sed`, `ed`, `patch`, `diff`,
-  `logger`, and `wtf`
+- currently builds 155 tools, including the core/text/filesystem/process set,
+  checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
+  tools, object inspection tools, `awk`, `sql`, `man`, `pstree`, `wget`, `ncc`,
+  `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, and the XML tool
+  family
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
   behavior
 - compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so
   the project code does not call the C standard library even though the binary
   has the unavoidable macOS system ABI dependency
-- is intentionally smaller than the Linux freestanding target until broader
-  networking, archive/compression, richer process/session reporting, and larger
+- strips unused sections, local symbols, and Mach-O function-start metadata by
+  default; LTO is enabled by default for the macOS freestanding-ish target and
+  can be disabled with `MACOS_FREESTANDING_LTO=0`; XML tools and `ncc`
+  currently opt out of LTO because they hit Apple-clang LTO-only crashes
+- is intentionally smaller than the Linux freestanding target until raw/admin
+  networking, richer process/session reporting, and larger
   application-level tool dependencies are implemented
 
 ## SELF-HOSTED BUILD
