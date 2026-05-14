@@ -8,8 +8,13 @@ platform - the OS abstraction layers for hosted and freestanding builds
 
 The platform component keeps shared code away from direct OS calls. Runtime and
 tool code are expected to program against `src/shared/platform.h`, which is then
-backed by either the hosted POSIX implementation or the freestanding raw-Linux
-syscall implementation.
+backed by the hosted POSIX implementation, the freestanding raw-Linux syscall
+implementation, or the native Windows freestanding PE implementation.
+
+Windows is being treated as a new contributor workstation environment first.
+Hosted Windows builds still run inside MSYS2 and use the POSIX backend, while
+`make freestanding-windows` uses `src/platform/windows/` to build native PE
+executables without the MSYS POSIX runtime or the Microsoft C runtime.
 
 ## BUILD-MODE SUMMARY
 
@@ -67,6 +72,22 @@ and does not depend on libc.
 - `syscall.h` — inline syscall helpers for the selected Linux target ABI
 - `syscall_stubs.S` — x86-64 out-of-line syscall entry helpers used by the freestanding platform layer
 
+### Native Windows freestanding layer (`src/platform/windows`)
+
+Used by `make freestanding-windows`. This layer links PE executables directly
+against the minimal Windows system DLL imports needed by the tools and keeps
+Win32 details out of shared runtime and tool code.
+
+- `core.c` — PE startup, argument parsing, fd/handle mapping, console I/O,
+  file/path helpers, environment lookup, time, terminal mode support, Winsock,
+  and process exit
+- `tls.c` — platform-facing TLS client glue backed by the shared TLS code and
+  Windows random byte generation
+
+The still-growing parts are process spawning, directory enumeration, symlink
+compatibility, fuller identity/session reporting, and certificate validation
+against the Windows trust store.
+
 ## CONTRIBUTOR BOUNDARIES
 
 - Shared code should call `platform_*` helpers rather than `open(2)`,
@@ -78,8 +99,9 @@ and does not depend on libc.
 
 ## LIMITATIONS
 
-- Hosted development assumes a POSIX environment; the true freestanding target currently focuses on Linux/AArch64 and Linux/x86-64
+- Hosted development assumes a POSIX environment; the Linux freestanding target currently focuses on AArch64 and x86-64
 - On macOS, the project currently favors local hosted binaries over a separate Darwin syscall-only userland target
+- Native Windows freestanding support is early and intentionally narrower than the POSIX and Linux backends; MSYS2 remains the current Windows hosted bootstrap environment
 - The abstraction is intentionally small; there is no threading or async event layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment
 

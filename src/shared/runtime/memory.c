@@ -1,21 +1,5 @@
 #include "runtime.h"
-
-#define RT_PROT_READ 1
-#define RT_PROT_WRITE 2
-#define RT_MAP_PRIVATE 2
-
-#if defined(__APPLE__) && defined(__aarch64__)
-#define RT_SYS_MMAP 197
-#define RT_MAP_ANONYMOUS 0x1000
-#elif defined(__linux__) && defined(__x86_64__)
-#define RT_SYS_MMAP 9
-#define RT_MAP_ANONYMOUS 0x20
-#elif defined(__linux__) && defined(__aarch64__)
-#define RT_SYS_MMAP 222
-#define RT_MAP_ANONYMOUS 0x20
-#else
-#error "rt allocator needs an mmap syscall for this platform"
-#endif
+#include "platform.h"
 
 /*
  * Keep these implementations strictly byte-wise and volatile-backed so the
@@ -96,47 +80,6 @@ struct RtAllocBlock {
 static RtAllocBlock *rt_alloc_head;
 static RtAllocBlock *rt_alloc_tail;
 
-#if defined(__APPLE__) && defined(__aarch64__)
-static long rt_mmap_syscall(unsigned long length) {
-    register long x16 __asm__("x16") = RT_SYS_MMAP;
-    register long x0 __asm__("x0") = 0;
-    register long x1 __asm__("x1") = (long)length;
-    register long x2 __asm__("x2") = RT_PROT_READ | RT_PROT_WRITE;
-    register long x3 __asm__("x3") = RT_MAP_PRIVATE | RT_MAP_ANONYMOUS;
-    register long x4 __asm__("x4") = -1;
-    register long x5 __asm__("x5") = 0;
-
-    __asm__ volatile("svc #0x80" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x16) : "memory");
-    return x0;
-}
-#elif defined(__linux__) && defined(__x86_64__)
-static long rt_mmap_syscall(unsigned long length) {
-    register long rax __asm__("rax") = RT_SYS_MMAP;
-    register long rdi __asm__("rdi") = 0;
-    register long rsi __asm__("rsi") = (long)length;
-    register long rdx __asm__("rdx") = RT_PROT_READ | RT_PROT_WRITE;
-    register long r10 __asm__("r10") = RT_MAP_PRIVATE | RT_MAP_ANONYMOUS;
-    register long r8 __asm__("r8") = -1;
-    register long r9 __asm__("r9") = 0;
-
-    __asm__ volatile("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
-    return rax;
-}
-#elif defined(__linux__) && defined(__aarch64__)
-static long rt_mmap_syscall(unsigned long length) {
-    register long x8 __asm__("x8") = RT_SYS_MMAP;
-    register long x0 __asm__("x0") = 0;
-    register long x1 __asm__("x1") = (long)length;
-    register long x2 __asm__("x2") = RT_PROT_READ | RT_PROT_WRITE;
-    register long x3 __asm__("x3") = RT_MAP_PRIVATE | RT_MAP_ANONYMOUS;
-    register long x4 __asm__("x4") = -1;
-    register long x5 __asm__("x5") = 0;
-
-    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8) : "memory");
-    return x0;
-}
-#endif
-
 static size_t rt_alloc_align(size_t value) {
     const size_t alignment = sizeof(void *) * 2U;
     return (value + alignment - 1U) & ~(alignment - 1U);
@@ -170,13 +113,13 @@ static RtAllocBlock *rt_alloc_find_free(size_t size) {
 
 static RtAllocBlock *rt_alloc_grow(size_t size) {
     size_t mapping_size;
-    long mapped;
+    void *mapped;
     RtAllocBlock *block;
     if (size > ((size_t)-1) - sizeof(RtAllocBlock)) return 0;
     mapping_size = rt_alloc_page_align(sizeof(RtAllocBlock) + size);
     if (mapping_size < size) return 0;
-    mapped = rt_mmap_syscall((unsigned long)mapping_size);
-    if (mapped < 0) return 0;
+    mapped = platform_allocate_pages(mapping_size);
+    if (mapped == 0) return 0;
     block = (RtAllocBlock *)mapped;
     block->size = mapping_size - sizeof(RtAllocBlock);
     block->free = 0;

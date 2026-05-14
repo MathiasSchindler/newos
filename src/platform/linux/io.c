@@ -9,6 +9,19 @@ long platform_read(int fd, void *buffer, size_t count) {
     return linux_syscall3(LINUX_SYS_READ, fd, (long)buffer, (long)count);
 }
 
+void *platform_allocate_pages(size_t size) {
+    long mapped = linux_syscall6(
+        LINUX_SYS_MMAP,
+        0,
+        (long)size,
+        LINUX_PROT_READ | LINUX_PROT_WRITE,
+        LINUX_MAP_PRIVATE | LINUX_MAP_ANONYMOUS,
+        -1,
+        0
+    );
+    return mapped < 0 ? 0 : (void *)mapped;
+}
+
 int platform_open_read(const char *path) {
     long fd;
 

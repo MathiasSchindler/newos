@@ -147,7 +147,9 @@ static int parse_target(const char *text, CompilerTarget *target_out) {
 
 static void write_usage(const char *program_name) {
     tool_write_usage(program_name, "[-E|--preprocess] [-S|--emit-asm] [--dump-tokens|--dump-ast|--dump-ir] [--target TARGET] [-I DIR] [-DNAME=VALUE] [-c] [-fsyntax-only] [-o OUTPUT] FILE...");
-    rt_write_line(2, "Targets: linux-x86_64, linux-aarch64, macos-aarch64");
+    rt_write_cstr(2, "Targets: ");
+    compiler_target_write_names(2);
+    rt_write_char(2, '\n');
 }
 
 static const char *pick_output_path(const CompilerOptions *options, char *buffer, size_t buffer_size) {
@@ -667,8 +669,6 @@ static int configure_preprocessor(CompilerPreprocessor *preprocessor, const Comp
     if (compiler_preprocessor_add_include_dir(preprocessor, ".") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/shared") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/compiler") != 0 ||
-        compiler_preprocessor_add_include_dir(preprocessor, "src/platform/posix") != 0 ||
-        compiler_preprocessor_add_include_dir(preprocessor, "src/platform/linux") != 0 ||
         compiler_preprocessor_define(preprocessor, "__STDC_HOSTED__", options->freestanding ? "0" : "1") != 0 ||
         compiler_target_apply_preprocessor_defaults(preprocessor, options->target, options->freestanding) != 0) {
         return -1;

@@ -73,7 +73,9 @@ static unsigned char *posix_tls_load_trust_pem(size_t *length_out) {
         "/etc/ssl/cert.pem",
         "/opt/homebrew/etc/openssl@3/cert.pem",
         "/usr/local/etc/openssl@3/cert.pem",
-        "/etc/ssl/certs/ca-certificates.crt"
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
     };
     const char *env_path = getenv("SSL_CERT_FILE");
     unsigned char *buffer;

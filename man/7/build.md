@@ -16,6 +16,11 @@ target so syscall-only regressions do not wait for a separate manual check. On
 macOS, the local default remains the hosted build unless an explicit
 alternative target is requested.
 
+On Windows, the repository is expected to be built from an MSYS2 shell for now.
+MSYS2 provides the POSIX shell tools, GNU make, and hosted compiler path, while
+the UCRT64 Clang/lld toolchain can build both the existing Linux freestanding
+target and the first native Windows freestanding PE executables.
+
 ## HOSTED BUILD
 
 The hosted build is the normal development path.
@@ -42,6 +47,17 @@ The freestanding build is the Linux target without libc.
 - includes freestanding stack-canary runtime support, with compiler stack-protector instrumentation controlled by `FREESTANDING_STACK_CFLAGS`
 - is where ABI, start-up, and portability mistakes become visible
 
+## WINDOWS FREESTANDING BUILD
+
+The Windows freestanding build is the native PE target without the MSYS POSIX
+runtime or the Microsoft C runtime.
+
+- built with `make freestanding-windows WINDOWS_TARGET_CC=clang`
+- writes binaries to `build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/`
+- uses the minimal `src/platform/windows/` startup and Kernel32 imports
+- currently builds the small tool subset `true`, `false`, `echo`, `printf`, `dirname`, `basename`, `cat`, `head`, `tail`, `nl`, `rev`, `fold`, `uniq`, `wc`, `cut`, `tr`, `expand`, `unexpand`, `pwd`, `hostname`, and `uname`, plus comparison, checksum, image, path, and basic filesystem tools including `cmp`, `comm`, `join`, `paste`, `tac`, `sleep`, `file`, `readlink`, `realpath`, `strings`, `hexdump`, `od`, `md5sum`, `sha256sum`, `sha512sum`, `test`, `which`, `printenv`, `tee`, `mkdir`, `rmdir`, `truncate`, `sync`, `imgmeta`, `imginfo`, `imgcheck`, `bc`, `expr`, and `seq`, plus native Winsock/TLS-backed `wtf`
+- is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
+
 ## SELF-HOSTED BUILD
 
 The self-hosted build reuses the in-tree `ncc` compiler for the hosted tool set.
@@ -59,6 +75,7 @@ and anything that adds new low-level dependencies.
     make               — on macOS build the local hosted set; on Linux build host plus freestanding
     make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
     make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
+    make freestanding-windows — build the native no-libc Windows PE subset under build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
@@ -74,6 +91,52 @@ Typical examples:
 
     make freestanding TARGET_ARCH=x86_64
     make freestanding TARGET_ARCH=aarch64
+
+## WINDOWS BOOTSTRAP
+
+Windows support is currently a contributor-environment path, not a native
+Windows userland target. Install the MSYS GCC package for hosted POSIX builds
+and the UCRT64 Clang/lld packages for freestanding Linux output:
+
+  pacman -Syuu
+  pacman -S --needed base-devel gcc mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld
+
+Then start the MSYS shell for the hosted build, change to the repository, and
+use Clang for the Linux freestanding path:
+
+  cd /c/Users/Mathias\ Schindler/newos
+  make host CC=gcc
+  make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+  make freestanding-windows WINDOWS_TARGET_CC=clang
+
+`make host` is useful as an early compiler and shell sanity check, but it still
+uses the hosted POSIX backend and therefore depends on the MSYS2 POSIX runtime.
+To launch those tools directly from PowerShell or `cmd.exe`, keep the MSYS
+runtime directory, such as `C:\msys64\usr\bin`, on `PATH`. Do not copy
+`msys-2.0.dll` beside the tools: doing so makes the runtime treat the output
+directory as its installation root, which breaks paths such as `.` and `/etc`.
+In PowerShell, dot-source the helper once per terminal session:
+
+  . .\activate-host-msys.ps1
+
+If local PowerShell execution policy blocks scripts, use the command runner:
+
+  .\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
+
+`make freestanding` remains the main target: it builds Linux ABI binaries using
+the raw syscall backend under `src/platform/linux/` and `src/arch/*/linux/`.
+`make freestanding-windows` is the early native Windows path. It links PE
+executables directly against Kernel32, Ws2_32, and Bcrypt where needed. The
+Windows subset now covers the small text/core tools, comparison/checksum/image,
+path/filesystem, regex/archive/awk/XML groups, plus `wtf`, `editor`, `mail`, and
+the `ncc` compiler executable. The backend has startup, argument parsing,
+stdout/stderr, heap allocation, file read/write/seek, path metadata, environment
+lookup, directory create/remove, truncate, flush support, current-directory,
+hostname, uname-style queries, basic Winsock, console raw mode, and native TLS
+client support. Certificate validation is not yet wired to the Windows trust
+store, so TLS tools are useful for bring-up testing but should not be treated as
+hardened HTTPS/IMAPS clients. The Windows-built `ncc` can target the existing
+Linux and macOS backends; emitting Windows PE executables remains future work.
 
 ## COMMON WORKFLOW
 
@@ -130,6 +193,7 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
 - On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
+- Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `make freestanding-windows` for the native no-CRT PE backend
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks
 

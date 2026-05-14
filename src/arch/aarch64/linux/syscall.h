@@ -59,6 +59,7 @@
 #define LINUX_SYS_SHUTDOWN 210
 #define LINUX_SYS_CLONE 220
 #define LINUX_SYS_EXECVE 221
+#define LINUX_SYS_MMAP 222
 #define LINUX_SYS_ACCEPT4 242
 #define LINUX_SYS_WAIT4 260
 #define LINUX_SYS_GETRANDOM 278
@@ -119,6 +120,19 @@ static inline long linux_syscall5(long number, long arg0, long arg1, long arg2, 
     register long x4 __asm__("x4") = arg4;
 
     __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8) : "memory");
+    return x0;
+}
+
+static inline long linux_syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = arg0;
+    register long x1 __asm__("x1") = arg1;
+    register long x2 __asm__("x2") = arg2;
+    register long x3 __asm__("x3") = arg3;
+    register long x4 __asm__("x4") = arg4;
+    register long x5 __asm__("x5") = arg5;
+
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8) : "memory");
     return x0;
 }
 

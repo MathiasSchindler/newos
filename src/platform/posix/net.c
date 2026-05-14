@@ -21,7 +21,13 @@
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <net/if.h>
+#if defined(__has_include)
+#if __has_include(<net/route.h>)
 #include <net/route.h>
+#endif
+#else
+#include <net/route.h>
+#endif
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdio.h>
@@ -52,6 +58,16 @@
 #define POSIX_ICMP_REPLY 0
 #define POSIX_ICMPV6_ECHO_REQUEST 128
 #define POSIX_ICMPV6_ECHO_REPLY 129
+
+#ifndef RTF_UP
+#define RTF_UP 0x1
+#endif
+#ifndef RTF_GATEWAY
+#define RTF_GATEWAY 0x2
+#endif
+#ifndef RTF_HOST
+#define RTF_HOST 0x4
+#endif
 
 typedef struct {
     unsigned char type;
@@ -1527,6 +1543,12 @@ int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_
     }
 
     if (want_up >= 0) {
+#ifndef SIOCSIFFLAGS
+        (void)want_up;
+        (void)close(sock);
+        errno = ENOSYS;
+        return -1;
+#else
 #ifdef IFF_UP
         if (want_up != 0) {
             ifr.ifr_flags = (short)(ifr.ifr_flags | IFF_UP);
@@ -1538,6 +1560,7 @@ int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_
             (void)close(sock);
             return -1;
         }
+#endif
     }
 
 #ifdef SIOCSIFMTU

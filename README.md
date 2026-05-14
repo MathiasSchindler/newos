@@ -18,7 +18,7 @@ The repository currently focuses on:
 
 ## Current status
 
-The host-side build and test workflow are active and in regular use on macOS and Linux.
+The host-side build and test workflow are active and in regular use on macOS and Linux. Windows is a new contributor environment for the project; the current practical route is MSYS2 while native Windows platform support is developed.
 
 The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. The hosted Linux workflow is active alongside macOS, Linux freestanding builds exercise the libc-free syscall path where available, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
 
@@ -35,6 +35,41 @@ The repository includes a structured shell-based test suite under [tests](tests)
 - grouped suites live in [tests/suites](tests/suites)
 
 On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path.
+
+On Windows, install MSYS2 with the MSYS GCC package for the hosted POSIX build
+and the UCRT64 Clang/lld toolchain for freestanding output. The first useful
+checks are:
+
+```
+make host CC=gcc
+make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+make freestanding-windows WINDOWS_TARGET_CC=clang
+```
+
+`make freestanding` still emits Linux ABI binaries through the raw Linux
+syscall backend. `make freestanding-windows` is the native no-CRT PE path. It
+now builds the small text/core tools, comparison/checksum/image/path/filesystem
+tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
+`editor`, `mail`, and the `ncc` compiler executable. `wtf` and `mail` use the
+native Winsock/TLS path; certificate validation is not wired to the Windows trust
+store yet, so treat network TLS on Windows as bring-up testing rather than a
+hardened HTTPS/IMAPS client. The Windows-built `ncc` can target the existing
+Linux and macOS backends; emitting Windows PE executables is still future work.
+To launch hosted MSYS tools directly from PowerShell or `cmd.exe`, keep the
+MSYS runtime on `PATH`, for example `C:\msys64\usr\bin`. Copying
+`msys-2.0.dll` beside the tools is not supported because it relocates the MSYS
+root away from the installed environment.
+In PowerShell, dot-source the helper once per terminal session:
+
+```
+. .\activate-host-msys.ps1
+```
+
+If local PowerShell execution policy blocks scripts, use the command runner:
+
+```
+.\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
+```
 
 ## Userland shell
 

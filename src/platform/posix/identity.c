@@ -41,7 +41,12 @@ int platform_set_hostname(const char *name) {
         return -1;
     }
 
+#if defined(__MSYS__)
+    errno = ENOSYS;
+    return -1;
+#else
     return sethostname(name, (int)rt_strlen(name));
+#endif
 }
 
 static void fill_group_name(char *buffer, size_t buffer_size, gid_t gid) {

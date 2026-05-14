@@ -15,6 +15,10 @@ COMMA := ,
 TARGET_ARCH ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_64,$(HOST_ARCH)),x86_64,aarch64),aarch64)
 TARGET_ARCH_DIR := src/arch/$(TARGET_ARCH)/linux
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -I$(TARGET_ARCH_DIR)
+WINDOWS_TARGET_ARCH ?= x86_64
+WINDOWS_TARGET_TRIPLE ?= x86_64-w64-windows-gnu
+WINDOWS_TARGET_CC ?= $(TARGET_CC)
+WINDOWS_TARGET_CC_TARGET_FLAG ?= --target=$(WINDOWS_TARGET_TRIPLE)
 HOST_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 HOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(COMMA)--gc-sections)
 FREESTANDING_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
@@ -26,10 +30,10 @@ FREESTANDING_LTO_FLAGS ?= $(if $(filter 1 yes true,$(FREESTANDING_LTO)),$(shell 
 FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS) $(FREESTANDING_OPT_CFLAGS) $(FREESTANDING_LTO_FLAGS)
 FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
-TARGET_LINKER_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -fuse-ld=lld -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
+TARGET_LINKER_FLAG ?= $(shell printf 'void _start(void){}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -fuse-ld=lld -Wl$(COMMA)-e$(COMMA)_start -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
 FREESTANDING_COMPACT_LDFLAGS ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -static-pie -Wl$(COMMA)-z$(COMMA)noseparate-code -x c - -o /tmp/newos-compact-link-check >/dev/null 2>&1 && echo -Wl$(COMMA)-z$(COMMA)noseparate-code; rm -f /tmp/newos-compact-link-check)
 FREESTANDING_BUILD_ID_LDFLAGS ?= $(shell printf 'void _start(void){}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -static-pie -Wl$(COMMA)--build-id=none -Wl$(COMMA)-e$(COMMA)_start -x c - -o /tmp/newos-build-id-check >/dev/null 2>&1 && echo -Wl$(COMMA)--build-id=none; rm -f /tmp/newos-build-id-check)
-TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
+TARGET_BUILTINS_LIB ?= $(if $(filter MSYS_NT% MINGW% CYGWIN%,$(HOST_OS)),,$(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true))
 FREESTANDING_LINK_MODE_LDFLAGS ?= -static-pie
 FREESTANDING_PIE_LDFLAGS ?= $(FREESTANDING_LINK_MODE_LDFLAGS)
 FREESTANDING_GC_LDFLAGS ?= -Wl,--gc-sections
@@ -49,6 +53,7 @@ HOST_ARCH_NAME := $(if $(filter arm64 aarch64,$(HOST_ARCH)),aarch64,$(HOST_ARCH)
 DEFAULT_HOST_BUILD_DIR := $(BUILD_ROOT)/host-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
 TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
+WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_ARCH)
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 HOST_SIZE_FLAGS ?= $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(HOST_SECTION_CFLAGS) $(HOST_GC_LDFLAGS))
 HOST_CFLAGS ?= $(CFLAGS) $(HOST_SIZE_FLAGS)
@@ -70,6 +75,18 @@ DEFAULT_ALL_TARGETS += freestanding
 endif
 TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown chgrp mknod uname hostname init getty login dmesg logger stty touch gzip gunzip bzip2 bunzip2 xz unxz tar md5sum sha256sum sha512sum sleep env kill pgrep pkill shutdown wc head tail ps top sort cut tr grep ripgrep rg ping ping6 ip id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar readelf objdump strip printf which readlink stat du df netcat dhcp nslookup dig ssh sshd sql ncc man test [ true false expr uniq seq mktemp yes less more watch wget wtf mail editor patch make tac nl paste join comm split csplit shuf fold fmt tsort sync truncate timeout time expand unexpand printenv ed bc pstree free uptime who users groups column rev httpd service imginfo imgcheck imgmeta c2pa xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
 INCEPTION_TOOLS ?= $(TOOLS)
+WINDOWS_FREESTANDING_TOOLS ?= true false echo printf dirname basename cat head tail nl rev fold uniq wc cut tr expand unexpand pwd hostname uname wtf imgmeta imginfo imgcheck c2pa bc yes expr seq cmp comm join paste tac sleep file readlink realpath strings hexdump od md5sum sha256sum sha512sum test which printenv tee mkdir rmdir truncate sync [ clear column diff du fmt date dd df free logger ls whoami id groups uptime grep csplit ed awk bunzip2 bzip2 gunzip xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo editor mail ncc
+WINDOWS_FREESTANDING_BIGNUM_TOOLS := bc expr seq
+WINDOWS_FREESTANDING_HASH_TOOLS := md5sum sha256sum sha512sum
+WINDOWS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
+WINDOWS_FREESTANDING_REGEX_TOOLS := grep csplit ed
+WINDOWS_FREESTANDING_ARCHIVE_TOOLS := bunzip2 bzip2 gunzip
+WINDOWS_FREESTANDING_AWK_TOOLS := awk
+WINDOWS_FREESTANDING_XML_TOOLS := xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
+WINDOWS_FREESTANDING_TUI_TOOLS := editor
+WINDOWS_FREESTANDING_MAIL_TOOLS := mail
+WINDOWS_FREESTANDING_NCC_TOOLS := ncc
+WINDOWS_FREESTANDING_GENERIC_TOOLS := $(filter-out wtf $(WINDOWS_FREESTANDING_IMAGE_TOOLS) $(WINDOWS_FREESTANDING_BIGNUM_TOOLS) $(WINDOWS_FREESTANDING_HASH_TOOLS) $(WINDOWS_FREESTANDING_REGEX_TOOLS) $(WINDOWS_FREESTANDING_ARCHIVE_TOOLS) $(WINDOWS_FREESTANDING_AWK_TOOLS) $(WINDOWS_FREESTANDING_XML_TOOLS) $(WINDOWS_FREESTANDING_TUI_TOOLS) $(WINDOWS_FREESTANDING_MAIL_TOOLS) $(WINDOWS_FREESTANDING_NCC_TOOLS),$(WINDOWS_FREESTANDING_TOOLS))
 INCEPTION_BUILD_DIR ?= $(BUILD_ROOT)/inception-freestanding-$(TARGET_ARCH)
 INCEPTION_OBJECT_BUILD_DIR ?= $(INCEPTION_BUILD_DIR)/.obj
 FREESTANDING_OBJECT_BUILD_DIR ?= $(TARGET_BUILD_DIR)/.obj
@@ -103,6 +120,21 @@ SSH_CRYPTO_SOURCES := \
 SSH_CRYPTO_SOURCES := $(sort $(SSH_CRYPTO_SOURCES))
 SHELL_SOURCES := $(shell grep -oE '"src/tools/sh/shell_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
+WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/tool_cli.c src/shared/tool_io.c src/shared/tool_file.c src/shared/tool_path.c src/platform/windows/core.c
+WINDOWS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/windows/tls.c
+WINDOWS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c
+WINDOWS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
+WINDOWS_FREESTANDING_REGEX_SOURCES := src/shared/tool_regex.c
+WINDOWS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/compression/crc32.c
+WINDOWS_FREESTANDING_AWK_SOURCES := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c $(WINDOWS_FREESTANDING_REGEX_SOURCES)
+WINDOWS_FREESTANDING_XML_SOURCES := src/shared/xml.c src/shared/xml_stream.c src/shared/xml_dtd.c src/shared/tool_xml.c $(WINDOWS_FREESTANDING_REGEX_SOURCES)
+WINDOWS_FREESTANDING_TUI_SOURCES := src/shared/tui.c
+WINDOWS_FREESTANDING_EDITOR_SOURCES := src/tools/editor/highlight.c $(WINDOWS_FREESTANDING_TUI_SOURCES)
+WINDOWS_FREESTANDING_MAIL_SOURCES := src/tools/mail/imap.c src/tools/mail/message.c src/tools/mail/mime.c $(WINDOWS_FREESTANDING_TUI_SOURCES) $(WINDOWS_FREESTANDING_TLS_SOURCES)
+WINDOWS_FREESTANDING_NCC_SOURCES := $(COMPILER_SOURCES) $(SHARED_SOURCES)
+WINDOWS_FREESTANDING_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -Isrc/shared -Isrc/platform/windows
+WINDOWS_FREESTANDING_LDFLAGS ?= -nostdlib -fuse-ld=lld -Wl$(COMMA)-e$(COMMA)mainCRTStartup -Wl$(COMMA)-s -Wl$(COMMA)--gc-sections -Wl$(COMMA)--stack$(COMMA)8388608 -lkernel32 -lws2_32
+WINDOWS_FREESTANDING_TLS_LDFLAGS ?= $(WINDOWS_FREESTANDING_LDFLAGS) -lbcrypt
 # Keep this shell extraction comma-free for compatibility with older GNU make on macOS.
 TARGET_PLATFORM_MANIFEST_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(filter src/platform/linux/% $(TARGET_ARCH_DIR)/%,$(TARGET_PLATFORM_MANIFEST_SOURCES))
@@ -147,7 +179,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding selfhost inception test test-phase1 test-smoke test-freestanding test-inception benchmark clean
+.PHONY: all host freestanding freestanding-windows selfhost inception test test-phase1 test-smoke test-freestanding test-inception benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -211,7 +243,9 @@ selfhost: $(DEFAULT_HOST_BUILD_DIR)/ncc
 inception: $(TARGET_BUILD_DIR)/ncc
 	+@$(MAKE) --no-print-directory -j$(INCEPTION_JOBS) TARGET_CC="$(abspath $(TARGET_BUILD_DIR)/ncc)" TARGET_CC_TARGET_FLAG=--target=linux-x86_64 TARGET_BUILD_DIR="$(INCEPTION_BUILD_DIR)" FREESTANDING_OPT_CFLAGS=-Os FREESTANDING_SECTION_CFLAGS= FREESTANDING_PIE_CFLAGS= TARGET_LINKER_FLAG= FREESTANDING_COMPACT_LDFLAGS= FREESTANDING_BUILD_ID_LDFLAGS= TARGET_BUILTINS_LIB= TARGET_LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-s" $(INCEPTION_TARGETS)
 
-$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(FREESTANDING_OBJECT_BUILD_DIR) $(INCEPTION_OBJECT_BUILD_DIR)):
+freestanding-windows: $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_TOOLS)))
+
+$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(WINDOWS_TARGET_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(FREESTANDING_OBJECT_BUILD_DIR) $(INCEPTION_OBJECT_BUILD_DIR)):
 	mkdir -p $@
 
 $(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
@@ -231,6 +265,42 @@ $(BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src
 
 $(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/tools/ssh/ssh_transport.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -fsyntax-only $(SSH_CLIENT_SOURCES) && : > $@
+
+$(WINDOWS_TARGET_BUILD_DIR)/wtf.exe: src/tools/wtf.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_TLS_SOURCES) src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_TLS_SOURCES) $(WINDOWS_FREESTANDING_TLS_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_IMAGE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_IMAGE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/image/image.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_IMAGE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_BIGNUM_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c src/shared/bignum.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) -Wno-pedantic $< src/shared/bignum.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_HASH_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_HASH_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/hash_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_HASH_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_REGEX_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_REGEX_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_REGEX_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_ARCHIVE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/archive_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_AWK_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_AWK_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/tools/awk/awk_impl.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_AWK_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_XML_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_XML_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/xml.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_XML_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_TUI_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_EDITOR_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/tui.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_EDITOR_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_MAIL_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_MAIL_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/tui.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_MAIL_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_TLS_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_NCC_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_NCC_SOURCES) src/compiler/source_manifest.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) -Isrc/compiler $< $(WINDOWS_FREESTANDING_NCC_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_GENERIC_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
 
 $(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/tools/sh/shell_shared.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(SHELL_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@

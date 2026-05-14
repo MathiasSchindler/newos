@@ -15,6 +15,11 @@
 #include "common.h"
 #include "signal_util.h"
 
+#include <limits.h>
+#ifndef NAME_MAX
+#define NAME_MAX 255
+#endif
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -115,6 +120,12 @@ static void posix_close_child_fds(void) {
 }
 
 static int posix_clear_supplementary_groups(const char *username, gid_t target_gid) {
+#if defined(__MSYS__)
+    (void)username;
+    (void)target_gid;
+    errno = ENOSYS;
+    return -1;
+#else
     if (username != NULL && username[0] != '\0') {
         return initgroups(username, target_gid);
     }
@@ -123,6 +134,7 @@ static int posix_clear_supplementary_groups(const char *username, gid_t target_g
 #else
     errno = ENOSYS;
     return -1;
+#endif
 #endif
 }
 

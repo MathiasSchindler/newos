@@ -237,6 +237,7 @@ typedef struct {
 
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
+void *platform_allocate_pages(size_t size);
 int platform_open_read(const char *path);
 int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out);
 int platform_open_write(const char *path, unsigned int mode);

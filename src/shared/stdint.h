@@ -1,10 +1,6 @@
 #ifndef NEWOS_STDINT_H
 #define NEWOS_STDINT_H
 
-#if defined(__STDC_HOSTED__) && __STDC_HOSTED__ && (defined(__GNUC__) || defined(__clang__))
-#include_next <stdint.h>
-#else
-
 #include <limits.h>
 
 #ifndef _INT8_T
@@ -49,12 +45,20 @@ typedef unsigned long long uint64_t;
 
 #ifndef _INTPTR_T
 #define _INTPTR_T
+#if defined(__INTPTR_TYPE__)
+typedef __INTPTR_TYPE__ intptr_t;
+#else
 typedef long intptr_t;
+#endif
 #endif
 
 #ifndef _UINTPTR_T
 #define _UINTPTR_T
+#if defined(__UINTPTR_TYPE__)
+typedef __UINTPTR_TYPE__ uintptr_t;
+#else
 typedef unsigned long uintptr_t;
+#endif
 #endif
 
 #ifndef _INTMAX_T
@@ -83,14 +87,18 @@ typedef unsigned long long uintmax_t;
 #define INT64_MAX LLONG_MAX
 #define UINT64_MAX ULLONG_MAX
 
+#if defined(__INTPTR_WIDTH__) && __INTPTR_WIDTH__ == 64
+#define INTPTR_MIN INT64_MIN
+#define INTPTR_MAX INT64_MAX
+#define UINTPTR_MAX UINT64_MAX
+#else
 #define INTPTR_MIN LONG_MIN
 #define INTPTR_MAX LONG_MAX
 #define UINTPTR_MAX ULONG_MAX
+#endif
 
 #define INTMAX_MIN LLONG_MIN
 #define INTMAX_MAX LLONG_MAX
 #define UINTMAX_MAX ULLONG_MAX
-
-#endif
 
 #endif

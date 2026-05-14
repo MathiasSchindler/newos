@@ -20,6 +20,8 @@ typedef struct {
     char                name[32];
     char                clang_triple[32];
     char                arch_include_dir[64];
+    char                platform_include_dir[64];
+    char                platform_common_include_dir[64];
     char                global_symbol_prefix[4];
     CompilerObjectFormat object_format;
     unsigned int        register_arg_limit;
@@ -32,6 +34,7 @@ CompilerTarget compiler_target_default(void);
 int compiler_target_parse(const char *text, CompilerTarget *target_out);
 const char *compiler_target_name(CompilerTarget target);
 const CompilerTargetInfo *compiler_target_get_info(CompilerTarget target);
+void compiler_target_write_names(int fd);
 int compiler_target_is_aarch64(CompilerTarget target);
 int compiler_target_is_darwin(CompilerTarget target);
 int compiler_target_apply_preprocessor_defaults(CompilerPreprocessor *preprocessor, CompilerTarget target, int freestanding);

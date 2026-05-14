@@ -77,9 +77,13 @@ static void fill_load_average(char *buffer, size_t buffer_size) {
 
     {
         double values[3];
+#if !defined(__MSYS__)
         if (getloadavg(values, 3) == 3) {
             (void)snprintf(buffer, buffer_size, "%.2f %.2f %.2f", values[0], values[1], values[2]);
         }
+#else
+        (void)values;
+#endif
     }
 }
 
