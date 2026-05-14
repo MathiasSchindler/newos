@@ -66,6 +66,25 @@ and does not depend on libc.
 - `stack_guard.c` — stack-canary guard initialization and failure handling for
   freestanding binaries when compiler instrumentation is enabled
 
+### Freestanding-ish macOS layer (`src/platform/macos`)
+
+Used by `make freestanding-macos`. This layer is the native Darwin arm64
+approximation of the freestanding idea: shared/tool code remains universal and
+the platform boundary owns the OS details, but the final executable still links
+`libSystem` because modern macOS does not run static no-libSystem user
+executables in the same way Linux runs static syscall-only binaries.
+
+- `freestanding.c` — Darwin-backed read, write, close, open, seek,
+  environment, directory, process id, and page allocation primitives for the
+  current small tool subset
+- `src/arch/aarch64/macos/syscall.h` — inline Darwin syscall helpers for the
+  platform adapter
+
+The supported set has grown to small argument-only tools, stdin/file text
+filters, environment printing, current-directory printing, simple directory
+creation/removal, and `tee`. The next steps are real path metadata, symlink
+handling, time formatting, terminal mode, and process primitives.
+
 ### Architecture glue (`src/arch/*/linux`)
 
 - `crt0.S` — minimal process startup for the freestanding binaries
@@ -100,7 +119,7 @@ against the Windows trust store.
 ## LIMITATIONS
 
 - Hosted development assumes a POSIX environment; the Linux freestanding target currently focuses on AArch64 and x86-64
-- On macOS, the project currently favors local hosted binaries over a separate Darwin syscall-only userland target
+- On macOS, the project currently favors local hosted binaries for `make`; `make freestanding` on local aarch64 routes to the early native Darwin approximation with an unavoidable `libSystem` launch dependency
 - Native Windows freestanding support is early and intentionally narrower than the POSIX and Linux backends; MSYS2 remains the current Windows hosted bootstrap environment
 - The abstraction is intentionally small; there is no threading or async event layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment

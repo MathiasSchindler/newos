@@ -58,6 +58,29 @@ runtime or the Microsoft C runtime.
 - currently builds the small tool subset `true`, `false`, `echo`, `printf`, `dirname`, `basename`, `cat`, `head`, `tail`, `nl`, `rev`, `fold`, `uniq`, `wc`, `cut`, `tr`, `expand`, `unexpand`, `pwd`, `hostname`, and `uname`, plus comparison, checksum, image, path, and basic filesystem tools including `cmp`, `comm`, `join`, `paste`, `tac`, `sleep`, `file`, `readlink`, `realpath`, `strings`, `hexdump`, `od`, `md5sum`, `sha256sum`, `sha512sum`, `test`, `which`, `printenv`, `tee`, `mkdir`, `rmdir`, `truncate`, `sync`, `imgmeta`, `imginfo`, `imgcheck`, `bc`, `expr`, and `seq`, plus native Winsock/TLS-backed `wtf`
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
+## MACOS FREESTANDING-ISH BUILD
+
+The macOS freestanding-ish build is the first native Darwin arm64 step. It keeps
+tool and shared runtime code on the same universal path as the other targets,
+but uses the system-provided Mach-O entry path and links only `libSystem`, which
+modern macOS requires for runnable executables.
+
+- built with `make freestanding` on local macOS/aarch64, or explicitly with
+  `make freestanding-macos`
+- writes binaries to `build/freestanding-macos-aarch64/`
+- currently builds `true`, `false`, `echo`, `printf`, `basename`, `dirname`,
+  `yes`, `rev`, `seq`, `expr`, `nl`, `tac`, `expand`, `unexpand`, `fold`,
+  `wc`, `head`, `cat`, `cut`, `tr`, `uniq`, `cmp`, `comm`, `join`, `paste`,
+  `printenv`, `pwd`, `mkdir`, `rmdir`, and `tee`
+- uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
+  behavior
+- compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so
+  the project code does not call the C standard library even though the binary
+  has the unavoidable macOS system ABI dependency
+- is intentionally smaller than the Linux freestanding target until full path
+  metadata, process, terminal, time, and network platform primitives are
+  implemented
+
 ## SELF-HOSTED BUILD
 
 The self-hosted build reuses the in-tree `ncc` compiler for the hosted tool set.
@@ -74,7 +97,8 @@ and anything that adds new low-level dependencies.
 
     make               — on macOS build the local hosted set; on Linux build host plus freestanding
     make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
-    make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on macOS default to the local hosted build
+    make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the freestanding-ish Darwin subset
+    make freestanding-macos — build the early native macOS arm64 freestanding-ish subset under build/freestanding-macos-aarch64/
     make freestanding-windows — build the native no-libc Windows PE subset under build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
@@ -192,7 +216,7 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 ## LIMITATIONS
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
-- On macOS, the default build behavior favors local runnable binaries over a separate fully freestanding Darwin userland target
+- On macOS, the default `make` behavior still favors local hosted binaries; `make freestanding` on local aarch64 routes to the early Darwin approximation, which still links the required system ABI library
 - Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `make freestanding-windows` for the native no-CRT PE backend
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks

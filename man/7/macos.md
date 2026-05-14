@@ -22,11 +22,13 @@ machine.
 - `make` builds the local hosted tool set by default
 - `make host` builds the same hosted local binaries under
   `build/host-macos-aarch64/` with compatibility symlinks in `build/`
-- `make freestanding` currently resolves to the local hosted build on macOS by
-  default rather than producing a separate libc-free target tree
+- `make freestanding` on local macOS/aarch64 builds the freestanding-ish Darwin
+  subset under `build/freestanding-macos-aarch64/`
+- `make freestanding-macos` builds that same target explicitly
 
 This policy exists because the repository is actively developed on macOS and
-contributors usually want runnable local binaries first.
+contributors usually want runnable local binaries first, while still having a
+native Darwin bring-up path for the freestanding platform boundary.
 
 ## LIMITATIONS
 
@@ -34,9 +36,11 @@ The project does not currently treat macOS as a true freestanding userland execu
 
 - normal macOS executables are expected to follow Mach-O conventions and use the system runtime
 - fully static, libc-free user executables are not the primary supported model on modern macOS/AArch64
-- the raw-syscall freestanding environment in this repository is therefore a Linux target, not a Darwin one
+- the Darwin target is freestanding-ish: project shared/tool code avoids libc
+  calls, but the final executable still links `libSystem`
 
-When the manuals say "freestanding" without further qualification, they should usually be read as referring to the Linux syscall-only build.
+When the manuals say "syscall-only freestanding" without further qualification,
+they should usually be read as referring to the Linux build.
 
 ## TECHNICAL DECISIONS
 
