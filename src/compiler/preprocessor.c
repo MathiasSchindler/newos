@@ -45,30 +45,27 @@ static int append_char(CompilerSource *source_out, size_t *offset, char ch) {
 }
 
 static int append_text(CompilerSource *source_out, size_t *offset, const char *text) {
-    size_t i = 0;
+    size_t length = text_length(text);
 
-    while (text[i] != '\0') {
-        if (append_char(source_out, offset, text[i]) != 0) {
-            return -1;
-        }
-        i += 1;
+    if (*offset + length >= sizeof(source_out->data)) {
+        return -1;
     }
 
+    memcpy(source_out->data + *offset, text, length);
+    *offset += length;
+    source_out->data[*offset] = '\0';
     return 0;
 }
 
 static int append_text_to_buffer(char *buffer, size_t buffer_size, size_t *offset, const char *text) {
-    size_t i = 0;
+    size_t length = text_length(text);
 
-    while (text[i] != '\0') {
-        if (*offset + 1U >= buffer_size) {
-            return -1;
-        }
-        buffer[*offset] = text[i];
-        *offset += 1U;
-        i += 1;
+    if (*offset + length >= buffer_size) {
+        return -1;
     }
 
+    memcpy(buffer + *offset, text, length);
+    *offset += length;
     buffer[*offset] = '\0';
     return 0;
 }
@@ -402,6 +399,21 @@ static int try_expand_builtin_macro(CompilerPreprocessor *preprocessor,
     return 1;
 }
 
+static int could_be_builtin_macro(const char *input, size_t index) {
+    char first = input[index];
+
+    if (first == 'W') {
+        return (input[index + 1U] == 'I' || input[index + 1U] == 'E' || input[index + 1U] == 'T');
+    }
+    if (first == 'S') {
+        return input[index + 1U] == '_';
+    }
+    if (first == 'F') {
+        return input[index + 1U] == 'D' && input[index + 2U] == '_';
+    }
+    return 0;
+}
+
 void compiler_preprocessor_init(CompilerPreprocessor *preprocessor) {
     rt_memset(preprocessor, 0, sizeof(*preprocessor));
 }
@@ -642,7 +654,9 @@ static int expand_text(
             char name[COMPILER_MACRO_NAME_CAPACITY];
             size_t length = 0;
             int index;
-            int builtin_result = try_expand_builtin_macro(preprocessor, input, &i, source_out, offset, depth, in_block_comment);
+            int builtin_result = could_be_builtin_macro(input, i)
+                ? try_expand_builtin_macro(preprocessor, input, &i, source_out, offset, depth, in_block_comment)
+                : 0;
 
             if (builtin_result < 0) {
                 return -1;

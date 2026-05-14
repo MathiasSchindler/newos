@@ -886,12 +886,44 @@ static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buff
     }
 }
 
-static int emit_scale_current_value(BackendState *state, int scale) {
+static int scale_shift_amount(int scale) {
+    if (scale == 2) return 1;
+    if (scale == 4) return 2;
+    if (scale == 8) return 3;
+    return 0;
+}
+
+static int emit_shift_register_left(BackendState *state, const char *reg, int shift) {
     char line[64];
     char digits[32];
 
+    rt_unsigned_to_string((unsigned long long)shift, digits, sizeof(digits));
+    if (backend_is_aarch64(state)) {
+        rt_copy_string(line, sizeof(line), "lsl ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", #");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+    } else {
+        rt_copy_string(line, sizeof(line), "salq $");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+    }
+    return emit_instruction(state, line);
+}
+
+static int emit_scale_current_value(BackendState *state, int scale) {
+    char line[64];
+    char digits[32];
+    int shift = scale_shift_amount(scale);
+
     if (scale <= 1) {
         return 0;
+    }
+    if (shift > 0) {
+        return emit_shift_register_left(state, backend_is_aarch64(state) ? "x0" : "%rax", shift);
     }
     rt_unsigned_to_string((unsigned long long)scale, digits, sizeof(digits));
     if (backend_is_aarch64(state)) {
@@ -909,30 +941,47 @@ static int emit_scale_current_value(BackendState *state, int scale) {
 static int emit_scale_top_of_stack(BackendState *state, int scale) {
     char line[64];
     char digits[32];
+    int shift = scale_shift_amount(scale);
 
     if (scale <= 1) {
         return 0;
     }
     if (backend_is_aarch64(state)) {
         if (emit_instruction(state, "ldr x9, [sp]") != 0 ||
-            emit_instruction(state, "add sp, sp, #16") != 0 ||
-            emit_load_immediate_register(state, "x10", scale) != 0 ||
-            emit_instruction(state, "mul x9, x9, x10") != 0 ||
-            emit_instruction(state, "sub sp, sp, #16") != 0 ||
+            emit_instruction(state, "add sp, sp, #16") != 0) {
+            return -1;
+        }
+        if (shift > 0) {
+            if (emit_shift_register_left(state, "x9", shift) != 0) {
+                return -1;
+            }
+        } else if (emit_load_immediate_register(state, "x10", scale) != 0 ||
+                   emit_instruction(state, "mul x9, x9, x10") != 0) {
+            return -1;
+        }
+        if (emit_instruction(state, "sub sp, sp, #16") != 0 ||
             emit_instruction(state, "str x9, [sp]") != 0) {
             return -1;
         }
         return 0;
     }
-    rt_unsigned_to_string((unsigned long long)scale, digits, sizeof(digits));
     if (emit_instruction(state, "popq %rcx") != 0) {
         return -1;
     }
-    rt_copy_string(line, sizeof(line), "imulq $");
-    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
-    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rcx, %rcx");
-    if (emit_instruction(state, line) != 0 ||
-        emit_instruction(state, "pushq %rcx") != 0) {
+    if (shift > 0) {
+        if (emit_shift_register_left(state, "%rcx", shift) != 0) {
+            return -1;
+        }
+    } else {
+        rt_unsigned_to_string((unsigned long long)scale, digits, sizeof(digits));
+        rt_copy_string(line, sizeof(line), "imulq $");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rcx, %rcx");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    if (emit_instruction(state, "pushq %rcx") != 0) {
         return -1;
     }
     return 0;

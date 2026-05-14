@@ -75,6 +75,69 @@ assert_file_contains "$WORK_DIR/flow_linux.s" 'addq %rcx, %rax' "compiler backen
 assert_file_contains "$WORK_DIR/flow_macos.s" 'b\.eq \.L[a-zA-Z0-9_]*_else[0-9][0-9]*' "compiler macOS AArch64 backend missing conditional branch"
 assert_file_contains "$WORK_DIR/flow_macos.s" 'add x0, x1, x2' "compiler macOS AArch64 backend missing arithmetic lowering"
 
+cat > "$WORK_DIR/pointer_scale.c" <<'EOF'
+long left_index(long *p) {
+    return *(p + 2);
+}
+
+long right_index(long *p) {
+    return *(2 + p);
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/pointer_scale.c" -o "$WORK_DIR/pointer_scale_linux.s"
+assert_file_contains "$WORK_DIR/pointer_scale_linux.s" 'salq \$3, %rax' "compiler x86_64 backend should scale pointer offsets with a shift"
+assert_file_contains "$WORK_DIR/pointer_scale_linux.s" 'salq \$3, %rcx' "compiler x86_64 backend should scale stacked pointer offsets with a shift"
+
+"$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/pointer_scale.c" -o "$WORK_DIR/pointer_scale_macos.s"
+assert_file_contains "$WORK_DIR/pointer_scale_macos.s" 'lsl x0, x0, #3' "compiler AArch64 backend should scale pointer offsets with a shift"
+assert_file_contains "$WORK_DIR/pointer_scale_macos.s" 'lsl x9, x9, #3' "compiler AArch64 backend should scale stacked pointer offsets with a shift"
+
+cat > "$WORK_DIR/same_value_compare.c" <<'EOF'
+int main(void) {
+    int value = 7;
+    if (value != value) {
+        return 1;
+    }
+    if (value <= value) {
+        return 0;
+    }
+    return 2;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir --target linux-x86_64 "$WORK_DIR/same_value_compare.c" > "$WORK_DIR/same_value_compare_linux.ir"
+assert_file_contains "$WORK_DIR/same_value_compare_linux.ir" '^ret 0$' "compiler IR should fold same-value integer comparisons on Linux target"
+"$ROOT_DIR/build/ncc" --dump-ir --target macos-aarch64 "$WORK_DIR/same_value_compare.c" > "$WORK_DIR/same_value_compare_macos.ir"
+assert_file_contains "$WORK_DIR/same_value_compare_macos.ir" '^ret 0$' "compiler IR should fold same-value integer comparisons on macOS target"
+
+cat > "$WORK_DIR/same_arm_conditional.c" <<'EOF'
+int main(int argc, char **argv) {
+    (void)argv;
+    return argc ? 7 : 7;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir --target linux-x86_64 "$WORK_DIR/same_arm_conditional.c" > "$WORK_DIR/same_arm_conditional_linux.ir"
+assert_file_contains "$WORK_DIR/same_arm_conditional_linux.ir" '^ret 7$' "compiler IR should fold same-arm conditionals on Linux target"
+"$ROOT_DIR/build/ncc" --dump-ir --target macos-aarch64 "$WORK_DIR/same_arm_conditional.c" > "$WORK_DIR/same_arm_conditional_macos.ir"
+assert_file_contains "$WORK_DIR/same_arm_conditional_macos.ir" '^ret 7$' "compiler IR should fold same-arm conditionals on macOS target"
+
+cat > "$WORK_DIR/side_effect_conditional.c" <<'EOF'
+static int bump(int *slot) {
+    *slot += 1;
+    return *slot;
+}
+
+int main(void) {
+    int value = 0;
+    return bump(&value) ? 7 : 7;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" --dump-ir --target macos-aarch64 "$WORK_DIR/side_effect_conditional.c" > "$WORK_DIR/side_effect_conditional.ir"
+assert_file_contains "$WORK_DIR/side_effect_conditional.ir" 'bump(&value) ? 7 : 7' "compiler IR must preserve side-effecting same-arm conditional predicates"
+
 "$ROOT_DIR/build/ncc" -c --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/flow_macos.o" > "$WORK_DIR/flow_macos_hex.out"
 assert_file_contains "$WORK_DIR/flow_macos_hex.out" 'cf fa ed fe' "compiler macOS object writer did not handle control-flow object emission"

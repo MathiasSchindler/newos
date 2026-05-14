@@ -75,6 +75,8 @@ static const char *ir_find_separator_outside_quotes(const char *text, const char
 static const char *ir_trim_trailing_spaces(const char *start, const char *end);
 static int ir_strip_outer_parens(const char *expr, char *buffer, size_t buffer_size);
 static int ir_find_top_level_operator(const char *expr, const char *op, const char **position_out);
+static int ir_find_top_level_conditional(const char *expr, const char **question_out, const char **colon_out);
+static int ir_try_simplify_conditional_expr(const char *expr, char *buffer, size_t buffer_size);
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size);
 static int ir_normalize_expr_text(const char *expr, char *buffer, size_t buffer_size);
 static int ir_expr_is_trivial_value(const char *expr);
@@ -153,6 +155,8 @@ static int ir_operator_is_embedded(const char *expr, size_t index, const char *o
             (op[0] == '&' && (prev == '&' || next == '&' || next == '=')) ||
             ((op[0] == '+' || op[0] == '-') && (prev == op[0] || next == op[0] || next == '=')) ||
             (op[0] == '-' && next == '>') ||
+            (op[0] == '<' && (next == '<' || next == '=')) ||
+            (op[0] == '>' && (next == '>' || next == '=')) ||
             ((op[0] == '*' || op[0] == '/' || op[0] == '%' || op[0] == '^') && next == '=')) {
             return 1;
         }
@@ -1097,8 +1101,124 @@ static int ir_find_top_level_operator(const char *expr, const char *op, const ch
     return 0;
 }
 
+static int ir_find_top_level_conditional(const char *expr, const char **question_out, const char **colon_out) {
+    size_t i = 0;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+    int conditional_depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+    const char *question = 0;
+
+    while (expr[i] != '\0') {
+        if ((in_string || in_char) && expr[i] == '\\' && expr[i + 1] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && expr[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && expr[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (in_string || in_char) {
+            i += 1U;
+            continue;
+        }
+
+        if (expr[i] == '(') {
+            paren_depth += 1;
+        } else if (expr[i] == ')') {
+            if (paren_depth > 0) {
+                paren_depth -= 1;
+            }
+        } else if (expr[i] == '[') {
+            bracket_depth += 1;
+        } else if (expr[i] == ']') {
+            if (bracket_depth > 0) {
+                bracket_depth -= 1;
+            }
+        } else if (expr[i] == '{') {
+            brace_depth += 1;
+        } else if (expr[i] == '}') {
+            if (brace_depth > 0) {
+                brace_depth -= 1;
+            }
+        } else if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+            if (expr[i] == '?') {
+                if (question == 0) {
+                    question = expr + i;
+                } else {
+                    conditional_depth += 1;
+                }
+            } else if (expr[i] == ':' && question != 0) {
+                if (conditional_depth == 0) {
+                    *question_out = question;
+                    *colon_out = expr + i;
+                    return 0;
+                }
+                conditional_depth -= 1;
+            }
+        }
+        i += 1U;
+    }
+
+    return -1;
+}
+
+static int ir_try_simplify_conditional_expr(const char *expr, char *buffer, size_t buffer_size) {
+    const char *question = 0;
+    const char *colon = 0;
+    const char *condition_start;
+    const char *condition_end;
+    const char *true_start;
+    const char *true_end;
+    const char *false_start;
+    const char *false_end;
+    char condition[COMPILER_IR_LINE_CAPACITY];
+    char true_expr[COMPILER_IR_LINE_CAPACITY];
+    char false_expr[COMPILER_IR_LINE_CAPACITY];
+    char normalized_true[COMPILER_IR_LINE_CAPACITY];
+    char normalized_false[COMPILER_IR_LINE_CAPACITY];
+
+    if (ir_find_top_level_conditional(expr, &question, &colon) != 0) {
+        return 0;
+    }
+
+    condition_start = ir_skip_spaces(expr);
+    condition_end = ir_trim_trailing_spaces(condition_start, question);
+    true_start = ir_skip_spaces(question + 1);
+    true_end = ir_trim_trailing_spaces(true_start, colon);
+    false_start = ir_skip_spaces(colon + 1);
+    false_end = ir_trim_trailing_spaces(false_start, false_start + rt_strlen(false_start));
+
+    if (ir_copy_identifier(condition, sizeof(condition), condition_start, condition_end) != 0 ||
+        ir_copy_identifier(true_expr, sizeof(true_expr), true_start, true_end) != 0 ||
+        ir_copy_identifier(false_expr, sizeof(false_expr), false_start, false_end) != 0) {
+        return 0;
+    }
+    if (ir_expr_has_side_effect_risk(condition)) {
+        return 0;
+    }
+    if (ir_normalize_expr_text(true_expr, normalized_true, sizeof(normalized_true)) != 0 ||
+        ir_normalize_expr_text(false_expr, normalized_false, sizeof(normalized_false)) != 0) {
+        return 0;
+    }
+    if (ir_text_equals(normalized_true, normalized_false) && ir_expr_is_trivial_value(normalized_true)) {
+        rt_copy_string(buffer, buffer_size, normalized_true);
+        return 1;
+    }
+
+    return 0;
+}
+
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size) {
-    const char ops[][3] = {"&&", "||", "&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
+    const char ops[][3] = {"&&", "||", "==", "!=", "<=", ">=", "<", ">", "&", "|", "^", "<<", ">>", "+", "-", "*", "/"};
     size_t op_index;
 
     for (op_index = 0; op_index < sizeof(ops) / sizeof(ops[0]); ++op_index) {
@@ -1182,6 +1302,14 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
             }
             if (ir_text_equals(op, "&") || ir_text_equals(op, "|")) {
                 rt_copy_string(buffer, buffer_size, lhs);
+                return 1;
+            }
+            if (ir_text_equals(op, "==") || ir_text_equals(op, "<=") || ir_text_equals(op, ">=")) {
+                rt_copy_string(buffer, buffer_size, "1");
+                return 1;
+            }
+            if (ir_text_equals(op, "!=") || ir_text_equals(op, "<") || ir_text_equals(op, ">")) {
+                rt_copy_string(buffer, buffer_size, "0");
                 return 1;
             }
         }
@@ -1353,6 +1481,20 @@ static int ir_optimize_expr_text(const char *expr,
         {
             char simplified[COMPILER_IR_LINE_CAPACITY];
             int result = ir_strip_outer_parens(current, simplified, sizeof(simplified));
+            if (result < 0) {
+                return -1;
+            }
+            if (result > 0) {
+                rt_copy_string(current, sizeof(current), simplified);
+                changed = 1;
+                local_change = 1;
+                continue;
+            }
+        }
+
+        {
+            char simplified[COMPILER_IR_LINE_CAPACITY];
+            int result = ir_try_simplify_conditional_expr(current, simplified, sizeof(simplified));
             if (result < 0) {
                 return -1;
             }

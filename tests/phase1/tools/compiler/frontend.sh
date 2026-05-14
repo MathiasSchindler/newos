@@ -240,6 +240,19 @@ EOF
 assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/for_scope.c" > "$WORK_DIR/for_scope.out"
 assert_file_contains "$WORK_DIR/for_scope.out" '^function main$' "compiler did not keep for-loop declarations scoped to the loop"
 
+cat > "$WORK_DIR/empty_external_declaration.c" <<'EOF'
+;
+int first(void) { return 0; }
+;
+int main(void) { return first(); }
+;
+EOF
+
+assert_command_succeeds "$ROOT_DIR/build/ncc" --target macos-aarch64 --dump-ast "$WORK_DIR/empty_external_declaration.c" > "$WORK_DIR/empty_external_declaration_macos.out"
+assert_file_contains "$WORK_DIR/empty_external_declaration_macos.out" '^function main$' "compiler rejected empty external declarations for macOS target parsing"
+assert_command_succeeds "$ROOT_DIR/build/ncc" --target linux-x86_64 --dump-ast "$WORK_DIR/empty_external_declaration.c" > "$WORK_DIR/empty_external_declaration_linux.out"
+assert_file_contains "$WORK_DIR/empty_external_declaration_linux.out" '^function first$' "compiler rejected empty external declarations for Linux target parsing"
+
 cat > "$WORK_DIR/array_param_decay.c" <<'EOF'
 static int first_char(char *argv[]) {
     return argv[0][0];

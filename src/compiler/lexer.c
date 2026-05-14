@@ -119,6 +119,11 @@ static void advance_one(CompilerLexer *lexer) {
     }
 }
 
+static void advance_same_line(CompilerLexer *lexer, const char *end) {
+    lexer->column += (unsigned long long)(end - lexer->cursor);
+    lexer->cursor = end;
+}
+
 static void make_token(CompilerToken *token, CompilerTokenKind kind, const char *start, size_t length, unsigned long long line, unsigned long long column) {
     token->kind = kind;
     token->start = start;
@@ -129,15 +134,32 @@ static void make_token(CompilerToken *token, CompilerTokenKind kind, const char 
 
 static int skip_ignored(CompilerLexer *lexer) {
     for (;;) {
-        if (rt_is_space(*lexer->cursor)) {
+        if (*lexer->cursor == ' ' ||
+            *lexer->cursor == '\t' ||
+            *lexer->cursor == '\r' ||
+            *lexer->cursor == '\v' ||
+            *lexer->cursor == '\f') {
+            const char *end = lexer->cursor + 1;
+
+            while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\v' || *end == '\f') {
+                end += 1;
+            }
+            advance_same_line(lexer, end);
+            continue;
+        }
+
+        if (*lexer->cursor == '\n') {
             advance_one(lexer);
             continue;
         }
 
         if (lexer->cursor[0] == '/' && lexer->cursor[1] == '/') {
-            while (*lexer->cursor != '\0' && *lexer->cursor != '\n') {
-                advance_one(lexer);
+            const char *end = lexer->cursor + 2;
+
+            while (*end != '\0' && *end != '\n') {
+                end += 1;
             }
+            advance_same_line(lexer, end);
             continue;
         }
 
@@ -238,7 +260,6 @@ int compiler_lexer_next(CompilerLexer *lexer, CompilerToken *token_out) {
     unsigned long long line;
     unsigned long long column;
     size_t length;
-    size_t i;
 
     if (skip_ignored(lexer) != 0) {
         return -1;
@@ -254,10 +275,12 @@ int compiler_lexer_next(CompilerLexer *lexer, CompilerToken *token_out) {
     }
 
     if (is_identifier_start(*lexer->cursor)) {
-        advance_one(lexer);
-        while (is_identifier_continue(*lexer->cursor)) {
-            advance_one(lexer);
+        const char *end = lexer->cursor + 1;
+
+        while (is_identifier_continue(*end)) {
+            end += 1;
         }
+        advance_same_line(lexer, end);
         length = (size_t)(lexer->cursor - start);
         make_token(
             token_out,
@@ -271,10 +294,12 @@ int compiler_lexer_next(CompilerLexer *lexer, CompilerToken *token_out) {
     }
 
     if (is_digit_ascii(*lexer->cursor) || (*lexer->cursor == '.' && is_digit_ascii(lexer->cursor[1]))) {
-        advance_one(lexer);
-        while (is_number_continue(*lexer->cursor)) {
-            advance_one(lexer);
+        const char *end = lexer->cursor + 1;
+
+        while (is_number_continue(*end)) {
+            end += 1;
         }
+        advance_same_line(lexer, end);
         make_token(token_out, COMPILER_TOKEN_NUMBER, start, (size_t)(lexer->cursor - start), line, column);
         return 0;
     }
@@ -308,9 +333,7 @@ int compiler_lexer_next(CompilerLexer *lexer, CompilerToken *token_out) {
 
     length = match_punctuator(lexer->cursor);
     if (length != 0U) {
-        for (i = 0; i < length; ++i) {
-            advance_one(lexer);
-        }
+        advance_same_line(lexer, lexer->cursor + length);
         make_token(token_out, COMPILER_TOKEN_PUNCTUATOR, start, length, line, column);
         return 0;
     }

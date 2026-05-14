@@ -16,11 +16,15 @@ compiler.
 - preprocessing with `-E`, `-I`, and simple `-DNAME=VALUE` defines
 - token, AST, and IR dumps for debugging (`--dump-tokens`, `--dump-ast`,
   `--dump-ir`)
-- parsing and semantic analysis for the bulk of the repository sources
+- parsing and semantic analysis for the bulk of the repository sources, including
+  empty external declarations at translation-unit scope
 - assembly generation for `linux-x86_64`, `linux-aarch64`, and
   `macos-aarch64`
 - object emission for Linux/x86-64 ELF and macOS/AArch64 Mach-O
-- self-hosted hosted-tool rebuilds on Linux/x86-64, while still relying on the host assembler, linker, and shell to run compile/link steps
+- self-hosted hosted-tool rebuilds on Linux/x86-64, while still relying on the
+  host assembler, linker, and shell to run compile/link steps
+- native macOS/AArch64 object and executable validation for focused compiler
+  frontend and backend coverage
 
 ## SUCCESS CRITERIA
 
@@ -46,10 +50,13 @@ Compilation proceeds in these layers:
 9. `driver.c` — command-line handling and orchestration
 
 The current optimization work should stay in the target-neutral layers when
-possible. A small IR cleanup pass already folds pure integer expressions,
-simplifies neutral arithmetic identities and safe short-circuit logical
-expressions, and prunes unreachable instructions after constant control-flow
-before any backend-specific assembly is emitted.
+possible. A small IR cleanup pass already folds pure integer expressions and
+same-value integer comparisons, simplifies neutral arithmetic identities and
+safe short-circuit logical expressions, folds some side-effect-free same-arm
+conditional expressions, and prunes unreachable instructions after constant
+control-flow before any backend-specific assembly is emitted. Backend code
+generation also applies small target-specific instruction selections, such as
+shift-based scaling for power-of-two pointer offsets.
 
 ## SELF-HOSTING STAGES
 

@@ -32,11 +32,14 @@ choices are isolated in the backend and target-description layers under
 - target selection for `linux-x86_64`, `linux-aarch64`, and `macos-aarch64`
 - target-specific ABI and object-format details are routed through explicit
   compiler target descriptors instead of being hard-coded across the frontend
-- a platform-neutral IR pass folds pure integer expressions, simplifies common
-  identity and short-circuit logical operations, and trims obviously constant
-  control-flow before backend emission
+- a platform-neutral IR pass folds pure integer expressions, same-value integer
+  comparisons, common identity and short-circuit logical operations, some
+  side-effect-free same-arm conditional expressions, and trims obviously
+  constant control-flow before backend emission
 - common warning-style compatibility flags such as `-Wall`, `-Wextra`, and
   `-Wno-pedantic` are accepted so existing project make rules keep working
+- the frontend accepts common translation-unit forms used by portable C sources,
+  including empty external declarations
 
 ## OPTIONS
 
@@ -58,7 +61,9 @@ choices are isolated in the backend and target-description layers under
 - not a complete ISO C implementation; the supported subset is aimed at the project's own code
 - final executable linking currently relies on the host `clang` toolchain
 - Linux x86-64 is the best-supported target today; Linux AArch64 output and linking still report "not implemented yet"
-- macOS/AArch64 hosted self-builds are progressing, but some real-world sources may still expose unsupported C constructs or backend gaps
+- macOS/AArch64 hosted self-builds are progressing with native object and
+  executable validation, but some real-world sources may still expose unsupported
+  C constructs or backend gaps
 
 ## EXAMPLES
 

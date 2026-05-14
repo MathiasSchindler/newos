@@ -440,6 +440,12 @@ int skip_gnu_attributes(CompilerParser *parser) {
 
 int compiler_parse_translation_unit(CompilerParser *parser) {
     while (parser->current.kind != COMPILER_TOKEN_EOF) {
+        if (current_is_punct(parser, ";")) {
+            if (advance(parser) != 0) {
+                return -1;
+            }
+            continue;
+        }
         if (parse_declaration_or_function(parser, 1, 1) != 0) {
             return -1;
         }
