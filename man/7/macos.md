@@ -25,8 +25,9 @@ machine.
 - `make freestanding` on local macOS/aarch64 builds the freestanding-ish Darwin
   subset under `build/freestanding-macos-aarch64/`
 - `make freestanding-macos` builds that same target explicitly
-- the current subset contains 46 tools spanning small core commands, text and
-  file filters, path metadata, symlink queries, checksums, sleep, touch,
+- the current subset contains 73 tools spanning small core commands, text and
+  file filters, path metadata, symlink queries, checksums, `bc`, identity,
+  directory listing, filesystem mutation, `free`, `kill`, sleep, touch,
   truncate, sync, and basic `dd`
 
 This policy exists because the repository is actively developed on macOS and
