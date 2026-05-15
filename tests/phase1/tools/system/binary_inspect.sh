@@ -57,24 +57,28 @@ assert_file_contains "$WORK_DIR/file_png.out" 'PNG image data, 2 x 3' "file did 
     printf '.text\000\000\000'
     printf '\043\001\000\000'
     printf '\000\020\000\000'
-    printf '\000\002\000\000'
+    printf '\020\000\000\000'
     printf '\000\002\000\000'
     dd if=/dev/zero bs=1 count=12 2>/dev/null
     printf '\040\000\000\140'
     printf '.rdata\000\000'
     printf '\200\000\000\000'
     printf '\000\040\000\000'
-    printf '\000\002\000\000'
-    printf '\000\004\000\000'
+    printf '\020\000\000\000'
+    printf '\020\002\000\000'
     dd if=/dev/zero bs=1 count=12 2>/dev/null
     printf '\100\000\000\100'
     printf '.pdata\000\000'
     printf '\100\000\000\000'
     printf '\000\060\000\000'
-    printf '\000\002\000\000'
-    printf '\000\006\000\000'
+    printf '\020\000\000\000'
+    printf '\040\002\000\000'
     dd if=/dev/zero bs=1 count=12 2>/dev/null
     printf '\100\000\000\100'
+    dd if=/dev/zero bs=1 count=168 2>/dev/null
+    printf '\220\220\303\000PE text data'
+    printf 'PE rdata sample!'
+    printf 'PE pdata sample!'
 } > "$WORK_DIR/pe64.exe"
 assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/pe64.exe" > "$WORK_DIR/file_pe.out"
 assert_file_contains "$WORK_DIR/file_pe.out" 'PE/COFF executable PE32+ x86-64, console, 3 sections' "file did not report PE/COFF executable details"
@@ -84,6 +88,15 @@ assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^  pe-entry-rva: 0x1000$' 
 assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^  pe-image-base: 0x140000000$' "file --verbose did not include the PE image base"
 assert_file_contains "$WORK_DIR/file_pe_verbose.out" 'dynamic-base' "file --verbose did not decode PE DLL characteristics"
 assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^    \.text: rva=0x1000' "file --verbose did not list PE sections"
+
+assert_command_succeeds "$ROOT_DIR/build/objdump" -f -h "$WORK_DIR/pe64.exe" > "$WORK_DIR/objdump_pe.out"
+assert_file_contains "$WORK_DIR/objdump_pe.out" 'file format pei-x86-64' "objdump -f did not identify PE/COFF files"
+assert_file_contains "$WORK_DIR/objdump_pe.out" '^  0 \.text vaddr=0x1000' "objdump -h did not list PE sections"
+assert_command_succeeds "$ROOT_DIR/build/objdump" -s "$WORK_DIR/pe64.exe" > "$WORK_DIR/objdump_pe_contents.out"
+assert_file_contains "$WORK_DIR/objdump_pe_contents.out" '^Contents of section \.text$' "objdump -s did not dump PE section contents"
+assert_file_contains "$WORK_DIR/objdump_pe_contents.out" '90 90 c3 00' "objdump -s did not include PE section bytes"
+assert_command_succeeds "$ROOT_DIR/build/objdump" -t "$WORK_DIR/pe64.exe" > "$WORK_DIR/objdump_pe_symbols.out"
+assert_file_contains "$WORK_DIR/objdump_pe_symbols.out" 'Symbol dumping for PE/COFF inputs is not implemented yet\.' "objdump -t did not report the PE symbol limitation"
 
 assert_command_succeeds "$ROOT_DIR/build/od" "$WORK_DIR/text.txt" > "$WORK_DIR/od.out"
 assert_file_contains "$WORK_DIR/od.out" '^0000000 ' "od did not print the expected offset prefix"
@@ -133,6 +146,11 @@ assert_file_contains "$WORK_DIR/readelf.out" 'Machine:' "readelf -h did not incl
 assert_command_succeeds "$ROOT_DIR/build/objdump" -f "$WORK_DIR/probe" > "$WORK_DIR/objdump.out"
 if ! grep -q 'file format elf' "$WORK_DIR/objdump.out"; then
     assert_file_contains "$WORK_DIR/objdump.out" 'file format mach-o' "objdump -f did not identify the hosted object format"
+    assert_command_succeeds "$ROOT_DIR/build/objdump" -h "$WORK_DIR/probe" > "$WORK_DIR/objdump_macho_sections.out"
+    assert_file_contains "$WORK_DIR/objdump_macho_sections.out" '^Sections:$' "objdump -h did not print Mach-O sections"
+    assert_file_contains "$WORK_DIR/objdump_macho_sections.out" '__TEXT,__text' "objdump -h did not list the Mach-O text section"
+    assert_command_succeeds "$ROOT_DIR/build/objdump" -s "$WORK_DIR/probe" > "$WORK_DIR/objdump_macho_contents.out"
+    assert_file_contains "$WORK_DIR/objdump_macho_contents.out" '^Contents of section __TEXT,__text$' "objdump -s did not dump Mach-O section contents"
 fi
 
 assert_command_succeeds "$ROOT_DIR/build/strip" -o "$WORK_DIR/probe.stripped" "$WORK_DIR/probe"

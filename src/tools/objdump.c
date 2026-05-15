@@ -5,6 +5,7 @@
 
 #define OBJDUMP_MAX_SECTIONS 256U
 #define OBJDUMP_NAME_TABLE_CAPACITY 65536U
+#define OBJDUMP_MACHO_MAX_COMMANDS 256U
 
 typedef struct {
     unsigned int name;
@@ -39,6 +40,36 @@ typedef struct {
     unsigned int flags;
 } MachHeaderInfo;
 
+typedef struct {
+    char segment[17];
+    char section[17];
+    unsigned long long addr;
+    unsigned long long size;
+    unsigned int offset;
+    unsigned int flags;
+} MachSectionInfo;
+
+typedef struct {
+    unsigned short machine;
+    unsigned short section_count;
+    unsigned int timestamp;
+    unsigned short optional_size;
+    unsigned short characteristics;
+    unsigned short optional_magic;
+    unsigned short subsystem;
+    unsigned long long entry;
+    unsigned long long image_base;
+} PeHeaderInfo;
+
+typedef struct {
+    char name[9];
+    unsigned int virtual_size;
+    unsigned int virtual_address;
+    unsigned int raw_size;
+    unsigned int raw_offset;
+    unsigned int characteristics;
+} PeSectionInfo;
+
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
 }
@@ -65,6 +96,44 @@ static const char *macho_type_name(unsigned int type) {
     if (type == 6U) return "shared-library";
     if (type == 8U) return "bundle";
     return "unknown";
+}
+
+static const char *pe_machine_name(unsigned short machine) {
+    if (machine == 0x014cU) return "i386";
+    if (machine == 0x8664U) return "x86-64";
+    if (machine == 0xaa64U) return "aarch64";
+    if (machine == 0x01c0U) return "arm";
+    if (machine == 0x01c4U) return "armv7";
+    return "unknown";
+}
+
+static const char *pe_subsystem_name(unsigned short subsystem) {
+    if (subsystem == 1U) return "native";
+    if (subsystem == 2U) return "windows-gui";
+    if (subsystem == 3U) return "console";
+    if (subsystem == 9U) return "windows-ce";
+    if (subsystem == 10U) return "efi-application";
+    if (subsystem == 11U) return "efi-boot-service-driver";
+    if (subsystem == 12U) return "efi-runtime-driver";
+    if (subsystem == 14U) return "xbox";
+    return "unknown";
+}
+
+static const char *pe_type_name(unsigned short characteristics) {
+    if ((characteristics & 0x2000U) != 0U) return "dll";
+    if ((characteristics & 0x0002U) != 0U) return "executable";
+    return "object";
+}
+
+static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
+    size_t i;
+
+    if (dest_size == 0U) return;
+    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
+        unsigned char ch = src[i];
+        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
+    }
+    dest[i] = '\0';
 }
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
@@ -165,6 +234,159 @@ static int parse_macho_header(int fd, MachHeaderInfo *info) {
     return 0;
 }
 
+static int load_macho_sections(int fd, const MachHeaderInfo *header, MachSectionInfo *sections, unsigned int *section_count_out) {
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+    unsigned int section_count = 0U;
+
+    *section_count_out = 0U;
+    if (header->ncmds > OBJDUMP_MACHO_MAX_COMMANDS) {
+        return -1;
+    }
+
+    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
+        unsigned char command_header[8];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
+            return -1;
+        }
+        command = read_u32_le_local(command_header + 0);
+        command_size = read_u32_le_local(command_header + 4);
+        if (command_size < 8U) {
+            return -1;
+        }
+
+        if (command == 0x19U && command_size >= 72U) {
+            unsigned char segment[72];
+            unsigned int nsects;
+            unsigned int section_index;
+            char segment_name[17];
+
+            if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) {
+                return -1;
+            }
+            copy_fixed_name(segment_name, sizeof(segment_name), segment + 8, 16U);
+            nsects = read_u32_le_local(segment + 64);
+            if (72U + nsects * 80U > command_size) {
+                return -1;
+            }
+            for (section_index = 0U; section_index < nsects; ++section_index) {
+                unsigned char raw[80];
+                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
+
+                if (section_count >= OBJDUMP_MAX_SECTIONS) {
+                    return -1;
+                }
+                if (read_region(fd, section_offset, raw, sizeof(raw)) != 0) {
+                    return -1;
+                }
+                copy_fixed_name(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
+                copy_fixed_name(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
+                if (sections[section_count].segment[0] == '\0') {
+                    rt_copy_string(sections[section_count].segment, sizeof(sections[section_count].segment), segment_name);
+                }
+                sections[section_count].addr = read_u64_le_local(raw + 32);
+                sections[section_count].size = read_u64_le_local(raw + 40);
+                sections[section_count].offset = read_u32_le_local(raw + 48);
+                sections[section_count].flags = read_u32_le_local(raw + 64);
+                section_count += 1U;
+            }
+        }
+
+        command_offset += (unsigned long long)command_size;
+    }
+
+    *section_count_out = section_count;
+    return 0;
+}
+
+static int parse_pe_header(int fd, PeHeaderInfo *info) {
+    unsigned char dos[64];
+    unsigned char coff[24];
+    unsigned int pe_offset;
+    unsigned long long optional_offset;
+
+    if (read_region(fd, 0ULL, dos, sizeof(dos)) != 0) {
+        return -1;
+    }
+    if (dos[0] != 'M' || dos[1] != 'Z') {
+        return -1;
+    }
+    pe_offset = read_u32_le_local(dos + 0x3cU);
+    if (read_region(fd, (unsigned long long)pe_offset, coff, sizeof(coff)) != 0) {
+        return -1;
+    }
+    if (!(coff[0] == 'P' && coff[1] == 'E' && coff[2] == 0U && coff[3] == 0U)) {
+        return -1;
+    }
+
+    info->machine = read_u16_le(coff + 4);
+    info->section_count = read_u16_le(coff + 6);
+    info->timestamp = read_u32_le_local(coff + 8);
+    info->optional_size = read_u16_le(coff + 20);
+    info->characteristics = read_u16_le(coff + 22);
+    info->optional_magic = 0U;
+    info->subsystem = 0U;
+    info->entry = 0ULL;
+    info->image_base = 0ULL;
+
+    optional_offset = (unsigned long long)pe_offset + 24ULL;
+    if (info->optional_size >= 70U) {
+        unsigned char optional[72];
+        if (read_region(fd, optional_offset, optional, sizeof(optional)) != 0) {
+            return -1;
+        }
+        info->optional_magic = read_u16_le(optional + 0);
+        info->entry = (unsigned long long)read_u32_le_local(optional + 16);
+        if (info->optional_magic == 0x020bU) {
+            info->image_base = read_u64_le_local(optional + 24);
+        } else if (info->optional_magic == 0x010bU) {
+            info->image_base = (unsigned long long)read_u32_le_local(optional + 28);
+        }
+        info->subsystem = read_u16_le(optional + 68);
+    } else if (info->optional_size >= 2U) {
+        unsigned char magic[2];
+        if (read_region(fd, optional_offset, magic, sizeof(magic)) != 0) {
+            return -1;
+        }
+        info->optional_magic = read_u16_le(magic);
+    }
+
+    return 0;
+}
+
+static int load_pe_sections(int fd, const PeHeaderInfo *header, PeSectionInfo *sections) {
+    unsigned char dos[64];
+    unsigned int pe_offset;
+    unsigned long long section_offset;
+    unsigned short i;
+
+    if (header->section_count > OBJDUMP_MAX_SECTIONS) {
+        return -1;
+    }
+    if (read_region(fd, 0ULL, dos, sizeof(dos)) != 0) {
+        return -1;
+    }
+    pe_offset = read_u32_le_local(dos + 0x3cU);
+    section_offset = (unsigned long long)pe_offset + 24ULL + (unsigned long long)header->optional_size;
+
+    for (i = 0U; i < header->section_count; ++i) {
+        unsigned char raw[40];
+        if (read_region(fd, section_offset + ((unsigned long long)i * 40ULL), raw, sizeof(raw)) != 0) {
+            return -1;
+        }
+        copy_fixed_name(sections[i].name, sizeof(sections[i].name), raw + 0, 8U);
+        sections[i].virtual_size = read_u32_le_local(raw + 8);
+        sections[i].virtual_address = read_u32_le_local(raw + 12);
+        sections[i].raw_size = read_u32_le_local(raw + 16);
+        sections[i].raw_offset = read_u32_le_local(raw + 20);
+        sections[i].characteristics = read_u32_le_local(raw + 36);
+    }
+    return 0;
+}
+
 static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *sections) {
     unsigned short i;
     unsigned char raw[64];
@@ -253,6 +475,33 @@ static void print_macho_file_header(const char *path, const MachHeaderInfo *head
     rt_write_char(1, '\n');
 }
 
+static void print_pe_file_header(const char *path, const PeHeaderInfo *header) {
+    rt_write_cstr(1, "\n");
+    rt_write_line(1, path);
+    rt_write_cstr(1, "file format ");
+    if (header->optional_magic == 0x020bU) rt_write_line(1, "pei-x86-64");
+    else if (header->optional_magic == 0x010bU) rt_write_line(1, "pei-i386");
+    else rt_write_line(1, "pe-coff");
+    rt_write_cstr(1, "architecture: ");
+    rt_write_cstr(1, pe_machine_name(header->machine));
+    rt_write_cstr(1, ", type: ");
+    rt_write_line(1, pe_type_name(header->characteristics));
+    if (header->subsystem != 0U) {
+        rt_write_cstr(1, "subsystem: ");
+        rt_write_line(1, pe_subsystem_name(header->subsystem));
+    }
+    rt_write_cstr(1, "start address ");
+    write_hex_value(header->entry);
+    rt_write_cstr(1, ", image base ");
+    write_hex_value(header->image_base);
+    rt_write_char(1, '\n');
+    rt_write_cstr(1, "timestamp: ");
+    rt_write_uint(1, (unsigned long long)header->timestamp);
+    rt_write_cstr(1, ", characteristics: ");
+    write_hex_value((unsigned long long)header->characteristics);
+    rt_write_char(1, '\n');
+}
+
 static void print_section_table(const ElfHeaderInfo *header, const ElfSectionInfo *sections, const char *names, size_t names_size) {
     unsigned short i;
 
@@ -274,11 +523,57 @@ static void print_section_table(const ElfHeaderInfo *header, const ElfSectionInf
     }
 }
 
-static void dump_section_bytes(int fd, const char *name, const ElfSectionInfo *section) {
+static void print_macho_section_table(const MachSectionInfo *sections, unsigned int section_count) {
+    unsigned int i;
+
+    rt_write_line(1, "Sections:");
+    for (i = 0U; i < section_count; ++i) {
+        rt_write_cstr(1, "  ");
+        rt_write_uint(1, (unsigned long long)i);
+        rt_write_cstr(1, " ");
+        rt_write_cstr(1, sections[i].segment);
+        rt_write_cstr(1, ",");
+        rt_write_cstr(1, sections[i].section);
+        rt_write_cstr(1, " addr=");
+        write_hex_value(sections[i].addr);
+        rt_write_cstr(1, " off=");
+        write_hex_value((unsigned long long)sections[i].offset);
+        rt_write_cstr(1, " size=");
+        write_hex_value(sections[i].size);
+        rt_write_cstr(1, " flags=");
+        write_hex_value((unsigned long long)sections[i].flags);
+        rt_write_char(1, '\n');
+    }
+}
+
+static void print_pe_section_table(const PeHeaderInfo *header, const PeSectionInfo *sections) {
+    unsigned short i;
+
+    rt_write_line(1, "Sections:");
+    for (i = 0U; i < header->section_count; ++i) {
+        rt_write_cstr(1, "  ");
+        rt_write_uint(1, (unsigned long long)i);
+        rt_write_cstr(1, " ");
+        rt_write_cstr(1, sections[i].name);
+        rt_write_cstr(1, " vaddr=");
+        write_hex_value((unsigned long long)sections[i].virtual_address);
+        rt_write_cstr(1, " vsize=");
+        write_hex_value((unsigned long long)sections[i].virtual_size);
+        rt_write_cstr(1, " off=");
+        write_hex_value((unsigned long long)sections[i].raw_offset);
+        rt_write_cstr(1, " size=");
+        write_hex_value((unsigned long long)sections[i].raw_size);
+        rt_write_cstr(1, " flags=");
+        write_hex_value((unsigned long long)sections[i].characteristics);
+        rt_write_char(1, '\n');
+    }
+}
+
+static void dump_bytes_range(int fd, const char *name, unsigned long long offset, unsigned long long size, unsigned long long addr) {
     unsigned char buffer[16];
-    unsigned long long remaining = section->size;
-    unsigned long long current_offset = section->offset;
-    unsigned long long display_addr = section->addr;
+    unsigned long long remaining = size;
+    unsigned long long current_offset = offset;
+    unsigned long long display_addr = addr;
 
     if (remaining == 0ULL) {
         return;
@@ -312,6 +607,10 @@ static void dump_section_bytes(int fd, const char *name, const ElfSectionInfo *s
         display_addr += (unsigned long long)chunk;
         remaining -= (unsigned long long)chunk;
     }
+}
+
+static void dump_section_bytes(int fd, const char *name, const ElfSectionInfo *section) {
+    dump_bytes_range(fd, name, section->offset, section->size, section->addr);
 }
 
 static void print_symbols(int fd, const ElfHeaderInfo *header, const ElfSectionInfo *sections, const char *names, size_t names_size) {
@@ -396,6 +695,10 @@ int main(int argc, char **argv) {
         int fd = platform_open_read(argv[i]);
         ElfHeaderInfo header;
         MachHeaderInfo macho;
+        MachSectionInfo macho_sections[OBJDUMP_MAX_SECTIONS];
+        unsigned int macho_section_count = 0U;
+        PeHeaderInfo pe;
+        PeSectionInfo pe_sections[OBJDUMP_MAX_SECTIONS];
         ElfSectionInfo sections[OBJDUMP_MAX_SECTIONS];
         char names[OBJDUMP_NAME_TABLE_CAPACITY];
         size_t names_size = 0U;
@@ -410,18 +713,52 @@ int main(int argc, char **argv) {
 
         if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
             load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
-            if (parse_macho_header(fd, &macho) == 0) {
+            if (parse_macho_header(fd, &macho) == 0 && load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0) {
                 if (show_file) {
                     print_macho_file_header(argv[i], &macho);
                 }
                 if (show_sections) {
-                    rt_write_line(1, "Section dumping for Mach-O inputs is not implemented yet.");
+                    print_macho_section_table(macho_sections, macho_section_count);
                 }
                 if (show_contents) {
-                    rt_write_line(1, "Raw section contents for Mach-O inputs are not implemented yet.");
+                    unsigned int macho_index;
+                    for (macho_index = 0U; macho_index < macho_section_count; ++macho_index) {
+                        char section_name[40];
+                        rt_copy_string(section_name, sizeof(section_name), macho_sections[macho_index].segment);
+                        if (rt_strlen(section_name) + 2U < sizeof(section_name)) {
+                            rt_copy_string(section_name + rt_strlen(section_name), sizeof(section_name) - rt_strlen(section_name), ",");
+                            rt_copy_string(section_name + rt_strlen(section_name), sizeof(section_name) - rt_strlen(section_name), macho_sections[macho_index].section);
+                        }
+                        dump_bytes_range(fd, section_name, (unsigned long long)macho_sections[macho_index].offset, macho_sections[macho_index].size, macho_sections[macho_index].addr);
+                    }
                 }
                 if (show_symbols) {
                     rt_write_line(1, "Symbol dumping for Mach-O inputs is not implemented yet.");
+                }
+                platform_close(fd);
+                continue;
+            }
+
+            if (parse_pe_header(fd, &pe) == 0 && load_pe_sections(fd, &pe, pe_sections) == 0) {
+                if (show_file) {
+                    print_pe_file_header(argv[i], &pe);
+                }
+                if (show_sections) {
+                    print_pe_section_table(&pe, pe_sections);
+                }
+                if (show_contents) {
+                    unsigned short pe_index;
+                    for (pe_index = 0U; pe_index < pe.section_count; ++pe_index) {
+                        if (pe_sections[pe_index].raw_size > 0U) {
+                            dump_bytes_range(fd, pe_sections[pe_index].name,
+                                             (unsigned long long)pe_sections[pe_index].raw_offset,
+                                             (unsigned long long)pe_sections[pe_index].raw_size,
+                                             pe.image_base + (unsigned long long)pe_sections[pe_index].virtual_address);
+                        }
+                    }
+                }
+                if (show_symbols) {
+                    rt_write_line(1, "Symbol dumping for PE/COFF inputs is not implemented yet.");
                 }
                 platform_close(fd);
                 continue;
