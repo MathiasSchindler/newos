@@ -7,7 +7,7 @@ strings - print printable character sequences from a file
 ## SYNOPSIS
 
 ```
-strings [-n MIN] [-o] [-f] [-t RADIX] [-e ENCODING] [file ...]
+strings [-a|-d] [-n MIN] [-o] [-f] [-t RADIX] [-e ENCODING] [file ...]
 ```
 
 ## DESCRIPTION
@@ -15,15 +15,27 @@ strings [-n MIN] [-o] [-f] [-t RADIX] [-e ENCODING] [file ...]
 `strings` scans each FILE (or standard input) and prints sequences of
 printable characters that are at least MIN bytes long (default: 4).
 
+By default `strings` scans the entire byte stream. With `-d`, recognised object
+files are scanned through their initialized section ranges instead, which skips
+headers, section tables, and uninitialized space where possible. If a file is not
+a recognised object format, `-d` falls back to the full byte stream.
+
 ## CURRENT CAPABILITIES
 
 - Configurable minimum string length with `-n`
+- Full-file scanning with `-a` / `--all` and object section scanning with `-d` /
+  `--data`
 - Print byte offsets with `-o` (octal) or `-t` (decimal/octal/hex)
 - Print the file name before each string with `-f`
 - Encoding selection: 8-bit, 7-bit, UTF-16 LE/BE, UTF-32 LE/BE with `-e`
+- Section-aware scanning for ELF64 little-endian, Mach-O 64-bit little-endian,
+  and PE/COFF executable images
 
 ## OPTIONS
 
+- `-a`, `--all` — scan the entire file (default)
+- `-d`, `--data` — scan initialized object-file sections for recognised ELF,
+  Mach-O, and PE/COFF inputs
 - `-n MIN`, `-MIN` — minimum string length (default: 4)
 - `-o` — print octal offset before each string
 - `-f` — print file name before each string
@@ -33,16 +45,20 @@ printable characters that are at least MIN bytes long (default: 4).
 
 ## LIMITATIONS
 
-- No ELF section filtering (always scans the full file byte-by-byte).
-- No `-a` / `--all` option (the entire file is always scanned).
-- no Unicode decoding, wide-string mode, or encoding auto-detection beyond the
-  documented byte-oriented scan
-- no radix/address formatting modes beyond the documented offset support
+- Object-aware scanning is intentionally shallow: ELF support is limited to
+  64-bit little-endian section headers, Mach-O support to 64-bit little-endian
+  `LC_SEGMENT_64` sections, and PE/COFF support to standard image section
+  tables.
+- Archive member traversal, compressed-file expansion, relocation awareness, and
+  debug metadata interpretation are not implemented.
+- Unicode decoding is limited to the documented byte-oriented ASCII-compatible
+  encodings; there is no UTF-8 validation or automatic encoding detection.
 
 ## EXAMPLES
 
 ```
 strings binary
+strings -d app.exe
 strings -n 8 library.so
 strings -t x firmware.bin
 strings -f *.o | grep "version"

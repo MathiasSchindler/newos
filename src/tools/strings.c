@@ -3,6 +3,8 @@
 #include "tool_util.h"
 
 #define STRINGS_BUFFER_CAPACITY 1024
+#define STRINGS_MAX_SECTIONS 256U
+#define STRINGS_MAX_MACHO_COMMANDS 256U
 
 typedef enum {
     STRINGS_ENCODING_7BIT,
@@ -18,11 +20,48 @@ typedef struct {
     int show_offset;
     unsigned int offset_base;
     int print_file_name;
+    int scan_data_sections;
     StringsEncoding encoding;
 } StringsOptions;
 
+typedef struct {
+    unsigned long long offset;
+    unsigned long long size;
+} StringsRange;
+
 static int is_printable_byte(unsigned char ch) {
     return ch >= 32U && ch <= 126U;
+}
+
+static unsigned short read_u16_le(const unsigned char *bytes) {
+    return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8U);
+}
+
+static unsigned int read_u32_le(const unsigned char *bytes) {
+    return (unsigned int)bytes[0] |
+           ((unsigned int)bytes[1] << 8U) |
+           ((unsigned int)bytes[2] << 16U) |
+           ((unsigned int)bytes[3] << 24U);
+}
+
+static unsigned long long read_u64_le(const unsigned char *bytes) {
+    return (unsigned long long)read_u32_le(bytes) | ((unsigned long long)read_u32_le(bytes + 4U) << 32U);
+}
+
+static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
+    size_t total = 0U;
+
+    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) {
+        return -1;
+    }
+    while (total < size) {
+        long chunk = platform_read(fd, buffer + total, size - total);
+        if (chunk <= 0) {
+            return -1;
+        }
+        total += (size_t)chunk;
+    }
+    return 0;
 }
 
 static void format_unsigned_value(unsigned long long value, unsigned int base, char *buffer, size_t buffer_size) {
@@ -142,18 +181,37 @@ static int flush_sequence(char *buffer,
     return 0;
 }
 
-static int strings_stream(int fd, const StringsOptions *options, const char *file_name) {
+static int strings_range(int fd, const StringsOptions *options, const char *file_name, unsigned long long offset, unsigned long long limit, int bounded) {
     unsigned char chunk[4096];
     unsigned char buffered[4096 + 4];
     char current[STRINGS_BUFFER_CAPACITY];
     size_t current_len = 0U;
-    unsigned long long absolute_offset = 0ULL;
+    unsigned long long absolute_offset = offset;
     unsigned long long start_offset = 0ULL;
     size_t pending = 0U;
     size_t unit_size = strings_unit_size(options->encoding);
-    long bytes_read;
+    long bytes_read = 0;
 
-    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
+    if (offset != 0ULL && platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) {
+        return -1;
+    }
+
+    while (!bounded || limit > 0ULL) {
+        size_t request = sizeof(chunk);
+        if (bounded && limit < (unsigned long long)request) {
+            request = (size_t)limit;
+        }
+        if (request == 0U) {
+            break;
+        }
+        bytes_read = platform_read(fd, chunk, request);
+        if (bytes_read <= 0) {
+            break;
+        }
+        if (bounded) {
+            limit -= (unsigned long long)bytes_read;
+        }
+
         size_t total = pending + (size_t)bytes_read;
         size_t i = 0U;
 
@@ -190,6 +248,174 @@ static int strings_stream(int fd, const StringsOptions *options, const char *fil
     return flush_sequence(current, &current_len, start_offset, options, file_name);
 }
 
+static int strings_stream(int fd, const StringsOptions *options, const char *file_name) {
+    return strings_range(fd, options, file_name, 0ULL, 0ULL, 0);
+}
+
+static int add_range(StringsRange *ranges, size_t *count, unsigned long long offset, unsigned long long size) {
+    if (size == 0ULL) {
+        return 0;
+    }
+    if (*count >= STRINGS_MAX_SECTIONS) {
+        return -1;
+    }
+    ranges[*count].offset = offset;
+    ranges[*count].size = size;
+    *count += 1U;
+    return 0;
+}
+
+static int load_elf_ranges(int fd, StringsRange *ranges, size_t *count) {
+    unsigned char header[64];
+    unsigned long long shoff;
+    unsigned short shentsize;
+    unsigned short shnum;
+    unsigned short i;
+
+    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    if (!(header[0] == 0x7fU && header[1] == 'E' && header[2] == 'L' && header[3] == 'F')) return -1;
+    if (header[4] != 2U || header[5] != 1U) return -1;
+
+    shoff = read_u64_le(header + 40);
+    shentsize = read_u16_le(header + 58);
+    shnum = read_u16_le(header + 60);
+    if (shnum > STRINGS_MAX_SECTIONS || shentsize < 64U) return -1;
+
+    for (i = 0U; i < shnum; ++i) {
+        unsigned char section[64];
+        unsigned int type;
+        unsigned long long flags;
+        unsigned long long offset;
+        unsigned long long size;
+
+        if (read_region(fd, shoff + ((unsigned long long)i * (unsigned long long)shentsize), section, sizeof(section)) != 0) return -1;
+        type = read_u32_le(section + 4);
+        flags = read_u64_le(section + 8);
+        offset = read_u64_le(section + 24);
+        size = read_u64_le(section + 32);
+        if (type != 8U && (flags & 0x2ULL) != 0ULL) {
+            if (add_range(ranges, count, offset, size) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
+    unsigned char header[32];
+    unsigned int magic;
+    unsigned int ncmds;
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+
+    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    magic = read_u32_le(header);
+    if (magic != 0xfeedfacfU) return -1;
+    ncmds = read_u32_le(header + 16);
+    if (ncmds > STRINGS_MAX_MACHO_COMMANDS) return -1;
+
+    for (command_index = 0U; command_index < ncmds; ++command_index) {
+        unsigned char command_header[8];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) return -1;
+        command = read_u32_le(command_header);
+        command_size = read_u32_le(command_header + 4);
+        if (command_size < 8U) return -1;
+        if (command == 0x19U && command_size >= 72U) {
+            unsigned char segment[72];
+            unsigned int nsects;
+            unsigned int section_index;
+
+            if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) return -1;
+            nsects = read_u32_le(segment + 64);
+            if (72U + nsects * 80U > command_size) return -1;
+            for (section_index = 0U; section_index < nsects; ++section_index) {
+                unsigned char section[80];
+                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
+                unsigned long long size;
+                unsigned int offset;
+                unsigned int flags;
+                unsigned int type;
+
+                if (read_region(fd, section_offset, section, sizeof(section)) != 0) return -1;
+                size = read_u64_le(section + 40);
+                offset = read_u32_le(section + 48);
+                flags = read_u32_le(section + 64);
+                type = flags & 0xffU;
+                if (type != 1U && type != 8U) {
+                    if (add_range(ranges, count, (unsigned long long)offset, size) != 0) return -1;
+                }
+            }
+        }
+        command_offset += (unsigned long long)command_size;
+    }
+    return *count > 0U ? 0 : -1;
+}
+
+static int load_pe_ranges(int fd, StringsRange *ranges, size_t *count) {
+    unsigned char dos[64];
+    unsigned char coff[24];
+    unsigned int pe_offset;
+    unsigned short section_count;
+    unsigned short optional_size;
+    unsigned short i;
+    unsigned long long section_offset;
+
+    if (read_region(fd, 0ULL, dos, sizeof(dos)) != 0) return -1;
+    if (dos[0] != 'M' || dos[1] != 'Z') return -1;
+    pe_offset = read_u32_le(dos + 0x3cU);
+    if (read_region(fd, (unsigned long long)pe_offset, coff, sizeof(coff)) != 0) return -1;
+    if (!(coff[0] == 'P' && coff[1] == 'E' && coff[2] == 0U && coff[3] == 0U)) return -1;
+    section_count = read_u16_le(coff + 6);
+    optional_size = read_u16_le(coff + 20);
+    if (section_count > STRINGS_MAX_SECTIONS) return -1;
+    section_offset = (unsigned long long)pe_offset + 24ULL + (unsigned long long)optional_size;
+
+    for (i = 0U; i < section_count; ++i) {
+        unsigned char section[40];
+        unsigned int raw_size;
+        unsigned int raw_offset;
+        unsigned int characteristics;
+
+        if (read_region(fd, section_offset + ((unsigned long long)i * 40ULL), section, sizeof(section)) != 0) return -1;
+        raw_size = read_u32_le(section + 16);
+        raw_offset = read_u32_le(section + 20);
+        characteristics = read_u32_le(section + 36);
+        if (raw_size > 0U && (characteristics & 0x02000000U) == 0U) {
+            if (add_range(ranges, count, (unsigned long long)raw_offset, (unsigned long long)raw_size) != 0) return -1;
+        }
+    }
+    return *count > 0U ? 0 : -1;
+}
+
+static int load_object_ranges(int fd, StringsRange *ranges, size_t *count) {
+    *count = 0U;
+    if (load_elf_ranges(fd, ranges, count) == 0 && *count > 0U) return 0;
+    *count = 0U;
+    if (load_macho_ranges(fd, ranges, count) == 0 && *count > 0U) return 0;
+    *count = 0U;
+    if (load_pe_ranges(fd, ranges, count) == 0 && *count > 0U) return 0;
+    *count = 0U;
+    return -1;
+}
+
+static int strings_object_sections(int fd, const StringsOptions *options, const char *file_name) {
+    StringsRange ranges[STRINGS_MAX_SECTIONS];
+    size_t count = 0U;
+    size_t i;
+
+    if (load_object_ranges(fd, ranges, &count) != 0) {
+        if (platform_seek(fd, 0, PLATFORM_SEEK_SET) < 0) return -1;
+        return strings_stream(fd, options, file_name);
+    }
+
+    for (i = 0U; i < count; ++i) {
+        if (strings_range(fd, options, file_name, ranges[i].offset, ranges[i].size, 1) != 0) return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     StringsOptions options;
     int argi = 1;
@@ -200,6 +426,7 @@ int main(int argc, char **argv) {
     options.show_offset = 0;
     options.offset_base = 10U;
     options.print_file_name = 0;
+    options.scan_data_sections = 0;
     options.encoding = STRINGS_ENCODING_8BIT;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
@@ -227,6 +454,12 @@ int main(int argc, char **argv) {
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-f") == 0) {
             options.print_file_name = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-a") == 0 || rt_strcmp(argv[argi], "--all") == 0) {
+            options.scan_data_sections = 0;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-d") == 0 || rt_strcmp(argv[argi], "--data") == 0) {
+            options.scan_data_sections = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-t") == 0 || (argv[argi][1] == 't' && argv[argi][2] != '\0')) {
             const char *radix = (argv[argi][2] != '\0') ? argv[argi] + 2 : ((argi + 1 < argc) ? argv[argi + 1] : 0);
@@ -297,7 +530,7 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (strings_stream(fd, &options, argv[i]) != 0) {
+        if ((options.scan_data_sections ? strings_object_sections(fd, &options, argv[i]) : strings_stream(fd, &options, argv[i])) != 0) {
             rt_write_cstr(2, "strings: read error on ");
             rt_write_line(2, argv[i]);
             exit_code = 1;
