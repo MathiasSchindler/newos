@@ -16,6 +16,7 @@
 #define WIN_FILE_ATTRIBUTE_NORMAL 0x00000080UL
 #define WIN_FILE_ATTRIBUTE_DIRECTORY 0x00000010UL
 #define WIN_INVALID_FILE_ATTRIBUTES 0xffffffffUL
+#define WIN_MOVEFILE_REPLACE_EXISTING 0x00000001UL
 #define WIN_FILE_TYPE_CHAR 0x0002UL
 #define WIN_ENABLE_ECHO_INPUT 0x0004UL
 #define WIN_ENABLE_LINE_INPUT 0x0002UL
@@ -114,6 +115,7 @@ __declspec(dllimport) unsigned long __stdcall GetCurrentDirectoryA(unsigned long
 __declspec(dllimport) int __stdcall GetComputerNameA(char *buffer, unsigned long *size_io);
 __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buffer, unsigned long size);
+__declspec(dllimport) int __stdcall SetEnvironmentVariableA(const char *name, const char *value);
 __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char *file_name);
 __declspec(dllimport) int __stdcall GetFileSizeEx(void *handle, long long *size_out);
@@ -137,10 +139,13 @@ __declspec(dllimport) void *__stdcall CreateFileA(const char *file_name, unsigne
                                                    unsigned long flags_and_attributes, void *template_file);
 __declspec(dllimport) int __stdcall CreateDirectoryA(const char *path_name, void *security_attributes);
 __declspec(dllimport) int __stdcall DeleteFileA(const char *file_name);
+__declspec(dllimport) int __stdcall MoveFileExA(const char *existing_file_name, const char *new_file_name, unsigned long flags);
+__declspec(dllimport) int __stdcall CreateHardLinkA(const char *file_name, const char *existing_file_name, void *security_attributes);
 __declspec(dllimport) unsigned long __stdcall GetTempPathA(unsigned long buffer_length, char *buffer);
 __declspec(dllimport) unsigned int __stdcall GetTempFileNameA(const char *path_name, const char *prefix_string, unsigned int unique, char *temp_file_name);
 __declspec(dllimport) int __stdcall FlushFileBuffers(void *handle);
 __declspec(dllimport) int __stdcall RemoveDirectoryA(const char *path_name);
+__declspec(dllimport) int __stdcall CreatePipe(void **read_pipe, void **write_pipe, void *pipe_attributes, unsigned long size);
 __declspec(dllimport) void *__stdcall VirtualAlloc(void *address, size_t size, unsigned long allocation_type, unsigned long protect);
 __declspec(dllimport) int __stdcall CloseHandle(void *handle);
 __declspec(dllimport) int __stdcall ReadFile(void *handle, void *buffer, unsigned long count, unsigned long *read_out, void *overlapped);
@@ -550,6 +555,23 @@ const char *platform_getenv_entry(size_t index) {
     return 0;
 }
 
+int platform_setenv(const char *name, const char *value, int overwrite) {
+    char existing[2];
+
+    if (name == 0 || name[0] == '\0' || value == 0) return -1;
+    if (!overwrite && GetEnvironmentVariableA(name, existing, sizeof(existing)) > 0UL) return 0;
+    return SetEnvironmentVariableA(name, value) != 0 ? 0 : -1;
+}
+
+int platform_unsetenv(const char *name) {
+    if (name == 0 || name[0] == '\0') return -1;
+    return SetEnvironmentVariableA(name, 0) != 0 ? 0 : -1;
+}
+
+int platform_clearenv(void) {
+    return 0;
+}
+
 int platform_isatty(int fd) {
     void *handle = windows_handle_for_fd(fd);
     unsigned long mode;
@@ -636,6 +658,21 @@ int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state) {
 
 int platform_get_process_id(void) {
     return (int)GetCurrentProcessId();
+}
+
+long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_read) {
+    (void)clear_after_read;
+    if (buffer != 0 && buffer_size > 0U) buffer[0] = '\0';
+    return 0;
+}
+
+int platform_clear_kernel_log(void) {
+    return 0;
+}
+
+int platform_set_console_log_level(int level) {
+    (void)level;
+    return -1;
 }
 
 long long platform_get_epoch_time(void) {
@@ -767,6 +804,17 @@ int platform_ignore_signal(int signal_number) {
     return 0;
 }
 
+int platform_send_signal(int pid, int signal_number) {
+    (void)pid;
+    (void)signal_number;
+    return -1;
+}
+
+int platform_shutdown_system(int action) {
+    (void)action;
+    return -1;
+}
+
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
     WinFdSet readfds;
     WinTimeval timeout;
@@ -852,6 +900,34 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     return 0;
 }
 
+int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) {
+    (void)host;
+    (void)port;
+    (void)socket_fd_out;
+    return -1;
+}
+
+int platform_accept_tcp(int listener_fd, int *client_fd_out) {
+    (void)listener_fd;
+    (void)client_fd_out;
+    return -1;
+}
+
+int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
+    (void)host;
+    (void)port;
+    (void)options;
+    return -1;
+}
+
+int platform_netcat_tcp(const char *host, unsigned int port, int listen_mode) {
+    PlatformNetcatOptions options;
+
+    rt_memset(&options, 0, sizeof(options));
+    options.listen_mode = listen_mode;
+    return platform_netcat(host, port, &options);
+}
+
 int platform_sleep_milliseconds(unsigned long long milliseconds) {
     while (milliseconds > 0xffffffffULL) {
         Sleep(0xffffffffUL);
@@ -859,6 +935,10 @@ int platform_sleep_milliseconds(unsigned long long milliseconds) {
     }
     Sleep((unsigned long)milliseconds);
     return 0;
+}
+
+int platform_sleep_seconds(unsigned int seconds) {
+    return platform_sleep_milliseconds((unsigned long long)seconds * 1000ULL);
 }
 
 int platform_get_current_directory(char *buffer, size_t buffer_size) {
@@ -910,6 +990,28 @@ int platform_make_directory(const char *path, unsigned int mode) {
     return CreateDirectoryA(path, 0) != 0 ? 0 : -1;
 }
 
+int platform_mount_filesystem(
+    const char *source,
+    const char *target,
+    const char *filesystem_type,
+    unsigned long long flags,
+    const char *data
+) {
+    (void)source;
+    (void)target;
+    (void)filesystem_type;
+    (void)flags;
+    (void)data;
+    return -1;
+}
+
+int platform_unmount_filesystem(const char *target, int force, int lazy) {
+    (void)target;
+    (void)force;
+    (void)lazy;
+    return -1;
+}
+
 int platform_remove_file(const char *path) {
     if (path == 0 || path[0] == '\0') return -1;
     return DeleteFileA(path) != 0 ? 0 : -1;
@@ -920,15 +1022,71 @@ int platform_remove_directory(const char *path) {
     return RemoveDirectoryA(path) != 0 ? 0 : -1;
 }
 
+int platform_rename_path(const char *old_path, const char *new_path) {
+    if (old_path == 0 || old_path[0] == '\0' || new_path == 0 || new_path[0] == '\0') return -1;
+    return MoveFileExA(old_path, new_path, WIN_MOVEFILE_REPLACE_EXISTING) != 0 ? 0 : -1;
+}
+
+int platform_create_hard_link(const char *target_path, const char *link_path) {
+    if (target_path == 0 || link_path == 0 || target_path[0] == '\0' || link_path[0] == '\0') return -1;
+    return CreateHardLinkA(link_path, target_path, 0) != 0 ? 0 : -1;
+}
+
 int platform_create_symbolic_link(const char *target_path, const char *link_path) {
     (void)target_path;
     (void)link_path;
     return -1;
 }
 
+int platform_create_node(const char *path, unsigned int node_type, unsigned int mode, unsigned int major, unsigned int minor) {
+    (void)path;
+    (void)node_type;
+    (void)mode;
+    (void)major;
+    (void)minor;
+    return -1;
+}
+
 int platform_change_mode(const char *path, unsigned int mode) {
     (void)mode;
     return platform_path_access(path, 0) == 0 ? 0 : -1;
+}
+
+int platform_change_owner_ex(const char *path, unsigned int uid, unsigned int gid, int follow_symlinks) {
+    (void)uid;
+    (void)gid;
+    (void)follow_symlinks;
+    return platform_path_access(path, 0) == 0 ? 0 : -1;
+}
+
+int platform_change_owner(const char *path, unsigned int uid, unsigned int gid) {
+    return platform_change_owner_ex(path, uid, gid, 1);
+}
+
+int platform_touch_path(const char *path) {
+    int fd;
+
+    if (path == 0 || path[0] == '\0') return -1;
+    fd = platform_open_append(path, 0644U);
+    if (fd < 0) return -1;
+    return platform_close(fd);
+}
+
+int platform_set_path_times(
+    const char *path,
+    long long atime,
+    long long mtime,
+    int create_if_missing,
+    int update_access,
+    int update_modify
+) {
+    (void)atime;
+    (void)mtime;
+    (void)update_access;
+    (void)update_modify;
+    if (path == 0 || path[0] == '\0') return -1;
+    if (platform_path_access(path, PLATFORM_ACCESS_EXISTS) == 0) return 0;
+    return create_if_missing ? platform_touch_path(path) : -1;
 }
 
 int platform_truncate_path(const char *path, unsigned long long size) {
@@ -996,6 +1154,11 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
 
 int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {
     return platform_get_path_info(path, entry_out);
+}
+
+int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out) {
+    if (platform_get_path_info(path, entry_out) != 0) return -1;
+    return platform_open_read(path);
 }
 
 int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out) {
@@ -1070,6 +1233,23 @@ void platform_format_mode(unsigned int mode, char out[11]) {
     out[10] = '\0';
 }
 
+int platform_stream_file_to_stdout(const char *path) {
+    char buffer[4096];
+    int fd;
+    long bytes_read;
+
+    fd = platform_open_read(path);
+    if (fd < 0) return -1;
+    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+        if (rt_write_all(1, buffer, (size_t)bytes_read) != 0) {
+            (void)platform_close(fd);
+            return -1;
+        }
+    }
+    (void)platform_close(fd);
+    return bytes_read < 0 ? -1 : 0;
+}
+
 int platform_get_identity(PlatformIdentity *identity_out) {
     const char *username;
 
@@ -1138,9 +1318,201 @@ int platform_spawn_process(
     return -1;
 }
 
+int platform_spawn_process_ex(
+    char *const argv[],
+    int stdin_fd,
+    int stdout_fd,
+    const char *input_path,
+    const char *output_path,
+    int output_append,
+    const char *working_directory,
+    const char *drop_user,
+    const char *drop_group,
+    int *pid_out
+) {
+    (void)working_directory;
+    (void)drop_user;
+    (void)drop_group;
+    return platform_spawn_process(argv, stdin_fd, stdout_fd, input_path, output_path, output_append, pid_out);
+}
+
 int platform_wait_process(int pid, int *exit_status_out) {
     (void)pid;
     (void)exit_status_out;
+    return -1;
+}
+
+int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {
+    (void)pid;
+    if (finished_out != 0) *finished_out = 0;
+    if (exit_status_out != 0) *exit_status_out = 0;
+    return -1;
+}
+
+int platform_wait_process_timeout(
+    int pid,
+    unsigned long long timeout_milliseconds,
+    unsigned long long kill_after_milliseconds,
+    int signal_number,
+    int preserve_status,
+    int *exit_status_out
+) {
+    (void)timeout_milliseconds;
+    (void)kill_after_milliseconds;
+    (void)signal_number;
+    (void)preserve_status;
+    return platform_wait_process(pid, exit_status_out);
+}
+
+int platform_create_pipe(int pipe_fds[2]) {
+    void *read_pipe = 0;
+    void *write_pipe = 0;
+    int read_fd;
+    int write_fd;
+
+    if (pipe_fds == 0) return -1;
+    if (CreatePipe(&read_pipe, &write_pipe, 0, 0) == 0) return -1;
+    read_fd = windows_allocate_fd(read_pipe, WIN_FD_KIND_FILE);
+    write_fd = windows_allocate_fd(write_pipe, WIN_FD_KIND_FILE);
+    if (read_fd < 0 || write_fd < 0) {
+        if (read_fd >= 0) (void)platform_close(read_fd); else (void)CloseHandle(read_pipe);
+        if (write_fd >= 0) (void)platform_close(write_fd); else (void)CloseHandle(write_pipe);
+        return -1;
+    }
+    pipe_fds[0] = read_fd;
+    pipe_fds[1] = write_fd;
+    return 0;
+}
+
+int platform_drop_privileges(const char *username, const char *groupname) {
+    (void)username;
+    (void)groupname;
+    return -1;
+}
+
+int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out == 0) return -1;
+    *count_out = 0U;
+    return 0;
+}
+
+int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out == 0) return -1;
+    *count_out = 0U;
+    return 0;
+}
+
+int platform_list_network_addresses(
+    PlatformNetworkAddress *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)family_filter;
+    (void)ifname_filter;
+    if (count_out == 0) return -1;
+    *count_out = 0U;
+    return 0;
+}
+
+int platform_list_network_routes(
+    PlatformRouteEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int family_filter,
+    const char *ifname_filter
+) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)family_filter;
+    (void)ifname_filter;
+    if (count_out == 0) return -1;
+    *count_out = 0U;
+    return 0;
+}
+
+int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_value, int set_mtu) {
+    (void)ifname;
+    (void)want_up;
+    (void)mtu_value;
+    (void)set_mtu;
+    return -1;
+}
+
+int platform_network_address_change(const char *ifname, const char *cidr, int add) {
+    (void)ifname;
+    (void)cidr;
+    (void)add;
+    return -1;
+}
+
+int platform_network_route_change(const char *destination, const char *gateway, const char *ifname, int add) {
+    (void)destination;
+    (void)gateway;
+    (void)ifname;
+    (void)add;
+    return -1;
+}
+
+int platform_dns_lookup(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    int family_filter,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    (void)server;
+    (void)port;
+    (void)name;
+    (void)family_filter;
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out != 0) *count_out = 0U;
+    return -1;
+}
+
+int platform_dns_query(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short record_type,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    (void)record_type;
+    return platform_dns_lookup(server, port, name, PLATFORM_NETWORK_FAMILY_ANY, entries_out, entry_capacity, count_out);
+}
+
+int platform_dhcp_request(
+    const char *ifname,
+    const char *server,
+    unsigned int server_port,
+    unsigned int client_port,
+    unsigned int timeout_milliseconds,
+    PlatformDhcpLease *lease_out
+) {
+    (void)ifname;
+    (void)server;
+    (void)server_port;
+    (void)client_port;
+    (void)timeout_milliseconds;
+    if (lease_out != 0) rt_memset(lease_out, 0, sizeof(*lease_out));
+    return -1;
+}
+
+int platform_ping_host(const char *host, const PlatformPingOptions *options) {
+    (void)host;
+    (void)options;
     return -1;
 }
 
