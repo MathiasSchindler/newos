@@ -12,6 +12,79 @@ assert_file_contains "$WORK_DIR/file_text.out" 'ASCII text' "file did not recogn
 assert_command_succeeds "$ROOT_DIR/build/file" -i "$WORK_DIR/text.txt" > "$WORK_DIR/file_mime.out"
 assert_file_contains "$WORK_DIR/file_mime.out" 'text/plain' "file -i did not report a text mime type"
 
+assert_command_succeeds "$ROOT_DIR/build/file" -b "$WORK_DIR/text.txt" > "$WORK_DIR/file_brief.out"
+assert_file_contains "$WORK_DIR/file_brief.out" '^ASCII text$' "file -b did not suppress the filename prefix"
+
+assert_command_succeeds "$ROOT_DIR/build/file" --verbose "$WORK_DIR/text.txt" > "$WORK_DIR/file_verbose.out"
+assert_file_contains "$WORK_DIR/file_verbose.out" '^  type: ASCII text$' "file --verbose did not include the detected type"
+assert_file_contains "$WORK_DIR/file_verbose.out" '^  mime: text/plain' "file --verbose did not include the MIME type"
+assert_file_contains "$WORK_DIR/file_verbose.out" '^  size: 11 bytes$' "file --verbose did not include the file size"
+assert_file_contains "$WORK_DIR/file_verbose.out" '^  mode: ' "file --verbose did not include the mode"
+
+printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\002\000\000\000\003' > "$WORK_DIR/sample.png"
+assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/sample.png" > "$WORK_DIR/file_png.out"
+assert_file_contains "$WORK_DIR/file_png.out" 'PNG image data, 2 x 3' "file did not report PNG dimensions"
+
+{
+    printf 'MZ'
+    dd if=/dev/zero bs=1 count=58 2>/dev/null
+    printf '\200\000\000\000'
+    dd if=/dev/zero bs=1 count=64 2>/dev/null
+    printf 'PE\000\000'
+    printf '\144\206'
+    printf '\003\000'
+    dd if=/dev/zero bs=1 count=12 2>/dev/null
+    printf '\110\000'
+    printf '\042\000'
+    printf '\013\002'
+    printf '\016\000'
+    printf '\000\002\000\000'
+    dd if=/dev/zero bs=1 count=8 2>/dev/null
+    printf '\000\020\000\000'
+    printf '\000\020\000\000'
+    printf '\000\000\000\100\001\000\000\000'
+    printf '\000\020\000\000'
+    printf '\000\002\000\000'
+    printf '\006\000\000\000'
+    dd if=/dev/zero bs=1 count=4 2>/dev/null
+    printf '\006\000\000\000'
+    dd if=/dev/zero bs=1 count=4 2>/dev/null
+    printf '\000\100\000\000'
+    printf '\000\002\000\000'
+    dd if=/dev/zero bs=1 count=4 2>/dev/null
+    printf '\003\000'
+    printf '\140\201'
+    printf '.text\000\000\000'
+    printf '\043\001\000\000'
+    printf '\000\020\000\000'
+    printf '\000\002\000\000'
+    printf '\000\002\000\000'
+    dd if=/dev/zero bs=1 count=12 2>/dev/null
+    printf '\040\000\000\140'
+    printf '.rdata\000\000'
+    printf '\200\000\000\000'
+    printf '\000\040\000\000'
+    printf '\000\002\000\000'
+    printf '\000\004\000\000'
+    dd if=/dev/zero bs=1 count=12 2>/dev/null
+    printf '\100\000\000\100'
+    printf '.pdata\000\000'
+    printf '\100\000\000\000'
+    printf '\000\060\000\000'
+    printf '\000\002\000\000'
+    printf '\000\006\000\000'
+    dd if=/dev/zero bs=1 count=12 2>/dev/null
+    printf '\100\000\000\100'
+} > "$WORK_DIR/pe64.exe"
+assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/pe64.exe" > "$WORK_DIR/file_pe.out"
+assert_file_contains "$WORK_DIR/file_pe.out" 'PE/COFF executable PE32+ x86-64, console, 3 sections' "file did not report PE/COFF executable details"
+assert_command_succeeds "$ROOT_DIR/build/file" --verbose "$WORK_DIR/pe64.exe" > "$WORK_DIR/file_pe_verbose.out"
+assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^  magic: PE/COFF$' "file --verbose did not include the PE/COFF magic label"
+assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^  pe-entry-rva: 0x1000$' "file --verbose did not include the PE entry RVA"
+assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^  pe-image-base: 0x140000000$' "file --verbose did not include the PE image base"
+assert_file_contains "$WORK_DIR/file_pe_verbose.out" 'dynamic-base' "file --verbose did not decode PE DLL characteristics"
+assert_file_contains "$WORK_DIR/file_pe_verbose.out" '^    \.text: rva=0x1000' "file --verbose did not list PE sections"
+
 assert_command_succeeds "$ROOT_DIR/build/od" "$WORK_DIR/text.txt" > "$WORK_DIR/od.out"
 assert_file_contains "$WORK_DIR/od.out" '^0000000 ' "od did not print the expected offset prefix"
 
@@ -45,6 +118,11 @@ int main(void) {
 EOF
 
 assert_command_succeeds cc -o "$WORK_DIR/probe" "$WORK_DIR/probe.c"
+
+assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/probe" > "$WORK_DIR/file_probe.out"
+if ! grep -q 'ELF ' "$WORK_DIR/file_probe.out"; then
+    assert_file_contains "$WORK_DIR/file_probe.out" 'Mach-O ' "file did not report richer executable details"
+fi
 
 assert_command_succeeds "$ROOT_DIR/build/readelf" -h "$WORK_DIR/probe" > "$WORK_DIR/readelf.out"
 if ! grep -q '^ELF Header:' "$WORK_DIR/readelf.out"; then
