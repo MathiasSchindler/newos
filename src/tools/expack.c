@@ -27,8 +27,8 @@
 #define EXPACK_BYTE_RUN_PAYLOAD_SIZE_OFFSET 294U
 #define EXPACK_LZREP_ORIGINAL_SIZE_OFFSET 379U
 #define EXPACK_LZREP_PAYLOAD_SIZE_OFFSET 387U
-#define EXPACK_LZSS_BCJ_ORIGINAL_SIZE_OFFSET 412U
-#define EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET 420U
+#define EXPACK_LZSS_BCJ_ORIGINAL_SIZE_OFFSET 448U
+#define EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET 456U
 #define EXPACK_LZREP_WINDOW_SIZE 2048U
 #define EXPACK_LZREP_MAX_EXPLICIT_MATCH 18U
 #define EXPACK_LZREP_MAX_REPEAT_MATCH 130U
@@ -69,6 +69,7 @@ typedef struct {
 } ExpackLoadRange;
 
 static int expack_compress_lzss_profile(const ExpackLzssProfile *profile, const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out);
+static void expack_write_candidate_name(const ExpackCandidate *candidate);
 
 static const unsigned char expack_stub_x86_64[] = {
     0x31, 0xed, 0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0x64, 0x01, 0x00, 0x00,
@@ -201,32 +202,35 @@ static const unsigned char expack_lzrep_stub_x86_64[] = {
 };
 
 static const unsigned char expack_lzss_bcj_stub_x86_64[] = {
-    0x31, 0xed, 0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0x90, 0x01, 0x00, 0x00,
+    0x31, 0xed, 0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0xb4, 0x01, 0x00, 0x00,
     0x31, 0xff, 0x4c, 0x89, 0xf6, 0xba, 0x03, 0x00, 0x00, 0x00, 0x41, 0xba,
     0x22, 0x00, 0x00, 0x00, 0x41, 0xb8, 0xff, 0xff, 0xff, 0xff, 0x45, 0x31,
     0xc9, 0xb8, 0x09, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x0f,
-    0x88, 0x5a, 0x01, 0x00, 0x00, 0x49, 0x89, 0xc5, 0x4f, 0x8d, 0x7c, 0x35,
-    0x00, 0x48, 0x8d, 0x1d, 0x70, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x2d, 0x59,
+    0x88, 0x7e, 0x01, 0x00, 0x00, 0x49, 0x89, 0xc5, 0x4f, 0x8d, 0x7c, 0x35,
+    0x00, 0x48, 0x8d, 0x1d, 0x94, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x2d, 0x7d,
     0x01, 0x00, 0x00, 0x48, 0x01, 0xdd, 0x4c, 0x89, 0xef, 0x45, 0x31, 0xc0,
     0x45, 0x31, 0xc9, 0x4c, 0x39, 0xff, 0x0f, 0x83, 0x95, 0x00, 0x00, 0x00,
-    0x45, 0x85, 0xc9, 0x75, 0x16, 0x48, 0x39, 0xeb, 0x0f, 0x83, 0x21, 0x01,
+    0x45, 0x85, 0xc9, 0x75, 0x16, 0x48, 0x39, 0xeb, 0x0f, 0x83, 0x45, 0x01,
     0x00, 0x00, 0x44, 0x0f, 0xb6, 0x03, 0x48, 0xff, 0xc3, 0x41, 0xb9, 0x08,
     0x00, 0x00, 0x00, 0x44, 0x89, 0xc0, 0x83, 0xe0, 0x01, 0x41, 0xd1, 0xe8,
     0x41, 0xff, 0xc9, 0x85, 0xc0, 0x75, 0x15, 0x48, 0x39, 0xeb, 0x0f, 0x83,
-    0xfb, 0x00, 0x00, 0x00, 0x8a, 0x03, 0x48, 0xff, 0xc3, 0x88, 0x07, 0x48,
+    0x1f, 0x01, 0x00, 0x00, 0x8a, 0x03, 0x48, 0xff, 0xc3, 0x88, 0x07, 0x48,
     0xff, 0xc7, 0xeb, 0xb7, 0x48, 0x8d, 0x43, 0x02, 0x48, 0x39, 0xe8, 0x0f,
-    0x87, 0xe2, 0x00, 0x00, 0x00, 0x0f, 0xb6, 0x03, 0x0f, 0xb6, 0x4b, 0x01,
+    0x87, 0x06, 0x01, 0x00, 0x00, 0x0f, 0xb6, 0x03, 0x0f, 0xb6, 0x4b, 0x01,
     0x48, 0x83, 0xc3, 0x02, 0x89, 0xca, 0xc1, 0xea, 0x03, 0xc1, 0xe2, 0x08,
     0x09, 0xc2, 0xff, 0xc2, 0x83, 0xe1, 0x07, 0x83, 0xc1, 0x03, 0x48, 0x89,
-    0xfe, 0x48, 0x29, 0xd6, 0x4c, 0x39, 0xee, 0x0f, 0x82, 0xb6, 0x00, 0x00,
-    0x00, 0x4c, 0x39, 0xff, 0x0f, 0x83, 0xad, 0x00, 0x00, 0x00, 0x8a, 0x06,
+    0xfe, 0x48, 0x29, 0xd6, 0x4c, 0x39, 0xee, 0x0f, 0x82, 0xda, 0x00, 0x00,
+    0x00, 0x4c, 0x39, 0xff, 0x0f, 0x83, 0xd1, 0x00, 0x00, 0x00, 0x8a, 0x06,
     0x48, 0xff, 0xc6, 0x88, 0x07, 0x48, 0xff, 0xc7, 0xff, 0xc9, 0x75, 0xe9,
-    0xe9, 0x62, 0xff, 0xff, 0xff, 0x48, 0x39, 0xeb, 0x0f, 0x85, 0x91, 0x00,
-    0x00, 0x00, 0x4c, 0x89, 0xee, 0x49, 0x8d, 0x7f, 0xfb, 0x48, 0x39, 0xfe,
-    0x77, 0x29, 0x8a, 0x06, 0x3c, 0xe8, 0x74, 0x04, 0x3c, 0xe9, 0x75, 0x17,
+    0xe9, 0x62, 0xff, 0xff, 0xff, 0x48, 0x39, 0xeb, 0x0f, 0x85, 0xb5, 0x00,
+    0x00, 0x00, 0x4c, 0x89, 0xee, 0x49, 0x8d, 0x7f, 0xfa, 0x48, 0x39, 0xfe,
+    0x77, 0x4d, 0x8a, 0x06, 0x3c, 0xe8, 0x74, 0x28, 0x3c, 0xe9, 0x74, 0x24,
+    0x3c, 0x0f, 0x75, 0x37, 0x8a, 0x46, 0x01, 0x24, 0xf0, 0x3c, 0x80, 0x75,
+    0x2e, 0x8b, 0x46, 0x02, 0x48, 0x89, 0xf2, 0x4c, 0x29, 0xea, 0x83, 0xc2,
+    0x06, 0x29, 0xd0, 0x89, 0x46, 0x02, 0x48, 0x83, 0xc6, 0x06, 0xeb, 0x1a,
     0x8b, 0x46, 0x01, 0x48, 0x89, 0xf2, 0x4c, 0x29, 0xea, 0x83, 0xc2, 0x05,
     0x29, 0xd0, 0x89, 0x46, 0x01, 0x48, 0x83, 0xc6, 0x05, 0xeb, 0x03, 0x48,
-    0xff, 0xc6, 0x48, 0x39, 0xfe, 0x76, 0xd7, 0xb8, 0x3f, 0x01, 0x00, 0x00,
+    0xff, 0xc6, 0x48, 0x39, 0xfe, 0x76, 0xb3, 0xb8, 0x3f, 0x01, 0x00, 0x00,
     0x48, 0x8d, 0x3d, 0x6d, 0x00, 0x00, 0x00, 0x31, 0xf6, 0x0f, 0x05, 0x48,
     0x85, 0xc0, 0x78, 0x47, 0x89, 0xc3, 0x4c, 0x89, 0xee, 0x4c, 0x89, 0xf2,
     0x48, 0x85, 0xd2, 0x74, 0x16, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xdf,
@@ -553,6 +557,11 @@ static void expack_x86_bcj_transform(unsigned char *data, size_t size) {
             value += (unsigned int)(position + 5U);
             archive_store_u32_le(data + position + 1U, value);
             position += 5U;
+        } else if (position + 5U < size && data[position] == 0x0fU && (data[position + 1U] & 0xf0U) == 0x80U) {
+            unsigned int value = archive_read_u32_le(data + position + 2U);
+            value += (unsigned int)(position + 6U);
+            archive_store_u32_le(data + position + 2U, value);
+            position += 6U;
         } else {
             position += 1U;
         }
@@ -851,7 +860,19 @@ static int expack_consider_candidate(ExpackCandidate *selected, int *have_select
     return 0;
 }
 
-static int expack_select_best_payload(const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out) {
+static void expack_report_candidate(const ExpackCandidate *candidate) {
+    rt_write_cstr(1, "  ");
+    expack_write_candidate_name(candidate);
+    rt_write_cstr(1, ": payload ");
+    rt_write_uint(1, (unsigned long long)candidate->payload_size);
+    rt_write_cstr(1, ", stub ");
+    rt_write_uint(1, (unsigned long long)candidate->stub_size);
+    rt_write_cstr(1, ", packed ");
+    rt_write_uint(1, candidate->packed_size);
+    rt_write_cstr(1, "\n");
+}
+
+static int expack_select_best_payload(const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates) {
     unsigned int profile_index;
     int have_selected = 0;
 
@@ -871,6 +892,7 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
             continue;
         }
         candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+        if (report_candidates) expack_report_candidate(&candidate);
         expack_consider_candidate(selected_out, &have_selected, &candidate);
     }
 
@@ -886,6 +908,7 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.packed_size = 0ULL;
         if (expack_compress_zero_run(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
             candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            if (report_candidates) expack_report_candidate(&candidate);
             expack_consider_candidate(selected_out, &have_selected, &candidate);
         }
     }
@@ -902,6 +925,7 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.packed_size = 0ULL;
         if (expack_compress_byte_run(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
             candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            if (report_candidates) expack_report_candidate(&candidate);
             expack_consider_candidate(selected_out, &have_selected, &candidate);
         }
     }
@@ -918,6 +942,7 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.packed_size = 0ULL;
         if (expack_compress_lzrep(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
             candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            if (report_candidates) expack_report_candidate(&candidate);
             expack_consider_candidate(selected_out, &have_selected, &candidate);
         }
     }
@@ -934,6 +959,7 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.packed_size = 0ULL;
         if (expack_compress_lzss_bcj(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
             candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            if (report_candidates) expack_report_candidate(&candidate);
             expack_consider_candidate(selected_out, &have_selected, &candidate);
         }
     }
@@ -971,6 +997,51 @@ static void expack_write_elf_header(unsigned char *header, unsigned long long fi
     archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 48, 0x1000ULL);
 }
 
+static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsigned int *original_size_offset_out, unsigned int *payload_size_offset_out) {
+    if (candidate->codec == EXPACK_CODEC_LZSS) {
+        *original_size_offset_out = EXPACK_LZSS_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_LZSS_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    if (candidate->codec == EXPACK_CODEC_ZERO_RUN) {
+        *original_size_offset_out = EXPACK_ZERO_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_ZERO_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    if (candidate->codec == EXPACK_CODEC_BYTE_RUN) {
+        *original_size_offset_out = EXPACK_BYTE_RUN_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_BYTE_RUN_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    if (candidate->codec == EXPACK_CODEC_LZREP) {
+        *original_size_offset_out = EXPACK_LZREP_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_LZREP_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
+        *original_size_offset_out = EXPACK_LZSS_BCJ_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    return -1;
+}
+
+static int expack_patch_stub(unsigned char *stub, const ExpackCandidate *candidate, size_t original_size) {
+    unsigned int original_size_offset;
+    unsigned int payload_size_offset;
+
+    if (expack_candidate_size_offsets(candidate, &original_size_offset, &payload_size_offset) != 0) {
+        return -1;
+    }
+    if (candidate->codec == EXPACK_CODEC_LZSS) {
+        stub[EXPACK_LZSS_STUB_LENGTH_SHIFT_OFFSET] = candidate->lzss_profile->length_shift;
+        stub[EXPACK_LZSS_STUB_LENGTH_MASK_OFFSET] = candidate->lzss_profile->length_mask;
+    }
+    archive_store_u64_le(stub + original_size_offset, (unsigned long long)original_size);
+    archive_store_u64_le(stub + payload_size_offset, (unsigned long long)candidate->payload_size);
+    return 0;
+}
+
 static int expack_write_packed_elf(const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
     unsigned char header[EXPACK_ELF_CODE_OFFSET];
     unsigned char stub[sizeof(expack_lzss_bcj_stub_x86_64)];
@@ -979,24 +1050,7 @@ static int expack_write_packed_elf(const char *output_path, const ExpackCandidat
 
     expack_write_elf_header(header, file_size);
     memcpy(stub, candidate->stub, candidate->stub_size);
-    if (candidate->codec == EXPACK_CODEC_LZSS) {
-        stub[EXPACK_LZSS_STUB_LENGTH_SHIFT_OFFSET] = candidate->lzss_profile->length_shift;
-        stub[EXPACK_LZSS_STUB_LENGTH_MASK_OFFSET] = candidate->lzss_profile->length_mask;
-        archive_store_u64_le(stub + EXPACK_LZSS_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
-        archive_store_u64_le(stub + EXPACK_LZSS_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-    } else if (candidate->codec == EXPACK_CODEC_ZERO_RUN) {
-        archive_store_u64_le(stub + EXPACK_ZERO_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
-        archive_store_u64_le(stub + EXPACK_ZERO_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-    } else if (candidate->codec == EXPACK_CODEC_BYTE_RUN) {
-        archive_store_u64_le(stub + EXPACK_BYTE_RUN_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
-        archive_store_u64_le(stub + EXPACK_BYTE_RUN_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-    } else if (candidate->codec == EXPACK_CODEC_LZREP) {
-        archive_store_u64_le(stub + EXPACK_LZREP_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
-        archive_store_u64_le(stub + EXPACK_LZREP_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-    } else if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
-        archive_store_u64_le(stub + EXPACK_LZSS_BCJ_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
-        archive_store_u64_le(stub + EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-    } else {
+    if (expack_patch_stub(stub, candidate, original_size) != 0) {
         return -1;
     }
 
@@ -1062,6 +1116,19 @@ static void expack_write_summary(size_t input_size, size_t image_size, int image
     rt_write_cstr(1, " bytes\n");
 }
 
+static void expack_write_analyze_header(size_t input_size, size_t image_size, int image_changed) {
+    rt_write_cstr(1, "expack analyze: input ");
+    rt_write_uint(1, (unsigned long long)input_size);
+    rt_write_cstr(1, " bytes, exec image ");
+    rt_write_uint(1, (unsigned long long)image_size);
+    if (image_changed) {
+        rt_write_cstr(1, " bytes (reconstructed)");
+    } else {
+        rt_write_cstr(1, " bytes");
+    }
+    rt_write_cstr(1, "\n");
+}
+
 int main(int argc, char **argv) {
     const char *input_path = 0;
     const char *output_path = 0;
@@ -1070,6 +1137,7 @@ int main(int argc, char **argv) {
     ExpackImage image;
     ExpackCandidate selected;
     size_t input_size = 0U;
+    int analyze = 0;
     int quiet = 0;
     ToolOptState options;
     int opt_result;
@@ -1085,10 +1153,12 @@ int main(int argc, char **argv) {
     image.size = 0U;
     image.changed = 0;
 
-    tool_opt_init(&options, argc, argv, EXPACK_TOOL_NAME, "[-q] INPUT OUTPUT");
+    tool_opt_init(&options, argc, argv, EXPACK_TOOL_NAME, "[-q] INPUT OUTPUT\n       expack --analyze INPUT");
     while ((opt_result = tool_opt_next(&options)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(options.flag, "-q") == 0 || rt_strcmp(options.flag, "--quiet") == 0) {
             quiet = 1;
+        } else if (rt_strcmp(options.flag, "--analyze") == 0) {
+            analyze = 1;
         } else {
             tool_write_error(EXPACK_TOOL_NAME, "unknown option: ", options.flag);
             tool_write_usage(EXPACK_TOOL_NAME, options.usage_suffix);
@@ -1102,13 +1172,13 @@ int main(int argc, char **argv) {
     if (opt_result == TOOL_OPT_ERROR) {
         return 1;
     }
-    if (argc - options.argi != 2) {
+    if ((!analyze && argc - options.argi != 2) || (analyze && argc - options.argi != 1)) {
         tool_write_usage(EXPACK_TOOL_NAME, options.usage_suffix);
         return 1;
     }
 
     input_path = argv[options.argi];
-    output_path = argv[options.argi + 1];
+    output_path = analyze ? 0 : argv[options.argi + 1];
     if (expack_load_file(input_path, &input_data, &input_size) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "cannot read input: ", input_path);
         return 1;
@@ -1124,11 +1194,25 @@ int main(int argc, char **argv) {
         rt_free(input_data);
         return 1;
     }
-    if (expack_select_best_payload(image.data, image.size, &selected) != 0) {
+    if (analyze) {
+        expack_write_analyze_header(input_size, image.size, image.changed);
+    }
+    if (expack_select_best_payload(image.data, image.size, &selected, analyze) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "compression failed", 0);
         rt_free(image.data);
         rt_free(input_data);
         return 1;
+    }
+    if (analyze) {
+        rt_write_cstr(1, "selected: ");
+        expack_write_candidate_name(&selected);
+        rt_write_cstr(1, " (packed ");
+        rt_write_uint(1, selected.packed_size);
+        rt_write_cstr(1, " bytes)\n");
+        expack_candidate_release(&selected);
+        rt_free(image.data);
+        rt_free(input_data);
+        return 0;
     }
     if (expack_write_packed_elf(output_path, &selected, image.size) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "cannot write packed output: ", output_path);
