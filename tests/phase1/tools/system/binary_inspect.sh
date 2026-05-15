@@ -33,8 +33,10 @@ assert_file_contains "$WORK_DIR/file_png.out" 'PNG image data, 2 x 3' "file did 
     printf 'PE\000\000'
     printf '\144\206'
     printf '\003\000'
-    dd if=/dev/zero bs=1 count=12 2>/dev/null
-    printf '\110\000'
+    dd if=/dev/zero bs=1 count=4 2>/dev/null
+    printf '\120\002\000\000'
+    printf '\001\000\000\000'
+    printf '\360\000'
     printf '\042\000'
     printf '\013\002'
     printf '\016\000'
@@ -54,6 +56,10 @@ assert_file_contains "$WORK_DIR/file_png.out" 'PNG image data, 2 x 3' "file did 
     dd if=/dev/zero bs=1 count=4 2>/dev/null
     printf '\003\000'
     printf '\140\201'
+    dd if=/dev/zero bs=1 count=88 2>/dev/null
+    printf '\000\060\000\000'
+    printf '\034\000\000\000'
+    dd if=/dev/zero bs=1 count=72 2>/dev/null
     printf '.text\000\000\000'
     printf '\043\001\000\000'
     printf '\000\020\000\000'
@@ -75,10 +81,10 @@ assert_file_contains "$WORK_DIR/file_png.out" 'PNG image data, 2 x 3' "file did 
     printf '\040\002\000\000'
     dd if=/dev/zero bs=1 count=12 2>/dev/null
     printf '\100\000\000\100'
-    dd if=/dev/zero bs=1 count=168 2>/dev/null
     printf '\220\220\303\000PE text data'
     printf 'PE rdata sample!'
     printf 'PE pdata sample!'
+    printf 'PE_SYMBOL_TABLE!'
 } > "$WORK_DIR/pe64.exe"
 assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/pe64.exe" > "$WORK_DIR/file_pe.out"
 assert_file_contains "$WORK_DIR/file_pe.out" 'PE/COFF executable PE32+ x86-64, console, 3 sections' "file did not report PE/COFF executable details"
@@ -97,6 +103,18 @@ assert_file_contains "$WORK_DIR/objdump_pe_contents.out" '^Contents of section \
 assert_file_contains "$WORK_DIR/objdump_pe_contents.out" '90 90 c3 00' "objdump -s did not include PE section bytes"
 assert_command_succeeds "$ROOT_DIR/build/objdump" -t "$WORK_DIR/pe64.exe" > "$WORK_DIR/objdump_pe_symbols.out"
 assert_file_contains "$WORK_DIR/objdump_pe_symbols.out" 'Symbol dumping for PE/COFF inputs is not implemented yet\.' "objdump -t did not report the PE symbol limitation"
+
+assert_command_succeeds "$ROOT_DIR/build/strip" -v -o "$WORK_DIR/pe64.stripped.exe" "$WORK_DIR/pe64.exe" > "$WORK_DIR/strip_pe_verbose.out"
+assert_file_contains "$WORK_DIR/strip_pe_verbose.out" 'PE/COFF' "strip -v did not report PE/COFF handling"
+assert_file_contains "$WORK_DIR/strip_pe_verbose.out" 'cleared PE/COFF symbol table and debug directory' "strip did not report PE symbol/debug stripping"
+assert_text_equals "$($ROOT_DIR/build/od -An -t x1 -j 140 -N 8 "$WORK_DIR/pe64.stripped.exe" | "$ROOT_DIR/build/tr" -d ' \n')" "0000000000000000" "strip did not clear PE/COFF symbol table fields"
+assert_text_equals "$($ROOT_DIR/build/od -An -t x1 -j 312 -N 8 "$WORK_DIR/pe64.stripped.exe" | "$ROOT_DIR/build/tr" -d ' \n')" "0000000000000000" "strip did not clear PE/COFF debug data-directory fields"
+
+assert_command_succeeds "$ROOT_DIR/build/strip" --dry-run -v -o "$WORK_DIR/pe64.dry.exe" "$WORK_DIR/pe64.exe" > "$WORK_DIR/strip_dry_run.out"
+assert_file_contains "$WORK_DIR/strip_dry_run.out" 'dry-run' "strip --dry-run did not report dry-run mode"
+if [ -e "$WORK_DIR/pe64.dry.exe" ]; then
+    fail "strip --dry-run should not create an output file"
+fi
 
 assert_command_succeeds "$ROOT_DIR/build/od" "$WORK_DIR/text.txt" > "$WORK_DIR/od.out"
 assert_file_contains "$WORK_DIR/od.out" '^0000000 ' "od did not print the expected offset prefix"
@@ -131,6 +149,7 @@ int main(void) {
 EOF
 
 assert_command_succeeds cc -o "$WORK_DIR/probe" "$WORK_DIR/probe.c"
+assert_command_succeeds cc -c -o "$WORK_DIR/probe.o" "$WORK_DIR/probe.c"
 
 assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/probe" > "$WORK_DIR/file_probe.out"
 if ! grep -q 'ELF ' "$WORK_DIR/file_probe.out"; then
@@ -153,8 +172,27 @@ if ! grep -q 'file format elf' "$WORK_DIR/objdump.out"; then
     assert_file_contains "$WORK_DIR/objdump_macho_contents.out" '^Contents of section __TEXT,__text$' "objdump -s did not dump Mach-O section contents"
 fi
 
-assert_command_succeeds "$ROOT_DIR/build/strip" -o "$WORK_DIR/probe.stripped" "$WORK_DIR/probe"
+assert_command_succeeds "$ROOT_DIR/build/strip" -v -o "$WORK_DIR/probe.stripped" "$WORK_DIR/probe" > "$WORK_DIR/strip_probe_verbose.out"
 [ -f "$WORK_DIR/probe.stripped" ] || fail "strip did not create the requested output file"
 orig_size=$(wc -c < "$WORK_DIR/probe" | tr -d ' ')
 stripped_size=$(wc -c < "$WORK_DIR/probe.stripped" | tr -d ' ')
 [ "$stripped_size" -le "$orig_size" ] || fail "strip output was unexpectedly larger than the original binary"
+assert_file_contains "$WORK_DIR/strip_probe_verbose.out" 'action: ' "strip -v did not report the action taken"
+if grep -q 'ELF ' "$WORK_DIR/file_probe.out"; then
+    assert_file_contains "$WORK_DIR/strip_probe_verbose.out" 'ELF64 little-endian' "strip -v did not report ELF handling"
+    assert_command_succeeds "$ROOT_DIR/build/readelf" -h "$WORK_DIR/probe.stripped" > "$WORK_DIR/readelf_stripped.out"
+    assert_file_contains "$WORK_DIR/readelf_stripped.out" 'Section header offset:[[:space:]]*0' "strip did not clear the ELF section header offset"
+else
+    assert_file_contains "$WORK_DIR/strip_probe_verbose.out" 'Mach-O 64-bit little-endian' "strip -v did not report Mach-O handling"
+    assert_file_contains "$WORK_DIR/strip_probe_verbose.out" 'mach-o-load-commands:' "strip -v did not include Mach-O load-command diagnostics"
+    assert_file_contains "$WORK_DIR/strip_probe_verbose.out" 'mach-o-symtab:' "strip -v did not include Mach-O symbol diagnostics"
+fi
+
+if "$ROOT_DIR/build/strip" -o "$WORK_DIR/probe_obj.stripped" "$WORK_DIR/probe.o" >/dev/null 2>&1; then
+    fail "strip should reject relocatable object files until section rewriting is implemented"
+fi
+
+assert_command_succeeds "$ROOT_DIR/build/ar" r "$WORK_DIR/probe.a" "$WORK_DIR/probe.o" >/dev/null
+assert_command_succeeds "$ROOT_DIR/build/strip" --dry-run -v "$WORK_DIR/probe.a" > "$WORK_DIR/strip_archive_verbose.out"
+assert_file_contains "$WORK_DIR/strip_archive_verbose.out" 'ar archive' "strip -v did not identify ar archives"
+assert_file_contains "$WORK_DIR/strip_archive_verbose.out" 'archive-members:' "strip -v did not report archive member diagnostics"
