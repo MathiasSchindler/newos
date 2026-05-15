@@ -5,6 +5,7 @@
 #define WTF_BUFFER_CHUNK 4096U
 #define WTF_HEADER_LIMIT 16384U
 #define WTF_URL_LIMIT 2048U
+#define WTF_DEFAULT_WRAP_COLUMNS 80U
 
 typedef struct {
     int https;
@@ -517,6 +518,94 @@ static void write_styled_line(int fd, int color_mode, int style, const char *tex
     tool_style_end(fd, color_mode);
 }
 
+static unsigned int output_columns(void) {
+    unsigned int rows = 0U;
+    unsigned int columns = 0U;
+    const char *columns_env = platform_getenv("COLUMNS");
+    unsigned long long parsed_columns = 0ULL;
+
+    if (platform_get_terminal_size(1, &rows, &columns) == 0 && columns > 0U) return columns;
+    if (columns_env != 0 && rt_parse_uint(columns_env, &parsed_columns) == 0 && parsed_columns > 0ULL && parsed_columns <= 10000ULL) {
+        return (unsigned int)parsed_columns;
+    }
+    return WTF_DEFAULT_WRAP_COLUMNS;
+}
+
+static size_t skip_leading_wrap_spaces(const char *text, size_t length, size_t start) {
+    size_t index = start;
+    RtTextSegment segment;
+
+    while (index < length && rt_text_next_segment(text, length, index, &segment) == 0) {
+        if (!rt_text_segment_is_space(text, length, &segment)) break;
+        index = segment.end;
+    }
+    return index;
+}
+
+static size_t find_wrap_split(const char *text, size_t length, size_t start, unsigned int columns, size_t *next_start_out) {
+    size_t index = start;
+    size_t split = start;
+    size_t last_space_start = 0U;
+    size_t last_space_end = 0U;
+    unsigned long long width = 0ULL;
+    RtTextSegment segment;
+
+    while (index < length && rt_text_next_segment(text, length, index, &segment) == 0) {
+        unsigned long long next_width = rt_text_apply_segment_width(width, &segment);
+
+        if (next_width > (unsigned long long)columns) {
+            if (last_space_start > start) {
+                *next_start_out = skip_leading_wrap_spaces(text, length, last_space_end);
+                return last_space_start;
+            }
+            if (split > start) {
+                *next_start_out = split;
+                return split;
+            }
+            *next_start_out = segment.end;
+            return segment.end;
+        }
+        if (rt_text_segment_is_space(text, length, &segment)) {
+            last_space_start = segment.start;
+            last_space_end = segment.end;
+        }
+        split = segment.end;
+        width = next_width;
+        index = segment.end;
+    }
+
+    *next_start_out = length;
+    return length;
+}
+
+static int write_wrapped_span(int fd, const char *text, size_t length, unsigned int columns) {
+    size_t start = skip_leading_wrap_spaces(text, length, 0U);
+
+    while (start < length) {
+        size_t next_start = length;
+        size_t split = find_wrap_split(text, length, start, columns, &next_start);
+
+        if (split > start && rt_write_all(fd, text + start, split - start) != 0) return -1;
+        if (next_start < length && rt_write_char(fd, '\n') != 0) return -1;
+        start = skip_leading_wrap_spaces(text, length, next_start);
+    }
+    return 0;
+}
+
+static int write_wrapped_text(int fd, const char *text, unsigned int columns) {
+    size_t start = 0U;
+
+    while (text[start] != '\0') {
+        size_t end = line_end(text, start);
+
+        if (write_wrapped_span(fd, text + start, end - start, columns) != 0) return -1;
+        if (rt_write_char(fd, '\n') != 0) return -1;
+        if (text[end] == '\0') break;
+        start = end + 1U;
+    }
+    return 0;
+}
+
 static void print_summary(const WtfSummary *summary, const WtfOptions *options) {
     int printed_heading = 0;
 
@@ -532,7 +621,7 @@ static void print_summary(const WtfSummary *summary, const WtfOptions *options) 
     if (printed_heading && options->show_extract && summary->extract[0] != '\0') {
         rt_write_char(1, '\n');
     }
-    if (options->show_extract && summary->extract[0] != '\0') rt_write_line(1, summary->extract);
+    if (options->show_extract && summary->extract[0] != '\0') (void)write_wrapped_text(1, summary->extract, output_columns());
     if (options->show_url && summary->page_url[0] != '\0') {
         if ((options->show_title && summary->title[0] != '\0') ||
             (options->show_description && summary->description[0] != '\0') ||

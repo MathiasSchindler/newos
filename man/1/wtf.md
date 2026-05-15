@@ -14,9 +14,9 @@ wtf [-l LANG] [-T TIMEOUT] [--base-url URL] [--url] [--color[=WHEN]] TERM...
 
 `wtf` looks up a short Wikipedia-style summary for a term and prints the title,
 description, and extract in the terminal. The title is rendered in bold when
-standard output is a capable terminal. It uses the project platform networking
-layer directly and does not depend on libc networking helpers or external JSON
-libraries.
+standard output is a capable terminal, and the extract is wrapped at word
+boundaries to the output width. It uses the project platform networking layer
+directly and does not depend on libc networking helpers or external JSON libraries.
 
 The default endpoint is the Wikipedia REST summary endpoint:
 

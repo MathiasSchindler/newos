@@ -220,6 +220,13 @@ trap 'kill "$httpd_pid" 2>/dev/null || true' EXIT INT TERM
 "$ROOT_DIR/build/sleep" 1
 "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_fetch.txt" "http://127.0.0.1:$HTTP_PORT_STATIC/index.txt"
 assert_file_contains "$WORK_DIR/http_fetch.txt" '^hello from httpd$' "httpd did not serve the requested static file"
+mkdir -p "$WORK_DIR/http_root/api/rest_v1/page/summary"
+cat > "$WORK_DIR/http_root/api/rest_v1/page/summary/Wrap_Test" <<'EOF'
+{"title":"Wrap Test","description":"fixture","extract":"alpha beta gamma delta epsilon zeta"}
+EOF
+COLUMNS=24 "$ROOT_DIR/build/wtf" --base-url "http://127.0.0.1:$HTTP_PORT_STATIC/api/rest_v1/page/summary" --only-extract Wrap Test > "$WORK_DIR/wtf_wrap.out"
+assert_file_contains "$WORK_DIR/wtf_wrap.out" '^alpha beta gamma delta$' "wtf should wrap extract text at a word boundary"
+assert_file_contains "$WORK_DIR/wtf_wrap.out" '^epsilon zeta$' "wtf should carry remaining extract words to the next line"
 http_hidden_status=0
 "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/http_hidden.txt" "http://127.0.0.1:$HTTP_PORT_STATIC/.secret" > "$WORK_DIR/http_hidden.out" 2>&1 || http_hidden_status=$?
 if [ "$http_hidden_status" -eq 0 ]; then
