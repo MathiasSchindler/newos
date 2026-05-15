@@ -14,9 +14,9 @@ expack - pack an ELF executable while keeping it directly executable
 The output contains a small Linux x86-64 unpacking stub and an encoded copy of the input.
 When run, the stub reconstructs the original executable in an anonymous in-memory file and executes it with the original argument vector and environment.
 
-The first packer format is intentionally small and local to this project. It uses a fixed-window LZSS stream with a 4 KiB history window and 3..18 byte matches. The generated stub contains a compact decoder, reconstructs the original executable in anonymous memory, writes it to a `memfd`, and then executes that file.
+The first packer format is intentionally small and local to this project. It uses a fixed-window LZSS stream with an 8 KiB history window and 3..10 byte matches. The generated stub contains a compact decoder, reconstructs the original executable in anonymous memory, writes it to a `memfd`, and then executes that file.
 
-LZSS is used here because its decompressor is small enough for an executable stub while still finding repeated code, strings, alignment bytes, and zero-heavy regions in static binaries. It is a foundation for future stronger or selectable codecs rather than a UPX-compatible format.
+LZSS is used here because its decompressor is small enough for an executable stub while still finding repeated code, strings, alignment bytes, and zero-heavy regions in static binaries. The token split is tuned for larger static tools, where the wider history window tends to beat longer individual matches; very small inputs may prefer a different split. The compressor can spend extra CPU on optimal match selection because packed binaries are usually produced once and decompressed many times. It is a foundation for future stronger or selectable codecs rather than a UPX-compatible format.
 
 ## OPTIONS
 

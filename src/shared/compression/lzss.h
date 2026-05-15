@@ -3,9 +3,9 @@
 
 #include <stddef.h>
 
-#define COMPRESSION_LZSS_WINDOW_SIZE 4096U
+#define COMPRESSION_LZSS_WINDOW_SIZE 8192U
 #define COMPRESSION_LZSS_MIN_MATCH 3U
-#define COMPRESSION_LZSS_MAX_MATCH 18U
+#define COMPRESSION_LZSS_MAX_MATCH 10U
 
 size_t compression_lzss_bound(size_t input_size);
 int compression_lzss_compress(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out);
