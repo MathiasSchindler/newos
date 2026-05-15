@@ -4,13 +4,13 @@
 #include "bignum.h"
 
 #define BC_INPUT_CAPACITY 16384
-#define BC_MAX_SCALE 72
+#define BC_MAX_SCALE 256
 #define BC_MAX_VARS 128
 #define BC_NAME_CAPACITY 32
-#define BC_OUTPUT_CAPACITY 4096
-#define BC_NUMERIC_TEXT_CAPACITY 4096
+#define BC_OUTPUT_CAPACITY (BN_MAX_DECIMAL_DIGITS + BC_MAX_SCALE + 16)
+#define BC_NUMERIC_TEXT_CAPACITY (BC_INPUT_CAPACITY + 1)
 #define BC_MAX_PARSE_DEPTH 128
-#define BC_MAX_LOOP_ITERATIONS 1000000ULL
+#define BC_MAX_LOOP_ITERATIONS 10000ULL
 
 typedef struct {
     Bignum mantissa;
@@ -389,7 +389,7 @@ static BcValue bc_mul_values(BcParser *parser, BcValue left, BcValue right) {
     return bc_normalize_value(bc_make_value_bn(&result, scale));
 }
 
-static BcValue bc_div_values(BcParser *parser, BcValue left, BcValue right) {
+static BcValue bc_div_values_with_scale(BcParser *parser, BcValue left, BcValue right, int requested_scale) {
     int scale;
     Bignum numerator;
     Bignum result;
@@ -400,7 +400,10 @@ static BcValue bc_div_values(BcParser *parser, BcValue left, BcValue right) {
         return bc_make_int(0);
     }
 
-    scale = bc_get_scale_setting(parser->env);
+    scale = requested_scale;
+    if (scale < 0) {
+        scale = bc_get_scale_setting(parser->env);
+    }
     if (left.scale > scale) {
         scale = left.scale;
     }
@@ -431,6 +434,10 @@ static BcValue bc_div_values(BcParser *parser, BcValue left, BcValue right) {
     }
     
     return bc_make_value_bn(&result, scale);
+}
+
+static BcValue bc_div_values(BcParser *parser, BcValue left, BcValue right) {
+    return bc_div_values_with_scale(parser, left, right, -1);
 }
 
 static BcValue bc_mod_values(BcParser *parser, BcValue left, BcValue right) {
@@ -572,7 +579,7 @@ static BcValue bc_pow_values(BcParser *parser, BcValue base, BcValue exponent) {
     return result;
 }
 
-static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
+static BcValue bc_sqrt_value_with_scale(BcParser *parser, BcValue value, int requested_scale) {
     int target_scale;
     int exponent;
     Bignum scaled_value;
@@ -594,7 +601,10 @@ static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
         return bc_make_int(0);
     }
 
-    target_scale = bc_get_scale_setting(parser->env);
+    target_scale = requested_scale;
+    if (target_scale < 0) {
+        target_scale = bc_get_scale_setting(parser->env);
+    }
     if ((value.scale + 1) / 2 > target_scale) {
         target_scale = (value.scale + 1) / 2;
     }
@@ -654,6 +664,10 @@ static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
     return bc_make_value_bn(&guess, target_scale);
 }
 
+static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
+    return bc_sqrt_value_with_scale(parser, value, -1);
+}
+
 static BcValue bc_length_value(BcValue value) {
     Bignum integer_part;
     char buffer[512];
@@ -693,6 +707,352 @@ static BcValue bc_length_value(BcValue value) {
 
 static BcValue bc_scale_value(BcValue value) {
     return bc_make_int(value.scale);
+}
+
+static int bc_math_work_scale(BcParser *parser, BcValue value) {
+    int scale = bc_get_scale_setting(parser->env);
+
+    if (value.scale > scale) {
+        scale = value.scale;
+    }
+    scale += 12;
+    if (scale > BC_MAX_SCALE) {
+        scale = BC_MAX_SCALE;
+    }
+    return scale;
+}
+
+static int bc_decimal_constant(BcParser *parser, const char *text, BcValue *out) {
+    char digits[BC_MAX_SCALE + 32];
+    size_t used = 0;
+    int scale = 0;
+    int saw_dot = 0;
+    int negative = 0;
+    size_t i = 0;
+
+    if (text[0] == '-') {
+        negative = 1;
+        i = 1;
+    }
+    for (; text[i] != '\0'; ++i) {
+        if (text[i] == '.') {
+            saw_dot = 1;
+            continue;
+        }
+        if (text[i] < '0' || text[i] > '9' || used + 1U >= sizeof(digits)) {
+            bc_set_error(parser, "invalid math constant");
+            return -1;
+        }
+        digits[used++] = text[i];
+        if (saw_dot) {
+            scale += 1;
+        }
+    }
+    digits[used] = '\0';
+    if (bn_from_string(&out->mantissa, digits) != 0) {
+        bc_set_error(parser, "invalid math constant");
+        return -1;
+    }
+    out->mantissa.is_negative = negative;
+    out->scale = scale;
+    return 0;
+}
+
+static BcValue bc_math_pi(BcParser *parser) {
+    BcValue value = bc_make_int(0);
+    (void)bc_decimal_constant(parser, "3.141592653589793238462643383279502884197169399375105820974944592307816406", &value);
+    return value;
+}
+
+static BcValue bc_math_rescale(BcParser *parser, BcValue value, int target_scale) {
+    if (target_scale > BC_MAX_SCALE) {
+        target_scale = BC_MAX_SCALE;
+    }
+    return bc_rescale(parser, value, target_scale);
+}
+
+static BcValue bc_math_abs(BcValue value) {
+    value.mantissa.is_negative = 0;
+    return value;
+}
+
+static BcValue bc_math_exp(BcParser *parser, BcValue value) {
+    int target_scale = bc_get_scale_setting(parser->env);
+    int work_scale = bc_math_work_scale(parser, value);
+    int negative = value.mantissa.is_negative;
+    int halvings = 0;
+    BcValue one = bc_make_int(1);
+    BcValue two = bc_make_int(2);
+    BcValue y = value;
+    BcValue sum;
+    BcValue term;
+    int n;
+
+    y.mantissa.is_negative = 0;
+    while (bc_compare_values(parser, y, one) > 0 && !parser->error && halvings < 16) {
+        y = bc_div_values_with_scale(parser, y, two, work_scale);
+        halvings += 1;
+    }
+
+    sum = bc_make_int(1);
+    term = bc_make_int(1);
+    for (n = 1; n <= 160 && !parser->error; ++n) {
+        BcValue divisor = bc_make_int(n);
+        term = bc_mul_values(parser, term, y);
+        term = bc_div_values_with_scale(parser, term, divisor, work_scale);
+        term = bc_math_rescale(parser, term, work_scale);
+        if (bn_is_zero(&term.mantissa)) {
+            break;
+        }
+        sum = bc_add_values(parser, sum, term);
+    }
+
+    while (halvings > 0 && !parser->error) {
+        sum = bc_mul_values(parser, sum, sum);
+        sum = bc_math_rescale(parser, sum, work_scale);
+        halvings -= 1;
+    }
+    if (negative && !parser->error) {
+        sum = bc_div_values_with_scale(parser, one, sum, work_scale);
+    }
+    return bc_math_rescale(parser, sum, target_scale);
+}
+
+static BcValue bc_math_log(BcParser *parser, BcValue value) {
+    int target_scale = bc_get_scale_setting(parser->env);
+    int work_scale = bc_math_work_scale(parser, value);
+    BcValue one = bc_make_int(1);
+    BcValue two = bc_make_int(2);
+    BcValue three = bc_make_int(3);
+    BcValue lower;
+    BcValue upper;
+    BcValue numerator;
+    BcValue denominator;
+    BcValue y;
+    BcValue y_squared;
+    BcValue term;
+    BcValue sum;
+    int multiplier = 1;
+    int n;
+
+    if (value.mantissa.is_negative || bn_is_zero(&value.mantissa)) {
+        bc_set_error(parser, "logarithm of non-positive value");
+        return bc_make_int(0);
+    }
+
+    lower = bc_div_values_with_scale(parser, three, bc_make_int(4), work_scale);
+    upper = bc_div_values_with_scale(parser, three, two, work_scale);
+    while (!parser->error && multiplier < 256 &&
+           (bc_compare_values(parser, value, lower) < 0 || bc_compare_values(parser, value, upper) > 0)) {
+        value = bc_sqrt_value_with_scale(parser, value, work_scale);
+        multiplier *= 2;
+    }
+
+    numerator = bc_sub_values(parser, value, one);
+    denominator = bc_add_values(parser, value, one);
+    y = bc_div_values_with_scale(parser, numerator, denominator, work_scale);
+    y_squared = bc_mul_values(parser, y, y);
+    y_squared = bc_math_rescale(parser, y_squared, work_scale);
+    term = y;
+    sum = y;
+
+    for (n = 3; n <= 399 && !parser->error; n += 2) {
+        BcValue divisor = bc_make_int(n);
+        BcValue addend;
+        term = bc_mul_values(parser, term, y_squared);
+        term = bc_math_rescale(parser, term, work_scale);
+        if (bn_is_zero(&term.mantissa)) {
+            break;
+        }
+        addend = bc_div_values_with_scale(parser, term, divisor, work_scale);
+        sum = bc_add_values(parser, sum, addend);
+    }
+
+    sum = bc_mul_values(parser, sum, two);
+    if (multiplier != 1) {
+        sum = bc_mul_values(parser, sum, bc_make_int(multiplier));
+    }
+    return bc_math_rescale(parser, sum, target_scale);
+}
+
+static BcValue bc_math_reduce_angle(BcParser *parser, BcValue value, int work_scale) {
+    BcValue pi = bc_math_rescale(parser, bc_math_pi(parser), work_scale);
+    BcValue two_pi = bc_mul_values(parser, pi, bc_make_int(2));
+    int count = 0;
+
+    while (bc_compare_values(parser, value, pi) > 0 && !parser->error && count < 128) {
+        value = bc_sub_values(parser, value, two_pi);
+        count += 1;
+    }
+    count = 0;
+    pi.mantissa.is_negative = 1;
+    while (bc_compare_values(parser, value, pi) < 0 && !parser->error && count < 128) {
+        value = bc_add_values(parser, value, two_pi);
+        count += 1;
+    }
+    return bc_math_rescale(parser, value, work_scale);
+}
+
+static BcValue bc_math_sin(BcParser *parser, BcValue value) {
+    int target_scale = bc_get_scale_setting(parser->env);
+    int work_scale = bc_math_work_scale(parser, value);
+    BcValue x = bc_math_reduce_angle(parser, value, work_scale);
+    BcValue x_squared = bc_mul_values(parser, x, x);
+    BcValue term = x;
+    BcValue sum = x;
+    int n;
+
+    x_squared = bc_math_rescale(parser, x_squared, work_scale);
+    for (n = 3; n <= 159 && !parser->error; n += 2) {
+        BcValue divisor = bc_make_int((long long)(n - 1) * (long long)n);
+        term = bc_mul_values(parser, term, x_squared);
+        term = bc_div_values_with_scale(parser, term, divisor, work_scale);
+        term.mantissa.is_negative = !term.mantissa.is_negative;
+        term = bc_math_rescale(parser, term, work_scale);
+        if (bn_is_zero(&term.mantissa)) {
+            break;
+        }
+        sum = bc_add_values(parser, sum, term);
+    }
+    return bc_math_rescale(parser, sum, target_scale);
+}
+
+static BcValue bc_math_cos(BcParser *parser, BcValue value) {
+    int target_scale = bc_get_scale_setting(parser->env);
+    int work_scale = bc_math_work_scale(parser, value);
+    BcValue x = bc_math_reduce_angle(parser, value, work_scale);
+    BcValue x_squared = bc_mul_values(parser, x, x);
+    BcValue term = bc_make_int(1);
+    BcValue sum = bc_make_int(1);
+    int n;
+
+    x_squared = bc_math_rescale(parser, x_squared, work_scale);
+    for (n = 2; n <= 160 && !parser->error; n += 2) {
+        BcValue divisor = bc_make_int((long long)(n - 1) * (long long)n);
+        term = bc_mul_values(parser, term, x_squared);
+        term = bc_div_values_with_scale(parser, term, divisor, work_scale);
+        term.mantissa.is_negative = !term.mantissa.is_negative;
+        term = bc_math_rescale(parser, term, work_scale);
+        if (bn_is_zero(&term.mantissa)) {
+            break;
+        }
+        sum = bc_add_values(parser, sum, term);
+    }
+    return bc_math_rescale(parser, sum, target_scale);
+}
+
+static BcValue bc_math_atan(BcParser *parser, BcValue value) {
+    int target_scale = bc_get_scale_setting(parser->env);
+    int work_scale = bc_math_work_scale(parser, value);
+    int negative = value.mantissa.is_negative;
+    int inverted = 0;
+    int reduced = 0;
+    BcValue one = bc_make_int(1);
+    BcValue x = bc_math_abs(value);
+    BcValue x_squared;
+    BcValue term;
+    BcValue sum;
+    int n;
+
+    if (bc_compare_values(parser, x, one) > 0) {
+        x = bc_div_values_with_scale(parser, one, x, work_scale);
+        inverted = 1;
+    }
+    x = bc_math_rescale(parser, x, work_scale);
+    if (bc_compare_values(parser, x, bc_div_values_with_scale(parser, one, bc_make_int(2), work_scale)) > 0 && !parser->error) {
+        BcValue x_squared = bc_mul_values(parser, x, x);
+        BcValue radical;
+        BcValue denominator;
+
+        x_squared = bc_math_rescale(parser, x_squared, work_scale);
+        radical = bc_sqrt_value_with_scale(parser, bc_add_values(parser, one, x_squared), work_scale);
+        denominator = bc_add_values(parser, one, radical);
+        x = bc_div_values_with_scale(parser, x, denominator, work_scale);
+        x = bc_math_rescale(parser, x, work_scale);
+        reduced = 1;
+    }
+    x_squared = bc_mul_values(parser, x, x);
+    x_squared = bc_math_rescale(parser, x_squared, work_scale);
+    term = x;
+    sum = x;
+
+    for (n = 3; n <= 399 && !parser->error; n += 2) {
+        BcValue divisor = bc_make_int(n);
+        BcValue addend;
+        term = bc_mul_values(parser, term, x_squared);
+        term = bc_math_rescale(parser, term, work_scale);
+        if (bn_is_zero(&term.mantissa)) {
+            break;
+        }
+        addend = bc_div_values_with_scale(parser, term, divisor, work_scale);
+        addend.mantissa.is_negative = ((n / 2) % 2) != 0;
+        sum = bc_add_values(parser, sum, addend);
+    }
+
+    if (inverted && !parser->error) {
+        BcValue pi_over_two = bc_div_values_with_scale(parser, bc_math_pi(parser), bc_make_int(2), work_scale);
+        if (reduced) {
+            sum = bc_mul_values(parser, sum, bc_make_int(2));
+        }
+        sum = bc_sub_values(parser, pi_over_two, sum);
+    } else if (reduced) {
+        sum = bc_mul_values(parser, sum, bc_make_int(2));
+    }
+    if (negative) {
+        bn_negate(&sum.mantissa);
+    }
+    return bc_math_rescale(parser, sum, target_scale);
+}
+
+static BcValue bc_math_bessel(BcParser *parser, BcValue order_value, BcValue value) {
+    long long order_ll = 0;
+    int target_scale = bc_get_scale_setting(parser->env);
+    int work_scale = bc_math_work_scale(parser, value);
+    int negative_order = 0;
+    int order;
+    int k;
+    BcValue half = bc_div_values_with_scale(parser, value, bc_make_int(2), work_scale);
+    BcValue factor = bc_make_int(1);
+    BcValue term = bc_make_int(1);
+    BcValue sum;
+
+    if (bc_value_to_integer(parser, order_value, &order_ll) != 0) {
+        return bc_make_int(0);
+    }
+    if (order_ll < 0) {
+        negative_order = 1;
+        order_ll = -order_ll;
+    }
+    if (order_ll > 64) {
+        bc_set_error(parser, "bessel order out of range");
+        return bc_make_int(0);
+    }
+    order = (int)order_ll;
+
+    for (k = 1; k <= order && !parser->error; ++k) {
+        term = bc_mul_values(parser, term, half);
+        term = bc_div_values_with_scale(parser, term, bc_make_int(k), work_scale);
+        term = bc_math_rescale(parser, term, work_scale);
+    }
+    sum = term;
+    factor = bc_mul_values(parser, half, half);
+    factor.mantissa.is_negative = 1;
+    factor = bc_math_rescale(parser, factor, work_scale);
+
+    for (k = 1; k <= 160 && !parser->error; ++k) {
+        BcValue divisor = bc_make_int((long long)k * (long long)(order + k));
+        term = bc_mul_values(parser, term, factor);
+        term = bc_div_values_with_scale(parser, term, divisor, work_scale);
+        term = bc_math_rescale(parser, term, work_scale);
+        if (bn_is_zero(&term.mantissa)) {
+            break;
+        }
+        sum = bc_add_values(parser, sum, term);
+    }
+    if (negative_order && (order % 2) != 0) {
+        bn_negate(&sum.mantissa);
+    }
+    return bc_math_rescale(parser, sum, target_scale);
 }
 
 static int bc_is_name_start(char ch) {
@@ -1161,6 +1521,13 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
                 bc_set_error(parser, "missing function argument");
                 return bc_make_int(0);
             }
+            if (rt_strcmp(token.text, "j") == 0 || rt_strcmp(token.text, "bessel") == 0) {
+                if (!has_second_arg) {
+                    bc_set_error(parser, "missing function argument");
+                    return bc_make_int(0);
+                }
+                return bc_math_bessel(parser, arg, second_arg);
+            }
             if (rt_strcmp(token.text, "min") == 0 || rt_strcmp(token.text, "max") == 0) {
                 int compare_result;
                 if (!has_second_arg) {
@@ -1182,6 +1549,21 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
             }
             if (rt_strcmp(token.text, "sqrt") == 0) {
                 return bc_sqrt_value(parser, arg);
+            }
+            if (rt_strcmp(token.text, "s") == 0 || rt_strcmp(token.text, "sin") == 0) {
+                return bc_math_sin(parser, arg);
+            }
+            if (rt_strcmp(token.text, "c") == 0 || rt_strcmp(token.text, "cos") == 0) {
+                return bc_math_cos(parser, arg);
+            }
+            if (rt_strcmp(token.text, "a") == 0 || rt_strcmp(token.text, "atan") == 0) {
+                return bc_math_atan(parser, arg);
+            }
+            if (rt_strcmp(token.text, "l") == 0 || rt_strcmp(token.text, "ln") == 0 || rt_strcmp(token.text, "log") == 0) {
+                return bc_math_log(parser, arg);
+            }
+            if (rt_strcmp(token.text, "e") == 0 || rt_strcmp(token.text, "exp") == 0) {
+                return bc_math_exp(parser, arg);
             }
             if (rt_strcmp(token.text, "length") == 0) {
                 return bc_length_value(arg);
@@ -1950,8 +2332,8 @@ static int bc_join_arguments(int start_index, int argc, char **argv, char *buffe
 }
 
 int main(int argc, char **argv) {
-    char input[BC_INPUT_CAPACITY];
-    BcEnv env;
+    static char input[BC_INPUT_CAPACITY];
+    static BcEnv env;
     BcParser parser;
     ToolOptState opt;
     int math_mode = 0;
@@ -1976,11 +2358,11 @@ int main(int argc, char **argv) {
     }
 
     if (opt.argi < argc) {
-        if (bc_join_arguments(opt.argi, argc, argv, input, sizeof(input)) != 0) {
+        if (bc_join_arguments(opt.argi, argc, argv, input, BC_INPUT_CAPACITY) != 0) {
             tool_write_error("bc", "expression too large", 0);
             return 1;
         }
-    } else if (bc_read_stdin(input, sizeof(input)) != 0) {
+    } else if (bc_read_stdin(input, BC_INPUT_CAPACITY) != 0) {
         tool_write_error("bc", "failed to read input", 0);
         return 1;
     }

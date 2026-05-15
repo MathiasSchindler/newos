@@ -207,7 +207,7 @@ int bn_add_unsigned(const Bignum *a, const Bignum *b, Bignum *result) {
     bn_zero(result);
     
     unsigned int max_len = (a->length > b->length) ? a->length : b->length;
-    if (max_len >= BN_MAX_DIGITS) {
+    if (max_len > BN_MAX_DIGITS) {
         return -1;
     }
     

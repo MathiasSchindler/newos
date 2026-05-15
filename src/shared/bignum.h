@@ -19,7 +19,7 @@
  *
  * Design:
  *   - Freestanding-first: no libc, no malloc, no external dependencies
- *   - Fixed-capacity stack-allocated storage with configurable limit
+ *   - Fixed-capacity value storage with configurable limit
  *   - Little-endian digit representation (least significant first)
  *   - Base 1000000000 (9 decimal digits per digit for efficient decimal I/O)
  *   - Explicit sign flag
@@ -35,7 +35,9 @@
 
 #define BN_DIGIT_BASE 1000000000U
 #define BN_DIGIT_DECIMALS 9
-#define BN_MAX_DIGITS 256
+#ifndef BN_MAX_DIGITS
+#define BN_MAX_DIGITS 8192
+#endif
 #define BN_MAX_DECIMAL_DIGITS (BN_MAX_DIGITS * BN_DIGIT_DECIMALS)
 
 typedef struct {

@@ -333,7 +333,7 @@ $(WINDOWS_TARGET_BUILD_DIR)/wtf.exe: src/tools/wtf.c $(WINDOWS_FREESTANDING_RUNT
 $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_IMAGE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_IMAGE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/image/image.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_IMAGE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
 
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_BIGNUM_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c src/shared/bignum.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_BIGNUM_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c src/shared/bignum.c src/shared/bignum.h $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) -Wno-pedantic $< src/shared/bignum.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
 
 $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_HASH_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_HASH_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/hash_util.h | $(WINDOWS_TARGET_BUILD_DIR)
@@ -411,7 +411,7 @@ $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_MAKE_TOOLS)): 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_SERVICE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_SERVICE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/tools/service/service_impl.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_SERVICE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
-$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_GENERIC_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_GENERIC_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/bignum.h src/shared/runtime.h src/shared/platform.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
 $(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/tools/sh/shell_shared.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
@@ -517,10 +517,10 @@ else
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_IMAGE_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
-$(BUILD_DIR)/bc: src/tools/bc.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+$(BUILD_DIR)/bc: src/tools/bc.c src/shared/bignum.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -Wno-pedantic $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/bc: src/tools/bc.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/bc: src/tools/bc.c src/shared/bignum.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) -Wno-pedantic $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 else

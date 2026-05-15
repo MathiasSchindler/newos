@@ -287,6 +287,7 @@ cc -std=c11 -Wall -Wextra -Wpedantic -O2 \
     src/shared/runtime/string.c \
     src/shared/runtime/parse.c \
     src/shared/runtime/io.c \
+    src/shared/runtime/unicode_utf8.c \
     src/shared/runtime/unicode.c \
     src/shared/tool_io.c \
     src/shared/tool_cli.c \
@@ -294,6 +295,7 @@ cc -std=c11 -Wall -Wextra -Wpedantic -O2 \
     src/shared/tool_path.c \
     src/shared/tool_fs.c \
     src/shared/archive_util.c \
+    src/shared/compression/crc32.c \
     src/shared/bignum.c \
     src/platform/posix/fs.c \
     src/platform/posix/process.c \
