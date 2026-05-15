@@ -38,6 +38,12 @@ assert_file_contains "$WORK_DIR/rg_files.out" 'src/b\.md$' "rg --files -g did no
 printf 'streamed-data\n' | "$ROOT_DIR/build/gzip" -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_stream.txt"
 assert_file_contains "$WORK_DIR/gzip_stream.txt" '^streamed-data$' "gzip/gunzip streaming pipeline failed"
 
+"$ROOT_DIR/build/expack" -q "$ROOT_DIR/build/echo" "$WORK_DIR/echo.packed"
+"$WORK_DIR/echo.packed" expack-ok > "$WORK_DIR/expack.out"
+assert_file_contains "$WORK_DIR/expack.out" '^expack-ok$' "expack output did not preserve executable behavior"
+"$ROOT_DIR/build/file" "$WORK_DIR/echo.packed" > "$WORK_DIR/expack_file.out"
+assert_file_contains "$WORK_DIR/expack_file.out" 'ELF' "expack output is not recognized as ELF"
+
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
 (
