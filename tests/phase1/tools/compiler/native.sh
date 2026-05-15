@@ -573,6 +573,67 @@ EOF
 
 compile_and_check_native "$WORK_DIR/int128_cast.c" "$WORK_DIR/int128_cast_bin" "0" "compiler failed on __int128 cast expressions"
 
+if [ "$RUN_TARGET" = "linux-x86_64" ] && command -v cc >/dev/null 2>&1; then
+    cat > "$WORK_DIR/native_archive_start.s" <<'EOF'
+.globl _start
+_start:
+    call helper
+    mov %rax, %rdi
+    mov $60, %rax
+    syscall
+EOF
+    cat > "$WORK_DIR/native_archive_helper.s" <<'EOF'
+.globl helper
+helper:
+    mov $42, %rax
+    ret
+EOF
+    cc -x assembler -c "$WORK_DIR/native_archive_start.s" -o "$WORK_DIR/native_archive_start.o"
+    cc -x assembler -c "$WORK_DIR/native_archive_helper.s" -o "$WORK_DIR/native_archive_helper.o"
+    "$ROOT_DIR/build/ar" rc "$WORK_DIR/libnative_helper.a" "$WORK_DIR/native_archive_helper.o"
+    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
+        "$WORK_DIR/native_archive_start.o" "$WORK_DIR/libnative_helper.a" \
+        -o "$WORK_DIR/native_archive_bin"
+    if "$WORK_DIR/native_archive_bin"; then
+        native_archive_status=0
+    else
+        native_archive_status=$?
+    fi
+    assert_text_equals "$native_archive_status" "42" "native linker did not pull a referenced object from an ar archive"
+
+    if command -v readelf >/dev/null 2>&1; then
+        readelf -l "$WORK_DIR/native_archive_bin" > "$WORK_DIR/native_archive_readelf.out"
+        assert_file_contains "$WORK_DIR/native_archive_readelf.out" 'There is 1 program header' "native linker did not keep a pure-text archive link compact"
+    fi
+
+    cat > "$WORK_DIR/native_data_segment.s" <<'EOF'
+.globl _start
+_start:
+    mov value(%rip), %rdi
+    mov $60, %rax
+    syscall
+.data
+.globl value
+value:
+    .quad 7
+EOF
+    cc -x assembler -c "$WORK_DIR/native_data_segment.s" -o "$WORK_DIR/native_data_segment.o"
+    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
+        "$WORK_DIR/native_data_segment.o" -o "$WORK_DIR/native_data_segment_bin"
+    if "$WORK_DIR/native_data_segment_bin"; then
+        native_data_status=0
+    else
+        native_data_status=$?
+    fi
+    assert_text_equals "$native_data_status" "7" "native linker did not preserve a data-segment relocation"
+
+    if command -v readelf >/dev/null 2>&1; then
+        readelf -l "$WORK_DIR/native_data_segment_bin" > "$WORK_DIR/native_data_segment_readelf.out"
+        assert_file_contains "$WORK_DIR/native_data_segment_readelf.out" 'R E' "native linker text segment is not executable/read-only"
+        assert_file_contains "$WORK_DIR/native_data_segment_readelf.out" 'RW' "native linker did not emit a writable data segment"
+    fi
+fi
+
 "$ROOT_DIR/build/ncc" -c "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host.o"
 "$ROOT_DIR/build/hexdump" "$WORK_DIR/default_host.o" > "$WORK_DIR/default_host_hex.out"
 if ! grep -q '7f 45 4c 46' "$WORK_DIR/default_host_hex.out" && ! grep -q 'cf fa ed fe' "$WORK_DIR/default_host_hex.out"; then

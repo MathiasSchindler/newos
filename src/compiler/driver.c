@@ -321,9 +321,8 @@ static int link_executable_output_native(const CompilerOptions *options) {
             continue;
         }
         if (ends_with(input_path, ".a")) {
-            cleanup_temp_paths(temp_paths, temp_count);
-            tool_write_error(options->program_name, "native linker does not support archives yet: ", input_path);
-            return 1;
+            object_paths[object_count++] = input_path;
+            continue;
         }
         if (is_assembly_input(input_path)) {
             if (temp_count >= COMPILER_MAX_INPUT_FILES || assemble_input_to_object(options, input_path, temp_paths[temp_count], sizeof(temp_paths[temp_count])) != 0) {

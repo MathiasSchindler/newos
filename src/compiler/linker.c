@@ -6,10 +6,12 @@
 
 #define LINKER_MAX_OBJECTS 320
 #define LINKER_MAX_OBJECT_SIZE (1024U * 1024U)
+#define LINKER_MAX_ARCHIVE_SIZE (64U * 1024U * 1024U)
 #define LINKER_MAX_OUTPUT (64U * 1024U * 1024U)
 #define LINKER_MAX_MEMORY (128U * 1024U * 1024U)
 #define LINKER_MAX_GLOBALS 8192
 #define LINKER_BASE_VADDR 0x400000ULL
+#define LINKER_AR_HEADER_SIZE 60U
 
 #define ELFCLASS64 2U
 #define ELFDATA2LSB 1U
@@ -199,6 +201,71 @@ static int section_is(const LinkObject *object, uint16_t index, const char *name
     return rt_strcmp(section_name(object, index), name) == 0;
 }
 
+static int ends_with_text(const char *text, const char *suffix) {
+    size_t text_length = rt_strlen(text);
+    size_t suffix_length = rt_strlen(suffix);
+
+    if (suffix_length > text_length) {
+        return 0;
+    }
+    return rt_strcmp(text + text_length - suffix_length, suffix) == 0;
+}
+
+static unsigned long long parse_ar_decimal_field(const unsigned char *field, size_t field_size) {
+    unsigned long long value = 0ULL;
+    size_t i = 0U;
+
+    while (i < field_size && field[i] == ' ') {
+        i += 1U;
+    }
+    while (i < field_size && field[i] >= '0' && field[i] <= '9') {
+        value = (value * 10ULL) + (unsigned long long)(field[i] - '0');
+        i += 1U;
+    }
+    return value;
+}
+
+static void copy_ar_trimmed_name(char *buffer, size_t buffer_size, const unsigned char *field) {
+    size_t start = 0U;
+    size_t end = 16U;
+    size_t length;
+
+    while (start < end && field[start] == ' ') {
+        start += 1U;
+    }
+    while (end > start && (field[end - 1U] == ' ' || field[end - 1U] == '/')) {
+        end -= 1U;
+    }
+    length = end - start;
+    if (length + 1U > buffer_size) {
+        length = buffer_size - 1U;
+    }
+    if (length > 0U) {
+        memcpy(buffer, field + start, length);
+    }
+    buffer[length] = '\0';
+}
+
+static void copy_ar_string_table_name(char *buffer, size_t buffer_size, const unsigned char *strings, size_t strings_size, size_t offset) {
+    size_t length = 0U;
+
+    if (buffer_size == 0U) {
+        return;
+    }
+    if (offset >= strings_size) {
+        buffer[0] = '\0';
+        return;
+    }
+    while (offset + length < strings_size && strings[offset + length] != '\0' && strings[offset + length] != '\n' && strings[offset + length] != '/') {
+        if (length + 1U >= buffer_size) {
+            break;
+        }
+        buffer[length] = (char)strings[offset + length];
+        length += 1U;
+    }
+    buffer[length] = '\0';
+}
+
 static void remember_section(LinkObject *object, uint16_t index) {
     const unsigned char *section = section_header(object, index);
     uint32_t type;
@@ -240,41 +307,13 @@ static void remember_section(LinkObject *object, uint16_t index) {
     }
 }
 
-static int load_object(LinkObject *object, const char *path, char *error_out, size_t error_size) {
-    int fd;
-    long bytes_read;
-    size_t total = 0;
+static int parse_loaded_object(LinkObject *object, const char *path, unsigned char *file, size_t size, char *error_out, size_t error_size) {
     uint16_t i;
 
     rt_memset(object, 0, sizeof(*object));
     rt_copy_string(object->path, sizeof(object->path), path);
-    fd = platform_open_read(path);
-    if (fd < 0) {
-        set_link_error(error_out, error_size, "failed to open object", path);
-        return -1;
-    }
-    object->file = (unsigned char *)rt_malloc(LINKER_MAX_OBJECT_SIZE);
-    if (object->file == 0) {
-        (void)platform_close(fd);
-        set_link_error(error_out, error_size, "failed to allocate object buffer", path);
-        return -1;
-    }
-    while ((bytes_read = platform_read(fd, object->file + total, LINKER_MAX_OBJECT_SIZE - total)) > 0) {
-        total += (size_t)bytes_read;
-        if (total == LINKER_MAX_OBJECT_SIZE) {
-            break;
-        }
-    }
-    (void)platform_close(fd);
-    if (bytes_read < 0) {
-        set_link_error(error_out, error_size, "failed to read object", path);
-        return -1;
-    }
-    if (total == LINKER_MAX_OBJECT_SIZE) {
-        set_link_error(error_out, error_size, "object exceeds native linker capacity", path);
-        return -1;
-    }
-    object->size = total;
+    object->file = file;
+    object->size = size;
     if (object->size < ELF64_EHDR_SIZE || object->file[0] != 0x7fU || object->file[1] != 'E' || object->file[2] != 'L' || object->file[3] != 'F' ||
         object->file[4] != ELFCLASS64 || object->file[5] != ELFDATA2LSB || read_u16(object->file + 16) != ET_REL || read_u16(object->file + 18) != EM_X86_64) {
         set_link_error(error_out, error_size, "unsupported object format", path);
@@ -313,6 +352,181 @@ static int load_object(LinkObject *object, const char *path, char *error_out, si
         set_link_error(error_out, error_size, "unsupported relocation entry size", path);
         return -1;
     }
+    return 0;
+}
+
+static int read_file_alloc(const char *path, size_t capacity, unsigned char **file_out, size_t *size_out, char *error_out, size_t error_size) {
+    int fd;
+    long bytes_read;
+    size_t total = 0;
+    unsigned char *file;
+
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        set_link_error(error_out, error_size, "failed to open object", path);
+        return -1;
+    }
+    file = (unsigned char *)rt_malloc(capacity);
+    if (file == 0) {
+        (void)platform_close(fd);
+        set_link_error(error_out, error_size, "failed to allocate linker input buffer", path);
+        return -1;
+    }
+    while ((bytes_read = platform_read(fd, file + total, capacity - total)) > 0) {
+        total += (size_t)bytes_read;
+        if (total == capacity) {
+            break;
+        }
+    }
+    (void)platform_close(fd);
+    if (bytes_read < 0) {
+        rt_free(file);
+        set_link_error(error_out, error_size, "failed to read linker input", path);
+        return -1;
+    }
+    if (total == capacity) {
+        rt_free(file);
+        set_link_error(error_out, error_size, "linker input exceeds native linker capacity", path);
+        return -1;
+    }
+    *file_out = file;
+    *size_out = total;
+    return 0;
+}
+
+static int load_object(LinkObject *object, const char *path, char *error_out, size_t error_size) {
+    unsigned char *file;
+    size_t size;
+
+    if (read_file_alloc(path, LINKER_MAX_OBJECT_SIZE, &file, &size, error_out, error_size) != 0) {
+        return -1;
+    }
+    return parse_loaded_object(object, path, file, size, error_out, error_size);
+}
+
+static int load_archive(const char *path, LinkObject *objects, size_t *object_count, char *error_out, size_t error_size) {
+    unsigned char *archive;
+    const unsigned char *string_table = 0;
+    size_t archive_size;
+    size_t string_table_size = 0U;
+    size_t offset = 8U;
+    size_t loaded = 0U;
+
+    if (read_file_alloc(path, LINKER_MAX_ARCHIVE_SIZE, &archive, &archive_size, error_out, error_size) != 0) {
+        return -1;
+    }
+    if (archive_size < 8U || archive[0] != '!' || archive[1] != '<' || archive[2] != 'a' || archive[3] != 'r' ||
+        archive[4] != 'c' || archive[5] != 'h' || archive[6] != '>' || archive[7] != '\n') {
+        rt_free(archive);
+        set_link_error(error_out, error_size, "unsupported archive format", path);
+        return -1;
+    }
+
+    while (offset + LINKER_AR_HEADER_SIZE <= archive_size) {
+        const unsigned char *header = archive + offset;
+        size_t payload_offset = offset + LINKER_AR_HEADER_SIZE;
+        unsigned long long payload_size_value = parse_ar_decimal_field(header + 48, 10U);
+        size_t payload_size = (size_t)payload_size_value;
+        size_t data_offset = payload_offset;
+        size_t data_size = payload_size;
+        size_t next_offset;
+        char member_name[COMPILER_PATH_CAPACITY];
+        char object_name[COMPILER_PATH_CAPACITY];
+        unsigned char *object_file;
+
+        if (header[58] != '`' || header[59] != '\n' || payload_size_value > (unsigned long long)(archive_size - payload_offset)) {
+            rt_free(archive);
+            set_link_error(error_out, error_size, "invalid archive member", path);
+            return -1;
+        }
+        next_offset = payload_offset + payload_size + ((payload_size & 1U) != 0U ? 1U : 0U);
+        if (next_offset > archive_size) {
+            rt_free(archive);
+            set_link_error(error_out, error_size, "invalid archive member size", path);
+            return -1;
+        }
+
+        copy_ar_trimmed_name(member_name, sizeof(member_name), header);
+        if (rt_strcmp(member_name, "//") == 0) {
+            string_table = archive + payload_offset;
+            string_table_size = payload_size;
+            offset = next_offset;
+            continue;
+        }
+        if (rt_strcmp(member_name, "/") == 0 || rt_strcmp(member_name, "__.SYMDEF") == 0 || rt_strcmp(member_name, "__.SYMDEF SORTED") == 0) {
+            offset = next_offset;
+            continue;
+        }
+        if (member_name[0] == '/' && member_name[1] >= '0' && member_name[1] <= '9') {
+            size_t string_offset = 0U;
+            size_t i = 1U;
+            while (member_name[i] >= '0' && member_name[i] <= '9') {
+                string_offset = (string_offset * 10U) + (size_t)(member_name[i] - '0');
+                i += 1U;
+            }
+            copy_ar_string_table_name(member_name, sizeof(member_name), string_table, string_table_size, string_offset);
+        } else if (member_name[0] == '#' && member_name[1] == '1' && member_name[2] == '/') {
+            unsigned long long name_length_value = parse_ar_decimal_field((const unsigned char *)member_name + 3, rt_strlen(member_name + 3));
+            size_t name_length = (size_t)name_length_value;
+            size_t copy_length;
+
+            if (name_length_value > payload_size) {
+                rt_free(archive);
+                set_link_error(error_out, error_size, "invalid archive member name", path);
+                return -1;
+            }
+            copy_length = name_length + 1U < sizeof(member_name) ? name_length : sizeof(member_name) - 1U;
+            memcpy(member_name, archive + payload_offset, copy_length);
+            member_name[copy_length] = '\0';
+            data_offset = payload_offset + name_length;
+            data_size = payload_size - name_length;
+        }
+
+        if (!ends_with_text(member_name, ".o") && !(data_size >= ELF64_EHDR_SIZE && archive[data_offset] == 0x7fU && archive[data_offset + 1U] == 'E')) {
+            offset = next_offset;
+            continue;
+        }
+        if (*object_count >= LINKER_MAX_OBJECTS) {
+            rt_free(archive);
+            set_link_error(error_out, error_size, "too many objects for native linker", path);
+            return -1;
+        }
+        if (data_size > LINKER_MAX_OBJECT_SIZE) {
+            rt_free(archive);
+            set_link_error(error_out, error_size, "archive member exceeds native linker capacity", member_name);
+            return -1;
+        }
+        object_file = (unsigned char *)rt_malloc(data_size);
+        if (object_file == 0) {
+            rt_free(archive);
+            set_link_error(error_out, error_size, "failed to allocate archive member", member_name);
+            return -1;
+        }
+        memcpy(object_file, archive + data_offset, data_size);
+        rt_copy_string(object_name, sizeof(object_name), path);
+        if (rt_strlen(object_name) + rt_strlen(member_name) + 3U < sizeof(object_name)) {
+            size_t used = rt_strlen(object_name);
+            object_name[used++] = '(';
+            rt_copy_string(object_name + used, sizeof(object_name) - used, member_name);
+            used = rt_strlen(object_name);
+            object_name[used++] = ')';
+            object_name[used] = '\0';
+        }
+        if (parse_loaded_object(&objects[*object_count], object_name, object_file, data_size, error_out, error_size) != 0) {
+            rt_free(archive);
+            rt_free(object_file);
+            return -1;
+        }
+        *object_count += 1U;
+        loaded += 1U;
+        offset = next_offset;
+    }
+    if (loaded == 0U) {
+        rt_free(archive);
+        set_link_error(error_out, error_size, "archive contains no supported objects", path);
+        return -1;
+    }
+    rt_free(archive);
     return 0;
 }
 
@@ -741,7 +955,28 @@ static void copy_sections(LinkObject *objects, size_t object_count, unsigned cha
     }
 }
 
-static void write_elf_header(unsigned char *output, uint64_t entry, uint64_t file_size, uint64_t memory_size) {
+static void write_load_header(unsigned char *output, uint16_t index, uint32_t flags, uint64_t offset, uint64_t file_size, uint64_t memory_size) {
+    unsigned char *program = output + ELF64_EHDR_SIZE + ((uint64_t)index * ELF64_PHDR_SIZE);
+
+    write_u32(program + 0, PT_LOAD);
+    write_u32(program + 4, flags);
+    write_u64(program + 8, offset);
+    write_u64(program + 16, LINKER_BASE_VADDR + offset);
+    write_u64(program + 24, LINKER_BASE_VADDR + offset);
+    write_u64(program + 32, file_size);
+    write_u64(program + 40, memory_size);
+    write_u64(program + 48, 0x1000U);
+}
+
+static void write_elf_header(unsigned char *output,
+                             uint64_t entry,
+                             uint64_t text_file_offset,
+                             uint64_t text_size,
+                             uint64_t data_file_offset,
+                             uint64_t data_size,
+                             uint64_t bss_size) {
+    uint16_t program_count = data_size != 0 || bss_size != 0 ? 2U : 1U;
+
     output[0] = 0x7fU;
     output[1] = 'E';
     output[2] = 'L';
@@ -759,19 +994,15 @@ static void write_elf_header(unsigned char *output, uint64_t entry, uint64_t fil
     write_u32(output + 48, 0U);
     write_u16(output + 52, ELF64_EHDR_SIZE);
     write_u16(output + 54, ELF64_PHDR_SIZE);
-    write_u16(output + 56, 1U);
+    write_u16(output + 56, program_count);
     write_u16(output + 58, 0U);
     write_u16(output + 60, 0U);
     write_u16(output + 62, 0U);
 
-    write_u32(output + ELF64_EHDR_SIZE + 0, PT_LOAD);
-    write_u32(output + ELF64_EHDR_SIZE + 4, PF_R | PF_W | PF_X);
-    write_u64(output + ELF64_EHDR_SIZE + 8, 0U);
-    write_u64(output + ELF64_EHDR_SIZE + 16, LINKER_BASE_VADDR);
-    write_u64(output + ELF64_EHDR_SIZE + 24, LINKER_BASE_VADDR);
-    write_u64(output + ELF64_EHDR_SIZE + 32, file_size);
-    write_u64(output + ELF64_EHDR_SIZE + 40, memory_size);
-    write_u64(output + ELF64_EHDR_SIZE + 48, 0x1000U);
+    write_load_header(output, 0U, PF_R | PF_X, 0U, text_file_offset + text_size, text_file_offset + text_size);
+    if (program_count > 1U) {
+        write_load_header(output, 1U, PF_R | PF_W, data_file_offset, data_size, data_size + bss_size);
+    }
 }
 
 int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t object_count, const char *output_path, char *error_out, size_t error_size) {
@@ -783,9 +1014,11 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     uint64_t bss_vaddr_offset;
     uint64_t file_size;
     uint64_t memory_size;
+    int has_writable_segment;
     uint64_t entry;
     int start_index;
     int fd;
+    size_t loaded_object_count = 0U;
     size_t i;
     unsigned char *output;
 
@@ -797,9 +1030,25 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         return -1;
     }
     for (i = 0; i < object_count; ++i) {
-        if (load_object(&linker_objects[i], object_paths[i], error_out, error_size) != 0) {
-            return -1;
+        if (ends_with_text(object_paths[i], ".a")) {
+            if (load_archive(object_paths[i], linker_objects, &loaded_object_count, error_out, error_size) != 0) {
+                return -1;
+            }
+        } else {
+            if (loaded_object_count >= LINKER_MAX_OBJECTS) {
+                set_link_error(error_out, error_size, "too many objects for native linker", object_paths[i]);
+                return -1;
+            }
+            if (load_object(&linker_objects[loaded_object_count], object_paths[i], error_out, error_size) != 0) {
+                return -1;
+            }
+            loaded_object_count += 1U;
         }
+    }
+    object_count = loaded_object_count;
+    if (object_count == 0U) {
+        set_link_error(error_out, error_size, "invalid object count for native linker", "");
+        return -1;
     }
     if (collect_defined_symbol_owners(linker_objects, object_count, error_out, error_size) != 0) {
         return -1;
@@ -809,11 +1058,19 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     }
 
     layout_objects(linker_objects, object_count, &text_size, &data_size, &bss_size);
-    text_file_offset = align_u64(ELF64_EHDR_SIZE + ELF64_PHDR_SIZE, 16U);
-    data_file_offset = align_u64(text_file_offset + text_size, 8U);
-    bss_vaddr_offset = align_u64(data_file_offset + data_size, 8U);
-    file_size = data_file_offset + data_size;
-    memory_size = bss_vaddr_offset + bss_size;
+    has_writable_segment = data_size != 0 || bss_size != 0;
+    text_file_offset = align_u64(ELF64_EHDR_SIZE + ((uint64_t)(has_writable_segment ? 2U : 1U) * ELF64_PHDR_SIZE), 16U);
+    if (has_writable_segment) {
+        data_file_offset = align_u64(text_file_offset + text_size, 0x1000U);
+        bss_vaddr_offset = align_u64(data_file_offset + data_size, 8U);
+        file_size = data_file_offset + data_size;
+        memory_size = bss_vaddr_offset + bss_size;
+    } else {
+        data_file_offset = text_file_offset + text_size;
+        bss_vaddr_offset = data_file_offset;
+        file_size = data_file_offset;
+        memory_size = file_size;
+    }
     if (file_size > LINKER_MAX_OUTPUT || memory_size > LINKER_MAX_MEMORY) {
         set_link_error(error_out, error_size, "linked executable exceeds native linker capacity", output_path);
         return -1;
@@ -849,7 +1106,7 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         rt_free(output);
         return -1;
     }
-    write_elf_header(output, entry, file_size, memory_size);
+    write_elf_header(output, entry, text_file_offset, text_size, data_file_offset, data_size, bss_size);
 
     fd = platform_open_write(output_path, 0755U);
     if (fd < 0) {

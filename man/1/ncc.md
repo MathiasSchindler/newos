@@ -59,8 +59,13 @@ choices are isolated in the backend and target-description layers under
 
 - only one input source file is accepted per invocation
 - not a complete ISO C implementation; the supported subset is aimed at the project's own code
-- final executable linking currently relies on the host `clang` toolchain
-- Linux x86-64 is the best-supported target today; Linux AArch64 output and linking still report "not implemented yet"
+- final executable linking usually delegates to the host toolchain, but Linux
+  x86-64 `-nostdlib -static` builds can use the in-tree native ELF linker
+- the native ELF linker supports relocatable objects and Unix `ar` archives,
+  but it is still narrower than a system linker and does not yet implement
+  section-level garbage collection or the full relocation surface of clang/lld
+- Linux x86-64 is the best-supported target today; Linux AArch64 object output
+  and native linking still report "not implemented yet"
 - macOS/AArch64 hosted self-builds are progressing with native object and
   executable validation, but some real-world sources may still expose unsupported
   C constructs or backend gaps
