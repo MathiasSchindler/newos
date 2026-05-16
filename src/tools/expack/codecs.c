@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static const ExpackLzssProfile expack_lzss_profiles[] = {
     {COMPRESSION_LZSS_PROFILE_WIDE_WINDOW, 3U, 0x07U},
     {COMPRESSION_LZSS_PROFILE_WIDE_MATCH, 4U, 0x0fU},
@@ -531,6 +533,14 @@ static unsigned long long expack_packed_size(size_t stub_size, size_t payload_si
     return (unsigned long long)EXPACK_ELF_CODE_OFFSET + (unsigned long long)stub_size + (unsigned long long)payload_size;
 }
 
+static unsigned long long expack_score_candidate(const ExpackInputFormat *format, const ExpackOutputBackend *backend, const ExpackCandidate *candidate) {
+    if (backend != 0 && backend->score_candidate != 0) {
+        return backend->score_candidate(format, candidate);
+    }
+    (void)format;
+    return expack_packed_size(candidate->stub_size, candidate->payload_size);
+}
+
 static void expack_candidate_release(ExpackCandidate *candidate) {
     if (candidate->payload != 0) {
         rt_free(candidate->payload);
@@ -585,12 +595,16 @@ static void expack_report_candidate(const ExpackCandidate *candidate) {
     rt_write_uint(1, (unsigned long long)candidate->payload_size);
     rt_write_cstr(1, ", stub ");
     rt_write_uint(1, (unsigned long long)candidate->stub_size);
-    rt_write_cstr(1, ", packed ");
-    rt_write_uint(1, candidate->packed_size);
+    if (candidate->packed_size == EXPACK_CANDIDATE_UNSUPPORTED_SIZE) {
+        rt_write_cstr(1, ", packed unsupported");
+    } else {
+        rt_write_cstr(1, ", packed ");
+        rt_write_uint(1, candidate->packed_size);
+    }
     rt_write_cstr(1, "\n");
 }
 
-static int expack_select_best_payload(const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates, int allow_x86_bcj) {
+static int expack_select_best_payload(const ExpackInputFormat *format, const ExpackOutputBackend *backend, const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates, int allow_x86_bcj) {
     unsigned int profile_index;
     int have_selected = 0;
 
@@ -609,9 +623,10 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         if (expack_compress_lzss_profile(candidate.lzss_profile, input_data, input_size, &candidate.payload, &candidate.payload_size) != 0) {
             continue;
         }
-        candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+        candidate.packed_size = expack_score_candidate(format, backend, &candidate);
         if (report_candidates) expack_report_candidate(&candidate);
-        expack_consider_candidate(selected_out, &have_selected, &candidate);
+        if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+        else expack_candidate_release(&candidate);
     }
 
     {
@@ -625,9 +640,10 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.payload_size = 0U;
         candidate.packed_size = 0ULL;
         if (expack_compress_zero_run(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
             if (report_candidates) expack_report_candidate(&candidate);
-            expack_consider_candidate(selected_out, &have_selected, &candidate);
+            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+            else expack_candidate_release(&candidate);
         }
     }
 
@@ -642,9 +658,10 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.payload_size = 0U;
         candidate.packed_size = 0ULL;
         if (expack_compress_byte_run(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
             if (report_candidates) expack_report_candidate(&candidate);
-            expack_consider_candidate(selected_out, &have_selected, &candidate);
+            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+            else expack_candidate_release(&candidate);
         }
     }
 
@@ -659,9 +676,10 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.payload_size = 0U;
         candidate.packed_size = 0ULL;
         if (expack_compress_lzrep(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
             if (report_candidates) expack_report_candidate(&candidate);
-            expack_consider_candidate(selected_out, &have_selected, &candidate);
+            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+            else expack_candidate_release(&candidate);
         }
     }
 
@@ -676,9 +694,10 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         candidate.payload_size = 0U;
         candidate.packed_size = 0ULL;
         if (expack_compress_lzss_bcj(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_packed_size(candidate.stub_size, candidate.payload_size);
+            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
             if (report_candidates) expack_report_candidate(&candidate);
-            expack_consider_candidate(selected_out, &have_selected, &candidate);
+            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+            else expack_candidate_release(&candidate);
         }
     }
 

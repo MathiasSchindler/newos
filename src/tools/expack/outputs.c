@@ -1,242 +1,7 @@
-static void expack_write_elf_header(unsigned char *header, unsigned long long file_size) {
-    unsigned long long entry = EXPACK_ELF_BASE_VADDR + EXPACK_ELF_CODE_OFFSET;
+#include "internal.h"
 
-    memset(header, 0, EXPACK_ELF_CODE_OFFSET);
-    header[0] = 0x7fU;
-    header[1] = 'E';
-    header[2] = 'L';
-    header[3] = 'F';
-    header[4] = 2U;
-    header[5] = 1U;
-    header[6] = 1U;
-    expack_store_u16_le(header + 16, 2U);
-    expack_store_u16_le(header + 18, 62U);
-    archive_store_u32_le(header + 20, 1U);
-    archive_store_u64_le(header + 24, entry);
-    archive_store_u64_le(header + 32, EXPACK_ELF_HEADER_SIZE);
-    expack_store_u16_le(header + 52, EXPACK_ELF_HEADER_SIZE);
-    expack_store_u16_le(header + 54, EXPACK_ELF_PHDR_SIZE);
-    expack_store_u16_le(header + 56, 1U);
-
-    archive_store_u32_le(header + EXPACK_ELF_HEADER_SIZE + 0, 1U);
-    archive_store_u32_le(header + EXPACK_ELF_HEADER_SIZE + 4, 5U);
-    archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 8, 0ULL);
-    archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 16, EXPACK_ELF_BASE_VADDR);
-    archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 24, EXPACK_ELF_BASE_VADDR);
-    archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 32, file_size);
-    archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 40, file_size);
-    archive_store_u64_le(header + EXPACK_ELF_HEADER_SIZE + 48, 0x1000ULL);
-}
-
-static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsigned int *original_size_offset_out, unsigned int *payload_size_offset_out) {
-    if (candidate->codec == EXPACK_CODEC_LZSS) {
-        *original_size_offset_out = EXPACK_LZSS_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_LZSS_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
-    if (candidate->codec == EXPACK_CODEC_ZERO_RUN) {
-        *original_size_offset_out = EXPACK_ZERO_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_ZERO_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
-    if (candidate->codec == EXPACK_CODEC_BYTE_RUN) {
-        *original_size_offset_out = EXPACK_BYTE_RUN_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_BYTE_RUN_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
-    if (candidate->codec == EXPACK_CODEC_LZREP) {
-        *original_size_offset_out = EXPACK_LZREP_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_LZREP_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
-    if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
-        *original_size_offset_out = EXPACK_LZSS_BCJ_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
-    return -1;
-}
-
-static int expack_patch_stub(unsigned char *stub, const ExpackCandidate *candidate, size_t original_size) {
-    unsigned int original_size_offset;
-    unsigned int payload_size_offset;
-
-    if (expack_candidate_size_offsets(candidate, &original_size_offset, &payload_size_offset) != 0) {
-        return -1;
-    }
-    if (candidate->codec == EXPACK_CODEC_LZSS) {
-        stub[EXPACK_LZSS_STUB_LENGTH_SHIFT_OFFSET] = candidate->lzss_profile->length_shift;
-        stub[EXPACK_LZSS_STUB_LENGTH_MASK_OFFSET] = candidate->lzss_profile->length_mask;
-    }
-    archive_store_u64_le(stub + original_size_offset, (unsigned long long)original_size);
-    archive_store_u64_le(stub + payload_size_offset, (unsigned long long)candidate->payload_size);
-    return 0;
-}
-
-static int expack_write_packed_elf(const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
-    unsigned char header[EXPACK_ELF_CODE_OFFSET];
-    unsigned char stub[sizeof(expack_lzss_bcj_stub_x86_64)];
-    unsigned long long file_size = (unsigned long long)sizeof(header) + (unsigned long long)candidate->stub_size + (unsigned long long)candidate->payload_size;
-    int output_fd;
-
-    expack_write_elf_header(header, file_size);
-    memcpy(stub, candidate->stub, candidate->stub_size);
-    if (expack_patch_stub(stub, candidate, original_size) != 0) {
-        return -1;
-    }
-
-    output_fd = platform_open_write(output_path, 0755U);
-    if (output_fd < 0) {
-        return -1;
-    }
-    if (rt_write_all(output_fd, header, sizeof(header)) != 0 || rt_write_all(output_fd, stub, candidate->stub_size) != 0 ||
-        rt_write_all(output_fd, candidate->payload, candidate->payload_size) != 0) {
-        platform_close(output_fd);
-        return -1;
-    }
-    if (platform_close(output_fd) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-static void expack_store_pe_section_name(unsigned char *field, const char *name) {
-    size_t index = 0U;
-
-    memset(field, 0, 8U);
-    while (index < 8U && name[index] != '\0') {
-        field[index] = (unsigned char)name[index];
-        index += 1U;
-    }
-}
-
-static void expack_write_pe_section(unsigned char *section, const char *name, unsigned int virtual_size, unsigned int virtual_address, unsigned int raw_size, unsigned int raw_offset, unsigned int characteristics) {
-    expack_store_pe_section_name(section, name);
-    archive_store_u32_le(section + 8U, virtual_size);
-    archive_store_u32_le(section + 12U, virtual_address);
-    archive_store_u32_le(section + 16U, raw_size);
-    archive_store_u32_le(section + 20U, raw_offset);
-    archive_store_u32_le(section + 24U, 0U);
-    archive_store_u32_le(section + 28U, 0U);
-    expack_store_u16_le(section + 32U, 0U);
-    expack_store_u16_le(section + 34U, 0U);
-    archive_store_u32_le(section + 36U, characteristics);
-}
-
-static void expack_write_pe_container_metadata(unsigned char *metadata, const ExpackInputFormat *format, const ExpackCandidate *candidate, size_t original_size) {
-    memset(metadata, 0, EXPACK_PE_CONTAINER_METADATA_SIZE);
-    memcpy(metadata, "EXPACKP1", 8U);
-    archive_store_u32_le(metadata + 8U, EXPACK_PE_CONTAINER_VERSION);
-    archive_store_u32_le(metadata + 12U, candidate->codec);
-    archive_store_u64_le(metadata + 16U, (unsigned long long)original_size);
-    archive_store_u64_le(metadata + 24U, (unsigned long long)candidate->payload_size);
-    archive_store_u32_le(metadata + 32U, format->info.pe.entry_rva);
-    archive_store_u32_le(metadata + 36U, format->info.pe.section_count);
-    archive_store_u64_le(metadata + 40U, format->info.pe.image_base);
-}
-
-static int expack_write_pe_container(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
-    static const unsigned char text_stub[] = { 0x31U, 0xc0U, 0xc3U };
-    unsigned int optional_header_size = 0xf0U;
-    unsigned int pe_header_offset = 0x80U;
-    unsigned int section_count = 2U;
-    unsigned long long expack_virtual_size64 = EXPACK_PE_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
-    unsigned long long expack_raw_size64 = expack_align_up_u64(expack_virtual_size64, EXPACK_PE_CONTAINER_FILE_ALIGNMENT);
-    unsigned long long expack_raw_offset64 = EXPACK_PE_CONTAINER_TEXT_RAW_OFFSET + EXPACK_PE_CONTAINER_TEXT_RAW_SIZE;
-    unsigned long long file_size64 = expack_raw_offset64 + expack_raw_size64;
-    unsigned long long size_of_image64 = expack_align_up_u64(EXPACK_PE_CONTAINER_EXPACK_RVA + expack_virtual_size64, EXPACK_PE_CONTAINER_SECTION_ALIGNMENT);
-    unsigned int expack_virtual_size;
-    unsigned int expack_raw_size;
-    unsigned int expack_raw_offset;
-    unsigned int file_size;
-    unsigned int size_of_image;
-    unsigned char *output_data;
-    unsigned char *pe;
-    unsigned char *optional;
-    unsigned char *sections;
-    unsigned int subsystem;
-    int output_fd;
-
-    if (expack_virtual_size64 > 0xffffffffULL || expack_raw_size64 > 0xffffffffULL || expack_raw_offset64 > 0xffffffffULL ||
-        file_size64 > 0xffffffffULL || size_of_image64 > 0xffffffffULL) {
-        return -1;
-    }
-    expack_virtual_size = (unsigned int)expack_virtual_size64;
-    expack_raw_size = (unsigned int)expack_raw_size64;
-    expack_raw_offset = (unsigned int)expack_raw_offset64;
-    file_size = (unsigned int)file_size64;
-    size_of_image = (unsigned int)size_of_image64;
-    output_data = (unsigned char *)rt_malloc(file_size == 0U ? 1U : file_size);
-    if (output_data == 0) {
-        return -1;
-    }
-    memset(output_data, 0, file_size);
-    output_data[0] = 'M';
-    output_data[1] = 'Z';
-    archive_store_u32_le(output_data + 0x3cU, pe_header_offset);
-    pe = output_data + pe_header_offset;
-    pe[0] = 'P';
-    pe[1] = 'E';
-    pe[2] = 0U;
-    pe[3] = 0U;
-    expack_store_u16_le(pe + 4U, 0x8664U);
-    expack_store_u16_le(pe + 6U, (unsigned short)section_count);
-    archive_store_u32_le(pe + 8U, 0U);
-    archive_store_u32_le(pe + 12U, 0U);
-    archive_store_u32_le(pe + 16U, 0U);
-    expack_store_u16_le(pe + 20U, (unsigned short)optional_header_size);
-    expack_store_u16_le(pe + 22U, 0x0022U);
-
-    optional = pe + 24U;
-    expack_store_u16_le(optional, 0x20bU);
-    optional[2] = 14U;
-    optional[3] = 0U;
-    archive_store_u32_le(optional + 4U, EXPACK_PE_CONTAINER_TEXT_RAW_SIZE);
-    archive_store_u32_le(optional + 8U, expack_raw_size);
-    archive_store_u32_le(optional + 12U, 0U);
-    archive_store_u32_le(optional + 16U, EXPACK_PE_CONTAINER_TEXT_RVA);
-    archive_store_u32_le(optional + 20U, EXPACK_PE_CONTAINER_TEXT_RVA);
-    archive_store_u64_le(optional + 24U, EXPACK_PE_CONTAINER_IMAGE_BASE);
-    archive_store_u32_le(optional + 32U, EXPACK_PE_CONTAINER_SECTION_ALIGNMENT);
-    archive_store_u32_le(optional + 36U, EXPACK_PE_CONTAINER_FILE_ALIGNMENT);
-    expack_store_u16_le(optional + 40U, 6U);
-    expack_store_u16_le(optional + 42U, 0U);
-    expack_store_u16_le(optional + 48U, 6U);
-    expack_store_u16_le(optional + 50U, 0U);
-    archive_store_u32_le(optional + 56U, size_of_image);
-    archive_store_u32_le(optional + 60U, EXPACK_PE_CONTAINER_HEADERS_SIZE);
-    subsystem = format->info.pe.subsystem == 0U ? 3U : format->info.pe.subsystem;
-    expack_store_u16_le(optional + 68U, (unsigned short)subsystem);
-    expack_store_u16_le(optional + 70U, 0x8160U);
-    archive_store_u64_le(optional + 72U, 0x100000ULL);
-    archive_store_u64_le(optional + 80U, 0x1000ULL);
-    archive_store_u64_le(optional + 88U, 0x100000ULL);
-    archive_store_u64_le(optional + 96U, 0x1000ULL);
-    archive_store_u32_le(optional + 108U, 16U);
-
-    sections = optional + optional_header_size;
-    expack_write_pe_section(sections, ".text", sizeof(text_stub), EXPACK_PE_CONTAINER_TEXT_RVA, EXPACK_PE_CONTAINER_TEXT_RAW_SIZE, EXPACK_PE_CONTAINER_TEXT_RAW_OFFSET, 0x60000020U);
-    expack_write_pe_section(sections + 40U, ".expack", expack_virtual_size, EXPACK_PE_CONTAINER_EXPACK_RVA, expack_raw_size, expack_raw_offset, 0x40000040U);
-    memcpy(output_data + EXPACK_PE_CONTAINER_TEXT_RAW_OFFSET, text_stub, sizeof(text_stub));
-    expack_write_pe_container_metadata(output_data + expack_raw_offset, format, candidate, original_size);
-    memcpy(output_data + expack_raw_offset + EXPACK_PE_CONTAINER_METADATA_SIZE, candidate->payload, candidate->payload_size);
-
-    output_fd = platform_open_write(output_path, 0755U);
-    if (output_fd < 0) {
-        rt_free(output_data);
-        return -1;
-    }
-    if (rt_write_all(output_fd, output_data, file_size) != 0) {
-        platform_close(output_fd);
-        rt_free(output_data);
-        return -1;
-    }
-    rt_free(output_data);
-    if (platform_close(output_fd) != 0) {
-        return -1;
-    }
-    return 0;
-}
+#include "outputs_elf.c"
+#include "outputs_pe.c"
 
 static int expack_macho_container_subtype(unsigned int cputype, unsigned int *subtype_out) {
     if (cputype == EXPACK_MACHO_CPU_ARM64) {
@@ -673,6 +438,39 @@ static int expack_backend_cannot_write_container(const ExpackInputFormat *format
     return 0;
 }
 
+static unsigned long long expack_elf_score_candidate(const ExpackInputFormat *format, const ExpackCandidate *candidate) {
+    (void)format;
+    return (unsigned long long)EXPACK_ELF_CODE_OFFSET + (unsigned long long)candidate->stub_size + (unsigned long long)candidate->payload_size;
+}
+
+static unsigned long long expack_macho_score_candidate(const ExpackInputFormat *format, const ExpackCandidate *candidate) {
+    enum { header_size = 32U, pagezero_command_size = 72U, text_command_size = 72U + 80U + 80U, linkedit_command_size = 72U, dylinker_command_size = 32U, build_version_command_size = 32U, main_command_size = 24U, code_signature_command_size = 16U };
+    ExpackMachoRunnerDescriptor runner;
+    unsigned int commands_size = pagezero_command_size + text_command_size + linkedit_command_size + dylinker_command_size + build_version_command_size + main_command_size + code_signature_command_size;
+    unsigned int code_offset = header_size + commands_size;
+    unsigned long long payload_size;
+    unsigned long long file_size;
+    unsigned long long text_file_size;
+
+    if (expack_macho_container_runner(format->info.macho.cputype, candidate->codec, &runner) != 0 || runner.stub == 0 || runner.stub_size == 0U) {
+        return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
+    }
+    payload_size = EXPACK_MACHO_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
+    file_size = (unsigned long long)code_offset + (unsigned long long)runner.stub_size + payload_size;
+    text_file_size = expack_align_up_u64(file_size, 0x4000ULL);
+    return text_file_size;
+}
+
+static unsigned long long expack_pe_score_candidate(const ExpackInputFormat *format, const ExpackCandidate *candidate) {
+    unsigned long long expack_virtual_size = EXPACK_PE_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
+    unsigned long long expack_raw_size = expack_align_up_u64(expack_virtual_size, EXPACK_PE_CONTAINER_FILE_ALIGNMENT);
+    (void)format;
+    if (expack_raw_size > 0xffffffffULL) {
+        return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
+    }
+    return EXPACK_PE_CONTAINER_TEXT_RAW_OFFSET + EXPACK_PE_CONTAINER_TEXT_RAW_SIZE + expack_raw_size;
+}
+
 static int expack_elf_write_packed(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
     (void)format;
     return expack_write_packed_elf(output_path, candidate, original_size);
@@ -684,7 +482,10 @@ static int expack_macho_can_write_container(const ExpackInputFormat *format, uns
 
 static int expack_macho_prepare_container_candidate(const ExpackInputFormat *format, const ExpackImage *image, ExpackCandidate *candidate) {
     if (format->info.macho.cputype == EXPACK_MACHO_CPU_ARM64 && candidate->codec != EXPACK_CODEC_LZREP) {
-        return expack_make_raw_candidate(image->data, image->size, candidate);
+        if (expack_make_raw_candidate(image->data, image->size, candidate) != 0) {
+            return -1;
+        }
+        candidate->packed_size = expack_macho_score_candidate(format, candidate);
     }
     return 0;
 }
@@ -722,6 +523,7 @@ static const ExpackOutputBackend expack_output_backends[] = {
         EXPACK_FORMAT_ELF64_X86_64,
         EXPACK_OUTPUT_KIND_ELF_PACKED,
         "cannot write packed output for this executable format",
+        expack_elf_score_candidate,
         expack_backend_can_write_packed,
         expack_backend_cannot_write_container,
         0,
@@ -733,6 +535,7 @@ static const ExpackOutputBackend expack_output_backends[] = {
         EXPACK_FORMAT_MACHO,
         EXPACK_OUTPUT_KIND_MACHO_CONTAINER,
         "Mach-O compression analysis is supported, but writing compressed runnable Mach-O output needs a native decoder backend",
+        expack_macho_score_candidate,
         expack_backend_cannot_write_packed,
         expack_macho_can_write_container,
         expack_macho_prepare_container_candidate,
@@ -744,6 +547,7 @@ static const ExpackOutputBackend expack_output_backends[] = {
         EXPACK_FORMAT_PE_COFF,
         EXPACK_OUTPUT_KIND_PE_CONTAINER,
         "PE/COFF compression analysis is supported, but writing packed output needs a PE/COFF container backend",
+        expack_pe_score_candidate,
         expack_backend_cannot_write_packed,
         expack_pe_can_write_container,
         0,

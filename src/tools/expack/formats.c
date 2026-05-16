@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int expack_validate_elf64_x86_64(const unsigned char *data, size_t size, const char **message_out) {
     unsigned short type;
     unsigned short machine;
