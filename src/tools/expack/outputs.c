@@ -55,6 +55,12 @@ static int expack_macho_container_runner(unsigned int cputype, unsigned int code
     static const unsigned char arm64_lzrep_runner_stub[] = {
 #include "macho_arm64_lzrep_runner.inc"
     };
+    static const unsigned char arm64_lzss_runner_stub[] = {
+#include "macho_arm64_lzss_runner.inc"
+    };
+    static const unsigned char arm64_lz4_runner_stub[] = {
+#include "macho_arm64_lz4_runner.inc"
+    };
     static const unsigned char x86_64_exit_stub[] = {
         0xb8, 0x01, 0x00, 0x00, 0x02,
         0xbf, 0x7f, 0x00, 0x00, 0x00,
@@ -79,6 +85,22 @@ static int expack_macho_container_runner(unsigned int cputype, unsigned int code
         runner_out->payload_address_offset = EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET;
         runner_out->payload_size_offset = EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_SIZE_OFFSET;
         runner_out->original_size_offset = EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET;
+        return 0;
+    }
+    if (cputype == EXPACK_MACHO_CPU_ARM64 && codec == EXPACK_CODEC_LZSS) {
+        runner_out->stub = arm64_lzss_runner_stub;
+        runner_out->stub_size = sizeof(arm64_lzss_runner_stub);
+        runner_out->payload_address_offset = EXPACK_MACHO_ARM64_LZSS_RUNNER_PAYLOAD_ADDRESS_OFFSET;
+        runner_out->payload_size_offset = EXPACK_MACHO_ARM64_LZSS_RUNNER_PAYLOAD_SIZE_OFFSET;
+        runner_out->original_size_offset = EXPACK_MACHO_ARM64_LZSS_RUNNER_ORIGINAL_SIZE_OFFSET;
+        return 0;
+    }
+    if (cputype == EXPACK_MACHO_CPU_ARM64 && codec == EXPACK_CODEC_LZ4) {
+        runner_out->stub = arm64_lz4_runner_stub;
+        runner_out->stub_size = sizeof(arm64_lz4_runner_stub);
+        runner_out->payload_address_offset = EXPACK_MACHO_ARM64_LZ4_RUNNER_PAYLOAD_ADDRESS_OFFSET;
+        runner_out->payload_size_offset = EXPACK_MACHO_ARM64_LZ4_RUNNER_PAYLOAD_SIZE_OFFSET;
+        runner_out->original_size_offset = EXPACK_MACHO_ARM64_LZ4_RUNNER_ORIGINAL_SIZE_OFFSET;
         return 0;
     }
     if (cputype == EXPACK_MACHO_CPU_X86_64) {
@@ -488,7 +510,10 @@ static int expack_macho_can_write_container(const ExpackInputFormat *format, uns
 }
 
 static int expack_macho_prepare_container_candidate(const ExpackInputFormat *format, const ExpackImage *image, ExpackCandidate *candidate) {
-    if (format->info.macho.cputype == EXPACK_MACHO_CPU_ARM64 && candidate->codec != EXPACK_CODEC_LZREP) {
+    ExpackMachoRunnerDescriptor runner;
+
+    if (format->info.macho.cputype == EXPACK_MACHO_CPU_ARM64 &&
+        expack_macho_container_runner(format->info.macho.cputype, candidate->codec, &runner) != 0) {
         if (expack_make_raw_candidate(image->data, image->size, candidate) != 0) {
             return -1;
         }

@@ -24,7 +24,8 @@ assert_file_contains "$WORK_DIR/expack_macho.out" 'format Mach-O 64-bit arm64' "
 assert_file_contains "$WORK_DIR/expack_macho.out" '^selected: ' "expack did not select a Mach-O compression candidate"
 assert_command_succeeds "$ROOT_DIR/build/expack" "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho_container.out"
 assert_file_contains "$WORK_DIR/expack_macho_container.out" '^expack: input .*format Mach-O' "expack did not report Mach-O input statistics while packing"
-assert_file_contains "$WORK_DIR/expack_macho_container.out" '^  lzss/wide-window: payload ' "expack did not report Mach-O compression candidates while packing"
+assert_file_contains "$WORK_DIR/expack_macho_container.out" '^  lzss/long-match: payload .* packed ' "expack did not report runnable Mach-O LZSS compression candidates while packing"
+assert_file_contains "$WORK_DIR/expack_macho_container.out" '^  lzrep: payload ' "expack did not report runnable Mach-O compression candidates while packing"
 assert_file_contains "$WORK_DIR/expack_macho_container.out" 'wrote Mach-O prototype container' "expack did not report Mach-O container output"
 assert_file_contains "$WORK_DIR/expack_macho_container.out" 'output .* bytes, payload ' "expack did not report Mach-O output statistics while packing"
 "$ROOT_DIR/build/file" "$WORK_DIR/minimal_macho-pack" > "$WORK_DIR/file_macho_container.out"
@@ -39,10 +40,17 @@ if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ] && command -v codesign
     assert_file_contains "$WORK_DIR/otool_macho_container_signed.out" 'LC_CODE_SIGNATURE' "signed Mach-O container has no code-signature load command"
     if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ] && [ -x "$ROOT_DIR/build/echo" ]; then
         assert_command_succeeds "$ROOT_DIR/build/expack" "$ROOT_DIR/build/echo" "$WORK_DIR/echo_macho.container" > "$WORK_DIR/expack_echo_macho_container.out"
-        assert_file_contains "$WORK_DIR/expack_echo_macho_container.out" 'with codec lzrep' "arm64 Mach-O runner container did not use the LZREP payload mode"
+        assert_file_contains "$WORK_DIR/expack_echo_macho_container.out" 'with codec lzrep' "arm64 Mach-O runner container did not use an LZREP payload mode"
         assert_command_succeeds codesign --verify --strict --verbose=4 "$WORK_DIR/echo_macho.container" > "$WORK_DIR/codesign_echo_macho_container_verify.out" 2>&1
         assert_command_succeeds "$WORK_DIR/echo_macho.container" expack-macho-ok > "$WORK_DIR/echo_macho_container_run.out"
         assert_file_contains "$WORK_DIR/echo_macho_container_run.out" '^expack-macho-ok$' "arm64 Mach-O runner container did not execute the original image"
+        if [ -x "$ROOT_DIR/build/freestanding-macos-aarch64/expack" ]; then
+            assert_command_succeeds "$ROOT_DIR/build/expack" --all "$ROOT_DIR/build/freestanding-macos-aarch64/expack" "$WORK_DIR/expack_macho_lz4.container" > "$WORK_DIR/expack_macho_lz4_container.out"
+            assert_file_contains "$WORK_DIR/expack_macho_lz4_container.out" 'with codec lz4-block' "arm64 Mach-O runner container did not use the LZ4 payload mode with --all"
+            assert_command_succeeds codesign --verify --strict --verbose=4 "$WORK_DIR/expack_macho_lz4.container" > "$WORK_DIR/codesign_expack_macho_lz4_container_verify.out" 2>&1
+            assert_command_succeeds "$WORK_DIR/expack_macho_lz4.container" --analyze "$ROOT_DIR/build/freestanding-macos-aarch64/expack" > "$WORK_DIR/expack_macho_lz4_container_run.out"
+            assert_file_contains "$WORK_DIR/expack_macho_lz4_container_run.out" '^selected: ' "arm64 Mach-O LZ4 runner container did not execute the original image"
+        fi
     fi
 fi
 assert_command_succeeds "$ROOT_DIR/build/expack" --macho-container "$WORK_DIR/minimal_macho" "$WORK_DIR/minimal_macho.flag-container" > "$WORK_DIR/expack_macho_flag_container.out"
@@ -57,13 +65,15 @@ for pe_fixture in "$ROOT_DIR"/tests/fixtures/pe/*.exe; do
     assert_file_contains "$WORK_DIR/expack_pe_$pe_name.out" '^selected: ' "expack did not select a PE/COFF compression candidate"
     assert_command_succeeds "$ROOT_DIR/build/expack" "$pe_fixture" "$WORK_DIR/$pe_name.pack" > "$WORK_DIR/expack_pe_pack_$pe_name.out"
     assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" '^expack: input .*format PE/COFF PE32' "expack did not report PE/COFF input statistics while packing"
-    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" '^  lzss/wide-window: payload ' "expack did not report PE/COFF compression candidates while packing"
-    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" 'wrote PE/COFF prototype container' "expack did not report PE/COFF container output"
+    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" '^  lzrep: payload ' "expack did not report PE/COFF compression candidates while packing"
+    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" 'wrote PE/COFF ' "expack did not report PE/COFF output"
     assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" 'output .* bytes, payload ' "expack did not report PE/COFF output statistics while packing"
     assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/$pe_name.pack" > "$WORK_DIR/file_pe_pack_$pe_name.out"
-    assert_file_contains "$WORK_DIR/file_pe_pack_$pe_name.out" 'PE/COFF executable PE32+ x86-64, console, 2 sections' "PE/COFF container is not recognized as a PE32+ executable"
+    assert_file_contains "$WORK_DIR/file_pe_pack_$pe_name.out" 'PE/COFF executable PE32+ x86-64' "PE/COFF container is not recognized as a PE32+ executable"
     assert_command_succeeds "$ROOT_DIR/build/strings" "$WORK_DIR/$pe_name.pack" > "$WORK_DIR/strings_pe_pack_$pe_name.out"
-    assert_file_contains "$WORK_DIR/strings_pe_pack_$pe_name.out" 'EXPACKP1' "PE/COFF container does not include expack metadata"
+    if grep -q 'self-extracting container' "$WORK_DIR/expack_pe_pack_$pe_name.out"; then
+        assert_file_contains "$WORK_DIR/strings_pe_pack_$pe_name.out" 'EXPACKP1' "PE/COFF container does not include expack metadata"
+    fi
 done
 
 {

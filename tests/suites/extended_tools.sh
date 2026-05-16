@@ -50,7 +50,7 @@ else
         assert_file_contains "$WORK_DIR/expack_host.out" 'format Mach-O' "expack did not analyze the Mach-O host executable"
         assert_file_contains "$WORK_DIR/expack_host.out" '^selected: ' "expack did not select a Mach-O compression candidate"
         "$ROOT_DIR/build/expack" "$ROOT_DIR/build/echo" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container.out"
-        assert_file_contains "$WORK_DIR/expack_host_container.out" '^  lzss/wide-window: payload ' "expack did not report compression candidates while packing a Mach-O container"
+        assert_file_contains "$WORK_DIR/expack_host_container.out" '^  lzrep: payload ' "expack did not report runnable Mach-O compression candidates while packing"
         assert_file_contains "$WORK_DIR/expack_host_container.out" 'wrote Mach-O prototype container' "expack did not report Mach-O container output"
         assert_file_contains "$WORK_DIR/expack_host_container.out" 'output .* bytes, payload ' "expack did not report Mach-O container output statistics"
         "$ROOT_DIR/build/file" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container_file.out"

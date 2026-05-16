@@ -1491,7 +1491,8 @@ static void expack_candidate_take(ExpackCandidate *selected, ExpackCandidate *ca
 }
 
 static int expack_consider_candidate(ExpackCandidate *selected, int *have_selected, ExpackCandidate *candidate) {
-    if (!*have_selected || candidate->packed_size < selected->packed_size) {
+    if (!*have_selected || candidate->packed_size < selected->packed_size ||
+        (candidate->packed_size == selected->packed_size && candidate->payload_size < selected->payload_size)) {
         expack_candidate_take(selected, candidate);
         *have_selected = 1;
     }

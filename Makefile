@@ -157,7 +157,7 @@ SSH_TRANSPORT_SOURCES := $(shell grep -oE '"src/tools/ssh/ssh_(core|client_io)\.
 SSH_CLIENT_SOURCES := $(shell grep -oE '"src/tools/ssh/ssh_(core|known_hosts|client[^"]*)\.c"' src/compiler/source_manifest.h | tr -d '"')
 SSHD_TOOL_SOURCES := $(shell grep -oE '"src/tools/sshd/sshd_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 EXPACK_SIGNING_SOURCE := src/shared/crypto/sha256.c
-EXPACK_PRIVATE_SOURCES := src/tools/expack/internal.h src/tools/expack/codecs.c src/tools/expack/formats.c src/tools/expack/outputs.c src/tools/expack/outputs_elf.c src/tools/expack/outputs_pe.c src/tools/expack/macho_arm64_lzrep_runner.inc
+EXPACK_PRIVATE_SOURCES := src/tools/expack/internal.h src/tools/expack/codecs.c src/tools/expack/formats.c src/tools/expack/outputs.c src/tools/expack/outputs_elf.c src/tools/expack/outputs_pe.c src/tools/expack/macho_arm64_runner_template.c src/tools/expack/macho_arm64_lzrep_runner.inc src/tools/expack/macho_arm64_lzss_runner.inc src/tools/expack/macho_arm64_lz4_runner.inc
 SSH_CRYPTO_SOURCES := \
 	$(CRYPTO_SOURCES) \
 	src/shared/crypto/curve25519.c \
