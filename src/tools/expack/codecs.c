@@ -43,63 +43,6 @@ static const unsigned char expack_stub_x86_64[] = {
     0x6b, 0x00, 0x00
 };
 
-static const unsigned char expack_zero_stub_x86_64[] = {
-    0x31, 0xed, 0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0x05, 0x01, 0x00, 0x00,
-    0x31, 0xff, 0x4c, 0x89, 0xf6, 0xba, 0x03, 0x00, 0x00, 0x00, 0x41, 0xba,
-    0x22, 0x00, 0x00, 0x00, 0x41, 0xb8, 0xff, 0xff, 0xff, 0xff, 0x45, 0x31,
-    0xc9, 0xb8, 0x09, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x0f,
-    0x88, 0xd0, 0x00, 0x00, 0x00, 0x49, 0x89, 0xc5, 0x4f, 0x8d, 0x7c, 0x35,
-    0x00, 0x48, 0x8d, 0x1d, 0xe5, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x2d, 0xce,
-    0x00, 0x00, 0x00, 0x48, 0x01, 0xdd, 0x4c, 0x89, 0xef, 0x48, 0x39, 0xeb,
-    0x74, 0x4e, 0x48, 0x8d, 0x43, 0x05, 0x48, 0x39, 0xe8, 0x0f, 0x87, 0xa2,
-    0x00, 0x00, 0x00, 0x0f, 0xb6, 0x03, 0x8b, 0x53, 0x01, 0x48, 0x83, 0xc3,
-    0x05, 0x4c, 0x89, 0xf9, 0x48, 0x29, 0xf9, 0x48, 0x39, 0xd1, 0x0f, 0x82,
-    0x89, 0x00, 0x00, 0x00, 0x85, 0xc0, 0x75, 0x17, 0x48, 0x89, 0xe9, 0x48,
-    0x29, 0xd9, 0x48, 0x39, 0xd1, 0x72, 0x7a, 0x48, 0x89, 0xde, 0x89, 0xd1,
-    0xf3, 0xa4, 0x48, 0x89, 0xf3, 0xeb, 0xba, 0x83, 0xf8, 0x01, 0x75, 0x69,
-    0x31, 0xc0, 0x89, 0xd1, 0xf3, 0xaa, 0xeb, 0xad, 0x4c, 0x39, 0xff, 0x75,
-    0x5c, 0xb8, 0x3f, 0x01, 0x00, 0x00, 0x48, 0x8d, 0x3d, 0x6c, 0x00, 0x00,
-    0x00, 0x31, 0xf6, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x78, 0x47, 0x89, 0xc3,
-    0x4c, 0x89, 0xee, 0x4c, 0x89, 0xf2, 0x48, 0x85, 0xd2, 0x74, 0x16, 0xb8,
-    0x01, 0x00, 0x00, 0x00, 0x89, 0xdf, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x7e,
-    0x2c, 0x48, 0x01, 0xc6, 0x48, 0x29, 0xc2, 0xeb, 0xe5, 0xb8, 0x42, 0x01,
-    0x00, 0x00, 0x89, 0xdf, 0x48, 0x8d, 0x35, 0x39, 0x00, 0x00, 0x00, 0x49,
-    0x8d, 0x54, 0x24, 0x08, 0x4d, 0x8b, 0x14, 0x24, 0x4f, 0x8d, 0x54, 0xd4,
-    0x10, 0x41, 0xb8, 0x00, 0x10, 0x00, 0x00, 0x0f, 0x05, 0xb8, 0x3c, 0x00,
-    0x00, 0x00, 0xbf, 0x7f, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x11, 0x22, 0x33,
-    0x44, 0x55, 0x66, 0x77, 0x88, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
-    0x11, 0x65, 0x78, 0x70, 0x61, 0x63, 0x6b, 0x00, 0x00
-};
-
-static const unsigned char expack_byte_run_stub_x86_64[] = {
-    0x31, 0xed, 0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0x11, 0x01, 0x00, 0x00,
-    0x31, 0xff, 0x4c, 0x89, 0xf6, 0xba, 0x03, 0x00, 0x00, 0x00, 0x41, 0xba,
-    0x22, 0x00, 0x00, 0x00, 0x41, 0xb8, 0xff, 0xff, 0xff, 0xff, 0x45, 0x31,
-    0xc9, 0xb8, 0x09, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x0f,
-    0x88, 0xdc, 0x00, 0x00, 0x00, 0x49, 0x89, 0xc5, 0x4f, 0x8d, 0x7c, 0x35,
-    0x00, 0x48, 0x8d, 0x1d, 0xf1, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x2d, 0xda,
-    0x00, 0x00, 0x00, 0x48, 0x01, 0xdd, 0x4c, 0x89, 0xef, 0x48, 0x39, 0xeb,
-    0x74, 0x5a, 0x48, 0x8d, 0x43, 0x05, 0x48, 0x39, 0xe8, 0x0f, 0x87, 0xae,
-    0x00, 0x00, 0x00, 0x0f, 0xb6, 0x03, 0x8b, 0x53, 0x01, 0x48, 0x83, 0xc3,
-    0x05, 0x4c, 0x89, 0xf9, 0x48, 0x29, 0xf9, 0x48, 0x39, 0xd1, 0x0f, 0x82,
-    0x95, 0x00, 0x00, 0x00, 0x85, 0xc0, 0x75, 0x1b, 0x48, 0x89, 0xe9, 0x48,
-    0x29, 0xd9, 0x48, 0x39, 0xd1, 0x0f, 0x82, 0x82, 0x00, 0x00, 0x00, 0x48,
-    0x89, 0xde, 0x89, 0xd1, 0xf3, 0xa4, 0x48, 0x89, 0xf3, 0xeb, 0xb6, 0x83,
-    0xf8, 0x01, 0x75, 0x71, 0x48, 0x39, 0xeb, 0x73, 0x6c, 0x8a, 0x03, 0x48,
-    0xff, 0xc3, 0x89, 0xd1, 0xf3, 0xaa, 0xeb, 0xa1, 0x4c, 0x39, 0xff, 0x75,
-    0x5c, 0xb8, 0x3f, 0x01, 0x00, 0x00, 0x48, 0x8d, 0x3d, 0x6c, 0x00, 0x00,
-    0x00, 0x31, 0xf6, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x78, 0x47, 0x89, 0xc3,
-    0x4c, 0x89, 0xee, 0x4c, 0x89, 0xf2, 0x48, 0x85, 0xd2, 0x74, 0x16, 0xb8,
-    0x01, 0x00, 0x00, 0x00, 0x89, 0xdf, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x7e,
-    0x2c, 0x48, 0x01, 0xc6, 0x48, 0x29, 0xc2, 0xeb, 0xe5, 0xb8, 0x42, 0x01,
-    0x00, 0x00, 0x89, 0xdf, 0x48, 0x8d, 0x35, 0x39, 0x00, 0x00, 0x00, 0x49,
-    0x8d, 0x54, 0x24, 0x08, 0x4d, 0x8b, 0x14, 0x24, 0x4f, 0x8d, 0x54, 0xd4,
-    0x10, 0x41, 0xb8, 0x00, 0x10, 0x00, 0x00, 0x0f, 0x05, 0xb8, 0x3c, 0x00,
-    0x00, 0x00, 0xbf, 0x7f, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x11, 0x22, 0x33,
-    0x44, 0x55, 0x66, 0x77, 0x88, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
-    0x11, 0x65, 0x78, 0x70, 0x61, 0x63, 0x6b, 0x00, 0x00
-};
-
 static const unsigned char expack_lzrep_stub_x86_64[] = {
     0x31, 0xed, 0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0x6e, 0x01, 0x00, 0x00,
     0x31, 0xff, 0x4c, 0x89, 0xf6, 0xba, 0x03, 0x00, 0x00, 0x00, 0x41, 0xba,
@@ -272,197 +215,89 @@ static const unsigned char expack_lz4_stub_x86_64[] = {
     0x78, 0x70, 0x61, 0x63, 0x6b, 0x00, 0x00
 };
 
+static const unsigned char expack_xlz_stub_x86_64[] = {
+    0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0x71, 0x01, 0x00, 0x00, 0x31, 0xff,
+    0x4c, 0x89, 0xf6, 0x6a, 0x03, 0x5a, 0x6a, 0x22, 0x41, 0x5a, 0x6a, 0xff,
+    0x41, 0x58, 0x45, 0x31, 0xc9, 0x6a, 0x09, 0x58, 0x0f, 0x05, 0x48, 0x85,
+    0xc0, 0x0f, 0x88, 0x48, 0x01, 0x00, 0x00, 0x49, 0x89, 0xc5, 0x4f, 0x8d,
+    0x7c, 0x35, 0x00, 0x48, 0x8d, 0x35, 0x59, 0x01, 0x00, 0x00, 0x48, 0x8b,
+    0x2d, 0x42, 0x01, 0x00, 0x00, 0x48, 0x01, 0xf5, 0x4c, 0x89, 0xef, 0x4c,
+    0x39, 0xff, 0x0f, 0x83, 0xc5, 0x00, 0x00, 0x00, 0x48, 0x39, 0xee, 0x0f,
+    0x83, 0x1a, 0x01, 0x00, 0x00, 0xac, 0x0f, 0xb6, 0xc0, 0x41, 0x89, 0xc0,
+    0x89, 0xc1, 0xc1, 0xe9, 0x05, 0x83, 0xf9, 0x07, 0x75, 0x14, 0x48, 0x39,
+    0xee, 0x0f, 0x83, 0x00, 0x01, 0x00, 0x00, 0xac, 0x0f, 0xb6, 0xc0, 0x48,
+    0x01, 0xc1, 0x3c, 0xff, 0x74, 0xec, 0x48, 0x89, 0xe8, 0x48, 0x29, 0xf0,
+    0x48, 0x39, 0xc8, 0x0f, 0x82, 0xe6, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xf8,
+    0x48, 0x29, 0xf8, 0x48, 0x39, 0xc8, 0x0f, 0x82, 0xd7, 0x00, 0x00, 0x00,
+    0xf3, 0xa4, 0x4c, 0x39, 0xff, 0x73, 0x72, 0x41, 0xf6, 0xc0, 0x10, 0x75,
+    0x11, 0x48, 0x39, 0xee, 0x0f, 0x83, 0xc1, 0x00, 0x00, 0x00, 0xac, 0x0f,
+    0xb6, 0xd0, 0xff, 0xc2, 0xeb, 0x14, 0x48, 0x8d, 0x46, 0x02, 0x48, 0x39,
+    0xe8, 0x0f, 0x87, 0xac, 0x00, 0x00, 0x00, 0x66, 0xad, 0x0f, 0xb7, 0xd0,
+    0xff, 0xc2, 0x44, 0x89, 0xc1, 0x83, 0xe1, 0x0f, 0x83, 0xc1, 0x03, 0x83,
+    0xf9, 0x12, 0x75, 0x14, 0x48, 0x39, 0xee, 0x0f, 0x83, 0x8e, 0x00, 0x00,
+    0x00, 0xac, 0x0f, 0xb6, 0xc0, 0x48, 0x01, 0xc1, 0x3c, 0xff, 0x74, 0xec,
+    0x48, 0x89, 0xf8, 0x4c, 0x29, 0xe8, 0x48, 0x39, 0xd0, 0x72, 0x78, 0x4c,
+    0x89, 0xf8, 0x48, 0x29, 0xf8, 0x48, 0x39, 0xc8, 0x72, 0x6d, 0x56, 0x48,
+    0x89, 0xfe, 0x48, 0x29, 0xd6, 0xf3, 0xa4, 0x5e, 0xe9, 0x32, 0xff, 0xff,
+    0xff, 0x48, 0x39, 0xee, 0x75, 0x59, 0x68, 0x3f, 0x01, 0x00, 0x00, 0x58,
+    0x48, 0x8d, 0x3d, 0x64, 0x00, 0x00, 0x00, 0x31, 0xf6, 0x0f, 0x05, 0x85,
+    0xc0, 0x78, 0x44, 0x93, 0x4c, 0x89, 0xee, 0x4c, 0x89, 0xf2, 0x48, 0x85,
+    0xd2, 0x74, 0x13, 0x6a, 0x01, 0x58, 0x89, 0xdf, 0x0f, 0x05, 0x85, 0xc0,
+    0x7e, 0x2d, 0x48, 0x01, 0xc6, 0x48, 0x29, 0xc2, 0xeb, 0xe8, 0x68, 0x42,
+    0x01, 0x00, 0x00, 0x58, 0x89, 0xdf, 0x48, 0x8d, 0x35, 0x35, 0x00, 0x00,
+    0x00, 0x49, 0x8d, 0x54, 0x24, 0x08, 0x4d, 0x8b, 0x14, 0x24, 0x4f, 0x8d,
+    0x54, 0xd4, 0x10, 0x41, 0xb8, 0x00, 0x10, 0x00, 0x00, 0x0f, 0x05, 0x6a,
+    0x3c, 0x58, 0x6a, 0x7f, 0x5f, 0x0f, 0x05, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x65,
+    0x78, 0x70, 0x61, 0x63, 0x6b, 0x00, 0x00
+};
 
-static unsigned long long expack_zero_run_length(const unsigned char *data, size_t size, size_t offset) {
-    size_t position = offset;
+static const unsigned char expack_xlz_bcj_stub_x86_64[] = {
+    0x49, 0x89, 0xe4, 0x4c, 0x8b, 0x35, 0xdf, 0x01, 0x00, 0x00, 0x31, 0xff,
+    0x4c, 0x89, 0xf6, 0x6a, 0x03, 0x5a, 0x6a, 0x22, 0x41, 0x5a, 0x6a, 0xff,
+    0x41, 0x58, 0x45, 0x31, 0xc9, 0x6a, 0x09, 0x58, 0x0f, 0x05, 0x48, 0x85,
+    0xc0, 0x0f, 0x88, 0xb6, 0x01, 0x00, 0x00, 0x49, 0x89, 0xc5, 0x4f, 0x8d,
+    0x7c, 0x35, 0x00, 0x48, 0x8d, 0x35, 0xc7, 0x01, 0x00, 0x00, 0x48, 0x8b,
+    0x2d, 0xb0, 0x01, 0x00, 0x00, 0x48, 0x01, 0xf5, 0x4c, 0x89, 0xef, 0x4c,
+    0x39, 0xff, 0x0f, 0x83, 0xcd, 0x00, 0x00, 0x00, 0x48, 0x39, 0xee, 0x0f,
+    0x83, 0x88, 0x01, 0x00, 0x00, 0xac, 0x0f, 0xb6, 0xc0, 0x41, 0x89, 0xc0,
+    0x89, 0xc1, 0xc1, 0xe9, 0x05, 0x83, 0xf9, 0x07, 0x75, 0x14, 0x48, 0x39,
+    0xee, 0x0f, 0x83, 0x6e, 0x01, 0x00, 0x00, 0xac, 0x0f, 0xb6, 0xc0, 0x48,
+    0x01, 0xc1, 0x3c, 0xff, 0x74, 0xec, 0x48, 0x89, 0xe8, 0x48, 0x29, 0xf0,
+    0x48, 0x39, 0xc8, 0x0f, 0x82, 0x54, 0x01, 0x00, 0x00, 0x4c, 0x89, 0xf8,
+    0x48, 0x29, 0xf8, 0x48, 0x39, 0xc8, 0x0f, 0x82, 0x45, 0x01, 0x00, 0x00,
+    0xf3, 0xa4, 0x4c, 0x39, 0xff, 0x73, 0x7a, 0x41, 0xf6, 0xc0, 0x10, 0x75,
+    0x11, 0x48, 0x39, 0xee, 0x0f, 0x83, 0x2f, 0x01, 0x00, 0x00, 0xac, 0x0f,
+    0xb6, 0xd0, 0xff, 0xc2, 0xeb, 0x14, 0x48, 0x8d, 0x46, 0x02, 0x48, 0x39,
+    0xe8, 0x0f, 0x87, 0x1a, 0x01, 0x00, 0x00, 0x66, 0xad, 0x0f, 0xb7, 0xd0,
+    0xff, 0xc2, 0x44, 0x89, 0xc1, 0x83, 0xe1, 0x0f, 0x83, 0xc1, 0x03, 0x83,
+    0xf9, 0x12, 0x75, 0x14, 0x48, 0x39, 0xee, 0x0f, 0x83, 0xfc, 0x00, 0x00,
+    0x00, 0xac, 0x0f, 0xb6, 0xc0, 0x48, 0x01, 0xc1, 0x3c, 0xff, 0x74, 0xec,
+    0x48, 0x89, 0xf8, 0x4c, 0x29, 0xe8, 0x48, 0x39, 0xd0, 0x0f, 0x82, 0xe2,
+    0x00, 0x00, 0x00, 0x4c, 0x89, 0xf8, 0x48, 0x29, 0xf8, 0x48, 0x39, 0xc8,
+    0x0f, 0x82, 0xd3, 0x00, 0x00, 0x00, 0x56, 0x48, 0x89, 0xfe, 0x48, 0x29,
+    0xd6, 0xf3, 0xa4, 0x5e, 0xe9, 0x2a, 0xff, 0xff, 0xff, 0x48, 0x39, 0xee,
+    0x0f, 0x85, 0xbb, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xee, 0x4c, 0x39, 0xfe,
+    0x73, 0x5a, 0x8a, 0x06, 0x3c, 0xe8, 0x74, 0x30, 0x3c, 0xe9, 0x74, 0x2c,
+    0x3c, 0x0f, 0x75, 0x47, 0x48, 0x8d, 0x46, 0x06, 0x4c, 0x39, 0xf8, 0x77,
+    0x3e, 0x8a, 0x46, 0x01, 0x24, 0xf0, 0x3c, 0x80, 0x75, 0x35, 0x8b, 0x46,
+    0x02, 0x89, 0xf2, 0x44, 0x29, 0xea, 0x83, 0xc2, 0x06, 0x29, 0xd0, 0x89,
+    0x46, 0x02, 0x48, 0x83, 0xc6, 0x06, 0xeb, 0xc5, 0x48, 0x8d, 0x46, 0x05,
+    0x4c, 0x39, 0xf8, 0x77, 0x16, 0x8b, 0x46, 0x01, 0x89, 0xf2, 0x44, 0x29,
+    0xea, 0x83, 0xc2, 0x05, 0x29, 0xd0, 0x89, 0x46, 0x01, 0x48, 0x83, 0xc6,
+    0x05, 0xeb, 0xa6, 0x48, 0xff, 0xc6, 0xeb, 0xa1, 0x68, 0x3f, 0x01, 0x00,
+    0x00, 0x58, 0x48, 0x8d, 0x3d, 0x64, 0x00, 0x00, 0x00, 0x31, 0xf6, 0x0f,
+    0x05, 0x85, 0xc0, 0x78, 0x44, 0x93, 0x4c, 0x89, 0xee, 0x4c, 0x89, 0xf2,
+    0x48, 0x85, 0xd2, 0x74, 0x13, 0x6a, 0x01, 0x58, 0x89, 0xdf, 0x0f, 0x05,
+    0x85, 0xc0, 0x7e, 0x2d, 0x48, 0x01, 0xc6, 0x48, 0x29, 0xc2, 0xeb, 0xe8,
+    0x68, 0x42, 0x01, 0x00, 0x00, 0x58, 0x89, 0xdf, 0x48, 0x8d, 0x35, 0x35,
+    0x00, 0x00, 0x00, 0x49, 0x8d, 0x54, 0x24, 0x08, 0x4d, 0x8b, 0x14, 0x24,
+    0x4f, 0x8d, 0x54, 0xd4, 0x10, 0x41, 0xb8, 0x00, 0x10, 0x00, 0x00, 0x0f,
+    0x05, 0x6a, 0x3c, 0x58, 0x6a, 0x7f, 0x5f, 0x0f, 0x05, 0x11, 0x22, 0x33,
+    0x44, 0x55, 0x66, 0x77, 0x88, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+    0x11, 0x65, 0x78, 0x70, 0x61, 0x63, 0x6b, 0x00, 0x00
+};
 
-    while (position < size && data[position] == 0U) {
-        position += 1U;
-    }
-    return (unsigned long long)(position - offset);
-}
-
-static unsigned long long expack_byte_run_length(const unsigned char *data, size_t size, size_t offset) {
-    size_t position = offset;
-    unsigned char value;
-
-    if (offset >= size) {
-        return 0ULL;
-    }
-    value = data[offset];
-    while (position < size && data[position] == value) {
-        position += 1U;
-    }
-    return (unsigned long long)(position - offset);
-}
-
-static int expack_should_start_zero_record(const unsigned char *data, size_t size, size_t offset) {
-    return expack_zero_run_length(data, size, offset) >= EXPACK_ZERO_RUN_MIN;
-}
-
-static int expack_should_start_byte_run_record(const unsigned char *data, size_t size, size_t offset) {
-    return expack_byte_run_length(data, size, offset) >= EXPACK_BYTE_RUN_MIN;
-}
-
-static unsigned long long expack_zero_encoded_size(const unsigned char *data, size_t size) {
-    size_t position = 0U;
-    unsigned long long encoded_size = 0ULL;
-
-    while (position < size) {
-        unsigned long long zero_count = expack_zero_run_length(data, size, position);
-        if (zero_count >= EXPACK_ZERO_RUN_MIN) {
-            while (zero_count > 0ULL) {
-                unsigned int chunk = zero_count > 0xffffffffULL ? 0xffffffffU : (unsigned int)zero_count;
-                encoded_size += 5ULL;
-                position += (size_t)chunk;
-                zero_count -= (unsigned long long)chunk;
-            }
-        } else {
-            size_t literal_start = position;
-
-            position += 1U;
-            while (position < size && position - literal_start < EXPACK_LITERAL_MAX && !expack_should_start_zero_record(data, size, position)) {
-                position += 1U;
-            }
-            encoded_size += 5ULL + (unsigned long long)(position - literal_start);
-        }
-    }
-    return encoded_size;
-}
-
-static int expack_zero_store_record(unsigned char *payload, size_t payload_capacity, size_t *payload_offset, unsigned char type, unsigned int length) {
-    if (*payload_offset + 5U > payload_capacity) {
-        return -1;
-    }
-    payload[*payload_offset] = type;
-    archive_store_u32_le(payload + *payload_offset + 1U, length);
-    *payload_offset += 5U;
-    return 0;
-}
-
-static int expack_compress_zero_run(const unsigned char *data, size_t size, unsigned char **payload_out, size_t *payload_size_out) {
-    unsigned long long encoded_bound = expack_zero_encoded_size(data, size);
-    unsigned char *payload;
-    size_t position = 0U;
-    size_t payload_offset = 0U;
-
-    if (encoded_bound > (unsigned long long)((size_t)-1)) {
-        return -1;
-    }
-    payload = (unsigned char *)rt_malloc((size_t)encoded_bound == 0U ? 1U : (size_t)encoded_bound);
-    if (payload == 0) {
-        return -1;
-    }
-
-    while (position < size) {
-        unsigned long long zero_count = expack_zero_run_length(data, size, position);
-        if (zero_count >= EXPACK_ZERO_RUN_MIN) {
-            while (zero_count > 0ULL) {
-                unsigned int chunk = zero_count > 0xffffffffULL ? 0xffffffffU : (unsigned int)zero_count;
-                if (expack_zero_store_record(payload, (size_t)encoded_bound, &payload_offset, 1U, chunk) != 0) {
-                    rt_free(payload);
-                    return -1;
-                }
-                position += (size_t)chunk;
-                zero_count -= (unsigned long long)chunk;
-            }
-        } else {
-            size_t literal_start = position;
-
-            position += 1U;
-            while (position < size && position - literal_start < EXPACK_LITERAL_MAX && !expack_should_start_zero_record(data, size, position)) {
-                position += 1U;
-            }
-            if (expack_zero_store_record(payload, (size_t)encoded_bound, &payload_offset, 0U, (unsigned int)(position - literal_start)) != 0 ||
-                payload_offset + (position - literal_start) > (size_t)encoded_bound) {
-                rt_free(payload);
-                return -1;
-            }
-            memcpy(payload + payload_offset, data + literal_start, position - literal_start);
-            payload_offset += position - literal_start;
-        }
-    }
-
-    *payload_out = payload;
-    *payload_size_out = payload_offset;
-    return 0;
-}
-
-static unsigned long long expack_byte_run_encoded_size(const unsigned char *data, size_t size) {
-    size_t position = 0U;
-    unsigned long long encoded_size = 0ULL;
-
-    while (position < size) {
-        unsigned long long run_count = expack_byte_run_length(data, size, position);
-        if (run_count >= EXPACK_BYTE_RUN_MIN) {
-            while (run_count > 0ULL) {
-                unsigned int chunk = run_count > 0xffffffffULL ? 0xffffffffU : (unsigned int)run_count;
-                encoded_size += 6ULL;
-                position += (size_t)chunk;
-                run_count -= (unsigned long long)chunk;
-            }
-        } else {
-            size_t literal_start = position;
-
-            position += 1U;
-            while (position < size && position - literal_start < EXPACK_LITERAL_MAX && !expack_should_start_byte_run_record(data, size, position)) {
-                position += 1U;
-            }
-            encoded_size += 5ULL + (unsigned long long)(position - literal_start);
-        }
-    }
-    return encoded_size;
-}
-
-static int expack_compress_byte_run(const unsigned char *data, size_t size, unsigned char **payload_out, size_t *payload_size_out) {
-    unsigned long long encoded_bound = expack_byte_run_encoded_size(data, size);
-    unsigned char *payload;
-    size_t position = 0U;
-    size_t payload_offset = 0U;
-
-    if (encoded_bound > (unsigned long long)((size_t)-1)) {
-        return -1;
-    }
-    payload = (unsigned char *)rt_malloc((size_t)encoded_bound == 0U ? 1U : (size_t)encoded_bound);
-    if (payload == 0) {
-        return -1;
-    }
-
-    while (position < size) {
-        unsigned long long run_count = expack_byte_run_length(data, size, position);
-        if (run_count >= EXPACK_BYTE_RUN_MIN) {
-            unsigned char value = data[position];
-            while (run_count > 0ULL) {
-                unsigned int chunk = run_count > 0xffffffffULL ? 0xffffffffU : (unsigned int)run_count;
-                if (expack_zero_store_record(payload, (size_t)encoded_bound, &payload_offset, 1U, chunk) != 0 || payload_offset >= (size_t)encoded_bound) {
-                    rt_free(payload);
-                    return -1;
-                }
-                payload[payload_offset++] = value;
-                position += (size_t)chunk;
-                run_count -= (unsigned long long)chunk;
-            }
-        } else {
-            size_t literal_start = position;
-
-            position += 1U;
-            while (position < size && position - literal_start < EXPACK_LITERAL_MAX && !expack_should_start_byte_run_record(data, size, position)) {
-                position += 1U;
-            }
-            if (expack_zero_store_record(payload, (size_t)encoded_bound, &payload_offset, 0U, (unsigned int)(position - literal_start)) != 0 ||
-                payload_offset + (position - literal_start) > (size_t)encoded_bound) {
-                rt_free(payload);
-                return -1;
-            }
-            memcpy(payload + payload_offset, data + literal_start, position - literal_start);
-            payload_offset += position - literal_start;
-        }
-    }
-
-    *payload_out = payload;
-    *payload_size_out = payload_offset;
-    return 0;
-}
 
 static size_t expack_match_length_at(const unsigned char *data, size_t size, size_t position, size_t distance, size_t max_length) {
     size_t length = 0U;
@@ -871,7 +706,7 @@ static int expack_compress_lz4_block(const unsigned char *data, size_t size, uns
         }
     }
 
-    if (anchor < size || output_offset == 0U) {
+    if (anchor < size) {
         size_t literal_length = size - anchor;
         unsigned char token;
         if (output_offset >= bound) {
@@ -901,6 +736,554 @@ static int expack_compress_lz4_block(const unsigned char *data, size_t size, uns
     }
 
     rt_free(hash_table);
+    *payload_out = payload;
+    *payload_size_out = output_offset;
+    return 0;
+}
+
+static unsigned int expack_xlz_hash4(const unsigned char *data) {
+    return (expack_lz4_read_u32(data) * 2246822519U) >> (32U - EXPACK_XLZ_HASH_BITS);
+}
+
+static size_t expack_xlz_extension_size(size_t length) {
+    size_t bytes = 1U;
+
+    while (length >= 255U) {
+        bytes += 1U;
+        length -= 255U;
+    }
+    return bytes;
+}
+
+static size_t expack_xlz_match_overhead(size_t match_length, size_t distance) {
+    size_t token_length = match_length - EXPACK_XLZ_MIN_MATCH;
+    size_t overhead = distance <= 256U ? 1U : 2U;
+
+    if (token_length >= 15U) {
+        overhead += expack_xlz_extension_size(token_length - 15U);
+    }
+    return overhead;
+}
+
+static size_t expack_xlz_literal_extension_size(size_t literal_length) {
+    return literal_length >= 7U ? expack_xlz_extension_size(literal_length - 7U) : 0U;
+}
+
+static size_t expack_xlz_literal_step_cost(size_t literal_length) {
+    size_t next_length = literal_length + 1U;
+    size_t previous_extension = expack_xlz_literal_extension_size(literal_length);
+    size_t next_extension = expack_xlz_literal_extension_size(next_length);
+
+    return 1U + next_extension - previous_extension;
+}
+
+static int expack_xlz_write_extension(unsigned char *payload, size_t capacity, size_t *offset, size_t value) {
+    while (value >= 255U) {
+        if (*offset >= capacity) {
+            return -1;
+        }
+        payload[(*offset)++] = 255U;
+        value -= 255U;
+    }
+    if (*offset >= capacity) {
+        return -1;
+    }
+    payload[(*offset)++] = (unsigned char)value;
+    return 0;
+}
+
+static int expack_xlz_emit_sequence(unsigned char *payload, size_t capacity, size_t *offset, const unsigned char *data, size_t literal_start, size_t literal_length, size_t match_length, size_t distance) {
+    size_t token_offset;
+    size_t token_match_length = match_length == 0U ? 0U : match_length - EXPACK_XLZ_MIN_MATCH;
+    unsigned char token = 0U;
+
+    if (*offset >= capacity || literal_start > ((size_t)-1) - literal_length) {
+        return -1;
+    }
+    token_offset = (*offset)++;
+    if (literal_length >= 7U) {
+        token = 0xe0U;
+        if (expack_xlz_write_extension(payload, capacity, offset, literal_length - 7U) != 0) {
+            return -1;
+        }
+    } else {
+        token = (unsigned char)(literal_length << 5U);
+    }
+    if (*offset > capacity || literal_length > capacity - *offset) {
+        return -1;
+    }
+    memcpy(payload + *offset, data + literal_start, literal_length);
+    *offset += literal_length;
+    if (match_length != 0U) {
+        size_t encoded_distance = distance - 1U;
+
+        if (distance == 0U || distance > EXPACK_XLZ_MAX_DISTANCE) {
+            return -1;
+        }
+        if (distance <= 256U) {
+            if (*offset >= capacity) {
+                return -1;
+            }
+            payload[(*offset)++] = (unsigned char)encoded_distance;
+        } else {
+            if (*offset + 2U > capacity) {
+                return -1;
+            }
+            token |= 0x10U;
+            payload[(*offset)++] = (unsigned char)(encoded_distance & 0xffU);
+            payload[(*offset)++] = (unsigned char)((encoded_distance >> 8U) & 0xffU);
+        }
+        if (token_match_length >= 15U) {
+            token |= 0x0fU;
+            if (expack_xlz_write_extension(payload, capacity, offset, token_match_length - 15U) != 0) {
+                return -1;
+            }
+        } else {
+            token |= (unsigned char)token_match_length;
+        }
+    }
+    payload[token_offset] = token;
+    return 0;
+}
+
+static void expack_xlz_insert_position(const unsigned char *data, size_t size, size_t position, size_t *head, size_t *previous) {
+    unsigned int hash;
+
+    if (position + 4U > size) {
+        return;
+    }
+    hash = expack_xlz_hash4(data + position);
+    previous[position] = head[hash];
+    head[hash] = position + 1U;
+}
+
+typedef struct {
+    size_t length;
+    size_t distance;
+} ExpackXlzMatch;
+
+typedef struct {
+    unsigned long long cost;
+    size_t anchor;
+    size_t previous_position;
+    unsigned int previous_slot;
+    size_t match_position;
+    size_t match_length;
+    size_t distance;
+    unsigned char used;
+} ExpackXlzParseState;
+
+typedef struct {
+    size_t position;
+    size_t length;
+    size_t distance;
+} ExpackXlzSequence;
+
+static void expack_xlz_add_match(ExpackXlzMatch *matches, unsigned int *match_count, size_t length, size_t distance) {
+    unsigned int i;
+    unsigned long long gain;
+    unsigned int worst = 0U;
+    unsigned long long worst_gain = 0ULL;
+
+    if (length < EXPACK_XLZ_MIN_MATCH || length <= expack_xlz_match_overhead(length, distance)) {
+        return;
+    }
+    for (i = 0U; i < *match_count; ++i) {
+        if (matches[i].length == length && matches[i].distance == distance) {
+            return;
+        }
+    }
+    if (*match_count < EXPACK_XLZ_PARSE_MATCHES) {
+        matches[*match_count].length = length;
+        matches[*match_count].distance = distance;
+        *match_count += 1U;
+        return;
+    }
+
+    gain = (unsigned long long)(length - expack_xlz_match_overhead(length, distance));
+    for (i = 0U; i < *match_count; ++i) {
+        unsigned long long candidate_gain = (unsigned long long)(matches[i].length - expack_xlz_match_overhead(matches[i].length, matches[i].distance));
+
+        if (i == 0U || candidate_gain < worst_gain || (candidate_gain == worst_gain && matches[i].distance > matches[worst].distance)) {
+            worst = i;
+            worst_gain = candidate_gain;
+        }
+    }
+    if (gain > worst_gain || (gain == worst_gain && distance < matches[worst].distance)) {
+        matches[worst].length = length;
+        matches[worst].distance = distance;
+    }
+}
+
+static unsigned int expack_xlz_find_matches(const unsigned char *data, size_t size, size_t position, const size_t *head, const size_t *previous, ExpackXlzMatch *matches) {
+    unsigned int match_count = 0U;
+    size_t link;
+    unsigned int attempts = 0U;
+
+    if (position + EXPACK_XLZ_MIN_MATCH > size) {
+        return 0U;
+    }
+    link = head[expack_xlz_hash4(data + position)];
+    while (link != 0U && attempts < EXPACK_XLZ_PARSE_ATTEMPTS) {
+        size_t candidate = link - 1U;
+        size_t distance;
+        size_t length;
+
+        if (candidate >= position) {
+            break;
+        }
+        distance = position - candidate;
+        if (distance > EXPACK_XLZ_MAX_DISTANCE) {
+            break;
+        }
+        length = expack_match_length_at(data, size, position, distance, size - position);
+        if (length >= EXPACK_XLZ_MIN_MATCH) {
+            size_t short_length;
+            size_t boundary_length = 18U;
+
+            expack_xlz_add_match(matches, &match_count, length, distance);
+            for (short_length = EXPACK_XLZ_MIN_MATCH; short_length <= 18U && short_length <= length; ++short_length) {
+                expack_xlz_add_match(matches, &match_count, short_length, distance);
+            }
+            while (boundary_length <= length) {
+                expack_xlz_add_match(matches, &match_count, boundary_length, distance);
+                if (boundary_length > EXPACK_XLZ_MIN_MATCH) {
+                    expack_xlz_add_match(matches, &match_count, boundary_length - 1U, distance);
+                }
+                if (boundary_length > ((size_t)-1) - 255U) {
+                    break;
+                }
+                boundary_length += 255U;
+            }
+        }
+        link = previous[candidate];
+        attempts += 1U;
+    }
+    return match_count;
+}
+
+static ExpackXlzParseState *expack_xlz_state_at(ExpackXlzParseState *states, size_t position, unsigned int slot) {
+    return states + position * EXPACK_XLZ_PARSE_BEAM + slot;
+}
+
+static int expack_xlz_insert_state(ExpackXlzParseState *states, unsigned int *state_counts, size_t position, const ExpackXlzParseState *state) {
+    unsigned int count = state_counts[position];
+    unsigned int slot;
+    unsigned int insert_at = count;
+
+    for (slot = 0U; slot < count; ++slot) {
+        ExpackXlzParseState *existing = expack_xlz_state_at(states, position, slot);
+
+        if (existing->used && existing->anchor == state->anchor) {
+            if (existing->cost <= state->cost) {
+                return 0;
+            }
+            *existing = *state;
+            return 0;
+        }
+        if (state->cost < existing->cost && insert_at == count) {
+            insert_at = slot;
+        }
+    }
+    if (count < EXPACK_XLZ_PARSE_BEAM) {
+        unsigned int move;
+
+        for (move = count; move > insert_at; --move) {
+            *expack_xlz_state_at(states, position, move) = *expack_xlz_state_at(states, position, move - 1U);
+        }
+        *expack_xlz_state_at(states, position, insert_at) = *state;
+        state_counts[position] = count + 1U;
+        return 0;
+    }
+    if (insert_at < EXPACK_XLZ_PARSE_BEAM) {
+        unsigned int move;
+
+        for (move = EXPACK_XLZ_PARSE_BEAM - 1U; move > insert_at; --move) {
+            *expack_xlz_state_at(states, position, move) = *expack_xlz_state_at(states, position, move - 1U);
+        }
+        *expack_xlz_state_at(states, position, insert_at) = *state;
+    }
+    return 0;
+}
+
+static int expack_verify_xlz_payload(const unsigned char *payload, size_t payload_size, const unsigned char *data, size_t size) {
+    unsigned char *decoded = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
+    size_t input_offset = 0U;
+    size_t output_offset = 0U;
+    int result = -1;
+
+    if (decoded == 0) {
+        return -1;
+    }
+    if (size == 0U && payload_size == 0U) {
+        result = 0;
+        goto done;
+    }
+    while (output_offset < size && input_offset < payload_size) {
+        unsigned char token = payload[input_offset++];
+        size_t literal_length = (size_t)(token >> 5U);
+        size_t match_length = (size_t)(token & 0x0fU) + EXPACK_XLZ_MIN_MATCH;
+        size_t distance;
+
+        if (literal_length == 7U) {
+            unsigned char extra;
+            do {
+                if (input_offset >= payload_size) goto done;
+                extra = payload[input_offset++];
+                literal_length += (size_t)extra;
+            } while (extra == 255U);
+        }
+        if (literal_length > payload_size - input_offset || literal_length > size - output_offset) goto done;
+        memcpy(decoded + output_offset, payload + input_offset, literal_length);
+        input_offset += literal_length;
+        output_offset += literal_length;
+        if (output_offset == size) {
+            if (input_offset == payload_size && memcmp(decoded, data, size) == 0) {
+                result = 0;
+            }
+            goto done;
+        }
+        if ((token & 0x10U) != 0U) {
+            if (payload_size - input_offset < 2U) goto done;
+            distance = (size_t)payload[input_offset] | ((size_t)payload[input_offset + 1U] << 8U);
+            input_offset += 2U;
+        } else {
+            if (input_offset >= payload_size) goto done;
+            distance = (size_t)payload[input_offset++];
+        }
+        distance += 1U;
+        if ((token & 0x0fU) == 0x0fU) {
+            unsigned char extra;
+            do {
+                if (input_offset >= payload_size) goto done;
+                extra = payload[input_offset++];
+                match_length += (size_t)extra;
+            } while (extra == 255U);
+        }
+        if (distance > output_offset || match_length > size - output_offset) goto done;
+        while (match_length > 0U) {
+            decoded[output_offset] = decoded[output_offset - distance];
+            output_offset += 1U;
+            match_length -= 1U;
+        }
+    }
+    if (input_offset == payload_size && output_offset == size && memcmp(decoded, data, size) == 0) {
+        result = 0;
+    }
+
+done:
+    rt_free(decoded);
+    return result;
+}
+
+static int expack_compress_xlz(const unsigned char *data, size_t size, unsigned char **payload_out, size_t *payload_size_out) {
+    size_t hash_count = (size_t)1U << EXPACK_XLZ_HASH_BITS;
+    size_t bound;
+    size_t *head;
+    size_t *previous;
+    ExpackXlzParseState *states;
+    unsigned int *state_counts;
+    ExpackXlzSequence *sequences;
+    unsigned char *payload;
+    size_t position;
+    size_t output_offset = 0U;
+    unsigned int best_slot = 0U;
+    unsigned int sequence_count = 0U;
+    unsigned int sequence_index;
+
+    if (size > (((size_t)-1) - 64U) / 2U || size > ((size_t)-1) / sizeof(*previous) || hash_count > ((size_t)-1) / sizeof(*head) ||
+        size + 1U == 0U || (size + 1U) > ((size_t)-1) / EXPACK_XLZ_PARSE_BEAM ||
+        (size + 1U) * EXPACK_XLZ_PARSE_BEAM > ((size_t)-1) / sizeof(*states) ||
+        (size + 1U) > ((size_t)-1) / sizeof(*state_counts) || (size == 0U ? 1U : size) > ((size_t)-1) / sizeof(*sequences)) {
+        return -1;
+    }
+    bound = size * 2U + 64U;
+    head = (size_t *)rt_malloc(hash_count * sizeof(*head));
+    if (head == 0) {
+        return -1;
+    }
+    previous = (size_t *)rt_malloc((size == 0U ? 1U : size) * sizeof(*previous));
+    if (previous == 0) {
+        rt_free(head);
+        return -1;
+    }
+    states = (ExpackXlzParseState *)rt_malloc((size + 1U) * EXPACK_XLZ_PARSE_BEAM * sizeof(*states));
+    if (states == 0) {
+        rt_free(previous);
+        rt_free(head);
+        return -1;
+    }
+    state_counts = (unsigned int *)rt_malloc((size + 1U) * sizeof(*state_counts));
+    if (state_counts == 0) {
+        rt_free(states);
+        rt_free(previous);
+        rt_free(head);
+        return -1;
+    }
+    sequences = (ExpackXlzSequence *)rt_malloc((size == 0U ? 1U : size) * sizeof(*sequences));
+    if (sequences == 0) {
+        rt_free(state_counts);
+        rt_free(states);
+        rt_free(previous);
+        rt_free(head);
+        return -1;
+    }
+    payload = (unsigned char *)rt_malloc(bound == 0U ? 1U : bound);
+    if (payload == 0) {
+        rt_free(sequences);
+        rt_free(state_counts);
+        rt_free(states);
+        rt_free(previous);
+        rt_free(head);
+        return -1;
+    }
+    memset(head, 0, hash_count * sizeof(*head));
+    memset(state_counts, 0, (size + 1U) * sizeof(*state_counts));
+
+    {
+        ExpackXlzParseState initial_state;
+
+        memset(&initial_state, 0, sizeof(initial_state));
+        initial_state.cost = size == 0U ? 0ULL : 1ULL;
+        initial_state.used = 1U;
+        expack_xlz_insert_state(states, state_counts, 0U, &initial_state);
+    }
+
+    for (position = 0U; position < size; ++position) {
+        unsigned int slot;
+        ExpackXlzMatch matches[EXPACK_XLZ_PARSE_MATCHES];
+        unsigned int match_count;
+
+        if (position > 0U) {
+            expack_xlz_insert_position(data, size, position - 1U, head, previous);
+        }
+        if (state_counts[position] == 0U) {
+            continue;
+        }
+        match_count = expack_xlz_find_matches(data, size, position, head, previous, matches);
+        for (slot = 0U; slot < state_counts[position]; ++slot) {
+            ExpackXlzParseState *state = expack_xlz_state_at(states, position, slot);
+            ExpackXlzParseState next_state;
+            size_t literal_length = position - state->anchor;
+            unsigned int match_index;
+
+            next_state = *state;
+            next_state.cost += (unsigned long long)expack_xlz_literal_step_cost(literal_length);
+            next_state.previous_position = position;
+            next_state.previous_slot = slot;
+            next_state.match_length = 0U;
+            next_state.distance = 0U;
+            next_state.match_position = 0U;
+            next_state.used = 1U;
+            expack_xlz_insert_state(states, state_counts, position + 1U, &next_state);
+
+            for (match_index = 0U; match_index < match_count; ++match_index) {
+                size_t end_position = position + matches[match_index].length;
+                size_t match_overhead;
+
+                if (end_position > size || matches[match_index].distance > position) {
+                    continue;
+                }
+                match_overhead = expack_xlz_match_overhead(matches[match_index].length, matches[match_index].distance);
+                memset(&next_state, 0, sizeof(next_state));
+                next_state.cost = state->cost + (unsigned long long)match_overhead;
+                if (end_position < size) {
+                    next_state.cost += 1ULL;
+                }
+                next_state.anchor = end_position;
+                next_state.previous_position = position;
+                next_state.previous_slot = slot;
+                next_state.match_position = position;
+                next_state.match_length = matches[match_index].length;
+                next_state.distance = matches[match_index].distance;
+                next_state.used = 1U;
+                expack_xlz_insert_state(states, state_counts, end_position, &next_state);
+            }
+        }
+    }
+
+    if (state_counts[size] == 0U) {
+        rt_free(payload);
+        rt_free(sequences);
+        rt_free(state_counts);
+        rt_free(states);
+        rt_free(previous);
+        rt_free(head);
+        return -1;
+    }
+    best_slot = 0U;
+
+    {
+        size_t trace_position = size;
+        unsigned int trace_slot = best_slot;
+
+        while (trace_position != 0U || trace_slot != 0U) {
+            ExpackXlzParseState *state = expack_xlz_state_at(states, trace_position, trace_slot);
+
+            if (state->match_length != 0U) {
+                if (sequence_count >= size) {
+                    rt_free(payload);
+                    rt_free(sequences);
+                    rt_free(state_counts);
+                    rt_free(states);
+                    rt_free(previous);
+                    rt_free(head);
+                    return -1;
+                }
+                sequences[sequence_count].position = state->match_position;
+                sequences[sequence_count].length = state->match_length;
+                sequences[sequence_count].distance = state->distance;
+                sequence_count += 1U;
+            }
+            if (state->previous_position == 0U && state->previous_slot == 0U && trace_position == 0U) {
+                break;
+            }
+            trace_position = state->previous_position;
+            trace_slot = state->previous_slot;
+        }
+    }
+
+    {
+        size_t anchor = 0U;
+
+        for (sequence_index = sequence_count; sequence_index > 0U; --sequence_index) {
+            ExpackXlzSequence *sequence = sequences + sequence_index - 1U;
+
+            if (expack_xlz_emit_sequence(payload, bound, &output_offset, data, anchor, sequence->position - anchor, sequence->length, sequence->distance) != 0) {
+                rt_free(payload);
+                rt_free(sequences);
+                rt_free(state_counts);
+                rt_free(states);
+                rt_free(previous);
+                rt_free(head);
+                return -1;
+            }
+            anchor = sequence->position + sequence->length;
+        }
+        if (anchor < size || (output_offset == 0U && size != 0U)) {
+            if (expack_xlz_emit_sequence(payload, bound, &output_offset, data, anchor, size - anchor, 0U, 0U) != 0) {
+                rt_free(payload);
+                rt_free(sequences);
+                rt_free(state_counts);
+                rt_free(states);
+                rt_free(previous);
+                rt_free(head);
+                return -1;
+            }
+        }
+        if (size == 0U) {
+            output_offset = 0U;
+        }
+    }
+    rt_free(sequences);
+    rt_free(state_counts);
+    rt_free(states);
+    rt_free(previous);
+    rt_free(head);
+    if (expack_verify_xlz_payload(payload, output_offset, data, size) != 0) {
+        rt_free(payload);
+        return -1;
+    }
     *payload_out = payload;
     *payload_size_out = output_offset;
     return 0;
@@ -1009,6 +1392,21 @@ static void expack_x86_bcj_transform(unsigned char *data, size_t size, int inclu
             position += 1U;
         }
     }
+}
+
+static int expack_compress_xlz_bcj(const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out) {
+    unsigned char *transformed;
+    int result;
+
+    transformed = (unsigned char *)rt_malloc(input_size == 0U ? 1U : input_size);
+    if (transformed == 0) {
+        return -1;
+    }
+    memcpy(transformed, input_data, input_size);
+    expack_x86_bcj_transform(transformed, input_size, 0);
+    result = expack_compress_xlz(transformed, input_size, payload_out, payload_size_out);
+    rt_free(transformed);
+    return result;
 }
 
 static int expack_compress_lzss_bcj_profile(const ExpackLzssProfile *profile, const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out) {
@@ -1184,44 +1582,6 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
     if (try_all_candidates) {
         ExpackCandidate candidate;
 
-        candidate.codec = EXPACK_CODEC_ZERO_RUN;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_zero_stub_x86_64;
-        candidate.stub_size = sizeof(expack_zero_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_zero_run(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
-        }
-    }
-
-    if (try_all_candidates) {
-        ExpackCandidate candidate;
-
-        candidate.codec = EXPACK_CODEC_BYTE_RUN;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_byte_run_stub_x86_64;
-        candidate.stub_size = sizeof(expack_byte_run_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_byte_run(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
-        }
-    }
-
-    if (try_all_candidates) {
-        ExpackCandidate candidate;
-
         candidate.codec = EXPACK_CODEC_LZ4;
         candidate.lzss_profile = 0;
         candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
@@ -1231,6 +1591,44 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         candidate.payload_size = 0U;
         candidate.packed_size = 0ULL;
         if (expack_compress_lz4_block(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
+            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
+            if (report_candidates) expack_report_candidate(&candidate);
+            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+            else expack_candidate_release(&candidate);
+        }
+    }
+
+    if (try_all_candidates && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
+        ExpackCandidate candidate;
+
+        candidate.codec = EXPACK_CODEC_XLZ;
+        candidate.lzss_profile = 0;
+        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
+        candidate.stub = expack_xlz_stub_x86_64;
+        candidate.stub_size = sizeof(expack_xlz_stub_x86_64);
+        candidate.payload = 0;
+        candidate.payload_size = 0U;
+        candidate.packed_size = 0ULL;
+        if (expack_compress_xlz(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
+            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
+            if (report_candidates) expack_report_candidate(&candidate);
+            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
+            else expack_candidate_release(&candidate);
+        }
+    }
+
+    if (try_all_candidates && allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
+        ExpackCandidate candidate;
+
+        candidate.codec = EXPACK_CODEC_XLZ_BCJ;
+        candidate.lzss_profile = 0;
+        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
+        candidate.stub = expack_xlz_bcj_stub_x86_64;
+        candidate.stub_size = sizeof(expack_xlz_bcj_stub_x86_64);
+        candidate.payload = 0;
+        candidate.payload_size = 0U;
+        candidate.packed_size = 0ULL;
+        if (expack_compress_xlz_bcj(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
             candidate.packed_size = expack_score_candidate(format, backend, &candidate);
             if (report_candidates) expack_report_candidate(&candidate);
             if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
@@ -1345,10 +1743,6 @@ static void expack_write_candidate_name(const ExpackCandidate *candidate) {
     if (candidate->codec == EXPACK_CODEC_LZSS) {
         rt_write_cstr(1, "lzss/");
         expack_write_lzss_profile_name(candidate->lzss_profile->profile_id);
-    } else if (candidate->codec == EXPACK_CODEC_ZERO_RUN) {
-        rt_write_cstr(1, "zero-run");
-    } else if (candidate->codec == EXPACK_CODEC_BYTE_RUN) {
-        rt_write_cstr(1, "byte-run");
     } else if (candidate->codec == EXPACK_CODEC_LZREP) {
         if (candidate->lzrep_parse == EXPACK_LZREP_PARSE_OPT) {
             rt_write_cstr(1, "lzrep-opt");
@@ -1357,6 +1751,10 @@ static void expack_write_candidate_name(const ExpackCandidate *candidate) {
         }
     } else if (candidate->codec == EXPACK_CODEC_LZ4) {
         rt_write_cstr(1, "lz4-block");
+    } else if (candidate->codec == EXPACK_CODEC_XLZ) {
+        rt_write_cstr(1, "xlz-short");
+    } else if (candidate->codec == EXPACK_CODEC_XLZ_BCJ) {
+        rt_write_cstr(1, "xlz-bcj");
     } else if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
         rt_write_cstr(1, "lzss-bcj/");
         expack_write_lzss_profile_name(candidate->lzss_profile->profile_id);

@@ -36,16 +36,6 @@ static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsig
         *payload_size_offset_out = EXPACK_LZSS_PAYLOAD_SIZE_OFFSET;
         return 0;
     }
-    if (candidate->codec == EXPACK_CODEC_ZERO_RUN) {
-        *original_size_offset_out = EXPACK_ZERO_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_ZERO_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
-    if (candidate->codec == EXPACK_CODEC_BYTE_RUN) {
-        *original_size_offset_out = EXPACK_BYTE_RUN_ORIGINAL_SIZE_OFFSET;
-        *payload_size_offset_out = EXPACK_BYTE_RUN_PAYLOAD_SIZE_OFFSET;
-        return 0;
-    }
     if (candidate->codec == EXPACK_CODEC_LZREP) {
         *original_size_offset_out = EXPACK_LZREP_ORIGINAL_SIZE_OFFSET;
         *payload_size_offset_out = EXPACK_LZREP_PAYLOAD_SIZE_OFFSET;
@@ -64,6 +54,16 @@ static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsig
     if (candidate->codec == EXPACK_CODEC_LZ4) {
         *original_size_offset_out = EXPACK_LZ4_ORIGINAL_SIZE_OFFSET;
         *payload_size_offset_out = EXPACK_LZ4_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    if (candidate->codec == EXPACK_CODEC_XLZ) {
+        *original_size_offset_out = EXPACK_XLZ_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_XLZ_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
+    if (candidate->codec == EXPACK_CODEC_XLZ_BCJ) {
+        *original_size_offset_out = EXPACK_XLZ_BCJ_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_XLZ_BCJ_PAYLOAD_SIZE_OFFSET;
         return 0;
     }
     return -1;
