@@ -41,6 +41,91 @@ static int expack_has_pe_coff_magic(const unsigned char *data, size_t size) {
     return size >= 2U && data[0] == 'M' && data[1] == 'Z';
 }
 
+static const char *expack_pe_machine_name(unsigned int machine) {
+    if (machine == 0x8664U) return "PE/COFF PE32+ x86-64";
+    return "PE/COFF";
+}
+
+static int expack_validate_pe_coff(const unsigned char *data, size_t size, ExpackInputFormat *format_out, const char **message_out) {
+    unsigned int pe_offset;
+    unsigned int machine;
+    unsigned int section_count;
+    unsigned int optional_header_size;
+    unsigned int optional_magic;
+    unsigned int section_index;
+    size_t pe_header_offset;
+    size_t optional_header_offset;
+    size_t section_table_offset;
+    size_t section_table_size;
+
+    if (size < 0x40U) {
+        *message_out = "input is too small for a PE/COFF DOS header";
+        return -1;
+    }
+    pe_offset = archive_read_u32_le(data + 0x3cU);
+    if (pe_offset > size || 24U > size - pe_offset) {
+        *message_out = "invalid PE/COFF header offset";
+        return -1;
+    }
+    pe_header_offset = (size_t)pe_offset;
+    if (!(data[pe_header_offset] == 'P' && data[pe_header_offset + 1U] == 'E' && data[pe_header_offset + 2U] == 0U && data[pe_header_offset + 3U] == 0U)) {
+        *message_out = "invalid PE/COFF signature";
+        return -1;
+    }
+    machine = expack_read_u16_le(data + pe_header_offset + 4U);
+    section_count = expack_read_u16_le(data + pe_header_offset + 6U);
+    optional_header_size = expack_read_u16_le(data + pe_header_offset + 20U);
+    optional_header_offset = pe_header_offset + 24U;
+    if (machine != 0x8664U) {
+        *message_out = "only PE32+ x86-64 inputs are supported today";
+        return -1;
+    }
+    if (section_count == 0U || section_count > 96U) {
+        *message_out = "invalid PE/COFF section count";
+        return -1;
+    }
+    if (optional_header_size < 112U || optional_header_size > size - optional_header_offset) {
+        *message_out = "invalid PE/COFF optional-header range";
+        return -1;
+    }
+    optional_magic = expack_read_u16_le(data + optional_header_offset);
+    if (optional_magic != 0x20bU) {
+        *message_out = "only PE32+ optional headers are supported today";
+        return -1;
+    }
+    section_table_offset = optional_header_offset + (size_t)optional_header_size;
+    section_table_size = (size_t)section_count * 40U;
+    if (section_table_offset > size || section_table_size > size - section_table_offset) {
+        *message_out = "invalid PE/COFF section-table range";
+        return -1;
+    }
+    for (section_index = 0U; section_index < section_count; ++section_index) {
+        size_t section_offset = section_table_offset + (size_t)section_index * 40U;
+        unsigned int raw_size = archive_read_u32_le(data + section_offset + 16U);
+        unsigned int raw_offset = archive_read_u32_le(data + section_offset + 20U);
+
+        if (raw_size != 0U && ((size_t)raw_offset > size || (size_t)raw_size > size - (size_t)raw_offset)) {
+            *message_out = "invalid PE/COFF section raw-data range";
+            return -1;
+        }
+    }
+
+    format_out->kind = EXPACK_FORMAT_PE_COFF;
+    format_out->name = expack_pe_machine_name(machine);
+    format_out->preprocess_error = "PE/COFF preprocessing failed";
+    format_out->allow_x86_bcj = 1;
+    format_out->info.pe.machine = machine;
+    format_out->info.pe.section_count = section_count;
+    format_out->info.pe.entry_rva = archive_read_u32_le(data + optional_header_offset + 16U);
+    format_out->info.pe.image_base = archive_read_u64_le(data + optional_header_offset + 24U);
+    format_out->info.pe.section_alignment = archive_read_u32_le(data + optional_header_offset + 32U);
+    format_out->info.pe.file_alignment = archive_read_u32_le(data + optional_header_offset + 36U);
+    format_out->info.pe.size_of_image = archive_read_u32_le(data + optional_header_offset + 56U);
+    format_out->info.pe.size_of_headers = archive_read_u32_le(data + optional_header_offset + 60U);
+    format_out->info.pe.subsystem = expack_read_u16_le(data + optional_header_offset + 68U);
+    return 0;
+}
+
 static const char *expack_macho_machine_name(unsigned int cputype) {
     if (cputype == EXPACK_MACHO_CPU_X86_64) return "Mach-O 64-bit x86-64";
     if (cputype == EXPACK_MACHO_CPU_ARM64) return "Mach-O 64-bit arm64";
@@ -80,8 +165,8 @@ static int expack_validate_macho64_le(const unsigned char *data, size_t size, Ex
         return -1;
     }
 
-    format_out->macho_code_signature_offset = 0U;
-    format_out->macho_code_signature_size = 0U;
+    format_out->info.macho.code_signature_offset = 0U;
+    format_out->info.macho.code_signature_size = 0U;
     for (command_index = 0U; command_index < ncmds; ++command_index) {
         unsigned int command;
         unsigned int command_size;
@@ -97,9 +182,9 @@ static int expack_validate_macho64_le(const unsigned char *data, size_t size, Ex
             return -1;
         }
         if (command == EXPACK_MACHO_LC_CODE_SIGNATURE && command_size >= 16U) {
-            format_out->macho_code_signature_offset = archive_read_u32_le(data + command_offset + 8U);
-            format_out->macho_code_signature_size = archive_read_u32_le(data + command_offset + 12U);
-            if (format_out->macho_code_signature_offset > size || format_out->macho_code_signature_size > size - format_out->macho_code_signature_offset) {
+            format_out->info.macho.code_signature_offset = archive_read_u32_le(data + command_offset + 8U);
+            format_out->info.macho.code_signature_size = archive_read_u32_le(data + command_offset + 12U);
+            if (format_out->info.macho.code_signature_offset > size || format_out->info.macho.code_signature_size > size - format_out->info.macho.code_signature_offset) {
                 *message_out = "invalid Mach-O code-signature range";
                 return -1;
             }
@@ -115,7 +200,7 @@ static int expack_validate_macho64_le(const unsigned char *data, size_t size, Ex
     format_out->name = expack_macho_machine_name(cputype);
     format_out->preprocess_error = "Mach-O preprocessing failed";
     format_out->allow_x86_bcj = cputype == EXPACK_MACHO_CPU_X86_64;
-    format_out->macho_cputype = cputype;
+    format_out->info.macho.cputype = cputype;
     return 0;
 }
 
@@ -128,20 +213,13 @@ static int expack_detect_input_format(const unsigned char *data, size_t size, Ex
         format_out->name = "ELF64 x86-64";
         format_out->preprocess_error = "ELF preprocessing failed";
         format_out->allow_x86_bcj = 1;
-        format_out->macho_cputype = 0U;
         return 0;
     }
     if (expack_has_macho_magic(data, size)) {
         return expack_validate_macho64_le(data, size, format_out, message_out);
     }
     if (expack_has_pe_coff_magic(data, size)) {
-        format_out->kind = EXPACK_FORMAT_PE_COFF;
-        format_out->name = "PE/COFF";
-        format_out->preprocess_error = "PE/COFF preprocessing failed";
-        format_out->allow_x86_bcj = 0;
-        format_out->macho_cputype = 0U;
-        *message_out = "PE/COFF input is recognized, but expack does not have a PE/COFF image backend today";
-        return -1;
+        return expack_validate_pe_coff(data, size, format_out, message_out);
     }
     *message_out = "input is not a supported executable format";
     return -1;
@@ -337,6 +415,9 @@ static int expack_make_exec_image(const ExpackInputFormat *format, const unsigne
         return expack_make_elf_exec_image(input_data, input_size, image_out);
     }
     if (format->kind == EXPACK_FORMAT_MACHO) {
+        return expack_make_exact_exec_image(input_data, input_size, image_out);
+    }
+    if (format->kind == EXPACK_FORMAT_PE_COFF) {
         return expack_make_exact_exec_image(input_data, input_size, image_out);
     }
     image_out->data = 0;

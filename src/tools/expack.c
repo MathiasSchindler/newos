@@ -22,8 +22,9 @@
 #define EXPACK_FORMAT_ELF64_X86_64 1U
 #define EXPACK_FORMAT_MACHO 2U
 #define EXPACK_FORMAT_PE_COFF 3U
-#define EXPACK_OUTPUT_PACKED 1U
-#define EXPACK_OUTPUT_MACHO_CONTAINER 2U
+#define EXPACK_OUTPUT_KIND_ELF_PACKED 1U
+#define EXPACK_OUTPUT_KIND_MACHO_CONTAINER 2U
+#define EXPACK_OUTPUT_KIND_PE_CONTAINER 3U
 #define EXPACK_MACHO_HEADER64_SIZE 32U
 #define EXPACK_MACHO_CPU_X86_64 0x01000007U
 #define EXPACK_MACHO_CPU_ARM64 0x0100000cU
@@ -95,13 +96,34 @@ typedef struct {
 } ExpackLoadRange;
 
 typedef struct {
+    unsigned int cputype;
+    unsigned int code_signature_offset;
+    unsigned int code_signature_size;
+} ExpackMachoInfo;
+
+typedef struct {
+    unsigned int machine;
+    unsigned int section_count;
+    unsigned int entry_rva;
+    unsigned int section_alignment;
+    unsigned int file_alignment;
+    unsigned int size_of_image;
+    unsigned int size_of_headers;
+    unsigned int subsystem;
+    unsigned long long image_base;
+} ExpackPeInfo;
+
+typedef union {
+    ExpackMachoInfo macho;
+    ExpackPeInfo pe;
+} ExpackFormatInfo;
+
+typedef struct {
     unsigned int kind;
     const char *name;
     const char *preprocess_error;
     int allow_x86_bcj;
-    unsigned int macho_cputype;
-    unsigned int macho_code_signature_offset;
-    unsigned int macho_code_signature_size;
+    ExpackFormatInfo info;
 } ExpackInputFormat;
 
 typedef struct ExpackOutputBackend ExpackOutputBackend;
@@ -230,11 +252,17 @@ static void expack_write_analyze_header(const ExpackInputFormat *format, size_t 
     } else {
         rt_write_cstr(1, " bytes");
     }
-    if (format->kind == EXPACK_FORMAT_MACHO && format->macho_code_signature_size != 0U) {
+    if (format->kind == EXPACK_FORMAT_MACHO && format->info.macho.code_signature_size != 0U) {
         rt_write_cstr(1, ", code signature ");
-        rt_write_uint(1, (unsigned long long)format->macho_code_signature_size);
+        rt_write_uint(1, (unsigned long long)format->info.macho.code_signature_size);
         rt_write_cstr(1, " bytes at ");
-        rt_write_uint(1, (unsigned long long)format->macho_code_signature_offset);
+        rt_write_uint(1, (unsigned long long)format->info.macho.code_signature_offset);
+    }
+    if (format->kind == EXPACK_FORMAT_PE_COFF) {
+        rt_write_cstr(1, ", entry RVA ");
+        rt_write_uint(1, (unsigned long long)format->info.pe.entry_rva);
+        rt_write_cstr(1, ", sections ");
+        rt_write_uint(1, (unsigned long long)format->info.pe.section_count);
     }
     rt_write_cstr(1, "\n");
 }
@@ -278,9 +306,7 @@ int main(int argc, char **argv) {
     input_format.name = "unknown";
     input_format.preprocess_error = "executable preprocessing failed";
     input_format.allow_x86_bcj = 0;
-    input_format.macho_cputype = 0U;
-    input_format.macho_code_signature_offset = 0U;
-    input_format.macho_code_signature_size = 0U;
+    memset(&input_format.info, 0, sizeof(input_format.info));
     image.data = 0;
     image.size = 0U;
     image.changed = 0;
@@ -364,11 +390,11 @@ int main(int argc, char **argv) {
         output_path = default_output_path;
     }
     if (macho_container) {
-        output_kind = EXPACK_OUTPUT_MACHO_CONTAINER;
+        output_kind = EXPACK_OUTPUT_KIND_MACHO_CONTAINER;
     } else if (output_backend != 0) {
         output_kind = output_backend->default_output_kind;
     }
-    if (output_kind == EXPACK_OUTPUT_MACHO_CONTAINER) {
+    if (output_kind == EXPACK_OUTPUT_KIND_MACHO_CONTAINER) {
         if (output_backend == 0 || output_backend->can_write_container == 0 || !output_backend->can_write_container(&input_format, output_kind)) {
             tool_write_error(EXPACK_TOOL_NAME, "--macho-container requires a Mach-O input", 0);
             if (default_output_path != 0) rt_free(default_output_path);
@@ -402,7 +428,7 @@ int main(int argc, char **argv) {
         rt_free(input_data);
         return 0;
     }
-    if (output_kind != EXPACK_OUTPUT_PACKED || output_backend == 0 || output_backend->can_write_packed == 0 || !output_backend->can_write_packed(&input_format)) {
+    if (output_kind != EXPACK_OUTPUT_KIND_ELF_PACKED || output_backend == 0 || output_backend->can_write_packed == 0 || !output_backend->can_write_packed(&input_format)) {
         expack_write_unsupported_output_error(output_backend, &input_format);
         if (default_output_path != 0) rt_free(default_output_path);
         expack_candidate_release(&selected);

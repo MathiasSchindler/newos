@@ -47,10 +47,13 @@ assert_file_contains "$WORK_DIR/expack_macho_flag_container.out" 'wrote Mach-O p
 
 assert_command_succeeds "$ROOT_DIR/build/file" "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/file_pe_fixture.out"
 assert_file_contains "$WORK_DIR/file_pe_fixture.out" 'PE/COFF executable PE32+ x86-64' "PE fixture is not recognized as a PE32+ executable"
-if "$ROOT_DIR/build/expack" --analyze "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/expack_pe.out" 2> "$WORK_DIR/expack_pe.err"; then
-    fail "expack should reject PE/COFF files until a PE/COFF backend exists"
+assert_command_succeeds "$ROOT_DIR/build/expack" --analyze "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/expack_pe.out"
+assert_file_contains "$WORK_DIR/expack_pe.out" 'format PE/COFF PE32+ x86-64' "expack did not analyze unsupported PE/COFF input"
+assert_file_contains "$WORK_DIR/expack_pe.out" '^selected: ' "expack did not select a PE/COFF compression candidate"
+if "$ROOT_DIR/build/expack" "$ROOT_DIR/tests/fixtures/pe/echo.exe" "$WORK_DIR/echo_pe.pack" > "$WORK_DIR/expack_pe_pack.out" 2> "$WORK_DIR/expack_pe_pack.err"; then
+    fail "expack should not write PE/COFF output until a PE/COFF writer exists"
 fi
-assert_file_contains "$WORK_DIR/expack_pe.err" 'PE/COFF input is recognized' "expack did not recognize unsupported PE/COFF input"
+assert_file_contains "$WORK_DIR/expack_pe_pack.err" 'writing runnable PE/COFF output needs a PE/COFF output backend' "expack did not explain the missing PE/COFF output backend"
 
 {
     printf '\177ELF\002\001\001'

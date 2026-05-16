@@ -112,7 +112,15 @@ static int expack_macho_container_subtype(unsigned int cputype, unsigned int *su
     return -1;
 }
 
-static const unsigned char *expack_macho_container_stub(unsigned int cputype, unsigned int codec, size_t *stub_size_out) {
+typedef struct {
+    const unsigned char *stub;
+    size_t stub_size;
+    unsigned int payload_address_offset;
+    unsigned int payload_size_offset;
+    unsigned int original_size_offset;
+} ExpackMachoRunnerDescriptor;
+
+static int expack_macho_container_runner(unsigned int cputype, unsigned int codec, ExpackMachoRunnerDescriptor *runner_out) {
     static const unsigned char arm64_raw_runner_stub[] = {
         0xf5, 0x03, 0x01, 0xaa, 0xf6, 0x03, 0x02, 0xaa, 0xff, 0x03, 0x01, 0xd1,
         0xf7, 0x03, 0x00, 0x91, 0x45, 0x07, 0x00, 0x10, 0x26, 0x03, 0x80, 0xd2,
@@ -150,19 +158,48 @@ static const unsigned char *expack_macho_container_stub(unsigned int cputype, un
         0x0f, 0x05
     };
 
+    runner_out->stub = 0;
+    runner_out->stub_size = 0U;
+    runner_out->payload_address_offset = (unsigned int)-1;
+    runner_out->payload_size_offset = (unsigned int)-1;
+    runner_out->original_size_offset = (unsigned int)-1;
     if (cputype == EXPACK_MACHO_CPU_ARM64 && codec == EXPACK_CODEC_RAW) {
-        *stub_size_out = sizeof(arm64_raw_runner_stub);
-        return arm64_raw_runner_stub;
+        runner_out->stub = arm64_raw_runner_stub;
+        runner_out->stub_size = sizeof(arm64_raw_runner_stub);
+        runner_out->payload_address_offset = EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET;
+        runner_out->payload_size_offset = EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET;
+        return 0;
     }
     if (cputype == EXPACK_MACHO_CPU_ARM64 && codec == EXPACK_CODEC_LZREP) {
-        *stub_size_out = sizeof(arm64_lzrep_runner_stub);
-        return arm64_lzrep_runner_stub;
+        runner_out->stub = arm64_lzrep_runner_stub;
+        runner_out->stub_size = sizeof(arm64_lzrep_runner_stub);
+        runner_out->payload_address_offset = EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET;
+        runner_out->payload_size_offset = EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_SIZE_OFFSET;
+        runner_out->original_size_offset = EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET;
+        return 0;
     }
     if (cputype == EXPACK_MACHO_CPU_X86_64) {
-        *stub_size_out = sizeof(x86_64_exit_stub);
-        return x86_64_exit_stub;
+        runner_out->stub = x86_64_exit_stub;
+        runner_out->stub_size = sizeof(x86_64_exit_stub);
+        return 0;
     }
-    *stub_size_out = 0U;
+    return -1;
+}
+
+static int expack_patch_macho_runner(const ExpackMachoRunnerDescriptor *runner, unsigned char *stub, size_t original_size, const ExpackCandidate *candidate) {
+    if (runner->payload_address_offset != (unsigned int)-1) {
+        if (runner->payload_address_offset + 8U > runner->stub_size || runner->payload_size_offset + 8U > runner->stub_size) {
+            return -1;
+        }
+        archive_store_u64_le(stub + runner->payload_address_offset, (unsigned long long)(runner->stub_size + EXPACK_MACHO_CONTAINER_METADATA_SIZE - runner->payload_address_offset));
+        archive_store_u64_le(stub + runner->payload_size_offset, (unsigned long long)candidate->payload_size);
+    }
+    if (runner->original_size_offset != (unsigned int)-1) {
+        if (runner->original_size_offset + 8U > runner->stub_size) {
+            return -1;
+        }
+        archive_store_u64_le(stub + runner->original_size_offset, (unsigned long long)original_size);
+    }
     return 0;
 }
 
@@ -354,6 +391,7 @@ static int expack_write_macho_container(const ExpackInputFormat *format, const c
     unsigned char *signature;
     unsigned char *patched_stub;
     const unsigned char *stub;
+    ExpackMachoRunnerDescriptor runner;
     size_t stub_size;
     size_t signature_size;
     unsigned int subtype;
@@ -365,10 +403,14 @@ static int expack_write_macho_container(const ExpackInputFormat *format, const c
     unsigned long long text_file_size;
     int output_fd;
 
-    if (expack_macho_container_subtype(format->macho_cputype, &subtype) != 0) {
+    if (expack_macho_container_subtype(format->info.macho.cputype, &subtype) != 0) {
         return -1;
     }
-    stub = expack_macho_container_stub(format->macho_cputype, candidate->codec, &stub_size);
+    if (expack_macho_container_runner(format->info.macho.cputype, candidate->codec, &runner) != 0) {
+        return -1;
+    }
+    stub = runner.stub;
+    stub_size = runner.stub_size;
     if (stub == 0 || stub_size == 0U || stub_size > (size_t)((unsigned int)-1 - code_offset)) {
         return -1;
     }
@@ -384,7 +426,7 @@ static int expack_write_macho_container(const ExpackInputFormat *format, const c
 
     memset(header, 0, sizeof(header));
     archive_store_u32_le(header + 0U, 0xfeedfacfU);
-    archive_store_u32_le(header + 4U, format->macho_cputype);
+    archive_store_u32_le(header + 4U, format->info.macho.cputype);
     archive_store_u32_le(header + 8U, subtype);
     archive_store_u32_le(header + 12U, EXPACK_MACHO_TYPE_EXECUTE);
     archive_store_u32_le(header + 16U, 7U);
@@ -419,26 +461,9 @@ static int expack_write_macho_container(const ExpackInputFormat *format, const c
     archive_store_u32_le(header + 504U, (unsigned int)text_file_size);
 
     expack_write_macho_container_metadata(metadata, candidate, original_size);
-    if (format->macho_cputype == EXPACK_MACHO_CPU_ARM64) {
-        if (candidate->codec == EXPACK_CODEC_RAW) {
-            if (EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET + 8U > stub_size) {
-                rt_free(patched_stub);
-                return -1;
-            }
-            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET, (unsigned long long)(stub_size + EXPACK_MACHO_CONTAINER_METADATA_SIZE - EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET));
-            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-        } else if (candidate->codec == EXPACK_CODEC_LZREP) {
-            if (EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET + 8U > stub_size) {
-                rt_free(patched_stub);
-                return -1;
-            }
-            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET, (unsigned long long)(stub_size + EXPACK_MACHO_CONTAINER_METADATA_SIZE - EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET));
-            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
-            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
-        } else {
-            rt_free(patched_stub);
-            return -1;
-        }
+    if (expack_patch_macho_runner(&runner, patched_stub, original_size, candidate) != 0) {
+        rt_free(patched_stub);
+        return -1;
     }
     signature = expack_make_macho_code_signature(header, sizeof(header), stub, stub_size, metadata, sizeof(metadata), candidate->payload, candidate->payload_size, text_file_size, &signature_size);
     if (signature == 0 || signature_size > (size_t)((unsigned int)-1)) {
@@ -516,11 +541,11 @@ static int expack_elf_write_packed(const ExpackInputFormat *format, const char *
 }
 
 static int expack_macho_can_write_container(const ExpackInputFormat *format, unsigned int output_kind) {
-    return format->kind == EXPACK_FORMAT_MACHO && output_kind == EXPACK_OUTPUT_MACHO_CONTAINER;
+    return format->kind == EXPACK_FORMAT_MACHO && output_kind == EXPACK_OUTPUT_KIND_MACHO_CONTAINER;
 }
 
 static int expack_macho_prepare_container_candidate(const ExpackInputFormat *format, const ExpackImage *image, ExpackCandidate *candidate) {
-    if (format->macho_cputype == EXPACK_MACHO_CPU_ARM64 && candidate->codec != EXPACK_CODEC_LZREP) {
+    if (format->info.macho.cputype == EXPACK_MACHO_CPU_ARM64 && candidate->codec != EXPACK_CODEC_LZREP) {
         return expack_make_raw_candidate(image->data, image->size, candidate);
     }
     return 0;
@@ -541,7 +566,7 @@ static void expack_macho_write_container_success(const char *output_path, const 
 static const ExpackOutputBackend expack_output_backends[] = {
     {
         EXPACK_FORMAT_ELF64_X86_64,
-        EXPACK_OUTPUT_PACKED,
+        EXPACK_OUTPUT_KIND_ELF_PACKED,
         "cannot write packed output for this executable format",
         expack_backend_can_write_packed,
         expack_backend_cannot_write_container,
@@ -552,7 +577,7 @@ static const ExpackOutputBackend expack_output_backends[] = {
     },
     {
         EXPACK_FORMAT_MACHO,
-        EXPACK_OUTPUT_MACHO_CONTAINER,
+        EXPACK_OUTPUT_KIND_MACHO_CONTAINER,
         "Mach-O compression analysis is supported, but writing compressed runnable Mach-O output needs a native decoder backend",
         expack_backend_cannot_write_packed,
         expack_macho_can_write_container,
@@ -563,8 +588,8 @@ static const ExpackOutputBackend expack_output_backends[] = {
     },
     {
         EXPACK_FORMAT_PE_COFF,
-        EXPACK_OUTPUT_PACKED,
-        "cannot write packed output for this executable format",
+        EXPACK_OUTPUT_KIND_PE_CONTAINER,
+        "PE/COFF analysis is supported, but writing runnable PE/COFF output needs a PE/COFF output backend",
         expack_backend_cannot_write_packed,
         expack_backend_cannot_write_container,
         0,
