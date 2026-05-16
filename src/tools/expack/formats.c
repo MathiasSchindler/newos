@@ -3,6 +3,7 @@
 #define EXPACK_ELF_PT_LOAD 1U
 #define EXPACK_ELF_PT_DYNAMIC 2U
 #define EXPACK_ELF_PT_INTERP 3U
+#define EXPACK_ELF_PT_NOTE 4U
 #define EXPACK_ELF_DT_NULL 0ULL
 #define EXPACK_ELF_DT_HASH 4ULL
 #define EXPACK_ELF_DT_STRTAB 5ULL
@@ -343,10 +344,111 @@ static int expack_elf_dynamic_has_relocation_work(const unsigned char *data, siz
     return (has_rela && rela_size != 0ULL) || (has_rel && rel_size != 0ULL) || (has_jmprel && jmprel_size != 0ULL) || relr_size != 0ULL;
 }
 
+static unsigned long long expack_elf_hash_symbol_count(const unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long hash_vaddr, unsigned long long *hash_size_out) {
+    unsigned long long hash_offset;
+    unsigned long long bucket_count;
+    unsigned long long chain_count;
+    unsigned long long hash_size;
+
+    if (expack_find_canonical_vaddr_offset(loads, load_count, hash_vaddr, 8ULL, &hash_offset) != 0) {
+        return 0ULL;
+    }
+    if (hash_offset > (unsigned long long)size || 8ULL > (unsigned long long)size - hash_offset) {
+        return 0ULL;
+    }
+    bucket_count = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset);
+    chain_count = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset + 4U);
+    if (bucket_count > (0xffffffffffffffffULL - 8ULL) / 4ULL || chain_count > ((0xffffffffffffffffULL - 8ULL) / 4ULL) - bucket_count) {
+        return 0ULL;
+    }
+    hash_size = 8ULL + 4ULL * (bucket_count + chain_count);
+    if (expack_find_canonical_vaddr_offset(loads, load_count, hash_vaddr, hash_size, &hash_offset) != 0) {
+        return 0ULL;
+    }
+    *hash_size_out = hash_size;
+    return chain_count;
+}
+
+static void expack_elf_zero_vaddr_range(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long vaddr, unsigned long long length) {
+    unsigned long long offset;
+
+    if (vaddr != 0ULL && length != 0ULL && expack_find_canonical_vaddr_offset(loads, load_count, vaddr, length, &offset) == 0) {
+        expack_zero_range(data, size, offset, length);
+    }
+}
+
+static void expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long gnu_hash_vaddr) {
+    unsigned long long hash_offset;
+    unsigned long long bucket_count;
+    unsigned long long symbol_offset;
+    unsigned long long bloom_size;
+    unsigned long long buckets_offset;
+    unsigned long long chains_offset;
+    unsigned long long max_chain_count = 0ULL;
+    unsigned int bucket_index;
+
+    if (expack_find_canonical_vaddr_offset(loads, load_count, gnu_hash_vaddr, 16ULL, &hash_offset) != 0 ||
+        hash_offset > (unsigned long long)size || 16ULL > (unsigned long long)size - hash_offset) {
+        return;
+    }
+    bucket_count = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset);
+    symbol_offset = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset + 4U);
+    bloom_size = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset + 8U);
+    if (bloom_size > (0xffffffffffffffffULL - 16ULL) / 8ULL || bucket_count > (0xffffffffffffffffULL - 16ULL - 8ULL * bloom_size) / 4ULL) {
+        return;
+    }
+    buckets_offset = hash_offset + 16ULL + 8ULL * bloom_size;
+    chains_offset = buckets_offset + 4ULL * bucket_count;
+    if (chains_offset > (unsigned long long)size || bucket_count > 0xffffffffULL) {
+        return;
+    }
+    for (bucket_index = 0U; bucket_index < (unsigned int)bucket_count; ++bucket_index) {
+        unsigned long long bucket_file_offset = buckets_offset + 4ULL * (unsigned long long)bucket_index;
+        unsigned long long chain_index;
+        unsigned long long chain_count;
+
+        if (bucket_file_offset > (unsigned long long)size || 4ULL > (unsigned long long)size - bucket_file_offset) {
+            return;
+        }
+        chain_index = (unsigned long long)archive_read_u32_le(data + (size_t)bucket_file_offset);
+        if (chain_index == 0ULL) {
+            continue;
+        }
+        if (chain_index < symbol_offset) {
+            return;
+        }
+        chain_count = chain_index - symbol_offset;
+        for (;;) {
+            unsigned long long chain_file_offset = chains_offset + 4ULL * chain_count;
+            unsigned int chain_value;
+
+            if (chain_count > 0x00ffffffULL || chain_file_offset > (unsigned long long)size || 4ULL > (unsigned long long)size - chain_file_offset) {
+                return;
+            }
+            chain_value = archive_read_u32_le(data + (size_t)chain_file_offset);
+            if (chain_count + 1ULL > max_chain_count) {
+                max_chain_count = chain_count + 1ULL;
+            }
+            if ((chain_value & 1U) != 0U) {
+                break;
+            }
+            chain_count += 1ULL;
+        }
+    }
+    if (expack_find_canonical_vaddr_offset(loads, load_count, gnu_hash_vaddr, (chains_offset - hash_offset) + 4ULL * max_chain_count, &hash_offset) == 0) {
+        expack_zero_range(data, size, hash_offset, (chains_offset - hash_offset) + 4ULL * max_chain_count);
+    }
+}
+
 static void expack_elf_zero_unused_dynamic_metadata(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long dynamic_offset, unsigned long long dynamic_size) {
     size_t offset;
+    unsigned long long hash_vaddr = 0ULL;
+    unsigned long long gnu_hash_vaddr = 0ULL;
     unsigned long long strtab_vaddr = 0ULL;
     unsigned long long strtab_size = 0ULL;
+    unsigned long long symtab_vaddr = 0ULL;
+    unsigned long long syment_size = 0ULL;
+    unsigned long long symbol_count = 0ULL;
 
     if (dynamic_offset > (unsigned long long)size || dynamic_size > (unsigned long long)size - dynamic_offset) {
         return;
@@ -359,21 +461,120 @@ static void expack_elf_zero_unused_dynamic_metadata(unsigned char *data, size_t 
         if (tag == EXPACK_ELF_DT_NULL) {
             break;
         }
-        if (tag == EXPACK_ELF_DT_STRTAB) {
+        if (tag == EXPACK_ELF_DT_HASH) {
+            hash_vaddr = value;
+        } else if (tag == EXPACK_ELF_DT_GNU_HASH) {
+            gnu_hash_vaddr = value;
+        } else if (tag == EXPACK_ELF_DT_STRTAB) {
             strtab_vaddr = value;
         } else if (tag == EXPACK_ELF_DT_STRSZ) {
             strtab_size = value;
+        } else if (tag == EXPACK_ELF_DT_SYMTAB) {
+            symtab_vaddr = value;
+        } else if (tag == EXPACK_ELF_DT_SYMENT) {
+            syment_size = value;
         }
         offset += 16U;
     }
-    if (strtab_vaddr != 0ULL && strtab_size != 0ULL) {
-        unsigned long long strtab_offset;
+    if (hash_vaddr != 0ULL) {
+        unsigned long long hash_offset;
+        unsigned long long hash_size = 0ULL;
 
-        if (expack_find_canonical_vaddr_offset(loads, load_count, strtab_vaddr, strtab_size, &strtab_offset) == 0) {
-            expack_zero_range(data, size, strtab_offset, strtab_size);
+        symbol_count = expack_elf_hash_symbol_count(data, size, loads, load_count, hash_vaddr, &hash_size);
+        if (symbol_count != 0ULL && expack_find_canonical_vaddr_offset(loads, load_count, hash_vaddr, hash_size, &hash_offset) == 0) {
+            expack_zero_range(data, size, hash_offset, hash_size);
         }
     }
+    if (gnu_hash_vaddr != 0ULL) {
+        expack_elf_zero_gnu_hash(data, size, loads, load_count, gnu_hash_vaddr);
+    }
+    if (symbol_count != 0ULL && symtab_vaddr != 0ULL && syment_size == 24ULL && symbol_count <= 0xffffffffffffffffULL / syment_size) {
+        expack_elf_zero_vaddr_range(data, size, loads, load_count, symtab_vaddr, symbol_count * syment_size);
+    }
+    expack_elf_zero_vaddr_range(data, size, loads, load_count, strtab_vaddr, strtab_size);
     expack_zero_range(data, size, dynamic_offset, dynamic_size);
+}
+
+static int expack_ranges_overlap_u64(unsigned long long a_offset, unsigned long long a_size, unsigned long long b_offset, unsigned long long b_size) {
+    unsigned long long a_end;
+    unsigned long long b_end;
+
+    if (a_size == 0ULL || b_size == 0ULL || a_size > 0xffffffffffffffffULL - a_offset || b_size > 0xffffffffffffffffULL - b_offset) {
+        return 0;
+    }
+    a_end = a_offset + a_size;
+    b_end = b_offset + b_size;
+    return a_offset < b_end && b_offset < a_end;
+}
+
+static int expack_elf_note_range_is_well_formed(const unsigned char *data, size_t size, unsigned long long offset, unsigned long long length) {
+    unsigned long long end;
+    unsigned long long cursor;
+
+    if (offset > (unsigned long long)size || length > (unsigned long long)size - offset) {
+        return 0;
+    }
+    end = offset + length;
+    cursor = offset;
+    while (cursor < end) {
+        unsigned long long namesz;
+        unsigned long long descsz;
+        unsigned long long name_end;
+        unsigned long long desc_offset;
+        unsigned long long desc_end;
+
+        if (12ULL > end - cursor) {
+            return 0;
+        }
+        namesz = (unsigned long long)archive_read_u32_le(data + (size_t)cursor);
+        descsz = (unsigned long long)archive_read_u32_le(data + (size_t)cursor + 4U);
+        if (namesz == 0ULL || namesz > 0xffffULL || descsz > 0x100000ULL) {
+            return 0;
+        }
+        name_end = cursor + 12ULL + namesz;
+        if (name_end < cursor || name_end > end) {
+            return 0;
+        }
+        desc_offset = expack_align_to_segment_mod(name_end, 0ULL, 4ULL);
+        desc_end = desc_offset + descsz;
+        if (desc_offset < name_end || desc_end < desc_offset || desc_end > end) {
+            return 0;
+        }
+        cursor = expack_align_to_segment_mod(desc_end, 0ULL, 4ULL);
+        if (cursor < desc_end || cursor > end) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void expack_elf_zero_static_note_metadata(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, const unsigned char *input_data, size_t input_size, size_t phoff, unsigned short phentsize, unsigned short phnum, size_t compact_phdr_size) {
+    unsigned short index;
+
+    for (index = 0U; index < phnum; ++index) {
+        size_t phdr_offset = phoff + (size_t)index * (size_t)phentsize;
+        const unsigned char *phdr = input_data + phdr_offset;
+        unsigned int type = archive_read_u32_le(phdr);
+        unsigned long long file_offset64 = archive_read_u64_le(phdr + 8U);
+        unsigned long long file_size64 = archive_read_u64_le(phdr + 32U);
+        unsigned long long new_offset64;
+
+        if (type != EXPACK_ELF_PT_NOTE || file_size64 == 0ULL) {
+            continue;
+        }
+        if (file_offset64 > (unsigned long long)input_size || file_size64 > (unsigned long long)input_size - file_offset64 ||
+            expack_find_canonical_load_offset(loads, load_count, file_offset64, file_size64, &new_offset64) != 0) {
+            continue;
+        }
+        if (!expack_elf_note_range_is_well_formed(input_data, input_size, file_offset64, file_size64)) {
+            continue;
+        }
+        if (expack_ranges_overlap_u64(new_offset64, file_size64, 0ULL, EXPACK_ELF_HEADER_SIZE) ||
+            expack_ranges_overlap_u64(new_offset64, file_size64, (unsigned long long)phoff, (unsigned long long)compact_phdr_size)) {
+            continue;
+        }
+        expack_zero_range(data, size, new_offset64, file_size64);
+    }
 }
 
 static int expack_make_elf_exec_image(const unsigned char *input_data, size_t input_size, ExpackImage *image_out) {
@@ -519,6 +720,9 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
         }
         compact_phnum += 1U;
     }
+    if (!has_interp) {
+        expack_elf_zero_static_note_metadata(image_data, (size_t)needed_size64, loads, load_count, input_data, input_size, phoff, phentsize, phnum, compact_phdr_size);
+    }
     if (!has_interp && dynamic_file_size != 0ULL) {
         unsigned long long dynamic_new_offset;
 
@@ -567,4 +771,3 @@ static int expack_make_exec_image(const ExpackInputFormat *format, const unsigne
     image_out->changed = 0;
     return -1;
 }
-

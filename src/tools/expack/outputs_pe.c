@@ -55,7 +55,8 @@ static int expack_write_pe_container(const ExpackInputFormat *format, const char
     if (!((candidate->codec == EXPACK_CODEC_RAW && original_size == candidate->payload_size) || candidate->codec == EXPACK_CODEC_LZSS || candidate->codec == EXPACK_CODEC_LZREP || candidate->codec == EXPACK_CODEC_LZSS_BCJ)) {
         return -1;
     }
-    if (candidate->codec == EXPACK_CODEC_LZSS && (candidate->lzss_profile == 0 || candidate->lzss_profile->profile_id != COMPRESSION_LZSS_PROFILE_WIDE_WINDOW)) {
+    if ((candidate->codec == EXPACK_CODEC_LZSS || candidate->codec == EXPACK_CODEC_LZSS_BCJ) &&
+        (candidate->lzss_profile == 0 || candidate->lzss_profile->profile_id != COMPRESSION_LZSS_PROFILE_WIDE_WINDOW)) {
         return -1;
     }
     if (candidate->codec == EXPACK_CODEC_RAW) {

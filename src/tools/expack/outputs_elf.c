@@ -61,6 +61,11 @@ static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsig
         *payload_size_offset_out = EXPACK_LZSS_BCJ_RIP_PAYLOAD_SIZE_OFFSET;
         return 0;
     }
+    if (candidate->codec == EXPACK_CODEC_LZ4) {
+        *original_size_offset_out = EXPACK_LZ4_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_LZ4_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
     return -1;
 }
 
@@ -74,6 +79,12 @@ static int expack_patch_stub(unsigned char *stub, const ExpackCandidate *candida
     if (candidate->codec == EXPACK_CODEC_LZSS) {
         stub[EXPACK_LZSS_STUB_LENGTH_SHIFT_OFFSET] = candidate->lzss_profile->length_shift;
         stub[EXPACK_LZSS_STUB_LENGTH_MASK_OFFSET] = candidate->lzss_profile->length_mask;
+    } else if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
+        stub[EXPACK_LZSS_BCJ_STUB_LENGTH_SHIFT_OFFSET] = candidate->lzss_profile->length_shift;
+        stub[EXPACK_LZSS_BCJ_STUB_LENGTH_MASK_OFFSET] = candidate->lzss_profile->length_mask;
+    } else if (candidate->codec == EXPACK_CODEC_LZSS_BCJ_RIP) {
+        stub[EXPACK_LZSS_BCJ_RIP_STUB_LENGTH_SHIFT_OFFSET] = candidate->lzss_profile->length_shift;
+        stub[EXPACK_LZSS_BCJ_RIP_STUB_LENGTH_MASK_OFFSET] = candidate->lzss_profile->length_mask;
     }
     archive_store_u64_le(stub + original_size_offset, (unsigned long long)original_size);
     archive_store_u64_le(stub + payload_size_offset, (unsigned long long)candidate->payload_size);

@@ -76,6 +76,10 @@ if [ -x "$ROOT_DIR/build/freestanding-macos-aarch64/expack" ]; then
 fi
 
 if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ "$(uname -m 2>/dev/null || echo unknown)" = x86_64 ] && [ -x "$ROOT_DIR/build/freestanding-linux-x86_64/expack" ] && [ -x "$ROOT_DIR/build/freestanding-linux-x86_64/echo" ]; then
+    "$ROOT_DIR/build/freestanding-linux-x86_64/expack" --analyze "$ROOT_DIR/build/freestanding-linux-x86_64/echo" > "$WORK_DIR/expack_freestanding_linux_analyze.out"
+    assert_file_contains "$WORK_DIR/expack_freestanding_linux_analyze.out" '^  lz4-block: payload ' "expack did not evaluate the LZ4-block codec for Linux ELF"
+    assert_file_contains "$WORK_DIR/expack_freestanding_linux_analyze.out" '^  lzss-bcj/long-match: payload ' "expack did not evaluate BCJ with all LZSS profiles for Linux ELF"
+    assert_file_contains "$WORK_DIR/expack_freestanding_linux_analyze.out" '^  lzss-bcj-rip/long-match: payload ' "expack did not evaluate BCJ-RIP with all LZSS profiles for Linux ELF"
     "$ROOT_DIR/build/freestanding-linux-x86_64/expack" -q "$ROOT_DIR/build/freestanding-linux-x86_64/echo" "$WORK_DIR/echo.freestanding-linux.packed"
     "$WORK_DIR/echo.freestanding-linux.packed" expack-linux-ok > "$WORK_DIR/expack_freestanding_linux.out"
     assert_file_contains "$WORK_DIR/expack_freestanding_linux.out" '^expack-linux-ok$' "freestanding Linux expack output did not preserve executable behavior"

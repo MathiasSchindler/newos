@@ -467,7 +467,8 @@ static unsigned long long expack_pe_score_candidate(const ExpackInputFormat *for
     if (candidate->codec == EXPACK_CODEC_RAW) {
         return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
     }
-    if (candidate->codec == EXPACK_CODEC_LZSS && (candidate->lzss_profile == 0 || candidate->lzss_profile->profile_id != COMPRESSION_LZSS_PROFILE_WIDE_WINDOW)) {
+    if ((candidate->codec == EXPACK_CODEC_LZSS || candidate->codec == EXPACK_CODEC_LZSS_BCJ) &&
+        (candidate->lzss_profile == 0 || candidate->lzss_profile->profile_id != COMPRESSION_LZSS_PROFILE_WIDE_WINDOW)) {
         return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
     }
     runner_size = expack_pe_runner_size_for_codec(candidate->codec);
