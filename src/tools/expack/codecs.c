@@ -351,6 +351,12 @@ typedef struct {
     unsigned int explicit_choices;
 } ExpackLzrepParseParams;
 
+typedef struct {
+    size_t *head;
+    size_t *next;
+    int available;
+} ExpackLzrepMatchIndex;
+
 static const ExpackLzrepParseParams expack_lzrep_fast_parse = {
     EXPACK_LZREP_FAST_LOOKAHEAD,
     EXPACK_LZREP_FAST_BEAM_WIDTH,
@@ -363,7 +369,86 @@ static const ExpackLzrepParseParams expack_lzrep_opt_parse = {
     EXPACK_LZREP_OPT_EXPLICIT_CHOICES
 };
 
-static void expack_find_lzrep_matches(const unsigned char *data, size_t size, size_t position, ExpackLzrepMatch *matches, unsigned int match_capacity) {
+static unsigned int expack_lzrep_hash3(const unsigned char *data) {
+    unsigned int value = (unsigned int)data[0] | ((unsigned int)data[1] << 8U) | ((unsigned int)data[2] << 16U);
+
+    return (value * 2246822519U) >> (32U - EXPACK_LZREP_HASH_BITS);
+}
+
+static void expack_lzrep_match_index_release(ExpackLzrepMatchIndex *index) {
+    if (index->head != 0) {
+        rt_free(index->head);
+    }
+    if (index->next != 0) {
+        rt_free(index->next);
+    }
+    index->head = 0;
+    index->next = 0;
+    index->available = 0;
+}
+
+static int expack_lzrep_match_index_build(const unsigned char *data, size_t size, ExpackLzrepMatchIndex *index) {
+    size_t hash_count = (size_t)1U << EXPACK_LZREP_HASH_BITS;
+    size_t *tail;
+    size_t position;
+
+    index->head = 0;
+    index->next = 0;
+    index->available = 0;
+    if (hash_count > ((size_t)-1) / sizeof(*index->head) || (size == 0U ? 1U : size) > ((size_t)-1) / sizeof(*index->next)) {
+        return -1;
+    }
+    index->head = (size_t *)rt_malloc(hash_count * sizeof(*index->head));
+    tail = (size_t *)rt_malloc(hash_count * sizeof(*tail));
+    index->next = (size_t *)rt_malloc((size == 0U ? 1U : size) * sizeof(*index->next));
+    if (index->head == 0 || tail == 0 || index->next == 0) {
+        if (tail != 0) {
+            rt_free(tail);
+        }
+        expack_lzrep_match_index_release(index);
+        return -1;
+    }
+    memset(index->head, 0, hash_count * sizeof(*index->head));
+    memset(tail, 0, hash_count * sizeof(*tail));
+    memset(index->next, 0, (size == 0U ? 1U : size) * sizeof(*index->next));
+    if (size >= COMPRESSION_LZSS_MIN_MATCH) {
+        for (position = 0U; position <= size - COMPRESSION_LZSS_MIN_MATCH; ++position) {
+            unsigned int hash = expack_lzrep_hash3(data + position);
+
+            if (tail[hash] == 0U) {
+                index->head[hash] = position + 1U;
+            } else {
+                index->next[tail[hash] - 1U] = position + 1U;
+            }
+            tail[hash] = position + 1U;
+        }
+    }
+    rt_free(tail);
+    index->available = 1;
+    return 0;
+}
+
+static void expack_lzrep_add_match(ExpackLzrepMatch *matches, unsigned int match_capacity, size_t length, unsigned int distance) {
+    unsigned int index;
+
+    if (length < COMPRESSION_LZSS_MIN_MATCH) {
+        return;
+    }
+    for (index = 0U; index < match_capacity; ++index) {
+        if (length > matches[index].length || (length == matches[index].length && distance < matches[index].distance)) {
+            unsigned int shift;
+
+            for (shift = match_capacity - 1U; shift > index; --shift) {
+                matches[shift] = matches[shift - 1U];
+            }
+            matches[index].length = length;
+            matches[index].distance = distance;
+            break;
+        }
+    }
+}
+
+static void expack_find_lzrep_matches(const unsigned char *data, size_t size, size_t position, const ExpackLzrepMatchIndex *match_index, ExpackLzrepMatch *matches, unsigned int match_capacity) {
     size_t window_start = position > EXPACK_LZREP_WINDOW_SIZE ? position - EXPACK_LZREP_WINDOW_SIZE : 0U;
     size_t candidate;
     unsigned int index;
@@ -372,23 +457,32 @@ static void expack_find_lzrep_matches(const unsigned char *data, size_t size, si
         matches[index].length = 0U;
         matches[index].distance = 0U;
     }
+    if (position > size || size - position < COMPRESSION_LZSS_MIN_MATCH) {
+        return;
+    }
+    if (match_index != 0 && match_index->available) {
+        size_t link = match_index->head[expack_lzrep_hash3(data + position)];
+
+        while (link != 0U) {
+            candidate = link - 1U;
+            if (candidate >= position) {
+                break;
+            }
+            if (candidate >= window_start) {
+                size_t distance = position - candidate;
+                size_t length = expack_match_length_at(data, size, position, distance, EXPACK_LZREP_MAX_EXPLICIT_MATCH);
+
+                expack_lzrep_add_match(matches, match_capacity, length, (unsigned int)distance);
+            }
+            link = match_index->next[candidate];
+        }
+        return;
+    }
     for (candidate = window_start; candidate < position; ++candidate) {
         size_t distance = position - candidate;
         size_t length = expack_match_length_at(data, size, position, distance, EXPACK_LZREP_MAX_EXPLICIT_MATCH);
-        if (length >= COMPRESSION_LZSS_MIN_MATCH) {
-            for (index = 0U; index < match_capacity; ++index) {
-                if (length > matches[index].length || (length == matches[index].length && (unsigned int)distance < matches[index].distance)) {
-                    unsigned int shift;
 
-                    for (shift = match_capacity - 1U; shift > index; --shift) {
-                        matches[shift] = matches[shift - 1U];
-                    }
-                    matches[index].length = length;
-                    matches[index].distance = (unsigned int)distance;
-                    break;
-                }
-            }
-        }
+        expack_lzrep_add_match(matches, match_capacity, length, (unsigned int)distance);
     }
 }
 
@@ -462,7 +556,7 @@ static void expack_lzrep_add_transition(ExpackLzrepBeamState states[EXPACK_LZREP
     expack_lzrep_insert_state(states[next_position], beam_width, &next_state);
 }
 
-static void expack_choose_lzrep_token(const unsigned char *data, size_t size, size_t position, const ExpackLzrepParseParams *params, unsigned int last_distance, unsigned int bit_index, ExpackLzrepToken *token_out) {
+static void expack_choose_lzrep_token(const unsigned char *data, size_t size, size_t position, const ExpackLzrepMatchIndex *match_index, const ExpackLzrepParseParams *params, unsigned int last_distance, unsigned int bit_index, ExpackLzrepToken *token_out) {
     ExpackLzrepBeamState states[EXPACK_LZREP_OPT_LOOKAHEAD + 1U][EXPACK_LZREP_OPT_BEAM_WIDTH];
     size_t remaining = size - position;
     unsigned int limit = remaining > params->lookahead ? params->lookahead : (unsigned int)remaining;
@@ -493,7 +587,7 @@ static void expack_choose_lzrep_token(const unsigned char *data, size_t size, si
         size_t absolute_position = position + (size_t)rel_position;
         ExpackLzrepMatch matches[EXPACK_LZREP_OPT_EXPLICIT_CHOICES];
 
-        expack_find_lzrep_matches(data, size, absolute_position, matches, params->explicit_choices);
+        expack_find_lzrep_matches(data, size, absolute_position, match_index, matches, params->explicit_choices);
         for (slot = 0U; slot < params->beam_width; ++slot) {
             ExpackLzrepBeamState state = states[rel_position][slot];
             ExpackLzrepToken token;
@@ -1291,6 +1385,7 @@ static int expack_compress_xlz(const unsigned char *data, size_t size, unsigned 
 
 static int expack_compress_lzrep_parse(const unsigned char *data, size_t size, const ExpackLzrepParseParams *params, unsigned char **payload_out, size_t *payload_size_out) {
     size_t bound = compression_lzss_bound(size);
+    ExpackLzrepMatchIndex match_index;
     unsigned char *payload;
     size_t input_offset = 0U;
     size_t output_offset = 0U;
@@ -1302,6 +1397,11 @@ static int expack_compress_lzrep_parse(const unsigned char *data, size_t size, c
     payload = (unsigned char *)rt_malloc(bound == 0U ? 1U : bound);
     if (payload == 0) {
         return -1;
+    }
+    if (expack_lzrep_match_index_build(data, size, &match_index) != 0) {
+        match_index.head = 0;
+        match_index.next = 0;
+        match_index.available = 0;
     }
 
     while (input_offset < size) {
@@ -1318,9 +1418,10 @@ static int expack_compress_lzrep_parse(const unsigned char *data, size_t size, c
         for (bit = 0U; bit < 8U && input_offset < size; ++bit) {
             ExpackLzrepToken token;
 
-            expack_choose_lzrep_token(data, size, input_offset, params, last_distance, bit, &token);
+            expack_choose_lzrep_token(data, size, input_offset, &match_index, params, last_distance, bit, &token);
             if (token.kind == EXPACK_LZREP_TOKEN_REPEAT) {
                 if (output_offset >= bound) {
+                    expack_lzrep_match_index_release(&match_index);
                     rt_free(payload);
                     return -1;
                 }
@@ -1332,6 +1433,7 @@ static int expack_compress_lzrep_parse(const unsigned char *data, size_t size, c
                 unsigned int token_length = (unsigned int)(token.length - COMPRESSION_LZSS_MIN_MATCH);
 
                 if (output_offset + 2U > bound) {
+                    expack_lzrep_match_index_release(&match_index);
                     rt_free(payload);
                     return -1;
                 }
@@ -1342,6 +1444,7 @@ static int expack_compress_lzrep_parse(const unsigned char *data, size_t size, c
                 input_offset += (size_t)token.length;
             } else {
                 if (output_offset >= bound) {
+                    expack_lzrep_match_index_release(&match_index);
                     rt_free(payload);
                     return -1;
                 }
@@ -1352,9 +1455,11 @@ static int expack_compress_lzrep_parse(const unsigned char *data, size_t size, c
     }
 
     if (expack_verify_lzrep_payload(payload, output_offset, data, size) != 0) {
+        expack_lzrep_match_index_release(&match_index);
         rt_free(payload);
         return -1;
     }
+    expack_lzrep_match_index_release(&match_index);
     *payload_out = payload;
     *payload_size_out = output_offset;
     return 0;
@@ -1551,176 +1656,245 @@ static int expack_bcj_rip_profile_in_normal_portfolio(const ExpackLzssProfile *p
            profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_MATCH;
 }
 
+#define EXPACK_MAX_CANDIDATE_JOBS 20U
+#define EXPACK_CANDIDATE_WORKERS 4U
+
+typedef struct {
+    unsigned int codec;
+    const ExpackLzssProfile *lzss_profile;
+    unsigned int lzrep_parse;
+    const unsigned char *input_data;
+    size_t input_size;
+    ExpackCandidate candidate;
+    int succeeded;
+    int done;
+} ExpackCandidateJob;
+
+static void expack_candidate_job_init(ExpackCandidateJob *job, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size) {
+    job->codec = codec;
+    job->lzss_profile = profile;
+    job->lzrep_parse = lzrep_parse;
+    job->input_data = input_data;
+    job->input_size = input_size;
+    job->candidate.codec = codec;
+    job->candidate.lzss_profile = profile;
+    job->candidate.lzrep_parse = lzrep_parse;
+    job->candidate.payload = 0;
+    job->candidate.payload_size = 0U;
+    job->candidate.packed_size = 0ULL;
+    job->succeeded = 0;
+    job->done = 0;
+    if (codec == EXPACK_CODEC_LZSS) {
+        job->candidate.stub = expack_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_LZREP) {
+        job->candidate.stub = expack_lzrep_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_lzrep_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_LZSS_BCJ) {
+        job->candidate.stub = expack_lzss_bcj_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_lzss_bcj_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_LZSS_BCJ_RIP) {
+        job->candidate.stub = expack_lzss_bcj_rip_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_lzss_bcj_rip_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_LZ4) {
+        job->candidate.stub = expack_lz4_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_lz4_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_XLZ) {
+        job->candidate.stub = expack_xlz_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_xlz_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_XLZ_BCJ) {
+        job->candidate.stub = expack_xlz_bcj_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_xlz_bcj_stub_x86_64);
+    } else {
+        job->candidate.stub = 0;
+        job->candidate.stub_size = 0U;
+    }
+}
+
+static int expack_add_candidate_job(ExpackCandidateJob *jobs, unsigned int *job_count, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size) {
+    if (*job_count >= EXPACK_MAX_CANDIDATE_JOBS) {
+        return -1;
+    }
+    expack_candidate_job_init(jobs + *job_count, codec, profile, lzrep_parse, input_data, input_size);
+    *job_count += 1U;
+    return 0;
+}
+
+static void expack_run_candidate_job(ExpackCandidateJob *job) {
+    int result = -1;
+
+    if (job->codec == EXPACK_CODEC_LZSS) {
+        result = expack_compress_lzss_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    } else if (job->codec == EXPACK_CODEC_LZREP) {
+        if (job->lzrep_parse == EXPACK_LZREP_PARSE_OPT) {
+            result = expack_compress_lzrep_parse(job->input_data, job->input_size, &expack_lzrep_opt_parse, &job->candidate.payload, &job->candidate.payload_size);
+        } else {
+            result = expack_compress_lzrep(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        }
+    } else if (job->codec == EXPACK_CODEC_LZSS_BCJ) {
+        result = expack_compress_lzss_bcj_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    } else if (job->codec == EXPACK_CODEC_LZSS_BCJ_RIP) {
+        result = expack_compress_lzss_bcj_rip_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    } else if (job->codec == EXPACK_CODEC_LZ4) {
+        result = expack_compress_lz4_block(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    } else if (job->codec == EXPACK_CODEC_XLZ) {
+        result = expack_compress_xlz(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    } else if (job->codec == EXPACK_CODEC_XLZ_BCJ) {
+        result = expack_compress_xlz_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    }
+    job->succeeded = result == 0;
+    job->done = 1;
+}
+
+static void expack_run_candidate_jobs_serial(ExpackCandidateJob *jobs, unsigned int job_count) {
+    unsigned int job_index;
+
+    for (job_index = 0U; job_index < job_count; ++job_index) {
+        expack_run_candidate_job(jobs + job_index);
+    }
+}
+
+#if EXPACK_HAVE_PTHREAD
+typedef struct {
+    ExpackCandidateJob *jobs;
+    unsigned int job_count;
+    unsigned int next_job;
+    pthread_mutex_t mutex;
+} ExpackCandidateQueue;
+
+static void *expack_candidate_worker(void *arg) {
+    ExpackCandidateQueue *queue = (ExpackCandidateQueue *)arg;
+
+    for (;;) {
+        unsigned int job_index;
+
+        (void)pthread_mutex_lock(&queue->mutex);
+        if (queue->next_job >= queue->job_count) {
+            (void)pthread_mutex_unlock(&queue->mutex);
+            break;
+        }
+        job_index = queue->next_job++;
+        (void)pthread_mutex_unlock(&queue->mutex);
+        expack_run_candidate_job(queue->jobs + job_index);
+    }
+    return 0;
+}
+
+static void expack_run_candidate_jobs(ExpackCandidateJob *jobs, unsigned int job_count) {
+    ExpackCandidateQueue queue;
+    pthread_t threads[EXPACK_CANDIDATE_WORKERS];
+    unsigned int worker_count = job_count < EXPACK_CANDIDATE_WORKERS ? job_count : EXPACK_CANDIDATE_WORKERS;
+    unsigned int created = 0U;
+    unsigned int worker_index;
+
+    if (worker_count < 2U || pthread_mutex_init(&queue.mutex, 0) != 0) {
+        expack_run_candidate_jobs_serial(jobs, job_count);
+        return;
+    }
+    queue.jobs = jobs;
+    queue.job_count = job_count;
+    queue.next_job = 0U;
+    for (worker_index = 0U; worker_index < worker_count; ++worker_index) {
+        if (pthread_create(&threads[worker_index], 0, expack_candidate_worker, &queue) != 0) {
+            break;
+        }
+        created += 1U;
+    }
+    for (worker_index = 0U; worker_index < created; ++worker_index) {
+        (void)pthread_join(threads[worker_index], 0);
+    }
+    (void)pthread_mutex_destroy(&queue.mutex);
+    if (created != worker_count) {
+        for (worker_index = 0U; worker_index < job_count; ++worker_index) {
+            if (!jobs[worker_index].done) {
+                expack_run_candidate_job(jobs + worker_index);
+            }
+        }
+    }
+}
+#else
+static void expack_run_candidate_jobs(ExpackCandidateJob *jobs, unsigned int job_count) {
+    expack_run_candidate_jobs_serial(jobs, job_count);
+}
+#endif
+
 static int expack_select_best_payload(const ExpackInputFormat *format, const ExpackOutputBackend *backend, const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates, int allow_x86_bcj, int try_all_candidates) {
     unsigned int profile_index;
+    ExpackCandidateJob jobs[EXPACK_MAX_CANDIDATE_JOBS];
+    unsigned int job_count = 0U;
+    unsigned int job_index;
     int have_selected = 0;
 
     expack_candidate_release(selected_out);
     for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
-        ExpackCandidate candidate;
-
         if (!try_all_candidates && !expack_lzss_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
             continue;
         }
-        candidate.codec = EXPACK_CODEC_LZSS;
-        candidate.lzss_profile = &expack_lzss_profiles[profile_index];
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_stub_x86_64;
-        candidate.stub_size = sizeof(expack_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-
-        if (expack_compress_lzss_profile(candidate.lzss_profile, input_data, input_size, &candidate.payload, &candidate.payload_size) != 0) {
-            continue;
+        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            return -1;
         }
-        candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-        if (report_candidates) expack_report_candidate(&candidate);
-        if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-        else expack_candidate_release(&candidate);
     }
 
     if (try_all_candidates) {
-        ExpackCandidate candidate;
-
-        candidate.codec = EXPACK_CODEC_LZ4;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_lz4_stub_x86_64;
-        candidate.stub_size = sizeof(expack_lz4_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_lz4_block(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
+        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZ4, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            return -1;
         }
     }
 
     if (try_all_candidates && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
-        ExpackCandidate candidate;
-
-        candidate.codec = EXPACK_CODEC_XLZ;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_xlz_stub_x86_64;
-        candidate.stub_size = sizeof(expack_xlz_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_xlz(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
+        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_XLZ, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            return -1;
         }
     }
 
     if (try_all_candidates && allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
-        ExpackCandidate candidate;
-
-        candidate.codec = EXPACK_CODEC_XLZ_BCJ;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_xlz_bcj_stub_x86_64;
-        candidate.stub_size = sizeof(expack_xlz_bcj_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_xlz_bcj(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
+        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_XLZ_BCJ, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            return -1;
         }
     }
 
-    {
-        ExpackCandidate candidate;
-
-        candidate.codec = EXPACK_CODEC_LZREP;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-        candidate.stub = expack_lzrep_stub_x86_64;
-        candidate.stub_size = sizeof(expack_lzrep_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_lzrep(input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
-        }
+    if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+        return -1;
     }
 
-    {
-        ExpackCandidate candidate;
-
-        candidate.codec = EXPACK_CODEC_LZREP;
-        candidate.lzss_profile = 0;
-        candidate.lzrep_parse = EXPACK_LZREP_PARSE_OPT;
-        candidate.stub = expack_lzrep_stub_x86_64;
-        candidate.stub_size = sizeof(expack_lzrep_stub_x86_64);
-        candidate.payload = 0;
-        candidate.payload_size = 0U;
-        candidate.packed_size = 0ULL;
-        if (expack_compress_lzrep_parse(input_data, input_size, &expack_lzrep_opt_parse, &candidate.payload, &candidate.payload_size) == 0) {
-            candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-            if (report_candidates) expack_report_candidate(&candidate);
-            if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-            else expack_candidate_release(&candidate);
-        }
+    if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_OPT, input_data, input_size) != 0) {
+        return -1;
     }
 
     if (allow_x86_bcj) {
         for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
-            ExpackCandidate candidate;
-
             if (!try_all_candidates && !expack_bcj_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
                 continue;
             }
-            candidate.codec = EXPACK_CODEC_LZSS_BCJ;
-            candidate.lzss_profile = &expack_lzss_profiles[profile_index];
-            candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-            candidate.stub = expack_lzss_bcj_stub_x86_64;
-            candidate.stub_size = sizeof(expack_lzss_bcj_stub_x86_64);
-            candidate.payload = 0;
-            candidate.payload_size = 0U;
-            candidate.packed_size = 0ULL;
-            if (expack_compress_lzss_bcj_profile(candidate.lzss_profile, input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-                candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-                if (report_candidates) expack_report_candidate(&candidate);
-                if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-                else expack_candidate_release(&candidate);
+            if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+                return -1;
             }
         }
     }
 
     if (allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
         for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
-            ExpackCandidate candidate;
-
             if (!try_all_candidates && !expack_bcj_rip_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
                 continue;
             }
-            candidate.codec = EXPACK_CODEC_LZSS_BCJ_RIP;
-            candidate.lzss_profile = &expack_lzss_profiles[profile_index];
-            candidate.lzrep_parse = EXPACK_LZREP_PARSE_FAST;
-            candidate.stub = expack_lzss_bcj_rip_stub_x86_64;
-            candidate.stub_size = sizeof(expack_lzss_bcj_rip_stub_x86_64);
-            candidate.payload = 0;
-            candidate.payload_size = 0U;
-            candidate.packed_size = 0ULL;
-            if (expack_compress_lzss_bcj_rip_profile(candidate.lzss_profile, input_data, input_size, &candidate.payload, &candidate.payload_size) == 0) {
-                candidate.packed_size = expack_score_candidate(format, backend, &candidate);
-                if (report_candidates) expack_report_candidate(&candidate);
-                if (candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &candidate);
-                else expack_candidate_release(&candidate);
+            if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ_RIP, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+                return -1;
             }
         }
+    }
+
+    expack_run_candidate_jobs(jobs, job_count);
+    for (job_index = 0U; job_index < job_count; ++job_index) {
+        ExpackCandidateJob *job = jobs + job_index;
+
+        if (!job->succeeded) {
+            expack_candidate_release(&job->candidate);
+            continue;
+        }
+        job->candidate.packed_size = expack_score_candidate(format, backend, &job->candidate);
+        if (report_candidates) expack_report_candidate(&job->candidate);
+        if (job->candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &job->candidate);
+        else expack_candidate_release(&job->candidate);
     }
 
     return have_selected ? 0 : -1;

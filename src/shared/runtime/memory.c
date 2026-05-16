@@ -1,6 +1,13 @@
 #include "runtime.h"
 #include "platform.h"
 
+#if defined(NEWOS_RUNTIME_THREAD_SAFE_ALLOC) && NEWOS_RUNTIME_THREAD_SAFE_ALLOC && defined(__STDC_HOSTED__) && __STDC_HOSTED__ && (defined(__unix__) || defined(__APPLE__)) && !defined(_WIN32)
+#include <pthread.h>
+#define RT_ALLOC_THREAD_SAFE 1
+#else
+#define RT_ALLOC_THREAD_SAFE 0
+#endif
+
 /*
  * Keep these implementations strictly byte-wise and volatile-backed so the
  * compiler does not fold them back into builtin memcpy or memset calls.
@@ -80,6 +87,24 @@ struct RtAllocBlock {
 static RtAllocBlock *rt_alloc_head;
 static RtAllocBlock *rt_alloc_tail;
 
+#if RT_ALLOC_THREAD_SAFE
+static pthread_mutex_t rt_alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void rt_alloc_lock(void) {
+    (void)pthread_mutex_lock(&rt_alloc_mutex);
+}
+
+static void rt_alloc_unlock(void) {
+    (void)pthread_mutex_unlock(&rt_alloc_mutex);
+}
+#else
+static void rt_alloc_lock(void) {
+}
+
+static void rt_alloc_unlock(void) {
+}
+#endif
+
 static size_t rt_alloc_align(size_t value) {
     const size_t alignment = sizeof(void *) * 2U;
     return (value + alignment - 1U) & ~(alignment - 1U);
@@ -148,7 +173,7 @@ static void rt_alloc_coalesce(void) {
     }
 }
 
-void *rt_malloc(size_t size) {
+static void *rt_malloc_unlocked(size_t size) {
     RtAllocBlock *block;
     if (size == 0U) size = 1U;
     size = rt_alloc_align(size);
@@ -162,6 +187,23 @@ void *rt_malloc(size_t size) {
     return block == 0 ? 0 : (void *)(block + 1);
 }
 
+void *rt_malloc(size_t size) {
+    void *ptr;
+
+    rt_alloc_lock();
+    ptr = rt_malloc_unlocked(size);
+    rt_alloc_unlock();
+    return ptr;
+}
+
+static void rt_free_unlocked(void *ptr) {
+    RtAllocBlock *block;
+    if (ptr == 0) return;
+    block = ((RtAllocBlock *)ptr) - 1;
+    block->free = 1;
+    rt_alloc_coalesce();
+}
+
 void *rt_realloc(void *ptr, size_t size) {
     RtAllocBlock *block;
     void *next;
@@ -171,26 +213,30 @@ void *rt_realloc(void *ptr, size_t size) {
         rt_free(ptr);
         return 0;
     }
+    rt_alloc_lock();
     block = ((RtAllocBlock *)ptr) - 1;
     size = rt_alloc_align(size);
     if (block->size >= size) {
         rt_alloc_split(block, size);
+        rt_alloc_unlock();
         return ptr;
     }
-    next = rt_malloc(size);
-    if (next == 0) return 0;
+    next = rt_malloc_unlocked(size);
+    if (next == 0) {
+        rt_alloc_unlock();
+        return 0;
+    }
     copy_size = block->size < size ? block->size : size;
     memcpy(next, ptr, copy_size);
-    rt_free(ptr);
+    rt_free_unlocked(ptr);
+    rt_alloc_unlock();
     return next;
 }
 
 void rt_free(void *ptr) {
-    RtAllocBlock *block;
-    if (ptr == 0) return;
-    block = ((RtAllocBlock *)ptr) - 1;
-    block->free = 1;
-    rt_alloc_coalesce();
+    rt_alloc_lock();
+    rt_free_unlocked(ptr);
+    rt_alloc_unlock();
 }
 
 static void rt_sort_swap(unsigned char *left, unsigned char *right, size_t item_size) {

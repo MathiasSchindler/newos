@@ -5,6 +5,13 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#if !defined(EXPACK_DISABLE_PTHREAD) && defined(__STDC_HOSTED__) && __STDC_HOSTED__ && (defined(__unix__) || defined(__APPLE__)) && !defined(_WIN32)
+#include <pthread.h>
+#define EXPACK_HAVE_PTHREAD 1
+#else
+#define EXPACK_HAVE_PTHREAD 0
+#endif
+
 #include "expack/internal.h"
 
 static unsigned short expack_read_u16_le(const unsigned char *bytes) {

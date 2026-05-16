@@ -3,6 +3,7 @@ typedef unsigned int ExpackRunnerU32;
 typedef unsigned long long ExpackRunnerU64;
 
 #define EXPACK_RUNNER_CODEC_LZSS 0U
+#define EXPACK_RUNNER_CODEC_LZREP 3U
 #define EXPACK_RUNNER_CODEC_LZ4 7U
 #define EXPACK_RUNNER_METADATA_SIZE 48ULL
 #define EXPACK_RUNNER_MIN_MATCH 3U
@@ -174,6 +175,59 @@ static int expack_runner_decode_payload(const ExpackRunnerU8 *payload, ExpackRun
                 distance = ((token & 0x00ffU) | ((token >> (8U + (ExpackRunnerU32)length_bits)) << 8U)) + 1U;
                 length = ((token >> 8U) & length_mask) + EXPACK_RUNNER_MIN_MATCH;
                 if ((ExpackRunnerU64)distance > output_offset || (ExpackRunnerU64)length > output_size - output_offset) {
+                    return -1;
+                }
+                for (index = 0U; index < length; ++index) {
+                    output[output_offset] = output[output_offset - (ExpackRunnerU64)distance];
+                    output_offset += 1ULL;
+                }
+            }
+        }
+    }
+    return input_offset == payload_size ? 0 : -1;
+}
+#elif EXPACK_MACHO_RUNNER_CODEC == EXPACK_RUNNER_CODEC_LZREP
+static int expack_runner_decode_payload(const ExpackRunnerU8 *payload, ExpackRunnerU64 payload_size, ExpackRunnerU8 *output, ExpackRunnerU64 output_size) {
+    ExpackRunnerU64 input_offset = 0ULL;
+    ExpackRunnerU64 output_offset = 0ULL;
+    ExpackRunnerU32 last_distance = 1U;
+
+    while (output_offset < output_size) {
+        ExpackRunnerU8 flags;
+        ExpackRunnerU32 bit;
+
+        if (input_offset >= payload_size) {
+            return -1;
+        }
+        flags = payload[input_offset++];
+        for (bit = 0U; bit < 8U && output_offset < output_size; ++bit) {
+            if ((flags & (ExpackRunnerU8)(1U << bit)) == 0U) {
+                if (input_offset >= payload_size) {
+                    return -1;
+                }
+                output[output_offset++] = payload[input_offset++];
+            } else {
+                ExpackRunnerU8 token;
+                ExpackRunnerU32 length;
+                ExpackRunnerU32 distance;
+                ExpackRunnerU32 index;
+
+                if (input_offset >= payload_size) {
+                    return -1;
+                }
+                token = payload[input_offset++];
+                if ((token & 0x80U) != 0U) {
+                    length = (ExpackRunnerU32)(token & 0x7fU) + EXPACK_RUNNER_MIN_MATCH;
+                    distance = last_distance;
+                } else {
+                    if (input_offset >= payload_size) {
+                        return -1;
+                    }
+                    length = (ExpackRunnerU32)(token & 0x0fU) + EXPACK_RUNNER_MIN_MATCH;
+                    distance = ((((ExpackRunnerU32)token >> 4U) << 8U) | (ExpackRunnerU32)payload[input_offset++]) + 1U;
+                    last_distance = distance;
+                }
+                if (distance == 0U || (ExpackRunnerU64)distance > output_offset || (ExpackRunnerU64)length > output_size - output_offset) {
                     return -1;
                 }
                 for (index = 0U; index < length; ++index) {
