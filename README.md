@@ -39,25 +39,24 @@ On Linux, `make test` also exercises representative freestanding binaries. On ma
 On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
 runtime, or the Microsoft C runtime. The important build-time tool is a C
 compiler/linker that can emit `x86_64-w64-windows-gnu` PE files; LLVM/Clang with
-lld is the preferred path. MSYS2 is currently only a convenient way to get
-`make`, a POSIX shell for the Makefile, and a packaged Clang/lld toolchain. The
-first useful checks are:
-
-```
-make host CC=gcc
-make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
-make freestanding-windows WINDOWS_TARGET_CC=clang
-```
-
-From PowerShell, the freestanding Windows build can also be launched with:
+lld is the preferred path. The native PowerShell build path does not invoke
+`make`, `sh`, or MSYS2 as build drivers:
 
 ```
 .\build-windows-freestanding.ps1
 ```
 
-That wrapper prefers a regular `clang` on `PATH` and only falls back to MSYS2's
-`bash.exe` as a Makefile driver when native `make` is not available or only
-MSYS `make` is present.
+That script prefers `clang` on `PATH`, then common LLVM/MSYS2 Clang install
+locations. MSYS2 can still be used as a convenient way to obtain a packaged
+Clang/lld toolchain, but the produced binaries are no-CRT PE files and the build
+script drives `clang.exe` directly from PowerShell.
+
+The first useful POSIX-hosted and Linux-freestanding checks remain:
+
+```
+make host CC=gcc
+make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+```
 
 `make freestanding` still emits Linux ABI binaries through the raw Linux
 syscall backend. `make freestanding-windows` is the native no-CRT PE path. It

@@ -462,13 +462,11 @@ static unsigned long long expack_macho_score_candidate(const ExpackInputFormat *
 }
 
 static unsigned long long expack_pe_score_candidate(const ExpackInputFormat *format, const ExpackCandidate *candidate) {
-    unsigned long long expack_virtual_size = EXPACK_PE_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
-    unsigned long long expack_raw_size = expack_align_up_u64(expack_virtual_size, EXPACK_PE_CONTAINER_FILE_ALIGNMENT);
     (void)format;
-    if (expack_raw_size > 0xffffffffULL) {
+    if (candidate->codec != EXPACK_CODEC_LZREP && candidate->codec != EXPACK_CODEC_RAW) {
         return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
     }
-    return EXPACK_PE_CONTAINER_TEXT_RAW_OFFSET + EXPACK_PE_CONTAINER_TEXT_RAW_SIZE + expack_raw_size;
+    return (unsigned long long)sizeof(expack_pe_runner_template) + EXPACK_PE_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
 }
 
 static int expack_elf_write_packed(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
@@ -498,6 +496,25 @@ static int expack_pe_can_write_container(const ExpackInputFormat *format, unsign
     return format->kind == EXPACK_FORMAT_PE_COFF && output_kind == EXPACK_OUTPUT_KIND_PE_CONTAINER;
 }
 
+static int expack_pe_prepare_container_candidate(const ExpackInputFormat *format, const ExpackImage *image, ExpackCandidate *candidate) {
+    if (candidate->codec == EXPACK_CODEC_LZREP) {
+        if (candidate->packed_size < (unsigned long long)image->size) {
+            return 0;
+        }
+        if (expack_make_raw_candidate(image->data, image->size, candidate) != 0) {
+            return -1;
+        }
+        candidate->packed_size = (unsigned long long)image->size;
+        return 0;
+    }
+    if (expack_make_raw_candidate(image->data, image->size, candidate) != 0) {
+        return -1;
+    }
+    (void)format;
+    candidate->packed_size = (unsigned long long)image->size;
+    return 0;
+}
+
 static int expack_pe_write_container_backend(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
     return expack_write_pe_container(format, output_path, candidate, original_size);
 }
@@ -511,7 +528,11 @@ static void expack_macho_write_container_success(const char *output_path, const 
 }
 
 static void expack_pe_write_container_success(const char *output_path, const ExpackCandidate *candidate) {
-    rt_write_cstr(1, "expack: wrote PE/COFF prototype container ");
+    if (candidate->codec == EXPACK_CODEC_RAW) {
+        rt_write_cstr(1, "expack: wrote PE/COFF exact executable copy ");
+    } else {
+        rt_write_cstr(1, "expack: wrote PE/COFF self-extracting container ");
+    }
     rt_write_cstr(1, output_path);
     rt_write_cstr(1, " with codec ");
     expack_write_candidate_name(candidate);
@@ -550,7 +571,7 @@ static const ExpackOutputBackend expack_output_backends[] = {
         expack_pe_score_candidate,
         expack_backend_cannot_write_packed,
         expack_pe_can_write_container,
-        0,
+        expack_pe_prepare_container_candidate,
         0,
         expack_pe_write_container_backend,
         expack_pe_write_container_success
