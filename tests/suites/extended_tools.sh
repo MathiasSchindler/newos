@@ -38,11 +38,40 @@ assert_file_contains "$WORK_DIR/rg_files.out" 'src/b\.md$' "rg --files -g did no
 printf 'streamed-data\n' | "$ROOT_DIR/build/gzip" -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_stream.txt"
 assert_file_contains "$WORK_DIR/gzip_stream.txt" '^streamed-data$' "gzip/gunzip streaming pipeline failed"
 
-"$ROOT_DIR/build/expack" -q "$ROOT_DIR/build/echo" "$WORK_DIR/echo.packed"
-"$WORK_DIR/echo.packed" expack-ok > "$WORK_DIR/expack.out"
-assert_file_contains "$WORK_DIR/expack.out" '^expack-ok$' "expack output did not preserve executable behavior"
-"$ROOT_DIR/build/file" "$WORK_DIR/echo.packed" > "$WORK_DIR/expack_file.out"
-assert_file_contains "$WORK_DIR/expack_file.out" 'ELF' "expack output is not recognized as ELF"
+"$ROOT_DIR/build/file" "$ROOT_DIR/build/echo" > "$WORK_DIR/echo_file.out"
+if grep -q 'ELF' "$WORK_DIR/echo_file.out"; then
+    "$ROOT_DIR/build/expack" -q "$ROOT_DIR/build/echo" "$WORK_DIR/echo.packed"
+    "$WORK_DIR/echo.packed" expack-ok > "$WORK_DIR/expack.out"
+    assert_file_contains "$WORK_DIR/expack.out" '^expack-ok$' "expack output did not preserve executable behavior"
+    "$ROOT_DIR/build/file" "$WORK_DIR/echo.packed" > "$WORK_DIR/expack_file.out"
+    assert_file_contains "$WORK_DIR/expack_file.out" 'ELF' "expack output is not recognized as ELF"
+else
+    if "$ROOT_DIR/build/expack" --analyze "$ROOT_DIR/build/echo" > "$WORK_DIR/expack_host.out" 2> "$WORK_DIR/expack_host.err"; then
+        assert_file_contains "$WORK_DIR/expack_host.out" 'format Mach-O' "expack did not analyze the Mach-O host executable"
+        assert_file_contains "$WORK_DIR/expack_host.out" '^selected: ' "expack did not select a Mach-O compression candidate"
+        "$ROOT_DIR/build/expack" --macho-container "$ROOT_DIR/build/echo" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container.out"
+        assert_file_contains "$WORK_DIR/expack_host_container.out" 'wrote Mach-O prototype container' "expack did not report Mach-O container output"
+        "$ROOT_DIR/build/file" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container_file.out"
+        assert_file_contains "$WORK_DIR/expack_host_container_file.out" 'Mach-O' "expack Mach-O container is not recognized as Mach-O"
+        if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ] && command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict --verbose=4 "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container_verify.out" 2>&1
+            codesign -dv "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container_codesign.out" 2>&1
+            assert_file_contains "$WORK_DIR/expack_host_container_codesign.out" 'Signature=adhoc' "expack did not emit an ad-hoc signature for the Mach-O host container"
+            if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+                "$WORK_DIR/expack_host.container" expack-ok > "$WORK_DIR/expack_host_container_run.out"
+                assert_file_contains "$WORK_DIR/expack_host_container_run.out" '^expack-ok$' "expack Mach-O container did not preserve executable behavior"
+            fi
+        fi
+    else
+        assert_file_contains "$WORK_DIR/expack_host.err" 'recognized, but expack does not have' "expack did not identify the unsupported host executable format"
+    fi
+fi
+
+if [ -x "$ROOT_DIR/build/freestanding-macos-aarch64/expack" ]; then
+    "$ROOT_DIR/build/freestanding-macos-aarch64/expack" --analyze "$ROOT_DIR/build/freestanding-macos-aarch64/expack" > "$WORK_DIR/expack_freestanding_macho.out"
+    assert_file_contains "$WORK_DIR/expack_freestanding_macho.out" 'format Mach-O' "freestanding expack did not analyze its own Mach-O executable"
+    assert_file_contains "$WORK_DIR/expack_freestanding_macho.out" '^selected: ' "freestanding expack did not select a Mach-O compression candidate"
+fi
 
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"

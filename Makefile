@@ -145,6 +145,8 @@ HASH_SOURCES := \
 SSH_TRANSPORT_SOURCES := $(shell grep -oE '"src/tools/ssh/ssh_(core|client_io)\.c"' src/compiler/source_manifest.h | tr -d '"')
 SSH_CLIENT_SOURCES := $(shell grep -oE '"src/tools/ssh/ssh_(core|known_hosts|client[^"]*)\.c"' src/compiler/source_manifest.h | tr -d '"')
 SSHD_TOOL_SOURCES := $(shell grep -oE '"src/tools/sshd/sshd_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
+EXPACK_SIGNING_SOURCE := src/shared/crypto/sha256.c
+EXPACK_RUNNER_SOURCE := src/tools/expack/macho_arm64_lzrep_runner.inc
 SSH_CRYPTO_SOURCES := \
 	$(CRYPTO_SOURCES) \
 	src/shared/crypto/curve25519.c \
@@ -159,7 +161,7 @@ WINDOWS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platfor
 WINDOWS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c
 WINDOWS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 WINDOWS_FREESTANDING_REGEX_SOURCES :=
-WINDOWS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/compression/crc32.c src/shared/compression/lzss.c
+WINDOWS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/compression/crc32.c src/shared/compression/lzss.c $(EXPACK_SIGNING_SOURCE)
 WINDOWS_FREESTANDING_AWK_SOURCES := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c $(WINDOWS_FREESTANDING_REGEX_SOURCES)
 WINDOWS_FREESTANDING_XML_SOURCES := src/shared/xml.c src/shared/xml_stream.c src/shared/xml_dtd.c src/shared/tool_xml.c $(WINDOWS_FREESTANDING_REGEX_SOURCES)
 WINDOWS_FREESTANDING_TUI_SOURCES := src/shared/tui.c
@@ -179,7 +181,7 @@ MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/run
 MACOS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 MACOS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/posix/tls.c
 MACOS_FREESTANDING_AWK_SOURCES := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c
-MACOS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/compression/crc32.c src/shared/compression/lzss.c src/shared/compression/zlib.c
+MACOS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/compression/crc32.c src/shared/compression/lzss.c src/shared/compression/zlib.c $(EXPACK_SIGNING_SOURCE)
 MACOS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c
 MACOS_FREESTANDING_XML_SOURCES := src/shared/xml.c src/shared/xml_stream.c src/shared/xml_dtd.c src/shared/tool_xml.c
 MACOS_FREESTANDING_NCC_SOURCES := $(COMPILER_SOURCES) $(SHARED_SOURCES)
@@ -356,7 +358,7 @@ $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING
 $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_REGEX_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_REGEX_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_REGEX_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
 
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_ARCHIVE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/archive_util.h | $(WINDOWS_TARGET_BUILD_DIR)
+$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_ARCHIVE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(EXPACK_RUNNER_SOURCE) $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/archive_util.h | $(WINDOWS_TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
 
 $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_AWK_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_AWK_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/tools/awk/awk_impl.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
@@ -407,7 +409,7 @@ $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_TLS_TOOLS)): $
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_AWK_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_AWK_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_AWK_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
-$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_ARCHIVE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_ARCHIVE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(EXPACK_RUNNER_SOURCE) $(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_IMAGE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
@@ -565,6 +567,9 @@ endif
 $(BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
+$(BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_RUNNER_SOURCE) $(SHARED_SOURCES) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(EXPACK_SIGNING_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
+
 $(TARGET_BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
@@ -582,9 +587,15 @@ $(BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
 ifneq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
+$(TARGET_BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_RUNNER_SOURCE) $(SHARED_DEPS) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(EXPACK_SIGNING_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
 $(TARGET_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
+
+$(INCEPTION_BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_RUNNER_SOURCE) $(SHARED_DEPS) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(EXPACK_SIGNING_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(INCEPTION_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

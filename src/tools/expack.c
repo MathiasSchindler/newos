@@ -1,5 +1,6 @@
 #include "archive_util.h"
 #include "compression/lzss.h"
+#include "crypto/sha256.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -17,6 +18,36 @@
 #define EXPACK_CODEC_BYTE_RUN 2U
 #define EXPACK_CODEC_LZREP 3U
 #define EXPACK_CODEC_LZSS_BCJ 4U
+#define EXPACK_CODEC_RAW 5U
+#define EXPACK_FORMAT_ELF64_X86_64 1U
+#define EXPACK_FORMAT_MACHO 2U
+#define EXPACK_FORMAT_PE_COFF 3U
+#define EXPACK_MACHO_HEADER64_SIZE 32U
+#define EXPACK_MACHO_CPU_X86_64 0x01000007U
+#define EXPACK_MACHO_CPU_ARM64 0x0100000cU
+#define EXPACK_MACHO_TYPE_EXECUTE 2U
+#define EXPACK_MACHO_LC_SEGMENT_64 0x19U
+#define EXPACK_MACHO_LC_LOAD_DYLINKER 0xeU
+#define EXPACK_MACHO_LC_BUILD_VERSION 0x32U
+#define EXPACK_MACHO_LC_MAIN 0x80000028U
+#define EXPACK_MACHO_LC_CODE_SIGNATURE 0x1dU
+#define EXPACK_MACHO_FLAG_NOUNDEFS 0x1U
+#define EXPACK_MACHO_FLAG_DYLDLINK 0x4U
+#define EXPACK_MACHO_FLAG_TWOLEVEL 0x80U
+#define EXPACK_MACHO_FLAG_PIE 0x200000U
+#define EXPACK_MACHO_VM_PROT_READ 1U
+#define EXPACK_MACHO_VM_PROT_EXECUTE 4U
+#define EXPACK_MACHO_CONTAINER_BASE 0x100000000ULL
+#define EXPACK_MACHO_CONTAINER_METADATA_SIZE 48U
+#define EXPACK_MACHO_CONTAINER_VERSION 1U
+#define EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET 232U
+#define EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET 240U
+#define EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET 520U
+#define EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_SIZE_OFFSET 528U
+#define EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET 536U
+#define EXPACK_MACHO_CODE_SIGNATURE_PAGE_SIZE 0x4000U
+#define EXPACK_MACHO_CODE_DIRECTORY_IDENT "expack"
+#define EXPACK_MACHO_CODE_DIRECTORY_IDENT_SIZE 7U
 #define EXPACK_LZSS_STUB_LENGTH_SHIFT_OFFSET 177U
 #define EXPACK_LZSS_STUB_LENGTH_MASK_OFFSET 187U
 #define EXPACK_LZSS_ORIGINAL_SIZE_OFFSET 368U
@@ -67,6 +98,17 @@ typedef struct {
     unsigned long long new_offset;
     unsigned long long file_size;
 } ExpackLoadRange;
+
+typedef struct {
+    unsigned int kind;
+    const char *name;
+    const char *preprocess_error;
+    int allow_x86_bcj;
+    int can_write_packed_output;
+    unsigned int macho_cputype;
+    unsigned int macho_code_signature_offset;
+    unsigned int macho_code_signature_size;
+} ExpackInputFormat;
 
 static int expack_compress_lzss_profile(const ExpackLzssProfile *profile, const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out);
 static void expack_write_candidate_name(const ExpackCandidate *candidate);
@@ -251,6 +293,26 @@ static unsigned short expack_read_u16_le(const unsigned char *bytes) {
 static void expack_store_u16_le(unsigned char *bytes, unsigned short value) {
     bytes[0] = (unsigned char)(value & 0xffU);
     bytes[1] = (unsigned char)((value >> 8) & 0xffU);
+}
+
+static unsigned long long expack_align_up_u64(unsigned long long value, unsigned long long alignment) {
+    unsigned long long remainder;
+
+    if (alignment <= 1ULL) {
+        return value;
+    }
+    remainder = value % alignment;
+    return remainder == 0ULL ? value : value + (alignment - remainder);
+}
+
+static void expack_store_fixed_name(unsigned char *field, const char *name) {
+    size_t index = 0U;
+
+    memset(field, 0, 16U);
+    while (index < 16U && name[index] != '\0') {
+        field[index] = (unsigned char)name[index];
+        index += 1U;
+    }
 }
 
 static unsigned long long expack_zero_run_length(const unsigned char *data, size_t size, size_t offset) {
@@ -583,7 +645,7 @@ static int expack_compress_lzss_bcj(const unsigned char *input_data, size_t inpu
     return result;
 }
 
-static int expack_validate_input_elf(const unsigned char *data, size_t size, const char **message_out) {
+static int expack_validate_elf64_x86_64(const unsigned char *data, size_t size, const char **message_out) {
     unsigned short type;
     unsigned short machine;
 
@@ -612,6 +674,127 @@ static int expack_validate_input_elf(const unsigned char *data, size_t size, con
     }
 
     return 0;
+}
+
+static int expack_has_macho_magic(const unsigned char *data, size_t size) {
+    if (size < 4U) {
+        return 0;
+    }
+    return (data[0] == 0xfeU && data[1] == 0xedU && data[2] == 0xfaU && (data[3] == 0xceU || data[3] == 0xcfU)) ||
+           ((data[0] == 0xceU || data[0] == 0xcfU) && data[1] == 0xfaU && data[2] == 0xedU && data[3] == 0xfeU);
+}
+
+static int expack_has_pe_coff_magic(const unsigned char *data, size_t size) {
+    return size >= 2U && data[0] == 'M' && data[1] == 'Z';
+}
+
+static const char *expack_macho_machine_name(unsigned int cputype) {
+    if (cputype == EXPACK_MACHO_CPU_X86_64) return "Mach-O 64-bit x86-64";
+    if (cputype == EXPACK_MACHO_CPU_ARM64) return "Mach-O 64-bit arm64";
+    return "Mach-O 64-bit";
+}
+
+static int expack_validate_macho64_le(const unsigned char *data, size_t size, ExpackInputFormat *format_out, const char **message_out) {
+    unsigned int cputype;
+    unsigned int filetype;
+    unsigned int ncmds;
+    unsigned int sizeofcmds;
+    unsigned int command_index;
+    size_t command_offset = EXPACK_MACHO_HEADER64_SIZE;
+
+    if (size < EXPACK_MACHO_HEADER64_SIZE) {
+        *message_out = "input is too small for a Mach-O 64-bit header";
+        return -1;
+    }
+    if (archive_read_u32_le(data) != 0xfeedfacfU) {
+        *message_out = "only Mach-O 64-bit little-endian files are supported";
+        return -1;
+    }
+    cputype = archive_read_u32_le(data + 4U);
+    filetype = archive_read_u32_le(data + 12U);
+    ncmds = archive_read_u32_le(data + 16U);
+    sizeofcmds = archive_read_u32_le(data + 20U);
+    if (filetype != EXPACK_MACHO_TYPE_EXECUTE) {
+        *message_out = "only Mach-O executable files are supported";
+        return -1;
+    }
+    if (!(cputype == EXPACK_MACHO_CPU_X86_64 || cputype == EXPACK_MACHO_CPU_ARM64)) {
+        *message_out = "only Mach-O x86-64 and arm64 inputs are supported";
+        return -1;
+    }
+    if (ncmds > 1024U || sizeofcmds > size - EXPACK_MACHO_HEADER64_SIZE) {
+        *message_out = "invalid Mach-O load-command table";
+        return -1;
+    }
+
+    format_out->macho_code_signature_offset = 0U;
+    format_out->macho_code_signature_size = 0U;
+    for (command_index = 0U; command_index < ncmds; ++command_index) {
+        unsigned int command;
+        unsigned int command_size;
+
+        if (command_offset > size || 8U > size - command_offset) {
+            *message_out = "invalid Mach-O load-command range";
+            return -1;
+        }
+        command = archive_read_u32_le(data + command_offset);
+        command_size = archive_read_u32_le(data + command_offset + 4U);
+        if (command_size < 8U || command_size > size - command_offset) {
+            *message_out = "invalid Mach-O load-command range";
+            return -1;
+        }
+        if (command == EXPACK_MACHO_LC_CODE_SIGNATURE && command_size >= 16U) {
+            format_out->macho_code_signature_offset = archive_read_u32_le(data + command_offset + 8U);
+            format_out->macho_code_signature_size = archive_read_u32_le(data + command_offset + 12U);
+            if (format_out->macho_code_signature_offset > size || format_out->macho_code_signature_size > size - format_out->macho_code_signature_offset) {
+                *message_out = "invalid Mach-O code-signature range";
+                return -1;
+            }
+        }
+        command_offset += (size_t)command_size;
+    }
+    if (command_offset > EXPACK_MACHO_HEADER64_SIZE + (size_t)sizeofcmds) {
+        *message_out = "invalid Mach-O load-command table";
+        return -1;
+    }
+
+    format_out->kind = EXPACK_FORMAT_MACHO;
+    format_out->name = expack_macho_machine_name(cputype);
+    format_out->preprocess_error = "Mach-O preprocessing failed";
+    format_out->allow_x86_bcj = cputype == EXPACK_MACHO_CPU_X86_64;
+    format_out->can_write_packed_output = 0;
+    format_out->macho_cputype = cputype;
+    return 0;
+}
+
+static int expack_detect_input_format(const unsigned char *data, size_t size, ExpackInputFormat *format_out, const char **message_out) {
+    if (size >= 4U && data[0] == 0x7fU && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
+        if (expack_validate_elf64_x86_64(data, size, message_out) != 0) {
+            return -1;
+        }
+        format_out->kind = EXPACK_FORMAT_ELF64_X86_64;
+        format_out->name = "ELF64 x86-64";
+        format_out->preprocess_error = "ELF preprocessing failed";
+        format_out->allow_x86_bcj = 1;
+        format_out->can_write_packed_output = 1;
+        format_out->macho_cputype = 0U;
+        return 0;
+    }
+    if (expack_has_macho_magic(data, size)) {
+        return expack_validate_macho64_le(data, size, format_out, message_out);
+    }
+    if (expack_has_pe_coff_magic(data, size)) {
+        format_out->kind = EXPACK_FORMAT_PE_COFF;
+        format_out->name = "PE/COFF";
+        format_out->preprocess_error = "PE/COFF preprocessing failed";
+        format_out->allow_x86_bcj = 0;
+        format_out->can_write_packed_output = 0;
+        format_out->macho_cputype = 0U;
+        *message_out = "PE/COFF input is recognized, but expack does not have a PE/COFF image backend today";
+        return -1;
+    }
+    *message_out = "input is not a supported executable format";
+    return -1;
 }
 
 static int expack_range_end(size_t offset, size_t length, size_t limit, size_t *end_out) {
@@ -659,7 +842,7 @@ static int expack_find_canonical_load_offset(const ExpackLoadRange *loads, unsig
     return -1;
 }
 
-static int expack_make_exec_image(const unsigned char *input_data, size_t input_size, ExpackImage *image_out) {
+static int expack_make_elf_exec_image(const unsigned char *input_data, size_t input_size, ExpackImage *image_out) {
     unsigned long long phoff64 = archive_read_u64_le(input_data + 32U);
     unsigned short phentsize = expack_read_u16_le(input_data + 54U);
     unsigned short phnum = expack_read_u16_le(input_data + 56U);
@@ -728,6 +911,10 @@ static int expack_make_exec_image(const unsigned char *input_data, size_t input_
         rt_free(loads);
         return -1;
     }
+    if (phoff > (size_t)needed_size64 || phdr_size > (size_t)needed_size64 - phoff) {
+        rt_free(loads);
+        return -1;
+    }
     image_data = (unsigned char *)rt_malloc((size_t)needed_size64 == 0U ? 1U : (size_t)needed_size64);
     if (image_data == 0) {
         rt_free(loads);
@@ -774,9 +961,38 @@ static int expack_make_exec_image(const unsigned char *input_data, size_t input_
 
     image_out->data = image_data;
     image_out->size = (size_t)needed_size64;
-    image_out->changed = (size_t)needed_size64 != input_size || memcmp(image_data, input_data, (size_t)needed_size64) != 0;
+    image_out->changed = (size_t)needed_size64 != input_size || memcmp(image_data, input_data, input_size) != 0;
     rt_free(loads);
     return 0;
+}
+
+static int expack_make_exact_exec_image(const unsigned char *input_data, size_t input_size, ExpackImage *image_out) {
+    image_out->data = (unsigned char *)input_data;
+    image_out->size = input_size;
+    image_out->changed = 0;
+    return 0;
+}
+
+static void expack_release_exec_image(ExpackImage *image, const unsigned char *input_data) {
+    if (image->data != 0 && image->data != input_data) {
+        rt_free(image->data);
+    }
+    image->data = 0;
+    image->size = 0U;
+    image->changed = 0;
+}
+
+static int expack_make_exec_image(const ExpackInputFormat *format, const unsigned char *input_data, size_t input_size, ExpackImage *image_out) {
+    if (format->kind == EXPACK_FORMAT_ELF64_X86_64) {
+        return expack_make_elf_exec_image(input_data, input_size, image_out);
+    }
+    if (format->kind == EXPACK_FORMAT_MACHO) {
+        return expack_make_exact_exec_image(input_data, input_size, image_out);
+    }
+    image_out->data = 0;
+    image_out->size = 0U;
+    image_out->changed = 0;
+    return -1;
 }
 
 static int expack_load_file(const char *path, unsigned char **data_out, size_t *size_out) {
@@ -860,6 +1076,25 @@ static int expack_consider_candidate(ExpackCandidate *selected, int *have_select
     return 0;
 }
 
+static int expack_make_raw_candidate(const unsigned char *input_data, size_t input_size, ExpackCandidate *candidate) {
+    unsigned char *payload = (unsigned char *)rt_malloc(input_size == 0U ? 1U : input_size);
+    if (payload == 0) {
+        return -1;
+    }
+    if (input_size != 0U) {
+        memcpy(payload, input_data, input_size);
+    }
+    expack_candidate_release(candidate);
+    candidate->codec = EXPACK_CODEC_RAW;
+    candidate->lzss_profile = 0;
+    candidate->stub = 0;
+    candidate->stub_size = 0U;
+    candidate->payload = payload;
+    candidate->payload_size = input_size;
+    candidate->packed_size = (unsigned long long)input_size;
+    return 0;
+}
+
 static void expack_report_candidate(const ExpackCandidate *candidate) {
     rt_write_cstr(1, "  ");
     expack_write_candidate_name(candidate);
@@ -872,7 +1107,7 @@ static void expack_report_candidate(const ExpackCandidate *candidate) {
     rt_write_cstr(1, "\n");
 }
 
-static int expack_select_best_payload(const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates) {
+static int expack_select_best_payload(const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates, int allow_x86_bcj) {
     unsigned int profile_index;
     int have_selected = 0;
 
@@ -947,7 +1182,7 @@ static int expack_select_best_payload(const unsigned char *input_data, size_t in
         }
     }
 
-    {
+    if (allow_x86_bcj) {
         ExpackCandidate candidate;
 
         candidate.codec = EXPACK_CODEC_LZSS_BCJ;
@@ -1069,6 +1304,410 @@ static int expack_write_packed_elf(const char *output_path, const ExpackCandidat
     return 0;
 }
 
+static int expack_macho_container_subtype(unsigned int cputype, unsigned int *subtype_out) {
+    if (cputype == EXPACK_MACHO_CPU_ARM64) {
+        *subtype_out = 0U;
+        return 0;
+    }
+    if (cputype == EXPACK_MACHO_CPU_X86_64) {
+        *subtype_out = 3U;
+        return 0;
+    }
+    return -1;
+}
+
+static const unsigned char *expack_macho_container_stub(unsigned int cputype, unsigned int codec, size_t *stub_size_out) {
+    static const unsigned char arm64_raw_runner_stub[] = {
+        0xf5, 0x03, 0x01, 0xaa, 0xf6, 0x03, 0x02, 0xaa, 0xff, 0x03, 0x01, 0xd1,
+        0xf7, 0x03, 0x00, 0x91, 0x45, 0x07, 0x00, 0x10, 0x26, 0x03, 0x80, 0xd2,
+        0xa7, 0x14, 0x40, 0x38, 0xe7, 0x16, 0x00, 0x38, 0xc6, 0x04, 0x00, 0xf1,
+        0xa1, 0xff, 0xff, 0x54, 0xf7, 0x03, 0x00, 0x91, 0x90, 0x02, 0x80, 0xd2,
+        0x01, 0x10, 0x00, 0xd4, 0xe1, 0x42, 0x00, 0x91, 0x02, 0x01, 0x80, 0xd2,
+        0x03, 0xfc, 0x5c, 0xd3, 0x63, 0x0c, 0x40, 0x92, 0x64, 0x06, 0x00, 0x30,
+        0x83, 0x68, 0x63, 0x38, 0x23, 0x14, 0x00, 0x38, 0x00, 0xec, 0x7c, 0xd3,
+        0x42, 0x04, 0x00, 0xf1, 0x21, 0xff, 0xff, 0x54, 0xe0, 0x03, 0x17, 0xaa,
+        0x21, 0xc0, 0x81, 0xd2, 0x02, 0x38, 0x80, 0xd2, 0xb0, 0x00, 0x80, 0xd2,
+        0x01, 0x10, 0x00, 0xd4, 0x62, 0x03, 0x00, 0x54, 0xf3, 0x03, 0x00, 0xaa,
+        0x89, 0x03, 0x00, 0x10, 0x38, 0x01, 0x40, 0xf9, 0x38, 0x01, 0x18, 0x8b,
+        0x69, 0x03, 0x00, 0x10, 0x39, 0x01, 0x40, 0xf9, 0x99, 0x01, 0x00, 0xb4,
+        0xe0, 0x03, 0x13, 0xaa, 0xe1, 0x03, 0x18, 0xaa, 0xe2, 0x03, 0x19, 0xaa,
+        0x90, 0x00, 0x80, 0xd2,
+        0x01, 0x10, 0x00, 0xd4, 0xc2, 0x01, 0x00, 0x54, 0x1f, 0x04, 0x00, 0xf1,
+        0x8b, 0x01, 0x00, 0x54, 0x18, 0x03, 0x00, 0x8b, 0x39, 0x03, 0x00, 0xcb,
+        0xf5, 0xff, 0xff, 0x17, 0xe0, 0x03, 0x13, 0xaa, 0xd0, 0x00, 0x80, 0xd2,
+        0x01, 0x10, 0x00, 0xd4, 0xe0, 0x03, 0x17, 0xaa, 0xe1, 0x03, 0x15, 0xaa,
+        0xe2, 0x03, 0x16, 0xaa, 0x70, 0x07, 0x80, 0xd2, 0x01, 0x10, 0x00, 0xd4,
+        0xe0, 0x0f, 0x80, 0xd2, 0x30, 0x00, 0x80, 0xd2, 0x01, 0x10, 0x00, 0xd4,
+        0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x2f, 0x74, 0x6d, 0x70,
+        0x2f, 0x65, 0x78, 0x70, 0x61, 0x63, 0x6b, 0x2d, 0x72, 0x75, 0x6e, 0x2d,
+        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x30, 0x31, 0x32,
+        0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65,
+        0x66
+    };
+    static const unsigned char arm64_lzrep_runner_stub[] = {
+#include "expack/macho_arm64_lzrep_runner.inc"
+    };
+    static const unsigned char x86_64_exit_stub[] = {
+        0xb8, 0x01, 0x00, 0x00, 0x02,
+        0xbf, 0x7f, 0x00, 0x00, 0x00,
+        0x0f, 0x05
+    };
+
+    if (cputype == EXPACK_MACHO_CPU_ARM64 && codec == EXPACK_CODEC_RAW) {
+        *stub_size_out = sizeof(arm64_raw_runner_stub);
+        return arm64_raw_runner_stub;
+    }
+    if (cputype == EXPACK_MACHO_CPU_ARM64 && codec == EXPACK_CODEC_LZREP) {
+        *stub_size_out = sizeof(arm64_lzrep_runner_stub);
+        return arm64_lzrep_runner_stub;
+    }
+    if (cputype == EXPACK_MACHO_CPU_X86_64) {
+        *stub_size_out = sizeof(x86_64_exit_stub);
+        return x86_64_exit_stub;
+    }
+    *stub_size_out = 0U;
+    return 0;
+}
+
+static void expack_write_macho_section(unsigned char *section, const char *section_name, const char *segment_name, unsigned long long address, unsigned long long size, unsigned int offset, unsigned int alignment, unsigned int flags) {
+    expack_store_fixed_name(section, section_name);
+    expack_store_fixed_name(section + 16U, segment_name);
+    archive_store_u64_le(section + 32U, address);
+    archive_store_u64_le(section + 40U, size);
+    archive_store_u32_le(section + 48U, offset);
+    archive_store_u32_le(section + 52U, alignment);
+    archive_store_u32_le(section + 56U, 0U);
+    archive_store_u32_le(section + 60U, 0U);
+    archive_store_u32_le(section + 64U, flags);
+    archive_store_u32_le(section + 68U, 0U);
+    archive_store_u32_le(section + 72U, 0U);
+    archive_store_u32_le(section + 76U, 0U);
+}
+
+static void expack_write_macho_segment64(unsigned char *segment, const char *segment_name, unsigned long long vmaddr, unsigned long long vmsize, unsigned long long fileoff, unsigned long long filesize, unsigned int maxprot, unsigned int initprot, unsigned int nsects, unsigned int flags) {
+    archive_store_u32_le(segment + 0U, EXPACK_MACHO_LC_SEGMENT_64);
+    archive_store_u32_le(segment + 4U, 72U + 80U * nsects);
+    expack_store_fixed_name(segment + 8U, segment_name);
+    archive_store_u64_le(segment + 24U, vmaddr);
+    archive_store_u64_le(segment + 32U, vmsize);
+    archive_store_u64_le(segment + 40U, fileoff);
+    archive_store_u64_le(segment + 48U, filesize);
+    archive_store_u32_le(segment + 56U, maxprot);
+    archive_store_u32_le(segment + 60U, initprot);
+    archive_store_u32_le(segment + 64U, nsects);
+    archive_store_u32_le(segment + 68U, flags);
+}
+
+static void expack_store_u32_be(unsigned char *out, unsigned int value) {
+    out[0] = (unsigned char)((value >> 24U) & 0xffU);
+    out[1] = (unsigned char)((value >> 16U) & 0xffU);
+    out[2] = (unsigned char)((value >> 8U) & 0xffU);
+    out[3] = (unsigned char)(value & 0xffU);
+}
+
+typedef struct {
+    CryptoSha256Context context;
+    unsigned char *hashes;
+    size_t hash_count;
+    size_t hash_index;
+    size_t page_used;
+} ExpackMachoPageHasher;
+
+static int expack_macho_page_hasher_init(ExpackMachoPageHasher *hasher, size_t hash_count) {
+    hasher->hashes = (unsigned char *)rt_malloc(hash_count * CRYPTO_SHA256_DIGEST_SIZE);
+    if (hasher->hashes == 0 && hash_count != 0U) {
+        return -1;
+    }
+    hasher->hash_count = hash_count;
+    hasher->hash_index = 0U;
+    hasher->page_used = 0U;
+    crypto_sha256_init(&hasher->context);
+    return 0;
+}
+
+static int expack_macho_page_hasher_update(ExpackMachoPageHasher *hasher, const unsigned char *data, size_t size) {
+    size_t offset = 0U;
+
+    while (offset < size) {
+        size_t space = EXPACK_MACHO_CODE_SIGNATURE_PAGE_SIZE - hasher->page_used;
+        size_t chunk = size - offset;
+        if (chunk > space) {
+            chunk = space;
+        }
+        crypto_sha256_update(&hasher->context, data + offset, chunk);
+        hasher->page_used += chunk;
+        offset += chunk;
+        if (hasher->page_used == EXPACK_MACHO_CODE_SIGNATURE_PAGE_SIZE) {
+            if (hasher->hash_index >= hasher->hash_count) {
+                return -1;
+            }
+            crypto_sha256_final(&hasher->context, hasher->hashes + hasher->hash_index * CRYPTO_SHA256_DIGEST_SIZE);
+            ++hasher->hash_index;
+            hasher->page_used = 0U;
+            crypto_sha256_init(&hasher->context);
+        }
+    }
+    return 0;
+}
+
+static int expack_macho_page_hasher_finish(ExpackMachoPageHasher *hasher) {
+    if (hasher->page_used != 0U) {
+        if (hasher->hash_index >= hasher->hash_count) {
+            return -1;
+        }
+        crypto_sha256_final(&hasher->context, hasher->hashes + hasher->hash_index * CRYPTO_SHA256_DIGEST_SIZE);
+        ++hasher->hash_index;
+        hasher->page_used = 0U;
+    }
+    return hasher->hash_index == hasher->hash_count ? 0 : -1;
+}
+
+static int expack_macho_page_hasher_update_zeroes(ExpackMachoPageHasher *hasher, unsigned long long size) {
+    static const unsigned char zero_pad[64] = {0U};
+    while (size != 0ULL) {
+        size_t chunk = size > (unsigned long long)sizeof(zero_pad) ? sizeof(zero_pad) : (size_t)size;
+        if (expack_macho_page_hasher_update(hasher, zero_pad, chunk) != 0) {
+            return -1;
+        }
+        size -= (unsigned long long)chunk;
+    }
+    return 0;
+}
+
+static unsigned char *expack_make_macho_code_signature(const unsigned char *header, size_t header_size, const unsigned char *stub, size_t stub_size, const unsigned char *metadata, size_t metadata_size, const unsigned char *payload, size_t payload_size, unsigned long long code_limit, size_t *signature_size_out) {
+    const unsigned int superblob_header_size = 20U;
+    const unsigned int code_directory_fixed_size = 88U;
+    const unsigned int hash_offset = code_directory_fixed_size + EXPACK_MACHO_CODE_DIRECTORY_IDENT_SIZE;
+    unsigned int code_slots;
+    unsigned int code_directory_size;
+    unsigned int signature_size;
+    unsigned char *signature;
+    ExpackMachoPageHasher hasher;
+    unsigned long long written_size = (unsigned long long)header_size + (unsigned long long)stub_size + (unsigned long long)metadata_size + (unsigned long long)payload_size;
+
+    if (code_limit == 0ULL || code_limit > 0xffffffffULL || (code_limit % EXPACK_MACHO_CODE_SIGNATURE_PAGE_SIZE) != 0ULL || written_size > code_limit) {
+        return 0;
+    }
+    code_slots = (unsigned int)(code_limit / EXPACK_MACHO_CODE_SIGNATURE_PAGE_SIZE);
+    if (code_slots == 0U || code_slots > ((unsigned int)-1 - hash_offset) / CRYPTO_SHA256_DIGEST_SIZE) {
+        return 0;
+    }
+    code_directory_size = hash_offset + code_slots * CRYPTO_SHA256_DIGEST_SIZE;
+    signature_size = superblob_header_size + code_directory_size;
+    signature = (unsigned char *)rt_malloc(signature_size);
+    if (signature == 0) {
+        return 0;
+    }
+    if (expack_macho_page_hasher_init(&hasher, code_slots) != 0) {
+        rt_free(signature);
+        return 0;
+    }
+    if (expack_macho_page_hasher_update(&hasher, header, header_size) != 0 ||
+        expack_macho_page_hasher_update(&hasher, stub, stub_size) != 0 ||
+        expack_macho_page_hasher_update(&hasher, metadata, metadata_size) != 0 ||
+        expack_macho_page_hasher_update(&hasher, payload, payload_size) != 0 ||
+        expack_macho_page_hasher_update_zeroes(&hasher, code_limit - written_size) != 0 ||
+        expack_macho_page_hasher_finish(&hasher) != 0) {
+        rt_free(hasher.hashes);
+        rt_free(signature);
+        return 0;
+    }
+
+    memset(signature, 0, signature_size);
+    expack_store_u32_be(signature + 0U, 0xfade0cc0U);
+    expack_store_u32_be(signature + 4U, signature_size);
+    expack_store_u32_be(signature + 8U, 1U);
+    expack_store_u32_be(signature + 12U, 0U);
+    expack_store_u32_be(signature + 16U, superblob_header_size);
+
+    expack_store_u32_be(signature + superblob_header_size + 0U, 0xfade0c02U);
+    expack_store_u32_be(signature + superblob_header_size + 4U, code_directory_size);
+    expack_store_u32_be(signature + superblob_header_size + 8U, 0x20400U);
+    expack_store_u32_be(signature + superblob_header_size + 12U, 0x2U);
+    expack_store_u32_be(signature + superblob_header_size + 16U, hash_offset);
+    expack_store_u32_be(signature + superblob_header_size + 20U, code_directory_fixed_size);
+    expack_store_u32_be(signature + superblob_header_size + 24U, 0U);
+    expack_store_u32_be(signature + superblob_header_size + 28U, code_slots);
+    expack_store_u32_be(signature + superblob_header_size + 32U, (unsigned int)code_limit);
+    signature[superblob_header_size + 36U] = CRYPTO_SHA256_DIGEST_SIZE;
+    signature[superblob_header_size + 37U] = 2U;
+    signature[superblob_header_size + 39U] = 14U;
+    memcpy(signature + superblob_header_size + code_directory_fixed_size, EXPACK_MACHO_CODE_DIRECTORY_IDENT, EXPACK_MACHO_CODE_DIRECTORY_IDENT_SIZE);
+    memcpy(signature + superblob_header_size + hash_offset, hasher.hashes, (size_t)code_slots * CRYPTO_SHA256_DIGEST_SIZE);
+    rt_free(hasher.hashes);
+    *signature_size_out = signature_size;
+    return signature;
+}
+
+static void expack_write_macho_container_metadata(unsigned char *metadata, const ExpackCandidate *candidate, size_t original_size) {
+    memset(metadata, 0, EXPACK_MACHO_CONTAINER_METADATA_SIZE);
+    memcpy(metadata, "EXPACKM1", 8U);
+    archive_store_u32_le(metadata + 8U, EXPACK_MACHO_CONTAINER_VERSION);
+    archive_store_u32_le(metadata + 12U, candidate->codec);
+    archive_store_u64_le(metadata + 16U, (unsigned long long)original_size);
+    archive_store_u64_le(metadata + 24U, (unsigned long long)candidate->payload_size);
+    archive_store_u32_le(metadata + 32U, candidate->codec == EXPACK_CODEC_LZSS ? candidate->lzss_profile->profile_id : 0xffffffffU);
+}
+
+static int expack_write_macho_container(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
+    enum { header_size = 32U, pagezero_command_size = 72U, text_command_size = 72U + 80U + 80U, linkedit_command_size = 72U, dylinker_command_size = 32U, build_version_command_size = 32U, main_command_size = 24U, code_signature_command_size = 16U };
+    unsigned char header[header_size + pagezero_command_size + text_command_size + linkedit_command_size + dylinker_command_size + build_version_command_size + main_command_size + code_signature_command_size];
+    static const unsigned char zero_pad[64] = {0U};
+    unsigned char metadata[EXPACK_MACHO_CONTAINER_METADATA_SIZE];
+    unsigned char *signature;
+    unsigned char *patched_stub;
+    const unsigned char *stub;
+    size_t stub_size;
+    size_t signature_size;
+    unsigned int subtype;
+    unsigned int commands_size = pagezero_command_size + text_command_size + linkedit_command_size + dylinker_command_size + build_version_command_size + main_command_size + code_signature_command_size;
+    unsigned int code_offset = header_size + commands_size;
+    unsigned int payload_offset;
+    unsigned long long payload_size = (unsigned long long)EXPACK_MACHO_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
+    unsigned long long file_size;
+    unsigned long long text_file_size;
+    int output_fd;
+
+    if (expack_macho_container_subtype(format->macho_cputype, &subtype) != 0) {
+        return -1;
+    }
+    stub = expack_macho_container_stub(format->macho_cputype, candidate->codec, &stub_size);
+    if (stub == 0 || stub_size == 0U || stub_size > (size_t)((unsigned int)-1 - code_offset)) {
+        return -1;
+    }
+    patched_stub = (unsigned char *)rt_malloc(stub_size);
+    if (patched_stub == 0) {
+        return -1;
+    }
+    memcpy(patched_stub, stub, stub_size);
+    stub = patched_stub;
+    payload_offset = code_offset + (unsigned int)stub_size;
+    file_size = (unsigned long long)payload_offset + payload_size;
+    text_file_size = expack_align_up_u64(file_size, 0x4000ULL);
+
+    memset(header, 0, sizeof(header));
+    archive_store_u32_le(header + 0U, 0xfeedfacfU);
+    archive_store_u32_le(header + 4U, format->macho_cputype);
+    archive_store_u32_le(header + 8U, subtype);
+    archive_store_u32_le(header + 12U, EXPACK_MACHO_TYPE_EXECUTE);
+    archive_store_u32_le(header + 16U, 7U);
+    archive_store_u32_le(header + 20U, commands_size);
+    archive_store_u32_le(header + 24U, EXPACK_MACHO_FLAG_NOUNDEFS | EXPACK_MACHO_FLAG_DYLDLINK | EXPACK_MACHO_FLAG_TWOLEVEL | EXPACK_MACHO_FLAG_PIE);
+
+    expack_write_macho_segment64(header + 32U, "__PAGEZERO", 0ULL, EXPACK_MACHO_CONTAINER_BASE, 0ULL, 0ULL, 0U, 0U, 0U, 0U);
+    expack_write_macho_segment64(header + 104U, "__TEXT", EXPACK_MACHO_CONTAINER_BASE, text_file_size, 0ULL, text_file_size, EXPACK_MACHO_VM_PROT_READ | EXPACK_MACHO_VM_PROT_EXECUTE, EXPACK_MACHO_VM_PROT_READ | EXPACK_MACHO_VM_PROT_EXECUTE, 2U, 0U);
+    expack_write_macho_section(header + 176U, "__text", "__TEXT", EXPACK_MACHO_CONTAINER_BASE + (unsigned long long)code_offset, (unsigned long long)stub_size, code_offset, 2U, 0x80000400U);
+    expack_write_macho_section(header + 256U, "__expack", "__TEXT", EXPACK_MACHO_CONTAINER_BASE + (unsigned long long)payload_offset, payload_size, payload_offset, 3U, 0U);
+    expack_write_macho_segment64(header + 336U, "__LINKEDIT", EXPACK_MACHO_CONTAINER_BASE + text_file_size, 0x4000ULL, text_file_size, 0ULL, EXPACK_MACHO_VM_PROT_READ, EXPACK_MACHO_VM_PROT_READ, 0U, 0U);
+
+    archive_store_u32_le(header + 408U, EXPACK_MACHO_LC_LOAD_DYLINKER);
+    archive_store_u32_le(header + 412U, dylinker_command_size);
+    archive_store_u32_le(header + 416U, 12U);
+    memcpy(header + 420U, "/usr/lib/dyld", 14U);
+
+    archive_store_u32_le(header + 440U, EXPACK_MACHO_LC_BUILD_VERSION);
+    archive_store_u32_le(header + 444U, build_version_command_size);
+    archive_store_u32_le(header + 448U, 1U);
+    archive_store_u32_le(header + 452U, 0x000b0000U);
+    archive_store_u32_le(header + 456U, 0x000b0000U);
+    archive_store_u32_le(header + 460U, 1U);
+    archive_store_u32_le(header + 464U, 3U);
+
+    archive_store_u32_le(header + 472U, EXPACK_MACHO_LC_MAIN);
+    archive_store_u32_le(header + 476U, main_command_size);
+    archive_store_u64_le(header + 480U, code_offset);
+
+    archive_store_u32_le(header + 496U, EXPACK_MACHO_LC_CODE_SIGNATURE);
+    archive_store_u32_le(header + 500U, code_signature_command_size);
+    archive_store_u32_le(header + 504U, (unsigned int)text_file_size);
+
+    expack_write_macho_container_metadata(metadata, candidate, original_size);
+    if (format->macho_cputype == EXPACK_MACHO_CPU_ARM64) {
+        if (candidate->codec == EXPACK_CODEC_RAW) {
+            if (EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET + 8U > stub_size) {
+                rt_free(patched_stub);
+                return -1;
+            }
+            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET, (unsigned long long)(stub_size + EXPACK_MACHO_CONTAINER_METADATA_SIZE - EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET));
+            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
+        } else if (candidate->codec == EXPACK_CODEC_LZREP) {
+            if (EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET + 8U > stub_size) {
+                rt_free(patched_stub);
+                return -1;
+            }
+            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET, (unsigned long long)(stub_size + EXPACK_MACHO_CONTAINER_METADATA_SIZE - EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET));
+            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_SIZE_OFFSET, (unsigned long long)candidate->payload_size);
+            archive_store_u64_le(patched_stub + EXPACK_MACHO_ARM64_LZREP_RUNNER_ORIGINAL_SIZE_OFFSET, (unsigned long long)original_size);
+        } else {
+            rt_free(patched_stub);
+            return -1;
+        }
+    }
+    signature = expack_make_macho_code_signature(header, sizeof(header), stub, stub_size, metadata, sizeof(metadata), candidate->payload, candidate->payload_size, text_file_size, &signature_size);
+    if (signature == 0 || signature_size > (size_t)((unsigned int)-1)) {
+        rt_free(patched_stub);
+        return -1;
+    }
+    archive_store_u32_le(header + 384U, (unsigned int)signature_size);
+    archive_store_u32_le(header + 508U, (unsigned int)signature_size);
+    rt_free(signature);
+    signature = expack_make_macho_code_signature(header, sizeof(header), stub, stub_size, metadata, sizeof(metadata), candidate->payload, candidate->payload_size, text_file_size, &signature_size);
+    if (signature == 0 || signature_size > (size_t)((unsigned int)-1)) {
+        rt_free(patched_stub);
+        return -1;
+    }
+
+    output_fd = platform_open_write(output_path, 0755U);
+    if (output_fd < 0) {
+        rt_free(signature);
+        rt_free(patched_stub);
+        return -1;
+    }
+    if (rt_write_all(output_fd, header, sizeof(header)) != 0 || rt_write_all(output_fd, stub, stub_size) != 0 ||
+        rt_write_all(output_fd, metadata, sizeof(metadata)) != 0 || rt_write_all(output_fd, candidate->payload, candidate->payload_size) != 0) {
+        platform_close(output_fd);
+        rt_free(signature);
+        rt_free(patched_stub);
+        return -1;
+    }
+    while (file_size < text_file_size) {
+        size_t chunk = (size_t)(text_file_size - file_size);
+        if (chunk > sizeof(zero_pad)) {
+            chunk = sizeof(zero_pad);
+        }
+        if (rt_write_all(output_fd, zero_pad, chunk) != 0) {
+            platform_close(output_fd);
+            rt_free(signature);
+            rt_free(patched_stub);
+            return -1;
+        }
+        file_size += (unsigned long long)chunk;
+    }
+    if (rt_write_all(output_fd, signature, signature_size) != 0) {
+        platform_close(output_fd);
+        rt_free(signature);
+        rt_free(patched_stub);
+        return -1;
+    }
+    rt_free(signature);
+    rt_free(patched_stub);
+    if (platform_close(output_fd) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int expack_write_packed_output(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
+    if (format->kind == EXPACK_FORMAT_ELF64_X86_64) {
+        return expack_write_packed_elf(output_path, candidate, original_size);
+    }
+    (void)output_path;
+    (void)candidate;
+    (void)original_size;
+    return -1;
+}
+
 static void expack_write_lzss_profile_name(unsigned int profile_id) {
     if (profile_id == COMPRESSION_LZSS_PROFILE_WIDE_WINDOW) {
         rt_write_cstr(1, "wide-window");
@@ -1095,6 +1734,8 @@ static void expack_write_candidate_name(const ExpackCandidate *candidate) {
         rt_write_cstr(1, "lzrep");
     } else if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
         rt_write_cstr(1, "lzss-bcj/wide-window");
+    } else if (candidate->codec == EXPACK_CODEC_RAW) {
+        rt_write_cstr(1, "raw");
     } else {
         rt_write_cstr(1, "unknown");
     }
@@ -1116,17 +1757,33 @@ static void expack_write_summary(size_t input_size, size_t image_size, int image
     rt_write_cstr(1, " bytes\n");
 }
 
-static void expack_write_analyze_header(size_t input_size, size_t image_size, int image_changed) {
+static void expack_write_analyze_header(const ExpackInputFormat *format, size_t input_size, size_t image_size, int image_changed) {
     rt_write_cstr(1, "expack analyze: input ");
     rt_write_uint(1, (unsigned long long)input_size);
-    rt_write_cstr(1, " bytes, exec image ");
+    rt_write_cstr(1, " bytes, format ");
+    rt_write_cstr(1, format->name);
+    rt_write_cstr(1, ", exec image ");
     rt_write_uint(1, (unsigned long long)image_size);
     if (image_changed) {
         rt_write_cstr(1, " bytes (reconstructed)");
     } else {
         rt_write_cstr(1, " bytes");
     }
+    if (format->kind == EXPACK_FORMAT_MACHO && format->macho_code_signature_size != 0U) {
+        rt_write_cstr(1, ", code signature ");
+        rt_write_uint(1, (unsigned long long)format->macho_code_signature_size);
+        rt_write_cstr(1, " bytes at ");
+        rt_write_uint(1, (unsigned long long)format->macho_code_signature_offset);
+    }
     rt_write_cstr(1, "\n");
+}
+
+static void expack_write_unsupported_output_error(const ExpackInputFormat *format) {
+    if (format->kind == EXPACK_FORMAT_MACHO) {
+        tool_write_error(EXPACK_TOOL_NAME, "Mach-O compression analysis is supported, but writing compressed runnable Mach-O output needs a native decoder backend", 0);
+    } else {
+        tool_write_error(EXPACK_TOOL_NAME, "cannot write packed output for this executable format", 0);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -1136,8 +1793,10 @@ int main(int argc, char **argv) {
     unsigned char *input_data = 0;
     ExpackImage image;
     ExpackCandidate selected;
+    ExpackInputFormat input_format;
     size_t input_size = 0U;
     int analyze = 0;
+    int macho_container = 0;
     int quiet = 0;
     ToolOptState options;
     int opt_result;
@@ -1149,16 +1808,26 @@ int main(int argc, char **argv) {
     selected.payload = 0;
     selected.payload_size = 0U;
     selected.packed_size = 0ULL;
+    input_format.kind = 0U;
+    input_format.name = "unknown";
+    input_format.preprocess_error = "executable preprocessing failed";
+    input_format.allow_x86_bcj = 0;
+    input_format.can_write_packed_output = 0;
+    input_format.macho_cputype = 0U;
+    input_format.macho_code_signature_offset = 0U;
+    input_format.macho_code_signature_size = 0U;
     image.data = 0;
     image.size = 0U;
     image.changed = 0;
 
-    tool_opt_init(&options, argc, argv, EXPACK_TOOL_NAME, "[-q] INPUT OUTPUT\n       expack --analyze INPUT");
+    tool_opt_init(&options, argc, argv, EXPACK_TOOL_NAME, "[-q] INPUT OUTPUT\n       expack --analyze INPUT\n       expack --macho-container INPUT OUTPUT");
     while ((opt_result = tool_opt_next(&options)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(options.flag, "-q") == 0 || rt_strcmp(options.flag, "--quiet") == 0) {
             quiet = 1;
         } else if (rt_strcmp(options.flag, "--analyze") == 0) {
             analyze = 1;
+        } else if (rt_strcmp(options.flag, "--macho-container") == 0) {
+            macho_container = 1;
         } else {
             tool_write_error(EXPACK_TOOL_NAME, "unknown option: ", options.flag);
             tool_write_usage(EXPACK_TOOL_NAME, options.usage_suffix);
@@ -1172,7 +1841,7 @@ int main(int argc, char **argv) {
     if (opt_result == TOOL_OPT_ERROR) {
         return 1;
     }
-    if ((!analyze && argc - options.argi != 2) || (analyze && argc - options.argi != 1)) {
+    if ((analyze && macho_container) || (!analyze && argc - options.argi != 2) || (analyze && argc - options.argi != 1)) {
         tool_write_usage(EXPACK_TOOL_NAME, options.usage_suffix);
         return 1;
     }
@@ -1183,23 +1852,23 @@ int main(int argc, char **argv) {
         tool_write_error(EXPACK_TOOL_NAME, "cannot read input: ", input_path);
         return 1;
     }
-    if (expack_validate_input_elf(input_data, input_size, &error_message) != 0) {
+    if (expack_detect_input_format(input_data, input_size, &input_format, &error_message) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, error_message, 0);
         rt_free(input_data);
         return 1;
     }
 
-    if (expack_make_exec_image(input_data, input_size, &image) != 0) {
-        tool_write_error(EXPACK_TOOL_NAME, "ELF preprocessing failed", 0);
+    if (expack_make_exec_image(&input_format, input_data, input_size, &image) != 0) {
+        tool_write_error(EXPACK_TOOL_NAME, input_format.preprocess_error, 0);
         rt_free(input_data);
         return 1;
     }
     if (analyze) {
-        expack_write_analyze_header(input_size, image.size, image.changed);
+        expack_write_analyze_header(&input_format, input_size, image.size, image.changed);
     }
-    if (expack_select_best_payload(image.data, image.size, &selected, analyze) != 0) {
+    if (expack_select_best_payload(image.data, image.size, &selected, analyze, input_format.allow_x86_bcj) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "compression failed", 0);
-        rt_free(image.data);
+        expack_release_exec_image(&image, input_data);
         rt_free(input_data);
         return 1;
     }
@@ -1210,14 +1879,57 @@ int main(int argc, char **argv) {
         rt_write_uint(1, selected.packed_size);
         rt_write_cstr(1, " bytes)\n");
         expack_candidate_release(&selected);
-        rt_free(image.data);
+        expack_release_exec_image(&image, input_data);
         rt_free(input_data);
         return 0;
     }
-    if (expack_write_packed_elf(output_path, &selected, image.size) != 0) {
+    if (macho_container) {
+        if (input_format.kind != EXPACK_FORMAT_MACHO) {
+            tool_write_error(EXPACK_TOOL_NAME, "--macho-container requires a Mach-O input", 0);
+            expack_candidate_release(&selected);
+            expack_release_exec_image(&image, input_data);
+            rt_free(input_data);
+            return 1;
+        }
+        if (input_format.macho_cputype == EXPACK_MACHO_CPU_ARM64 && selected.codec != EXPACK_CODEC_LZREP) {
+            if (expack_make_raw_candidate(image.data, image.size, &selected) != 0) {
+                tool_write_error(EXPACK_TOOL_NAME, "cannot prepare raw Mach-O runner payload", 0);
+                expack_candidate_release(&selected);
+                expack_release_exec_image(&image, input_data);
+                rt_free(input_data);
+                return 1;
+            }
+        }
+        if (expack_write_macho_container(&input_format, output_path, &selected, image.size) != 0) {
+            tool_write_error(EXPACK_TOOL_NAME, "cannot write Mach-O prototype container: ", output_path);
+            expack_candidate_release(&selected);
+            expack_release_exec_image(&image, input_data);
+            rt_free(input_data);
+            return 1;
+        }
+        if (!quiet) {
+            rt_write_cstr(1, "expack: wrote Mach-O prototype container ");
+            rt_write_cstr(1, output_path);
+            rt_write_cstr(1, " with codec ");
+            expack_write_candidate_name(&selected);
+            rt_write_cstr(1, "\n");
+        }
+        expack_candidate_release(&selected);
+        expack_release_exec_image(&image, input_data);
+        rt_free(input_data);
+        return 0;
+    }
+    if (!input_format.can_write_packed_output) {
+        expack_write_unsupported_output_error(&input_format);
+        expack_candidate_release(&selected);
+        expack_release_exec_image(&image, input_data);
+        rt_free(input_data);
+        return 1;
+    }
+    if (expack_write_packed_output(&input_format, output_path, &selected, image.size) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "cannot write packed output: ", output_path);
         expack_candidate_release(&selected);
-        rt_free(image.data);
+        expack_release_exec_image(&image, input_data);
         rt_free(input_data);
         return 1;
     }
@@ -1226,7 +1938,7 @@ int main(int argc, char **argv) {
     }
 
     expack_candidate_release(&selected);
-    rt_free(image.data);
+    expack_release_exec_image(&image, input_data);
     rt_free(input_data);
     return 0;
 }

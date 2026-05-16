@@ -30,29 +30,26 @@
 static inline long darwin_syscall0(long number) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0");
-    unsigned long failed;
 
-    __asm__ volatile("svc #0x80\n\tcset %w[failed], cs" : "=r"(x0), [failed] "=r"(failed) : "r"(x16) : "memory", "cc");
-    return failed ? -x0 : x0;
+    __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "=r"(x0), "+r"(x16) : : "memory", "cc");
+    return x0;
 }
 
 static inline long darwin_syscall1(long number, long arg0) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
-    unsigned long failed;
 
-    __asm__ volatile("svc #0x80\n\tcset %w[failed], cs" : "+r"(x0), [failed] "=r"(failed) : "r"(x16) : "memory", "cc");
-    return failed ? -x0 : x0;
+    __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x16) : : "memory", "cc");
+    return x0;
 }
 
 static inline long darwin_syscall2(long number, long arg0, long arg1) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
-    unsigned long failed;
 
-    __asm__ volatile("svc #0x80\n\tcset %w[failed], cs" : "+r"(x0), [failed] "=r"(failed) : "r"(x1), "r"(x16) : "memory", "cc");
-    return failed ? -x0 : x0;
+    __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x16) : : "memory", "cc");
+    return x0;
 }
 
 static inline long darwin_syscall3(long number, long arg0, long arg1, long arg2) {
@@ -60,10 +57,9 @@ static inline long darwin_syscall3(long number, long arg0, long arg1, long arg2)
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
     register long x2 __asm__("x2") = arg2;
-    unsigned long failed;
 
-    __asm__ volatile("svc #0x80\n\tcset %w[failed], cs" : "+r"(x0), [failed] "=r"(failed) : "r"(x1), "r"(x2), "r"(x16) : "memory", "cc");
-    return failed ? -x0 : x0;
+    __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x16) : : "memory", "cc");
+    return x0;
 }
 
 static inline long darwin_syscall5(long number, long arg0, long arg1, long arg2, long arg3, long arg4) {
@@ -73,10 +69,9 @@ static inline long darwin_syscall5(long number, long arg0, long arg1, long arg2,
     register long x2 __asm__("x2") = arg2;
     register long x3 __asm__("x3") = arg3;
     register long x4 __asm__("x4") = arg4;
-    unsigned long failed;
 
-    __asm__ volatile("svc #0x80\n\tcset %w[failed], cs" : "+r"(x0), [failed] "=r"(failed) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x16) : "memory", "cc");
-    return failed ? -x0 : x0;
+    __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x16) : : "memory", "cc");
+    return x0;
 }
 
 static inline long darwin_syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
@@ -87,10 +82,9 @@ static inline long darwin_syscall6(long number, long arg0, long arg1, long arg2,
     register long x3 __asm__("x3") = arg3;
     register long x4 __asm__("x4") = arg4;
     register long x5 __asm__("x5") = arg5;
-    unsigned long failed;
 
-    __asm__ volatile("svc #0x80\n\tcset %w[failed], cs" : "+r"(x0), [failed] "=r"(failed) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x16) : "memory", "cc");
-    return failed ? -x0 : x0;
+    __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x16) : : "memory", "cc");
+    return x0;
 }
 
 #endif

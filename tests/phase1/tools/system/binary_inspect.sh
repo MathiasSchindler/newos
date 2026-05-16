@@ -9,6 +9,78 @@ printf 'alpha\nbeta\n' > "$WORK_DIR/text.txt"
 assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/text.txt" > "$WORK_DIR/file_text.out"
 assert_file_contains "$WORK_DIR/file_text.out" 'ASCII text' "file did not recognize a text file"
 
+{
+    printf '\317\372\355\376'
+    printf '\014\000\000\001'
+    printf '\000\000\000\000'
+    printf '\002\000\000\000'
+    printf '\000\000\000\000'
+    printf '\000\000\000\000'
+    printf '\000\000\000\000'
+    printf '\000\000\000\000'
+} > "$WORK_DIR/minimal_macho"
+assert_command_succeeds "$ROOT_DIR/build/expack" --analyze "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho.out"
+assert_file_contains "$WORK_DIR/expack_macho.out" 'format Mach-O 64-bit arm64' "expack did not analyze a Mach-O executable image"
+assert_file_contains "$WORK_DIR/expack_macho.out" '^selected: ' "expack did not select a Mach-O compression candidate"
+assert_command_succeeds "$ROOT_DIR/build/expack" --macho-container "$WORK_DIR/minimal_macho" "$WORK_DIR/minimal_macho.container" > "$WORK_DIR/expack_macho_container.out"
+assert_file_contains "$WORK_DIR/expack_macho_container.out" 'wrote Mach-O prototype container' "expack did not report Mach-O container output"
+"$ROOT_DIR/build/file" "$WORK_DIR/minimal_macho.container" > "$WORK_DIR/file_macho_container.out"
+assert_file_contains "$WORK_DIR/file_macho_container.out" 'Mach-O 64-bit executable arm64' "Mach-O container is not recognized as an arm64 executable"
+"$ROOT_DIR/build/strings" "$WORK_DIR/minimal_macho.container" > "$WORK_DIR/strings_macho_container.out"
+assert_file_contains "$WORK_DIR/strings_macho_container.out" 'EXPACKM1' "Mach-O container does not include expack metadata"
+if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ] && command -v codesign >/dev/null 2>&1 && command -v otool >/dev/null 2>&1; then
+    assert_command_succeeds codesign --verify --strict --verbose=4 "$WORK_DIR/minimal_macho.container" > "$WORK_DIR/codesign_macho_container_verify.out" 2>&1
+    codesign -dv "$WORK_DIR/minimal_macho.container" > "$WORK_DIR/codesign_macho_container.out" 2>&1
+    assert_file_contains "$WORK_DIR/codesign_macho_container.out" 'Signature=adhoc' "expack did not emit an ad-hoc signature for the Mach-O container"
+    otool -l "$WORK_DIR/minimal_macho.container" > "$WORK_DIR/otool_macho_container_signed.out"
+    assert_file_contains "$WORK_DIR/otool_macho_container_signed.out" 'LC_CODE_SIGNATURE' "signed Mach-O container has no code-signature load command"
+    if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ] && [ -x "$ROOT_DIR/build/echo" ]; then
+        assert_command_succeeds "$ROOT_DIR/build/expack" --macho-container "$ROOT_DIR/build/echo" "$WORK_DIR/echo_macho.container" > "$WORK_DIR/expack_echo_macho_container.out"
+        assert_file_contains "$WORK_DIR/expack_echo_macho_container.out" 'with codec lzrep' "arm64 Mach-O runner container did not use the LZREP payload mode"
+        assert_command_succeeds codesign --verify --strict --verbose=4 "$WORK_DIR/echo_macho.container" > "$WORK_DIR/codesign_echo_macho_container_verify.out" 2>&1
+        assert_command_succeeds "$WORK_DIR/echo_macho.container" expack-macho-ok > "$WORK_DIR/echo_macho_container_run.out"
+        assert_file_contains "$WORK_DIR/echo_macho_container_run.out" '^expack-macho-ok$' "arm64 Mach-O runner container did not execute the original image"
+    fi
+fi
+if "$ROOT_DIR/build/expack" "$WORK_DIR/minimal_macho" "$WORK_DIR/minimal_macho.packed" > "$WORK_DIR/expack_macho_pack.out" 2> "$WORK_DIR/expack_macho_pack.err"; then
+    fail "expack should not write packed Mach-O output until a Mach-O unpacking stub exists"
+fi
+assert_file_contains "$WORK_DIR/expack_macho_pack.err" 'writing compressed runnable Mach-O output needs a native decoder backend' "expack did not explain the missing Mach-O output backend"
+
+assert_command_succeeds "$ROOT_DIR/build/file" "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/file_pe_fixture.out"
+assert_file_contains "$WORK_DIR/file_pe_fixture.out" 'PE/COFF executable PE32+ x86-64' "PE fixture is not recognized as a PE32+ executable"
+if "$ROOT_DIR/build/expack" --analyze "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/expack_pe.out" 2> "$WORK_DIR/expack_pe.err"; then
+    fail "expack should reject PE/COFF files until a PE/COFF backend exists"
+fi
+assert_file_contains "$WORK_DIR/expack_pe.err" 'PE/COFF input is recognized' "expack did not recognize unsupported PE/COFF input"
+
+{
+    printf '\177ELF\002\001\001'
+    dd if=/dev/zero bs=1 count=9 2>/dev/null
+    printf '\002\000'
+    printf '\076\000'
+    printf '\001\000\000\000'
+    dd if=/dev/zero bs=1 count=8 2>/dev/null
+    printf '\200\000\000\000\000\000\000\000'
+    dd if=/dev/zero bs=1 count=12 2>/dev/null
+    printf '\100\000'
+    printf '\070\000'
+    printf '\001\000'
+    dd if=/dev/zero bs=1 count=70 2>/dev/null
+    printf '\001\000\000\000'
+    printf '\005\000\000\000'
+    dd if=/dev/zero bs=1 count=8 2>/dev/null
+    printf '\000\000\100\000\000\000\000\000'
+    printf '\000\000\100\000\000\000\000\000'
+    printf '\100\000\000\000\000\000\000\000'
+    printf '\100\000\000\000\000\000\000\000'
+    printf '\000\020\000\000\000\000\000\000'
+} > "$WORK_DIR/expack_bad_phdr.elf"
+if "$ROOT_DIR/build/expack" --analyze "$WORK_DIR/expack_bad_phdr.elf" > "$WORK_DIR/expack_bad_phdr.out" 2> "$WORK_DIR/expack_bad_phdr.err"; then
+    fail "expack should reject ELF files whose program headers are outside the reconstructed image"
+fi
+assert_file_contains "$WORK_DIR/expack_bad_phdr.err" 'ELF preprocessing failed' "expack did not report preprocessing failure for an out-of-image program header table"
+
 assert_command_succeeds "$ROOT_DIR/build/file" -i "$WORK_DIR/text.txt" > "$WORK_DIR/file_mime.out"
 assert_file_contains "$WORK_DIR/file_mime.out" 'text/plain' "file -i did not report a text mime type"
 
