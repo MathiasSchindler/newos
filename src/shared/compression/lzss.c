@@ -15,6 +15,8 @@ typedef struct {
 } CompressionLzssProfile;
 
 static const size_t COMPRESSION_LZSS_COST_MAX = ((size_t)-1) / 4U;
+#define COMPRESSION_LZSS_OPTIMAL_MAX_STATES 2097152U
+#define COMPRESSION_LZSS_LAZY_LOOKAHEAD 4U
 
 static int compression_lzss_get_profile(unsigned int profile_id, CompressionLzssProfile *profile_out) {
     if (profile_out == 0) {
@@ -113,6 +115,31 @@ static int compression_lzss_state_count(size_t input_size, size_t *state_count_o
     return 0;
 }
 
+static int compression_lzss_should_defer_match(const CompressionLzssProfile *profile, const unsigned char *input, size_t input_size, size_t position, size_t match_length) {
+    unsigned int skip;
+    unsigned int max_skip;
+
+    if (match_length >= (size_t)profile->max_match || position + 1U >= input_size) {
+        return 0;
+    }
+    max_skip = (unsigned int)(input_size - position - 1U);
+    if (max_skip > COMPRESSION_LZSS_LAZY_LOOKAHEAD) {
+        max_skip = COMPRESSION_LZSS_LAZY_LOOKAHEAD;
+    }
+    for (skip = 1U; skip <= max_skip; ++skip) {
+        unsigned int next_distance = 0U;
+        size_t next_match_length = compression_lzss_find_match(profile, input, input_size, position + (size_t)skip, &next_distance);
+
+        if (next_match_length < COMPRESSION_LZSS_MIN_MATCH) {
+            continue;
+        }
+        if ((skip == 1U && next_match_length > match_length) || next_match_length >= match_length + (size_t)skip) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int compression_lzss_compress_lazy(const CompressionLzssProfile *profile, const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {
     size_t input_offset = 0U;
     size_t output_offset = 0U;
@@ -135,13 +162,8 @@ static int compression_lzss_compress_lazy(const CompressionLzssProfile *profile,
             unsigned int distance = 0U;
             size_t match_length = compression_lzss_find_match(profile, input, input_size, input_offset, &distance);
 
-            if (match_length < (size_t)profile->max_match && input_offset + 1U < input_size) {
-                unsigned int next_distance = 0U;
-                size_t next_match_length = compression_lzss_find_match(profile, input, input_size, input_offset + 1U, &next_distance);
-
-                if (next_match_length > match_length) {
-                    match_length = 0U;
-                }
+            if (compression_lzss_should_defer_match(profile, input, input_size, input_offset, match_length)) {
+                match_length = 0U;
             }
 
             if (match_length >= COMPRESSION_LZSS_MIN_MATCH) {
@@ -178,7 +200,9 @@ static int compression_lzss_compress_optimal(const CompressionLzssProfile *profi
     size_t flag_offset;
     unsigned int slot;
 
-    if (compression_lzss_state_count(input_size, &state_count) != 0 || state_count > ((size_t)-1) / sizeof(*states)) {
+    if (compression_lzss_state_count(input_size, &state_count) != 0 ||
+        state_count > COMPRESSION_LZSS_OPTIMAL_MAX_STATES ||
+        state_count > ((size_t)-1) / sizeof(*states)) {
         return -1;
     }
     states = (CompressionLzssOptimalState *)rt_malloc(state_count * sizeof(*states));

@@ -377,7 +377,7 @@ static void expack_elf_zero_vaddr_range(unsigned char *data, size_t size, const 
     }
 }
 
-static void expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long gnu_hash_vaddr) {
+static unsigned long long expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long gnu_hash_vaddr) {
     unsigned long long hash_offset;
     unsigned long long bucket_count;
     unsigned long long symbol_offset;
@@ -389,18 +389,18 @@ static void expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const Exp
 
     if (expack_find_canonical_vaddr_offset(loads, load_count, gnu_hash_vaddr, 16ULL, &hash_offset) != 0 ||
         hash_offset > (unsigned long long)size || 16ULL > (unsigned long long)size - hash_offset) {
-        return;
+        return 0ULL;
     }
     bucket_count = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset);
     symbol_offset = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset + 4U);
     bloom_size = (unsigned long long)archive_read_u32_le(data + (size_t)hash_offset + 8U);
     if (bloom_size > (0xffffffffffffffffULL - 16ULL) / 8ULL || bucket_count > (0xffffffffffffffffULL - 16ULL - 8ULL * bloom_size) / 4ULL) {
-        return;
+        return 0ULL;
     }
     buckets_offset = hash_offset + 16ULL + 8ULL * bloom_size;
     chains_offset = buckets_offset + 4ULL * bucket_count;
     if (chains_offset > (unsigned long long)size || bucket_count > 0xffffffffULL) {
-        return;
+        return 0ULL;
     }
     for (bucket_index = 0U; bucket_index < (unsigned int)bucket_count; ++bucket_index) {
         unsigned long long bucket_file_offset = buckets_offset + 4ULL * (unsigned long long)bucket_index;
@@ -408,14 +408,14 @@ static void expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const Exp
         unsigned long long chain_count;
 
         if (bucket_file_offset > (unsigned long long)size || 4ULL > (unsigned long long)size - bucket_file_offset) {
-            return;
+            return 0ULL;
         }
         chain_index = (unsigned long long)archive_read_u32_le(data + (size_t)bucket_file_offset);
         if (chain_index == 0ULL) {
             continue;
         }
         if (chain_index < symbol_offset) {
-            return;
+            return 0ULL;
         }
         chain_count = chain_index - symbol_offset;
         for (;;) {
@@ -423,7 +423,7 @@ static void expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const Exp
             unsigned int chain_value;
 
             if (chain_count > 0x00ffffffULL || chain_file_offset > (unsigned long long)size || 4ULL > (unsigned long long)size - chain_file_offset) {
-                return;
+                return 0ULL;
             }
             chain_value = archive_read_u32_le(data + (size_t)chain_file_offset);
             if (chain_count + 1ULL > max_chain_count) {
@@ -438,6 +438,10 @@ static void expack_elf_zero_gnu_hash(unsigned char *data, size_t size, const Exp
     if (expack_find_canonical_vaddr_offset(loads, load_count, gnu_hash_vaddr, (chains_offset - hash_offset) + 4ULL * max_chain_count, &hash_offset) == 0) {
         expack_zero_range(data, size, hash_offset, (chains_offset - hash_offset) + 4ULL * max_chain_count);
     }
+    if (max_chain_count == 0ULL || symbol_offset > 0xffffffffffffffffULL - max_chain_count) {
+        return 0ULL;
+    }
+    return symbol_offset + max_chain_count;
 }
 
 static void expack_elf_zero_unused_dynamic_metadata(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long dynamic_offset, unsigned long long dynamic_size) {
@@ -486,7 +490,11 @@ static void expack_elf_zero_unused_dynamic_metadata(unsigned char *data, size_t 
         }
     }
     if (gnu_hash_vaddr != 0ULL) {
-        expack_elf_zero_gnu_hash(data, size, loads, load_count, gnu_hash_vaddr);
+        unsigned long long gnu_symbol_count = expack_elf_zero_gnu_hash(data, size, loads, load_count, gnu_hash_vaddr);
+
+        if (gnu_symbol_count > symbol_count) {
+            symbol_count = gnu_symbol_count;
+        }
     }
     if (symbol_count != 0ULL && symtab_vaddr != 0ULL && syment_size == 24ULL && symbol_count <= 0xffffffffffffffffULL / syment_size) {
         expack_elf_zero_vaddr_range(data, size, loads, load_count, symtab_vaddr, symbol_count * syment_size);

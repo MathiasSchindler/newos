@@ -6,11 +6,11 @@ expack - pack an executable while keeping it directly executable
 
 ## SYNOPSIS
 
-`expack` [`-q`] `INPUT` [`OUTPUT`]
+`expack` [`-q`] [`--all`] `INPUT` [`OUTPUT`]
 
-`expack` `--analyze` `INPUT`
+`expack` `--analyze` [`--all`] `INPUT`
 
-`expack` `--macho-container` `INPUT` [`OUTPUT`]
+`expack` `--macho-container` [`--all`] `INPUT` [`OUTPUT`]
 
 ## DESCRIPTION
 
@@ -26,7 +26,7 @@ LZSS is used here because its decompressor is small enough for an executable stu
 
 For x86-64 code-heavy images, `expack` also tries a reversible branch transform before LZSS. Relative `call`, `jmp`, and near conditional-branch displacements are converted to file-position targets before compression, and the selected stub converts them back after decompression and before execution. The transform is applied to the whole reconstructed image so the inverse pass restores the same byte positions, including any accidental opcode-looking bytes in data.
 
-Normal pack runs print the input size, detected format, executable-image size, every candidate's payload, stub, and packed estimate, the selected codec, and the final output file size. Use `-q` to suppress that report. Use `--analyze` to inspect the same portfolio decision without writing an output file. This is useful when tuning codecs because decoder size is counted in the reported result. For statically linked Linux x86-64 ELF inputs, the x86 branch-conversion candidates (`lzss-bcj/*` and `lzss-bcj-rip/*`) are measured across every LZSS profile.
+Normal pack runs print the input size, detected format, executable-image size, each enabled candidate's payload, stub, and packed estimate, the selected codec, and the final output file size. Use `-q` to suppress that report. Use `--analyze` to inspect the same portfolio decision without writing an output file. By default `expack` evaluates the candidate set that has been useful on the freestanding tool corpus: `lzss/long-match`, `lzrep`, `lzrep-opt`, `lzss-bcj/wide-window`, `lzss-bcj/wide-match`, `lzss-bcj/medium-match`, `lzss-bcj-rip/wide-window`, and `lzss-bcj-rip/wide-match`. Use `--all` to evaluate every available candidate, including the slower or historically uncompetitive modes. This is useful when tuning codecs because decoder size is counted in the reported result.
 
 The executable-format layer is intentionally separate from the codec selection and packed-output writer so Mach-O and PE/COFF image backends can be added without rewriting the compression portfolio. Mach-O 64-bit executable inputs can be analyzed and compressed as exact executable images; this keeps code-signature bytes in the payload and avoids rewriting load commands. PE32+ x86-64 inputs can be analyzed with the compression portfolio. Written PE output currently supports LZSS wide-window, LZREP, and x86 branch-transform LZSS payloads inside small no-CRT Windows launchers so the result remains directly runnable.
 
@@ -41,6 +41,7 @@ Tiny literal/zero-run and literal/byte-run codecs are also tried for executable 
 | Option | Description |
 | --- | --- |
 | `-q`, `--quiet` | Do not print the compression-candidate report or size summary. |
+| `--all` | Evaluate every available compression candidate instead of the normal reduced portfolio. |
 | `--analyze` | Report candidate sizes for `INPUT` without creating a packed executable. |
 | `--macho-container` | Explicitly request Mach-O container output; this is the default for Mach-O inputs. |
 | `-h`, `--help` | Show usage. |

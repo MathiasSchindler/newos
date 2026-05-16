@@ -171,6 +171,7 @@ int main(int argc, char **argv) {
     int macho_container = 0;
     int positional_count;
     unsigned int output_kind = 0U;
+    int try_all_candidates = 0;
     int quiet = 0;
     ToolOptState options;
     int opt_result;
@@ -191,10 +192,12 @@ int main(int argc, char **argv) {
     image.size = 0U;
     image.changed = 0;
 
-    tool_opt_init(&options, argc, argv, EXPACK_TOOL_NAME, "[-q] INPUT [OUTPUT]\n       expack --analyze INPUT\n       expack --macho-container INPUT [OUTPUT]");
+    tool_opt_init(&options, argc, argv, EXPACK_TOOL_NAME, "[-q] [--all] INPUT [OUTPUT]\n       expack --analyze [--all] INPUT\n       expack --macho-container [--all] INPUT [OUTPUT]");
     while ((opt_result = tool_opt_next(&options)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(options.flag, "-q") == 0 || rt_strcmp(options.flag, "--quiet") == 0) {
             quiet = 1;
+        } else if (rt_strcmp(options.flag, "--all") == 0) {
+            try_all_candidates = 1;
         } else if (rt_strcmp(options.flag, "--analyze") == 0) {
             analyze = 1;
         } else if (rt_strcmp(options.flag, "--macho-container") == 0) {
@@ -241,7 +244,7 @@ int main(int argc, char **argv) {
     if (analyze || !quiet) {
         expack_write_report_header(analyze ? "expack analyze" : "expack", &input_format, input_size, image.size, image.changed);
     }
-    if (expack_select_best_payload(&input_format, output_backend, image.data, image.size, &selected, analyze || !quiet, input_format.allow_x86_bcj) != 0) {
+    if (expack_select_best_payload(&input_format, output_backend, image.data, image.size, &selected, analyze || !quiet, input_format.allow_x86_bcj, try_all_candidates) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "compression failed", 0);
         expack_release_exec_image(&image, input_data);
         rt_free(input_data);
