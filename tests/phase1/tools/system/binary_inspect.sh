@@ -23,7 +23,10 @@ assert_command_succeeds "$ROOT_DIR/build/expack" --analyze "$WORK_DIR/minimal_ma
 assert_file_contains "$WORK_DIR/expack_macho.out" 'format Mach-O 64-bit arm64' "expack did not analyze a Mach-O executable image"
 assert_file_contains "$WORK_DIR/expack_macho.out" '^selected: ' "expack did not select a Mach-O compression candidate"
 assert_command_succeeds "$ROOT_DIR/build/expack" "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho_container.out"
+assert_file_contains "$WORK_DIR/expack_macho_container.out" '^expack: input .*format Mach-O' "expack did not report Mach-O input statistics while packing"
+assert_file_contains "$WORK_DIR/expack_macho_container.out" '^  lzss/wide-window: payload ' "expack did not report Mach-O compression candidates while packing"
 assert_file_contains "$WORK_DIR/expack_macho_container.out" 'wrote Mach-O prototype container' "expack did not report Mach-O container output"
+assert_file_contains "$WORK_DIR/expack_macho_container.out" 'output .* bytes, payload ' "expack did not report Mach-O output statistics while packing"
 "$ROOT_DIR/build/file" "$WORK_DIR/minimal_macho-pack" > "$WORK_DIR/file_macho_container.out"
 assert_file_contains "$WORK_DIR/file_macho_container.out" 'Mach-O 64-bit executable arm64' "Mach-O container is not recognized as an arm64 executable"
 "$ROOT_DIR/build/strings" "$WORK_DIR/minimal_macho-pack" > "$WORK_DIR/strings_macho_container.out"
@@ -45,15 +48,23 @@ fi
 assert_command_succeeds "$ROOT_DIR/build/expack" --macho-container "$WORK_DIR/minimal_macho" "$WORK_DIR/minimal_macho.flag-container" > "$WORK_DIR/expack_macho_flag_container.out"
 assert_file_contains "$WORK_DIR/expack_macho_flag_container.out" 'wrote Mach-O prototype container' "expack did not keep --macho-container compatibility"
 
-assert_command_succeeds "$ROOT_DIR/build/file" "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/file_pe_fixture.out"
-assert_file_contains "$WORK_DIR/file_pe_fixture.out" 'PE/COFF executable PE32+ x86-64' "PE fixture is not recognized as a PE32+ executable"
-assert_command_succeeds "$ROOT_DIR/build/expack" --analyze "$ROOT_DIR/tests/fixtures/pe/echo.exe" > "$WORK_DIR/expack_pe.out"
-assert_file_contains "$WORK_DIR/expack_pe.out" 'format PE/COFF PE32+ x86-64' "expack did not analyze unsupported PE/COFF input"
-assert_file_contains "$WORK_DIR/expack_pe.out" '^selected: ' "expack did not select a PE/COFF compression candidate"
-if "$ROOT_DIR/build/expack" "$ROOT_DIR/tests/fixtures/pe/echo.exe" "$WORK_DIR/echo_pe.pack" > "$WORK_DIR/expack_pe_pack.out" 2> "$WORK_DIR/expack_pe_pack.err"; then
-    fail "expack should not write PE/COFF output until a PE/COFF writer exists"
-fi
-assert_file_contains "$WORK_DIR/expack_pe_pack.err" 'writing runnable PE/COFF output needs a PE/COFF output backend' "expack did not explain the missing PE/COFF output backend"
+for pe_fixture in "$ROOT_DIR"/tests/fixtures/pe/*.exe; do
+    pe_name=$(basename "$pe_fixture")
+    assert_command_succeeds "$ROOT_DIR/build/file" "$pe_fixture" > "$WORK_DIR/file_pe_fixture_$pe_name.out"
+    assert_file_contains "$WORK_DIR/file_pe_fixture_$pe_name.out" 'PE/COFF executable PE32+ x86-64' "PE fixture is not recognized as a PE32+ executable"
+    assert_command_succeeds "$ROOT_DIR/build/expack" --analyze "$pe_fixture" > "$WORK_DIR/expack_pe_$pe_name.out"
+    assert_file_contains "$WORK_DIR/expack_pe_$pe_name.out" 'format PE/COFF PE32+ x86-64' "expack did not analyze PE/COFF input"
+    assert_file_contains "$WORK_DIR/expack_pe_$pe_name.out" '^selected: ' "expack did not select a PE/COFF compression candidate"
+    assert_command_succeeds "$ROOT_DIR/build/expack" "$pe_fixture" "$WORK_DIR/$pe_name.pack" > "$WORK_DIR/expack_pe_pack_$pe_name.out"
+    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" '^expack: input .*format PE/COFF PE32' "expack did not report PE/COFF input statistics while packing"
+    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" '^  lzss/wide-window: payload ' "expack did not report PE/COFF compression candidates while packing"
+    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" 'wrote PE/COFF prototype container' "expack did not report PE/COFF container output"
+    assert_file_contains "$WORK_DIR/expack_pe_pack_$pe_name.out" 'output .* bytes, payload ' "expack did not report PE/COFF output statistics while packing"
+    assert_command_succeeds "$ROOT_DIR/build/file" "$WORK_DIR/$pe_name.pack" > "$WORK_DIR/file_pe_pack_$pe_name.out"
+    assert_file_contains "$WORK_DIR/file_pe_pack_$pe_name.out" 'PE/COFF executable PE32+ x86-64, console, 2 sections' "PE/COFF container is not recognized as a PE32+ executable"
+    assert_command_succeeds "$ROOT_DIR/build/strings" "$WORK_DIR/$pe_name.pack" > "$WORK_DIR/strings_pe_pack_$pe_name.out"
+    assert_file_contains "$WORK_DIR/strings_pe_pack_$pe_name.out" 'EXPACKP1' "PE/COFF container does not include expack metadata"
+done
 
 {
     printf '\177ELF\002\001\001'

@@ -43,6 +43,16 @@
 #define EXPACK_MACHO_CONTAINER_BASE 0x100000000ULL
 #define EXPACK_MACHO_CONTAINER_METADATA_SIZE 48U
 #define EXPACK_MACHO_CONTAINER_VERSION 1U
+#define EXPACK_PE_CONTAINER_METADATA_SIZE 48U
+#define EXPACK_PE_CONTAINER_VERSION 1U
+#define EXPACK_PE_CONTAINER_IMAGE_BASE 0x140000000ULL
+#define EXPACK_PE_CONTAINER_SECTION_ALIGNMENT 0x1000U
+#define EXPACK_PE_CONTAINER_FILE_ALIGNMENT 0x200U
+#define EXPACK_PE_CONTAINER_HEADERS_SIZE 0x400U
+#define EXPACK_PE_CONTAINER_TEXT_RVA 0x1000U
+#define EXPACK_PE_CONTAINER_EXPACK_RVA 0x2000U
+#define EXPACK_PE_CONTAINER_TEXT_RAW_OFFSET EXPACK_PE_CONTAINER_HEADERS_SIZE
+#define EXPACK_PE_CONTAINER_TEXT_RAW_SIZE 0x200U
 #define EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_ADDRESS_OFFSET 232U
 #define EXPACK_MACHO_ARM64_RUNNER_PAYLOAD_SIZE_OFFSET 240U
 #define EXPACK_MACHO_ARM64_LZREP_RUNNER_PAYLOAD_ADDRESS_OFFSET 520U
@@ -224,24 +234,40 @@ static char *expack_make_default_output_path(const char *input_path) {
     return output_path;
 }
 
-static void expack_write_summary(size_t input_size, size_t image_size, int image_changed, const ExpackCandidate *candidate) {
+static unsigned long long expack_output_file_size(const char *output_path) {
+    PlatformDirEntry entry;
+
+    if (platform_get_path_info(output_path, &entry) == 0) {
+        return entry.size;
+    }
+    return 0ULL;
+}
+
+static void expack_write_summary(size_t input_size, size_t image_size, int image_changed, const ExpackCandidate *candidate, unsigned long long output_size) {
     rt_write_cstr(1, "expack: input ");
     rt_write_uint(1, (unsigned long long)input_size);
     if (image_changed) {
         rt_write_cstr(1, " bytes, exec image ");
         rt_write_uint(1, (unsigned long long)image_size);
     }
-    rt_write_cstr(1, " bytes, payload ");
+    rt_write_cstr(1, " bytes");
+    if (output_size != 0ULL) {
+        rt_write_cstr(1, ", output ");
+        rt_write_uint(1, output_size);
+        rt_write_cstr(1, " bytes");
+    }
+    rt_write_cstr(1, ", payload ");
     rt_write_uint(1, (unsigned long long)candidate->payload_size);
     rt_write_cstr(1, " bytes, codec ");
     expack_write_candidate_name(candidate);
-    rt_write_cstr(1, ", packed ");
+    rt_write_cstr(1, ", packed estimate ");
     rt_write_uint(1, candidate->packed_size);
     rt_write_cstr(1, " bytes\n");
 }
 
-static void expack_write_analyze_header(const ExpackInputFormat *format, size_t input_size, size_t image_size, int image_changed) {
-    rt_write_cstr(1, "expack analyze: input ");
+static void expack_write_report_header(const char *label, const ExpackInputFormat *format, size_t input_size, size_t image_size, int image_changed) {
+    rt_write_cstr(1, label);
+    rt_write_cstr(1, ": input ");
     rt_write_uint(1, (unsigned long long)input_size);
     rt_write_cstr(1, " bytes, format ");
     rt_write_cstr(1, format->name);
@@ -358,10 +384,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     output_backend = expack_find_output_backend(&input_format);
-    if (analyze) {
-        expack_write_analyze_header(&input_format, input_size, image.size, image.changed);
+    if (analyze || !quiet) {
+        expack_write_report_header(analyze ? "expack analyze" : "expack", &input_format, input_size, image.size, image.changed);
     }
-    if (expack_select_best_payload(image.data, image.size, &selected, analyze, input_format.allow_x86_bcj) != 0) {
+    if (expack_select_best_payload(image.data, image.size, &selected, analyze || !quiet, input_format.allow_x86_bcj) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "compression failed", 0);
         expack_release_exec_image(&image, input_data);
         rt_free(input_data);
@@ -394,9 +420,13 @@ int main(int argc, char **argv) {
     } else if (output_backend != 0) {
         output_kind = output_backend->default_output_kind;
     }
-    if (output_kind == EXPACK_OUTPUT_KIND_MACHO_CONTAINER) {
+    if (output_kind != EXPACK_OUTPUT_KIND_ELF_PACKED) {
         if (output_backend == 0 || output_backend->can_write_container == 0 || !output_backend->can_write_container(&input_format, output_kind)) {
-            tool_write_error(EXPACK_TOOL_NAME, "--macho-container requires a Mach-O input", 0);
+            if (macho_container) {
+                tool_write_error(EXPACK_TOOL_NAME, "--macho-container requires a Mach-O input", 0);
+            } else {
+                expack_write_unsupported_output_error(output_backend, &input_format);
+            }
             if (default_output_path != 0) rt_free(default_output_path);
             expack_candidate_release(&selected);
             expack_release_exec_image(&image, input_data);
@@ -404,7 +434,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (output_backend->prepare_container_candidate != 0 && output_backend->prepare_container_candidate(&input_format, &image, &selected) != 0) {
-            tool_write_error(EXPACK_TOOL_NAME, "cannot prepare raw Mach-O runner payload", 0);
+            tool_write_error(EXPACK_TOOL_NAME, "cannot prepare container payload", 0);
             if (default_output_path != 0) rt_free(default_output_path);
             expack_candidate_release(&selected);
             expack_release_exec_image(&image, input_data);
@@ -412,7 +442,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (expack_write_container_output(output_backend, &input_format, output_path, &selected, image.size, output_kind) != 0) {
-            tool_write_error(EXPACK_TOOL_NAME, "cannot write Mach-O prototype container: ", output_path);
+            tool_write_error(EXPACK_TOOL_NAME, "cannot write container output: ", output_path);
             if (default_output_path != 0) rt_free(default_output_path);
             expack_candidate_release(&selected);
             expack_release_exec_image(&image, input_data);
@@ -421,6 +451,7 @@ int main(int argc, char **argv) {
         }
         if (!quiet && output_backend->write_container_success != 0) {
             output_backend->write_container_success(output_path, &selected);
+            expack_write_summary(input_size, image.size, image.changed, &selected, expack_output_file_size(output_path));
         }
         if (default_output_path != 0) rt_free(default_output_path);
         expack_candidate_release(&selected);
@@ -445,7 +476,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!quiet) {
-        expack_write_summary(input_size, image.size, image.changed, &selected);
+        expack_write_summary(input_size, image.size, image.changed, &selected, expack_output_file_size(output_path));
     }
 
     if (default_output_path != 0) rt_free(default_output_path);
