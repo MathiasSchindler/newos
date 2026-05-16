@@ -462,11 +462,19 @@ static unsigned long long expack_macho_score_candidate(const ExpackInputFormat *
 }
 
 static unsigned long long expack_pe_score_candidate(const ExpackInputFormat *format, const ExpackCandidate *candidate) {
+    unsigned long long runner_size;
     (void)format;
-    if (candidate->codec != EXPACK_CODEC_LZREP && candidate->codec != EXPACK_CODEC_RAW) {
+    if (candidate->codec == EXPACK_CODEC_RAW) {
         return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
     }
-    return (unsigned long long)sizeof(expack_pe_runner_template) + EXPACK_PE_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
+    if (candidate->codec == EXPACK_CODEC_LZSS && (candidate->lzss_profile == 0 || candidate->lzss_profile->profile_id != COMPRESSION_LZSS_PROFILE_WIDE_WINDOW)) {
+        return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
+    }
+    runner_size = expack_pe_runner_size_for_codec(candidate->codec);
+    if (runner_size == EXPACK_CANDIDATE_UNSUPPORTED_SIZE) {
+        return EXPACK_CANDIDATE_UNSUPPORTED_SIZE;
+    }
+    return runner_size + EXPACK_PE_CONTAINER_METADATA_SIZE + (unsigned long long)candidate->payload_size;
 }
 
 static int expack_elf_write_packed(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
@@ -497,7 +505,7 @@ static int expack_pe_can_write_container(const ExpackInputFormat *format, unsign
 }
 
 static int expack_pe_prepare_container_candidate(const ExpackInputFormat *format, const ExpackImage *image, ExpackCandidate *candidate) {
-    if (candidate->codec == EXPACK_CODEC_LZREP) {
+    if (candidate->codec == EXPACK_CODEC_LZSS || candidate->codec == EXPACK_CODEC_LZREP || candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
         if (candidate->packed_size < (unsigned long long)image->size) {
             return 0;
         }

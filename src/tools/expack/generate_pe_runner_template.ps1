@@ -67,33 +67,52 @@ function Compact-Headers([byte[]]$Bytes) {
     return $compact
 }
 
-New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-$exe = Join-Path $BuildDir "pe_runner_template.exe"
-$args = @(
-    "--target=$TargetTriple",
-    "-Oz", "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
-    "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
-    "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
-    "-lkernel32", $Source, "-o", $exe
-)
-& $Compiler @args
-if ($LASTEXITCODE -ne 0) { throw "runner compile failed" }
+function Add-Runner([System.Collections.Generic.List[string]]$Lines, [string]$Name, [byte[]]$Bytes, [int]$PatchOffset) {
+    $Lines.Add("static const unsigned char $($Name)[] = {")
+    for ($i = 0; $i -lt $Bytes.Length; $i += 12) {
+        $end = [Math]::Min($i + 11, $Bytes.Length - 1)
+        $chunk = for ($j = $i; $j -le $end; $j += 1) { "0x{0:x2}U" -f $Bytes[$j] }
+        $suffix = if ($i + 12 -lt $Bytes.Length) { "," } else { "" }
+        $Lines.Add("    " + ($chunk -join ", ") + $suffix)
+    }
+    $Lines.Add("};")
+    $Lines.Add("#define $($Name.ToUpperInvariant())_METADATA_OFFSET_PATCH $($PatchOffset)U")
+}
 
-$bytes = [IO.File]::ReadAllBytes($exe)
-$bytes = Compact-Headers $bytes
-$marker = [byte[]](0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11)
-$patchOffset = Find-Sequence $bytes $marker
-if ($patchOffset -lt 0) { throw "metadata offset marker not found" }
+function Build-Runner([string]$Name, [int]$Codec) {
+    $exe = Join-Path $BuildDir "$Name.exe"
+    $args = @(
+        "--target=$TargetTriple",
+        "-DEXPACK_PE_RUNNER_CODEC=$Codec",
+        "-Oz", "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
+        "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
+        "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
+        "-lkernel32", $Source, "-o", $exe
+    )
+    & $Compiler @args
+    if ($LASTEXITCODE -ne 0) { throw "runner compile failed for $Name" }
+
+    $bytes = [IO.File]::ReadAllBytes($exe)
+    $bytes = Compact-Headers $bytes
+    $marker = [byte[]](0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11)
+    $patchOffset = Find-Sequence $bytes $marker
+    if ($patchOffset -lt 0) { throw "metadata offset marker not found for $Name" }
+    return [pscustomobject]@{ Name = $Name; Bytes = $bytes; PatchOffset = $patchOffset }
+}
+
+New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+$runners = @(
+    (Build-Runner "expack_pe_lzss_runner_template" 0),
+    (Build-Runner "expack_pe_lzrep_runner_template" 3),
+    (Build-Runner "expack_pe_lzss_bcj_runner_template" 4)
+)
 
 $lines = New-Object System.Collections.Generic.List[string]
-$lines.Add("static const unsigned char expack_pe_runner_template[] = {")
-for ($i = 0; $i -lt $bytes.Length; $i += 12) {
-    $end = [Math]::Min($i + 11, $bytes.Length - 1)
-    $chunk = for ($j = $i; $j -le $end; $j += 1) { "0x{0:x2}U" -f $bytes[$j] }
-    $suffix = if ($i + 12 -lt $bytes.Length) { "," } else { "" }
-    $lines.Add("    " + ($chunk -join ", ") + $suffix)
+foreach ($runner in $runners) {
+    Add-Runner $lines $runner.Name $runner.Bytes $runner.PatchOffset
 }
-$lines.Add("};")
-$lines.Add("#define EXPACK_PE_RUNNER_METADATA_OFFSET_PATCH $($patchOffset)U")
 Set-Content -LiteralPath $OutputInclude -Value $lines -Encoding ascii
-"runner_size=$($bytes.Length) metadata_patch=$patchOffset output=$OutputInclude"
+foreach ($runner in $runners) {
+    "runner=$($runner.Name) size=$($runner.Bytes.Length) metadata_patch=$($runner.PatchOffset)"
+}
+"output=$OutputInclude"

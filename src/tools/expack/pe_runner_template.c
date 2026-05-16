@@ -15,9 +15,15 @@ typedef unsigned long size_t;
 #define WIN_MEM_COMMIT 0x1000UL
 #define WIN_MEM_RESERVE 0x2000UL
 #define WIN_PAGE_READWRITE 0x04UL
+#define EXPACK_CODEC_LZSS 0U
+#define EXPACK_CODEC_LZSS_BCJ 4U
 #define EXPACK_CODEC_LZREP 3U
-#define EXPACK_METADATA_SIZE 48U
+#define EXPACK_METADATA_SIZE 24U
 #define EXPACK_MIN_MATCH 3U
+
+#ifndef EXPACK_PE_RUNNER_CODEC
+#define EXPACK_PE_RUNNER_CODEC EXPACK_CODEC_LZREP
+#endif
 
 typedef struct {
     unsigned long cb;
@@ -64,7 +70,7 @@ __declspec(dllimport) int __stdcall DeleteFileA(const char *file_name);
 __declspec(dllimport) void *__stdcall VirtualAlloc(void *address, size_t size, unsigned long allocation_type, unsigned long protect);
 
 unsigned long __stack_chk_guard;
-unsigned long long expack_metadata_file_offset = 0x1122334455667788ULL;
+const unsigned long long expack_metadata_file_offset = 0x1122334455667788ULL;
 
 void __main(void) {
 }
@@ -120,7 +126,8 @@ static int write_exact(void *handle, const void *buffer, unsigned long long size
     return 0;
 }
 
-static int lzrep_decode(const unsigned char *payload, unsigned long long payload_size, unsigned char *output, unsigned long long output_size) {
+#if EXPACK_PE_RUNNER_CODEC == EXPACK_CODEC_LZREP
+static int decode_payload(const unsigned char *payload, unsigned long long payload_size, unsigned char *output, unsigned long long output_size) {
     unsigned long long input_offset = 0ULL;
     unsigned long long output_offset = 0ULL;
     unsigned int last_distance = 1U;
@@ -170,6 +177,81 @@ static int lzrep_decode(const unsigned char *payload, unsigned long long payload
     }
     return input_offset == payload_size ? 0 : -1;
 }
+#elif EXPACK_PE_RUNNER_CODEC == EXPACK_CODEC_LZSS || EXPACK_PE_RUNNER_CODEC == EXPACK_CODEC_LZSS_BCJ
+static int decode_payload(const unsigned char *payload, unsigned long long payload_size, unsigned char *output, unsigned long long output_size) {
+    unsigned long long input_offset = 0ULL;
+    unsigned long long output_offset = 0ULL;
+
+    while (output_offset < output_size) {
+        unsigned char flags;
+        unsigned int bit;
+        if (input_offset >= payload_size) {
+            return -1;
+        }
+        flags = payload[input_offset++];
+        for (bit = 0U; bit < 8U && output_offset < output_size; ++bit) {
+            if ((flags & (unsigned char)(1U << bit)) == 0U) {
+                if (input_offset >= payload_size) {
+                    return -1;
+                }
+                output[output_offset++] = payload[input_offset++];
+            } else {
+                unsigned int token;
+                unsigned int distance;
+                unsigned int length;
+                unsigned int i;
+                if (input_offset + 2ULL > payload_size) {
+                    return -1;
+                }
+                token = (unsigned int)payload[input_offset] | ((unsigned int)payload[input_offset + 1ULL] << 8U);
+                input_offset += 2ULL;
+                distance = ((token & 0x00ffU) | ((token >> 3U) & 0x1f00U)) + 1U;
+                length = ((token >> 8U) & 0x07U) + EXPACK_MIN_MATCH;
+                if ((unsigned long long)distance > output_offset || (unsigned long long)length > output_size - output_offset) {
+                    return -1;
+                }
+                for (i = 0U; i < length; ++i) {
+                    output[output_offset] = output[output_offset - (unsigned long long)distance];
+                    output_offset += 1ULL;
+                }
+            }
+        }
+    }
+    if (input_offset != payload_size) {
+        return -1;
+    }
+
+#if EXPACK_PE_RUNNER_CODEC == EXPACK_CODEC_LZSS_BCJ
+    {
+        unsigned long long position = 0ULL;
+        while (position + 4ULL < output_size) {
+            if (output[position] == 0xe8U || output[position] == 0xe9U) {
+                unsigned int value = read_u32_le(output + position + 1ULL);
+                value -= (unsigned int)(position + 5ULL);
+                output[position + 1ULL] = (unsigned char)(value & 0xffU);
+                output[position + 2ULL] = (unsigned char)((value >> 8U) & 0xffU);
+                output[position + 3ULL] = (unsigned char)((value >> 16U) & 0xffU);
+                output[position + 4ULL] = (unsigned char)((value >> 24U) & 0xffU);
+                position += 5ULL;
+            } else if (position + 5ULL < output_size && output[position] == 0x0fU && (output[position + 1ULL] & 0xf0U) == 0x80U) {
+                unsigned int value = read_u32_le(output + position + 2ULL);
+                value -= (unsigned int)(position + 6ULL);
+                output[position + 2ULL] = (unsigned char)(value & 0xffU);
+                output[position + 3ULL] = (unsigned char)((value >> 8U) & 0xffU);
+                output[position + 4ULL] = (unsigned char)((value >> 16U) & 0xffU);
+                output[position + 5ULL] = (unsigned char)((value >> 24U) & 0xffU);
+                position += 6ULL;
+            } else {
+                position += 1ULL;
+            }
+        }
+    }
+#endif
+    return 0;
+}
+#else
+#error unsupported EXPACK_PE_RUNNER_CODEC
+#endif
 
 static const char *skip_first_arg(const char *command_line) {
     int in_quotes = 0;
@@ -273,12 +355,12 @@ void mainCRTStartup(void) {
         CloseHandle(input);
         ExitProcess(127);
     }
-    if (metadata[0] != 'E' || metadata[1] != 'X' || metadata[2] != 'P' || metadata[3] != 'A' || metadata[4] != 'C' || metadata[5] != 'K' || metadata[6] != 'P' || metadata[7] != '1' || read_u32_le(metadata + 12U) != EXPACK_CODEC_LZREP) {
+    if (metadata[0] != 'E' || metadata[1] != 'X' || metadata[2] != 'P' || metadata[3] != 'A' || metadata[4] != 'C' || metadata[5] != 'K' || metadata[6] != 'P' || metadata[7] != '1') {
         CloseHandle(input);
         ExitProcess(127);
     }
-    original_size = read_u64_le(metadata + 16U);
-    payload_size = read_u64_le(metadata + 24U);
+    original_size = read_u64_le(metadata + 8U);
+    payload_size = read_u64_le(metadata + 16U);
     if (original_size == 0ULL || payload_size == 0ULL || payload_size > 0x7fffffffULL || original_size > 0x7fffffffULL) {
         CloseHandle(input);
         ExitProcess(127);
@@ -294,7 +376,7 @@ void mainCRTStartup(void) {
         ExitProcess(127);
     }
     CloseHandle(input);
-    if (lzrep_decode(payload, payload_size, image, original_size) != 0) ExitProcess(127);
+    if (decode_payload(payload, payload_size, image, original_size) != 0) ExitProcess(127);
     if (make_temp_path(temp_path, sizeof(temp_path)) != 0) ExitProcess(127);
     output = CreateFileA(temp_path, WIN_GENERIC_WRITE, 0, 0, WIN_CREATE_ALWAYS, WIN_FILE_ATTRIBUTE_NORMAL | WIN_FILE_ATTRIBUTE_TEMPORARY | WIN_FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, 0);
     if (output == WIN_INVALID_HANDLE_VALUE) {
