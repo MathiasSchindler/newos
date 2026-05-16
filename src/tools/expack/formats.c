@@ -1,5 +1,24 @@
 #include "internal.h"
 
+#define EXPACK_ELF_PT_LOAD 1U
+#define EXPACK_ELF_PT_DYNAMIC 2U
+#define EXPACK_ELF_PT_INTERP 3U
+#define EXPACK_ELF_DT_NULL 0ULL
+#define EXPACK_ELF_DT_HASH 4ULL
+#define EXPACK_ELF_DT_STRTAB 5ULL
+#define EXPACK_ELF_DT_SYMTAB 6ULL
+#define EXPACK_ELF_DT_RELA 7ULL
+#define EXPACK_ELF_DT_RELASZ 8ULL
+#define EXPACK_ELF_DT_STRSZ 10ULL
+#define EXPACK_ELF_DT_SYMENT 11ULL
+#define EXPACK_ELF_DT_REL 17ULL
+#define EXPACK_ELF_DT_RELSZ 18ULL
+#define EXPACK_ELF_DT_JMPREL 23ULL
+#define EXPACK_ELF_DT_PLTRELSZ 2ULL
+#define EXPACK_ELF_DT_GNU_HASH 0x6ffffef5ULL
+#define EXPACK_ELF_DT_RELACOUNT 0x6ffffff9ULL
+#define EXPACK_ELF_DT_RELRSZ 35ULL
+
 static int expack_validate_elf64_x86_64(const unsigned char *data, size_t size, const char **message_out) {
     unsigned short type;
     unsigned short machine;
@@ -272,16 +291,106 @@ static int expack_find_canonical_load_offset(const ExpackLoadRange *loads, unsig
     return -1;
 }
 
+static int expack_find_canonical_vaddr_offset(const ExpackLoadRange *loads, unsigned int load_count, unsigned long long vaddr, unsigned long long size, unsigned long long *new_offset_out) {
+    unsigned int index;
+
+    for (index = 0U; index < load_count; ++index) {
+        unsigned long long load_end = loads[index].vaddr + loads[index].file_size;
+        if (vaddr >= loads[index].vaddr && size <= load_end - vaddr) {
+            *new_offset_out = loads[index].new_offset + (vaddr - loads[index].vaddr);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void expack_zero_range(unsigned char *data, size_t size, unsigned long long offset, unsigned long long length) {
+    if (offset <= (unsigned long long)size && length <= (unsigned long long)size - offset) {
+        memset(data + (size_t)offset, 0, (size_t)length);
+    }
+}
+
+static int expack_elf_dynamic_has_relocation_work(const unsigned char *data, size_t size, unsigned long long dynamic_offset, unsigned long long dynamic_size) {
+    size_t offset;
+    int has_rela = 0;
+    int has_rel = 0;
+    int has_jmprel = 0;
+    unsigned long long rela_size = 0ULL;
+    unsigned long long rel_size = 0ULL;
+    unsigned long long jmprel_size = 0ULL;
+    unsigned long long relr_size = 0ULL;
+
+    if (dynamic_offset > (unsigned long long)size || dynamic_size > (unsigned long long)size - dynamic_offset) {
+        return 1;
+    }
+    offset = (size_t)dynamic_offset;
+    while (offset + 16U <= (size_t)(dynamic_offset + dynamic_size)) {
+        unsigned long long tag = archive_read_u64_le(data + offset);
+        unsigned long long value = archive_read_u64_le(data + offset + 8U);
+
+        if (tag == EXPACK_ELF_DT_NULL) {
+            break;
+        }
+        if (tag == EXPACK_ELF_DT_RELA) has_rela = 1;
+        else if (tag == EXPACK_ELF_DT_RELASZ) rela_size = value;
+        else if (tag == EXPACK_ELF_DT_REL) has_rel = 1;
+        else if (tag == EXPACK_ELF_DT_RELSZ) rel_size = value;
+        else if (tag == EXPACK_ELF_DT_JMPREL) has_jmprel = 1;
+        else if (tag == EXPACK_ELF_DT_PLTRELSZ) jmprel_size = value;
+        else if (tag == EXPACK_ELF_DT_RELRSZ) relr_size = value;
+        offset += 16U;
+    }
+    return (has_rela && rela_size != 0ULL) || (has_rel && rel_size != 0ULL) || (has_jmprel && jmprel_size != 0ULL) || relr_size != 0ULL;
+}
+
+static void expack_elf_zero_unused_dynamic_metadata(unsigned char *data, size_t size, const ExpackLoadRange *loads, unsigned int load_count, unsigned long long dynamic_offset, unsigned long long dynamic_size) {
+    size_t offset;
+    unsigned long long strtab_vaddr = 0ULL;
+    unsigned long long strtab_size = 0ULL;
+
+    if (dynamic_offset > (unsigned long long)size || dynamic_size > (unsigned long long)size - dynamic_offset) {
+        return;
+    }
+    offset = (size_t)dynamic_offset;
+    while (offset + 16U <= (size_t)(dynamic_offset + dynamic_size)) {
+        unsigned long long tag = archive_read_u64_le(data + offset);
+        unsigned long long value = archive_read_u64_le(data + offset + 8U);
+
+        if (tag == EXPACK_ELF_DT_NULL) {
+            break;
+        }
+        if (tag == EXPACK_ELF_DT_STRTAB) {
+            strtab_vaddr = value;
+        } else if (tag == EXPACK_ELF_DT_STRSZ) {
+            strtab_size = value;
+        }
+        offset += 16U;
+    }
+    if (strtab_vaddr != 0ULL && strtab_size != 0ULL) {
+        unsigned long long strtab_offset;
+
+        if (expack_find_canonical_vaddr_offset(loads, load_count, strtab_vaddr, strtab_size, &strtab_offset) == 0) {
+            expack_zero_range(data, size, strtab_offset, strtab_size);
+        }
+    }
+    expack_zero_range(data, size, dynamic_offset, dynamic_size);
+}
+
 static int expack_make_elf_exec_image(const unsigned char *input_data, size_t input_size, ExpackImage *image_out) {
     unsigned long long phoff64 = archive_read_u64_le(input_data + 32U);
     unsigned short phentsize = expack_read_u16_le(input_data + 54U);
     unsigned short phnum = expack_read_u16_le(input_data + 56U);
     size_t phoff;
     size_t phdr_size;
+    size_t compact_phdr_size;
     unsigned long long needed_size64 = EXPACK_ELF_HEADER_SIZE;
     unsigned long long canonical_cursor = 0ULL;
     unsigned short index;
     unsigned int load_count = 0U;
+    unsigned int compact_phnum = 0U;
+    int has_interp = 0;
+    unsigned long long dynamic_old_offset = 0ULL;
+    unsigned long long dynamic_file_size = 0ULL;
     ExpackLoadRange *loads;
     unsigned char *image_data;
 
@@ -319,21 +428,32 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
             rt_free(loads);
             return -1;
         }
-        if (type != 1U || file_size64 == 0ULL) {
+        if (type == EXPACK_ELF_PT_INTERP) {
+            has_interp = 1;
+        }
+        if (type == EXPACK_ELF_PT_DYNAMIC && file_size64 != 0ULL) {
+            dynamic_old_offset = file_offset64;
+            dynamic_file_size = file_size64;
+        }
+        if (type != EXPACK_ELF_PT_LOAD) {
             continue;
         }
-        new_offset64 = expack_align_to_segment_mod(canonical_cursor, vaddr64, align64);
-        if (file_size64 > 0xffffffffffffffffULL - new_offset64) {
-            rt_free(loads);
-            return -1;
-        }
-        loads[load_count].old_offset = file_offset64;
-        loads[load_count].new_offset = new_offset64;
-        loads[load_count].file_size = file_size64;
-        load_count += 1U;
-        canonical_cursor = new_offset64 + file_size64;
-        if (canonical_cursor > needed_size64) {
-            needed_size64 = canonical_cursor;
+        compact_phnum += 1U;
+        if (file_size64 != 0ULL) {
+            new_offset64 = expack_align_to_segment_mod(canonical_cursor, vaddr64, align64);
+            if (file_size64 > 0xffffffffffffffffULL - new_offset64) {
+                rt_free(loads);
+                return -1;
+            }
+            loads[load_count].old_offset = file_offset64;
+            loads[load_count].new_offset = new_offset64;
+            loads[load_count].vaddr = vaddr64;
+            loads[load_count].file_size = file_size64;
+            load_count += 1U;
+            canonical_cursor = new_offset64 + file_size64;
+            if (canonical_cursor > needed_size64) {
+                needed_size64 = canonical_cursor;
+            }
         }
     }
 
@@ -341,7 +461,12 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
         rt_free(loads);
         return -1;
     }
-    if (phoff > (size_t)needed_size64 || phdr_size > (size_t)needed_size64 - phoff) {
+    if (compact_phnum == 0U) {
+        rt_free(loads);
+        return -1;
+    }
+    compact_phdr_size = (size_t)compact_phnum * EXPACK_ELF_PHDR_SIZE;
+    if (phoff > (size_t)needed_size64 || compact_phdr_size > (size_t)needed_size64 - phoff) {
         rt_free(loads);
         return -1;
     }
@@ -352,7 +477,7 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
     }
     memset(image_data, 0, (size_t)needed_size64);
     memcpy(image_data, input_data, EXPACK_ELF_HEADER_SIZE);
-    memcpy(image_data + phoff, input_data + phoff, phdr_size);
+    expack_store_u16_le(image_data + 56U, (unsigned short)compact_phnum);
     for (index = 0U; index < phnum; ++index) {
         size_t phdr_offset = phoff + (size_t)index * (size_t)phentsize;
         const unsigned char *input_phdr = input_data + phdr_offset;
@@ -375,16 +500,31 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
         }
         memcpy(image_data + (size_t)new_offset64, input_data + (size_t)file_offset64, (size_t)file_size64);
     }
+    compact_phnum = 0U;
     for (index = 0U; index < phnum; ++index) {
         size_t phdr_offset = phoff + (size_t)index * (size_t)phentsize;
-        unsigned char *image_phdr = image_data + phdr_offset;
+        unsigned char *image_phdr = image_data + phoff + (size_t)compact_phnum * EXPACK_ELF_PHDR_SIZE;
         const unsigned char *input_phdr = input_data + phdr_offset;
+        unsigned int type = archive_read_u32_le(input_phdr);
         unsigned long long file_offset64 = archive_read_u64_le(input_phdr + 8U);
         unsigned long long file_size64 = archive_read_u64_le(input_phdr + 32U);
         unsigned long long new_offset64;
 
+        if (type != EXPACK_ELF_PT_LOAD) {
+            continue;
+        }
+        memcpy(image_phdr, input_phdr, EXPACK_ELF_PHDR_SIZE);
         if (file_size64 != 0ULL && expack_find_canonical_load_offset(loads, load_count, file_offset64, file_size64, &new_offset64) == 0) {
             archive_store_u64_le(image_phdr + 8U, new_offset64);
+        }
+        compact_phnum += 1U;
+    }
+    if (!has_interp && dynamic_file_size != 0ULL) {
+        unsigned long long dynamic_new_offset;
+
+        if (expack_find_canonical_load_offset(loads, load_count, dynamic_old_offset, dynamic_file_size, &dynamic_new_offset) == 0 &&
+            !expack_elf_dynamic_has_relocation_work(image_data, (size_t)needed_size64, dynamic_new_offset, dynamic_file_size)) {
+            expack_elf_zero_unused_dynamic_metadata(image_data, (size_t)needed_size64, loads, load_count, dynamic_new_offset, dynamic_file_size);
         }
     }
     expack_clear_section_header_fields(image_data, (size_t)needed_size64);

@@ -20,6 +20,7 @@
 #define EXPACK_CODEC_LZREP 3U
 #define EXPACK_CODEC_LZSS_BCJ 4U
 #define EXPACK_CODEC_RAW 5U
+#define EXPACK_CODEC_LZSS_BCJ_RIP 6U
 #define EXPACK_FORMAT_ELF64_X86_64 1U
 #define EXPACK_FORMAT_MACHO 2U
 #define EXPACK_FORMAT_PE_COFF 3U
@@ -74,6 +75,8 @@
 #define EXPACK_LZREP_PAYLOAD_SIZE_OFFSET 387U
 #define EXPACK_LZSS_BCJ_ORIGINAL_SIZE_OFFSET 448U
 #define EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET 456U
+#define EXPACK_LZSS_BCJ_RIP_ORIGINAL_SIZE_OFFSET 566U
+#define EXPACK_LZSS_BCJ_RIP_PAYLOAD_SIZE_OFFSET 574U
 #define EXPACK_LZREP_WINDOW_SIZE 2048U
 #define EXPACK_LZREP_MAX_EXPLICIT_MATCH 18U
 #define EXPACK_LZREP_MAX_REPEAT_MATCH 130U
@@ -104,6 +107,7 @@ typedef struct {
 typedef struct {
     unsigned long long old_offset;
     unsigned long long new_offset;
+    unsigned long long vaddr;
     unsigned long long file_size;
 } ExpackLoadRange;
 

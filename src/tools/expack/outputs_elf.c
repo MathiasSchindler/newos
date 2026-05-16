@@ -56,6 +56,11 @@ static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsig
         *payload_size_offset_out = EXPACK_LZSS_BCJ_PAYLOAD_SIZE_OFFSET;
         return 0;
     }
+    if (candidate->codec == EXPACK_CODEC_LZSS_BCJ_RIP) {
+        *original_size_offset_out = EXPACK_LZSS_BCJ_RIP_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_LZSS_BCJ_RIP_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
     return -1;
 }
 

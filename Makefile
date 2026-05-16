@@ -29,7 +29,12 @@ HOST_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 HOST_GC_LDFLAGS ?= $(if $(filter Darwin,$(HOST_OS)),-Wl$(COMMA)-dead_strip,-Wl$(COMMA)--gc-sections)
 FREESTANDING_SECTION_CFLAGS ?= -ffunction-sections -fdata-sections
 FREESTANDING_STACK_CFLAGS ?=
+FREESTANDING_PACK_SIZE ?= 0
+ifeq ($(FREESTANDING_PACK_SIZE),1)
+FREESTANDING_PIE_CFLAGS ?=
+else
 FREESTANDING_PIE_CFLAGS ?= -fPIE
+endif
 FREESTANDING_OPT_CFLAGS ?= $(shell printf 'int x;\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -Oz -x c - -c -o /tmp/newos-oz-check.o >/dev/null 2>&1 && echo -Oz || echo -Os; rm -f /tmp/newos-oz-check.o)
 FREESTANDING_LTO ?= 0
 FREESTANDING_LTO_FLAGS ?= $(if $(filter 1 yes true,$(FREESTANDING_LTO)),$(shell "$(TARGET_CC)" --version 2>/dev/null | grep -qi clang && echo -flto))
@@ -37,10 +42,16 @@ FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) 
 FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
 TARGET_LINKER_FLAG ?= $(shell printf 'void _start(void){}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -fuse-ld=lld -Wl$(COMMA)-e$(COMMA)_start -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
+ifeq ($(FREESTANDING_PACK_SIZE),1)
+FREESTANDING_COMPACT_LDFLAGS ?=
+FREESTANDING_BUILD_ID_LDFLAGS ?= -Wl$(COMMA)--build-id=none
+FREESTANDING_LINK_MODE_LDFLAGS ?= -static
+else
 FREESTANDING_COMPACT_LDFLAGS ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -static-pie -Wl$(COMMA)-z$(COMMA)noseparate-code -x c - -o /tmp/newos-compact-link-check >/dev/null 2>&1 && echo -Wl$(COMMA)-z$(COMMA)noseparate-code; rm -f /tmp/newos-compact-link-check)
 FREESTANDING_BUILD_ID_LDFLAGS ?= $(shell printf 'void _start(void){}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -static-pie -Wl$(COMMA)--build-id=none -Wl$(COMMA)-e$(COMMA)_start -x c - -o /tmp/newos-build-id-check >/dev/null 2>&1 && echo -Wl$(COMMA)--build-id=none; rm -f /tmp/newos-build-id-check)
-TARGET_BUILTINS_LIB ?= $(if $(filter MSYS_NT% MINGW% CYGWIN%,$(HOST_OS)),,$(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true))
 FREESTANDING_LINK_MODE_LDFLAGS ?= -static-pie
+endif
+TARGET_BUILTINS_LIB ?= $(if $(filter MSYS_NT% MINGW% CYGWIN%,$(HOST_OS)),,$(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true))
 FREESTANDING_PIE_LDFLAGS ?= $(FREESTANDING_LINK_MODE_LDFLAGS)
 FREESTANDING_GC_LDFLAGS ?= -Wl,--gc-sections
 ifeq ($(FREESTANDING_DEBUG),1)
