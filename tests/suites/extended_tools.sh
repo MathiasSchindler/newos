@@ -49,7 +49,7 @@ else
     if "$ROOT_DIR/build/expack" --analyze "$ROOT_DIR/build/echo" > "$WORK_DIR/expack_host.out" 2> "$WORK_DIR/expack_host.err"; then
         assert_file_contains "$WORK_DIR/expack_host.out" 'format Mach-O' "expack did not analyze the Mach-O host executable"
         assert_file_contains "$WORK_DIR/expack_host.out" '^selected: ' "expack did not select a Mach-O compression candidate"
-        "$ROOT_DIR/build/expack" --macho-container "$ROOT_DIR/build/echo" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container.out"
+        "$ROOT_DIR/build/expack" "$ROOT_DIR/build/echo" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container.out"
         assert_file_contains "$WORK_DIR/expack_host_container.out" 'wrote Mach-O prototype container' "expack did not report Mach-O container output"
         "$ROOT_DIR/build/file" "$WORK_DIR/expack_host.container" > "$WORK_DIR/expack_host_container_file.out"
         assert_file_contains "$WORK_DIR/expack_host_container_file.out" 'Mach-O' "expack Mach-O container is not recognized as Mach-O"

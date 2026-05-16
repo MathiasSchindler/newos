@@ -2,19 +2,20 @@
 
 ## NAME
 
-expack - pack an ELF executable while keeping it directly executable
+expack - pack an executable while keeping it directly executable
 
 ## SYNOPSIS
 
-`expack` [`-q`] `INPUT` `OUTPUT`
+`expack` [`-q`] `INPUT` [`OUTPUT`]
 
 `expack` `--analyze` `INPUT`
 
-`expack` `--macho-container` `INPUT` `OUTPUT`
+`expack` `--macho-container` `INPUT` [`OUTPUT`]
 
 ## DESCRIPTION
 
-`expack` creates a new executable file from an existing executable image. The current packable backend is implemented for x86-64 ELF executable and PIE inputs, and the current output container is a Linux x86-64 ELF stub.
+`expack` creates a new executable file from an existing executable image. If `OUTPUT` is omitted, the output path is `INPUT-pack`. The output format is selected from the detected input format: x86-64 ELF inputs produce a Linux x86-64 ELF stub, while Mach-O inputs produce a Mach-O container.
+The current ELF backend is implemented for x86-64 ELF executable and PIE inputs.
 Before compression the ELF backend reconstructs a canonical execution image from the input ELF header, program header table, and loadable file ranges. Load segment file offsets are compacted while preserving each segment's virtual-address alignment rule. Program headers that point inside moved load segments are adjusted. Section headers, unreferenced trailing data, and gaps outside the executable image are omitted or zeroed.
 The output contains a small unpacking stub and an encoded copy of that execution image.
 When run, the stub reconstructs the preprocessed executable image in an anonymous in-memory file and executes it with the original argument vector and environment.
@@ -29,7 +30,7 @@ Use `--analyze` to inspect the exact portfolio decision without writing an outpu
 
 The executable-format layer is intentionally separate from the codec selection and packed-output writer so Mach-O and PE/COFF image backends can be added without rewriting the compression portfolio. Mach-O 64-bit executable inputs can be analyzed and compressed as exact executable images; this keeps code-signature bytes in the payload and avoids rewriting load commands. PE/COFF inputs are recognized and rejected with an explicit unsupported-backend diagnostic.
 
-`--macho-container` is a development step toward native Mach-O output. It writes a Mach-O executable-shaped container for an x86-64 or arm64 Mach-O input with a `__TEXT,__expack` section containing an `EXPACKM1` metadata block followed by the payload. For arm64 Mach-O inputs on Darwin, the container can execute LZREP-compressed payloads; its native runner decompresses the exact executable image to a temporary executable file and executes it with the original argument vector and environment. If the selected codec does not have an arm64 Darwin runner yet, the container falls back to a raw exact-image payload. For x86-64 Mach-O inputs, the container is still a signed layout and metadata prototype with a placeholder entry point. The container includes linker-like `__PAGEZERO`, `__TEXT`, `__LINKEDIT`, dyld, build-version, and code-signature load commands. `expack` emits a minimal ad-hoc CodeDirectory signature using SHA-256 page hashes; Apple's `codesign --verify --strict` can be used as an oracle for the generated signature. This file is not the final general Mach-O output path yet because only the arm64 LZREP runner exists.
+Mach-O output writes a Mach-O executable-shaped container for an x86-64 or arm64 Mach-O input with a `__TEXT,__expack` section containing an `EXPACKM1` metadata block followed by the payload. For arm64 Mach-O inputs on Darwin, the container can execute LZREP-compressed payloads; its native runner decompresses the exact executable image to a temporary executable file and executes it with the original argument vector and environment. If the selected codec does not have an arm64 Darwin runner yet, the container falls back to a raw exact-image payload. For x86-64 Mach-O inputs, the container is still a signed layout and metadata prototype with a placeholder entry point. The container includes linker-like `__PAGEZERO`, `__TEXT`, `__LINKEDIT`, dyld, build-version, and code-signature load commands. `expack` emits a minimal ad-hoc CodeDirectory signature using SHA-256 page hashes; Apple's `codesign --verify --strict` can be used as an oracle for the generated signature. `--macho-container` remains accepted as an explicit development-mode spelling, but it is no longer required for Mach-O inputs.
 
 Tiny literal/zero-run and literal/byte-run codecs are also tried for executable images dominated by long repeated regions. The compressor can spend extra CPU on optimal match selection because packed binaries are usually produced once and decompressed many times. `expack` ships the decoder that produced the smallest complete packed file, including stub overhead. It is a foundation for future stronger or selectable codecs rather than a UPX-compatible format.
 
@@ -39,14 +40,14 @@ Tiny literal/zero-run and literal/byte-run codecs are also tried for executable 
 | --- | --- |
 | `-q`, `--quiet` | Do not print the size summary. |
 | `--analyze` | Report candidate sizes for `INPUT` without creating a packed executable. |
-| `--macho-container` | Write a prototype Mach-O container; arm64 Mach-O inputs can run LZREP-compressed payloads. |
+| `--macho-container` | Explicitly request Mach-O container output; this is the default for Mach-O inputs. |
 | `-h`, `--help` | Show usage. |
 
 ## LIMITATIONS
 
-- output stubs currently target Linux x86-64 ELF only
-- packable inputs must be ELF64 little-endian x86-64 `EXEC` or `DYN` files
-- Mach-O 64-bit executable inputs support `--analyze` and `--macho-container`; arm64 containers can run LZREP-compressed payloads and use raw payloads as a fallback
+- ELF output stubs currently target Linux x86-64 only
+- ELF packable inputs must be ELF64 little-endian x86-64 `EXEC` or `DYN` files
+- Mach-O 64-bit executable inputs support `--analyze` and default container output; arm64 containers can run LZREP-compressed payloads and use raw payloads as a fallback
 - PE/COFF inputs are recognized but not packable yet
 - the packed executable requires Linux `memfd_create` and `execveat`
 - section headers and other bytes not referenced by program headers are not preserved
