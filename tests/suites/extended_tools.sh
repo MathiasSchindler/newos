@@ -75,6 +75,14 @@ if [ -x "$ROOT_DIR/build/freestanding-macos-aarch64/expack" ]; then
     assert_file_contains "$WORK_DIR/expack_freestanding_macho.out" '^selected: ' "freestanding expack did not select a Mach-O compression candidate"
 fi
 
+if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ "$(uname -m 2>/dev/null || echo unknown)" = x86_64 ] && [ -x "$ROOT_DIR/build/freestanding-linux-x86_64/expack" ] && [ -x "$ROOT_DIR/build/freestanding-linux-x86_64/echo" ]; then
+    "$ROOT_DIR/build/freestanding-linux-x86_64/expack" -q "$ROOT_DIR/build/freestanding-linux-x86_64/echo" "$WORK_DIR/echo.freestanding-linux.packed"
+    "$WORK_DIR/echo.freestanding-linux.packed" expack-linux-ok > "$WORK_DIR/expack_freestanding_linux.out"
+    assert_file_contains "$WORK_DIR/expack_freestanding_linux.out" '^expack-linux-ok$' "freestanding Linux expack output did not preserve executable behavior"
+    "$ROOT_DIR/build/freestanding-linux-x86_64/file" "$WORK_DIR/echo.freestanding-linux.packed" > "$WORK_DIR/expack_freestanding_linux_file.out"
+    assert_file_contains "$WORK_DIR/expack_freestanding_linux_file.out" 'ELF' "freestanding Linux expack output is not recognized as ELF"
+fi
+
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
 (

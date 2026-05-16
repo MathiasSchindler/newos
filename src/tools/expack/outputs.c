@@ -547,52 +547,43 @@ static void expack_pe_write_container_success(const char *output_path, const Exp
     rt_write_cstr(1, "\n");
 }
 
-static const ExpackOutputBackend expack_output_backends[] = {
-    {
-        EXPACK_FORMAT_ELF64_X86_64,
-        EXPACK_OUTPUT_KIND_ELF_PACKED,
-        "cannot write packed output for this executable format",
-        expack_elf_score_candidate,
-        expack_backend_can_write_packed,
-        expack_backend_cannot_write_container,
-        0,
-        expack_elf_write_packed,
-        0,
-        0
-    },
-    {
-        EXPACK_FORMAT_MACHO,
-        EXPACK_OUTPUT_KIND_MACHO_CONTAINER,
-        "Mach-O compression analysis is supported, but writing compressed runnable Mach-O output needs a native decoder backend",
-        expack_macho_score_candidate,
-        expack_backend_cannot_write_packed,
-        expack_macho_can_write_container,
-        expack_macho_prepare_container_candidate,
-        0,
-        expack_macho_write_container_backend,
-        expack_macho_write_container_success
-    },
-    {
-        EXPACK_FORMAT_PE_COFF,
-        EXPACK_OUTPUT_KIND_PE_CONTAINER,
-        "PE/COFF compression analysis is supported, but writing packed output needs a PE/COFF container backend",
-        expack_pe_score_candidate,
-        expack_backend_cannot_write_packed,
-        expack_pe_can_write_container,
-        expack_pe_prepare_container_candidate,
-        0,
-        expack_pe_write_container_backend,
-        expack_pe_write_container_success
-    }
-};
-
 static const ExpackOutputBackend *expack_find_output_backend(const ExpackInputFormat *format) {
-    size_t index;
+    static ExpackOutputBackend backend;
 
-    for (index = 0U; index < sizeof(expack_output_backends) / sizeof(expack_output_backends[0]); ++index) {
-        if (expack_output_backends[index].format_kind == format->kind) {
-            return &expack_output_backends[index];
-        }
+    memset(&backend, 0, sizeof(backend));
+    if (format->kind == EXPACK_FORMAT_ELF64_X86_64) {
+        backend.format_kind = EXPACK_FORMAT_ELF64_X86_64;
+        backend.default_output_kind = EXPACK_OUTPUT_KIND_ELF_PACKED;
+        backend.packed_unsupported_message = "cannot write packed output for this executable format";
+        backend.score_candidate = expack_elf_score_candidate;
+        backend.can_write_packed = expack_backend_can_write_packed;
+        backend.can_write_container = expack_backend_cannot_write_container;
+        backend.write_packed = expack_elf_write_packed;
+        return &backend;
+    }
+    if (format->kind == EXPACK_FORMAT_MACHO) {
+        backend.format_kind = EXPACK_FORMAT_MACHO;
+        backend.default_output_kind = EXPACK_OUTPUT_KIND_MACHO_CONTAINER;
+        backend.packed_unsupported_message = "Mach-O compression analysis is supported, but writing compressed runnable Mach-O output needs a native decoder backend";
+        backend.score_candidate = expack_macho_score_candidate;
+        backend.can_write_packed = expack_backend_cannot_write_packed;
+        backend.can_write_container = expack_macho_can_write_container;
+        backend.prepare_container_candidate = expack_macho_prepare_container_candidate;
+        backend.write_container = expack_macho_write_container_backend;
+        backend.write_container_success = expack_macho_write_container_success;
+        return &backend;
+    }
+    if (format->kind == EXPACK_FORMAT_PE_COFF) {
+        backend.format_kind = EXPACK_FORMAT_PE_COFF;
+        backend.default_output_kind = EXPACK_OUTPUT_KIND_PE_CONTAINER;
+        backend.packed_unsupported_message = "PE/COFF compression analysis is supported, but writing packed output needs a PE/COFF container backend";
+        backend.score_candidate = expack_pe_score_candidate;
+        backend.can_write_packed = expack_backend_cannot_write_packed;
+        backend.can_write_container = expack_pe_can_write_container;
+        backend.prepare_container_candidate = expack_pe_prepare_container_candidate;
+        backend.write_container = expack_pe_write_container_backend;
+        backend.write_container_success = expack_pe_write_container_success;
+        return &backend;
     }
     return 0;
 }
