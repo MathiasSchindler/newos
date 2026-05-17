@@ -22,3 +22,12 @@ ssh_user_status=0
 "$ROOT_DIR/build/ssh" -l 'bad user' example.invalid > "$WORK_DIR/ssh_bad_user.out" 2>&1 || ssh_user_status=$?
 assert_exit_code "$ssh_user_status" '1' "ssh should reject unsafe remote user names"
 assert_file_contains "$WORK_DIR/ssh_bad_user.out" 'invalid remote user' "ssh did not reject an unsafe remote user name"
+
+printf 'scp-local\n' > "$WORK_DIR/scp_source.txt"
+assert_command_succeeds "$ROOT_DIR/build/scp" "$WORK_DIR/scp_source.txt" "$WORK_DIR/scp_copy.txt"
+assert_file_contains "$WORK_DIR/scp_copy.txt" '^scp-local$' "scp did not perform a local-to-local copy"
+
+scp_remote_status=0
+"$ROOT_DIR/build/scp" "$WORK_DIR/scp_source.txt" user@example.invalid:/tmp/scp_source.txt > "$WORK_DIR/scp_remote.out" 2>&1 || scp_remote_status=$?
+assert_exit_code "$scp_remote_status" '1' "scp should reject remote operands until remote transfer is implemented"
+assert_file_contains "$WORK_DIR/scp_remote.out" 'remote transfers are not available yet' "scp did not explain the remote-transfer limitation"

@@ -45,8 +45,10 @@
 #define DARWIN_S_IFDIR 0040000U
 #define MACOS_ICMP_ECHO_REPLY 0
 #define MACOS_ICMP_ECHO 8
+#define MACOS_ICMP_TIME_EXCEEDED 11
 #define MACOS_ICMPV6_ECHO_REQUEST 128
 #define MACOS_ICMPV6_ECHO_REPLY 129
+#define MACOS_ICMPV6_TIME_EXCEEDED 3
 
 typedef struct {
     long tv_sec;
@@ -2933,6 +2935,327 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
         macos_ping_summary(host, transmitted, received_count, min_ms, max_ms, total_ms);
         return received_count > 0U ? 0 : 1;
     }
+}
+
+static int macos_trace_match_inner_ipv4(
+    const unsigned char *reply,
+    size_t reply_size,
+    size_t outer_offset,
+    unsigned short identifier,
+    unsigned short sequence,
+    int allow_identifier_rewrite
+) {
+    size_t inner_ip_offset = outer_offset + sizeof(MacosIcmpPacket);
+    size_t inner_ip_header_length;
+    const MacosIcmpPacket *inner_icmp;
+
+    if (reply_size < inner_ip_offset + 20U || (reply[inner_ip_offset] >> 4) != 4U) {
+        return 0;
+    }
+    inner_ip_header_length = (size_t)(reply[inner_ip_offset] & 0x0fU) * 4U;
+    if (inner_ip_header_length < 20U || reply_size < inner_ip_offset + inner_ip_header_length + sizeof(MacosIcmpPacket)) {
+        return 0;
+    }
+    inner_icmp = (const MacosIcmpPacket *)(reply + inner_ip_offset + inner_ip_header_length);
+    return inner_icmp->type == MACOS_ICMP_ECHO &&
+           ntohs(inner_icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || ntohs(inner_icmp->identifier) == identifier);
+}
+
+static int macos_trace_match_inner_ipv6(
+    const unsigned char *reply,
+    size_t reply_size,
+    size_t outer_offset,
+    unsigned short identifier,
+    unsigned short sequence,
+    int allow_identifier_rewrite
+) {
+    size_t inner_ip_offset = outer_offset + sizeof(MacosIcmpv6Packet);
+    const MacosIcmpv6Packet *inner_icmp;
+
+    if (reply_size < inner_ip_offset + 40U || (reply[inner_ip_offset] >> 4) != 6U) {
+        return 0;
+    }
+    if (reply_size < inner_ip_offset + 40U + sizeof(MacosIcmpv6Packet)) {
+        return 0;
+    }
+    inner_icmp = (const MacosIcmpv6Packet *)(reply + inner_ip_offset + 40U);
+    return inner_icmp->type == MACOS_ICMPV6_ECHO_REQUEST &&
+           ntohs(inner_icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || ntohs(inner_icmp->identifier) == identifier);
+}
+
+static void macos_trace_lookup_name(const struct sockaddr *peer, socklen_t peer_len, char *name_out, size_t name_size) {
+    if (name_out == 0 || name_size == 0U) {
+        return;
+    }
+    name_out[0] = '\0';
+    if (peer == 0) {
+        return;
+    }
+    if (getnameinfo(peer, peer_len, name_out, (socklen_t)name_size, 0, 0, NI_NAMEREQD) != 0) {
+        name_out[0] = '\0';
+    }
+}
+
+int platform_trace_route(
+    const char *host,
+    const PlatformTracerouteOptions *options,
+    PlatformTracerouteHop *hops_out,
+    size_t hop_capacity,
+    size_t *hop_count_out
+) {
+    PlatformTracerouteOptions defaults;
+    struct sockaddr_in addr;
+    struct timeval timeout;
+    unsigned int max_ttl;
+    unsigned int queries;
+    unsigned int timeout_seconds;
+    unsigned int payload_size;
+    unsigned short identifier;
+    unsigned int ttl;
+    int sock;
+    int allow_identifier_rewrite = 0;
+    size_t hop_count = 0U;
+
+    if (hop_count_out != 0) {
+        *hop_count_out = 0U;
+    }
+    if (host == 0 || hops_out == 0 || hop_count_out == 0 || hop_capacity == 0U) {
+        return -1;
+    }
+    if (options == 0) {
+        defaults.max_ttl = 30U;
+        defaults.queries = 3U;
+        defaults.timeout_seconds = PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS;
+        defaults.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
+        defaults.family = PLATFORM_NETWORK_FAMILY_IPV4;
+        defaults.numeric_only = 1;
+        options = &defaults;
+    }
+    max_ttl = options->max_ttl == 0U ? 30U : options->max_ttl;
+    queries = options->queries == 0U ? 1U : options->queries;
+    timeout_seconds = options->timeout_seconds == 0U ? PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS : options->timeout_seconds;
+    payload_size = options->payload_size > PLATFORM_PING_MAX_PAYLOAD_SIZE ? PLATFORM_PING_MAX_PAYLOAD_SIZE : options->payload_size;
+    if (max_ttl > PLATFORM_PING_MAX_TTL || queries > PLATFORM_TRACEROUTE_MAX_QUERIES) {
+        return -1;
+    }
+
+    if (options->family == PLATFORM_NETWORK_FAMILY_IPV6 ||
+        (options->family != PLATFORM_NETWORK_FAMILY_IPV4 && macos_contains_char(host, ':'))) {
+        struct sockaddr_in6 addr6;
+        int allow_identifier_rewrite6 = 1;
+
+        if (macos_resolve_ping_host6(host, &addr6, hops_out[0].address, sizeof(hops_out[0].address)) != 0) {
+            return -1;
+        }
+        sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+        if (sock < 0) {
+            sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+            allow_identifier_rewrite6 = 0;
+        }
+        if (sock < 0) {
+            return -1;
+        }
+        timeout.tv_sec = (time_t)timeout_seconds;
+        timeout.tv_usec = 0;
+        (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        identifier = (unsigned short)((platform_get_process_id() > 0) ? platform_get_process_id() : 0x1234);
+
+        for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
+            PlatformTracerouteHop *hop = hops_out + hop_count;
+            unsigned int probe;
+            int hops_value = (int)ttl;
+
+            rt_memset(hop, 0, sizeof(*hop));
+            hop->ttl = ttl;
+            hop->probe_count = queries;
+            (void)setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops_value, sizeof(hops_value));
+
+            for (probe = 0U; probe < queries; ++probe) {
+                unsigned char packet[sizeof(MacosIcmpv6Packet) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+                unsigned char reply[768];
+                MacosIcmpv6Packet *header = (MacosIcmpv6Packet *)packet;
+                size_t packet_size = sizeof(MacosIcmpv6Packet) + payload_size;
+                unsigned short sequence = (unsigned short)(ttl * 32U + probe);
+                struct timeval start_time;
+                struct timeval end_time;
+
+                memset(packet, 0, packet_size);
+                header->type = MACOS_ICMPV6_ECHO_REQUEST;
+                header->code = 0;
+                header->identifier = htons(identifier);
+                header->sequence = htons(sequence);
+                memset(packet + sizeof(MacosIcmpv6Packet), 0x42, payload_size);
+                header->checksum = 0;
+
+                (void)gettimeofday(&start_time, 0);
+                if (sendto(sock, packet, packet_size, 0, (struct sockaddr *)&addr6, sizeof(addr6)) < 0) {
+                    continue;
+                }
+
+                for (;;) {
+                    struct sockaddr_storage peer;
+                    socklen_t peer_len = sizeof(peer);
+                    ssize_t reply_size = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer, &peer_len);
+                    size_t offset = 0U;
+                    const MacosIcmpv6Packet *reply_header;
+                    int matched = 0;
+
+                    if (reply_size < 0) {
+                        break;
+                    }
+                    if ((size_t)reply_size >= 40U && (reply[0] >> 4) == 6U) {
+                        offset = 40U;
+                    }
+                    if ((size_t)reply_size < offset + sizeof(MacosIcmpv6Packet)) {
+                        continue;
+                    }
+                    reply_header = (const MacosIcmpv6Packet *)(reply + offset);
+                    if (reply_header->type == MACOS_ICMPV6_ECHO_REPLY &&
+                        ntohs(reply_header->sequence) == sequence &&
+                        (allow_identifier_rewrite6 || ntohs(reply_header->identifier) == identifier)) {
+                        matched = 1;
+                        hop->reached_destination = 1;
+                    } else if (reply_header->type == MACOS_ICMPV6_TIME_EXCEEDED &&
+                               macos_trace_match_inner_ipv6(reply, (size_t)reply_size, offset, identifier, sequence, allow_identifier_rewrite6)) {
+                        matched = 1;
+                    }
+                    if (!matched) {
+                        continue;
+                    }
+
+                    (void)gettimeofday(&end_time, 0);
+                    hop->probe_replied[probe] = 1U;
+                    hop->rtt_milliseconds[probe] = (unsigned int)(macos_elapsed_milliseconds(&start_time, &end_time) + 0.5);
+                    hop->reply_count += 1U;
+                    if (peer.ss_family == AF_INET6) {
+                        const struct sockaddr_in6 *peer6 = (const struct sockaddr_in6 *)&peer;
+                        (void)inet_ntop(AF_INET6, &peer6->sin6_addr, hop->address, sizeof(hop->address));
+                        if (!options->numeric_only) {
+                            macos_trace_lookup_name((const struct sockaddr *)&peer, peer_len, hop->hostname, sizeof(hop->hostname));
+                        }
+                    }
+                    break;
+                }
+            }
+
+            hop_count += 1U;
+            if (hop->reached_destination) {
+                break;
+            }
+        }
+
+        (void)platform_close(sock);
+        *hop_count_out = hop_count;
+        return 0;
+    }
+
+    if (macos_resolve_ping_host(host, &addr, hops_out[0].address, sizeof(hops_out[0].address)) != 0) {
+        return -1;
+    }
+
+    sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) {
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+        allow_identifier_rewrite = 1;
+    }
+    if (sock < 0) {
+        return -1;
+    }
+    timeout.tv_sec = (time_t)timeout_seconds;
+    timeout.tv_usec = 0;
+    (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    identifier = (unsigned short)((platform_get_process_id() > 0) ? platform_get_process_id() : 0x1234);
+
+    for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
+        PlatformTracerouteHop *hop = hops_out + hop_count;
+        unsigned int probe;
+        int ttl_value = (int)ttl;
+
+        rt_memset(hop, 0, sizeof(*hop));
+        hop->ttl = ttl;
+        hop->probe_count = queries;
+        (void)setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl_value, sizeof(ttl_value));
+
+        for (probe = 0U; probe < queries; ++probe) {
+            unsigned char packet[sizeof(MacosIcmpPacket) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+            unsigned char reply[512];
+            MacosIcmpPacket *header = (MacosIcmpPacket *)packet;
+            size_t packet_size = sizeof(MacosIcmpPacket) + payload_size;
+            unsigned short sequence = (unsigned short)(ttl * 32U + probe);
+            struct timeval start_time;
+            struct timeval end_time;
+
+            memset(packet, 0, packet_size);
+            header->type = MACOS_ICMP_ECHO;
+            header->code = 0;
+            header->identifier = htons(identifier);
+            header->sequence = htons(sequence);
+            memset(packet + sizeof(MacosIcmpPacket), 0x42, payload_size);
+            header->checksum = macos_icmp_checksum(packet, packet_size);
+
+            (void)gettimeofday(&start_time, 0);
+            if (sendto(sock, packet, packet_size, 0, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+                continue;
+            }
+
+            for (;;) {
+                struct sockaddr_storage peer;
+                socklen_t peer_len = sizeof(peer);
+                ssize_t reply_size = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer, &peer_len);
+                size_t offset;
+                const MacosIcmpPacket *reply_header;
+                int matched = 0;
+
+                if (reply_size < 0) {
+                    break;
+                }
+                offset = 0U;
+                if ((size_t)reply_size >= 20U && (reply[0] >> 4) == 4U) {
+                    offset = (size_t)(reply[0] & 0x0fU) * 4U;
+                }
+                if ((size_t)reply_size < offset + sizeof(MacosIcmpPacket)) {
+                    continue;
+                }
+                reply_header = (const MacosIcmpPacket *)(reply + offset);
+                if (reply_header->type == MACOS_ICMP_ECHO_REPLY &&
+                    ntohs(reply_header->sequence) == sequence &&
+                    (allow_identifier_rewrite || ntohs(reply_header->identifier) == identifier)) {
+                    matched = 1;
+                    hop->reached_destination = 1;
+                } else if (reply_header->type == MACOS_ICMP_TIME_EXCEEDED &&
+                           macos_trace_match_inner_ipv4(reply, (size_t)reply_size, offset, identifier, sequence, allow_identifier_rewrite)) {
+                    matched = 1;
+                }
+                if (!matched) {
+                    continue;
+                }
+
+                (void)gettimeofday(&end_time, 0);
+                hop->probe_replied[probe] = 1U;
+                hop->rtt_milliseconds[probe] = (unsigned int)(macos_elapsed_milliseconds(&start_time, &end_time) + 0.5);
+                hop->reply_count += 1U;
+                if (peer.ss_family == AF_INET) {
+                    const struct sockaddr_in *peer4 = (const struct sockaddr_in *)&peer;
+                    (void)inet_ntop(AF_INET, &peer4->sin_addr, hop->address, sizeof(hop->address));
+                    if (!options->numeric_only) {
+                        macos_trace_lookup_name((const struct sockaddr *)&peer, peer_len, hop->hostname, sizeof(hop->hostname));
+                    }
+                }
+                break;
+            }
+        }
+
+        hop_count += 1U;
+        if (hop->reached_destination) {
+            break;
+        }
+    }
+
+    (void)platform_close(sock);
+    *hop_count_out = hop_count;
+    return 0;
 }
 
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {

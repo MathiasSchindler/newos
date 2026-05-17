@@ -47,6 +47,10 @@
 #define LINUX_RTF_HOST 0x0004U
 #define LINUX_ICMP_ECHO 8U
 #define LINUX_ICMP_REPLY 0U
+#define LINUX_ICMP_TIME_EXCEEDED 11U
+#define LINUX_ICMPV6_ECHO_REQUEST 128U
+#define LINUX_ICMPV6_ECHO_REPLY 129U
+#define LINUX_ICMPV6_TIME_EXCEEDED 3U
 #define LINUX_CLOCK_MONOTONIC 1
 
 typedef struct {
@@ -567,6 +571,25 @@ static int linux_connect_ipv6(int sock, const LinuxIn6Addr *ip, unsigned int por
     return linux_syscall3(LINUX_SYS_CONNECT, sock, (long)&address, sizeof(address)) < 0 ? -1 : 0;
 }
 
+static long linux_sendto_ipv6(int sock, const void *buffer, size_t length, const LinuxIn6Addr *ip, unsigned int port) {
+    struct linux_sockaddr_in6 address;
+
+    linux_prepare_sockaddr6(&address, ip, port);
+    return linux_syscall6(LINUX_SYS_SENDTO, sock, (long)buffer, (long)length, 0, (long)&address, sizeof(address));
+}
+
+static long linux_recvfrom_ipv6(int sock, void *buffer, size_t length, LinuxIn6Addr *peer_out) {
+    struct linux_sockaddr_in6 address;
+    unsigned int address_length = sizeof(address);
+    long bytes;
+
+    rt_memset(&address, 0, sizeof(address));
+    bytes = linux_syscall6(LINUX_SYS_RECVFROM, sock, (long)buffer, (long)length, 0, (long)&address, (long)&address_length);
+    if (bytes >= 0 && peer_out != 0 && address.sin6_family == LINUX_AF_INET6) {
+        *peer_out = address.sin6_addr;
+    }
+    return bytes;
+}
 
 static int linux_set_socket_int_option(int sock, int level, int option, int value) {
     return linux_syscall5(LINUX_SYS_SETSOCKOPT, sock, level, option, (long)&value, sizeof(value)) < 0 ? -1 : 0;
@@ -1231,7 +1254,7 @@ static int linux_dns_query(
             family = PLATFORM_NETWORK_FAMILY_IPV6;
             rt_copy_string(data_text, sizeof(data_text), address_text);
             keep_record = 1;
-        } else if (class_code == 1U && (type == PLATFORM_DNS_RECORD_NS || type == PLATFORM_DNS_RECORD_CNAME)) {
+        } else if (class_code == 1U && (type == PLATFORM_DNS_RECORD_NS || type == PLATFORM_DNS_RECORD_CNAME || type == PLATFORM_DNS_RECORD_PTR)) {
             if (linux_dns_read_name(reply, (size_t)reply_bytes, offset, 0, data_text, sizeof(data_text)) == 0) {
                 keep_record = 1;
             }
@@ -2848,4 +2871,425 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
 
     platform_close(sock);
     return received == 0U ? 1 : 0;
+}
+
+static int linux_trace_match_inner_ipv4(
+    const unsigned char *reply,
+    size_t reply_size,
+    size_t outer_offset,
+    unsigned short identifier,
+    unsigned short sequence
+) {
+    size_t inner_ip_offset = outer_offset + sizeof(LinuxIcmpPacket);
+    size_t inner_ip_header_length;
+    const LinuxIcmpPacket *inner_icmp;
+
+    if (reply_size < inner_ip_offset + 20U || (reply[inner_ip_offset] >> 4) != 4U) {
+        return 0;
+    }
+    inner_ip_header_length = (size_t)(reply[inner_ip_offset] & 0x0fU) * 4U;
+    if (inner_ip_header_length < 20U || reply_size < inner_ip_offset + inner_ip_header_length + sizeof(LinuxIcmpPacket)) {
+        return 0;
+    }
+    inner_icmp = (const LinuxIcmpPacket *)(reply + inner_ip_offset + inner_ip_header_length);
+    return inner_icmp->type == LINUX_ICMP_ECHO &&
+           linux_net_to_host16(inner_icmp->identifier) == identifier &&
+           linux_net_to_host16(inner_icmp->sequence) == sequence;
+}
+
+static int linux_trace_match_inner_ipv6(
+    const unsigned char *reply,
+    size_t reply_size,
+    size_t outer_offset,
+    unsigned short identifier,
+    unsigned short sequence,
+    int allow_identifier_rewrite
+) {
+    size_t inner_ip_offset = outer_offset + sizeof(LinuxIcmpv6Packet);
+    const LinuxIcmpv6Packet *inner_icmp;
+
+    if (reply_size < inner_ip_offset + 40U || (reply[inner_ip_offset] >> 4) != 6U) {
+        return 0;
+    }
+    if (reply_size < inner_ip_offset + 40U + sizeof(LinuxIcmpv6Packet)) {
+        return 0;
+    }
+    inner_icmp = (const LinuxIcmpv6Packet *)(reply + inner_ip_offset + 40U);
+    return inner_icmp->type == LINUX_ICMPV6_ECHO_REQUEST &&
+           linux_net_to_host16(inner_icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || linux_net_to_host16(inner_icmp->identifier) == identifier);
+}
+
+static int linux_trace_append_text(char *buffer, size_t buffer_size, const char *text) {
+    size_t used;
+    size_t index = 0U;
+
+    if (buffer == 0 || buffer_size == 0U || text == 0) {
+        return -1;
+    }
+    used = rt_strlen(buffer);
+    while (text[index] != '\0') {
+        if (used + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[used++] = text[index++];
+        buffer[used] = '\0';
+    }
+    return 0;
+}
+
+static int linux_trace_append_uint(char *buffer, size_t buffer_size, unsigned int value) {
+    char digits[16];
+
+    rt_unsigned_to_string((unsigned long long)value, digits, sizeof(digits));
+    return linux_trace_append_text(buffer, buffer_size, digits);
+}
+
+static int linux_trace_ipv4_ptr_name(const LinuxInAddr *address, char *buffer, size_t buffer_size) {
+    int index;
+
+    if (address == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    for (index = 3; index >= 0; --index) {
+        if (linux_trace_append_uint(buffer, buffer_size, (unsigned int)address->bytes[index]) != 0 ||
+            linux_trace_append_text(buffer, buffer_size, ".") != 0) {
+            return -1;
+        }
+    }
+    return linux_trace_append_text(buffer, buffer_size, "in-addr.arpa");
+}
+
+static int linux_trace_ipv6_ptr_name(const LinuxIn6Addr *address, char *buffer, size_t buffer_size) {
+    static const char hex[] = "0123456789abcdef";
+    int index;
+
+    if (address == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    for (index = 15; index >= 0; --index) {
+        char nibble[3];
+        nibble[0] = hex[address->bytes[index] & 0x0fU];
+        nibble[1] = '.';
+        nibble[2] = '\0';
+        if (linux_trace_append_text(buffer, buffer_size, nibble) != 0) {
+            return -1;
+        }
+        nibble[0] = hex[(address->bytes[index] >> 4) & 0x0fU];
+        if (linux_trace_append_text(buffer, buffer_size, nibble) != 0) {
+            return -1;
+        }
+    }
+    return linux_trace_append_text(buffer, buffer_size, "ip6.arpa");
+}
+
+static void linux_trace_lookup_ptr(const char *ptr_name, char *name_out, size_t name_size) {
+    PlatformDnsEntry entries[2];
+    size_t count = 0U;
+    size_t index;
+
+    if (ptr_name == 0 || name_out == 0 || name_size == 0U) {
+        return;
+    }
+    name_out[0] = '\0';
+    if (linux_dns_query(0, 53U, ptr_name, PLATFORM_DNS_RECORD_PTR, entries, sizeof(entries) / sizeof(entries[0]), &count) != 0) {
+        return;
+    }
+    for (index = 0U; index < count; ++index) {
+        if (entries[index].record_type == PLATFORM_DNS_RECORD_PTR && entries[index].data[0] != '\0') {
+            rt_copy_string(name_out, name_size, entries[index].data);
+            return;
+        }
+    }
+}
+
+static void linux_trace_lookup_ipv4_name(const LinuxInAddr *address, char *name_out, size_t name_size) {
+    char ptr_name[PLATFORM_NAME_CAPACITY];
+
+    if (name_out == 0 || name_size == 0U) {
+        return;
+    }
+    name_out[0] = '\0';
+    if (linux_trace_ipv4_ptr_name(address, ptr_name, sizeof(ptr_name)) == 0) {
+        linux_trace_lookup_ptr(ptr_name, name_out, name_size);
+    }
+}
+
+static void linux_trace_lookup_ipv6_name(const LinuxIn6Addr *address, char *name_out, size_t name_size) {
+    char ptr_name[PLATFORM_NAME_CAPACITY];
+
+    if (name_out == 0 || name_size == 0U) {
+        return;
+    }
+    name_out[0] = '\0';
+    if (linux_trace_ipv6_ptr_name(address, ptr_name, sizeof(ptr_name)) == 0) {
+        linux_trace_lookup_ptr(ptr_name, name_out, name_size);
+    }
+}
+
+int platform_trace_route(
+    const char *host,
+    const PlatformTracerouteOptions *options,
+    PlatformTracerouteHop *hops_out,
+    size_t hop_capacity,
+    size_t *hop_count_out
+) {
+    PlatformTracerouteOptions defaults;
+    LinuxInAddr address;
+    LinuxIn6Addr address6;
+    unsigned int max_ttl;
+    unsigned int queries;
+    unsigned int timeout_ms;
+    unsigned int payload_size;
+    unsigned short identifier;
+    unsigned int ttl;
+    int sock;
+    size_t hop_count = 0U;
+
+    if (hop_count_out != 0) {
+        *hop_count_out = 0U;
+    }
+    if (host == 0 || hops_out == 0 || hop_count_out == 0 || hop_capacity == 0U) {
+        return -1;
+    }
+    if (options == 0) {
+        defaults.max_ttl = 30U;
+        defaults.queries = 3U;
+        defaults.timeout_seconds = PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS;
+        defaults.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
+        defaults.family = PLATFORM_NETWORK_FAMILY_IPV4;
+        defaults.numeric_only = 1;
+        options = &defaults;
+    }
+    max_ttl = options->max_ttl == 0U ? 30U : options->max_ttl;
+    queries = options->queries == 0U ? 1U : options->queries;
+    timeout_ms = (options->timeout_seconds == 0U ? PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS : options->timeout_seconds) * 1000U;
+    payload_size = options->payload_size > PLATFORM_PING_MAX_PAYLOAD_SIZE ? PLATFORM_PING_MAX_PAYLOAD_SIZE : options->payload_size;
+    if (max_ttl > PLATFORM_PING_MAX_TTL || queries > PLATFORM_TRACEROUTE_MAX_QUERIES) {
+        return -1;
+    }
+
+    if (options->family == PLATFORM_NETWORK_FAMILY_IPV6 ||
+        (options->family != PLATFORM_NETWORK_FAMILY_IPV4 && linux_contains_char(host, ':'))) {
+        int allow_identifier_rewrite6 = 1;
+
+        if (linux_resolve_ipv6_host(host, &address6) != 0) {
+            return -1;
+        }
+        sock = linux_open_socket(LINUX_AF_INET6, LINUX_SOCK_DGRAM, LINUX_IPPROTO_ICMPV6);
+        if (sock < 0) {
+            sock = linux_open_socket(LINUX_AF_INET6, LINUX_SOCK_RAW, LINUX_IPPROTO_ICMPV6);
+            allow_identifier_rewrite6 = 0;
+        }
+        if (sock < 0) {
+            return -1;
+        }
+        identifier = (unsigned short)(platform_get_process_id() & 0xffff);
+
+        for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
+            PlatformTracerouteHop *hop = hops_out + hop_count;
+            unsigned int probe;
+            int hops_value = (int)ttl;
+
+            rt_memset(hop, 0, sizeof(*hop));
+            hop->ttl = ttl;
+            hop->probe_count = queries;
+            (void)linux_set_socket_int_option(sock, LINUX_IPPROTO_IPV6, LINUX_IPV6_UNICAST_HOPS, hops_value);
+
+            for (probe = 0U; probe < queries; ++probe) {
+                unsigned char packet[sizeof(LinuxIcmpv6Packet) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+                unsigned char reply[768];
+                LinuxIcmpv6Packet *header = (LinuxIcmpv6Packet *)packet;
+                size_t packet_size = sizeof(LinuxIcmpv6Packet) + payload_size;
+                unsigned short sequence = (unsigned short)(ttl * 32U + probe);
+                unsigned long long start_ms;
+                unsigned long long deadline;
+                size_t ready_index = 0U;
+                unsigned int i;
+
+                rt_memset(packet, 0, packet_size);
+                header->type = LINUX_ICMPV6_ECHO_REQUEST;
+                header->code = 0U;
+                header->identifier = linux_host_to_net16(identifier);
+                header->sequence = linux_host_to_net16(sequence);
+                for (i = 0U; i < payload_size; ++i) {
+                    packet[sizeof(LinuxIcmpv6Packet) + i] = (unsigned char)('A' + (i % 26U));
+                }
+                header->checksum = 0U;
+
+                start_ms = linux_monotonic_milliseconds();
+                if (linux_sendto_ipv6(sock, packet, packet_size, &address6, 0U) < (long)packet_size) {
+                    continue;
+                }
+                deadline = start_ms + timeout_ms;
+
+                for (;;) {
+                    int timeout_remaining = (int)(deadline > linux_monotonic_milliseconds() ? deadline - linux_monotonic_milliseconds() : 0ULL);
+                    long reply_bytes;
+                    size_t offset = 0U;
+                    LinuxIcmpv6Packet *reply_icmp6;
+                    LinuxIn6Addr peer;
+                    int matched = 0;
+
+                    if (platform_poll_fds(&sock, 1U, &ready_index, timeout_remaining) <= 0) {
+                        break;
+                    }
+                    rt_memset(&peer, 0, sizeof(peer));
+                    reply_bytes = linux_recvfrom_ipv6(sock, reply, sizeof(reply), &peer);
+                    if (reply_bytes <= 0) {
+                        break;
+                    }
+                    if ((size_t)reply_bytes >= 40U && (reply[0] >> 4) == 6U) {
+                        offset = 40U;
+                    }
+                    if ((size_t)reply_bytes < offset + sizeof(LinuxIcmpv6Packet)) {
+                        continue;
+                    }
+                    reply_icmp6 = (LinuxIcmpv6Packet *)(reply + offset);
+                    if (reply_icmp6->type == LINUX_ICMPV6_ECHO_REPLY &&
+                        linux_net_to_host16(reply_icmp6->sequence) == sequence &&
+                        (allow_identifier_rewrite6 || linux_net_to_host16(reply_icmp6->identifier) == identifier)) {
+                        matched = 1;
+                        hop->reached_destination = 1;
+                    } else if (reply_icmp6->type == LINUX_ICMPV6_TIME_EXCEEDED &&
+                               linux_trace_match_inner_ipv6(reply, (size_t)reply_bytes, offset, identifier, sequence, allow_identifier_rewrite6)) {
+                        matched = 1;
+                    }
+                    if (!matched) {
+                        continue;
+                    }
+
+                    hop->probe_replied[probe] = 1U;
+                    hop->rtt_milliseconds[probe] = (unsigned int)(linux_monotonic_milliseconds() - start_ms);
+                    hop->reply_count += 1U;
+                    linux_ipv6_to_text(&peer, hop->address, sizeof(hop->address));
+                    if (!options->numeric_only) {
+                        linux_trace_lookup_ipv6_name(&peer, hop->hostname, sizeof(hop->hostname));
+                    }
+                    break;
+                }
+            }
+
+            hop_count += 1U;
+            if (hop->reached_destination) {
+                break;
+            }
+        }
+
+        platform_close(sock);
+        *hop_count_out = hop_count;
+        return 0;
+    }
+
+    if (linux_resolve_ipv4_host(host, &address) != 0) {
+        return -1;
+    }
+    sock = linux_open_inet_socket(LINUX_SOCK_RAW, LINUX_IPPROTO_ICMP);
+    if (sock < 0 || linux_connect_ipv4(sock, &address, 0U) != 0) {
+        if (sock >= 0) {
+            platform_close(sock);
+        }
+        return -1;
+    }
+    identifier = (unsigned short)(platform_get_process_id() & 0xffff);
+
+    for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
+        PlatformTracerouteHop *hop = hops_out + hop_count;
+        unsigned int probe;
+        int ttl_value = (int)ttl;
+
+        rt_memset(hop, 0, sizeof(*hop));
+        hop->ttl = ttl;
+        hop->probe_count = queries;
+        (void)linux_set_socket_int_option(sock, LINUX_IPPROTO_IP, LINUX_IP_TTL, ttl_value);
+
+        for (probe = 0U; probe < queries; ++probe) {
+            unsigned char packet[sizeof(LinuxIcmpPacket) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+            unsigned char reply[512];
+            LinuxIcmpPacket *header = (LinuxIcmpPacket *)packet;
+            size_t packet_size = sizeof(LinuxIcmpPacket) + payload_size;
+            unsigned short sequence = (unsigned short)(ttl * 32U + probe);
+            unsigned long long start_ms;
+            unsigned long long deadline;
+            size_t ready_index = 0U;
+            unsigned int i;
+
+            rt_memset(packet, 0, packet_size);
+            header->type = LINUX_ICMP_ECHO;
+            header->code = 0U;
+            header->identifier = linux_host_to_net16(identifier);
+            header->sequence = linux_host_to_net16(sequence);
+            for (i = 0U; i < payload_size; ++i) {
+                packet[sizeof(LinuxIcmpPacket) + i] = (unsigned char)('A' + (i % 26U));
+            }
+            header->checksum = 0U;
+            header->checksum = linux_compute_icmp_checksum(packet, packet_size);
+
+            start_ms = linux_monotonic_milliseconds();
+            if (platform_write(sock, packet, packet_size) < (long)packet_size) {
+                continue;
+            }
+            deadline = start_ms + timeout_ms;
+
+            for (;;) {
+                int timeout_remaining = (int)(deadline > linux_monotonic_milliseconds() ? deadline - linux_monotonic_milliseconds() : 0ULL);
+                long reply_bytes;
+                size_t offset;
+                LinuxIcmpPacket *reply_icmp;
+                int matched = 0;
+
+                if (platform_poll_fds(&sock, 1U, &ready_index, timeout_remaining) <= 0) {
+                    break;
+                }
+                reply_bytes = platform_read(sock, reply, sizeof(reply));
+                if (reply_bytes <= 0 || (size_t)reply_bytes < 20U || (reply[0] >> 4) != 4U) {
+                    continue;
+                }
+                offset = (size_t)(reply[0] & 0x0fU) * 4U;
+                if ((size_t)reply_bytes < offset + sizeof(LinuxIcmpPacket)) {
+                    continue;
+                }
+                reply_icmp = (LinuxIcmpPacket *)(reply + offset);
+                if (reply_icmp->type == LINUX_ICMP_REPLY &&
+                    linux_net_to_host16(reply_icmp->identifier) == identifier &&
+                    linux_net_to_host16(reply_icmp->sequence) == sequence) {
+                    matched = 1;
+                    hop->reached_destination = 1;
+                } else if (reply_icmp->type == LINUX_ICMP_TIME_EXCEEDED &&
+                           linux_trace_match_inner_ipv4(reply, (size_t)reply_bytes, offset, identifier, sequence)) {
+                    matched = 1;
+                }
+                if (!matched) {
+                    continue;
+                }
+
+                hop->probe_replied[probe] = 1U;
+                hop->rtt_milliseconds[probe] = (unsigned int)(linux_monotonic_milliseconds() - start_ms);
+                hop->reply_count += 1U;
+                if ((size_t)reply_bytes >= 16U) {
+                    LinuxInAddr peer;
+                    peer.bytes[0] = reply[12];
+                    peer.bytes[1] = reply[13];
+                    peer.bytes[2] = reply[14];
+                    peer.bytes[3] = reply[15];
+                    linux_ipv4_to_text(&peer, hop->address, sizeof(hop->address));
+                    if (!options->numeric_only) {
+                        linux_trace_lookup_ipv4_name(&peer, hop->hostname, sizeof(hop->hostname));
+                    }
+                }
+                break;
+            }
+        }
+
+        hop_count += 1U;
+        if (hop->reached_destination) {
+            break;
+        }
+    }
+
+    platform_close(sock);
+    *hop_count_out = hop_count;
+    return 0;
 }

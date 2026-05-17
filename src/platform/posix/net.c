@@ -56,8 +56,10 @@
 
 #define POSIX_ICMP_ECHO 8
 #define POSIX_ICMP_REPLY 0
+#define POSIX_ICMP_TIME_EXCEEDED 11
 #define POSIX_ICMPV6_ECHO_REQUEST 128
 #define POSIX_ICMPV6_ECHO_REPLY 129
+#define POSIX_ICMPV6_TIME_EXCEEDED 3
 
 #ifndef RTF_UP
 #define RTF_UP 0x1
@@ -2149,7 +2151,7 @@ static int posix_dns_query_records(
                 rt_copy_string(data_text, sizeof(data_text), address);
                 keep_record = 1;
             }
-        } else if (class_code == 1U && (type == PLATFORM_DNS_RECORD_NS || type == PLATFORM_DNS_RECORD_CNAME)) {
+        } else if (class_code == 1U && (type == PLATFORM_DNS_RECORD_NS || type == PLATFORM_DNS_RECORD_CNAME || type == PLATFORM_DNS_RECORD_PTR)) {
             if (posix_dns_read_name(reply, (size_t)reply_length, offset, NULL, data_text, sizeof(data_text)) == 0) {
                 keep_record = 1;
             }
@@ -3021,4 +3023,327 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     }
 
     return received_count > 0U ? 0 : 1;
+}
+
+static int posix_trace_match_inner_ipv4(
+    const unsigned char *reply,
+    size_t reply_size,
+    size_t outer_offset,
+    unsigned short identifier,
+    unsigned short sequence,
+    int allow_identifier_rewrite
+) {
+    size_t inner_ip_offset = outer_offset + sizeof(PosixIcmpPacket);
+    size_t inner_ip_header_length;
+    const PosixIcmpPacket *inner_icmp;
+
+    if (reply_size < inner_ip_offset + 20U || (reply[inner_ip_offset] >> 4) != 4U) {
+        return 0;
+    }
+    inner_ip_header_length = (size_t)(reply[inner_ip_offset] & 0x0fU) * 4U;
+    if (inner_ip_header_length < 20U || reply_size < inner_ip_offset + inner_ip_header_length + sizeof(PosixIcmpPacket)) {
+        return 0;
+    }
+    inner_icmp = (const PosixIcmpPacket *)(reply + inner_ip_offset + inner_ip_header_length);
+    return inner_icmp->type == POSIX_ICMP_ECHO &&
+           ntohs(inner_icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || ntohs(inner_icmp->identifier) == identifier);
+}
+
+static int posix_trace_match_inner_ipv6(
+    const unsigned char *reply,
+    size_t reply_size,
+    size_t outer_offset,
+    unsigned short identifier,
+    unsigned short sequence,
+    int allow_identifier_rewrite
+) {
+    size_t inner_ip_offset = outer_offset + sizeof(PosixIcmpv6Packet);
+    const PosixIcmpv6Packet *inner_icmp;
+
+    if (reply_size < inner_ip_offset + 40U || (reply[inner_ip_offset] >> 4) != 6U) {
+        return 0;
+    }
+    if (reply_size < inner_ip_offset + 40U + sizeof(PosixIcmpv6Packet)) {
+        return 0;
+    }
+    inner_icmp = (const PosixIcmpv6Packet *)(reply + inner_ip_offset + 40U);
+    return inner_icmp->type == POSIX_ICMPV6_ECHO_REQUEST &&
+           ntohs(inner_icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || ntohs(inner_icmp->identifier) == identifier);
+}
+
+static void posix_trace_lookup_name(const struct sockaddr *peer, socklen_t peer_len, char *name_out, size_t name_size) {
+    if (name_out == NULL || name_size == 0U) {
+        return;
+    }
+    name_out[0] = '\0';
+    if (peer == NULL) {
+        return;
+    }
+    if (getnameinfo(peer, peer_len, name_out, (socklen_t)name_size, NULL, 0, NI_NAMEREQD) != 0) {
+        name_out[0] = '\0';
+    }
+}
+
+int platform_trace_route(
+    const char *host,
+    const PlatformTracerouteOptions *options,
+    PlatformTracerouteHop *hops_out,
+    size_t hop_capacity,
+    size_t *hop_count_out
+) {
+    PlatformTracerouteOptions defaults;
+    struct sockaddr_in addr;
+    struct timeval timeout;
+    unsigned int max_ttl;
+    unsigned int queries;
+    unsigned int timeout_seconds;
+    unsigned int payload_size;
+    unsigned short identifier;
+    unsigned int ttl;
+    int sock;
+    int allow_identifier_rewrite = 0;
+    size_t hop_count = 0U;
+
+    if (hop_count_out != NULL) {
+        *hop_count_out = 0U;
+    }
+    if (host == NULL || hops_out == NULL || hop_count_out == NULL || hop_capacity == 0U) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (options == NULL) {
+        defaults.max_ttl = 30U;
+        defaults.queries = 3U;
+        defaults.timeout_seconds = PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS;
+        defaults.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
+        defaults.family = PLATFORM_NETWORK_FAMILY_IPV4;
+        defaults.numeric_only = 1;
+        options = &defaults;
+    }
+    max_ttl = options->max_ttl == 0U ? 30U : options->max_ttl;
+    queries = options->queries == 0U ? 1U : options->queries;
+    timeout_seconds = options->timeout_seconds == 0U ? PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS : options->timeout_seconds;
+    payload_size = options->payload_size > PLATFORM_PING_MAX_PAYLOAD_SIZE ? PLATFORM_PING_MAX_PAYLOAD_SIZE : options->payload_size;
+    if (max_ttl > PLATFORM_PING_MAX_TTL || queries > PLATFORM_TRACEROUTE_MAX_QUERIES) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (options->family == PLATFORM_NETWORK_FAMILY_IPV6 ||
+        (options->family != PLATFORM_NETWORK_FAMILY_IPV4 && strchr(host, ':') != NULL)) {
+        struct sockaddr_in6 addr6;
+        int allow_identifier_rewrite6 = 1;
+
+        if (resolve_ping_host6(host, &addr6, hops_out[0].address, sizeof(hops_out[0].address)) != 0) {
+            return -1;
+        }
+        sock = posix_socket_open(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+        if (sock < 0) {
+            sock = posix_socket_open(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+            allow_identifier_rewrite6 = 0;
+        }
+        if (sock < 0) {
+            return -1;
+        }
+        timeout.tv_sec = (time_t)timeout_seconds;
+        timeout.tv_usec = 0;
+        (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        identifier = (unsigned short)((platform_get_process_id() > 0) ? platform_get_process_id() : 0x1234);
+
+        for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
+            PlatformTracerouteHop *hop = hops_out + hop_count;
+            unsigned int probe;
+            int hops_value = (int)ttl;
+
+            rt_memset(hop, 0, sizeof(*hop));
+            hop->ttl = ttl;
+            hop->probe_count = queries;
+            (void)setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops_value, sizeof(hops_value));
+
+            for (probe = 0U; probe < queries; ++probe) {
+                unsigned char packet[sizeof(PosixIcmpv6Packet) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+                unsigned char reply[768];
+                PosixIcmpv6Packet *header = (PosixIcmpv6Packet *)packet;
+                size_t packet_size = sizeof(PosixIcmpv6Packet) + payload_size;
+                unsigned short sequence = (unsigned short)(ttl * 32U + probe);
+                struct timeval start_time;
+                struct timeval end_time;
+
+                memset(packet, 0, packet_size);
+                header->type = POSIX_ICMPV6_ECHO_REQUEST;
+                header->code = 0;
+                header->identifier = htons(identifier);
+                header->sequence = htons(sequence);
+                memset(packet + sizeof(PosixIcmpv6Packet), 0x42, payload_size);
+                header->checksum = 0;
+
+                (void)gettimeofday(&start_time, 0);
+                if (sendto(sock, packet, packet_size, 0, (struct sockaddr *)&addr6, sizeof(addr6)) < 0) {
+                    continue;
+                }
+
+                for (;;) {
+                    struct sockaddr_storage peer;
+                    socklen_t peer_len = sizeof(peer);
+                    ssize_t reply_size = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer, &peer_len);
+                    size_t offset = 0U;
+                    const PosixIcmpv6Packet *reply_header;
+                    int matched = 0;
+
+                    if (reply_size < 0) {
+                        break;
+                    }
+                    if ((size_t)reply_size >= 40U && (reply[0] >> 4) == 6U) {
+                        offset = 40U;
+                    }
+                    if ((size_t)reply_size < offset + sizeof(PosixIcmpv6Packet)) {
+                        continue;
+                    }
+                    reply_header = (const PosixIcmpv6Packet *)(reply + offset);
+                    if (reply_header->type == POSIX_ICMPV6_ECHO_REPLY &&
+                        ntohs(reply_header->sequence) == sequence &&
+                        (allow_identifier_rewrite6 || ntohs(reply_header->identifier) == identifier)) {
+                        matched = 1;
+                        hop->reached_destination = 1;
+                    } else if (reply_header->type == POSIX_ICMPV6_TIME_EXCEEDED &&
+                               posix_trace_match_inner_ipv6(reply, (size_t)reply_size, offset, identifier, sequence, allow_identifier_rewrite6)) {
+                        matched = 1;
+                    }
+                    if (!matched) {
+                        continue;
+                    }
+
+                    (void)gettimeofday(&end_time, 0);
+                    hop->probe_replied[probe] = 1U;
+                    hop->rtt_milliseconds[probe] = (unsigned int)(elapsed_milliseconds(&start_time, &end_time) + 0.5);
+                    hop->reply_count += 1U;
+                    if (peer.ss_family == AF_INET6) {
+                        const struct sockaddr_in6 *peer6 = (const struct sockaddr_in6 *)&peer;
+                        (void)inet_ntop(AF_INET6, &peer6->sin6_addr, hop->address, sizeof(hop->address));
+                        if (!options->numeric_only) {
+                            posix_trace_lookup_name((const struct sockaddr *)&peer, peer_len, hop->hostname, sizeof(hop->hostname));
+                        }
+                    }
+                    break;
+                }
+            }
+
+            hop_count += 1U;
+            if (hop->reached_destination) {
+                break;
+            }
+        }
+
+        close(sock);
+        *hop_count_out = hop_count;
+        return 0;
+    }
+
+    if (resolve_ping_host(host, &addr, hops_out[0].address, sizeof(hops_out[0].address)) != 0) {
+        return -1;
+    }
+
+    sock = posix_socket_open(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) {
+        sock = posix_socket_open(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+        allow_identifier_rewrite = 1;
+    }
+    if (sock < 0) {
+        return -1;
+    }
+    timeout.tv_sec = (time_t)timeout_seconds;
+    timeout.tv_usec = 0;
+    (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    identifier = (unsigned short)((platform_get_process_id() > 0) ? platform_get_process_id() : 0x1234);
+
+    for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
+        PlatformTracerouteHop *hop = hops_out + hop_count;
+        unsigned int probe;
+        int ttl_value = (int)ttl;
+
+        rt_memset(hop, 0, sizeof(*hop));
+        hop->ttl = ttl;
+        hop->probe_count = queries;
+        (void)setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl_value, sizeof(ttl_value));
+
+        for (probe = 0U; probe < queries; ++probe) {
+            unsigned char packet[sizeof(PosixIcmpPacket) + PLATFORM_PING_MAX_PAYLOAD_SIZE];
+            unsigned char reply[512];
+            PosixIcmpPacket *header = (PosixIcmpPacket *)packet;
+            size_t packet_size = sizeof(PosixIcmpPacket) + payload_size;
+            unsigned short sequence = (unsigned short)(ttl * 32U + probe);
+            struct timeval start_time;
+            struct timeval end_time;
+
+            memset(packet, 0, packet_size);
+            header->type = POSIX_ICMP_ECHO;
+            header->code = 0;
+            header->identifier = htons(identifier);
+            header->sequence = htons(sequence);
+            memset(packet + sizeof(PosixIcmpPacket), 0x42, payload_size);
+            header->checksum = compute_icmp_checksum(packet, packet_size);
+
+            (void)gettimeofday(&start_time, 0);
+            if (sendto(sock, packet, packet_size, 0, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+                continue;
+            }
+
+            for (;;) {
+                struct sockaddr_storage peer;
+                socklen_t peer_len = sizeof(peer);
+                ssize_t reply_size = recvfrom(sock, reply, sizeof(reply), 0, (struct sockaddr *)&peer, &peer_len);
+                size_t offset;
+                const PosixIcmpPacket *reply_header;
+                int matched = 0;
+
+                if (reply_size < 0) {
+                    break;
+                }
+                offset = 0U;
+                if ((size_t)reply_size >= 20U && (reply[0] >> 4) == 4U) {
+                    offset = (size_t)(reply[0] & 0x0fU) * 4U;
+                }
+                if ((size_t)reply_size < offset + sizeof(PosixIcmpPacket)) {
+                    continue;
+                }
+                reply_header = (const PosixIcmpPacket *)(reply + offset);
+                if (reply_header->type == POSIX_ICMP_REPLY &&
+                    ntohs(reply_header->sequence) == sequence &&
+                    (allow_identifier_rewrite || ntohs(reply_header->identifier) == identifier)) {
+                    matched = 1;
+                    hop->reached_destination = 1;
+                } else if (reply_header->type == POSIX_ICMP_TIME_EXCEEDED &&
+                           posix_trace_match_inner_ipv4(reply, (size_t)reply_size, offset, identifier, sequence, allow_identifier_rewrite)) {
+                    matched = 1;
+                }
+                if (!matched) {
+                    continue;
+                }
+
+                (void)gettimeofday(&end_time, 0);
+                hop->probe_replied[probe] = 1U;
+                hop->rtt_milliseconds[probe] = (unsigned int)(elapsed_milliseconds(&start_time, &end_time) + 0.5);
+                hop->reply_count += 1U;
+                if (peer.ss_family == AF_INET) {
+                    const struct sockaddr_in *peer4 = (const struct sockaddr_in *)&peer;
+                    (void)inet_ntop(AF_INET, &peer4->sin_addr, hop->address, sizeof(hop->address));
+                    if (!options->numeric_only) {
+                        posix_trace_lookup_name((const struct sockaddr *)&peer, peer_len, hop->hostname, sizeof(hop->hostname));
+                    }
+                }
+                break;
+            }
+        }
+
+        hop_count += 1U;
+        if (hop->reached_destination) {
+            break;
+        }
+    }
+
+    close(sock);
+    *hop_count_out = hop_count;
+    return 0;
 }

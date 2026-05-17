@@ -1516,6 +1516,21 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     return -1;
 }
 
+int platform_trace_route(
+    const char *host,
+    const PlatformTracerouteOptions *options,
+    PlatformTracerouteHop *hops_out,
+    size_t hop_capacity,
+    size_t *hop_count_out
+) {
+    (void)host;
+    (void)options;
+    (void)hops_out;
+    (void)hop_capacity;
+    if (hop_count_out != 0) *hop_count_out = 0U;
+    return -1;
+}
+
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     (void)path;
     (void)buffer;

@@ -30,6 +30,14 @@ assert_file_contains "$WORK_DIR/top.out" '^top - ' "top did not print the expect
 assert_file_contains "$WORK_DIR/top.out" '^PID[[:space:]][[:space:]]*USER[[:space:]][[:space:]]*STATE[[:space:]][[:space:]]*RSS' "top did not print the process table header"
 assert_file_contains "$WORK_DIR/top.out" "^$$[[:space:]]" "top did not include the current shell pid"
 
+assert_command_succeeds "$ROOT_DIR/build/lsof" --help > "$WORK_DIR/lsof_help.out" 2>&1
+assert_file_contains "$WORK_DIR/lsof_help.out" 'list open files' "lsof --help did not print the tool summary"
+if [ -d "/proc/$$/fd" ]; then
+    assert_command_succeeds "$ROOT_DIR/build/lsof" -p $$ > "$WORK_DIR/lsof.out"
+    assert_file_contains "$WORK_DIR/lsof.out" '^COMMAND PID USER FD NAME$' "lsof did not print the expected header"
+    assert_file_contains "$WORK_DIR/lsof.out" "^[^[:space:]][^[:space:]]*[[:space:]]$$[[:space:]]" "lsof did not include the current shell pid"
+fi
+
 kill_term=$("$ROOT_DIR/build/kill" -l TERM | tr -d '\r\n')
 assert_text_equals "$kill_term" '15' "kill -l TERM did not resolve to SIGTERM"
 

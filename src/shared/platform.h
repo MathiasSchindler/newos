@@ -14,6 +14,7 @@
 #define PLATFORM_PING_DEFAULT_PAYLOAD_SIZE 56U
 #define PLATFORM_PING_MAX_PAYLOAD_SIZE 1400U
 #define PLATFORM_PING_MAX_TTL 255U
+#define PLATFORM_TRACEROUTE_MAX_QUERIES 10U
 #define PLATFORM_NETWORK_TEXT_CAPACITY 64
 #define PLATFORM_NETWORK_FAMILY_ANY 0
 #define PLATFORM_NETWORK_FAMILY_IPV4 4
@@ -21,6 +22,7 @@
 #define PLATFORM_DNS_RECORD_A 1U
 #define PLATFORM_DNS_RECORD_NS 2U
 #define PLATFORM_DNS_RECORD_CNAME 5U
+#define PLATFORM_DNS_RECORD_PTR 12U
 #define PLATFORM_DNS_RECORD_MX 15U
 #define PLATFORM_DNS_RECORD_TXT 16U
 #define PLATFORM_DNS_RECORD_AAAA 28U
@@ -153,6 +155,26 @@ typedef struct {
     int family;
     int numeric_only;
 } PlatformPingOptions;
+
+typedef struct {
+    unsigned int max_ttl;
+    unsigned int queries;
+    unsigned int timeout_seconds;
+    unsigned int payload_size;
+    int family;
+    int numeric_only;
+} PlatformTracerouteOptions;
+
+typedef struct {
+    unsigned int ttl;
+    unsigned int probe_count;
+    unsigned int reply_count;
+    int reached_destination;
+    char address[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char hostname[PLATFORM_NAME_CAPACITY];
+    unsigned char probe_replied[PLATFORM_TRACEROUTE_MAX_QUERIES];
+    unsigned int rtt_milliseconds[PLATFORM_TRACEROUTE_MAX_QUERIES];
+} PlatformTracerouteHop;
 
 typedef struct {
     int listen_mode;
@@ -420,6 +442,13 @@ int platform_get_uname(
     size_t machine_size
 );
 int platform_ping_host(const char *host, const PlatformPingOptions *options);
+int platform_trace_route(
+    const char *host,
+    const PlatformTracerouteOptions *options,
+    PlatformTracerouteHop *hops_out,
+    size_t hop_capacity,
+    size_t *hop_count_out
+);
 
 int platform_collect_entries(
     const char *path,

@@ -18,6 +18,69 @@ assert_file_contains "$WORK_DIR/netcat_server.out" 'phase1-netcat' "netcat loopb
 assert_command_succeeds "$ROOT_DIR/build/ping" --help > "$WORK_DIR/ping_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping_help.out" 'quiet output' "ping --help did not describe the extended options"
 
+assert_command_succeeds "$ROOT_DIR/build/traceroute" --help > "$WORK_DIR/traceroute_help.out" 2>&1
+assert_file_contains "$WORK_DIR/traceroute_help.out" 'increasing ICMP TTL' "traceroute --help did not describe TTL probing"
+
+traceroute_bad_status=0
+"$ROOT_DIR/build/traceroute" -m 0 127.0.0.1 > "$WORK_DIR/traceroute_bad.out" 2>&1 || traceroute_bad_status=$?
+assert_exit_code "$traceroute_bad_status" 1 "traceroute should reject a zero max TTL"
+assert_file_contains "$WORK_DIR/traceroute_bad.out" '^Usage: traceroute ' "traceroute did not print usage for an invalid max TTL"
+
+traceroute_status=0
+"$ROOT_DIR/build/traceroute" -4 -m 1 -q 1 -w 1 127.0.0.1 > "$WORK_DIR/traceroute_loopback.out" 2>&1 || traceroute_status=$?
+case "$traceroute_status" in
+    0|1) ;;
+    *) fail "traceroute returned an unexpected exit status: $traceroute_status" ;;
+esac
+if grep -q '^PING ' "$WORK_DIR/traceroute_loopback.out" || grep -q 'ping statistics' "$WORK_DIR/traceroute_loopback.out"; then
+    fail "traceroute should not print ping banners or ping statistics"
+fi
+
+traceroute6_status=0
+"$ROOT_DIR/build/traceroute" -6 -m 1 -q 1 -w 1 ::1 > "$WORK_DIR/traceroute6_loopback.out" 2>&1 || traceroute6_status=$?
+case "$traceroute6_status" in
+    0|1) ;;
+    *) fail "traceroute -6 returned an unexpected exit status: $traceroute6_status" ;;
+esac
+if grep -q '^PING ' "$WORK_DIR/traceroute6_loopback.out" || grep -q 'ping statistics' "$WORK_DIR/traceroute6_loopback.out"; then
+    fail "traceroute -6 should not print ping banners or ping statistics"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+    whois_port=$((port + 300))
+    python3 - <<'PY' "$whois_port" > "$WORK_DIR/whois_server.out" 2>&1 &
+import socket, sys
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('127.0.0.1', port))
+sock.listen(1)
+conn, _ = sock.accept()
+data = b''
+while not data.endswith(b'\n'):
+    chunk = conn.recv(1024)
+    if not chunk:
+        break
+    data += chunk
+conn.sendall(b'Domain Name: EXAMPLE.TEST\r\nQuery: ' + data.strip() + b'\r\n')
+conn.close()
+sock.close()
+print('MOCK_WHOIS_OK')
+PY
+    whois_server_pid=$!
+    "$ROOT_DIR/build/sleep" 1
+    whois_status=0
+    "$ROOT_DIR/build/whois" -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois.out" 2>&1 || whois_status=$?
+    if [ "$whois_status" -ne 0 ]; then
+        kill "$whois_server_pid" 2>/dev/null || true
+    fi
+    wait "$whois_server_pid" || true
+    assert_exit_code "$whois_status" 0 "whois did not complete the mock query"
+    assert_file_contains "$WORK_DIR/whois_server.out" 'MOCK_WHOIS_OK' "mock whois server did not complete"
+    assert_file_contains "$WORK_DIR/whois.out" 'Domain Name: EXAMPLE\.TEST' "whois did not print the mock response"
+    assert_file_contains "$WORK_DIR/whois.out" 'Query: example\.test' "whois did not send the requested query"
+fi
+
 lookup_status=0
 "$ROOT_DIR/build/nslookup" localhost > "$WORK_DIR/nslookup.out" 2>&1 || lookup_status=$?
 assert_exit_code "$lookup_status" 0 "nslookup localhost should succeed"
