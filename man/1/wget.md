@@ -42,8 +42,8 @@ external dependencies or a hosted libc requirement in the tool itself.
 
 - TLS peer certificates are verified where the platform TLS layer has trust
   anchor support; Windows freestanding HTTPS currently reports an unverified
-  peer status. On POSIX and macOS, `NEWOS_NATIVE_TLS_INSECURE=1` can be used
-  to bypass certificate verification for diagnostics.
+  peer status. Hosted POSIX builds support `NEWOS_NATIVE_TLS_INSECURE=1` to
+  bypass certificate verification for diagnostics.
 - no resume/download continuation support
 - no authentication, cookies, proxy support, or recursive mirroring
 - only simple GET-style retrieval is supported

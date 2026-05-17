@@ -17,11 +17,13 @@ for rel in $hosted_guard_files; do
     case "$rel" in
         src/compiler/driver.c|\
         src/platform/*|\
+        src/shared/runtime/memory.c|\
         src/shared/shell_builtins.c|\
         src/shared/shell_interactive.c|\
         src/shared/tool_util.c|\
         src/tools/date.c|\
         src/tools/env.c|\
+        src/tools/expack.c|\
         src/tools/less.c|\
         src/tools/mktemp.c|\
         src/tools/more.c|\

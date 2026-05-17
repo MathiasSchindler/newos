@@ -2,7 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#include <limits.h>
+#include "limits.h"
 
 typedef enum {
     DATE_FORMAT_DEFAULT,
@@ -573,6 +573,29 @@ static const char *format_for_kind(DateFormatKind kind, int use_utc) {
     }
 }
 
+static void date_signed_to_string(long long value, char *buffer, size_t buffer_size) {
+    unsigned long long magnitude;
+
+    if (buffer_size == 0U) {
+        return;
+    }
+    if (value < 0LL) {
+        buffer[0] = '-';
+        magnitude = (unsigned long long)(-(value + 1LL)) + 1ULL;
+        rt_unsigned_to_string(magnitude, buffer + 1U, buffer_size > 1U ? buffer_size - 1U : 0U);
+    } else {
+        rt_unsigned_to_string((unsigned long long)value, buffer, buffer_size);
+    }
+}
+
+static int date_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size) {
+    if (format != 0 && format[0] == '%' && format[1] == 's' && format[2] == '\0') {
+        date_signed_to_string(epoch_seconds, buffer, buffer_size);
+        return buffer_size == 0U || buffer[0] == '\0' ? -1 : 0;
+    }
+    return platform_format_time(epoch_seconds, use_local_time, format, buffer, buffer_size);
+}
+
 static int parse_iso_precision(const char *text, DateFormatKind *kind_out) {
     if (text == 0 || text[0] == '\0' || date_equals_ignore_case(text, "date")) {
         *kind_out = DATE_FORMAT_ISO_DATE;
@@ -755,8 +778,8 @@ int main(int argc, char **argv) {
         epoch_seconds = platform_get_epoch_time();
     }
     actual_format = options.format_kind == DATE_FORMAT_CUSTOM ? options.custom_format : format_for_kind(options.format_kind, options.use_utc);
-    if (platform_format_time(epoch_seconds, options.use_utc ? 0 : 1, actual_format, output, sizeof(output)) != 0) {
-        if (platform_format_time(epoch_seconds, 0, "%Y-%m-%d %H:%M:%S", output, sizeof(output)) != 0) {
+    if (date_format_time(epoch_seconds, options.use_utc ? 0 : 1, actual_format, output, sizeof(output)) != 0) {
+        if (date_format_time(epoch_seconds, 0, "%Y-%m-%d %H:%M:%S", output, sizeof(output)) != 0) {
             tool_write_error("date", "failed to format time", 0);
             return 1;
         }
