@@ -24,7 +24,74 @@ typedef struct {
     int output_to_stdout;
 } WgetOptions;
 
+typedef struct {
+    int use_tls;
+    int socket_fd;
+    PlatformTlsClient tls;
+} WgetConnection;
+
 static int open_output_for_url(const WgetOptions *options, const WgetUrl *url, char *path_out, size_t path_out_size, int *fd_out);
+
+static unsigned int default_port_for_scheme(int scheme) {
+    return scheme == WGET_SCHEME_HTTPS ? 443U : 80U;
+}
+
+static int wget_connect(const WgetUrl *url, WgetConnection *connection) {
+    rt_memset(connection, 0, sizeof(*connection));
+    connection->socket_fd = -1;
+    connection->use_tls = url->scheme == WGET_SCHEME_HTTPS;
+
+    if (connection->use_tls) {
+        if (platform_tls_connect(&connection->tls, url->host, url->port) != 0) {
+            return -1;
+        }
+        connection->socket_fd = connection->tls.socket_fd;
+        return 0;
+    }
+
+    return platform_connect_tcp(url->host, url->port, &connection->socket_fd);
+}
+
+static int wget_connection_fd(const WgetConnection *connection) {
+    return connection->use_tls ? connection->tls.socket_fd : connection->socket_fd;
+}
+
+static long wget_connection_read(WgetConnection *connection, void *buffer, size_t count) {
+    if (connection->use_tls) {
+        return platform_tls_read(&connection->tls, buffer, count);
+    }
+    return platform_read(connection->socket_fd, buffer, count);
+}
+
+static int wget_connection_write_all(WgetConnection *connection, const void *buffer, size_t count) {
+    const unsigned char *bytes = (const unsigned char *)buffer;
+    size_t written = 0U;
+
+    while (written < count) {
+        long result;
+
+        if (connection->use_tls) {
+            result = platform_tls_write(&connection->tls, bytes + written, count - written);
+        } else {
+            result = platform_write(connection->socket_fd, bytes + written, count - written);
+        }
+        if (result <= 0) {
+            return -1;
+        }
+        written += (size_t)result;
+    }
+
+    return 0;
+}
+
+static void wget_connection_close(WgetConnection *connection) {
+    if (connection->use_tls) {
+        platform_tls_close(&connection->tls);
+    } else if (connection->socket_fd >= 0) {
+        (void)platform_close(connection->socket_fd);
+    }
+    connection->socket_fd = -1;
+}
 
 static char to_lower_ascii(char ch) {
     if (ch >= 'A' && ch <= 'Z') {
@@ -462,7 +529,7 @@ static int fetch_http_body(
     char *redirect_url,
     size_t redirect_size
 ) {
-    int socket_fd = -1;
+    WgetConnection connection;
     int output_fd = -1;
     int should_close_output = 0;
     char output_path[512];
@@ -475,15 +542,15 @@ static int fetch_http_body(
     char buffer[WGET_BUFFER_CAPACITY];
     long bytes_read = 0;
 
-    if (platform_connect_tcp(url->host, url->port, &socket_fd) != 0) {
+    if (wget_connect(url, &connection) != 0) {
         return -1;
     }
 
     request_length = buffer_append_cstr(request, sizeof(request), request_length, "GET ");
     request_length = buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
-    request_length = buffer_append_cstr(request, sizeof(request), request_length, " HTTP/1.0\r\nHost: ");
+    request_length = buffer_append_cstr(request, sizeof(request), request_length, url->scheme == WGET_SCHEME_HTTPS ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
     request_length = buffer_append_cstr(request, sizeof(request), request_length, url->host);
-    if (url->port != 80U) {
+    if (url->port != default_port_for_scheme(url->scheme)) {
         char port_text[16];
         rt_unsigned_to_string(url->port, port_text, sizeof(port_text));
         request_length = buffer_append_char(request, sizeof(request), request_length, ':');
@@ -491,18 +558,22 @@ static int fetch_http_body(
     }
     request_length = buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
 
-    if (rt_write_all(socket_fd, request, request_length) != 0) {
-        (void)platform_close(socket_fd);
+    if (wget_connection_write_all(&connection, request, request_length) != 0) {
+        wget_connection_close(&connection);
         return -1;
     }
 
     for (;;) {
-        if (maybe_wait_for_socket(socket_fd, options->timeout_ms) != 0) {
+        if (!connection.use_tls && maybe_wait_for_socket(wget_connection_fd(&connection), options->timeout_ms) != 0) {
             bytes_read = -1;
             break;
         }
 
-        bytes_read = platform_read(socket_fd, buffer, sizeof(buffer));
+        bytes_read = wget_connection_read(&connection, buffer, sizeof(buffer));
+        if (bytes_read < 0 && connection.use_tls && header_complete) {
+            bytes_read = 0;
+            break;
+        }
         if (bytes_read <= 0) {
             break;
         }
@@ -511,7 +582,7 @@ static int fetch_http_body(
             size_t body_offset = 0;
 
             if (header_length + (size_t)bytes_read >= sizeof(header_buffer)) {
-                (void)platform_close(socket_fd);
+                wget_connection_close(&connection);
                 return -1;
             }
 
@@ -529,12 +600,12 @@ static int fetch_http_body(
                 header_buffer[body_offset] = '\0';
 
                 if (options->show_headers && rt_write_all(2, header_buffer, body_offset) != 0) {
-                    (void)platform_close(socket_fd);
+                    wget_connection_close(&connection);
                     return -1;
                 }
 
                 if (parse_http_headers(header_buffer, &status_code, redirect_url, redirect_size) != 0) {
-                    (void)platform_close(socket_fd);
+                    wget_connection_close(&connection);
                     return -1;
                 }
 
@@ -542,17 +613,17 @@ static int fetch_http_body(
             }
 
             if (status_code >= 300 && status_code < 400 && redirect_url[0] != '\0') {
-                (void)platform_close(socket_fd);
+                wget_connection_close(&connection);
                 return 1;
             }
 
             if (status_code < 200 || status_code >= 300) {
-                (void)platform_close(socket_fd);
+                wget_connection_close(&connection);
                 return -1;
             }
 
             if (open_output_for_url(options, url, output_path, sizeof(output_path), &output_fd) != 0) {
-                (void)platform_close(socket_fd);
+                wget_connection_close(&connection);
                 return -1;
             }
             should_close_output = output_fd > 1;
@@ -565,19 +636,19 @@ static int fetch_http_body(
                 if (should_close_output) {
                     (void)platform_close(output_fd);
                 }
-                (void)platform_close(socket_fd);
+                wget_connection_close(&connection);
                 return -1;
             }
         } else if (rt_write_all(output_fd, buffer, (size_t)bytes_read) != 0) {
             if (should_close_output) {
                 (void)platform_close(output_fd);
             }
-            (void)platform_close(socket_fd);
+            wget_connection_close(&connection);
             return -1;
         }
     }
 
-    (void)platform_close(socket_fd);
+    wget_connection_close(&connection);
     if (should_close_output) {
         (void)platform_close(output_fd);
     }
@@ -644,11 +715,6 @@ static int fetch_one_url(const char *source_url, const WgetOptions *options) {
             return 1;
         }
 
-        if (url.scheme == WGET_SCHEME_HTTPS) {
-            tool_write_error("wget", "https is not yet supported for ", current_url);
-            return 1;
-        }
-
         if (url.scheme == WGET_SCHEME_FILE &&
             open_output_for_url(options, &url, output_path, sizeof(output_path), &output_fd) != 0) {
             tool_write_error("wget", "cannot open output for ", current_url);
@@ -686,8 +752,20 @@ static int fetch_one_url(const char *source_url, const WgetOptions *options) {
             continue;
         }
 
-        if (url.scheme == WGET_SCHEME_HTTP) {
+        if (url.scheme == WGET_SCHEME_HTTP || url.scheme == WGET_SCHEME_HTTPS) {
             tool_write_error("wget", "request failed for ", current_url);
+            if (url.scheme == WGET_SCHEME_HTTPS) {
+                const char *tls_error = platform_tls_last_error();
+                if (tls_error != 0 && rt_strcmp(tls_error, "none") != 0) {
+                    tool_write_error("wget", "tls: ", tls_error);
+                }
+                if (tls_error != 0 && rt_strcmp(tls_error, "certificate verification failed") == 0) {
+                    const char *peer_status = platform_tls_peer_verification_status();
+                    if (peer_status != 0 && peer_status[0] != '\0') {
+                        tool_write_error("wget", "tls peer: ", peer_status);
+                    }
+                }
+            }
         } else {
             tool_write_error("wget", "cannot read ", url.path);
         }

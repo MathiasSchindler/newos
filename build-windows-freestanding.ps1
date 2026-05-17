@@ -178,6 +178,7 @@ $awkTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_AWK_TOOLS"
 $xmlTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_XML_TOOLS"
 $tuiTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_TUI_TOOLS"
 $mailTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_MAIL_TOOLS"
+$wgetTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_WGET_TOOLS"
 $nccTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_NCC_TOOLS"
 $shellTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SHELL_TOOLS"
 $makeTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_MAKE_TOOLS"
@@ -187,7 +188,7 @@ $sshTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSH_TOOLS"
 $sshdTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSHD_TOOLS"
 $aliasTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_ALIAS_TOOLS"
 
-$specialTools = Add-Unique (@("wtf") + $imageTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $nccTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
+$specialTools = Add-Unique (@("wtf") + $imageTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $nccTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
 $genericTools = Remove-Tools $allTools $specialTools
 
 $toolKinds = @{}
@@ -201,6 +202,7 @@ foreach ($tool in $awkTools) { $toolKinds[$tool] = "awk" }
 foreach ($tool in $xmlTools) { $toolKinds[$tool] = "xml" }
 foreach ($tool in $tuiTools) { $toolKinds[$tool] = "editor" }
 foreach ($tool in $mailTools) { $toolKinds[$tool] = "mail" }
+foreach ($tool in $wgetTools) { $toolKinds[$tool] = "wget" }
 foreach ($tool in $nccTools) { $toolKinds[$tool] = "ncc" }
 foreach ($tool in $shellTools) { $toolKinds[$tool] = "shell" }
 foreach ($tool in $makeTools) { $toolKinds[$tool] = "make" }
@@ -267,6 +269,7 @@ foreach ($tool in $selectedTools) {
         "xml" { $sources += $xmlSources + $runtimeSources }
         "editor" { $sources += $editorSources + $runtimeSources }
         "mail" { $sources += $mailSources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
+        "wget" { $sources += $runtimeSources + $tlsSources + $cryptoSources + @("src/platform/windows/tls.c"); $linkFlags = $windowsTlsLdFlags }
         "ncc" { $extraCFlags += "-Isrc/compiler"; $sources += $nccSources + @("src/platform/windows/core.c") }
         "shell" { $sources += $shellToolSources + @("src/platform/windows/core.c") }
         "make" { $sources += $makeToolSources + @("src/platform/windows/core.c") }
