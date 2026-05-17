@@ -14,6 +14,7 @@
 #define LINUX_IPPROTO_IPV6 41
 #define LINUX_IPPROTO_ICMPV6 58
 #define LINUX_IP_TTL 2
+#define LINUX_IP_RECVERR 11
 #define LINUX_IPV6_UNICAST_HOPS 16
 #define LINUX_SOL_SOCKET 1
 #define LINUX_SO_REUSEADDR 2
@@ -23,6 +24,8 @@
 #define LINUX_POLLOUT 0x0004
 #define LINUX_POLLERR 0x0008
 #define LINUX_POLLHUP 0x0010
+#define LINUX_MSG_ERRQUEUE 0x2000
+#define LINUX_SO_EE_ORIGIN_ICMP 2U
 #define LINUX_IFNAMSIZ 16
 #define LINUX_IFF_UP 0x0001U
 #define LINUX_IFF_BROADCAST 0x0002U
@@ -130,6 +133,37 @@ struct linux_pollfd {
     int fd;
     short events;
     short revents;
+};
+
+struct linux_iovec {
+    void *iov_base;
+    unsigned long iov_len;
+};
+
+struct linux_msghdr {
+    void *msg_name;
+    unsigned int msg_namelen;
+    struct linux_iovec *msg_iov;
+    unsigned long msg_iovlen;
+    void *msg_control;
+    unsigned long msg_controllen;
+    unsigned int msg_flags;
+};
+
+struct linux_cmsghdr {
+    unsigned long cmsg_len;
+    int cmsg_level;
+    int cmsg_type;
+};
+
+struct linux_sock_extended_err {
+    unsigned int ee_errno;
+    unsigned char ee_origin;
+    unsigned char ee_type;
+    unsigned char ee_code;
+    unsigned char ee_pad;
+    unsigned int ee_info;
+    unsigned int ee_data;
 };
 
 static unsigned short linux_byte_swap16(unsigned short value) {
@@ -576,6 +610,90 @@ static long linux_sendto_ipv6(int sock, const void *buffer, size_t length, const
 
     linux_prepare_sockaddr6(&address, ip, port);
     return linux_syscall6(LINUX_SYS_SENDTO, sock, (long)buffer, (long)length, 0, (long)&address, sizeof(address));
+}
+
+static long linux_sendto_ipv4(int sock, const void *buffer, size_t length, const LinuxInAddr *ip, unsigned int port) {
+    struct linux_sockaddr_in address;
+
+    linux_prepare_sockaddr(&address, ip, port);
+    return linux_syscall6(LINUX_SYS_SENDTO, sock, (long)buffer, (long)length, 0, (long)&address, sizeof(address));
+}
+
+static long linux_recvfrom_ipv4(int sock, void *buffer, size_t length, LinuxInAddr *peer_out) {
+    struct linux_sockaddr_in address;
+    unsigned int address_length = sizeof(address);
+    long bytes;
+
+    rt_memset(&address, 0, sizeof(address));
+    bytes = linux_syscall6(LINUX_SYS_RECVFROM, sock, (long)buffer, (long)length, 0, (long)&address, (long)&address_length);
+    if (bytes >= 0 && peer_out != 0 && address.sin_family == LINUX_AF_INET) {
+        *peer_out = address.sin_addr;
+    }
+    return bytes;
+}
+
+static size_t linux_control_align(size_t value) {
+    size_t alignment = sizeof(unsigned long);
+
+    return (value + alignment - 1U) & ~(alignment - 1U);
+}
+
+static long linux_recvmsg_ipv4_error(int sock, void *buffer, size_t length, LinuxInAddr *peer_out, unsigned char *icmp_type_out) {
+    unsigned char control[128];
+    struct linux_iovec iov;
+    struct linux_msghdr message;
+    long bytes;
+    size_t offset = 0U;
+
+    if (icmp_type_out != 0) {
+        *icmp_type_out = 0U;
+    }
+    if (peer_out != 0) {
+        rt_memset(peer_out, 0, sizeof(*peer_out));
+    }
+    rt_memset(control, 0, sizeof(control));
+    rt_memset(&message, 0, sizeof(message));
+    iov.iov_base = buffer;
+    iov.iov_len = length;
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1U;
+    message.msg_control = control;
+    message.msg_controllen = sizeof(control);
+
+    bytes = linux_syscall3(LINUX_SYS_RECVMSG, sock, (long)&message, LINUX_MSG_ERRQUEUE);
+    if (bytes < 0) {
+        return bytes;
+    }
+
+    while (offset + sizeof(struct linux_cmsghdr) <= message.msg_controllen) {
+        const struct linux_cmsghdr *control_header = (const struct linux_cmsghdr *)(control + offset);
+        size_t data_offset;
+        size_t offender_offset;
+
+        if (control_header->cmsg_len < sizeof(struct linux_cmsghdr) || offset + control_header->cmsg_len > message.msg_controllen) {
+            break;
+        }
+        data_offset = offset + linux_control_align(sizeof(struct linux_cmsghdr));
+        if (control_header->cmsg_level == LINUX_IPPROTO_IP && control_header->cmsg_type == LINUX_IP_RECVERR &&
+            data_offset + sizeof(struct linux_sock_extended_err) <= offset + control_header->cmsg_len) {
+            const struct linux_sock_extended_err *error_info = (const struct linux_sock_extended_err *)(control + data_offset);
+
+            if (error_info->ee_origin == LINUX_SO_EE_ORIGIN_ICMP && icmp_type_out != 0) {
+                *icmp_type_out = error_info->ee_type;
+            }
+            offender_offset = data_offset + linux_control_align(sizeof(struct linux_sock_extended_err));
+            if (peer_out != 0 && offender_offset + sizeof(struct linux_sockaddr_in) <= offset + control_header->cmsg_len) {
+                const struct linux_sockaddr_in *offender = (const struct linux_sockaddr_in *)(control + offender_offset);
+
+                if (offender->sin_family == LINUX_AF_INET) {
+                    *peer_out = offender->sin_addr;
+                }
+            }
+        }
+        offset += linux_control_align((size_t)control_header->cmsg_len);
+    }
+
+    return bytes;
 }
 
 static long linux_recvfrom_ipv6(int sock, void *buffer, size_t length, LinuxIn6Addr *peer_out) {
@@ -2878,7 +2996,8 @@ static int linux_trace_match_inner_ipv4(
     size_t reply_size,
     size_t outer_offset,
     unsigned short identifier,
-    unsigned short sequence
+    unsigned short sequence,
+    int allow_identifier_rewrite
 ) {
     size_t inner_ip_offset = outer_offset + sizeof(LinuxIcmpPacket);
     size_t inner_ip_header_length;
@@ -2893,8 +3012,33 @@ static int linux_trace_match_inner_ipv4(
     }
     inner_icmp = (const LinuxIcmpPacket *)(reply + inner_ip_offset + inner_ip_header_length);
     return inner_icmp->type == LINUX_ICMP_ECHO &&
-           linux_net_to_host16(inner_icmp->identifier) == identifier &&
-           linux_net_to_host16(inner_icmp->sequence) == sequence;
+           linux_net_to_host16(inner_icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || linux_net_to_host16(inner_icmp->identifier) == identifier);
+}
+
+static int linux_trace_match_probe_ipv4(
+    const unsigned char *packet,
+    size_t packet_size,
+    unsigned short identifier,
+    unsigned short sequence,
+    int allow_identifier_rewrite
+) {
+    size_t offset = 0U;
+    const LinuxIcmpPacket *icmp;
+
+    if (packet_size >= 20U && (packet[0] >> 4) == 4U) {
+        offset = (size_t)(packet[0] & 0x0fU) * 4U;
+        if (offset < 20U) {
+            return 0;
+        }
+    }
+    if (packet_size < offset + sizeof(LinuxIcmpPacket)) {
+        return 0;
+    }
+    icmp = (const LinuxIcmpPacket *)(packet + offset);
+    return icmp->type == LINUX_ICMP_ECHO &&
+           linux_net_to_host16(icmp->sequence) == sequence &&
+           (allow_identifier_rewrite || linux_net_to_host16(icmp->identifier) == identifier);
 }
 
 static int linux_trace_match_inner_ipv6(
@@ -3046,6 +3190,7 @@ int platform_trace_route(
     unsigned short identifier;
     unsigned int ttl;
     int sock;
+    int allow_identifier_rewrite = 0;
     size_t hop_count = 0U;
 
     if (hop_count_out != 0) {
@@ -3187,12 +3332,14 @@ int platform_trace_route(
         return -1;
     }
     sock = linux_open_inet_socket(LINUX_SOCK_RAW, LINUX_IPPROTO_ICMP);
-    if (sock < 0 || linux_connect_ipv4(sock, &address, 0U) != 0) {
-        if (sock >= 0) {
-            platform_close(sock);
-        }
+    if (sock < 0) {
+        sock = linux_open_inet_socket(LINUX_SOCK_DGRAM, LINUX_IPPROTO_ICMP);
+        allow_identifier_rewrite = 1;
+    }
+    if (sock < 0) {
         return -1;
     }
+    (void)linux_set_socket_int_option(sock, LINUX_IPPROTO_IP, LINUX_IP_RECVERR, 1);
     identifier = (unsigned short)(platform_get_process_id() & 0xffff);
 
     for (ttl = 1U; ttl <= max_ttl && hop_count < hop_capacity; ++ttl) {
@@ -3228,7 +3375,7 @@ int platform_trace_route(
             header->checksum = linux_compute_icmp_checksum(packet, packet_size);
 
             start_ms = linux_monotonic_milliseconds();
-            if (platform_write(sock, packet, packet_size) < (long)packet_size) {
+            if (linux_sendto_ipv4(sock, packet, packet_size, &address, 0U) < (long)packet_size) {
                 continue;
             }
             deadline = start_ms + timeout_ms;
@@ -3236,30 +3383,42 @@ int platform_trace_route(
             for (;;) {
                 int timeout_remaining = (int)(deadline > linux_monotonic_milliseconds() ? deadline - linux_monotonic_milliseconds() : 0ULL);
                 long reply_bytes;
-                size_t offset;
+                size_t offset = 0U;
                 LinuxIcmpPacket *reply_icmp;
+                LinuxInAddr peer;
                 int matched = 0;
 
                 if (platform_poll_fds(&sock, 1U, &ready_index, timeout_remaining) <= 0) {
                     break;
                 }
-                reply_bytes = platform_read(sock, reply, sizeof(reply));
-                if (reply_bytes <= 0 || (size_t)reply_bytes < 20U || (reply[0] >> 4) != 4U) {
-                    continue;
-                }
-                offset = (size_t)(reply[0] & 0x0fU) * 4U;
-                if ((size_t)reply_bytes < offset + sizeof(LinuxIcmpPacket)) {
-                    continue;
-                }
-                reply_icmp = (LinuxIcmpPacket *)(reply + offset);
-                if (reply_icmp->type == LINUX_ICMP_REPLY &&
-                    linux_net_to_host16(reply_icmp->identifier) == identifier &&
-                    linux_net_to_host16(reply_icmp->sequence) == sequence) {
+                rt_memset(&peer, 0, sizeof(peer));
+                reply_bytes = linux_recvfrom_ipv4(sock, reply, sizeof(reply), &peer);
+                if (reply_bytes <= 0) {
+                    unsigned char error_type = 0U;
+
+                    reply_bytes = linux_recvmsg_ipv4_error(sock, reply, sizeof(reply), &peer, &error_type);
+                    if (reply_bytes <= 0 || error_type != LINUX_ICMP_TIME_EXCEEDED ||
+                        !linux_trace_match_probe_ipv4(reply, (size_t)reply_bytes, identifier, sequence, allow_identifier_rewrite)) {
+                        continue;
+                    }
                     matched = 1;
-                    hop->reached_destination = 1;
-                } else if (reply_icmp->type == LINUX_ICMP_TIME_EXCEEDED &&
-                           linux_trace_match_inner_ipv4(reply, (size_t)reply_bytes, offset, identifier, sequence)) {
-                    matched = 1;
+                } else {
+                    if ((size_t)reply_bytes >= 20U && (reply[0] >> 4) == 4U) {
+                        offset = (size_t)(reply[0] & 0x0fU) * 4U;
+                    }
+                    if ((size_t)reply_bytes < offset + sizeof(LinuxIcmpPacket)) {
+                        continue;
+                    }
+                    reply_icmp = (LinuxIcmpPacket *)(reply + offset);
+                    if (reply_icmp->type == LINUX_ICMP_REPLY &&
+                        linux_net_to_host16(reply_icmp->sequence) == sequence &&
+                        (allow_identifier_rewrite || linux_net_to_host16(reply_icmp->identifier) == identifier)) {
+                        matched = 1;
+                        hop->reached_destination = 1;
+                    } else if (reply_icmp->type == LINUX_ICMP_TIME_EXCEEDED &&
+                               linux_trace_match_inner_ipv4(reply, (size_t)reply_bytes, offset, identifier, sequence, allow_identifier_rewrite)) {
+                        matched = 1;
+                    }
                 }
                 if (!matched) {
                     continue;
@@ -3268,12 +3427,13 @@ int platform_trace_route(
                 hop->probe_replied[probe] = 1U;
                 hop->rtt_milliseconds[probe] = (unsigned int)(linux_monotonic_milliseconds() - start_ms);
                 hop->reply_count += 1U;
-                if ((size_t)reply_bytes >= 16U) {
-                    LinuxInAddr peer;
+                if (peer.bytes[0] == 0U && peer.bytes[1] == 0U && peer.bytes[2] == 0U && peer.bytes[3] == 0U && offset >= 20U) {
                     peer.bytes[0] = reply[12];
                     peer.bytes[1] = reply[13];
                     peer.bytes[2] = reply[14];
                     peer.bytes[3] = reply[15];
+                }
+                if (peer.bytes[0] != 0U || peer.bytes[1] != 0U || peer.bytes[2] != 0U || peer.bytes[3] != 0U) {
                     linux_ipv4_to_text(&peer, hop->address, sizeof(hop->address));
                     if (!options->numeric_only) {
                         linux_trace_lookup_ipv4_name(&peer, hop->hostname, sizeof(hop->hostname));
