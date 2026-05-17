@@ -115,8 +115,6 @@ WINDOWS_FREESTANDING_SERVICE_TOOLS := service
 WINDOWS_FREESTANDING_SSH_TOOLS := ssh
 WINDOWS_FREESTANDING_SSHD_TOOLS := sshd
 WINDOWS_FREESTANDING_ALIAS_TOOLS := ping6
-WINDOWS_FREESTANDING_GENERIC_TOOLS := $(filter-out wtf $(WINDOWS_FREESTANDING_IMAGE_TOOLS) $(WINDOWS_FREESTANDING_BIGNUM_TOOLS) $(WINDOWS_FREESTANDING_HASH_TOOLS) $(WINDOWS_FREESTANDING_REGEX_TOOLS) $(WINDOWS_FREESTANDING_ARCHIVE_TOOLS) $(WINDOWS_FREESTANDING_AWK_TOOLS) $(WINDOWS_FREESTANDING_XML_TOOLS) $(WINDOWS_FREESTANDING_TUI_TOOLS) $(WINDOWS_FREESTANDING_MAIL_TOOLS) $(WINDOWS_FREESTANDING_NCC_TOOLS) $(WINDOWS_FREESTANDING_SHELL_TOOLS) $(WINDOWS_FREESTANDING_MAKE_TOOLS) $(WINDOWS_FREESTANDING_HTTPD_TOOLS) $(WINDOWS_FREESTANDING_SERVICE_TOOLS) $(WINDOWS_FREESTANDING_SSH_TOOLS) $(WINDOWS_FREESTANDING_SSHD_TOOLS) $(WINDOWS_FREESTANDING_ALIAS_TOOLS),$(WINDOWS_FREESTANDING_TOOLS))
-WINDOWS_FREESTANDING_GENERIC_TOOLS := $(filter-out wtf $(WINDOWS_FREESTANDING_IMAGE_TOOLS) $(WINDOWS_FREESTANDING_BIGNUM_TOOLS) $(WINDOWS_FREESTANDING_HASH_TOOLS) $(WINDOWS_FREESTANDING_REGEX_TOOLS) $(WINDOWS_FREESTANDING_ARCHIVE_TOOLS) $(WINDOWS_FREESTANDING_AWK_TOOLS) $(WINDOWS_FREESTANDING_XML_TOOLS) $(WINDOWS_FREESTANDING_TUI_TOOLS) $(WINDOWS_FREESTANDING_MAIL_TOOLS) $(WINDOWS_FREESTANDING_NCC_TOOLS),$(WINDOWS_FREESTANDING_TOOLS))
 MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test [ nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od md5sum sha256sum sha512sum dd touch truncate sync bc split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf awk gzip gunzip bzip2 bunzip2 xz unxz tar ar readelf objdump strip expack imgmeta imginfo imgcheck c2pa xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo wget sql man pstree ncc netcat nslookup dig ssh sshd httpd ip ping ping6 sh mail editor make dhcp dmesg getty init login mknod mount rg ripgrep service shutdown top umount uptime users who
 MACOS_FREESTANDING_HASH_TOOLS := md5sum sha256sum sha512sum
 MACOS_FREESTANDING_TLS_TOOLS := wtf
@@ -255,7 +253,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-windows freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception benchmark clean
+.PHONY: all host freestanding freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -325,8 +323,6 @@ selfhost: $(DEFAULT_HOST_BUILD_DIR)/ncc
 inception: $(TARGET_BUILD_DIR)/ncc
 	+@$(MAKE) --no-print-directory -j$(INCEPTION_JOBS) TARGET_CC="$(abspath $(TARGET_BUILD_DIR)/ncc)" TARGET_CC_TARGET_FLAG=--target=linux-x86_64 TARGET_BUILD_DIR="$(INCEPTION_BUILD_DIR)" FREESTANDING_OPT_CFLAGS=-Os FREESTANDING_SECTION_CFLAGS= FREESTANDING_PIE_CFLAGS= TARGET_LINKER_FLAG= FREESTANDING_COMPACT_LDFLAGS= FREESTANDING_BUILD_ID_LDFLAGS= TARGET_BUILTINS_LIB= TARGET_LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-s" $(INCEPTION_TARGETS)
 
-freestanding-windows: $(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_TOOLS)))
-
 ifeq ($(AUTO_PARALLEL),1)
 freestanding-macos: $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_TOOLS))
 else ifneq ($(strip $(PARALLEL_MAKEFLAGS)),)
@@ -336,7 +332,7 @@ freestanding-macos:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding-macos
 endif
 
-$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(WINDOWS_TARGET_BUILD_DIR) $(MACOS_FREESTANDING_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(FREESTANDING_OBJECT_BUILD_DIR) $(INCEPTION_OBJECT_BUILD_DIR)):
+$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(MACOS_FREESTANDING_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(FREESTANDING_OBJECT_BUILD_DIR) $(INCEPTION_OBJECT_BUILD_DIR)):
 	mkdir -p $@
 
 $(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
@@ -356,63 +352,6 @@ $(BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src
 
 $(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/tools/ssh/ssh_transport.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -fsyntax-only $(SSH_CLIENT_SOURCES) && : > $@
-
-$(WINDOWS_TARGET_BUILD_DIR)/wtf.exe: src/tools/wtf.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_TLS_SOURCES) src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_TLS_SOURCES) $(WINDOWS_FREESTANDING_TLS_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_IMAGE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_IMAGE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/image/image.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_IMAGE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_BIGNUM_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c src/shared/bignum.c src/shared/bignum.h $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) -Wno-pedantic $< src/shared/bignum.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_HASH_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_HASH_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/hash_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_HASH_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_REGEX_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_REGEX_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_REGEX_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_ARCHIVE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(EXPACK_PRIVATE_SOURCES) $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/archive_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_ARCHIVE_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_AWK_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_AWK_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/tools/awk/awk_impl.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_AWK_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_XML_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_XML_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/xml.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_XML_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_TUI_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_EDITOR_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/tui.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_EDITOR_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_MAIL_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_MAIL_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/tui.h src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_MAIL_SOURCES) $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_TLS_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_NCC_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_NCC_SOURCES) src/compiler/source_manifest.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) -Isrc/compiler $< $(WINDOWS_FREESTANDING_NCC_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_SHELL_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_SHELL_SOURCES) src/tools/sh/shell_shared.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_SHELL_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_MAKE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_MAKE_SOURCES) src/tools/make/make_impl.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_MAKE_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_HTTPD_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_HTTPD_SOURCES) src/tools/httpd/httpd_impl.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h src/shared/server_log.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_HTTPD_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_SERVICE_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_SERVICE_SOURCES) src/tools/service/service_impl.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/simple_config.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_SERVICE_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_SSH_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_SSH_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_client.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_SSH_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_TLS_LDFLAGS) -o $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_SSHD_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_SSHD_SOURCES) src/tools/sshd/sshd.h src/tools/ssh/ssh_core.h src/tools/ssh/ssh_transport.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_SSHD_SOURCES) src/platform/windows/core.c $(WINDOWS_FREESTANDING_TLS_LDFLAGS) -o $@
-
-$(WINDOWS_TARGET_BUILD_DIR)/ping6.exe: $(WINDOWS_TARGET_BUILD_DIR)/ping.exe | $(WINDOWS_TARGET_BUILD_DIR)
-	cp $< $@
-
-$(addprefix $(WINDOWS_TARGET_BUILD_DIR)/,$(addsuffix .exe,$(WINDOWS_FREESTANDING_GENERIC_TOOLS))): $(WINDOWS_TARGET_BUILD_DIR)/%.exe: src/tools/%.c $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h | $(WINDOWS_TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(WINDOWS_TARGET_CC) $(WINDOWS_TARGET_CC_TARGET_FLAG) $(WINDOWS_FREESTANDING_CFLAGS) $< $(WINDOWS_FREESTANDING_RUNTIME_SOURCES) $(WINDOWS_FREESTANDING_LDFLAGS) -o $@
 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_HASH_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_HASH_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/hash_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_HASH_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@

@@ -52,8 +52,7 @@ The freestanding build is the Linux target without libc.
 The Windows freestanding build is the native PE target without the MSYS POSIX
 runtime or the Microsoft C runtime.
 
-- built with `make freestanding-windows WINDOWS_TARGET_CC=clang`
-- can be launched from PowerShell with `./build-windows-freestanding.ps1`
+- built from PowerShell with `./build-windows-freestanding.ps1`
 - writes binaries to `build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/`
 - uses the minimal `src/platform/windows/` startup and Kernel32 imports
 - currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
@@ -106,7 +105,6 @@ and anything that adds new low-level dependencies.
     make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
     make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the freestanding-ish Darwin subset
     make freestanding-macos — build the early native macOS arm64 freestanding-ish subset under build/freestanding-macos-aarch64/
-    make freestanding-windows — build the native no-libc Windows PE subset under build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
@@ -139,20 +137,18 @@ use Clang for the Linux freestanding path:
   cd /c/Users/Mathias\ Schindler/newos
   make host CC=gcc
   make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
-  make freestanding-windows WINDOWS_TARGET_CC=clang
 
 For the Windows freestanding path, MSYS2 is a build convenience rather than a
 runtime requirement. The PE binaries do not link against the MSYS POSIX runtime
 or a C standard library. A regular LLVM/Clang installation is enough for the
 compiler/linker side as long as it can target `x86_64-w64-windows-gnu`; the
-current Makefile still needs `make` and a POSIX-style shell as build drivers.
-From PowerShell, use:
+PowerShell builder drives `clang.exe` directly and does not require `make` or a
+POSIX-style shell as build drivers. From PowerShell, use:
 
   .\build-windows-freestanding.ps1
 
-The wrapper uses `clang` from `PATH` by default and falls back to MSYS2's
-`bash.exe` only to drive the existing Makefile when native `make` is missing or
-only MSYS `make` is present.
+The script uses `clang` from `PATH` by default, with common LLVM and MSYS2 Clang
+install locations as fallbacks.
 
 `make host` is useful as an early compiler and shell sanity check, but it still
 uses the hosted POSIX backend and therefore depends on the MSYS2 POSIX runtime.
@@ -168,13 +164,15 @@ If local PowerShell execution policy blocks scripts, use the command runner:
 
   .\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
 
-`make freestanding` remains the main target: it builds Linux ABI binaries using
-the raw syscall backend under `src/platform/linux/` and `src/arch/*/linux/`.
-`make freestanding-windows` is the early native Windows path. It links PE
-executables directly against Kernel32, Ws2_32, and Bcrypt where needed. The
-Windows subset now covers the small text/core tools, comparison/checksum/image,
-path/filesystem, regex/archive/awk/XML groups, plus `wtf`, `editor`, `mail`, and
-the `ncc` compiler executable. The backend has startup, argument parsing,
+`make freestanding` remains the main Makefile target: it builds Linux ABI
+binaries using the raw syscall backend under `src/platform/linux/` and
+`src/arch/*/linux/`, or the local macOS freestanding-ish target on supported
+Darwin hosts. `build-windows-freestanding.ps1` is the early native Windows path.
+It links PE executables directly against Kernel32, Ws2_32, and Bcrypt where
+needed. The Windows subset now covers the small text/core tools,
+comparison/checksum/image, path/filesystem, regex/archive/awk/XML groups, plus
+`wtf`, `editor`, `mail`, and the `ncc` compiler executable. The backend has
+startup, argument parsing,
 stdout/stderr, heap allocation, file read/write/seek, path metadata, environment
 lookup, directory create/remove, truncate, flush support, current-directory,
 hostname, uname-style queries, basic Winsock, console raw mode, and native TLS
@@ -238,7 +236,7 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
 - On macOS, the default `make` behavior still favors local hosted binaries; `make freestanding` on local aarch64 routes to the early Darwin approximation, which still links the required system ABI library
-- Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `make freestanding-windows` for the native no-CRT PE backend
+- Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `build-windows-freestanding.ps1` for the native no-CRT PE backend
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks
 
