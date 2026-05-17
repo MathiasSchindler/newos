@@ -77,6 +77,21 @@ static int expack_load_file(const char *path, unsigned char **data_out, size_t *
     return 0;
 }
 
+static int expack_write_exact_file(const char *path, const unsigned char *data, size_t size) {
+    int fd = platform_open_write(path, 0755U);
+    if (fd < 0) {
+        return -1;
+    }
+    if (size != 0U && rt_write_all(fd, data, size) != 0) {
+        platform_close(fd);
+        return -1;
+    }
+    if (platform_close(fd) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static char *expack_make_default_output_path(const char *input_path) {
     const char suffix[] = "-pack";
     size_t input_length = rt_strlen(input_path);
@@ -330,6 +345,28 @@ int main(int argc, char **argv) {
         expack_release_exec_image(&image, input_data);
         rt_free(input_data);
         return 1;
+    }
+    if (selected.packed_size >= (unsigned long long)input_size) {
+        ExpackCandidate raw;
+        raw.payload = 0;
+        if (expack_make_raw_candidate(input_data, input_size, &raw) != 0 || expack_write_exact_file(output_path, input_data, input_size) != 0) {
+            tool_write_error(EXPACK_TOOL_NAME, "cannot write exact output: ", output_path);
+            if (default_output_path != 0) rt_free(default_output_path);
+            expack_candidate_release(&raw);
+            expack_candidate_release(&selected);
+            expack_release_exec_image(&image, input_data);
+            rt_free(input_data);
+            return 1;
+        }
+        if (!quiet) {
+            expack_write_summary(input_size, image.size, image.changed, &raw, expack_output_file_size(output_path));
+        }
+        if (default_output_path != 0) rt_free(default_output_path);
+        expack_candidate_release(&raw);
+        expack_candidate_release(&selected);
+        expack_release_exec_image(&image, input_data);
+        rt_free(input_data);
+        return 0;
     }
     if (expack_write_packed_output(output_backend, &input_format, output_path, &selected, image.size) != 0) {
         tool_write_error(EXPACK_TOOL_NAME, "cannot write packed output: ", output_path);
