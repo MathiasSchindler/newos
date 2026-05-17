@@ -55,15 +55,21 @@ int bn_to_string(const Bignum *bn, char *buffer, size_t buffer_size);
 int bn_is_zero(const Bignum *bn);
 int bn_compare_abs(const Bignum *a, const Bignum *b);
 int bn_compare(const Bignum *a, const Bignum *b);
+int bn_decimal_digit_count(const Bignum *bn, size_t *digits_out);
+int bn_to_ull(const Bignum *bn, unsigned long long *value_out);
+int bn_to_ll(const Bignum *bn, long long *value_out);
 
 void bn_normalize(Bignum *bn);
 void bn_negate(Bignum *bn);
+void bn_abs(Bignum *bn);
+void bn_abs_copy(const Bignum *bn, Bignum *result);
 
 int bn_add(const Bignum *a, const Bignum *b, Bignum *result);
 int bn_subtract(const Bignum *a, const Bignum *b, Bignum *result);
 int bn_multiply(const Bignum *a, const Bignum *b, Bignum *result);
 int bn_divide(const Bignum *dividend, const Bignum *divisor,
               Bignum *quotient, Bignum *remainder);
+int bn_mod(const Bignum *dividend, const Bignum *divisor, Bignum *remainder);
 
 int bn_add_unsigned(const Bignum *a, const Bignum *b, Bignum *result);
 int bn_subtract_unsigned(const Bignum *a, const Bignum *b, Bignum *result);
@@ -76,5 +82,9 @@ int bn_shift_left_digits(const Bignum *bn, unsigned int positions, Bignum *resul
 
 int bn_power(const Bignum *base, unsigned long long exponent, Bignum *result);
 int bn_scale(const Bignum *bn, int scale_power_of_10, Bignum *result);
+int bn_sqrt_floor(const Bignum *bn, Bignum *result);
+int bn_gcd(const Bignum *a, const Bignum *b, Bignum *result);
+int bn_lcm(const Bignum *a, const Bignum *b, Bignum *result);
+int bn_factorial(unsigned int value, Bignum *result);
 
 #endif

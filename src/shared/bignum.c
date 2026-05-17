@@ -164,6 +164,15 @@ void bn_negate(Bignum *bn) {
     }
 }
 
+void bn_abs(Bignum *bn) {
+    bn->is_negative = 0;
+}
+
+void bn_abs_copy(const Bignum *bn, Bignum *result) {
+    *result = *bn;
+    result->is_negative = 0;
+}
+
 int bn_compare_abs(const Bignum *a, const Bignum *b) {
     if (a->length > b->length) {
         return 1;
@@ -201,6 +210,88 @@ int bn_compare(const Bignum *a, const Bignum *b) {
     
     int cmp = bn_compare_abs(a, b);
     return a->is_negative ? -cmp : cmp;
+}
+
+int bn_decimal_digit_count(const Bignum *bn, size_t *digits_out) {
+    size_t digits;
+    unsigned int top;
+
+    if (digits_out == 0) {
+        return -1;
+    }
+    if (bn_is_zero(bn)) {
+        *digits_out = 1;
+        return 0;
+    }
+
+    digits = ((size_t)bn->length - 1U) * BN_DIGIT_DECIMALS;
+    top = bn->digits[bn->length - 1U];
+    while (top > 0U) {
+        digits += 1U;
+        top /= 10U;
+    }
+
+    *digits_out = digits;
+    return 0;
+}
+
+int bn_to_ull(const Bignum *bn, unsigned long long *value_out) {
+    unsigned long long value = 0ULL;
+    unsigned int i;
+
+    if (value_out == 0 || bn->is_negative) {
+        return -1;
+    }
+
+    for (i = bn->length; i > 0U; --i) {
+        unsigned int digit = bn->digits[i - 1U];
+        if (value > (~0ULL / (unsigned long long)BN_DIGIT_BASE)) {
+            return -1;
+        }
+        value *= (unsigned long long)BN_DIGIT_BASE;
+        if (value > ~0ULL - (unsigned long long)digit) {
+            return -1;
+        }
+        value += (unsigned long long)digit;
+    }
+
+    *value_out = value;
+    return 0;
+}
+
+int bn_to_ll(const Bignum *bn, long long *value_out) {
+    Bignum magnitude;
+    unsigned long long value;
+    const unsigned long long max_positive = 9223372036854775807ULL;
+    const unsigned long long max_negative = 9223372036854775808ULL;
+
+    if (value_out == 0) {
+        return -1;
+    }
+
+    magnitude = *bn;
+    magnitude.is_negative = 0;
+    if (bn_to_ull(&magnitude, &value) != 0) {
+        return -1;
+    }
+
+    if (bn->is_negative) {
+        if (value > max_negative) {
+            return -1;
+        }
+        if (value == max_negative) {
+            *value_out = -9223372036854775807LL - 1LL;
+        } else {
+            *value_out = -(long long)value;
+        }
+    } else {
+        if (value > max_positive) {
+            return -1;
+        }
+        *value_out = (long long)value;
+    }
+
+    return 0;
 }
 
 int bn_add_unsigned(const Bignum *a, const Bignum *b, Bignum *result) {
@@ -526,6 +617,12 @@ int bn_divide(const Bignum *dividend, const Bignum *divisor,
     return 0;
 }
 
+int bn_mod(const Bignum *dividend, const Bignum *divisor, Bignum *remainder) {
+    Bignum quotient;
+
+    return bn_divide(dividend, divisor, &quotient, remainder);
+}
+
 int bn_power(const Bignum *base, unsigned long long exponent, Bignum *result) {
     if (exponent == 0) {
         bn_from_uint(result, 1);
@@ -587,4 +684,154 @@ int bn_scale(const Bignum *bn, int scale_power_of_10, Bignum *result) {
         
         return bn_multiply(bn, &multiplier, result);
     }
+}
+
+int bn_sqrt_floor(const Bignum *bn, Bignum *result) {
+    Bignum guess;
+    Bignum one;
+    Bignum two;
+    size_t digits;
+    unsigned int i;
+
+    if (bn->is_negative) {
+        return -1;
+    }
+    if (bn_is_zero(bn)) {
+        bn_zero(result);
+        return 0;
+    }
+
+    if (bn_decimal_digit_count(bn, &digits) != 0) {
+        return -1;
+    }
+
+    bn_from_uint(&one, 1U);
+    bn_from_uint(&two, 2U);
+    if (bn_scale(&one, (int)((digits + 1U) / 2U), &guess) != 0) {
+        return -1;
+    }
+
+    for (i = 0U; i < 256U; ++i) {
+        Bignum quotient;
+        Bignum remainder;
+        Bignum sum;
+        Bignum next;
+
+        if (bn_divide(bn, &guess, &quotient, &remainder) != 0) {
+            return -1;
+        }
+        if (bn_add(&guess, &quotient, &sum) != 0) {
+            return -1;
+        }
+        if (bn_divide(&sum, &two, &next, &remainder) != 0) {
+            return -1;
+        }
+        if (bn_compare(&next, &guess) >= 0) {
+            break;
+        }
+        guess = next;
+    }
+
+    for (;;) {
+        Bignum square;
+        Bignum next_guess;
+
+        if (bn_multiply(&guess, &guess, &square) == 0 && bn_compare(&square, bn) <= 0) {
+            break;
+        }
+        if (bn_subtract(&guess, &one, &next_guess) != 0) {
+            return -1;
+        }
+        guess = next_guess;
+    }
+
+    for (;;) {
+        Bignum next_guess;
+        Bignum square;
+
+        if (bn_add(&guess, &one, &next_guess) != 0) {
+            break;
+        }
+        if (bn_multiply(&next_guess, &next_guess, &square) != 0) {
+            break;
+        }
+        if (bn_compare(&square, bn) > 0) {
+            break;
+        }
+        guess = next_guess;
+    }
+
+    *result = guess;
+    bn_normalize(result);
+    return 0;
+}
+
+int bn_gcd(const Bignum *a, const Bignum *b, Bignum *result) {
+    Bignum left;
+    Bignum right;
+
+    bn_abs_copy(a, &left);
+    bn_abs_copy(b, &right);
+
+    while (!bn_is_zero(&right)) {
+        Bignum remainder;
+
+        if (bn_mod(&left, &right, &remainder) != 0) {
+            return -1;
+        }
+        bn_abs(&remainder);
+        left = right;
+        right = remainder;
+    }
+
+    *result = left;
+    return 0;
+}
+
+int bn_lcm(const Bignum *a, const Bignum *b, Bignum *result) {
+    Bignum left;
+    Bignum right;
+    Bignum gcd;
+    Bignum quotient;
+    Bignum remainder;
+
+    if (bn_is_zero(a) || bn_is_zero(b)) {
+        bn_zero(result);
+        return 0;
+    }
+
+    bn_abs_copy(a, &left);
+    bn_abs_copy(b, &right);
+    if (bn_gcd(&left, &right, &gcd) != 0) {
+        return -1;
+    }
+    if (bn_divide(&left, &gcd, &quotient, &remainder) != 0 || !bn_is_zero(&remainder)) {
+        return -1;
+    }
+    if (bn_multiply(&quotient, &right, result) != 0) {
+        return -1;
+    }
+    bn_abs(result);
+    return 0;
+}
+
+int bn_factorial(unsigned int value, Bignum *result) {
+    unsigned int i;
+
+    bn_from_uint(result, 1U);
+    i = 2U;
+    while (i <= value) {
+        Bignum product;
+
+        if (bn_multiply_digit(result, i, &product) != 0) {
+            return -1;
+        }
+        *result = product;
+        if (i == value) {
+            break;
+        }
+        i += 1U;
+    }
+
+    return 0;
 }

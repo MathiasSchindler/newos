@@ -201,7 +201,7 @@ static int bc_get_scale_setting(BcEnv *env) {
         if (rt_strcmp(env->vars[i].name, "scale") == 0) {
             BcValue value = env->vars[i].value;
             Bignum integer_part;
-            char buffer[64];
+            long long ivalue;
 
             if (value.scale > 0) {
                 if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
@@ -210,24 +210,11 @@ static int bc_get_scale_setting(BcEnv *env) {
             } else {
                 integer_part = value.mantissa;
             }
-            
-            if (bn_to_string(&integer_part, buffer, sizeof(buffer)) != 0) {
+
+            if (bn_to_ll(&integer_part, &ivalue) != 0) {
                 return 6;
             }
-            
-            long long ivalue = 0;
-            int is_neg = 0;
-            const char *p = buffer;
-            if (*p == '-') {
-                is_neg = 1;
-                p++;
-            }
-            while (*p >= '0' && *p <= '9') {
-                ivalue = ivalue * 10 + (*p - '0');
-                p++;
-            }
-            if (is_neg) ivalue = -ivalue;
-            
+
             if (ivalue < 0) {
                 return 0;
             }
@@ -248,7 +235,7 @@ static int bc_get_ibase_setting(BcEnv *env) {
         if (rt_strcmp(env->vars[i].name, "ibase") == 0) {
             BcValue value = env->vars[i].value;
             Bignum integer_part;
-            char buffer[64];
+            long long ivalue;
 
             if (value.scale > 0) {
                 if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
@@ -257,24 +244,11 @@ static int bc_get_ibase_setting(BcEnv *env) {
             } else {
                 integer_part = value.mantissa;
             }
-            
-            if (bn_to_string(&integer_part, buffer, sizeof(buffer)) != 0) {
+
+            if (bn_to_ll(&integer_part, &ivalue) != 0) {
                 return 10;
             }
-            
-            long long ivalue = 0;
-            int is_neg = 0;
-            const char *p = buffer;
-            if (*p == '-') {
-                is_neg = 1;
-                p++;
-            }
-            while (*p >= '0' && *p <= '9') {
-                ivalue = ivalue * 10 + (*p - '0');
-                p++;
-            }
-            if (is_neg) ivalue = -ivalue;
-            
+
             if (ivalue < 2) {
                 return 10;
             }
@@ -295,7 +269,7 @@ static int bc_get_obase_setting(BcEnv *env) {
         if (rt_strcmp(env->vars[i].name, "obase") == 0) {
             BcValue value = env->vars[i].value;
             Bignum integer_part;
-            char buffer[64];
+            long long ivalue;
 
             if (value.scale > 0) {
                 if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
@@ -304,24 +278,11 @@ static int bc_get_obase_setting(BcEnv *env) {
             } else {
                 integer_part = value.mantissa;
             }
-            
-            if (bn_to_string(&integer_part, buffer, sizeof(buffer)) != 0) {
+
+            if (bn_to_ll(&integer_part, &ivalue) != 0) {
                 return 10;
             }
-            
-            long long ivalue = 0;
-            int is_neg = 0;
-            const char *p = buffer;
-            if (*p == '-') {
-                is_neg = 1;
-                p++;
-            }
-            while (*p >= '0' && *p <= '9') {
-                ivalue = ivalue * 10 + (*p - '0');
-                p++;
-            }
-            if (is_neg) ivalue = -ivalue;
-            
+
             if (ivalue < 2) {
                 return 10;
             }
@@ -444,10 +405,7 @@ static BcValue bc_mod_values(BcParser *parser, BcValue left, BcValue right) {
     int scale = left.scale > right.scale ? left.scale : right.scale;
     BcValue a = bc_rescale(parser, left, scale);
     BcValue b = bc_rescale(parser, right, scale);
-    Bignum quotient;
     Bignum remainder;
-    Bignum product;
-    Bignum result;
 
     if (parser->error) {
         return bc_make_int(0);
@@ -456,18 +414,13 @@ static BcValue bc_mod_values(BcParser *parser, BcValue left, BcValue right) {
         bc_set_error(parser, "division by zero");
         return bc_make_int(0);
     }
-    
-    if (bn_divide(&a.mantissa, &b.mantissa, &quotient, &remainder) != 0) {
+
+    if (bn_mod(&a.mantissa, &b.mantissa, &remainder) != 0) {
         bc_set_error(parser, "modulo error");
         return bc_make_int(0);
     }
 
-    if (bn_multiply(&quotient, &b.mantissa, &product) != 0 || bn_subtract(&a.mantissa, &product, &result) != 0) {
-        bc_set_error(parser, "modulo error");
-        return bc_make_int(0);
-    }
-
-    return bc_normalize_value(bc_make_value_bn(&result, scale));
+    return bc_normalize_value(bc_make_value_bn(&remainder, scale));
 }
 
 static int bc_compare_values(BcParser *parser, BcValue left, BcValue right) {
@@ -484,40 +437,42 @@ static int bc_compare_values(BcParser *parser, BcValue left, BcValue right) {
 
 static int bc_value_to_integer(BcParser *parser, BcValue value, long long *out) {
     BcValue integer_value = bc_rescale(parser, value, 0);
-    char buffer[128];
 
     if (parser->error) {
         return -1;
     }
-    
-    if (bn_to_string(&integer_value.mantissa, buffer, sizeof(buffer)) != 0) {
+
+    if (bn_to_ll(&integer_value.mantissa, out) != 0) {
         bc_set_error(parser, "conversion error");
         return -1;
     }
-    
-    *out = 0;
-    int is_neg = 0;
-    const char *p = buffer;
-    if (*p == '-') {
-        is_neg = 1;
-        p++;
-    }
-    
-    while (*p >= '0' && *p <= '9') {
-        long long digit = *p - '0';
-        if (*out > (9223372036854775807LL / 10) ||
-            (*out == (9223372036854775807LL / 10) && digit > 7)) {
-            bc_set_error(parser, "integer overflow");
+
+    return 0;
+}
+
+static int bc_value_to_exact_integer(BcParser *parser, BcValue value, Bignum *out) {
+    Bignum integer_part;
+
+    if (value.scale > 0) {
+        Bignum scaled_back;
+
+        if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
+            bc_set_error(parser, "integer conversion error");
             return -1;
         }
-        *out = *out * 10 + digit;
-        p++;
+        if (bn_scale(&integer_part, value.scale, &scaled_back) != 0) {
+            bc_set_error(parser, "integer conversion error");
+            return -1;
+        }
+        if (bn_compare(&value.mantissa, &scaled_back) != 0) {
+            bc_set_error(parser, "non-integer argument");
+            return -1;
+        }
+    } else {
+        integer_part = value.mantissa;
     }
-    
-    if (is_neg) {
-        *out = -*out;
-    }
-    
+
+    *out = integer_part;
     return 0;
 }
 
@@ -583,14 +538,7 @@ static BcValue bc_sqrt_value_with_scale(BcParser *parser, BcValue value, int req
     int target_scale;
     int exponent;
     Bignum scaled_value;
-    Bignum guess;
-    Bignum two;
-    int i;
-    char buffer[BC_NUMERIC_TEXT_CAPACITY];
-    size_t len;
-    size_t half_len;
-    char guess_str[BC_NUMERIC_TEXT_CAPACITY];
-    size_t j;
+    Bignum root;
 
     if (value.mantissa.is_negative) {
         bc_set_error(parser, "square root of negative value");
@@ -621,47 +569,12 @@ static BcValue bc_sqrt_value_with_scale(BcParser *parser, BcValue value, int req
         bc_set_error(parser, "numeric overflow");
         return bc_make_int(0);
     }
-    if (bn_to_string(&scaled_value, buffer, sizeof(buffer)) != 0) {
-        bc_set_error(parser, "numeric overflow");
+    if (bn_sqrt_floor(&scaled_value, &root) != 0) {
+        bc_set_error(parser, "square root error");
         return bc_make_int(0);
     }
 
-    len = rt_strlen(buffer);
-    half_len = (len + 1U) / 2U;
-    guess_str[0] = '1';
-    for (j = 1; j < half_len && j + 1 < sizeof(guess_str); ++j) {
-        guess_str[j] = '0';
-    }
-    guess_str[j] = '\0';
-
-    if (bn_from_string(&guess, guess_str) != 0) {
-        guess = scaled_value;
-    }
-
-    bn_from_uint(&two, 2);
-
-    for (i = 0; i < 50; ++i) {
-        Bignum quotient;
-        Bignum remainder;
-        Bignum sum;
-        Bignum new_guess;
-
-        if (bn_divide(&scaled_value, &guess, &quotient, &remainder) != 0) {
-            break;
-        }
-        if (bn_add(&guess, &quotient, &sum) != 0) {
-            break;
-        }
-        if (bn_divide(&sum, &two, &new_guess, &remainder) != 0) {
-            break;
-        }
-        if (bn_compare(&new_guess, &guess) == 0) {
-            break;
-        }
-        guess = new_guess;
-    }
-
-    return bc_make_value_bn(&guess, target_scale);
+    return bc_make_value_bn(&root, target_scale);
 }
 
 static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
@@ -670,8 +583,7 @@ static BcValue bc_sqrt_value(BcParser *parser, BcValue value) {
 
 static BcValue bc_length_value(BcValue value) {
     Bignum integer_part;
-    char buffer[512];
-    int digits;
+    size_t digits;
 
     if (value.scale > 0) {
         if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
@@ -680,29 +592,14 @@ static BcValue bc_length_value(BcValue value) {
     } else {
         integer_part = value.mantissa;
     }
-    
-    integer_part.is_negative = 0;
-    
-    if (bn_is_zero(&integer_part)) {
+
+    bn_abs(&integer_part);
+
+    if (bn_decimal_digit_count(&integer_part, &digits) != 0 || digits > 9223372036854775807ULL) {
         return bc_make_int(1);
     }
-    
-    if (bn_to_string(&integer_part, buffer, sizeof(buffer)) != 0) {
-        return bc_make_int(1);
-    }
-    
-    digits = 0;
-    for (const char *p = buffer; *p != '\0'; p++) {
-        if (*p >= '0' && *p <= '9') {
-            digits++;
-        }
-    }
-    
-    if (digits == 0) {
-        digits = 1;
-    }
-    
-    return bc_make_int(digits);
+
+    return bc_make_int((long long)digits);
 }
 
 static BcValue bc_scale_value(BcValue value) {
@@ -772,8 +669,63 @@ static BcValue bc_math_rescale(BcParser *parser, BcValue value, int target_scale
 }
 
 static BcValue bc_math_abs(BcValue value) {
-    value.mantissa.is_negative = 0;
+    bn_abs(&value.mantissa);
     return value;
+}
+
+static BcValue bc_math_gcd(BcParser *parser, BcValue left, BcValue right) {
+    Bignum left_integer;
+    Bignum right_integer;
+    Bignum result;
+
+    if (bc_value_to_exact_integer(parser, left, &left_integer) != 0 ||
+        bc_value_to_exact_integer(parser, right, &right_integer) != 0) {
+        return bc_make_int(0);
+    }
+    if (bn_gcd(&left_integer, &right_integer, &result) != 0) {
+        bc_set_error(parser, "gcd error");
+        return bc_make_int(0);
+    }
+    return bc_make_value_bn(&result, 0);
+}
+
+static BcValue bc_math_lcm(BcParser *parser, BcValue left, BcValue right) {
+    Bignum left_integer;
+    Bignum right_integer;
+    Bignum result;
+
+    if (bc_value_to_exact_integer(parser, left, &left_integer) != 0 ||
+        bc_value_to_exact_integer(parser, right, &right_integer) != 0) {
+        return bc_make_int(0);
+    }
+    if (bn_lcm(&left_integer, &right_integer, &result) != 0) {
+        bc_set_error(parser, "lcm error");
+        return bc_make_int(0);
+    }
+    return bc_make_value_bn(&result, 0);
+}
+
+static BcValue bc_math_factorial(BcParser *parser, BcValue value) {
+    Bignum integer;
+    Bignum result;
+    unsigned long long argument;
+
+    if (bc_value_to_exact_integer(parser, value, &integer) != 0) {
+        return bc_make_int(0);
+    }
+    if (integer.is_negative) {
+        bc_set_error(parser, "factorial of negative value");
+        return bc_make_int(0);
+    }
+    if (bn_to_ull(&integer, &argument) != 0 || argument > (unsigned long long)~0U) {
+        bc_set_error(parser, "factorial argument out of range");
+        return bc_make_int(0);
+    }
+    if (bn_factorial((unsigned int)argument, &result) != 0) {
+        bc_set_error(parser, "numeric overflow");
+        return bc_make_int(0);
+    }
+    return bc_make_value_bn(&result, 0);
 }
 
 static BcValue bc_math_exp(BcParser *parser, BcValue value) {
@@ -1528,6 +1480,16 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
                 }
                 return bc_math_bessel(parser, arg, second_arg);
             }
+            if (rt_strcmp(token.text, "gcd") == 0 || rt_strcmp(token.text, "lcm") == 0) {
+                if (!has_second_arg) {
+                    bc_set_error(parser, "missing function argument");
+                    return bc_make_int(0);
+                }
+                if (rt_strcmp(token.text, "gcd") == 0) {
+                    return bc_math_gcd(parser, arg, second_arg);
+                }
+                return bc_math_lcm(parser, arg, second_arg);
+            }
             if (rt_strcmp(token.text, "min") == 0 || rt_strcmp(token.text, "max") == 0) {
                 int compare_result;
                 if (!has_second_arg) {
@@ -1572,8 +1534,10 @@ static BcValue bc_parse_primary(BcParser *parser, int evaluate) {
                 return bc_scale_value(arg);
             }
             if (rt_strcmp(token.text, "abs") == 0) {
-                arg.mantissa.is_negative = 0;
-                return arg;
+                return bc_math_abs(arg);
+            }
+            if (rt_strcmp(token.text, "fact") == 0 || rt_strcmp(token.text, "factorial") == 0) {
+                return bc_math_factorial(parser, arg);
             }
             bc_set_error(parser, "unknown function");
             return bc_make_int(0);

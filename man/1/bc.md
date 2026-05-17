@@ -35,7 +35,8 @@ and `/* ... */` comments are ignored.
   (previous result)
 - base conversion via `ibase` and `obase` (2 through 16)
 - built-in functions `sqrt(x)`, `length(x)`, `scale(x)`, `abs(x)`,
-  `min(x, y)`, and `max(x, y)`
+  `min(x, y)`, `max(x, y)`, `gcd(x, y)`, `lcm(x, y)`, and `fact(x)` /
+  `factorial(x)`
 - math-library functions `s(x)`/`sin(x)`, `c(x)`/`cos(x)`,
   `a(x)`/`atan(x)`, `l(x)`/`ln(x)`/`log(x)`, `e(x)`/`exp(x)`, and
   `j(n, x)`/`bessel(n, x)`
@@ -72,6 +73,7 @@ printf 'sum=0; for (i=0; i<4; i=i+1) sum=sum+i; sum\n' | bc
 printf 'sum=0; for (i=0; i<10; i=i+1) { if (i==3) continue; if (i==6) break; sum=sum+i }; sum\n' | bc
 printf 'obase=16; 255\n' | bc
 printf 'sqrt(81); abs(-12.5); max(3, 7); 5 <= 3\n' | bc
+printf 'gcd(48, 18); lcm(21, 6); fact(10)\n' | bc
 bc -l 'scale=10; s(pi/2); c(pi); a(1); e(1); l(1); j(0,0)'
 ```
 

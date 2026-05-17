@@ -23,6 +23,21 @@ assert_text_equals "$bc_large_mul" '888888888887111111111112' "bc large multipli
 bc_abs=$("$ROOT_DIR/build/bc" 'abs(-42.5)' | tr -d '\r\n')
 assert_text_equals "$bc_abs" '42.5' "bc abs() failed"
 
+bc_integer_helpers=$("$ROOT_DIR/build/bc" 'gcd(48, 18); gcd(-48, 18); lcm(21, 6); lcm(0, 99); fact(10); factorial(0)' | tr -d '\r')
+cat > "$WORK_DIR/bc_integer_helpers.expected" <<'EOF'
+6
+6
+42
+0
+3628800
+1
+EOF
+printf '%s\n' "$bc_integer_helpers" > "$WORK_DIR/bc_integer_helpers.out"
+assert_files_equal "$WORK_DIR/bc_integer_helpers.expected" "$WORK_DIR/bc_integer_helpers.out" "bc integer helper functions failed"
+
+bc_large_length=$("$ROOT_DIR/build/bc" 'length(12345678901234567890123456789012345678901234567890123456789012345678901234567890)' | tr -d '\r\n')
+assert_text_equals "$bc_large_length" '80' "bc large length() failed"
+
 bc_high_scale=$("$ROOT_DIR/build/bc" 'scale=30; 1/7' | tr -d '\r\n')
 assert_text_equals "$bc_high_scale" '0.142857142857142857142857142857' "bc high-scale division failed"
 
