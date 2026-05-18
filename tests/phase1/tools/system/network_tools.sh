@@ -39,6 +39,52 @@ assert_exit_code "$portscan_fail_closed_status" 3 "portscan --fail-closed should
 assert_command_succeeds "$ROOT_DIR/build/portscan" --help > "$WORK_DIR/portscan_help.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_help.out" 'authorized hosts' "portscan --help did not describe authorized-host usage"
 assert_file_contains "$WORK_DIR/portscan_help.out" 'common-port scanning' "portscan --help did not describe common-port scanning"
+assert_file_contains "$WORK_DIR/portscan_help.out" 'passively read any banner' "portscan --help did not describe the banner option"
+
+if command -v python3 >/dev/null 2>&1; then
+    banner_port=$((port + 500))
+    python3 - <<'PY' "$banner_port" > "$WORK_DIR/banner_server.out" 2>&1 &
+import socket, sys
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('127.0.0.1', port))
+sock.listen(2)
+for _ in range(2):
+    conn, _ = sock.accept()
+    try:
+        conn.sendall(b'SSH-2.0-portscan-test\r\n\x01hi')
+    except OSError:
+        pass
+    conn.close()
+sock.close()
+print('MOCK_BANNER_OK')
+PY
+    banner_server_pid=$!
+    "$ROOT_DIR/build/sleep" 1
+    assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner.out" 2>&1
+    assert_file_contains "$WORK_DIR/portscan_banner.out" "^127\.0\.0\.1 $banner_port open SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi$" "portscan --banner did not display the escaped banner"
+    assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --csv --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner_csv.out" 2>&1
+    assert_file_contains "$WORK_DIR/portscan_banner_csv.out" '^host,port,state,service,banner$' "portscan --banner --csv header missing banner column"
+    assert_file_contains "$WORK_DIR/portscan_banner_csv.out" "^127\.0\.0\.1,$banner_port,open,,SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi$" "portscan --banner --csv did not include the escaped banner"
+    wait "$banner_server_pid" || true
+    assert_file_contains "$WORK_DIR/banner_server.out" 'MOCK_BANNER_OK' "mock banner server did not complete"
+fi
+
+quiet_port=$((port + 600))
+"$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$quiet_port" > "$WORK_DIR/portscan_quiet_server.out" 2>&1 &
+quiet_pid=$!
+"$ROOT_DIR/build/sleep" 1
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --banner-timeout 200ms 127.0.0.1 "$quiet_port" > "$WORK_DIR/portscan_quiet.out" 2>&1
+wait "$quiet_pid" 2>/dev/null || true
+assert_file_contains "$WORK_DIR/portscan_quiet.out" "^127\.0\.0\.1 $quiet_port open$" "portscan --banner on a quiet port should print the result without banner text"
+
+portscan_banner_bytes_status=0
+"$ROOT_DIR/build/portscan" --banner-bytes 0 -4 -n 127.0.0.1 1 > "$WORK_DIR/portscan_banner_bytes.out" 2>&1 || portscan_banner_bytes_status=$?
+assert_exit_code "$portscan_banner_bytes_status" 1 "portscan --banner-bytes 0 should be rejected"
+portscan_banner_bytes_status=0
+"$ROOT_DIR/build/portscan" --banner-bytes 9999 -4 -n 127.0.0.1 1 > "$WORK_DIR/portscan_banner_bytes_big.out" 2>&1 || portscan_banner_bytes_status=$?
+assert_exit_code "$portscan_banner_bytes_status" 1 "portscan --banner-bytes above the cap should be rejected"
 
 assert_command_succeeds "$ROOT_DIR/build/ping" --help > "$WORK_DIR/ping_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping_help.out" 'quiet output' "ping --help did not describe the extended options"

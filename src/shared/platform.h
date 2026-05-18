@@ -185,6 +185,10 @@ typedef struct {
     int numeric_only;
     unsigned int bind_port;
     char bind_host[PLATFORM_NETWORK_TEXT_CAPACITY];
+    unsigned char *banner_buffer;
+    unsigned int banner_capacity;
+    unsigned int banner_read_timeout_milliseconds;
+    unsigned int *banner_received_length;
 } PlatformNetcatOptions;
 
 typedef struct {

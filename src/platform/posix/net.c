@@ -765,6 +765,23 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     }
 
     if (options->scan_mode) {
+        if (options->banner_received_length != NULL) {
+            *options->banner_received_length = 0U;
+        }
+        if (options->banner_buffer != NULL && options->banner_capacity > 0U) {
+            unsigned int read_timeout = options->banner_read_timeout_milliseconds;
+            size_t ready_index = 0U;
+
+            if (read_timeout == 0U) {
+                read_timeout = 500U;
+            }
+            if (platform_poll_fds(&sock, 1U, &ready_index, (int)read_timeout) > 0) {
+                ssize_t received = recv(sock, options->banner_buffer, (size_t)options->banner_capacity, 0);
+                if (received > 0 && options->banner_received_length != NULL) {
+                    *options->banner_received_length = (unsigned int)received;
+                }
+            }
+        }
         close(sock);
         return 0;
     }

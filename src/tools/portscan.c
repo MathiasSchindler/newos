@@ -3,6 +3,9 @@
 #include "tool_util.h"
 
 #define PORTSCAN_HOST_SIZE 256U
+#define PORTSCAN_BANNER_MAX 1024U
+#define PORTSCAN_BANNER_DEFAULT 256U
+#define PORTSCAN_BANNER_TIMEOUT_DEFAULT 500U
 
 typedef struct {
     int family;
@@ -14,8 +17,11 @@ typedef struct {
     int use_common_ports;
     int fail_open;
     int fail_closed;
+    int read_banner;
     unsigned int timeout_milliseconds;
     unsigned int delay_milliseconds;
+    unsigned int banner_byte_limit;
+    unsigned int banner_timeout_milliseconds;
     unsigned int scanned_count;
     unsigned int open_count;
     unsigned int closed_count;
@@ -48,7 +54,7 @@ static int streq(const char *left, const char *right) {
 }
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-46an] [-w TIMEOUT] [--common] [--services] [--summary] HOSTS [PORTS...]");
+    tool_write_usage(program_name, "[-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--banner] HOSTS [PORTS...]");
 }
 
 static void print_help(const char *program_name) {
@@ -68,6 +74,9 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "  --csv        write CSV rows: host,port,state,service");
     rt_write_line(1, "  --fail-open  exit non-zero when any open port is found");
     rt_write_line(1, "  --fail-closed exit non-zero when any closed port is found");
+    rt_write_line(1, "  --banner     passively read any banner the service sends on connect");
+    rt_write_line(1, "  --banner-bytes N   maximum banner bytes to read (default 256, max 1024)");
+    rt_write_line(1, "  --banner-timeout TIME  wait for banner data (default 500ms)");
     rt_write_line(1, "");
     rt_write_line(1, "Hosts may be comma-separated or an IPv4 last-octet range such as 192.0.2.1-5.");
     rt_write_line(1, "Ports may be listed individually, comma-separated, or as ranges such as 22,80,8000-8010.");
@@ -110,6 +119,69 @@ static void write_csv_field(const char *text) {
         ++index;
     }
     rt_write_char(1, '"');
+}
+
+static char hex_digit(unsigned int value) {
+    return (char)(value < 10U ? '0' + value : 'a' + (value - 10U));
+}
+
+static int append_escaped_byte(char *buffer, size_t buffer_size, size_t *length_io, unsigned char byte) {
+    char escape;
+    int use_named = 0;
+
+    switch (byte) {
+    case 0x00U: escape = '0'; use_named = 1; break;
+    case 0x09U: escape = 't'; use_named = 1; break;
+    case 0x0AU: escape = 'n'; use_named = 1; break;
+    case 0x0DU: escape = 'r'; use_named = 1; break;
+    case 0x5CU: escape = '\\'; use_named = 1; break;
+    default: escape = '\0'; break;
+    }
+    if (use_named) {
+        if (*length_io + 2U >= buffer_size) {
+            return -1;
+        }
+        buffer[*length_io] = '\\';
+        buffer[*length_io + 1U] = escape;
+        *length_io += 2U;
+        buffer[*length_io] = '\0';
+        return 0;
+    }
+    if (byte >= 0x20U && byte <= 0x7EU) {
+        if (*length_io + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[*length_io] = (char)byte;
+        *length_io += 1U;
+        buffer[*length_io] = '\0';
+        return 0;
+    }
+    if (*length_io + 4U >= buffer_size) {
+        return -1;
+    }
+    buffer[*length_io] = '\\';
+    buffer[*length_io + 1U] = 'x';
+    buffer[*length_io + 2U] = hex_digit((unsigned int)(byte >> 4U) & 0x0FU);
+    buffer[*length_io + 3U] = hex_digit((unsigned int)byte & 0x0FU);
+    *length_io += 4U;
+    buffer[*length_io] = '\0';
+    return 0;
+}
+
+static void escape_banner(const unsigned char *raw, unsigned int raw_length, char *out, size_t out_size) {
+    size_t length = 0U;
+    unsigned int index = 0U;
+
+    if (out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
+    while (index < raw_length) {
+        if (append_escaped_byte(out, out_size, &length, raw[index]) != 0) {
+            break;
+        }
+        ++index;
+    }
 }
 
 static int append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
@@ -199,7 +271,7 @@ static int host_prefix_looks_ipv4(const char *text, size_t length) {
     return dots == 3U;
 }
 
-static void print_result(const char *host, unsigned int port, int is_open, const PortscanOptions *options) {
+static void print_result(const char *host, unsigned int port, int is_open, const char *banner_text, const PortscanOptions *options) {
     const char *service = service_name_for_port(port);
 
     if (options->csv_output) {
@@ -210,6 +282,10 @@ static void print_result(const char *host, unsigned int port, int is_open, const
         rt_write_cstr(1, is_open ? "open" : "closed");
         rt_write_char(1, ',');
         write_csv_field(service);
+        if (options->read_banner) {
+            rt_write_char(1, ',');
+            write_csv_field(banner_text != 0 ? banner_text : "");
+        }
         rt_write_char(1, '\n');
         return;
     }
@@ -223,11 +299,18 @@ static void print_result(const char *host, unsigned int port, int is_open, const
         rt_write_char(1, ' ');
         rt_write_cstr(1, service);
     }
+    if (options->read_banner && banner_text != 0 && banner_text[0] != '\0') {
+        rt_write_char(1, ' ');
+        rt_write_cstr(1, banner_text);
+    }
     rt_write_char(1, '\n');
 }
 
 static void scan_one(const char *host, unsigned int port, PortscanOptions *options) {
     PlatformNetcatOptions netcat_options;
+    unsigned char banner_buffer[PORTSCAN_BANNER_MAX];
+    char banner_text[PORTSCAN_BANNER_MAX * 4U + 1U];
+    unsigned int banner_length = 0U;
     int is_open;
 
     rt_memset(&netcat_options, 0, sizeof(netcat_options));
@@ -235,6 +318,16 @@ static void scan_one(const char *host, unsigned int port, PortscanOptions *optio
     netcat_options.family = options->family;
     netcat_options.numeric_only = options->numeric_only;
     netcat_options.timeout_milliseconds = options->timeout_milliseconds;
+    if (options->read_banner) {
+        unsigned int capacity = options->banner_byte_limit;
+        if (capacity == 0U || capacity > PORTSCAN_BANNER_MAX) {
+            capacity = PORTSCAN_BANNER_DEFAULT;
+        }
+        netcat_options.banner_buffer = banner_buffer;
+        netcat_options.banner_capacity = capacity;
+        netcat_options.banner_read_timeout_milliseconds = options->banner_timeout_milliseconds;
+        netcat_options.banner_received_length = &banner_length;
+    }
 
     is_open = platform_netcat(host, port, &netcat_options) == 0;
     options->scanned_count += 1U;
@@ -243,8 +336,12 @@ static void scan_one(const char *host, unsigned int port, PortscanOptions *optio
     } else {
         options->closed_count += 1U;
     }
+    banner_text[0] = '\0';
+    if (options->read_banner && is_open && banner_length > 0U) {
+        escape_banner(banner_buffer, banner_length, banner_text, sizeof(banner_text));
+    }
     if (is_open || options->show_all) {
-        print_result(host, port, is_open, options);
+        print_result(host, port, is_open, banner_text, options);
     }
     if (options->delay_milliseconds > 0U) {
         (void)platform_sleep_milliseconds((unsigned long long)options->delay_milliseconds);
@@ -426,6 +523,25 @@ int main(int argc, char **argv) {
             options.fail_open = 1;
         } else if (streq(argv[argi], "--fail-closed")) {
             options.fail_closed = 1;
+        } else if (streq(argv[argi], "--banner")) {
+            options.read_banner = 1;
+        } else if (streq(argv[argi], "--banner-bytes")) {
+            unsigned long long value = 0ULL;
+            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &value, "portscan", "banner byte limit") != 0 ||
+                value == 0ULL || value > (unsigned long long)PORTSCAN_BANNER_MAX) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            options.banner_byte_limit = (unsigned int)value;
+            argi += 1;
+        } else if (streq(argv[argi], "--banner-timeout")) {
+            unsigned long long banner_timeout = 0ULL;
+            if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &banner_timeout) != 0 || banner_timeout > 0xffffffffULL) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            options.banner_timeout_milliseconds = (unsigned int)banner_timeout;
+            argi += 1;
         } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
@@ -441,7 +557,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (options.csv_output) {
-        rt_write_line(1, "host,port,state,service");
+        if (options.read_banner) {
+            rt_write_line(1, "host,port,state,service,banner");
+        } else {
+            rt_write_line(1, "host,port,state,service");
+        }
     }
     if (scan_hosts(argv[argi], argi + 1, argc, argv, &options) != 0) {
         return 1;

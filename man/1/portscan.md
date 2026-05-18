@@ -6,7 +6,7 @@ portscan - check TCP ports on authorized hosts
 
 ## Synopsis
 
-`portscan [-46an] [-w TIMEOUT] [--common] [--services] [--summary] HOSTS [PORTS...]`
+`portscan [-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--banner] HOSTS [PORTS...]`
 
 ## Description
 
@@ -17,6 +17,8 @@ The tool does not perform raw packet scans, spoofing, stealth probes, service ex
 By default, only open ports are printed. Use `-a` to print closed results too.
 
 `HOSTS` may be a single host, a comma-separated list, or an IPv4 last-octet range such as `192.0.2.1-5`. `PORTS` may be one or more arguments, each containing a single port, a comma-separated list, or a range such as `22,80,443` or `8000-8010`. Use `--common` to scan a conservative set of common administration and service ports without listing ports explicitly.
+
+With `--banner`, after each successful connect `portscan` passively reads up to `--banner-bytes` bytes that the service volunteers within `--banner-timeout`. No data is sent, no protocol handshake is performed, and no probe is written to the wire. The intent is to identify what is listening on an unexpected port without active service interrogation.
 
 ## Options
 
@@ -32,6 +34,9 @@ By default, only open ports are printed. Use `-a` to print closed results too.
 - `--csv` write CSV rows with `host,port,state,service` columns
 - `--fail-open` exit with status 2 when any open port is found
 - `--fail-closed` exit with status 3 when any closed port is found
+- `--banner` after connect, read whatever the service volunteers; print it as an additional column with non-printable bytes escaped. Nothing is sent to the service.
+- `--banner-bytes N` maximum banner bytes to capture; default `256`, hard cap `1024`
+- `--banner-timeout TIME` how long to wait for banner data after connect; default `500ms`
 - `-h`, `--help` show usage information
 
 ## Examples
@@ -50,6 +55,8 @@ By default, only open ports are printed. Use `-a` to print closed results too.
 
 `portscan --fail-open 10.0.0.25 23,3389`
 
+`portscan --banner --services 127.0.0.1 22,25,80,143`
+
 ## Output
 
 Each result is printed as:
@@ -61,18 +68,26 @@ HOST PORT closed
 
 Closed results are only printed with `-a`.
 
-With `--services`, a fourth field is appended when the port has a built-in well-known service hint:
+With `--services`, a service-name hint is appended when the port has a built-in well-known entry. With `--banner`, an additional escaped banner field is appended whenever a banner was captured:
 
 ```text
-HOST PORT open ssh
-HOST PORT closed https
+HOST PORT open ssh SSH-2.0-OpenSSH_9.6p1\r\n
+HOST PORT open http
 ```
 
-With `--csv`, output starts with a header and then prints one row per displayed result:
+The banner field is omitted from a line when no bytes were received within the timeout, so a quiet open port still prints as `HOST PORT open`.
+
+With `--csv`, output starts with a header and then prints one row per displayed result. When `--banner` is also set, the header gains a `banner` column and each row includes the escaped banner text (empty for closed ports or quiet services):
 
 ```text
 host,port,state,service
 127.0.0.1,22,open,ssh
+```
+
+```text
+host,port,state,service,banner
+127.0.0.1,22,open,ssh,SSH-2.0-OpenSSH_9.6p1\r\n
+127.0.0.1,80,open,http,
 ```
 
 With `--summary`, the final line is:
@@ -80,6 +95,16 @@ With `--summary`, the final line is:
 ```text
 summary scanned=COUNT open=COUNT closed=COUNT
 ```
+
+### Banner escaping
+
+Bytes outside printable ASCII are escaped before output so that arbitrary remote data cannot inject terminal control sequences or break CSV parsing. The escape rules are:
+
+- `\\` for a literal backslash
+- `\t`, `\n`, `\r`, `\0` for tab, newline, carriage return, and NUL
+- `\xHH` (lowercase hex) for any other byte below `0x20` or above `0x7e`
+
+Banners are read once with a single `recv` and truncated at `--banner-bytes`; no second read is attempted.
 
 ## Exit Status
 
@@ -93,6 +118,6 @@ Timeout handling depends on the platform networking backend. Local and refused c
 
 Closed, filtered, and unreachable failures are currently reported together as `closed` because the portable platform API only exposes connect success or failure. Distinguishing `closed/refused` from `filtered/timeout` would require preserving connection error detail in the platform layer.
 
-Service names are static hints based on common port numbers. `portscan` does not perform banner grabbing or protocol detection, so a service hint does not prove what software is actually listening.
+Service names are static hints based on common port numbers. `portscan` does not perform active protocol detection, so a service hint does not prove what software is actually listening. The optional `--banner` mode reads bytes a service volunteers on its own; it sends nothing, does not speak any protocol, and does not attempt version-to-CVE mapping. A banner is whatever the service chose to send and may be misleading or empty.
 
 Reverse-DNS display for numeric host ranges, JSON output, and reading host or port lists from files are not implemented yet. These are diagnostic conveniences rather than scan-behavior changes and can be added later without changing the conservative TCP-connect model.
