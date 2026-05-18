@@ -15,6 +15,31 @@ EOF
 wait "$netcat_pid"
 assert_file_contains "$WORK_DIR/netcat_server.out" 'phase1-netcat' "netcat loopback mode did not deliver the payload"
 
+scan_port=$((port + 400))
+"$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$scan_port" > "$WORK_DIR/portscan_server.out" &
+portscan_pid=$!
+"$ROOT_DIR/build/sleep" 1
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s 127.0.0.1-1 "$scan_port,$((scan_port + 1))" > "$WORK_DIR/portscan.out" 2>&1
+wait "$portscan_pid"
+assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $scan_port open$" "portscan did not report the loopback listener as open"
+assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $((scan_port + 1)) closed$" "portscan did not report a closed loopback port with -a"
+
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --services --summary --delay 1ms -w 1s 127.0.0.1 22 > "$WORK_DIR/portscan_services.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_services.out" '^127\.0\.0\.1 22 .* ssh$' "portscan --services did not show the SSH service hint"
+assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01]$' "portscan --summary did not print totals"
+
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service$' "portscan --csv did not print a header"
+assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,$" "portscan --csv did not print a closed row"
+
+portscan_fail_closed_status=0
+"$ROOT_DIR/build/portscan" -4 -a -n --fail-closed -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_fail_closed.out" 2>&1 || portscan_fail_closed_status=$?
+assert_exit_code "$portscan_fail_closed_status" 3 "portscan --fail-closed should return 3 when a closed port is found"
+
+assert_command_succeeds "$ROOT_DIR/build/portscan" --help > "$WORK_DIR/portscan_help.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_help.out" 'authorized hosts' "portscan --help did not describe authorized-host usage"
+assert_file_contains "$WORK_DIR/portscan_help.out" 'common-port scanning' "portscan --help did not describe common-port scanning"
+
 assert_command_succeeds "$ROOT_DIR/build/ping" --help > "$WORK_DIR/ping_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping_help.out" 'quiet output' "ping --help did not describe the extended options"
 
