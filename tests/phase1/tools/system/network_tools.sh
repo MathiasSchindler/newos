@@ -28,6 +28,15 @@ assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --services --summary
 assert_file_contains "$WORK_DIR/portscan_services.out" '^127\.0\.0\.1 22 .* ssh$' "portscan --services did not show the SSH service hint"
 assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01] filtered=[01] unreachable=[01] error=[01]$' "portscan --summary did not print totals"
 
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 "$((scan_port + 1))" --summary > "$WORK_DIR/portscan_trailing_summary.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_trailing_summary.out" '^summary scanned=1 open=0 closed=1 filtered=0 unreachable=0 error=0$' "portscan should accept --summary after host and port arguments"
+
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --progress "$((scan_port + 1))" > "$WORK_DIR/portscan_progress.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_progress.out" "^127\.0\.0\.1 $((scan_port + 1)) closed$" "portscan --progress should print closed results as they complete"
+
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --common --summary -w 1ms > "$WORK_DIR/portscan_trailing_common.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_trailing_common.out" '^summary scanned=' "portscan should accept --common after the host argument"
+
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service$' "portscan --csv did not print a header"
 assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,$" "portscan --csv did not print a closed row"

@@ -13,6 +13,7 @@ typedef struct {
     int show_all;
     int show_services;
     int show_summary;
+    int show_progress;
     int csv_output;
     int use_common_ports;
     int fail_open;
@@ -57,7 +58,7 @@ static int streq(const char *left, const char *right) {
 }
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--banner] HOSTS [PORTS...]");
+    tool_write_usage(program_name, "[-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--progress] [--banner] HOSTS [PORTS...]");
 }
 
 static void print_help(const char *program_name) {
@@ -74,6 +75,7 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "  --delay TIME wait between connect attempts");
     rt_write_line(1, "  --services   show well-known service-name hints for common ports");
     rt_write_line(1, "  --summary    print scanned/open/closed totals after the scan");
+    rt_write_line(1, "  --progress   print each result as soon as it completes");
     rt_write_line(1, "  --csv        write CSV rows: host,port,state,service");
     rt_write_line(1, "  --fail-open  exit non-zero when any open port is found");
     rt_write_line(1, "  --fail-closed exit non-zero when any closed port is found");
@@ -368,7 +370,7 @@ static void scan_one(const char *host, unsigned int port, PortscanOptions *optio
     if (options->read_banner && is_open && banner_length > 0U) {
         escape_banner(banner_buffer, banner_length, banner_text, sizeof(banner_text));
     }
-    if (is_open || options->show_all) {
+    if (is_open || options->show_all || options->show_progress) {
         print_result(host, port, connect_status, banner_text, options);
     }
     if (options->delay_milliseconds > 0U) {
@@ -417,12 +419,12 @@ static int scan_host_ports(const char *host, const char *port_spec, PortscanOpti
     return 0;
 }
 
-static int scan_host_with_all_ports(const char *host, int port_arg_start, int argc, char **argv, PortscanOptions *options) {
-    int index = port_arg_start;
+static int scan_host_with_all_ports(const char *host, int port_count, char **ports, PortscanOptions *options) {
+    int index = 0;
 
-    while (index < argc) {
-        if (scan_host_ports(host, argv[index], options) != 0) {
-            tool_write_error("portscan", "invalid port list: ", argv[index]);
+    while (index < port_count) {
+        if (scan_host_ports(host, ports[index], options) != 0) {
+            tool_write_error("portscan", "invalid port list: ", ports[index]);
             return -1;
         }
         ++index;
@@ -450,7 +452,7 @@ static void print_summary(const PortscanOptions *options) {
     rt_write_char(1, '\n');
 }
 
-static int scan_host_token(const char *token, size_t token_length, int port_arg_start, int argc, char **argv, PortscanOptions *options) {
+static int scan_host_token(const char *token, size_t token_length, int port_count, char **ports, PortscanOptions *options) {
     char host[PORTSCAN_HOST_SIZE];
     size_t last_dot = 0U;
     size_t dash = 0U;
@@ -474,7 +476,7 @@ static int scan_host_token(const char *token, size_t token_length, int port_arg_
             if (append_uint(host, sizeof(host), &length, first) != 0) {
                 return -1;
             }
-            if (scan_host_with_all_ports(host, port_arg_start, argc, argv, options) != 0) {
+            if (scan_host_with_all_ports(host, port_count, ports, options) != 0) {
                 return -1;
             }
             if (first == 255U) {
@@ -488,10 +490,10 @@ static int scan_host_token(const char *token, size_t token_length, int port_arg_
     if (copy_slice(host, sizeof(host), token, token_length) != 0) {
         return -1;
     }
-    return scan_host_with_all_ports(host, port_arg_start, argc, argv, options);
+    return scan_host_with_all_ports(host, port_count, ports, options);
 }
 
-static int scan_hosts(const char *host_spec, int port_arg_start, int argc, char **argv, PortscanOptions *options) {
+static int scan_hosts(const char *host_spec, int port_count, char **ports, PortscanOptions *options) {
     size_t spec_length = rt_strlen(host_spec);
     size_t start = 0U;
 
@@ -500,7 +502,7 @@ static int scan_hosts(const char *host_spec, int port_arg_start, int argc, char 
         while (end < spec_length && host_spec[end] != ',') {
             ++end;
         }
-        if (scan_host_token(host_spec + start, end - start, port_arg_start, argc, argv, options) != 0) {
+        if (scan_host_token(host_spec + start, end - start, port_count, ports, options) != 0) {
             tool_write_error("portscan", "invalid host list: ", host_spec);
             return -1;
         }
@@ -514,13 +516,21 @@ static int scan_hosts(const char *host_spec, int port_arg_start, int argc, char 
 
 int main(int argc, char **argv) {
     PortscanOptions options;
+    char **positionals;
+    int positional_count = 0;
     int argi = 1;
 
     rt_memset(&options, 0, sizeof(options));
     options.family = PLATFORM_NETWORK_FAMILY_ANY;
     options.timeout_milliseconds = 1000U;
 
-    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+    positionals = (char **)rt_malloc(sizeof(char *) * (size_t)(argc > 1 ? argc - 1 : 1));
+    if (positionals == 0) {
+        tool_write_error("portscan", "out of memory", 0);
+        return 1;
+    }
+
+    while (argi < argc) {
         if (streq(argv[argi], "-4")) {
             options.family = PLATFORM_NETWORK_FAMILY_IPV4;
         } else if (streq(argv[argi], "-6")) {
@@ -533,6 +543,7 @@ int main(int argc, char **argv) {
             unsigned long long timeout_value = 0ULL;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &timeout_value) != 0 || timeout_value > 0xffffffffULL) {
                 print_usage(argv[0]);
+                rt_free(positionals);
                 return 1;
             }
             options.timeout_milliseconds = (unsigned int)timeout_value;
@@ -543,6 +554,7 @@ int main(int argc, char **argv) {
             unsigned long long delay_value = 0ULL;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &delay_value) != 0 || delay_value > 0xffffffffULL) {
                 print_usage(argv[0]);
+                rt_free(positionals);
                 return 1;
             }
             options.delay_milliseconds = (unsigned int)delay_value;
@@ -551,6 +563,8 @@ int main(int argc, char **argv) {
             options.show_services = 1;
         } else if (streq(argv[argi], "--summary")) {
             options.show_summary = 1;
+        } else if (streq(argv[argi], "--progress")) {
+            options.show_progress = 1;
         } else if (streq(argv[argi], "--csv")) {
             options.csv_output = 1;
         } else if (streq(argv[argi], "--fail-open")) {
@@ -564,6 +578,7 @@ int main(int argc, char **argv) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &value, "portscan", "banner byte limit") != 0 ||
                 value == 0ULL || value > (unsigned long long)PORTSCAN_BANNER_MAX) {
                 print_usage(argv[0]);
+                rt_free(positionals);
                 return 1;
             }
             options.banner_byte_limit = (unsigned int)value;
@@ -572,22 +587,29 @@ int main(int argc, char **argv) {
             unsigned long long banner_timeout = 0ULL;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &banner_timeout) != 0 || banner_timeout > 0xffffffffULL) {
                 print_usage(argv[0]);
+                rt_free(positionals);
                 return 1;
             }
             options.banner_timeout_milliseconds = (unsigned int)banner_timeout;
             argi += 1;
         } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
             print_help(argv[0]);
+            rt_free(positionals);
             return 0;
-        } else {
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
             print_usage(argv[0]);
+            rt_free(positionals);
             return 1;
+        } else {
+            positionals[positional_count] = argv[argi];
+            positional_count += 1;
         }
         argi += 1;
     }
 
-    if (argc - argi < 1 || (argc - argi < 2 && !options.use_common_ports)) {
+    if (positional_count < 1 || (positional_count < 2 && !options.use_common_ports)) {
         print_usage(argv[0]);
+        rt_free(positionals);
         return 1;
     }
     if (options.csv_output) {
@@ -597,17 +619,21 @@ int main(int argc, char **argv) {
             rt_write_line(1, "host,port,state,service");
         }
     }
-    if (scan_hosts(argv[argi], argi + 1, argc, argv, &options) != 0) {
+    if (scan_hosts(positionals[0], positional_count - 1, positionals + 1, &options) != 0) {
+        rt_free(positionals);
         return 1;
     }
     if (options.show_summary) {
         print_summary(&options);
     }
     if (options.fail_open && options.open_count > 0U) {
+        rt_free(positionals);
         return 2;
     }
     if (options.fail_closed && options.closed_count > 0U) {
+        rt_free(positionals);
         return 3;
     }
+    rt_free(positionals);
     return 0;
 }

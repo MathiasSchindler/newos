@@ -6,7 +6,7 @@ portscan - check TCP ports on authorized hosts
 
 ## Synopsis
 
-`portscan [-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--banner] HOSTS [PORTS...]`
+`portscan [-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--progress] [--banner] HOSTS [PORTS...]`
 
 ## Description
 
@@ -17,6 +17,8 @@ The tool does not perform raw packet scans, spoofing, stealth probes, service ex
 By default, only open ports are printed. Use `-a` to print closed results too.
 
 `HOSTS` may be a single host, a comma-separated list, or an IPv4 last-octet range such as `192.0.2.1-5`. `PORTS` may be one or more arguments, each containing a single port, a comma-separated list, or a range such as `22,80,443` or `8000-8010`. Use `--common` to scan a conservative set of common administration and service ports without listing ports explicitly.
+
+Options may appear before or after `HOSTS` and `PORTS`. For example, `portscan router.lan --common --summary` and `portscan --common --summary router.lan` are equivalent.
 
 With `--banner`, after each successful connect `portscan` passively reads up to `--banner-bytes` bytes that the service volunteers within `--banner-timeout`. No data is sent, no protocol handshake is performed, and no probe is written to the wire. The intent is to identify what is listening on an unexpected port without active service interrogation.
 
@@ -31,6 +33,7 @@ With `--banner`, after each successful connect `portscan` passively reads up to 
 - `--delay TIME` wait between connect attempts, using `ms`, `s`, or `m` suffixes
 - `--services` show well-known service-name hints for common ports
 - `--summary` print scanned, open, and closed totals after the scan
+- `--progress` print every completed result as it is scanned, including non-open states that would normally be hidden unless `-a` is used
 - `--csv` write CSV rows with `host,port,state,service` columns
 - `--fail-open` exit with status 2 when any open port is found
 - `--fail-closed` exit with status 3 when any closed port is found
@@ -51,6 +54,8 @@ With `--banner`, after each successful connect `portscan` passively reads up to 
 
 `portscan --common --services --summary router.lan`
 
+`portscan router.lan --common --summary --progress`
+
 `portscan --csv -a 127.0.0.1 22,80,443`
 
 `portscan --fail-open 10.0.0.25 23,3389`
@@ -69,7 +74,9 @@ HOST PORT unreachable
 HOST PORT error
 ```
 
-Non-open results are only printed with `-a`. `closed` means the connection was actively refused. `filtered` means the connection timed out or remained in progress until the platform gave up. `unreachable` means name resolution, the host, or the network was unreachable. `error` is used for failures that cannot be classified portably.
+Non-open results are only printed with `-a` or `--progress`. `closed` means the connection was actively refused. `filtered` means the connection timed out or remained in progress until the platform gave up. `unreachable` means name resolution, the host, or the network was unreachable. `error` is used for failures that cannot be classified portably.
+
+`--progress` uses the same line format as normal output, but prints each completed port check as soon as it finishes. This is useful for common-port or range scans where otherwise nothing may appear until an open port is found or the final summary is printed.
 
 With `--services`, a service-name hint is appended when the port has a built-in well-known entry. With `--banner`, an additional escaped banner field is appended whenever a banner was captured:
 
