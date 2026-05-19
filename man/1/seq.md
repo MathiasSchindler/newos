@@ -45,6 +45,10 @@ seq prints a sequence of numbers from FIRST to LAST, incrementing by STEP. FIRST
 - `seq -s , 1 5` — print `1,2,3,4,5`
 - `seq -f "%'f" 1000 1000 3000` — print grouped fixed-width numbers
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 yes, printf, bc

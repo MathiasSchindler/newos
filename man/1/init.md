@@ -69,6 +69,10 @@ init -m 3 -r 1s -c 'echo booting; exit 1'
 init -q -c 'while true; do date; sleep 5; done'
 ```
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 sh, watch, timeout, pstree

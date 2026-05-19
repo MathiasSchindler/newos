@@ -92,6 +92,23 @@ signature counts, X.509 certificate count, embedded validation-failure count,
 content-hash status, signature-verification status, trust-validation status,
 and ingredient count. JSON output includes the same summary in a `c2pa` object.
 
+## JSON Output
+
+With `--json`, `imginfo` writes one JSON Lines event per input using the common
+envelope documented in `json-output`. The event name is `image_info`, and the
+metadata fields are in the `data` object.
+
+Example event:
+
+```json
+{"schema":"newos.tool.v1","tool":"imginfo","stream":"stdout","event":"image_info","seq":1,"data":{"path":"picture.png","format":"PNG","extension":"png","canonical_extension":"png","mime":"image/png","width":640,"height":480,"bit_depth":8,"channels":4,"variant":"PNG","color":"truecolor-alpha","compression":"deflate","orientation":null,"frames":null,"duration_ms":null,"loop_count":null,"density":null,"properties":["alpha"],"c2pa":{"present":false}}}
+```
+
+Unknown numeric fields are `null`. `properties` is an array of property names.
+`c2pa` is always present and contains at least `present`; when C2PA metadata is
+found, it includes the structural counters and validation booleans shown by
+`--details`.
+
 ## LIMITATIONS
 
 - JPEG dimensions are found by scanning for a SOF marker. Path inputs that look like JPEGs but do not expose dimensions in the initial probe window are retried with a full-file probe; standard input is read fully for the same reason.
@@ -130,4 +147,4 @@ cat image.webp | imginfo
 
 ## SEE ALSO
 
-imgcheck, imgmeta, file, hexdump
+imgcheck, imgmeta, file, hexdump, json-output

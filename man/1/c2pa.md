@@ -54,3 +54,8 @@ and carrier-writing paths. It is not production provenance.
 c2pa add --dev-key -o signed.png input.png
 imgmeta show --c2pa-trust signed.png
 ```
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

@@ -44,3 +44,8 @@ objdump -f -h app.exe
   traversal, and target-selection options are not implemented yet.
 - Output is intended for project diagnostics and may not match GNU binutils
   formatting or option compatibility.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

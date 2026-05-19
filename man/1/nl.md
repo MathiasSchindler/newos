@@ -52,6 +52,10 @@ nl reads files (or standard input) and writes them to standard output with line 
 - `nl -v0 -i2 file.txt` — start at 0 and increment by 2
 - `nl -n rz -w 4 file.txt` — zero-padded 4-digit numbers
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 cat, wc, pr

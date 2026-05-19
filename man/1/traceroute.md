@@ -35,3 +35,8 @@ The platform backend decodes ICMP time-exceeded replies and echo replies directl
 ## Limitations
 
 IPv4 and IPv6 hop reporting is supported on POSIX, macOS freestanding, and Linux freestanding backends. IPv6 availability still depends on the host having IPv6 routing and on the platform allowing ICMPv6 sockets. Host names depend on reverse-DNS records and resolver availability.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

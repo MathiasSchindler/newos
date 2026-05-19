@@ -50,6 +50,10 @@ xmlset --force //chapter "TODO" document.xml
 xmlset //item/@status active document.xml
 ```
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 xmlrename, xmldel, xmlcut

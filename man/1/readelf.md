@@ -40,3 +40,8 @@ readelf -S -s hello.o
 - Relocation, dynamic-section, note, versioning, DWARF, and archive-member
   views are not complete.
 - Output formatting is diagnostic-oriented and not a full GNU readelf clone.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

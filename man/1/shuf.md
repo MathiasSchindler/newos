@@ -53,6 +53,10 @@ shuf randomly permutes its input lines and writes the result to standard output.
 - `shuf -i 1-100 -n 5` — pick 5 random numbers between 1 and 100
 - `shuf -e alpha beta gamma` — shuffle three words
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 sort, awk, seq

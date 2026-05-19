@@ -42,6 +42,8 @@ fi
 assert_file_contains "$WORK_DIR/late-time-strict.out" 'strict PNG rejects ancillary chunks after IDAT' "imgcheck --strict did not report late ancillary PNG chunks"
 
 "$ROOT_DIR/build/imgcheck" --json "$WORK_DIR/valid.png" > "$WORK_DIR/valid-json.out"
+assert_file_contains "$WORK_DIR/valid-json.out" '"schema":"newos.tool.v1"' "imgcheck --json did not use the shared JSON envelope"
+assert_file_contains "$WORK_DIR/valid-json.out" '"event":"image_check"' "imgcheck --json did not emit image_check events"
 assert_file_contains "$WORK_DIR/valid-json.out" '"valid":true' "imgcheck --json did not report success"
 assert_file_contains "$WORK_DIR/valid-json.out" '"failure_offset":null' "imgcheck --json did not report null success offset"
 "$ROOT_DIR/build/imgcheck" --json "$WORK_DIR/c2pa.jpg" > "$WORK_DIR/c2pa-json.out"

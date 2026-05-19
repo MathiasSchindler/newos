@@ -49,3 +49,8 @@ account lookup, public-key authentication, or rekeying.
   forwarding, agent forwarding, X11 forwarding, and rekeying are not supported.
 - Host-key management is seed-file based; there is no `sshd_config` parser,
   multi-key host identity set, or automatic host-key generation workflow.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

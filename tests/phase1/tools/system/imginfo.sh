@@ -40,6 +40,8 @@ assert_text_equals "$($ROOT_DIR/build/imginfo --canonical-ext "$WORK_DIR/sample.
 assert_file_contains "$WORK_DIR/sample.png" 'PNG' "test fixture sanity check failed"
 
 "$ROOT_DIR/build/imginfo" --json "$WORK_DIR/sample.png" > "$WORK_DIR/png-json.txt"
+assert_file_contains "$WORK_DIR/png-json.txt" '"schema":"newos.tool.v1"' "imginfo --json did not use the shared JSON envelope"
+assert_file_contains "$WORK_DIR/png-json.txt" '"event":"image_info"' "imginfo --json did not emit image_info events"
 assert_file_contains "$WORK_DIR/png-json.txt" '"canonical_extension":"png"' "imginfo --json did not report canonical extension"
 assert_file_contains "$WORK_DIR/png-json.txt" '"width":2' "imginfo --json did not report width"
 

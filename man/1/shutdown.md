@@ -32,3 +32,8 @@ In the experimental initramfs guest, `shutdown now` is intended to end the QEMU 
 - Behavior depends on the platform backend and privileges; hosted environments
   may reject reboot, halt, or poweroff requests.
 - No runlevel, single-user, kexec, or firmware-selection modes are provided.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

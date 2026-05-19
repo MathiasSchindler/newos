@@ -83,6 +83,10 @@ Color output follows the shared project behavior documented in `output-style`.
 - `make -f build.mk install` — use an alternate Makefile and build the install target
 - `make CC=clang all` — override the CC variable
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 sh, ncc, output-style

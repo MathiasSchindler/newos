@@ -101,46 +101,18 @@ static void write_plain_result(const char *label, const ImageValidation *validat
     rt_write_char(1, '\n');
 }
 
-static void write_json_string(const char *text) {
-    size_t index;
-
-    rt_write_char(1, '"');
-    if (text != 0) {
-        for (index = 0U; text[index] != '\0'; ++index) {
-            unsigned char ch = (unsigned char)text[index];
-
-            if (ch == '"' || ch == '\\') {
-                rt_write_char(1, '\\');
-                rt_write_char(1, (char)ch);
-            } else if (ch == '\n') {
-                rt_write_cstr(1, "\\n");
-            } else if (ch == '\r') {
-                rt_write_cstr(1, "\\r");
-            } else if (ch == '\t') {
-                rt_write_cstr(1, "\\t");
-            } else if (ch < 32U) {
-                rt_write_cstr(1, "\\u00");
-                rt_write_char(1, "0123456789abcdef"[(ch >> 4U) & 0x0fU]);
-                rt_write_char(1, "0123456789abcdef"[ch & 0x0fU]);
-            } else {
-                rt_write_char(1, (char)ch);
-            }
-        }
-    }
-    rt_write_char(1, '"');
-}
-
 static void write_json_result(const char *label, const ImageValidation *validation, const ImageC2paInfo *c2pa) {
-    rt_write_cstr(1, "{\"path\":");
-    write_json_string(label);
+    tool_json_begin_event(1, "imgcheck", "stdout", "image_check");
+    rt_write_cstr(1, ",\"data\":{\"path\":");
+    tool_json_write_string(1, label);
     rt_write_cstr(1, ",\"format\":");
-    write_json_string(image_format_extension(validation->format));
+    tool_json_write_string(1, image_format_extension(validation->format));
     rt_write_cstr(1, ",\"valid\":");
     rt_write_cstr(1, validation->valid ? "true" : "false");
     rt_write_cstr(1, ",\"status\":");
-    write_json_string(validation->valid ? "ok" : "fail");
+    tool_json_write_string(1, validation->valid ? "ok" : "fail");
     rt_write_cstr(1, ",\"message\":");
-    write_json_string(validation->message);
+    tool_json_write_string(1, validation->message);
     rt_write_cstr(1, ",\"failure_offset\":");
     if (validation->has_failure_offset) {
         rt_write_uint(1, (unsigned long long)validation->failure_offset);
@@ -150,11 +122,11 @@ static void write_json_result(const char *label, const ImageValidation *validati
     rt_write_cstr(1, ",\"c2pa\":");
     if (c2pa != 0 && c2pa->present) {
         rt_write_cstr(1, "{\"present\":true,\"status\":");
-        write_json_string(c2pa->status);
+        tool_json_write_string(1, c2pa->status);
         rt_write_cstr(1, ",\"carrier\":");
-        write_json_string(c2pa->carrier);
+        tool_json_write_string(1, c2pa->carrier);
         rt_write_cstr(1, ",\"signature_algorithm\":");
-        if (c2pa->signature_algorithm != 0) write_json_string(c2pa->signature_algorithm); else rt_write_cstr(1, "null");
+        if (c2pa->signature_algorithm != 0) tool_json_write_string(1, c2pa->signature_algorithm); else rt_write_cstr(1, "null");
         rt_write_cstr(1, ",\"jumbf_valid\":");
         rt_write_cstr(1, c2pa->jumbf_valid ? "true" : "false");
         rt_write_cstr(1, ",\"cbor_valid\":");
@@ -193,7 +165,8 @@ static void write_json_result(const char *label, const ImageValidation *validati
     } else {
         rt_write_cstr(1, "{\"present\":false}");
     }
-    rt_write_line(1, "}");
+    rt_write_char(1, '}');
+    tool_json_end_event(1);
 }
 
 static void write_human_result(const char *label, const ImageValidation *validation, const ImgcheckOptions *options, const ImageC2paInfo *c2pa) {
@@ -324,6 +297,7 @@ static int parse_options(int argc, char **argv, ImgcheckOptions *options, int *a
         }
         if (rt_strcmp(arg, "--json") == 0) {
             options->json = 1;
+            tool_json_set_enabled(1);
             arg_index += 1;
             continue;
         }

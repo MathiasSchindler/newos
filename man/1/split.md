@@ -49,6 +49,10 @@ split divides a file (or standard input) into smaller pieces. Output files are n
 - `split -n 4 data.csv part` — split into 4 equal pieces
 - `split -d -a 3 file.txt x` — numeric 3-digit suffix: `x000`, `x001`, …
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 cat, csplit, head, tail

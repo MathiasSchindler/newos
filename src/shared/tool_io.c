@@ -132,6 +132,10 @@ void tool_write_styled(int fd, int mode, int style, const char *text) {
 }
 
 void tool_write_usage(const char *program_name, const char *usage_suffix) {
+    if (tool_json_is_enabled()) {
+        (void)tool_json_write_usage(program_name, usage_suffix);
+        return;
+    }
     tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_CYAN, "Usage:");
     rt_write_char(2, ' ');
     rt_write_cstr(2, program_name);
@@ -143,6 +147,10 @@ void tool_write_usage(const char *program_name, const char *usage_suffix) {
 }
 
 void tool_write_error(const char *tool_name, const char *message, const char *detail) {
+    if (tool_json_is_enabled()) {
+        (void)tool_json_write_diagnostic(tool_name, "error", message, detail);
+        return;
+    }
     tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_RED, tool_name);
     tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_RED, ": ");
     if (message != 0) {

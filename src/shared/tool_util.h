@@ -14,6 +14,17 @@ int tool_write_visible(int fd, const char *text, size_t length);
 int tool_write_visible_line(int fd, const char *text);
 int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool_name);
 
+void tool_json_set_enabled(int enabled);
+int tool_json_is_enabled(void);
+unsigned long long tool_json_next_seq(void);
+int tool_json_write_string(int fd, const char *text);
+int tool_json_write_string_n(int fd, const char *text, size_t length);
+int tool_json_write_base64(int fd, const unsigned char *data, size_t length);
+int tool_json_begin_event(int fd, const char *tool_name, const char *stream_name, const char *event_name);
+int tool_json_end_event(int fd);
+int tool_json_write_diagnostic(const char *tool_name, const char *level, const char *message, const char *detail);
+int tool_json_write_usage(const char *tool_name, const char *usage_suffix);
+
 #define TOOL_OUTPUT_BUFFER_SIZE 16384U
 
 typedef struct {

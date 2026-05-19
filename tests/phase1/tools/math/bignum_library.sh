@@ -289,6 +289,7 @@ cc -std=c11 -Wall -Wextra -Wpedantic -O2 \
     src/shared/runtime/io.c \
     src/shared/runtime/unicode_utf8.c \
     src/shared/runtime/unicode.c \
+    src/shared/tool_json.c \
     src/shared/tool_io.c \
     src/shared/tool_cli.c \
     src/shared/tool_regex.c \

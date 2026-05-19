@@ -47,6 +47,10 @@ truncate sets the length of each file to SIZE bytes. If a file is shorter it is 
 - `truncate -s +4K file` — increase size by 4 KiB
 - `truncate -c -s 0 maybe.txt` — zero if exists, skip if not
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 dd, fallocate, sync

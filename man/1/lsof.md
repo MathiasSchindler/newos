@@ -28,3 +28,8 @@ On platforms that expose `/proc/<pid>/fd`, each file descriptor symlink is read 
 ## Limitations
 
 Systems without `/proc/<pid>/fd` support may only print the header and return a non-zero status because the platform does not expose open-file enumeration yet.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

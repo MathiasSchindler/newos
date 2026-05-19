@@ -70,6 +70,10 @@ wtf --url Ada Lovelace
 wtf --base-url http://127.0.0.1:8080/api/rest_v1/page/summary Plan 9
 ```
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 wget, nslookup, dig

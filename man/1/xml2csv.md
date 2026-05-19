@@ -51,6 +51,10 @@ xml2csv --header --sep '\t' --row //item --col @id --col title document.xml
 xml2csv --row //book --col title --col author catalog.xml
 ```
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 xml2json, xml2lines, xmlget

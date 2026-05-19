@@ -78,6 +78,10 @@ man --color=always ls
 When the built-in pager is active, `Space` or `f` advances a page, `Enter` or
 `j` advances a line, `q` quits, and `h` shows a brief key summary.
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 less, ls, cp, ncc, manual, output-style

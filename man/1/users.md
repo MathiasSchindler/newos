@@ -51,6 +51,10 @@ users prints the usernames of all users currently logged in to the system, deriv
 - `users -l` — include terminal, login time, and host details
 - `users --since @0 alice` — show Alice's current sessions logged after epoch 0
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 who, groups, id, w

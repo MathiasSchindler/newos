@@ -44,6 +44,10 @@ expand reads files (or standard input) and writes them with tab characters repla
 - `expand -z -t 4 paths0.txt` — reset columns at NUL-delimited records
 - `expand -t 1,9,17 file.txt` — expand to explicit stop positions
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 unexpand, cat, pr

@@ -44,6 +44,10 @@ timeout executes COMMAND with its ARGs and sends it a signal if it has not exite
 - `timeout -k 5 60 prog` — send TERM after 60 s, KILL after 65 s
 - `timeout 0.5 curl http://slow/` — 500 ms HTTP timeout
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 kill, sh, sleep

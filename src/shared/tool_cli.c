@@ -31,32 +31,39 @@ void tool_opt_init(ToolOptState *s, int argc, char **argv,
 int tool_opt_next(ToolOptState *s) {
     const char *arg;
 
-    if (s->argi >= s->argc) {
-        return TOOL_OPT_END;
-    }
+    while (1) {
+        if (s->argi >= s->argc) {
+            return TOOL_OPT_END;
+        }
 
-    arg = s->argv[s->argi];
+        arg = s->argv[s->argi];
 
-    /* bare "--" ends option scanning */
-    if (arg[0] == '-' && arg[1] == '-' && arg[2] == '\0') {
+        /* bare "--" ends option scanning */
+        if (arg[0] == '-' && arg[1] == '-' && arg[2] == '\0') {
+            s->argi += 1;
+            return TOOL_OPT_END;
+        }
+
+        /* not a flag: single '-' is a stdin placeholder, not an option */
+        if (arg[0] != '-' || arg[1] == '\0') {
+            return TOOL_OPT_END;
+        }
+
+        s->flag = arg;
         s->argi += 1;
-        return TOOL_OPT_END;
+
+        if (rt_strcmp(arg, "--json") == 0) {
+            tool_json_set_enabled(1);
+            continue;
+        }
+
+        /* unified help detection */
+        if ((arg[1] == 'h' && arg[2] == '\0') || rt_strcmp(arg, "--help") == 0) {
+            return TOOL_OPT_HELP;
+        }
+
+        return TOOL_OPT_FLAG;
     }
-
-    /* not a flag: single '-' is a stdin placeholder, not an option */
-    if (arg[0] != '-' || arg[1] == '\0') {
-        return TOOL_OPT_END;
-    }
-
-    s->flag = arg;
-    s->argi += 1;
-
-    /* unified help detection */
-    if ((arg[1] == 'h' && arg[2] == '\0') || rt_strcmp(arg, "--help") == 0) {
-        return TOOL_OPT_HELP;
-    }
-
-    return TOOL_OPT_FLAG;
 }
 
 /*

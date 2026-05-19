@@ -45,6 +45,10 @@ unexpand reads files (or standard input) and converts runs of spaces back to tab
 - `unexpand -a file.txt` — convert all space runs
 - `unexpand -z -a -t 4 paths0.txt` — convert NUL-delimited records
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 expand, cat, pr

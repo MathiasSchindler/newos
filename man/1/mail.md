@@ -110,6 +110,10 @@ Do not commit real credentials. A local `mail.config` file is ignored by the rep
 - compose editing is intentionally basic: it is an inline text/plain editor with no draft recovery, cursor navigation inside prior lines, spell checking, or attachment picker
 - the interactive folder pane is populated from the server during refresh, but folder selection and switching are not implemented yet
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 editor, user-interface, platform, runtime

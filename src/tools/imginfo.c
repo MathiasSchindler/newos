@@ -148,35 +148,6 @@ static int write_property_list(unsigned int property_flags) {
     return wrote;
 }
 
-static void write_json_string(const char *text) {
-    size_t index;
-
-    rt_write_char(1, '"');
-    if (text != 0) {
-        for (index = 0U; text[index] != '\0'; ++index) {
-            unsigned char ch = (unsigned char)text[index];
-
-            if (ch == '"' || ch == '\\') {
-                rt_write_char(1, '\\');
-                rt_write_char(1, (char)ch);
-            } else if (ch == '\n') {
-                rt_write_cstr(1, "\\n");
-            } else if (ch == '\r') {
-                rt_write_cstr(1, "\\r");
-            } else if (ch == '\t') {
-                rt_write_cstr(1, "\\t");
-            } else if (ch < 32U) {
-                rt_write_cstr(1, "\\u00");
-                rt_write_char(1, "0123456789abcdef"[(ch >> 4U) & 0x0fU]);
-                rt_write_char(1, "0123456789abcdef"[ch & 0x0fU]);
-            } else {
-                rt_write_char(1, (char)ch);
-            }
-        }
-    }
-    rt_write_char(1, '"');
-}
-
 static void write_json_uint_or_null(unsigned int value, int known) {
     if (known) {
         rt_write_uint(1, (unsigned long long)value);
@@ -215,7 +186,7 @@ static void write_json_properties(unsigned int property_flags) {
             if (wrote) {
                 rt_write_char(1, ',');
             }
-            write_json_string(name);
+            tool_json_write_string(1, name);
             wrote = 1;
         }
     }
@@ -511,16 +482,17 @@ static int write_detail_block(const char *label, const ImageInfo *info) {
 }
 
 static void write_json_info(const char *label, const ImageInfo *info) {
-    rt_write_cstr(1, "{\"path\":");
-    write_json_string(label);
+    tool_json_begin_event(1, "imginfo", "stdout", "image_info");
+    rt_write_cstr(1, ",\"data\":{\"path\":");
+    tool_json_write_string(1, label);
     rt_write_cstr(1, ",\"format\":");
-    write_json_string(image_format_name(info->format));
+    tool_json_write_string(1, image_format_name(info->format));
     rt_write_cstr(1, ",\"extension\":");
-    write_json_string(image_format_extension(info->format));
+    tool_json_write_string(1, image_format_extension(info->format));
     rt_write_cstr(1, ",\"canonical_extension\":");
-    write_json_string(image_format_extension(info->format));
+    tool_json_write_string(1, image_format_extension(info->format));
     rt_write_cstr(1, ",\"mime\":");
-    write_json_string(image_format_mime(info->format));
+    tool_json_write_string(1, image_format_mime(info->format));
     rt_write_cstr(1, ",\"width\":");
     write_json_uint_or_null(info->width, (info->flags & IMAGE_INFO_HAS_DIMENSIONS) != 0U);
     rt_write_cstr(1, ",\"height\":");
@@ -530,11 +502,11 @@ static void write_json_info(const char *label, const ImageInfo *info) {
     rt_write_cstr(1, ",\"channels\":");
     write_json_uint_or_null(info->channel_count, (info->flags & IMAGE_INFO_HAS_CHANNELS) != 0U);
     rt_write_cstr(1, ",\"variant\":");
-    if ((info->flags & IMAGE_INFO_HAS_VARIANT) != 0U) write_json_string(info->variant); else rt_write_cstr(1, "null");
+    if ((info->flags & IMAGE_INFO_HAS_VARIANT) != 0U) tool_json_write_string(1, info->variant); else rt_write_cstr(1, "null");
     rt_write_cstr(1, ",\"color\":");
-    if ((info->flags & IMAGE_INFO_HAS_COLOR) != 0U) write_json_string(info->color_model); else rt_write_cstr(1, "null");
+    if ((info->flags & IMAGE_INFO_HAS_COLOR) != 0U) tool_json_write_string(1, info->color_model); else rt_write_cstr(1, "null");
     rt_write_cstr(1, ",\"compression\":");
-    if ((info->flags & IMAGE_INFO_HAS_COMPRESSION) != 0U) write_json_string(info->compression); else rt_write_cstr(1, "null");
+    if ((info->flags & IMAGE_INFO_HAS_COMPRESSION) != 0U) tool_json_write_string(1, info->compression); else rt_write_cstr(1, "null");
     rt_write_cstr(1, ",\"orientation\":");
     write_json_uint_or_null(info->orientation, (info->flags & IMAGE_INFO_HAS_ORIENTATION) != 0U);
     rt_write_cstr(1, ",\"frames\":");
@@ -550,7 +522,7 @@ static void write_json_info(const char *label, const ImageInfo *info) {
         rt_write_cstr(1, ",\"y\":");
         rt_write_uint(1, (unsigned long long)info->density_y);
         rt_write_cstr(1, ",\"unit\":");
-        write_json_string(info->density_unit);
+        tool_json_write_string(1, info->density_unit);
         rt_write_char(1, '}');
     } else {
         rt_write_cstr(1, "null");
@@ -560,11 +532,11 @@ static void write_json_info(const char *label, const ImageInfo *info) {
     rt_write_cstr(1, ",\"c2pa\":");
     if ((info->flags & IMAGE_INFO_HAS_C2PA) != 0U) {
         rt_write_cstr(1, "{\"present\":true,\"status\":");
-        write_json_string(info->c2pa.status);
+        tool_json_write_string(1, info->c2pa.status);
         rt_write_cstr(1, ",\"carrier\":");
-        write_json_string(info->c2pa.carrier);
+        tool_json_write_string(1, info->c2pa.carrier);
         rt_write_cstr(1, ",\"signature_algorithm\":");
-        if (info->c2pa.signature_algorithm != 0) write_json_string(info->c2pa.signature_algorithm); else rt_write_cstr(1, "null");
+        if (info->c2pa.signature_algorithm != 0) tool_json_write_string(1, info->c2pa.signature_algorithm); else rt_write_cstr(1, "null");
         rt_write_cstr(1, ",\"carrier_count\":");
         rt_write_uint(1, (unsigned long long)info->c2pa.carrier_count);
         rt_write_cstr(1, ",\"recognized_carrier_count\":");
@@ -617,7 +589,8 @@ static void write_json_info(const char *label, const ImageInfo *info) {
     } else {
         rt_write_cstr(1, "{\"present\":false}");
     }
-    rt_write_line(1, "}");
+    rt_write_char(1, '}');
+    tool_json_end_event(1);
 }
 
 static int describe_path(const char *path, const ImginfoOptions *options) {
@@ -759,6 +732,7 @@ static int parse_options(int argc, char **argv, ImginfoOptions *options, int *ar
         }
         if (rt_strcmp(arg, "--json") == 0) {
             options->json_output = 1;
+            tool_json_set_enabled(1);
             argi += 1;
             continue;
         }

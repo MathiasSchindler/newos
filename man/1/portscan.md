@@ -131,3 +131,8 @@ Connect failures are classified from platform error details where available. The
 Service names are static hints based on common port numbers. `portscan` does not perform active protocol detection, so a service hint does not prove what software is actually listening. The optional `--banner` mode reads bytes a service volunteers on its own; it sends nothing, does not speak any protocol, and does not attempt version-to-CVE mapping. A banner is whatever the service chose to send and may be misleading or empty.
 
 Reverse-DNS display for numeric host ranges, JSON output, and reading host or port lists from files are not implemented yet. These are diagnostic conveniences rather than scan-behavior changes and can be added later without changing the conservative TCP-connect model.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

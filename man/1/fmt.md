@@ -42,6 +42,10 @@ fmt fills and joins short lines in paragraphs to produce output with lines no lo
 - `fmt -s -w 80 code_comments.txt` — break long lines only
 - `fmt -u essay.txt` — normalise spacing
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 fold, pr, sed

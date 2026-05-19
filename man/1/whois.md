@@ -32,3 +32,8 @@ The default server is `whois.iana.org` on TCP port 43. When the response names a
 ## Limitations
 
 Referral following is intentionally shallow and only follows plain WHOIS server names. Use `-h` to select a specific registry server directly, or `-R` to inspect only the first server response.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+

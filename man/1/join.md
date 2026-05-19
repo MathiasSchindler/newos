@@ -56,6 +56,10 @@ join reads two files sorted on a join field and writes one line per matching pai
 - `join -t: /etc/passwd /etc/shadow` — join colon-delimited files
 - `join -a1 -e N/A -o 1.1,2.2 a.txt b.txt` — left join with a fill value
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 sort, paste, cut, comm

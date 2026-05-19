@@ -44,6 +44,23 @@ When a validator can identify the byte position of the first failure, human,
 plain, and JSON output include that zero-based byte offset. If no precise offset
 is available, plain output prints `-` and JSON prints `null`.
 
+## JSON Output
+
+With `--json`, `imgcheck` writes one JSON Lines event per displayed input using
+the common envelope documented in `json-output`. The event name is
+`image_check`, and the validation fields are in the `data` object.
+
+Example event:
+
+```json
+{"schema":"newos.tool.v1","tool":"imgcheck","stream":"stdout","event":"image_check","seq":1,"data":{"path":"picture.png","format":"png","valid":true,"status":"ok","message":"valid PNG image","failure_offset":null,"c2pa":{"present":false}}}
+```
+
+`failure_offset` is a zero-based byte offset when available, otherwise `null`.
+`c2pa` is always present and contains at least `present`; when C2PA metadata is
+found, it includes the structural counters and validation booleans reported by
+the C2PA checker.
+
 ## EXIT STATUS
 
 `imgcheck` exits with status 0 when all inputs pass their available checks. It exits with status 1 when any input cannot be read, is unsupported, or fails validation.
@@ -80,4 +97,4 @@ cat image.png | imgcheck -q
 
 ## SEE ALSO
 
-imginfo, imgmeta, file, hexdump
+imginfo, imgmeta, file, hexdump, json-output

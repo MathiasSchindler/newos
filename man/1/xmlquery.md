@@ -59,6 +59,10 @@ xmlquery '//item[.="ready"]' file.xml
 xmlquery '//item[text()="ready"]' file.xml
 ```
 
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
 ## SEE ALSO
 
 xmlcut, xmlget, xmlgrep

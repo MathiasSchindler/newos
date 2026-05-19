@@ -31,3 +31,8 @@ The current implementation supports local-to-local copies. Remote operands of th
 ## Exit Status
 
 Returns 0 when all requested local copies succeed. Returns non-zero for copy failures, invalid arguments, or remote operands.
+
+## JSON Output
+
+JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+
