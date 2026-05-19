@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <errno.h>
 #include <grp.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -1527,8 +1528,10 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     struct addrinfo *current;
     char port_text[16];
     int sock = -1;
+    int last_error = EHOSTUNREACH;
 
     if (host == 0 || host[0] == '\0' || socket_fd_out == 0 || port == 0U || port > 65535U) {
+        errno = EINVAL;
         return -1;
     }
 
@@ -1539,6 +1542,7 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
     rt_unsigned_to_string((unsigned long long)port, port_text, sizeof(port_text));
 
     if (getaddrinfo(host, port_text, &hints, &results) != 0) {
+        errno = EHOSTUNREACH;
         return -1;
     }
 
@@ -1550,17 +1554,70 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
         if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
             break;
         }
+        {
+            int socket_error = 0;
+            socklen_t socket_error_size = (socklen_t)sizeof(socket_error);
+            last_error = errno;
+            if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_size) == 0 && socket_error != 0) {
+                last_error = socket_error;
+            }
+        }
         (void)platform_close(sock);
         sock = -1;
     }
 
     freeaddrinfo(results);
     if (sock < 0) {
+        errno = last_error;
         return -1;
     }
 
     *socket_fd_out = sock;
     return 0;
+}
+
+static int macos_connect_status_from_errno(int error_code) {
+    switch (error_code) {
+    case ECONNREFUSED:
+        return PLATFORM_CONNECT_STATUS_CLOSED;
+    case ETIMEDOUT:
+#ifdef EAGAIN
+    case EAGAIN:
+#endif
+#ifdef EWOULDBLOCK
+#if EWOULDBLOCK != EAGAIN
+    case EWOULDBLOCK:
+#endif
+#endif
+#ifdef EINPROGRESS
+    case EINPROGRESS:
+#endif
+#ifdef EACCES
+    case EACCES:
+#endif
+#ifdef EPERM
+    case EPERM:
+#endif
+        return PLATFORM_CONNECT_STATUS_FILTERED;
+#ifdef EHOSTUNREACH
+    case EHOSTUNREACH:
+#endif
+#ifdef ENETUNREACH
+    case ENETUNREACH:
+#endif
+#ifdef EHOSTDOWN
+    case EHOSTDOWN:
+#endif
+#ifdef ENETDOWN
+    case ENETDOWN:
+#endif
+#ifdef EADDRNOTAVAIL
+    case EADDRNOTAVAIL:
+#endif
+        return PLATFORM_CONNECT_STATUS_UNREACHABLE;
+    default:
+        return PLATFORM_CONNECT_STATUS_ERROR;
+    }
 }
 
 int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) {
@@ -1674,6 +1731,9 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         memset(&defaults, 0, sizeof(defaults));
         options = &defaults;
     }
+    if (options->connect_status_out != 0) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_ERROR;
+    }
     if (options->use_udp) {
         return -1;
     }
@@ -1700,7 +1760,13 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     }
 
     if (platform_connect_tcp(host, port, &sock) != 0) {
+        if (options->connect_status_out != 0) {
+            *options->connect_status_out = macos_connect_status_from_errno(errno);
+        }
         return -1;
+    }
+    if (options->connect_status_out != 0) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_OPEN;
     }
     if (options->scan_mode) {
         if (options->banner_received_length != 0) {

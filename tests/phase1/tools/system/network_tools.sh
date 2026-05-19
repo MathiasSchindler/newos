@@ -26,11 +26,14 @@ assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $((scan_port + 1)) 
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --services --summary --delay 1ms -w 1s 127.0.0.1 22 > "$WORK_DIR/portscan_services.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_services.out" '^127\.0\.0\.1 22 .* ssh$' "portscan --services did not show the SSH service hint"
-assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01]$' "portscan --summary did not print totals"
+assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01] filtered=[01] unreachable=[01] error=[01]$' "portscan --summary did not print totals"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service$' "portscan --csv did not print a header"
 assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,$" "portscan --csv did not print a closed row"
+
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s not-a-numeric-host "$((scan_port + 1))" > "$WORK_DIR/portscan_unreachable.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_unreachable.out" "^not-a-numeric-host $((scan_port + 1)) unreachable$" "portscan did not print an unreachable state for an unresolvable numeric-only host"
 
 portscan_fail_closed_status=0
 "$ROOT_DIR/build/portscan" -4 -a -n --fail-closed -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_fail_closed.out" 2>&1 || portscan_fail_closed_status=$?

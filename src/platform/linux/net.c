@@ -25,6 +25,18 @@
 #define LINUX_POLLERR 0x0008
 #define LINUX_POLLHUP 0x0010
 #define LINUX_MSG_ERRQUEUE 0x2000
+#define LINUX_EPERM 1
+#define LINUX_EAGAIN 11
+#define LINUX_EACCES 13
+#define LINUX_EWOULDBLOCK 11
+#define LINUX_EADDRNOTAVAIL 99
+#define LINUX_ENETDOWN 100
+#define LINUX_ENETUNREACH 101
+#define LINUX_ETIMEDOUT 110
+#define LINUX_ECONNREFUSED 111
+#define LINUX_EHOSTDOWN 112
+#define LINUX_EHOSTUNREACH 113
+#define LINUX_EINPROGRESS 115
 #define LINUX_SO_EE_ORIGIN_ICMP 2U
 #define LINUX_IFNAMSIZ 16
 #define LINUX_IFF_UP 0x0001U
@@ -589,6 +601,50 @@ static int linux_connect_ipv4(int sock, const LinuxInAddr *ip, unsigned int port
 
     linux_prepare_sockaddr(&address, ip, port);
     return linux_syscall3(LINUX_SYS_CONNECT, sock, (long)&address, sizeof(address)) < 0 ? -1 : 0;
+}
+
+static int linux_connect_status_from_error(long result) {
+    long error_code = result < 0 ? -result : result;
+
+    switch (error_code) {
+    case LINUX_ECONNREFUSED:
+        return PLATFORM_CONNECT_STATUS_CLOSED;
+    case LINUX_ETIMEDOUT:
+    case LINUX_EAGAIN:
+    case LINUX_EINPROGRESS:
+    case LINUX_EACCES:
+    case LINUX_EPERM:
+        return PLATFORM_CONNECT_STATUS_FILTERED;
+    case LINUX_EHOSTUNREACH:
+    case LINUX_ENETUNREACH:
+    case LINUX_EHOSTDOWN:
+    case LINUX_ENETDOWN:
+    case LINUX_EADDRNOTAVAIL:
+        return PLATFORM_CONNECT_STATUS_UNREACHABLE;
+    default:
+        return PLATFORM_CONNECT_STATUS_ERROR;
+    }
+}
+
+static int linux_connect_ipv4_status(int sock, const LinuxInAddr *ip, unsigned int port, int *status_out) {
+    struct linux_sockaddr_in address;
+    long result;
+
+    if (status_out != 0) {
+        *status_out = PLATFORM_CONNECT_STATUS_ERROR;
+    }
+    linux_prepare_sockaddr(&address, ip, port);
+    result = linux_syscall3(LINUX_SYS_CONNECT, sock, (long)&address, sizeof(address));
+    if (result < 0) {
+        if (status_out != 0) {
+            *status_out = linux_connect_status_from_error(result);
+        }
+        return -1;
+    }
+    if (status_out != 0) {
+        *status_out = PLATFORM_CONNECT_STATUS_OPEN;
+    }
+    return 0;
 }
 
 static int linux_bind_ipv4(int sock, const LinuxInAddr *ip, unsigned int port) {
@@ -1637,10 +1693,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     LinuxInAddr bind_address;
     const LinuxInAddr *bind_ptr = 0;
     int sock = -1;
+    int connect_status = PLATFORM_CONNECT_STATUS_ERROR;
 
     if (options == 0) {
         rt_memset(&defaults, 0, sizeof(defaults));
         options = &defaults;
+    }
+    if (options->connect_status_out != 0) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_ERROR;
     }
 
     if (options->use_udp || options->family == PLATFORM_NETWORK_FAMILY_IPV6) {
@@ -1706,6 +1766,9 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     }
     if ((options->numeric_only && linux_parse_ipv4_text(host, &address) != 0) ||
         (!options->numeric_only && linux_resolve_ipv4_host(host, &address) != 0)) {
+        if (options->connect_status_out != 0) {
+            *options->connect_status_out = PLATFORM_CONNECT_STATUS_UNREACHABLE;
+        }
         return -1;
     }
     sock = linux_open_inet_socket(LINUX_SOCK_STREAM, LINUX_IPPROTO_TCP);
@@ -1716,9 +1779,15 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         platform_close(sock);
         return -1;
     }
-    if (linux_connect_ipv4(sock, &address, port) != 0) {
+    if (linux_connect_ipv4_status(sock, &address, port, &connect_status) != 0) {
+        if (options->connect_status_out != 0) {
+            *options->connect_status_out = connect_status;
+        }
         platform_close(sock);
         return -1;
+    }
+    if (options->connect_status_out != 0) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_OPEN;
     }
     if (options->scan_mode) {
         if (options->banner_received_length != 0) {

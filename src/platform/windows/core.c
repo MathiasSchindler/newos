@@ -916,7 +916,9 @@ int platform_accept_tcp(int listener_fd, int *client_fd_out) {
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
     (void)host;
     (void)port;
-    (void)options;
+    if (options != 0 && options->connect_status_out != 0) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_ERROR;
+    }
     return -1;
 }
 

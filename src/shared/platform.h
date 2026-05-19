@@ -19,6 +19,11 @@
 #define PLATFORM_NETWORK_FAMILY_ANY 0
 #define PLATFORM_NETWORK_FAMILY_IPV4 4
 #define PLATFORM_NETWORK_FAMILY_IPV6 6
+#define PLATFORM_CONNECT_STATUS_OPEN 0
+#define PLATFORM_CONNECT_STATUS_CLOSED 1
+#define PLATFORM_CONNECT_STATUS_FILTERED 2
+#define PLATFORM_CONNECT_STATUS_UNREACHABLE 3
+#define PLATFORM_CONNECT_STATUS_ERROR 4
 #define PLATFORM_DNS_RECORD_A 1U
 #define PLATFORM_DNS_RECORD_NS 2U
 #define PLATFORM_DNS_RECORD_CNAME 5U
@@ -189,6 +194,7 @@ typedef struct {
     unsigned int banner_capacity;
     unsigned int banner_read_timeout_milliseconds;
     unsigned int *banner_received_length;
+    int *connect_status_out;
 } PlatformNetcatOptions;
 
 typedef struct {

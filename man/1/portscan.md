@@ -64,9 +64,12 @@ Each result is printed as:
 ```text
 HOST PORT open
 HOST PORT closed
+HOST PORT filtered
+HOST PORT unreachable
+HOST PORT error
 ```
 
-Closed results are only printed with `-a`.
+Non-open results are only printed with `-a`. `closed` means the connection was actively refused. `filtered` means the connection timed out or remained in progress until the platform gave up. `unreachable` means name resolution, the host, or the network was unreachable. `error` is used for failures that cannot be classified portably.
 
 With `--services`, a service-name hint is appended when the port has a built-in well-known entry. With `--banner`, an additional escaped banner field is appended whenever a banner was captured:
 
@@ -93,7 +96,7 @@ host,port,state,service,banner
 With `--summary`, the final line is:
 
 ```text
-summary scanned=COUNT open=COUNT closed=COUNT
+summary scanned=COUNT open=COUNT closed=COUNT filtered=COUNT unreachable=COUNT error=COUNT
 ```
 
 ### Banner escaping
@@ -108,7 +111,7 @@ Banners are read once with a single `recv` and truncated at `--banner-bytes`; no
 
 ## Exit Status
 
-The normal exit status is 0 when the scan completed and 1 for invalid arguments or scan setup errors. `--fail-open` changes the exit status to 2 when any open port is found. `--fail-closed` changes the exit status to 3 when any closed port is found.
+The normal exit status is 0 when the scan completed and 1 for invalid arguments or scan setup errors. `--fail-open` changes the exit status to 2 when any open port is found. `--fail-closed` changes the exit status to 3 when any actively refused `closed` port is found.
 
 ## Limitations
 
@@ -116,7 +119,7 @@ Only TCP connect checks are implemented. UDP scanning is not included because la
 
 Timeout handling depends on the platform networking backend. Local and refused connections usually complete quickly; filtered network paths may take longer on backends that cannot interrupt a blocking connect.
 
-Closed, filtered, and unreachable failures are currently reported together as `closed` because the portable platform API only exposes connect success or failure. Distinguishing `closed/refused` from `filtered/timeout` would require preserving connection error detail in the platform layer.
+Connect failures are classified from platform error details where available. The mapping is intentionally small and portable: refused connections are `closed`, timeouts and still-in-progress connects are `filtered`, and name, host, or network reachability failures are `unreachable`. Some platform backends may still report unusual failures as `error` when the native error cannot be mapped safely.
 
 Service names are static hints based on common port numbers. `portscan` does not perform active protocol detection, so a service hint does not prove what software is actually listening. The optional `--banner` mode reads bytes a service volunteers on its own; it sends nothing, does not speak any protocol, and does not attempt version-to-CVE mapping. A banner is whatever the service chose to send and may be misleading or empty.
 

@@ -25,6 +25,9 @@ typedef struct {
     unsigned int scanned_count;
     unsigned int open_count;
     unsigned int closed_count;
+    unsigned int filtered_count;
+    unsigned int unreachable_count;
+    unsigned int error_count;
 } PortscanOptions;
 
 typedef struct {
@@ -271,15 +274,31 @@ static int host_prefix_looks_ipv4(const char *text, size_t length) {
     return dots == 3U;
 }
 
-static void print_result(const char *host, unsigned int port, int is_open, const char *banner_text, const PortscanOptions *options) {
+static const char *connect_status_name(int status) {
+    switch (status) {
+    case PLATFORM_CONNECT_STATUS_OPEN:
+        return "open";
+    case PLATFORM_CONNECT_STATUS_CLOSED:
+        return "closed";
+    case PLATFORM_CONNECT_STATUS_FILTERED:
+        return "filtered";
+    case PLATFORM_CONNECT_STATUS_UNREACHABLE:
+        return "unreachable";
+    default:
+        return "error";
+    }
+}
+
+static void print_result(const char *host, unsigned int port, int connect_status, const char *banner_text, const PortscanOptions *options) {
     const char *service = service_name_for_port(port);
+    const char *status_text = connect_status_name(connect_status);
 
     if (options->csv_output) {
         write_csv_field(host);
         rt_write_char(1, ',');
         rt_write_uint(1, (unsigned long long)port);
         rt_write_char(1, ',');
-        rt_write_cstr(1, is_open ? "open" : "closed");
+        rt_write_cstr(1, status_text);
         rt_write_char(1, ',');
         write_csv_field(service);
         if (options->read_banner) {
@@ -294,7 +313,7 @@ static void print_result(const char *host, unsigned int port, int is_open, const
     rt_write_char(1, ' ');
     rt_write_uint(1, (unsigned long long)port);
     rt_write_char(1, ' ');
-    rt_write_cstr(1, is_open ? "open" : "closed");
+    rt_write_cstr(1, status_text);
     if (options->show_services && service[0] != '\0') {
         rt_write_char(1, ' ');
         rt_write_cstr(1, service);
@@ -311,6 +330,7 @@ static void scan_one(const char *host, unsigned int port, PortscanOptions *optio
     unsigned char banner_buffer[PORTSCAN_BANNER_MAX];
     char banner_text[PORTSCAN_BANNER_MAX * 4U + 1U];
     unsigned int banner_length = 0U;
+    int connect_status = PLATFORM_CONNECT_STATUS_ERROR;
     int is_open;
 
     rt_memset(&netcat_options, 0, sizeof(netcat_options));
@@ -318,6 +338,7 @@ static void scan_one(const char *host, unsigned int port, PortscanOptions *optio
     netcat_options.family = options->family;
     netcat_options.numeric_only = options->numeric_only;
     netcat_options.timeout_milliseconds = options->timeout_milliseconds;
+    netcat_options.connect_status_out = &connect_status;
     if (options->read_banner) {
         unsigned int capacity = options->banner_byte_limit;
         if (capacity == 0U || capacity > PORTSCAN_BANNER_MAX) {
@@ -331,17 +352,24 @@ static void scan_one(const char *host, unsigned int port, PortscanOptions *optio
 
     is_open = platform_netcat(host, port, &netcat_options) == 0;
     options->scanned_count += 1U;
-    if (is_open) {
+    if (is_open || connect_status == PLATFORM_CONNECT_STATUS_OPEN) {
+        connect_status = PLATFORM_CONNECT_STATUS_OPEN;
         options->open_count += 1U;
-    } else {
+    } else if (connect_status == PLATFORM_CONNECT_STATUS_CLOSED) {
         options->closed_count += 1U;
+    } else if (connect_status == PLATFORM_CONNECT_STATUS_FILTERED) {
+        options->filtered_count += 1U;
+    } else if (connect_status == PLATFORM_CONNECT_STATUS_UNREACHABLE) {
+        options->unreachable_count += 1U;
+    } else {
+        options->error_count += 1U;
     }
     banner_text[0] = '\0';
     if (options->read_banner && is_open && banner_length > 0U) {
         escape_banner(banner_buffer, banner_length, banner_text, sizeof(banner_text));
     }
     if (is_open || options->show_all) {
-        print_result(host, port, is_open, banner_text, options);
+        print_result(host, port, connect_status, banner_text, options);
     }
     if (options->delay_milliseconds > 0U) {
         (void)platform_sleep_milliseconds((unsigned long long)options->delay_milliseconds);
@@ -413,6 +441,12 @@ static void print_summary(const PortscanOptions *options) {
     rt_write_uint(1, (unsigned long long)options->open_count);
     rt_write_cstr(1, " closed=");
     rt_write_uint(1, (unsigned long long)options->closed_count);
+    rt_write_cstr(1, " filtered=");
+    rt_write_uint(1, (unsigned long long)options->filtered_count);
+    rt_write_cstr(1, " unreachable=");
+    rt_write_uint(1, (unsigned long long)options->unreachable_count);
+    rt_write_cstr(1, " error=");
+    rt_write_uint(1, (unsigned long long)options->error_count);
     rt_write_char(1, '\n');
 }
 

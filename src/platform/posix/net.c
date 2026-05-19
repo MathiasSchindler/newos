@@ -387,6 +387,50 @@ static int posix_netcat_ai_family(int family_filter) {
     return AF_UNSPEC;
 }
 
+static int posix_connect_status_from_errno(int error_code) {
+    switch (error_code) {
+    case ECONNREFUSED:
+        return PLATFORM_CONNECT_STATUS_CLOSED;
+    case ETIMEDOUT:
+#ifdef EAGAIN
+    case EAGAIN:
+#endif
+#ifdef EWOULDBLOCK
+#if EWOULDBLOCK != EAGAIN
+    case EWOULDBLOCK:
+#endif
+#endif
+#ifdef EINPROGRESS
+    case EINPROGRESS:
+#endif
+#ifdef EACCES
+    case EACCES:
+#endif
+#ifdef EPERM
+    case EPERM:
+#endif
+        return PLATFORM_CONNECT_STATUS_FILTERED;
+#ifdef EHOSTUNREACH
+    case EHOSTUNREACH:
+#endif
+#ifdef ENETUNREACH
+    case ENETUNREACH:
+#endif
+#ifdef EHOSTDOWN
+    case EHOSTDOWN:
+#endif
+#ifdef ENETDOWN
+    case ENETDOWN:
+#endif
+#ifdef EADDRNOTAVAIL
+    case EADDRNOTAVAIL:
+#endif
+        return PLATFORM_CONNECT_STATUS_UNREACHABLE;
+    default:
+        return PLATFORM_CONNECT_STATUS_ERROR;
+    }
+}
+
 static int bind_socket_local_endpoint(
     int sock,
     int family,
@@ -613,10 +657,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     PlatformNetcatOptions effective_options;
     int sock = -1;
     int ai_family;
+    int connect_status = PLATFORM_CONNECT_STATUS_ERROR;
 
     if (options == NULL) {
         memset(&effective_options, 0, sizeof(effective_options));
         options = &effective_options;
+    }
+    if (options->connect_status_out != NULL) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_ERROR;
     }
 
     ai_family = posix_netcat_ai_family(options->family);
@@ -736,6 +784,10 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
 
         if (getaddrinfo(host, port_text, &hints, &results) != 0) {
             errno = EINVAL;
+            connect_status = PLATFORM_CONNECT_STATUS_UNREACHABLE;
+            if (options->connect_status_out != NULL) {
+                *options->connect_status_out = connect_status;
+            }
             return -1;
         }
 
@@ -751,8 +803,10 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
                 continue;
             }
             if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
+                connect_status = PLATFORM_CONNECT_STATUS_OPEN;
                 break;
             }
+            connect_status = posix_connect_status_from_errno(errno);
             close(sock);
             sock = -1;
         }
@@ -761,7 +815,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     }
 
     if (sock < 0) {
+        if (options->connect_status_out != NULL) {
+            *options->connect_status_out = connect_status;
+        }
         return -1;
+    }
+
+    if (options->connect_status_out != NULL) {
+        *options->connect_status_out = PLATFORM_CONNECT_STATUS_OPEN;
     }
 
     if (options->scan_mode) {
