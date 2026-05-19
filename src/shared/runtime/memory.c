@@ -1,7 +1,7 @@
 #include "runtime.h"
 #include "platform.h"
 
-#if defined(NEWOS_RUNTIME_THREAD_SAFE_ALLOC) && NEWOS_RUNTIME_THREAD_SAFE_ALLOC && defined(__STDC_HOSTED__) && __STDC_HOSTED__ && (defined(__unix__) || defined(__APPLE__)) && !defined(_WIN32)
+#if defined(NEWOS_RUNTIME_THREAD_SAFE_ALLOC) && NEWOS_RUNTIME_THREAD_SAFE_ALLOC && defined(NEWOS_HAVE_PTHREAD) && NEWOS_HAVE_PTHREAD
 #include <pthread.h>
 #define RT_ALLOC_THREAD_SAFE 1
 #else

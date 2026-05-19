@@ -5,7 +5,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#if !defined(EXPACK_DISABLE_PTHREAD) && defined(__STDC_HOSTED__) && __STDC_HOSTED__ && (defined(__unix__) || defined(__APPLE__)) && !defined(_WIN32)
+#if !defined(EXPACK_DISABLE_PTHREAD) && defined(NEWOS_HAVE_PTHREAD) && NEWOS_HAVE_PTHREAD
 #include <pthread.h>
 #define EXPACK_HAVE_PTHREAD 1
 #else

@@ -10,7 +10,6 @@
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
-#include <sys/reboot.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/proc.h>
