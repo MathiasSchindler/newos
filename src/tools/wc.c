@@ -20,6 +20,31 @@ typedef struct {
     unsigned long long max_line_length;
 } WcStats;
 
+static void write_json_wc_result(const WcStats *stats, const char *name) {
+    if (tool_json_begin_event(1, "wc", "stdout", "wc_result") != 0) return;
+    rt_write_cstr(1, ",\"data\":{");
+    if (name != 0) {
+        rt_write_cstr(1, "\"file\":");
+        tool_json_write_string(1, name);
+        rt_write_char(1, ',');
+    } else {
+        rt_write_cstr(1, "\"file\":null,");
+    }
+
+    rt_write_cstr(1, "\"lines\":");
+    rt_write_uint(1, stats->lines);
+    rt_write_cstr(1, ",\"words\":");
+    rt_write_uint(1, stats->words);
+    rt_write_cstr(1, ",\"chars\":");
+    rt_write_uint(1, stats->chars);
+    rt_write_cstr(1, ",\"bytes\":");
+    rt_write_uint(1, stats->bytes);
+    rt_write_cstr(1, ",\"max_line_length\":");
+    rt_write_uint(1, stats->max_line_length);
+    rt_write_char(1, '}');
+    tool_json_end_event(1);
+}
+
 static unsigned int count_digits(unsigned long long value) {
     unsigned int digits = 1U;
 
@@ -81,6 +106,11 @@ static unsigned long long next_display_width(unsigned long long current_width, u
 static void print_counts(const WcOptions *options, const WcStats *stats, const char *name) {
     int wrote_value = 0;
     unsigned int minimum_width = (options->pad_output && name != 0) ? 7U : 1U;
+
+    if (tool_json_is_enabled()) {
+        write_json_wc_result(stats, name);
+        return;
+    }
 
     if (!options->explicit_selection || options->show_lines) {
         (void)write_padded_uint(1, stats->lines, minimum_width);
@@ -250,6 +280,12 @@ int main(int argc, char **argv) {
             break;
         }
 
+        if (rt_strcmp(argv[arg_index], "--json") == 0) {
+            tool_json_set_enabled(1);
+            arg_index += 1;
+            continue;
+        }
+
         if (rt_strcmp(argv[arg_index], "--lines") == 0) {
             options.show_lines = 1;
             options.explicit_selection = 1;
@@ -317,7 +353,7 @@ int main(int argc, char **argv) {
         WcStats stats;
 
         if (count_stream(0, &stats) != 0) {
-            rt_write_line(2, "wc: read error");
+            tool_write_error("wc", "read error", 0);
             return 1;
         }
 
@@ -331,15 +367,13 @@ int main(int argc, char **argv) {
         WcStats stats;
 
         if (tool_open_input(argv[i], &fd, &should_close) != 0) {
-            rt_write_cstr(2, "wc: cannot open ");
-            rt_write_line(2, argv[i]);
+            tool_write_error("wc", "cannot open ", argv[i]);
             exit_code = 1;
             continue;
         }
 
         if (count_stream(fd, &stats) != 0) {
-            rt_write_cstr(2, "wc: read error on ");
-            rt_write_line(2, argv[i]);
+            tool_write_error("wc", "read error on ", argv[i]);
             exit_code = 1;
         } else {
             print_counts(&options, &stats, argv[i]);

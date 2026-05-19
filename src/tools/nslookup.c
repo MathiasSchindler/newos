@@ -21,6 +21,24 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "  -6           query IPv6 AAAA records only");
     rt_write_line(1, "  -s SERVER    use the specified DNS server instead of the default resolver");
     rt_write_line(1, "  -p PORT      use a custom DNS server port (default: 53)");
+    rt_write_line(1, "  --json       write newline-delimited JSON events");
+}
+
+static void write_json_nslookup_result(const char *name, const PlatformDnsEntry *entries, size_t count) {
+    size_t i;
+    if (tool_json_begin_event(1, "nslookup", "stdout", "dns_result") != 0) return;
+    rt_write_cstr(1, ",\"data\":{\"query\":");
+    tool_json_write_string(1, name);
+    rt_write_cstr(1, ",\"answers\":[");
+    for (i = 0U; i < count; ++i) {
+        if (i > 0U) rt_write_char(1, ',');
+        rt_write_char(1, '{');
+        rt_write_cstr(1, "\"address\":");
+        tool_json_write_string(1, entries[i].address);
+        rt_write_char(1, '}');
+    }
+    rt_write_cstr(1, "]}}");
+    tool_json_end_event(1);
 }
 
 int main(int argc, char **argv) {
@@ -41,6 +59,11 @@ int main(int argc, char **argv) {
         }
         if (streq(argv[argi], "-6")) {
             family = PLATFORM_NETWORK_FAMILY_IPV6;
+            argi += 1;
+            continue;
+        }
+        if (streq(argv[argi], "--json")) {
+            tool_json_set_enabled(1);
             argi += 1;
             continue;
         }
@@ -78,6 +101,11 @@ int main(int argc, char **argv) {
     if (platform_dns_lookup(server, (unsigned int)port_value, name, family, entries, NSLOOKUP_MAX_RESULTS, &count) != 0 || count == 0U) {
         tool_write_error("nslookup", "lookup failed for ", name);
         return 1;
+    }
+
+    if (tool_json_is_enabled()) {
+        write_json_nslookup_result(name, entries, count);
+        return 0;
     }
 
     rt_write_cstr(1, "Name:    ");

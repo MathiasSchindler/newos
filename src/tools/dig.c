@@ -92,7 +92,44 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "  -t TYPE      select the DNS record type");
     rt_write_line(1, "  -s SERVER    query the specified DNS server");
     rt_write_line(1, "  -p PORT      use a custom DNS server port (default: 53)");
+    rt_write_line(1, "  --json       write newline-delimited JSON events");
     rt_write_line(1, "  -h, --help   show this help text");
+}
+
+static void write_json_dig_result(const char *name, const char *server, unsigned int port, unsigned short query_type, const PlatformDnsEntry *entries, size_t count) {
+    size_t i;
+    if (tool_json_begin_event(1, "dig", "stdout", "dns_result") != 0) return;
+    rt_write_cstr(1, ",\"data\":{\"query\":");
+    tool_json_write_string(1, name);
+    rt_write_cstr(1, ",\"type\":");
+    tool_json_write_string(1, dns_type_name(query_type));
+    rt_write_cstr(1, ",\"server\":");
+    if (server != 0 && server[0] != '\0') {
+        tool_json_write_string(1, server);
+    } else {
+        rt_write_cstr(1, "null");
+    }
+    rt_write_cstr(1, ",\"port\":");
+    rt_write_uint(1, (unsigned long long)port);
+    rt_write_cstr(1, ",\"answers\":[");
+    for (i = 0U; i < count; ++i) {
+        const char *text = entries[i].data[0] != '\0' ? entries[i].data : entries[i].address;
+        if (i > 0U) rt_write_char(1, ',');
+        rt_write_char(1, '{');
+        rt_write_cstr(1, "\"name\":");
+        tool_json_write_string(1, entries[i].name);
+        rt_write_cstr(1, ",\"type\":");
+        tool_json_write_string(1, dns_type_name(entries[i].record_type));
+        rt_write_cstr(1, ",\"ttl\":");
+        rt_write_uint(1, (unsigned long long)entries[i].ttl);
+        rt_write_cstr(1, ",\"preference\":");
+        rt_write_uint(1, (unsigned long long)entries[i].preference);
+        rt_write_cstr(1, ",\"data\":");
+        tool_json_write_string(1, text);
+        rt_write_char(1, '}');
+    }
+    rt_write_cstr(1, "]}}");
+    tool_json_end_event(1);
 }
 
 static void write_name_with_dot(const char *name) {
@@ -162,6 +199,11 @@ int main(int argc, char **argv) {
             argi += 1;
             continue;
         }
+        if (streq(argv[argi], "--json")) {
+            tool_json_set_enabled(1);
+            argi += 1;
+            continue;
+        }
         if (streq(argv[argi], "-t")) {
             if (argi + 1 >= argc || parse_type(argv[argi + 1], &query_type) != 0) {
                 tool_write_error("dig", "unsupported type: ", argi + 1 < argc ? argv[argi + 1] : "(missing)");
@@ -228,6 +270,11 @@ int main(int argc, char **argv) {
     if (platform_dns_query(server, (unsigned int)port_value, name, query_type, entries, DIG_MAX_RESULTS, &count) != 0 || count == 0U) {
         tool_write_error("dig", "lookup failed for ", name);
         return 1;
+    }
+
+    if (tool_json_is_enabled()) {
+        write_json_dig_result(name, server, (unsigned int)port_value, query_type, entries, count);
+        return 0;
     }
 
     rt_write_cstr(1, "; <<>> dig <<>> ");

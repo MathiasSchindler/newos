@@ -30,6 +30,7 @@ than a full diagnostic suite.
 - `-6` - limit the lookup to IPv6 answers
 - `-s SERVER` - query the specified DNS server instead of the default resolver
 - `-p PORT` - use the specified DNS port instead of `53`
+- `--json` - write newline-delimited JSON events
 - `-h`, `--help` - show a short usage summary
 
 ## LIMITATIONS
@@ -45,11 +46,17 @@ than a full diagnostic suite.
 nslookup localhost
 nslookup -6 example.com
 nslookup -s 1.1.1.1 example.com
+nslookup --json localhost
 ```
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `nslookup` writes JSON Lines using the common envelope documented in `json-output`. The output contains a single `dns_result` event. Its `data` object contains:
+
+- `query`: parsed host query string
+- `answers`: an array of resolved objects, each containing an `address` string
+
+Diagnostics and query failures are reported via stdout or standard error with `diagnostic` event types in JSON mode.
 
 ## SEE ALSO
 

@@ -31,6 +31,7 @@ for quick inspection and troubleshooting, not for full protocol analysis.
 - `-s SERVER` - query the specified DNS server
 - `@SERVER` - dig-style shorthand for selecting a DNS server
 - `-p PORT` - use the specified DNS port instead of `53`
+- `--json` - write newline-delimited JSON events
 - `-h`, `--help` - show a short usage summary
 
 ## LIMITATIONS
@@ -46,11 +47,25 @@ for quick inspection and troubleshooting, not for full protocol analysis.
 dig localhost
 dig -t AAAA localhost
 dig @1.1.1.1 example.com MX
+dig --json localhost
 ```
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `dig` writes JSON Lines using the common envelope documented in `json-output`. Modern automation engines can parse the single `dns_result` event written to standard output. Its `data` object contains:
+
+- `query`: original domain name query string
+- `type`: query request type (e.g. `A`, `AAAA`, `MX`, `NS`, `TXT`)
+- `server`: custom override address, or `null`
+- `port`: server port number (e.g., 53)
+- `answers`: an array of resolved objects, containing:
+  - `name`: record name
+  - `type`: record answer type
+  - `ttl`: answer Time-To-Live integer
+  - `preference`: preference rank (for MX queries, 0 otherwise)
+  - `data`: resolved address, target hostname, or payload text string
+
+Diagnostics and query exceptions are mapped to the common `diagnostic` JSON Line object on standard error.
 
 ## SEE ALSO
 

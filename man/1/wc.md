@@ -7,7 +7,7 @@ wc - count lines, words, characters, and bytes
 ## SYNOPSIS
 
 ```
-wc [-lwcmL] [file ...]
+wc [-lwcmL] [--json] [file ...]
 ```
 
 ## DESCRIPTION
@@ -30,6 +30,7 @@ The wc tool counts lines, words, bytes, characters, and maximum line length. Wit
 | `-c` | Print the byte count. |
 | `-m` | Print the character count using UTF-8 decoding. |
 | `-L` | Print the maximum terminal display width. |
+| `--json` | Write newline-delimited JSON events. |
 
 ## LIMITATIONS
 
@@ -45,11 +46,21 @@ The wc tool counts lines, words, bytes, characters, and maximum line length. Wit
 wc file.txt
 wc -l *.log
 wc -m unicode.txt
+wc --json file.txt
 ```
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `wc` writes JSON Lines using the common envelope documented in `json-output`. Each processed file or stdin target emits a `wc_result` event on stdout. The `data` object contains:
+
+- `file`: file path, or `null` for stdin
+- `lines`: lines count
+- `words`: words count
+- `chars`: characters count
+- `bytes`: bytes count
+- `max_line_length`: maximum line length
+
+When reading from multiple files, the accumulated counts are also written as a final `wc_result` event with `"file":"total"`. Usage warnings and errors are written to standard error as JSON diagnostic objects.
 
 ## SEE ALSO
 
