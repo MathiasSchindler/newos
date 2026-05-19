@@ -3292,6 +3292,8 @@ int platform_trace_route(
         defaults.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
         defaults.family = PLATFORM_NETWORK_FAMILY_IPV4;
         defaults.numeric_only = 1;
+        defaults.hop_callback = 0;
+        defaults.hop_callback_user_data = 0;
         options = &defaults;
     }
     max_ttl = options->max_ttl == 0U ? 30U : options->max_ttl;
@@ -3403,6 +3405,9 @@ int platform_trace_route(
                 }
             }
 
+            if (options->hop_callback != 0) {
+                options->hop_callback(hop, options->hop_callback_user_data);
+            }
             hop_count += 1U;
             if (hop->reached_destination) {
                 break;
@@ -3529,6 +3534,9 @@ int platform_trace_route(
             }
         }
 
+        if (options->hop_callback != 0) {
+            options->hop_callback(hop, options->hop_callback_user_data);
+        }
         hop_count += 1U;
         if (hop->reached_destination) {
             break;

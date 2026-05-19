@@ -162,15 +162,6 @@ typedef struct {
 } PlatformPingOptions;
 
 typedef struct {
-    unsigned int max_ttl;
-    unsigned int queries;
-    unsigned int timeout_seconds;
-    unsigned int payload_size;
-    int family;
-    int numeric_only;
-} PlatformTracerouteOptions;
-
-typedef struct {
     unsigned int ttl;
     unsigned int probe_count;
     unsigned int reply_count;
@@ -180,6 +171,19 @@ typedef struct {
     unsigned char probe_replied[PLATFORM_TRACEROUTE_MAX_QUERIES];
     unsigned int rtt_milliseconds[PLATFORM_TRACEROUTE_MAX_QUERIES];
 } PlatformTracerouteHop;
+
+typedef void (*PlatformTracerouteHopCallback)(const PlatformTracerouteHop *hop, void *user_data);
+
+typedef struct {
+    unsigned int max_ttl;
+    unsigned int queries;
+    unsigned int timeout_seconds;
+    unsigned int payload_size;
+    int family;
+    int numeric_only;
+    PlatformTracerouteHopCallback hop_callback;
+    void *hop_callback_user_data;
+} PlatformTracerouteOptions;
 
 typedef struct {
     int listen_mode;

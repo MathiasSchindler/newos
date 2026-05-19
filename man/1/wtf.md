@@ -7,7 +7,7 @@ wtf - Wikipedia Terminal Facts summary lookup
 ## SYNOPSIS
 
 ```
-wtf [-l LANG] [-T TIMEOUT] [--base-url URL] [--url] [--color[=WHEN]] TERM...
+wtf [-l LANG] [-T TIMEOUT] [--base-url URL] [--url] [--json] [--color[=WHEN]] TERM...
 ```
 
 ## DESCRIPTION
@@ -37,6 +37,7 @@ The term is URL-encoded and spaces are written as underscores.
   for local mirrors and tests. When set, it is used instead of the language-based
   default endpoint.
 - `--url` - print the page URL when the response contains one
+- `--json` - write the summary as a newline-delimited JSON event
 - `--no-title` - do not print the article title
 - `--no-description` - do not print the one-line description
 - `--no-extract` - do not print the introduction extract
@@ -72,7 +73,18 @@ wtf --base-url http://127.0.0.1:8080/api/rest_v1/page/summary Plan 9
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `wtf` writes one JSON Lines event using the common envelope documented in `json-output`. The event name is `wtf_summary` and `data` contains:
+
+- `term`: joined lookup term
+- `language`: two-letter language code used for the default endpoint
+- `request_url`: URL requested by the tool
+- `title`: response title string, or `null`
+- `description`: response description string, or `null`
+- `extract`: response extract string, or `null`
+- `page_url`: page URL string, or `null`
+- `missing`: boolean MediaWiki not-found indicator
+
+JSON mode ignores text-display selection flags such as `--only-title` and emits all parsed summary fields. Diagnostics and usage errors are emitted on stderr using the shared JSON diagnostic envelope when JSON mode is enabled.
 
 ## SEE ALSO
 

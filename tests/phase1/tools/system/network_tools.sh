@@ -41,6 +41,18 @@ assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.
 assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service$' "portscan --csv did not print a header"
 assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,$" "portscan --csv did not print a closed row"
 
+assert_command_succeeds "$ROOT_DIR/build/portscan" --json -4 -a -n --summary -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_json.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_json.out" '"schema":"newos.tool.v1"' "portscan --json did not use the shared JSON envelope"
+assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"port_result"' "portscan --json did not emit port_result events"
+assert_file_contains "$WORK_DIR/portscan_json.out" "\"port\":$((scan_port + 1))" "portscan --json did not report the scanned port"
+assert_file_contains "$WORK_DIR/portscan_json.out" '"state":"closed"' "portscan --json did not report the closed state"
+assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"scan_summary"' "portscan --json --summary did not emit scan_summary"
+
+portscan_csv_json_status=0
+"$ROOT_DIR/build/portscan" --csv --json -4 -n 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv_json.out" 2>&1 || portscan_csv_json_status=$?
+assert_exit_code "$portscan_csv_json_status" 1 "portscan should reject --csv with --json"
+assert_file_contains "$WORK_DIR/portscan_csv_json.out" '"event":"diagnostic"' "portscan --csv --json should report a JSON diagnostic"
+
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s not-a-numeric-host "$((scan_port + 1))" > "$WORK_DIR/portscan_unreachable.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_unreachable.out" "^not-a-numeric-host $((scan_port + 1)) unreachable$" "portscan did not print an unreachable state for an unresolvable numeric-only host"
 
@@ -118,6 +130,16 @@ esac
 if grep -q '^PING ' "$WORK_DIR/traceroute_loopback.out" || grep -q 'ping statistics' "$WORK_DIR/traceroute_loopback.out"; then
     fail "traceroute should not print ping banners or ping statistics"
 fi
+
+traceroute_json_status=0
+"$ROOT_DIR/build/traceroute" --json -4 -m 1 -q 1 -w 1 127.0.0.1 > "$WORK_DIR/traceroute_json.out" 2>&1 || traceroute_json_status=$?
+case "$traceroute_json_status" in
+    0|1) ;;
+    *) fail "traceroute --json returned an unexpected exit status: $traceroute_json_status" ;;
+esac
+assert_file_contains "$WORK_DIR/traceroute_json.out" '"schema":"newos.tool.v1"' "traceroute --json did not use the shared JSON envelope"
+assert_file_contains "$WORK_DIR/traceroute_json.out" '"event":"trace_start"' "traceroute --json did not emit trace_start"
+assert_file_contains "$WORK_DIR/traceroute_json.out" '"host":"127.0.0.1"' "traceroute --json did not report the target host"
 
 traceroute6_status=0
 "$ROOT_DIR/build/traceroute" -6 -m 1 -q 1 -w 1 ::1 > "$WORK_DIR/traceroute6_loopback.out" 2>&1 || traceroute6_status=$?

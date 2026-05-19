@@ -6,7 +6,7 @@ portscan - check TCP ports on authorized hosts
 
 ## Synopsis
 
-`portscan [-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--progress] [--banner] HOSTS [PORTS...]`
+`portscan [-46an] [-w TIMEOUT] [--common] [--services] [--summary] [--progress] [--banner] [--json] HOSTS [PORTS...]`
 
 ## Description
 
@@ -35,6 +35,7 @@ With `--banner`, after each successful connect `portscan` passively reads up to 
 - `--summary` print scanned, open, and closed totals after the scan
 - `--progress` print every completed result as it is scanned, including non-open states that would normally be hidden unless `-a` is used
 - `--csv` write CSV rows with `host,port,state,service` columns
+- `--json` write newline-delimited JSON events
 - `--fail-open` exit with status 2 when any open port is found
 - `--fail-closed` exit with status 3 when any closed port is found
 - `--banner` after connect, read whatever the service volunteers; print it as an additional column with non-printable bytes escaped. Nothing is sent to the service.
@@ -130,9 +131,17 @@ Connect failures are classified from platform error details where available. The
 
 Service names are static hints based on common port numbers. `portscan` does not perform active protocol detection, so a service hint does not prove what software is actually listening. The optional `--banner` mode reads bytes a service volunteers on its own; it sends nothing, does not speak any protocol, and does not attempt version-to-CVE mapping. A banner is whatever the service chose to send and may be misleading or empty.
 
-Reverse-DNS display for numeric host ranges, JSON output, and reading host or port lists from files are not implemented yet. These are diagnostic conveniences rather than scan-behavior changes and can be added later without changing the conservative TCP-connect model.
+Reverse-DNS display for numeric host ranges and reading host or port lists from files are not implemented yet. These are diagnostic conveniences rather than scan-behavior changes and can be added later without changing the conservative TCP-connect model.
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `portscan` writes one JSON Lines event per displayed result using the common envelope documented in `json-output`. The event name is `port_result` and `data` contains:
+
+- `host`: scanned host string
+- `port`: TCP port number
+- `state`: `open`, `closed`, `filtered`, `unreachable`, or `error`
+- `service`: service-name hint string, or `null`
+- `banner`: escaped banner text, or `null`
+
+When `--summary` is set, the final JSON event is `scan_summary` with `scanned`, `open`, `closed`, `filtered`, `unreachable`, and `error` counters. Result filtering matches normal output: closed and non-open results are emitted only with `-a` or `--progress`. `--csv` and `--json` are mutually exclusive.
 

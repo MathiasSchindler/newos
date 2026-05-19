@@ -6,7 +6,7 @@ traceroute - trace the route to a host with increasing ICMP TTL values
 
 ## Synopsis
 
-`traceroute [-4|-6] [-n] [-m MAXTTL] [-q QUERIES] [-w SECONDS] HOST`
+`traceroute [-4|-6] [-n] [-m MAXTTL] [-q QUERIES] [-w SECONDS] [--json] HOST`
 
 ## Description
 
@@ -22,6 +22,7 @@ The platform backend decodes ICMP time-exceeded replies and echo replies directl
 - `-m MAXTTL` set the maximum TTL, default 30
 - `-q QUERIES` send `QUERIES` probes per TTL, default 1
 - `-w SECONDS` wait up to `SECONDS` for each probe, default 1
+- `--json` write newline-delimited JSON events
 - `-h`, `--help` show usage information
 
 ## Examples
@@ -38,5 +39,16 @@ IPv4 and IPv6 hop reporting is supported on POSIX, macOS freestanding, and Linux
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `traceroute` writes JSON Lines using the common envelope documented in `json-output`. The first event is `trace_start`, whose `data` contains `host`, `max_ttl`, `queries`, `timeout_seconds`, `family`, and `numeric_only`.
+
+Each reported hop is emitted as a `trace_hop` event. Its `data` contains:
+
+- `ttl`: hop TTL
+- `address`: responding address, or `null`
+- `hostname`: reverse-DNS host name, or `null`
+- `reply_count`: number of probes that received replies
+- `reached_destination`: boolean
+- `probes`: an array of objects with `replied` and `rtt_ms`; `rtt_ms` is `null` for timed-out probes
+
+Hop events are emitted as each TTL finishes, so callers can update progress while the trace is still running. Within a hop, the `probes` array is complete for that TTL.
 

@@ -295,6 +295,25 @@ static void print_result(const char *host, unsigned int port, int connect_status
     const char *service = service_name_for_port(port);
     const char *status_text = connect_status_name(connect_status);
 
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "portscan", "stdout", "port_result") != 0) return;
+        rt_write_cstr(1, ",\"data\":{\"host\":");
+        tool_json_write_string(1, host);
+        rt_write_cstr(1, ",\"port\":");
+        rt_write_uint(1, (unsigned long long)port);
+        rt_write_cstr(1, ",\"state\":");
+        tool_json_write_string(1, status_text);
+        rt_write_cstr(1, ",\"service\":");
+        if (service[0] != '\0') tool_json_write_string(1, service);
+        else rt_write_cstr(1, "null");
+        rt_write_cstr(1, ",\"banner\":");
+        if (options->read_banner && banner_text != 0 && banner_text[0] != '\0') tool_json_write_string(1, banner_text);
+        else rt_write_cstr(1, "null");
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+        return;
+    }
+
     if (options->csv_output) {
         write_csv_field(host);
         rt_write_char(1, ',');
@@ -437,6 +456,25 @@ static int scan_host_with_all_ports(const char *host, int port_count, char **por
 }
 
 static void print_summary(const PortscanOptions *options) {
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "portscan", "stdout", "scan_summary") != 0) return;
+        rt_write_cstr(1, ",\"data\":{\"scanned\":");
+        rt_write_uint(1, (unsigned long long)options->scanned_count);
+        rt_write_cstr(1, ",\"open\":");
+        rt_write_uint(1, (unsigned long long)options->open_count);
+        rt_write_cstr(1, ",\"closed\":");
+        rt_write_uint(1, (unsigned long long)options->closed_count);
+        rt_write_cstr(1, ",\"filtered\":");
+        rt_write_uint(1, (unsigned long long)options->filtered_count);
+        rt_write_cstr(1, ",\"unreachable\":");
+        rt_write_uint(1, (unsigned long long)options->unreachable_count);
+        rt_write_cstr(1, ",\"error\":");
+        rt_write_uint(1, (unsigned long long)options->error_count);
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+        return;
+    }
+
     rt_write_cstr(1, "summary scanned=");
     rt_write_uint(1, (unsigned long long)options->scanned_count);
     rt_write_cstr(1, " open=");
@@ -567,6 +605,8 @@ int main(int argc, char **argv) {
             options.show_progress = 1;
         } else if (streq(argv[argi], "--csv")) {
             options.csv_output = 1;
+        } else if (streq(argv[argi], "--json")) {
+            tool_json_set_enabled(1);
         } else if (streq(argv[argi], "--fail-open")) {
             options.fail_open = 1;
         } else if (streq(argv[argi], "--fail-closed")) {
@@ -609,6 +649,11 @@ int main(int argc, char **argv) {
 
     if (positional_count < 1 || (positional_count < 2 && !options.use_common_ports)) {
         print_usage(argv[0]);
+        rt_free(positionals);
+        return 1;
+    }
+    if (options.csv_output && tool_json_is_enabled()) {
+        tool_write_error("portscan", "--csv and --json are mutually exclusive", 0);
         rt_free(positionals);
         return 1;
     }

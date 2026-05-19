@@ -324,6 +324,18 @@ static int wait_socket(int fd, unsigned long long timeout_ms) {
 }
 
 static void write_tls_error(const char *phase, const char *url) {
+    if (tool_json_is_enabled()) {
+        char message[128];
+        size_t length = 0U;
+        length = append_cstr(message, sizeof(message), length, phase);
+        length = append_cstr(message, sizeof(message), length, " failed for ");
+        length = append_cstr(message, sizeof(message), length, url);
+        if (rt_strlen(message) != length) {
+            rt_copy_string(message, sizeof(message), "TLS operation failed");
+        }
+        (void)tool_json_write_diagnostic("wtf", "error", message, platform_tls_last_error());
+        return;
+    }
     rt_write_cstr(2, "wtf: ");
     rt_write_cstr(2, phase);
     rt_write_cstr(2, " failed for ");
@@ -632,6 +644,32 @@ static void print_summary(const WtfSummary *summary, const WtfOptions *options) 
     }
 }
 
+static void print_json_summary(const char *term, const char *request_url, const WtfSummary *summary, const WtfOptions *options) {
+    if (tool_json_begin_event(1, "wtf", "stdout", "wtf_summary") != 0) return;
+    rt_write_cstr(1, ",\"data\":{\"term\":");
+    tool_json_write_string(1, term);
+    rt_write_cstr(1, ",\"language\":");
+    tool_json_write_string(1, options->language);
+    rt_write_cstr(1, ",\"request_url\":");
+    tool_json_write_string(1, request_url);
+    rt_write_cstr(1, ",\"title\":");
+    if (summary->title[0] != '\0') tool_json_write_string(1, summary->title);
+    else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"description\":");
+    if (summary->description[0] != '\0') tool_json_write_string(1, summary->description);
+    else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"extract\":");
+    if (summary->extract[0] != '\0') tool_json_write_string(1, summary->extract);
+    else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"page_url\":");
+    if (summary->page_url[0] != '\0') tool_json_write_string(1, summary->page_url);
+    else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"missing\":");
+    rt_write_cstr(1, summary->missing ? "true" : "false");
+    rt_write_char(1, '}');
+    tool_json_end_event(1);
+}
+
 static void select_only(WtfOptions *options, int title, int description, int extract) {
     options->show_title = title;
     options->show_description = description;
@@ -768,7 +806,8 @@ int main(int argc, char **argv) {
         buffer_free(&body);
         return 1;
     }
-    print_summary(&summary, &options);
+    if (tool_json_is_enabled()) print_json_summary(term, request_url, &summary, &options);
+    else print_summary(&summary, &options);
     buffer_free(&body);
     return 0;
 }

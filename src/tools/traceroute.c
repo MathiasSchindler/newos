@@ -46,6 +46,66 @@ static void print_hop(const PlatformTracerouteHop *hop) {
     rt_write_char(1, '\n');
 }
 
+static void print_json_start(const char *host, const PlatformTracerouteOptions *options) {
+    if (tool_json_begin_event(1, "traceroute", "stdout", "trace_start") != 0) return;
+    rt_write_cstr(1, ",\"data\":{\"host\":");
+    tool_json_write_string(1, host);
+    rt_write_cstr(1, ",\"max_ttl\":");
+    rt_write_uint(1, (unsigned long long)options->max_ttl);
+    rt_write_cstr(1, ",\"queries\":");
+    rt_write_uint(1, (unsigned long long)options->queries);
+    rt_write_cstr(1, ",\"timeout_seconds\":");
+    rt_write_uint(1, (unsigned long long)options->timeout_seconds);
+    rt_write_cstr(1, ",\"family\":");
+    if (options->family == PLATFORM_NETWORK_FAMILY_IPV4) tool_json_write_string(1, "ipv4");
+    else if (options->family == PLATFORM_NETWORK_FAMILY_IPV6) tool_json_write_string(1, "ipv6");
+    else tool_json_write_string(1, "any");
+    rt_write_cstr(1, ",\"numeric_only\":");
+    rt_write_cstr(1, options->numeric_only ? "true" : "false");
+    rt_write_char(1, '}');
+    tool_json_end_event(1);
+}
+
+static void print_json_hop(const PlatformTracerouteHop *hop) {
+    unsigned int probe;
+
+    if (tool_json_begin_event(1, "traceroute", "stdout", "trace_hop") != 0) return;
+    rt_write_cstr(1, ",\"data\":{\"ttl\":");
+    rt_write_uint(1, (unsigned long long)hop->ttl);
+    rt_write_cstr(1, ",\"address\":");
+    if (hop->address[0] != '\0') tool_json_write_string(1, hop->address);
+    else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"hostname\":");
+    if (hop->hostname[0] != '\0') tool_json_write_string(1, hop->hostname);
+    else rt_write_cstr(1, "null");
+    rt_write_cstr(1, ",\"reply_count\":");
+    rt_write_uint(1, (unsigned long long)hop->reply_count);
+    rt_write_cstr(1, ",\"reached_destination\":");
+    rt_write_cstr(1, hop->reached_destination ? "true" : "false");
+    rt_write_cstr(1, ",\"probes\":[");
+    for (probe = 0U; probe < hop->probe_count; ++probe) {
+        if (probe > 0U) rt_write_char(1, ',');
+        rt_write_cstr(1, "{\"replied\":");
+        rt_write_cstr(1, hop->probe_replied[probe] ? "true" : "false");
+        rt_write_cstr(1, ",\"rtt_ms\":");
+        if (hop->probe_replied[probe]) rt_write_uint(1, (unsigned long long)hop->rtt_milliseconds[probe]);
+        else rt_write_cstr(1, "null");
+        rt_write_char(1, '}');
+    }
+    rt_write_cstr(1, "]}");
+    tool_json_end_event(1);
+}
+
+static void print_hop_callback(const PlatformTracerouteHop *hop, void *user_data) {
+    (void)user_data;
+    print_hop(hop);
+}
+
+static void print_json_hop_callback(const PlatformTracerouteHop *hop, void *user_data) {
+    (void)user_data;
+    print_json_hop(hop);
+}
+
 int main(int argc, char **argv) {
     static PlatformTracerouteHop hops[PLATFORM_PING_MAX_TTL];
     unsigned long long max_ttl = 30ULL;
@@ -56,7 +116,6 @@ int main(int argc, char **argv) {
     const char *host;
     PlatformTracerouteOptions trace_options;
     size_t hop_count = 0U;
-    size_t index;
     ToolOptState opt;
     int r;
 
@@ -103,11 +162,6 @@ int main(int argc, char **argv) {
     }
 
     host = argv[opt.argi];
-    rt_write_cstr(1, "traceroute to ");
-    rt_write_cstr(1, host);
-    rt_write_cstr(1, ", ");
-    rt_write_uint(1, max_ttl);
-    rt_write_line(1, " hops max");
 
     trace_options.max_ttl = (unsigned int)max_ttl;
     trace_options.queries = (unsigned int)queries;
@@ -115,17 +169,26 @@ int main(int argc, char **argv) {
     trace_options.payload_size = PLATFORM_PING_DEFAULT_PAYLOAD_SIZE;
     trace_options.family = family;
     trace_options.numeric_only = numeric_only;
+    trace_options.hop_callback = tool_json_is_enabled() ? print_json_hop_callback : print_hop_callback;
+    trace_options.hop_callback_user_data = 0;
+
+    if (tool_json_is_enabled()) {
+        print_json_start(host, &trace_options);
+    } else {
+        rt_write_cstr(1, "traceroute to ");
+        rt_write_cstr(1, host);
+        rt_write_cstr(1, ", ");
+        rt_write_uint(1, max_ttl);
+        rt_write_line(1, " hops max");
+    }
 
     if (platform_trace_route(host, &trace_options, hops, sizeof(hops) / sizeof(hops[0]), &hop_count) != 0) {
         tool_write_error("traceroute", "unable to trace route to ", host);
         return 1;
     }
 
-    for (index = 0U; index < hop_count; ++index) {
-        print_hop(hops + index);
-        if (hops[index].reached_destination) {
-            return 0;
-        }
+    if (hop_count > 0U && hops[hop_count - 1U].reached_destination) {
+        return 0;
     }
     return 1;
 }

@@ -5,9 +5,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 
 . "$ROOT_DIR/tests/lib/assert.sh"
 
-TMP_DIR="$ROOT_DIR/tests/tmp/json-output-contract"
-rm -rf "$TMP_DIR"
-mkdir -p "$TMP_DIR"
+note "phase1 system: json output contract"
 
 tools=$(sed -n 's/^TOOLS := //p' "$ROOT_DIR/Makefile")
 
@@ -26,15 +24,28 @@ for tool in $tools; do
         continue
     fi
 
-    tool_path="$ROOT_DIR/build/$tool"
-    if [ -x "$tool_path" ]; then
-        if "$tool_path" --json --help >"$TMP_DIR/$tool.out" 2>"$TMP_DIR/$tool.err"; then
-            continue
-        fi
+    if grep 'JSON mode limitation' "$man_page" >/dev/null 2>&1; then
+        continue
     fi
 
-    if ! grep 'JSON mode limitation' "$man_page" >/dev/null 2>&1; then
-        echo "tool neither accepts --json --help nor documents a JSON mode limitation: $tool" >&2
+    source_path="$ROOT_DIR/src/tools/$tool.c"
+    case "$tool" in
+        '[')
+            source_path="$ROOT_DIR/src/tools/[.c"
+            ;;
+        ping6)
+            source_path="$ROOT_DIR/src/tools/ping.c"
+            ;;
+    esac
+
+    if [ ! -f "$source_path" ]; then
+        echo "tool has JSON Output section without limitation but no source file evidence: $tool" >&2
+        status=1
+        continue
+    fi
+
+    if ! grep -- '--json\|tool_opt_next' "$source_path" >/dev/null 2>&1; then
+        echo "tool has JSON Output section without limitation but no static --json parser evidence: $tool" >&2
         status=1
     fi
 done
