@@ -37,7 +37,7 @@ static void write_json_nslookup_result(const char *name, const PlatformDnsEntry 
         tool_json_write_string(1, entries[i].address);
         rt_write_char(1, '}');
     }
-    rt_write_cstr(1, "]}}");
+    rt_write_cstr(1, "]}");
     tool_json_end_event(1);
 }
 
