@@ -1955,9 +1955,21 @@ static int bc_print_value(BcParser *parser, BcValue value) {
     char buffer[BC_OUTPUT_CAPACITY];
 
     bc_format_based(parser, value, buffer, sizeof(buffer));
-    if (rt_write_line(1, buffer) != 0) {
-        tool_write_error("bc", "failed to write output", 0);
-        return -1;
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "bc", "stdout", "bc_result") != 0) return -1;
+        rt_write_cstr(1, ",\"data\":{\"text\":");
+        tool_json_write_string(1, buffer);
+        rt_write_cstr(1, ",\"scale\":");
+        rt_write_uint(1, (unsigned long long)value.scale);
+        rt_write_cstr(1, ",\"obase\":");
+        rt_write_uint(1, (unsigned long long)bc_get_obase_setting(parser->env));
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+    } else {
+        if (rt_write_line(1, buffer) != 0) {
+            tool_write_error("bc", "failed to write output", 0);
+            return -1;
+        }
     }
     bc_store_var(parser, "last", value);
     if (parser->error) {

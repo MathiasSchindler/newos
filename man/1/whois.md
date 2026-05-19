@@ -6,7 +6,7 @@ whois - query a WHOIS server
 
 ## Synopsis
 
-`whois [-R] [-h SERVER] [-p PORT] QUERY`
+`whois [-R] [-h SERVER] [-p PORT] [-w SECONDS] [--json] QUERY`
 
 ## Description
 
@@ -19,6 +19,8 @@ The default server is `whois.iana.org` on TCP port 43. When the response names a
 - `-R` do not follow referral servers
 - `-h SERVER` query `SERVER` instead of `whois.iana.org`
 - `-p PORT` connect to `PORT` instead of 43
+- `-w SECONDS` wait up to `SECONDS` for response data before failing or ending an idle response; the default is 10 seconds
+- `--json` write newline-delimited JSON events
 - `--help` show usage information
 
 ## Examples
@@ -35,5 +37,7 @@ Referral following is intentionally shallow and only follows plain WHOIS server 
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `whois` writes JSON Lines using the common envelope documented in `json-output`. Each server query starts with a `whois_query_start` event whose `data` contains `server`, `port`, and `query`.
+
+Response bytes are streamed as `whois_response_chunk` events as they arrive. Each chunk contains `server`, `port`, `query`, `bytes`, and `text`. When a server finishes, `whois_query_complete` reports `captured_bytes`, which is the retained response size used for referral detection. If referral following is enabled, each referred server produces its own start, chunk, and complete sequence.
 

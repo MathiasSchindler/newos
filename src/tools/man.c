@@ -1265,6 +1265,46 @@ static int render_markdown_file(const char *path) {
     ManPager pager;
     ManRenderState state;
 
+    if (tool_json_is_enabled()) {
+        fd = platform_open_read(path);
+        if (fd < 0) {
+            return -1;
+        }
+        if (tool_json_begin_event(1, "man", "stdout", "man_page_start") != 0) {
+            platform_close(fd);
+            return -1;
+        }
+        rt_write_cstr(1, ",\"data\":{\"path\":");
+        tool_json_write_string(1, path);
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+
+        while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+            if (tool_json_begin_event(1, "man", "stdout", "man_page_chunk") != 0) {
+                platform_close(fd);
+                return -1;
+            }
+            rt_write_cstr(1, ",\"data\":{\"path\":");
+            tool_json_write_string(1, path);
+            rt_write_cstr(1, ",\"bytes\":");
+            rt_write_uint(1, (unsigned long long)bytes_read);
+            rt_write_cstr(1, ",\"markdown\":");
+            tool_json_write_string_n(1, buffer, (size_t)bytes_read);
+            rt_write_char(1, '}');
+            tool_json_end_event(1);
+        }
+        platform_close(fd);
+        if (bytes_read < 0) {
+            return -1;
+        }
+        if (tool_json_begin_event(1, "man", "stdout", "man_page_complete") != 0) return -1;
+        rt_write_cstr(1, ",\"data\":{\"path\":");
+        tool_json_write_string(1, path);
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+        return 0;
+    }
+
     pager_init(&pager);
     rt_memset(&state, 0, sizeof(state));
 
@@ -1375,11 +1415,24 @@ static int file_contains_keyword(const char *path, const char *keyword) {
     return 0;
 }
 
-static int write_search_result(const char *section, const char *name) {
+static int write_search_result(const char *section, const char *name, const char *path) {
     size_t length = rt_strlen(name);
 
     if (text_ends_with(name, ".md")) {
         length -= 3U;
+    }
+
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "man", "stdout", "man_search_result") != 0) return -1;
+        rt_write_cstr(1, ",\"data\":{\"section\":");
+        tool_json_write_string(1, section);
+        rt_write_cstr(1, ",\"name\":");
+        tool_json_write_string_n(1, name, length);
+        rt_write_cstr(1, ",\"path\":");
+        tool_json_write_string(1, path);
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+        return 0;
     }
 
     if (rt_write_all(1, name, length) != 0 ||
@@ -1449,7 +1502,7 @@ static int search_keyword(const ManContext *context, const char *keyword) {
                     found = 1;
                     continue;
                 }
-                if (write_search_result(sections[section_index].name, entries[i].name) != 0) {
+                if (write_search_result(sections[section_index].name, entries[i].name, page_path) != 0) {
                     return 1;
                 }
                 found = 1;
@@ -1548,6 +1601,9 @@ int main(int argc, char **argv) {
                 return 1;
             }
             tool_set_global_color_mode(color_mode);
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--json") == 0) {
+            tool_json_set_enabled(1);
             argi += 1;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;

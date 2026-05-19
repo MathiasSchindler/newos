@@ -159,16 +159,17 @@ port = int(sys.argv[1])
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 sock.bind(('127.0.0.1', port))
-sock.listen(1)
-conn, _ = sock.accept()
-data = b''
-while not data.endswith(b'\n'):
-    chunk = conn.recv(1024)
-    if not chunk:
-        break
-    data += chunk
-conn.sendall(b'Domain Name: EXAMPLE.TEST\r\nQuery: ' + data.strip() + b'\r\n')
-conn.close()
+sock.listen(2)
+for _ in range(2):
+    conn, _ = sock.accept()
+    data = b''
+    while not data.endswith(b'\n'):
+        chunk = conn.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+    conn.sendall(b'Domain Name: EXAMPLE.TEST\r\nQuery: ' + data.strip() + b'\r\n')
+    conn.close()
 sock.close()
 print('MOCK_WHOIS_OK')
 PY
@@ -176,14 +177,47 @@ PY
     "$ROOT_DIR/build/sleep" 1
     whois_status=0
     "$ROOT_DIR/build/whois" -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois.out" 2>&1 || whois_status=$?
+    whois_json_status=0
+    "$ROOT_DIR/build/whois" --json -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois_json.out" 2>&1 || whois_json_status=$?
     if [ "$whois_status" -ne 0 ]; then
         kill "$whois_server_pid" 2>/dev/null || true
     fi
     wait "$whois_server_pid" || true
     assert_exit_code "$whois_status" 0 "whois did not complete the mock query"
+    assert_exit_code "$whois_json_status" 0 "whois --json did not complete the mock query"
     assert_file_contains "$WORK_DIR/whois_server.out" 'MOCK_WHOIS_OK' "mock whois server did not complete"
     assert_file_contains "$WORK_DIR/whois.out" 'Domain Name: EXAMPLE\.TEST' "whois did not print the mock response"
     assert_file_contains "$WORK_DIR/whois.out" 'Query: example\.test' "whois did not send the requested query"
+    assert_file_contains "$WORK_DIR/whois_json.out" '"event":"whois_query_start"' "whois --json did not emit whois_query_start"
+    assert_file_contains "$WORK_DIR/whois_json.out" '"event":"whois_response_chunk"' "whois --json did not emit response chunks"
+    assert_file_contains "$WORK_DIR/whois_json.out" '"text":"Domain Name: EXAMPLE.TEST' "whois --json did not include response text"
+    assert_file_contains "$WORK_DIR/whois_json.out" '"event":"whois_query_complete"' "whois --json did not emit whois_query_complete"
+
+    silent_whois_port=$((port + 301))
+    python3 - <<'PY' "$silent_whois_port" > "$WORK_DIR/whois_silent_server.out" 2>&1 &
+import socket, sys, time
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('127.0.0.1', port))
+sock.listen(1)
+conn, _ = sock.accept()
+try:
+    conn.recv(1024)
+    time.sleep(2)
+finally:
+    conn.close()
+    sock.close()
+print('MOCK_WHOIS_SILENT_OK')
+PY
+    silent_whois_pid=$!
+    "$ROOT_DIR/build/sleep" 1
+    whois_timeout_status=0
+    "$ROOT_DIR/build/whois" -w 1 -h 127.0.0.1 -p "$silent_whois_port" example.test > "$WORK_DIR/whois_timeout.out" 2>&1 || whois_timeout_status=$?
+    wait "$silent_whois_pid" || true
+    assert_exit_code "$whois_timeout_status" 1 "whois should fail instead of hanging on a silent server"
+    assert_file_contains "$WORK_DIR/whois_timeout.out" 'read timeout from 127\.0\.0\.1' "whois did not report the silent server timeout"
+    assert_file_contains "$WORK_DIR/whois_silent_server.out" 'MOCK_WHOIS_SILENT_OK' "mock silent whois server did not complete"
 fi
 
 lookup_status=0

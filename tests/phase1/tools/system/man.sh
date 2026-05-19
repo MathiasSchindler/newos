@@ -28,6 +28,11 @@ assert_file_contains "$WORK_DIR/man_sync.out" 'single confirmation when syncing 
 "$ROOT_DIR/build/man" -k compiler > "$WORK_DIR/man_search.out"
 assert_file_contains "$WORK_DIR/man_search.out" '^ncc (1)$' "man -k did not find the compiler page"
 
+"$ROOT_DIR/build/man" --json -k compiler > "$WORK_DIR/man_search_json.out"
+assert_file_contains "$WORK_DIR/man_search_json.out" '"schema":"newos.tool.v1"' "man --json -k did not use the shared JSON envelope"
+assert_file_contains "$WORK_DIR/man_search_json.out" '"event":"man_search_result"' "man --json -k did not emit search result events"
+assert_file_contains "$WORK_DIR/man_search_json.out" '"name":"ncc"' "man --json -k did not report the matched page name"
+
 cat > "$WORK_DIR/man_render.md" <<'EOF'
 # RENDER
 
@@ -52,6 +57,12 @@ assert_file_contains "$WORK_DIR/man_render.out" '^    echo hi$' "man did not pre
 assert_file_contains "$WORK_DIR/man_render.out" '^Literal flag: --color\[=WHEN\]$' "man did not preserve literal bracketed option syntax"
 assert_file_contains "$WORK_DIR/man_render.out" '^┌.*┐$' "man did not render markdown tables with Unicode borders"
 assert_file_contains "$WORK_DIR/man_render.out" '^│ Flag .* │$' "man did not render the table header row cleanly"
+
+"$ROOT_DIR/build/man" --json -l "$WORK_DIR/man_render.md" > "$WORK_DIR/man_render_json.out"
+assert_file_contains "$WORK_DIR/man_render_json.out" '"event":"man_page_start"' "man --json -l did not emit man_page_start"
+assert_file_contains "$WORK_DIR/man_render_json.out" '"event":"man_page_chunk"' "man --json -l did not emit man_page_chunk"
+assert_file_contains "$WORK_DIR/man_render_json.out" '"markdown":"# RENDER' "man --json -l did not include raw markdown content"
+assert_file_contains "$WORK_DIR/man_render_json.out" '"event":"man_page_complete"' "man --json -l did not emit man_page_complete"
 
 cat > "$WORK_DIR/man_wrap.md" <<'EOF'
 # WRAP

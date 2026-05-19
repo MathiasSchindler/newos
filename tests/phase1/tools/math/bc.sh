@@ -8,6 +8,13 @@ phase1_math_setup bc
 bc_large_add=$("$ROOT_DIR/build/bc" '12345678901234567890 + 98765432109876543210' | tr -d '\r\n')
 assert_text_equals "$bc_large_add" '111111111011111111100' "bc large addition failed"
 
+"$ROOT_DIR/build/bc" --json '1+2; scale=4; 1/2' > "$WORK_DIR/bc_json.out"
+assert_file_contains "$WORK_DIR/bc_json.out" '"schema":"newos.tool.v1"' "bc --json did not use the shared JSON envelope"
+assert_file_contains "$WORK_DIR/bc_json.out" '"event":"bc_result"' "bc --json did not emit bc_result events"
+assert_file_contains "$WORK_DIR/bc_json.out" '"text":"3"' "bc --json did not report the first result"
+assert_file_contains "$WORK_DIR/bc_json.out" '"text":"0.5000"' "bc --json did not preserve formatted scale output"
+assert_file_contains "$WORK_DIR/bc_json.out" '"obase":10' "bc --json did not report the output base"
+
 bc_pow_64=$("$ROOT_DIR/build/bc" '2^64' | tr -d '\r\n')
 assert_text_equals "$bc_pow_64" '18446744073709551616' "bc 2^64 failed"
 

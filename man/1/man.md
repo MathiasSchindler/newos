@@ -7,9 +7,9 @@ man - view project-local manual pages stored in the repository
 ## SYNOPSIS
 
 ```
-man [--color[=WHEN]] [SECTION] TOPIC
-man [--color[=WHEN]] -k KEYWORD
-man [--color[=WHEN]] -l FILE
+man [--color[=WHEN]] [--json] [SECTION] TOPIC
+man [--color[=WHEN]] [--json] -k KEYWORD
+man [--color[=WHEN]] [--json] -l FILE
 ```
 
 ## DESCRIPTION
@@ -47,6 +47,7 @@ readable terminal layout.
 - `-k KEYWORD` — searches page names and content for the keyword
 - `-l FILE` — displays the specified Markdown file directly
 - `--color[=WHEN]` — control terminal styling with `auto`, `always`, or `never`
+- `--json` — write newline-delimited JSON events
 - `--help` — print the usage summary
 
 ## ENVIRONMENT
@@ -80,7 +81,9 @@ When the built-in pager is active, `Space` or `f` advances a page, `Enter` or
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `man` writes JSON Lines using the common envelope documented in `json-output`. Page display emits `man_page_start`, then one or more `man_page_chunk` events, then `man_page_complete`. Page chunks contain `path`, `bytes`, and raw Markdown text in `markdown`; JSON mode does not render terminal styling or invoke the pager.
+
+Keyword search with `-k` emits one `man_search_result` event per match. Each result contains `section`, `name`, and `path`.
 
 ## SEE ALSO
 

@@ -7,7 +7,7 @@ bc - line-oriented calculator with decimal arithmetic and variables
 ## SYNOPSIS
 
 ```
-bc [expression]
+bc [-l] [--json] [expression]
 ```
 
 ## DESCRIPTION
@@ -52,6 +52,7 @@ and `/* ... */` comments are ignored.
 - `-l` enables higher-precision math mode with `scale=32`, predefines the
   constants `pi` and `e` to 72 fractional digits, and makes the traditional
   math-library names convenient to use
+- `--json` writes each printed result as a newline-delimited JSON event
 
 ## LIMITATIONS
 
@@ -79,7 +80,13 @@ bc -l 'scale=10; s(pi/2); c(pi); a(1); e(1); l(1); j(0,0)'
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `bc` writes JSON Lines using the common envelope documented in `json-output`. Each result that would normally print a line is emitted as a `bc_result` event. The `data` object contains:
+
+- `text`: the formatted result string using the current `obase`
+- `scale`: the result scale before output formatting
+- `obase`: the output base in effect for the result
+
+Assignments that do not normally print still do not emit result events. Diagnostics and usage errors are emitted on stderr using the shared JSON diagnostic envelope when JSON mode is enabled.
 
 ## SEE ALSO
 
