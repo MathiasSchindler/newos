@@ -2101,6 +2101,161 @@ int platform_list_network_routes(
     return 0;
 }
 
+static int linux_socket_next_token(const char **cursor_io, char *buffer, size_t buffer_size) {
+    const char *cursor = *cursor_io;
+    size_t length = 0U;
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor += 1;
+    }
+    while (*cursor != '\0' && *cursor != '\n' && *cursor != ' ' && *cursor != '\t') {
+        if (length + 1U < buffer_size) {
+            buffer[length++] = *cursor;
+        }
+        cursor += 1;
+    }
+    buffer[length] = '\0';
+    *cursor_io = cursor;
+    return length == 0U ? -1 : 0;
+}
+
+static const char *linux_socket_state_name(unsigned long state, int udp) {
+    if (udp) return "UNCONN";
+    switch (state) {
+        case 1UL: return "ESTAB";
+        case 2UL: return "SYN-SENT";
+        case 3UL: return "SYN-RECV";
+        case 4UL: return "FIN-WAIT-1";
+        case 5UL: return "FIN-WAIT-2";
+        case 6UL: return "TIME-WAIT";
+        case 7UL: return "CLOSE";
+        case 8UL: return "CLOSE-WAIT";
+        case 9UL: return "LAST-ACK";
+        case 10UL: return "LISTEN";
+        case 11UL: return "CLOSING";
+        default: return "UNKNOWN";
+    }
+}
+
+static int linux_socket_parse_endpoint(const char *text, int ipv6, char *address_out, size_t address_size, unsigned int *port_out) {
+    char address_text[40];
+    char port_text[16];
+    size_t i = 0U;
+    size_t addr_len = 0U;
+    unsigned long port = 0UL;
+
+    while (text[i] != '\0' && text[i] != ':' && addr_len + 1U < sizeof(address_text)) {
+        address_text[addr_len++] = text[i++];
+    }
+    address_text[addr_len] = '\0';
+    if (text[i] != ':') return -1;
+    i += 1U;
+    rt_copy_string(port_text, sizeof(port_text), text + i);
+    if (linux_parse_hex_text(port_text, &port) != 0) return -1;
+    *port_out = (unsigned int)port;
+    if (ipv6) {
+        rt_copy_string(address_out, address_size, address_text);
+    } else {
+        LinuxInAddr address;
+        unsigned long raw = 0UL;
+        if (linux_parse_hex_text(address_text, &raw) != 0) return -1;
+        address.bytes[0] = (unsigned char)(raw & 0xffUL);
+        address.bytes[1] = (unsigned char)((raw >> 8U) & 0xffUL);
+        address.bytes[2] = (unsigned char)((raw >> 16U) & 0xffUL);
+        address.bytes[3] = (unsigned char)((raw >> 24U) & 0xffUL);
+        linux_ipv4_to_text(&address, address_out, address_size);
+    }
+    return 0;
+}
+
+static int linux_socket_read_file(const char *path,
+                                  const char *protocol,
+                                  int ipv6,
+                                  int udp,
+                                  PlatformSocketEntry *entries_out,
+                                  size_t entry_capacity,
+                                  size_t *count_io,
+                                  int listening_only) {
+    int fd;
+    char buffer[65536];
+    long bytes;
+    const char *cursor;
+    int line_number = 0;
+
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        return 0;
+    }
+    bytes = platform_read(fd, buffer, sizeof(buffer) - 1U);
+    platform_close(fd);
+    if (bytes <= 0) return 0;
+    buffer[bytes] = '\0';
+    cursor = buffer;
+    while (*cursor != '\0' && *count_io < entry_capacity) {
+        const char *line = cursor;
+        const char *line_end = cursor;
+        char sl[16], local[80], remote[80], state_text[16], token[80];
+        unsigned long state = 0UL;
+        unsigned long long inode = 0ULL;
+        int token_index;
+        PlatformSocketEntry *entry;
+
+        while (*line_end != '\0' && *line_end != '\n') line_end += 1;
+        cursor = (*line_end == '\n') ? line_end + 1 : line_end;
+        line_number += 1;
+        if (line_number == 1) continue;
+        if (linux_socket_next_token(&line, sl, sizeof(sl)) != 0 ||
+            linux_socket_next_token(&line, local, sizeof(local)) != 0 ||
+            linux_socket_next_token(&line, remote, sizeof(remote)) != 0 ||
+            linux_socket_next_token(&line, state_text, sizeof(state_text)) != 0 ||
+            linux_parse_hex_text(state_text, &state) != 0) {
+            continue;
+        }
+        if (listening_only && !(udp || state == 10UL)) {
+            continue;
+        }
+        for (token_index = 0; token_index < 5; ++token_index) {
+            if (linux_socket_next_token(&line, token, sizeof(token)) != 0) {
+                break;
+            }
+        }
+        if (linux_socket_next_token(&line, token, sizeof(token)) == 0) {
+            (void)linux_parse_decimal_text(token, &inode);
+        }
+        entry = &entries_out[*count_io];
+        rt_memset(entry, 0, sizeof(*entry));
+        rt_copy_string(entry->protocol, sizeof(entry->protocol), protocol);
+        rt_copy_string(entry->state, sizeof(entry->state), linux_socket_state_name(state, udp));
+        if (linux_socket_parse_endpoint(local, ipv6, entry->local_address, sizeof(entry->local_address), &entry->local_port) != 0 ||
+            linux_socket_parse_endpoint(remote, ipv6, entry->remote_address, sizeof(entry->remote_address), &entry->remote_port) != 0) {
+            continue;
+        }
+        entry->inode = inode;
+        *count_io += 1U;
+    }
+    return 0;
+}
+
+int platform_list_sockets(PlatformSocketEntry *entries_out, size_t entry_capacity, size_t *count_out, int include_tcp, int include_udp, int listening_only) {
+    size_t count = 0U;
+
+    if (entries_out == 0 || count_out == 0) return -1;
+    if (!include_tcp && !include_udp) {
+        include_tcp = 1;
+        include_udp = 1;
+    }
+    if (include_tcp) {
+        (void)linux_socket_read_file("/proc/net/tcp", "tcp", 0, 0, entries_out, entry_capacity, &count, listening_only);
+        (void)linux_socket_read_file("/proc/net/tcp6", "tcp6", 1, 0, entries_out, entry_capacity, &count, listening_only);
+    }
+    if (include_udp) {
+        (void)linux_socket_read_file("/proc/net/udp", "udp", 0, 1, entries_out, entry_capacity, &count, listening_only);
+        (void)linux_socket_read_file("/proc/net/udp6", "udp6", 1, 1, entries_out, entry_capacity, &count, listening_only);
+    }
+    *count_out = count;
+    return 0;
+}
+
 int platform_network_link_set(const char *ifname, int want_up, unsigned int mtu_value, int set_mtu) {
     int sock;
     struct linux_ifreq ifr;

@@ -2581,6 +2581,16 @@ int platform_dhcp_request(
     return 0;
 }
 
+int platform_list_sockets(PlatformSocketEntry *entries_out, size_t entry_capacity, size_t *count_out, int include_tcp, int include_udp, int listening_only) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)include_tcp;
+    (void)include_udp;
+    (void)listening_only;
+    if (count_out != 0) *count_out = 0U;
+    return -1;
+}
+
 static unsigned short macos_icmp_checksum(const void *data, size_t length) {
     const unsigned short *words = (const unsigned short *)data;
     unsigned int sum = 0U;

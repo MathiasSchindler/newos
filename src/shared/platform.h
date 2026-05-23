@@ -282,6 +282,16 @@ typedef struct {
     char dns2[PLATFORM_NETWORK_TEXT_CAPACITY];
 } PlatformDhcpLease;
 
+typedef struct {
+    char protocol[8];
+    char state[16];
+    char local_address[PLATFORM_NETWORK_TEXT_CAPACITY];
+    char remote_address[PLATFORM_NETWORK_TEXT_CAPACITY];
+    unsigned int local_port;
+    unsigned int remote_port;
+    unsigned long long inode;
+} PlatformSocketEntry;
+
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 void *platform_allocate_pages(size_t size);
@@ -409,6 +419,7 @@ int platform_dhcp_request(
     unsigned int timeout_milliseconds,
     PlatformDhcpLease *lease_out
 );
+int platform_list_sockets(PlatformSocketEntry *entries_out, size_t entry_capacity, size_t *count_out, int include_tcp, int include_udp, int listening_only);
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_drop_privileges(const char *username, const char *groupname);

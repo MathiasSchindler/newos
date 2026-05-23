@@ -2711,6 +2711,19 @@ int platform_dhcp_request(
     return 0;
 }
 
+int platform_list_sockets(PlatformSocketEntry *entries_out, size_t entry_capacity, size_t *count_out, int include_tcp, int include_udp, int listening_only) {
+    (void)entries_out;
+    (void)entry_capacity;
+    (void)include_tcp;
+    (void)include_udp;
+    (void)listening_only;
+    if (count_out != NULL) {
+        *count_out = 0U;
+    }
+    errno = ENOTSUP;
+    return -1;
+}
+
 int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     struct sockaddr_in addr;
     char ip_text[INET_ADDRSTRLEN];
