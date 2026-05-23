@@ -8,8 +8,10 @@
 #define LINKER_MAX_OBJECT_SIZE (1024U * 1024U)
 #define LINKER_MAX_ARCHIVE_SIZE (64U * 1024U * 1024U)
 #define LINKER_MAX_OUTPUT (64U * 1024U * 1024U)
-#define LINKER_MAX_MEMORY (128U * 1024U * 1024U)
+#define LINKER_MAX_MEMORY (512U * 1024U * 1024U)
 #define LINKER_MAX_GLOBALS 8192
+#define LINKER_MAX_SECTIONS 512
+#define LINKER_MAX_RELA_SECTIONS 512
 #define LINKER_BASE_VADDR 0x400000ULL
 #define LINKER_AR_HEADER_SIZE 60U
 
@@ -23,14 +25,23 @@
 #define PF_X 1U
 #define PF_W 2U
 #define PF_R 4U
+#define SHT_PROGBITS 1U
 #define SHT_SYMTAB 2U
 #define SHT_STRTAB 3U
 #define SHT_RELA 4U
+#define SHT_NOBITS 8U
+#define SHF_WRITE 1ULL
+#define SHF_ALLOC 2ULL
+#define SHF_EXECINSTR 4ULL
 #define SHN_UNDEF 0U
+#define SHN_ABS 0xfff1U
 #define STB_GLOBAL 1U
+#define R_X86_64_NONE 0U
 #define R_X86_64_64 1U
 #define R_X86_64_PC32 2U
 #define R_X86_64_PLT32 4U
+#define R_X86_64_32 10U
+#define R_X86_64_32S 11U
 
 #define ELF64_EHDR_SIZE 64U
 #define ELF64_PHDR_SIZE 56U
@@ -43,6 +54,37 @@ typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
 typedef long long int64_t;
 typedef int int32_t;
+
+typedef enum {
+    LINK_SECTION_NONE = 0,
+    LINK_SECTION_TEXT,
+    LINK_SECTION_DATA,
+    LINK_SECTION_BSS
+} LinkSectionKind;
+
+typedef struct {
+    uint16_t index;
+    uint32_t type;
+    uint64_t flags;
+    uint64_t offset;
+    uint64_t size;
+    uint64_t align;
+    uint64_t out_offset;
+    LinkSectionKind kind;
+    int live;
+    int folded;
+    size_t fold_object_index;
+    size_t fold_section_index;
+    char why[COMPILER_PATH_CAPACITY];
+} LinkSection;
+
+typedef struct {
+    uint16_t index;
+    uint16_t target_index;
+    uint64_t offset;
+    uint64_t size;
+    uint64_t entsize;
+} LinkRelaSection;
 
 typedef struct {
     char path[COMPILER_PATH_CAPACITY];
@@ -75,6 +117,10 @@ typedef struct {
     uint64_t rela_data_offset;
     uint64_t rela_data_size;
     uint64_t rela_data_entsize;
+    LinkSection sections[LINKER_MAX_SECTIONS];
+    size_t section_count;
+    LinkRelaSection rela_sections[LINKER_MAX_RELA_SECTIONS];
+    size_t rela_section_count;
     uint64_t out_text_offset;
     uint64_t out_data_offset;
     uint64_t out_bss_offset;
@@ -96,6 +142,13 @@ static LinkGlobal linker_globals[LINKER_MAX_GLOBALS];
 static LinkDefinedSymbol linker_defined_symbols[LINKER_MAX_GLOBALS];
 static size_t linker_global_count;
 static size_t linker_defined_symbol_count;
+
+static const char *linker_entry_symbol(const CompilerLinkerOptions *options) {
+    if (options != 0 && options->entry_symbol != 0 && options->entry_symbol[0] != '\0') {
+        return options->entry_symbol;
+    }
+    return "_start";
+}
 
 static void set_link_error(char *error_out, size_t error_size, const char *message, const char *detail) {
     if (error_out == 0 || error_size == 0U) {
@@ -158,7 +211,17 @@ static void write_u64(unsigned char *p, uint64_t value) {
 }
 
 static uint64_t align_u64(uint64_t value, uint64_t alignment) {
+    if (alignment <= 1ULL) {
+        return value;
+    }
     return (value + alignment - 1ULL) & ~(alignment - 1ULL);
+}
+
+static uint64_t trim_trailing_zero_bytes(const unsigned char *data, uint64_t size, uint64_t minimum_size) {
+    while (size > minimum_size && data[size - 1ULL] == 0U) {
+        size -= 1ULL;
+    }
+    return size;
 }
 
 static int range_valid(uint64_t offset, uint64_t size, uint64_t limit) {
@@ -199,6 +262,28 @@ static const char *section_name(const LinkObject *object, uint16_t index) {
 
 static int section_is(const LinkObject *object, uint16_t index, const char *name) {
     return rt_strcmp(section_name(object, index), name) == 0;
+}
+
+static LinkSection *find_link_section(LinkObject *object, uint16_t index) {
+    size_t i;
+
+    for (i = 0; i < object->section_count; ++i) {
+        if (object->sections[i].index == index) {
+            return &object->sections[i];
+        }
+    }
+    return 0;
+}
+
+static const LinkSection *find_link_section_const(const LinkObject *object, uint16_t index) {
+    size_t i;
+
+    for (i = 0; i < object->section_count; ++i) {
+        if (object->sections[i].index == index) {
+            return &object->sections[i];
+        }
+    }
+    return 0;
 }
 
 static int ends_with_text(const char *text, const char *suffix) {
@@ -269,11 +354,45 @@ static void copy_ar_string_table_name(char *buffer, size_t buffer_size, const un
 static void remember_section(LinkObject *object, uint16_t index) {
     const unsigned char *section = section_header(object, index);
     uint32_t type;
+    uint64_t flags;
 
     if (section == 0) {
         return;
     }
     type = read_u32(section + 4);
+    flags = read_u64(section + 8);
+    if ((flags & SHF_ALLOC) != 0ULL && (type == SHT_PROGBITS || type == SHT_NOBITS) && object->section_count < LINKER_MAX_SECTIONS) {
+        LinkSection *link_section = &object->sections[object->section_count++];
+
+        link_section->index = index;
+        link_section->type = type;
+        link_section->flags = flags;
+        link_section->offset = read_u64(section + 24);
+        link_section->size = read_u64(section + 32);
+        link_section->align = read_u64(section + 48);
+        link_section->out_offset = 0ULL;
+        link_section->live = 0;
+        link_section->folded = 0;
+        link_section->fold_object_index = 0U;
+        link_section->fold_section_index = 0U;
+        link_section->why[0] = '\0';
+        if (type == SHT_NOBITS) {
+            link_section->kind = LINK_SECTION_BSS;
+        } else if ((flags & SHF_WRITE) != 0ULL) {
+            link_section->kind = LINK_SECTION_DATA;
+        } else {
+            link_section->kind = LINK_SECTION_TEXT;
+        }
+    }
+    if (type == SHT_RELA && object->rela_section_count < LINKER_MAX_RELA_SECTIONS) {
+        LinkRelaSection *rela = &object->rela_sections[object->rela_section_count++];
+
+        rela->index = index;
+        rela->target_index = (uint16_t)read_u32(section + 44);
+        rela->offset = read_u64(section + 24);
+        rela->size = read_u64(section + 32);
+        rela->entsize = read_u64(section + 56);
+    }
     if (section_is(object, index, ".text")) {
         object->text_index = index;
         object->text_offset = read_u64(section + 24);
@@ -331,26 +450,30 @@ static int parse_loaded_object(LinkObject *object, const char *path, unsigned ch
     for (i = 1; i < object->shnum; ++i) {
         remember_section(object, i);
     }
-    if (object->text_index == 0 || object->symtab_index == 0 || object->strtab_index == 0 || object->symtab_entsize < ELF64_SYM_SIZE) {
+    if (object->section_count == 0 || object->symtab_index == 0 || object->strtab_index == 0 || object->symtab_entsize < ELF64_SYM_SIZE) {
         set_link_error(error_out, error_size, "object is missing required linker sections", path);
         return -1;
     }
-    if (!range_valid(object->text_offset, object->text_size, object->size) ||
-        !range_valid(object->data_offset, object->data_size, object->size) ||
-        !range_valid(object->symtab_offset, object->symtab_size, object->size) ||
-        !range_valid(object->strtab_offset, object->strtab_size, object->size) ||
-        !range_valid(object->rela_text_offset, object->rela_text_size, object->size) ||
-        !range_valid(object->rela_data_offset, object->rela_data_size, object->size)) {
+    for (i = 0; i < object->section_count; ++i) {
+        if (object->sections[i].type != SHT_NOBITS && !range_valid(object->sections[i].offset, object->sections[i].size, object->size)) {
+            set_link_error(error_out, error_size, "object section extends past end of file", path);
+            return -1;
+        }
+    }
+    if (!range_valid(object->symtab_offset, object->symtab_size, object->size) ||
+        !range_valid(object->strtab_offset, object->strtab_size, object->size)) {
         set_link_error(error_out, error_size, "object section extends past end of file", path);
         return -1;
     }
-    if (object->rela_text_index != 0 && object->rela_text_entsize < ELF64_RELA_SIZE) {
-        set_link_error(error_out, error_size, "unsupported relocation entry size", path);
-        return -1;
-    }
-    if (object->rela_data_index != 0 && object->rela_data_entsize < ELF64_RELA_SIZE) {
-        set_link_error(error_out, error_size, "unsupported relocation entry size", path);
-        return -1;
+    for (i = 0; i < object->rela_section_count; ++i) {
+        if (!range_valid(object->rela_sections[i].offset, object->rela_sections[i].size, object->size)) {
+            set_link_error(error_out, error_size, "object section extends past end of file", path);
+            return -1;
+        }
+        if (object->rela_sections[i].entsize < ELF64_RELA_SIZE) {
+            set_link_error(error_out, error_size, "unsupported relocation entry size", path);
+            return -1;
+        }
     }
     return 0;
 }
@@ -432,7 +555,6 @@ static int load_archive(const char *path, LinkObject *objects, size_t *object_co
         size_t next_offset;
         char member_name[COMPILER_PATH_CAPACITY];
         char object_name[COMPILER_PATH_CAPACITY];
-        unsigned char *object_file;
 
         if (header[58] != '`' || header[59] != '\n' || payload_size_value > (unsigned long long)(archive_size - payload_offset)) {
             rt_free(archive);
@@ -496,13 +618,6 @@ static int load_archive(const char *path, LinkObject *objects, size_t *object_co
             set_link_error(error_out, error_size, "archive member exceeds native linker capacity", member_name);
             return -1;
         }
-        object_file = (unsigned char *)rt_malloc(data_size);
-        if (object_file == 0) {
-            rt_free(archive);
-            set_link_error(error_out, error_size, "failed to allocate archive member", member_name);
-            return -1;
-        }
-        memcpy(object_file, archive + data_offset, data_size);
         rt_copy_string(object_name, sizeof(object_name), path);
         if (rt_strlen(object_name) + rt_strlen(member_name) + 3U < sizeof(object_name)) {
             size_t used = rt_strlen(object_name);
@@ -512,9 +627,8 @@ static int load_archive(const char *path, LinkObject *objects, size_t *object_co
             object_name[used++] = ')';
             object_name[used] = '\0';
         }
-        if (parse_loaded_object(&objects[*object_count], object_name, object_file, data_size, error_out, error_size) != 0) {
+        if (parse_loaded_object(&objects[*object_count], object_name, archive + data_offset, data_size, error_out, error_size) != 0) {
             rt_free(archive);
-            rt_free(object_file);
             return -1;
         }
         *object_count += 1U;
@@ -526,7 +640,6 @@ static int load_archive(const char *path, LinkObject *objects, size_t *object_co
         set_link_error(error_out, error_size, "archive contains no supported objects", path);
         return -1;
     }
-    rt_free(archive);
     return 0;
 }
 
@@ -664,12 +777,84 @@ static int find_defined_global_object(LinkObject *objects, size_t object_count, 
     return -1;
 }
 
+static int find_defined_global_symbol(LinkObject *objects,
+                                      size_t object_count,
+                                      const char *name,
+                                      size_t *object_index_out,
+                                      const unsigned char **symbol_out) {
+    int owner_index = find_defined_global_object(objects, object_count, name);
+    uint32_t count;
+    uint32_t symbol_index;
+    LinkObject *object;
+
+    if (owner_index < 0) {
+        return -1;
+    }
+    object = &objects[owner_index];
+    count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+    for (symbol_index = 0; symbol_index < count; ++symbol_index) {
+        const unsigned char *symbol = symbol_entry(object, symbol_index);
+
+        if (symbol == 0) {
+            continue;
+        }
+        if ((symbol[4] >> 4U) == STB_GLOBAL && read_u16(symbol + 6) != SHN_UNDEF && rt_strcmp(symbol_name(object, symbol), name) == 0) {
+            *object_index_out = (size_t)owner_index;
+            *symbol_out = symbol;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int mark_symbol_section_live(LinkObject *objects,
+                                    size_t object_count,
+                                    size_t object_index,
+                                    const unsigned char *symbol,
+                                    const char *reason,
+                                    int *changed_out,
+                                    char *error_out,
+                                    size_t error_size) {
+    LinkObject *object = &objects[object_index];
+    uint16_t shndx = read_u16(symbol + 6);
+    LinkSection *section;
+    const char *name;
+    const unsigned char *definition;
+    size_t definition_object_index;
+
+    if (shndx == SHN_ABS) {
+        return 0;
+    }
+    if (shndx == SHN_UNDEF) {
+        name = symbol_name(object, symbol);
+        if (find_defined_global_symbol(objects, object_count, name, &definition_object_index, &definition) != 0) {
+            set_link_error(error_out, error_size, "undefined symbol", name);
+            return -1;
+        }
+        return mark_symbol_section_live(objects, object_count, definition_object_index, definition, name, changed_out, error_out, error_size);
+    }
+    section = find_link_section(object, shndx);
+    if (section == 0) {
+        set_link_error(error_out, error_size, "unsupported symbol section", object->path);
+        return -1;
+    }
+    object->live = 1;
+    if (!section->live) {
+        section->live = 1;
+        rt_copy_string(section->why, sizeof(section->why), reason != 0 && reason[0] != '\0' ? reason : symbol_name(object, symbol));
+        *changed_out = 1;
+    }
+    return 0;
+}
+
 static int mark_relocation_dependencies(LinkObject *objects,
                                         size_t object_count,
                                         LinkObject *object,
                                         uint64_t rela_offset,
                                         uint64_t rela_size,
                                         uint64_t rela_entsize,
+                                        size_t *queue,
+                                        size_t *queue_tail,
                                         int *changed_out,
                                         char *error_out,
                                         size_t error_size) {
@@ -703,21 +888,63 @@ static int mark_relocation_dependencies(LinkObject *objects,
         }
         if (!objects[owner_index].live) {
             objects[owner_index].live = 1;
+            if (queue != 0 && queue_tail != 0 && *queue_tail < LINKER_MAX_OBJECTS) {
+                queue[*queue_tail] = (size_t)owner_index;
+                *queue_tail += 1U;
+            }
             *changed_out = 1;
         }
     }
     return 0;
 }
 
-static int mark_live_objects(LinkObject *objects, size_t object_count, char *error_out, size_t error_size) {
-    int root_index = find_defined_global_object(objects, object_count, "_start");
-    int changed = 1;
+static int mark_live_objects(LinkObject *objects, size_t object_count, const char *entry_symbol, char *error_out, size_t error_size) {
+    int root_index = find_defined_global_object(objects, object_count, entry_symbol);
+    size_t queue[LINKER_MAX_OBJECTS];
+    size_t queue_head = 0U;
+    size_t queue_tail = 0U;
 
     if (root_index < 0) {
-        set_link_error(error_out, error_size, "undefined entry symbol", "_start");
+        set_link_error(error_out, error_size, "undefined entry symbol", entry_symbol);
         return -1;
     }
     objects[root_index].live = 1;
+    queue[queue_tail++] = (size_t)root_index;
+
+    while (queue_head < queue_tail) {
+        size_t i = queue[queue_head++];
+        LinkObject *object = &objects[i];
+        size_t rela_index;
+        int changed = 0;
+
+        (void)changed;
+        if (!object->live) {
+            continue;
+        }
+        for (rela_index = 0; rela_index < object->rela_section_count; ++rela_index) {
+            LinkRelaSection *rela = &object->rela_sections[rela_index];
+
+            if (mark_relocation_dependencies(objects, object_count, object, rela->offset, rela->size, rela->entsize, queue, &queue_tail, &changed, error_out, error_size) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int mark_live_sections(LinkObject *objects, size_t object_count, const char *entry_symbol, char *error_out, size_t error_size) {
+    const unsigned char *entry_symbol_entry;
+    size_t entry_object_index;
+    int changed = 0;
+
+    if (find_defined_global_symbol(objects, object_count, entry_symbol, &entry_object_index, &entry_symbol_entry) != 0) {
+        set_link_error(error_out, error_size, "undefined entry symbol", entry_symbol);
+        return -1;
+    }
+    if (mark_symbol_section_live(objects, object_count, entry_object_index, entry_symbol_entry, "entry", &changed, error_out, error_size) != 0) {
+        return -1;
+    }
 
     while (changed) {
         size_t i;
@@ -725,43 +952,142 @@ static int mark_live_objects(LinkObject *objects, size_t object_count, char *err
         changed = 0;
         for (i = 0; i < object_count; ++i) {
             LinkObject *object = &objects[i];
+            size_t rela_index;
 
-            if (!object->live) {
-                continue;
-            }
-            if (object->rela_text_index != 0 &&
-                mark_relocation_dependencies(objects, object_count, object, object->rela_text_offset, object->rela_text_size, object->rela_text_entsize, &changed, error_out, error_size) != 0) {
-                return -1;
-            }
-            if (object->rela_data_index != 0 &&
-                mark_relocation_dependencies(objects, object_count, object, object->rela_data_offset, object->rela_data_size, object->rela_data_entsize, &changed, error_out, error_size) != 0) {
-                return -1;
+            for (rela_index = 0; rela_index < object->rela_section_count; ++rela_index) {
+                LinkRelaSection *rela = &object->rela_sections[rela_index];
+                LinkSection *target = find_link_section(object, rela->target_index);
+                uint64_t entry_count;
+                uint64_t reloc_index;
+
+                if (target == 0 || !target->live || rela->size == 0) {
+                    continue;
+                }
+                entry_count = rela->size / rela->entsize;
+                for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
+                    const unsigned char *reloc = object->file + rela->offset + (reloc_index * rela->entsize);
+                    uint64_t info = read_u64(reloc + 8);
+                    uint32_t symbol_index = (uint32_t)(info >> 32U);
+                    uint32_t type = (uint32_t)info;
+                    const unsigned char *symbol = symbol_entry(object, symbol_index);
+
+                    if (symbol == 0) {
+                        set_link_error(error_out, error_size, "invalid relocation in object", object->path);
+                        return -1;
+                    }
+                    if (type == R_X86_64_NONE) {
+                        continue;
+                    }
+                    if (mark_symbol_section_live(objects, object_count, i, symbol, symbol_name(object, symbol), &changed, error_out, error_size) != 0) {
+                        return -1;
+                    }
+                }
             }
         }
     }
-
     return 0;
+}
+
+static void mark_all_sections_in_live_objects(LinkObject *objects, size_t object_count) {
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        if (!objects[i].live) {
+            continue;
+        }
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            objects[i].sections[section_index].live = 1;
+            rt_copy_string(objects[i].sections[section_index].why, sizeof(objects[i].sections[section_index].why), "live object");
+        }
+    }
+}
+
+static int section_has_relocations(const LinkObject *object, uint16_t section_index) {
+    size_t rela_index;
+
+    for (rela_index = 0; rela_index < object->rela_section_count; ++rela_index) {
+        if (object->rela_sections[rela_index].target_index == section_index && object->rela_sections[rela_index].size != 0ULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int sections_have_same_bytes(const LinkObject *left_object, const LinkSection *left, const LinkObject *right_object, const LinkSection *right) {
+    if (left->size != right->size || left->align != right->align || left->type != right->type || left->size == 0ULL) {
+        return 0;
+    }
+    if (left->type == SHT_NOBITS || right->type == SHT_NOBITS) {
+        return 0;
+    }
+    return memcmp(left_object->file + left->offset, right_object->file + right->offset, (size_t)left->size) == 0;
+}
+
+static void fold_identical_sections(LinkObject *objects, size_t object_count) {
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+            size_t master_object_index;
+
+            if (!section->live || section->folded || section->kind != LINK_SECTION_TEXT || section_has_relocations(&objects[i], section->index)) {
+                continue;
+            }
+            for (master_object_index = 0; master_object_index <= i; ++master_object_index) {
+                size_t master_section_index;
+
+                for (master_section_index = 0; master_section_index < objects[master_object_index].section_count; ++master_section_index) {
+                    LinkSection *master = &objects[master_object_index].sections[master_section_index];
+
+                    if (master_object_index == i && master_section_index >= section_index) {
+                        break;
+                    }
+                    if (!master->live || master->folded || master->kind != LINK_SECTION_TEXT || section_has_relocations(&objects[master_object_index], master->index)) {
+                        continue;
+                    }
+                    if (sections_have_same_bytes(&objects[i], section, &objects[master_object_index], master)) {
+                        section->folded = 1;
+                        section->fold_object_index = master_object_index;
+                        section->fold_section_index = master_section_index;
+                        rt_copy_string(section->why, sizeof(section->why), "identical code folded");
+                        break;
+                    }
+                }
+                if (section->folded) {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 static int symbol_value(const LinkObject *object, const unsigned char *symbol, uint64_t *value_out, char *error_out, size_t error_size) {
     uint16_t shndx = read_u16(symbol + 6);
     uint64_t value = read_u64(symbol + 8);
+    const LinkSection *section;
     const char *name;
     int global_index;
 
-    if (shndx == object->text_index) {
-        *value_out = LINKER_BASE_VADDR + object->out_text_offset + value;
-        return 0;
-    }
-    if (object->data_index != 0 && shndx == object->data_index) {
-        *value_out = LINKER_BASE_VADDR + object->out_data_offset + value;
-        return 0;
-    }
-    if (object->bss_index != 0 && shndx == object->bss_index) {
-        *value_out = LINKER_BASE_VADDR + object->out_bss_offset + value;
+    if (shndx == SHN_ABS) {
+        *value_out = value;
         return 0;
     }
     if (shndx != SHN_UNDEF) {
+        section = find_link_section_const(object, shndx);
+        if (section != 0) {
+            if (section->folded) {
+                const LinkSection *folded = &linker_objects[section->fold_object_index].sections[section->fold_section_index];
+                *value_out = LINKER_BASE_VADDR + folded->out_offset + value;
+                return 0;
+            }
+            *value_out = LINKER_BASE_VADDR + section->out_offset + value;
+            return 0;
+        }
         set_link_error(error_out, error_size, "unsupported symbol section", object->path);
         return -1;
     }
@@ -802,6 +1128,12 @@ static int collect_globals(LinkObject *objects, size_t object_count, char *error
             shndx = read_u16(symbol + 6);
             if (bind != STB_GLOBAL || shndx == SHN_UNDEF) {
                 continue;
+            }
+            if (shndx != SHN_ABS) {
+                const LinkSection *section = find_link_section_const(object, shndx);
+                if (section == 0 || !section->live) {
+                    continue;
+                }
             }
             if (symbol_value(object, symbol, &value, error_out, error_size) != 0) {
                 return -1;
@@ -847,10 +1179,13 @@ static int apply_relocation_table(LinkObject *object,
             set_link_error(error_out, error_size, "invalid relocation in object", object->path);
             return -1;
         }
-        if (type == R_X86_64_PC32 || type == R_X86_64_PLT32) {
+        if (type == R_X86_64_NONE) {
+            continue;
+        } else if (type == R_X86_64_PC32 || type == R_X86_64_PLT32) {
             int64_t patched;
 
-            if (!is_text || offset + 4ULL > target_size) {
+            (void)is_text;
+            if (offset + 4ULL > target_size) {
                 set_link_error(error_out, error_size, "invalid relocation in object", object->path);
                 return -1;
             }
@@ -860,6 +1195,27 @@ static int apply_relocation_table(LinkObject *object,
             place_addr = LINKER_BASE_VADDR + out_target_offset + offset;
             patched = (int64_t)symbol_addr + addend - (int64_t)place_addr;
             if (patched < -2147483648LL || patched > 2147483647LL) {
+                set_link_error(error_out, error_size, "relocation is out of range", object->path);
+                return -1;
+            }
+            patch_offset = out_target_offset + offset;
+            write_u32(output + patch_offset, (uint32_t)(int32_t)patched);
+        } else if (type == R_X86_64_32 || type == R_X86_64_32S) {
+            int64_t patched;
+
+            if (offset + 4ULL > target_size) {
+                set_link_error(error_out, error_size, "invalid relocation in object", object->path);
+                return -1;
+            }
+            if (symbol_value(object, symbol, &symbol_addr, error_out, error_size) != 0) {
+                return -1;
+            }
+            patched = (int64_t)symbol_addr + addend;
+            if (type == R_X86_64_32 && (patched < 0 || patched > 4294967295LL)) {
+                set_link_error(error_out, error_size, "relocation is out of range", object->path);
+                return -1;
+            }
+            if (type == R_X86_64_32S && (patched < -2147483648LL || patched > 2147483647LL)) {
                 set_link_error(error_out, error_size, "relocation is out of range", object->path);
                 return -1;
             }
@@ -891,17 +1247,28 @@ static int apply_relocations(LinkObject *objects, size_t object_count, unsigned 
 
     for (i = 0; i < object_count; ++i) {
         LinkObject *object = &objects[i];
+        size_t rela_index;
 
         if (!object->live) {
             continue;
         }
-        if (object->rela_text_index != 0 &&
-            apply_relocation_table(object, object->rela_text_offset, object->rela_text_size, object->rela_text_entsize, object->text_size, object->out_text_offset, 1, output, error_out, error_size) != 0) {
-            return -1;
-        }
-        if (object->rela_data_index != 0 &&
-            apply_relocation_table(object, object->rela_data_offset, object->rela_data_size, object->rela_data_entsize, object->data_size, object->out_data_offset, 0, output, error_out, error_size) != 0) {
-            return -1;
+        for (rela_index = 0; rela_index < object->rela_section_count; ++rela_index) {
+            LinkRelaSection *rela = &object->rela_sections[rela_index];
+            LinkSection *target = find_link_section(object, rela->target_index);
+
+            if (target == 0) {
+                set_link_error(error_out, error_size, "relocation targets unsupported section", object->path);
+                return -1;
+            }
+            if (!target->live || target->folded) {
+                continue;
+            }
+            if (target->kind == LINK_SECTION_BSS) {
+                continue;
+            }
+            if (apply_relocation_table(object, rela->offset, rela->size, rela->entsize, target->size, target->out_offset, target->kind == LINK_SECTION_TEXT, output, error_out, error_size) != 0) {
+                return -1;
+            }
         }
     }
     return 0;
@@ -914,25 +1281,55 @@ static void layout_objects(LinkObject *objects, size_t object_count, uint64_t *t
     size_t i;
 
     for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
         if (!objects[i].live) {
             continue;
         }
-        objects[i].out_text_offset = text_size;
-        text_size = align_u64(text_size + objects[i].text_size, 16U);
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section->live || section->folded || section->kind != LINK_SECTION_TEXT) {
+                continue;
+            }
+            text_size = align_u64(text_size, section->align);
+            section->out_offset = text_size;
+            text_size += section->size;
+        }
     }
     for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
         if (!objects[i].live) {
             continue;
         }
-        objects[i].out_data_offset = data_size;
-        data_size = align_u64(data_size + objects[i].data_size, 8U);
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section->live || section->folded || section->kind != LINK_SECTION_DATA) {
+                continue;
+            }
+            data_size = align_u64(data_size, section->align);
+            section->out_offset = data_size;
+            data_size += section->size;
+        }
     }
     for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
         if (!objects[i].live) {
             continue;
         }
-        objects[i].out_bss_offset = bss_size;
-        bss_size = align_u64(bss_size + objects[i].bss_size, 8U);
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section->live || section->folded || section->kind != LINK_SECTION_BSS) {
+                continue;
+            }
+            bss_size = align_u64(bss_size, section->align);
+            section->out_offset = bss_size;
+            bss_size += section->size;
+        }
     }
     *text_size_out = text_size;
     *data_size_out = data_size;
@@ -943,19 +1340,23 @@ static void copy_sections(LinkObject *objects, size_t object_count, unsigned cha
     size_t i;
 
     for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
         if (!objects[i].live) {
             continue;
         }
-        if (objects[i].text_size > 0) {
-            memcpy(output + objects[i].out_text_offset, objects[i].file + objects[i].text_offset, (size_t)objects[i].text_size);
-        }
-        if (objects[i].data_size > 0) {
-            memcpy(output + objects[i].out_data_offset, objects[i].file + objects[i].data_offset, (size_t)objects[i].data_size);
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section->live || section->folded || section->kind == LINK_SECTION_BSS || section->size == 0ULL) {
+                continue;
+            }
+            memcpy(output + section->out_offset, objects[i].file + section->offset, (size_t)section->size);
         }
     }
 }
 
-static void write_load_header(unsigned char *output, uint16_t index, uint32_t flags, uint64_t offset, uint64_t file_size, uint64_t memory_size) {
+static void write_load_header(unsigned char *output, uint16_t index, uint32_t flags, uint64_t offset, uint64_t file_size, uint64_t memory_size, uint64_t alignment) {
     unsigned char *program = output + ELF64_EHDR_SIZE + ((uint64_t)index * ELF64_PHDR_SIZE);
 
     write_u32(program + 0, PT_LOAD);
@@ -965,7 +1366,7 @@ static void write_load_header(unsigned char *output, uint16_t index, uint32_t fl
     write_u64(program + 24, LINKER_BASE_VADDR + offset);
     write_u64(program + 32, file_size);
     write_u64(program + 40, memory_size);
-    write_u64(program + 48, 0x1000U);
+    write_u64(program + 48, alignment);
 }
 
 static void write_elf_header(unsigned char *output,
@@ -974,8 +1375,12 @@ static void write_elf_header(unsigned char *output,
                              uint64_t text_size,
                              uint64_t data_file_offset,
                              uint64_t data_size,
-                             uint64_t bss_size) {
-    uint16_t program_count = data_size != 0 || bss_size != 0 ? 2U : 1U;
+                             uint64_t bss_size,
+                             uint64_t file_size,
+                             uint64_t memory_size,
+                             int tiny) {
+    uint16_t program_count = tiny ? 1U : (data_size != 0 || bss_size != 0 ? 2U : 1U);
+    uint64_t segment_alignment = tiny ? 1U : 0x1000U;
 
     output[0] = 0x7fU;
     output[1] = 'E';
@@ -999,13 +1404,259 @@ static void write_elf_header(unsigned char *output,
     write_u16(output + 60, 0U);
     write_u16(output + 62, 0U);
 
-    write_load_header(output, 0U, PF_R | PF_X, 0U, text_file_offset + text_size, text_file_offset + text_size);
+    if (tiny) {
+        uint32_t flags = PF_R | PF_X;
+        if (data_size != 0 || bss_size != 0) {
+            flags |= PF_W;
+        }
+        write_load_header(output, 0U, flags, 0U, file_size, memory_size, segment_alignment);
+        return;
+    }
+
+    write_load_header(output, 0U, PF_R | PF_X, 0U, file_size < text_file_offset + text_size ? file_size : text_file_offset + text_size, text_file_offset + text_size, segment_alignment);
     if (program_count > 1U) {
-        write_load_header(output, 1U, PF_R | PF_W, data_file_offset, data_size, data_size + bss_size);
+        uint64_t data_file_size = 0ULL;
+
+        if (file_size > data_file_offset) {
+            data_file_size = file_size - data_file_offset;
+            if (data_file_size > data_size) {
+                data_file_size = data_size;
+            }
+        }
+        write_load_header(output, 1U, PF_R | PF_W, data_file_offset, data_file_size, data_size + bss_size, segment_alignment);
     }
 }
 
-int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t object_count, const char *output_path, char *error_out, size_t error_size) {
+static int linker_write_hex64(int fd, uint64_t value) {
+    char buffer[18];
+    const char *digits = "0123456789abcdef";
+    int i;
+
+    buffer[0] = '0';
+    buffer[1] = 'x';
+    for (i = 0; i < 16; ++i) {
+        buffer[2 + i] = digits[(value >> (uint64_t)((15 - i) * 4)) & 0xfU];
+    }
+    return rt_write_all(fd, buffer, sizeof(buffer));
+}
+
+static uint64_t count_live_objects(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        if (objects[i].live) {
+            count += 1ULL;
+        }
+    }
+    return count;
+}
+
+static uint64_t count_live_sections(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            if (objects[i].sections[section_index].live) {
+                count += 1ULL;
+            }
+        }
+    }
+    return count;
+}
+
+static uint64_t count_total_sections(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        count += (uint64_t)objects[i].section_count;
+    }
+    return count;
+}
+
+static uint64_t count_live_relocations(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t rela_index;
+
+        for (rela_index = 0; rela_index < objects[i].rela_section_count; ++rela_index) {
+            const LinkRelaSection *rela = &objects[i].rela_sections[rela_index];
+            const LinkSection *target = find_link_section_const(&objects[i], rela->target_index);
+
+            if (target != 0 && target->live && rela->entsize != 0) {
+                count += rela->size / rela->entsize;
+            }
+        }
+    }
+    return count;
+}
+
+static int write_link_stats(int fd,
+                            const LinkObject *objects,
+                            size_t object_count,
+                            uint64_t text_size,
+                            uint64_t data_size,
+                            uint64_t bss_size,
+                            uint64_t file_size,
+                            uint64_t memory_size,
+                            uint64_t header_size,
+                            uint64_t padding_size,
+                            int tiny,
+                            int gc_sections) {
+    if (rt_write_cstr(fd, "linker stats\nobjects live/total: ") != 0) return -1;
+    if (rt_write_uint(fd, count_live_objects(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, (unsigned long long)object_count) != 0) return -1;
+    if (rt_write_cstr(fd, "\nsections live/total: ") != 0) return -1;
+    if (rt_write_uint(fd, count_live_sections(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, count_total_sections(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "\nrelocations applied: ") != 0) return -1;
+    if (rt_write_uint(fd, count_live_relocations(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "\ntext/data/bss: ") != 0) return -1;
+    if (rt_write_uint(fd, text_size) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, data_size) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, bss_size) != 0) return -1;
+    if (rt_write_cstr(fd, "\nfile/memory: ") != 0) return -1;
+    if (rt_write_uint(fd, file_size) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, memory_size) != 0) return -1;
+    if (rt_write_cstr(fd, "\nheaders/padding: ") != 0) return -1;
+    if (rt_write_uint(fd, header_size) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, padding_size) != 0) return -1;
+    if (rt_write_cstr(fd, "\npolicy: ") != 0) return -1;
+    if (rt_write_cstr(fd, tiny ? "tiny" : "page-aligned") != 0) return -1;
+    if (rt_write_cstr(fd, gc_sections ? " gc-sections\n" : " object-gc\n") != 0) return -1;
+    return 0;
+}
+
+static int write_link_map(const char *path,
+                          const LinkObject *objects,
+                          size_t object_count,
+                          const char *output_path,
+                          const char *entry_symbol,
+                          uint64_t entry,
+                          uint64_t text_size,
+                          uint64_t data_size,
+                          uint64_t bss_size,
+                          uint64_t file_size,
+                          uint64_t memory_size,
+                          int tiny,
+                          int gc_sections,
+                          char *error_out,
+                          size_t error_size) {
+    int fd = platform_open_write(path, 0644U);
+    size_t i;
+
+    if (fd < 0) {
+        set_link_error(error_out, error_size, "failed to open map file", path);
+        return -1;
+    }
+    if (rt_write_cstr(fd, "newos linker map\noutput: ") != 0 || rt_write_cstr(fd, output_path) != 0 ||
+        rt_write_cstr(fd, "\nentry: ") != 0 || rt_write_cstr(fd, entry_symbol) != 0 || rt_write_cstr(fd, " ") != 0 || linker_write_hex64(fd, entry) != 0 ||
+        rt_write_cstr(fd, "\npolicy: ") != 0 || rt_write_cstr(fd, tiny ? "tiny" : "page-aligned") != 0 || rt_write_cstr(fd, gc_sections ? " gc-sections\n" : " object-gc\n") != 0 ||
+        rt_write_cstr(fd, "text/data/bss/file/memory: ") != 0 || rt_write_uint(fd, text_size) != 0 || rt_write_cstr(fd, "/") != 0 ||
+        rt_write_uint(fd, data_size) != 0 || rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, bss_size) != 0 || rt_write_cstr(fd, "/") != 0 ||
+        rt_write_uint(fd, file_size) != 0 || rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, memory_size) != 0 || rt_write_cstr(fd, "\n\nLive sections:\n") != 0) {
+        (void)platform_close(fd);
+        set_link_error(error_out, error_size, "failed to write map file", path);
+        return -1;
+    }
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section->live) {
+                continue;
+            }
+            if (linker_write_hex64(fd, LINKER_BASE_VADDR + (section->folded ? objects[section->fold_object_index].sections[section->fold_section_index].out_offset : section->out_offset)) != 0 || rt_write_cstr(fd, " ") != 0 ||
+                rt_write_uint(fd, section->size) != 0 || rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, section_name(&objects[i], section->index)) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, " why=") != 0 ||
+                rt_write_cstr(fd, section->why[0] != '\0' ? section->why : "live") != 0 ||
+                (section->folded && (rt_write_cstr(fd, " folded-to=") != 0 || rt_write_cstr(fd, objects[section->fold_object_index].path) != 0 || rt_write_cstr(fd, ":") != 0 || rt_write_cstr(fd, section_name(&objects[section->fold_object_index], objects[section->fold_object_index].sections[section->fold_section_index].index)) != 0)) ||
+                rt_write_cstr(fd, "\n") != 0) {
+                (void)platform_close(fd);
+                set_link_error(error_out, error_size, "failed to write map file", path);
+                return -1;
+            }
+        }
+    }
+    if (platform_close(fd) != 0) {
+        set_link_error(error_out, error_size, "failed to close map file", path);
+        return -1;
+    }
+    return 0;
+}
+
+static int write_why_live(int fd, const LinkObject *objects, size_t object_count, const char *query) {
+    int found = 0;
+    size_t i;
+
+    if (query == 0 || query[0] == '\0') {
+        return 0;
+    }
+    if (rt_write_cstr(fd, "why-live ") != 0 || rt_write_cstr(fd, query) != 0 || rt_write_cstr(fd, "\n") != 0) {
+        return -1;
+    }
+    for (i = 0; i < object_count; ++i) {
+        uint32_t symbol_count = (uint32_t)(objects[i].symtab_size / objects[i].symtab_entsize);
+        uint32_t symbol_index;
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+
+            if (section->live && rt_strcmp(section_name(&objects[i], section->index), query) == 0) {
+                found = 1;
+                if (rt_write_cstr(fd, "section ") != 0 || rt_write_cstr(fd, query) != 0 || rt_write_cstr(fd, " in ") != 0 ||
+                    rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, " because ") != 0 || rt_write_cstr(fd, section->why) != 0 || rt_write_cstr(fd, "\n") != 0) {
+                    return -1;
+                }
+            }
+        }
+        for (symbol_index = 0; symbol_index < symbol_count; ++symbol_index) {
+            const unsigned char *symbol = symbol_entry(&objects[i], symbol_index);
+            const LinkSection *section;
+            uint16_t shndx;
+
+            if (symbol == 0 || rt_strcmp(symbol_name(&objects[i], symbol), query) != 0) {
+                continue;
+            }
+            shndx = read_u16(symbol + 6);
+            section = shndx != SHN_ABS && shndx != SHN_UNDEF ? find_link_section_const(&objects[i], shndx) : 0;
+            if (section != 0 && section->live) {
+                found = 1;
+                if (rt_write_cstr(fd, "symbol ") != 0 || rt_write_cstr(fd, query) != 0 || rt_write_cstr(fd, " in ") != 0 ||
+                    rt_write_cstr(fd, section_name(&objects[i], section->index)) != 0 || rt_write_cstr(fd, " from ") != 0 ||
+                    rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, " because ") != 0 || rt_write_cstr(fd, section->why) != 0 || rt_write_cstr(fd, "\n") != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    if (!found && rt_write_cstr(fd, "not live\n") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
+                                              size_t object_count,
+                                              const char *output_path,
+                                              const CompilerLinkerOptions *options,
+                                              char *error_out,
+                                              size_t error_size) {
     uint64_t text_size;
     uint64_t data_size;
     uint64_t bss_size;
@@ -1015,12 +1666,17 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     uint64_t file_size;
     uint64_t memory_size;
     int has_writable_segment;
+    uint64_t header_size;
+    uint64_t padding_size;
     uint64_t entry;
     int start_index;
     int fd;
     size_t loaded_object_count = 0U;
     size_t i;
     unsigned char *output;
+    int tiny = options != 0 && options->tiny != 0;
+    int gc_sections = options != 0 && options->gc_sections != 0;
+    const char *entry_symbol = linker_entry_symbol(options);
 
     if (error_out != 0 && error_size > 0U) {
         error_out[0] = '\0';
@@ -1053,15 +1709,26 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     if (collect_defined_symbol_owners(linker_objects, object_count, error_out, error_size) != 0) {
         return -1;
     }
-    if (mark_live_objects(linker_objects, object_count, error_out, error_size) != 0) {
-        return -1;
+    if (gc_sections) {
+        if (mark_live_sections(linker_objects, object_count, entry_symbol, error_out, error_size) != 0) {
+            return -1;
+        }
+    } else {
+        if (mark_live_objects(linker_objects, object_count, entry_symbol, error_out, error_size) != 0) {
+            return -1;
+        }
+        mark_all_sections_in_live_objects(linker_objects, object_count);
+    }
+    if (options != 0 && options->icf_safe) {
+        fold_identical_sections(linker_objects, object_count);
     }
 
     layout_objects(linker_objects, object_count, &text_size, &data_size, &bss_size);
     has_writable_segment = data_size != 0 || bss_size != 0;
-    text_file_offset = align_u64(ELF64_EHDR_SIZE + ((uint64_t)(has_writable_segment ? 2U : 1U) * ELF64_PHDR_SIZE), 16U);
+    header_size = ELF64_EHDR_SIZE + ((uint64_t)((tiny || !has_writable_segment) ? 1U : 2U) * ELF64_PHDR_SIZE);
+    text_file_offset = align_u64(header_size, 16U);
     if (has_writable_segment) {
-        data_file_offset = align_u64(text_file_offset + text_size, 0x1000U);
+        data_file_offset = align_u64(text_file_offset + text_size, tiny ? 16U : 0x1000U);
         bss_vaddr_offset = align_u64(data_file_offset + data_size, 8U);
         file_size = data_file_offset + data_size;
         memory_size = bss_vaddr_offset + bss_size;
@@ -1075,18 +1742,32 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         set_link_error(error_out, error_size, "linked executable exceeds native linker capacity", output_path);
         return -1;
     }
+    padding_size = text_file_offset - header_size;
+    if (has_writable_segment && data_file_offset > text_file_offset + text_size) {
+        padding_size += data_file_offset - (text_file_offset + text_size);
+    }
     output = (unsigned char *)rt_malloc((size_t)file_size);
     if (output == 0) {
         set_link_error(error_out, error_size, "failed to allocate linker output", output_path);
         return -1;
     }
     for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
         if (!linker_objects[i].live) {
             continue;
         }
-        linker_objects[i].out_text_offset += text_file_offset;
-        linker_objects[i].out_data_offset += data_file_offset;
-        linker_objects[i].out_bss_offset += bss_vaddr_offset;
+        for (section_index = 0; section_index < linker_objects[i].section_count; ++section_index) {
+            LinkSection *section = &linker_objects[i].sections[section_index];
+
+            if (section->kind == LINK_SECTION_TEXT) {
+                section->out_offset += text_file_offset;
+            } else if (section->kind == LINK_SECTION_DATA) {
+                section->out_offset += data_file_offset;
+            } else if (section->kind == LINK_SECTION_BSS) {
+                section->out_offset += bss_vaddr_offset;
+            }
+        }
     }
 
     rt_memset(output, 0, (size_t)file_size);
@@ -1095,9 +1776,9 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         rt_free(output);
         return -1;
     }
-    start_index = find_global("_start");
+    start_index = find_global(entry_symbol);
     if (start_index < 0) {
-        set_link_error(error_out, error_size, "undefined entry symbol", "_start");
+        set_link_error(error_out, error_size, "undefined entry symbol", entry_symbol);
         rt_free(output);
         return -1;
     }
@@ -1106,7 +1787,8 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
         rt_free(output);
         return -1;
     }
-    write_elf_header(output, entry, text_file_offset, text_size, data_file_offset, data_size, bss_size);
+    file_size = trim_trailing_zero_bytes(output, file_size, (!tiny && has_writable_segment) ? data_file_offset : header_size);
+    write_elf_header(output, entry, text_file_offset, text_size, data_file_offset, data_size, bss_size, file_size, memory_size, tiny);
 
     fd = platform_open_write(output_path, 0755U);
     if (fd < 0) {
@@ -1127,5 +1809,51 @@ int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t ob
     }
     rt_free(output);
     (void)platform_change_mode(output_path, 0755U);
+    if (options != 0 && options->map_path != 0 && options->map_path[0] != '\0') {
+        if (write_link_map(options->map_path,
+                           linker_objects,
+                           object_count,
+                           output_path,
+                           entry_symbol,
+                           entry,
+                           text_size,
+                           data_size,
+                           bss_size,
+                           file_size,
+                           memory_size,
+                           tiny,
+                           gc_sections,
+                           error_out,
+                           error_size) != 0) {
+            return -1;
+        }
+    }
+    if (options != 0 && options->stats) {
+        if (write_link_stats(1,
+                             linker_objects,
+                             object_count,
+                             text_size,
+                             data_size,
+                             bss_size,
+                             file_size,
+                             memory_size,
+                             header_size,
+                             padding_size,
+                             tiny,
+                             gc_sections) != 0) {
+            set_link_error(error_out, error_size, "failed to write linker stats", output_path);
+            return -1;
+        }
+    }
+    if (options != 0 && options->why_live != 0 && options->why_live[0] != '\0') {
+        if (write_why_live(1, linker_objects, object_count, options->why_live) != 0) {
+            set_link_error(error_out, error_size, "failed to write why-live report", options->why_live);
+            return -1;
+        }
+    }
     return 0;
+}
+
+int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t object_count, const char *output_path, char *error_out, size_t error_size) {
+    return compiler_link_elf64_x86_64_static_options(object_paths, object_count, output_path, 0, error_out, error_size);
 }
