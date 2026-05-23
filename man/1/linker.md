@@ -168,6 +168,10 @@ almost all linker wall-clock overhead for 185 tools.
   symbol values, relocation offsets, and layout-dependent references.
 - Archives are parsed by this linker directly; archive symbol indexes are not
   required.
+- LTO bitcode inputs (LLVM IR or GCC LTO IR) are not accepted directly. For
+  GCC LTO, use `build-freestanding-newlinker.sh` with `NEWLINKER_LTO=1`; it
+  runs a GCC prelink step (`gcc -flto -flinker-output=nolto-rel -r`) that
+  produces a native ELF relocatable before handing off to this linker.
 
 ## JSON Output
 

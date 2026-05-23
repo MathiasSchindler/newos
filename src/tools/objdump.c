@@ -391,7 +391,13 @@ static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *se
     unsigned short i;
     unsigned char raw[64];
 
-    if (header->shnum > OBJDUMP_MAX_SECTIONS || header->shentsize < 64U) {
+    if (header->shnum > OBJDUMP_MAX_SECTIONS) {
+        return -1;
+    }
+    if (header->shnum == 0) {
+        return 0;
+    }
+    if (header->shentsize < 64U) {
         return -1;
     }
 

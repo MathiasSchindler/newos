@@ -5,7 +5,7 @@
 #include "source.h"
 
 #define LINKER_MAX_OBJECTS 320
-#define LINKER_MAX_OBJECT_SIZE (1024U * 1024U)
+#define LINKER_MAX_OBJECT_SIZE (16U * 1024U * 1024U)
 #define LINKER_MAX_ARCHIVE_SIZE (64U * 1024U * 1024U)
 #define LINKER_MAX_OUTPUT (64U * 1024U * 1024U)
 #define LINKER_MAX_MEMORY (512U * 1024U * 1024U)
@@ -132,10 +132,12 @@ typedef struct {
     uint64_t rela_data_offset;
     uint64_t rela_data_size;
     uint64_t rela_data_entsize;
-    LinkSection sections[LINKER_MAX_SECTIONS];
+    LinkSection *sections;
     size_t section_count;
-    LinkRelaSection rela_sections[LINKER_MAX_RELA_SECTIONS];
+    size_t section_capacity;
+    LinkRelaSection *rela_sections;
     size_t rela_section_count;
+    size_t rela_section_capacity;
     uint64_t out_text_offset;
     uint64_t out_data_offset;
     uint64_t out_bss_offset;
@@ -390,6 +392,38 @@ static void copy_ar_string_table_name(char *buffer, size_t buffer_size, const un
     buffer[length] = '\0';
 }
 
+static int grow_sections(LinkObject *object) {
+    size_t new_cap;
+    LinkSection *new_sections;
+    if (object->section_count < object->section_capacity) {
+        return 0;
+    }
+    new_cap = object->section_capacity == 0U ? 32U : object->section_capacity * 2U;
+    new_sections = (LinkSection *)rt_realloc(object->sections, new_cap * sizeof(LinkSection));
+    if (new_sections == 0) {
+        return -1;
+    }
+    object->sections = new_sections;
+    object->section_capacity = new_cap;
+    return 0;
+}
+
+static int grow_rela_sections(LinkObject *object) {
+    size_t new_cap;
+    LinkRelaSection *new_rela;
+    if (object->rela_section_count < object->rela_section_capacity) {
+        return 0;
+    }
+    new_cap = object->rela_section_capacity == 0U ? 32U : object->rela_section_capacity * 2U;
+    new_rela = (LinkRelaSection *)rt_realloc(object->rela_sections, new_cap * sizeof(LinkRelaSection));
+    if (new_rela == 0) {
+        return -1;
+    }
+    object->rela_sections = new_rela;
+    object->rela_section_capacity = new_cap;
+    return 0;
+}
+
 static void remember_section(LinkObject *object, uint16_t index) {
     const unsigned char *section = section_header(object, index);
     uint32_t type;
@@ -400,8 +434,12 @@ static void remember_section(LinkObject *object, uint16_t index) {
     }
     type = read_u32(section + 4);
     flags = read_u64(section + 8);
-    if ((flags & SHF_ALLOC) != 0ULL && (type == SHT_PROGBITS || type == SHT_NOBITS) && object->section_count < LINKER_MAX_SECTIONS) {
-        LinkSection *link_section = &object->sections[object->section_count++];
+    if ((flags & SHF_ALLOC) != 0ULL && (type == SHT_PROGBITS || type == SHT_NOBITS)) {
+        LinkSection *link_section;
+        if (grow_sections(object) != 0) {
+            return;
+        }
+        link_section = &object->sections[object->section_count++];
 
         link_section->index = index;
         link_section->type = type;
@@ -426,8 +464,12 @@ static void remember_section(LinkObject *object, uint16_t index) {
             link_section->kind = LINK_SECTION_TEXT;
         }
     }
-    if (type == SHT_RELA && object->rela_section_count < LINKER_MAX_RELA_SECTIONS) {
-        LinkRelaSection *rela = &object->rela_sections[object->rela_section_count++];
+    if (type == SHT_RELA) {
+        LinkRelaSection *rela;
+        if (grow_rela_sections(object) != 0) {
+            return;
+        }
+        rela = &object->rela_sections[object->rela_section_count++];
 
         rela->index = index;
         rela->target_index = (uint16_t)read_u32(section + 44);
@@ -2418,11 +2460,19 @@ static int write_section_label(int fd, const LinkObject *objects, size_t object_
 
 static int write_live_chain(int fd, const LinkObject *objects, size_t object_count, size_t object_index, size_t section_index) {
     size_t depth;
+    size_t max_depth = 0;
+    size_t di;
 
+    for (di = 0; di < object_count; ++di) {
+        max_depth += objects[di].section_count;
+    }
+    if (max_depth == 0) {
+        max_depth = 1;
+    }
     if (rt_write_cstr(fd, "chain: ") != 0) {
         return -1;
     }
-    for (depth = 0; depth < object_count * LINKER_MAX_SECTIONS; ++depth) {
+    for (depth = 0; depth < max_depth; ++depth) {
         const LinkSection *section;
 
         if (object_index == LINKER_NO_INDEX || section_index == LINKER_NO_INDEX || object_index >= object_count || section_index >= objects[object_index].section_count) {
