@@ -46,6 +46,7 @@
     X("src/compiler/linker_layout.c") \
     X("src/compiler/linker_report.c") \
     X("src/compiler/linker_lto.c") \
+    X("src/compiler/linker_macho.c") \
     X("src/compiler/object_writer.c") \
     X("src/compiler/parser.c") \
     X("src/compiler/parser_types.c") \

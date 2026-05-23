@@ -17,14 +17,171 @@ if [ ! -x "$LINKER" ]; then
 fi
 
 linker_macho_status=0
-"$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/linker_macho.out" "$WORK_DIR/missing.o" > "$WORK_DIR/linker_macho.stdout" 2> "$WORK_DIR/linker_macho.stderr" || linker_macho_status=$?
-assert_text_equals "$linker_macho_status" '1' "linker Mach-O target should be a named but unimplemented backend"
-assert_file_contains "$WORK_DIR/linker_macho.stderr" 'Mach-O arm64 linker backend is not implemented yet' "linker Mach-O target did not report the backend boundary"
+"$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/linker_macho.out" "$WORK_DIR/missing-a.o" "$WORK_DIR/missing-b.o" > "$WORK_DIR/linker_macho.stdout" 2> "$WORK_DIR/linker_macho.stderr" || linker_macho_status=$?
+assert_text_equals "$linker_macho_status" '1' "linker Mach-O target should enforce the current single-object boundary"
+assert_file_contains "$WORK_DIR/linker_macho.stderr" 'Mach-O arm64 linker currently accepts exactly one relocatable object' "linker Mach-O target did not report the single-object boundary"
+
+if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ] && command -v clang >/dev/null 2>&1; then
+    cat > "$WORK_DIR/macho_start.s" <<'ASM'
+.globl _start
+.p2align 2
+_start:
+    mov x0, #0
+    mov x16, #1
+    svc #0x80
+ASM
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_start.s" -o "$WORK_DIR/macho_start.o" > "$WORK_DIR/macho_start_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_start" "$WORK_DIR/macho_start.o" > "$WORK_DIR/linker_macho_start.stdout" 2> "$WORK_DIR/linker_macho_start.stderr"
+        od -An -tx1 -N4 "$WORK_DIR/macho_start" | tr -d ' \n' > "$WORK_DIR/macho_start.magic"
+        assert_file_contains "$WORK_DIR/macho_start.magic" '^cffaedfe$' "Mach-O backend did not write a 64-bit Mach-O executable"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_start" > "$WORK_DIR/macho_start.otool"
+            assert_file_contains "$WORK_DIR/macho_start.otool" 'LC_MAIN' "Mach-O backend did not write LC_MAIN"
+            assert_file_contains "$WORK_DIR/macho_start.otool" 'LC_CODE_SIGNATURE' "Mach-O backend did not write LC_CODE_SIGNATURE"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_start" > "$WORK_DIR/macho_start_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_start"
+        fi
+    else
+        echo "skipping Mach-O executable test; clang could not emit arm64 Mach-O assembly"
+    fi
+
+    cat > "$WORK_DIR/macho_external.s" <<'ASM'
+.globl _start
+.p2align 2
+_start:
+    bl _missing_symbol
+    mov x0, #0
+    mov x16, #1
+    svc #0x80
+ASM
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_external.s" -o "$WORK_DIR/macho_external.o" > "$WORK_DIR/macho_external_compile.out" 2>&1; then
+        linker_macho_external_status=0
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_external" "$WORK_DIR/macho_external.o" > "$WORK_DIR/linker_macho_external.stdout" 2> "$WORK_DIR/linker_macho_external.stderr" || linker_macho_external_status=$?
+        assert_text_equals "$linker_macho_external_status" '1' "Mach-O backend should reject undefined branch targets"
+        assert_file_contains "$WORK_DIR/linker_macho_external.stderr" 'undefined Mach-O arm64 symbol' "Mach-O backend did not diagnose undefined branch targets"
+    fi
+
+    cat > "$WORK_DIR/macho_call_local.s" <<'ASM'
+.globl _start
+.p2align 2
+_start:
+    bl helper
+    mov x16, #1
+    svc #0x80
+helper:
+    mov x0, #0
+    ret
+ASM
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_call_local.s" -o "$WORK_DIR/macho_call_local.o" > "$WORK_DIR/macho_call_local_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_call_local" "$WORK_DIR/macho_call_local.o" > "$WORK_DIR/linker_macho_call_local.stdout" 2> "$WORK_DIR/linker_macho_call_local.stderr"
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_call_local" > "$WORK_DIR/macho_call_local_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_call_local"
+        fi
+    fi
+
+    cat > "$WORK_DIR/macho_data_ref.s" <<'ASM'
+.data
+.p2align 3
+value:
+    .quad 7
+.text
+.globl _start
+.p2align 2
+_start:
+    adrp x1, value@PAGE
+    add x1, x1, value@PAGEOFF
+    mov x0, #0
+    mov x16, #1
+    svc #0x80
+ASM
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_data_ref.s" -o "$WORK_DIR/macho_data_ref.o" > "$WORK_DIR/macho_data_ref_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_data_ref" "$WORK_DIR/macho_data_ref.o" > "$WORK_DIR/linker_macho_data_ref.stdout" 2> "$WORK_DIR/linker_macho_data_ref.stderr"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_data_ref" > "$WORK_DIR/macho_data_ref.otool"
+            assert_file_contains "$WORK_DIR/macho_data_ref.otool" '__DATA' "Mach-O backend did not write a __DATA segment for data references"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_data_ref" > "$WORK_DIR/macho_data_ref_codesign.out" 2>&1
+        fi
+    fi
+
+    cat > "$WORK_DIR/macho_cstring_ref.s" <<'ASM'
+.cstring
+Lstr:
+    .asciz "hello"
+.text
+.globl _start
+.p2align 2
+_start:
+    adrp x1, Lstr@PAGE
+    add x1, x1, Lstr@PAGEOFF
+    mov x0, #0
+    mov x16, #1
+    svc #0x80
+ASM
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_cstring_ref.s" -o "$WORK_DIR/macho_cstring_ref.o" > "$WORK_DIR/macho_cstring_ref_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_cstring_ref" "$WORK_DIR/macho_cstring_ref.o" > "$WORK_DIR/linker_macho_cstring_ref.stdout" 2> "$WORK_DIR/linker_macho_cstring_ref.stderr"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_cstring_ref" > "$WORK_DIR/macho_cstring_ref.otool"
+            assert_file_contains "$WORK_DIR/macho_cstring_ref.otool" '__cstring' "Mach-O backend did not preserve __TEXT,__cstring"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_cstring_ref" > "$WORK_DIR/macho_cstring_ref_codesign.out" 2>&1
+        fi
+    fi
+
+    cat > "$WORK_DIR/macho_arm64.c" <<'C'
+int linker_macho_probe(void) { return 42; }
+C
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_arm64.c" -o "$WORK_DIR/macho_arm64.o" > "$WORK_DIR/macho_arm64_compile.out" 2>&1; then
+        linker_macho_object_status=0
+        "$LINKER" -m x86_64-linux -o "$WORK_DIR/macho_arm64.bin" "$WORK_DIR/macho_arm64.o" > "$WORK_DIR/linker_macho_object.stdout" 2> "$WORK_DIR/linker_macho_object.stderr" || linker_macho_object_status=$?
+        assert_text_equals "$linker_macho_object_status" '1' "linker should reject Mach-O arm64 objects with the explicit Mach-O object boundary"
+        assert_file_contains "$WORK_DIR/linker_macho_object.stderr" 'Mach-O arm64 relocatable object is recognized, but Mach-O linking is not implemented yet' "linker did not recognize a Mach-O arm64 relocatable before rejecting it"
+    else
+        echo "skipping Mach-O object recognizer test; clang could not emit arm64 Mach-O"
+    fi
+fi
 
 printf 'BC\300\336' > "$WORK_DIR/clang_lto.bc"
 linker_llvm_lto_status=0
 "$LINKER" -m x86_64-linux -o "$WORK_DIR/clang_lto.bin" "$WORK_DIR/clang_lto.bc" > "$WORK_DIR/linker_llvm_lto.stdout" 2> "$WORK_DIR/linker_llvm_lto.stderr" || linker_llvm_lto_status=$?
 assert_text_equals "$linker_llvm_lto_status" '1' "linker should reject LLVM bitcode without an LTO prelink compiler"
 assert_file_contains "$WORK_DIR/linker_llvm_lto.stderr" 'LLVM/Clang LTO bitcode object; add --lto-cc=clang' "linker did not diagnose LLVM/Clang LTO bitcode distinctly"
+
+CLANG_LTO_CC=${NEWOS_CLANG_LTO_CC:-clang}
+if command -v "$CLANG_LTO_CC" >/dev/null 2>&1; then
+    cat > "$WORK_DIR/clang_lto_start.c" <<'C'
+__attribute__((noreturn)) void _start(void) {
+    __asm__ volatile(
+        "mov $60, %%rax\n"
+        "xor %%rdi, %%rdi\n"
+        "syscall\n"
+        :
+        :
+        : "rax", "rdi", "memory");
+    __builtin_unreachable();
+}
+C
+    if "$CLANG_LTO_CC" -target x86_64-unknown-linux-elf -flto -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie \
+        -Oz -c "$WORK_DIR/clang_lto_start.c" -o "$WORK_DIR/clang_lto_start.o" > "$WORK_DIR/clang_lto_compile.out" 2>&1 && \
+       "$CLANG_LTO_CC" -target x86_64-unknown-linux-elf -flto -fuse-ld=lld -r -nostdlib \
+        -Wl,--gc-sections -Wl,-u,_start "$WORK_DIR/clang_lto_start.o" -o "$WORK_DIR/clang_lto_probe.o" > "$WORK_DIR/clang_lto_prelink_probe.out" 2>&1; then
+        "$LINKER" --tiny --gc-sections --lto-cc="$CLANG_LTO_CC" -m x86_64-linux \
+            -o "$WORK_DIR/clang_lto_start.bin" "$WORK_DIR/clang_lto_start.o" > "$WORK_DIR/linker_clang_lto.stdout" 2> "$WORK_DIR/linker_clang_lto.stderr"
+        od -An -tx1 -N4 "$WORK_DIR/clang_lto_start.bin" | tr -d ' \n' > "$WORK_DIR/clang_lto_start.magic"
+        assert_file_contains "$WORK_DIR/clang_lto_start.magic" '^7f454c46$' "Clang LTO prelink did not produce an ELF executable"
+    else
+        echo "skipping Clang LTO prelink test; $CLANG_LTO_CC cannot emit x86_64 ELF LTO with lld"
+    fi
+fi
 
 echo "LINKER_CLI_OK"

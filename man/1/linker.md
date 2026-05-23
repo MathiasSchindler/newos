@@ -21,18 +21,18 @@ The implemented target is intentionally narrow. Inputs must define `_start` or
 provide an archive member that defines it. The output is an `ET_EXEC` ELF64 file
 for Linux x86-64.
 
-The command-line parser now has an explicit linker target boundary. The supported
-implemented target spellings select the existing ELF64 x86-64 backend. Mach-O
-arm64 spellings are recognized as a named target, but the backend deliberately
-reports that Mach-O arm64 linking is not implemented yet. This keeps future
-Darwin work out of the ELF-specific path instead of hiding it behind aliases.
+The command-line parser has an explicit linker target boundary. The supported
+ELF spellings select the existing ELF64 x86-64 backend. Mach-O arm64 spellings
+select an early Darwin backend that can turn one small arm64 object into an
+ad-hoc signed Mach-O executable. This keeps Darwin work in a target-specific
+path instead of hiding it behind ELF aliases.
 
 ## OPTIONS
 
 - `-o OUTPUT`, `--output=OUTPUT` - write the executable to OUTPUT instead of `a.out`
 - `-m elf_x86_64` - select the ELF x86-64 emulation
 - `--target=elf64-x86_64`, `--target=x86_64-linux`, `--target=linux-x86_64` - select the implemented ELF64 x86-64 target
-- `--target=mach-o-arm64`, `--target=macho64-aarch64`, `--target=macos-aarch64` - select the named Mach-O arm64 target; currently reports an unimplemented backend
+- `--target=mach-o-arm64`, `--target=macho64-aarch64`, `--target=macos-aarch64` - select the early Mach-O arm64 target
 - `-e SYMBOL`, `--entry=SYMBOL` - use SYMBOL as the entry symbol instead of `_start`
 - `-static`, `--static` - accepted for compatibility; static linking is always used
 - `@FILE` - read additional whitespace-separated arguments from FILE; single and double quotes are honored
@@ -90,9 +90,36 @@ raw bitcode magic and Mach-O `__LLVM,__bitcode` markers; the current native
 prelink implementation is for the ELF64 x86-64 backend and expects a clang/lld
 toolchain capable of `-target x86_64-unknown-linux-elf -flto -r`.
 
+`make test-linker-cli` includes an optional Clang LTO fixture. It compiles a tiny
+raw LLVM bitcode object, probes whether the selected clang can prelink x86-64 ELF
+with lld, and then asks this linker to produce an ELF executable via
+`--lto-cc=clang`. The fixture skips cleanly when that cross-LTO toolchain is not
+available.
+
 Mach-O arm64 LTO remains delegated to Apple clang and Apple ld in the macOS
-freestanding-ish build. A project-owned Mach-O arm64 linker backend is a future
-target-specific implementation, not an extension of the ELF writer.
+freestanding-ish build. The project-owned Mach-O backend is now only a seed: it
+parses Mach-O arm64 object load commands, sections, relocations, and symbol
+tables, then writes a runnable executable when the object fits the currently
+implemented section and relocation subset. LLVM/Clang bitcode carried in Mach-O
+objects is still detected as LTO input but not lowered by this backend.
+
+## Mach-O arm64 Subset
+
+The Mach-O backend currently accepts exactly one arm64 relocatable object. The
+object must contain `_start` or the symbol named with `-e` in `__TEXT,__text`,
+and may contain `__TEXT,__cstring` and `__DATA,__data` payload sections. The
+relocation pass supports the arm64 `BRANCH26`, `PAGE21`, `PAGEOFF12`, and simple
+absolute `UNSIGNED` records needed by local calls and `adrp`/`add` references to
+defined symbols in the same object. The writer emits `__PAGEZERO`, `__TEXT`,
+optional `__DATA`, `__LINKEDIT`, `LC_LOAD_DYLINKER`, `LC_BUILD_VERSION`,
+`LC_MAIN`, and `LC_CODE_SIGNATURE`. Output uses the same 16 KiB page/signature
+granularity as the macOS prototype container writer and includes an in-tree
+ad-hoc SHA-256 CodeDirectory signature.
+
+This is enough for tiny syscall-only arm64 start objects with local calls,
+literal strings, and initialized data references. General Darwin linking still
+needs archive resolution, multi-object symbol binding, BSS/zero-fill layout,
+more section classes, and the rest of the arm64 relocation vocabulary.
 
 Use `make newlinker-lto-size-report` to rebuild both no-LTO and GCC-LTO
 freestanding trees and print total size deltas, largest regressions, and largest
@@ -144,6 +171,11 @@ file-backed Mach-O section bytes for representative macOS freestanding-ish tools
 Use the file-section byte column when judging linker or LTO changes on macOS,
 because final Mach-O file sizes can move in coarse 16 KiB-ish steps after page,
 segment, and signature layout effects are applied.
+
+Save a report and compare later with `make macos-freestanding-size-compare
+BASELINE=previous.tsv`. The compare output adds `delta_file_bytes` and
+`delta_file_section_bytes`; the latter is the main pre-raster signal for macOS
+size work.
 
 `make test-newlinker-optimizations` runs small standalone linker fixtures for
 relocation-aware ICF, mergeable string pooling, and reporting output. The ICF
@@ -216,9 +248,10 @@ almost all linker wall-clock overhead for 185 tools.
   pass `--lto-cc=clang` and provide a clang/lld toolchain that can emit a native
   relocatable. Mach-O arm64 LTO is still handled by Apple clang/ld outside this
   linker.
-- The Mach-O arm64 target is parsed as a first-class target name, but the actual
-  Mach-O object reader, arm64 relocation engine, layout writer, code-signature
-  handling, and output writer are not implemented yet.
+- The Mach-O arm64 target is first-class but intentionally tiny: one object,
+  no archives, no multi-object undefined symbol resolution, no BSS/zero-fill
+  layout, and only the initial `BRANCH26`/`PAGE21`/`PAGEOFF12`/simple
+  `UNSIGNED` arm64 relocation subset.
 
 ## JSON Output
 

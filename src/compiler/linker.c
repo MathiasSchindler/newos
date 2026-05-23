@@ -306,8 +306,7 @@ int compiler_link_static_options(const char *const *object_paths,
         return link_elf64_x86_64_static_options(object_paths, object_count, output_path, options, error_out, error_size);
     }
     if (target == COMPILER_LINKER_TARGET_MACHO64_AARCH64) {
-        set_link_error(error_out, error_size, "Mach-O arm64 linker backend is not implemented yet", output_path);
-        return -1;
+        return compiler_link_macho64_aarch64_static_options(object_paths, object_count, output_path, options, error_out, error_size);
     }
     set_link_error(error_out, error_size, "unsupported linker target", compiler_linker_target_name(target));
     return -1;

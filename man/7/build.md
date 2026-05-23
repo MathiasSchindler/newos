@@ -87,7 +87,16 @@ modern macOS requires for runnable executables.
   as final file bytes. `make macos-freestanding-size-report` reports exact file
   bytes and summed file-backed Mach-O section bytes for representative tools, so
   linker or LTO changes can be judged before 16 KiB-ish Mach-O layout/signature
-  steps hide smaller gains or regressions
+  steps hide smaller gains or regressions. Save a report and rerun with
+  `make macos-freestanding-size-compare BASELINE=previous.tsv` to get exact
+  file-byte and file-section-byte deltas
+- the in-tree `linker --target=mach-o-arm64` backend is separate from this
+  Apple-clang/ld build path. It currently exists as a focused bring-up target
+  for one small arm64 object with `__TEXT,__text`, optional `__TEXT,__cstring`
+  and `__DATA,__data`, and the first local arm64 relocation subset. It writes an
+  ad-hoc signed Mach-O executable. `make test-linker-cli` builds and verifies
+  tiny executable, local-call, data-reference, and cstring-reference fixtures on
+  Darwin hosts while also pinning unsupported undefined-symbol behavior.
 - keeps privileged or host-mutating operations conservative on Darwin when the
   project does not yet have a validated macOS implementation, so some admin
   front-ends build and report unsupported operations instead of changing the host

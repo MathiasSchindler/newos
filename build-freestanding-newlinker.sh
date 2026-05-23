@@ -225,12 +225,14 @@ for tool in $TOOLS; do
       ;;
     ncc)
       for src in "${COMPILER_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      append_unique_source tool_sources src/shared/crypto/sha256.c
       ;;
     linker)
       for src in src/compiler/linker.c src/compiler/linker_util.c src/compiler/linker_elf.c \
                  src/compiler/linker_object.c src/compiler/linker_symbols.c src/compiler/linker_gc.c \
                  src/compiler/linker_merge.c src/compiler/linker_icf.c src/compiler/linker_reloc.c \
-                 src/compiler/linker_layout.c src/compiler/linker_report.c src/compiler/linker_lto.c; do
+                 src/compiler/linker_layout.c src/compiler/linker_report.c src/compiler/linker_lto.c \
+                 src/compiler/linker_macho.c src/shared/crypto/sha256.c; do
         append_unique_source tool_sources "$src"
       done
       ;;

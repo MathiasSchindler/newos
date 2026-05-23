@@ -1,5 +1,121 @@
 #include "linker_internal.h"
 
+#define MACHO64_MAGIC          0xfeedfacfU
+#define MACHO_CPU_TYPE_ARM64   0x0100000cU
+#define MACHO_FILETYPE_OBJECT  1U
+#define MACHO_LC_SEGMENT_64    0x19U
+#define MACHO_LC_SYMTAB        0x2U
+#define MACHO_HEADER64_SIZE    32U
+#define MACHO_SECTION64_SIZE   80U
+#define MACHO_NLIST64_SIZE     16U
+#define MACHO_RELOC_SIZE       8U
+
+static int looks_like_macho64_object(const unsigned char *file, size_t size) {
+    return size >= MACHO_HEADER64_SIZE && read_u32(file) == MACHO64_MAGIC;
+}
+
+static int parse_macho64_aarch64_object_boundary(const unsigned char *file, size_t size, const char *path, char *error_out, size_t error_size) {
+    uint32_t cputype;
+    uint32_t filetype;
+    uint32_t ncmds;
+    uint32_t sizeofcmds;
+    uint64_t load_offset;
+    uint32_t command_index;
+    int saw_segment = 0;
+    int saw_symtab = 0;
+    uint64_t section_count = 0ULL;
+
+    cputype = read_u32(file + 4);
+    filetype = read_u32(file + 12);
+    ncmds = read_u32(file + 16);
+    sizeofcmds = read_u32(file + 20);
+    if (cputype != MACHO_CPU_TYPE_ARM64 || filetype != MACHO_FILETYPE_OBJECT) {
+        set_link_error(error_out, error_size, "unsupported Mach-O object variant", path);
+        return -1;
+    }
+    if (!range_valid(MACHO_HEADER64_SIZE, sizeofcmds, size)) {
+        set_link_error(error_out, error_size, "invalid Mach-O load command table", path);
+        return -1;
+    }
+    load_offset = MACHO_HEADER64_SIZE;
+    for (command_index = 0; command_index < ncmds; ++command_index) {
+        uint64_t command_offset = load_offset;
+        uint32_t command;
+        uint32_t command_size;
+
+        if (!range_valid(command_offset, 8U, size) || command_offset + 8U > MACHO_HEADER64_SIZE + sizeofcmds) {
+            set_link_error(error_out, error_size, "invalid Mach-O load command", path);
+            return -1;
+        }
+        command = read_u32(file + command_offset);
+        command_size = read_u32(file + command_offset + 4U);
+        if (command_size < 8U || !range_valid(command_offset, command_size, size) || command_offset + command_size > MACHO_HEADER64_SIZE + sizeofcmds) {
+            set_link_error(error_out, error_size, "invalid Mach-O load command", path);
+            return -1;
+        }
+        if (command == MACHO_LC_SEGMENT_64) {
+            uint32_t nsects;
+            uint64_t minimum_command_size;
+            uint32_t section_index;
+
+            if (command_size < 72U) {
+                set_link_error(error_out, error_size, "invalid Mach-O segment command", path);
+                return -1;
+            }
+            nsects = read_u32(file + command_offset + 64U);
+            minimum_command_size = 72ULL + ((uint64_t)nsects * MACHO_SECTION64_SIZE);
+            if (command_size < minimum_command_size) {
+                set_link_error(error_out, error_size, "invalid Mach-O section table", path);
+                return -1;
+            }
+            saw_segment = 1;
+            section_count += nsects;
+            for (section_index = 0; section_index < nsects; ++section_index) {
+                uint64_t section_offset = command_offset + 72ULL + ((uint64_t)section_index * MACHO_SECTION64_SIZE);
+                uint64_t section_size = read_u64(file + section_offset + 40U);
+                uint32_t file_offset = read_u32(file + section_offset + 48U);
+                uint32_t reloff = read_u32(file + section_offset + 56U);
+                uint32_t nreloc = read_u32(file + section_offset + 60U);
+
+                if (file_offset != 0U && !range_valid(file_offset, section_size, size)) {
+                    set_link_error(error_out, error_size, "Mach-O section extends past end of file", path);
+                    return -1;
+                }
+                if (nreloc != 0U && !range_valid(reloff, (uint64_t)nreloc * MACHO_RELOC_SIZE, size)) {
+                    set_link_error(error_out, error_size, "Mach-O relocation table extends past end of file", path);
+                    return -1;
+                }
+            }
+        } else if (command == MACHO_LC_SYMTAB) {
+            uint32_t symoff;
+            uint32_t nsyms;
+            uint32_t stroff;
+            uint32_t strsize;
+
+            if (command_size < 24U) {
+                set_link_error(error_out, error_size, "invalid Mach-O symbol table command", path);
+                return -1;
+            }
+            symoff = read_u32(file + command_offset + 8U);
+            nsyms = read_u32(file + command_offset + 12U);
+            stroff = read_u32(file + command_offset + 16U);
+            strsize = read_u32(file + command_offset + 20U);
+            if (!range_valid(symoff, (uint64_t)nsyms * MACHO_NLIST64_SIZE, size) || !range_valid(stroff, strsize, size)) {
+                set_link_error(error_out, error_size, "Mach-O symbol table extends past end of file", path);
+                return -1;
+            }
+            saw_symtab = 1;
+        }
+        load_offset += command_size;
+    }
+    if (load_offset != MACHO_HEADER64_SIZE + sizeofcmds || !saw_segment || !saw_symtab || section_count == 0ULL) {
+        set_link_error(error_out, error_size, "incomplete Mach-O arm64 relocatable object", path);
+        return -1;
+    }
+    set_link_error(error_out, error_size, "Mach-O arm64 relocatable object is recognized, but Mach-O linking is not implemented yet", path);
+    return -1;
+}
+
 static int grow_sections(LinkObject *object) {
     size_t new_cap;
     LinkSection *new_sections;
@@ -127,6 +243,9 @@ static int parse_loaded_object(LinkObject *object, const char *path, unsigned ch
     rt_copy_string(object->path, sizeof(object->path), path);
     object->file = file;
     object->size = size;
+    if (looks_like_macho64_object(object->file, object->size)) {
+        return parse_macho64_aarch64_object_boundary(object->file, object->size, path, error_out, error_size);
+    }
     if (object->size < ELF64_EHDR_SIZE || object->file[0] != 0x7fU || object->file[1] != 'E' || object->file[2] != 'L' || object->file[3] != 'F' ||
         object->file[4] != ELFCLASS64 || object->file[5] != ELFDATA2LSB || read_u16(object->file + 16) != ET_REL || read_u16(object->file + 18) != EM_X86_64) {
         set_link_error(error_out, error_size, "unsupported object format", path);
