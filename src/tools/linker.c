@@ -10,7 +10,7 @@
 #define LINKER_TOOL_PATH_CAPACITY 4096U
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--tiny] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--tiny] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<gcc>] object-or-archive ...");
 }
 
 static int starts_with(const char *text, const char *prefix) {
@@ -297,6 +297,19 @@ int main(int argc, char **argv) {
         }
         if (parsing_options && starts_with(arg, "--entry=")) {
             options.entry_symbol = arg + 8;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--lto-cc") == 0) {
+            if (i + 1 >= expanded_argc) {
+                tool_write_error(expanded_args[0], "missing compiler path after ", arg);
+                print_usage(expanded_args[0]);
+                return 1;
+            }
+            options.lto_cc = expanded_args[++i];
+            continue;
+        }
+        if (parsing_options && starts_with(arg, "--lto-cc=")) {
+            options.lto_cc = arg + 9;
             continue;
         }
         if (parsing_options && (rt_strcmp(arg, "--static") == 0 || rt_strcmp(arg, "-static") == 0)) {

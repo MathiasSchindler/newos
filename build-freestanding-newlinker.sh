@@ -42,15 +42,12 @@ if [[ "$NEWLINKER_LTO" != "1" ]]; then
     if [[ "$_f" == "-flto" || "$_f" == -flto=* ]]; then NEWLINKER_LTO=1; break; fi
   done
 fi
+if [[ "$NEWLINKER_LTO" == "1" && "$NEWLINKER_IS_GCC" == "1" ]]; then
+  LINKER_FLAGS_ARRAY+=("--lto-cc=$NEWLINKER_CC")
+fi
 
 rm -rf "$WORK"
 mkdir -p "$OBJROOT" "$LOGROOT"
-if [[ "$NEWLINKER_LTO" == "1" && "$NEWLINKER_IS_GCC" == "1" ]]; then
-  LTOROOT="$WORK/.lto"
-  mkdir -p "$LTOROOT"
-else
-  LTOROOT=""
-fi
 if [[ "$LINKER_REPORTS" == "1" ]]; then
   MAPROOT="$WORK/.maps"
   mkdir -p "$MAPROOT"
@@ -96,13 +93,6 @@ if [[ "$NEWLINKER_LTO" == "1" && "$NEWLINKER_IS_GCC" == "1" ]]; then
     if [[ "$_f" == "-flto" || "$_f" == -flto=* ]]; then _has_flto=1; break; fi
   done
   if [[ $_has_flto -eq 0 ]]; then CFLAGS+=(-flto); fi
-  GCC_LTO_PRELINK_FLAGS=(-flto -flinker-output=nolto-rel -r -nostdlib
-    "${NEWLINKER_TARGET_FLAGS[@]}"
-    -Oz -ffreestanding -fno-builtin -fno-stack-protector
-    -fno-unwind-tables -fno-asynchronous-unwind-tables
-    -ffunction-sections -fdata-sections
-    -fno-pic -fno-pie
-    -fmerge-all-constants)
 fi
 
 declare -A SOURCE_TO_OBJ
@@ -195,29 +185,11 @@ link_one_tool() {
   stem=$(tool_stem "$tool")
   outbin="$WORK/$tool"
   llog="$LOGROOT/link-$stem.log"
-  if [[ "$NEWLINKER_LTO" == "1" && "$NEWLINKER_IS_GCC" == "1" ]]; then
-    local lto_obj="$LTOROOT/$stem.lto.o"
-    local lto_log="$LOGROOT/lto-$stem.log"
-    if ! "$NEWLINKER_CC" "${GCC_LTO_PRELINK_FLAGS[@]}" \
-        -Wl,--gc-sections -Wl,-u,_start \
-        "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" \
-        -o "$lto_obj" >"$lto_log" 2>&1; then
-      printf 'lto-prelink\t%s\t%s\n' "$tool" "$(first_line "$lto_log")" > "$result"
-      return 0
-    fi
-    if [[ "$LINKER_REPORTS" == "1" ]]; then
-      map_path="$MAPROOT/$stem.map"
-      "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" --stats --map "$map_path" -m x86_64-linux -o "$outbin" "$lto_obj" >"$llog" 2>&1
-    else
-      "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" -m x86_64-linux -o "$outbin" "$lto_obj" >"$llog" 2>&1
-    fi
+  if [[ "$LINKER_REPORTS" == "1" ]]; then
+    map_path="$MAPROOT/$stem.map"
+    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" --stats --map "$map_path" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
   else
-    if [[ "$LINKER_REPORTS" == "1" ]]; then
-      map_path="$MAPROOT/$stem.map"
-      "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" --stats --map "$map_path" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
-    else
-      "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
-    fi
+    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
   fi
   rc=$?
   if [[ $rc -ne 0 ]]; then
@@ -341,7 +313,7 @@ done
   echo "RESULT_COUNTS compile_failures=$compile_fail link_failures=$link_fail successes=$success"
   if [[ "$NEWLINKER_LTO" == "1" ]]; then
     if [[ "$NEWLINKER_IS_GCC" == "1" ]]; then
-      echo "LTO_MODE: gcc-prelink (gcc -flto -flinker-output=nolto-rel -r)"
+      echo "LTO_MODE: gcc-lto-cc (linker auto-prelinking via --lto-cc=$NEWLINKER_CC)"
     else
       echo "LTO_MODE: lto=1 but compiler is not gcc; prelink not applied"
     fi

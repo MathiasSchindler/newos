@@ -138,6 +138,7 @@ typedef struct {
     LinkRelaSection *rela_sections;
     size_t rela_section_count;
     size_t rela_section_capacity;
+    int is_lto_ir;
     uint64_t out_text_offset;
     uint64_t out_data_offset;
     uint64_t out_bss_offset;
@@ -535,6 +536,13 @@ static int parse_loaded_object(LinkObject *object, const char *path, unsigned ch
         remember_section(object, i);
     }
     if (object->section_count == 0 || object->symtab_index == 0 || object->strtab_index == 0 || object->symtab_entsize < ELF64_SYM_SIZE) {
+        for (i = 1; i < object->shnum; ++i) {
+            if (rt_strncmp(section_name(object, i), ".gnu.lto_", 9) == 0) {
+                object->is_lto_ir = 1;
+                set_link_error(error_out, error_size, "GCC LTO IR object; add --lto-cc=gcc to enable transparent prelink", path);
+                return -1;
+            }
+        }
         set_link_error(error_out, error_size, "object is missing required linker sections", path);
         return -1;
     }
@@ -2583,6 +2591,96 @@ static int write_why_live(int fd, const LinkObject *objects, size_t object_count
 }
 #endif
 
+static int detect_lto_ir(const unsigned char *file, size_t size) {
+    uint64_t shoff;
+    uint16_t shentsize, shnum, shstrndx;
+    const unsigned char *shstr_hdr;
+    uint64_t shstr_off, shstr_size;
+    uint16_t i;
+
+    if (size < ELF64_EHDR_SIZE) return 0;
+    if (file[0] != 0x7fU || file[1] != 'E' || file[2] != 'L' || file[3] != 'F') return 0;
+    shoff = read_u64(file + 40);
+    shentsize = read_u16(file + 58);
+    shnum = read_u16(file + 60);
+    shstrndx = read_u16(file + 62);
+    if (shnum == 0 || shstrndx >= shnum || shentsize == 0) return 0;
+    if (!range_valid(shoff, (uint64_t)shnum * shentsize, size)) return 0;
+    shstr_hdr = file + shoff + (uint64_t)shstrndx * shentsize;
+    shstr_off = read_u64(shstr_hdr + 24);
+    shstr_size = read_u64(shstr_hdr + 32);
+    if (!range_valid(shstr_off, shstr_size, size) || shstr_size == 0) return 0;
+    for (i = 1; i < shnum; ++i) {
+        const unsigned char *shdr = file + shoff + (uint64_t)i * shentsize;
+        uint32_t name_off = read_u32(shdr + 0);
+        if (name_off + 9U < shstr_size) {
+            if (rt_strncmp((const char *)(file + shstr_off + name_off), ".gnu.lto_", 9) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int run_gcc_lto_prelink(const char *const *paths, size_t count, const char *entry_symbol,
+                               const char *lto_cc, const char *out_path,
+                               char *error_out, size_t error_size) {
+    char entry_keep[COMPILER_PATH_CAPACITY];
+    char **argv;
+    size_t argc = 0;
+    size_t i;
+    int pid = 0;
+    int exit_status = 0;
+
+    /* "-Wl,-u," is 8 characters */
+    rt_copy_string(entry_keep, sizeof(entry_keep), "-Wl,-u,");
+    rt_copy_string(entry_keep + 7, sizeof(entry_keep) - 7, entry_symbol);
+
+    argv = (char **)rt_malloc((20U + count + 3U) * sizeof(char *));
+    if (argv == 0) {
+        set_link_error(error_out, error_size, "out of memory for LTO prelink argv", out_path);
+        return -1;
+    }
+    argv[argc++] = (char *)lto_cc;
+    argv[argc++] = "-flto";
+    argv[argc++] = "-flinker-output=nolto-rel";
+    argv[argc++] = "-r";
+    argv[argc++] = "-nostdlib";
+    argv[argc++] = "-m64";
+    argv[argc++] = "-Oz";
+    argv[argc++] = "-ffreestanding";
+    argv[argc++] = "-fno-builtin";
+    argv[argc++] = "-fno-stack-protector";
+    argv[argc++] = "-fno-unwind-tables";
+    argv[argc++] = "-fno-asynchronous-unwind-tables";
+    argv[argc++] = "-ffunction-sections";
+    argv[argc++] = "-fdata-sections";
+    argv[argc++] = "-fno-pic";
+    argv[argc++] = "-fno-pie";
+    argv[argc++] = "-fmerge-all-constants";
+    argv[argc++] = "-Wl,--gc-sections";
+    argv[argc++] = entry_keep;
+    for (i = 0; i < count; ++i) {
+        argv[argc++] = (char *)paths[i];
+    }
+    argv[argc++] = "-o";
+    argv[argc++] = (char *)out_path;
+    argv[argc] = 0;
+
+    if (platform_spawn_process(argv, -1, -1, 0, 0, 0, &pid) != 0) {
+        rt_free(argv);
+        set_link_error(error_out, error_size, "failed to spawn GCC for LTO prelink", out_path);
+        return -1;
+    }
+    if (platform_wait_process(pid, &exit_status) != 0 || exit_status != 0) {
+        rt_free(argv);
+        set_link_error(error_out, error_size, "GCC LTO prelink failed", out_path);
+        return -1;
+    }
+    rt_free(argv);
+    return 0;
+}
+
 int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
                                               size_t object_count,
                                               const char *output_path,
@@ -2609,6 +2707,10 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     int tiny = options != 0 && options->tiny != 0;
     int gc_sections = options != 0 && options->gc_sections != 0;
     const char *entry_symbol = linker_entry_symbol(options);
+    const char *lto_cc = (options != 0 && options->lto_cc != 0 && options->lto_cc[0] != '\0') ? options->lto_cc : 0;
+    char lto_prelink_path[COMPILER_PATH_CAPACITY];
+    const char *lto_prelink_single[1];
+    int did_lto_prelink = 0;
 
     if (error_out != 0 && error_size > 0U) {
         error_out[0] = '\0';
@@ -2626,6 +2728,37 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     if (object_count == 0 || object_count > LINKER_MAX_OBJECTS) {
         set_link_error(error_out, error_size, "invalid object count for native linker", "");
         return -1;
+    }
+    if (lto_cc != 0) {
+        int lto_ir_found = 0;
+        size_t out_len;
+        for (i = 0; i < object_count && !lto_ir_found; ++i) {
+            if (!ends_with_text(object_paths[i], ".a")) {
+                unsigned char *probe = 0;
+                size_t probe_size = 0;
+                char probe_err[256];
+                if (read_file_alloc(object_paths[i], LINKER_MAX_OBJECT_SIZE, &probe, &probe_size, probe_err, sizeof(probe_err)) == 0) {
+                    lto_ir_found = detect_lto_ir(probe, probe_size);
+                    rt_free(probe);
+                }
+            }
+        }
+        if (lto_ir_found) {
+            out_len = rt_strlen(output_path);
+            if (out_len + 16U >= sizeof(lto_prelink_path)) {
+                set_link_error(error_out, error_size, "output path too long for LTO prelink temp file", output_path);
+                return -1;
+            }
+            rt_copy_string(lto_prelink_path, sizeof(lto_prelink_path), output_path);
+            rt_copy_string(lto_prelink_path + out_len, sizeof(lto_prelink_path) - out_len, ".lto-prelink.o");
+            if (run_gcc_lto_prelink(object_paths, object_count, entry_symbol, lto_cc, lto_prelink_path, error_out, error_size) != 0) {
+                return -1;
+            }
+            lto_prelink_single[0] = lto_prelink_path;
+            object_paths = lto_prelink_single;
+            object_count = 1U;
+            did_lto_prelink = 1;
+        }
     }
     for (i = 0; i < object_count; ++i) {
         if (ends_with_text(object_paths[i], ".a")) {
@@ -2809,6 +2942,9 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
         }
     }
 #endif
+    if (did_lto_prelink) {
+        platform_remove_file(lto_prelink_path);
+    }
     return 0;
 }
 

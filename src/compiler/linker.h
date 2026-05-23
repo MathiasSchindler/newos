@@ -14,6 +14,7 @@ typedef struct {
 	const char *map_path;
 	const char *why_live;
 	const char *entry_symbol;
+	const char *lto_cc;
 } CompilerLinkerOptions;
 
 int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t object_count, const char *output_path, char *error_out, size_t error_size);

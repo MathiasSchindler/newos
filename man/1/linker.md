@@ -33,6 +33,13 @@ for Linux x86-64.
 - `-lNAME` - link `libNAME.a` from the configured library search path or current directory
 - `--start-group`, `--end-group`, `--whole-archive`, `--no-whole-archive` - accepted for command-line compatibility
 - `-h`, `--help` - show usage
+- `--lto-cc=COMPILER` - enable transparent GCC LTO IR support. When any input
+  object contains `.gnu.lto_*` sections (i.e. was compiled with `gcc -flto`),
+  the linker automatically invokes COMPILER to run a GCC LTO prelink step
+  (`gcc -flto -flinker-output=nolto-rel -r -nostdlib ...`) before proceeding
+  with normal linking. The resulting native ELF relocatable replaces the original
+  LTO IR inputs. Without this option, passing GCC LTO IR objects produces a
+  diagnostic explaining the requirement.
 
 ## Size and Layout Options
 
@@ -168,10 +175,10 @@ almost all linker wall-clock overhead for 185 tools.
   symbol values, relocation offsets, and layout-dependent references.
 - Archives are parsed by this linker directly; archive symbol indexes are not
   required.
-- LTO bitcode inputs (LLVM IR or GCC LTO IR) are not accepted directly. For
-  GCC LTO, use `build-freestanding-newlinker.sh` with `NEWLINKER_LTO=1`; it
-  runs a GCC prelink step (`gcc -flto -flinker-output=nolto-rel -r`) that
-  produces a native ELF relocatable before handing off to this linker.
+- LTO bitcode inputs (LLVM IR or GCC LTO IR) are not accepted directly as native
+  ELF sections. For GCC LTO, pass `--lto-cc=gcc` to enable transparent prelink;
+  the linker detects `.gnu.lto_*` IR sections and invokes GCC automatically.
+  Clang LTO bitcode objects are not supported.
 
 ## JSON Output
 
