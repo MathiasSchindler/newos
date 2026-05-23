@@ -786,6 +786,94 @@ int platform_spawn_process(
     return platform_spawn_process_ex(argv, stdin_fd, stdout_fd, input_path, output_path, output_append, 0, 0, 0, pid_out);
 }
 
+#if defined(__x86_64__)
+typedef struct {
+    unsigned long r15, r14, r13, r12, rbp, rbx;
+    unsigned long r11, r10, r9, r8, rax, rcx, rdx, rsi, rdi;
+    unsigned long orig_rax, rip, cs, eflags, rsp, ss;
+    unsigned long fs_base, gs_base, ds, es, fs, gs;
+} LinuxUserRegs;
+
+#define LINUX_PTRACE_TRACEME 0
+#define LINUX_PTRACE_PEEKUSER 3
+#define LINUX_PTRACE_SYSCALL 24
+#define LINUX_PTRACE_GETREGS 12
+#define LINUX_PTRACE_SETOPTIONS 0x4200
+#define LINUX_PTRACE_O_TRACESYSGOOD 1
+
+static int linux_wait_for_trace(int pid, int *status_out) {
+    return linux_syscall4(LINUX_SYS_WAIT4, pid, (long)status_out, 0, 0) < 0 ? -1 : 0;
+}
+
+int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out) {
+    long pid;
+    int status = 0;
+    int in_syscall = 0;
+    PlatformSyscallEvent event;
+
+    if (argv == 0 || argv[0] == 0 || callback == 0) return -1;
+    pid = linux_syscall5(LINUX_SYS_CLONE, LINUX_SIGCHLD, 0, 0, 0, 0);
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        (void)linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_TRACEME, 0, 0, 0);
+        (void)linux_syscall2(LINUX_SYS_KILL, linux_syscall0(LINUX_SYS_GETPID), LINUX_SIGSTOP);
+        linux_reset_child_signals();
+        if (linux_path_has_slash(argv[0])) {
+            linux_try_exec(argv[0], argv);
+        } else {
+            char candidate[512];
+            const char *prefixes[] = { "./", "/bin/", "/usr/bin/" };
+            unsigned long i;
+            for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+                if (linux_join_path(prefixes[i], argv[0], candidate, sizeof(candidate)) == 0) {
+                    linux_try_exec(candidate, argv);
+                }
+            }
+        }
+        linux_child_exit(127);
+    }
+    if (linux_wait_for_trace((int)pid, &status) != 0) return -1;
+    (void)linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SETOPTIONS, pid, 0, LINUX_PTRACE_O_TRACESYSGOOD);
+    for (;;) {
+        LinuxUserRegs regs;
+        int sig;
+
+        if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SYSCALL, pid, 0, 0) < 0) return -1;
+        if (linux_wait_for_trace((int)pid, &status) != 0) return -1;
+        if ((status & 0x7f) == 0) {
+            if (exit_status_out != 0) *exit_status_out = (status >> 8) & 0xff;
+            return 0;
+        }
+        if ((status & 0xff) != 0x7f) continue;
+        sig = (status >> 8) & 0xff;
+        if (sig != (LINUX_SIGTRAP | 0x80)) {
+            continue;
+        }
+        if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_GETREGS, pid, 0, (long)&regs) < 0) return -1;
+        rt_memset(&event, 0, sizeof(event));
+        event.entering = !in_syscall;
+        event.number = (long)regs.orig_rax;
+        event.args[0] = (long)regs.rdi;
+        event.args[1] = (long)regs.rsi;
+        event.args[2] = (long)regs.rdx;
+        event.args[3] = (long)regs.r10;
+        event.args[4] = (long)regs.r8;
+        event.args[5] = (long)regs.r9;
+        event.result = (long)regs.rax;
+        if (callback(&event, user_data) != 0) return -1;
+        in_syscall = !in_syscall;
+    }
+}
+#else
+int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out) {
+    (void)argv;
+    (void)callback;
+    (void)user_data;
+    if (exit_status_out != 0) *exit_status_out = 1;
+    return -1;
+}
+#endif
+
 int platform_send_signal(int pid, int signal_number) {
     return linux_syscall2(LINUX_SYS_KILL, pid, signal_number) < 0 ? -1 : 0;
 }

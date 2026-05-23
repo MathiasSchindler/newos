@@ -890,6 +890,14 @@ static int sleep_uninterrupted(unsigned long long milliseconds) {
     return 0;
 }
 
+int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out) {
+    (void)argv;
+    (void)callback;
+    (void)user_data;
+    if (exit_status_out != 0) *exit_status_out = 1;
+    return -1;
+}
+
 int platform_wait_process(int pid, int *exit_status_out) {
     int status;
 

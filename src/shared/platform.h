@@ -292,6 +292,15 @@ typedef struct {
     unsigned long long inode;
 } PlatformSocketEntry;
 
+typedef struct {
+    int entering;
+    long number;
+    long args[6];
+    long result;
+} PlatformSyscallEvent;
+
+typedef int (*PlatformSyscallTraceCallback)(const PlatformSyscallEvent *event, void *user_data);
+
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 void *platform_allocate_pages(size_t size);
@@ -444,6 +453,7 @@ int platform_spawn_process_ex(
     const char *drop_group,
     int *pid_out
 );
+int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out);
 int platform_wait_process(int pid, int *exit_status_out);
 int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out);
 int platform_wait_process_timeout(
