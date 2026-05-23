@@ -8,6 +8,7 @@
 typedef struct {
     int show_all;
     int dirs_only;
+    int json;
     int max_depth;
     unsigned long long files;
     unsigned long long dirs;
@@ -31,7 +32,31 @@ static int compare_entries(const void *left_ptr, const void *right_ptr) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("tree", "[-a] [-d] [-L LEVEL] [PATH ...]");
+    tool_write_usage("tree", "[-a] [-d] [-L LEVEL] [--json] [PATH ...]");
+}
+
+static int write_json_entry(const char *path, const char *name, int depth, int is_dir) {
+    if (tool_json_begin_event(1, "tree", "stdout", "entry") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"path\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (rt_write_cstr(1, ",\"name\":") != 0) return -1;
+    if (tool_json_write_string(1, name) != 0) return -1;
+    if (rt_write_cstr(1, ",\"depth\":") != 0) return -1;
+    if (rt_write_uint(1, (unsigned long long)depth) != 0) return -1;
+    if (rt_write_cstr(1, ",\"type\":") != 0) return -1;
+    if (tool_json_write_string(1, is_dir ? "directory" : "file") != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
+static int write_json_summary(const TreeOptions *options) {
+    if (tool_json_begin_event(1, "tree", "stdout", "summary") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"directories\":") != 0) return -1;
+    if (rt_write_uint(1, options->dirs) != 0) return -1;
+    if (rt_write_cstr(1, ",\"files\":") != 0) return -1;
+    if (rt_write_uint(1, options->files) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
 }
 
 static void write_prefix(const TreeOptions *options, int depth) {
@@ -88,9 +113,15 @@ static int walk_tree(const char *path, TreeOptions *options, int depth) {
     for (i = 0U; i < count; ++i) {
         int is_last = i + 1U == count;
 
-        write_prefix(options, depth);
-        rt_write_cstr(1, is_last ? "`-- " : "|-- ");
-        rt_write_line(1, entries[i].name);
+        if (options->json) {
+            if (write_json_entry(entries[i].path, entries[i].name, depth + 1, entries[i].is_dir) != 0) {
+                return 1;
+            }
+        } else {
+            write_prefix(options, depth);
+            rt_write_cstr(1, is_last ? "`-- " : "|-- ");
+            rt_write_line(1, entries[i].name);
+        }
         if (entries[i].is_dir) {
             options->dirs += 1ULL;
             if (depth + 1 < TREE_MAX_DEPTH) {
@@ -128,6 +159,10 @@ int main(int argc, char **argv) {
             }
             options.max_depth = (int)level;
             argi += 2;
+        } else if (rt_strcmp(argv[argi], "--json") == 0) {
+            options.json = 1;
+            tool_json_set_enabled(1);
+            argi += 1;
         } else if (rt_strcmp(argv[argi], "--help") == 0 || rt_strcmp(argv[argi], "-h") == 0) {
             print_usage();
             return 0;
@@ -137,13 +172,25 @@ int main(int argc, char **argv) {
         }
     }
     if (argi >= argc) {
-        rt_write_line(1, ".");
+        if (options.json) {
+            if (write_json_entry(".", ".", 0, 1) != 0) return 1;
+        } else {
+            rt_write_line(1, ".");
+        }
         if (walk_tree(".", &options, 0) != 0) status = 1;
     }
     for (; argi < argc; ++argi) {
         saw_path = 1;
-        rt_write_line(1, argv[argi]);
+        if (options.json) {
+            if (write_json_entry(argv[argi], argv[argi], 0, 1) != 0) return 1;
+        } else {
+            rt_write_line(1, argv[argi]);
+        }
         if (walk_tree(argv[argi], &options, 0) != 0) status = 1;
+    }
+    if (options.json) {
+        if (write_json_summary(&options) != 0) return 1;
+        return status;
     }
     rt_write_char(1, '\n');
     rt_write_uint(1, options.dirs);

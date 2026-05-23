@@ -7,13 +7,34 @@
 static int show_tcp = 0;
 static int show_udp = 0;
 static int show_listen = 0;
+static int ss_json;
 
 static int streq(const char *left, const char *right) {
     return rt_strcmp(left, right) == 0;
 }
 
 static void print_usage(void) {
-    tool_write_usage("ss", "[-t] [-u] [-l] [-a]");
+    tool_write_usage("ss", "[-t] [-u] [-l] [-a] [--json]");
+}
+
+static int write_json_socket(const PlatformSocketEntry *socket) {
+    if (tool_json_begin_event(1, "ss", "stdout", "socket") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"protocol\":") != 0) return -1;
+    if (tool_json_write_string(1, socket->protocol) != 0) return -1;
+    if (rt_write_cstr(1, ",\"state\":") != 0) return -1;
+    if (tool_json_write_string(1, socket->state) != 0) return -1;
+    if (rt_write_cstr(1, ",\"local_address\":") != 0) return -1;
+    if (tool_json_write_string(1, socket->local_address) != 0) return -1;
+    if (rt_write_cstr(1, ",\"local_port\":") != 0) return -1;
+    if (rt_write_uint(1, socket->local_port) != 0) return -1;
+    if (rt_write_cstr(1, ",\"remote_address\":") != 0) return -1;
+    if (tool_json_write_string(1, socket->remote_address) != 0) return -1;
+    if (rt_write_cstr(1, ",\"remote_port\":") != 0) return -1;
+    if (rt_write_uint(1, socket->remote_port) != 0) return -1;
+    if (rt_write_cstr(1, ",\"inode\":") != 0) return -1;
+    if (rt_write_uint(1, socket->inode) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
 }
 
 static void write_padding(size_t width, size_t used) {
@@ -38,6 +59,9 @@ int main(int argc, char **argv) {
             show_listen = 1;
         } else if (streq(argv[argi], "-a") || streq(argv[argi], "--all")) {
             show_listen = 0;
+        } else if (streq(argv[argi], "--json")) {
+            ss_json = 1;
+            tool_json_set_enabled(1);
         } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
             print_usage();
             return 0;
@@ -54,10 +78,18 @@ int main(int argc, char **argv) {
         tool_write_error("ss", "socket listing is not supported on this platform", 0);
         return 1;
     }
-    rt_write_line(1, "Netid State      Local Address:Port        Peer Address:Port         Inode");
+    if (!ss_json) {
+        rt_write_line(1, "Netid State      Local Address:Port        Peer Address:Port         Inode");
+    }
     for (i = 0U; i < count; ++i) {
         size_t used;
 
+        if (ss_json) {
+            if (write_json_socket(&sockets[i]) != 0) {
+                return 1;
+            }
+            continue;
+        }
         rt_write_cstr(1, sockets[i].protocol);
         write_padding(6U, rt_strlen(sockets[i].protocol));
         rt_write_cstr(1, sockets[i].state);

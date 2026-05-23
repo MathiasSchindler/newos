@@ -42,6 +42,7 @@ static int nm_sort_enabled = 1;
 static int nm_sort_numeric = 1;
 static int nm_undefined_only;
 static int nm_external_only;
+static int nm_json;
 
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8U);
@@ -113,6 +114,15 @@ static int compare_symbols(const void *left_ptr, const void *right_ptr) {
     return rt_strcmp(left->name, right->name);
 }
 
+static const char *symbol_bind_name(unsigned char info) {
+    unsigned int bind = (unsigned int)(info >> 4U);
+
+    if (bind == 0U) return "local";
+    if (bind == 1U) return "global";
+    if (bind == 2U) return "weak";
+    return "other";
+}
+
 static int add_symbol(const char *name, unsigned long long value, unsigned long long size, unsigned char info, unsigned short shndx, char type) {
     unsigned int bind = (unsigned int)(info >> 4U);
 
@@ -136,6 +146,34 @@ static int add_symbol(const char *name, unsigned long long value, unsigned long 
     rt_copy_string(nm_symbols[nm_symbol_count].name, sizeof(nm_symbols[nm_symbol_count].name), name);
     nm_symbol_count += 1U;
     return 0;
+}
+
+static int write_json_symbol(const char *path, const NmSymbol *symbol) {
+    char type_text[2];
+
+    type_text[0] = symbol->type;
+    type_text[1] = '\0';
+    if (tool_json_begin_event(1, "nm", "stdout", "symbol") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (rt_write_cstr(1, ",\"name\":") != 0) return -1;
+    if (tool_json_write_string(1, symbol->name) != 0) return -1;
+    if (rt_write_cstr(1, ",\"type\":") != 0) return -1;
+    if (tool_json_write_string(1, type_text) != 0) return -1;
+    if (rt_write_cstr(1, ",\"bind\":") != 0) return -1;
+    if (tool_json_write_string(1, symbol_bind_name(symbol->info)) != 0) return -1;
+    if (rt_write_cstr(1, ",\"defined\":") != 0) return -1;
+    if (rt_write_cstr(1, symbol->shndx == ELF_SHN_UNDEF ? "false" : "true") != 0) return -1;
+    if (rt_write_cstr(1, ",\"value\":") != 0) return -1;
+    if (symbol->shndx == ELF_SHN_UNDEF) {
+        if (rt_write_cstr(1, "null") != 0) return -1;
+    } else if (rt_write_uint(1, symbol->value) != 0) {
+        return -1;
+    }
+    if (rt_write_cstr(1, ",\"size\":") != 0) return -1;
+    if (rt_write_uint(1, symbol->size) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
 }
 
 static int load_symbols_from_table(int fd, const NmSection *symtab, const char *strings, size_t string_size) {
@@ -250,6 +288,12 @@ static int nm_file(const char *path) {
         rt_sort(nm_symbols, nm_symbol_count, sizeof(nm_symbols[0]), compare_symbols);
     }
     for (i = 0U; i < nm_symbol_count; ++i) {
+        if (nm_json) {
+            if (write_json_symbol(path, &nm_symbols[i]) != 0) {
+                return 1;
+            }
+            continue;
+        }
         if (nm_symbols[i].shndx == ELF_SHN_UNDEF) {
             rt_write_cstr(1, "                 ");
         } else {
@@ -264,7 +308,7 @@ static int nm_file(const char *path) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("nm", "[-n] [-p] [-u] [-g] FILE ...");
+    tool_write_usage("nm", "[-n] [-p] [-u] [-g] [--json] FILE ...");
 }
 
 int main(int argc, char **argv) {
@@ -283,6 +327,9 @@ int main(int argc, char **argv) {
             nm_undefined_only = 1;
         } else if (rt_strcmp(argv[argi], "-g") == 0 || rt_strcmp(argv[argi], "--extern-only") == 0) {
             nm_external_only = 1;
+        } else if (rt_strcmp(argv[argi], "--json") == 0) {
+            nm_json = 1;
+            tool_json_set_enabled(1);
         } else {
             tool_write_error("nm", "unknown option: ", argv[argi]);
             return 1;
@@ -294,7 +341,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     for (; argi < argc; ++argi) {
-        if (argc - argi > 1) {
+        if (!nm_json && argc - argi > 1) {
             rt_write_cstr(1, argv[argi]);
             rt_write_line(1, ":");
         }

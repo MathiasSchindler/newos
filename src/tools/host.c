@@ -52,7 +52,27 @@ static const char *type_name(unsigned short type) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("host", "[-4|-6] [-t TYPE] [-s SERVER] NAME [TYPE]");
+    tool_write_usage("host", "[-4|-6] [-t TYPE] [-s SERVER] [--json] NAME [TYPE]");
+}
+
+static int write_json_answer(const char *query, const PlatformDnsEntry *entry) {
+    const char *data = entry->data[0] != '\0' ? entry->data : entry->address;
+
+    if (tool_json_begin_event(1, "host", "stdout", "answer") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"query\":") != 0) return -1;
+    if (tool_json_write_string(1, query) != 0) return -1;
+    if (rt_write_cstr(1, ",\"name\":") != 0) return -1;
+    if (tool_json_write_string(1, entry->name) != 0) return -1;
+    if (rt_write_cstr(1, ",\"type\":") != 0) return -1;
+    if (tool_json_write_string(1, type_name(entry->record_type)) != 0) return -1;
+    if (rt_write_cstr(1, ",\"ttl\":") != 0) return -1;
+    if (rt_write_uint(1, entry->ttl) != 0) return -1;
+    if (rt_write_cstr(1, ",\"preference\":") != 0) return -1;
+    if (rt_write_uint(1, entry->preference) != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":") != 0) return -1;
+    if (tool_json_write_string(1, data) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
 }
 
 static void print_result(const char *query, const PlatformDnsEntry *entry) {
@@ -88,6 +108,7 @@ int main(int argc, char **argv) {
     PlatformDnsEntry entries[HOST_MAX_RESULTS];
     size_t count = 0U;
     size_t i;
+    int json = 0;
 
     while (argi < argc) {
         if (streq(argv[argi], "-4")) {
@@ -111,6 +132,10 @@ int main(int argc, char **argv) {
             }
             server = argv[argi + 1];
             argi += 2;
+        } else if (streq(argv[argi], "--json")) {
+            json = 1;
+            tool_json_set_enabled(1);
+            argi += 1;
         } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
             print_usage();
             return 0;
@@ -140,7 +165,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     for (i = 0U; i < count; ++i) {
-        print_result(name, &entries[i]);
+        if (json) {
+            if (write_json_answer(name, &entries[i]) != 0) {
+                return 1;
+            }
+        } else {
+            print_result(name, &entries[i]);
+        }
     }
     return 0;
 }

@@ -7,7 +7,7 @@ size - summarize ELF64 text, data, and bss sizes
 ## SYNOPSIS
 
 ```
-size FILE ...
+size [--json] FILE ...
 ```
 
 ## DESCRIPTION
@@ -16,11 +16,26 @@ size FILE ...
 total hexadecimal, file size, and file name. It is useful for checking the effect
 of compiler flags, LTO, and newlinker size optimizations.
 
+## OPTIONS
+
+- `--json` - emit JSON Lines events instead of the text table.
+- `-h`, `--help` - show usage.
+
 ## OUTPUT
 
 ```
 text    data    bss     dec     hex     file    name
 ```
+
+## JSON Output
+
+With `--json`, `size` emits one `size` event per file:
+
+```json
+{"schema":"newos.tool.v1","tool":"size","stream":"stdout","event":"size","seq":1,"data":{"file":"app","text":1234,"data_size":56,"bss":78,"total":1368,"file_size":4096}}
+```
+
+Diagnostics and usage messages follow the shared `json-output` envelope.
 
 ## LIMITATIONS
 

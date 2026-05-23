@@ -11,6 +11,8 @@
 #define ELF_SHF_ALLOC 2ULL
 #define ELF_SHF_EXECINSTR 4ULL
 
+static int size_json;
+
 typedef struct {
     unsigned int type;
     unsigned long long flags;
@@ -54,6 +56,30 @@ static void write_hex(unsigned long long value) {
     while (count > 0U) {
         rt_write_char(1, temp[--count]);
     }
+}
+
+static int write_json_size(const char *path,
+                           unsigned long long text,
+                           unsigned long long data,
+                           unsigned long long bss,
+                           unsigned long long file_size) {
+    unsigned long long total = text + data + bss;
+
+    if (tool_json_begin_event(1, "size", "stdout", "size") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (rt_write_cstr(1, ",\"text\":") != 0) return -1;
+    if (rt_write_uint(1, text) != 0) return -1;
+    if (rt_write_cstr(1, ",\"data_size\":") != 0) return -1;
+    if (rt_write_uint(1, data) != 0) return -1;
+    if (rt_write_cstr(1, ",\"bss\":") != 0) return -1;
+    if (rt_write_uint(1, bss) != 0) return -1;
+    if (rt_write_cstr(1, ",\"total\":") != 0) return -1;
+    if (rt_write_uint(1, total) != 0) return -1;
+    if (rt_write_cstr(1, ",\"file_size\":") != 0) return -1;
+    if (rt_write_uint(1, file_size) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
 }
 
 static int size_file(const char *path, int print_name) {
@@ -116,6 +142,9 @@ static int size_file(const char *path, int print_name) {
         }
     }
     platform_close(fd);
+    if (size_json) {
+        return write_json_size(path, text, data, bss, file_size) == 0 ? 0 : 1;
+    }
     rt_write_uint(1, text);
     rt_write_char(1, '\t');
     rt_write_uint(1, data);
@@ -136,19 +165,35 @@ static int size_file(const char *path, int print_name) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("size", "FILE ...");
+    tool_write_usage("size", "[--json] FILE ...");
 }
 
 int main(int argc, char **argv) {
     int i;
     int status = 0;
+    int argi = 1;
 
-    if (argc < 2 || rt_strcmp(argv[1], "--help") == 0 || rt_strcmp(argv[1], "-h") == 0) {
-        print_usage();
-        return argc < 2 ? 1 : 0;
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strcmp(argv[argi], "--help") == 0 || rt_strcmp(argv[argi], "-h") == 0) {
+            print_usage();
+            return 0;
+        } else if (rt_strcmp(argv[argi], "--json") == 0) {
+            size_json = 1;
+            tool_json_set_enabled(1);
+        } else {
+            tool_write_error("size", "unknown option: ", argv[argi]);
+            return 1;
+        }
+        argi += 1;
     }
-    rt_write_line(1, "text\tdata\tbss\tdec\thex\tfile\tname");
-    for (i = 1; i < argc; ++i) {
+    if (argi >= argc) {
+        print_usage();
+        return 1;
+    }
+    if (!size_json) {
+        rt_write_line(1, "text\tdata\tbss\tdec\thex\tfile\tname");
+    }
+    for (i = argi; i < argc; ++i) {
         if (size_file(argv[i], 1) != 0) {
             status = 1;
         }

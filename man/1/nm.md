@@ -7,7 +7,7 @@ nm - list ELF64 symbols
 ## SYNOPSIS
 
 ```
-nm [-n] [-p] [-u] [-g] FILE ...
+nm [-n] [-p] [-u] [-g] [--json] FILE ...
 ```
 
 ## DESCRIPTION
@@ -22,7 +22,19 @@ project's compiler, linker, and profiler workflows, especially producing
 - `-p`, `--no-sort` - keep symbol-table order.
 - `-u`, `--undefined-only` - show only undefined symbols.
 - `-g`, `--extern-only` - show only non-local symbols.
+- `--json` - emit JSON Lines events instead of text.
 - `-h`, `--help` - show usage.
+
+## JSON Output
+
+With `--json`, `nm` emits one `symbol` event per symbol:
+
+```json
+{"schema":"newos.tool.v1","tool":"nm","stream":"stdout","event":"symbol","seq":1,"data":{"file":"a.out","name":"main","type":"T","bind":"global","defined":true,"value":4198400,"size":42}}
+```
+
+`value` is `null` for undefined symbols. Diagnostics and usage messages follow
+the shared `json-output` envelope.
 
 ## LIMITATIONS
 
