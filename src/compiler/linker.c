@@ -17,6 +17,14 @@
 #define LINKER_NO_INDEX ((size_t)-1)
 #define LINKER_UNPLACED_OFFSET (~0ULL)
 
+#ifndef COMPILER_LINKER_ENABLE_REPORTING
+#define COMPILER_LINKER_ENABLE_REPORTING 1
+#endif
+
+#ifndef COMPILER_LINKER_ENABLE_CONST_MERGE
+#define COMPILER_LINKER_ENABLE_CONST_MERGE 0
+#endif
+
 #define ELFCLASS64 2U
 #define ELFDATA2LSB 1U
 #define EV_CURRENT 1U
@@ -164,6 +172,15 @@ static int linker_merge_string_pool_active;
 static size_t linker_merge_master_object_index;
 static size_t linker_merge_master_section_index;
 static uint64_t linker_merge_master_input_size;
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static unsigned char *linker_merge_const_pool;
+static uint64_t linker_merge_const_pool_size;
+static uint64_t linker_merge_const_pool_capacity;
+static int linker_merge_const_pool_active;
+static size_t linker_merge_const_master_object_index;
+static size_t linker_merge_const_master_section_index;
+static uint64_t linker_merge_const_master_input_size;
+#endif
 
 static const char *linker_entry_symbol(const CompilerLinkerOptions *options) {
     if (options != 0 && options->entry_symbol != 0 && options->entry_symbol[0] != '\0') {
@@ -1048,6 +1065,17 @@ static int section_has_relocations(const LinkObject *object, uint16_t section_in
     return 0;
 }
 
+static const LinkRelaSection *find_rela_section_const(const LinkObject *object, uint16_t section_index) {
+    size_t rela_index;
+
+    for (rela_index = 0; rela_index < object->rela_section_count; ++rela_index) {
+        if (object->rela_sections[rela_index].target_index == section_index) {
+            return &object->rela_sections[rela_index];
+        }
+    }
+    return 0;
+}
+
 static void reset_merge_string_pool(void) {
     if (linker_merge_string_pool != 0) {
         rt_free(linker_merge_string_pool);
@@ -1061,14 +1089,96 @@ static void reset_merge_string_pool(void) {
     linker_merge_master_input_size = 0ULL;
 }
 
-static int section_is_mergeable_string(const LinkObject *object, const LinkSection *section) {
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static void reset_merge_const_pool(void) {
+    if (linker_merge_const_pool != 0) {
+        rt_free(linker_merge_const_pool);
+    }
+    linker_merge_const_pool = 0;
+    linker_merge_const_pool_size = 0ULL;
+    linker_merge_const_pool_capacity = 0ULL;
+    linker_merge_const_pool_active = 0;
+    linker_merge_const_master_object_index = 0U;
+    linker_merge_const_master_section_index = 0U;
+    linker_merge_const_master_input_size = 0ULL;
+}
+#endif
+
+static uint64_t section_entry_size(const LinkObject *object, const LinkSection *section) {
     const unsigned char *header = section_header(object, section->index);
-    uint64_t entsize = header != 0 ? read_u64(header + 56) : 0ULL;
+
+    return header != 0 ? read_u64(header + 56) : 0ULL;
+}
+
+static int section_is_mergeable_string(const LinkObject *object, const LinkSection *section) {
+    uint64_t entsize = section_entry_size(object, section);
 
     return section->live && !section->folded && section->kind == LINK_SECTION_TEXT && section->type == SHT_PROGBITS &&
            (section->flags & SHF_EXECINSTR) == 0ULL && (section->flags & SHF_MERGE) != 0ULL && (section->flags & SHF_STRINGS) != 0ULL &&
            entsize == 1ULL && section->align <= 1ULL && !section_has_relocations(object, section->index);
 }
+
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static int merge_const_section_references_supported(const LinkObject *object, const LinkSection *section, uint64_t entsize) {
+    uint32_t symbol_count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+    uint32_t symbol_index;
+    size_t rela_index;
+
+    for (symbol_index = 0; symbol_index < symbol_count; ++symbol_index) {
+        const unsigned char *symbol = symbol_entry(object, symbol_index);
+
+        if (symbol != 0 && read_u16(symbol + 6) == section->index) {
+            uint64_t value = read_u64(symbol + 8);
+
+            if (value > section->size || (value % entsize) != 0ULL) {
+                return 0;
+            }
+        }
+    }
+    for (rela_index = 0; rela_index < object->rela_section_count; ++rela_index) {
+        const LinkRelaSection *rela = &object->rela_sections[rela_index];
+        uint64_t entry_count;
+        uint64_t reloc_index;
+
+        if (rela->entsize == 0ULL) {
+            continue;
+        }
+        entry_count = rela->size / rela->entsize;
+        for (reloc_index = 0ULL; reloc_index < entry_count; ++reloc_index) {
+            const unsigned char *reloc = object->file + rela->offset + (reloc_index * rela->entsize);
+            uint64_t info = read_u64(reloc + 8);
+            uint32_t symbol_index_from_reloc = (uint32_t)(info >> 32U);
+            uint32_t type = (uint32_t)info;
+            const unsigned char *symbol = symbol_entry(object, symbol_index_from_reloc);
+
+            if (symbol != 0 && read_u16(symbol + 6) == section->index) {
+                int64_t relocation_bias = (type == R_X86_64_PC32 || type == R_X86_64_PLT32) ? -4LL : 0LL;
+                int64_t const_addend = read_i64(reloc + 16) - relocation_bias;
+                uint64_t symbol_offset = read_u64(symbol + 8);
+                uint64_t input_offset;
+
+                if (const_addend < 0 || (uint64_t)const_addend > section->size || symbol_offset > section->size - (uint64_t)const_addend) {
+                    return 0;
+                }
+                input_offset = symbol_offset + (uint64_t)const_addend;
+                if (input_offset >= section->size || (input_offset % entsize) != 0ULL) {
+                    return 0;
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+static int section_is_mergeable_const(const LinkObject *object, const LinkSection *section) {
+    uint64_t entsize = section_entry_size(object, section);
+
+    return section->live && !section->folded && section->kind == LINK_SECTION_TEXT && section->type == SHT_PROGBITS &&
+           (section->flags & SHF_EXECINSTR) == 0ULL && (section->flags & SHF_MERGE) != 0ULL && (section->flags & SHF_STRINGS) == 0ULL &&
+           entsize > 1ULL && section->size != 0ULL && (section->size % entsize) == 0ULL && !section_has_relocations(object, section->index) &&
+           merge_const_section_references_supported(object, section, entsize);
+}
+#endif
 
 static int section_uses_merge_string_pool(const LinkSection *section) {
     return linker_merge_string_pool_active && (section->flags & SHF_MERGE) != 0ULL && (section->flags & SHF_STRINGS) != 0ULL &&
@@ -1082,6 +1192,21 @@ static uint64_t merge_string_input_size(const LinkSection *section) {
     }
     return section->size;
 }
+
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static int section_uses_merge_const_pool(const LinkSection *section) {
+    return linker_merge_const_pool_active && (section->flags & SHF_MERGE) != 0ULL && (section->flags & SHF_STRINGS) == 0ULL &&
+           ((section->folded && section->fold_object_index == linker_merge_const_master_object_index && section->fold_section_index == linker_merge_const_master_section_index) ||
+            (!section->folded && section == &linker_objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index]));
+}
+
+static uint64_t merge_const_input_size(const LinkSection *section) {
+    if (linker_merge_const_pool_active && section == &linker_objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index]) {
+        return linker_merge_const_master_input_size;
+    }
+    return section->size;
+}
+#endif
 
 static uint64_t merge_string_length_at(const LinkObject *object, const LinkSection *section, uint64_t offset) {
     uint64_t length = 0ULL;
@@ -1142,6 +1267,61 @@ static int merge_string_pool_append(const unsigned char *bytes, uint64_t length,
     *offset_out = offset;
     return 0;
 }
+
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static int merge_const_pool_find(const unsigned char *bytes, uint64_t length, uint64_t alignment, uint64_t *offset_out) {
+    uint64_t offset;
+
+    if (length == 0ULL || linker_merge_const_pool_size < length) {
+        return 0;
+    }
+    if (alignment == 0ULL) {
+        alignment = 1ULL;
+    }
+    for (offset = 0ULL; offset + length <= linker_merge_const_pool_size; ++offset) {
+        if ((offset % alignment) == 0ULL && memcmp(linker_merge_const_pool + offset, bytes, (size_t)length) == 0) {
+            *offset_out = offset;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int merge_const_pool_append(const unsigned char *bytes, uint64_t length, uint64_t alignment, uint64_t *offset_out, char *error_out, size_t error_size) {
+    uint64_t offset;
+
+    if (alignment == 0ULL) {
+        alignment = 1ULL;
+    }
+    if (merge_const_pool_find(bytes, length, alignment, &offset)) {
+        *offset_out = offset;
+        return 0;
+    }
+    offset = align_u64(linker_merge_const_pool_size, alignment);
+    if (offset + length > linker_merge_const_pool_capacity) {
+        uint64_t next_capacity = linker_merge_const_pool_capacity != 0ULL ? linker_merge_const_pool_capacity : 128ULL;
+        unsigned char *resized;
+
+        while (next_capacity < offset + length) {
+            next_capacity *= 2ULL;
+        }
+        resized = (unsigned char *)rt_realloc(linker_merge_const_pool, (size_t)next_capacity);
+        if (resized == 0) {
+            set_link_error(error_out, error_size, "failed to allocate merge constant pool", "");
+            return -1;
+        }
+        linker_merge_const_pool = resized;
+        linker_merge_const_pool_capacity = next_capacity;
+    }
+    while (linker_merge_const_pool_size < offset) {
+        linker_merge_const_pool[linker_merge_const_pool_size++] = 0U;
+    }
+    memcpy(linker_merge_const_pool + offset, bytes, (size_t)length);
+    linker_merge_const_pool_size = offset + length;
+    *offset_out = offset;
+    return 0;
+}
+#endif
 
 static int translate_merge_string_offset(const LinkObject *object, const LinkSection *section, uint64_t input_offset, uint64_t *output_offset_out) {
     uint64_t length = merge_string_length_at(object, section, input_offset);
@@ -1275,6 +1455,85 @@ static int merge_string_sections(LinkObject *objects, size_t object_count, char 
     return 0;
 }
 
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static int translate_merge_const_offset(const LinkObject *object, const LinkSection *section, uint64_t input_offset, uint64_t *output_offset_out) {
+    uint64_t entsize = section_entry_size(object, section);
+    uint64_t input_size = merge_const_input_size(section);
+
+    if (!linker_merge_const_pool_active || entsize <= 1ULL || input_offset >= input_size || (input_offset % entsize) != 0ULL) {
+        return 0;
+    }
+    return merge_const_pool_find(object->file + section->offset + input_offset, entsize, section->align, output_offset_out);
+}
+
+static int merge_const_sections(LinkObject *objects, size_t object_count, char *error_out, size_t error_size) {
+    size_t i;
+    int have_master = 0;
+
+    reset_merge_const_pool();
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        if (!objects[i].live) {
+            continue;
+        }
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+            uint64_t entsize;
+            uint64_t offset;
+
+            if (!section_is_mergeable_const(&objects[i], section)) {
+                continue;
+            }
+            entsize = section_entry_size(&objects[i], section);
+            if (!have_master) {
+                linker_merge_const_master_object_index = i;
+                linker_merge_const_master_section_index = section_index;
+                linker_merge_const_master_input_size = section->size;
+                have_master = 1;
+            }
+            if (section->align > objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index].align) {
+                objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index].align = section->align;
+            }
+            for (offset = 0ULL; offset < section->size; offset += entsize) {
+                uint64_t merged_offset;
+
+                if (merge_const_pool_append(objects[i].file + section->offset + offset, entsize, section->align, &merged_offset, error_out, error_size) != 0) {
+                    reset_merge_const_pool();
+                    return -1;
+                }
+            }
+        }
+    }
+    if (!have_master) {
+        return 0;
+    }
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section_is_mergeable_const(&objects[i], section)) {
+                continue;
+            }
+            if (i == linker_merge_const_master_object_index && section_index == linker_merge_const_master_section_index) {
+                section->size = linker_merge_const_pool_size;
+                rt_copy_string(section->why, sizeof(section->why), "merge constant pool");
+            } else {
+                section->folded = 1;
+                section->fold_object_index = linker_merge_const_master_object_index;
+                section->fold_section_index = linker_merge_const_master_section_index;
+                section->fold_addend = 0ULL;
+                rt_copy_string(section->why, sizeof(section->why), "merge constant folded");
+            }
+        }
+    }
+    linker_merge_const_pool_active = 1;
+    return 0;
+}
+#endif
+
 static int sections_have_same_bytes(const LinkObject *left_object, const LinkSection *left, const LinkObject *right_object, const LinkSection *right) {
     if (left->size != right->size || left->align != right->align || left->type != right->type || left->size == 0ULL) {
         return 0;
@@ -1283,6 +1542,73 @@ static int sections_have_same_bytes(const LinkObject *left_object, const LinkSec
         return 0;
     }
     return memcmp(left_object->file + left->offset, right_object->file + right->offset, (size_t)left->size) == 0;
+}
+
+static int relocation_symbols_equivalent(const LinkObject *left_object,
+                                         const LinkSection *left_section,
+                                         const unsigned char *left_symbol,
+                                         const LinkObject *right_object,
+                                         const LinkSection *right_section,
+                                         const unsigned char *right_symbol) {
+    uint16_t left_shndx = read_u16(left_symbol + 6);
+    uint16_t right_shndx = read_u16(right_symbol + 6);
+    unsigned int left_bind = (unsigned int)(left_symbol[4] >> 4U);
+    unsigned int right_bind = (unsigned int)(right_symbol[4] >> 4U);
+
+    if (left_shndx == SHN_UNDEF || right_shndx == SHN_UNDEF) {
+        return left_shndx == SHN_UNDEF && right_shndx == SHN_UNDEF && rt_strcmp(symbol_name(left_object, left_symbol), symbol_name(right_object, right_symbol)) == 0;
+    }
+    if (left_shndx == SHN_ABS || right_shndx == SHN_ABS) {
+        return left_shndx == SHN_ABS && right_shndx == SHN_ABS && read_u64(left_symbol + 8) == read_u64(right_symbol + 8);
+    }
+    if (left_bind == STB_GLOBAL || right_bind == STB_GLOBAL) {
+        return left_bind == STB_GLOBAL && right_bind == STB_GLOBAL && rt_strcmp(symbol_name(left_object, left_symbol), symbol_name(right_object, right_symbol)) == 0;
+    }
+    if (left_shndx == left_section->index && right_shndx == right_section->index) {
+        return read_u64(left_symbol + 8) == read_u64(right_symbol + 8);
+    }
+    return 0;
+}
+
+static int sections_have_equivalent_relocations(const LinkObject *left_object,
+                                                const LinkSection *left,
+                                                const LinkObject *right_object,
+                                                const LinkSection *right) {
+    const LinkRelaSection *left_rela = find_rela_section_const(left_object, left->index);
+    const LinkRelaSection *right_rela = find_rela_section_const(right_object, right->index);
+    uint64_t left_count;
+    uint64_t right_count;
+    uint64_t reloc_index;
+
+    if (left_rela == 0 || left_rela->size == 0ULL) {
+        return right_rela == 0 || right_rela->size == 0ULL;
+    }
+    if (right_rela == 0 || right_rela->size == 0ULL || left_rela->entsize == 0ULL || right_rela->entsize == 0ULL) {
+        return 0;
+    }
+    left_count = left_rela->size / left_rela->entsize;
+    right_count = right_rela->size / right_rela->entsize;
+    if (left_count != right_count) {
+        return 0;
+    }
+    for (reloc_index = 0ULL; reloc_index < left_count; ++reloc_index) {
+        const unsigned char *left_reloc = left_object->file + left_rela->offset + (reloc_index * left_rela->entsize);
+        const unsigned char *right_reloc = right_object->file + right_rela->offset + (reloc_index * right_rela->entsize);
+        uint64_t left_info = read_u64(left_reloc + 8);
+        uint64_t right_info = read_u64(right_reloc + 8);
+        uint32_t left_symbol_index = (uint32_t)(left_info >> 32U);
+        uint32_t right_symbol_index = (uint32_t)(right_info >> 32U);
+        const unsigned char *left_symbol = symbol_entry(left_object, left_symbol_index);
+        const unsigned char *right_symbol = symbol_entry(right_object, right_symbol_index);
+
+        if (read_u64(left_reloc + 0) != read_u64(right_reloc + 0) || (uint32_t)left_info != (uint32_t)right_info || read_i64(left_reloc + 16) != read_i64(right_reloc + 16)) {
+            return 0;
+        }
+        if (left_symbol == 0 || right_symbol == 0 || !relocation_symbols_equivalent(left_object, left, left_symbol, right_object, right, right_symbol)) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int section_alignment_satisfies(uint64_t master_align, uint64_t folded_align, uint64_t addend) {
@@ -1333,7 +1659,7 @@ static void fold_identical_sections(LinkObject *objects, size_t object_count) {
             LinkSection *section = &objects[i].sections[section_index];
             size_t master_object_index;
 
-            if (!section->live || section->folded || section->kind != LINK_SECTION_TEXT || section_has_relocations(&objects[i], section->index)) {
+            if (!section->live || section->folded || section->kind != LINK_SECTION_TEXT) {
                 continue;
             }
             for (master_object_index = 0; master_object_index <= i; ++master_object_index) {
@@ -1345,10 +1671,10 @@ static void fold_identical_sections(LinkObject *objects, size_t object_count) {
                     if (master_object_index == i && master_section_index >= section_index) {
                         break;
                     }
-                    if (!master->live || master->folded || master->kind != LINK_SECTION_TEXT || section_has_relocations(&objects[master_object_index], master->index)) {
+                    if (!master->live || master->folded || master->kind != LINK_SECTION_TEXT) {
                         continue;
                     }
-                    if (sections_have_same_bytes(&objects[i], section, &objects[master_object_index], master)) {
+                    if (sections_have_same_bytes(&objects[i], section, &objects[master_object_index], master) && sections_have_equivalent_relocations(&objects[i], section, &objects[master_object_index], master)) {
                         section->folded = 1;
                         section->fold_object_index = master_object_index;
                         section->fold_section_index = master_section_index;
@@ -1403,6 +1729,17 @@ static int symbol_value(const LinkObject *object, const unsigned char *symbol, u
                     return 0;
                 }
             }
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+            if (section_uses_merge_const_pool(section)) {
+                const LinkSection *master = &linker_objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index];
+                uint64_t merged_offset;
+
+                if (translate_merge_const_offset(object, section, value, &merged_offset)) {
+                    *value_out = LINKER_BASE_VADDR + master->out_offset + merged_offset;
+                    return 0;
+                }
+            }
+#endif
             if (section->folded) {
                 const LinkSection *folded = &linker_objects[section->fold_object_index].sections[section->fold_section_index];
                 *value_out = LINKER_BASE_VADDR + folded->out_offset + section->fold_addend + value;
@@ -1461,6 +1798,30 @@ static int relocation_symbol_value(const LinkObject *object,
             *addend_out = relocation_bias;
             return 0;
         }
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+        if (section != 0 && section_uses_merge_const_pool(section)) {
+            uint64_t symbol_offset = read_u64(symbol + 8);
+            uint64_t input_offset;
+            uint64_t merged_offset;
+            const LinkSection *master = &linker_objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index];
+            uint64_t input_size = merge_const_input_size(section);
+            int64_t relocation_bias = (type == R_X86_64_PC32 || type == R_X86_64_PLT32) ? -4LL : 0LL;
+            int64_t const_addend = addend - relocation_bias;
+
+            if (const_addend < 0 || (uint64_t)const_addend > input_size || symbol_offset > input_size - (uint64_t)const_addend) {
+                set_link_error(error_out, error_size, "invalid merge constant relocation", object->path);
+                return -1;
+            }
+            input_offset = symbol_offset + (uint64_t)const_addend;
+            if (!translate_merge_const_offset(object, section, input_offset, &merged_offset)) {
+                set_link_error(error_out, error_size, "invalid merge constant relocation", object->path);
+                return -1;
+            }
+            *value_out = LINKER_BASE_VADDR + master->out_offset + merged_offset;
+            *addend_out = relocation_bias;
+            return 0;
+        }
+#endif
     }
     return symbol_value(object, symbol, value_out, error_out, error_size);
 }
@@ -1751,6 +2112,10 @@ static void copy_sections(LinkObject *objects, size_t object_count, unsigned cha
             }
             if (linker_merge_string_pool_active && section == &linker_objects[linker_merge_master_object_index].sections[linker_merge_master_section_index]) {
                 memcpy(output + section->out_offset, linker_merge_string_pool, (size_t)section->size);
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+            } else if (linker_merge_const_pool_active && section == &linker_objects[linker_merge_const_master_object_index].sections[linker_merge_const_master_section_index]) {
+                memcpy(output + section->out_offset, linker_merge_const_pool, (size_t)section->size);
+#endif
             } else {
                 memcpy(output + section->out_offset, objects[i].file + section->offset, (size_t)section->size);
             }
@@ -1829,6 +2194,7 @@ static void write_elf_header(unsigned char *output,
     }
 }
 
+#if COMPILER_LINKER_ENABLE_REPORTING
 static int linker_write_hex64(int fd, uint64_t value) {
     char buffer[18];
     const char *digits = "0123456789abcdef";
@@ -2165,6 +2531,7 @@ static int write_why_live(int fd, const LinkObject *objects, size_t object_count
     }
     return 0;
 }
+#endif
 
 int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
                                               size_t object_count,
@@ -2196,7 +2563,16 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     if (error_out != 0 && error_size > 0U) {
         error_out[0] = '\0';
     }
+#if !COMPILER_LINKER_ENABLE_REPORTING
+    if (options != 0 && (options->stats || options->print_gc_sections || (options->map_path != 0 && options->map_path[0] != '\0') || (options->why_live != 0 && options->why_live[0] != '\0'))) {
+        set_link_error(error_out, error_size, "linker reporting is not available in this build", output_path);
+        return -1;
+    }
+#endif
     reset_merge_string_pool();
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+    reset_merge_const_pool();
+#endif
     if (object_count == 0 || object_count > LINKER_MAX_OBJECTS) {
         set_link_error(error_out, error_size, "invalid object count for native linker", "");
         return -1;
@@ -2238,6 +2614,11 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     if (merge_string_sections(linker_objects, object_count, error_out, error_size) != 0) {
         return -1;
     }
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+    if (merge_const_sections(linker_objects, object_count, error_out, error_size) != 0) {
+        return -1;
+    }
+#endif
     if (options != 0 && options->icf_safe) {
         fold_identical_sections(linker_objects, object_count);
     }
@@ -2328,6 +2709,7 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     }
     rt_free(output);
     (void)platform_change_mode(output_path, 0755U);
+#if COMPILER_LINKER_ENABLE_REPORTING
     if (options != 0 && options->map_path != 0 && options->map_path[0] != '\0') {
         if (write_link_map(options->map_path,
                            linker_objects,
@@ -2376,6 +2758,7 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
             return -1;
         }
     }
+#endif
     return 0;
 }
 

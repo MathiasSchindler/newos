@@ -50,20 +50,26 @@ CFLAGS=(-target x86_64-unknown-linux-elf -std=c11 -Wall -Wextra -Wpedantic -Oz -
 ASMFLAGS=(-target x86_64-unknown-linux-elf -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie -fno-addrsig -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
 
 declare -A SOURCE_TO_OBJ
-obj_for() { local s="$1" n; n="${s//\//__}"; n="${n//[/lb}"; n="${n//]/rb}"; printf '%s/%s.o' "$OBJROOT" "$n"; }
+obj_for() { local s="$1" variant="${2:-}" n; n="${s//\//__}"; n="${n//[/lb}"; n="${n//]/rb}"; if [[ -n "$variant" ]]; then n="${variant}__${n}"; fi; printf '%s/%s.o' "$OBJROOT" "$n"; }
 first_line() { local f="$1"; grep -m1 -E 'error:|undefined reference|multiple definition|unsupported|relocation|failed|cannot|No such file|not found|too many input files|undefined symbol|exceeds' "$f" || sed -n '1p' "$f"; }
 compile_one() {
-  local src="$1" obj log rc
-  if [[ -n "${SOURCE_TO_OBJ[$src]:-}" ]]; then printf '%s\n' "${SOURCE_TO_OBJ[$src]}"; return 0; fi
-  obj=$(obj_for "$src"); log="$LOGROOT/compile-${obj##*/}.log"; mkdir -p "$(dirname "$obj")"
+  local src="$1" variant="${2:-}" key obj log rc cflags asmflags
+  key="$variant|$src"
+  if [[ -n "${SOURCE_TO_OBJ[$key]:-}" ]]; then printf '%s\n' "${SOURCE_TO_OBJ[$key]}"; return 0; fi
+  obj=$(obj_for "$src" "$variant"); log="$LOGROOT/compile-${obj##*/}.log"; mkdir -p "$(dirname "$obj")"
+  cflags=("${CFLAGS[@]}"); asmflags=("${ASMFLAGS[@]}")
+  case "$variant" in
+    linker-core) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0) ;;
+    linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
+  esac
   if [[ "$src" == *.S || "$src" == *.s ]]; then
-    clang "${ASMFLAGS[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    clang "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   else
-    clang "${CFLAGS[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    clang "${cflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   fi
   rc=$?
   if [[ $rc -ne 0 ]]; then echo "$src|$(first_line "$log")"; return 1; fi
-  SOURCE_TO_OBJ[$src]="$obj"
+  SOURCE_TO_OBJ[$key]="$obj"
   printf '%s\n' "$obj"
   return 0
 }
@@ -178,7 +184,11 @@ for tool in $TOOLS; do
   tool_objs=()
   tfail=""
   for src in "${tool_sources[@]}"; do
-    out=$(compile_one "$src")
+    variant=""
+    if [[ "$src" == "src/compiler/linker.c" ]]; then
+      if [[ "$tool" == "linker" ]]; then variant="linker-report"; elif [[ "$tool" == "ncc" ]]; then variant="linker-core"; fi
+    fi
+    out=$(compile_one "$src" "$variant")
     if [[ $? -ne 0 ]]; then tfail="$src: ${out#*|}"; break; else tool_objs+=("$out"); fi
   done
   if [[ -n "$tfail" ]]; then compile_fail=$((compile_fail+1)); printf 'compile\t%s\t%s\n' "$tool" "$tfail" >> "$FAILFILE"; continue; fi

@@ -254,7 +254,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-newlinker freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-newlinker-expack newlinker-size-report benchmark clean
+.PHONY: all host freestanding freestanding-newlinker freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-newlinker-expack test-newlinker-optimizations newlinker-size-report benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -272,6 +272,9 @@ freestanding-newlinker: $(BUILD_DIR)/linker
 
 test-newlinker-expack: $(BUILD_DIR)/expack
 	NEWOS_EXPACK="$(abspath $(BUILD_DIR)/expack)" bash ./tests/suites/newlinker_expack.sh
+
+test-newlinker-optimizations: $(BUILD_DIR)/linker
+	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" bash ./tests/suites/newlinker_optimizations.sh
 
 newlinker-size-report: $(BUILD_DIR)/linker
 	LINKER="$(abspath $(BUILD_DIR)/linker)" bash report-newlinker-size.sh
@@ -424,7 +427,7 @@ $(BUILD_DIR)/ncc: src/tools/ncc.c $(COMPILER_SOURCES) $(COMPILER_IMPL_INCLUDES) 
 	mkdir -p $(dir $@) && $(CC) $(HOST_NCC_CFLAGS) $< $(COMPILER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(TARGET_BUILD_DIR)/ncc: src/tools/ncc.c $(COMPILER_SOURCES) $(COMPILER_IMPL_INCLUDES) src/compiler/source_manifest.h $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/compiler/backend.h src/compiler/backend_internal.h src/compiler/compiler.h src/compiler/object_writer.h src/compiler/source.h src/compiler/lexer.h src/compiler/ir.h src/compiler/parser.h src/compiler/preprocessor.h src/compiler/semantic.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(COMPILER_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=0 $< $(COMPILER_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/md5sum $(BUILD_DIR)/sha256sum $(BUILD_DIR)/sha512sum: $(BUILD_DIR)/%: src/tools/%.c $(SHARED_SOURCES) $(HASH_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/md5.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HASH_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
@@ -448,7 +451,7 @@ MAKE_TOOL_SOURCES := src/tools/make/make_parse.c src/tools/make/make_exec.c
 LINKER_TOOL_SOURCES := src/compiler/linker.c
 HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS)) -idirafter src/shared
 HOST_EXPACK_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
-HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
+HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -DCOMPILER_LINKER_ENABLE_REPORTING=0 -idirafter src/shared
 AWK_TOOL_SOURCES  := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c
 SERVICE_TOOL_SOURCES := src/tools/service/service_main.c src/tools/service/service_pidfile.c src/tools/service/service_spawn.c src/tools/service/service_signal.c src/tools/service/service_config.c
 HTTPD_TOOL_SOURCES := src/tools/httpd/httpd_main.c src/tools/httpd/http_listener.c src/tools/httpd/http_conn.c src/tools/httpd/http_parse.c src/tools/httpd/http_route.c src/tools/httpd/http_static.c src/tools/httpd/http_log.c
@@ -458,10 +461,10 @@ HOST_TLS_PLATFORM_SOURCE := src/platform/posix/tls.c
 TARGET_TLS_PLATFORM_SOURCE := src/platform/linux/tls.c
 
 $(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) $< $(LINKER_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(TARGET_BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(TARGET_REUSABLE_OBJECTS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(LINKER_TOOL_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/make: src/tools/make.c $(MAKE_TOOL_SOURCES) src/tools/make/make_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) src/tools/make.c $(MAKE_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@

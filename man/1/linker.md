@@ -49,8 +49,9 @@ for Linux x86-64.
 - `--no-gc-sections` - disable section-level garbage collection and keep the
   current object-level reachability behavior.
 - `--icf=safe`, `--icf` - fold identical live read-only sections that have no
-  relocation records. This includes exact folding and conservative suffix
-  folding for relocation-free read-only data.
+  relocation records, and exact-size sections whose relocation records refer to
+  equivalent targets. Conservative suffix folding is still limited to
+  relocation-free read-only data.
 
 The linker also coalesces eligible ELF mergeable byte-string sections
 (`SHF_MERGE | SHF_STRINGS`, entry size 1) into one string pool. Duplicate strings
@@ -95,9 +96,16 @@ newlinker build tree, or `NEWOS_EXPACK_FLAGS` to override the default `--all`
 packing mode.
 
 `make newlinker-size-report` builds a report-enabled newlinker tree and prints
-file, text, data, BSS, folded-byte, discarded-byte, top-section, and top-object
-size attribution for representative tools. The report target is intended to
-guide feature-preserving size work.
+file size, traditional-baseline size, delta, text, data, BSS, folded-byte,
+discarded-byte, top-section, and top-object size attribution for representative
+tools. Top-section and top-object lists focus on file-backed payload by omitting
+BSS and already folded sections. The report target is intended to guide
+feature-preserving size work.
+
+`make test-newlinker-optimizations` runs small standalone linker fixtures for
+relocation-aware ICF, mergeable string pooling, and reporting output. The ICF
+fixture verifies that two relocated functions fold to the same address while the
+linked executable still runs.
 
 `make freestanding-newlinker` runs `build-freestanding-newlinker.sh` to build the
 freestanding Linux x86-64 tool tree with this linker. Its default size-focused C
@@ -108,9 +116,10 @@ the startup stack-guard initialization call so unused stack-protector support is
 not retained in tiny binaries.
 
 Current measured newlinker sizes on this workspace are: `true` 157 bytes,
-`false` 158 bytes, `cat` 2159 bytes, and `ncc` 199981 bytes, with all 185 tools
-linking successfully. Against the traditional freestanding tree, 184 of 185
-tools are smaller; `ncc` remains the only larger binary.
+`false` 158 bytes, `cat` 2159 bytes, and `ncc` 195565 bytes for focused report
+builds after relocation-aware ICF and embedded-linker reporting removal. Against
+the traditional freestanding tree, 184 of 185 tools are smaller; `ncc` remains
+the only larger binary.
 
 ## LIMITATIONS
 
@@ -124,12 +133,19 @@ tools are smaller; `ncc` remains the only larger binary.
 - `--tiny` trades strict W^X separation for smaller files when writable memory is
   present. Use the default page-aligned layout when separate executable and
   writable mappings are required.
-- `--icf=safe` currently folds only read-only sections with no relocation
-  records. More aggressive relocation-aware folding is not implemented yet.
+- `--icf=safe` relocation-aware folding is intentionally conservative: relocated
+  sections fold only when relocation offsets, types, addends, and target symbols
+  are equivalent. General equivalence-class ICF for mutually recursive local
+  sections is not implemented yet.
 - Mergeable string pooling is limited to allocatable read-only byte-string
   sections with no relocations in the string section itself. Other `SHF_MERGE`
-  entry sizes and relocation-bearing merge sections are kept on the normal
-  section path.
+  entry sizes are implemented as an experimental build-time constant-pooling
+  path, but are disabled by default until every relocation pattern is proven
+  safe. Relocation-bearing merge sections are kept on the normal section path.
+- x86-64 size-changing instruction relaxation is not implemented yet. The
+  current freestanding `ncc` inputs do not expose common same-size GOT relaxation
+  relocations; real byte savings would require rewriting section contents,
+  symbol values, relocation offsets, and layout-dependent references.
 - Archives are parsed by this linker directly; archive symbol indexes are not
   required.
 
