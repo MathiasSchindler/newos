@@ -8,6 +8,14 @@ typedef struct {
     size_t length;
 } CryptoX509DerCert;
 
+typedef struct {
+    char subject[256];
+    char issuer[256];
+    char dns_names[512];
+    long long not_before;
+    long long not_after;
+} CryptoX509CertificateInfo;
+
 int crypto_x509_verify_chain(
     const CryptoX509DerCert *chain,
     size_t chain_count,
@@ -38,6 +46,12 @@ int crypto_x509_get_rsa_public_key(
     unsigned char *exponent,
     size_t exponent_cap,
     size_t *exponent_len_out
+);
+
+int crypto_x509_describe_certificate(
+    const unsigned char *der,
+    size_t der_length,
+    CryptoX509CertificateInfo *info_out
 );
 
 #endif

@@ -541,6 +541,161 @@ static int parse_certificate(X509Parsed *cert, const unsigned char *der, size_t 
     return 0;
 }
 
+static int x509_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    if (buffer == 0 || length_io == 0 || *length_io + 1U >= buffer_size) {
+        return -1;
+    }
+    buffer[*length_io] = ch;
+    *length_io += 1U;
+    buffer[*length_io] = '\0';
+    return 0;
+}
+
+static int x509_append_text(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
+    size_t index = 0U;
+
+    while (text != 0 && text[index] != '\0') {
+        if (x509_append_char(buffer, buffer_size, length_io, text[index]) != 0) {
+            return -1;
+        }
+        ++index;
+    }
+    return 0;
+}
+
+static char x509_hex_digit(unsigned int value) {
+    return (char)(value < 10U ? '0' + value : 'a' + (value - 10U));
+}
+
+static int x509_append_escaped_byte(char *buffer, size_t buffer_size, size_t *length_io, unsigned char byte) {
+    if (byte >= 0x20U && byte <= 0x7eU && byte != '\\' && byte != ',' && byte != '=') {
+        return x509_append_char(buffer, buffer_size, length_io, (char)byte);
+    }
+    if (*length_io + 4U >= buffer_size) {
+        return -1;
+    }
+    buffer[*length_io] = '\\';
+    buffer[*length_io + 1U] = 'x';
+    buffer[*length_io + 2U] = x509_hex_digit((unsigned int)(byte >> 4U) & 0x0fU);
+    buffer[*length_io + 3U] = x509_hex_digit((unsigned int)byte & 0x0fU);
+    *length_io += 4U;
+    buffer[*length_io] = '\0';
+    return 0;
+}
+
+static const char *x509_name_oid_label(const unsigned char *oid, size_t oid_len) {
+    static const unsigned char oid_common_name[] = { 0x55U, 0x04U, 0x03U };
+    static const unsigned char oid_country[] = { 0x55U, 0x04U, 0x06U };
+    static const unsigned char oid_locality[] = { 0x55U, 0x04U, 0x07U };
+    static const unsigned char oid_state[] = { 0x55U, 0x04U, 0x08U };
+    static const unsigned char oid_organization[] = { 0x55U, 0x04U, 0x0aU };
+    static const unsigned char oid_unit[] = { 0x55U, 0x04U, 0x0bU };
+
+    if (oid_is(oid, oid_len, oid_common_name, sizeof(oid_common_name))) return "CN";
+    if (oid_is(oid, oid_len, oid_country, sizeof(oid_country))) return "C";
+    if (oid_is(oid, oid_len, oid_locality, sizeof(oid_locality))) return "L";
+    if (oid_is(oid, oid_len, oid_state, sizeof(oid_state))) return "ST";
+    if (oid_is(oid, oid_len, oid_organization, sizeof(oid_organization))) return "O";
+    if (oid_is(oid, oid_len, oid_unit, sizeof(oid_unit))) return "OU";
+    return "OID";
+}
+
+static int x509_format_name(const unsigned char *der, size_t der_len, char *buffer, size_t buffer_size) {
+    struct der_tlv name;
+    struct der_tlv set;
+    size_t pos = 0U;
+    size_t length = 0U;
+    int first = 1;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    if (der_expect_tlv(der, der_len, &pos, 0x30U, &name) != 0 || pos != der_len) {
+        return -1;
+    }
+    pos = 0U;
+    while (pos < name.value_len) {
+        size_t set_pos = 0U;
+        if (der_expect_tlv(name.value, name.value_len, &pos, 0x31U, &set) != 0) {
+            return -1;
+        }
+        while (set_pos < set.value_len) {
+            struct der_tlv attr;
+            struct der_tlv value;
+            const unsigned char *oid = 0;
+            size_t oid_len = 0U;
+            size_t attr_pos = 0U;
+            size_t index;
+
+            if (der_expect_tlv(set.value, set.value_len, &set_pos, 0x30U, &attr) != 0 ||
+                der_read_oid(attr.value, attr.value_len, &attr_pos, &oid, &oid_len) != 0 ||
+                der_read_tlv(attr.value, attr.value_len, &attr_pos, &value) != 0) {
+                return -1;
+            }
+            if (!first && x509_append_char(buffer, buffer_size, &length, ',') != 0) {
+                return -1;
+            }
+            first = 0;
+            if (x509_append_text(buffer, buffer_size, &length, x509_name_oid_label(oid, oid_len)) != 0 ||
+                x509_append_char(buffer, buffer_size, &length, '=') != 0) {
+                return -1;
+            }
+            for (index = 0U; index < value.value_len; ++index) {
+                if (x509_append_escaped_byte(buffer, buffer_size, &length, value.value[index]) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int x509_format_dns_names(const X509Parsed *cert, char *buffer, size_t buffer_size) {
+    size_t length = 0U;
+    size_t index;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    for (index = 0U; cert != 0 && index < cert->dns_name_count; ++index) {
+        if (index > 0U && x509_append_char(buffer, buffer_size, &length, ',') != 0) {
+            return -1;
+        }
+        if (x509_append_text(buffer, buffer_size, &length, cert->dns_names[index]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int crypto_x509_describe_certificate(
+    const unsigned char *der,
+    size_t der_length,
+    CryptoX509CertificateInfo *info_out
+) {
+    X509Parsed cert;
+
+    if (info_out == 0) {
+        return -1;
+    }
+    memset(info_out, 0, sizeof(*info_out));
+    if (parse_certificate(&cert, der, der_length) != 0) {
+        return -1;
+    }
+    if (x509_format_name(cert.subject, cert.subject_len, info_out->subject, sizeof(info_out->subject)) != 0) {
+        rt_copy_string(info_out->subject, sizeof(info_out->subject), "unparsed");
+    }
+    if (x509_format_name(cert.issuer, cert.issuer_len, info_out->issuer, sizeof(info_out->issuer)) != 0) {
+        rt_copy_string(info_out->issuer, sizeof(info_out->issuer), "unparsed");
+    }
+    (void)x509_format_dns_names(&cert, info_out->dns_names, sizeof(info_out->dns_names));
+    info_out->not_before = cert.not_before;
+    info_out->not_after = cert.not_after;
+    return 0;
+}
+
 static int ascii_lower(int ch) {
     return ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch;
 }

@@ -143,6 +143,42 @@ static int macos_native_tls_version(PlatformTlsClient *client) {
     return client->opaque[1] == (void *)12 ? 12 : 13;
 }
 
+static int macos_native_tls_insecure_opt_in(void) {
+    const char *value = platform_getenv("NEWOS_NATIVE_TLS_INSECURE");
+
+    return value != 0 && value[0] == '1' && value[1] == '\0';
+}
+
+int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out) {
+    CryptoX509DerCert certs[TLS13_MAX_PEER_CERTS];
+    CryptoX509CertificateInfo cert_info;
+    size_t cert_count;
+
+    if (client == 0 || info_out == 0 || !client->active) {
+        return -1;
+    }
+    memset(info_out, 0, sizeof(*info_out));
+    if (macos_native_tls_version(client) == 12) {
+        cert_count = tls12_client_peer_certificates(macos_native_tls12_client(client), certs, TLS12_MAX_PEER_CERTS);
+        rt_copy_string(info_out->protocol, sizeof(info_out->protocol), "TLSv1.2");
+        rt_copy_string(info_out->cipher, sizeof(info_out->cipher), "TLS_RSA_WITH_AES_256_GCM_SHA384");
+    } else {
+        cert_count = tls13_client_peer_certificates(macos_native_tls_client(client), certs, TLS13_MAX_PEER_CERTS);
+        rt_copy_string(info_out->protocol, sizeof(info_out->protocol), "TLSv1.3");
+        rt_copy_string(info_out->cipher, sizeof(info_out->cipher), "TLS_AES_128_GCM_SHA256");
+    }
+    rt_copy_string(info_out->verification, sizeof(info_out->verification), platform_tls_peer_verification_status());
+    if (cert_count == 0U || crypto_x509_describe_certificate(certs[0].data, certs[0].length, &cert_info) != 0) {
+        return -1;
+    }
+    rt_copy_string(info_out->subject, sizeof(info_out->subject), cert_info.subject);
+    rt_copy_string(info_out->issuer, sizeof(info_out->issuer), cert_info.issuer);
+    rt_copy_string(info_out->dns_names, sizeof(info_out->dns_names), cert_info.dns_names);
+    info_out->not_before = cert_info.not_before;
+    info_out->not_after = cert_info.not_after;
+    return 0;
+}
+
 int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) {
     Tls13Client *native;
     Tls12Client *native12;
@@ -190,10 +226,14 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
             return -1;
         }
         if (macos_tls_verify_native12_peer(native12, host) != 0) {
+            if (macos_native_tls_insecure_opt_in()) {
+                macos_tls_set_error("none");
+            } else {
             macos_tls_set_error("certificate verification failed");
             rt_free(native12);
             (void)platform_close(socket_fd);
             return -1;
+            }
         }
         client->opaque[0] = native12;
         client->opaque[1] = (void *)12;
@@ -203,10 +243,14 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
         return 0;
     }
     if (macos_tls_verify_native_peer(native, host) != 0) {
+        if (macos_native_tls_insecure_opt_in()) {
+            macos_tls_set_error("none");
+        } else {
         macos_tls_set_error("certificate verification failed");
         rt_free(native);
         (void)platform_close(socket_fd);
         return -1;
+        }
     }
     client->opaque[0] = native;
     client->opaque[1] = (void *)13;

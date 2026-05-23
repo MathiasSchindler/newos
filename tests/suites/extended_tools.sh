@@ -97,6 +97,37 @@ if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ "$(uname -m 2>/dev
     assert_file_contains "$WORK_DIR/expack_freestanding_linux_file.out" 'ELF' "freestanding Linux expack output is not recognized as ELF"
 fi
 
+"$ROOT_DIR/build/portscan" --profile admin --summary 127.0.0.1 > "$WORK_DIR/portscan_profile.out"
+assert_file_contains "$WORK_DIR/portscan_profile.out" 'summary scanned=11 ' "portscan profile summary did not scan the admin profile"
+assert_file_contains "$WORK_DIR/portscan_profile.out" ' jobs=1 timeout_ms=1000' "portscan summary did not include scan parameters"
+
+cat > "$WORK_DIR/portscan_baseline.csv" <<'EOF'
+host,port,state,service
+127.0.0.1,1,open,old
+EOF
+"$ROOT_DIR/build/portscan" --csv --baseline "$WORK_DIR/portscan_baseline.csv" --diff -a 127.0.0.1 1 > "$WORK_DIR/portscan_diff.csv"
+assert_file_contains "$WORK_DIR/portscan_diff.csv" '^host,port,state,service,latency_ms,reason,change,banner,tls_protocol' "portscan CSV header did not include detailed columns"
+assert_file_contains "$WORK_DIR/portscan_diff.csv" '^127\.0\.0\.1,1,closed,,[0-9][0-9]*,connection_refused,now-closed,' "portscan baseline diff did not report a now-closed port"
+
+"$ROOT_DIR/build/portscan" --json --summary --jobs 2 --per-host 1 -a '[127.0.0.1]' 1,2 > "$WORK_DIR/portscan_json.out"
+assert_file_contains "$WORK_DIR/portscan_json.out" '"latency_ms":' "portscan JSON result did not include latency"
+assert_file_contains "$WORK_DIR/portscan_json.out" '"reason":"connection_refused"' "portscan JSON result did not include reason detail"
+assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"scan_summary"' "portscan JSON summary was not emitted"
+
+if [ -x "$ROOT_DIR/build/freestanding-linux-x86_64/portscan" ] && command -v openssl >/dev/null 2>&1; then
+    TLS_PORT=$((33000 + ($$ % 1000)))
+    openssl req -x509 -newkey rsa:2048 -nodes -subj '/CN=localhost/O=newos-test' \
+        -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' -days 1 \
+        -keyout "$WORK_DIR/portscan.key" -out "$WORK_DIR/portscan.crt" > "$WORK_DIR/portscan_openssl_req.out" 2>&1
+    openssl s_server -quiet -accept "$TLS_PORT" -cert "$WORK_DIR/portscan.crt" -key "$WORK_DIR/portscan.key" > "$WORK_DIR/portscan_sserver.out" 2>&1 &
+    TLS_PID=$!
+    sleep 1
+    "$ROOT_DIR/build/freestanding-linux-x86_64/portscan" --tls-cert --tls-insecure --details 127.0.0.1 "$TLS_PORT" > "$WORK_DIR/portscan_tls.out"
+    kill "$TLS_PID" 2>/dev/null || true
+    assert_file_contains "$WORK_DIR/portscan_tls.out" 'tls=TLSv1\.[23]' "portscan TLS certificate mode did not report a TLS protocol"
+    assert_file_contains "$WORK_DIR/portscan_tls.out" 'cert_subject=CN=localhost,O=newos-test' "portscan TLS certificate mode did not report certificate subject"
+fi
+
 mkdir -p "$WORK_DIR/tar_src"
 printf 'archive-data\n' > "$WORK_DIR/tar_src/file.txt"
 (

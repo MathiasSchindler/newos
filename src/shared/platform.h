@@ -222,6 +222,17 @@ typedef struct {
 } PlatformTlsClient;
 
 typedef struct {
+    char protocol[16];
+    char cipher[64];
+    char verification[160];
+    char subject[256];
+    char issuer[256];
+    char dns_names[512];
+    long long not_before;
+    long long not_after;
+} PlatformTlsPeerInfo;
+
+typedef struct {
     unsigned int index;
     unsigned int flags;
     unsigned int mtu;
@@ -349,6 +360,7 @@ int platform_accept_tcp(int listener_fd, int *client_fd_out);
 int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port);
 const char *platform_tls_last_error(void);
 const char *platform_tls_peer_verification_status(void);
+int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out);
 long platform_tls_read(PlatformTlsClient *client, void *buffer, size_t count);
 long platform_tls_write(PlatformTlsClient *client, const void *buffer, size_t count);
 void platform_tls_close(PlatformTlsClient *client);

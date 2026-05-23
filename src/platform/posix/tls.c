@@ -142,6 +142,36 @@ static int posix_native_tls_version(PlatformTlsClient *client) {
     return client->opaque[1] == (void *)12 ? 12 : 13;
 }
 
+int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out) {
+    CryptoX509DerCert certs[TLS13_MAX_PEER_CERTS];
+    CryptoX509CertificateInfo cert_info;
+    size_t cert_count;
+
+    if (client == 0 || info_out == 0 || !client->active) {
+        return -1;
+    }
+    memset(info_out, 0, sizeof(*info_out));
+    if (posix_native_tls_version(client) == 12) {
+        cert_count = tls12_client_peer_certificates(posix_native_tls12_client(client), certs, TLS12_MAX_PEER_CERTS);
+        rt_copy_string(info_out->protocol, sizeof(info_out->protocol), "TLSv1.2");
+        rt_copy_string(info_out->cipher, sizeof(info_out->cipher), "TLS_RSA_WITH_AES_256_GCM_SHA384");
+    } else {
+        cert_count = tls13_client_peer_certificates(posix_native_tls_client(client), certs, TLS13_MAX_PEER_CERTS);
+        rt_copy_string(info_out->protocol, sizeof(info_out->protocol), "TLSv1.3");
+        rt_copy_string(info_out->cipher, sizeof(info_out->cipher), "TLS_AES_128_GCM_SHA256");
+    }
+    rt_copy_string(info_out->verification, sizeof(info_out->verification), platform_tls_peer_verification_status());
+    if (cert_count == 0U || crypto_x509_describe_certificate(certs[0].data, certs[0].length, &cert_info) != 0) {
+        return -1;
+    }
+    rt_copy_string(info_out->subject, sizeof(info_out->subject), cert_info.subject);
+    rt_copy_string(info_out->issuer, sizeof(info_out->issuer), cert_info.issuer);
+    rt_copy_string(info_out->dns_names, sizeof(info_out->dns_names), cert_info.dns_names);
+    info_out->not_before = cert_info.not_before;
+    info_out->not_after = cert_info.not_after;
+    return 0;
+}
+
 static int posix_native_tls_insecure_opt_in(void) {
     const char *value = getenv("NEWOS_NATIVE_TLS_INSECURE");
 

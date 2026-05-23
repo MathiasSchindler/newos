@@ -212,7 +212,7 @@ for tool in $TOOLS; do
     imginfo|imgcheck|imgmeta|c2pa)
       for src in "${IMAGE_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
-    wget|wtf)
+    wget|wtf|portscan)
       for src in "${TLS_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       for src in "${CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       append_unique_source tool_sources "$TLS_PLATFORM_SOURCE"
