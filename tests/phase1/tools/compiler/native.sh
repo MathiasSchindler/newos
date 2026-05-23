@@ -574,6 +574,11 @@ EOF
 compile_and_check_native "$WORK_DIR/int128_cast.c" "$WORK_DIR/int128_cast_bin" "0" "compiler failed on __int128 cast expressions"
 
 if [ "$RUN_TARGET" = "linux-x86_64" ] && command -v cc >/dev/null 2>&1; then
+    native_ar="$ROOT_DIR/build/ar"
+    if [ ! -x "$native_ar" ] && command -v ar >/dev/null 2>&1; then
+        native_ar=ar
+    fi
+
     cat > "$WORK_DIR/native_archive_start.s" <<'EOF'
 .globl _start
 _start:
@@ -590,7 +595,7 @@ helper:
 EOF
     cc -x assembler -c "$WORK_DIR/native_archive_start.s" -o "$WORK_DIR/native_archive_start.o"
     cc -x assembler -c "$WORK_DIR/native_archive_helper.s" -o "$WORK_DIR/native_archive_helper.o"
-    "$ROOT_DIR/build/ar" rc "$WORK_DIR/libnative_helper.a" "$WORK_DIR/native_archive_helper.o"
+    "$native_ar" rc "$WORK_DIR/libnative_helper.a" "$WORK_DIR/native_archive_helper.o"
     "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
         "$WORK_DIR/native_archive_start.o" "$WORK_DIR/libnative_helper.a" \
         -o "$WORK_DIR/native_archive_bin"
@@ -632,10 +637,56 @@ EOF
         assert_file_contains "$WORK_DIR/native_data_segment_readelf.out" 'R E' "native linker text segment is not executable/read-only"
         assert_file_contains "$WORK_DIR/native_data_segment_readelf.out" 'RW' "native linker did not emit a writable data segment"
     fi
+
+    cat > "$WORK_DIR/native_merge_strings.s" <<'EOF'
+.globl _start
+_start:
+    lea whole(%rip), %rsi
+    cmpb $'s', 0(%rsi)
+    jne fail
+    cmpb $'l', 10(%rsi)
+    jne fail
+    lea duplicate(%rip), %rsi
+    cmpb $'h', 1(%rsi)
+    jne fail
+    lea suffix(%rip), %rsi
+    cmpb $'t', 0(%rsi)
+    jne fail
+    cmpb $0, 4(%rsi)
+    jne fail
+    xor %rdi, %rdi
+    jmp done
+fail:
+    mov $17, %rdi
+done:
+    mov $60, %rax
+    syscall
+.section .rodata.str1.1,"aMS",@progbits,1
+whole:
+    .asciz "shared-tail"
+duplicate:
+    .asciz "shared-tail"
+suffix:
+    .asciz "tail"
+EOF
+    cc -x assembler -c "$WORK_DIR/native_merge_strings.s" -o "$WORK_DIR/native_merge_strings.o"
+    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
+        "$WORK_DIR/native_merge_strings.o" -o "$WORK_DIR/native_merge_strings_bin"
+    "$WORK_DIR/native_merge_strings_bin"
+    merge_string_count=$(grep -ao 'shared-tail' "$WORK_DIR/native_merge_strings_bin" | wc -l | tr -d ' ')
+    assert_text_equals "$merge_string_count" "1" "native linker did not merge duplicate SHF_MERGE strings"
 fi
 
 "$ROOT_DIR/build/ncc" -c "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host.o"
-"$ROOT_DIR/build/hexdump" "$WORK_DIR/default_host.o" > "$WORK_DIR/default_host_hex.out"
+if command -v od >/dev/null 2>&1; then
+    od -An -tx1 -N4 "$WORK_DIR/default_host.o" > "$WORK_DIR/default_host_hex.out"
+else
+    native_hexdump="$ROOT_DIR/build/hexdump"
+    if [ ! -x "$native_hexdump" ] && command -v hexdump >/dev/null 2>&1; then
+        native_hexdump=hexdump
+    fi
+    "$native_hexdump" "$WORK_DIR/default_host.o" > "$WORK_DIR/default_host_hex.out"
+fi
 if ! grep -q '7f 45 4c 46' "$WORK_DIR/default_host_hex.out" && ! grep -q 'cf fa ed fe' "$WORK_DIR/default_host_hex.out"; then
     fail "compiler default target did not emit a supported object format"
 fi

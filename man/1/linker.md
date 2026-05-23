@@ -52,6 +52,12 @@ for Linux x86-64.
   relocation records. This includes exact folding and conservative suffix
   folding for relocation-free read-only data.
 
+The linker also coalesces eligible ELF mergeable byte-string sections
+(`SHF_MERGE | SHF_STRINGS`, entry size 1) into one string pool. Duplicate strings
+and strings that are suffixes of longer strings share the same output bytes while
+relocations are retargeted to the pooled offset. This primarily reduces tools
+with many diagnostics or compiler tables, such as `ncc`.
+
 The linker orders live sections by alignment and places zero-tailed writable data
 late in the data image so padding and trailing zero bytes are less likely to be
 written to disk.
@@ -81,10 +87,12 @@ linker --tiny --gc-sections --map app.map --why-live main -o app @objects.rsp
 ## TESTING
 
 `make test-newlinker-expack` packs every tool from the newlinker freestanding
-tree with `expack`, using `PARALLEL_JOBS` jobs by default. Packed executables are
-written to `build/freestanding-linux-expack` with the same names as the input
-tools. The test also smoke-tests the packed `true`, `false`, and `cat` binaries.
-Set `NEWOS_NEWLINKER_BUILD_DIR` to point at a non-default newlinker build tree.
+tree with `expack --all`, using `PARALLEL_JOBS` jobs by default. Packed
+executables are written to `build/freestanding-linux-expack` with the same names
+as the input tools. The test also smoke-tests the packed `true`, `false`, and
+`cat` binaries. Set `NEWOS_NEWLINKER_BUILD_DIR` to point at a non-default
+newlinker build tree, or `NEWOS_EXPACK_FLAGS` to override the default `--all`
+packing mode.
 
 `make newlinker-size-report` builds a report-enabled newlinker tree and prints
 file, text, data, BSS, folded-byte, discarded-byte, top-section, and top-object
@@ -100,7 +108,9 @@ the startup stack-guard initialization call so unused stack-protector support is
 not retained in tiny binaries.
 
 Current measured newlinker sizes on this workspace are: `true` 157 bytes,
-`false` 158 bytes, and `cat` 2171 bytes, with all 185 tools linking successfully.
+`false` 158 bytes, `cat` 2159 bytes, and `ncc` 199981 bytes, with all 185 tools
+linking successfully. Against the traditional freestanding tree, 184 of 185
+tools are smaller; `ncc` remains the only larger binary.
 
 ## LIMITATIONS
 
@@ -115,8 +125,11 @@ Current measured newlinker sizes on this workspace are: `true` 157 bytes,
   present. Use the default page-aligned layout when separate executable and
   writable mappings are required.
 - `--icf=safe` currently folds only read-only sections with no relocation
-  records. More aggressive relocation-aware folding and general string tail
-  merging across relocation-bearing sections are not implemented yet.
+  records. More aggressive relocation-aware folding is not implemented yet.
+- Mergeable string pooling is limited to allocatable read-only byte-string
+  sections with no relocations in the string section itself. Other `SHF_MERGE`
+  entry sizes and relocation-bearing merge sections are kept on the normal
+  section path.
 - Archives are parsed by this linker directly; archive symbol indexes are not
   required.
 

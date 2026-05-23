@@ -5,7 +5,9 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 BUILD_DIR=${NEWOS_NEWLINKER_BUILD_DIR:-$ROOT_DIR/build/freestanding-linux-newlinker}
 EXPACK=${NEWOS_EXPACK:-$ROOT_DIR/build/host-linux-x86_64/expack}
 OUTPUT_DIR=${NEWOS_NEWLINKER_EXPACK_OUT:-$ROOT_DIR/build/freestanding-linux-expack}
+EXPACK_FLAGS=${NEWOS_EXPACK_FLAGS---all}
 JOBS=${PARALLEL_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+read -r -a EXPACK_FLAGS_ARRAY <<< "$EXPACK_FLAGS"
 if [[ -n "${NEWOS_NEWLINKER_EXPACK_TOOLS:-}" ]]; then
     TOOLS=$NEWOS_NEWLINKER_EXPACK_TOOLS
 else
@@ -42,7 +44,7 @@ pack_one() {
         printf 'fail\t%s\tmissing newlinker tool: %s\n' "$tool" "$input" > "$result"
         return 1
     fi
-    if ! "$EXPACK" -q "$input" "$output" >"$log" 2>&1; then
+    if ! "$EXPACK" -q "${EXPACK_FLAGS_ARRAY[@]}" "$input" "$output" >"$log" 2>&1; then
         printf 'fail\t%s\t' "$tool" > "$result"
         sed -n '1p' "$log" >> "$result"
         return 1
@@ -107,4 +109,4 @@ if ! cmp -s "$OUTPUT_DIR/.cat.in" "$OUTPUT_DIR/.cat.out"; then
 fi
 
 count=$(printf '%s\n' $TOOLS | wc -l)
-echo "NEWLINKER_EXPACK_OK tools=$count jobs=$JOBS output=$OUTPUT_DIR"
+echo "NEWLINKER_EXPACK_OK tools=$count jobs=$JOBS flags=${EXPACK_FLAGS:-none} output=$OUTPUT_DIR"
