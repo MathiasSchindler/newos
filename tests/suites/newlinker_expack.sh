@@ -108,5 +108,12 @@ if ! cmp -s "$OUTPUT_DIR/.cat.in" "$OUTPUT_DIR/.cat.out"; then
     exit 1
 fi
 
+pwd_output=$("$OUTPUT_DIR/pwd")
+expected_pwd=$(pwd)
+if [[ "$pwd_output" != "$expected_pwd" ]]; then
+    echo "packed pwd output mismatch: got '$pwd_output', expected '$expected_pwd'" >&2
+    exit 1
+fi
+
 count=$(printf '%s\n' $TOOLS | wc -l)
 echo "NEWLINKER_EXPACK_OK tools=$count jobs=$JOBS flags=${EXPACK_FLAGS:-none} output=$OUTPUT_DIR"

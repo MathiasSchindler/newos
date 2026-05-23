@@ -1472,7 +1472,7 @@ static int expack_compress_lzrep(const unsigned char *data, size_t size, unsigne
 static void expack_x86_bcj_transform(unsigned char *data, size_t size, int include_rip_relative) {
     size_t position = 0U;
 
-    while (position + 4U < size) {
+    while (position + 5U < size) {
         if (data[position] == 0xe8U || data[position] == 0xe9U) {
             unsigned int value = archive_read_u32_le(data + position + 1U);
             value += (unsigned int)(position + 5U);
