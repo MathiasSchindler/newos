@@ -2708,9 +2708,11 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     int gc_sections = options != 0 && options->gc_sections != 0;
     const char *entry_symbol = linker_entry_symbol(options);
     const char *lto_cc = (options != 0 && options->lto_cc != 0 && options->lto_cc[0] != '\0') ? options->lto_cc : 0;
+    const char *lto_ir_path = 0;
     char lto_prelink_path[COMPILER_PATH_CAPACITY];
     const char *lto_prelink_single[1];
     int did_lto_prelink = 0;
+    int lto_ir_found = 0;
 
     if (error_out != 0 && error_size > 0U) {
         error_out[0] = '\0';
@@ -2729,8 +2731,7 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
         set_link_error(error_out, error_size, "invalid object count for native linker", "");
         return -1;
     }
-    if (lto_cc != 0) {
-        int lto_ir_found = 0;
+    {
         size_t out_len;
         for (i = 0; i < object_count && !lto_ir_found; ++i) {
             if (!ends_with_text(object_paths[i], ".a")) {
@@ -2739,11 +2740,18 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
                 char probe_err[256];
                 if (read_file_alloc(object_paths[i], LINKER_MAX_OBJECT_SIZE, &probe, &probe_size, probe_err, sizeof(probe_err)) == 0) {
                     lto_ir_found = detect_lto_ir(probe, probe_size);
+                    if (lto_ir_found) {
+                        lto_ir_path = object_paths[i];
+                    }
                     rt_free(probe);
                 }
             }
         }
         if (lto_ir_found) {
+            if (lto_cc == 0) {
+                set_link_error(error_out, error_size, "GCC LTO IR object; add --lto-cc=gcc to enable transparent prelink", lto_ir_path != 0 ? lto_ir_path : "");
+                return -1;
+            }
             out_len = rt_strlen(output_path);
             if (out_len + 16U >= sizeof(lto_prelink_path)) {
                 set_link_error(error_out, error_size, "output path too long for LTO prelink temp file", output_path);

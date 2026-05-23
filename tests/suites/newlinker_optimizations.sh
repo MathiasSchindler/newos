@@ -21,6 +21,11 @@ if ! command -v cc >/dev/null 2>&1; then
     echo "missing cc for assembler fixtures" >&2
     exit 1
 fi
+if command -v gcc >/dev/null 2>&1; then
+    LTO_CC=${NEWOS_LTO_CC:-gcc}
+else
+    LTO_CC=${NEWOS_LTO_CC:-}
+fi
 bash -n build-freestanding-newlinker.sh
 
 cat > "$WORK_DIR/icf_reloc.s" <<'ASM'
@@ -104,6 +109,42 @@ string_count=$(grep -ao 'shared-tail' "$WORK_DIR/merge_strings.bin" | wc -l | tr
 if [[ "$string_count" != "1" ]]; then
     echo "mergeable string pooling kept $string_count copies" >&2
     exit 1
+fi
+
+if [[ -n "$LTO_CC" ]]; then
+    cat > "$WORK_DIR/gcc_lto_start.c" <<'C'
+__attribute__((noreturn)) void _start(void) {
+    __asm__ volatile(
+        "mov $60, %%rax\n"
+        "xor %%rdi, %%rdi\n"
+        "syscall\n"
+        :
+        :
+        : "rax", "rdi", "memory");
+    __builtin_unreachable();
+}
+C
+    "$LTO_CC" -flto -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables \
+        -ffunction-sections -fdata-sections -fno-pic -fno-pie \
+        -c "$WORK_DIR/gcc_lto_start.c" -o "$WORK_DIR/gcc_lto_start.o"
+    if ! grep -aq '\.gnu\.lto_' "$WORK_DIR/gcc_lto_start.o"; then
+        echo "GCC LTO fixture did not contain .gnu.lto_* sections" >&2
+        exit 1
+    fi
+    if "$LINKER" --tiny --gc-sections -m x86_64-linux \
+        -o "$WORK_DIR/gcc_lto_missing.bin" "$WORK_DIR/gcc_lto_start.o" \
+        > "$WORK_DIR/gcc_lto_missing.out" 2>&1; then
+        echo "GCC LTO fixture linked without --lto-cc" >&2
+        exit 1
+    fi
+    if ! grep -q -- '--lto-cc=gcc' "$WORK_DIR/gcc_lto_missing.out"; then
+        echo "GCC LTO fixture did not report the --lto-cc requirement" >&2
+        exit 1
+    fi
+    "$LINKER" --tiny --gc-sections --lto-cc="$LTO_CC" -m x86_64-linux \
+        -o "$WORK_DIR/gcc_lto_start.bin" "$WORK_DIR/gcc_lto_start.o"
+    "$WORK_DIR/gcc_lto_start.bin"
 fi
 
 echo "NEWLINKER_OPTIMIZATIONS_OK"

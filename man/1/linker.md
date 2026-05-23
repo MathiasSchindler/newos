@@ -70,6 +70,20 @@ The linker orders live sections by alignment and places zero-tailed writable dat
 late in the data image so padding and trailing zero bytes are less likely to be
 written to disk.
 
+## GCC LTO Notes
+
+The supported LTO path is GCC. `make freestanding` compiles freestanding Linux
+objects with `-flto` by default and passes `--lto-cc=$(CC)` to this linker. The
+linker does not parse GCC's internal IR; instead it detects `.gnu.lto_*` sections
+and asks GCC to lower all inputs into one native relocatable using
+`-flinker-output=nolto-rel`, then applies the normal newlinker size passes.
+
+Use `make newlinker-lto-size-report` to rebuild both no-LTO and GCC-LTO
+freestanding trees and print total size deltas, largest regressions, and largest
+wins. Current GCC tuning deliberately keeps the default IPA behavior: tested
+`-fno-partial-inlining` and `-fno-ipa-cp-clone` variants did not improve the
+overall size result, and `-fno-partial-inlining` made the total output larger.
+
 ## Reporting Options
 
 - `--stats` - print link statistics to standard output, including live object and

@@ -62,9 +62,14 @@ On Linux x86-64, `make freestanding` builds the canonical freestanding tool tree
 with the project ELF linker, parallel link jobs, size-focused compiler flags, and
 the raw Linux syscall backend. It honors `TARGET_CC`, so use `TARGET_CC=clang` or
 `TARGET_CC=gcc` to choose the object compiler; by default it uses the Makefile's
-normal target compiler selection. Set `FREESTANDING_USE_NEWLINKER=0` only when
-you need the older system-linker freestanding path for comparison. On local
-macOS/aarch64, `make freestanding` still builds the macOS freestanding-ish target.
+normal target compiler selection. GCC LTO is enabled by default on this path:
+the build script compiles objects with `-flto` and lets the project linker invoke
+GCC through `--lto-cc` to lower `.gnu.lto_*` inputs into native ELF before the
+final size passes. Use `make newlinker-lto-size-report` to rebuild no-LTO and
+GCC-LTO trees side by side and print total deltas plus the largest wins and
+regressions. Set `FREESTANDING_USE_NEWLINKER=0` only when you need the older
+system-linker freestanding path for comparison. On local macOS/aarch64, `make
+freestanding` still builds the macOS freestanding-ish target.
 The native no-CRT Windows PE path is `build-windows-freestanding.ps1`. It now
 builds the small text/core tools, comparison/checksum/image/path/filesystem
 tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
