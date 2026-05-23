@@ -68,7 +68,10 @@ with many diagnostics or compiler tables, such as `ncc`.
 
 The linker orders live sections by alignment and places zero-tailed writable data
 late in the data image so padding and trailing zero bytes are less likely to be
-written to disk.
+written to disk. In `--tiny` mode, segment-internal text, data, and BSS starts
+are aligned to the strongest live section requirement instead of a fixed padding
+boundary, so post-LTO outputs do not keep unused header or segment gaps when GCC
+emits only byte-aligned sections.
 
 ## GCC LTO Notes
 

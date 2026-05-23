@@ -47,6 +47,7 @@ done:
     syscall
 .section .text.f1,"ax",@progbits
 .globl f1
+.p2align 4
 f1:
     call helper
     ret
@@ -108,6 +109,23 @@ cc -x assembler -c "$WORK_DIR/merge_strings.s" -o "$WORK_DIR/merge_strings.o"
 string_count=$(grep -ao 'shared-tail' "$WORK_DIR/merge_strings.bin" | wc -l | tr -d ' ')
 if [[ "$string_count" != "1" ]]; then
     echo "mergeable string pooling kept $string_count copies" >&2
+    exit 1
+fi
+
+cat > "$WORK_DIR/tiny_minimal.s" <<'ASM'
+.globl _start
+_start:
+    xor %rdi, %rdi
+    mov $60, %rax
+    syscall
+ASM
+cc -x assembler -c "$WORK_DIR/tiny_minimal.s" -o "$WORK_DIR/tiny_minimal.o"
+"$LINKER" --tiny --gc-sections -m x86_64-linux \
+    -o "$WORK_DIR/tiny_minimal.bin" "$WORK_DIR/tiny_minimal.o"
+"$WORK_DIR/tiny_minimal.bin"
+tiny_minimal_size=$(wc -c < "$WORK_DIR/tiny_minimal.bin")
+if [[ "$tiny_minimal_size" -ge 140 ]]; then
+    echo "tiny layout kept unnecessary text padding: $tiny_minimal_size bytes" >&2
     exit 1
 fi
 

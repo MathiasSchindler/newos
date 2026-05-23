@@ -1585,7 +1585,7 @@ static int merge_const_sections(LinkObject *objects, size_t object_count, char *
 #endif
 
 static int sections_have_same_bytes(const LinkObject *left_object, const LinkSection *left, const LinkObject *right_object, const LinkSection *right) {
-    if (left->size != right->size || left->align != right->align || left->type != right->type || left->size == 0ULL) {
+    if (left->size != right->size || left->type != right->type || left->size == 0ULL) {
         return 0;
     }
     if (left->type == SHT_NOBITS || right->type == SHT_NOBITS) {
@@ -1724,7 +1724,9 @@ static void fold_identical_sections(LinkObject *objects, size_t object_count) {
                     if (!master->live || master->folded || master->kind != LINK_SECTION_TEXT) {
                         continue;
                     }
-                    if (sections_have_same_bytes(&objects[i], section, &objects[master_object_index], master) && sections_have_equivalent_relocations(&objects[i], section, &objects[master_object_index], master)) {
+                    if (sections_have_same_bytes(&objects[i], section, &objects[master_object_index], master) &&
+                        section_alignment_satisfies(master->align, section->align, 0ULL) &&
+                        sections_have_equivalent_relocations(&objects[i], section, &objects[master_object_index], master)) {
                         section->folded = 1;
                         section->fold_object_index = master_object_index;
                         section->fold_section_index = master_section_index;
@@ -2143,6 +2145,27 @@ static void layout_objects(LinkObject *objects, size_t object_count, uint64_t *t
     *text_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_TEXT);
     *data_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_DATA);
     *bss_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_BSS);
+}
+
+static uint64_t max_live_section_alignment(const LinkObject *objects, size_t object_count, LinkSectionKind kind) {
+    uint64_t alignment = 1ULL;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        if (!objects[i].live) {
+            continue;
+        }
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+
+            if (section->live && !section->folded && section->kind == kind && section->align > alignment) {
+                alignment = section->align;
+            }
+        }
+    }
+    return alignment;
 }
 
 static void copy_sections(LinkObject *objects, size_t object_count, unsigned char *output) {
@@ -2698,6 +2721,9 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     int has_writable_segment;
     uint64_t header_size;
     uint64_t padding_size;
+    uint64_t text_alignment;
+    uint64_t data_alignment;
+    uint64_t bss_alignment;
     uint64_t entry;
     int start_index;
     int fd;
@@ -2817,10 +2843,13 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     layout_objects(linker_objects, object_count, &text_size, &data_size, &bss_size);
     has_writable_segment = data_size != 0 || bss_size != 0;
     header_size = ELF64_EHDR_SIZE + ((uint64_t)((tiny || !has_writable_segment) ? 1U : 2U) * ELF64_PHDR_SIZE);
-    text_file_offset = align_u64(header_size, 16U);
+    text_alignment = max_live_section_alignment(linker_objects, object_count, LINK_SECTION_TEXT);
+    data_alignment = max_live_section_alignment(linker_objects, object_count, LINK_SECTION_DATA);
+    bss_alignment = max_live_section_alignment(linker_objects, object_count, LINK_SECTION_BSS);
+    text_file_offset = align_u64(header_size, tiny ? text_alignment : (text_alignment > 16ULL ? text_alignment : 16ULL));
     if (has_writable_segment) {
-        data_file_offset = align_u64(text_file_offset + text_size, tiny ? 16U : 0x1000U);
-        bss_vaddr_offset = align_u64(data_file_offset + data_size, 8U);
+        data_file_offset = align_u64(text_file_offset + text_size, tiny ? data_alignment : (data_alignment > 0x1000ULL ? data_alignment : 0x1000ULL));
+        bss_vaddr_offset = align_u64(data_file_offset + data_size, bss_alignment > 8ULL ? bss_alignment : 8ULL);
         file_size = data_file_offset + data_size;
         memory_size = bss_vaddr_offset + bss_size;
     } else {
