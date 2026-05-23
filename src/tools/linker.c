@@ -10,18 +10,11 @@
 #define LINKER_TOOL_PATH_CAPACITY 4096U
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--tiny] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<gcc>] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
 }
 
 static int starts_with(const char *text, const char *prefix) {
     return rt_strncmp(text, prefix, rt_strlen(prefix)) == 0;
-}
-
-static int target_supported(const char *target) {
-    return rt_strcmp(target, "elf_x86_64") == 0 ||
-           rt_strcmp(target, "elf64-x86_64") == 0 ||
-           rt_strcmp(target, "x86_64-linux") == 0 ||
-           rt_strcmp(target, "linux-x86_64") == 0;
 }
 
 static int read_response_file(const char *path, char **buffer_out) {
@@ -218,7 +211,7 @@ int main(int argc, char **argv) {
                 print_usage(expanded_args[0]);
                 return 1;
             }
-            if (!target_supported(expanded_args[++i])) {
+            if (compiler_linker_target_parse(expanded_args[++i], &options.target) != 0) {
                 tool_write_error(expanded_args[0], "unsupported emulation: ", expanded_args[i]);
                 return 1;
             }
@@ -226,7 +219,7 @@ int main(int argc, char **argv) {
         }
         if (parsing_options && starts_with(arg, "--target=")) {
             const char *target = arg + 9;
-            if (!target_supported(target)) {
+            if (compiler_linker_target_parse(target, &options.target) != 0) {
                 tool_write_error(expanded_args[0], "unsupported target: ", target);
                 return 1;
             }
@@ -359,7 +352,7 @@ int main(int argc, char **argv) {
         print_usage(expanded_args[0]);
         return 1;
     }
-    if (compiler_link_elf64_x86_64_static_options(inputs, input_count, output_path, &options, error, sizeof(error)) != 0) {
+    if (compiler_link_static_options(inputs, input_count, output_path, &options, error, sizeof(error)) != 0) {
         tool_write_error(expanded_args[0], error[0] != '\0' ? error : "link failed", "");
         return 1;
     }

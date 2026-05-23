@@ -83,6 +83,11 @@ modern macOS requires for runnable executables.
   default; LTO is enabled by default for the macOS freestanding-ish target and
   can be disabled with `MACOS_FREESTANDING_LTO=0`; XML tools and `ncc`
   currently opt out of LTO because they hit Apple-clang LTO-only crashes
+- size work on this path should compare pre-raster payload measurements as well
+  as final file bytes. `make macos-freestanding-size-report` reports exact file
+  bytes and summed file-backed Mach-O section bytes for representative tools, so
+  linker or LTO changes can be judged before 16 KiB-ish Mach-O layout/signature
+  steps hide smaller gains or regressions
 - keeps privileged or host-mutating operations conservative on Darwin when the
   project does not yet have a validated macOS implementation, so some admin
   front-ends build and report unsupported operations instead of changing the host

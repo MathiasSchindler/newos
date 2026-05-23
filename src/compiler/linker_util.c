@@ -1,5 +1,39 @@
 #include "linker_internal.h"
 
+const char *compiler_linker_target_name(CompilerLinkerTarget target) {
+    switch (target) {
+        case COMPILER_LINKER_TARGET_ELF64_X86_64:
+            return "elf64-x86_64";
+        case COMPILER_LINKER_TARGET_MACHO64_AARCH64:
+            return "macho64-aarch64";
+    }
+    return "unknown";
+}
+
+int compiler_linker_target_parse(const char *text, CompilerLinkerTarget *target_out) {
+    CompilerLinkerTarget target;
+
+    if (text == 0 || target_out == 0) {
+        return -1;
+    }
+    if (rt_strcmp(text, "elf_x86_64") == 0 ||
+        rt_strcmp(text, "elf64-x86_64") == 0 ||
+        rt_strcmp(text, "x86_64-linux") == 0 ||
+        rt_strcmp(text, "linux-x86_64") == 0) {
+        target = COMPILER_LINKER_TARGET_ELF64_X86_64;
+    } else if (rt_strcmp(text, "macho64-aarch64") == 0 ||
+               rt_strcmp(text, "mach-o-arm64") == 0 ||
+               rt_strcmp(text, "mach-o-aarch64") == 0 ||
+               rt_strcmp(text, "macos-aarch64") == 0 ||
+               rt_strcmp(text, "macos-arm64") == 0) {
+        target = COMPILER_LINKER_TARGET_MACHO64_AARCH64;
+    } else {
+        return -1;
+    }
+    *target_out = target;
+    return 0;
+}
+
 void set_link_error(char *error_out, size_t error_size, const char *message, const char *detail) {
     if (error_out == 0 || error_size == 0U) {
         return;

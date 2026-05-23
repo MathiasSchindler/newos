@@ -128,7 +128,7 @@ MACOS_FREESTANDING_HASH_TOOLS := md5sum sha256sum sha512sum
 MACOS_FREESTANDING_TLS_TOOLS := wtf wget portscan
 MACOS_FREESTANDING_AWK_TOOLS := awk
 MACOS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
-MACOS_FREESTANDING_ARCHIVE_TOOLS := gzip gunzip bzip2 bunzip2 xz unxz tar ar readelf objdump strip expack
+MACOS_FREESTANDING_ARCHIVE_TOOLS := gzip gunzip bzip2 bunzip2 xz unxz tar ar nm size readelf objdump strip expack
 MACOS_FREESTANDING_XML_TOOLS := xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
 MACOS_FREESTANDING_NCC_TOOLS := ncc
 MACOS_FREESTANDING_SSH_TOOLS := ssh
@@ -261,7 +261,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-newlinker freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-newlinker-expack test-newlinker-optimizations newlinker-size-report newlinker-lto-size-report benchmark clean
+.PHONY: all host freestanding freestanding-newlinker freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -273,6 +273,9 @@ test-smoke: host
 
 test-inception: inception
 	NEWOS_INCEPTION_BUILD_DIR="$(abspath $(INCEPTION_BUILD_DIR))" sh ./tests/suites/inception.sh
+
+test-linker-cli: $(BUILD_DIR)/linker
+	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" sh ./tests/suites/linker_cli.sh
 
 freestanding-newlinker: $(BUILD_DIR)/linker
 	WORK="$(abspath $(NEWLINKER_STANDALONE_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" bash build-freestanding-newlinker.sh
@@ -288,6 +291,9 @@ newlinker-size-report: $(BUILD_DIR)/linker
 
 newlinker-lto-size-report: $(BUILD_DIR)/linker
 	LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash report-newlinker-lto-size.sh
+
+macos-freestanding-size-report: freestanding-macos
+	bash report-macos-freestanding-size.sh
 
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 test-freestanding:

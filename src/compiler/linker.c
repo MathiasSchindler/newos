@@ -9,12 +9,12 @@ static const char *linker_entry_symbol(const CompilerLinkerOptions *options) {
     return "_start";
 }
 
-int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
-                                              size_t object_count,
-                                              const char *output_path,
-                                              const CompilerLinkerOptions *options,
-                                              char *error_out,
-                                              size_t error_size) {
+static int link_elf64_x86_64_static_options(const char *const *object_paths,
+                                            size_t object_count,
+                                            const char *output_path,
+                                            const CompilerLinkerOptions *options,
+                                            char *error_out,
+                                            size_t error_size) {
     uint64_t text_size;
     uint64_t data_size;
     uint64_t bss_size;
@@ -43,7 +43,7 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     char lto_prelink_path[COMPILER_PATH_CAPACITY];
     const char *lto_prelink_single[1];
     int did_lto_prelink = 0;
-    int lto_ir_found = 0;
+    LinkLtoKind lto_kind = LINK_LTO_NONE;
 
     if (error_out != 0 && error_size > 0U) {
         error_out[0] = '\0';
@@ -64,23 +64,23 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
     }
     {
         size_t out_len;
-        for (i = 0; i < object_count && !lto_ir_found; ++i) {
+        for (i = 0; i < object_count && lto_kind == LINK_LTO_NONE; ++i) {
             if (!ends_with_text(object_paths[i], ".a")) {
                 unsigned char *probe = 0;
                 size_t probe_size = 0;
                 char probe_err[256];
                 if (read_file_alloc(object_paths[i], LINKER_MAX_OBJECT_SIZE, &probe, &probe_size, probe_err, sizeof(probe_err)) == 0) {
-                    lto_ir_found = detect_lto_ir(probe, probe_size);
-                    if (lto_ir_found) {
+                    lto_kind = detect_lto_ir_kind(probe, probe_size);
+                    if (lto_kind != LINK_LTO_NONE) {
                         lto_ir_path = object_paths[i];
                     }
                     rt_free(probe);
                 }
             }
         }
-        if (lto_ir_found) {
+        if (lto_kind != LINK_LTO_NONE) {
             if (lto_cc == 0) {
-                set_link_error(error_out, error_size, "GCC LTO IR object; add --lto-cc=gcc to enable transparent prelink", lto_ir_path != 0 ? lto_ir_path : "");
+                set_link_error(error_out, error_size, lto_kind == LINK_LTO_GCC ? "GCC LTO IR object; add --lto-cc=gcc to enable transparent prelink" : "LLVM/Clang LTO bitcode object; add --lto-cc=clang to enable transparent prelink", lto_ir_path != 0 ? lto_ir_path : "");
                 return -1;
             }
             out_len = rt_strlen(output_path);
@@ -90,7 +90,11 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
             }
             rt_copy_string(lto_prelink_path, sizeof(lto_prelink_path), output_path);
             rt_copy_string(lto_prelink_path + out_len, sizeof(lto_prelink_path) - out_len, ".lto-prelink.o");
-            if (run_gcc_lto_prelink(object_paths, object_count, entry_symbol, lto_cc, lto_prelink_path, error_out, error_size) != 0) {
+            if (lto_kind == LINK_LTO_GCC) {
+                if (run_gcc_lto_prelink(object_paths, object_count, entry_symbol, lto_cc, lto_prelink_path, error_out, error_size) != 0) {
+                    return -1;
+                }
+            } else if (run_clang_lto_prelink_elf64_x86_64(object_paths, object_count, entry_symbol, lto_cc, lto_prelink_path, error_out, error_size) != 0) {
                 return -1;
             }
             lto_prelink_single[0] = lto_prelink_path;
@@ -288,6 +292,34 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
         platform_remove_file(lto_prelink_path);
     }
     return 0;
+}
+
+int compiler_link_static_options(const char *const *object_paths,
+                                 size_t object_count,
+                                 const char *output_path,
+                                 const CompilerLinkerOptions *options,
+                                 char *error_out,
+                                 size_t error_size) {
+    CompilerLinkerTarget target = options != 0 ? options->target : COMPILER_LINKER_TARGET_ELF64_X86_64;
+
+    if (target == COMPILER_LINKER_TARGET_ELF64_X86_64) {
+        return link_elf64_x86_64_static_options(object_paths, object_count, output_path, options, error_out, error_size);
+    }
+    if (target == COMPILER_LINKER_TARGET_MACHO64_AARCH64) {
+        set_link_error(error_out, error_size, "Mach-O arm64 linker backend is not implemented yet", output_path);
+        return -1;
+    }
+    set_link_error(error_out, error_size, "unsupported linker target", compiler_linker_target_name(target));
+    return -1;
+}
+
+int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
+                                              size_t object_count,
+                                              const char *output_path,
+                                              const CompilerLinkerOptions *options,
+                                              char *error_out,
+                                              size_t error_size) {
+    return link_elf64_x86_64_static_options(object_paths, object_count, output_path, options, error_out, error_size);
 }
 
 int compiler_link_elf64_x86_64_static(const char *const *object_paths, size_t object_count, const char *output_path, char *error_out, size_t error_size) {

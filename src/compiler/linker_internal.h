@@ -74,6 +74,12 @@ typedef unsigned long long uint64_t;
 typedef long long          int64_t;
 typedef int                int32_t;
 
+typedef enum {
+    LINK_LTO_NONE = 0,
+    LINK_LTO_GCC,
+    LINK_LTO_LLVM
+} LinkLtoKind;
+
 /* ── core data types ─────────────────────────────────────────────────────── */
 typedef enum {
     LINK_SECTION_NONE = 0,
@@ -313,7 +319,9 @@ int write_why_live(int fd, const LinkObject *objects, size_t object_count, const
 #endif
 
 /* ── linker_lto.c ────────────────────────────────────────────────────────── */
+LinkLtoKind detect_lto_ir_kind(const unsigned char *file, size_t size);
 int detect_lto_ir(const unsigned char *file, size_t size);
 int run_gcc_lto_prelink(const char *const *paths, size_t count, const char *entry_symbol, const char *lto_cc, const char *out_path, char *error_out, size_t error_size);
+int run_clang_lto_prelink_elf64_x86_64(const char *const *paths, size_t count, const char *entry_symbol, const char *lto_cc, const char *out_path, char *error_out, size_t error_size);
 
 #endif /* NEWOS_LINKER_INTERNAL_H */

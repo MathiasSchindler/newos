@@ -7,7 +7,7 @@
 ## SYNOPSIS
 
 ```
-linker [-o OUTPUT] [-m elf_x86_64] [options] object-or-archive ...
+linker [-o OUTPUT] [-m elf_x86_64] [--target=TARGET] [options] object-or-archive ...
 ```
 
 ## DESCRIPTION
@@ -17,15 +17,22 @@ linker [-o OUTPUT] [-m elf_x86_64] [options] object-or-archive ...
 entry point for small freestanding binaries: no dynamic linker, no standard C
 library startup files, and no final section-header table are emitted.
 
-The initial target is intentionally narrow. Inputs must define `_start` or
+The implemented target is intentionally narrow. Inputs must define `_start` or
 provide an archive member that defines it. The output is an `ET_EXEC` ELF64 file
 for Linux x86-64.
+
+The command-line parser now has an explicit linker target boundary. The supported
+implemented target spellings select the existing ELF64 x86-64 backend. Mach-O
+arm64 spellings are recognized as a named target, but the backend deliberately
+reports that Mach-O arm64 linking is not implemented yet. This keeps future
+Darwin work out of the ELF-specific path instead of hiding it behind aliases.
 
 ## OPTIONS
 
 - `-o OUTPUT`, `--output=OUTPUT` - write the executable to OUTPUT instead of `a.out`
 - `-m elf_x86_64` - select the ELF x86-64 emulation
-- `--target=elf64-x86_64` - select the ELF64 x86-64 target
+- `--target=elf64-x86_64`, `--target=x86_64-linux`, `--target=linux-x86_64` - select the implemented ELF64 x86-64 target
+- `--target=mach-o-arm64`, `--target=macho64-aarch64`, `--target=macos-aarch64` - select the named Mach-O arm64 target; currently reports an unimplemented backend
 - `-e SYMBOL`, `--entry=SYMBOL` - use SYMBOL as the entry symbol instead of `_start`
 - `-static`, `--static` - accepted for compatibility; static linking is always used
 - `@FILE` - read additional whitespace-separated arguments from FILE; single and double quotes are honored
@@ -33,13 +40,13 @@ for Linux x86-64.
 - `-lNAME` - link `libNAME.a` from the configured library search path or current directory
 - `--start-group`, `--end-group`, `--whole-archive`, `--no-whole-archive` - accepted for command-line compatibility
 - `-h`, `--help` - show usage
-- `--lto-cc=COMPILER` - enable transparent GCC LTO IR support. When any input
-  object contains `.gnu.lto_*` sections (i.e. was compiled with `gcc -flto`),
-  the linker automatically invokes COMPILER to run a GCC LTO prelink step
-  (`gcc -flto -flinker-output=nolto-rel -r -nostdlib ...`) before proceeding
-  with normal linking. The resulting native ELF relocatable replaces the original
-  LTO IR inputs. Without this option, passing GCC LTO IR objects produces a
-  diagnostic explaining the requirement.
+- `--lto-cc=COMPILER` - enable transparent LTO prelink support. When any input
+  object contains GCC `.gnu.lto_*` sections, the linker invokes COMPILER to run a
+  GCC LTO prelink step (`gcc -flto -flinker-output=nolto-rel -r -nostdlib ...`)
+  before normal linking. LLVM/Clang bitcode inputs are detected separately and
+  ask for `--lto-cc=clang`; for the ELF64 x86-64 backend this routes through a
+  Clang/lld relocatable prelink step. In both cases, the resulting native ELF
+  relocatable replaces the original LTO IR inputs.
 
 ## Size and Layout Options
 
@@ -73,13 +80,19 @@ are aligned to the strongest live section requirement instead of a fixed padding
 boundary, so post-LTO outputs do not keep unused header or segment gaps when GCC
 emits only byte-aligned sections.
 
-## GCC LTO Notes
+## LTO Notes
 
-The supported LTO path is GCC. `make freestanding` compiles freestanding Linux
-objects with `-flto` by default and passes `--lto-cc=$(CC)` to this linker. The
-linker does not parse GCC's internal IR; instead it detects `.gnu.lto_*` sections
-and asks GCC to lower all inputs into one native relocatable using
-`-flinker-output=nolto-rel`, then applies the normal newlinker size passes.
+The linker does not parse compiler IR. It detects LTO containers and asks the
+selected compiler driver to lower all inputs into one native relocatable, then
+applies the normal newlinker size passes. GCC LTO uses `.gnu.lto_*` section
+detection and `-flinker-output=nolto-rel`. LLVM/Clang bitcode detection covers
+raw bitcode magic and Mach-O `__LLVM,__bitcode` markers; the current native
+prelink implementation is for the ELF64 x86-64 backend and expects a clang/lld
+toolchain capable of `-target x86_64-unknown-linux-elf -flto -r`.
+
+Mach-O arm64 LTO remains delegated to Apple clang and Apple ld in the macOS
+freestanding-ish build. A project-owned Mach-O arm64 linker backend is a future
+target-specific implementation, not an extension of the ELF writer.
 
 Use `make newlinker-lto-size-report` to rebuild both no-LTO and GCC-LTO
 freestanding trees and print total size deltas, largest regressions, and largest
@@ -125,6 +138,12 @@ discarded-byte, top-section, and top-object size attribution for representative
 tools. Top-section and top-object lists focus on file-backed payload by omitting
 BSS and already folded sections. The report target is intended to guide
 feature-preserving size work.
+
+`make macos-freestanding-size-report` prints exact Mach-O file bytes and summed
+file-backed Mach-O section bytes for representative macOS freestanding-ish tools.
+Use the file-section byte column when judging linker or LTO changes on macOS,
+because final Mach-O file sizes can move in coarse 16 KiB-ish steps after page,
+segment, and signature layout effects are applied.
 
 `make test-newlinker-optimizations` runs small standalone linker fixtures for
 relocation-aware ICF, mergeable string pooling, and reporting output. The ICF
@@ -192,10 +211,14 @@ almost all linker wall-clock overhead for 185 tools.
   symbol values, relocation offsets, and layout-dependent references.
 - Archives are parsed by this linker directly; archive symbol indexes are not
   required.
-- LTO bitcode inputs (LLVM IR or GCC LTO IR) are not accepted directly as native
-  ELF sections. For GCC LTO, pass `--lto-cc=gcc` to enable transparent prelink;
-  the linker detects `.gnu.lto_*` IR sections and invokes GCC automatically.
-  Clang LTO bitcode objects are not supported.
+- LTO bitcode inputs are not parsed directly as native object sections. For GCC
+  LTO, pass `--lto-cc=gcc`; for LLVM/Clang bitcode on the ELF64 x86-64 backend,
+  pass `--lto-cc=clang` and provide a clang/lld toolchain that can emit a native
+  relocatable. Mach-O arm64 LTO is still handled by Apple clang/ld outside this
+  linker.
+- The Mach-O arm64 target is parsed as a first-class target name, but the actual
+  Mach-O object reader, arm64 relocation engine, layout writer, code-signature
+  handling, and output writer are not implemented yet.
 
 ## JSON Output
 
