@@ -2,10 +2,15 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#define STRACE_MAX_FILTERS 64
+#define STRACE_FILTER_TOKEN_CAPACITY 32
+
 static int show_numbers;
 static int json_output;
 static PlatformSyscallEvent pending_event;
 static int have_pending;
+static long filter_numbers[STRACE_MAX_FILTERS];
+static size_t filter_count;
 
 static const char *syscall_name(long number) {
     switch (number) {
@@ -13,42 +18,206 @@ static const char *syscall_name(long number) {
         case 1: return "write";
         case 2: return "open";
         case 3: return "close";
+        case 4: return "stat";
+        case 5: return "fstat";
+        case 6: return "lstat";
+        case 7: return "poll";
         case 8: return "lseek";
         case 9: return "mmap";
+        case 10: return "mprotect";
+        case 11: return "munmap";
         case 12: return "brk";
+        case 13: return "rt_sigaction";
+        case 14: return "rt_sigprocmask";
         case 16: return "ioctl";
+        case 17: return "pread64";
+        case 18: return "pwrite64";
+        case 20: return "writev";
         case 21: return "access";
+        case 23: return "select";
+        case 24: return "sched_yield";
+        case 25: return "mremap";
+        case 26: return "msync";
+        case 28: return "madvise";
+        case 32: return "dup";
+        case 33: return "dup2";
         case 35: return "nanosleep";
+        case 38: return "setitimer";
         case 39: return "getpid";
         case 41: return "socket";
         case 42: return "connect";
+        case 43: return "accept";
+        case 44: return "sendto";
+        case 45: return "recvfrom";
+        case 46: return "sendmsg";
+        case 47: return "recvmsg";
+        case 48: return "shutdown";
+        case 49: return "bind";
+        case 50: return "listen";
+        case 51: return "getsockname";
+        case 52: return "getpeername";
+        case 53: return "socketpair";
+        case 54: return "setsockopt";
+        case 55: return "getsockopt";
         case 56: return "clone";
         case 57: return "fork";
+        case 58: return "vfork";
         case 59: return "execve";
         case 60: return "exit";
         case 61: return "wait4";
         case 62: return "kill";
+        case 63: return "uname";
         case 72: return "fcntl";
+        case 73: return "flock";
+        case 74: return "fsync";
+        case 75: return "fdatasync";
+        case 76: return "truncate";
+        case 77: return "ftruncate";
+        case 78: return "getdents";
         case 79: return "getcwd";
         case 80: return "chdir";
+        case 81: return "fchdir";
+        case 82: return "rename";
+        case 83: return "mkdir";
+        case 84: return "rmdir";
+        case 85: return "creat";
+        case 86: return "link";
+        case 87: return "unlink";
+        case 88: return "symlink";
         case 89: return "readlink";
+        case 90: return "chmod";
+        case 91: return "fchmod";
+        case 97: return "getrlimit";
         case 101: return "ptrace";
         case 102: return "getuid";
+        case 103: return "syslog";
         case 104: return "getgid";
+        case 105: return "setuid";
+        case 106: return "setgid";
+        case 107: return "geteuid";
+        case 108: return "getegid";
+        case 110: return "getppid";
+        case 111: return "getpgrp";
+        case 112: return "setsid";
+        case 113: return "setreuid";
+        case 114: return "setregid";
+        case 116: return "setgroups";
+        case 118: return "setresuid";
+        case 119: return "getresuid";
+        case 131: return "sigaltstack";
+        case 137: return "statfs";
+        case 138: return "fstatfs";
+        case 157: return "prctl";
         case 158: return "arch_prctl";
+        case 162: return "sync";
+        case 165: return "mount";
+        case 166: return "umount2";
+        case 169: return "reboot";
+        case 170: return "sethostname";
+        case 186: return "gettid";
         case 202: return "futex";
+        case 204: return "sched_getaffinity";
         case 217: return "getdents64";
         case 228: return "clock_gettime";
+        case 231: return "exit_group";
+        case 232: return "epoll_wait";
+        case 233: return "epoll_ctl";
         case 257: return "openat";
+        case 258: return "mkdirat";
+        case 259: return "mknodat";
+        case 260: return "fchownat";
+        case 261: return "futimesat";
         case 262: return "newfstatat";
         case 263: return "unlinkat";
+        case 264: return "renameat";
+        case 265: return "linkat";
+        case 266: return "symlinkat";
         case 267: return "readlinkat";
         case 268: return "fchmodat";
+        case 270: return "pselect6";
+        case 271: return "ppoll";
+        case 273: return "set_robust_list";
         case 280: return "utimensat";
+        case 288: return "accept4";
+        case 291: return "epoll_create1";
         case 292: return "dup3";
+        case 293: return "pipe2";
+        case 302: return "prlimit64";
         case 318: return "getrandom";
+        case 332: return "statx";
+        case 334: return "rseq";
+        case 436: return "close_range";
         default: return "syscall";
     }
+}
+
+static long syscall_number_by_name(const char *name) {
+    unsigned long long numeric;
+    long number;
+
+    if (rt_parse_uint(name, &numeric) == 0) {
+        return (long)numeric;
+    }
+    for (number = 0; number <= 512; ++number) {
+        if (rt_strcmp(syscall_name(number), name) == 0) {
+            return number;
+        }
+    }
+    return -1;
+}
+
+static int filter_includes(long number) {
+    size_t i;
+
+    if (filter_count == 0U) {
+        return 1;
+    }
+    for (i = 0; i < filter_count; ++i) {
+        if (filter_numbers[i] == number) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int add_filter_number(long number) {
+    if (number < 0 || filter_count >= STRACE_MAX_FILTERS) {
+        return -1;
+    }
+    filter_numbers[filter_count++] = number;
+    return 0;
+}
+
+static int parse_filter_spec(const char *spec) {
+    size_t index = 0U;
+
+    if (rt_strncmp(spec, "trace=", 6U) == 0) {
+        spec += 6;
+    }
+    while (spec[index] != '\0') {
+        char token[STRACE_FILTER_TOKEN_CAPACITY];
+        size_t length = 0U;
+        long number;
+
+        while (spec[index] == ',' || spec[index] == ' ') {
+            index += 1U;
+        }
+        while (spec[index] != '\0' && spec[index] != ',' && spec[index] != ' ') {
+            if (length + 1U >= sizeof(token)) {
+                return -1;
+            }
+            token[length++] = spec[index++];
+        }
+        if (length == 0U) {
+            continue;
+        }
+        token[length] = '\0';
+        number = syscall_number_by_name(token);
+        if (add_filter_number(number) != 0) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static void write_hex_long(int fd, unsigned long value) {
@@ -79,6 +248,9 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
     completed = have_pending ? pending_event : *event;
     completed.result = event->result;
     have_pending = 0;
+    if (!filter_includes(completed.number)) {
+        return 0;
+    }
     if (json_output) {
         int i;
         if (tool_json_begin_event(2, "strace", "stderr", "syscall") != 0) return -1;
@@ -112,7 +284,7 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("strace", "[-n] [--json] COMMAND [ARG ...]");
+    tool_write_usage("strace", "[-n] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]");
 }
 
 int main(int argc, char **argv) {
@@ -122,6 +294,22 @@ int main(int argc, char **argv) {
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "-n") == 0 || rt_strcmp(argv[argi], "--numbers") == 0) {
             show_numbers = 1;
+        } else if (rt_strcmp(argv[argi], "-e") == 0 || rt_strcmp(argv[argi], "--trace") == 0) {
+            if (argi + 1 >= argc || parse_filter_spec(argv[argi + 1]) != 0) {
+                tool_write_error("strace", "invalid syscall filter", argi + 1 < argc ? argv[argi + 1] : 0);
+                return 1;
+            }
+            argi += 1;
+        } else if (rt_strncmp(argv[argi], "-e", 2U) == 0 && argv[argi][2] != '\0') {
+            if (parse_filter_spec(argv[argi] + 2) != 0) {
+                tool_write_error("strace", "invalid syscall filter", argv[argi] + 2);
+                return 1;
+            }
+        } else if (rt_strncmp(argv[argi], "--trace=", 8U) == 0) {
+            if (parse_filter_spec(argv[argi] + 8) != 0) {
+                tool_write_error("strace", "invalid syscall filter", argv[argi] + 8);
+                return 1;
+            }
         } else if (rt_strcmp(argv[argi], "--json") == 0) {
             json_output = 1;
             tool_json_set_enabled(1);
