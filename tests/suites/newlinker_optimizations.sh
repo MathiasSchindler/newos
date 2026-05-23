@@ -21,6 +21,7 @@ if ! command -v cc >/dev/null 2>&1; then
     echo "missing cc for assembler fixtures" >&2
     exit 1
 fi
+bash -n build-freestanding-newlinker.sh
 
 cat > "$WORK_DIR/icf_reloc.s" <<'ASM'
 .globl _start

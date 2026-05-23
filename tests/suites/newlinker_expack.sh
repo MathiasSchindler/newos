@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-BUILD_DIR=${NEWOS_NEWLINKER_BUILD_DIR:-$ROOT_DIR/build/freestanding-linux-newlinker}
+BUILD_DIR=${NEWOS_NEWLINKER_BUILD_DIR:-$ROOT_DIR/build/freestanding-linux-$(uname -m)}
 EXPACK=${NEWOS_EXPACK:-$ROOT_DIR/build/host-linux-x86_64/expack}
 OUTPUT_DIR=${NEWOS_NEWLINKER_EXPACK_OUT:-$ROOT_DIR/build/freestanding-linux-expack}
 EXPACK_FLAGS=${NEWOS_EXPACK_FLAGS---all}
@@ -24,7 +24,7 @@ if [[ ! -x "$EXPACK" ]]; then
 fi
 if [[ ! -d "$BUILD_DIR" ]]; then
     echo "missing newlinker build directory: $BUILD_DIR" >&2
-    echo "build it first with make freestanding-newlinker" >&2
+    echo "build it first with make freestanding" >&2
     exit 1
 fi
 

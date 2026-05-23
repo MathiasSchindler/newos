@@ -7,6 +7,22 @@ REPORT="$WORK/report.txt"
 LINKER=${LINKER:-build/host-linux-x86_64/linker}
 LINKER_FLAGS_DEFAULT=(--tiny --gc-sections --icf=safe)
 LINKER_REPORTS=${LINKER_REPORTS:-0}
+if [[ -z "${NEWLINKER_CC:-}" ]]; then
+  if command -v clang >/dev/null 2>&1; then
+    NEWLINKER_CC=clang
+  elif command -v gcc >/dev/null 2>&1; then
+    NEWLINKER_CC=gcc
+  else
+    NEWLINKER_CC=cc
+  fi
+fi
+if "$NEWLINKER_CC" --version 2>/dev/null | grep -qi clang; then
+  NEWLINKER_TARGET_FLAGS=(-target x86_64-unknown-linux-elf)
+  NEWLINKER_NO_ADDRSIG_FLAGS=(-fno-addrsig)
+else
+  NEWLINKER_TARGET_FLAGS=(-m64)
+  NEWLINKER_NO_ADDRSIG_FLAGS=()
+fi
 if [[ -n "${LINKER_FLAGS:-}" ]]; then
   read -r -a LINKER_FLAGS_ARRAY <<< "$LINKER_FLAGS"
 else
@@ -27,6 +43,18 @@ if [[ "$LINKER_REPORTS" == "1" ]]; then
 else
   MAPROOT=""
 fi
+if [[ -z "${NEWLINKER_LINK_JOBS:-}" ]]; then
+  if [[ -n "${PARALLEL_JOBS:-}" ]]; then
+    NEWLINKER_LINK_JOBS="$PARALLEL_JOBS"
+  elif command -v nproc >/dev/null 2>&1; then
+    NEWLINKER_LINK_JOBS=$(nproc)
+  else
+    NEWLINKER_LINK_JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')
+  fi
+fi
+if ! [[ "$NEWLINKER_LINK_JOBS" =~ ^[0-9]+$ ]] || (( NEWLINKER_LINK_JOBS < 1 )); then
+  NEWLINKER_LINK_JOBS=1
+fi
 
 if [[ ! -x "$LINKER" ]]; then
   echo "LINKER_MISSING $LINKER" | tee "$REPORT"
@@ -46,12 +74,13 @@ HASH_SOURCES=(src/shared/hash_util.c "${CRYPTO_SOURCES[@]}")
 TLS_PLATFORM_SOURCE=src/platform/linux/tls.c
 TUI_SOURCE=src/shared/tui.c
 CRT_SRC=src/arch/x86_64/linux/crt0.S
-CFLAGS=(-target x86_64-unknown-linux-elf -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie -fno-addrsig "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DEXPACK_DISABLE_PTHREAD=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
-ASMFLAGS=(-target x86_64-unknown-linux-elf -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie -fno-addrsig -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DEXPACK_DISABLE_PTHREAD=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+ASMFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
 
 declare -A SOURCE_TO_OBJ
 obj_for() { local s="$1" variant="${2:-}" n; n="${s//\//__}"; n="${n//[/lb}"; n="${n//]/rb}"; if [[ -n "$variant" ]]; then n="${variant}__${n}"; fi; printf '%s/%s.o' "$OBJROOT" "$n"; }
 first_line() { local f="$1"; grep -m1 -E 'error:|undefined reference|multiple definition|unsupported|relocation|failed|cannot|No such file|not found|too many input files|undefined symbol|exceeds' "$f" || sed -n '1p' "$f"; }
+tool_stem() { local n="$1"; if [[ "$n" == "[" ]]; then printf 'lbracket'; else n="${n//\//_}"; n="${n//[/lb}"; n="${n//]/rb}"; printf '%s' "$n"; fi; }
 compile_one() {
   local src="$1" variant="${2:-}" key obj log rc cflags asmflags
   key="$variant|$src"
@@ -63,9 +92,9 @@ compile_one() {
     linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
   esac
   if [[ "$src" == *.S || "$src" == *.s ]]; then
-    clang "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    "$NEWLINKER_CC" "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   else
-    clang "${cflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    "$NEWLINKER_CC" "${cflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   fi
   rc=$?
   if [[ $rc -ne 0 ]]; then echo "$src|$(first_line "$log")"; return 1; fi
@@ -110,9 +139,11 @@ for src in "${REUSE_SOURCES[@]}"; do
 done
 {
   echo "newlinker freestanding build: $WORK"
+  echo "compiler: $NEWLINKER_CC"
   echo "linker: $LINKER"
   echo "linker flags: ${LINKER_FLAGS_ARRAY[*]}"
   echo "extra cflags: ${NEWLINKER_EXTRA_CFLAGS_ARRAY[*]:-none}"
+  echo "link jobs: $NEWLINKER_LINK_JOBS"
   echo "tools from Makefile: $(wc -w <<<"$TOOLS")"
   echo "reusable sources attempted: ${#REUSE_SOURCES[@]} plus crt0"
 } | tee "$REPORT"
@@ -125,6 +156,36 @@ fi
 compile_fail=0; link_fail=0; success=0
 FAILFILE="$WORK/failures.tsv"; : > "$FAILFILE"
 SUCCESSFILE="$WORK/successes.tsv"; : > "$SUCCESSFILE"
+TOOL_OBJROOT="$WORK/.tool-objects"; mkdir -p "$TOOL_OBJROOT"
+LINK_RESULTROOT="$WORK/.link-results"; mkdir -p "$LINK_RESULTROOT"
+TOOL_QUEUE=()
+link_one_tool() {
+  local tool="$1" objfile="$2" result="$3" stem outbin llog map_path rc bytes
+  local tool_objs=()
+
+  mapfile -t tool_objs < "$objfile"
+  stem=$(tool_stem "$tool")
+  outbin="$WORK/$tool"
+  llog="$LOGROOT/link-$stem.log"
+  if [[ "$LINKER_REPORTS" == "1" ]]; then
+    map_path="$MAPROOT/$stem.map"
+    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" --stats --map "$map_path" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
+  else
+    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
+  fi
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf 'link\t%s\t%s\n' "$tool" "$(first_line "$llog")" > "$result"
+  else
+    if [[ -f "$outbin" ]]; then
+      bytes=$(wc -c < "$outbin")
+    else
+      bytes=0
+    fi
+    printf 'success\t%s\t%s\n' "$tool" "$bytes" > "$result"
+  fi
+  return 0
+}
 for tool in $TOOLS; do
   tool_sources=()
   if [[ -f "src/tools/$tool.c" ]]; then append_unique_source tool_sources "src/tools/$tool.c"
@@ -192,18 +253,41 @@ for tool in $TOOLS; do
     if [[ $? -ne 0 ]]; then tfail="$src: ${out#*|}"; break; else tool_objs+=("$out"); fi
   done
   if [[ -n "$tfail" ]]; then compile_fail=$((compile_fail+1)); printf 'compile\t%s\t%s\n' "$tool" "$tfail" >> "$FAILFILE"; continue; fi
-  outbin="$WORK/$tool"
-  llog="$LOGROOT/link-${tool//\//_}.log"; [[ "$tool" == "[" ]] && llog="$LOGROOT/link-lbracket.log"
-  if [[ "$LINKER_REPORTS" == "1" ]]; then
-    map_path="$MAPROOT/${tool//\//_}.map"; [[ "$tool" == "[" ]] && map_path="$MAPROOT/lbracket.map"
-    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" --stats --map "$map_path" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
-  else
-    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" -m x86_64-linux -o "$outbin" "$CRT_OBJ" "${tool_objs[@]}" "${REUSE_OBJS[@]}" >"$llog" 2>&1
+  objfile="$TOOL_OBJROOT/$(tool_stem "$tool").list"
+  printf '%s\n' "${tool_objs[@]}" > "$objfile"
+  TOOL_QUEUE+=("$tool")
+done
+
+active_links=0
+for tool in "${TOOL_QUEUE[@]}"; do
+  stem=$(tool_stem "$tool")
+  link_one_tool "$tool" "$TOOL_OBJROOT/$stem.list" "$LINK_RESULTROOT/$stem.tsv" &
+  active_links=$((active_links+1))
+  if (( active_links >= NEWLINKER_LINK_JOBS )); then
+    wait -n || true
+    active_links=$((active_links-1))
   fi
-  if [[ $? -ne 0 ]]; then
-    link_fail=$((link_fail+1)); printf 'link\t%s\t%s\n' "$tool" "$(first_line "$llog")" >> "$FAILFILE"
+done
+while (( active_links > 0 )); do
+  wait -n || true
+  active_links=$((active_links-1))
+done
+
+for tool in "${TOOL_QUEUE[@]}"; do
+  stem=$(tool_stem "$tool")
+  result="$LINK_RESULTROOT/$stem.tsv"
+  if [[ ! -s "$result" ]]; then
+    link_fail=$((link_fail+1))
+    printf 'link\t%s\t%s\n' "$tool" "missing link result" >> "$FAILFILE"
+    continue
+  fi
+  IFS=$'\t' read -r kind result_tool result_value < "$result"
+  if [[ "$kind" == "success" ]]; then
+    success=$((success+1))
+    printf '%s\t%s\n' "$result_tool" "$result_value" >> "$SUCCESSFILE"
   else
-    success=$((success+1)); bytes=$(wc -c < "$outbin" 2>/dev/null || echo 0); printf '%s\t%s\n' "$tool" "$bytes" >> "$SUCCESSFILE"
+    link_fail=$((link_fail+1))
+    cat "$result" >> "$FAILFILE"
   fi
 done
 

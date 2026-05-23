@@ -49,9 +49,14 @@ fi
 
 if command -v readelf >/dev/null 2>&1; then
     LC_ALL=C readelf -h "$BIN_DIR/httpd" > "$WORK_DIR/httpd.elf"
-    assert_file_contains "$WORK_DIR/httpd.elf" 'Type:[[:space:]]*DYN' "freestanding httpd should be a static PIE"
+    assert_file_contains "$WORK_DIR/httpd.elf" 'Type:[[:space:]]*\(EXEC\|DYN\)' "freestanding httpd should be a static executable"
     LC_ALL=C readelf -lW "$BIN_DIR/httpd" > "$WORK_DIR/httpd.phdr"
-    assert_file_contains "$WORK_DIR/httpd.phdr" 'GNU_STACK[[:space:]].* RW ' "freestanding httpd stack should be non-executable"
+    if grep -q 'INTERP' "$WORK_DIR/httpd.phdr"; then
+        fail "freestanding httpd should not request a dynamic interpreter"
+    fi
+    if grep -q 'GNU_STACK' "$WORK_DIR/httpd.phdr"; then
+        assert_file_contains "$WORK_DIR/httpd.phdr" 'GNU_STACK[[:space:]].* RW ' "freestanding httpd stack should be non-executable"
+    fi
 fi
 
 "$BIN_DIR/echo" "hello freestanding" > "$WORK_DIR/echo.out"

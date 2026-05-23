@@ -55,12 +55,17 @@ The first useful POSIX-hosted and Linux-freestanding checks remain:
 
 ```
 make host CC=gcc
-make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
+make freestanding
 ```
 
-`make freestanding` emits Linux ABI binaries through the raw Linux syscall
-backend on Linux and the local macOS freestanding-ish target on macOS/aarch64.
-The native no-CRT Windows PE path is `.uild-windows-freestanding.ps1`. It now
+On Linux x86-64, `make freestanding` builds the canonical freestanding tool tree
+with the project ELF linker, parallel link jobs, size-focused compiler flags, and
+the raw Linux syscall backend. It honors `TARGET_CC`, so use `TARGET_CC=clang` or
+`TARGET_CC=gcc` to choose the object compiler; by default it uses the Makefile's
+normal target compiler selection. Set `FREESTANDING_USE_NEWLINKER=0` only when
+you need the older system-linker freestanding path for comparison. On local
+macOS/aarch64, `make freestanding` still builds the macOS freestanding-ish target.
+The native no-CRT Windows PE path is `build-windows-freestanding.ps1`. It now
 builds the small text/core tools, comparison/checksum/image/path/filesystem
 tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
 `editor`, `mail`, and the `ncc` compiler executable. `wtf` and `mail` use the

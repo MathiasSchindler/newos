@@ -107,19 +107,39 @@ relocation-aware ICF, mergeable string pooling, and reporting output. The ICF
 fixture verifies that two relocated functions fold to the same address while the
 linked executable still runs.
 
-`make freestanding-newlinker` runs `build-freestanding-newlinker.sh` to build the
-freestanding Linux x86-64 tool tree with this linker. Its default size-focused C
-flags include
-`-fmerge-all-constants`; set `NEWLINKER_EXTRA_CFLAGS` to override or extend the
-extra compiler flags. The script compiles with `-fno-stack-protector` and disables
-the startup stack-guard initialization call so unused stack-protector support is
-not retained in tiny binaries.
+On Linux x86-64, `make freestanding` is the default newlinker build. It runs
+`build-freestanding-newlinker.sh`, writes the canonical freestanding tree under
+`build/freestanding-linux-x86_64`, and uses `TARGET_CC` as the object compiler
+with this linker for the final links. The script supports both GCC and Clang;
+when run directly, set `NEWLINKER_CC` to choose the compiler. Its default
+size-focused C flags include `-fmerge-all-constants`; set
+`NEWLINKER_EXTRA_CFLAGS` to override or extend the extra compiler flags. The
+script compiles with `-fno-stack-protector` and disables the startup stack-guard
+initialization call so unused stack-protector support is not retained in tiny
+binaries. Set `FREESTANDING_USE_NEWLINKER=0` to use the older system-linker
+freestanding Makefile path for comparison.
 
-Current measured newlinker sizes on this workspace are: `true` 157 bytes,
-`false` 158 bytes, `cat` 2159 bytes, and `ncc` 195565 bytes for focused report
-builds after relocation-aware ICF and embedded-linker reporting removal. Against
-the traditional freestanding tree, 184 of 185 tools are smaller; `ncc` remains
-the only larger binary.
+`make freestanding-newlinker` remains available as an explicit side build under
+`build/freestanding-linux-newlinker`.
+
+The build script compiles each needed object once, then links independent tools in
+parallel. Set `NEWLINKER_LINK_JOBS=N` to choose the number of simultaneous linker
+invocations; when unset, the script uses `PARALLEL_JOBS`, `nproc`, or the online
+processor count. Use `NEWLINKER_LINK_JOBS=1` for serial timing or easier log
+inspection. The build report records the selected link job count.
+
+Current default `make freestanding` newlinker sizes on this workspace with `cc`
+as `TARGET_CC` are: `true` 161 bytes, `false` 162 bytes, `cat` 2279 bytes,
+`linker` 26065 bytes, `ncc` 184653 bytes, `ssh` 51621 bytes, and `wget` 68541
+bytes. The 185-tool output total is 2420174 bytes.
+
+Current all-tool wall-clock measurements on this workspace: default
+`make freestanding` with `cc` as `TARGET_CC` and 16 link jobs took 45.39 seconds.
+`make freestanding TARGET_CC=clang` into a separate output tree took 42.41
+seconds. In earlier clang-focused timing, `NEWLINKER_LINK_JOBS=1` took 44.29
+seconds, the default 16-way link phase took 40.92 seconds, and a fake-linker run
+using `LINKER=/usr/bin/true` took 40.35 seconds, so parallel linking removed
+almost all linker wall-clock overhead for 185 tools.
 
 ## LIMITATIONS
 

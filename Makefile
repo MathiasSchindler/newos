@@ -71,6 +71,7 @@ LOCAL_MACOS_FREESTANDING := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter aarch
 DEFAULT_HOST_BUILD_DIR := $(BUILD_ROOT)/host-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
 TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
+NEWLINKER_STANDALONE_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-newlinker
 WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_ARCH)
 MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTANDING_ARCH)
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
@@ -91,6 +92,7 @@ PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.l
 PHASE1_JOBS ?= $(PARALLEL_JOBS)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
 LOCAL_PLATFORM_ONLY ?= $(if $(filter Darwin,$(HOST_OS)),1,0)
+FREESTANDING_USE_NEWLINKER ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_64,$(TARGET_ARCH)),1,0),0)
 DEFAULT_ALL_TARGETS := host
 ifeq ($(LOCAL_PLATFORM_ONLY),0)
 DEFAULT_ALL_TARGETS += freestanding
@@ -268,7 +270,7 @@ test-inception: inception
 	NEWOS_INCEPTION_BUILD_DIR="$(abspath $(INCEPTION_BUILD_DIR))" sh ./tests/suites/inception.sh
 
 freestanding-newlinker: $(BUILD_DIR)/linker
-	LINKER="$(abspath $(BUILD_DIR)/linker)" bash build-freestanding-newlinker.sh
+	WORK="$(abspath $(NEWLINKER_STANDALONE_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash build-freestanding-newlinker.sh
 
 test-newlinker-expack: $(BUILD_DIR)/expack
 	NEWOS_EXPACK="$(abspath $(BUILD_DIR)/expack)" bash ./tests/suites/newlinker_expack.sh
@@ -305,6 +307,9 @@ ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 freestanding: freestanding-macos
 else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
+else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
+freestanding: $(BUILD_DIR)/linker
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
@@ -314,6 +319,9 @@ ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 freestanding: freestanding-macos
 else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
+else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
+freestanding: $(BUILD_DIR)/linker
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
