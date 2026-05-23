@@ -47,6 +47,24 @@ if [ ! -x "$BIN_DIR/sh" ] || [ ! -x "$BIN_DIR/httpd" ]; then
     fail "freestanding build directory is missing expected tools: $BIN_DIR"
 fi
 
+"$BIN_DIR/readelf" -h "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes.out"
+assert_file_contains "$WORK_DIR/project_readelf_yes.out" '^ELF Header:$' "project readelf should accept sectionless freestanding ELF files"
+assert_file_contains "$WORK_DIR/project_readelf_yes.out" 'Section headers:[[:space:]]*0' "project readelf should report sectionless freestanding ELF files"
+
+"$BIN_DIR/readelf" -S "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes_sections.out"
+assert_file_contains "$WORK_DIR/project_readelf_yes_sections.out" '^Section Headers:$' "project readelf -S should handle sectionless freestanding ELF files"
+assert_file_contains "$WORK_DIR/project_readelf_yes_sections.out" '(none)' "project readelf -S should report no sections for sectionless freestanding ELF files"
+
+"$BIN_DIR/readelf" -l "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes_programs.out"
+assert_file_contains "$WORK_DIR/project_readelf_yes_programs.out" '^Program Headers:$' "project readelf -l should print program headers"
+assert_file_contains "$WORK_DIR/project_readelf_yes_programs.out" 'LOAD off=0x0 .*filesz=.*memsz=.*align=0x1' "project readelf -l should describe the newlinker load segment"
+
+"$BIN_DIR/readelf" -a "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes_all.out"
+assert_file_contains "$WORK_DIR/project_readelf_yes_all.out" 'There is no dynamic section in this file' "project readelf -a should report missing dynamic section"
+assert_file_contains "$WORK_DIR/project_readelf_yes_all.out" 'There are no relocations in this file' "project readelf -a should report missing relocations"
+assert_file_contains "$WORK_DIR/project_readelf_yes_all.out" 'No symbol table is available' "project readelf -a should report missing symbols"
+assert_file_contains "$WORK_DIR/project_readelf_yes_all.out" 'No notes found in this file' "project readelf -a should report missing notes"
+
 if command -v readelf >/dev/null 2>&1; then
     LC_ALL=C readelf -h "$BIN_DIR/httpd" > "$WORK_DIR/httpd.elf"
     assert_file_contains "$WORK_DIR/httpd.elf" 'Type:[[:space:]]*\(EXEC\|DYN\)' "freestanding httpd should be a static executable"

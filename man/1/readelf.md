@@ -2,12 +2,12 @@
 
 ## NAME
 
-**readelf** - inspect ELF file headers, sections, and symbols
+**readelf** - inspect ELF file structure
 
 ## SYNOPSIS
 
 ```
-readelf [-h] [-S] [-s] FILE ...
+readelf [-a] [-h] [-l] [-S] [-d] [-r] [-s] [-n] FILE ...
 ```
 
 ## DESCRIPTION
@@ -16,11 +16,20 @@ readelf [-h] [-S] [-s] FILE ...
 hosted macOS builds it can also recognize Mach-O headers well enough to report
 basic file information instead of failing outright.
 
+ELF executables without a section header table are accepted. This covers tiny
+freestanding outputs from the project linker, where program loading metadata is
+enough to run the binary and section metadata has intentionally been omitted.
+
 Supported output modes:
 
+- **-a**, **--all** — all implemented ELF views
 - **-h** — ELF file header
+- **-l** — program headers / loadable segments
 - **-S** — section table
+- **-d** — dynamic section
+- **-r** — relocation sections
 - **-s** — symbol table
+- **-n** — note sections
 
 If no mode is selected, the ELF header is shown.
 
@@ -28,7 +37,9 @@ If no mode is selected, the ELF header is shown.
 
 ```
 readelf -h a.out
+readelf -l tiny-static-tool
 readelf -S -s hello.o
+readelf -a /bin/ls
 ```
 
 ## LIMITATIONS
@@ -37,8 +48,10 @@ readelf -S -s hello.o
   files, which covers the project's Linux outputs on x86_64 and AArch64.
 - Mach-O support is currently limited to basic header reporting for hosted
   compatibility.
-- Relocation, dynamic-section, note, versioning, DWARF, and archive-member
-  views are not complete.
+- Dynamic-section, relocation, and note views are intentionally compact. They
+  cover common ELF64 Linux files but are not a complete GNU readelf clone.
+- Versioning, DWARF, unwind, GOT, histogram, and archive-member views are not
+  complete.
 - Output formatting is diagnostic-oriented and not a full GNU readelf clone.
 
 ## JSON Output
