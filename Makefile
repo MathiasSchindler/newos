@@ -254,7 +254,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-newlinker-expack benchmark clean
+.PHONY: all host freestanding freestanding-newlinker freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-newlinker-expack newlinker-size-report benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -267,8 +267,14 @@ test-smoke: host
 test-inception: inception
 	NEWOS_INCEPTION_BUILD_DIR="$(abspath $(INCEPTION_BUILD_DIR))" sh ./tests/suites/inception.sh
 
+freestanding-newlinker: $(BUILD_DIR)/linker
+	LINKER="$(abspath $(BUILD_DIR)/linker)" bash build-freestanding-newlinker.sh
+
 test-newlinker-expack: $(BUILD_DIR)/expack
-	NEWOS_EXPACK="$(abspath $(BUILD_DIR)/expack)" sh ./tests/suites/newlinker_expack.sh
+	NEWOS_EXPACK="$(abspath $(BUILD_DIR)/expack)" bash ./tests/suites/newlinker_expack.sh
+
+newlinker-size-report: $(BUILD_DIR)/linker
+	LINKER="$(abspath $(BUILD_DIR)/linker)" bash report-newlinker-size.sh
 
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 test-freestanding:

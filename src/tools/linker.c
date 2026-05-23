@@ -10,7 +10,7 @@
 #define LINKER_TOOL_PATH_CAPACITY 4096U
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--tiny] [--gc-sections] [--stats] [--map FILE] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--tiny] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] object-or-archive ...");
 }
 
 static int starts_with(const char *text, const char *prefix) {
@@ -254,6 +254,10 @@ int main(int argc, char **argv) {
         }
         if (parsing_options && rt_strcmp(arg, "--stats") == 0) {
             options.stats = 1;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--print-gc-sections") == 0) {
+            options.print_gc_sections = 1;
             continue;
         }
         if (parsing_options && rt_strcmp(arg, "--map") == 0) {

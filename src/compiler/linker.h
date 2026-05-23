@@ -10,6 +10,7 @@ typedef struct {
 	int gc_sections;
 	int stats;
 	int icf_safe;
+	int print_gc_sections;
 	const char *map_path;
 	const char *why_live;
 	const char *entry_symbol;

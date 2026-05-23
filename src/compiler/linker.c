@@ -14,6 +14,8 @@
 #define LINKER_MAX_RELA_SECTIONS 512
 #define LINKER_BASE_VADDR 0x400000ULL
 #define LINKER_AR_HEADER_SIZE 60U
+#define LINKER_NO_INDEX ((size_t)-1)
+#define LINKER_UNPLACED_OFFSET (~0ULL)
 
 #define ELFCLASS64 2U
 #define ELFDATA2LSB 1U
@@ -75,6 +77,9 @@ typedef struct {
     int folded;
     size_t fold_object_index;
     size_t fold_section_index;
+    uint64_t fold_addend;
+    size_t parent_object_index;
+    size_t parent_section_index;
     char why[COMPILER_PATH_CAPACITY];
 } LinkSection;
 
@@ -375,6 +380,9 @@ static void remember_section(LinkObject *object, uint16_t index) {
         link_section->folded = 0;
         link_section->fold_object_index = 0U;
         link_section->fold_section_index = 0U;
+        link_section->fold_addend = 0ULL;
+        link_section->parent_object_index = LINKER_NO_INDEX;
+        link_section->parent_section_index = LINKER_NO_INDEX;
         link_section->why[0] = '\0';
         if (type == SHT_NOBITS) {
             link_section->kind = LINK_SECTION_BSS;
@@ -812,6 +820,8 @@ static int mark_symbol_section_live(LinkObject *objects,
                                     size_t object_index,
                                     const unsigned char *symbol,
                                     const char *reason,
+                                    size_t parent_object_index,
+                                    size_t parent_section_index,
                                     int *changed_out,
                                     char *error_out,
                                     size_t error_size) {
@@ -831,7 +841,7 @@ static int mark_symbol_section_live(LinkObject *objects,
             set_link_error(error_out, error_size, "undefined symbol", name);
             return -1;
         }
-        return mark_symbol_section_live(objects, object_count, definition_object_index, definition, name, changed_out, error_out, error_size);
+        return mark_symbol_section_live(objects, object_count, definition_object_index, definition, name, parent_object_index, parent_section_index, changed_out, error_out, error_size);
     }
     section = find_link_section(object, shndx);
     if (section == 0) {
@@ -842,6 +852,8 @@ static int mark_symbol_section_live(LinkObject *objects,
     if (!section->live) {
         section->live = 1;
         rt_copy_string(section->why, sizeof(section->why), reason != 0 && reason[0] != '\0' ? reason : symbol_name(object, symbol));
+        section->parent_object_index = parent_object_index;
+        section->parent_section_index = parent_section_index;
         *changed_out = 1;
     }
     return 0;
@@ -942,7 +954,7 @@ static int mark_live_sections(LinkObject *objects, size_t object_count, const ch
         set_link_error(error_out, error_size, "undefined entry symbol", entry_symbol);
         return -1;
     }
-    if (mark_symbol_section_live(objects, object_count, entry_object_index, entry_symbol_entry, "entry", &changed, error_out, error_size) != 0) {
+    if (mark_symbol_section_live(objects, object_count, entry_object_index, entry_symbol_entry, "entry", LINKER_NO_INDEX, LINKER_NO_INDEX, &changed, error_out, error_size) != 0) {
         return -1;
     }
 
@@ -959,10 +971,12 @@ static int mark_live_sections(LinkObject *objects, size_t object_count, const ch
                 LinkSection *target = find_link_section(object, rela->target_index);
                 uint64_t entry_count;
                 uint64_t reloc_index;
+                size_t parent_section_index;
 
                 if (target == 0 || !target->live || rela->size == 0) {
                     continue;
                 }
+                parent_section_index = (size_t)(target - object->sections);
                 entry_count = rela->size / rela->entsize;
                 for (reloc_index = 0; reloc_index < entry_count; ++reloc_index) {
                     const unsigned char *reloc = object->file + rela->offset + (reloc_index * rela->entsize);
@@ -978,7 +992,7 @@ static int mark_live_sections(LinkObject *objects, size_t object_count, const ch
                     if (type == R_X86_64_NONE) {
                         continue;
                     }
-                    if (mark_symbol_section_live(objects, object_count, i, symbol, symbol_name(object, symbol), &changed, error_out, error_size) != 0) {
+                    if (mark_symbol_section_live(objects, object_count, i, symbol, symbol_name(object, symbol), i, parent_section_index, &changed, error_out, error_size) != 0) {
                         return -1;
                     }
                 }
@@ -999,6 +1013,8 @@ static void mark_all_sections_in_live_objects(LinkObject *objects, size_t object
         }
         for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
             objects[i].sections[section_index].live = 1;
+            objects[i].sections[section_index].parent_object_index = LINKER_NO_INDEX;
+            objects[i].sections[section_index].parent_section_index = LINKER_NO_INDEX;
             rt_copy_string(objects[i].sections[section_index].why, sizeof(objects[i].sections[section_index].why), "live object");
         }
     }
@@ -1023,6 +1039,44 @@ static int sections_have_same_bytes(const LinkObject *left_object, const LinkSec
         return 0;
     }
     return memcmp(left_object->file + left->offset, right_object->file + right->offset, (size_t)left->size) == 0;
+}
+
+static int section_alignment_satisfies(uint64_t master_align, uint64_t folded_align, uint64_t addend) {
+    if (folded_align <= 1ULL) {
+        return 1;
+    }
+    if (master_align <= 1ULL) {
+        return 0;
+    }
+    return master_align >= folded_align && (master_align % folded_align) == 0ULL && (addend % folded_align) == 0ULL;
+}
+
+static int section_is_readonly_data(const LinkSection *section) {
+    return section->kind == LINK_SECTION_TEXT && (section->flags & SHF_EXECINSTR) == 0ULL && section->type == SHT_PROGBITS;
+}
+
+static int sections_have_suffix_bytes(const LinkObject *folded_object,
+                                      const LinkSection *folded,
+                                      const LinkObject *master_object,
+                                      const LinkSection *master,
+                                      uint64_t *addend_out) {
+    uint64_t addend;
+
+    if (!section_is_readonly_data(folded) || !section_is_readonly_data(master) || folded->size == 0ULL || folded->size >= master->size) {
+        return 0;
+    }
+    if (folded->type == SHT_NOBITS || master->type == SHT_NOBITS) {
+        return 0;
+    }
+    addend = master->size - folded->size;
+    if (!section_alignment_satisfies(master->align, folded->align, addend)) {
+        return 0;
+    }
+    if (memcmp(folded_object->file + folded->offset, master_object->file + master->offset + addend, (size_t)folded->size) != 0) {
+        return 0;
+    }
+    *addend_out = addend;
+    return 1;
 }
 
 static void fold_identical_sections(LinkObject *objects, size_t object_count) {
@@ -1054,7 +1108,23 @@ static void fold_identical_sections(LinkObject *objects, size_t object_count) {
                         section->folded = 1;
                         section->fold_object_index = master_object_index;
                         section->fold_section_index = master_section_index;
-                        rt_copy_string(section->why, sizeof(section->why), "identical code folded");
+                        section->fold_addend = 0ULL;
+                        rt_copy_string(section->why, sizeof(section->why), "identical section folded");
+                        break;
+                    }
+                    if (section_is_readonly_data(section) && section_is_readonly_data(master)) {
+                        uint64_t fold_addend;
+
+                        if (sections_have_suffix_bytes(&objects[i], section, &objects[master_object_index], master, &fold_addend)) {
+                            section->folded = 1;
+                            section->fold_object_index = master_object_index;
+                            section->fold_section_index = master_section_index;
+                            section->fold_addend = fold_addend;
+                            rt_copy_string(section->why, sizeof(section->why), "read-only suffix folded");
+                            break;
+                        }
+                    }
+                    if (section->folded) {
                         break;
                     }
                 }
@@ -1082,7 +1152,7 @@ static int symbol_value(const LinkObject *object, const unsigned char *symbol, u
         if (section != 0) {
             if (section->folded) {
                 const LinkSection *folded = &linker_objects[section->fold_object_index].sections[section->fold_section_index];
-                *value_out = LINKER_BASE_VADDR + folded->out_offset + value;
+                *value_out = LINKER_BASE_VADDR + folded->out_offset + section->fold_addend + value;
                 return 0;
             }
             *value_out = LINKER_BASE_VADDR + section->out_offset + value;
@@ -1274,10 +1344,42 @@ static int apply_relocations(LinkObject *objects, size_t object_count, unsigned 
     return 0;
 }
 
-static void layout_objects(LinkObject *objects, size_t object_count, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out) {
-    uint64_t text_size = 0;
-    uint64_t data_size = 0;
-    uint64_t bss_size = 0;
+static uint64_t section_trailing_zero_bytes(const LinkObject *object, const LinkSection *section) {
+    uint64_t count = 0ULL;
+
+    if (section->type == SHT_NOBITS || section->size == 0ULL) {
+        return 0ULL;
+    }
+    while (count < section->size && object->file[section->offset + section->size - count - 1ULL] == 0U) {
+        count += 1ULL;
+    }
+    return count;
+}
+
+static int layout_section_is_better(const LinkObject *candidate_object,
+                                    const LinkSection *candidate,
+                                    const LinkObject *best_object,
+                                    const LinkSection *best,
+                                    LinkSectionKind kind) {
+    if (best == 0) {
+        return 1;
+    }
+    if (candidate->align != best->align) {
+        return candidate->align > best->align;
+    }
+    if (kind == LINK_SECTION_DATA) {
+        uint64_t candidate_zero_tail = section_trailing_zero_bytes(candidate_object, candidate);
+        uint64_t best_zero_tail = section_trailing_zero_bytes(best_object, best);
+
+        if (candidate_zero_tail != best_zero_tail) {
+            return candidate_zero_tail < best_zero_tail;
+        }
+    }
+    return candidate->size > best->size;
+}
+
+static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count, LinkSectionKind kind) {
+    uint64_t size = 0ULL;
     size_t i;
 
     for (i = 0; i < object_count; ++i) {
@@ -1289,51 +1391,53 @@ static void layout_objects(LinkObject *objects, size_t object_count, uint64_t *t
         for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
             LinkSection *section = &objects[i].sections[section_index];
 
-            if (!section->live || section->folded || section->kind != LINK_SECTION_TEXT) {
-                continue;
+            if (section->live && !section->folded && section->kind == kind) {
+                section->out_offset = LINKER_UNPLACED_OFFSET;
             }
-            text_size = align_u64(text_size, section->align);
-            section->out_offset = text_size;
-            text_size += section->size;
         }
     }
-    for (i = 0; i < object_count; ++i) {
-        size_t section_index;
+    for (;;) {
+        LinkSection *best = 0;
+        LinkObject *best_object = 0;
+        size_t best_object_index = 0U;
+        size_t best_section_index = 0U;
 
-        if (!objects[i].live) {
-            continue;
-        }
-        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
-            LinkSection *section = &objects[i].sections[section_index];
+        for (i = 0; i < object_count; ++i) {
+            size_t section_index;
 
-            if (!section->live || section->folded || section->kind != LINK_SECTION_DATA) {
+            if (!objects[i].live) {
                 continue;
             }
-            data_size = align_u64(data_size, section->align);
-            section->out_offset = data_size;
-            data_size += section->size;
-        }
-    }
-    for (i = 0; i < object_count; ++i) {
-        size_t section_index;
+            for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+                LinkSection *section = &objects[i].sections[section_index];
 
-        if (!objects[i].live) {
-            continue;
-        }
-        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
-            LinkSection *section = &objects[i].sections[section_index];
-
-            if (!section->live || section->folded || section->kind != LINK_SECTION_BSS) {
-                continue;
+                if (!section->live || section->folded || section->kind != kind || section->out_offset != LINKER_UNPLACED_OFFSET) {
+                    continue;
+                }
+                if (layout_section_is_better(&objects[i], section, best_object, best, kind)) {
+                    best = section;
+                    best_object = &objects[i];
+                    best_object_index = i;
+                    best_section_index = section_index;
+                }
             }
-            bss_size = align_u64(bss_size, section->align);
-            section->out_offset = bss_size;
-            bss_size += section->size;
         }
+        if (best == 0) {
+            break;
+        }
+        (void)best_object_index;
+        (void)best_section_index;
+        size = align_u64(size, best->align);
+        best->out_offset = size;
+        size += best->size;
     }
-    *text_size_out = text_size;
-    *data_size_out = data_size;
-    *bss_size_out = bss_size;
+    return size;
+}
+
+static void layout_objects(LinkObject *objects, size_t object_count, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out) {
+    *text_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_TEXT);
+    *data_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_DATA);
+    *bss_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_BSS);
 }
 
 static void copy_sections(LinkObject *objects, size_t object_count, unsigned char *output) {
@@ -1468,6 +1572,38 @@ static uint64_t count_live_sections(const LinkObject *objects, size_t object_cou
     return count;
 }
 
+static uint64_t count_folded_section_bytes(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            if (objects[i].sections[section_index].live && objects[i].sections[section_index].folded) {
+                count += objects[i].sections[section_index].size;
+            }
+        }
+    }
+    return count;
+}
+
+static uint64_t count_discarded_section_bytes(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            if (!objects[i].sections[section_index].live) {
+                count += objects[i].sections[section_index].size;
+            }
+        }
+    }
+    return count;
+}
+
 static uint64_t count_total_sections(const LinkObject *objects, size_t object_count) {
     uint64_t count = 0;
     size_t i;
@@ -1519,6 +1655,10 @@ static int write_link_stats(int fd,
     if (rt_write_uint(fd, count_total_sections(objects, object_count)) != 0) return -1;
     if (rt_write_cstr(fd, "\nrelocations applied: ") != 0) return -1;
     if (rt_write_uint(fd, count_live_relocations(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "\nfolded/discarded bytes: ") != 0) return -1;
+    if (rt_write_uint(fd, count_folded_section_bytes(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, count_discarded_section_bytes(objects, object_count)) != 0) return -1;
     if (rt_write_cstr(fd, "\ntext/data/bss: ") != 0) return -1;
     if (rt_write_uint(fd, text_size) != 0) return -1;
     if (rt_write_cstr(fd, "/") != 0) return -1;
@@ -1580,7 +1720,7 @@ static int write_link_map(const char *path,
             if (!section->live) {
                 continue;
             }
-            if (linker_write_hex64(fd, LINKER_BASE_VADDR + (section->folded ? objects[section->fold_object_index].sections[section->fold_section_index].out_offset : section->out_offset)) != 0 || rt_write_cstr(fd, " ") != 0 ||
+            if (linker_write_hex64(fd, LINKER_BASE_VADDR + (section->folded ? objects[section->fold_object_index].sections[section->fold_section_index].out_offset + section->fold_addend : section->out_offset)) != 0 || rt_write_cstr(fd, " ") != 0 ||
                 rt_write_uint(fd, section->size) != 0 || rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, section_name(&objects[i], section->index)) != 0 ||
                 rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, " why=") != 0 ||
                 rt_write_cstr(fd, section->why[0] != '\0' ? section->why : "live") != 0 ||
@@ -1595,6 +1735,74 @@ static int write_link_map(const char *path,
     if (platform_close(fd) != 0) {
         set_link_error(error_out, error_size, "failed to close map file", path);
         return -1;
+    }
+    return 0;
+}
+
+static int write_section_label(int fd, const LinkObject *objects, size_t object_index, size_t section_index) {
+    const LinkSection *section;
+
+    if (object_index == LINKER_NO_INDEX || section_index == LINKER_NO_INDEX || section_index >= objects[object_index].section_count) {
+        return rt_write_cstr(fd, "<root>");
+    }
+    section = &objects[object_index].sections[section_index];
+    if (rt_write_cstr(fd, section_name(&objects[object_index], section->index)) != 0 || rt_write_cstr(fd, " in ") != 0 || rt_write_cstr(fd, objects[object_index].path) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int write_live_chain(int fd, const LinkObject *objects, size_t object_count, size_t object_index, size_t section_index) {
+    size_t depth;
+
+    if (rt_write_cstr(fd, "chain: ") != 0) {
+        return -1;
+    }
+    for (depth = 0; depth < object_count * LINKER_MAX_SECTIONS; ++depth) {
+        const LinkSection *section;
+
+        if (object_index == LINKER_NO_INDEX || section_index == LINKER_NO_INDEX || object_index >= object_count || section_index >= objects[object_index].section_count) {
+            break;
+        }
+        section = &objects[object_index].sections[section_index];
+        if (depth != 0 && rt_write_cstr(fd, " <- ") != 0) {
+            return -1;
+        }
+        if (write_section_label(fd, objects, object_index, section_index) != 0) {
+            return -1;
+        }
+        if (section->parent_object_index == LINKER_NO_INDEX || section->parent_section_index == LINKER_NO_INDEX) {
+            break;
+        }
+        object_index = section->parent_object_index;
+        section_index = section->parent_section_index;
+    }
+    if (rt_write_cstr(fd, "\n") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int write_gc_sections(int fd, const LinkObject *objects, size_t object_count) {
+    size_t i;
+
+    if (rt_write_cstr(fd, "discarded sections\n") != 0) {
+        return -1;
+    }
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+
+            if (section->live) {
+                continue;
+            }
+            if (rt_write_uint(fd, section->size) != 0 || rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, section_name(&objects[i], section->index)) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, "\n") != 0) {
+                return -1;
+            }
+        }
     }
     return 0;
 }
@@ -1623,6 +1831,9 @@ static int write_why_live(int fd, const LinkObject *objects, size_t object_count
                     rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, " because ") != 0 || rt_write_cstr(fd, section->why) != 0 || rt_write_cstr(fd, "\n") != 0) {
                     return -1;
                 }
+                if (write_live_chain(fd, objects, object_count, i, section_index) != 0) {
+                    return -1;
+                }
             }
         }
         for (symbol_index = 0; symbol_index < symbol_count; ++symbol_index) {
@@ -1636,10 +1847,16 @@ static int write_why_live(int fd, const LinkObject *objects, size_t object_count
             shndx = read_u16(symbol + 6);
             section = shndx != SHN_ABS && shndx != SHN_UNDEF ? find_link_section_const(&objects[i], shndx) : 0;
             if (section != 0 && section->live) {
+                size_t live_section_index;
+
                 found = 1;
                 if (rt_write_cstr(fd, "symbol ") != 0 || rt_write_cstr(fd, query) != 0 || rt_write_cstr(fd, " in ") != 0 ||
                     rt_write_cstr(fd, section_name(&objects[i], section->index)) != 0 || rt_write_cstr(fd, " from ") != 0 ||
                     rt_write_cstr(fd, objects[i].path) != 0 || rt_write_cstr(fd, " because ") != 0 || rt_write_cstr(fd, section->why) != 0 || rt_write_cstr(fd, "\n") != 0) {
+                    return -1;
+                }
+                live_section_index = (size_t)(section - objects[i].sections);
+                if (write_live_chain(fd, objects, object_count, i, live_section_index) != 0) {
                     return -1;
                 }
             }
@@ -1842,6 +2059,12 @@ int compiler_link_elf64_x86_64_static_options(const char *const *object_paths,
                              tiny,
                              gc_sections) != 0) {
             set_link_error(error_out, error_size, "failed to write linker stats", output_path);
+            return -1;
+        }
+    }
+    if (options != 0 && options->print_gc_sections) {
+        if (write_gc_sections(1, linker_objects, object_count) != 0) {
+            set_link_error(error_out, error_size, "failed to write discarded section report", output_path);
             return -1;
         }
     }
