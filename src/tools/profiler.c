@@ -132,11 +132,11 @@ static int parse_address_token(const char *text, unsigned long long *value_out) 
     size_t i;
     int has_hex_letter = 0;
 
-    if (parse_unsigned_auto(text, value_out) == 0) {
-        return 0;
-    }
     if (text == 0 || text[0] == '\0') {
         return -1;
+    }
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        return parse_unsigned_auto(text, value_out);
     }
     for (i = 0U; text[i] != '\0'; ++i) {
         unsigned int digit;
@@ -149,7 +149,7 @@ static int parse_address_token(const char *text, unsigned long long *value_out) 
         }
     }
     if (!has_hex_letter && rt_strlen(text) < 9U) {
-        return -1;
+        return parse_unsigned_auto(text, value_out);
     }
     *value_out = 0ULL;
     for (i = 0U; text[i] != '\0'; ++i) {
