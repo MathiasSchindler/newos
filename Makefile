@@ -459,7 +459,18 @@ $(TARGET_BUILD_DIR)/sshd: src/tools/sshd.c $(SSHD_TOOL_SOURCES) $(TARGET_REUSABL
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(SSHD_TOOL_SOURCES) $(SSH_TRANSPORT_SOURCES) $(TARGET_SSH_CRYPTO_OBJECTS) $(TARGET_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 MAKE_TOOL_SOURCES := src/tools/make/make_parse.c src/tools/make/make_exec.c
-LINKER_TOOL_SOURCES := src/compiler/linker.c
+LINKER_TOOL_SOURCES := src/compiler/linker.c \
+    src/compiler/linker_util.c \
+    src/compiler/linker_elf.c \
+    src/compiler/linker_object.c \
+    src/compiler/linker_symbols.c \
+    src/compiler/linker_gc.c \
+    src/compiler/linker_merge.c \
+    src/compiler/linker_icf.c \
+    src/compiler/linker_reloc.c \
+    src/compiler/linker_layout.c \
+    src/compiler/linker_report.c \
+    src/compiler/linker_lto.c
 HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS)) -idirafter src/shared
 HOST_EXPACK_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
 HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -DCOMPILER_LINKER_ENABLE_REPORTING=0 -idirafter src/shared

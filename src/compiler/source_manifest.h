@@ -35,6 +35,17 @@
     X("src/compiler/driver.c") \
     X("src/compiler/ir.c") \
     X("src/compiler/linker.c") \
+    X("src/compiler/linker_util.c") \
+    X("src/compiler/linker_elf.c") \
+    X("src/compiler/linker_object.c") \
+    X("src/compiler/linker_symbols.c") \
+    X("src/compiler/linker_gc.c") \
+    X("src/compiler/linker_merge.c") \
+    X("src/compiler/linker_icf.c") \
+    X("src/compiler/linker_reloc.c") \
+    X("src/compiler/linker_layout.c") \
+    X("src/compiler/linker_report.c") \
+    X("src/compiler/linker_lto.c") \
     X("src/compiler/object_writer.c") \
     X("src/compiler/parser.c") \
     X("src/compiler/parser_types.c") \

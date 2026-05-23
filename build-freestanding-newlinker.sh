@@ -222,7 +222,12 @@ for tool in $TOOLS; do
       for src in "${COMPILER_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
     linker)
-      append_unique_source tool_sources src/compiler/linker.c
+      for src in src/compiler/linker.c src/compiler/linker_util.c src/compiler/linker_elf.c \
+                 src/compiler/linker_object.c src/compiler/linker_symbols.c src/compiler/linker_gc.c \
+                 src/compiler/linker_merge.c src/compiler/linker_icf.c src/compiler/linker_reloc.c \
+                 src/compiler/linker_layout.c src/compiler/linker_report.c src/compiler/linker_lto.c; do
+        append_unique_source tool_sources "$src"
+      done
       ;;
     md5sum|sha256sum|sha512sum)
       for src in "${HASH_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
@@ -264,7 +269,7 @@ for tool in $TOOLS; do
   tfail=""
   for src in "${tool_sources[@]}"; do
     variant=""
-    if [[ "$src" == "src/compiler/linker.c" ]]; then
+    if [[ "$src" == "src/compiler/linker.c" || "$src" == "src/compiler/linker_"*.c ]]; then
       if [[ "$tool" == "linker" ]]; then variant="linker-report"; elif [[ "$tool" == "ncc" ]]; then variant="linker-core"; fi
     fi
     out=$(compile_one "$src" "$variant")
