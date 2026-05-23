@@ -26,7 +26,21 @@ gcc   -finstrument-functions -fno-omit-frame-pointer -g -O2 ...
 clang -finstrument-functions -fno-omit-frame-pointer -g -O2 ...
 ```
 
-Runtime hooks should emit trace lines in this format:
+The project build can add these hooks for GCC/Clang based Linux builds:
+
+```
+make freestanding PROFILE=1
+NEWOS_PROFILE=cat.nprof build/freestanding-linux-x86_64/cat README.md >/dev/null
+profiler cat.nprof
+```
+
+When `PROFILE=1` is enabled, the build adds
+`-finstrument-functions -fno-omit-frame-pointer -fno-inline` and links the small
+project runtime hook implementation. The runtime is inactive unless
+`NEWOS_PROFILE` names an output file. Set `NEWOS_PROFILE=0`, `off`, `false`, or
+`no` to force profiling off for a profiled binary.
+
+Runtime hooks emit trace lines in this format:
 
 ```
 enter TIME_NS ADDRESS
@@ -63,8 +77,8 @@ hex address such as those emitted by `nm`.
 Text output uses tab-separated columns:
 
 ```
-rank    calls   self_ms total_ms avg_self_ms avg_total_ms address function
-1       42      12.300  30.100   0.292       0.716        0x401000 parse
+rank    calls   self_ms total_ms max_ms self% total% avg_self_ms avg_total_ms address function
+1       42      12.300  30.100   2.400  40.86 100.00 0.292       0.716        0x401000 parse
 ```
 
 Definitions:
@@ -72,6 +86,9 @@ Definitions:
 - `calls` - number of function-entry events.
 - `self_ms` - time spent in the function body, excluding child calls.
 - `total_ms` - inclusive time from function entry to matching exit.
+- `max_ms` - largest inclusive duration observed for one call.
+- `self%` and `total%` - percentages relative to the largest inclusive function
+  total in the trace, normally `main` for a complete single-threaded trace.
 - `avg_self_ms` and `avg_total_ms` - per-call averages.
 
 Diagnostics about malformed lines, unmatched exits, stack overflows, or open
@@ -106,20 +123,43 @@ nm -n ./program > program.syms
 profiler -m program.syms program.nprof
 ```
 
+Newlinker freestanding binaries are intentionally compact and normally do not
+carry a final symbol table, so `nm` may not be able to name their addresses. In
+that case, run `profiler` without `-m` for an address-only report, or use symbols
+from an equivalent non-stripped GCC/Clang-linked profiling build.
+
 ## CURRENT CAPABILITIES
 
 - parses line-oriented GCC/Clang instrumentation traces
 - reconstructs nested calls with a fixed-size stack
 - computes self time, total time, maximum inclusive call time, call count, and
   averages
-- resolves exact or nearest-lower addresses through simple symbol files or
-  `nm -n` output
+- resolves exact or nearest-lower function addresses through simple symbol files
+  or `nm -n` output; non-function `nm` symbols are ignored
 - writes text or CSV reports
+- includes a buffered Linux trace runtime for `PROFILE=1` builds
 
 ## LIMITATIONS
 
 - this is an instrumentation trace reporter, not a sampling profiler
-- runtime hook emission is intentionally separate from this report tool
+- `PROFILE=1` currently targets GCC/Clang based Linux builds; `ncc` is not yet a
+  suitable C compiler for this workflow
+- the runtime writes buffered text traces; this is much cheaper than flushing
+  every event, but still high overhead compared with no profiling
+- timings are best used comparatively inside one run, not as exact wall-clock
+  runtime measurements
+- the trace model is single-threaded: interleaved events from multiple threads
+  would require per-thread stack tracking, which is not implemented yet
+- instrumentation changes behavior because every instrumented function call runs
+  enter/exit hooks; very small or hot functions can be distorted
+- profiling builds use `-fno-inline` by default so function-level costs stay
+  visible; normal optimized/LTO builds may inline or remove functions that you
+  expected to see
+- PIE/ASLR can shift addresses. Use symbols from the exact profiled binary, and
+  prefer non-PIE/stable-address profiling builds when comparing raw addresses
+- compact newlinker outputs usually do not include enough symbol information for
+  `nm`; address-only reports still work, and richer newlinker symbol maps remain
+  future work
 - recursive functions are supported through stack nesting, but address-only
   symbolization cannot distinguish inlined call sites
 - async signal profiling, statistical sampling, call graph arc percentages, and

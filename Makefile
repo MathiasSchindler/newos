@@ -38,7 +38,11 @@ endif
 FREESTANDING_OPT_CFLAGS ?= $(shell printf 'int x;\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -Oz -x c - -c -o /tmp/newos-oz-check.o >/dev/null 2>&1 && echo -Oz || echo -Os; rm -f /tmp/newos-oz-check.o)
 FREESTANDING_LTO ?= 1
 FREESTANDING_LTO_FLAGS ?= $(if $(filter 1 yes true,$(FREESTANDING_LTO)),-flto)
+PROFILE ?= 0
+PROFILE_CFLAGS ?= $(if $(filter 1 yes true,$(PROFILE)),-finstrument-functions -fno-omit-frame-pointer -fno-inline)
+PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/shared/profiler_runtime.c)
 FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS) $(FREESTANDING_OPT_CFLAGS) $(FREESTANDING_LTO_FLAGS)
+FREESTANDING_CFLAGS += $(PROFILE_CFLAGS)
 FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
 TARGET_LINKER_FLAG ?= $(shell printf 'void _start(void){}\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -nostdlib -fuse-ld=lld -Wl$(COMMA)-e$(COMMA)_start -x c - -o /tmp/newos-lld-check >/dev/null 2>&1 && echo -fuse-ld=lld; rm -f /tmp/newos-lld-check)
@@ -77,6 +81,7 @@ MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTA
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 HOST_SIZE_FLAGS ?= $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(HOST_SECTION_CFLAGS) $(HOST_GC_LDFLAGS))
 HOST_CFLAGS ?= $(CFLAGS) $(HOST_SIZE_FLAGS)
+HOST_CFLAGS += $(PROFILE_CFLAGS)
 EXPACK_HOST_PTHREAD_ENABLED := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(if $(filter MSYS_NT% MINGW% CYGWIN%,$(HOST_OS)),,1))
 EXPACK_HOST_THREAD_FLAGS ?= $(if $(EXPACK_HOST_PTHREAD_ENABLED),$(if $(filter Darwin,$(HOST_OS)),,-pthread))
 EXPACK_HOST_THREAD_DEFS ?= $(if $(EXPACK_HOST_PTHREAD_ENABLED),-DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_HAVE_PTHREAD=1,-DEXPACK_DISABLE_PTHREAD=1)
@@ -312,7 +317,7 @@ else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
 freestanding: $(BUILD_DIR)/linker
-	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" bash build-freestanding-newlinker.sh
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" NEWLINKER_PROFILE="$(PROFILE)" bash build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
@@ -324,7 +329,7 @@ else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
 freestanding: $(BUILD_DIR)/linker
-	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" bash build-freestanding-newlinker.sh
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" NEWLINKER_PROFILE="$(PROFILE)" bash build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
@@ -471,7 +476,7 @@ LINKER_TOOL_SOURCES := src/compiler/linker.c \
     src/compiler/linker_layout.c \
     src/compiler/linker_report.c \
     src/compiler/linker_lto.c
-HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS)) -idirafter src/shared
+HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS) $(PROFILE_CFLAGS)) -idirafter src/shared
 HOST_EXPACK_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
 HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -DCOMPILER_LINKER_ENABLE_REPORTING=0 -idirafter src/shared
 HOST_READELF_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
@@ -483,11 +488,11 @@ MAIL_TOOL_SOURCES := src/tools/mail/imap.c src/tools/mail/message.c src/tools/ma
 HOST_TLS_PLATFORM_SOURCE := src/platform/posix/tls.c
 TARGET_TLS_PLATFORM_SOURCE := src/platform/linux/tls.c
 
-$(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+$(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(TARGET_REUSABLE_OBJECTS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(TARGET_BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(TARGET_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/make: src/tools/make.c $(MAKE_TOOL_SOURCES) src/tools/make/make_impl.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) src/tools/make.c $(MAKE_TOOL_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
@@ -583,44 +588,44 @@ else
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) -Wno-pedantic $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
-$(BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+$(BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_SOURCES) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_EXPACK_CFLAGS) $(EXPACK_HOST_THREAD_FLAGS) $(EXPACK_HOST_THREAD_DEFS) $< $(SHARED_SOURCES) $(EXPACK_SIGNING_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@ $(EXPACK_HOST_THREAD_FLAGS)
+$(BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_EXPACK_CFLAGS) $(EXPACK_HOST_THREAD_FLAGS) $(EXPACK_HOST_THREAD_DEFS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@ $(EXPACK_HOST_THREAD_FLAGS)
 
-$(BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/archive_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_READELF_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+$(BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/archive_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_READELF_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 else
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
-$(INCEPTION_BUILD_DIR)/man: src/tools/man.c $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(INCEPTION_BUILD_DIR)/man: src/tools/man.c $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
-$(addprefix $(INCEPTION_BUILD_DIR)/,$(INCEPTION_UNICODE_TOOLS)): $(INCEPTION_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(addprefix $(INCEPTION_BUILD_DIR)/,$(INCEPTION_UNICODE_TOOLS)): $(INCEPTION_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
-$(BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+$(BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
 ifneq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
-$(TARGET_BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_DEPS) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(EXPACK_SIGNING_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(TARGET_BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
-$(TARGET_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(TARGET_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
-$(INCEPTION_BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_DEPS) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(EXPACK_SIGNING_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(INCEPTION_BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
-$(INCEPTION_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+$(INCEPTION_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 clean:
 	@for path in $(BUILD_ROOT) tests/tmp; do \

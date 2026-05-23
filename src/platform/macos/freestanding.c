@@ -899,6 +899,16 @@ long long platform_get_epoch_time(void) {
     return (long long)now.tv_sec;
 }
 
+unsigned long long platform_get_monotonic_time_ns(void) {
+    struct timeval now;
+
+    if (gettimeofday(&now, 0) != 0) {
+        return 0ULL;
+    }
+
+    return ((unsigned long long)now.tv_sec * 1000000000ULL) + ((unsigned long long)now.tv_usec * 1000ULL);
+}
+
 int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size) {
     time_t when;
     struct tm time_value;

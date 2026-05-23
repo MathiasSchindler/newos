@@ -112,6 +112,16 @@ long long platform_get_epoch_time(void) {
     return (long long)now.tv_sec;
 }
 
+unsigned long long platform_get_monotonic_time_ns(void) {
+    struct linux_timespec now;
+
+    if (linux_syscall2(LINUX_SYS_CLOCK_GETTIME, 1, (long)&now) < 0) {
+        return 0ULL;
+    }
+
+    return ((unsigned long long)now.tv_sec * 1000000000ULL) + (unsigned long long)now.tv_nsec;
+}
+
 int platform_get_memory_info(PlatformMemoryInfo *info_out) {
     char meminfo[4096];
     unsigned long long reclaimable_bytes = 0;

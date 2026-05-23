@@ -18,6 +18,7 @@ typedef struct {
 
 typedef struct {
     unsigned long long address;
+    int function_symbol;
     char name[PROFILER_NAME_CAPACITY];
 } ProfileSymbol;
 
@@ -60,9 +61,12 @@ static void print_usage(void) {
 
 static void print_instrumentation_help(void) {
     rt_write_cstr(1, "GCC primary instrumentation flags:\n");
-    rt_write_cstr(1, "  gcc -finstrument-functions -fno-omit-frame-pointer -g -O2 ...\n");
+    rt_write_cstr(1, "  gcc -finstrument-functions -fno-omit-frame-pointer -fno-inline -g -O2 ...\n");
     rt_write_cstr(1, "\nClang secondary instrumentation flags:\n");
-    rt_write_cstr(1, "  clang -finstrument-functions -fno-omit-frame-pointer -g -O2 ...\n");
+    rt_write_cstr(1, "  clang -finstrument-functions -fno-omit-frame-pointer -fno-inline -g -O2 ...\n");
+    rt_write_cstr(1, "\nProject build shortcut:\n");
+    rt_write_cstr(1, "  make freestanding PROFILE=1\n");
+    rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/freestanding-linux-x86_64/tool ...\n");
     rt_write_cstr(1, "\nTrace lines accepted by profiler:\n");
     rt_write_cstr(1, "  enter TIME_NS ADDRESS\n");
     rt_write_cstr(1, "  exit  TIME_NS ADDRESS\n");
@@ -226,7 +230,12 @@ static int find_or_add_function(unsigned long long address, size_t *index_out) {
     return 0;
 }
 
-static void add_symbol(unsigned long long address, const char *name) {
+static int symbol_type_is_function(const char *type) {
+    return rt_strcmp(type, "T") == 0 || rt_strcmp(type, "t") == 0 ||
+           rt_strcmp(type, "W") == 0 || rt_strcmp(type, "w") == 0;
+}
+
+static void add_symbol(unsigned long long address, const char *name, int function_symbol) {
     size_t i;
 
     if (name == 0 || name[0] == '\0') {
@@ -234,7 +243,10 @@ static void add_symbol(unsigned long long address, const char *name) {
     }
     for (i = 0U; i < profiler_symbol_count; ++i) {
         if (profiler_symbols[i].address == address) {
-            rt_copy_string(profiler_symbols[i].name, sizeof(profiler_symbols[i].name), name);
+            if (function_symbol || !profiler_symbols[i].function_symbol) {
+                profiler_symbols[i].function_symbol = function_symbol;
+                rt_copy_string(profiler_symbols[i].name, sizeof(profiler_symbols[i].name), name);
+            }
             return;
         }
     }
@@ -242,6 +254,7 @@ static void add_symbol(unsigned long long address, const char *name) {
         return;
     }
     profiler_symbols[profiler_symbol_count].address = address;
+    profiler_symbols[profiler_symbol_count].function_symbol = function_symbol;
     rt_copy_string(profiler_symbols[profiler_symbol_count].name, sizeof(profiler_symbols[profiler_symbol_count].name), name);
     profiler_symbol_count += 1U;
 }
@@ -298,6 +311,20 @@ static void write_ns_as_ms(unsigned long long ns) {
     write_padded_3((ns % 1000000ULL) / 1000ULL);
 }
 
+static void write_percent_2(unsigned long long value, unsigned long long total) {
+    unsigned long long scaled;
+
+    if (total == 0ULL) {
+        rt_write_cstr(1, "0.00");
+        return;
+    }
+    scaled = (value * 10000ULL) / total;
+    rt_write_uint(1, scaled / 100ULL);
+    rt_write_char(1, '.');
+    rt_write_char(1, (char)('0' + ((scaled / 10ULL) % 10ULL)));
+    rt_write_char(1, (char)('0' + (scaled % 10ULL)));
+}
+
 static int read_symbols(const char *path) {
     int fd;
     int should_close;
@@ -327,9 +354,11 @@ static int read_symbols(const char *path) {
             continue;
         }
         if (rt_strlen(second) == 1U && next_token(&cursor, third, sizeof(third))) {
-            add_symbol(address, third);
+            if (symbol_type_is_function(second)) {
+                add_symbol(address, third, 1);
+            }
         } else {
-            add_symbol(address, second);
+            add_symbol(address, second, 1);
         }
     }
     tool_close_input(fd, should_close);
@@ -466,7 +495,7 @@ static int compare_rows(const void *left_ptr, const void *right_ptr) {
     return 0;
 }
 
-static void write_report_line(size_t rank, const ProfileFunction *function, int csv) {
+static void write_report_line(size_t rank, const ProfileFunction *function, unsigned long long program_total_ns, int csv) {
     const char *symbol = symbol_for_address(function->address);
     unsigned long long avg_self = function->calls == 0ULL ? 0ULL : function->self_ns / function->calls;
     unsigned long long avg_total = function->calls == 0ULL ? 0ULL : function->total_ns / function->calls;
@@ -479,6 +508,12 @@ static void write_report_line(size_t rank, const ProfileFunction *function, int 
         rt_write_uint(1, function->self_ns);
         rt_write_char(1, ',');
         rt_write_uint(1, function->total_ns);
+        rt_write_char(1, ',');
+        rt_write_uint(1, function->max_ns);
+        rt_write_char(1, ',');
+        write_percent_2(function->self_ns, program_total_ns);
+        rt_write_char(1, ',');
+        write_percent_2(function->total_ns, program_total_ns);
         rt_write_char(1, ',');
         rt_write_uint(1, avg_self);
         rt_write_char(1, ',');
@@ -497,6 +532,12 @@ static void write_report_line(size_t rank, const ProfileFunction *function, int 
     rt_write_char(1, '\t');
     write_ns_as_ms(function->total_ns);
     rt_write_char(1, '\t');
+    write_ns_as_ms(function->max_ns);
+    rt_write_char(1, '\t');
+    write_percent_2(function->self_ns, program_total_ns);
+    rt_write_char(1, '\t');
+    write_percent_2(function->total_ns, program_total_ns);
+    rt_write_char(1, '\t');
     write_ns_as_ms(avg_self);
     rt_write_char(1, '\t');
     write_ns_as_ms(avg_total);
@@ -509,21 +550,25 @@ static void write_report_line(size_t rank, const ProfileFunction *function, int 
 static void write_report(unsigned long long limit, int csv, const ProfileStats *stats) {
     size_t i;
     size_t count = profiler_function_count;
+    unsigned long long program_total_ns = 0ULL;
 
     for (i = 0U; i < profiler_function_count; ++i) {
         profiler_rows[i].function_index = i;
+        if (profiler_functions[i].total_ns > program_total_ns) {
+            program_total_ns = profiler_functions[i].total_ns;
+        }
     }
     rt_sort(profiler_rows, profiler_function_count, sizeof(profiler_rows[0]), compare_rows);
     if (limit != 0ULL && limit < (unsigned long long)count) {
         count = (size_t)limit;
     }
     if (csv) {
-        rt_write_cstr(1, "rank,calls,self_ns,total_ns,avg_self_ns,avg_total_ns,address,function\n");
+        rt_write_cstr(1, "rank,calls,self_ns,total_ns,max_ns,self_pct,total_pct,avg_self_ns,avg_total_ns,address,function\n");
     } else {
-        rt_write_cstr(1, "rank\tcalls\tself_ms\ttotal_ms\tavg_self_ms\tavg_total_ms\taddress\tfunction\n");
+        rt_write_cstr(1, "rank\tcalls\tself_ms\ttotal_ms\tmax_ms\tself%\ttotal%\tavg_self_ms\tavg_total_ms\taddress\tfunction\n");
     }
     for (i = 0U; i < count; ++i) {
-        write_report_line(i + 1U, &profiler_functions[profiler_rows[i].function_index], csv);
+        write_report_line(i + 1U, &profiler_functions[profiler_rows[i].function_index], program_total_ns, csv);
     }
     if (!csv) {
         rt_write_cstr(2, "profiler: events=");

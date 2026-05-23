@@ -254,6 +254,20 @@ long long platform_get_epoch_time(void) {
     return (now == (time_t)-1) ? 0 : (long long)now;
 }
 
+unsigned long long platform_get_monotonic_time_ns(void) {
+    struct timespec now;
+
+#if defined(CLOCK_MONOTONIC)
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+        return ((unsigned long long)now.tv_sec * 1000000000ULL) + (unsigned long long)now.tv_nsec;
+    }
+#endif
+    if (clock_gettime(CLOCK_REALTIME, &now) == 0) {
+        return ((unsigned long long)now.tv_sec * 1000000000ULL) + (unsigned long long)now.tv_nsec;
+    }
+    return (unsigned long long)platform_get_epoch_time() * 1000000000ULL;
+}
+
 int platform_get_memory_info(PlatformMemoryInfo *info_out) {
     char meminfo[4096];
 

@@ -37,6 +37,7 @@ else
   NEWLINKER_EXTRA_CFLAGS_ARRAY=()
 fi
 NEWLINKER_LTO=${NEWLINKER_LTO:-0}
+NEWLINKER_PROFILE=${NEWLINKER_PROFILE:-0}
 if [[ "$NEWLINKER_LTO" != "1" ]]; then
   for _f in "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}"; do
     if [[ "$_f" == "-flto" || "$_f" == -flto=* ]]; then NEWLINKER_LTO=1; break; fi
@@ -87,6 +88,9 @@ TUI_SOURCE=src/shared/tui.c
 CRT_SRC=src/arch/x86_64/linux/crt0.S
 CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DEXPACK_DISABLE_PTHREAD=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
 ASMFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+if [[ "$NEWLINKER_PROFILE" == "1" || "$NEWLINKER_PROFILE" == "yes" || "$NEWLINKER_PROFILE" == "true" ]]; then
+  CFLAGS+=(-finstrument-functions -fno-omit-frame-pointer -fno-inline)
+fi
 if [[ "$NEWLINKER_LTO" == "1" && "$NEWLINKER_IS_GCC" == "1" ]]; then
   _has_flto=0
   for _f in "${CFLAGS[@]}"; do
@@ -161,6 +165,7 @@ done
   echo "linker: $LINKER"
   echo "linker flags: ${LINKER_FLAGS_ARRAY[*]}"
   echo "extra cflags: ${NEWLINKER_EXTRA_CFLAGS_ARRAY[*]:-none}"
+  echo "profile: $NEWLINKER_PROFILE"
   echo "link jobs: $NEWLINKER_LINK_JOBS"
   echo "tools from Makefile: $(wc -w <<<"$TOOLS")"
   echo "reusable sources attempted: ${#REUSE_SOURCES[@]} plus crt0"
@@ -265,6 +270,9 @@ for tool in $TOOLS; do
       append_dir_sources tool_sources "src/tools/$tool"
       ;;
   esac
+  if [[ "$NEWLINKER_PROFILE" == "1" || "$NEWLINKER_PROFILE" == "yes" || "$NEWLINKER_PROFILE" == "true" ]]; then
+    append_unique_source tool_sources src/shared/profiler_runtime.c
+  fi
   tool_objs=()
   tfail=""
   for src in "${tool_sources[@]}"; do

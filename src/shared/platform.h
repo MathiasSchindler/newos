@@ -343,6 +343,7 @@ int platform_terminal_restore_mode(int fd, const PlatformTerminalState *state);
 int platform_sleep_milliseconds(unsigned long long milliseconds);
 int platform_sleep_seconds(unsigned int seconds);
 long long platform_get_epoch_time(void);
+unsigned long long platform_get_monotonic_time_ns(void);
 int platform_format_time(long long epoch_seconds, int use_local_time, const char *format, char *buffer, size_t buffer_size);
 int platform_send_signal(int pid, int signal_number);
 int platform_ignore_signal(int signal_number);

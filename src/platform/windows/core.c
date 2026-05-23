@@ -685,6 +685,10 @@ long long platform_get_epoch_time(void) {
     return (long long)((ticks - 116444736000000000ULL) / 10000000ULL);
 }
 
+unsigned long long platform_get_monotonic_time_ns(void) {
+    return GetTickCount64() * 1000000ULL;
+}
+
 int platform_get_memory_info(PlatformMemoryInfo *info_out) {
     WinMemoryStatusEx status;
 
