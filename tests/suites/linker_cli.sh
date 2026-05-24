@@ -17,9 +17,9 @@ if [ ! -x "$LINKER" ]; then
 fi
 
 linker_macho_status=0
-"$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/linker_macho.out" "$WORK_DIR/missing-a.o" "$WORK_DIR/missing-b.o" > "$WORK_DIR/linker_macho.stdout" 2> "$WORK_DIR/linker_macho.stderr" || linker_macho_status=$?
-assert_text_equals "$linker_macho_status" '1' "linker Mach-O target should enforce the current single-object boundary"
-assert_file_contains "$WORK_DIR/linker_macho.stderr" 'Mach-O arm64 linker currently accepts exactly one relocatable object' "linker Mach-O target did not report the single-object boundary"
+"$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/linker_macho.out" "$WORK_DIR/missing-a.o" > "$WORK_DIR/linker_macho.stdout" 2> "$WORK_DIR/linker_macho.stderr" || linker_macho_status=$?
+assert_text_equals "$linker_macho_status" '1' "linker Mach-O target should reject missing inputs"
+assert_file_contains "$WORK_DIR/linker_macho.stderr" 'failed to open object' "linker Mach-O target did not report the missing input"
 
 if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ] && command -v clang >/dev/null 2>&1; then
     cat > "$WORK_DIR/macho_start.s" <<'ASM'
@@ -134,6 +134,144 @@ ASM
         fi
         if command -v codesign >/dev/null 2>&1; then
             codesign --verify --strict "$WORK_DIR/macho_cstring_ref" > "$WORK_DIR/macho_cstring_ref_codesign.out" 2>&1
+        fi
+    fi
+
+    cat > "$WORK_DIR/macho_clang_start.c" <<'C'
+__attribute__((noreturn)) static void sys_exit(long code) {
+    register long x0 __asm__("x0") = code;
+    register long x16 __asm__("x16") = 1;
+    __asm__ volatile("svc #0x80" : : "r"(x0), "r"(x16) : "memory");
+    for (;;) {}
+}
+static long sys_write(long fd, const void *buf, unsigned long len) {
+    register long x0 __asm__("x0") = fd;
+    register long x1 __asm__("x1") = (long)buf;
+    register long x2 __asm__("x2") = (long)len;
+    register long x16 __asm__("x16") = 4;
+    __asm__ volatile("svc #0x80" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x16) : "memory");
+    return x0;
+}
+__attribute__((noreturn)) void _start(void) {
+    static const char msg[] = "tiny clang ok\n";
+    (void)sys_write(1, msg, sizeof(msg) - 1);
+    sys_exit(0);
+}
+C
+    if clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions \
+        -c "$WORK_DIR/macho_clang_start.c" -o "$WORK_DIR/macho_clang_start.o" > "$WORK_DIR/macho_clang_start_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_clang_start" "$WORK_DIR/macho_clang_start.o" > "$WORK_DIR/linker_macho_clang_start.stdout" 2> "$WORK_DIR/linker_macho_clang_start.stderr"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_clang_start" > "$WORK_DIR/macho_clang_start.otool"
+            assert_file_contains "$WORK_DIR/macho_clang_start.otool" '__const' "Mach-O backend did not preserve clang __TEXT,__const"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_clang_start" > "$WORK_DIR/macho_clang_start_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_clang_start" > "$WORK_DIR/macho_clang_start.run"
+            assert_file_contains "$WORK_DIR/macho_clang_start.run" 'tiny clang ok' "Mach-O clang C executable did not run correctly"
+        fi
+    fi
+
+    if clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -flto \
+        -c "$WORK_DIR/macho_clang_start.c" -o "$WORK_DIR/macho_clang_start_lto.o" > "$WORK_DIR/macho_clang_start_lto_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 --lto-cc=clang -o "$WORK_DIR/macho_clang_start_lto" "$WORK_DIR/macho_clang_start_lto.o" > "$WORK_DIR/linker_macho_clang_start_lto.stdout" 2> "$WORK_DIR/linker_macho_clang_start_lto.stderr"
+        od -An -tx1 -N4 "$WORK_DIR/macho_clang_start_lto" | tr -d ' \n' > "$WORK_DIR/macho_clang_start_lto.magic"
+        assert_file_contains "$WORK_DIR/macho_clang_start_lto.magic" '^cffaedfe$' "Mach-O clang LTO path did not write an executable"
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_clang_start_lto" > "$WORK_DIR/macho_clang_start_lto_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_clang_start_lto" > "$WORK_DIR/macho_clang_start_lto.run"
+            assert_file_contains "$WORK_DIR/macho_clang_start_lto.run" 'tiny clang ok' "Mach-O clang LTO executable did not run correctly"
+        fi
+    fi
+
+    cat > "$WORK_DIR/macho_split_start.c" <<'C'
+extern const char *helper_message(void);
+__attribute__((noreturn)) static void sys_exit(long code) {
+    register long x0 __asm__("x0") = code;
+    register long x16 __asm__("x16") = 1;
+    __asm__ volatile("svc #0x80" : : "r"(x0), "r"(x16) : "memory");
+    for (;;) {}
+}
+static long sys_write(long fd, const void *buf, unsigned long len) {
+    register long x0 __asm__("x0") = fd;
+    register long x1 __asm__("x1") = (long)buf;
+    register long x2 __asm__("x2") = (long)len;
+    register long x16 __asm__("x16") = 4;
+    __asm__ volatile("svc #0x80" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x16) : "memory");
+    return x0;
+}
+static unsigned long c_strlen(const char *text) {
+    unsigned long len = 0;
+    while (text[len] != '\0') {
+        len += 1;
+    }
+    return len;
+}
+__attribute__((noreturn)) void _start(void) {
+    const char *msg = helper_message();
+    (void)sys_write(1, msg, c_strlen(msg));
+    sys_exit(0);
+}
+C
+    cat > "$WORK_DIR/macho_split_helper.c" <<'C'
+const char *helper_message(void) {
+    static int counter;
+    static const char first[] = "multi object ok\n";
+    static const char later[] = "bad\n";
+    counter += 1;
+    return counter == 1 ? first : later;
+}
+C
+    if clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions \
+        -c "$WORK_DIR/macho_split_start.c" -o "$WORK_DIR/macho_split_start.o" > "$WORK_DIR/macho_split_start_compile.out" 2>&1 && \
+       clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions \
+        -c "$WORK_DIR/macho_split_helper.c" -o "$WORK_DIR/macho_split_helper.o" > "$WORK_DIR/macho_split_helper_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_split" "$WORK_DIR/macho_split_start.o" "$WORK_DIR/macho_split_helper.o" > "$WORK_DIR/linker_macho_split.stdout" 2> "$WORK_DIR/linker_macho_split.stderr"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_split" > "$WORK_DIR/macho_split.otool"
+            assert_file_contains "$WORK_DIR/macho_split.otool" '__bss' "Mach-O backend did not preserve clang __DATA,__bss"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_split" > "$WORK_DIR/macho_split_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_split" > "$WORK_DIR/macho_split.run"
+            assert_file_contains "$WORK_DIR/macho_split.run" 'multi object ok' "Mach-O multi-object clang executable did not run correctly"
+        fi
+        if command -v ar >/dev/null 2>&1; then
+            (cd "$WORK_DIR" && ar rcs libmacho_split_helper.a macho_split_helper.o) > "$WORK_DIR/macho_split_archive.out" 2>&1
+            "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_split_archive" "$WORK_DIR/macho_split_start.o" "$WORK_DIR/libmacho_split_helper.a" > "$WORK_DIR/linker_macho_split_archive.stdout" 2> "$WORK_DIR/linker_macho_split_archive.stderr"
+            if command -v codesign >/dev/null 2>&1; then
+                codesign --verify --strict "$WORK_DIR/macho_split_archive" > "$WORK_DIR/macho_split_archive_codesign.out" 2>&1
+            fi
+            if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+                "$WORK_DIR/macho_split_archive" > "$WORK_DIR/macho_split_archive.run"
+                assert_file_contains "$WORK_DIR/macho_split_archive.run" 'multi object ok' "Mach-O archive member executable did not run correctly"
+            fi
+        fi
+    fi
+
+    if clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -flto \
+        -c "$WORK_DIR/macho_split_start.c" -o "$WORK_DIR/macho_split_start_lto.o" > "$WORK_DIR/macho_split_start_lto_compile.out" 2>&1 && \
+       clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -flto \
+        -c "$WORK_DIR/macho_split_helper.c" -o "$WORK_DIR/macho_split_helper_lto.o" > "$WORK_DIR/macho_split_helper_lto_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 --lto-cc=clang -o "$WORK_DIR/macho_split_lto" "$WORK_DIR/macho_split_start_lto.o" "$WORK_DIR/macho_split_helper_lto.o" > "$WORK_DIR/linker_macho_split_lto.stdout" 2> "$WORK_DIR/linker_macho_split_lto.stderr"
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_split_lto" > "$WORK_DIR/macho_split_lto_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_split_lto" > "$WORK_DIR/macho_split_lto.run"
+            assert_file_contains "$WORK_DIR/macho_split_lto.run" 'multi object ok' "Mach-O multi-input clang LTO executable did not run correctly"
         fi
     fi
 

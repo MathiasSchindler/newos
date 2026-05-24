@@ -45,8 +45,10 @@ path instead of hiding it behind ELF aliases.
   GCC LTO prelink step (`gcc -flto -flinker-output=nolto-rel -r -nostdlib ...`)
   before normal linking. LLVM/Clang bitcode inputs are detected separately and
   ask for `--lto-cc=clang`; for the ELF64 x86-64 backend this routes through a
-  Clang/lld relocatable prelink step. In both cases, the resulting native ELF
-  relocatable replaces the original LTO IR inputs.
+  Clang/lld relocatable prelink step. For the Mach-O arm64 backend, Apple clang
+  and ld64 are used to materialize the native LTO object with
+  `-Wl,-object_path_lto`. In all cases, the resulting native relocatable replaces
+  the original LTO IR inputs before target-specific linking continues.
 
 ## Size and Layout Options
 
@@ -84,11 +86,12 @@ emits only byte-aligned sections.
 
 The linker does not parse compiler IR. It detects LTO containers and asks the
 selected compiler driver to lower all inputs into one native relocatable, then
-applies the normal newlinker size passes. GCC LTO uses `.gnu.lto_*` section
+applies the normal newlinker target pass. GCC LTO uses `.gnu.lto_*` section
 detection and `-flinker-output=nolto-rel`. LLVM/Clang bitcode detection covers
-raw bitcode magic and Mach-O `__LLVM,__bitcode` markers; the current native
-prelink implementation is for the ELF64 x86-64 backend and expects a clang/lld
-toolchain capable of `-target x86_64-unknown-linux-elf -flto -r`.
+raw bitcode magic and Mach-O `__LLVM,__bitcode` markers. The ELF64 x86-64 path
+expects a clang/lld toolchain capable of
+`-target x86_64-unknown-linux-elf -flto -r`. The Mach-O arm64 path uses Apple
+clang/ld64 with `-Wl,-object_path_lto` and then links the native object itself.
 
 `make test-linker-cli` includes an optional Clang LTO fixture. It compiles a tiny
 raw LLVM bitcode object, probes whether the selected clang can prelink x86-64 ELF
@@ -96,30 +99,37 @@ with lld, and then asks this linker to produce an ELF executable via
 `--lto-cc=clang`. The fixture skips cleanly when that cross-LTO toolchain is not
 available.
 
-Mach-O arm64 LTO remains delegated to Apple clang and Apple ld in the macOS
-freestanding-ish build. The project-owned Mach-O backend is now only a seed: it
-parses Mach-O arm64 object load commands, sections, relocations, and symbol
-tables, then writes a runnable executable when the object fits the currently
-implemented section and relocation subset. LLVM/Clang bitcode carried in Mach-O
-objects is still detected as LTO input but not lowered by this backend.
+The project-owned Mach-O backend can now consume tiny syscall-only clang C
+objects directly, including split source files and simple archives. It can also
+consume clang LTO bitcode when `--lto-cc=clang` is provided. The LTO lowering
+step uses Apple ld64's `object_path_lto` output as the native relocatable and
+then this backend writes the final ad-hoc signed Mach-O executable itself.
 
 ## Mach-O arm64 Subset
 
-The Mach-O backend currently accepts exactly one arm64 relocatable object. The
-object must contain `_start` or the symbol named with `-e` in `__TEXT,__text`,
-and may contain `__TEXT,__cstring` and `__DATA,__data` payload sections. The
-relocation pass supports the arm64 `BRANCH26`, `PAGE21`, `PAGEOFF12`, and simple
-absolute `UNSIGNED` records needed by local calls and `adrp`/`add` references to
-defined symbols in the same object. The writer emits `__PAGEZERO`, `__TEXT`,
-optional `__DATA`, `__LINKEDIT`, `LC_LOAD_DYLINKER`, `LC_BUILD_VERSION`,
-`LC_MAIN`, and `LC_CODE_SIGNATURE`. Output uses the same 16 KiB page/signature
-granularity as the macOS prototype container writer and includes an in-tree
-ad-hoc SHA-256 CodeDirectory signature.
+The Mach-O backend accepts multiple arm64 relocatable objects and simple
+archives. One input must contain `_start` or the symbol named with `-e` in
+`__TEXT,__text`; Darwin C entry symbols are represented with the Mach-O symbol
+spelling `__start`, and the backend accepts that symbol when the requested entry
+is `_start`. Supported payload sections are `__TEXT,__text`, `__TEXT,__const`,
+`__TEXT,__cstring`, `__DATA,__data`, and zero-fill `__DATA,__bss`. The linker
+groups same-kind sections into one output section per kind and resolves external
+defined symbols across input objects. The relocation pass supports the arm64
+`BRANCH26`, `PAGE21`, `PAGEOFF12`, and simple absolute `UNSIGNED` records needed
+by local and cross-object calls, `adrp`/`add` references, and clang's
+unsigned-offset load/store references to static data. The writer emits
+`__PAGEZERO`, `__TEXT`, optional `__DATA`, `__LINKEDIT`, `LC_LOAD_DYLINKER`,
+`LC_BUILD_VERSION`, `LC_MAIN`, and `LC_CODE_SIGNATURE`. Output uses the same 16
+KiB page/signature granularity as the macOS prototype container writer and
+includes an in-tree ad-hoc SHA-256 CodeDirectory signature.
 
-This is enough for tiny syscall-only arm64 start objects with local calls,
-literal strings, and initialized data references. General Darwin linking still
-needs archive resolution, multi-object symbol binding, BSS/zero-fill layout,
-more section classes, and the rest of the arm64 relocation vocabulary.
+This is enough for tiny syscall-only arm64 start objects and freestanding clang
+C start files split across several translation units, with local calls,
+cross-object calls, literal strings, static const data, initialized data,
+zero-initialized data, archive members, and the same shape after clang LTO
+prelinking. General Darwin linking still needs selective archive member loading,
+common-symbol handling, more section classes, libSystem/project runtime
+integration, and the rest of the arm64 relocation vocabulary.
 
 Use `make newlinker-lto-size-report` to rebuild both no-LTO and GCC-LTO
 freestanding trees and print total size deltas, largest regressions, and largest
@@ -246,12 +256,13 @@ almost all linker wall-clock overhead for 185 tools.
 - LTO bitcode inputs are not parsed directly as native object sections. For GCC
   LTO, pass `--lto-cc=gcc`; for LLVM/Clang bitcode on the ELF64 x86-64 backend,
   pass `--lto-cc=clang` and provide a clang/lld toolchain that can emit a native
-  relocatable. Mach-O arm64 LTO is still handled by Apple clang/ld outside this
-  linker.
-- The Mach-O arm64 target is first-class but intentionally tiny: one object,
-  no archives, no multi-object undefined symbol resolution, no BSS/zero-fill
-  layout, and only the initial `BRANCH26`/`PAGE21`/`PAGEOFF12`/simple
-  `UNSIGNED` arm64 relocation subset.
+  relocatable. For Mach-O arm64 clang LTO, pass `--lto-cc=clang`; Apple clang and
+  ld64 materialize the native LTO object and this linker writes the final Mach-O.
+- The Mach-O arm64 target is first-class but intentionally tiny: archives are
+  loaded as simple object containers rather than via selective symbol-index
+  extraction, common symbols are not implemented, supported sections are limited
+  to the current text/const/cstring/data/bss set, and the arm64 relocation
+  vocabulary is still the subset used by the current clang syscall fixtures.
 
 ## JSON Output
 

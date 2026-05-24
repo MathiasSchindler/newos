@@ -78,6 +78,8 @@ TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
 NEWLINKER_STANDALONE_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-newlinker
 WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_ARCH)
 MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTANDING_ARCH)
+MACOS_NEWLINKER_EXPERIMENT_DIR ?= $(BUILD_ROOT)/newlinker-macos-$(MACOS_FREESTANDING_ARCH)
+MACOS_NEWLINKER_TOOLS ?= true false echo
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 HOST_SIZE_FLAGS ?= $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(HOST_SECTION_CFLAGS) $(HOST_GC_LDFLAGS))
 HOST_CFLAGS ?= $(CFLAGS) $(HOST_SIZE_FLAGS)
@@ -218,6 +220,10 @@ MACOS_FREESTANDING_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_F
 MACOS_FREESTANDING_LDFLAGS ?= -nodefaultlibs -lSystem -Wl$(COMMA)-dead_strip -Wl$(COMMA)-x -Wl$(COMMA)-no_function_starts -Wl$(COMMA)-adhoc_codesign $(MACOS_FREESTANDING_LTO_FLAGS)
 MACOS_FREESTANDING_NO_LTO_CFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_CFLAGS))
 MACOS_FREESTANDING_NO_LTO_LDFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_LDFLAGS))
+MACOS_NEWLINKER_EXPERIMENT_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions
+MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS ?= $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -flto
+MACOS_NEWLINKER_RUNTIME_OBJECTS := $(patsubst %.c,$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o,$(MACOS_FREESTANDING_RUNTIME_SOURCES))
+MACOS_NEWLINKER_TOOL_TARGETS := $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_NEWLINKER_TOOLS))
 # Keep this shell extraction comma-free for compatibility with older GNU make on macOS.
 TARGET_PLATFORM_MANIFEST_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(filter src/platform/linux/% $(TARGET_ARCH_DIR)/%,$(TARGET_PLATFORM_MANIFEST_SOURCES))
@@ -262,7 +268,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-newlinker freestanding-macos selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
+.PHONY: all host freestanding freestanding-newlinker freestanding-macos macos-newlinker-tiny macos-newlinker-tools selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -277,6 +283,10 @@ test-inception: inception
 
 test-linker-cli: $(BUILD_DIR)/linker
 	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" sh ./tests/suites/linker_cli.sh
+
+macos-newlinker-tiny: $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny-lto
+
+macos-newlinker-tools: $(MACOS_NEWLINKER_TOOL_TARGETS)
 
 freestanding-newlinker: $(BUILD_DIR)/linker
 	WORK="$(abspath $(NEWLINKER_STANDALONE_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" bash build-freestanding-newlinker.sh
@@ -372,7 +382,7 @@ freestanding-macos:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding-macos
 endif
 
-$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(MACOS_FREESTANDING_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(FREESTANDING_OBJECT_BUILD_DIR) $(INCEPTION_OBJECT_BUILD_DIR)):
+$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(MACOS_FREESTANDING_BUILD_DIR) $(MACOS_NEWLINKER_EXPERIMENT_DIR) $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj $(SELFHOST_BUILD_DIR) $(FREESTANDING_OBJECT_BUILD_DIR) $(INCEPTION_OBJECT_BUILD_DIR)):
 	mkdir -p $@
 
 $(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
@@ -502,6 +512,33 @@ TARGET_TLS_PLATFORM_SOURCE := src/platform/linux/tls.c
 
 $(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o: tests/fixtures/macho/newlinker_tiny_start.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -c $< -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o: tests/fixtures/macho/newlinker_tiny_helper.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -c $< -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.lto.o: tests/fixtures/macho/newlinker_tiny_start.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -c $< -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o: tests/fixtures/macho/newlinker_tiny_helper.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -c $< -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o: src/platform/macos/newlinker_start.S | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -c $< -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o: %.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -Isrc/shared -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o
+
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny-lto: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.lto.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.lto.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o
+
+$(MACOS_NEWLINKER_TOOL_TARGETS): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_RUNTIME_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_RUNTIME_OBJECTS)
 
 $(TARGET_BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(TARGET_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) $(TARGET_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

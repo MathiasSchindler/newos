@@ -92,11 +92,27 @@ modern macOS requires for runnable executables.
   file-byte and file-section-byte deltas
 - the in-tree `linker --target=mach-o-arm64` backend is separate from this
   Apple-clang/ld build path. It currently exists as a focused bring-up target
-  for one small arm64 object with `__TEXT,__text`, optional `__TEXT,__cstring`
-  and `__DATA,__data`, and the first local arm64 relocation subset. It writes an
-  ad-hoc signed Mach-O executable. `make test-linker-cli` builds and verifies
-  tiny executable, local-call, data-reference, and cstring-reference fixtures on
-  Darwin hosts while also pinning unsupported undefined-symbol behavior.
+  for small arm64 objects with `__TEXT,__text`, optional `__TEXT,__const`,
+  `__TEXT,__cstring`, `__DATA,__data`, and zero-fill `__DATA,__bss`, plus the
+  first local and cross-object arm64 relocation subset. It writes an ad-hoc
+  signed Mach-O executable. `make test-linker-cli` builds and verifies tiny
+  assembly fixtures plus freestanding clang C, archive, BSS, and clang LTO
+  syscall-style start files on Darwin hosts, while also pinning unsupported
+  undefined-symbol behavior.
+- `make macos-newlinker-tiny` is the explicit experimental integration target
+  for this backend. It compiles a two-file syscall-only macOS arm64 C fixture and
+  links both normal and clang-LTO variants with `build/linker`, writing
+  `build/newlinker-macos-aarch64/tiny` and `tiny-lto`. This target is the bridge
+  for newlinker work before the main `freestanding-macos` Apple-ld path is
+  replaced.
+- `make macos-newlinker-tools` is the first real-tool bridge target. It compiles
+  the `MACOS_NEWLINKER_TOOLS` subset with clang LTO, links with the in-tree
+  Mach-O backend, and writes outputs under `build/newlinker-macos-aarch64/`.
+  The default subset is currently `true`, `false`, and `echo`; all three are
+  dependency-free syscall-style executables using the project macOS runtime and a
+  project-owned `_start` shim, not Apple ld final linking. This target is still
+  intentionally separate from `make freestanding` until the subset expands to the
+  full `src/tools` list.
 - keeps privileged or host-mutating operations conservative on Darwin when the
   project does not yet have a validated macOS implementation, so some admin
   front-ends build and report unsupported operations instead of changing the host

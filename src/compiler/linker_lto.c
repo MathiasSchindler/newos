@@ -190,3 +190,124 @@ int run_clang_lto_prelink_elf64_x86_64(const char *const *paths, size_t count, c
     rt_free(argv);
     return 0;
 }
+
+static int lto_output_is_macho64_aarch64_object(const char *path) {
+    unsigned char *file = 0;
+    size_t size = 0U;
+    int ok = 0;
+
+    if (read_file_alloc(path, LINKER_MAX_OBJECT_SIZE, &file, &size, 0, 0) != 0) {
+        return 0;
+    }
+    if (size >= 32U && read_u32(file) == 0xfeedfacfU && read_u32(file + 4U) == 0x0100000cU && read_u32(file + 12U) == 1U) {
+        ok = 1;
+    }
+    rt_free(file);
+    return ok;
+}
+
+int run_clang_lto_prelink_macho64_aarch64(const char *const *paths, size_t count, const char *entry_symbol,
+                                          const char *lto_cc, const char *out_path,
+                                          char *error_out, size_t error_size) {
+    char entry_keep[COMPILER_PATH_CAPACITY];
+    char entry_flag[COMPILER_PATH_CAPACITY];
+    char entry_name[COMPILER_PATH_CAPACITY];
+    char object_path_lto[COMPILER_PATH_CAPACITY];
+    char final_path[COMPILER_PATH_CAPACITY];
+    const char *sdkroot;
+    char **argv;
+    size_t out_len;
+    size_t argc = 0;
+    size_t i;
+    int pid = 0;
+    int exit_status = 0;
+    int quiet_attempt = 1;
+
+    sdkroot = platform_getenv("SDKROOT");
+    if ((sdkroot == 0 || sdkroot[0] == '\0') && platform_path_access("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk", PLATFORM_ACCESS_EXISTS) == 0) {
+        sdkroot = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
+    }
+    if ((sdkroot == 0 || sdkroot[0] == '\0') && platform_path_access("/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk", PLATFORM_ACCESS_EXISTS) == 0) {
+        sdkroot = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
+    }
+
+    if (rt_strcmp(entry_symbol, "_start") == 0) {
+        rt_copy_string(entry_name, sizeof(entry_name), "__start");
+    } else {
+        rt_copy_string(entry_name, sizeof(entry_name), entry_symbol);
+    }
+    rt_copy_string(entry_flag, sizeof(entry_flag), "-Wl,-e,");
+    rt_copy_string(entry_flag + rt_strlen(entry_flag), sizeof(entry_flag) - rt_strlen(entry_flag), entry_name);
+    rt_copy_string(entry_keep, sizeof(entry_keep), "-Wl,-u,");
+    rt_copy_string(entry_keep + 7, sizeof(entry_keep) - 7, entry_name);
+    rt_copy_string(object_path_lto, sizeof(object_path_lto), "-Wl,-object_path_lto,");
+    rt_copy_string(object_path_lto + rt_strlen(object_path_lto), sizeof(object_path_lto) - rt_strlen(object_path_lto), out_path);
+    out_len = rt_strlen(out_path);
+    if (out_len + 7U >= sizeof(final_path)) {
+        set_link_error(error_out, error_size, "LTO prelink output path is too long", out_path);
+        return -1;
+    }
+    rt_copy_string(final_path, sizeof(final_path), out_path);
+    rt_copy_string(final_path + out_len, sizeof(final_path) - out_len, ".final");
+
+retry_prelink:
+    argv = (char **)rt_malloc((24U + count + 3U) * sizeof(char *));
+    if (argv == 0) {
+        set_link_error(error_out, error_size, "out of memory for Mach-O Clang LTO prelink argv", out_path);
+        return -1;
+    }
+    argv[argc++] = (char *)lto_cc;
+    argv[argc++] = "-target";
+    argv[argc++] = "arm64-apple-macos11";
+    argv[argc++] = "-flto";
+    if (quiet_attempt && sdkroot != 0 && sdkroot[0] != '\0') {
+        argv[argc++] = "-isysroot";
+        argv[argc++] = (char *)sdkroot;
+    }
+    if (quiet_attempt) {
+        argv[argc++] = "-nodefaultlibs";
+        argv[argc++] = "-lSystem";
+    } else {
+        argv[argc++] = "-nostdlib";
+    }
+    argv[argc++] = "-Oz";
+    argv[argc++] = "-ffreestanding";
+    argv[argc++] = "-fno-builtin";
+    argv[argc++] = "-fno-stack-protector";
+    argv[argc++] = "-fno-unwind-tables";
+    argv[argc++] = "-fno-asynchronous-unwind-tables";
+    argv[argc++] = entry_flag;
+    argv[argc++] = entry_keep;
+    argv[argc++] = object_path_lto;
+    for (i = 0; i < count; ++i) {
+        argv[argc++] = (char *)paths[i];
+    }
+    argv[argc++] = "-o";
+    argv[argc++] = final_path;
+    argv[argc] = 0;
+
+    platform_remove_file(out_path);
+    platform_remove_file(final_path);
+    if (platform_spawn_process(argv, -1, -1, 0, 0, 0, &pid) != 0) {
+        rt_free(argv);
+        set_link_error(error_out, error_size, "failed to spawn Clang for Mach-O LTO prelink", out_path);
+        return -1;
+    }
+    (void)platform_wait_process(pid, &exit_status);
+    rt_free(argv);
+    platform_remove_file(final_path);
+    if (lto_output_is_macho64_aarch64_object(out_path)) {
+        return 0;
+    }
+    if (quiet_attempt) {
+        quiet_attempt = 0;
+        argc = 0U;
+        pid = 0;
+        exit_status = 0;
+        platform_remove_file(final_path);
+        platform_remove_file(out_path);
+        goto retry_prelink;
+    }
+    set_link_error(error_out, error_size, "Clang Mach-O LTO prelink failed", out_path);
+    return -1;
+}
