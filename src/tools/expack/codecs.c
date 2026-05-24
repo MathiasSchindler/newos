@@ -1499,6 +1499,8 @@ static void expack_x86_bcj_transform(unsigned char *data, size_t size, int inclu
     }
 }
 
+#include "deflate.c"
+
 static int expack_compress_xlz_bcj(const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out) {
     unsigned char *transformed;
     int result;
@@ -1705,6 +1707,9 @@ static void expack_candidate_job_init(ExpackCandidateJob *job, unsigned int code
     } else if (codec == EXPACK_CODEC_XLZ_BCJ) {
         job->candidate.stub = expack_xlz_bcj_stub_x86_64;
         job->candidate.stub_size = sizeof(expack_xlz_bcj_stub_x86_64);
+    } else if (codec == EXPACK_CODEC_DEFLATE_BCJ) {
+        job->candidate.stub = expack_deflate_bcj_stub_x86_64;
+        job->candidate.stub_size = sizeof(expack_deflate_bcj_stub_x86_64);
     } else {
         job->candidate.stub = 0;
         job->candidate.stub_size = 0U;
@@ -1741,6 +1746,8 @@ static void expack_run_candidate_job(ExpackCandidateJob *job) {
         result = expack_compress_xlz(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
     } else if (job->codec == EXPACK_CODEC_XLZ_BCJ) {
         result = expack_compress_xlz_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+    } else if (job->codec == EXPACK_CODEC_DEFLATE_BCJ) {
+        result = expack_compress_deflate_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
     }
     job->succeeded = result == 0;
     job->done = 1;
@@ -1853,6 +1860,12 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         }
     }
 
+    if (allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64 && (try_all_candidates || input_size >= 16384U)) {
+        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_DEFLATE_BCJ, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            return -1;
+        }
+    }
+
     if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
         return -1;
     }
@@ -1930,6 +1943,8 @@ static void expack_write_candidate_name(const ExpackCandidate *candidate) {
         rt_write_cstr(1, "xlz-short");
     } else if (candidate->codec == EXPACK_CODEC_XLZ_BCJ) {
         rt_write_cstr(1, "xlz-bcj");
+    } else if (candidate->codec == EXPACK_CODEC_DEFLATE_BCJ) {
+        rt_write_cstr(1, "deflate-bcj");
     } else if (candidate->codec == EXPACK_CODEC_LZSS_BCJ) {
         rt_write_cstr(1, "lzss-bcj/");
         expack_write_lzss_profile_name(candidate->lzss_profile->profile_id);

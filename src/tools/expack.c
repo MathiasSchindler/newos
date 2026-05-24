@@ -273,11 +273,21 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (analyze) {
-        rt_write_cstr(1, "selected: ");
-        expack_write_candidate_name(&selected);
-        rt_write_cstr(1, " (packed ");
-        rt_write_uint(1, selected.packed_size);
-        rt_write_cstr(1, " bytes)\n");
+        if (selected.packed_size >= (unsigned long long)input_size) {
+            rt_write_cstr(1, "selected: raw (kept unpacked: input ");
+            rt_write_uint(1, (unsigned long long)input_size);
+            rt_write_cstr(1, " bytes, best packer ");
+            expack_write_candidate_name(&selected);
+            rt_write_cstr(1, " would be ");
+            rt_write_uint(1, selected.packed_size);
+            rt_write_cstr(1, " bytes)\n");
+        } else {
+            rt_write_cstr(1, "selected: ");
+            expack_write_candidate_name(&selected);
+            rt_write_cstr(1, " (packed ");
+            rt_write_uint(1, selected.packed_size);
+            rt_write_cstr(1, " bytes)\n");
+        }
         expack_candidate_release(&selected);
         expack_release_exec_image(&image, input_data);
         rt_free(input_data);

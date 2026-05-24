@@ -66,7 +66,17 @@ static int expack_candidate_size_offsets(const ExpackCandidate *candidate, unsig
         *payload_size_offset_out = EXPACK_XLZ_BCJ_PAYLOAD_SIZE_OFFSET;
         return 0;
     }
+    if (candidate->codec == EXPACK_CODEC_DEFLATE_BCJ) {
+        *original_size_offset_out = EXPACK_DEFLATE_BCJ_ORIGINAL_SIZE_OFFSET;
+        *payload_size_offset_out = EXPACK_DEFLATE_BCJ_PAYLOAD_SIZE_OFFSET;
+        return 0;
+    }
     return -1;
+}
+
+static unsigned long long expack_load_stub_u64_le(const unsigned char *bytes) {
+    return (unsigned long long)bytes[0] | ((unsigned long long)bytes[1] << 8) | ((unsigned long long)bytes[2] << 16) | ((unsigned long long)bytes[3] << 24) |
+           ((unsigned long long)bytes[4] << 32) | ((unsigned long long)bytes[5] << 40) | ((unsigned long long)bytes[6] << 48) | ((unsigned long long)bytes[7] << 56);
 }
 
 static int expack_patch_stub(unsigned char *stub, const ExpackCandidate *candidate, size_t original_size) {
@@ -74,6 +84,15 @@ static int expack_patch_stub(unsigned char *stub, const ExpackCandidate *candida
     unsigned int payload_size_offset;
 
     if (expack_candidate_size_offsets(candidate, &original_size_offset, &payload_size_offset) != 0) {
+        return -1;
+    }
+    if (original_size_offset > candidate->stub_size || payload_size_offset > candidate->stub_size ||
+        candidate->stub_size - original_size_offset < 8U || candidate->stub_size - payload_size_offset < 8U) {
+        return -1;
+    }
+    if (candidate->codec == EXPACK_CODEC_DEFLATE_BCJ &&
+        (expack_load_stub_u64_le(stub + original_size_offset) != EXPACK_DEFLATE_BCJ_ORIGINAL_SIZE_MARKER ||
+         expack_load_stub_u64_le(stub + payload_size_offset) != EXPACK_DEFLATE_BCJ_PAYLOAD_SIZE_MARKER)) {
         return -1;
     }
     if (candidate->codec == EXPACK_CODEC_LZSS) {
