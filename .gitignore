@@ -3,7 +3,10 @@ plans/
 .DS_Store
 tests/tmp/
 temporary-please-ignore-for-now/
-experimental/ 
+experimental/*
+!experimental/multicall/
+experimental/multicall/*
+!experimental/multicall/build.py
 services/httpd/log/
 sequel/
 gui/

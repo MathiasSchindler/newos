@@ -268,7 +268,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-newlinker freestanding-macos macos-newlinker-tiny macos-newlinker-tools selfhost inception test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
+.PHONY: all host freestanding freestanding-newlinker freestanding-macos macos-newlinker-tiny macos-newlinker-tools selfhost inception experimental-multicall test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -320,6 +320,55 @@ endif
 
 benchmark: host
 	./tests/benchmarks/run_benchmarks.sh
+
+MULTICALL_BUILD_DIR ?= $(BUILD_ROOT)/experimental/multicall
+MULTICALL_SUPPORT_SOURCES = $(sort \
+	$(SHARED_SOURCES) \
+	$(COMPILER_SOURCES) \
+	$(IMAGE_SOURCES) \
+	$(CRYPTO_SOURCES) \
+	$(TLS_SOURCES) \
+	$(TUI_SOURCES) \
+	$(HASH_SOURCES) \
+	$(SSH_TRANSPORT_SOURCES) \
+	$(SSH_CLIENT_SOURCES) \
+	$(SSHD_TOOL_SOURCES) \
+	$(SSH_CRYPTO_SOURCES) \
+	$(SHELL_SOURCES) \
+	$(MAKE_TOOL_SOURCES) \
+	$(AWK_TOOL_SOURCES) \
+	$(SERVICE_TOOL_SOURCES) \
+	$(HTTPD_TOOL_SOURCES) \
+	$(EDITOR_TOOL_SOURCES) \
+	$(MAIL_TOOL_SOURCES) \
+	$(LINKER_SIGNING_SOURCE) \
+	$(TARGET_TLS_PLATFORM_SOURCE) \
+	$(TARGET_PLATFORM_SOURCES) \
+	$(PROFILE_RUNTIME_SOURCE))
+
+experimental-multicall:
+	ROOT="$(abspath .)" \
+	OUTPUT="$(abspath $(MULTICALL_BUILD_DIR)/multicall)" \
+	OBJDIR="$(abspath $(MULTICALL_BUILD_DIR)/.obj)" \
+	SYMLINK_DIR="$(abspath $(MULTICALL_BUILD_DIR)/bin)" \
+	TOOLS="$(TOOLS)" \
+	SUPPORT_SOURCES="$(MULTICALL_SUPPORT_SOURCES)" \
+	TARGET_CRT="$(TARGET_CRT)" \
+	TARGET_CC="$(TARGET_CC)" \
+	TARGET_CC_TARGET_FLAG="$(TARGET_CC_TARGET_FLAG)" \
+	MULTICALL_CFLAGS="$(filter-out $(FREESTANDING_LTO_FLAGS) $(FREESTANDING_PIE_CFLAGS),$(CFLAGS) $(FREESTANDING_CFLAGS))" \
+	MULTICALL_LDFLAGS="$(filter-out $(FREESTANDING_LTO_FLAGS) $(FREESTANDING_LINK_MODE_LDFLAGS),$(TARGET_LDFLAGS)) -static" \
+	MULTICALL_JOBS="$(PARALLEL_JOBS)" \
+	python3 experimental/multicall/build.py
+
+test-experimental-multicall: experimental-multicall
+	$(MULTICALL_BUILD_DIR)/multicall echo hi >/dev/null
+	$(MULTICALL_BUILD_DIR)/multicall true
+	@if $(MULTICALL_BUILD_DIR)/multicall false; then exit 1; fi
+	$(MULTICALL_BUILD_DIR)/multicall whoami >/dev/null
+	$(MULTICALL_BUILD_DIR)/multicall '[' -d /tmp ']'
+	$(MULTICALL_BUILD_DIR)/multicall rg main src/tools/true.c >/dev/null
+	$(MULTICALL_BUILD_DIR)/bin/echo symlink >/dev/null
 
 ifeq ($(AUTO_PARALLEL),1)
 all: $(DEFAULT_ALL_TARGETS)
