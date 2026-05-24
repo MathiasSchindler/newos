@@ -306,12 +306,16 @@ static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
     unsigned int ncmds;
     unsigned int command_index;
     unsigned long long command_offset = 32ULL;
+    unsigned long long file_size = 0ULL;
+    long long end_offset;
 
     if (read_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
     magic = read_u32_le(header);
     if (magic != 0xfeedfacfU) return -1;
     ncmds = read_u32_le(header + 16);
     if (ncmds > STRINGS_MAX_MACHO_COMMANDS) return -1;
+    end_offset = platform_seek(fd, 0, PLATFORM_SEEK_END);
+    if (end_offset > 0) file_size = (unsigned long long)end_offset;
 
     for (command_index = 0U; command_index < ncmds; ++command_index) {
         unsigned char command_header[8];
@@ -343,7 +347,8 @@ static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
                 offset = read_u32_le(section + 48);
                 flags = read_u32_le(section + 64);
                 type = flags & 0xffU;
-                if (type != 1U && type != 8U) {
+                if (type != 1U && type != 8U && type != 12U && type != 18U && offset != 0U && size != 0ULL &&
+                    (file_size == 0ULL || ((unsigned long long)offset <= file_size && size <= file_size - (unsigned long long)offset))) {
                     if (add_range(ranges, count, (unsigned long long)offset, size) != 0) return -1;
                 }
             }

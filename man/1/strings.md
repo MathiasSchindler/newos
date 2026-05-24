@@ -17,8 +17,9 @@ printable characters that are at least MIN bytes long (default: 4).
 
 By default `strings` scans the entire byte stream. With `-d`, recognised object
 files are scanned through their initialized section ranges instead, which skips
-headers, section tables, and uninitialized space where possible. If a file is not
-a recognised object format, `-d` falls back to the full byte stream.
+headers, section tables, code signatures, and uninitialized space where possible.
+If a file is not a recognised object format, `-d` falls back to the full byte
+stream.
 
 ## CURRENT CAPABILITIES
 
@@ -49,6 +50,8 @@ a recognised object format, `-d` falls back to the full byte stream.
   64-bit little-endian section headers, Mach-O support to 64-bit little-endian
   `LC_SEGMENT_64` sections, and PE/COFF support to standard image section
   tables.
+- Mach-O zero-fill sections are skipped, and section ranges are checked against
+  the file size before scanning.
 - Archive member traversal, compressed-file expansion, relocation awareness, and
   debug metadata interpretation are not implemented.
 - Unicode decoding is limited to the documented byte-oriented ASCII-compatible
@@ -59,6 +62,7 @@ a recognised object format, `-d` falls back to the full byte stream.
 ```
 strings binary
 strings -d app.exe
+strings -d build/newlinker-macos-aarch64/echo
 strings -n 8 library.so
 strings -t x firmware.bin
 strings -f *.o | grep "version"

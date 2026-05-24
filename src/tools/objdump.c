@@ -7,6 +7,17 @@
 #define OBJDUMP_NAME_TABLE_CAPACITY 65536U
 #define OBJDUMP_MACHO_MAX_COMMANDS 256U
 
+#define MACHO_LC_SEGMENT_64 0x19U
+#define MACHO_LC_SYMTAB 0x2U
+#define MACHO_S_ZEROFILL 1U
+#define MACHO_S_CSTRING_LITERALS 2U
+#define MACHO_S_4BYTE_LITERALS 3U
+#define MACHO_S_8BYTE_LITERALS 4U
+#define MACHO_S_SYMBOL_STUBS 8U
+#define MACHO_S_GB_ZEROFILL 12U
+#define MACHO_S_16BYTE_LITERALS 14U
+#define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
+
 typedef struct {
     unsigned int name;
     unsigned int type;
@@ -48,6 +59,13 @@ typedef struct {
     unsigned int offset;
     unsigned int flags;
 } MachSectionInfo;
+
+typedef struct {
+    unsigned int symoff;
+    unsigned int nsyms;
+    unsigned int stroff;
+    unsigned int strsize;
+} MachSymtabInfo;
 
 typedef struct {
     unsigned short machine;
@@ -96,6 +114,25 @@ static const char *macho_type_name(unsigned int type) {
     if (type == 6U) return "shared-library";
     if (type == 8U) return "bundle";
     return "unknown";
+}
+
+static const char *macho_section_type_name(unsigned int type) {
+    if (type == 0U) return "regular";
+    if (type == MACHO_S_ZEROFILL) return "zerofill";
+    if (type == MACHO_S_CSTRING_LITERALS) return "cstring";
+    if (type == MACHO_S_4BYTE_LITERALS) return "literal4";
+    if (type == MACHO_S_8BYTE_LITERALS) return "literal8";
+    if (type == MACHO_S_SYMBOL_STUBS) return "stubs";
+    if (type == MACHO_S_GB_ZEROFILL) return "gb-zerofill";
+    if (type == MACHO_S_16BYTE_LITERALS) return "literal16";
+    if (type == MACHO_S_THREAD_LOCAL_ZEROFILL) return "tlv-zerofill";
+    return "other";
+}
+
+static int macho_section_is_zerofill(const MachSectionInfo *section) {
+    unsigned int type = section->flags & 0xffU;
+
+    return type == MACHO_S_ZEROFILL || type == MACHO_S_GB_ZEROFILL || type == MACHO_S_THREAD_LOCAL_ZEROFILL;
 }
 
 static const char *pe_machine_name(unsigned short machine) {
@@ -258,7 +295,7 @@ static int load_macho_sections(int fd, const MachHeaderInfo *header, MachSection
             return -1;
         }
 
-        if (command == 0x19U && command_size >= 72U) {
+        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
             unsigned char segment[72];
             unsigned int nsects;
             unsigned int section_index;
@@ -299,6 +336,46 @@ static int load_macho_sections(int fd, const MachHeaderInfo *header, MachSection
     }
 
     *section_count_out = section_count;
+    return 0;
+}
+
+static int load_macho_symtab(int fd, const MachHeaderInfo *header, MachSymtabInfo *symtab) {
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+
+    symtab->symoff = 0U;
+    symtab->nsyms = 0U;
+    symtab->stroff = 0U;
+    symtab->strsize = 0U;
+    if (header->ncmds > OBJDUMP_MACHO_MAX_COMMANDS) {
+        return -1;
+    }
+
+    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
+        unsigned char command_header[24];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_header, 8U) != 0) {
+            return -1;
+        }
+        command = read_u32_le_local(command_header + 0);
+        command_size = read_u32_le_local(command_header + 4);
+        if (command_size < 8U) {
+            return -1;
+        }
+        if (command == MACHO_LC_SYMTAB && command_size >= 24U) {
+            if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
+                return -1;
+            }
+            symtab->symoff = read_u32_le_local(command_header + 8);
+            symtab->nsyms = read_u32_le_local(command_header + 12);
+            symtab->stroff = read_u32_le_local(command_header + 16);
+            symtab->strsize = read_u32_le_local(command_header + 20);
+            return 0;
+        }
+        command_offset += (unsigned long long)command_size;
+    }
     return 0;
 }
 
@@ -546,6 +623,8 @@ static void print_macho_section_table(const MachSectionInfo *sections, unsigned 
         write_hex_value((unsigned long long)sections[i].offset);
         rt_write_cstr(1, " size=");
         write_hex_value(sections[i].size);
+        rt_write_cstr(1, " type=");
+        rt_write_cstr(1, macho_section_type_name(sections[i].flags & 0xffU));
         rt_write_cstr(1, " flags=");
         write_hex_value((unsigned long long)sections[i].flags);
         rt_write_char(1, '\n');
@@ -662,6 +741,51 @@ static void print_symbols(int fd, const ElfHeaderInfo *header, const ElfSectionI
     }
 }
 
+static void print_macho_symbols(int fd, const MachSymtabInfo *symtab) {
+    char strings[OBJDUMP_NAME_TABLE_CAPACITY];
+    size_t string_size = 0U;
+    unsigned int index;
+
+    if (symtab->symoff == 0U || symtab->nsyms == 0U || symtab->stroff == 0U || symtab->strsize == 0U) {
+        rt_write_line(1, "No Mach-O symbol table is available.");
+        return;
+    }
+
+    if (symtab->strsize > 0U) {
+        size_t to_read = symtab->strsize < (unsigned int)(sizeof(strings) - 1U) ? (size_t)symtab->strsize : sizeof(strings) - 1U;
+        if (read_region(fd, (unsigned long long)symtab->stroff, (unsigned char *)strings, to_read) == 0) {
+            strings[to_read] = '\0';
+            string_size = to_read;
+        }
+    }
+
+    rt_write_line(1, "SYMBOL TABLE: LC_SYMTAB");
+    for (index = 0U; index < symtab->nsyms; ++index) {
+        unsigned char entry[16];
+        unsigned int strx;
+        unsigned int type;
+        unsigned int sect;
+        unsigned long long value;
+        const char *name;
+
+        if (read_region(fd, (unsigned long long)symtab->symoff + ((unsigned long long)index * 16ULL), entry, sizeof(entry)) != 0) {
+            break;
+        }
+        strx = read_u32_le_local(entry + 0);
+        type = (unsigned int)entry[4];
+        sect = (unsigned int)entry[5];
+        value = read_u64_le_local(entry + 8);
+        name = name_from_table(strings, string_size, strx);
+        write_hex_value(value);
+        rt_write_cstr(1, " type=");
+        write_hex_value((unsigned long long)type);
+        rt_write_cstr(1, " sect=");
+        rt_write_uint(1, (unsigned long long)sect);
+        rt_write_char(1, ' ');
+        rt_write_line(1, name);
+    }
+}
+
 int main(int argc, char **argv) {
     int show_file = 0;
     int show_sections = 0;
@@ -702,6 +826,7 @@ int main(int argc, char **argv) {
         ElfHeaderInfo header;
         MachHeaderInfo macho;
         MachSectionInfo macho_sections[OBJDUMP_MAX_SECTIONS];
+        MachSymtabInfo macho_symtab;
         unsigned int macho_section_count = 0U;
         PeHeaderInfo pe;
         PeSectionInfo pe_sections[OBJDUMP_MAX_SECTIONS];
@@ -719,7 +844,7 @@ int main(int argc, char **argv) {
 
         if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
             load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
-            if (parse_macho_header(fd, &macho) == 0 && load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0) {
+            if (parse_macho_header(fd, &macho) == 0 && load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0 && load_macho_symtab(fd, &macho, &macho_symtab) == 0) {
                 if (show_file) {
                     print_macho_file_header(argv[i], &macho);
                 }
@@ -730,6 +855,9 @@ int main(int argc, char **argv) {
                     unsigned int macho_index;
                     for (macho_index = 0U; macho_index < macho_section_count; ++macho_index) {
                         char section_name[40];
+                        if (macho_section_is_zerofill(&macho_sections[macho_index]) || macho_sections[macho_index].offset == 0U) {
+                            continue;
+                        }
                         rt_copy_string(section_name, sizeof(section_name), macho_sections[macho_index].segment);
                         if (rt_strlen(section_name) + 2U < sizeof(section_name)) {
                             rt_copy_string(section_name + rt_strlen(section_name), sizeof(section_name) - rt_strlen(section_name), ",");
@@ -739,7 +867,7 @@ int main(int argc, char **argv) {
                     }
                 }
                 if (show_symbols) {
-                    rt_write_line(1, "Symbol dumping for Mach-O inputs is not implemented yet.");
+                    print_macho_symbols(fd, &macho_symtab);
                 }
                 platform_close(fd);
                 continue;

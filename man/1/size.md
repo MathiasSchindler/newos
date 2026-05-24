@@ -2,7 +2,7 @@
 
 ## NAME
 
-size - summarize ELF64 text, data, and bss sizes
+size - summarize ELF64 and Mach-O text, data, and bss sizes
 
 ## SYNOPSIS
 
@@ -12,9 +12,16 @@ size [--json] FILE ...
 
 ## DESCRIPTION
 
-`size` reads ELF64 little-endian files and prints text, data, bss, total decimal,
-total hexadecimal, file size, and file name. It is useful for checking the effect
-of compiler flags, LTO, and newlinker size optimizations.
+`size` reads ELF64 little-endian files and Mach-O 64-bit little-endian files and
+prints text, data, bss, total decimal, total hexadecimal, file size, and file
+name. It is useful for checking the effect of compiler flags, LTO, and newlinker
+size optimizations.
+
+For Mach-O inputs, `size` reads `LC_SEGMENT_64` section metadata. `__TEXT`
+sections count as text, writable initialized sections count as data, and
+zero-fill sections such as `__DATA,__bss` count as bss. `__LINKEDIT`, load
+commands, and code signatures are reflected in the file-size column but are not
+included in text/data/bss payload totals.
 
 ## OPTIONS
 
@@ -39,8 +46,12 @@ Diagnostics and usage messages follow the shared `json-output` envelope.
 
 ## LIMITATIONS
 
-Only ELF64 little-endian section tables are supported. Compact stripped
-executables without section headers cannot be broken down into text/data/bss.
+- ELF64 support depends on section headers. Compact stripped ELF executables
+	without section headers cannot be broken down into text/data/bss.
+- Mach-O support covers 64-bit little-endian files with `LC_SEGMENT_64`
+	sections, including the arm64 binaries produced by the macOS newlinker path.
+- Mach-O totals are section-payload totals, not rounded segment or code-signature
+	sizes.
 
 ## SEE ALSO
 

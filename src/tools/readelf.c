@@ -6,6 +6,7 @@
 #define READELF_MAX_SECTIONS 256U
 #define READELF_MAX_PROGRAM_HEADERS 128U
 #define READELF_NAME_TABLE_CAPACITY 65536U
+#define READELF_MAX_MACHO_COMMANDS 256U
 
 #define ELF_SHT_DYNAMIC 6U
 #define ELF_SHT_NOTE 7U
@@ -17,6 +18,22 @@
 #define ELF_PT_INTERP 3U
 #define ELF_PT_NOTE 4U
 #define ELF_PT_PHDR 6U
+
+#define MACHO_LC_SEGMENT_64 0x19U
+#define MACHO_LC_SYMTAB 0x2U
+#define MACHO_LC_LOAD_DYLINKER 0xeU
+#define MACHO_LC_CODE_SIGNATURE 0x1dU
+#define MACHO_LC_MAIN 0x80000028U
+#define MACHO_LC_BUILD_VERSION 0x32U
+
+#define MACHO_S_ZEROFILL 1U
+#define MACHO_S_CSTRING_LITERALS 2U
+#define MACHO_S_4BYTE_LITERALS 3U
+#define MACHO_S_8BYTE_LITERALS 4U
+#define MACHO_S_SYMBOL_STUBS 8U
+#define MACHO_S_GB_ZEROFILL 12U
+#define MACHO_S_16BYTE_LITERALS 14U
+#define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
 
 #define ELF_DT_NULL 0LL
 #define ELF_DT_NEEDED 1LL
@@ -101,6 +118,23 @@ typedef struct {
     unsigned int flags;
 } MachHeaderInfo;
 
+typedef struct {
+    char segment[17];
+    char section[17];
+    unsigned long long addr;
+    unsigned long long size;
+    unsigned int offset;
+    unsigned int align;
+    unsigned int flags;
+} MachSectionInfo;
+
+typedef struct {
+    unsigned int symoff;
+    unsigned int nsyms;
+    unsigned int stroff;
+    unsigned int strsize;
+} MachSymtabInfo;
+
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
 }
@@ -119,6 +153,37 @@ static const char *macho_type_name(unsigned int type) {
     if (type == 6U) return "DYLIB";
     if (type == 8U) return "BUNDLE";
     return "UNKNOWN";
+}
+
+static const char *macho_command_name(unsigned int command) {
+    if (command == MACHO_LC_SEGMENT_64) return "LC_SEGMENT_64";
+    if (command == MACHO_LC_SYMTAB) return "LC_SYMTAB";
+    if (command == MACHO_LC_LOAD_DYLINKER) return "LC_LOAD_DYLINKER";
+    if (command == MACHO_LC_CODE_SIGNATURE) return "LC_CODE_SIGNATURE";
+    if (command == MACHO_LC_MAIN) return "LC_MAIN";
+    if (command == MACHO_LC_BUILD_VERSION) return "LC_BUILD_VERSION";
+    return "LC_OTHER";
+}
+
+static const char *macho_platform_name(unsigned int platform) {
+    if (platform == 1U) return "macOS";
+    if (platform == 2U) return "iOS";
+    if (platform == 3U) return "tvOS";
+    if (platform == 4U) return "watchOS";
+    return "unknown";
+}
+
+static const char *macho_section_type_name(unsigned int type) {
+    if (type == 0U) return "REGULAR";
+    if (type == MACHO_S_ZEROFILL) return "ZEROFILL";
+    if (type == MACHO_S_CSTRING_LITERALS) return "CSTRING";
+    if (type == MACHO_S_4BYTE_LITERALS) return "LITERAL4";
+    if (type == MACHO_S_8BYTE_LITERALS) return "LITERAL8";
+    if (type == MACHO_S_SYMBOL_STUBS) return "STUBS";
+    if (type == MACHO_S_GB_ZEROFILL) return "GB_ZEROFILL";
+    if (type == MACHO_S_16BYTE_LITERALS) return "LITERAL16";
+    if (type == MACHO_S_THREAD_LOCAL_ZEROFILL) return "TLV_ZEROFILL";
+    return "OTHER";
 }
 
 static const char *elf_type_name(unsigned short type) {
@@ -300,6 +365,17 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
     return archive_read_exact(fd, buffer, size);
 }
 
+static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
+    size_t i;
+
+    if (dest_size == 0U) return;
+    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
+        unsigned char ch = src[i];
+        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
+    }
+    dest[i] = '\0';
+}
+
 static int parse_elf_header(int fd, ElfHeaderInfo *info) {
     unsigned char header[64];
 
@@ -379,6 +455,113 @@ static int parse_macho_header(int fd, MachHeaderInfo *info) {
     info->ncmds = read_u32_le_local(header + 16);
     info->sizeofcmds = read_u32_le_local(header + 20);
     info->flags = read_u32_le_local(header + 24);
+    return 0;
+}
+
+static int load_macho_sections(int fd, const MachHeaderInfo *header, MachSectionInfo *sections, unsigned int *section_count_out) {
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+    unsigned int section_count = 0U;
+
+    *section_count_out = 0U;
+    if (header->ncmds > READELF_MAX_MACHO_COMMANDS) {
+        return -1;
+    }
+
+    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
+        unsigned char command_header[8];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
+            return -1;
+        }
+        command = read_u32_le_local(command_header + 0);
+        command_size = read_u32_le_local(command_header + 4);
+        if (command_size < 8U) {
+            return -1;
+        }
+        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
+            unsigned char segment[72];
+            unsigned int nsects;
+            unsigned int section_index;
+            char segment_name[17];
+
+            if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) {
+                return -1;
+            }
+            copy_fixed_name(segment_name, sizeof(segment_name), segment + 8, 16U);
+            nsects = read_u32_le_local(segment + 64);
+            if (72U + nsects * 80U > command_size) {
+                return -1;
+            }
+            for (section_index = 0U; section_index < nsects; ++section_index) {
+                unsigned char raw[80];
+                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
+
+                if (section_count >= READELF_MAX_SECTIONS) {
+                    return -1;
+                }
+                if (read_region(fd, section_offset, raw, sizeof(raw)) != 0) {
+                    return -1;
+                }
+                copy_fixed_name(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
+                copy_fixed_name(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
+                if (sections[section_count].segment[0] == '\0') {
+                    rt_copy_string(sections[section_count].segment, sizeof(sections[section_count].segment), segment_name);
+                }
+                sections[section_count].addr = read_u64_le_local(raw + 32);
+                sections[section_count].size = read_u64_le_local(raw + 40);
+                sections[section_count].offset = read_u32_le_local(raw + 48);
+                sections[section_count].align = read_u32_le_local(raw + 52);
+                sections[section_count].flags = read_u32_le_local(raw + 64);
+                section_count += 1U;
+            }
+        }
+        command_offset += (unsigned long long)command_size;
+    }
+
+    *section_count_out = section_count;
+    return 0;
+}
+
+static int load_macho_symtab(int fd, const MachHeaderInfo *header, MachSymtabInfo *symtab) {
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+
+    symtab->symoff = 0U;
+    symtab->nsyms = 0U;
+    symtab->stroff = 0U;
+    symtab->strsize = 0U;
+    if (header->ncmds > READELF_MAX_MACHO_COMMANDS) {
+        return -1;
+    }
+
+    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
+        unsigned char command_header[24];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_header, 8U) != 0) {
+            return -1;
+        }
+        command = read_u32_le_local(command_header + 0);
+        command_size = read_u32_le_local(command_header + 4);
+        if (command_size < 8U) {
+            return -1;
+        }
+        if (command == MACHO_LC_SYMTAB && command_size >= 24U) {
+            if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
+                return -1;
+            }
+            symtab->symoff = read_u32_le_local(command_header + 8);
+            symtab->nsyms = read_u32_le_local(command_header + 12);
+            symtab->stroff = read_u32_le_local(command_header + 16);
+            symtab->strsize = read_u32_le_local(command_header + 20);
+            return 0;
+        }
+        command_offset += (unsigned long long)command_size;
+    }
     return 0;
 }
 
@@ -518,10 +701,16 @@ static void print_header(const ElfHeaderInfo *info) {
 
 static void print_macho_header(const MachHeaderInfo *info) {
     rt_write_line(1, "Mach-O Header:");
+    rt_write_cstr(1, "  Magic: ");
+    write_hex_value((unsigned long long)info->magic);
+    rt_write_char(1, '\n');
     rt_write_cstr(1, "  Type: ");
     rt_write_line(1, macho_type_name(info->filetype));
     rt_write_cstr(1, "  Machine: ");
     rt_write_line(1, macho_machine_name(info->cputype));
+    rt_write_cstr(1, "  CPU subtype: ");
+    write_hex_value((unsigned long long)info->cpusubtype);
+    rt_write_char(1, '\n');
     rt_write_cstr(1, "  Load commands: ");
     rt_write_uint(1, (unsigned long long)info->ncmds);
     rt_write_cstr(1, " (");
@@ -530,6 +719,198 @@ static void print_macho_header(const MachHeaderInfo *info) {
     rt_write_cstr(1, "  Flags: ");
     write_hex_value((unsigned long long)info->flags);
     rt_write_char(1, '\n');
+}
+
+static void print_macho_version(unsigned int version) {
+    rt_write_uint(1, (unsigned long long)((version >> 16U) & 0xffffU));
+    rt_write_char(1, '.');
+    rt_write_uint(1, (unsigned long long)((version >> 8U) & 0xffU));
+    rt_write_char(1, '.');
+    rt_write_uint(1, (unsigned long long)(version & 0xffU));
+}
+
+static void print_macho_load_commands(int fd, const MachHeaderInfo *header) {
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+
+    rt_write_line(1, "Mach-O Load Commands:");
+    if (header->ncmds == 0U) {
+        rt_write_line(1, "  (none)");
+        return;
+    }
+    if (header->ncmds > READELF_MAX_MACHO_COMMANDS) {
+        rt_write_line(1, "  invalid load-command count");
+        return;
+    }
+
+    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
+        unsigned char command_data[128];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_data, 8U) != 0) {
+            rt_write_line(1, "  truncated load-command table");
+            return;
+        }
+        command = read_u32_le_local(command_data + 0);
+        command_size = read_u32_le_local(command_data + 4);
+        if (command_size < 8U) {
+            rt_write_line(1, "  invalid load-command size");
+            return;
+        }
+
+        rt_write_cstr(1, "  [");
+        rt_write_uint(1, (unsigned long long)command_index);
+        rt_write_cstr(1, "] ");
+        rt_write_cstr(1, macho_command_name(command));
+        rt_write_cstr(1, " cmdsize=");
+        rt_write_uint(1, (unsigned long long)command_size);
+
+        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U && read_region(fd, command_offset, command_data, 72U) == 0) {
+            char segment_name[17];
+            copy_fixed_name(segment_name, sizeof(segment_name), command_data + 8, 16U);
+            rt_write_cstr(1, " segname=");
+            rt_write_cstr(1, segment_name[0] != '\0' ? segment_name : "(none)");
+            rt_write_cstr(1, " vmaddr=");
+            write_hex_value(read_u64_le_local(command_data + 24));
+            rt_write_cstr(1, " vmsize=");
+            write_hex_value(read_u64_le_local(command_data + 32));
+            rt_write_cstr(1, " fileoff=");
+            write_hex_value(read_u64_le_local(command_data + 40));
+            rt_write_cstr(1, " filesize=");
+            write_hex_value(read_u64_le_local(command_data + 48));
+            rt_write_cstr(1, " initprot=");
+            write_hex_value((unsigned long long)read_u32_le_local(command_data + 60));
+            rt_write_cstr(1, " nsects=");
+            rt_write_uint(1, (unsigned long long)read_u32_le_local(command_data + 64));
+        } else if (command == MACHO_LC_SYMTAB && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
+            rt_write_cstr(1, " symoff=");
+            write_hex_value((unsigned long long)read_u32_le_local(command_data + 8));
+            rt_write_cstr(1, " nsyms=");
+            rt_write_uint(1, (unsigned long long)read_u32_le_local(command_data + 12));
+            rt_write_cstr(1, " stroff=");
+            write_hex_value((unsigned long long)read_u32_le_local(command_data + 16));
+            rt_write_cstr(1, " strsize=");
+            write_hex_value((unsigned long long)read_u32_le_local(command_data + 20));
+        } else if (command == MACHO_LC_MAIN && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
+            rt_write_cstr(1, " entryoff=");
+            write_hex_value(read_u64_le_local(command_data + 8));
+            rt_write_cstr(1, " stacksize=");
+            write_hex_value(read_u64_le_local(command_data + 16));
+        } else if (command == MACHO_LC_CODE_SIGNATURE && command_size >= 16U && read_region(fd, command_offset, command_data, 16U) == 0) {
+            rt_write_cstr(1, " dataoff=");
+            write_hex_value((unsigned long long)read_u32_le_local(command_data + 8));
+            rt_write_cstr(1, " datasize=");
+            write_hex_value((unsigned long long)read_u32_le_local(command_data + 12));
+        } else if (command == MACHO_LC_BUILD_VERSION && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
+            unsigned int platform = read_u32_le_local(command_data + 8);
+            rt_write_cstr(1, " platform=");
+            rt_write_cstr(1, macho_platform_name(platform));
+            rt_write_cstr(1, " minos=");
+            print_macho_version(read_u32_le_local(command_data + 12));
+            rt_write_cstr(1, " sdk=");
+            print_macho_version(read_u32_le_local(command_data + 16));
+            rt_write_cstr(1, " ntools=");
+            rt_write_uint(1, (unsigned long long)read_u32_le_local(command_data + 20));
+        } else if (command == MACHO_LC_LOAD_DYLINKER && command_size > 12U && command_size <= sizeof(command_data) && read_region(fd, command_offset, command_data, command_size) == 0) {
+            unsigned int name_offset = read_u32_le_local(command_data + 8);
+            if (name_offset < command_size) {
+                char path[128];
+                copy_fixed_name(path, sizeof(path), command_data + name_offset, (size_t)(command_size - name_offset));
+                rt_write_cstr(1, " path=");
+                rt_write_cstr(1, path);
+            }
+        } else {
+            rt_write_cstr(1, " cmd=");
+            write_hex_value((unsigned long long)command);
+        }
+        rt_write_char(1, '\n');
+        command_offset += (unsigned long long)command_size;
+    }
+}
+
+static void print_macho_sections(const MachSectionInfo *sections, unsigned int section_count) {
+    unsigned int i;
+
+    rt_write_line(1, "Mach-O Sections:");
+    if (section_count == 0U) {
+        rt_write_line(1, "  (none)");
+        return;
+    }
+    for (i = 0U; i < section_count; ++i) {
+        rt_write_cstr(1, "  [");
+        rt_write_uint(1, (unsigned long long)i);
+        rt_write_cstr(1, "] ");
+        rt_write_cstr(1, sections[i].segment);
+        rt_write_cstr(1, ",");
+        rt_write_cstr(1, sections[i].section);
+        rt_write_cstr(1, " type=");
+        rt_write_cstr(1, macho_section_type_name(sections[i].flags & 0xffU));
+        rt_write_cstr(1, " addr=");
+        write_hex_value(sections[i].addr);
+        rt_write_cstr(1, " off=");
+        write_hex_value((unsigned long long)sections[i].offset);
+        rt_write_cstr(1, " size=");
+        write_hex_value(sections[i].size);
+        rt_write_cstr(1, " align=2^");
+        rt_write_uint(1, (unsigned long long)sections[i].align);
+        rt_write_cstr(1, " flags=");
+        write_hex_value((unsigned long long)sections[i].flags);
+        rt_write_char(1, '\n');
+    }
+}
+
+static void print_macho_symbols(int fd, const MachSymtabInfo *symtab) {
+    char strings[READELF_NAME_TABLE_CAPACITY];
+    size_t string_size = 0U;
+    unsigned int index;
+
+    if (symtab->symoff == 0U || symtab->nsyms == 0U || symtab->stroff == 0U || symtab->strsize == 0U) {
+        rt_write_line(1, "No Mach-O symbol table is available.");
+        return;
+    }
+    if (symtab->strsize > 0U) {
+        size_t to_read = symtab->strsize < (unsigned int)(sizeof(strings) - 1U) ? (size_t)symtab->strsize : sizeof(strings) - 1U;
+        if (read_region(fd, (unsigned long long)symtab->stroff, (unsigned char *)strings, to_read) == 0) {
+            strings[to_read] = '\0';
+            string_size = to_read;
+        }
+    }
+
+    rt_write_line(1, "Mach-O Symbol Table:");
+    for (index = 0U; index < symtab->nsyms; ++index) {
+        unsigned char entry[16];
+        unsigned int strx;
+        unsigned int type;
+        unsigned int sect;
+        unsigned int desc;
+        unsigned long long value;
+        const char *name;
+
+        if (read_region(fd, (unsigned long long)symtab->symoff + ((unsigned long long)index * 16ULL), entry, sizeof(entry)) != 0) {
+            break;
+        }
+        strx = read_u32_le_local(entry + 0);
+        type = (unsigned int)entry[4];
+        sect = (unsigned int)entry[5];
+        desc = (unsigned int)read_u16_le(entry + 6);
+        value = read_u64_le_local(entry + 8);
+        name = name_from_table(strings, string_size, strx);
+
+        rt_write_cstr(1, "  [");
+        rt_write_uint(1, (unsigned long long)index);
+        rt_write_cstr(1, "] ");
+        rt_write_cstr(1, name);
+        rt_write_cstr(1, " value=");
+        write_hex_value(value);
+        rt_write_cstr(1, " type=");
+        write_hex_value((unsigned long long)type);
+        rt_write_cstr(1, " sect=");
+        rt_write_uint(1, (unsigned long long)sect);
+        rt_write_cstr(1, " desc=");
+        write_hex_value((unsigned long long)desc);
+        rt_write_char(1, '\n');
+    }
 }
 
 static void print_sections(const ElfHeaderInfo *header, const ElfSectionInfo *sections, const char *names, size_t names_size) {
@@ -968,6 +1349,9 @@ int main(int argc, char **argv) {
         int fd = platform_open_read(argv[i]);
         ElfHeaderInfo header;
         MachHeaderInfo macho;
+        MachSectionInfo macho_sections[READELF_MAX_SECTIONS];
+        MachSymtabInfo macho_symtab;
+        unsigned int macho_section_count = 0U;
         ElfProgramInfo programs[READELF_MAX_PROGRAM_HEADERS];
         ElfSectionInfo sections[READELF_MAX_SECTIONS];
         char names[READELF_NAME_TABLE_CAPACITY];
@@ -983,28 +1367,38 @@ int main(int argc, char **argv) {
         if (parse_elf_header(fd, &header) != 0 || load_program_headers(fd, &header, programs) != 0 || load_sections(fd, &header, sections) != 0 ||
             load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
             if (parse_macho_header(fd, &macho) == 0) {
+                int macho_sections_ok = load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0;
+                int macho_symtab_ok = load_macho_symtab(fd, &macho, &macho_symtab) == 0;
                 rt_write_cstr(1, "File: ");
                 rt_write_line(1, argv[i]);
                 if (show_header_flag) {
                     print_macho_header(&macho);
                 }
                 if (show_programs_flag) {
-                    rt_write_line(1, "Program header dumping for Mach-O inputs is not implemented yet.");
+                    print_macho_load_commands(fd, &macho);
                 }
                 if (show_sections_flag) {
-                    rt_write_line(1, "Section header dumping for Mach-O inputs is not implemented yet.");
+                    if (macho_sections_ok) {
+                        print_macho_sections(macho_sections, macho_section_count);
+                    } else {
+                        rt_write_line(1, "Mach-O section table is not available.");
+                    }
                 }
                 if (show_dynamic_flag) {
-                    rt_write_line(1, "Dynamic-section dumping for Mach-O inputs is not implemented yet.");
+                    rt_write_line(1, "Mach-O inputs do not have ELF dynamic sections.");
                 }
                 if (show_relocations_flag) {
-                    rt_write_line(1, "Relocation dumping for Mach-O inputs is not implemented yet.");
+                    rt_write_line(1, "Mach-O relocation dumping is not implemented yet.");
                 }
                 if (show_symbols_flag) {
-                    rt_write_line(1, "Symbol dumping for Mach-O inputs is not implemented yet.");
+                    if (macho_symtab_ok) {
+                        print_macho_symbols(fd, &macho_symtab);
+                    } else {
+                        rt_write_line(1, "Mach-O symbol table is not available.");
+                    }
                 }
                 if (show_notes_flag) {
-                    rt_write_line(1, "Note dumping for Mach-O inputs is not implemented yet.");
+                    rt_write_line(1, "Mach-O note dumping is not implemented yet.");
                 }
                 platform_close(fd);
                 continue;

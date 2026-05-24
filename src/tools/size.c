@@ -4,12 +4,21 @@
 #include "archive_util.h"
 
 #define SIZE_MAX_SECTIONS 512U
+#define SIZE_MAX_MACHO_COMMANDS 256U
 
 #define ELF_SHT_PROGBITS 1U
 #define ELF_SHT_NOBITS 8U
 #define ELF_SHF_WRITE 1ULL
 #define ELF_SHF_ALLOC 2ULL
 #define ELF_SHF_EXECINSTR 4ULL
+
+#define MACHO_MAGIC_64_LE 0xfeedfacfU
+#define MACHO_LC_SEGMENT_64 0x19U
+#define MACHO_S_ZEROFILL 1U
+#define MACHO_S_GB_ZEROFILL 12U
+#define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
+#define MACHO_VM_PROT_WRITE 2U
+#define MACHO_VM_PROT_EXECUTE 4U
 
 static int size_json;
 
@@ -37,6 +46,131 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
         return -1;
     }
     return archive_read_exact(fd, buffer, size);
+}
+
+static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
+    size_t i;
+
+    if (dest_size == 0U) return;
+    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
+        unsigned char ch = src[i];
+        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
+    }
+    dest[i] = '\0';
+}
+
+static int macho_is_zerofill_type(unsigned int type) {
+    return type == MACHO_S_ZEROFILL || type == MACHO_S_GB_ZEROFILL || type == MACHO_S_THREAD_LOCAL_ZEROFILL;
+}
+
+static int name_starts_with(const char *name, const char *prefix) {
+    size_t i;
+
+    for (i = 0U; prefix[i] != '\0'; ++i) {
+        if (name[i] != prefix[i]) return 0;
+    }
+    return 1;
+}
+
+static int add_macho_section_size(const char *segment,
+                                  const char *section,
+                                  unsigned int initprot,
+                                  unsigned int flags,
+                                  unsigned long long size,
+                                  unsigned long long *text,
+                                  unsigned long long *data,
+                                  unsigned long long *bss) {
+    unsigned int type = flags & 0xffU;
+
+    if (size == 0ULL) return 0;
+    if (macho_is_zerofill_type(type) || rt_strcmp(section, "__bss") == 0 || rt_strcmp(section, "__common") == 0) {
+        *bss += size;
+    } else if (name_starts_with(segment, "__DATA") || rt_strcmp(section, "__data") == 0) {
+        *data += size;
+    } else if ((initprot & MACHO_VM_PROT_EXECUTE) != 0U || rt_strcmp(segment, "__TEXT") == 0) {
+        *text += size;
+    } else if ((initprot & MACHO_VM_PROT_WRITE) != 0U) {
+        *data += size;
+    } else {
+        *text += size;
+    }
+    return 0;
+}
+
+static int size_macho64_file(int fd,
+                             const unsigned char *header,
+                             unsigned long long file_size,
+                             unsigned long long *text,
+                             unsigned long long *data,
+                             unsigned long long *bss) {
+    unsigned int ncmds = read_u32_le(header + 16);
+    unsigned int sizeofcmds = read_u32_le(header + 20);
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+
+    *text = 0ULL;
+    *data = 0ULL;
+    *bss = 0ULL;
+
+    if (ncmds > SIZE_MAX_MACHO_COMMANDS || sizeofcmds > file_size || 32ULL + (unsigned long long)sizeofcmds > file_size) {
+        return -1;
+    }
+
+    for (command_index = 0U; command_index < ncmds; ++command_index) {
+        unsigned char command_header[8];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (command_offset + 8ULL > file_size || read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
+            return -1;
+        }
+        command = read_u32_le(command_header + 0);
+        command_size = read_u32_le(command_header + 4);
+        if (command_size < 8U || command_offset + (unsigned long long)command_size > file_size) {
+            return -1;
+        }
+
+        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
+            unsigned char segment_command[72];
+            char segment_name[17];
+            unsigned int initprot;
+            unsigned int nsects;
+            unsigned int section_index;
+
+            if (read_region(fd, command_offset, segment_command, sizeof(segment_command)) != 0) {
+                return -1;
+            }
+            copy_fixed_name(segment_name, sizeof(segment_name), segment_command + 8, 16U);
+            initprot = read_u32_le(segment_command + 60);
+            nsects = read_u32_le(segment_command + 64);
+            if (nsects > SIZE_MAX_SECTIONS || 72U + nsects * 80U > command_size) {
+                return -1;
+            }
+            for (section_index = 0U; section_index < nsects; ++section_index) {
+                unsigned char section_command[80];
+                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
+                char section_name[17];
+                char section_segment[17];
+                unsigned long long section_size;
+                unsigned int section_flags;
+
+                if (read_region(fd, section_offset, section_command, sizeof(section_command)) != 0) {
+                    return -1;
+                }
+                copy_fixed_name(section_name, sizeof(section_name), section_command + 0, 16U);
+                copy_fixed_name(section_segment, sizeof(section_segment), section_command + 16, 16U);
+                if (section_segment[0] == '\0') {
+                    rt_copy_string(section_segment, sizeof(section_segment), segment_name);
+                }
+                section_size = read_u64_le(section_command + 40);
+                section_flags = read_u32_le(section_command + 64);
+                add_macho_section_size(section_segment, section_name, initprot, section_flags, section_size, text, data, bss);
+            }
+        }
+
+        command_offset += (unsigned long long)command_size;
+    }
+    return 0;
 }
 
 static void write_hex(unsigned long long value) {
@@ -103,8 +237,40 @@ static int size_file(const char *path, int print_name) {
         long long end_offset = platform_seek(fd, 0, PLATFORM_SEEK_END);
         file_size = end_offset < 0 ? 0ULL : (unsigned long long)end_offset;
     }
-    if (read_region(fd, 0ULL, header, sizeof(header)) != 0 ||
-        header[0] != 0x7fU || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
+    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
+        platform_close(fd);
+        tool_write_error("size", "unsupported file: ", path);
+        return 1;
+    }
+    if (read_u32_le(header) == MACHO_MAGIC_64_LE) {
+        int result = size_macho64_file(fd, header, file_size, &text, &data, &bss);
+        platform_close(fd);
+        if (result != 0) {
+            tool_write_error("size", "invalid Mach-O file: ", path);
+            return 1;
+        }
+        if (size_json) {
+            return write_json_size(path, text, data, bss, file_size) == 0 ? 0 : 1;
+        }
+        rt_write_uint(1, text);
+        rt_write_char(1, '\t');
+        rt_write_uint(1, data);
+        rt_write_char(1, '\t');
+        rt_write_uint(1, bss);
+        rt_write_char(1, '\t');
+        rt_write_uint(1, text + data + bss);
+        rt_write_char(1, '\t');
+        write_hex(text + data + bss);
+        rt_write_char(1, '\t');
+        rt_write_uint(1, file_size);
+        if (print_name) {
+            rt_write_char(1, '\t');
+            rt_write_cstr(1, path);
+        }
+        rt_write_char(1, '\n');
+        return 0;
+    }
+    if (header[0] != 0x7fU || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
         header[4] != 2U || header[5] != 1U) {
         platform_close(fd);
         tool_write_error("size", "unsupported file: ", path);
