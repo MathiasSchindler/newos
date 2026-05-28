@@ -166,6 +166,10 @@ IMAGE_TOOLS := imginfo imgcheck imgmeta c2pa
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 TLS_SOURCES := $(shell grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 TUI_SOURCES := $(shell grep -oE '"src/shared/tui\.c"' src/compiler/source_manifest.h | tr -d '"')
+FONTRENDER_SOURCES := $(shell grep -oE '"src/shared/(fontrender_runtime|fontrender/[^"]+)\.c"' src/compiler/source_manifest.h | tr -d '"')
+FONTRENDER_DEPS := $(FONTRENDER_SOURCES) src/shared/fontrender_runtime.h $(wildcard src/shared/fontrender/*.h src/shared/fontrender/fontrender/*.h)
+FONTTEST_SOURCE := tests/fixtures/fontrender/fonttest.c
+THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
 HASH_SOURCES := \
 	$(shell grep -oE '"src/shared/hash_util\.c"' src/compiler/source_manifest.h | tr -d '"') \
 	$(CRYPTO_SOURCES)
@@ -700,12 +704,21 @@ $(BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_SOURC
 $(BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/archive_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_READELF_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
+$(BUILD_DIR)/fonttest: $(FONTTEST_SOURCE) $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
 $(TARGET_BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 else
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
+
+$(TARGET_BUILD_DIR)/fonttest: $(FONTTEST_SOURCE) $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
+$(TARGET_BUILD_DIR)/threadtest: $(THREADTEST_SOURCE) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(INCEPTION_BUILD_DIR)/man: src/tools/man.c $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

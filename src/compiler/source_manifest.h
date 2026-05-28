@@ -136,6 +136,15 @@
 #define FOREACH_TUI_SOURCE(X) \
     X("src/shared/tui.c")
 
+/* ── TrueType font rendering helpers ────────────────────────────────────── */
+
+#define FOREACH_FONTRENDER_SOURCE(X) \
+    X("src/shared/fontrender_runtime.c") \
+    X("src/shared/fontrender/fr_platform.c") \
+    X("src/shared/fontrender/fr_raster.c") \
+    X("src/shared/fontrender/fr_ttf.c") \
+    X("src/shared/fontrender/font_backend_truetype.c")
+
 /* ── hash utilities (hash_util + crypto) ────────────────────────────────── */
 
 #define FOREACH_HASH_SOURCE(X) \
@@ -168,6 +177,7 @@
     X("src/platform/linux/identity.c") \
     X("src/platform/linux/net.c") \
     X("src/platform/linux/stack_guard.c") \
+    X("src/platform/linux/thread.c") \
     X("src/platform/linux/time.c") \
     X("src/arch/x86_64/linux/syscall_stubs.S")
 

@@ -232,6 +232,23 @@ typedef struct {
     long long not_after;
 } PlatformTlsPeerInfo;
 
+typedef int (*PlatformThreadMain)(void *arg);
+
+typedef struct {
+    int tid;
+    volatile int clear_tid;
+    void *stack;
+    size_t stack_size;
+} PlatformThread;
+
+typedef struct {
+    volatile int state;
+} PlatformMutex;
+
+typedef struct {
+    volatile int count;
+} PlatformSemaphore;
+
 typedef struct {
     unsigned int index;
     unsigned int flags;
@@ -304,6 +321,14 @@ typedef int (*PlatformSyscallTraceCallback)(const PlatformSyscallEvent *event, v
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
 void *platform_allocate_pages(size_t size);
+int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size);
+int platform_thread_join(PlatformThread *thread, int *result_out);
+void platform_mutex_init(PlatformMutex *mutex);
+void platform_mutex_lock(PlatformMutex *mutex);
+void platform_mutex_unlock(PlatformMutex *mutex);
+void platform_semaphore_init(PlatformSemaphore *semaphore, int value);
+void platform_semaphore_wait(PlatformSemaphore *semaphore);
+void platform_semaphore_post(PlatformSemaphore *semaphore);
 int platform_open_read(const char *path);
 int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out);
 int platform_open_write(const char *path, unsigned int mode);

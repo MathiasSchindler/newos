@@ -8,6 +8,8 @@
 #define RT_ALLOC_THREAD_SAFE 0
 #endif
 
+static volatile int rt_alloc_atomic_lock;
+
 /*
  * Keep these implementations strictly byte-wise and volatile-backed so the
  * compiler does not fold them back into builtin memcpy or memset calls.
@@ -99,9 +101,14 @@ static void rt_alloc_unlock(void) {
 }
 #else
 static void rt_alloc_lock(void) {
+    while (__atomic_exchange_n(&rt_alloc_atomic_lock, 1, __ATOMIC_ACQUIRE) != 0) {
+        while (__atomic_load_n(&rt_alloc_atomic_lock, __ATOMIC_RELAXED) != 0) {
+        }
+    }
 }
 
 static void rt_alloc_unlock(void) {
+    __atomic_store_n(&rt_alloc_atomic_lock, 0, __ATOMIC_RELEASE);
 }
 #endif
 

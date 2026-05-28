@@ -7,6 +7,7 @@
 #define LINUX_SYS_POLL 7
 #define LINUX_SYS_LSEEK 8
 #define LINUX_SYS_MMAP 9
+#define LINUX_SYS_MUNMAP 11
 #define LINUX_SYS_IOCTL 16
 #define LINUX_SYS_RT_SIGACTION 13
 #define LINUX_SYS_NANOSLEEP 35
@@ -30,6 +31,7 @@
 #define LINUX_SYS_KILL 62
 #define LINUX_SYS_UNAME 63
 #define LINUX_SYS_PTRACE 101
+#define LINUX_SYS_FUTEX 202
 #define LINUX_SYS_FSYNC 74
 #define LINUX_SYS_FDATASYNC 75
 #define LINUX_SYS_TRUNCATE 76
@@ -75,5 +77,6 @@ long linux_syscall3(long number, long arg0, long arg1, long arg2);
 long linux_syscall4(long number, long arg0, long arg1, long arg2, long arg3);
 long linux_syscall5(long number, long arg0, long arg1, long arg2, long arg3, long arg4);
 long linux_syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5);
+long linux_clone_thread(long flags, void *stack_top, int *child_tid, int (*entry)(void *), void *arg);
 
 #endif
