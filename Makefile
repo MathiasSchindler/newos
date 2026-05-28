@@ -82,7 +82,12 @@ MACOS_NEWLINKER_EXPERIMENT_DIR ?= $(BUILD_ROOT)/newlinker-macos-$(MACOS_FREESTAN
 MACOS_NEWLINKER_TOOLS ?= true false echo
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 HOST_SIZE_FLAGS ?= $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(HOST_SECTION_CFLAGS) $(HOST_GC_LDFLAGS))
-HOST_CFLAGS ?= $(CFLAGS) $(HOST_SIZE_FLAGS)
+ifneq ($(findstring ncc,$(CC)),)
+  HOST_SHARED_INC_FLAG := -Isrc/shared
+else
+  HOST_SHARED_INC_FLAG := -idirafter src/shared
+endif
+HOST_CFLAGS ?= $(filter-out -Isrc/shared,$(CFLAGS)) $(HOST_SIZE_FLAGS) $(HOST_SHARED_INC_FLAG)
 HOST_CFLAGS += $(PROFILE_CFLAGS)
 EXPACK_HOST_PTHREAD_ENABLED := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(if $(filter MSYS_NT% MINGW% CYGWIN%,$(HOST_OS)),,1))
 EXPACK_HOST_THREAD_FLAGS ?= $(if $(EXPACK_HOST_PTHREAD_ENABLED),$(if $(filter Darwin,$(HOST_OS)),,-pthread))
@@ -447,7 +452,7 @@ $(TARGET_BUILD_DIR)/ping6: $(TARGET_BUILD_DIR)/ping | $(TARGET_BUILD_DIR)
 	rm -f $@ && ln -sfn ping $@
 
 $(BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/tools/ssh/ssh_transport.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(CFLAGS) $(HOST_SECTION_CFLAGS) -fsyntax-only $(SSH_CLIENT_SOURCES) && : > $@
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $(HOST_SECTION_CFLAGS) -fsyntax-only $(SSH_CLIENT_SOURCES) && : > $@
 
 $(TARGET_BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/tools/ssh/ssh_transport.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -fsyntax-only $(SSH_CLIENT_SOURCES) && : > $@
@@ -547,10 +552,10 @@ LINKER_TOOL_SOURCES := src/compiler/linker.c \
     src/compiler/linker_report.c \
 	src/compiler/linker_lto.c \
 	src/compiler/linker_macho.c
-HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS) $(PROFILE_CFLAGS)) -idirafter src/shared
-HOST_EXPACK_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
-HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -DCOMPILER_LINKER_ENABLE_REPORTING=0 -idirafter src/shared
-HOST_READELF_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -idirafter src/shared
+HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS) $(PROFILE_CFLAGS)) $(HOST_SHARED_INC_FLAG)
+HOST_EXPACK_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) $(HOST_SHARED_INC_FLAG)
+HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -DCOMPILER_LINKER_ENABLE_REPORTING=0 $(HOST_SHARED_INC_FLAG)
+HOST_READELF_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) $(HOST_SHARED_INC_FLAG)
 AWK_TOOL_SOURCES  := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c
 SERVICE_TOOL_SOURCES := src/tools/service/service_main.c src/tools/service/service_pidfile.c src/tools/service/service_spawn.c src/tools/service/service_signal.c src/tools/service/service_config.c
 HTTPD_TOOL_SOURCES := src/tools/httpd/httpd_main.c src/tools/httpd/http_listener.c src/tools/httpd/http_conn.c src/tools/httpd/http_parse.c src/tools/httpd/http_route.c src/tools/httpd/http_static.c src/tools/httpd/http_log.c

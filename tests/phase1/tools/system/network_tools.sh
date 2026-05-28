@@ -26,10 +26,10 @@ assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $((scan_port + 1)) 
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --services --summary --delay 1ms -w 1s 127.0.0.1 22 > "$WORK_DIR/portscan_services.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_services.out" '^127\.0\.0\.1 22 .* ssh$' "portscan --services did not show the SSH service hint"
-assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01] filtered=[01] unreachable=[01] error=[01]$' "portscan --summary did not print totals"
+assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01] filtered=[01] unreachable=[01] error=[01] elapsed_ms=[0-9][0-9]* jobs=[0-9][0-9]* timeout_ms=[0-9][0-9]*$' "portscan --summary did not print totals"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 "$((scan_port + 1))" --summary > "$WORK_DIR/portscan_trailing_summary.out" 2>&1
-assert_file_contains "$WORK_DIR/portscan_trailing_summary.out" '^summary scanned=1 open=0 closed=1 filtered=0 unreachable=0 error=0$' "portscan should accept --summary after host and port arguments"
+assert_file_contains "$WORK_DIR/portscan_trailing_summary.out" '^summary scanned=1 open=0 closed=1 filtered=0 unreachable=0 error=0 elapsed_ms=[0-9][0-9]* jobs=[0-9][0-9]* timeout_ms=[0-9][0-9]*$' "portscan should accept --summary after host and port arguments"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --progress "$((scan_port + 1))" > "$WORK_DIR/portscan_progress.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_progress.out" "^127\.0\.0\.1 $((scan_port + 1)) closed$" "portscan --progress should print closed results as they complete"
@@ -38,8 +38,8 @@ assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --common --su
 assert_file_contains "$WORK_DIR/portscan_trailing_common.out" '^summary scanned=' "portscan should accept --common after the host argument"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv.out" 2>&1
-assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service$' "portscan --csv did not print a header"
-assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,$" "portscan --csv did not print a closed row"
+assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service,latency_ms,reason,change,' "portscan --csv did not print a header"
+assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,,[0-9][0-9]*,connection_refused," "portscan --csv did not print a closed row"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" --json -4 -a -n --summary -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_json.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_json.out" '"schema":"newos.tool.v1"' "portscan --json did not use the shared JSON envelope"
@@ -89,8 +89,8 @@ PY
     assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner.out" 2>&1
     assert_file_contains "$WORK_DIR/portscan_banner.out" "^127\.0\.0\.1 $banner_port open SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi$" "portscan --banner did not display the escaped banner"
     assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --csv --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner_csv.out" 2>&1
-    assert_file_contains "$WORK_DIR/portscan_banner_csv.out" '^host,port,state,service,banner$' "portscan --banner --csv header missing banner column"
-    assert_file_contains "$WORK_DIR/portscan_banner_csv.out" "^127\.0\.0\.1,$banner_port,open,,SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi$" "portscan --banner --csv did not include the escaped banner"
+    assert_file_contains "$WORK_DIR/portscan_banner_csv.out" '^host,port,state,service,latency_ms,reason,change,' "portscan --banner --csv header missing banner column"
+    assert_file_contains "$WORK_DIR/portscan_banner_csv.out" "^127\.0\.0\.1,$banner_port,open,,[0-9][0-9]*,connected,,SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi" "portscan --banner --csv did not include the escaped banner"
     wait "$banner_server_pid" || true
     assert_file_contains "$WORK_DIR/banner_server.out" 'MOCK_BANNER_OK' "mock banner server did not complete"
 fi

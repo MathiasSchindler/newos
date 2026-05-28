@@ -1456,8 +1456,8 @@ static void write_png_itxt_chunk(unsigned char *output,
     cursor = offset + 8U;
     memcpy(output + cursor, key, key_length);
     cursor += key_length;
-    output[cursor++] = compressed ? 1U : 0U;
     output[cursor++] = 0U;
+    output[cursor++] = compressed ? 1U : 0U;
     output[cursor++] = 0U;
     if (language_length != 0U) {
         memcpy(output + cursor, language, language_length);

@@ -28,6 +28,10 @@ static int skip_braced_initializer(CompilerParser *parser) {
         }
         if (current_is_punct(parser, "{")) {
             depth += 1U;
+            if (depth > COMPILER_MAX_INITIALIZER_DEPTH) {
+                set_error(parser, "initializer nesting too deep");
+                return -1;
+            }
         } else if (current_is_punct(parser, "}")) {
             if (depth == 0U) {
                 set_error(parser, "expected } in initializer");

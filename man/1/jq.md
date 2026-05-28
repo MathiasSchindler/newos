@@ -33,7 +33,7 @@ and complete JSON reformatting are outside the initial scope.
 
 ## JSON Output
 
-`jq` does not use the shared JSON Lines envelope for normal output because its
+JSON mode limitation: `jq` does not use the shared JSON Lines envelope for normal output because its
 normal output is already JSON (or raw string data with `-r`). Diagnostics and
 usage remain plain text in this initial version.
 

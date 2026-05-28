@@ -17,6 +17,7 @@ for rel in $hosted_guard_files; do
     case "$rel" in
         src/compiler/driver.c|\
         src/platform/*|\
+        src/shared/profiler_runtime.c|\
         src/shared/runtime/memory.c|\
         src/shared/shell_builtins.c|\
         src/shared/shell_interactive.c|\

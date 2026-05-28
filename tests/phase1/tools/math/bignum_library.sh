@@ -6,9 +6,29 @@ set -eu
 phase1_math_setup bignum_library
 
 cat > "$WORK_DIR/test_bignum.c" <<'EOF'
+#include <stdio.h>
+#include <string.h>
 #include "bignum.h"
-#include "runtime.h"
-#include "platform.h"
+
+int rt_strcmp(const char *lhs, const char *rhs) {
+    return strcmp(lhs, rhs);
+}
+
+size_t rt_strlen(const char *text) {
+    return strlen(text);
+}
+
+void rt_unsigned_to_string(unsigned long long value, char *buffer, size_t buffer_size) {
+    snprintf(buffer, buffer_size, "%llu", value);
+}
+
+int rt_write_line(int fd, const char *text) {
+    FILE *f = (fd == 2) ? stderr : stdout;
+    if (fprintf(f, "%s\n", text) < 0) {
+        return -1;
+    }
+    return 0;
+}
 
 int main(int argc, char **argv) {
     (void)argc;
@@ -281,28 +301,9 @@ int main(int argc, char **argv) {
 EOF
 
 cc -std=c11 -Wall -Wextra -Wpedantic -O2 \
-    -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common \
+    -idirafter src/shared \
     -o "$WORK_DIR/test_bignum" "$WORK_DIR/test_bignum.c" \
-    src/shared/runtime/memory.c \
-    src/shared/runtime/string.c \
-    src/shared/runtime/parse.c \
-    src/shared/runtime/io.c \
-    src/shared/runtime/unicode_utf8.c \
-    src/shared/runtime/unicode.c \
-    src/shared/tool_json.c \
-    src/shared/tool_io.c \
-    src/shared/tool_cli.c \
-    src/shared/tool_regex.c \
-    src/shared/tool_path.c \
-    src/shared/tool_fs.c \
-    src/shared/archive_util.c \
-    src/shared/compression/crc32.c \
-    src/shared/bignum.c \
-    src/platform/posix/fs.c \
-    src/platform/posix/process.c \
-    src/platform/posix/identity.c \
-    src/platform/posix/net.c \
-    src/platform/posix/time.c || fail "bignum test compilation failed"
+    src/shared/bignum.c || fail "bignum test compilation failed"
 
 "$WORK_DIR/test_bignum" > "$WORK_DIR/test_output.txt" 2>&1 || {
     cat "$WORK_DIR/test_output.txt"

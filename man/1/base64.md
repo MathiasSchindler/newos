@@ -23,7 +23,7 @@ input back to bytes.
 
 ## JSON Output
 
-`base64` does not implement `--json` because its primary output is encoded or
+JSON mode limitation: `base64` does not implement `--json` because its primary output is encoded or
 decoded byte data. Diagnostics and usage remain plain text.
 
 ## SEE ALSO
