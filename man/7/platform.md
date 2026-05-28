@@ -132,7 +132,7 @@ against the Windows trust store.
 - Hosted development assumes a POSIX environment; the Linux freestanding target currently focuses on AArch64 and x86-64
 - On macOS, the project currently favors local hosted binaries for `make`; `make freestanding` on local aarch64 routes to the early native Darwin approximation with an unavoidable `libSystem` launch dependency
 - Native Windows freestanding support is early and intentionally narrower than the POSIX and Linux backends; MSYS2 remains the current Windows hosted bootstrap environment
-- The abstraction is intentionally small; there is no threading or async event layer
+- The abstraction is intentionally small; the shared runtime now has targeted threading support where needed, but there is still no broad userland threading or async event layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment
 
 ## SEE ALSO

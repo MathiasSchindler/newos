@@ -68,7 +68,7 @@ modern macOS requires for runnable executables.
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
   `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds all 178 tools, including the core/text/filesystem/process set,
+- currently builds the full 194-tool set, including the core/text/filesystem/process set,
   checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
   tools, object inspection tools, `awk`, `sql`, `man`, `pstree`, `wget`, `ncc`,
   `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, `ping`, `ping6`,

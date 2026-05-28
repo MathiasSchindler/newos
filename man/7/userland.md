@@ -86,6 +86,9 @@ multiple tools can reuse:
   invalid UTF-8, incomplete UTF-8, wide, and zero-width character handling for
   wrapping and table-oriented tools.
 
+- **fontrender_runtime.c** and **fontrender/** - embedded font-rendering support
+  for render-oriented tools and UI work, backed by the shared runtime.
+
 - **tool_util.h** - common tool argument parsing and error reporting
 
 - **simple_config.{c,h}** and **server_log.{c,h}** - small shared config and
@@ -101,14 +104,13 @@ multiple tools can reuse:
   C2PA helpers build on the same image and crypto base where appropriate.
 
 - **compression/** - reusable compression-adjacent primitives shared by archive,
-  compression, and media tools. CRC32 lives here so gzip/xz/bzip-style checks and
-  PNG chunk validation/editing use the same implementation; small zlib
-  stored-block encoding lives here for metadata writers that need a valid zlib
-  stream without full deflate compression.
+  compression, and media tools. CRC32, LZSS, zlib, and zstd support now live in
+  the shared layer, so archive, metadata, and media code can reuse the same
+  core primitives instead of each carrying separate implementations.
 
 Other shared components include archive utilities, crypto, TLS, hash functions,
-regex, path manipulation, XML parsing/streaming/DTD support, and shell
-infrastructure.
+regex, path manipulation, XML parsing/streaming/DTD support, font rendering,
+and shell infrastructure.
 
 ## HIGH-VALUE REMAINING GAPS
 
