@@ -6,38 +6,39 @@ build - hosted and freestanding build workflow
 
 ## DESCRIPTION
 
-The repository uses one root `Makefile` for both normal development and the
-freestanding target. The same tools are compiled in both modes where practical,
-but they are linked against different backends and start-up paths.
+The repository uses one root `Makefile` for the normal freestanding builds and
+the secondary hosted POSIX build. The same tools are compiled in multiple modes
+where practical, but they are linked against different backends and start-up
+paths.
 
-For most contributors, the usual loop is `make host` followed by `make test`.
-On Linux, `make test` also builds and exercises the libc-free freestanding
-target so syscall-only regressions do not wait for a separate manual check. On
-macOS, the local default remains the hosted build unless an explicit
-alternative target is requested.
+For macOS and Linux work, the normal build is `make freestanding`. On Linux this
+builds the libc-free raw-syscall target; on macOS/aarch64 it builds the native
+freestanding-ish Darwin target. `make host` is still valuable, but it is the
+hosted POSIX verification path and the fast bring-up path for new platforms or
+features before native platform code exists.
 
 On Windows, the repository is expected to be built from an MSYS2 shell for now.
 MSYS2 provides the POSIX shell tools, GNU make, and hosted compiler path, while
 the UCRT64 Clang/lld toolchain can build both the existing Linux freestanding
 target and the first native Windows freestanding PE executables.
 
-## HOSTED BUILD
+## HOSTED POSIX BUILD
 
-The hosted build is the normal development path.
+The hosted build is the secondary POSIX verification and bring-up path.
 
 - built with `make host`
 - writes binaries to `build/host-<os>-<arch>/`
 - keeps compatibility symlinks at `build/<tool>` for the default hosted build
 - uses the POSIX backend in `src/platform/posix/`
 - is the variant exercised by the smoke tests and benchmarks
-- is the fastest loop for day-to-day tool, shell, and compiler work
+- is often the fastest loop for isolated tool, shell, and compiler work
 
-When you are changing visible behavior or adding a new utility, this is usually
-the first mode to get green.
+When a native platform implementation is not ready yet, this mode is a useful
+way to make progress without blocking the freestanding target design.
 
-## FREESTANDING BUILD
+## LINUX FREESTANDING BUILD
 
-The freestanding build is the Linux target without libc.
+The Linux freestanding build is the primary Linux target without libc.
 
 - built with `make freestanding`
 - writes binaries to `build/freestanding-linux-$(TARGET_ARCH)/`
@@ -45,7 +46,7 @@ The freestanding build is the Linux target without libc.
 - links with the minimal `crt0.S` entry path and direct syscalls
 - defaults to static PIE output with section garbage collection and size-oriented optimization
 - includes freestanding stack-canary runtime support, with compiler stack-protector instrumentation controlled by `FREESTANDING_STACK_CFLAGS`
-- is where ABI, start-up, and portability mistakes become visible
+- is where Linux ABI, start-up, and libc-dependency mistakes become visible
 
 ## WINDOWS FREESTANDING BUILD
 
@@ -131,9 +132,9 @@ and anything that adds new low-level dependencies.
 
 ## TARGETS
 
-    make               — on macOS build the local hosted set; on Linux build host plus freestanding
-    make host          — build the hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
-    make freestanding  — on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the freestanding-ish Darwin subset
+    make               — on macOS build the local hosted set for compatibility symlinks; on Linux build host plus freestanding
+    make host          — build the secondary hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
+    make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the freestanding-ish Darwin target
     make freestanding-macos — build the early native macOS arm64 freestanding-ish subset under build/freestanding-macos-aarch64/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite

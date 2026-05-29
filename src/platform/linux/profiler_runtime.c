@@ -11,7 +11,7 @@
 #include <time.h>
 #include <unistd.h>
 #elif defined(__linux__)
-#include "../platform/linux/common.h"
+#include "common.h"
 #endif
 
 #include <stddef.h>

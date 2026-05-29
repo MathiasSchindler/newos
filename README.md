@@ -2,7 +2,7 @@
 
 newos is an experimental userland project for a Linux-ABI-compatible operating system.
 
-In broad terms, this repository is a growing collection of command-line tools, shell support code, a self-hosting C compiler, shared runtime code, platform backends, and in-tree documentation designed to build on host systems such as macOS and Linux while also targeting a freestanding Linux environment.
+In broad terms, this repository is a growing collection of command-line tools, shell support code, a self-hosting C compiler, shared runtime code, platform backends, and in-tree documentation designed around freestanding builds on macOS and Linux, with hosted POSIX builds kept as a secondary verification and bring-up path.
 
 The project has been written with the help of a finetuned version of GPT 5.4, with an emphasis on portability, small utilities, clear separation between tool logic and platform-specific code, and a freestanding-first design.
 
@@ -18,9 +18,9 @@ The repository currently focuses on:
 
 ## Current status
 
-The host-side build and test workflow are active and in regular use on macOS and Linux. Windows is a new contributor environment for the project; the current practical route is MSYS2 while native Windows platform support is developed.
+The normal local workflow on macOS and Linux is now `make freestanding`. The hosted POSIX build remains active for verification, fast iteration, and early platform bring-up. Windows is a new contributor environment for the project; the current practical route is MSYS2 while native Windows platform support is developed.
 
-The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. The hosted Linux workflow is active alongside macOS, Linux freestanding builds exercise the libc-free syscall path where available, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
+The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. Linux freestanding builds exercise the libc-free syscall path where available, macOS freestanding-ish builds cover the native Darwin path, hosted POSIX remains a useful comparison build, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
 
 The repository also includes a lightweight manual browser and a growing set of manual pages for tools, subsystems, and design notes.
 
@@ -34,7 +34,7 @@ The repository includes a structured shell-based test suite under [tests](tests)
 - shared helpers live in [tests/lib](tests/lib)
 - grouped suites live in [tests/suites](tests/suites)
 
-On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default and the local hosted workflow remains the normal path. On local macOS/aarch64, `make freestanding` now builds the macOS freestanding-ish target under `build/freestanding-macos-aarch64/`; it uses project runtime and tool code while linking only the system ABI library that macOS requires for launch. The current Darwin subset covers the current 194-tool surface: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression, image metadata, object inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools.
+On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default, but the normal local build path is still `make freestanding`: on local macOS/aarch64 it builds the macOS freestanding-ish target under `build/freestanding-macos-aarch64/`. That target uses project runtime and tool code while linking only the system ABI library that macOS requires for launch. The current Darwin subset covers the current 194-tool surface: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression, image metadata, object inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools. Use `make host` when you specifically want the hosted POSIX comparison build or a quicker bring-up loop for a platform feature that is not native yet.
 
 On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
 runtime, or the Microsoft C runtime. The important build-time tool is a C
@@ -51,11 +51,11 @@ locations. MSYS2 can still be used as a convenient way to obtain a packaged
 Clang/lld toolchain, but the produced binaries are no-CRT PE files and the build
 script drives `clang.exe` directly from PowerShell.
 
-The first useful POSIX-hosted and Linux-freestanding checks remain:
+The first useful native/freestanding and POSIX-hosted checks are:
 
 ```
-make host CC=gcc
 make freestanding
+make host CC=gcc
 ```
 
 On Linux x86-64, `make freestanding` builds the canonical freestanding tool tree

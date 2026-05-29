@@ -273,7 +273,7 @@ for tool in $TOOLS; do
       ;;
   esac
   if [[ "$NEWLINKER_PROFILE" == "1" || "$NEWLINKER_PROFILE" == "yes" || "$NEWLINKER_PROFILE" == "true" ]]; then
-    append_unique_source tool_sources src/shared/profiler_runtime.c
+    append_unique_source tool_sources src/platform/linux/profiler_runtime.c
   fi
   tool_objs=()
   tfail=""

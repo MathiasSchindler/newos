@@ -40,7 +40,7 @@ FREESTANDING_LTO ?= 1
 FREESTANDING_LTO_FLAGS ?= $(if $(filter 1 yes true,$(FREESTANDING_LTO)),-flto)
 PROFILE ?= 0
 PROFILE_CFLAGS ?= $(if $(filter 1 yes true,$(PROFILE)),-finstrument-functions -fno-omit-frame-pointer -fno-inline)
-PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/shared/profiler_runtime.c)
+PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/platform/linux/profiler_runtime.c)
 FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS) $(FREESTANDING_OPT_CFLAGS) $(FREESTANDING_LTO_FLAGS)
 FREESTANDING_CFLAGS += $(PROFILE_CFLAGS)
 FREESTANDING_DEBUG ?= 0
@@ -103,6 +103,9 @@ endif
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 PHASE1_JOBS ?= $(PARALLEL_JOBS)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
+# Plain `make` keeps macOS local by default, but `make freestanding` is the
+# normal project path on both Linux and macOS. `make host` remains the POSIX
+# verification/bootstrap path for quick iteration and early platform bring-up.
 LOCAL_PLATFORM_ONLY ?= $(if $(filter Darwin,$(HOST_OS)),1,0)
 FREESTANDING_USE_NEWLINKER ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_64,$(TARGET_ARCH)),1,0),0)
 DEFAULT_ALL_TARGETS := host

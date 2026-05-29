@@ -19,13 +19,16 @@ PE executables without the MSYS POSIX runtime or the Microsoft C runtime.
 ## BUILD-MODE SUMMARY
 
 The platform abstraction exists so that most tool code can stay the same across
-both development and target builds.
+the normal freestanding builds and the secondary hosted POSIX build.
 
 In practice:
 
-- the hosted build is for fast local iteration, testing, and debugging
-- the freestanding build is for verifying that the same logic still works with
-  the raw Linux ABI and minimal startup support
+- `make freestanding` is the normal macOS and Linux path
+- the hosted build is for fast local iteration, testing, and early platform
+  bring-up when native code is not ready yet
+- the Linux freestanding build is the raw Linux ABI and minimal startup path
+- the macOS freestanding-ish build is the native Darwin path, with the minimal
+  `libSystem` dependency required by modern macOS launch rules
 - a bug that appears only in one mode usually means the abstraction boundary is
   missing an implementation detail or has leaked an assumption from the other
   side
@@ -46,8 +49,8 @@ host-libc-only design.
 
 ### Hosted POSIX layer (`src/platform/posix`)
 
-Used by `make host` and by the smoke tests. On macOS this is also the default
-local build path used by `make` and, by default, `make freestanding`.
+Used by `make host` and by the smoke tests. This is the hosted POSIX comparison
+path, not the design center for ordinary macOS or Linux builds.
 
 - `fs.c` — file, directory, and path operations
 - `process.c` — spawn, wait, signal, terminal, and environment handling
@@ -58,17 +61,20 @@ local build path used by `make` and, by default, `make freestanding`.
 
 ### Freestanding Linux layer (`src/platform/linux`)
 
-Used by `make freestanding`. This layer talks to the Linux kernel ABI directly
-and does not depend on libc.
+Used by `make freestanding` on Linux. This layer talks to the Linux kernel ABI
+directly and does not depend on libc.
 
 - `fs.c`, `process.c`, `identity.c`, `net.c`, `time.c`, and `tls.c` mirror the
   hosted interface using syscalls and freestanding shared code
 - `stack_guard.c` — stack-canary guard initialization and failure handling for
   freestanding binaries when compiler instrumentation is enabled
+- `profiler_runtime.c` — GCC/Clang `-finstrument-functions` hooks for Linux
+  profiling builds, using libc when hosted and raw syscalls when freestanding
 
 ### Freestanding-ish macOS layer (`src/platform/macos`)
 
-Used by `make freestanding-macos`. This layer is the native Darwin arm64
+Used by `make freestanding` on local macOS/aarch64, or explicitly with
+`make freestanding-macos`. This layer is the native Darwin arm64
 approximation of the freestanding idea: shared/tool code remains universal and
 the platform boundary owns the OS details, but the final executable still links
 `libSystem` because modern macOS does not run static no-libSystem user
@@ -130,7 +136,7 @@ against the Windows trust store.
 ## LIMITATIONS
 
 - Hosted development assumes a POSIX environment; the Linux freestanding target currently focuses on AArch64 and x86-64
-- On macOS, the project currently favors local hosted binaries for `make`; `make freestanding` on local aarch64 routes to the early native Darwin approximation with an unavoidable `libSystem` launch dependency
+- On macOS/aarch64, `make freestanding` routes to the native Darwin approximation with an unavoidable `libSystem` launch dependency; `make host` remains available as the hosted POSIX comparison path
 - Native Windows freestanding support is early and intentionally narrower than the POSIX and Linux backends; MSYS2 remains the current Windows hosted bootstrap environment
 - The abstraction is intentionally small; the shared runtime now has targeted threading support where needed, but there is still no broad userland threading or async event layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment

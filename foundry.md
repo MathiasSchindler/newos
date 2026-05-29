@@ -29,7 +29,7 @@ Read those pages before making broad architectural changes.
 
 In this project, "freestanding" means that the target Linux build does not depend on a standard C library. Freestanding binaries use a small startup path, direct Linux syscalls through project-owned architecture glue, and project-owned runtime helpers.
 
-The hosted build still exists. It is used for local development, testing, and debugging on POSIX-like systems such as macOS and Linux. Hosted binaries use the POSIX platform backend. The freestanding Linux build uses the Linux syscall backend and architecture-specific startup files.
+The hosted build still exists, but it is no longer the design center. It is used for POSIX verification, fast debugging, and platform bring-up before native code exists. Hosted binaries use the POSIX platform backend. The freestanding Linux build uses the Linux syscall backend and architecture-specific startup files, while the macOS freestanding-ish build uses the Darwin platform layer and the minimal system ABI dependency macOS requires for launch.
 
 The important rule is that ordinary tool logic should not care which backend is active. Tool code should depend on the shared runtime and the platform interface, not on libc, POSIX calls, or host-specific headers directly.
 
@@ -64,8 +64,9 @@ The main source layers are:
 - `src/tools/<name>/`: private modules for a larger tool named `<name>`
 - `src/shared/`: reusable code used by more than one tool or maintained as a project-wide subsystem
 - `src/shared/runtime/`: libc-independent memory, string, parsing, I/O, and Unicode support
-- `src/platform/posix/`: hosted POSIX backend used by local host builds
+- `src/platform/posix/`: hosted POSIX backend used by secondary host builds
 - `src/platform/linux/`: freestanding Linux backend using raw syscalls
+- `src/platform/macos/`: freestanding-ish Darwin backend used by local macOS/aarch64 `make freestanding`
 - `src/arch/aarch64/linux/` and `src/arch/x86_64/linux/`: startup and syscall ABI glue
 - `src/compiler/`: the `ncc` compiler implementation
 - `man/`: in-tree manuals and design notes
@@ -83,7 +84,7 @@ Generic tool and shared code should call project platform functions declared thr
 
 If a new OS-facing capability is required, add a narrow platform abstraction and implement it in the relevant backend or document why the capability is hosted-only. ABI-specific startup or syscall details belong under `src/arch/*`, not in generic tools.
 
-The hosted backend is not the design center. It is the fast development and testing path. The freestanding Linux backend is the pressure test that prevents the project from becoming accidentally libc-dependent.
+The hosted backend is not the design center. It is the comparison, debugging, and bring-up path. The Linux and macOS freestanding paths are the normal pressure tests that prevent the project from becoming accidentally libc-dependent.
 
 ## Runtime And Shared Facilities
 
@@ -155,14 +156,14 @@ Do not overfit new tools to GNU behavior unless GNU compatibility is the explici
 
 ## Build And Test Expectations
 
-The normal development loop is:
+The normal freestanding-oriented development loop is:
 
 ```sh
-make host
+make freestanding
 make test
 ```
 
-On Linux, `make test` also exercises representative freestanding binaries. On macOS, the default build favors local hosted binaries; freestanding Linux checks are skipped by default unless explicitly requested or run on a suitable Linux host.
+On Linux, `make freestanding` builds the raw-syscall target. On local macOS/aarch64, `make freestanding` builds the native freestanding-ish Darwin target. Use `make host` when you specifically need the POSIX comparison build, faster hosted diagnostics, or a temporary path while native platform code is being added.
 
 For low-level runtime, platform, compiler, startup, or shared subsystem changes, run the broadest practical test target. The self-hosting check is also important when changes may affect the compiler or the project's ability to rebuild itself:
 

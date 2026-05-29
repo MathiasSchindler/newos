@@ -36,7 +36,7 @@ profiler cat.nprof
 
 When `PROFILE=1` is enabled, the build adds
 `-finstrument-functions -fno-omit-frame-pointer -fno-inline` and links the small
-project runtime hook implementation. The runtime is inactive unless
+Linux platform hook implementation. The runtime is inactive unless
 `NEWOS_PROFILE` names an output file. Set `NEWOS_PROFILE=0`, `off`, `false`, or
 `no` to force profiling off for a profiled binary.
 
