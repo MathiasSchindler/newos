@@ -1,95 +1,81 @@
 #include "runtime.h"
 #include "platform.h"
 
+#include <stdint.h>
+
+#define NEWOS_RUNTIME_ALLOC_LOCK_NONE 0
+#define NEWOS_RUNTIME_ALLOC_LOCK_ATOMIC 1
+#define NEWOS_RUNTIME_ALLOC_LOCK_PTHREAD 2
+
+#ifndef NEWOS_RUNTIME_ALLOC_LOCK
 #if defined(NEWOS_RUNTIME_THREAD_SAFE_ALLOC) && NEWOS_RUNTIME_THREAD_SAFE_ALLOC && defined(NEWOS_HAVE_PTHREAD) && NEWOS_HAVE_PTHREAD
-#include <pthread.h>
-#define RT_ALLOC_THREAD_SAFE 1
+#define NEWOS_RUNTIME_ALLOC_LOCK NEWOS_RUNTIME_ALLOC_LOCK_PTHREAD
+#elif defined(NEWOS_RUNTIME_THREAD_SAFE_ALLOC) && NEWOS_RUNTIME_THREAD_SAFE_ALLOC
+#define NEWOS_RUNTIME_ALLOC_LOCK NEWOS_RUNTIME_ALLOC_LOCK_ATOMIC
 #else
-#define RT_ALLOC_THREAD_SAFE 0
+#define NEWOS_RUNTIME_ALLOC_LOCK NEWOS_RUNTIME_ALLOC_LOCK_NONE
+#endif
 #endif
 
-static volatile int rt_alloc_atomic_lock;
+#if NEWOS_RUNTIME_ALLOC_LOCK == NEWOS_RUNTIME_ALLOC_LOCK_PTHREAD && defined(NEWOS_HAVE_PTHREAD) && NEWOS_HAVE_PTHREAD
+#include <pthread.h>
+#define RT_ALLOC_LOCK_PTHREAD 1
+#else
+#define RT_ALLOC_LOCK_PTHREAD 0
+#endif
 
-/*
- * Keep these implementations strictly byte-wise and volatile-backed so the
- * compiler does not fold them back into builtin memcpy or memset calls.
- * That would recurse here in hosted optimized builds.
- */
-void *memcpy(void *dst, const void *src, size_t count) {
-    volatile unsigned char *out = (volatile unsigned char *)dst;
-    const volatile unsigned char *in = (const volatile unsigned char *)src;
-    size_t i;
+#define RT_ALIGN ((size_t)16U)
+#define RT_SMALL_CLASS_COUNT 8U
+#define RT_SMALL_MAX_SIZE ((size_t)2048U)
+#define RT_SMALL_MAGIC 0x534d414cU
+#define RT_LARGE_MAGIC 0x4c415247U
+#define RT_ARENA_DEFAULT_BLOCK_SIZE ((size_t)16384U)
 
-    for (i = 0; i < count; ++i) {
-        out[i] = in[i];
-    }
+#ifndef RT_LARGE_CACHE_MAX_BYTES
+#define RT_LARGE_CACHE_MAX_BYTES 8388608U
+#endif
 
-    return dst;
-}
+#ifndef RT_LARGE_CACHE_MAX_COUNT
+#define RT_LARGE_CACHE_MAX_COUNT 32U
+#endif
 
-int memcmp(const void *left, const void *right, size_t count) {
-    const unsigned char *left_bytes = (const unsigned char *)left;
-    const unsigned char *right_bytes = (const unsigned char *)right;
-    size_t i;
+typedef struct RtSmallBlock RtSmallBlock;
+typedef struct RtLargeBlock RtLargeBlock;
 
-    for (i = 0; i < count; ++i) {
-        if (left_bytes[i] != right_bytes[i]) {
-            return (int)left_bytes[i] - (int)right_bytes[i];
-        }
-    }
-    return 0;
-}
-
-void *memset(void *buffer, int byte_value, size_t count) {
-    volatile unsigned char *out = (volatile unsigned char *)buffer;
-    unsigned char value = (unsigned char)byte_value;
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        out[i] = value;
-    }
-
-    return buffer;
-}
-
-void *memmove(void *dst, const void *src, size_t count) {
-    volatile unsigned char *out = (volatile unsigned char *)dst;
-    const volatile unsigned char *in = (const volatile unsigned char *)src;
-    size_t i;
-
-    if (out == in) {
-        return dst;
-    }
-
-    if (out < in) {
-        for (i = 0; i < count; ++i) {
-            out[i] = in[i];
-        }
-    } else {
-        for (i = count; i > 0; --i) {
-            out[i - 1] = in[i - 1];
-        }
-    }
-
-    return dst;
-}
-
-void rt_memset(void *buffer, int byte_value, size_t count) {
-    (void)memset(buffer, byte_value, count);
-}
-
-typedef struct RtAllocBlock RtAllocBlock;
-
-struct RtAllocBlock {
-    size_t size;
-    int free;
-    RtAllocBlock *next;
+struct RtSmallBlock {
+    RtSmallBlock *next;
+    size_t requested;
+    size_t reserved;
+    unsigned int class_index;
+    unsigned int magic;
 };
 
-static RtAllocBlock *rt_alloc_head;
-static RtAllocBlock *rt_alloc_tail;
+struct RtLargeBlock {
+    RtLargeBlock *next;
+    size_t requested;
+    size_t mapping_size;
+    unsigned int class_index;
+    unsigned int magic;
+};
 
-#if RT_ALLOC_THREAD_SAFE
+struct RtArenaBlock {
+    RtArenaBlock *next;
+    size_t used;
+    size_t size;
+    size_t mapping_size;
+    unsigned char data[];
+};
+
+static const size_t rt_small_classes[RT_SMALL_CLASS_COUNT] = {
+    16U, 32U, 64U, 128U, 256U, 512U, 1024U, 2048U
+};
+
+static RtSmallBlock *rt_small_free[RT_SMALL_CLASS_COUNT];
+static RtLargeBlock *rt_large_cache;
+static size_t rt_large_cache_bytes;
+static size_t rt_large_cache_count;
+
+#if RT_ALLOC_LOCK_PTHREAD
 static pthread_mutex_t rt_alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void rt_alloc_lock(void) {
@@ -99,7 +85,9 @@ static void rt_alloc_lock(void) {
 static void rt_alloc_unlock(void) {
     (void)pthread_mutex_unlock(&rt_alloc_mutex);
 }
-#else
+#elif NEWOS_RUNTIME_ALLOC_LOCK == NEWOS_RUNTIME_ALLOC_LOCK_ATOMIC
+static volatile int rt_alloc_atomic_lock;
+
 static void rt_alloc_lock(void) {
     while (__atomic_exchange_n(&rt_alloc_atomic_lock, 1, __ATOMIC_ACQUIRE) != 0) {
         while (__atomic_load_n(&rt_alloc_atomic_lock, __ATOMIC_RELAXED) != 0) {
@@ -110,88 +98,225 @@ static void rt_alloc_lock(void) {
 static void rt_alloc_unlock(void) {
     __atomic_store_n(&rt_alloc_atomic_lock, 0, __ATOMIC_RELEASE);
 }
+#else
+static void rt_alloc_lock(void) {
+}
+
+static void rt_alloc_unlock(void) {
+}
 #endif
 
-static size_t rt_alloc_align(size_t value) {
-    const size_t alignment = sizeof(void *) * 2U;
+static size_t rt_align_up(size_t value, size_t alignment) {
     return (value + alignment - 1U) & ~(alignment - 1U);
 }
 
-static size_t rt_alloc_page_align(size_t value) {
-    const size_t page_size = 4096U;
-    return (value + page_size - 1U) & ~(page_size - 1U);
+static size_t rt_page_align(size_t size) {
+    return rt_align_up(size, platform_page_size());
 }
 
-static void rt_alloc_split(RtAllocBlock *block, size_t size) {
-    RtAllocBlock *next;
-    if (block->size <= size + sizeof(RtAllocBlock) + sizeof(void *) * 2U) return;
-    next = (RtAllocBlock *)((unsigned char *)(block + 1) + size);
-    next->size = block->size - size - sizeof(RtAllocBlock);
-    next->free = 1;
-    next->next = block->next;
-    block->size = size;
-    block->next = next;
-    if (rt_alloc_tail == block) rt_alloc_tail = next;
+static int rt_mul_overflow(size_t left, size_t right, size_t *out) {
+    if (left != 0U && right > ((size_t)-1) / left) return 1;
+    *out = left * right;
+    return 0;
 }
 
-static RtAllocBlock *rt_alloc_find_free(size_t size) {
-    RtAllocBlock *block = rt_alloc_head;
+static unsigned int rt_class_for_size(size_t size) {
+    unsigned int class_index;
+    for (class_index = 0U; class_index < RT_SMALL_CLASS_COUNT; ++class_index) {
+        if (size <= rt_small_classes[class_index]) return class_index;
+    }
+    return RT_SMALL_CLASS_COUNT;
+}
+
+static int rt_fill_small_class(unsigned int class_index) {
+    size_t payload_size = rt_small_classes[class_index];
+    size_t block_size = sizeof(RtSmallBlock) + payload_size;
+    size_t mapping_size = rt_page_align(block_size * 64U);
+    unsigned char *cursor;
+    unsigned char *end;
+
+    if (mapping_size < block_size) return 0;
+    cursor = (unsigned char *)platform_allocate_pages(mapping_size);
+    if (cursor == 0) return 0;
+    end = cursor + mapping_size;
+
+    while (cursor + block_size <= end) {
+        RtSmallBlock *block = (RtSmallBlock *)cursor;
+        block->requested = 0U;
+        block->reserved = 0U;
+        block->class_index = class_index;
+        block->magic = RT_SMALL_MAGIC;
+        block->next = rt_small_free[class_index];
+        rt_small_free[class_index] = block;
+        cursor += block_size;
+    }
+
+    return 1;
+}
+
+static RtLargeBlock *rt_large_cache_take(size_t mapping_size) {
+    RtLargeBlock *best = 0;
+    RtLargeBlock *best_prev = 0;
+    RtLargeBlock *prev = 0;
+    RtLargeBlock *block = rt_large_cache;
+
     while (block != 0) {
-        if (block->free && block->size >= size) return block;
+        if (block->mapping_size >= mapping_size && (best == 0 || block->mapping_size < best->mapping_size)) {
+            best = block;
+            best_prev = prev;
+        }
+        prev = block;
         block = block->next;
+    }
+
+    if (best == 0) return 0;
+    if (best_prev == 0) rt_large_cache = best->next;
+    else best_prev->next = best->next;
+    rt_large_cache_bytes -= best->mapping_size;
+    --rt_large_cache_count;
+    best->next = 0;
+    return best;
+}
+
+static int rt_large_cache_put(RtLargeBlock *block) {
+#if RT_LARGE_CACHE_MAX_BYTES > 0U && RT_LARGE_CACHE_MAX_COUNT > 0U
+    if (block->mapping_size > RT_LARGE_CACHE_MAX_BYTES) return 0;
+    while ((rt_large_cache_bytes + block->mapping_size > RT_LARGE_CACHE_MAX_BYTES || rt_large_cache_count >= RT_LARGE_CACHE_MAX_COUNT) && rt_large_cache != 0) {
+        RtLargeBlock *evicted = rt_large_cache;
+        rt_large_cache = evicted->next;
+        rt_large_cache_bytes -= evicted->mapping_size;
+        --rt_large_cache_count;
+        (void)platform_free_pages(evicted, evicted->mapping_size);
+    }
+    if (rt_large_cache_bytes + block->mapping_size > RT_LARGE_CACHE_MAX_BYTES || rt_large_cache_count >= RT_LARGE_CACHE_MAX_COUNT) return 0;
+    block->requested = 0U;
+    block->next = rt_large_cache;
+    rt_large_cache = block;
+    rt_large_cache_bytes += block->mapping_size;
+    ++rt_large_cache_count;
+    return 1;
+#else
+    (void)block;
+    return 0;
+#endif
+}
+
+void *memcpy(void *dst, const void *src, size_t count) {
+    volatile unsigned char *out = (volatile unsigned char *)dst;
+    const volatile unsigned char *in = (const volatile unsigned char *)src;
+
+    if ((((uintptr_t)out ^ (uintptr_t)in) & (sizeof(size_t) - 1U)) == 0U) {
+        while (count != 0U && ((uintptr_t)out & (sizeof(size_t) - 1U)) != 0U) {
+            *out++ = *in++;
+            --count;
+        }
+        while (count >= sizeof(size_t)) {
+            *(volatile size_t *)out = *(const volatile size_t *)in;
+            out += sizeof(size_t);
+            in += sizeof(size_t);
+            count -= sizeof(size_t);
+        }
+    }
+
+    while (count != 0U) {
+        *out++ = *in++;
+        --count;
+    }
+
+    return dst;
+}
+
+int memcmp(const void *left, const void *right, size_t count) {
+    const unsigned char *left_bytes = (const unsigned char *)left;
+    const unsigned char *right_bytes = (const unsigned char *)right;
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (left_bytes[index] != right_bytes[index]) {
+            return (int)left_bytes[index] - (int)right_bytes[index];
+        }
     }
     return 0;
 }
 
-static RtAllocBlock *rt_alloc_grow(size_t size) {
-    size_t mapping_size;
-    void *mapped;
-    RtAllocBlock *block;
-    if (size > ((size_t)-1) - sizeof(RtAllocBlock)) return 0;
-    mapping_size = rt_alloc_page_align(sizeof(RtAllocBlock) + size);
-    if (mapping_size < size) return 0;
-    mapped = platform_allocate_pages(mapping_size);
-    if (mapped == 0) return 0;
-    block = (RtAllocBlock *)mapped;
-    block->size = mapping_size - sizeof(RtAllocBlock);
-    block->free = 0;
-    block->next = 0;
-    if (rt_alloc_tail != 0) rt_alloc_tail->next = block;
-    else rt_alloc_head = block;
-    rt_alloc_tail = block;
-    rt_alloc_split(block, size);
-    return block;
-}
+void *memset(void *buffer, int byte_value, size_t count) {
+    volatile unsigned char *out = (volatile unsigned char *)buffer;
+    unsigned char value = (unsigned char)byte_value;
+    size_t word = 0U;
+    size_t index;
 
-static int rt_alloc_blocks_adjacent(struct RtAllocBlock *left, struct RtAllocBlock *right) {
-    return (const unsigned char *)(left + 1) + left->size == (const unsigned char *)right;
-}
-
-static void rt_alloc_coalesce(void) {
-    RtAllocBlock *block = rt_alloc_head;
-    while (block != 0 && block->next != 0) {
-        if (block->free && block->next->free && rt_alloc_blocks_adjacent(block, block->next)) {
-            block->size += sizeof(RtAllocBlock) + block->next->size;
-            block->next = block->next->next;
-            if (block->next == 0) rt_alloc_tail = block;
-        } else {
-            block = block->next;
-        }
+    for (index = 0U; index < sizeof(size_t); ++index) {
+        word = (word << 8U) | value;
     }
+
+    while (count != 0U && ((uintptr_t)out & (sizeof(size_t) - 1U)) != 0U) {
+        *out++ = value;
+        --count;
+    }
+    while (count >= sizeof(size_t)) {
+        *(volatile size_t *)out = word;
+        out += sizeof(size_t);
+        count -= sizeof(size_t);
+    }
+    while (count != 0U) {
+        *out++ = value;
+        --count;
+    }
+
+    return buffer;
+}
+
+void *memmove(void *dst, const void *src, size_t count) {
+    volatile unsigned char *out = (volatile unsigned char *)dst;
+    const volatile unsigned char *in = (const volatile unsigned char *)src;
+
+    if (out == in || count == 0U) return dst;
+    if (out < in || out >= in + count) return memcpy(dst, src, count);
+
+    out += count;
+    in += count;
+    while (count != 0U) {
+        *--out = *--in;
+        --count;
+    }
+
+    return dst;
+}
+
+void rt_memset(void *buffer, int byte_value, size_t count) {
+    (void)memset(buffer, byte_value, count);
 }
 
 static void *rt_malloc_unlocked(size_t size) {
-    RtAllocBlock *block;
-    if (size == 0U) size = 1U;
-    size = rt_alloc_align(size);
-    block = rt_alloc_find_free(size);
-    if (block != 0) {
-        block->free = 0;
-        rt_alloc_split(block, size);
-        return block + 1;
+    unsigned int class_index;
+
+    if (size == 0U) return 0;
+    class_index = rt_class_for_size(size);
+    if (class_index < RT_SMALL_CLASS_COUNT) {
+        RtSmallBlock *block;
+        if (rt_small_free[class_index] == 0 && !rt_fill_small_class(class_index)) return 0;
+        block = rt_small_free[class_index];
+        rt_small_free[class_index] = block->next;
+        block->next = 0;
+        block->requested = size;
+        return (void *)(block + 1);
     }
-    block = rt_alloc_grow(size);
-    return block == 0 ? 0 : (void *)(block + 1);
+
+    if (size > ((size_t)-1) - sizeof(RtLargeBlock)) return 0;
+    {
+        size_t mapping_size = rt_page_align(sizeof(RtLargeBlock) + size);
+        RtLargeBlock *block;
+        if (mapping_size < size) return 0;
+        block = rt_large_cache_take(mapping_size);
+        if (block == 0) block = (RtLargeBlock *)platform_allocate_pages(mapping_size);
+        if (block == 0) return 0;
+        block->next = 0;
+        block->requested = size;
+        if (block->mapping_size == 0U) block->mapping_size = mapping_size;
+        block->class_index = RT_SMALL_CLASS_COUNT;
+        block->magic = RT_LARGE_MAGIC;
+        return (void *)(block + 1);
+    }
 }
 
 void *rt_malloc(size_t size) {
@@ -204,40 +329,23 @@ void *rt_malloc(size_t size) {
 }
 
 static void rt_free_unlocked(void *ptr) {
-    RtAllocBlock *block;
-    if (ptr == 0) return;
-    block = ((RtAllocBlock *)ptr) - 1;
-    block->free = 1;
-    rt_alloc_coalesce();
-}
+    RtSmallBlock *small;
+    RtLargeBlock *large;
 
-void *rt_realloc(void *ptr, size_t size) {
-    RtAllocBlock *block;
-    void *next;
-    size_t copy_size;
-    if (ptr == 0) return rt_malloc(size);
-    if (size == 0U) {
-        rt_free(ptr);
-        return 0;
+    if (ptr == 0) return;
+    small = ((RtSmallBlock *)ptr) - 1;
+    if (small->magic == RT_SMALL_MAGIC && small->class_index < RT_SMALL_CLASS_COUNT) {
+        unsigned int class_index = small->class_index;
+        small->requested = 0U;
+        small->next = rt_small_free[class_index];
+        rt_small_free[class_index] = small;
+        return;
     }
-    rt_alloc_lock();
-    block = ((RtAllocBlock *)ptr) - 1;
-    size = rt_alloc_align(size);
-    if (block->size >= size) {
-        rt_alloc_split(block, size);
-        rt_alloc_unlock();
-        return ptr;
+
+    large = ((RtLargeBlock *)ptr) - 1;
+    if (large->magic == RT_LARGE_MAGIC) {
+        if (!rt_large_cache_put(large)) (void)platform_free_pages(large, large->mapping_size);
     }
-    next = rt_malloc_unlocked(size);
-    if (next == 0) {
-        rt_alloc_unlock();
-        return 0;
-    }
-    copy_size = block->size < size ? block->size : size;
-    memcpy(next, ptr, copy_size);
-    rt_free_unlocked(ptr);
-    rt_alloc_unlock();
-    return next;
 }
 
 void rt_free(void *ptr) {
@@ -246,12 +354,143 @@ void rt_free(void *ptr) {
     rt_alloc_unlock();
 }
 
+void *rt_realloc(void *ptr, size_t size) {
+    RtSmallBlock *small;
+    RtLargeBlock *large;
+    size_t old_size;
+    void *next;
+
+    if (ptr == 0) return rt_malloc(size);
+    if (size == 0U) {
+        rt_free(ptr);
+        return 0;
+    }
+
+    rt_alloc_lock();
+    small = ((RtSmallBlock *)ptr) - 1;
+    if (small->magic == RT_SMALL_MAGIC && small->class_index < RT_SMALL_CLASS_COUNT) {
+        old_size = small->requested;
+        if (size <= rt_small_classes[small->class_index]) {
+            small->requested = size;
+            rt_alloc_unlock();
+            return ptr;
+        }
+    } else {
+        large = ((RtLargeBlock *)ptr) - 1;
+        if (large->magic != RT_LARGE_MAGIC) {
+            rt_alloc_unlock();
+            return 0;
+        }
+        old_size = large->requested;
+        if (size > RT_SMALL_MAX_SIZE && size <= large->mapping_size - sizeof(RtLargeBlock)) {
+            large->requested = size;
+            rt_alloc_unlock();
+            return ptr;
+        }
+    }
+
+    next = rt_malloc_unlocked(size);
+    if (next == 0) {
+        rt_alloc_unlock();
+        return 0;
+    }
+    memcpy(next, ptr, old_size < size ? old_size : size);
+    rt_free_unlocked(ptr);
+    rt_alloc_unlock();
+    return next;
+}
+
+void *rt_malloc_array(size_t count, size_t item_size) {
+    size_t size;
+    if (rt_mul_overflow(count, item_size, &size)) return 0;
+    return rt_malloc(size);
+}
+
+void *rt_realloc_array(void *ptr, size_t count, size_t item_size) {
+    size_t size;
+    if (rt_mul_overflow(count, item_size, &size)) return 0;
+    return rt_realloc(ptr, size);
+}
+
+void rt_arena_init(RtArena *arena, size_t default_block_size) {
+    if (arena == 0) return;
+    arena->blocks = 0;
+    arena->default_block_size = default_block_size == 0U ? RT_ARENA_DEFAULT_BLOCK_SIZE : rt_align_up(default_block_size, RT_ALIGN);
+}
+
+void rt_arena_reset(RtArena *arena) {
+    RtArenaBlock *block;
+    if (arena == 0) return;
+    block = arena->blocks;
+    while (block != 0) {
+        block->used = 0U;
+        block = block->next;
+    }
+}
+
+void rt_arena_destroy(RtArena *arena) {
+    RtArenaBlock *block;
+    if (arena == 0) return;
+    block = arena->blocks;
+    while (block != 0) {
+        RtArenaBlock *next = block->next;
+        (void)platform_free_pages(block, block->mapping_size);
+        block = next;
+    }
+    arena->blocks = 0;
+}
+
+static RtArenaBlock *rt_arena_new_block(size_t payload_size) {
+    size_t total_size;
+    size_t mapping_size;
+    RtArenaBlock *block;
+
+    if (payload_size > ((size_t)-1) - sizeof(RtArenaBlock)) return 0;
+    total_size = sizeof(RtArenaBlock) + payload_size;
+    mapping_size = rt_page_align(total_size);
+    if (mapping_size < total_size) return 0;
+    block = (RtArenaBlock *)platform_allocate_pages(mapping_size);
+    if (block == 0) return 0;
+    block->next = 0;
+    block->used = 0U;
+    block->size = mapping_size - sizeof(RtArenaBlock);
+    block->mapping_size = mapping_size;
+    return block;
+}
+
+void *rt_arena_alloc(RtArena *arena, size_t size) {
+    RtArenaBlock *block;
+    size_t offset;
+
+    if (arena == 0 || size == 0U) return 0;
+    size = rt_align_up(size, RT_ALIGN);
+    block = arena->blocks;
+    if (block == 0 || block->used + size < block->used || block->used + size > block->size) {
+        size_t payload_size = size > arena->default_block_size ? size : arena->default_block_size;
+        RtArenaBlock *next = rt_arena_new_block(payload_size);
+        if (next == 0) return 0;
+        next->next = arena->blocks;
+        arena->blocks = next;
+        block = next;
+    }
+
+    offset = block->used;
+    block->used += size;
+    return block->data + offset;
+}
+
+void *rt_arena_alloc_array(RtArena *arena, size_t count, size_t item_size) {
+    size_t size;
+    if (rt_mul_overflow(count, item_size, &size)) return 0;
+    return rt_arena_alloc(arena, size);
+}
+
 static void rt_sort_swap(unsigned char *left, unsigned char *right, size_t item_size) {
-    size_t i;
-    for (i = 0U; i < item_size; ++i) {
-        unsigned char temp = left[i];
-        left[i] = right[i];
-        right[i] = temp;
+    size_t index;
+    for (index = 0U; index < item_size; ++index) {
+        unsigned char temp = left[index];
+        left[index] = right[index];
+        right[index] = temp;
     }
 }
 

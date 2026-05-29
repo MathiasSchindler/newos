@@ -47,6 +47,16 @@ void *platform_allocate_pages(size_t size) {
     return mapped == MAP_FAILED ? 0 : mapped;
 }
 
+size_t platform_page_size(void) {
+    long value = sysconf(_SC_PAGESIZE);
+    return value > 0 ? (size_t)value : 4096U;
+}
+
+int platform_free_pages(void *ptr, size_t size) {
+    if (ptr == 0 || size == 0U) return 0;
+    return munmap(ptr, size) == 0 ? 0 : -1;
+}
+
 static int posix_mark_fd_cloexec(int fd) {
     int flags;
 

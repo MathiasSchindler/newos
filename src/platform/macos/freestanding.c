@@ -32,6 +32,7 @@
 #define DARWIN_PROT_WRITE 2
 #define DARWIN_MAP_PRIVATE 2
 #define DARWIN_MAP_ANONYMOUS 0x1000
+#define DARWIN_SYS_MUNMAP 73
 #define DARWIN_O_WRONLY 0x0001
 #define DARWIN_O_APPEND 0x0008
 #define DARWIN_O_CREAT 0x0200
@@ -314,6 +315,16 @@ long platform_read(int fd, void *buffer, size_t count) {
     return darwin_syscall3(DARWIN_SYS_READ, (long)fd, (long)buffer, (long)count);
 }
 
+size_t platform_page_size(void) {
+    long value = sysconf(_SC_PAGESIZE);
+    if (value > 0) return (size_t)value;
+#if defined(__aarch64__)
+    return 16384U;
+#else
+    return 4096U;
+#endif
+}
+
 void *platform_allocate_pages(size_t size) {
     long mapped = darwin_syscall6(
         DARWIN_SYS_MMAP,
@@ -325,6 +336,11 @@ void *platform_allocate_pages(size_t size) {
         0
     );
     return mapped < 0 ? 0 : (void *)mapped;
+}
+
+int platform_free_pages(void *ptr, size_t size) {
+    if (ptr == 0 || size == 0U) return 0;
+    return darwin_syscall2(DARWIN_SYS_MUNMAP, (long)ptr, (long)size) < 0 ? -1 : 0;
 }
 
 int platform_close(int fd) {

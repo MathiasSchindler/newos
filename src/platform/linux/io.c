@@ -9,6 +9,10 @@ long platform_read(int fd, void *buffer, size_t count) {
     return linux_syscall3(LINUX_SYS_READ, fd, (long)buffer, (long)count);
 }
 
+size_t platform_page_size(void) {
+    return 4096U;
+}
+
 void *platform_allocate_pages(size_t size) {
     long mapped = linux_syscall6(
         LINUX_SYS_MMAP,
@@ -20,6 +24,11 @@ void *platform_allocate_pages(size_t size) {
         0
     );
     return mapped < 0 ? 0 : (void *)mapped;
+}
+
+int platform_free_pages(void *ptr, size_t size) {
+    if (ptr == 0 || size == 0U) return 0;
+    return linux_syscall2(LINUX_SYS_MUNMAP, (long)ptr, (long)size) < 0 ? -1 : 0;
 }
 
 int platform_open_read(const char *path) {

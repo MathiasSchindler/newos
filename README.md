@@ -121,7 +121,7 @@ Manual pages live under [man](man), with user-facing commands typically document
 
 The repository also includes its own man program at [src/tools/man.c](src/tools/man.c), so the same tree can provide and browse its own documentation after a build.
 
-Useful design pages include [man/7/userland.md](man/7/userland.md), [man/7/build.md](man/7/build.md), [man/7/testing.md](man/7/testing.md), [man/7/runtime.md](man/7/runtime.md), and [man/7/unicode.md](man/7/unicode.md).
+Useful design pages include [man/7/userland.md](man/7/userland.md), [man/7/build.md](man/7/build.md), [man/7/testing.md](man/7/testing.md), [man/7/runtime.md](man/7/runtime.md), [man/7/memory.md](man/7/memory.md), and [man/7/unicode.md](man/7/unicode.md).
 
 ## Benchmarks
 

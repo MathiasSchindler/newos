@@ -320,7 +320,9 @@ typedef int (*PlatformSyscallTraceCallback)(const PlatformSyscallEvent *event, v
 
 long platform_write(int fd, const void *buffer, size_t count);
 long platform_read(int fd, void *buffer, size_t count);
+size_t platform_page_size(void);
 void *platform_allocate_pages(size_t size);
+int platform_free_pages(void *ptr, size_t size);
 int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size);
 int platform_thread_join(PlatformThread *thread, int *result_out);
 void platform_mutex_init(PlatformMutex *mutex);

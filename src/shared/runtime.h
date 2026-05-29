@@ -11,6 +11,22 @@ void *memset(void *buffer, int byte_value, size_t count);
 void *rt_malloc(size_t size);
 void *rt_realloc(void *ptr, size_t size);
 void rt_free(void *ptr);
+void *rt_malloc_array(size_t count, size_t item_size);
+void *rt_realloc_array(void *ptr, size_t count, size_t item_size);
+
+typedef struct RtArenaBlock RtArenaBlock;
+
+typedef struct {
+	RtArenaBlock *blocks;
+	size_t default_block_size;
+} RtArena;
+
+void rt_arena_init(RtArena *arena, size_t default_block_size);
+void rt_arena_reset(RtArena *arena);
+void rt_arena_destroy(RtArena *arena);
+void *rt_arena_alloc(RtArena *arena, size_t size);
+void *rt_arena_alloc_array(RtArena *arena, size_t count, size_t item_size);
+
 void rt_sort(void *base, size_t count, size_t item_size, int (*compare)(const void *, const void *));
 
 size_t rt_strlen(const char *text);

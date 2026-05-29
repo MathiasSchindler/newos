@@ -15,7 +15,9 @@ hosted and freestanding builds.
 
 ### Core runtime (`src/shared/runtime`)
 
-- `memory.c` — allocation helpers built on the platform memory interface
+- `memory.c` — freestanding memory primitives, size-class heap allocation,
+  page-backed large allocations, checked array helpers, and arenas; see
+  [memory](memory.md) for the allocator design
 - `string.c` — string copying, comparison, parsing, and path joining helpers
 - `parse.c` — numeric parsing used by command-line tools
 - `io.c` — small buffered I/O wrappers over the platform layer
@@ -51,9 +53,9 @@ hosted and freestanding builds.
 ## LIMITATIONS
 
 - This is a focused internal support layer, not a general-purpose standard library
-- There is no `FILE *`/stdio abstraction, locale database, or broad userland threading API; runtime threading support is limited to specific shared subsystems such as allocator locking
+- There is no `FILE *`/stdio abstraction, locale database, or broad userland threading API; runtime threading support is limited to specific shared subsystems, and allocator locking should remain opt-in rather than a default cost
 - Formatting and parsing support cover the project's needs, not every libc edge case
 
 ## SEE ALSO
 
-man, project-layout, platform, shell, compiler
+man, project-layout, platform, memory, shell, compiler
