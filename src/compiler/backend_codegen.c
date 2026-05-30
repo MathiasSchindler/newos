@@ -2506,7 +2506,6 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             const char *arrow = line + 8;
             char expr[COMPILER_IR_LINE_CAPACITY];
             char label[COMPILER_IR_NAME_CAPACITY];
-            char asm_label[96];
             size_t out = 0;
 
             const char *separator = find_ir_separator_outside_quotes(arrow, " -> ");
@@ -2519,11 +2518,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             }
             expr[out] = '\0';
             rt_copy_string(label, sizeof(label), skip_spaces(separator + 4));
-            if (emit_expression(&state, expr) != 0 || emit_cmp_zero(&state) != 0) {
-                return -1;
-            }
-            rt_copy_string(asm_label, sizeof(asm_label), backend_is_aarch64(&state) ? "b.eq" : "je");
-            if (emit_jump_to_label(&state, asm_label, label) != 0) {
+            if (emit_branch_false(&state, expr, label) != 0) {
                 return -1;
             }
             continue;

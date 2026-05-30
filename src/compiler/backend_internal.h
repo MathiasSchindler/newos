@@ -245,6 +245,7 @@ int emit_set_condition(BackendState *state, const char *condition);
 int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *label);
 
 int emit_expression(BackendState *state, const char *expr);
+int emit_branch_false(BackendState *state, const char *expr, const char *label);
 int emit_array_initializer_store(BackendState *state, const char *name, const char *expr);
 int emit_object_initializer_store(BackendState *state, const char *name, const char *expr);
 int emit_object_copy_store(BackendState *state, const char *name, const char *expr);

@@ -2192,7 +2192,7 @@ int emit_push_value(BackendState *state) {
 
 int emit_cmp_zero(BackendState *state) {
     return backend_is_aarch64(state) ? emit_instruction(state, "cmp x0, #0") :
-                                       emit_instruction(state, "cmpq $0, %rax");
+                                       emit_instruction(state, "testq %rax, %rax");
 }
 
 int emit_set_condition(BackendState *state, const char *condition) {
@@ -2213,7 +2213,7 @@ int emit_set_condition(BackendState *state, const char *condition) {
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), x86_condition);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), " %al");
         return emit_instruction(state, line) == 0 &&
-               emit_instruction(state, "movzbq %al, %rax") == 0 ? 0 : -1;
+               emit_instruction(state, "movzbl %al, %eax") == 0 ? 0 : -1;
     }
 }
 

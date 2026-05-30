@@ -13,7 +13,35 @@ EOF
 
 "$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_linux.s"
 assert_file_contains "$WORK_DIR/sample_linux.s" '^\.globl main$' "compiler x86_64 backend missing global symbol"
-assert_file_contains "$WORK_DIR/sample_linux.s" 'movq \$42, %rax' "compiler x86_64 backend missing immediate return code"
+assert_file_contains "$WORK_DIR/sample_linux.s" 'pushq \$42' "compiler x86_64 backend missing compact immediate return code"
+assert_file_contains "$WORK_DIR/sample_linux.s" 'popq %rax' "compiler x86_64 backend missing immediate return register load"
+
+cat > "$WORK_DIR/zero_branch.c" <<'EOF'
+int main(int argc, char **argv) {
+    (void)argv;
+    if (argc) {
+        return 1;
+    }
+    return 0;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/zero_branch.c" -o "$WORK_DIR/zero_branch_linux.s"
+assert_file_contains "$WORK_DIR/zero_branch_linux.s" 'testq %rax, %rax' "compiler x86_64 backend should use compact zero tests"
+
+cat > "$WORK_DIR/register_call_args.c" <<'EOF'
+int pair(int left, int right) {
+    return left + right;
+}
+
+int main(void) {
+    return pair(1, 2);
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/register_call_args.c" -o "$WORK_DIR/register_call_args_linux.s"
+assert_file_contains "$WORK_DIR/register_call_args_linux.s" 'popq %rsi' "compiler x86_64 backend should pop register call args directly"
+assert_file_contains "$WORK_DIR/register_call_args_linux.s" 'popq %rdi' "compiler x86_64 backend should pop register call args directly"
 
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/sample.c" -o "$WORK_DIR/sample_macos.s"
 assert_file_contains "$WORK_DIR/sample_macos.s" '^\.globl _main$' "compiler macOS AArch64 backend missing Darwin global symbol"
@@ -70,9 +98,43 @@ EOF
 "$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_linux.s"
 assert_file_contains "$WORK_DIR/flow_linux.s" '^\.L[a-zA-Z0-9_]*_else[0-9][0-9]*:$' "compiler backend missing conditional branch label"
 assert_file_contains "$WORK_DIR/flow_linux.s" 'addq %rcx, %rax' "compiler backend missing arithmetic lowering"
+assert_file_contains "$WORK_DIR/flow_linux.s" 'jge \.L' "compiler x86_64 backend should branch directly on relational conditions"
+
+cat > "$WORK_DIR/bool_value.c" <<'EOF'
+int main(int argc, char **argv) {
+    (void)argv;
+    return argc < 3;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/bool_value.c" -o "$WORK_DIR/bool_value_linux.s"
+assert_file_contains "$WORK_DIR/bool_value_linux.s" 'setl %al' "compiler x86_64 backend should still materialize value-producing booleans"
+assert_file_contains "$WORK_DIR/bool_value_linux.s" 'movzbl %al, %eax' "compiler x86_64 backend should compact boolean materialization"
+
+cat > "$WORK_DIR/direct_branch.c" <<'EOF'
+int probe(int value) {
+    return value;
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    if (probe(argc) != 0 && argc > 1) {
+        return 0;
+    }
+    return 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/direct_branch.c" -o "$WORK_DIR/direct_branch_linux.s"
+assert_file_contains "$WORK_DIR/direct_branch_linux.s" 'call probe' "compiler x86_64 backend should emit call in branch condition"
+assert_file_contains "$WORK_DIR/direct_branch_linux.s" 'testq %rax, %rax' "compiler x86_64 backend should test call results directly in branches"
+assert_file_contains "$WORK_DIR/direct_branch_linux.s" 'jle \.L' "compiler x86_64 backend should branch directly on && relational leaves"
+if grep -q 'setne %al' "$WORK_DIR/direct_branch_linux.s"; then
+    fail "compiler x86_64 backend should not materialize call != 0 branch conditions"
+fi
 
 "$ROOT_DIR/build/ncc" -S --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos.s"
-assert_file_contains "$WORK_DIR/flow_macos.s" 'b\.eq \.L[a-zA-Z0-9_]*_else[0-9][0-9]*' "compiler macOS AArch64 backend missing conditional branch"
+assert_file_contains "$WORK_DIR/flow_macos.s" 'b\.ge \.L[a-zA-Z0-9_]*_else[0-9][0-9]*' "compiler macOS AArch64 backend should branch directly on relational conditions"
 assert_file_contains "$WORK_DIR/flow_macos.s" 'add x0, x1, x2' "compiler macOS AArch64 backend missing arithmetic lowering"
 
 cat > "$WORK_DIR/pointer_scale.c" <<'EOF'

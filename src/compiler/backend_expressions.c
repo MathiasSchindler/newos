@@ -40,6 +40,7 @@ static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buff
 static int emit_scale_current_value(BackendState *state, int scale);
 static int emit_scale_top_of_stack(BackendState *state, int scale);
 static int type_is_unsigned_like(const char *type_text);
+static int emit_branch_false_range(BackendState *state, const char *start, const char *end, const char *label);
 
 static void expr_next(ExprParser *parser) {
     const char *cursor = skip_spaces(parser->cursor);
@@ -1671,6 +1672,18 @@ static int emit_move_call_arguments(BackendState *state, int arg_count) {
     }
     stack_arg_count = arg_count - register_arg_count;
 
+    if (!backend_is_aarch64(state) && stack_arg_count == 0) {
+        for (reg_index = register_arg_count - 1; reg_index >= 0; --reg_index) {
+            char line[32];
+            rt_copy_string(line, sizeof(line), "popq ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), x86_arg_regs[reg_index]);
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
     for (reg_index = 0; reg_index < register_arg_count; ++reg_index) {
         char line[64];
         unsigned long long offset_bytes =
@@ -1713,6 +1726,9 @@ static int emit_cleanup_call_arguments(BackendState *state, int arg_count) {
         register_arg_count = arg_count;
     }
     stack_arg_count = arg_count - register_arg_count;
+    if (!backend_is_aarch64(state) && stack_arg_count == 0) {
+        return 0;
+    }
     cleanup_bytes = (unsigned long long)(arg_count + (backend_is_aarch64(state) ? 0 : stack_arg_count)) *
                     (unsigned long long)backend_stack_slot_size(state);
     rt_unsigned_to_string(cleanup_bytes, digits, sizeof(digits));
@@ -2887,6 +2903,406 @@ int emit_expression(BackendState *state, const char *expr) {
         return -1;
     }
     return 0;
+}
+
+static const char *range_skip_left(const char *start, const char *end) {
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+        start += 1;
+    }
+    return start;
+}
+
+static const char *range_skip_right(const char *start, const char *end) {
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+        end -= 1;
+    }
+    return end;
+}
+
+static int range_copy_trimmed(char *buffer, size_t buffer_size, const char *start, const char *end) {
+    size_t length;
+
+    start = range_skip_left(start, end);
+    end = range_skip_right(start, end);
+    length = (size_t)(end - start);
+    if (length + 1U > buffer_size) {
+        return -1;
+    }
+    {
+        size_t index;
+        for (index = 0; index < length; ++index) {
+            buffer[index] = start[index];
+        }
+    }
+    buffer[length] = '\0';
+    return 0;
+}
+
+static int range_is_wrapped_in_parens(const char *start, const char *end) {
+    const char *cursor = start;
+    int depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (end <= start + 1 || *start != '(' || end[-1] != ')') {
+        return 0;
+    }
+    while (cursor < end) {
+        if ((in_string || in_char) && *cursor == '\\' && cursor + 1 < end) {
+            cursor += 2;
+            continue;
+        }
+        if (!in_char && *cursor == '"') {
+            in_string = !in_string;
+        } else if (!in_string && *cursor == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char) {
+            if (*cursor == '(') {
+                depth += 1;
+            } else if (*cursor == ')') {
+                depth -= 1;
+                if (depth == 0 && cursor + 1 < end) {
+                    return 0;
+                }
+            }
+        }
+        cursor += 1;
+    }
+    return depth == 0;
+}
+
+static void range_trim_outer_parens(const char **start_inout, const char **end_inout) {
+    const char *start = *start_inout;
+    const char *end = *end_inout;
+
+    for (;;) {
+        start = range_skip_left(start, end);
+        end = range_skip_right(start, end);
+        if (!range_is_wrapped_in_parens(start, end)) {
+            break;
+        }
+        start += 1;
+        end -= 1;
+    }
+    *start_inout = start;
+    *end_inout = end;
+}
+
+static const char *range_find_top_level_token(const char *start, const char *end, const char *token) {
+    const char *cursor = start;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+    size_t token_length = rt_strlen(token);
+
+    while (cursor < end) {
+        if ((in_string || in_char) && *cursor == '\\' && cursor + 1 < end) {
+            cursor += 2;
+            continue;
+        }
+        if (!in_char && *cursor == '"') {
+            in_string = !in_string;
+            cursor += 1;
+            continue;
+        }
+        if (!in_string && *cursor == '\'') {
+            in_char = !in_char;
+            cursor += 1;
+            continue;
+        }
+        if (!in_string && !in_char) {
+            if (*cursor == '(') {
+                paren_depth += 1;
+            } else if (*cursor == ')' && paren_depth > 0) {
+                paren_depth -= 1;
+            } else if (*cursor == '[') {
+                bracket_depth += 1;
+            } else if (*cursor == ']' && bracket_depth > 0) {
+                bracket_depth -= 1;
+            } else if (paren_depth == 0 && bracket_depth == 0 && cursor + token_length <= end) {
+                size_t index = 0;
+                while (index < token_length && cursor[index] == token[index]) {
+                    index += 1U;
+                }
+                if (index == token_length) {
+                    return cursor;
+                }
+            }
+        }
+        cursor += 1;
+    }
+    return 0;
+}
+
+static int branch_range_has_fallback_operator(const char *start, const char *end) {
+    return range_find_top_level_token(start, end, "||") != 0 ||
+           range_find_top_level_token(start, end, "?") != 0 ||
+           range_find_top_level_token(start, end, ",") != 0;
+}
+
+static int branch_comparison_operator_at(const char *start, const char *cursor, const char *end, const char **op_out) {
+    char previous = cursor > start ? cursor[-1] : '\0';
+    char next = cursor + 1 < end ? cursor[1] : '\0';
+
+    if (cursor + 2 <= end) {
+        if (cursor[0] == '=' && cursor[1] == '=') {
+            *op_out = "==";
+            return 2;
+        }
+        if (cursor[0] == '!' && cursor[1] == '=') {
+            *op_out = "!=";
+            return 2;
+        }
+        if (cursor[0] == '<' && cursor[1] == '=') {
+            *op_out = "<=";
+            return 2;
+        }
+        if (cursor[0] == '>' && cursor[1] == '=') {
+            *op_out = ">=";
+            return 2;
+        }
+    }
+    if (*cursor == '<' && previous != '<' && next != '<') {
+        *op_out = "<";
+        return 1;
+    }
+    if (*cursor == '>' && previous != '-' && previous != '>' && next != '>') {
+        *op_out = ">";
+        return 1;
+    }
+    return 0;
+}
+
+static const char *range_find_single_comparison(const char *start, const char *end, const char **op_out) {
+    const char *cursor = start;
+    const char *found = 0;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (cursor < end) {
+        if ((in_string || in_char) && *cursor == '\\' && cursor + 1 < end) {
+            cursor += 2;
+            continue;
+        }
+        if (!in_char && *cursor == '"') {
+            in_string = !in_string;
+            cursor += 1;
+            continue;
+        }
+        if (!in_string && *cursor == '\'') {
+            in_char = !in_char;
+            cursor += 1;
+            continue;
+        }
+        if (!in_string && !in_char) {
+            if (*cursor == '(') {
+                paren_depth += 1;
+            } else if (*cursor == ')' && paren_depth > 0) {
+                paren_depth -= 1;
+            } else if (*cursor == '[') {
+                bracket_depth += 1;
+            } else if (*cursor == ']' && bracket_depth > 0) {
+                bracket_depth -= 1;
+            } else if (paren_depth == 0 && bracket_depth == 0) {
+                const char *op = 0;
+                int width = branch_comparison_operator_at(start, cursor, end, &op);
+                if (width > 0) {
+                    if (found != 0) {
+                        return 0;
+                    }
+                    found = cursor;
+                    *op_out = op;
+                    cursor += width;
+                    continue;
+                }
+            }
+        }
+        cursor += 1;
+    }
+    return found;
+}
+
+static int branch_expr_looks_unsigned(BackendState *state, const char *expr) {
+    ExprParser parser;
+    char type_text[128];
+
+    parser.cursor = expr;
+    parser.state = state;
+    expr_next(&parser);
+    if (expr_snapshot_looks_unsigned(&parser)) {
+        return 1;
+    }
+    expr_infer_result_type(&parser, type_text, sizeof(type_text));
+    return type_is_unsigned_like(type_text);
+}
+
+static int branch_expr_is_zero_literal(const char *expr) {
+    long long value = 1;
+    const char *cursor = skip_spaces(expr);
+
+    if (parse_signed_value(cursor, &value) != 0 || value != 0) {
+        return 0;
+    }
+    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t' && *cursor != '\n' && *cursor != '\r') {
+        cursor += 1;
+    }
+    cursor = skip_spaces(cursor);
+    return *cursor == '\0';
+}
+
+static const char *branch_false_jump_for_compare(BackendState *state, const char *op, int use_unsigned) {
+    if (backend_is_aarch64(state)) {
+        if (names_equal(op, "==")) return "b.ne";
+        if (names_equal(op, "!=")) return "b.eq";
+        if (use_unsigned && names_equal(op, "<")) return "b.hs";
+        if (use_unsigned && names_equal(op, "<=")) return "b.hi";
+        if (use_unsigned && names_equal(op, ">")) return "b.ls";
+        if (use_unsigned && names_equal(op, ">=")) return "b.lo";
+        if (names_equal(op, "<")) return "b.ge";
+        if (names_equal(op, "<=")) return "b.gt";
+        if (names_equal(op, ">")) return "b.le";
+        if (names_equal(op, ">=")) return "b.lt";
+    } else {
+        if (names_equal(op, "==")) return "jne";
+        if (names_equal(op, "!=")) return "je";
+        if (use_unsigned && names_equal(op, "<")) return "jae";
+        if (use_unsigned && names_equal(op, "<=")) return "ja";
+        if (use_unsigned && names_equal(op, ">")) return "jbe";
+        if (use_unsigned && names_equal(op, ">=")) return "jb";
+        if (names_equal(op, "<")) return "jge";
+        if (names_equal(op, "<=")) return "jg";
+        if (names_equal(op, ">")) return "jle";
+        if (names_equal(op, ">=")) return "jl";
+    }
+    return 0;
+}
+
+static int emit_branch_false_fallback(BackendState *state, const char *expr, const char *label) {
+    const char *mnemonic = backend_is_aarch64(state) ? "b.eq" : "je";
+
+    return emit_expression(state, expr) == 0 &&
+           emit_cmp_zero(state) == 0 &&
+           emit_jump_to_label(state, mnemonic, label) == 0 ? 0 : -1;
+}
+
+static int emit_branch_false_compare(BackendState *state, const char *expr, const char *label) {
+    const char *start = expr;
+    const char *end = expr + rt_strlen(expr);
+    const char *op = 0;
+    const char *op_at;
+    char lhs[COMPILER_IR_LINE_CAPACITY];
+    char rhs[COMPILER_IR_LINE_CAPACITY];
+    int use_unsigned;
+    const char *mnemonic;
+
+    range_trim_outer_parens(&start, &end);
+    op_at = range_find_single_comparison(start, end, &op);
+    if (op_at == 0 || op == 0) {
+        return emit_branch_false_fallback(state, expr, label);
+    }
+    if (range_copy_trimmed(lhs, sizeof(lhs), start, op_at) != 0 ||
+        range_copy_trimmed(rhs, sizeof(rhs), op_at + rt_strlen(op), end) != 0) {
+        backend_set_error(state->backend, "branch condition too large for backend");
+        return -1;
+    }
+    if (lhs[0] == '\0' || rhs[0] == '\0') {
+        return emit_branch_false_fallback(state, expr, label);
+    }
+    {
+        const char *lhs_start = lhs;
+        const char *lhs_end = lhs + rt_strlen(lhs);
+        const char *rhs_start = rhs;
+        const char *rhs_end = rhs + rt_strlen(rhs);
+        range_trim_outer_parens(&lhs_start, &lhs_end);
+        range_trim_outer_parens(&rhs_start, &rhs_end);
+        if (branch_range_has_fallback_operator(lhs_start, lhs_end) ||
+            branch_range_has_fallback_operator(rhs_start, rhs_end)) {
+            return emit_branch_false_fallback(state, expr, label);
+        }
+    }
+
+    mnemonic = branch_false_jump_for_compare(state, op, 0);
+    if (mnemonic == 0) {
+        return emit_branch_false_fallback(state, expr, label);
+    }
+
+    if ((names_equal(op, "==") || names_equal(op, "!=")) && branch_expr_is_zero_literal(rhs)) {
+        return emit_expression(state, lhs) == 0 &&
+               emit_cmp_zero(state) == 0 &&
+               emit_jump_to_label(state, mnemonic, label) == 0 ? 0 : -1;
+    }
+    if ((names_equal(op, "==") || names_equal(op, "!=")) && branch_expr_is_zero_literal(lhs)) {
+        return emit_expression(state, rhs) == 0 &&
+               emit_cmp_zero(state) == 0 &&
+               emit_jump_to_label(state, mnemonic, label) == 0 ? 0 : -1;
+    }
+
+    use_unsigned = branch_expr_looks_unsigned(state, lhs) || branch_expr_looks_unsigned(state, rhs);
+    mnemonic = branch_false_jump_for_compare(state, op, use_unsigned);
+    if (mnemonic == 0) {
+        return emit_branch_false_fallback(state, expr, label);
+    }
+
+    if (emit_expression(state, lhs) != 0 || emit_push_value(state) != 0 || emit_expression(state, rhs) != 0) {
+        return -1;
+    }
+    if (backend_is_aarch64(state)) {
+        if (emit_instruction(state, "mov x2, x0") != 0 ||
+            emit_instruction(state, "ldr x1, [sp]") != 0 ||
+            emit_instruction(state, "add sp, sp, #16") != 0 ||
+            emit_instruction(state, "cmp x1, x2") != 0) {
+            return -1;
+        }
+    } else if (emit_instruction(state, "movq %rax, %rcx") != 0 ||
+               emit_instruction(state, "popq %rax") != 0 ||
+               emit_instruction(state, "cmpq %rcx, %rax") != 0) {
+        return -1;
+    }
+    return emit_jump_to_label(state, mnemonic, label);
+}
+
+static int emit_branch_false_range(BackendState *state, const char *start, const char *end, const char *label) {
+    const char *and_at;
+    char expr[COMPILER_IR_LINE_CAPACITY];
+
+    range_trim_outer_parens(&start, &end);
+    if (start >= end) {
+        backend_set_error(state->backend, "empty branch condition in backend");
+        return -1;
+    }
+    if (branch_range_has_fallback_operator(start, end)) {
+        if (range_copy_trimmed(expr, sizeof(expr), start, end) != 0) {
+            backend_set_error(state->backend, "branch condition too large for backend");
+            return -1;
+        }
+        return emit_branch_false_fallback(state, expr, label);
+    }
+
+    and_at = range_find_top_level_token(start, end, "&&");
+    while (and_at != 0) {
+        if (emit_branch_false_range(state, start, and_at, label) != 0) {
+            return -1;
+        }
+        start = and_at + 2;
+        range_trim_outer_parens(&start, &end);
+        and_at = range_find_top_level_token(start, end, "&&");
+    }
+
+    if (range_copy_trimmed(expr, sizeof(expr), start, end) != 0) {
+        backend_set_error(state->backend, "branch condition too large for backend");
+        return -1;
+    }
+    return emit_branch_false_compare(state, expr, label);
+}
+
+int emit_branch_false(BackendState *state, const char *expr, const char *label) {
+    const char *start = expr;
+    const char *end = expr + rt_strlen(expr);
+
+    return emit_branch_false_range(state, start, end, label);
 }
 
 static int emit_array_element_address(BackendState *state,
