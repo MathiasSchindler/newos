@@ -73,6 +73,8 @@ int compiler_semantic_declare(
 int compiler_semantic_declare_constant(CompilerSemantic *semantic, const char *name, long long value);
 int compiler_semantic_use_identifier(CompilerSemantic *semantic, const char *name, int as_function_call);
 int compiler_semantic_lookup_constant(const CompilerSemantic *semantic, const char *name, long long *value_out);
+int compiler_semantic_lookup_symbol_type(const CompilerSemantic *semantic, const char *name, CompilerType *type_out);
+int compiler_semantic_update_symbol_type(CompilerSemantic *semantic, const char *name, const CompilerType *type);
 int compiler_semantic_lookup_typedef(const CompilerSemantic *semantic, const char *name, CompilerType *type_out);
 void compiler_semantic_begin_function(CompilerSemantic *semantic, const CompilerType *type);
 void compiler_semantic_end_function(CompilerSemantic *semantic);

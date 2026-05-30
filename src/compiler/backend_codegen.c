@@ -976,6 +976,165 @@ static int lookup_function_stack_bytes(const BackendState *state, const char *na
     return 0;
 }
 
+static BackendFunctionName *lookup_function_info(BackendState *state, const char *name) {
+    size_t i;
+
+    if (state == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    for (i = 0; i < state->function_count; ++i) {
+        if (names_equal(state->functions[i].name, name)) {
+            return &state->functions[i];
+        }
+    }
+    return 0;
+}
+
+static int is_identifier_char(char ch) {
+    return (ch >= 'a' && ch <= 'z') ||
+           (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') ||
+           ch == '_';
+}
+
+static int line_references_identifier(const char *line, const char *name) {
+    size_t name_length;
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (line == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    name_length = rt_strlen(name);
+
+    while (line[i] != '\0') {
+        if ((in_string || in_char) && line[i] == '\\' && line[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && line[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && line[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char &&
+            (i == 0U || !is_identifier_char(line[i - 1U])) &&
+            rt_strncmp(line + i, name, name_length) == 0 &&
+            !is_identifier_char(line[i + name_length])) {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static int line_has_function_call(const char *line, const char *name) {
+    size_t name_length;
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (line == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    name_length = rt_strlen(name);
+    while (line[i] != '\0') {
+        if ((in_string || in_char) && line[i] == '\\' && line[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && line[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && line[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char &&
+            (i == 0U || !is_identifier_char(line[i - 1U])) &&
+            rt_strncmp(line + i, name, name_length) == 0 &&
+            !is_identifier_char(line[i + name_length])) {
+            const char *cursor = skip_spaces(line + i + name_length);
+            if (*cursor == '(') {
+                return 1;
+            }
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static int is_void_identifier_eval_line(const char *line, const char *name) {
+    const char *cursor = skip_spaces(line != 0 && starts_with(line, "eval ") ? line + 5 : line);
+    size_t name_length;
+
+    if (cursor == 0 || name == 0 || name[0] == '\0' || !starts_with(cursor, "(void)")) {
+        return 0;
+    }
+    cursor = skip_spaces(cursor + 6);
+    name_length = rt_strlen(name);
+    return rt_strncmp(cursor, name, name_length) == 0 && !is_identifier_char(cursor[name_length]) &&
+           *skip_spaces(cursor + name_length) == '\0';
+}
+
+static int is_void_discard_identifier_expr(const char *expr) {
+    const char *cursor = skip_spaces(expr);
+
+    if (!starts_with(cursor, "(void)")) {
+        return 0;
+    }
+    cursor = skip_spaces(cursor + 6);
+    if (!((*cursor >= 'a' && *cursor <= 'z') || (*cursor >= 'A' && *cursor <= 'Z') || *cursor == '_')) {
+        return 0;
+    }
+    cursor += 1;
+    while (is_identifier_char(*cursor)) {
+        cursor += 1;
+    }
+    return *skip_spaces(cursor) == '\0';
+}
+
+static int parameter_is_used_after_decl(const CompilerIr *ir, size_t decl_index, const char *name) {
+    size_t i;
+
+    for (i = decl_index + 1U; i < ir->count; ++i) {
+        const char *line = ir->lines[i];
+        if (starts_with(line, "endfunc ")) {
+            break;
+        }
+        if (is_void_identifier_eval_line(line, name)) {
+            continue;
+        }
+        if (line_references_identifier(line, name)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int function_line_has_call(const BackendState *state, const char *line, int object_returns_only) {
+    size_t i;
+
+    for (i = 0; i < state->function_count; ++i) {
+        if (object_returns_only && !state->functions[i].returns_object) {
+            continue;
+        }
+        if (line_has_function_call(line, state->functions[i].name)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int count_compound_literal_slots(const char *text) {
     int count = 0;
     int in_string = 0;
@@ -1102,6 +1261,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
     size_t i;
     int in_function = 0;
     char current_function[COMPILER_IR_NAME_CAPACITY];
+    int current_param_index = 0;
 
     current_function[0] = '\0';
 
@@ -1168,6 +1328,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
 
         if (starts_with(line, "func ")) {
             in_function = 1;
+            current_param_index = 0;
             {
                 size_t j = 5;
                 size_t out = 0;
@@ -1181,6 +1342,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
         if (starts_with(line, "endfunc ")) {
             in_function = 0;
             current_function[0] = '\0';
+            current_param_index = 0;
             continue;
         }
 
@@ -1190,20 +1352,29 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             char type_text[128];
             char name[COMPILER_IR_NAME_CAPACITY];
             int slot_size;
-            size_t function_index;
 
             parse_decl_line(line, storage, sizeof(storage), kind, sizeof(kind), type_text, sizeof(type_text), name, sizeof(name));
             if (names_equal(storage, "param") || names_equal(storage, "local")) {
+                BackendFunctionName *function_info = lookup_function_info(state, current_function);
+                int used_param = 1;
+
+                if (names_equal(storage, "param")) {
+                    used_param = parameter_is_used_after_decl(ir, i, name);
+                    if (!used_param && function_info != 0 && current_param_index < 64) {
+                        function_info->unused_param_mask |= 1ULL << (unsigned int)current_param_index;
+                    }
+                    current_param_index += 1;
+                }
+                if (names_equal(storage, "param") && !used_param) {
+                    continue;
+                }
                 if (names_equal(storage, "param") && text_contains(type_text, "[")) {
                     slot_size = backend_stack_slot_size(state);
                 } else {
                     slot_size = decl_slot_size(state, type_text);
                 }
-                for (function_index = 0; function_index < state->function_count; ++function_index) {
-                    if (names_equal(state->functions[function_index].name, current_function)) {
-                        state->functions[function_index].stack_bytes += slot_size;
-                        break;
-                    }
+                if (function_info != 0) {
+                    function_info->stack_bytes += slot_size;
                 }
                 continue;
             }
@@ -1211,14 +1382,17 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
 
         if (in_function && current_function[0] != '\0') {
             int compound_slots = count_compound_literal_slots(line);
-            size_t function_index;
+            BackendFunctionName *function_info = lookup_function_info(state, current_function);
 
+            if (function_info != 0 && function_line_has_call(state, line, 0)) {
+                function_info->has_call = 1;
+            }
+            if (function_info != 0 && function_line_has_call(state, line, 1)) {
+                function_info->needs_callret = 1;
+            }
             if (compound_slots > 0) {
-                for (function_index = 0; function_index < state->function_count; ++function_index) {
-                    if (names_equal(state->functions[function_index].name, current_function)) {
-                        state->functions[function_index].stack_bytes += compound_slots * backend_stack_slot_size(state);
-                        break;
-                    }
+                if (function_info != 0) {
+                    function_info->stack_bytes += compound_slots * backend_stack_slot_size(state);
                 }
             }
         }
@@ -1655,6 +1829,7 @@ static int function_has_global_linkage(const BackendState *state, const char *na
 
 static int begin_function(BackendState *state, const char *name) {
     char symbol[COMPILER_IR_NAME_CAPACITY];
+    BackendFunctionName *function_info = lookup_function_info(state, name);
     int export_symbol = function_has_global_linkage(state, name);
     int returns_object = function_returns_object(state, name);
     const char *return_type = function_return_type(state, name);
@@ -1663,14 +1838,19 @@ static int begin_function(BackendState *state, const char *name) {
     reset_local_index(state);
     state->param_count = returns_object ? 1 : 0;
     state->saw_return_in_function = 0;
+    state->frameless_function = 0;
     state->stack_size = 0;
     state->reserved_stack_size = lookup_function_stack_bytes(state, name);
-    state->reserved_stack_size += BACKEND_ARRAY_STACK_BYTES;
+    if (function_info != 0 && function_info->needs_callret) {
+        state->reserved_stack_size += BACKEND_ARRAY_STACK_BYTES;
+    }
     if (returns_object) {
         state->reserved_stack_size += backend_stack_slot_size(state);
         state->reserved_stack_size += decl_slot_size(state, return_type);
     }
     state->reserved_stack_size = aligned_function_stack_bytes(state->reserved_stack_size);
+    state->frameless_function = !backend_is_aarch64(state) && state->reserved_stack_size == 0 &&
+                                !returns_object && (function_info == 0 || !function_info->has_call);
     rt_copy_string(state->current_function, sizeof(state->current_function), name);
     format_symbol_name(state, name, symbol, sizeof(symbol));
 
@@ -1700,6 +1880,10 @@ static int begin_function(BackendState *state, const char *name) {
         backend_set_error(state->backend, "failed to emit function label");
         return -1;
     }
+    if (state->frameless_function) {
+        return 0;
+    }
+
     if (backend_is_aarch64(state)) {
         if (emit_instruction(state, "stp x29, x30, [sp, #-16]!") != 0 ||
             emit_instruction(state, "mov x29, sp") != 0) {
@@ -1739,7 +1923,8 @@ static int begin_function(BackendState *state, const char *name) {
         }
     }
 
-    if (allocate_local(state, "__callret", "char[4096]", BACKEND_ARRAY_STACK_BYTES, 1, 0, 1, 0) != 0) {
+    if (function_info != 0 && function_info->needs_callret &&
+        allocate_local(state, "__callret", "char[4096]", BACKEND_ARRAY_STACK_BYTES, 1, 0, 1, 0) != 0) {
         return -1;
     }
 
@@ -1789,6 +1974,7 @@ static int end_function(BackendState *state) {
     state->local_count = 0;
     state->param_count = 0;
     state->saw_return_in_function = 0;
+    state->frameless_function = 0;
     state->stack_size = 0;
     state->reserved_stack_size = 0;
     state->current_function[0] = '\0';
@@ -1800,6 +1986,9 @@ static int emit_function_return(BackendState *state) {
         return emit_instruction(state, "mov sp, x29") == 0 &&
                emit_instruction(state, "ldp x29, x30, [sp], #16") == 0 &&
                emit_instruction(state, "ret") == 0 ? 0 : -1;
+    }
+    if (state->frameless_function) {
+        return emit_instruction(state, "ret");
     }
     return emit_instruction(state, "leave") == 0 && emit_instruction(state, "ret") == 0 ? 0 : -1;
 }
@@ -1958,6 +2147,14 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         const char aarch64_arg_regs[][3] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
         char asm_line[128];
         int index = state->param_count;
+        BackendFunctionName *function_info = lookup_function_info(state, state->current_function);
+        int source_param_index = function_returns_object(state, state->current_function) ? index - 1 : index;
+
+        if (function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
+            (function_info->unused_param_mask & (1ULL << (unsigned int)source_param_index)) != 0ULL) {
+            state->param_count += 1;
+            return 0;
+        }
 
         if (allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
             return -1;
@@ -2096,7 +2293,9 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         }
 
         if (starts_with(line, "endfunc ")) {
-            if (state.in_function && emit_function_return(&state) != 0) {
+            if (state.in_function &&
+                !(i > 0U && starts_with(ir->lines[i - 1U], "ret")) &&
+                emit_function_return(&state) != 0) {
                 return -1;
             }
             end_function(&state);
@@ -2186,6 +2385,9 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         }
 
         if (starts_with(line, "eval ")) {
+            if (is_void_discard_identifier_expr(line + 5)) {
+                continue;
+            }
             if (emit_expression(&state, line + 5) != 0) {
                 backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;

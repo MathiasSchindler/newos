@@ -90,5 +90,6 @@ int looks_like_compound_literal_after_lparen(const CompilerParser *parser);
 int parse_type_name(CompilerParser *parser);
 int parse_enum_specifier(CompilerParser *parser);
 int parser_emit_type_layout_notes(CompilerParser *parser, const CompilerType *type);
+unsigned long long parser_type_storage_bytes(const CompilerParser *parser, const CompilerType *type);
 
 #endif

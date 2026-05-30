@@ -668,7 +668,6 @@ static int configure_preprocessor(CompilerPreprocessor *preprocessor, const Comp
     if (compiler_preprocessor_add_include_dir(preprocessor, ".") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/shared") != 0 ||
         compiler_preprocessor_add_include_dir(preprocessor, "src/compiler") != 0 ||
-        compiler_preprocessor_define(preprocessor, "__NEWOS_NCC__", "1") != 0 ||
         compiler_preprocessor_define(preprocessor, "__STDC_HOSTED__", options->freestanding ? "0" : "1") != 0 ||
         compiler_target_apply_preprocessor_defaults(preprocessor, options->target, options->freestanding) != 0) {
         return -1;

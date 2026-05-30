@@ -29,6 +29,9 @@ typedef struct {
     int global;
     int stack_bytes;
     int returns_object;
+    int needs_callret;
+    int has_call;
+    unsigned long long unused_param_mask;
 } BackendFunctionName;
 
 typedef struct {
@@ -123,6 +126,7 @@ typedef struct {
     int in_function;
     int param_count;
     int saw_return_in_function;
+    int frameless_function;
     int stack_size;
     int reserved_stack_size;
     unsigned int label_counter;

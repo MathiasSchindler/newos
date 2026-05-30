@@ -250,6 +250,38 @@ int compiler_semantic_lookup_constant(const CompilerSemantic *semantic, const ch
     return 0;
 }
 
+int compiler_semantic_lookup_symbol_type(const CompilerSemantic *semantic, const char *name, CompilerType *type_out) {
+    int index;
+
+    if (semantic == 0 || name == 0 || name[0] == '\0' || type_out == 0) {
+        return -1;
+    }
+
+    index = find_symbol(semantic, name);
+    if (index < 0 || semantic->symbols[index].kind == COMPILER_SYMBOL_ENUM_CONSTANT) {
+        return -1;
+    }
+
+    *type_out = semantic->symbols[index].type;
+    return 0;
+}
+
+int compiler_semantic_update_symbol_type(CompilerSemantic *semantic, const char *name, const CompilerType *type) {
+    int index;
+
+    if (semantic == 0 || name == 0 || name[0] == '\0' || type == 0) {
+        return -1;
+    }
+
+    index = find_symbol(semantic, name);
+    if (index < 0 || semantic->symbols[index].kind != COMPILER_SYMBOL_OBJECT) {
+        return -1;
+    }
+
+    semantic->symbols[index].type = *type;
+    return 0;
+}
+
 int compiler_semantic_lookup_typedef(const CompilerSemantic *semantic, const char *name, CompilerType *type_out) {
     int index;
 

@@ -129,6 +129,204 @@ static int parse_array_length_token_value(const CompilerToken *token, unsigned l
     return -1;
 }
 
+static int parser_is_hex_digit(char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+}
+
+static const char *skip_string_escape(const char *cursor) {
+    int digits = 0;
+
+    if (cursor == 0 || *cursor != '\\') {
+        return cursor;
+    }
+    cursor += 1;
+    if (*cursor == 'x' || *cursor == 'X') {
+        cursor += 1;
+        while (parser_is_hex_digit(*cursor)) {
+            cursor += 1;
+        }
+        return cursor;
+    }
+    if (*cursor >= '0' && *cursor <= '7') {
+        while (digits < 3 && *cursor >= '0' && *cursor <= '7') {
+            cursor += 1;
+            digits += 1;
+        }
+        return cursor;
+    }
+    return *cursor != '\0' ? cursor + 1 : cursor;
+}
+
+static unsigned long long count_string_initializer_bytes(const char *expr) {
+    const char *cursor = expr;
+    unsigned long long count = 0ULL;
+
+    if (cursor == 0 || *cursor != '"') {
+        return 0ULL;
+    }
+    while (*cursor == '"') {
+        cursor += 1;
+        while (*cursor != '\0' && *cursor != '"') {
+            if (*cursor == '\\' && cursor[1] != '\0') {
+                cursor = skip_string_escape(cursor);
+            } else {
+                cursor += 1;
+            }
+            count += 1ULL;
+        }
+        if (*cursor != '"') {
+            return 0ULL;
+        }
+        cursor += 1;
+        while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+            cursor += 1;
+        }
+    }
+    return *cursor == '\0' ? count + 1ULL : 0ULL;
+}
+
+static int update_inferred_string_array_length(CompilerParser *parser,
+                                               const CompilerDeclarator *declarator,
+                                               const CompilerType *base_type,
+                                               const char *init_text) {
+    CompilerType inferred_type;
+    unsigned long long length;
+
+    if (declarator == 0 || base_type == 0 || init_text == 0 || declarator->name[0] == '\0' ||
+        !declarator->is_array || declarator->array_length != 0ULL ||
+        base_type->base != COMPILER_BASE_CHAR || base_type->pointer_depth != 0) {
+        return 0;
+    }
+
+    length = count_string_initializer_bytes(init_text);
+    if (length == 0ULL) {
+        return 0;
+    }
+
+    inferred_type = *base_type;
+    inferred_type.is_array = 1;
+    inferred_type.array_length = length;
+    inferred_type.array_stride = declarator->array_stride;
+    return compiler_semantic_update_symbol_type(&parser->semantic, declarator->name, &inferred_type) == 0 ? 0 : semantic_error(parser);
+}
+
+static int apply_array_length_value(CompilerParser *parser,
+                                    long long value,
+                                    char pending_op,
+                                    long long *sum_io,
+                                    long long *term_io,
+                                    int *saw_value_io) {
+    long long next_sum;
+
+    if (sum_io == 0 || term_io == 0 || saw_value_io == 0) {
+        return -1;
+    }
+    if (!*saw_value_io) {
+        *term_io = value;
+        *saw_value_io = 1;
+    } else if (pending_op == '*') {
+        if (checked_multiply_long_long(*term_io, value, term_io) != 0) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+    } else if (pending_op == '/') {
+        if (value != 0) {
+            *term_io /= value;
+        }
+    } else if (pending_op == '-') {
+        if (checked_add_long_long(*sum_io, *term_io, &next_sum) != 0) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+        *sum_io = next_sum;
+        *term_io = -value;
+    } else {
+        if (checked_add_long_long(*sum_io, *term_io, &next_sum) != 0) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+        *sum_io = next_sum;
+        *term_io = value;
+    }
+    return 0;
+}
+
+static int parse_array_sizeof_value(CompilerParser *parser, long long *value_out) {
+    CompilerType type;
+    int has_paren = 0;
+    unsigned long long size;
+
+    if (value_out == 0 || !current_is_keyword(parser, "sizeof")) {
+        return -1;
+    }
+    if (advance(parser) != 0) {
+        return -1;
+    }
+
+    if (current_is_punct(parser, "(")) {
+        has_paren = 1;
+        if (advance(parser) != 0) {
+            return -1;
+        }
+    }
+
+    if (current_is_identifier(parser)) {
+        char name[COMPILER_TYPEDEF_NAME_CAPACITY];
+        copy_token_text(&parser->current, name, sizeof(name));
+        if (compiler_semantic_lookup_symbol_type(&parser->semantic, name, &type) == 0 ||
+            compiler_semantic_lookup_typedef(&parser->semantic, name, &type) == 0) {
+            size = parser_type_storage_bytes(parser, &type);
+            if (size > (unsigned long long)LLONG_MAX) {
+                set_error(parser, "array bound is too large");
+                return -1;
+            }
+            if (advance(parser) != 0 || (has_paren && expect_punct(parser, ")") != 0)) {
+                return -1;
+            }
+            *value_out = (long long)size;
+            return 0;
+        }
+    }
+
+    if (has_paren) {
+        CompilerDeclarator declarator;
+        int saw;
+
+        compiler_type_init(&type);
+        saw = parse_declaration_specifiers(parser, 0, 0, 0, &type);
+        if (saw <= 0) {
+            set_error(parser, "expected sizeof operand");
+            return -1;
+        }
+        if (current_is_punct(parser, "*") || current_is_punct(parser, "(") || current_is_punct(parser, "[")) {
+            rt_memset(&declarator, 0, sizeof(declarator));
+            if (parse_declarator(parser, &declarator, 1) != 0) {
+                return -1;
+            }
+            if (parser_add_pointer_depth(parser, &type.pointer_depth, declarator.pointer_depth) != 0) {
+                return -1;
+            }
+            type.is_function = declarator.is_function;
+            type.is_array = declarator.is_array;
+            type.array_length = declarator.array_length;
+            type.array_stride = declarator.array_stride;
+        }
+        if (expect_punct(parser, ")") != 0) {
+            return -1;
+        }
+        size = parser_type_storage_bytes(parser, &type);
+        if (size > (unsigned long long)LLONG_MAX) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+        *value_out = (long long)size;
+        return 0;
+    }
+
+    set_error(parser, "expected sizeof operand");
+    return -1;
+}
+
 static int maybe_capture_array_length(CompilerParser *parser, unsigned long long *value_out) {
     long long sum = 0;
     long long term = 0;
@@ -150,75 +348,33 @@ static int maybe_capture_array_length(CompilerParser *parser, unsigned long long
             long long value;
 
             if (parse_array_length_token_value(&parser->current, &parsed) == 0) {
-                long long next_sum;
-
                 if (parsed > (unsigned long long)LLONG_MAX) {
                     set_error(parser, "array bound is too large");
                     return -1;
                 }
                 value = (long long)parsed;
-                if (!saw_value) {
-                    term = value;
-                    saw_value = 1;
-                } else if (pending_op == '*') {
-                    if (checked_multiply_long_long(term, value, &term) != 0) {
-                        set_error(parser, "array bound is too large");
-                        return -1;
-                    }
-                } else if (pending_op == '/') {
-                    if (value != 0) {
-                        term /= value;
-                    }
-                } else if (pending_op == '-') {
-                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
-                        set_error(parser, "array bound is too large");
-                        return -1;
-                    }
-                    sum = next_sum;
-                    term = -value;
-                } else {
-                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
-                        set_error(parser, "array bound is too large");
-                        return -1;
-                    }
-                    sum = next_sum;
-                    term = value;
+                if (apply_array_length_value(parser, value, pending_op, &sum, &term, &saw_value) != 0) {
+                    return -1;
                 }
             }
+        } else if (current_is_keyword(parser, "sizeof")) {
+            long long sizeof_value = 0;
+            if (parse_array_sizeof_value(parser, &sizeof_value) != 0) {
+                return -1;
+            }
+            if (apply_array_length_value(parser, sizeof_value, pending_op, &sum, &term, &saw_value) != 0) {
+                return -1;
+            }
+            continue;
         } else if (parser->current.kind == COMPILER_TOKEN_IDENTIFIER) {
             char ident[64];
             long long const_value = 0;
-            long long next_sum;
 
             copy_token_text(&parser->current, ident, sizeof(ident));
             if (compiler_semantic_lookup_constant(&parser->semantic, ident, &const_value) == 0 &&
                 const_value > 0) {
-                if (!saw_value) {
-                    term = const_value;
-                    saw_value = 1;
-                } else if (pending_op == '*') {
-                    if (checked_multiply_long_long(term, const_value, &term) != 0) {
-                        set_error(parser, "array bound is too large");
-                        return -1;
-                    }
-                } else if (pending_op == '/') {
-                    if (const_value != 0) {
-                        term /= const_value;
-                    }
-                } else if (pending_op == '-') {
-                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
-                        set_error(parser, "array bound is too large");
-                        return -1;
-                    }
-                    sum = next_sum;
-                    term = -const_value;
-                } else {
-                    if (checked_add_long_long(sum, term, &next_sum) != 0) {
-                        set_error(parser, "array bound is too large");
-                        return -1;
-                    }
-                    sum = next_sum;
-                    term = const_value;
+                if (apply_array_length_value(parser, const_value, pending_op, &sum, &term, &saw_value) != 0) {
+                    return -1;
                 }
             }
         } else if (parser->current.kind == COMPILER_TOKEN_PUNCTUATOR &&
@@ -550,6 +706,9 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
                 return -1;
             }
             copy_normalized_span(init_start, parser->current.start, init_text, sizeof(init_text), "0");
+            if (update_inferred_string_array_length(parser, &declarator, &declared_type, init_text) != 0) {
+                return -1;
+            }
             if (declarator.name[0] != '\0' &&
                 emit_ir_status(parser, compiler_ir_emit_assign(&parser->ir, declarator.name, init_text)) != 0) {
                 return -1;

@@ -242,18 +242,6 @@ static void p256_jacobian_set_affine(P256Jacobian *point, const P256Int *x, cons
     point->infinity = 0;
 }
 
-#if defined(__NEWOS_NCC__)
-static void p256_jacobian_copy(P256Jacobian *out, const P256Jacobian *in) {
-    p256_copy(&out->x, &in->x);
-    p256_copy(&out->y, &in->y);
-    p256_copy(&out->z, &in->z);
-    out->infinity = in->infinity;
-}
-#define P256_JACOBIAN_ASSIGN(out, in) p256_jacobian_copy(&(out), &(in))
-#else
-#define P256_JACOBIAN_ASSIGN(out, in) ((out) = (in))
-#endif
-
 static void p256_point_double(P256Jacobian *out, const P256Jacobian *point) {
     P256Int xx;
     P256Int yy;
@@ -381,14 +369,14 @@ static int p256_double_scalar_mult_affine(P256Int *out_x,
     p256_jacobian_set_infinity(&result);
     for (bit = 255; bit >= 0; --bit) {
         p256_point_double(&next, &result);
-        P256_JACOBIAN_ASSIGN(result, next);
+        result = next;
         if (p256_get_bit(left_scalar, (unsigned int)bit)) {
             p256_point_add_mixed(&next, &result, left_x, left_y);
-            P256_JACOBIAN_ASSIGN(result, next);
+            result = next;
         }
         if (p256_get_bit(right_scalar, (unsigned int)bit)) {
             p256_point_add_mixed(&next, &result, right_x, right_y);
-            P256_JACOBIAN_ASSIGN(result, next);
+            result = next;
         }
     }
     if (result.infinity) {
@@ -413,10 +401,10 @@ static int p256_scalar_mult_affine(P256Int *out_x, P256Int *out_y, const P256Int
     p256_jacobian_set_infinity(&result);
     for (bit = 255; bit >= 0; --bit) {
         p256_point_double(&next, &result);
-        P256_JACOBIAN_ASSIGN(result, next);
+        result = next;
         if (p256_get_bit(scalar, (unsigned int)bit)) {
             p256_point_add_mixed(&next, &result, base_x, base_y);
-            P256_JACOBIAN_ASSIGN(result, next);
+            result = next;
         }
     }
     if (result.infinity) {

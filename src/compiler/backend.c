@@ -1133,7 +1133,7 @@ static int emit_aarch64_offset_address(BackendState *state,
     return emit_instruction(state, line);
 }
 
-static int aarch64_object_copy_chunk_size(int remaining) {
+static int object_copy_chunk_size(int remaining) {
     if (remaining >= 8) return 8;
     if (remaining >= 4) return 4;
     if (remaining >= 2) return 2;
@@ -1170,6 +1170,40 @@ static int emit_aarch64_store_copy_chunk(BackendState *state, int chunk_size) {
     }
 
     return emit_instruction(state, store_op);
+}
+
+static int emit_x86_copy_chunk(BackendState *state, const char *src_reg, const char *dst_reg, int offset, int chunk_size) {
+    char load_line[64];
+    char store_line[64];
+    char offset_text[32];
+    const char *load_op = "movq ";
+    const char *store_op = "movq %r11, ";
+
+    if (chunk_size == 4) {
+        load_op = "movl ";
+        store_op = "movl %r11d, ";
+    } else if (chunk_size == 2) {
+        load_op = "movw ";
+        store_op = "movw %r11w, ";
+    } else if (chunk_size == 1) {
+        load_op = "movb ";
+        store_op = "movb %r11b, ";
+    }
+
+    rt_unsigned_to_string((unsigned long long)offset, offset_text, sizeof(offset_text));
+    rt_copy_string(load_line, sizeof(load_line), load_op);
+    rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), offset_text);
+    rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "(");
+    rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), src_reg);
+    rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "), ");
+    rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line),
+                   chunk_size == 8 ? "%r11" : chunk_size == 4 ? "%r11d" : chunk_size == 2 ? "%r11w" : "%r11b");
+    rt_copy_string(store_line, sizeof(store_line), store_op);
+    rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), offset_text);
+    rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "(");
+    rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), dst_reg);
+    rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), ")");
+    return emit_instruction(state, load_line) == 0 && emit_instruction(state, store_line) == 0 ? 0 : -1;
 }
 
 static const char *x86_reg32_name(const char *reg) {
@@ -1888,8 +1922,8 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
         if (bytes > 128) {
             return emit_copy_memory_call(state, bytes, "x13", "x12");
         }
-        for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
-            int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
+        for (chunk = 0; chunk < bytes; chunk += object_copy_chunk_size(bytes - chunk)) {
+            int chunk_size = object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
                 emit_aarch64_load_copy_chunk(state, chunk_size) != 0 ||
                 emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
@@ -1911,19 +1945,9 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
     if (bytes > 128) {
         return emit_copy_memory_call(state, bytes, "%rcx", "%rdx");
     }
-    for (chunk = 0; chunk < bytes; chunk += 8) {
-        char load_line[64];
-        char store_line[64];
-        char chunk_text[32];
-
-        rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
-        rt_copy_string(load_line, sizeof(load_line), "movq ");
-        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
-        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "(%rdx), %r11");
-        rt_copy_string(store_line, sizeof(store_line), "movq %r11, ");
-        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
-        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "(%rcx)");
-        if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+    for (chunk = 0; chunk < bytes; chunk += object_copy_chunk_size(bytes - chunk)) {
+        int chunk_size = object_copy_chunk_size(bytes - chunk);
+        if (emit_x86_copy_chunk(state, "%rdx", "%rcx", chunk, chunk_size) != 0) {
             return -1;
         }
     }
@@ -1960,8 +1984,8 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
         if (bytes > 128) {
             return emit_copy_memory_call(state, bytes, "x13", "x12");
         }
-        for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
-            int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
+        for (chunk = 0; chunk < bytes; chunk += object_copy_chunk_size(bytes - chunk)) {
+            int chunk_size = object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
                 emit_aarch64_load_copy_chunk(state, chunk_size) != 0 ||
                 emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
@@ -1983,19 +2007,9 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
     if (bytes > 128) {
         return emit_copy_memory_call(state, bytes, "%rcx", "%rdx");
     }
-    for (chunk = 0; chunk < bytes; chunk += 8) {
-        char load_line[64];
-        char store_line[64];
-        char chunk_text[32];
-
-        rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
-        rt_copy_string(load_line, sizeof(load_line), "movq ");
-        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
-        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "(%rdx), %r11");
-        rt_copy_string(store_line, sizeof(store_line), "movq %r11, ");
-        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
-        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "(%rcx)");
-        if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+    for (chunk = 0; chunk < bytes; chunk += object_copy_chunk_size(bytes - chunk)) {
+        int chunk_size = object_copy_chunk_size(bytes - chunk);
+        if (emit_x86_copy_chunk(state, "%rdx", "%rcx", chunk, chunk_size) != 0) {
             return -1;
         }
     }
@@ -2018,8 +2032,8 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
         if (bytes > 128) {
             return emit_copy_memory_call(state, bytes, "x13", "x12");
         }
-        for (chunk = 0; chunk < bytes; chunk += aarch64_object_copy_chunk_size(bytes - chunk)) {
-            int chunk_size = aarch64_object_copy_chunk_size(bytes - chunk);
+        for (chunk = 0; chunk < bytes; chunk += object_copy_chunk_size(bytes - chunk)) {
+            int chunk_size = object_copy_chunk_size(bytes - chunk);
             if (emit_aarch64_offset_address(state, "x14", "x12", chunk, "x15") != 0 ||
                 emit_aarch64_load_copy_chunk(state, chunk_size) != 0 ||
                 emit_aarch64_offset_address(state, "x14", "x13", chunk, "x15") != 0 ||
@@ -2037,19 +2051,9 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
     if (bytes > 128) {
         return emit_copy_memory_call(state, bytes, "%rcx", "%rdx");
     }
-    for (chunk = 0; chunk < bytes; chunk += 8) {
-        char load_line[64];
-        char store_line[64];
-        char chunk_text[32];
-
-        rt_unsigned_to_string((unsigned long long)chunk, chunk_text, sizeof(chunk_text));
-        rt_copy_string(load_line, sizeof(load_line), "movq ");
-        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), chunk_text);
-        rt_copy_string(load_line + rt_strlen(load_line), sizeof(load_line) - rt_strlen(load_line), "(%rdx), %r11");
-        rt_copy_string(store_line, sizeof(store_line), "movq %r11, ");
-        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), chunk_text);
-        rt_copy_string(store_line + rt_strlen(store_line), sizeof(store_line) - rt_strlen(store_line), "(%rcx)");
-        if (emit_instruction(state, load_line) != 0 || emit_instruction(state, store_line) != 0) {
+    for (chunk = 0; chunk < bytes; chunk += object_copy_chunk_size(bytes - chunk)) {
+        int chunk_size = object_copy_chunk_size(bytes - chunk);
+        if (emit_x86_copy_chunk(state, "%rdx", "%rcx", chunk, chunk_size) != 0) {
             return -1;
         }
     }
@@ -2086,6 +2090,33 @@ int emit_load_immediate_register(BackendState *state, const char *reg, long long
     if (!backend_is_aarch64(state)) {
         unsigned long long magnitude;
         int needs_movabs = value < -2147483648LL || value > 2147483647LL;
+
+        if (names_equal(reg, "%rax") && value == 0) {
+            return emit_instruction(state, "xor %eax, %eax");
+        }
+        if (names_equal(reg, "%rax") && value >= -128 && value <= 127) {
+            if (value < 0) {
+                magnitude = (unsigned long long)(-(value + 1LL)) + 1ULL;
+                rt_unsigned_to_string(magnitude, digits, sizeof(digits));
+                rt_copy_string(line, sizeof(line), "pushq $-");
+            } else {
+                magnitude = (unsigned long long)value;
+                rt_unsigned_to_string(magnitude, digits, sizeof(digits));
+                rt_copy_string(line, sizeof(line), "pushq $");
+            }
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+            return emit_instruction(state, "popq %rax");
+        }
+        if (names_equal(reg, "%rax") && value > 0 && value <= 2147483647LL) {
+            rt_unsigned_to_string((unsigned long long)value, digits, sizeof(digits));
+            rt_copy_string(line, sizeof(line), "movl $");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %eax");
+            return emit_instruction(state, line);
+        }
 
         if (value < 0) {
             magnitude = (unsigned long long)(-(value + 1LL)) + 1ULL;

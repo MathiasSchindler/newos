@@ -13,6 +13,23 @@ EOF
 
 compile_and_check_native "$WORK_DIR/sample.c" "$WORK_DIR/sample_native_bin" "42" "compiler linker did not produce a runnable executable"
 
+if [ "$RUN_TARGET" = "linux-x86_64" ]; then
+    cat > "$WORK_DIR/tiny_leaf_return.c" <<'EOF'
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    return 1;
+}
+EOF
+
+    "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -S -std=c11 -O2 -ffreestanding -ffunction-sections -fdata-sections "$WORK_DIR/tiny_leaf_return.c" -o "$WORK_DIR/tiny_leaf_return.s"
+    if grep -q 'pushq %rbp\|subq.*%rsp\|movq %rdi\|movq %rsi\|leave' "$WORK_DIR/tiny_leaf_return.s"; then
+        fail "compiler emitted a stack frame or unused parameter spills for a tiny leaf return"
+    fi
+    assert_file_contains "$WORK_DIR/tiny_leaf_return.s" 'pushq \$1' "compiler did not use compact small-immediate return code"
+    assert_file_contains "$WORK_DIR/tiny_leaf_return.s" 'popq %rax' "compiler did not complete compact small-immediate return code"
+fi
+
 cat > "$WORK_DIR/flow.c" <<'EOF'
 int main(void) {
     int value = 3;
@@ -69,6 +86,19 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/static_local_string_array.c" "$WORK_DIR/static_local_string_array_bin" "0" "compiler failed on a function-local static string array initializer"
+
+cat > "$WORK_DIR/sizeof_string_array_bound.c" <<'EOF'
+int main(void) {
+    static const char context[] = "TLS 1.3, server CertificateVerify";
+    unsigned char storage[64U + sizeof(context) + 32U];
+    unsigned char guard = 7;
+
+    storage[64U + sizeof(context) + 31U] = 9U;
+    return guard == 7U && storage[64U + sizeof(context) + 31U] == 9U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/sizeof_string_array_bound.c" "$WORK_DIR/sizeof_string_array_bound_bin" "0" "compiler dropped sizeof(string array) from an array bound"
 
 cat > "$WORK_DIR/u64_constant_compare.c" <<'EOF'
 static const unsigned long long expected = 0x1122334455667788ULL;
@@ -298,7 +328,8 @@ static const char table_array[] = "\x05\x00\x07";
 int main(void) {
     const unsigned char *table = table_ptr();
     return table[0] == 0x63U && table[1] == 0U && table[2] == 0xffU && table[3] == 0x16U &&
-           (unsigned char)table_array[0] == 5U && (unsigned char)table_array[1] == 0U && (unsigned char)table_array[2] == 7U ? 0 : 1;
+           (unsigned char)table_array[0] == 5U && (unsigned char)table_array[1] == 0U && (unsigned char)table_array[2] == 7U &&
+           sizeof(table_array) == 4U ? 0 : 1;
 }
 EOF
 
@@ -545,6 +576,49 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/typedef_struct_copy_assignment.c" "$WORK_DIR/typedef_struct_copy_assignment_bin" "0" "compiler failed to copy a typedef-backed struct by value"
+
+cat > "$WORK_DIR/struct_copy_tail.c" <<'EOF'
+typedef struct {
+    unsigned int word[8];
+} WideInt;
+
+typedef struct {
+    WideInt x;
+    WideInt y;
+    WideInt z;
+    int infinity;
+} Jacobian;
+
+static void fill_jacobian(Jacobian *point, unsigned int seed) {
+    int i;
+    for (i = 0; i < 8; i += 1) {
+        point->x.word[i] = seed + (unsigned int)i;
+        point->y.word[i] = seed + 20U + (unsigned int)i;
+        point->z.word[i] = seed + 40U + (unsigned int)i;
+    }
+    point->infinity = (int)(seed + 60U);
+}
+
+static int check_jacobian(const Jacobian *point, unsigned int seed) {
+    return point->x.word[7] == seed + 7U &&
+           point->y.word[7] == seed + 27U &&
+           point->z.word[7] == seed + 47U &&
+           point->infinity == (int)(seed + 60U);
+}
+
+int main(void) {
+    Jacobian result;
+    Jacobian next;
+    int guard = 77;
+
+    fill_jacobian(&result, 1U);
+    fill_jacobian(&next, 9U);
+    result = next;
+    return check_jacobian(&result, 9U) && guard == 77 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/struct_copy_tail.c" "$WORK_DIR/struct_copy_tail_bin" "0" "compiler aggregate assignment overcopied a non-8-byte-sized struct"
 
 cat > "$WORK_DIR/loop_continue.c" <<'EOF'
 int main(void) {

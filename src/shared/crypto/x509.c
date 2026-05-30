@@ -867,18 +867,12 @@ int crypto_x509_verify_chain(
     char *status,
     size_t status_size
 ) {
-#if defined(__NEWOS_NCC__)
-    X509Parsed *parsed;
-    unsigned char *anchor_der;
-    X509Parsed *anchor;
-#else
     X509Parsed parsed_storage[X509_MAX_CERTS];
     unsigned char anchor_der_storage[X509_MAX_DER_SIZE];
     X509Parsed anchor_storage;
     X509Parsed *parsed = parsed_storage;
     unsigned char *anchor_der = anchor_der_storage;
     X509Parsed *anchor = &anchor_storage;
-#endif
     size_t i;
     size_t pem_pos = 0U;
     int verify_result = -1;
@@ -887,15 +881,6 @@ int crypto_x509_verify_chain(
         x509_status(status, status_size, "invalid x509 verification input");
         return -1;
     }
-#if defined(__NEWOS_NCC__)
-    parsed = (X509Parsed *)rt_malloc(sizeof(X509Parsed) * X509_MAX_CERTS);
-    anchor_der = (unsigned char *)rt_malloc(X509_MAX_DER_SIZE);
-    anchor = (X509Parsed *)rt_malloc(sizeof(X509Parsed));
-    if (parsed == 0 || anchor_der == 0 || anchor == 0) {
-        x509_status(status, status_size, "x509 verification allocation failed");
-        goto cleanup;
-    }
-#endif
     for (i = 0; i < chain_count; ++i) {
         if (parse_certificate(&parsed[i], chain[i].data, chain[i].length) != 0) {
             x509_status(status, status_size, "certificate parse failed");
@@ -940,11 +925,6 @@ int crypto_x509_verify_chain(
     }
     x509_status(status, status_size, "no trusted root matched certificate chain");
 cleanup:
-#if defined(__NEWOS_NCC__)
-    rt_free(parsed);
-    rt_free(anchor_der);
-    rt_free(anchor);
-#endif
     return verify_result;
 }
 

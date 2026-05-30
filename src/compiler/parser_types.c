@@ -215,6 +215,10 @@ static unsigned long long type_storage_bytes(const CompilerParser *parser, const
     return 4U;
 }
 
+unsigned long long parser_type_storage_bytes(const CompilerParser *parser, const CompilerType *type) {
+    return type_storage_bytes(parser, type);
+}
+
 static void format_layout_type(const CompilerType *type, char *buffer, size_t buffer_size) {
     size_t i;
     const char *base = "int";
