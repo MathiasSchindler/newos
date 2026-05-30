@@ -1152,6 +1152,25 @@ static int emit_index_address(BackendState *state, int element_scale) {
 static int emit_identifier_incdec(BackendState *state, const char *name, int delta, int return_old) {
     const char *result_register = backend_is_aarch64(state) ? "x0" : "%rax";
     const char *op = delta > 0 ? "+" : "-";
+    int local_index = find_local(state, name);
+
+    if (!backend_is_aarch64(state) && local_index >= 0 && state->locals[local_index].cached_register >= 0) {
+        char line[64];
+        const char *reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+
+        if (reg == 0) {
+            return -1;
+        }
+        if (return_old && emit_load_name(state, name) != 0) {
+            return -1;
+        }
+        rt_copy_string(line, sizeof(line), delta > 0 ? "addq $1, " : "subq $1, ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+        return return_old ? 0 : emit_load_name(state, name);
+    }
 
     if (emit_load_name(state, name) != 0) {
         return -1;
@@ -2003,6 +2022,18 @@ static int expr_parse_unary(ExprParser *parser) {
         if (is_incdec_text(op)) {
             int byte_sized = 0;
             int delta = names_equal(op, "++") ? 1 : -1;
+            if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
+                char name[COMPILER_IR_NAME_CAPACITY];
+                int local_index;
+
+                rt_copy_string(name, sizeof(name), parser->current.text);
+                local_index = find_local(parser->state, name);
+                if (!backend_is_aarch64(parser->state) && local_index >= 0 &&
+                    parser->state->locals[local_index].cached_register >= 0) {
+                    expr_next(parser);
+                    return emit_identifier_incdec(parser->state, name, delta, 0);
+                }
+            }
             if (expr_parse_lvalue_address(parser, &byte_sized) != 0) {
                 return -1;
             }

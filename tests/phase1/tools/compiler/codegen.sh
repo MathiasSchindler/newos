@@ -78,6 +78,25 @@ EOF
 assert_file_contains "$WORK_DIR/cached_local_linux.s" 'movq %rax, %rbx' "compiler x86_64 backend should cache single-assignment scalar locals"
 assert_file_contains "$WORK_DIR/cached_local_linux.s" 'movslq %ebx, %rax' "compiler x86_64 backend should sign-extend cached int locals"
 
+cat > "$WORK_DIR/cached_mutable_local.c" <<'EOF'
+int main(int argc, char **argv) {
+    int i = 1;
+    (void)argv;
+    if (i < argc) {
+        ++i;
+    }
+    if (i < argc) {
+        return i;
+    }
+    return i + 1;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/cached_mutable_local.c" -o "$WORK_DIR/cached_mutable_local_linux.s"
+assert_file_contains "$WORK_DIR/cached_mutable_local_linux.s" 'addq \$1, %rbx' "compiler x86_64 backend should update cached mutable locals in registers"
+assert_file_contains "$WORK_DIR/cached_mutable_local_linux.s" 'movslq %ebx, %rax' "compiler x86_64 backend should read cached mutable int locals from registers"
+compile_and_check_native "$WORK_DIR/cached_mutable_local.c" "$WORK_DIR/cached_mutable_local_bin" 2 "compiler x86_64 backend should preserve cached mutable local semantics"
+
 cat > "$WORK_DIR/mutated_local.c" <<'EOF'
 int main(void) {
     int value = 1;

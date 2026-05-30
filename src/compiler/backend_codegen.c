@@ -1247,6 +1247,25 @@ static int line_modifies_identifier(const char *line, const char *name) {
     return 0;
 }
 
+static int line_is_simple_identifier_incdec(const char *line, const char *name) {
+    const char *cursor = line != 0 && starts_with(line, "eval ") ? skip_spaces(line + 5) : skip_spaces(line);
+    size_t name_length = rt_strlen(name != 0 ? name : "");
+
+    if (name_length == 0U) {
+        return 0;
+    }
+    if ((starts_with(cursor, "++") || starts_with(cursor, "--")) &&
+        text_has_identifier_at(skip_spaces(cursor + 2), name)) {
+        cursor = skip_spaces(cursor + 2);
+        return *skip_spaces(cursor + name_length) == '\0';
+    }
+    if (text_has_identifier_at(cursor, name)) {
+        cursor = skip_spaces(cursor + name_length);
+        return (starts_with(cursor, "++") || starts_with(cursor, "--")) && *skip_spaces(cursor + 2) == '\0';
+    }
+    return 0;
+}
+
 static int parameter_can_use_cached_register(const BackendState *state,
                                              const CompilerIr *ir,
                                              size_t decl_index,
@@ -1308,7 +1327,14 @@ static int local_can_use_cached_register(const BackendState *state,
         if (!line_references_identifier(line, name)) {
             continue;
         }
-        if (line_takes_identifier_address(line, name) || line_modifies_identifier(line, name)) {
+        if (line_takes_identifier_address(line, name)) {
+            return 0;
+        }
+        if (line_modifies_identifier(line, name)) {
+            if (saw_store && line_is_simple_identifier_incdec(line, name)) {
+                reference_count += 1;
+                continue;
+            }
             return 0;
         }
         if (!saw_store) {
