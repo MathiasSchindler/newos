@@ -123,7 +123,7 @@ static int relocation_symbol_value(const LinkObject *object,
 int collect_globals(LinkObject *objects, size_t object_count, char *error_out, size_t error_size) {
     size_t i;
 
-    linker_global_count = 0;
+    reset_global_index();
     for (i = 0; i < object_count; ++i) {
         LinkObject *object = &objects[i];
         uint32_t symbol_count = (uint32_t)(object->symtab_size / object->symtab_entsize);

@@ -34,7 +34,39 @@ static int layout_section_is_better(const LinkObject *candidate_object,
     return candidate->size > best->size;
 }
 
-static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count, LinkSectionKind kind) {
+typedef struct {
+    LinkObject *object;
+    LinkSection *section;
+    size_t object_index;
+    size_t section_index;
+    uint64_t zero_tail;
+} LinkLayoutEntry;
+
+static LinkSectionKind layout_sort_kind;
+
+static int compare_layout_entries(const void *left_ptr, const void *right_ptr) {
+    const LinkLayoutEntry *left = (const LinkLayoutEntry *)left_ptr;
+    const LinkLayoutEntry *right = (const LinkLayoutEntry *)right_ptr;
+
+    if (left->section->align != right->section->align) {
+        return left->section->align > right->section->align ? -1 : 1;
+    }
+    if (layout_sort_kind == LINK_SECTION_DATA && left->zero_tail != right->zero_tail) {
+        return left->zero_tail < right->zero_tail ? -1 : 1;
+    }
+    if (left->section->size != right->section->size) {
+        return left->section->size > right->section->size ? -1 : 1;
+    }
+    if (left->object_index != right->object_index) {
+        return left->object_index < right->object_index ? -1 : 1;
+    }
+    if (left->section_index != right->section_index) {
+        return left->section_index < right->section_index ? -1 : 1;
+    }
+    return 0;
+}
+
+static uint64_t layout_sections_of_kind_slow(LinkObject *objects, size_t object_count, LinkSectionKind kind) {
     uint64_t size = 0ULL;
     size_t i;
 
@@ -87,6 +119,68 @@ static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count
         best->out_offset = size;
         size += best->size;
     }
+    return size;
+}
+
+static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count, LinkSectionKind kind) {
+    LinkLayoutEntry *entries;
+    size_t entry_count = 0U;
+    size_t entry_index = 0U;
+    size_t i;
+    uint64_t size = 0ULL;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        if (!objects[i].live) {
+            continue;
+        }
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+
+            if (section->live && !section->folded && section->kind == kind) {
+                section->out_offset = LINKER_UNPLACED_OFFSET;
+                entry_count += 1U;
+            }
+        }
+    }
+    if (entry_count == 0U) {
+        return 0ULL;
+    }
+    entries = (LinkLayoutEntry *)rt_malloc_array(entry_count, sizeof(*entries));
+    if (entries == 0) {
+        return layout_sections_of_kind_slow(objects, object_count, kind);
+    }
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+
+        if (!objects[i].live) {
+            continue;
+        }
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            LinkSection *section = &objects[i].sections[section_index];
+
+            if (!section->live || section->folded || section->kind != kind) {
+                continue;
+            }
+            entries[entry_index].object = &objects[i];
+            entries[entry_index].section = section;
+            entries[entry_index].object_index = i;
+            entries[entry_index].section_index = section_index;
+            entries[entry_index].zero_tail = kind == LINK_SECTION_DATA ? section_trailing_zero_bytes(&objects[i], section) : 0ULL;
+            entry_index += 1U;
+        }
+    }
+    layout_sort_kind = kind;
+    rt_sort(entries, entry_count, sizeof(*entries), compare_layout_entries);
+    for (entry_index = 0U; entry_index < entry_count; ++entry_index) {
+        LinkSection *section = entries[entry_index].section;
+
+        size = align_u64(size, section->align);
+        section->out_offset = size;
+        size += section->size;
+    }
+    rt_free(entries);
     return size;
 }
 

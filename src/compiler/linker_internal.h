@@ -13,6 +13,7 @@
 #define LINKER_MAX_OUTPUT          (64U * 1024U * 1024U)
 #define LINKER_MAX_MEMORY          (512U * 1024U * 1024U)
 #define LINKER_MAX_GLOBALS         8192
+#define LINKER_SYMBOL_BUCKETS      16384U
 #define LINKER_MAX_SECTIONS        512
 #define LINKER_MAX_RELA_SECTIONS   512
 #define LINKER_BASE_VADDR          0x400000ULL
@@ -162,11 +163,15 @@ typedef struct {
 typedef struct {
     char     name[COMPILER_PATH_CAPACITY];
     uint64_t value;
+    unsigned int hash;
+    unsigned int next_index;
 } LinkGlobal;
 
 typedef struct {
     char   name[COMPILER_PATH_CAPACITY];
     size_t object_index;
+    unsigned int hash;
+    unsigned int next_index;
 } LinkDefinedSymbol;
 
 typedef struct {
@@ -181,6 +186,8 @@ typedef struct {
 extern LinkObject        linker_objects[LINKER_MAX_OBJECTS];
 extern LinkGlobal        linker_globals[LINKER_MAX_GLOBALS];
 extern LinkDefinedSymbol linker_defined_symbols[LINKER_MAX_GLOBALS];
+extern unsigned int      linker_global_buckets[LINKER_SYMBOL_BUCKETS];
+extern unsigned int      linker_defined_symbol_buckets[LINKER_SYMBOL_BUCKETS];
 extern size_t            linker_global_count;
 extern size_t            linker_defined_symbol_count;
 extern unsigned char    *linker_merge_string_pool;
@@ -274,6 +281,7 @@ int load_archive(const char *path, LinkObject *objects, size_t *object_count, ch
 /* ── linker_symbols.c ────────────────────────────────────────────────────── */
 int  linker_find_global(const char *name);
 int  linker_add_global(const char *name, uint64_t value, char *error_out, size_t error_size);
+void reset_global_index(void);
 int  find_defined_symbol_owner(const char *name);
 int  add_defined_symbol_owner(const char *name, size_t object_index, char *error_out, size_t error_size);
 int  collect_defined_symbol_owners(LinkObject *objects, size_t object_count, char *error_out, size_t error_size);
