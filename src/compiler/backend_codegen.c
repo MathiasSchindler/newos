@@ -144,6 +144,7 @@ typedef struct {
     const char *cursor;
     GlobalInitTokenKind kind;
     char text[COMPILER_IR_LINE_CAPACITY];
+    size_t text_length;
     long long number_value;
 } GlobalInitParser;
 
@@ -153,6 +154,7 @@ static void global_init_next(GlobalInitParser *parser) {
 
     parser->cursor = cursor;
     parser->text[0] = '\0';
+    parser->text_length = 0U;
     parser->number_value = 0;
 
     if (*cursor == '\0') {
@@ -185,6 +187,7 @@ static void global_init_next(GlobalInitParser *parser) {
             parser->text[length++] = *cursor++;
         }
         parser->text[length] = '\0';
+        parser->text_length = length;
         if (*cursor == quote) {
             cursor += 1;
         }
@@ -333,9 +336,8 @@ static int emit_data_symbol_ref(BackendState *state, const char *symbol_text) {
     return emit_line(state, line);
 }
 
-static int emit_char_array_contents(BackendState *state, const char *text, unsigned long long total_size) {
+static int emit_char_array_contents(BackendState *state, const char *text, size_t text_length, unsigned long long total_size) {
     unsigned long long i;
-    size_t text_length = text != 0 ? rt_strlen(text) : 0U;
 
     for (i = 0; i < total_size; ++i) {
         unsigned char value = 0;
@@ -489,8 +491,8 @@ static int emit_global_initializer_array(BackendState *state,
     if (parser->kind == GLOBAL_INIT_STRING && starts_with(skip_spaces(type_text), "char[")) {
         unsigned long long total = length > 0ULL
                                        ? clamp_array_product(length, element_size, (unsigned long long)BACKEND_MAX_OBJECT_STACK_BYTES)
-                                       : ((unsigned long long)rt_strlen(parser->text) + 1ULL);
-        if (emit_char_array_contents(state, parser->text, total) != 0) {
+                                       : ((unsigned long long)parser->text_length + 1ULL);
+        if (emit_char_array_contents(state, parser->text, parser->text_length, total) != 0) {
             return -1;
         }
         global_init_next(parser);
@@ -549,7 +551,7 @@ static int emit_global_initializer_value(BackendState *state,
         return emit_global_initializer_aggregate(state, type, parser, bytes_out);
     }
     if (parser->kind == GLOBAL_INIT_STRING && text_contains(type, "*")) {
-        int string_index = add_string_literal(state, parser->text);
+        int string_index = add_string_literal_bytes(state, parser->text, parser->text_length);
         char symbol[64];
         if (string_index < 0) {
             return -1;
@@ -1604,7 +1606,6 @@ static int emit_string_literals(BackendState *state) {
     }
     for (i = 0; i < state->string_count; ++i) {
         char line[COMPILER_IR_LINE_CAPACITY];
-        size_t out = 0;
         size_t j;
 
         if (state->backend->data_sections && backend_supports_named_sections(state)) {
@@ -1625,30 +1626,14 @@ static int emit_string_literals(BackendState *state) {
             return -1;
         }
 
-        rt_copy_string(line, sizeof(line), "    .asciz \"");
-        out = rt_strlen(line);
-        for (j = 0; state->strings[i].text[j] != '\0' && out + 4 < sizeof(line); ++j) {
-            char ch = state->strings[i].text[j];
-            if (ch == '"' || ch == '\\') {
-                line[out++] = '\\';
-                line[out++] = ch;
-            } else if (ch == '\n') {
-                line[out++] = '\\';
-                line[out++] = 'n';
-            } else if (ch == '\t') {
-                line[out++] = '\\';
-                line[out++] = 't';
-            } else if (ch == '\r') {
-                line[out++] = '\\';
-                line[out++] = 'r';
-            } else {
-                line[out++] = ch;
+        for (j = 0; j < state->strings[i].length; ++j) {
+            if (emit_data_integer(state, 1, (long long)(unsigned char)state->strings[i].text[j]) != 0) {
+                backend_set_error(state->backend, "failed to emit string literal contents");
+                return -1;
             }
         }
-        line[out++] = '"';
-        line[out] = '\0';
-        if (emit_line(state, line) != 0) {
-            backend_set_error(state->backend, "failed to emit string literal contents");
+        if (emit_data_integer(state, 1, 0) != 0) {
+            backend_set_error(state->backend, "failed to emit string literal terminator");
             return -1;
         }
     }

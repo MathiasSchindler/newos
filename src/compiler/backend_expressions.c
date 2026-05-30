@@ -48,6 +48,7 @@ static void expr_next(ExprParser *parser) {
     parser->cursor = cursor;
     parser->current.text[0] = '\0';
     parser->current.number_value = 0;
+    parser->current.text_length = 0U;
 
     if (*cursor == '\0') {
         parser->current.kind = EXPR_TOKEN_EOF;
@@ -155,6 +156,7 @@ static void expr_next(ExprParser *parser) {
             cursor = skip_spaces(cursor);
         } while (*cursor == '"');
         parser->current.text[length] = '\0';
+        parser->current.text_length = length;
         parser->cursor = cursor;
         return;
     }
@@ -1817,7 +1819,7 @@ static int expr_parse_primary(ExprParser *parser) {
     }
 
     if (parser->current.kind == EXPR_TOKEN_STRING) {
-        int result = emit_load_string_literal(parser->state, parser->current.text);
+        int result = emit_load_string_literal_bytes(parser->state, parser->current.text, parser->current.text_length);
         expr_next(parser);
         if (result != 0) {
             return -1;

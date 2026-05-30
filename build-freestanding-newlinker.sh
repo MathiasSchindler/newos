@@ -16,7 +16,14 @@ if [[ -z "${NEWLINKER_CC:-}" ]]; then
     NEWLINKER_CC=cc
   fi
 fi
-if "$NEWLINKER_CC" --version 2>/dev/null | grep -qi clang; then
+NEWLINKER_CC_VERSION=$("$NEWLINKER_CC" --version 2>/dev/null || true)
+NEWLINKER_IS_NCC=0
+if printf '%s\n' "$NEWLINKER_CC_VERSION" | grep -qi '^ncc\|newos.*ncc'; then
+  NEWLINKER_TARGET_FLAGS=(--target linux-x86_64)
+  NEWLINKER_NO_ADDRSIG_FLAGS=()
+  NEWLINKER_IS_GCC=0
+  NEWLINKER_IS_NCC=1
+elif printf '%s\n' "$NEWLINKER_CC_VERSION" | grep -qi clang; then
   NEWLINKER_TARGET_FLAGS=(-target x86_64-unknown-linux-elf)
   NEWLINKER_NO_ADDRSIG_FLAGS=(-fno-addrsig)
   NEWLINKER_IS_GCC=0
@@ -30,7 +37,13 @@ if [[ -n "${LINKER_FLAGS:-}" ]]; then
 else
   LINKER_FLAGS_ARRAY=("${LINKER_FLAGS_DEFAULT[@]}")
 fi
-NEWLINKER_EXTRA_CFLAGS=${NEWLINKER_EXTRA_CFLAGS:--fmerge-all-constants}
+if [[ -z "${NEWLINKER_EXTRA_CFLAGS+x}" ]]; then
+  if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
+    NEWLINKER_EXTRA_CFLAGS=""
+  else
+    NEWLINKER_EXTRA_CFLAGS="-fmerge-all-constants"
+  fi
+fi
 if [[ -n "${NEWLINKER_EXTRA_CFLAGS:-}" ]]; then
   read -r -a NEWLINKER_EXTRA_CFLAGS_ARRAY <<< "$NEWLINKER_EXTRA_CFLAGS"
 else
@@ -73,7 +86,7 @@ if [[ ! -x "$LINKER" ]]; then
   exit 1
 fi
 
-TOOLS=$(awk '/^TOOLS[[:space:]]*:=/{sub(/^[^:]*:=/,""); print; exit}' Makefile)
+TOOLS=${TOOLS:-$(awk '/^TOOLS[[:space:]]*:=/{sub(/^[^:]*:=/,""); print; exit}' Makefile)}
 mapfile -t SHARED_SOURCES < <(grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t PLATFORM_SOURCES < <(grep -oE '"src/platform/linux/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t COMPILER_SOURCES < <(grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
@@ -86,8 +99,13 @@ HASH_SOURCES=(src/shared/hash_util.c "${CRYPTO_SOURCES[@]}")
 TLS_PLATFORM_SOURCE=src/platform/linux/tls.c
 TUI_SOURCE=src/shared/tui.c
 CRT_SRC=src/arch/x86_64/linux/crt0.S
-CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DEXPACK_DISABLE_PTHREAD=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
-ASMFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
+  CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -ffunction-sections -fdata-sections "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DNEWOS_HAVE_PTHREAD=0 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=0 -DNEWOS_RUNTIME_ALLOC_LOCK=0 -DEXPACK_DISABLE_PTHREAD=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+  ASMFLAGS=(-m64 -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+else
+  CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DEXPACK_DISABLE_PTHREAD=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+  ASMFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+fi
 if [[ "$NEWLINKER_PROFILE" == "1" || "$NEWLINKER_PROFILE" == "yes" || "$NEWLINKER_PROFILE" == "true" ]]; then
   CFLAGS+=(-finstrument-functions -fno-omit-frame-pointer -fno-inline)
 fi
@@ -114,7 +132,11 @@ compile_one() {
     linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
   esac
   if [[ "$src" == *.S || "$src" == *.s ]]; then
-    "$NEWLINKER_CC" "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
+      "${NEWLINKER_AS:-cc}" "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    else
+      "$NEWLINKER_CC" "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
+    fi
   else
     "$NEWLINKER_CC" "${cflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   fi
@@ -162,6 +184,7 @@ done
 {
   echo "newlinker freestanding build: $WORK"
   echo "compiler: $NEWLINKER_CC"
+  if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then echo "ncc mode: 1"; fi
   echo "linker: $LINKER"
   echo "linker flags: ${LINKER_FLAGS_ARRAY[*]}"
   echo "extra cflags: ${NEWLINKER_EXTRA_CFLAGS_ARRAY[*]:-none}"

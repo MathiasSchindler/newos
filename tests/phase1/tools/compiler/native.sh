@@ -39,6 +39,20 @@ EOF
 
 compile_and_check_native "$WORK_DIR/backend_expr.c" "$WORK_DIR/backend_expr_bin" "0" "compiler backend did not preserve string/index expression semantics"
 
+cat > "$WORK_DIR/add_sub_chain.c" <<'EOF'
+static int base64_like(int ch) {
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    return -1;
+}
+
+int main(void) {
+    return base64_like('a') == 26 && base64_like('z') == 51 && base64_like('0') == 52 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/add_sub_chain.c" "$WORK_DIR/add_sub_chain_bin" "0" "compiler IR optimizer changed left-associative add/sub semantics"
+
 cat > "$WORK_DIR/long_expr.c" <<'EOF'
 int main(void) {
     return 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -104,6 +118,23 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/compound_shift_assignment.c" "$WORK_DIR/compound_shift_assignment_bin" "0" "compiler IR optimizer split >>= into relational tokens"
+
+cat > "$WORK_DIR/function_sections_gc.c" <<'EOF'
+extern int missing_external(void);
+
+static int unused_function(void) {
+    return missing_external();
+}
+
+int main(void) {
+    return 0;
+}
+EOF
+
+if [ -n "$RUN_TARGET" ]; then
+    "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -ffunction-sections -fdata-sections -Wl,--gc-sections "$WORK_DIR/function_sections_gc.c" -o "$WORK_DIR/function_sections_gc_bin"
+    "$WORK_DIR/function_sections_gc_bin"
+fi
 
 cat > "$WORK_DIR/long_logic_label.c" <<'EOF'
 static int compression_zstd_parse_compressed_literals_header(int first, int second) {
@@ -256,6 +287,22 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/adjacent_strings.c" "$WORK_DIR/adjacent_strings_bin" "0" "compiler failed on adjacent string literal concatenation"
+
+cat > "$WORK_DIR/binary_string_literal.c" <<'EOF'
+static const unsigned char *table_ptr(void) {
+    return (const unsigned char *)"\x63\x00\xff\x16";
+}
+
+static const char table_array[] = "\x05\x00\x07";
+
+int main(void) {
+    const unsigned char *table = table_ptr();
+    return table[0] == 0x63U && table[1] == 0U && table[2] == 0xffU && table[3] == 0x16U &&
+           (unsigned char)table_array[0] == 5U && (unsigned char)table_array[1] == 0U && (unsigned char)table_array[2] == 7U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/binary_string_literal.c" "$WORK_DIR/binary_string_literal_bin" "0" "compiler truncated binary string literals at embedded NUL bytes"
 
 cat > "$WORK_DIR/comment_macro.c" <<'EOF'
 #define VALUE 0 /* inline expansion payload */

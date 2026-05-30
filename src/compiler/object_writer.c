@@ -2489,6 +2489,12 @@ int compiler_object_write_elf64_x86_64(CompilerObjectWriter *writer, const Compi
         return -1;
     }
 
+    if (function_sections || data_sections) {
+        int external_status = write_external_elf_object(writer, temp_path, fd);
+        (void)platform_remove_file(temp_path);
+        return external_status;
+    }
+
     if (compiler_load_source(temp_path, &source) != 0) {
         int fallback_status = write_external_elf_object(writer, temp_path, fd);
         (void)platform_remove_file(temp_path);

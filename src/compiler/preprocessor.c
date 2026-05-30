@@ -15,6 +15,12 @@ typedef struct {
     int branch_taken;
 } CompilerConditionalFrame;
 
+typedef struct {
+    CompilerPreprocessor *preprocessor;
+    const char *cursor;
+    int depth;
+} PreprocessorExprParser;
+
 static int is_identifier_start(char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
 }
@@ -516,100 +522,171 @@ int compiler_preprocessor_undefine(CompilerPreprocessor *preprocessor, const cha
     return 0;
 }
 
-static int evaluate_expr(CompilerPreprocessor *preprocessor, const char *expr, int *value_out) {
+static int preprocessor_expr_parse_or(PreprocessorExprParser *parser, int *value_out);
+
+static void preprocessor_expr_skip_spaces(PreprocessorExprParser *parser) {
+    parser->cursor = skip_spaces(parser->cursor);
+}
+
+static int preprocessor_expr_match(PreprocessorExprParser *parser, const char *token) {
+    size_t index = 0U;
+
+    preprocessor_expr_skip_spaces(parser);
+    while (token[index] != '\0') {
+        if (parser->cursor[index] != token[index]) return 0;
+        index += 1U;
+    }
+    parser->cursor += index;
+    return 1;
+}
+
+static int preprocessor_expr_read_identifier(PreprocessorExprParser *parser, char *name, size_t name_size) {
+    size_t length = 0U;
+
+    preprocessor_expr_skip_spaces(parser);
+    if (!is_identifier_start(*parser->cursor)) return -1;
+    while (is_identifier_continue(*parser->cursor) && length + 1U < name_size) {
+        name[length++] = *parser->cursor++;
+    }
+    name[length] = '\0';
+    while (is_identifier_continue(*parser->cursor)) parser->cursor += 1;
+    return 0;
+}
+
+static int preprocessor_expr_macro_value(PreprocessorExprParser *parser, int macro_index, int *value_out) {
+    PreprocessorExprParser nested;
+    const char *value;
+
+    if (macro_index < 0 || !parser->preprocessor->macros[macro_index].defined) {
+        *value_out = 0;
+        return 0;
+    }
+    value = parser->preprocessor->macros[macro_index].value;
+    if (value[0] == '\0') {
+        *value_out = 0;
+        return 0;
+    }
+    if (parser->depth >= 16) {
+        *value_out = 1;
+        return 0;
+    }
+    nested.preprocessor = parser->preprocessor;
+    nested.cursor = value;
+    nested.depth = parser->depth + 1;
+    if (preprocessor_expr_parse_or(&nested, value_out) != 0) {
+        *value_out = 1;
+        return 0;
+    }
+    preprocessor_expr_skip_spaces(&nested);
+    if (*nested.cursor != '\0') *value_out = 1;
+    return 0;
+}
+
+static int preprocessor_expr_parse_number(PreprocessorExprParser *parser, int *value_out) {
+    unsigned long long value = 0ULL;
+    int sign = 1;
+
+    preprocessor_expr_skip_spaces(parser);
+    if (*parser->cursor == '+') parser->cursor += 1;
+    else if (*parser->cursor == '-') {
+        sign = -1;
+        parser->cursor += 1;
+    }
+    if (*parser->cursor < '0' || *parser->cursor > '9') return -1;
+    while (*parser->cursor >= '0' && *parser->cursor <= '9') {
+        value = value * 10ULL + (unsigned long long)(*parser->cursor - '0');
+        parser->cursor += 1;
+    }
+    while (*parser->cursor == 'u' || *parser->cursor == 'U' || *parser->cursor == 'l' || *parser->cursor == 'L') parser->cursor += 1;
+    *value_out = sign < 0 ? -(int)value : (int)value;
+    return 0;
+}
+
+static int preprocessor_expr_parse_primary(PreprocessorExprParser *parser, int *value_out) {
     char name[COMPILER_MACRO_NAME_CAPACITY];
-    char number[COMPILER_MACRO_VALUE_CAPACITY];
-    const char *cursor = skip_spaces(expr);
-    size_t length = 0;
-    unsigned long long number_value = 0;
-    int negate = 0;
     int index;
 
-    while (*cursor == '!') {
-        negate = !negate;
-        cursor = skip_spaces(cursor + 1);
+    preprocessor_expr_skip_spaces(parser);
+    if (preprocessor_expr_match(parser, "(")) {
+        if (preprocessor_expr_parse_or(parser, value_out) != 0) return -1;
+        return preprocessor_expr_match(parser, ")") ? 0 : -1;
+    }
+    if ((*parser->cursor >= '0' && *parser->cursor <= '9') ||
+        ((*parser->cursor == '+' || *parser->cursor == '-') && parser->cursor[1] >= '0' && parser->cursor[1] <= '9')) {
+        return preprocessor_expr_parse_number(parser, value_out);
+    }
+    if (preprocessor_expr_read_identifier(parser, name, sizeof(name)) != 0) return -1;
+    if (names_equal(name, "defined")) {
+        int has_paren;
+        preprocessor_expr_skip_spaces(parser);
+        has_paren = preprocessor_expr_match(parser, "(");
+        if (preprocessor_expr_read_identifier(parser, name, sizeof(name)) != 0) return -1;
+        if (has_paren && !preprocessor_expr_match(parser, ")")) return -1;
+        *value_out = find_macro(parser->preprocessor, name) >= 0 ? 1 : 0;
+        return 0;
     }
 
-    if (cursor[0] == '(') {
-        size_t expr_len = text_length(cursor);
-        if (expr_len >= 2 && cursor[expr_len - 1] == ')') {
-            char inner[COMPILER_MACRO_VALUE_CAPACITY];
-            size_t i;
-            if (expr_len - 1 >= sizeof(inner)) {
-                return -1;
-            }
-            for (i = 1; i + 1 < expr_len; ++i) {
-                inner[i - 1] = cursor[i];
-            }
-            inner[expr_len - 2] = '\0';
-            if (evaluate_expr(preprocessor, inner, value_out) != 0) {
-                return -1;
-            }
-            if (negate) {
-                *value_out = !*value_out;
-            }
+    index = find_macro(parser->preprocessor, name);
+    return preprocessor_expr_macro_value(parser, index, value_out);
+}
+
+static int preprocessor_expr_parse_unary(PreprocessorExprParser *parser, int *value_out) {
+    if (preprocessor_expr_match(parser, "!")) {
+        if (preprocessor_expr_parse_unary(parser, value_out) != 0) return -1;
+        *value_out = !*value_out;
+        return 0;
+    }
+    return preprocessor_expr_parse_primary(parser, value_out);
+}
+
+static int preprocessor_expr_parse_equality(PreprocessorExprParser *parser, int *value_out) {
+    int right;
+
+    if (preprocessor_expr_parse_unary(parser, value_out) != 0) return -1;
+    for (;;) {
+        if (preprocessor_expr_match(parser, "==")) {
+            if (preprocessor_expr_parse_unary(parser, &right) != 0) return -1;
+            *value_out = *value_out == right;
+        } else if (preprocessor_expr_match(parser, "!=")) {
+            if (preprocessor_expr_parse_unary(parser, &right) != 0) return -1;
+            *value_out = *value_out != right;
+        } else {
             return 0;
         }
     }
+}
 
-    if (cursor[0] == 'd' && cursor[1] == 'e' && cursor[2] == 'f' && cursor[3] == 'i' && cursor[4] == 'n' && cursor[5] == 'e' && cursor[6] == 'd') {
-        cursor = skip_spaces(cursor + 7);
-        if (*cursor == '(') {
-            cursor = skip_spaces(cursor + 1);
-        }
-        while (is_identifier_continue(*cursor) && length + 1 < sizeof(name)) {
-            name[length++] = *cursor++;
-        }
-        name[length] = '\0';
-        *value_out = find_macro(preprocessor, name) >= 0 ? 1 : 0;
-        if (negate) {
-            *value_out = !*value_out;
-        }
-        return 0;
-    }
+static int preprocessor_expr_parse_and(PreprocessorExprParser *parser, int *value_out) {
+    int right;
 
-    if ((*cursor >= '0' && *cursor <= '9') || ((*cursor == '+' || *cursor == '-') && cursor[1] >= '0' && cursor[1] <= '9')) {
-        rt_copy_string(number, sizeof(number), cursor);
-        trim_trailing_spaces(number);
-        if (rt_parse_uint(number[0] == '+' ? number + 1 : number, &number_value) != 0) {
-            return -1;
-        }
-        *value_out = (int)number_value;
-        if (number[0] == '-') {
-            *value_out = -*value_out;
-        }
-        if (negate) {
-            *value_out = !*value_out;
-        }
-        return 0;
-    }
-
-    while (is_identifier_continue(*cursor) && length + 1 < sizeof(name)) {
-        name[length++] = *cursor++;
-    }
-    name[length] = '\0';
-
-    if (name[0] == '\0') {
-        return -1;
-    }
-
-    index = find_macro(preprocessor, name);
-    if (index < 0 || preprocessor->macros[index].value[0] == '\0') {
-        *value_out = 0;
-    } else {
-        rt_copy_string(number, sizeof(number), preprocessor->macros[index].value);
-        trim_trailing_spaces(number);
-        if (rt_parse_uint(number, &number_value) != 0) {
-            *value_out = 1;
-        } else {
-            *value_out = (int)number_value;
-        }
-    }
-
-    if (negate) {
-        *value_out = !*value_out;
+    if (preprocessor_expr_parse_equality(parser, value_out) != 0) return -1;
+    while (preprocessor_expr_match(parser, "&&")) {
+        if (preprocessor_expr_parse_equality(parser, &right) != 0) return -1;
+        *value_out = (*value_out && right) ? 1 : 0;
     }
     return 0;
+}
+
+static int preprocessor_expr_parse_or(PreprocessorExprParser *parser, int *value_out) {
+    int right;
+
+    if (preprocessor_expr_parse_and(parser, value_out) != 0) return -1;
+    while (preprocessor_expr_match(parser, "||")) {
+        if (preprocessor_expr_parse_and(parser, &right) != 0) return -1;
+        *value_out = (*value_out || right) ? 1 : 0;
+    }
+    return 0;
+}
+
+static int evaluate_expr(CompilerPreprocessor *preprocessor, const char *expr, int *value_out) {
+    PreprocessorExprParser parser;
+
+    parser.preprocessor = preprocessor;
+    parser.cursor = expr;
+    parser.depth = 0;
+    if (preprocessor_expr_parse_or(&parser, value_out) != 0) return -1;
+    preprocessor_expr_skip_spaces(&parser);
+    return *parser.cursor == '\0' ? 0 : -1;
 }
 
 static int expand_text(

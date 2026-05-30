@@ -137,16 +137,26 @@ EOF
 
 cat > "$WORK_DIR/preprocess.c" <<'EOF'
 #include "local.h"
+#define ALIAS_ZERO ZERO_VALUE
+#define ZERO_VALUE 0U
+#define ALIAS_ONE ONE_VALUE
+#define ONE_VALUE 1
 #if defined(__APPLE__)
 int platform_value = 1;
 #else
 int platform_value = 0;
+#endif
+#if defined(ALIAS_ZERO) && ALIAS_ZERO == 0U && (ALIAS_ONE != 0 || defined(MISSING_VALUE))
+int expression_value = 3;
+#else
+int expression_value = 4;
 #endif
 int main(void) { return FEATURE_VALUE; }
 EOF
 
 "$ROOT_DIR/build/ncc" --preprocess --target macos-aarch64 "$WORK_DIR/preprocess.c" > "$WORK_DIR/preprocess.out"
 assert_file_contains "$WORK_DIR/preprocess.out" 'int platform_value = 1;' "preprocessor did not keep the macOS branch"
+assert_file_contains "$WORK_DIR/preprocess.out" 'int expression_value = 3;' "preprocessor did not evaluate macro aliases and logical operators"
 assert_file_contains "$WORK_DIR/preprocess.out" 'return 7;' "preprocessor did not expand an object-like macro"
 if grep -q 'platform_value = 0' "$WORK_DIR/preprocess.out"; then
     fail "preprocessor kept an inactive conditional branch"

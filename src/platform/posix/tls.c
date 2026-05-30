@@ -11,14 +11,13 @@
 
 static const char *posix_tls_error = "none";
 static char posix_tls_peer_status_storage[160] = "not-verified-native";
-static const char *posix_tls_peer_status = posix_tls_peer_status_storage;
 
 const char *platform_tls_last_error(void) {
     return posix_tls_error;
 }
 
 const char *platform_tls_peer_verification_status(void) {
-    return posix_tls_peer_status;
+    return posix_tls_peer_status_storage;
 }
 
 static void posix_tls_set_error(const char *message) {

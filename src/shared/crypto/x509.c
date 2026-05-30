@@ -831,7 +831,7 @@ static int pem_decode_next_cert(const unsigned char *pem, size_t pem_len, size_t
     if (!found) return 1;
     while (i < pem_len) {
         int v;
-        if (i + end_len <= pem_len && memcmp(pem + i, end, end_len) == 0) {
+        if (pem[i] == '-' && i + end_len <= pem_len && memcmp(pem + i, end, end_len) == 0) {
             *pos = i + end_len;
             *der_len = out;
             return out != 0U ? 0 : -1;
@@ -867,55 +867,85 @@ int crypto_x509_verify_chain(
     char *status,
     size_t status_size
 ) {
-    X509Parsed parsed[X509_MAX_CERTS];
-    unsigned char anchor_der[X509_MAX_DER_SIZE];
-    X509Parsed anchor;
+#if defined(__NEWOS_NCC__)
+    X509Parsed *parsed;
+    unsigned char *anchor_der;
+    X509Parsed *anchor;
+#else
+    X509Parsed parsed_storage[X509_MAX_CERTS];
+    unsigned char anchor_der_storage[X509_MAX_DER_SIZE];
+    X509Parsed anchor_storage;
+    X509Parsed *parsed = parsed_storage;
+    unsigned char *anchor_der = anchor_der_storage;
+    X509Parsed *anchor = &anchor_storage;
+#endif
     size_t i;
     size_t pem_pos = 0U;
+    int verify_result = -1;
 
     if (chain == 0 || chain_count == 0U || chain_count > X509_MAX_CERTS || trust_pem == 0 || trust_pem_length == 0U) {
         x509_status(status, status_size, "invalid x509 verification input");
         return -1;
     }
+#if defined(__NEWOS_NCC__)
+    parsed = (X509Parsed *)rt_malloc(sizeof(X509Parsed) * X509_MAX_CERTS);
+    anchor_der = (unsigned char *)rt_malloc(X509_MAX_DER_SIZE);
+    anchor = (X509Parsed *)rt_malloc(sizeof(X509Parsed));
+    if (parsed == 0 || anchor_der == 0 || anchor == 0) {
+        x509_status(status, status_size, "x509 verification allocation failed");
+        goto cleanup;
+    }
+#endif
     for (i = 0; i < chain_count; ++i) {
         if (parse_certificate(&parsed[i], chain[i].data, chain[i].length) != 0) {
             x509_status(status, status_size, "certificate parse failed");
-            return -1;
+            goto cleanup;
         }
         if (now_epoch_seconds < parsed[i].not_before || now_epoch_seconds > parsed[i].not_after) {
             x509_status(status, status_size, "certificate expired or not yet valid");
-            return -1;
+            goto cleanup;
         }
     }
     if (!verify_hostname(&parsed[0], hostname)) {
         x509_status(status, status_size, "certificate hostname mismatch");
-        return -1;
+        goto cleanup;
     }
     for (i = 0; i + 1U < chain_count; ++i) {
         if (!bytes_equal(parsed[i].issuer, parsed[i].issuer_len, parsed[i + 1U].subject, parsed[i + 1U].subject_len) || !parsed[i + 1U].is_ca ||
             verify_cert_signature(&parsed[i], &parsed[i + 1U]) != 0) {
             x509_status(status, status_size, "certificate chain signature failed");
-            return -1;
+            goto cleanup;
         }
     }
     for (;;) {
         size_t anchor_len = 0U;
-        int result = pem_decode_next_cert(trust_pem, trust_pem_length, &pem_pos, anchor_der, sizeof(anchor_der), &anchor_len);
+        size_t previous_pem_pos = pem_pos;
+        int result = pem_decode_next_cert(trust_pem, trust_pem_length, &pem_pos, anchor_der, X509_MAX_DER_SIZE, &anchor_len);
         if (result == 1) break;
-        if (result != 0 || parse_certificate(&anchor, anchor_der, anchor_len) != 0) {
+        if (result != 0 && pem_pos == previous_pem_pos && pem_pos < trust_pem_length) {
+            pem_pos += 1U;
+        }
+        if (result != 0 || parse_certificate(anchor, anchor_der, anchor_len) != 0) {
             continue;
         }
-        if (now_epoch_seconds < anchor.not_before || now_epoch_seconds > anchor.not_after) {
+        if (now_epoch_seconds < anchor->not_before || now_epoch_seconds > anchor->not_after) {
             continue;
         }
-        if (bytes_equal(parsed[chain_count - 1U].issuer, parsed[chain_count - 1U].issuer_len, anchor.subject, anchor.subject_len) && anchor.is_ca &&
-            verify_cert_signature(&parsed[chain_count - 1U], &anchor) == 0) {
+        if (bytes_equal(parsed[chain_count - 1U].issuer, parsed[chain_count - 1U].issuer_len, anchor->subject, anchor->subject_len) && anchor->is_ca &&
+            verify_cert_signature(&parsed[chain_count - 1U], anchor) == 0) {
             x509_status(status, status_size, "trusted");
-            return 0;
+            verify_result = 0;
+            goto cleanup;
         }
     }
     x509_status(status, status_size, "no trusted root matched certificate chain");
-    return -1;
+cleanup:
+#if defined(__NEWOS_NCC__)
+    rt_free(parsed);
+    rt_free(anchor_der);
+    rt_free(anchor);
+#endif
+    return verify_result;
 }
 
 int crypto_x509_verify_tls13_certificate_verify(

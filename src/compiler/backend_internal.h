@@ -61,6 +61,7 @@ typedef struct {
 typedef struct {
     char label[32];
     char text[COMPILER_IR_LINE_CAPACITY];
+    size_t length;
 } BackendStringLiteral;
 
 typedef struct {
@@ -139,6 +140,7 @@ typedef enum {
 typedef struct {
     ExprTokenKind kind;
     char text[COMPILER_IR_LINE_CAPACITY];
+    size_t text_length;
     long long number_value;
 } ExprToken;
 
@@ -218,8 +220,10 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
 int backend_array_index_scale(const BackendState *state, const char *base_type, int word_index);
 int find_string_literal(const BackendState *state, const char *text);
 int add_string_literal(BackendState *state, const char *text);
+int add_string_literal_bytes(BackendState *state, const char *text, size_t length);
 int emit_address_of_name(BackendState *state, const char *name);
 int emit_load_string_literal(BackendState *state, const char *text);
+int emit_load_string_literal_bytes(BackendState *state, const char *text, size_t length);
 int emit_load_name_into_register(BackendState *state, const char *name, const char *dst_reg);
 int emit_load_name(BackendState *state, const char *name);
 int emit_store_name(BackendState *state, const char *name);

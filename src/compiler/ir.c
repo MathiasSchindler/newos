@@ -77,6 +77,8 @@ static const char *ir_find_separator_outside_quotes(const char *text, const char
 static const char *ir_trim_trailing_spaces(const char *start, const char *end);
 static int ir_strip_outer_parens(const char *expr, char *buffer, size_t buffer_size);
 static int ir_find_top_level_operator(const char *expr, const char *op, const char **position_out);
+static int ir_operator_precedence(const char *op);
+static int ir_operator_has_right_precedence_boundary(const char *expr, const char *position, const char *op);
 static int ir_find_top_level_conditional(const char *expr, const char **question_out, const char **colon_out);
 static int ir_try_simplify_conditional_expr(const char *expr, char *buffer, size_t buffer_size);
 static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerState *state, char *buffer, size_t buffer_size);
@@ -1195,6 +1197,40 @@ static int ir_find_top_level_operator(const char *expr, const char *op, const ch
     return 0;
 }
 
+static int ir_operator_precedence(const char *op) {
+    if (ir_text_equals(op, "||")) return 1;
+    if (ir_text_equals(op, "&&")) return 2;
+    if (ir_text_equals(op, "|")) return 3;
+    if (ir_text_equals(op, "^")) return 4;
+    if (ir_text_equals(op, "&")) return 5;
+    if (ir_text_equals(op, "==") || ir_text_equals(op, "!=")) return 6;
+    if (ir_text_equals(op, "<") || ir_text_equals(op, ">") || ir_text_equals(op, "<=") || ir_text_equals(op, ">=")) return 7;
+    if (ir_text_equals(op, "<<") || ir_text_equals(op, ">>")) return 8;
+    if (ir_text_equals(op, "+") || ir_text_equals(op, "-")) return 9;
+    if (ir_text_equals(op, "*") || ir_text_equals(op, "/") || ir_text_equals(op, "%")) return 10;
+    return 0;
+}
+
+static int ir_operator_has_right_precedence_boundary(const char *expr, const char *position, const char *op) {
+    const char ops[][3] = {"||", "&&", "|", "^", "&", "==", "!=", "<=", ">=", "<", ">", "<<", ">>", "+", "-", "*", "/", "%"};
+    size_t i;
+    int precedence = ir_operator_precedence(op);
+
+    if (precedence == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(ops) / sizeof(ops[0]); ++i) {
+        const char *other_position = 0;
+        if (ir_find_top_level_operator(expr, ops[i], &other_position) == 0 && other_position > position &&
+            ir_operator_precedence(ops[i]) <= precedence) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static int ir_find_top_level_conditional(const char *expr, const char **question_out, const char **colon_out) {
     size_t i = 0;
     int paren_depth = 0;
@@ -1339,6 +1375,9 @@ static int ir_try_simplify_identity_expr(const char *expr, const IrOptimizerStat
         int rhs_is_constant;
 
         if (ir_find_top_level_operator(expr, op, &position) != 0) {
+            continue;
+        }
+        if (ir_operator_has_right_precedence_boundary(expr, position, op)) {
             continue;
         }
 

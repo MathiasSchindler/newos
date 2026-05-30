@@ -1338,12 +1338,31 @@ int find_string_literal(const BackendState *state, const char *text) {
 }
 
 int add_string_literal(BackendState *state, const char *text) {
+    return add_string_literal_bytes(state, text, rt_strlen(text != 0 ? text : ""));
+}
+
+int add_string_literal_bytes(BackendState *state, const char *text, size_t length) {
     char digits[32];
     unsigned int index;
-    int existing = find_string_literal(state, text);
+    int existing = -1;
+    size_t i;
 
-    if (existing >= 0) {
-        return existing;
+    text = text != 0 ? text : "";
+    if (length + 1U > sizeof(state->strings[0].text)) {
+        backend_set_error(state->backend, "string literal too large for backend");
+        return -1;
+    }
+    if (length == rt_strlen(text)) {
+        existing = find_string_literal(state, text);
+        if (existing >= 0) {
+            return existing;
+        }
+    } else {
+        for (i = 0; i < state->string_count; ++i) {
+            if (state->strings[i].length == length && memcmp(state->strings[i].text, text, length) == 0) {
+                return (int)i;
+            }
+        }
     }
     if (state->string_count >= COMPILER_BACKEND_MAX_STRINGS) {
         backend_set_error(state->backend, "too many string literals for backend");
@@ -1356,8 +1375,12 @@ int add_string_literal(BackendState *state, const char *text) {
     rt_copy_string(state->strings[index].label + 3U,
                    sizeof(state->strings[index].label) - 3U,
                    digits);
-    rt_copy_string(state->strings[index].text, sizeof(state->strings[index].text), text);
-    remember_string_index(state, text, index);
+    memcpy(state->strings[index].text, text, length);
+    state->strings[index].text[length] = '\0';
+    state->strings[index].length = length;
+    if (length == rt_strlen(text)) {
+        remember_string_index(state, text, index);
+    }
     state->string_count += 1U;
     return (int)index;
 }
@@ -1479,8 +1502,12 @@ int emit_address_of_name(BackendState *state, const char *name) {
 }
 
 int emit_load_string_literal(BackendState *state, const char *text) {
+    return emit_load_string_literal_bytes(state, text, rt_strlen(text != 0 ? text : ""));
+}
+
+int emit_load_string_literal_bytes(BackendState *state, const char *text, size_t length) {
     char line[128];
-    int index = add_string_literal(state, text);
+    int index = add_string_literal_bytes(state, text, length);
     const char *label;
 
     if (index < 0) {

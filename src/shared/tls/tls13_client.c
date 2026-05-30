@@ -190,13 +190,20 @@ static int tls13_store_certificate_message(struct Tls13Client *c, const unsigned
 
 static int tls13_verify_certificate_verify(struct Tls13Client *c, const unsigned char transcript_hash[32], const unsigned char *msg, size_t msg_len) {
 	static const char context[] = "TLS 1.3, server CertificateVerify";
-	unsigned char signed_content[64U + sizeof(context) + 32U];
+	#if defined(__NEWOS_NCC__)
+	unsigned char *signed_content;
+	#else
+	unsigned char signed_content_storage[64U + sizeof(context) + 32U];
+	unsigned char *signed_content = signed_content_storage;
+	#endif
 	const unsigned char *body;
 	size_t body_len;
 	size_t context_len = sizeof(context) - 1U;
+	size_t signed_content_len = 64U + context_len + 1U + 32U;
 	unsigned short scheme;
 	unsigned short signature_len;
 	size_t i;
+	int result;
 
 	if (!c || c->peer_cert_count == 0U || !transcript_hash || !msg || msg_len < 8U) return -1;
 	body = msg + 4U;
@@ -212,19 +219,26 @@ static int tls13_verify_certificate_verify(struct Tls13Client *c, const unsigned
 		(void)rt_write_uint(2, (unsigned long long)signature_len);
 		tlsdbg(c, "\n");
 	}
+	#if defined(__NEWOS_NCC__)
+	signed_content = (unsigned char *)rt_malloc(signed_content_len);
+	if (!signed_content) return -1;
+	#endif
 	for (i = 0; i < 64U; ++i) signed_content[i] = 0x20U;
 	memcpy(signed_content + 64U, context, context_len);
 	signed_content[64U + context_len] = 0U;
 	memcpy(signed_content + 64U + context_len + 1U, transcript_hash, 32U);
-	int result = crypto_x509_verify_tls13_certificate_verify(
+	result = crypto_x509_verify_tls13_certificate_verify(
 		c->peer_cert_der[0],
 		c->peer_cert_len[0],
 		scheme,
 		signed_content,
-		64U + context_len + 1U + 32U,
+		signed_content_len,
 		body + 4U,
 		signature_len
 	);
+	#if defined(__NEWOS_NCC__)
+	rt_free(signed_content);
+	#endif
 	if (c->debug) {
 		tlsdbg(c, "cert_verify_result ");
 		(void)rt_write_uint(2, result == 0 ? 0ULL : 1ULL);

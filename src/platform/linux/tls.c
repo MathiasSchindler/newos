@@ -9,14 +9,13 @@
 
 static const char *linux_tls_error = "none";
 static char linux_tls_peer_status_storage[160] = "not-verified-native";
-static const char *linux_tls_peer_status = linux_tls_peer_status_storage;
 
 const char *platform_tls_last_error(void) {
     return linux_tls_error;
 }
 
 const char *platform_tls_peer_verification_status(void) {
-    return linux_tls_peer_status;
+    return linux_tls_peer_status_storage;
 }
 
 static void linux_tls_set_error(const char *message) {

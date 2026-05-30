@@ -18,6 +18,8 @@ typedef unsigned long long u64;
 #define x25519_scalarmult crypto_x25519_scalarmult
 #define x25519_scalarmult_base crypto_x25519_scalarmult_base
 
+#if defined(__SIZEOF_INT128__) && !defined(NEWOS_CRYPTO_CURVE25519_FORCE_64BIT)
+
 #define MASK51 ((u64)((1ULL << 51) - 1ULL))
 
 struct fe {
@@ -528,6 +530,350 @@ int x25519_scalarmult(u8 out[32], const u8 scalar[32], const u8 point[32]) {
 int x25519_scalarmult_base(u8 out[32], const u8 scalar[32]) {
     return x25519_scalarmult(out, scalar, g_x25519_basepoint);
 }
+
+#else
+
+#define FE_LIMBS 16U
+#define FE_MASK16 0xffffULL
+
+struct fe {
+    u64 v[FE_LIMBS];
+};
+
+static const u8 g_x25519_basepoint[32] = { 9 };
+
+static void secure_bzero(void *ptr, usize len) {
+    crypto_secure_bzero(ptr, len);
+}
+
+static void fe_reduce(struct fe *f) {
+    int pass;
+
+    for (pass = 0; pass < 4; ++pass) {
+        usize i;
+        u64 carry;
+
+        for (i = 0; i < FE_LIMBS - 1U; ++i) {
+            carry = f->v[i] >> 16;
+            f->v[i] &= FE_MASK16;
+            f->v[i + 1U] += carry;
+        }
+        carry = f->v[15] >> 15;
+        f->v[15] &= 0x7fffULL;
+        f->v[0] += carry * 19ULL;
+    }
+}
+
+static void fe_0(struct fe *f) {
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) f->v[i] = 0;
+}
+
+static void fe_1(struct fe *f) {
+    fe_0(f);
+    f->v[0] = 1;
+}
+
+static void fe_copy(struct fe *dst, const struct fe *src) {
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) dst->v[i] = src->v[i];
+}
+
+static void fe_frombytes(struct fe *f, const u8 s[32]) {
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) {
+        f->v[i] = (u64)s[i * 2U] | ((u64)s[i * 2U + 1U] << 8);
+    }
+    f->v[15] &= 0x7fffULL;
+}
+
+static int fe_ge_p(const struct fe *f) {
+    static const u64 p[FE_LIMBS] = {
+        0xffedULL, 0xffffULL, 0xffffULL, 0xffffULL,
+        0xffffULL, 0xffffULL, 0xffffULL, 0xffffULL,
+        0xffffULL, 0xffffULL, 0xffffULL, 0xffffULL,
+        0xffffULL, 0xffffULL, 0xffffULL, 0x7fffULL
+    };
+    int i;
+
+    for (i = (int)FE_LIMBS - 1; i >= 0; --i) {
+        if (f->v[i] > p[i]) return 1;
+        if (f->v[i] < p[i]) return 0;
+    }
+    return 1;
+}
+
+static void fe_sub_p(struct fe *f) {
+    static const u64 p[FE_LIMBS] = {
+        0xffedULL, 0xffffULL, 0xffffULL, 0xffffULL,
+        0xffffULL, 0xffffULL, 0xffffULL, 0xffffULL,
+        0xffffULL, 0xffffULL, 0xffffULL, 0xffffULL,
+        0xffffULL, 0xffffULL, 0xffffULL, 0x7fffULL
+    };
+    u64 borrow = 0;
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) {
+        u64 sub = p[i] + borrow;
+        if (f->v[i] >= sub) {
+            f->v[i] -= sub;
+            borrow = 0;
+        } else {
+            f->v[i] = (f->v[i] + 0x10000ULL) - sub;
+            borrow = 1;
+        }
+    }
+}
+
+static void fe_normalize(struct fe *f) {
+    int i;
+
+    fe_reduce(f);
+    for (i = 0; i < 4 && fe_ge_p(f); ++i) fe_sub_p(f);
+}
+
+static void fe_tobytes(u8 out[32], const struct fe *f) {
+    struct fe t;
+    usize i;
+
+    fe_copy(&t, f);
+    fe_normalize(&t);
+    for (i = 0; i < FE_LIMBS; ++i) {
+        out[i * 2U] = (u8)(t.v[i] & 0xffU);
+        out[i * 2U + 1U] = (u8)((t.v[i] >> 8) & 0xffU);
+    }
+    secure_bzero(&t, sizeof(t));
+}
+
+static void fe_add(struct fe *h, const struct fe *f, const struct fe *g) {
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) h->v[i] = f->v[i] + g->v[i];
+    fe_normalize(h);
+}
+
+static void fe_sub(struct fe *h, const struct fe *f, const struct fe *g) {
+    static const u64 four_p[FE_LIMBS] = {
+        0x3ffb4ULL, 0x3fffcULL, 0x3fffcULL, 0x3fffcULL,
+        0x3fffcULL, 0x3fffcULL, 0x3fffcULL, 0x3fffcULL,
+        0x3fffcULL, 0x3fffcULL, 0x3fffcULL, 0x3fffcULL,
+        0x3fffcULL, 0x3fffcULL, 0x3fffcULL, 0x1fffcULL
+    };
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) h->v[i] = f->v[i] + four_p[i] - g->v[i];
+    fe_normalize(h);
+}
+
+static void fe_mul(struct fe *h, const struct fe *f, const struct fe *g) {
+    u64 t[31];
+    usize i;
+    usize j;
+
+    for (i = 0; i < 31U; ++i) t[i] = 0;
+    for (i = 0; i < FE_LIMBS; ++i) {
+        for (j = 0; j < FE_LIMBS; ++j) {
+            t[i + j] += f->v[i] * g->v[j];
+        }
+    }
+    for (i = 30U; i >= FE_LIMBS; --i) {
+        t[i - FE_LIMBS] += t[i] * 38ULL;
+        if (i == FE_LIMBS) break;
+    }
+    for (i = 0; i < FE_LIMBS; ++i) h->v[i] = t[i];
+    fe_normalize(h);
+    secure_bzero(t, sizeof(t));
+}
+
+static void fe_sq(struct fe *h, const struct fe *f) {
+    fe_mul(h, f, f);
+}
+
+static void fe_mul_small(struct fe *h, const struct fe *f, u64 k) {
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; ++i) h->v[i] = f->v[i] * k;
+    fe_normalize(h);
+}
+
+static void fe_cswap(struct fe *a, struct fe *b, u32 swap) {
+    u64 mask = (u64)0 - (u64)(swap & 1U);
+    usize i;
+
+    for (i = 0; i < FE_LIMBS; i++) {
+        u64 t = mask & (a->v[i] ^ b->v[i]);
+        a->v[i] ^= t;
+        b->v[i] ^= t;
+    }
+}
+
+static void fe_inv(struct fe *out, const struct fe *z) {
+    struct fe z2;
+    struct fe z9;
+    struct fe z11;
+    struct fe z2_5_0;
+    struct fe z2_10_0;
+    struct fe z2_20_0;
+    struct fe z2_50_0;
+    struct fe z2_100_0;
+    struct fe t;
+    int i;
+
+    fe_sq(&z2, z);
+    fe_sq(&t, &z2);
+    fe_sq(&t, &t);
+    fe_mul(&z9, &t, z);
+    fe_mul(&z11, &z9, &z2);
+    fe_sq(&t, &z11);
+    fe_mul(&z2_5_0, &t, &z9);
+
+    fe_sq(&t, &z2_5_0);
+    for (i = 1; i < 5; i++) fe_sq(&t, &t);
+    fe_mul(&z2_10_0, &t, &z2_5_0);
+
+    fe_sq(&t, &z2_10_0);
+    for (i = 1; i < 10; i++) fe_sq(&t, &t);
+    fe_mul(&z2_20_0, &t, &z2_10_0);
+
+    fe_sq(&t, &z2_20_0);
+    for (i = 1; i < 20; i++) fe_sq(&t, &t);
+    fe_mul(&t, &t, &z2_20_0);
+
+    fe_sq(&t, &t);
+    for (i = 1; i < 10; i++) fe_sq(&t, &t);
+    fe_mul(&z2_50_0, &t, &z2_10_0);
+
+    fe_sq(&t, &z2_50_0);
+    for (i = 1; i < 50; i++) fe_sq(&t, &t);
+    fe_mul(&z2_100_0, &t, &z2_50_0);
+
+    fe_sq(&t, &z2_100_0);
+    for (i = 1; i < 100; i++) fe_sq(&t, &t);
+    fe_mul(&t, &t, &z2_100_0);
+
+    fe_sq(&t, &t);
+    for (i = 1; i < 50; i++) fe_sq(&t, &t);
+    fe_mul(&t, &t, &z2_50_0);
+
+    fe_sq(&t, &t);
+    for (i = 1; i < 5; i++) fe_sq(&t, &t);
+    fe_mul(out, &t, &z11);
+
+    secure_bzero(&z2, sizeof(z2));
+    secure_bzero(&z9, sizeof(z9));
+    secure_bzero(&z11, sizeof(z11));
+    secure_bzero(&z2_5_0, sizeof(z2_5_0));
+    secure_bzero(&z2_10_0, sizeof(z2_10_0));
+    secure_bzero(&z2_20_0, sizeof(z2_20_0));
+    secure_bzero(&z2_50_0, sizeof(z2_50_0));
+    secure_bzero(&z2_100_0, sizeof(z2_100_0));
+    secure_bzero(&t, sizeof(t));
+}
+
+static int bytes_are_all_zero(const u8 *buf, usize len) {
+    u8 diff = 0;
+    usize i = 0;
+
+    while (i < len) diff |= buf[i++];
+    return diff == 0 ? 1 : 0;
+}
+
+int x25519_scalarmult(u8 out[32], const u8 scalar[32], const u8 point[32]) {
+    u8 e[32];
+    struct fe x1;
+    struct fe x2;
+    struct fe z2;
+    struct fe x3;
+    struct fe z3;
+    struct fe a;
+    struct fe aa;
+    struct fe b;
+    struct fe bb;
+    struct fe e_diff;
+    struct fe c;
+    struct fe d;
+    struct fe da;
+    struct fe cb;
+    struct fe t0;
+    struct fe t1;
+    u32 swap = 0;
+    int status = 0;
+    int pos;
+
+    for (pos = 0; pos < 32; pos++) e[pos] = scalar[pos];
+    e[0] &= 248u;
+    e[31] &= 127u;
+    e[31] |= 64u;
+
+    fe_frombytes(&x1, point);
+    fe_1(&x2);
+    fe_0(&z2);
+    fe_copy(&x3, &x1);
+    fe_1(&z3);
+
+    for (pos = 254; pos >= 0; pos--) {
+        u32 bit = (u32)((e[pos / 8] >> (pos & 7)) & 1u);
+        swap ^= bit;
+        fe_cswap(&x2, &x3, swap);
+        fe_cswap(&z2, &z3, swap);
+        swap = bit;
+
+        fe_add(&a, &x2, &z2);
+        fe_sub(&b, &x2, &z2);
+        fe_sq(&aa, &a);
+        fe_sq(&bb, &b);
+        fe_sub(&e_diff, &aa, &bb);
+        fe_add(&c, &x3, &z3);
+        fe_sub(&d, &x3, &z3);
+        fe_mul(&da, &d, &a);
+        fe_mul(&cb, &c, &b);
+
+        fe_add(&t0, &da, &cb);
+        fe_sq(&x3, &t0);
+        fe_sub(&t1, &da, &cb);
+        fe_sq(&t1, &t1);
+        fe_mul(&z3, &t1, &x1);
+        fe_mul(&x2, &aa, &bb);
+        fe_mul_small(&t0, &e_diff, 121665u);
+        fe_add(&t0, &t0, &aa);
+        fe_mul(&z2, &e_diff, &t0);
+    }
+
+    fe_cswap(&x2, &x3, swap);
+    fe_cswap(&z2, &z3, swap);
+    fe_inv(&z2, &z2);
+    fe_mul(&x2, &x2, &z2);
+    fe_tobytes(out, &x2);
+    status = bytes_are_all_zero(out, 32u) ? -1 : 0;
+
+    secure_bzero(e, sizeof(e));
+    secure_bzero(&x1, sizeof(x1));
+    secure_bzero(&x2, sizeof(x2));
+    secure_bzero(&z2, sizeof(z2));
+    secure_bzero(&x3, sizeof(x3));
+    secure_bzero(&z3, sizeof(z3));
+    secure_bzero(&a, sizeof(a));
+    secure_bzero(&aa, sizeof(aa));
+    secure_bzero(&b, sizeof(b));
+    secure_bzero(&bb, sizeof(bb));
+    secure_bzero(&e_diff, sizeof(e_diff));
+    secure_bzero(&c, sizeof(c));
+    secure_bzero(&d, sizeof(d));
+    secure_bzero(&da, sizeof(da));
+    secure_bzero(&cb, sizeof(cb));
+    secure_bzero(&t0, sizeof(t0));
+    secure_bzero(&t1, sizeof(t1));
+    return status;
+}
+
+int x25519_scalarmult_base(u8 out[32], const u8 scalar[32]) {
+    return x25519_scalarmult(out, scalar, g_x25519_basepoint);
+}
+
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
