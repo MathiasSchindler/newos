@@ -13,8 +13,8 @@ typedef struct {
     unsigned long long max_depth;
 } XmlCountStats;
 
-static void update_max_depth(XmlCountStats *stats, const XmlToken *token) {
-    unsigned long long depth = (unsigned long long)token->depth + 1ULL;
+static void update_max_depth(XmlCountStats *stats, unsigned int token_depth) {
+    unsigned long long depth = (unsigned long long)token_depth + 1ULL;
     if (depth > stats->max_depth) {
         stats->max_depth = depth;
     }
@@ -38,48 +38,39 @@ static void write_stats(const XmlCountStats *stats) {
     write_stat("max-depth", stats->max_depth);
 }
 
+static int count_event(const XmlStreamEvent *event, void *user_data) {
+    XmlCountStats *stats = (XmlCountStats *)user_data;
+    if (event->type == XML_TOKEN_START || event->type == XML_TOKEN_EMPTY) {
+        stats->elements += 1ULL;
+        stats->attributes += (unsigned long long)event->attribute_count;
+        update_max_depth(stats, event->depth);
+    } else if (event->type == XML_TOKEN_TEXT) {
+        if (!event->text_is_blank) {
+            stats->text_nodes += 1ULL;
+        }
+    } else if (event->type == XML_TOKEN_CDATA) {
+        stats->cdata += 1ULL;
+        if (event->text_length > 0U) {
+            stats->text_nodes += 1ULL;
+        }
+    } else if (event->type == XML_TOKEN_COMMENT) {
+        stats->comments += 1ULL;
+    } else if (event->type == XML_TOKEN_PI) {
+        stats->processing_instructions += 1ULL;
+    } else if (event->type == XML_TOKEN_DOCTYPE) {
+        stats->doctypes += 1ULL;
+    }
+    return 0;
+}
+
 static int count_one(const char *path) {
-    XmlParser parser;
-    XmlToken token;
     XmlCountStats stats;
-    char *input_buffer;
-    size_t length;
-    int result;
 
     rt_memset(&stats, 0, sizeof(stats));
-    if (xml_read_document(path, &input_buffer, &length, "xmlcount") != 0) {
-        return 1;
-    }
-    xml_parser_init(&parser, input_buffer, length);
-    while ((result = xml_next_token(&parser, &token)) > 0) {
-        if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
-            stats.elements += 1ULL;
-            stats.attributes += (unsigned long long)token.attribute_count;
-            update_max_depth(&stats, &token);
-        } else if (token.type == XML_TOKEN_TEXT) {
-            if (!token.text_is_blank) {
-                stats.text_nodes += 1ULL;
-            }
-        } else if (token.type == XML_TOKEN_CDATA) {
-            stats.cdata += 1ULL;
-            if (token.text_length > 0U) {
-                stats.text_nodes += 1ULL;
-            }
-        } else if (token.type == XML_TOKEN_COMMENT) {
-            stats.comments += 1ULL;
-        } else if (token.type == XML_TOKEN_PI) {
-            stats.processing_instructions += 1ULL;
-        } else if (token.type == XML_TOKEN_DOCTYPE) {
-            stats.doctypes += 1ULL;
-        }
-    }
-    if (result < 0 || xml_parse_complete(&parser) != 0) {
-        xml_report_error("xmlcount", path, &parser);
-        xml_free_document(input_buffer);
+    if (xml_stream_visit_document(path, "xmlcount", count_event, &stats) != 0) {
         return 1;
     }
     write_stats(&stats);
-    xml_free_document(input_buffer);
     return 0;
 }
 

@@ -186,13 +186,14 @@ The target API is:
 
     typedef struct RtArena RtArena;
 
-    void rt_arena_init(RtArena *arena);
+    void rt_arena_init(RtArena *arena, size_t default_block_size);
     void *rt_arena_alloc(RtArena *arena, size_t size);
     void *rt_arena_alloc_array(RtArena *arena, size_t count, size_t item_size);
     void rt_arena_reset(RtArena *arena);
     void rt_arena_destroy(RtArena *arena);
 
 Arena allocation should be a bump-pointer fast path inside page-backed blocks.
+Passing `0` as `default_block_size` selects the runtime default block size.
 `rt_arena_reset` releases or rewinds all allocations in the arena as a group.
 `rt_arena_destroy` returns backing pages to the platform.
 

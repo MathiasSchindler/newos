@@ -132,6 +132,19 @@ typedef struct {
     const char *root_name;
 } XmlStreamOptions;
 
+typedef struct {
+    XmlTokenType type;
+    XmlName name;
+    size_t attribute_count;
+    size_t text_length;
+    unsigned long long line;
+    unsigned long long column;
+    unsigned int depth;
+    int text_is_blank;
+} XmlStreamEvent;
+
+typedef int (*XmlStreamEventCallback)(const XmlStreamEvent *event, void *user_data);
+
 void xml_parser_init(XmlParser *parser, const char *input, size_t length);
 void xml_parser_free(XmlParser *parser);
 int xml_next_token(XmlParser *parser, XmlToken *token);
@@ -143,6 +156,8 @@ void xml_free_document(char *buffer);
 void xml_report_error(const char *tool_name, const char *path, const XmlParser *parser);
 int xml_stream_validate_document(const char *path, const char *tool_name);
 int xml_stream_validate_document_with_options(const char *path, const char *tool_name, const XmlStreamOptions *options);
+int xml_stream_visit_document(const char *path, const char *tool_name, XmlStreamEventCallback callback, void *user_data);
+int xml_stream_visit_document_with_options(const char *path, const char *tool_name, const XmlStreamOptions *options, XmlStreamEventCallback callback, void *user_data);
 
 int xml_name_equals(const XmlName *name, const char *text);
 int xml_name_equals_slice(const XmlName *name, const char *text, size_t length);

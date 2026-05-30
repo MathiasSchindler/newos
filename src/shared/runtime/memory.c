@@ -107,6 +107,7 @@ static void rt_alloc_unlock(void) {
 #endif
 
 static size_t rt_align_up(size_t value, size_t alignment) {
+    if (value > ((size_t)-1) - (alignment - 1U)) return 0;
     return (value + alignment - 1U) & ~(alignment - 1U);
 }
 
@@ -413,9 +414,15 @@ void *rt_realloc_array(void *ptr, size_t count, size_t item_size) {
 }
 
 void rt_arena_init(RtArena *arena, size_t default_block_size) {
+    size_t aligned_size;
     if (arena == 0) return;
     arena->blocks = 0;
-    arena->default_block_size = default_block_size == 0U ? RT_ARENA_DEFAULT_BLOCK_SIZE : rt_align_up(default_block_size, RT_ALIGN);
+    if (default_block_size == 0U) {
+        arena->default_block_size = RT_ARENA_DEFAULT_BLOCK_SIZE;
+        return;
+    }
+    aligned_size = rt_align_up(default_block_size, RT_ALIGN);
+    arena->default_block_size = aligned_size == 0U ? RT_ARENA_DEFAULT_BLOCK_SIZE : aligned_size;
 }
 
 void rt_arena_reset(RtArena *arena) {
@@ -464,6 +471,7 @@ void *rt_arena_alloc(RtArena *arena, size_t size) {
 
     if (arena == 0 || size == 0U) return 0;
     size = rt_align_up(size, RT_ALIGN);
+    if (size == 0U) return 0;
     block = arena->blocks;
     if (block == 0 || block->used + size < block->used || block->used + size > block->size) {
         size_t payload_size = size > arena->default_block_size ? size : arena->default_block_size;
