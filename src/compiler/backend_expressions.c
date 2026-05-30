@@ -48,6 +48,7 @@ static void expr_next(ExprParser *parser) {
     parser->cursor = cursor;
     parser->current.text[0] = '\0';
     parser->current.number_value = 0;
+    parser->current.number_is_unsigned = 0;
     parser->current.text_length = 0U;
 
     if (*cursor == '\0') {
@@ -107,6 +108,9 @@ static void expr_next(ExprParser *parser) {
         parser->current.text[length] = '\0';
         while (*cursor == 'u' || *cursor == 'U' || *cursor == 'l' || *cursor == 'L' ||
                *cursor == 'f' || *cursor == 'F') {
+            if (*cursor == 'u' || *cursor == 'U') {
+                parser->current.number_is_unsigned = 1;
+            }
             cursor += 1;
         }
         (void)parse_signed_value(parser->current.text, &parser->current.number_value);
@@ -806,7 +810,7 @@ static void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buff
         rt_copy_string(buffer, buffer_size, "char*");
         expr_next(parser);
     } else if (parser->current.kind == EXPR_TOKEN_NUMBER || parser->current.kind == EXPR_TOKEN_CHAR) {
-        if (text_contains(parser->current.text, "u") || text_contains(parser->current.text, "U")) {
+        if (parser->current.number_is_unsigned) {
             rt_copy_string(buffer, buffer_size, "unsigned long");
         } else {
             rt_copy_string(buffer, buffer_size, "int");
@@ -1020,7 +1024,6 @@ static int type_is_unsigned_like(const char *type_text) {
 
     return text_contains(type, "unsigned") ||
            text_contains(type, "*") ||
-           text_contains(type, "[") ||
            names_equal(type, "size_t") ||
            names_equal(type, "uintptr_t") ||
            names_equal(type, "usize");
@@ -1030,10 +1033,17 @@ static int expr_snapshot_looks_unsigned(ExprParser *parser) {
     ExprParser snapshot = *parser;
 
     if (snapshot.current.kind == EXPR_TOKEN_NUMBER) {
-        return text_contains(snapshot.current.text, "u") || text_contains(snapshot.current.text, "U");
+        return snapshot.current.number_is_unsigned;
     }
     if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
+        ExprParser inferred = snapshot;
+        char inferred_type[128];
         const char *known_type = lookup_name_type_text(snapshot.state, snapshot.current.text);
+
+        expr_infer_result_type(&inferred, inferred_type, sizeof(inferred_type));
+        if (inferred_type[0] != '\0') {
+            return type_is_unsigned_like(inferred_type);
+        }
         if (known_type != 0 && type_is_unsigned_like(known_type)) {
             return 1;
         }
@@ -1486,7 +1496,7 @@ static int expr_parse_sizeof(ExprParser *parser) {
                         }
                         if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "]")) {
                             char indexed[128];
-                            copy_indexed_result_type(type_text, indexed, sizeof(indexed));
+                            backend_copy_sizeof_indexed_type_text(type_text, indexed, sizeof(indexed));
                             rt_copy_string(type_text, sizeof(type_text), indexed);
                             expr_next(parser);
                         }
@@ -2273,6 +2283,7 @@ static int expr_parse_multiplicative(ExprParser *parser) {
 static int expr_parse_additive(ExprParser *parser) {
     char lhs_type[128];
     ExprParser lhs_snapshot = *parser;
+    int lhs_unsigned = expr_snapshot_looks_unsigned(&lhs_snapshot);
 
     expr_infer_result_type(&lhs_snapshot, lhs_type, sizeof(lhs_type));
     if (expr_parse_multiplicative(parser) != 0) {
@@ -2286,6 +2297,7 @@ static int expr_parse_additive(ExprParser *parser) {
         ExprParser rhs_snapshot;
         int lhs_pointer_like;
         int rhs_pointer_like;
+        int use_unsigned;
 
         rt_copy_string(op, sizeof(op), parser->current.text);
         expr_next(parser);
@@ -2294,10 +2306,12 @@ static int expr_parse_additive(ExprParser *parser) {
         }
 
         rhs_snapshot = *parser;
+        use_unsigned = lhs_unsigned || expr_snapshot_looks_unsigned(&rhs_snapshot);
         expr_infer_result_type(&rhs_snapshot, rhs_type, sizeof(rhs_type));
         if (expr_parse_multiplicative(parser) != 0) {
             return -1;
         }
+        use_unsigned = use_unsigned || type_is_unsigned_like(lhs_type) || type_is_unsigned_like(rhs_type);
 
         lhs_pointer_like = lhs_type[0] != '\0' && (text_contains(lhs_type, "*") || text_contains(lhs_type, "["));
         rhs_pointer_like = rhs_type[0] != '\0' && (text_contains(rhs_type, "*") || text_contains(rhs_type, "["));
@@ -2314,10 +2328,11 @@ static int expr_parse_additive(ExprParser *parser) {
             }
             rt_copy_string(lhs_type, sizeof(lhs_type), rhs_type);
         } else if (!lhs_pointer_like || rhs_pointer_like) {
-            lhs_type[0] = '\0';
+            rt_copy_string(lhs_type, sizeof(lhs_type), use_unsigned ? "unsigned long" : "int");
         }
+        lhs_unsigned = use_unsigned;
 
-        if (emit_binary_op(parser->state, op) != 0) {
+        if (emit_binary_op_mode(parser->state, op, use_unsigned) != 0) {
             return -1;
         }
     }

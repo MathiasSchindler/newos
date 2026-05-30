@@ -184,15 +184,58 @@ static int expand_text(
 );
 
 static int find_macro(const CompilerPreprocessor *preprocessor, const char *name) {
-    size_t i;
+    const char *original_name = name;
+    unsigned int hash = 2166136261U;
+    size_t bucket;
+    size_t probe;
 
-    for (i = 0; i < preprocessor->macro_count; ++i) {
-        if (preprocessor->macros[i].defined && names_equal(preprocessor->macros[i].name, name)) {
-            return (int)i;
+    while (name != 0 && *name != '\0') {
+        hash ^= (unsigned int)(unsigned char)*name++;
+        hash *= 16777619U;
+    }
+    bucket = (size_t)(hash & (unsigned int)(COMPILER_MACRO_INDEX_CAPACITY - 1U));
+
+    for (probe = 0; probe < COMPILER_MACRO_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = preprocessor->macro_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
         }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < preprocessor->macro_count &&
+            preprocessor->macros[index].defined && names_equal(preprocessor->macros[index].name, original_name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (COMPILER_MACRO_INDEX_CAPACITY - 1U);
     }
 
     return -1;
+}
+
+static void remember_macro_index(CompilerPreprocessor *preprocessor, const char *name, unsigned int index) {
+    const char *original_name = name;
+    unsigned int hash = 2166136261U;
+    size_t bucket;
+    size_t probe;
+
+    while (name != 0 && *name != '\0') {
+        hash ^= (unsigned int)(unsigned char)*name++;
+        hash *= 16777619U;
+    }
+    bucket = (size_t)(hash & (unsigned int)(COMPILER_MACRO_INDEX_CAPACITY - 1U));
+
+    for (probe = 0; probe < COMPILER_MACRO_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = preprocessor->macro_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U ||
+            (existing >= 0 && (size_t)existing < preprocessor->macro_count && names_equal(preprocessor->macros[existing].name, original_name))) {
+            preprocessor->macro_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (COMPILER_MACRO_INDEX_CAPACITY - 1U);
+    }
 }
 
 static void copy_trimmed_slice(const char *start, size_t length, char *buffer, size_t buffer_size) {
@@ -468,6 +511,7 @@ int compiler_preprocessor_define(CompilerPreprocessor *preprocessor, const char 
     preprocessor->macros[index].parameter_count = 0U;
     preprocessor->macros[index].defined = 1;
     preprocessor->macros[index].is_function_like = 0;
+    remember_macro_index(preprocessor, name, (unsigned int)index);
     return 0;
 }
 
@@ -503,6 +547,7 @@ static int define_function_like_macro(CompilerPreprocessor *preprocessor,
     }
     preprocessor->macros[index].defined = 1;
     preprocessor->macros[index].is_function_like = 1;
+    remember_macro_index(preprocessor, name, (unsigned int)index);
     return 0;
 }
 

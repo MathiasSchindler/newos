@@ -24,6 +24,7 @@ typedef struct {
     int pointer_depth;
     int is_function;
     int is_array;
+    int pointer_to_array;
     int is_unsigned;
     unsigned long long array_length;
     unsigned long long array_stride;

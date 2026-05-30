@@ -67,33 +67,107 @@ char backend_decode_escaped_char(const char **cursor_inout) {
     return *cursor;
 }
 
-int backend_type_access_size(const char *type_text, int word_index) {
-    const char *type = skip_spaces(type_text != 0 ? type_text : "");
-    int is_unsigned = text_contains(type, "unsigned");
+typedef struct {
+    const char *text;
+    int has_pointer;
+    int has_array;
+    int is_unsigned;
+    int is_struct;
+    int is_union;
+    int is_enum;
+    int has_char;
+    int has_short;
+    int has_int;
+    int has_long;
+    int has_double;
+    int has_int128;
+} BackendTypeInfo;
 
-    if (type[0] == '\0') {
+static BackendTypeInfo analyze_backend_type(const char *type_text) {
+    BackendTypeInfo info;
+
+    info.text = skip_spaces(type_text != 0 ? type_text : "");
+    info.has_pointer = text_contains(info.text, "*");
+    info.has_array = text_contains(info.text, "[");
+    info.is_unsigned = text_contains(info.text, "unsigned");
+    info.is_struct = starts_with(info.text, "struct");
+    info.is_union = starts_with(info.text, "union");
+    info.is_enum = starts_with(info.text, "enum");
+    info.has_char = text_contains(info.text, "char");
+    info.has_short = text_contains(info.text, "short");
+    info.has_int = text_contains(info.text, "int");
+    info.has_long = text_contains(info.text, "long");
+    info.has_double = text_contains(info.text, "double");
+    info.has_int128 = text_contains(info.text, "__int128");
+    return info;
+}
+
+static int backend_type_is_plain_char_scalar(const BackendTypeInfo *info) {
+    return info->has_char && !info->has_pointer && !info->is_struct && !info->is_union && !info->is_enum;
+}
+
+static int copy_pointer_to_array_element_type(const char *base_type, char *buffer, size_t buffer_size) {
+    const char *type = skip_spaces(base_type != 0 ? base_type : "");
+    const char *open = type;
+    const char *close;
+    const char *suffix;
+    size_t length;
+
+    if (buffer_size == 0) {
+        return 0;
+    }
+    while (*open != '\0' && *open != '[') {
+        open += 1;
+    }
+    if (*open != '[') {
+        return 0;
+    }
+    close = open;
+    while (*close != '\0' && *close != ']') {
+        close += 1;
+    }
+    if (*close != ']') {
+        return 0;
+    }
+    suffix = skip_spaces(close + 1);
+    if (*suffix != '*') {
+        return 0;
+    }
+    length = (size_t)(close + 1 - type);
+    if (length >= buffer_size) {
+        length = buffer_size - 1U;
+    }
+    memcpy(buffer, type, length);
+    buffer[length] = '\0';
+    return 1;
+}
+
+int backend_type_access_size(const char *type_text, int word_index) {
+    BackendTypeInfo info = analyze_backend_type(type_text);
+
+    if (info.text[0] == '\0') {
         return word_index ? 0 : -1;
     }
-    if (text_contains(type, "char") && !text_contains(type, "*") &&
-        !starts_with(type, "struct") && !starts_with(type, "union") && !starts_with(type, "enum")) {
-        return is_unsigned ? 1 : -1;
+    if (backend_type_is_plain_char_scalar(&info)) {
+        return info.is_unsigned ? 1 : -1;
     }
-    if (text_contains(type, "short") && !text_contains(type, "*")) {
-        return is_unsigned ? 2 : -2;
+    if (info.has_short && !info.has_pointer) {
+        return info.is_unsigned ? 2 : -2;
     }
-    if ((text_contains(type, "int") || starts_with(type, "enum")) && !text_contains(type, "*")) {
-        return is_unsigned ? 4 : -4;
+    if ((info.has_int || info.is_enum) && !info.has_pointer) {
+        return info.is_unsigned ? 4 : -4;
     }
     return 0;
 }
 
 int backend_member_prefers_word_index(const char *name, const char *type_text) {
+    BackendTypeInfo info = analyze_backend_type(type_text);
+
     if (type_text != 0 && should_prefer_word_index(name != 0 ? name : "", type_text)) {
         return 1;
     }
-    if (type_text != 0 && type_text[0] != '\0') {
-        if (text_contains(type_text, "char") && !text_contains(type_text, "*") && !text_contains(type_text, "struct") &&
-            !text_contains(type_text, "union") && !text_contains(type_text, "enum")) {
+    if (info.text[0] != '\0') {
+        if (backend_type_is_plain_char_scalar(&info)) {
             return 0;
         }
         return 1;
@@ -113,7 +187,7 @@ int backend_member_prefers_word_index(const char *name, const char *type_text) {
 }
 
 int backend_member_result_decays_to_address(const char *type_text) {
-    return type_text != 0 && text_contains(type_text, "[");
+    return analyze_backend_type(type_text).has_array;
 }
 
 static int type_matches_named_aggregate(const char *base_type, const char *name) {
@@ -544,7 +618,12 @@ void backend_copy_member_result_type(const BackendState *state,
 }
 
 int backend_type_is_pointer_like(const char *base_type) {
-    return base_type != 0 && text_contains(base_type, "*") && !text_contains(base_type, "[");
+    BackendTypeInfo info = analyze_backend_type(base_type);
+    if (info.has_pointer && info.has_array) {
+        char element_type[128];
+        return copy_pointer_to_array_element_type(base_type, element_type, sizeof(element_type));
+    }
+    return info.has_pointer && !info.has_array;
 }
 
 void backend_copy_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size) {
@@ -558,6 +637,9 @@ void backend_copy_indexed_type_text(const char *base_type, char *buffer, size_t 
     }
     if (base_type == 0) {
         buffer[0] = '\0';
+        return;
+    }
+    if (copy_pointer_to_array_element_type(base_type, buffer, buffer_size)) {
         return;
     }
 
@@ -645,7 +727,8 @@ void backend_copy_dereferenced_type_text(const char *base_type, char *buffer, si
 }
 
 long long backend_type_storage_bytes(const BackendState *state, const char *type_text) {
-    const char *type = skip_spaces(type_text != 0 ? type_text : "");
+    BackendTypeInfo info = analyze_backend_type(type_text);
+    const char *type = info.text;
     char element_type[128];
     const char *open = 0;
     unsigned long long length = 0ULL;
@@ -654,6 +737,13 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
 
     if (type[0] == '\0') {
         return backend_stack_slot_size(state);
+    }
+
+    if (info.has_pointer && info.has_array) {
+        char array_element_type[128];
+        if (copy_pointer_to_array_element_type(type, array_element_type, sizeof(array_element_type))) {
+            return 8;
+        }
     }
 
     open = type;
@@ -674,7 +764,7 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
         return element_size * (long long)length;
     }
 
-    if (!text_contains(type, "*")) {
+    if (!info.has_pointer) {
         aggregate_size = lookup_aggregate_size(state, type);
         if (aggregate_size > 0) {
             return aggregate_size;
@@ -696,7 +786,7 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
         }
         return BACKEND_STRUCT_STACK_BYTES;
     }
-    if (text_contains(type, "*")) {
+    if (info.has_pointer) {
         return 8;
     }
     if (names_equal(type, "size_t") || names_equal(type, "ssize_t") || names_equal(type, "ptrdiff_t") ||
@@ -704,19 +794,19 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
         names_equal(type, "off_t") || names_equal(type, "time_t")) {
         return 8;
     }
-    if (text_contains(type, "char")) {
+    if (info.has_char) {
         return 1;
     }
-    if (text_contains(type, "short")) {
+    if (info.has_short) {
         return 2;
     }
-    if (text_contains(type, "__int128")) {
+    if (info.has_int128) {
         return 16;
     }
-    if (text_contains(type, "long") || text_contains(type, "double")) {
+    if (info.has_long || info.has_double) {
         return 8;
     }
-    if (starts_with(type, "enum") || text_contains(type, "int")) {
+    if (info.is_enum || info.has_int) {
         return 4;
     }
 
@@ -731,18 +821,22 @@ long long backend_type_storage_bytes(const BackendState *state, const char *type
 }
 
 int backend_array_index_scale(const BackendState *state, const char *base_type, int word_index) {
-    if (base_type != 0 && text_contains(base_type, "[")) {
+    BackendTypeInfo info = analyze_backend_type(base_type);
+
+    if (info.has_array) {
         char element_type[128];
         long long element_size;
 
-        backend_copy_indexed_type_text(base_type, element_type, sizeof(element_type));
+        if (!copy_pointer_to_array_element_type(base_type, element_type, sizeof(element_type))) {
+            backend_copy_indexed_type_text(base_type, element_type, sizeof(element_type));
+        }
         element_size = backend_type_storage_bytes(state, element_type);
         if (element_size > 0 && element_size <= 0x7fffffffLL) {
             return (int)element_size;
         }
         return backend_stack_slot_size(state);
     }
-    if (base_type != 0 && text_contains(base_type, "*")) {
+    if (info.has_pointer) {
         char element_type[128];
         long long element_size;
 
@@ -753,4 +847,10 @@ int backend_array_index_scale(const BackendState *state, const char *base_type, 
         }
     }
     return word_index ? 8 : 1;
+}
+
+void backend_copy_sizeof_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size) {
+    if (!copy_pointer_to_array_element_type(base_type, buffer, buffer_size)) {
+        backend_copy_indexed_type_text(base_type, buffer, buffer_size);
+    }
 }

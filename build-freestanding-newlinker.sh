@@ -80,6 +80,19 @@ fi
 if ! [[ "$NEWLINKER_LINK_JOBS" =~ ^[0-9]+$ ]] || (( NEWLINKER_LINK_JOBS < 1 )); then
   NEWLINKER_LINK_JOBS=1
 fi
+if [[ -z "${NEWLINKER_COMPILE_JOBS:-}" ]]; then
+  if [[ -n "${PARALLEL_JOBS:-}" ]]; then
+    NEWLINKER_COMPILE_JOBS="$PARALLEL_JOBS"
+  elif command -v nproc >/dev/null 2>&1; then
+    NEWLINKER_COMPILE_JOBS=$(nproc)
+  else
+    NEWLINKER_COMPILE_JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')
+  fi
+fi
+if ! [[ "$NEWLINKER_COMPILE_JOBS" =~ ^[0-9]+$ ]] || (( NEWLINKER_COMPILE_JOBS < 1 )); then
+  NEWLINKER_COMPILE_JOBS=1
+fi
+NEWLINKER_NCC_BATCH=${NEWLINKER_NCC_BATCH:-auto}
 
 if [[ ! -x "$LINKER" ]]; then
   echo "LINKER_MISSING $LINKER" | tee "$REPORT"
@@ -121,10 +134,17 @@ declare -A SOURCE_TO_OBJ
 obj_for() { local s="$1" variant="${2:-}" n; n="${s//\//__}"; n="${n//[/lb}"; n="${n//]/rb}"; if [[ -n "$variant" ]]; then n="${variant}__${n}"; fi; printf '%s/%s.o' "$OBJROOT" "$n"; }
 first_line() { local f="$1"; grep -m1 -E 'error:|undefined reference|multiple definition|unsupported|relocation|failed|cannot|No such file|not found|too many input files|undefined symbol|exceeds' "$f" || sed -n '1p' "$f"; }
 tool_stem() { local n="$1"; if [[ "$n" == "[" ]]; then printf 'lbracket'; else n="${n//\//_}"; n="${n//[/lb}"; n="${n//]/rb}"; printf '%s' "$n"; fi; }
-compile_one() {
-  local src="$1" variant="${2:-}" key obj log rc cflags asmflags
+variant_for_tool_source() {
+  local tool="$1" src="$2"
+  if [[ "$src" == "src/compiler/linker.c" || "$src" == "src/compiler/linker_"*.c ]]; then
+    if [[ "$tool" == "linker" ]]; then printf 'linker-report'; return 0; fi
+    if [[ "$tool" == "ncc" ]]; then printf 'linker-core'; return 0; fi
+  fi
+  printf ''
+}
+compile_direct() {
+  local src="$1" variant="${2:-}" result="$3" key obj log rc cflags asmflags
   key="$variant|$src"
-  if [[ -n "${SOURCE_TO_OBJ[$key]:-}" ]]; then printf '%s\n' "${SOURCE_TO_OBJ[$key]}"; return 0; fi
   obj=$(obj_for "$src" "$variant"); log="$LOGROOT/compile-${obj##*/}.log"; mkdir -p "$(dirname "$obj")"
   cflags=("${CFLAGS[@]}"); asmflags=("${ASMFLAGS[@]}")
   case "$variant" in
@@ -141,9 +161,124 @@ compile_one() {
     "$NEWLINKER_CC" "${cflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   fi
   rc=$?
-  if [[ $rc -ne 0 ]]; then echo "$src|$(first_line "$log")"; return 1; fi
-  SOURCE_TO_OBJ[$key]="$obj"
-  printf '%s\n' "$obj"
+  if [[ $rc -ne 0 ]]; then printf 'fail\t%s\t%s|%s\n' "$key" "$src" "$(first_line "$log")" > "$result"; return 0; fi
+  printf 'ok\t%s\t%s\n' "$key" "$obj" > "$result"
+  return 0
+}
+compile_manifest_direct() {
+  local variant="$1" manifest="$2" result="$3" log="$4" rc cflags key src obj
+  cflags=("${CFLAGS[@]}")
+  case "$variant" in
+    linker-core) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0) ;;
+    linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
+  esac
+  "$NEWLINKER_CC" "${cflags[@]}" -c --compile-manifest "$manifest" >"$log" 2>&1
+  rc=$?
+  if [[ $rc -ne 0 ]]; then printf 'fail\tmanifest\t%s\n' "$(first_line "$log")" > "$result"; return 0; fi
+  : > "$result"
+  while IFS=$'\t' read -r src obj; do
+    [[ -n "$src" && -n "$obj" ]] || continue
+    key="$variant|$src"
+    printf 'ok\t%s\t%s\n' "$key" "$obj" >> "$result"
+  done < "$manifest"
+  return 0
+}
+compile_sources() {
+  local tool="$1"
+  local -n sources_ref=$2
+  local -n objs_ref=$3
+  local resultroot="$WORK/.compile-results/$(tool_stem "${tool:-reuse}")-$$-$RANDOM"
+  local pending_results=()
+  local pending_manifests=()
+  local active=0
+  local src variant variant_key key obj result fail message kind result_key result_obj manifest log
+  local missing_by_variant=""
+
+  COMPILE_ERROR=""
+  mkdir -p "$resultroot"
+  for src in "${sources_ref[@]}"; do
+    [[ -f "$src" ]] || continue
+    variant=$(variant_for_tool_source "$tool" "$src")
+    key="$variant|$src"
+    if [[ -n "${SOURCE_TO_OBJ[$key]:-}" ]]; then
+      continue
+    fi
+    if [[ "$NEWLINKER_IS_NCC" == "1" && "$src" == *.c && ( "$NEWLINKER_NCC_BATCH" == "1" || "$NEWLINKER_NCC_BATCH" == "yes" || "$NEWLINKER_NCC_BATCH" == "true" || ( "$NEWLINKER_NCC_BATCH" == "auto" && "$NEWLINKER_COMPILE_JOBS" == "1" ) ) ]]; then
+      variant_key="${variant:-default}"
+      missing_by_variant+="$variant_key"$'\t'"$src"$'\n'
+      continue
+    fi
+    obj=$(obj_for "$src" "$variant")
+    result="$resultroot/${#pending_results[@]}-${obj##*/}.tsv"
+    compile_direct "$src" "$variant" "$result" &
+    pending_results+=("$result")
+    active=$((active+1))
+    if (( active >= NEWLINKER_COMPILE_JOBS )); then
+      wait -n || true
+      active=$((active-1))
+    fi
+  done
+
+  if [[ -n "$missing_by_variant" ]]; then
+    while IFS=$'\t' read -r variant_key; do
+      [[ -n "$variant_key" ]] || continue
+      if [[ "$variant_key" == "default" ]]; then variant=""; else variant="$variant_key"; fi
+      manifest="$resultroot/manifest-${#pending_results[@]}-$(tool_stem "$variant_key").tsv"
+      log="$LOGROOT/compile-manifest-$(tool_stem "${tool:-reuse}")-$variant_key-${#pending_results[@]}.log"
+      result="$resultroot/manifest-${#pending_results[@]}.tsv"
+      : > "$manifest"
+      while IFS=$'\t' read -r row_variant_key src; do
+        [[ "$row_variant_key" == "$variant_key" ]] || continue
+        printf '%s\t%s\n' "$src" "$(obj_for "$src" "$variant")" >> "$manifest"
+      done <<< "$missing_by_variant"
+      compile_manifest_direct "$variant" "$manifest" "$result" "$log" &
+      pending_results+=("$result")
+      pending_manifests+=("$manifest")
+      active=$((active+1))
+      if (( active >= NEWLINKER_COMPILE_JOBS )); then
+        wait -n || true
+        active=$((active-1))
+      fi
+    done < <(printf '%s' "$missing_by_variant" | cut -f1 | sort -u)
+  fi
+
+  while (( active > 0 )); do
+    wait -n || true
+    active=$((active-1))
+  done
+
+  fail=""
+  for result in "${pending_results[@]}"; do
+    if [[ ! -s "$result" ]]; then
+      fail="missing compile result: $result"
+      break
+    fi
+    while IFS=$'\t' read -r kind result_key result_obj; do
+      if [[ "$kind" == "ok" ]]; then
+        SOURCE_TO_OBJ[$result_key]="$result_obj"
+      else
+        fail="$result_obj"
+        break
+      fi
+    done < "$result"
+    [[ -z "$fail" ]] || break
+  done
+  if [[ -n "$fail" ]]; then
+    COMPILE_ERROR="$fail"
+    return 1
+  fi
+
+  for src in "${sources_ref[@]}"; do
+    [[ -f "$src" ]] || continue
+    variant=$(variant_for_tool_source "$tool" "$src")
+    key="$variant|$src"
+    obj="${SOURCE_TO_OBJ[$key]:-}"
+    if [[ -z "$obj" ]]; then
+      COMPILE_ERROR="missing object for $src"
+      return 1
+    fi
+    objs_ref+=("$obj")
+  done
   return 0
 }
 append_unique_source() {
@@ -175,12 +310,10 @@ append_dir_sources() {
 
 REUSE_OBJS=()
 REUSE_FAILS=()
-out=$(compile_one "$CRT_SRC"); if [[ $? -ne 0 ]]; then REUSE_FAILS+=("$out"); else CRT_OBJ="$out"; fi
-for src in "${REUSE_SOURCES[@]}"; do
-  [[ -f "$src" ]] || continue
-  out=$(compile_one "$src")
-  if [[ $? -ne 0 ]]; then REUSE_FAILS+=("$out"); else REUSE_OBJS+=("$out"); fi
-done
+CRT_SOURCES=("$CRT_SRC")
+CRT_OBJS=()
+if ! compile_sources "" CRT_SOURCES CRT_OBJS; then REUSE_FAILS+=("$COMPILE_ERROR"); else CRT_OBJ="${CRT_OBJS[0]}"; fi
+if ! compile_sources "" REUSE_SOURCES REUSE_OBJS; then REUSE_FAILS+=("$COMPILE_ERROR"); fi
 {
   echo "newlinker freestanding build: $WORK"
   echo "compiler: $NEWLINKER_CC"
@@ -189,6 +322,8 @@ done
   echo "linker flags: ${LINKER_FLAGS_ARRAY[*]}"
   echo "extra cflags: ${NEWLINKER_EXTRA_CFLAGS_ARRAY[*]:-none}"
   echo "profile: $NEWLINKER_PROFILE"
+  echo "compile jobs: $NEWLINKER_COMPILE_JOBS"
+  echo "ncc batch: $NEWLINKER_NCC_BATCH"
   echo "link jobs: $NEWLINKER_LINK_JOBS"
   echo "tools from Makefile: $(wc -w <<<"$TOOLS")"
   echo "reusable sources attempted: ${#REUSE_SOURCES[@]} plus crt0"
@@ -300,14 +435,7 @@ for tool in $TOOLS; do
   fi
   tool_objs=()
   tfail=""
-  for src in "${tool_sources[@]}"; do
-    variant=""
-    if [[ "$src" == "src/compiler/linker.c" || "$src" == "src/compiler/linker_"*.c ]]; then
-      if [[ "$tool" == "linker" ]]; then variant="linker-report"; elif [[ "$tool" == "ncc" ]]; then variant="linker-core"; fi
-    fi
-    out=$(compile_one "$src" "$variant")
-    if [[ $? -ne 0 ]]; then tfail="$src: ${out#*|}"; break; else tool_objs+=("$out"); fi
-  done
+  if ! compile_sources "$tool" tool_sources tool_objs; then tfail="$COMPILE_ERROR"; fi
   if [[ -n "$tfail" ]]; then compile_fail=$((compile_fail+1)); printf 'compile\t%s\t%s\n' "$tool" "$tfail" >> "$FAILFILE"; continue; fi
   objfile="$TOOL_OBJROOT/$(tool_stem "$tool").list"
   printf '%s\n' "${tool_objs[@]}" > "$objfile"

@@ -434,6 +434,8 @@ static int parse_parameter_list(CompilerParser *parser, CompilerDeclarator *decl
 }
 
 static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int allow_abstract) {
+    int parenthesized_pointer = 0;
+
     if (current_is_identifier(parser)) {
         copy_token_text(&parser->current, declarator->name, sizeof(declarator->name));
         if (advance(parser) != 0) {
@@ -443,6 +445,7 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
         if (advance(parser) != 0 || parse_declarator(parser, declarator, 1) != 0 || expect_punct(parser, ")") != 0) {
             return -1;
         }
+        parenthesized_pointer = declarator->pointer_depth > 0;
     } else if (!allow_abstract) {
         set_error(parser, "expected declarator");
         return -1;
@@ -491,6 +494,9 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
             }
         }
         declarator->is_array = 1;
+        if (parenthesized_pointer) {
+            declarator->pointer_to_array = 1;
+        }
         if (expect_punct(parser, "]") != 0) {
             return -1;
         }
@@ -547,6 +553,7 @@ static int declare_symbol(
     }
     symbol_type.is_function = declarator->is_function;
     symbol_type.is_array = declarator->is_array;
+    symbol_type.pointer_to_array = declarator->pointer_to_array;
     symbol_type.array_length = declarator->array_length;
     symbol_type.array_stride = declarator->array_stride;
 

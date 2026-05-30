@@ -146,6 +146,7 @@ typedef struct {
     char text[COMPILER_IR_LINE_CAPACITY];
     size_t text_length;
     long long number_value;
+    int number_is_unsigned;
 } ExprToken;
 
 typedef struct {
@@ -219,6 +220,7 @@ void backend_copy_member_result_type(const BackendState *state,
                                      size_t buffer_size);
 int backend_type_is_pointer_like(const char *base_type);
 void backend_copy_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size);
+void backend_copy_sizeof_indexed_type_text(const char *base_type, char *buffer, size_t buffer_size);
 void backend_copy_dereferenced_type_text(const char *base_type, char *buffer, size_t buffer_size);
 long long backend_type_storage_bytes(const BackendState *state, const char *type_text);
 int backend_array_index_scale(const BackendState *state, const char *base_type, int word_index);

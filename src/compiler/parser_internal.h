@@ -8,6 +8,7 @@ typedef struct {
     char name[COMPILER_TYPEDEF_NAME_CAPACITY];
     int is_function;
     int is_array;
+    int pointer_to_array;
     int pointer_depth;
     unsigned long long array_length;
     unsigned long long array_stride;

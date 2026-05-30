@@ -165,6 +165,9 @@ static unsigned long long type_storage_bytes(const CompilerParser *parser, const
     if (type == 0) {
         return 0ULL;
     }
+    if (type->pointer_to_array && type->pointer_depth > 0) {
+        return 8U;
+    }
     if (type->is_array) {
         CompilerType element_type = *type;
         if (type->array_stride > 0ULL) {
@@ -257,11 +260,27 @@ static void format_layout_type(const CompilerType *type, char *buffer, size_t bu
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), type->aggregate_name);
     }
 
+    if (type->is_array && type->pointer_to_array) {
+        char digits[32];
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+        if (type->array_length > 0ULL) {
+            rt_unsigned_to_string(type->array_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+        }
+        rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        if (type->array_stride > 0ULL) {
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_stride, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        }
+    }
+
     for (i = 0; i < (size_t)type->pointer_depth; ++i) {
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "*");
     }
 
-    if (type->is_array) {
+    if (type->is_array && !type->pointer_to_array) {
         char digits[32];
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
         if (type->array_length > 0ULL) {

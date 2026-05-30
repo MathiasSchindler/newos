@@ -16,11 +16,13 @@
 #define COMPILER_MAX_INPUT_FILES 256
 #define COMPILER_MAX_EXTRA_LINK_ARGS 32
 #define COMPILER_MAX_LINK_ARGS (COMPILER_MAX_INPUT_FILES * 4 + 64)
+#define COMPILER_MANIFEST_MAX_BYTES (1024 * 1024)
 
 typedef struct {
     const char *program_name;
     const char *input_path;
     const char *output_path;
+    const char *compile_manifest_path;
     const char *input_paths[COMPILER_MAX_INPUT_FILES];
     size_t input_count;
     CompilerTarget target;
@@ -36,6 +38,7 @@ typedef struct {
     int static_link;
     int function_sections;
     int data_sections;
+    int time_report;
     char include_dirs[COMPILER_MAX_INCLUDE_DIRS][COMPILER_PATH_CAPACITY];
     size_t include_dir_count;
     const char *extra_link_args[COMPILER_MAX_EXTRA_LINK_ARGS];
@@ -146,7 +149,7 @@ static int parse_target(const char *text, CompilerTarget *target_out) {
 }
 
 static void write_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-E|--preprocess] [-S|--emit-asm] [--dump-tokens|--dump-ast|--dump-ir] [--target TARGET] [-I DIR] [-DNAME=VALUE] [-c] [-fsyntax-only] [-o OUTPUT] FILE...");
+    tool_write_usage(program_name, "[-E|--preprocess] [-S|--emit-asm] [--dump-tokens|--dump-ast|--dump-ir] [--target TARGET] [-I DIR] [-DNAME=VALUE] [-c] [--compile-manifest FILE] [-fsyntax-only] [-o OUTPUT] FILE...");
     rt_write_cstr(2, "Targets: ");
     compiler_target_write_names(2);
     rt_write_char(2, '\n');
@@ -189,6 +192,31 @@ static const char *pick_output_path(const CompilerOptions *options, char *buffer
 }
 
 static int parse_translation_unit(const CompilerOptions *options);
+
+static void write_time_report(const CompilerOptions *options,
+                              unsigned long long preprocess_ns,
+                              unsigned long long parse_ns,
+                              unsigned long long optimize_ns,
+                              unsigned long long output_ns,
+                              unsigned long long total_ns) {
+    if (!options->time_report) {
+        return;
+    }
+
+    rt_write_cstr(2, "ncc time ");
+    rt_write_cstr(2, options->input_path != 0 ? options->input_path : "<input>");
+    rt_write_cstr(2, ": preprocess_us=");
+    rt_write_uint(2, preprocess_ns / 1000ULL);
+    rt_write_cstr(2, " parse_us=");
+    rt_write_uint(2, parse_ns / 1000ULL);
+    rt_write_cstr(2, " optimize_us=");
+    rt_write_uint(2, optimize_ns / 1000ULL);
+    rt_write_cstr(2, " output_us=");
+    rt_write_uint(2, output_ns / 1000ULL);
+    rt_write_cstr(2, " total_us=");
+    rt_write_uint(2, total_ns / 1000ULL);
+    rt_write_char(2, '\n');
+}
 
 static const char *pick_link_output_path(const CompilerOptions *options, char *buffer, size_t buffer_size) {
     if (options->output_path != 0) {
@@ -517,6 +545,24 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
             options->dump_ir = 1;
             continue;
         }
+        if (text_equals(arg, "--time") || text_equals(arg, "-ftime-report")) {
+            options->time_report = 1;
+            continue;
+        }
+        if (text_equals(arg, "--compile-manifest")) {
+            if (i + 1 >= argc) {
+                tool_write_error(options->program_name, "missing path after ", "--compile-manifest");
+                return -1;
+            }
+            options->compile_manifest_path = argv[++i];
+            options->compile_only = 1;
+            continue;
+        }
+        if (starts_with(arg, "--compile-manifest=")) {
+            options->compile_manifest_path = arg + 19;
+            options->compile_only = 1;
+            continue;
+        }
         if (text_equals(arg, "-S") || text_equals(arg, "--emit-asm")) {
             options->emit_assembly = 1;
             continue;
@@ -643,7 +689,7 @@ static int parse_options(int argc, char **argv, CompilerOptions *options) {
         }
     }
 
-    if (options->input_count == 0) {
+    if (options->input_count == 0 && options->compile_manifest_path == 0) {
         write_usage(options->program_name);
         return -1;
     }
@@ -866,6 +912,12 @@ static int parse_translation_unit(const CompilerOptions *options) {
     const char *output_path;
     int out_fd = 1;
     int should_close = 0;
+    unsigned long long total_start = platform_get_monotonic_time_ns();
+    unsigned long long stage_start;
+    unsigned long long after_preprocess;
+    unsigned long long after_parse;
+    unsigned long long after_optimize;
+    unsigned long long after_output;
 
     output_path = pick_output_path(options, derived_output_path, sizeof(derived_output_path));
 
@@ -888,6 +940,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         should_close = 1;
     }
 
+    stage_start = platform_get_monotonic_time_ns();
     if (compiler_preprocess_file(&preprocessor, options->input_path, &source) != 0) {
         if (should_close) {
             (void)platform_close(out_fd);
@@ -895,6 +948,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         write_preprocessor_error(options->program_name, &preprocessor);
         return 1;
     }
+    after_preprocess = platform_get_monotonic_time_ns();
 
     compiler_ir_destroy(&parser.ir);
     compiler_parser_init(&parser, &source, options->dump_ast, options->dump_ir, out_fd);
@@ -913,6 +967,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         rt_write_line(2, compiler_parser_error_message(&parser));
         return 1;
     }
+    after_parse = platform_get_monotonic_time_ns();
 
     if (compiler_ir_optimize(&parser.ir) != 0) {
         if (should_close) {
@@ -921,6 +976,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         tool_write_error(options->program_name, "failed while optimizing IR: ", compiler_ir_error_message(&parser.ir));
         return 1;
     }
+    after_optimize = platform_get_monotonic_time_ns();
 
     if (options->dump_ir && compiler_ir_write_dump(&parser.ir, out_fd) != 0) {
         if (should_close) {
@@ -952,8 +1008,117 @@ static int parse_translation_unit(const CompilerOptions *options) {
         }
     }
 
+    after_output = platform_get_monotonic_time_ns();
+
     if (should_close) {
         (void)platform_close(out_fd);
+    }
+
+    write_time_report(options,
+                      after_preprocess - stage_start,
+                      after_parse - after_preprocess,
+                      after_optimize - after_parse,
+                      after_output - after_optimize,
+                      after_output - total_start);
+
+    return 0;
+}
+
+static int copy_manifest_path(const char *start, const char *end, char *buffer, size_t buffer_size) {
+    size_t length;
+
+    while (start < end && (*start == ' ' || *start == '\t')) {
+        start += 1;
+    }
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) {
+        end -= 1;
+    }
+    length = (size_t)(end - start);
+    if (length == 0U || length >= buffer_size) {
+        return -1;
+    }
+    memcpy(buffer, start, length);
+    buffer[length] = '\0';
+    return 0;
+}
+
+static int compile_manifest_inputs(const CompilerOptions *options) {
+    static char manifest_data[COMPILER_MANIFEST_MAX_BYTES + 1U];
+    char input_path[COMPILER_PATH_CAPACITY];
+    char output_path[COMPILER_PATH_CAPACITY];
+    int fd;
+    long bytes_read;
+    size_t size = 0;
+    const char *cursor;
+
+    fd = platform_open_read(options->compile_manifest_path);
+    if (fd < 0) {
+        tool_write_error(options->program_name, "cannot open compile manifest ", options->compile_manifest_path);
+        return 1;
+    }
+    while (size < COMPILER_MANIFEST_MAX_BYTES &&
+           (bytes_read = platform_read(fd, manifest_data + size, COMPILER_MANIFEST_MAX_BYTES - size)) > 0) {
+        size += (size_t)bytes_read;
+    }
+    (void)platform_close(fd);
+    if (bytes_read < 0) {
+        tool_write_error(options->program_name, "cannot read compile manifest ", options->compile_manifest_path);
+        return 1;
+    }
+    if (size == COMPILER_MANIFEST_MAX_BYTES) {
+        tool_write_error(options->program_name, "compile manifest is too large ", options->compile_manifest_path);
+        return 1;
+    }
+    manifest_data[size] = '\0';
+
+    cursor = manifest_data;
+    while (*cursor != '\0') {
+        const char *line_start = cursor;
+        const char *line_end;
+        const char *separator;
+        CompilerOptions per_input;
+
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor += 1;
+        }
+        line_end = cursor;
+        if (*cursor == '\n') {
+            cursor += 1;
+        }
+        while (line_start < line_end && (*line_start == ' ' || *line_start == '\t' || *line_start == '\r')) {
+            line_start += 1;
+        }
+        if (line_start == line_end || *line_start == '#') {
+            continue;
+        }
+
+        separator = line_start;
+        while (separator < line_end && *separator != '\t' && *separator != ' ') {
+            separator += 1;
+        }
+        if (separator == line_end || copy_manifest_path(line_start, separator, input_path, sizeof(input_path)) != 0 ||
+            copy_manifest_path(separator, line_end, output_path, sizeof(output_path)) != 0) {
+            tool_write_error(options->program_name, "invalid compile manifest line in ", options->compile_manifest_path);
+            return 1;
+        }
+
+        per_input = *options;
+        per_input.input_path = input_path;
+        per_input.output_path = output_path;
+        per_input.input_paths[0] = input_path;
+        per_input.input_count = 1U;
+        per_input.compile_manifest_path = 0;
+        per_input.compile_only = 1;
+        per_input.syntax_only = 0;
+        per_input.dump_tokens = 0;
+        per_input.preprocess_only = 0;
+        per_input.dump_ast = 0;
+        per_input.dump_ir = 0;
+        per_input.emit_assembly = 0;
+
+        if (parse_translation_unit(&per_input) != 0) {
+            return 1;
+        }
     }
 
     return 0;
@@ -969,6 +1134,14 @@ int compiler_main(int argc, char **argv) {
     }
     if (parse_result != 0) {
         return 1;
+    }
+
+    if (options.compile_manifest_path != 0) {
+        if (options.output_path != 0 || options.preprocess_only || options.dump_tokens || options.dump_ast || options.dump_ir || options.emit_assembly || options.syntax_only) {
+            tool_write_error(options.program_name, "--compile-manifest only supports object compilation", "");
+            return 1;
+        }
+        return compile_manifest_inputs(&options);
     }
 
     if ((options.preprocess_only || options.dump_tokens || options.dump_ast || options.dump_ir) && options.input_count > 1U) {

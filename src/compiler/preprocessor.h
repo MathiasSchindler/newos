@@ -6,6 +6,7 @@
 
 #define COMPILER_MAX_INCLUDE_DIRS 16
 #define COMPILER_MAX_MACROS 512
+#define COMPILER_MACRO_INDEX_CAPACITY 1024
 #define COMPILER_MACRO_NAME_CAPACITY 64
 #define COMPILER_MACRO_VALUE_CAPACITY 2048
 
@@ -23,6 +24,7 @@ typedef struct {
     char include_dirs[COMPILER_MAX_INCLUDE_DIRS][COMPILER_PATH_CAPACITY];
     size_t include_dir_count;
     CompilerMacro macros[COMPILER_MAX_MACROS];
+    unsigned int macro_index[COMPILER_MACRO_INDEX_CAPACITY];
     size_t macro_count;
     char error_path[COMPILER_PATH_CAPACITY];
     unsigned long long error_line;

@@ -651,6 +651,10 @@ static int decl_slot_size(const BackendState *state, const char *type_text) {
     int has_pointer = text_contains(type, "*");
     int aggregate_size = named_aggregate_stack_bytes(state, type);
 
+    if (backend_type_is_pointer_like(type)) {
+        return backend_stack_slot_size(state);
+    }
+
     if (has_pointer) {
         element_size = 8ULL;
     } else if (text_contains(type, "char")) {
@@ -698,6 +702,10 @@ static int decl_alignment_bytes(const BackendState *state, const char *type_text
     const char *type = skip_spaces(type_text != 0 ? type_text : "");
     const char *open = type;
     char element_type[128];
+
+    if (backend_type_is_pointer_like(type)) {
+        return backend_stack_slot_size(state);
+    }
 
     while (*open != '\0' && *open != '[') {
         open += 1;
@@ -934,6 +942,10 @@ static void maybe_apply_array_initializer_length(char *type_text, size_t type_te
 
 static int decl_requires_object_storage(const char *type_text) {
     const char *type = skip_spaces(type_text);
+
+    if (backend_type_is_pointer_like(type)) {
+        return 0;
+    }
 
     return text_contains(type, "[") ||
            ((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*"));

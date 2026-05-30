@@ -134,6 +134,18 @@ EOF
 
 compile_and_check_native "$WORK_DIR/u64_unsigned_shift.c" "$WORK_DIR/u64_unsigned_shift_bin" "0" "compiler miscompiled an unsigned 64-bit right shift on x86_64"
 
+cat > "$WORK_DIR/u64_unsigned_division_guard.c" <<'EOF'
+static unsigned long long parse_guard_limit(unsigned long long digit) {
+    return (18446744073709551615ULL - digit) / 10ULL;
+}
+
+int main(void) {
+    return parse_guard_limit(1ULL) == 1844674407370955161ULL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u64_unsigned_division_guard.c" "$WORK_DIR/u64_unsigned_division_guard_bin" "0" "compiler emitted signed division for an unsigned overflow guard"
+
 cat > "$WORK_DIR/compound_shift_assignment.c" <<'EOF'
 typedef struct {
     unsigned int bit_buffer;
@@ -228,6 +240,38 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/array_parameter_reassignment.c" "$WORK_DIR/array_parameter_reassignment_bin" "0" "compiler treated array-parameter pointer reassignment as object copy"
+
+cat > "$WORK_DIR/pointer_to_array_sizeof.c" <<'EOF'
+int main(void) {
+    char storage[2][16];
+    char (*rows)[16];
+    char *pointers[16];
+
+    rows = (char (*)[16])storage;
+    pointers[0] = storage[0];
+    rows[1][0] = 'X';
+
+    if (sizeof(rows[0]) != 16) return 1;
+    if (sizeof(pointers[0]) != 8) return 2;
+    if (rows[1][0] != 'X') return 3;
+    return pointers[0][0] == storage[0][0] ? 0 : 4;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/pointer_to_array_sizeof.c" "$WORK_DIR/pointer_to_array_sizeof_bin" "0" "compiler miscompiled sizeof or indexing for a pointer-to-array"
+
+cat > "$WORK_DIR/signed_indexed_array_compare.c" <<'EOF'
+int main(void) {
+    int values[2];
+    unsigned long index = 0U;
+
+    values[0] = -1;
+    values[1] = 7;
+    return values[index] < 0 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/signed_indexed_array_compare.c" "$WORK_DIR/signed_indexed_array_compare_bin" "0" "compiler treated an indexed signed int array expression as unsigned"
 
 cat > "$WORK_DIR/shared_crypto_api.c" <<'EOF'
 #include "crypto/hmac_sha256.h"

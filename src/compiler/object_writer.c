@@ -16,6 +16,7 @@ typedef long long int64_t;
 #define OBJECT_WRITER_MAX_SYMBOLS 1024
 #define OBJECT_WRITER_SYMBOL_INDEX_CAPACITY 2048
 #define OBJECT_WRITER_MAX_LABELS 2048
+#define OBJECT_WRITER_LABEL_INDEX_CAPACITY 4096
 #define OBJECT_WRITER_MAX_FIXUPS 4096
 #define OBJECT_WRITER_MAX_RELOCS 4096
 #define OBJECT_WRITER_MAX_OUTPUT (OBJECT_WRITER_MAX_TEXT + OBJECT_WRITER_MAX_DATA + 65536)
@@ -101,6 +102,7 @@ typedef struct {
     unsigned int symbol_index[OBJECT_WRITER_SYMBOL_INDEX_CAPACITY];
     size_t symbol_count;
     ObjectLabel labels[OBJECT_WRITER_MAX_LABELS];
+    unsigned int label_index[OBJECT_WRITER_LABEL_INDEX_CAPACITY];
     size_t label_count;
     ObjectFixup fixups[OBJECT_WRITER_MAX_FIXUPS];
     size_t fixup_count;
@@ -458,15 +460,65 @@ static int get_symbol(ObjectAssembler *assembler, const char *name) {
     return (int)index;
 }
 
-static int add_label(ObjectAssembler *assembler, const char *name, ObjectSection section, size_t offset) {
+static int find_label_indexed(const ObjectAssembler *assembler, const char *name) {
+    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_LABEL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < OBJECT_WRITER_LABEL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = assembler->label_index[bucket];
+        int index;
+
+        if (stored == 0U) {
+            return -1;
+        }
+        index = (int)stored - 1;
+        if (index >= 0 && (size_t)index < assembler->label_count && names_equal(assembler->labels[index].name, name)) {
+            return index;
+        }
+        bucket = (bucket + 1U) & (OBJECT_WRITER_LABEL_INDEX_CAPACITY - 1U);
+    }
+    return -1;
+}
+
+static void remember_label_index(ObjectAssembler *assembler, const char *name, unsigned int index) {
+    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_LABEL_INDEX_CAPACITY);
+    size_t probe;
+
+    for (probe = 0; probe < OBJECT_WRITER_LABEL_INDEX_CAPACITY; ++probe) {
+        unsigned int stored = assembler->label_index[bucket];
+        int existing = (int)stored - 1;
+
+        if (stored == 0U || (existing >= 0 && (size_t)existing < assembler->label_count && names_equal(assembler->labels[existing].name, name))) {
+            assembler->label_index[bucket] = index + 1U;
+            return;
+        }
+        bucket = (bucket + 1U) & (OBJECT_WRITER_LABEL_INDEX_CAPACITY - 1U);
+    }
+}
+
+static int find_label(const ObjectAssembler *assembler, const char *name) {
+    int indexed = find_label_indexed(assembler, name);
     size_t i;
+
+    if (indexed >= 0) {
+        return indexed;
+    }
 
     for (i = 0; i < assembler->label_count; ++i) {
         if (names_equal(assembler->labels[i].name, name)) {
-            assembler->labels[i].section = section;
-            assembler->labels[i].offset = offset;
-            return 0;
+            return (int)i;
         }
+    }
+    return -1;
+}
+
+static int add_label(ObjectAssembler *assembler, const char *name, ObjectSection section, size_t offset) {
+    int existing = find_label(assembler, name);
+
+    if (existing >= 0) {
+        assembler->labels[existing].section = section;
+        assembler->labels[existing].offset = offset;
+        return 0;
     }
 
     if (assembler->label_count >= OBJECT_WRITER_MAX_LABELS) {
@@ -477,19 +529,9 @@ static int add_label(ObjectAssembler *assembler, const char *name, ObjectSection
     rt_copy_string(assembler->labels[assembler->label_count].name, sizeof(assembler->labels[assembler->label_count].name), name);
     assembler->labels[assembler->label_count].section = section;
     assembler->labels[assembler->label_count].offset = offset;
+    remember_label_index(assembler, name, (unsigned int)assembler->label_count);
     assembler->label_count += 1U;
     return 0;
-}
-
-static int find_label(const ObjectAssembler *assembler, const char *name) {
-    size_t i;
-
-    for (i = 0; i < assembler->label_count; ++i) {
-        if (names_equal(assembler->labels[i].name, name)) {
-            return (int)i;
-        }
-    }
-    return -1;
 }
 
 static int add_fixup(ObjectAssembler *assembler, const char *name, size_t offset, uint32_t type, int64_t addend) {
