@@ -37,6 +37,8 @@ typedef struct {
     const IrOptimizerState *state;
 } IrConstParser;
 
+#define COMPILER_IR_INITIAL_LINE_CAPACITY 1024U
+
 static int ir_text_equals(const char *lhs, const char *rhs);
 static int ir_starts_with(const char *text, const char *prefix);
 static const char *ir_skip_spaces(const char *text);
@@ -101,6 +103,9 @@ static int ir_extract_assignment_parts(const char *expr, char *name, size_t name
 static int ir_extract_branch_parts(const char *line, char *label, size_t label_size, char *expr, size_t expr_size);
 static int ir_extract_jump_target(const char *line, char *label, size_t label_size);
 static int ir_extract_const_parts(const char *line, char *name, size_t name_size, const char **expr_out);
+static int ir_reserve_lines(CompilerIr *ir, size_t needed);
+static char *ir_build_line(CompilerIr *ir, const char *lhs, const char *mid, const char *rhs, const char *tail);
+static int ir_replace_line(CompilerIr *ir, size_t index, const char *line);
 
 static void set_error(CompilerIr *ir, const char *message) {
     rt_copy_string(ir->error_message, sizeof(ir->error_message), message != 0 ? message : "IR error");
@@ -164,6 +169,11 @@ static int ir_operator_is_embedded(const char *expr, size_t index, const char *o
     }
 
     if ((ir_text_equals(op, "<<") || ir_text_equals(op, ">>")) && next == '=') {
+        return 1;
+    }
+
+    if ((ir_text_equals(op, "<=") && prev == '<') ||
+        (ir_text_equals(op, ">=") && prev == '>')) {
         return 1;
     }
 
@@ -792,26 +802,90 @@ static int append_uint(char *buffer, size_t buffer_size, size_t *offset, unsigne
     return append_text(buffer, buffer_size, offset, scratch);
 }
 
-static int emit_line(CompilerIr *ir, const char *lhs, const char *mid, const char *rhs, const char *tail) {
+static int ir_reserve_lines(CompilerIr *ir, size_t needed) {
+    size_t new_capacity;
+    char **new_lines;
+
+    if (needed <= ir->capacity) {
+        return 0;
+    }
+    new_capacity = ir->capacity > 0U ? ir->capacity : COMPILER_IR_INITIAL_LINE_CAPACITY;
+    while (new_capacity < needed) {
+        if (new_capacity > ((size_t)-1) / 2U) {
+            set_error(ir, "IR instruction capacity exceeded");
+            return -1;
+        }
+        new_capacity *= 2U;
+    }
+    new_lines = (char **)rt_realloc_array(ir->lines, new_capacity, sizeof(ir->lines[0]));
+    if (new_lines == 0) {
+        set_error(ir, "out of memory while growing IR line table");
+        return -1;
+    }
+    ir->lines = new_lines;
+    ir->capacity = new_capacity;
+    return 0;
+}
+
+static char *ir_build_line(CompilerIr *ir, const char *lhs, const char *mid, const char *rhs, const char *tail) {
+    size_t length = 0;
     size_t offset = 0;
     char *line;
 
-    if (ir->count >= COMPILER_MAX_IR_LINES) {
-        set_error(ir, "IR instruction capacity exceeded");
-        return -1;
+    if (lhs != 0) length += rt_strlen(lhs);
+    if (mid != 0) length += rt_strlen(mid);
+    if (rhs != 0) length += rt_strlen(rhs);
+    if (tail != 0) length += rt_strlen(tail);
+    if (length == (size_t)-1) {
+        set_error(ir, "IR instruction text exceeded addressable size");
+        return 0;
     }
-
-    line = ir->lines[ir->count];
+    line = (char *)rt_malloc(length + 1U);
+    if (line == 0) {
+        set_error(ir, "out of memory while storing IR instruction");
+        return 0;
+    }
     line[0] = '\0';
-
-    if ((lhs != 0 && append_text(line, COMPILER_IR_LINE_CAPACITY, &offset, lhs) != 0) ||
-        (mid != 0 && append_text(line, COMPILER_IR_LINE_CAPACITY, &offset, mid) != 0) ||
-        (rhs != 0 && append_text(line, COMPILER_IR_LINE_CAPACITY, &offset, rhs) != 0) ||
-        (tail != 0 && append_text(line, COMPILER_IR_LINE_CAPACITY, &offset, tail) != 0)) {
+    if ((lhs != 0 && append_text(line, length + 1U, &offset, lhs) != 0) ||
+        (mid != 0 && append_text(line, length + 1U, &offset, mid) != 0) ||
+        (rhs != 0 && append_text(line, length + 1U, &offset, rhs) != 0) ||
+        (tail != 0 && append_text(line, length + 1U, &offset, tail) != 0)) {
+        rt_free(line);
         set_error(ir, "IR instruction text exceeded line capacity");
+        return 0;
+    }
+    return line;
+}
+
+static int ir_replace_line(CompilerIr *ir, size_t index, const char *line) {
+    char *copy;
+
+    if (index >= ir->count) {
+        set_error(ir, "IR rewrite index out of range");
+        return -1;
+    }
+    copy = ir_build_line(ir, line, 0, 0, 0);
+    if (copy == 0) {
+        return -1;
+    }
+    rt_free(ir->lines[index]);
+    ir->lines[index] = copy;
+    return 0;
+}
+
+static int emit_line(CompilerIr *ir, const char *lhs, const char *mid, const char *rhs, const char *tail) {
+    char *line;
+
+    if (ir_reserve_lines(ir, ir->count + 1U) != 0) {
         return -1;
     }
 
+    line = ir_build_line(ir, lhs, mid, rhs, tail);
+    if (line == 0) {
+        return -1;
+    }
+
+    ir->lines[ir->count] = line;
     ir->count += 1U;
     return 0;
 }
@@ -877,6 +951,19 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
 }
 
 void compiler_ir_init(CompilerIr *ir) {
+    rt_memset(ir, 0, sizeof(*ir));
+}
+
+void compiler_ir_destroy(CompilerIr *ir) {
+    size_t i;
+
+    if (ir == 0) {
+        return;
+    }
+    for (i = 0; i < ir->count; ++i) {
+        rt_free(ir->lines[i]);
+    }
+    rt_free(ir->lines);
     rt_memset(ir, 0, sizeof(*ir));
 }
 
@@ -1632,8 +1719,7 @@ static int ir_rewrite_expr_line(CompilerIr *ir, size_t index, const char *prefix
         set_error(ir, "IR instruction text exceeded line capacity");
         return -1;
     }
-    rt_copy_string(ir->lines[index], sizeof(ir->lines[index]), line);
-    return 0;
+    return ir_replace_line(ir, index, line);
 }
 
 static int ir_rewrite_branch_line(CompilerIr *ir, size_t index, const char *expr, const char *label) {
@@ -1648,8 +1734,7 @@ static int ir_rewrite_branch_line(CompilerIr *ir, size_t index, const char *expr
         set_error(ir, "IR instruction text exceeded line capacity");
         return -1;
     }
-    rt_copy_string(ir->lines[index], sizeof(ir->lines[index]), line);
-    return 0;
+    return ir_replace_line(ir, index, line);
 }
 
 static int ir_rewrite_jump_line(CompilerIr *ir, size_t index, const char *label) {
@@ -1662,11 +1747,13 @@ static void ir_remove_line(CompilerIr *ir, size_t index) {
     if (index >= ir->count) {
         return;
     }
+    rt_free(ir->lines[index]);
     for (i = index + 1U; i < ir->count; ++i) {
-        memcpy(ir->lines[i - 1U], ir->lines[i], sizeof(ir->lines[i - 1U]));
+        ir->lines[i - 1U] = ir->lines[i];
     }
     if (ir->count > 0) {
         ir->count -= 1U;
+        ir->lines[ir->count] = 0;
     }
 }
 
@@ -1892,7 +1979,9 @@ int compiler_ir_optimize(CompilerIr *ir) {
                     set_error(ir, "IR instruction text exceeded line capacity");
                     return -1;
                 }
-                rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                if (ir_replace_line(ir, i, rewritten) != 0) {
+                    return -1;
+                }
             }
             i += 1U;
             continue;
@@ -1944,7 +2033,9 @@ int compiler_ir_optimize(CompilerIr *ir) {
                     set_error(ir, "IR instruction text exceeded line capacity");
                     return -1;
                 }
-                rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                if (ir_replace_line(ir, i, rewritten) != 0) {
+                    return -1;
+                }
                 if (ir_set_tracked_value(state.local_values, &state.local_value_count, name, value) != 0) {
                     set_error(ir, "IR optimizer tracking capacity exceeded");
                     return -1;
@@ -1961,7 +2052,9 @@ int compiler_ir_optimize(CompilerIr *ir) {
                     set_error(ir, "IR instruction text exceeded line capacity");
                     return -1;
                 }
-                rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                if (ir_replace_line(ir, i, rewritten) != 0) {
+                    return -1;
+                }
                 ir_invalidate_local_value(&state, name);
             } else if (parsed_store) {
                 ir_invalidate_local_value(&state, name);
@@ -2002,7 +2095,9 @@ int compiler_ir_optimize(CompilerIr *ir) {
                             set_error(ir, "IR instruction text exceeded line capacity");
                             return -1;
                         }
-                        rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                        if (ir_replace_line(ir, i, rewritten) != 0) {
+                            return -1;
+                        }
                         if (ir_set_tracked_value(state.local_values, &state.local_value_count, name, value) != 0) {
                             set_error(ir, "IR optimizer tracking capacity exceeded");
                             return -1;
@@ -2024,7 +2119,9 @@ int compiler_ir_optimize(CompilerIr *ir) {
                             set_error(ir, "IR instruction text exceeded line capacity");
                             return -1;
                         }
-                        rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                        if (ir_replace_line(ir, i, rewritten) != 0) {
+                            return -1;
+                        }
                     }
                 } else {
                     long long lhs = 0;
@@ -2061,7 +2158,9 @@ int compiler_ir_optimize(CompilerIr *ir) {
                                 set_error(ir, "IR instruction text exceeded line capacity");
                                 return -1;
                             }
-                            rt_copy_string(line, sizeof(ir->lines[i]), rewritten);
+                            if (ir_replace_line(ir, i, rewritten) != 0) {
+                                return -1;
+                            }
                             if (ir_set_tracked_value(state.local_values, &state.local_value_count, name, value) != 0) {
                                 set_error(ir, "IR optimizer tracking capacity exceeded");
                                 return -1;

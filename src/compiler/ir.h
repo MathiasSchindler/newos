@@ -5,19 +5,20 @@
 
 #include "semantic.h"
 
-#define COMPILER_MAX_IR_LINES 8192
 #define COMPILER_IR_LINE_CAPACITY 8192
 #define COMPILER_IR_NAME_CAPACITY 64
 
 typedef struct {
-    char lines[COMPILER_MAX_IR_LINES][COMPILER_IR_LINE_CAPACITY];
+    char **lines;
     size_t count;
+    size_t capacity;
     unsigned int temp_counter;
     unsigned int label_counter;
     char error_message[COMPILER_ERROR_CAPACITY];
 } CompilerIr;
 
 void compiler_ir_init(CompilerIr *ir);
+void compiler_ir_destroy(CompilerIr *ir);
 int compiler_ir_make_label(CompilerIr *ir, const char *prefix, char *buffer, size_t buffer_size);
 int compiler_ir_optimize(CompilerIr *ir);
 int compiler_ir_emit_function_begin(CompilerIr *ir, const char *name, const CompilerType *type);

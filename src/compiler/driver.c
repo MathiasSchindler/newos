@@ -896,6 +896,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         return 1;
     }
 
+    compiler_ir_destroy(&parser.ir);
     compiler_parser_init(&parser, &source, options->dump_ast, options->dump_ir, out_fd);
     if (compiler_parse_translation_unit(&parser) != 0) {
         if (should_close) {

@@ -2403,7 +2403,7 @@ static int expr_parse_logical_and(ExprParser *parser) {
     while (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "&&")) {
         char false_label[32];
         char end_label[32];
-        char asm_label[64];
+        char asm_label[128];
 
         expr_make_logic_label(parser->state, "land_false", false_label, sizeof(false_label));
         expr_make_logic_label(parser->state, "land_end", end_label, sizeof(end_label));
@@ -2450,7 +2450,7 @@ static int expr_parse_logical_or(ExprParser *parser) {
     while (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "||")) {
         char true_label[32];
         char end_label[32];
-        char asm_label[64];
+        char asm_label[128];
 
         expr_make_logic_label(parser->state, "lor_true", true_label, sizeof(true_label));
         expr_make_logic_label(parser->state, "lor_end", end_label, sizeof(end_label));
@@ -2497,7 +2497,7 @@ static int expr_parse_conditional(ExprParser *parser) {
     if (expr_match_punct(parser, "?")) {
         char false_label[32];
         char end_label[32];
-        char asm_label[64];
+        char asm_label[128];
 
         expr_make_logic_label(parser->state, "cond_false", false_label, sizeof(false_label));
         expr_make_logic_label(parser->state, "cond_end", end_label, sizeof(end_label));
@@ -2681,9 +2681,26 @@ static int expr_parse_assignment(ExprParser *parser) {
                 }
 
                 int word_index = 0;
-                if (lookup_array_storage(parser->state, name, &word_index)) {
+                int local_index = find_local(parser->state, name);
+                int global_index = find_global(parser->state, name);
+                int target_pointer_depth = 0;
+                const char *target_type = lookup_name_type_text(parser->state, name);
+                const char *target_base = skip_spaces(target_type);
+                int target_is_object;
+
+                if (local_index >= 0) {
+                    target_pointer_depth = parser->state->locals[local_index].pointer_depth;
+                } else if (global_index >= 0) {
+                    target_pointer_depth = parser->state->globals[global_index].pointer_depth;
+                }
+                target_is_object = target_pointer_depth == 0 &&
+                                       target_base[0] != '\0' &&
+                                       !text_contains(target_base, "*") &&
+                                       (text_contains(target_base, "[") ||
+                                        starts_with(target_base, "struct:") ||
+                                        starts_with(target_base, "union:"));
+                if (lookup_array_storage(parser->state, name, &word_index) || target_is_object) {
                     int rhs_byte_sized = 0;
-                    int local_index = find_local(parser->state, name);
                     int bytes = 0;
                     int direct_store_size = -1;
                     ExprParser object_rhs_snapshot = *parser;

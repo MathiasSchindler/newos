@@ -90,6 +90,84 @@ EOF
 
 compile_and_check_native "$WORK_DIR/u64_unsigned_shift.c" "$WORK_DIR/u64_unsigned_shift_bin" "0" "compiler miscompiled an unsigned 64-bit right shift on x86_64"
 
+cat > "$WORK_DIR/compound_shift_assignment.c" <<'EOF'
+typedef struct {
+    unsigned int bit_buffer;
+} Writer;
+
+int main(void) {
+    Writer writer;
+    writer.bit_buffer = 0x8000U;
+    writer.bit_buffer >>= 8U;
+    return writer.bit_buffer == 0x80U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/compound_shift_assignment.c" "$WORK_DIR/compound_shift_assignment_bin" "0" "compiler IR optimizer split >>= into relational tokens"
+
+cat > "$WORK_DIR/long_logic_label.c" <<'EOF'
+static int compression_zstd_parse_compressed_literals_header(int first, int second) {
+    return first ? (second && first ? 7 : 9) : 11;
+}
+
+int main(void) {
+    return compression_zstd_parse_compressed_literals_header(1, 1) == 7 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/long_logic_label.c" "$WORK_DIR/long_logic_label_bin" "0" "compiler truncated long generated logic labels"
+
+cat > "$WORK_DIR/global_struct_copy_from_pointer.c" <<'EOF'
+typedef struct {
+    int entering;
+    long number;
+    long args[6];
+    long result;
+} PlatformSyscallEvent;
+
+static PlatformSyscallEvent pending_event;
+
+static void remember_event(const PlatformSyscallEvent *event) {
+    pending_event = *event;
+}
+
+int main(void) {
+    PlatformSyscallEvent event;
+
+    event.entering = 1;
+    event.number = 42;
+    event.args[0] = 7;
+    event.result = -3;
+    remember_event(&event);
+    return pending_event.number == 42 && pending_event.args[0] == 7 && pending_event.result == -3 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/global_struct_copy_from_pointer.c" "$WORK_DIR/global_struct_copy_from_pointer_bin" "0" "compiler failed to copy into a global aggregate assignment target"
+
+cat > "$WORK_DIR/array_parameter_reassignment.c" <<'EOF'
+typedef unsigned char u8;
+
+static int pick_key(const u8 seed[32], const u8 public_key[32]) {
+    u8 derived_public_key[32];
+
+    derived_public_key[0] = seed[0] + 1U;
+    if (public_key == (const u8 *)0) {
+        public_key = derived_public_key;
+    }
+    return public_key[0] == 8U ? 0 : 1;
+}
+
+int main(void) {
+    u8 seed[32];
+
+    seed[0] = 7U;
+    return pick_key(seed, (const u8 *)0);
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/array_parameter_reassignment.c" "$WORK_DIR/array_parameter_reassignment_bin" "0" "compiler treated array-parameter pointer reassignment as object copy"
+
 cat > "$WORK_DIR/shared_crypto_api.c" <<'EOF'
 #include "crypto/hmac_sha256.h"
 #include "crypto/hkdf_sha256.h"

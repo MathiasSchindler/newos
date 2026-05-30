@@ -1831,28 +1831,31 @@ static int emit_copy_memory_call(BackendState *state, int bytes, const char *dst
 
 int emit_copy_object_to_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
+    int global_index = find_global(state, name);
     int bytes;
     int offset;
     int chunk;
 
-    if (local_index < 0 || !state->locals[local_index].is_array) {
+    if ((local_index < 0 || !state->locals[local_index].is_array) &&
+        (global_index < 0 || !state->globals[global_index].is_array || !state->globals[global_index].has_storage)) {
         backend_set_error(state->backend, "unsupported object assignment target in backend");
         return -1;
     }
 
-    bytes = state->locals[local_index].stack_bytes;
-    offset = state->locals[local_index].offset;
+    bytes = local_index >= 0 ? state->locals[local_index].stack_bytes
+                             : (int)backend_type_storage_bytes(state, state->globals[global_index].type_text);
+    offset = local_index >= 0 ? state->locals[local_index].offset : 0;
     if (bytes <= 0) {
         return 0;
     }
 
     if (backend_is_aarch64(state)) {
         if (emit_instruction(state, "mov x12, x0") != 0 ||
-            (state->locals[local_index].static_storage ? emit_address_of_name(state, name)
-                                                       : emit_local_address(state, offset, "x13")) != 0) {
+            ((local_index >= 0 && !state->locals[local_index].static_storage) ? emit_local_address(state, offset, "x13")
+                                                                              : emit_address_of_name(state, name)) != 0) {
             return -1;
         }
-        if (state->locals[local_index].static_storage && emit_instruction(state, "mov x13, x0") != 0) {
+        if ((local_index < 0 || state->locals[local_index].static_storage) && emit_instruction(state, "mov x13, x0") != 0) {
             return -1;
         }
         if (bytes > 128) {
@@ -1871,10 +1874,11 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
     }
 
     if (emit_instruction(state, "movq %rax, %rdx") != 0 ||
-        (state->locals[local_index].static_storage ? emit_address_of_name(state, name) : emit_local_address(state, offset, "%rcx")) != 0) {
+        ((local_index >= 0 && !state->locals[local_index].static_storage) ? emit_local_address(state, offset, "%rcx")
+                                                                          : emit_address_of_name(state, name)) != 0) {
         return -1;
     }
-    if (state->locals[local_index].static_storage && emit_instruction(state, "movq %rax, %rcx") != 0) {
+    if ((local_index < 0 || state->locals[local_index].static_storage) && emit_instruction(state, "movq %rax, %rcx") != 0) {
         return -1;
     }
     if (bytes > 128) {
@@ -2156,8 +2160,8 @@ int emit_set_condition(BackendState *state, const char *condition) {
 }
 
 int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *label) {
-    char asm_label[96];
-    char scoped_label[64];
+    char asm_label[160];
+    char scoped_label[128];
 
     write_label_name(state, scoped_label, sizeof(scoped_label), label);
 
