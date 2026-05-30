@@ -1050,6 +1050,7 @@ static int compile_manifest_inputs(const CompilerOptions *options) {
     long bytes_read;
     size_t size = 0;
     const char *cursor;
+    int status = 0;
 
     fd = platform_open_read(options->compile_manifest_path);
     if (fd < 0) {
@@ -1070,6 +1071,9 @@ static int compile_manifest_inputs(const CompilerOptions *options) {
         return 1;
     }
     manifest_data[size] = '\0';
+
+    compiler_source_cache_clear();
+    compiler_source_cache_set_enabled(1);
 
     cursor = manifest_data;
     while (*cursor != '\0') {
@@ -1099,7 +1103,8 @@ static int compile_manifest_inputs(const CompilerOptions *options) {
         if (separator == line_end || copy_manifest_path(line_start, separator, input_path, sizeof(input_path)) != 0 ||
             copy_manifest_path(separator, line_end, output_path, sizeof(output_path)) != 0) {
             tool_write_error(options->program_name, "invalid compile manifest line in ", options->compile_manifest_path);
-            return 1;
+            status = 1;
+            break;
         }
 
         per_input = *options;
@@ -1117,11 +1122,14 @@ static int compile_manifest_inputs(const CompilerOptions *options) {
         per_input.emit_assembly = 0;
 
         if (parse_translation_unit(&per_input) != 0) {
-            return 1;
+            status = 1;
+            break;
         }
     }
 
-    return 0;
+    compiler_source_cache_set_enabled(0);
+    compiler_source_cache_clear();
+    return status;
 }
 
 int compiler_main(int argc, char **argv) {

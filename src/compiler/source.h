@@ -13,5 +13,7 @@ typedef struct {
 } CompilerSource;
 
 int compiler_load_source(const char *path, CompilerSource *source_out);
+void compiler_source_cache_set_enabled(int enabled);
+void compiler_source_cache_clear(void);
 
 #endif

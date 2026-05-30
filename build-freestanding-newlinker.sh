@@ -93,6 +93,25 @@ if ! [[ "$NEWLINKER_COMPILE_JOBS" =~ ^[0-9]+$ ]] || (( NEWLINKER_COMPILE_JOBS < 
   NEWLINKER_COMPILE_JOBS=1
 fi
 NEWLINKER_NCC_BATCH=${NEWLINKER_NCC_BATCH:-auto}
+NEWLINKER_NCC_BATCH_SHARDS=${NEWLINKER_NCC_BATCH_SHARDS:-auto}
+if [[ "$NEWLINKER_NCC_BATCH_SHARDS" == "auto" ]]; then
+  NEWLINKER_NCC_BATCH_SHARDS="$NEWLINKER_COMPILE_JOBS"
+fi
+if ! [[ "$NEWLINKER_NCC_BATCH_SHARDS" =~ ^[0-9]+$ ]] || (( NEWLINKER_NCC_BATCH_SHARDS < 1 )); then
+  NEWLINKER_NCC_BATCH_SHARDS=1
+fi
+NEWLINKER_LINK_BATCH=${NEWLINKER_LINK_BATCH:-0}
+NEWLINKER_LINK_BATCH_SHARDS=${NEWLINKER_LINK_BATCH_SHARDS:-auto}
+if [[ "$NEWLINKER_LINK_BATCH_SHARDS" == "auto" ]]; then
+  NEWLINKER_LINK_BATCH_SHARDS="$NEWLINKER_LINK_JOBS"
+fi
+if ! [[ "$NEWLINKER_LINK_BATCH_SHARDS" =~ ^[0-9]+$ ]] || (( NEWLINKER_LINK_BATCH_SHARDS < 1 )); then
+  NEWLINKER_LINK_BATCH_SHARDS=1
+fi
+NEWLINKER_OBJECT_CACHE=${NEWLINKER_OBJECT_CACHE:-0}
+NEWLINKER_OBJECT_CACHE_DIR=${NEWLINKER_OBJECT_CACHE_DIR:-build/.newlinker-object-cache}
+NEWLINKER_OBJECT_CACHE_ENABLED=0
+NEWLINKER_OBJECT_CACHE_SIGNATURE=""
 
 if [[ ! -x "$LINKER" ]]; then
   echo "LINKER_MISSING $LINKER" | tee "$REPORT"
@@ -130,6 +149,54 @@ if [[ "$NEWLINKER_LTO" == "1" && "$NEWLINKER_IS_GCC" == "1" ]]; then
   if [[ $_has_flto -eq 0 ]]; then CFLAGS+=(-flto); fi
 fi
 
+object_cache_requested() {
+  [[ "$NEWLINKER_OBJECT_CACHE" == "1" || "$NEWLINKER_OBJECT_CACHE" == "yes" || "$NEWLINKER_OBJECT_CACHE" == "true" || "$NEWLINKER_OBJECT_CACHE" == "auto" ]]
+}
+object_cache_prepare() {
+  [[ "$NEWLINKER_LTO" != "1" ]] || return 0
+  object_cache_requested || return 0
+  command -v sha256sum >/dev/null 2>&1 || return 0
+  command -v sort >/dev/null 2>&1 || return 0
+  command -v xargs >/dev/null 2>&1 || return 0
+  mkdir -p "$NEWLINKER_OBJECT_CACHE_DIR"
+  NEWLINKER_OBJECT_CACHE_SIGNATURE=$(
+    {
+      printf 'compiler\t'
+      sha256sum "$NEWLINKER_CC" 2>/dev/null || printf '%s\n' "$NEWLINKER_CC"
+      printf 'assembler\t%s\n' "${NEWLINKER_AS:-cc}"
+      printf 'cflags\t%s\n' "${CFLAGS[*]}"
+      printf 'asmflags\t%s\n' "${ASMFLAGS[*]}"
+      find src -type f \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.s' \) -print0 | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )
+  if [[ -n "$NEWLINKER_OBJECT_CACHE_SIGNATURE" ]]; then
+    NEWLINKER_OBJECT_CACHE_ENABLED=1
+  fi
+}
+object_cache_key() {
+  local src="$1" variant="${2:-}" mode="$3"
+  printf '%s\t%s\t%s\t%s\n' "$NEWLINKER_OBJECT_CACHE_SIGNATURE" "$mode" "$variant" "$src" | sha256sum | awk '{print $1}'
+}
+object_cache_restore() {
+  local src="$1" variant="${2:-}" obj="$3" mode="$4" key cached
+  [[ "$NEWLINKER_OBJECT_CACHE_ENABLED" == "1" ]] || return 1
+  key=$(object_cache_key "$src" "$variant" "$mode")
+  cached="$NEWLINKER_OBJECT_CACHE_DIR/$key.o"
+  [[ -s "$cached" ]] || return 1
+  mkdir -p "$(dirname "$obj")"
+  cp -p "$cached" "$obj"
+}
+object_cache_store() {
+  local src="$1" variant="${2:-}" obj="$3" mode="$4" key cached tmp
+  [[ "$NEWLINKER_OBJECT_CACHE_ENABLED" == "1" && -s "$obj" ]] || return 0
+  key=$(object_cache_key "$src" "$variant" "$mode")
+  cached="$NEWLINKER_OBJECT_CACHE_DIR/$key.o"
+  [[ -s "$cached" ]] && return 0
+  tmp="$cached.$$"
+  cp -p "$obj" "$tmp" && mv "$tmp" "$cached"
+}
+object_cache_prepare
+
 declare -A SOURCE_TO_OBJ
 obj_for() { local s="$1" variant="${2:-}" n; n="${s//\//__}"; n="${n//[/lb}"; n="${n//]/rb}"; if [[ -n "$variant" ]]; then n="${variant}__${n}"; fi; printf '%s/%s.o' "$OBJROOT" "$n"; }
 first_line() { local f="$1"; grep -m1 -E 'error:|undefined reference|multiple definition|unsupported|relocation|failed|cannot|No such file|not found|too many input files|undefined symbol|exceeds' "$f" || sed -n '1p' "$f"; }
@@ -152,16 +219,25 @@ compile_direct() {
     linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
   esac
   if [[ "$src" == *.S || "$src" == *.s ]]; then
+    if object_cache_restore "$src" "$variant" "$obj" asm; then
+      printf 'ok\t%s\t%s\n' "$key" "$obj" > "$result"
+      return 0
+    fi
     if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
       "${NEWLINKER_AS:-cc}" "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
     else
       "$NEWLINKER_CC" "${asmflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
     fi
   else
+    if object_cache_restore "$src" "$variant" "$obj" c; then
+      printf 'ok\t%s\t%s\n' "$key" "$obj" > "$result"
+      return 0
+    fi
     "$NEWLINKER_CC" "${cflags[@]}" -c "$src" -o "$obj" >"$log" 2>&1
   fi
   rc=$?
   if [[ $rc -ne 0 ]]; then printf 'fail\t%s\t%s|%s\n' "$key" "$src" "$(first_line "$log")" > "$result"; return 0; fi
+  if [[ "$src" == *.S || "$src" == *.s ]]; then object_cache_store "$src" "$variant" "$obj" asm; else object_cache_store "$src" "$variant" "$obj" c; fi
   printf 'ok\t%s\t%s\n' "$key" "$obj" > "$result"
   return 0
 }
@@ -178,10 +254,16 @@ compile_manifest_direct() {
   : > "$result"
   while IFS=$'\t' read -r src obj; do
     [[ -n "$src" && -n "$obj" ]] || continue
+    object_cache_store "$src" "$variant" "$obj" c
     key="$variant|$src"
     printf 'ok\t%s\t%s\n' "$key" "$obj" >> "$result"
   done < "$manifest"
   return 0
+}
+use_ncc_manifest_batch() {
+  local src="$1"
+  [[ "$NEWLINKER_IS_NCC" == "1" && "$src" == *.c ]] || return 1
+  [[ "$NEWLINKER_NCC_BATCH" == "1" || "$NEWLINKER_NCC_BATCH" == "yes" || "$NEWLINKER_NCC_BATCH" == "true" || ( "$NEWLINKER_NCC_BATCH" == "auto" && "$NEWLINKER_COMPILE_JOBS" == "1" ) ]]
 }
 compile_sources() {
   local tool="$1"
@@ -192,6 +274,7 @@ compile_sources() {
   local pending_manifests=()
   local active=0
   local src variant variant_key key obj result fail message kind result_key result_obj manifest log
+  local shard_count shard_index manifest_index rows_for_variant
   local missing_by_variant=""
 
   COMPILE_ERROR=""
@@ -203,7 +286,14 @@ compile_sources() {
     if [[ -n "${SOURCE_TO_OBJ[$key]:-}" ]]; then
       continue
     fi
-    if [[ "$NEWLINKER_IS_NCC" == "1" && "$src" == *.c && ( "$NEWLINKER_NCC_BATCH" == "1" || "$NEWLINKER_NCC_BATCH" == "yes" || "$NEWLINKER_NCC_BATCH" == "true" || ( "$NEWLINKER_NCC_BATCH" == "auto" && "$NEWLINKER_COMPILE_JOBS" == "1" ) ) ]]; then
+    if use_ncc_manifest_batch "$src"; then
+      obj=$(obj_for "$src" "$variant")
+      result="$resultroot/${#pending_results[@]}-${obj##*/}.tsv"
+      if object_cache_restore "$src" "$variant" "$obj" c; then
+        printf 'ok\t%s\t%s\n' "$key" "$obj" > "$result"
+        pending_results+=("$result")
+        continue
+      fi
       variant_key="${variant:-default}"
       missing_by_variant+="$variant_key"$'\t'"$src"$'\n'
       continue
@@ -226,19 +316,42 @@ compile_sources() {
       manifest="$resultroot/manifest-${#pending_results[@]}-$(tool_stem "$variant_key").tsv"
       log="$LOGROOT/compile-manifest-$(tool_stem "${tool:-reuse}")-$variant_key-${#pending_results[@]}.log"
       result="$resultroot/manifest-${#pending_results[@]}.tsv"
-      : > "$manifest"
-      while IFS=$'\t' read -r row_variant_key src; do
-        [[ "$row_variant_key" == "$variant_key" ]] || continue
-        printf '%s\t%s\n' "$src" "$(obj_for "$src" "$variant")" >> "$manifest"
-      done <<< "$missing_by_variant"
-      compile_manifest_direct "$variant" "$manifest" "$result" "$log" &
-      pending_results+=("$result")
-      pending_manifests+=("$manifest")
-      active=$((active+1))
-      if (( active >= NEWLINKER_COMPILE_JOBS )); then
-        wait -n || true
-        active=$((active-1))
-      fi
+      rows_for_variant=$(printf '%s' "$missing_by_variant" | awk -F '\t' -v key="$variant_key" '$1 == key { count++ } END { print count + 0 }')
+      shard_count=$NEWLINKER_NCC_BATCH_SHARDS
+      if (( shard_count > rows_for_variant )); then shard_count=$rows_for_variant; fi
+      if (( shard_count < 1 )); then shard_count=1; fi
+      for (( shard_index=0; shard_index<shard_count; shard_index++ )); do
+        manifest_index=${#pending_results[@]}
+        manifest="$resultroot/manifest-$manifest_index-$(tool_stem "$variant_key")-$shard_index.tsv"
+        log="$LOGROOT/compile-manifest-$(tool_stem "${tool:-reuse}")-$variant_key-$manifest_index-$shard_index.log"
+        result="$resultroot/manifest-$manifest_index.tsv"
+        : > "$manifest"
+        awk -F '\t' -v key="$variant_key" -v shard="$shard_index" -v shards="$shard_count" -v objroot="$OBJROOT" -v variant="$variant" '
+          $1 == key {
+            source = $2
+            if ((row % shards) == shard) {
+              name = source
+              gsub(/\//, "__", name)
+              gsub(/\[/, "lb", name)
+              gsub(/\]/, "rb", name)
+              if (variant != "") name = variant "__" name
+              print source "\t" objroot "/" name ".o"
+            }
+            row++
+          }
+        ' <<< "$missing_by_variant" > "$manifest"
+        if [[ ! -s "$manifest" ]]; then
+          continue
+        fi
+        compile_manifest_direct "$variant" "$manifest" "$result" "$log" &
+        pending_results+=("$result")
+        pending_manifests+=("$manifest")
+        active=$((active+1))
+        if (( active >= NEWLINKER_COMPILE_JOBS )); then
+          wait -n || true
+          active=$((active-1))
+        fi
+      done
     done < <(printf '%s' "$missing_by_variant" | cut -f1 | sort -u)
   fi
 
@@ -324,7 +437,12 @@ if ! compile_sources "" REUSE_SOURCES REUSE_OBJS; then REUSE_FAILS+=("$COMPILE_E
   echo "profile: $NEWLINKER_PROFILE"
   echo "compile jobs: $NEWLINKER_COMPILE_JOBS"
   echo "ncc batch: $NEWLINKER_NCC_BATCH"
+  echo "ncc batch shards: $NEWLINKER_NCC_BATCH_SHARDS"
   echo "link jobs: $NEWLINKER_LINK_JOBS"
+  echo "link batch: $NEWLINKER_LINK_BATCH"
+  echo "link batch shards: $NEWLINKER_LINK_BATCH_SHARDS"
+  echo "object cache: $NEWLINKER_OBJECT_CACHE"
+  echo "object cache enabled: $NEWLINKER_OBJECT_CACHE_ENABLED"
   echo "tools from Makefile: $(wc -w <<<"$TOOLS")"
   echo "reusable sources attempted: ${#REUSE_SOURCES[@]} plus crt0"
 } | tee "$REPORT"
@@ -340,6 +458,10 @@ SUCCESSFILE="$WORK/successes.tsv"; : > "$SUCCESSFILE"
 TOOL_OBJROOT="$WORK/.tool-objects"; mkdir -p "$TOOL_OBJROOT"
 LINK_RESULTROOT="$WORK/.link-results"; mkdir -p "$LINK_RESULTROOT"
 TOOL_QUEUE=()
+link_batch_enabled() {
+  [[ "$LINKER_REPORTS" != "1" ]] || return 1
+  [[ "$NEWLINKER_LINK_BATCH" == "1" || "$NEWLINKER_LINK_BATCH" == "yes" || "$NEWLINKER_LINK_BATCH" == "true" || "$NEWLINKER_LINK_BATCH" == "auto" ]]
+}
 link_one_tool() {
   local tool="$1" objfile="$2" result="$3" stem outbin llog map_path rc bytes
   local tool_objs=()
@@ -439,23 +561,79 @@ for tool in $TOOLS; do
   if [[ -n "$tfail" ]]; then compile_fail=$((compile_fail+1)); printf 'compile\t%s\t%s\n' "$tool" "$tfail" >> "$FAILFILE"; continue; fi
   objfile="$TOOL_OBJROOT/$(tool_stem "$tool").list"
   printf '%s\n' "${tool_objs[@]}" > "$objfile"
+  if link_batch_enabled; then
+    full_objfile="$TOOL_OBJROOT/$(tool_stem "$tool").full.list"
+    {
+      printf '%s\n' "$CRT_OBJ"
+      printf '%s\n' "${tool_objs[@]}"
+      printf '%s\n' "${REUSE_OBJS[@]}"
+    } > "$full_objfile"
+  fi
   TOOL_QUEUE+=("$tool")
 done
 
-active_links=0
-for tool in "${TOOL_QUEUE[@]}"; do
-  stem=$(tool_stem "$tool")
-  link_one_tool "$tool" "$TOOL_OBJROOT/$stem.list" "$LINK_RESULTROOT/$stem.tsv" &
-  active_links=$((active_links+1))
-  if (( active_links >= NEWLINKER_LINK_JOBS )); then
+if link_batch_enabled && (( ${#TOOL_QUEUE[@]} > 0 )); then
+  LINK_BATCH_ROOT="$WORK/.link-batches"; mkdir -p "$LINK_BATCH_ROOT"
+  link_batch_shards=$NEWLINKER_LINK_BATCH_SHARDS
+  if (( link_batch_shards > ${#TOOL_QUEUE[@]} )); then link_batch_shards=${#TOOL_QUEUE[@]}; fi
+  if (( link_batch_shards < 1 )); then link_batch_shards=1; fi
+  for (( shard=0; shard<link_batch_shards; shard++ )); do
+    : > "$LINK_BATCH_ROOT/shard-$shard.tsv"
+  done
+  queue_index=0
+  for tool in "${TOOL_QUEUE[@]}"; do
+    stem=$(tool_stem "$tool")
+    shard=$((queue_index % link_batch_shards))
+    printf '%s\t%s\t%s\n' "$tool" "$WORK/$tool" "$TOOL_OBJROOT/$stem.full.list" >> "$LINK_BATCH_ROOT/shard-$shard.tsv"
+    queue_index=$((queue_index+1))
+  done
+  active_links=0
+  for (( shard=0; shard<link_batch_shards; shard++ )); do
+    manifest="$LINK_BATCH_ROOT/shard-$shard.tsv"
+    [[ -s "$manifest" ]] || continue
+    result="$LINK_BATCH_ROOT/shard-$shard.result.tsv"
+    llog="$LOGROOT/link-batch-$shard.log"
+    "$LINKER" "${LINKER_FLAGS_ARRAY[@]}" -m x86_64-linux --link-manifest "$manifest" --link-results "$result" >"$llog" 2>&1 &
+    active_links=$((active_links+1))
+    if (( active_links >= NEWLINKER_LINK_JOBS )); then
+      wait -n || true
+      active_links=$((active_links-1))
+    fi
+  done
+  while (( active_links > 0 )); do
     wait -n || true
     active_links=$((active_links-1))
-  fi
-done
-while (( active_links > 0 )); do
-  wait -n || true
-  active_links=$((active_links-1))
-done
+  done
+  for (( shard=0; shard<link_batch_shards; shard++ )); do
+    result="$LINK_BATCH_ROOT/shard-$shard.result.tsv"
+    if [[ ! -s "$result" ]]; then
+      while IFS=$'\t' read -r tool outbin full_objfile; do
+        [[ -n "$tool" ]] || continue
+        printf 'link\t%s\t%s\n' "$tool" "missing link batch result" > "$LINK_RESULTROOT/$(tool_stem "$tool").tsv"
+      done < "$LINK_BATCH_ROOT/shard-$shard.tsv"
+      continue
+    fi
+    while IFS=$'\t' read -r kind result_tool result_value; do
+      [[ -n "$kind" && -n "$result_tool" ]] || continue
+      printf '%s\t%s\t%s\n' "$kind" "$result_tool" "$result_value" > "$LINK_RESULTROOT/$(tool_stem "$result_tool").tsv"
+    done < "$result"
+  done
+else
+  active_links=0
+  for tool in "${TOOL_QUEUE[@]}"; do
+    stem=$(tool_stem "$tool")
+    link_one_tool "$tool" "$TOOL_OBJROOT/$stem.list" "$LINK_RESULTROOT/$stem.tsv" &
+    active_links=$((active_links+1))
+    if (( active_links >= NEWLINKER_LINK_JOBS )); then
+      wait -n || true
+      active_links=$((active_links-1))
+    fi
+  done
+  while (( active_links > 0 )); do
+    wait -n || true
+    active_links=$((active_links-1))
+  done
+fi
 
 for tool in "${TOOL_QUEUE[@]}"; do
   stem=$(tool_stem "$tool")
