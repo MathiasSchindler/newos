@@ -1133,6 +1133,192 @@ static int parameter_is_used_after_decl(const CompilerIr *ir, size_t decl_index,
     return 0;
 }
 
+static int text_has_identifier_at(const char *text, const char *name) {
+    size_t name_length;
+
+    if (text == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    name_length = rt_strlen(name);
+    return rt_strncmp(text, name, name_length) == 0 && !is_identifier_char(text[name_length]);
+}
+
+static int line_takes_identifier_address(const char *line, const char *name) {
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (line != 0 && line[i] != '\0') {
+        if ((in_string || in_char) && line[i] == '\\' && line[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && line[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && line[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char && line[i] == '&' && (i == 0U || line[i - 1U] != '&')) {
+            const char *cursor = skip_spaces(line + i + 1U);
+            if (text_has_identifier_at(cursor, name)) {
+                return 1;
+            }
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static int is_assignment_operator_after_identifier(const char *cursor) {
+    cursor = skip_spaces(cursor);
+    if (cursor[0] == '=' && cursor[1] != '=') {
+        return 1;
+    }
+    if ((cursor[0] == '+' || cursor[0] == '-' || cursor[0] == '*' || cursor[0] == '/' ||
+         cursor[0] == '%' || cursor[0] == '&' || cursor[0] == '|' || cursor[0] == '^') &&
+        cursor[1] == '=') {
+        return 1;
+    }
+    if ((cursor[0] == '<' || cursor[0] == '>') && cursor[1] == cursor[0] && cursor[2] == '=') {
+        return 1;
+    }
+    return (cursor[0] == '+' && cursor[1] == '+') || (cursor[0] == '-' && cursor[1] == '-');
+}
+
+static int identifier_has_prefix_incdec(const char *line, size_t offset) {
+    size_t cursor = offset;
+
+    while (cursor > 0U && line[cursor - 1U] == ' ') {
+        cursor -= 1U;
+    }
+    return cursor >= 2U &&
+           ((line[cursor - 2U] == '+' && line[cursor - 1U] == '+') ||
+            (line[cursor - 2U] == '-' && line[cursor - 1U] == '-'));
+}
+
+static int line_modifies_identifier(const char *line, const char *name) {
+    size_t name_length;
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (line == 0 || name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    if (starts_with(line, "store ")) {
+        char store_name[COMPILER_IR_NAME_CAPACITY];
+        (void)extract_store_name(line + 6, store_name, sizeof(store_name));
+        if (names_equal(store_name, name)) {
+            return 1;
+        }
+    }
+    name_length = rt_strlen(name);
+    while (line[i] != '\0') {
+        if ((in_string || in_char) && line[i] == '\\' && line[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && line[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && line[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char &&
+            (i == 0U || !is_identifier_char(line[i - 1U])) &&
+            rt_strncmp(line + i, name, name_length) == 0 &&
+            !is_identifier_char(line[i + name_length])) {
+            if (is_assignment_operator_after_identifier(line + i + name_length) ||
+                identifier_has_prefix_incdec(line, i)) {
+                return 1;
+            }
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static int parameter_can_use_cached_register(const BackendState *state,
+                                             const CompilerIr *ir,
+                                             size_t decl_index,
+                                             const char *function_name,
+                                             const char *name,
+                                             const char *type_text,
+                                             int source_param_index) {
+    size_t i;
+    int abi_param_index = source_param_index + (function_returns_object(state, function_name) ? 1 : 0);
+    int reference_count = 0;
+
+    if (backend_is_aarch64(state) || source_param_index < 0 || abi_param_index >= backend_register_arg_limit(state) ||
+        decl_requires_object_storage(type_text)) {
+        return 0;
+    }
+    for (i = decl_index + 1U; i < ir->count; ++i) {
+        const char *line = ir->lines[i];
+        if (starts_with(line, "endfunc ")) {
+            break;
+        }
+        if (!line_references_identifier(line, name)) {
+            continue;
+        }
+        if (line_takes_identifier_address(line, name) || line_modifies_identifier(line, name)) {
+            return 0;
+        }
+        reference_count += 1;
+    }
+    return reference_count >= 3;
+}
+
+static int local_can_use_cached_register(const BackendState *state,
+                                         const CompilerIr *ir,
+                                         size_t decl_index,
+                                         const char *name,
+                                         const char *type_text) {
+    size_t i;
+    int reference_count = 0;
+    int store_count = 0;
+    int saw_store = 0;
+
+    if (backend_is_aarch64(state) || decl_requires_object_storage(type_text)) {
+        return 0;
+    }
+    for (i = decl_index + 1U; i < ir->count; ++i) {
+        const char *line = ir->lines[i];
+        if (starts_with(line, "endfunc ")) {
+            break;
+        }
+        if (starts_with(line, "store ")) {
+            char store_name[COMPILER_IR_NAME_CAPACITY];
+            (void)extract_store_name(line + 6, store_name, sizeof(store_name));
+            if (names_equal(store_name, name)) {
+                store_count += 1;
+                saw_store = 1;
+                continue;
+            }
+        }
+        if (!line_references_identifier(line, name)) {
+            continue;
+        }
+        if (line_takes_identifier_address(line, name) || line_modifies_identifier(line, name)) {
+            return 0;
+        }
+        if (!saw_store) {
+            return 0;
+        }
+        reference_count += 1;
+    }
+    return store_count == 1 && reference_count >= 3;
+}
+
 static int function_line_has_call(const BackendState *state, const char *line, int object_returns_only) {
     size_t i;
 
@@ -1274,6 +1460,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
     int in_function = 0;
     char current_function[COMPILER_IR_NAME_CAPACITY];
     int current_param_index = 0;
+    int current_local_index = 0;
 
     current_function[0] = '\0';
 
@@ -1341,6 +1528,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
         if (starts_with(line, "func ")) {
             in_function = 1;
             current_param_index = 0;
+            current_local_index = 0;
             {
                 size_t j = 5;
                 size_t out = 0;
@@ -1355,6 +1543,7 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
             in_function = 0;
             current_function[0] = '\0';
             current_param_index = 0;
+            current_local_index = 0;
             continue;
         }
 
@@ -1375,10 +1564,28 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                     if (!used_param && function_info != 0 && current_param_index < 64) {
                         function_info->unused_param_mask |= 1ULL << (unsigned int)current_param_index;
                     }
+                    if (used_param && function_info != 0 && current_param_index < 64 && function_info->cached_param_count < 5 &&
+                        parameter_can_use_cached_register(state, ir, i, current_function, name, type_text, current_param_index)) {
+                        function_info->cached_param_mask |= 1ULL << (unsigned int)current_param_index;
+                        function_info->cached_param_count += 1;
+                        current_param_index += 1;
+                        continue;
+                    }
                     current_param_index += 1;
                 }
                 if (names_equal(storage, "param") && !used_param) {
                     continue;
+                }
+                if (names_equal(storage, "local") && function_info != 0 && current_local_index < 64 &&
+                    function_info->cached_param_count + function_info->cached_local_count < 5 &&
+                    local_can_use_cached_register(state, ir, i, name, type_text)) {
+                    function_info->cached_local_mask |= 1ULL << (unsigned int)current_local_index;
+                    function_info->cached_local_count += 1;
+                    current_local_index += 1;
+                    continue;
+                }
+                if (names_equal(storage, "local")) {
+                    current_local_index += 1;
                 }
                 if (names_equal(storage, "param") && text_contains(type_text, "[")) {
                     slot_size = backend_stack_slot_size(state);
@@ -1839,6 +2046,45 @@ static int function_has_global_linkage(const BackendState *state, const char *na
     return 1;
 }
 
+static int cached_register_save_offset(int index) {
+    return (index + 1) * 8;
+}
+
+static int emit_cached_register_save_restore(BackendState *state, int restore) {
+    int index;
+
+    if (backend_is_aarch64(state)) {
+        return 0;
+    }
+    for (index = 0; index < state->saved_register_count; ++index) {
+        char line[96];
+        char offset_text[32];
+        const char *reg = backend_x86_cached_register_name(index);
+
+        if (reg == 0) {
+            backend_set_error(state->backend, "invalid cached register save slot");
+            return -1;
+        }
+        rt_unsigned_to_string((unsigned long long)cached_register_save_offset(index), offset_text, sizeof(offset_text));
+        if (restore) {
+            rt_copy_string(line, sizeof(line), "movq -");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rbp), ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+        } else {
+            rt_copy_string(line, sizeof(line), "movq ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", -");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rbp)");
+        }
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int begin_function(BackendState *state, const char *name) {
     char symbol[COMPILER_IR_NAME_CAPACITY];
     BackendFunctionName *function_info = lookup_function_info(state, name);
@@ -1852,7 +2098,14 @@ static int begin_function(BackendState *state, const char *name) {
     state->saw_return_in_function = 0;
     state->frameless_function = 0;
     state->stack_size = 0;
+    state->saved_register_count = (!backend_is_aarch64(state) && function_info != 0)
+                                      ? function_info->cached_param_count + function_info->cached_local_count
+                                      : 0;
+    state->cached_param_count = 0;
+    state->cached_local_count = 0;
+    state->local_decl_count = 0;
     state->reserved_stack_size = lookup_function_stack_bytes(state, name);
+    state->reserved_stack_size += state->saved_register_count * backend_stack_slot_size(state);
     if (function_info != 0 && function_info->needs_callret) {
         state->reserved_stack_size += BACKEND_ARRAY_STACK_BYTES;
     }
@@ -1935,6 +2188,11 @@ static int begin_function(BackendState *state, const char *name) {
         }
     }
 
+    if (emit_cached_register_save_restore(state, 0) != 0) {
+        return -1;
+    }
+    state->stack_size = state->saved_register_count * backend_stack_slot_size(state);
+
     if (function_info != 0 && function_info->needs_callret &&
         allocate_local(state, "__callret", "char[4096]", BACKEND_ARRAY_STACK_BYTES, 1, 0, 1, 0) != 0) {
         return -1;
@@ -1989,6 +2247,10 @@ static int end_function(BackendState *state) {
     state->frameless_function = 0;
     state->stack_size = 0;
     state->reserved_stack_size = 0;
+    state->saved_register_count = 0;
+    state->cached_param_count = 0;
+    state->cached_local_count = 0;
+    state->local_decl_count = 0;
     state->current_function[0] = '\0';
     return 0;
 }
@@ -2001,6 +2263,9 @@ static int emit_function_return(BackendState *state) {
     }
     if (state->frameless_function) {
         return emit_instruction(state, "ret");
+    }
+    if (emit_cached_register_save_restore(state, 1) != 0) {
+        return -1;
     }
     return emit_instruction(state, "leave") == 0 && emit_instruction(state, "ret") == 0 ? 0 : -1;
 }
@@ -2168,6 +2433,27 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             return 0;
         }
 
+        if (!backend_is_aarch64(state) && function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
+            index < backend_register_arg_limit(state) &&
+            (function_info->cached_param_mask & (1ULL << (unsigned int)source_param_index)) != 0ULL) {
+            const char *cached_reg = backend_x86_cached_register_name(state->cached_param_count);
+
+            if (cached_reg == 0 ||
+                allocate_cached_local(state, name, type_text, pointer_depth, char_based, prefers_word_index, state->cached_param_count) != 0) {
+                return -1;
+            }
+            rt_copy_string(asm_line, sizeof(asm_line), "movq ");
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), x86_arg_regs[index]);
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", ");
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), cached_reg);
+            if (emit_instruction(state, asm_line) != 0) {
+                return -1;
+            }
+            state->cached_param_count += 1;
+            state->param_count += 1;
+            return 0;
+        }
+
         if (allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
             return -1;
         }
@@ -2242,6 +2528,22 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
     }
 
     if (names_equal(storage, "local")) {
+        int local_decl_index = state->local_decl_count;
+        BackendFunctionName *function_info = lookup_function_info(state, state->current_function);
+
+        state->local_decl_count += 1;
+        if (!backend_is_aarch64(state) && function_info != 0 && local_decl_index >= 0 && local_decl_index < 64 &&
+            (function_info->cached_local_mask & (1ULL << (unsigned int)local_decl_index)) != 0ULL) {
+            int cached_register = function_info->cached_param_count + state->cached_local_count;
+            const char *cached_reg = backend_x86_cached_register_name(cached_register);
+
+            if (cached_reg == 0 ||
+                allocate_cached_local(state, name, type_text, pointer_depth, char_based, prefers_word_index, cached_register) != 0) {
+                return -1;
+            }
+            state->cached_local_count += 1;
+            return 0;
+        }
         return allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index);
     }
     if (names_equal(storage, "local_static")) {

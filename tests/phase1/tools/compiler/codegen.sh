@@ -29,6 +29,68 @@ EOF
 "$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/zero_branch.c" -o "$WORK_DIR/zero_branch_linux.s"
 assert_file_contains "$WORK_DIR/zero_branch_linux.s" 'testq %rax, %rax' "compiler x86_64 backend should use compact zero tests"
 
+cat > "$WORK_DIR/cached_params.c" <<'EOF'
+int main(int argc, char **argv) {
+    int total = 0;
+    if (argc > 2) {
+        total = total + argv[0][0];
+        total = total + argv[1][0];
+        total = total + argv[argc - 1][0];
+        return total + argc;
+    }
+    return argc;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/cached_params.c" -o "$WORK_DIR/cached_params_linux.s"
+assert_file_contains "$WORK_DIR/cached_params_linux.s" 'movq %rdi, %rbx' "compiler x86_64 backend should cache immutable first parameter"
+assert_file_contains "$WORK_DIR/cached_params_linux.s" 'movq %rsi, %r12' "compiler x86_64 backend should cache immutable second parameter"
+assert_file_contains "$WORK_DIR/cached_params_linux.s" 'movslq %ebx, %rax' "compiler x86_64 backend should sign-extend cached int parameters"
+
+cat > "$WORK_DIR/mutated_param.c" <<'EOF'
+int main(int argc, char **argv) {
+    (void)argv;
+    argc = argc + 1;
+    return argc;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/mutated_param.c" -o "$WORK_DIR/mutated_param_linux.s"
+if grep -q 'movq %rdi, %rbx' "$WORK_DIR/mutated_param_linux.s"; then
+    fail "compiler x86_64 backend should not cache mutated parameters"
+fi
+
+cat > "$WORK_DIR/cached_local.c" <<'EOF'
+int main(int argc, char **argv) {
+    int base = argc + 1;
+    (void)argv;
+    if (base > 10) {
+        return base;
+    }
+    if (base < 0) {
+        return base + 1;
+    }
+    return base + 2;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/cached_local.c" -o "$WORK_DIR/cached_local_linux.s"
+assert_file_contains "$WORK_DIR/cached_local_linux.s" 'movq %rax, %rbx' "compiler x86_64 backend should cache single-assignment scalar locals"
+assert_file_contains "$WORK_DIR/cached_local_linux.s" 'movslq %ebx, %rax' "compiler x86_64 backend should sign-extend cached int locals"
+
+cat > "$WORK_DIR/mutated_local.c" <<'EOF'
+int main(void) {
+    int value = 1;
+    value = value + 1;
+    return value;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/mutated_local.c" -o "$WORK_DIR/mutated_local_linux.s"
+if grep -q 'movq %rax, %rbx' "$WORK_DIR/mutated_local_linux.s"; then
+    fail "compiler x86_64 backend should not cache mutated locals"
+fi
+
 cat > "$WORK_DIR/register_call_args.c" <<'EOF'
 int pair(int left, int right) {
     return left + right;

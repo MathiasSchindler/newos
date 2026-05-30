@@ -984,6 +984,7 @@ int allocate_local(BackendState *state, const char *name, const char *type_text,
     state->locals[state->local_count].char_based = char_based;
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 0;
+    state->locals[state->local_count].cached_register = -1;
     state->stack_size += slot_size;
     remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
@@ -993,6 +994,28 @@ int allocate_local(BackendState *state, const char *name, const char *type_text,
         return -1;
     }
 
+    return 0;
+}
+
+int allocate_cached_local(BackendState *state, const char *name, const char *type_text, int pointer_depth, int char_based, int prefers_word_index, int cached_register) {
+    if (state->local_count >= COMPILER_BACKEND_MAX_LOCALS) {
+        backend_set_error(state->backend, "too many local variables for backend");
+        return -1;
+    }
+
+    rt_copy_string(state->locals[state->local_count].name, sizeof(state->locals[state->local_count].name), name);
+    rt_copy_string(state->locals[state->local_count].type_text, sizeof(state->locals[state->local_count].type_text), type_text != 0 ? type_text : "");
+    state->locals[state->local_count].symbol_name[0] = '\0';
+    state->locals[state->local_count].stack_bytes = 0;
+    state->locals[state->local_count].offset = 0;
+    state->locals[state->local_count].is_array = 0;
+    state->locals[state->local_count].pointer_depth = pointer_depth;
+    state->locals[state->local_count].char_based = char_based;
+    state->locals[state->local_count].prefers_word_index = prefers_word_index;
+    state->locals[state->local_count].static_storage = 0;
+    state->locals[state->local_count].cached_register = cached_register;
+    remember_local_index(state, name, (unsigned int)state->local_count);
+    state->local_count += 1U;
     return 0;
 }
 
@@ -1014,6 +1037,7 @@ int allocate_static_local(BackendState *state, const char *name, const char *sym
     state->locals[state->local_count].char_based = char_based;
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 1;
+    state->locals[state->local_count].cached_register = -1;
     remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
     return 0;
@@ -1217,7 +1241,92 @@ static const char *x86_reg32_name(const char *reg) {
     if (names_equal(reg, "%r9")) return "%r9d";
     if (names_equal(reg, "%r10")) return "%r10d";
     if (names_equal(reg, "%r11")) return "%r11d";
+    if (names_equal(reg, "%r12")) return "%r12d";
+    if (names_equal(reg, "%r13")) return "%r13d";
+    if (names_equal(reg, "%r14")) return "%r14d";
+    if (names_equal(reg, "%r15")) return "%r15d";
     return "%eax";
+}
+
+static const char *x86_reg16_name(const char *reg) {
+    if (names_equal(reg, "%rax")) return "%ax";
+    if (names_equal(reg, "%rbx")) return "%bx";
+    if (names_equal(reg, "%rcx")) return "%cx";
+    if (names_equal(reg, "%rdx")) return "%dx";
+    if (names_equal(reg, "%rsi")) return "%si";
+    if (names_equal(reg, "%rdi")) return "%di";
+    if (names_equal(reg, "%r8")) return "%r8w";
+    if (names_equal(reg, "%r9")) return "%r9w";
+    if (names_equal(reg, "%r10")) return "%r10w";
+    if (names_equal(reg, "%r11")) return "%r11w";
+    if (names_equal(reg, "%r12")) return "%r12w";
+    if (names_equal(reg, "%r13")) return "%r13w";
+    if (names_equal(reg, "%r14")) return "%r14w";
+    if (names_equal(reg, "%r15")) return "%r15w";
+    return "%ax";
+}
+
+static const char *x86_reg8_name(const char *reg) {
+    if (names_equal(reg, "%rax")) return "%al";
+    if (names_equal(reg, "%rbx")) return "%bl";
+    if (names_equal(reg, "%rcx")) return "%cl";
+    if (names_equal(reg, "%rdx")) return "%dl";
+    if (names_equal(reg, "%rsi")) return "%sil";
+    if (names_equal(reg, "%rdi")) return "%dil";
+    if (names_equal(reg, "%r8")) return "%r8b";
+    if (names_equal(reg, "%r9")) return "%r9b";
+    if (names_equal(reg, "%r10")) return "%r10b";
+    if (names_equal(reg, "%r11")) return "%r11b";
+    if (names_equal(reg, "%r12")) return "%r12b";
+    if (names_equal(reg, "%r13")) return "%r13b";
+    if (names_equal(reg, "%r14")) return "%r14b";
+    if (names_equal(reg, "%r15")) return "%r15b";
+    return "%al";
+}
+
+const char *backend_x86_cached_register_name(int index) {
+    static const char *regs[] = {"%rbx", "%r12", "%r13", "%r14", "%r15"};
+    if (index < 0 || index >= (int)(sizeof(regs) / sizeof(regs[0]))) {
+        return 0;
+    }
+    return regs[index];
+}
+
+static int emit_load_cached_register(BackendState *state, const char *src_reg, const char *dst_reg, int access_size) {
+    char line[64];
+    const char *opcode = "movq";
+    const char *src = src_reg;
+    const char *dst = dst_reg;
+
+    if (access_size == -1) {
+        opcode = "movsbq";
+        src = x86_reg8_name(src_reg);
+    } else if (access_size == 1) {
+        opcode = "movzbq";
+        src = x86_reg8_name(src_reg);
+    } else if (access_size == -2) {
+        opcode = "movswq";
+        src = x86_reg16_name(src_reg);
+    } else if (access_size == 2) {
+        opcode = "movzwq";
+        src = x86_reg16_name(src_reg);
+    } else if (access_size == -4) {
+        opcode = "movslq";
+        src = x86_reg32_name(src_reg);
+    } else if (access_size == 4) {
+        opcode = "movl";
+        src = x86_reg32_name(src_reg);
+        dst = x86_reg32_name(dst_reg);
+    } else if (names_equal(src_reg, dst_reg)) {
+        return 0;
+    }
+
+    rt_copy_string(line, sizeof(line), opcode);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), " ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), dst);
+    return emit_instruction(state, line);
 }
 
 static int scalar_type_access_size(const char *type_text, int word_index) {
@@ -1447,6 +1556,10 @@ int emit_address_of_name(BackendState *state, const char *name) {
     int global_index = find_global(state, name);
 
     if (local_index >= 0) {
+        if (state->locals[local_index].cached_register >= 0) {
+            backend_set_error(state->backend, "backend cannot take address of cached local");
+            return -1;
+        }
         if (state->locals[local_index].static_storage) {
             char formatted_symbol[COMPILER_IR_NAME_CAPACITY];
             const char *symbol = state->locals[local_index].symbol_name[0] != '\0'
@@ -1582,6 +1695,18 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
     long long builtin_value = 0;
 
     if (local_index >= 0) {
+        if (state->locals[local_index].cached_register >= 0) {
+            const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            int access_size = scalar_type_access_size(state->locals[local_index].type_text, state->locals[local_index].prefers_word_index);
+            if (src_reg == 0 || backend_is_aarch64(state)) {
+                backend_set_error(state->backend, "invalid cached local register");
+                return -1;
+            }
+            if (state->locals[local_index].pointer_depth > 0) {
+                access_size = 0;
+            }
+            return emit_load_cached_register(state, src_reg, dst_reg, access_size);
+        }
         if (state->locals[local_index].static_storage) {
             if (state->locals[local_index].is_array) {
                 return emit_address_of_name(state, name) == 0 &&
@@ -1675,6 +1800,18 @@ int emit_load_name(BackendState *state, const char *name) {
     long long builtin_value = 0;
 
     if (local_index >= 0) {
+        if (state->locals[local_index].cached_register >= 0) {
+            const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            int access_size = scalar_type_access_size(state->locals[local_index].type_text, state->locals[local_index].prefers_word_index);
+            if (src_reg == 0 || backend_is_aarch64(state)) {
+                backend_set_error(state->backend, "invalid cached local register");
+                return -1;
+            }
+            if (state->locals[local_index].pointer_depth > 0) {
+                access_size = 0;
+            }
+            return emit_load_cached_register(state, src_reg, "%rax", access_size);
+        }
         if (state->locals[local_index].static_storage) {
             if (state->locals[local_index].is_array) {
                 const char *type_text = skip_spaces(state->locals[local_index].type_text);
@@ -1758,6 +1895,10 @@ int emit_store_name(BackendState *state, const char *name) {
     int global_index = find_global(state, name);
 
     if (local_index >= 0) {
+        if (state->locals[local_index].cached_register >= 0) {
+            const char *dst_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            return dst_reg != 0 ? emit_move_value_register(state, dst_reg) : -1;
+        }
         if (state->locals[local_index].is_array) {
             backend_set_error(state->backend, "unsupported local array assignment in backend");
             return -1;
@@ -2045,7 +2186,7 @@ int emit_copy_object_to_pushed_address(BackendState *state, int bytes) {
     }
 
     if (emit_instruction(state, "movq %rax, %rdx") != 0 ||
-        emit_instruction(state, "popq %rcx") != 0) {
+        emit_pop_to_register(state, "%rcx") != 0) {
         return -1;
     }
     if (bytes > 128) {

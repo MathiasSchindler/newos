@@ -998,7 +998,7 @@ static int emit_scale_top_of_stack(BackendState *state, int scale) {
         }
         return 0;
     }
-    if (emit_instruction(state, "popq %rcx") != 0) {
+    if (emit_pop_to_register(state, "%rcx") != 0) {
         return -1;
     }
     if (shift > 0) {
@@ -1126,7 +1126,7 @@ static int emit_index_address(BackendState *state, int element_scale) {
         return emit_instruction(state, "add x0, x1, x2");
     }
 
-    if (emit_instruction(state, "movq %rax, %rcx") != 0 || emit_instruction(state, "popq %rax") != 0) {
+    if (emit_instruction(state, "movq %rax, %rcx") != 0 || emit_pop_to_register(state, "%rax") != 0) {
         return -1;
     }
     if (element_scale == 1) {
@@ -2081,7 +2081,7 @@ static int emit_binary_op_mode(BackendState *state, const char *op, int use_unsi
         if (names_equal(op, "==")) return emit_set_condition(state, "eq");
         if (names_equal(op, "!=")) return emit_set_condition(state, "ne");
     } else {
-        if (emit_instruction(state, "movq %rax, %rcx") != 0 || emit_instruction(state, "popq %rax") != 0) {
+        if (emit_instruction(state, "movq %rax, %rcx") != 0 || emit_pop_to_register(state, "%rax") != 0) {
             return -1;
         }
 
@@ -3257,7 +3257,7 @@ static int emit_branch_false_compare(BackendState *state, const char *expr, cons
             return -1;
         }
     } else if (emit_instruction(state, "movq %rax, %rcx") != 0 ||
-               emit_instruction(state, "popq %rax") != 0 ||
+               emit_pop_to_register(state, "%rax") != 0 ||
                emit_instruction(state, "cmpq %rcx, %rax") != 0) {
         return -1;
     }

@@ -32,6 +32,10 @@ typedef struct {
     int needs_callret;
     int has_call;
     unsigned long long unused_param_mask;
+    unsigned long long cached_param_mask;
+    unsigned long long cached_local_mask;
+    int cached_param_count;
+    int cached_local_count;
 } BackendFunctionName;
 
 typedef struct {
@@ -59,6 +63,7 @@ typedef struct {
     int char_based;
     int prefers_word_index;
     int static_storage;
+    int cached_register;
 } BackendLocal;
 
 typedef struct {
@@ -129,6 +134,10 @@ typedef struct {
     int frameless_function;
     int stack_size;
     int reserved_stack_size;
+    int saved_register_count;
+    int cached_param_count;
+    int cached_local_count;
+    int local_decl_count;
     unsigned int label_counter;
 } BackendState;
 
@@ -197,8 +206,10 @@ int add_global(BackendState *state, const char *name, const char *type_text, int
 int find_local(const BackendState *state, const char *name);
 void reset_local_index(BackendState *state);
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
+int allocate_cached_local(BackendState *state, const char *name, const char *type_text, int pointer_depth, int char_based, int prefers_word_index, int cached_register);
 int allocate_static_local(BackendState *state, const char *name, const char *symbol_name, const char *type_text, int storage_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 void build_static_local_symbol_name(const BackendState *state, const char *function_name, const char *name, char *buffer, size_t buffer_size);
+const char *backend_x86_cached_register_name(int index);
 const char *lookup_name_type_text(const BackendState *state, const char *name);
 int write_label_name(const BackendState *state, char *buffer, size_t buffer_size, const char *label);
 int emit_pop_to_register(BackendState *state, const char *reg);
