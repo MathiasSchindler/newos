@@ -39,6 +39,7 @@
     X("src/compiler/backend_codegen.c") \
     X("src/compiler/driver.c") \
     X("src/compiler/ir.c") \
+    X("src/compiler/ir_constexpr.c") \
     X("src/compiler/linker.c") \
     X("src/compiler/linker_util.c") \
     X("src/compiler/linker_elf.c") \
@@ -53,6 +54,7 @@
     X("src/compiler/linker_lto.c") \
     X("src/compiler/linker_macho.c") \
     X("src/compiler/object_writer.c") \
+    X("src/compiler/object_writer_symbols.c") \
     X("src/compiler/parser.c") \
     X("src/compiler/parser_types.c") \
     X("src/compiler/parser_expressions.c") \

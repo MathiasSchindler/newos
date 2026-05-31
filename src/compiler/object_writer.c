@@ -1,118 +1,13 @@
-#include "object_writer.h"
+#include "object_writer_internal.h"
 
-#include "platform.h"
-#include "runtime.h"
 #include "source.h"
 
-typedef signed char int8_t;
-typedef unsigned short uint16_t;
-typedef int int32_t;
-typedef unsigned int uint32_t;
-typedef unsigned long long uint64_t;
-typedef long long int64_t;
-
-#define OBJECT_WRITER_MAX_TEXT 262144
-#define OBJECT_WRITER_MAX_DATA 65536
-#define OBJECT_WRITER_MAX_SYMBOLS 1024
-#define OBJECT_WRITER_SYMBOL_INDEX_CAPACITY 2048
-#define OBJECT_WRITER_MAX_LABELS 2048
-#define OBJECT_WRITER_LABEL_INDEX_CAPACITY 4096
-#define OBJECT_WRITER_MAX_FIXUPS 4096
-#define OBJECT_WRITER_MAX_RELOCS 4096
-#define OBJECT_WRITER_MAX_OUTPUT (OBJECT_WRITER_MAX_TEXT + OBJECT_WRITER_MAX_DATA + 65536)
-
-#define ELFCLASS64 2U
-#define ELFDATA2LSB 1U
-#define EV_CURRENT 1U
-#define ET_REL 1U
-#define EM_X86_64 62U
-
-#define SHT_NULL 0U
-#define SHT_PROGBITS 1U
-#define SHT_SYMTAB 2U
-#define SHT_STRTAB 3U
-#define SHT_RELA 4U
-#define SHT_NOBITS 8U
-
-#define SHF_WRITE 0x1ULL
-#define SHF_ALLOC 0x2ULL
-#define SHF_EXECINSTR 0x4ULL
-
-#define STB_LOCAL 0U
-#define STB_GLOBAL 1U
-#define STT_NOTYPE 0U
-#define STT_OBJECT 1U
-#define STT_FUNC 2U
-#define STT_SECTION 3U
-
-#define ELF64_SYMBOL_SIZE 24U
-#define ELF64_SECTION_HEADER_SIZE 64U
-
-#define R_X86_64_64 1U
-#define R_X86_64_PC32 2U
-#define R_X86_64_PLT32 4U
-
-typedef enum {
-    OBJECT_SECTION_NONE = 0,
-    OBJECT_SECTION_TEXT = 1,
-    OBJECT_SECTION_DATA = 2,
-    OBJECT_SECTION_BSS = 3
-} ObjectSection;
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-    ObjectSection section;
-    size_t offset;
-    int defined;
-    int global;
-    int is_function;
-    uint32_t name_offset;
-    unsigned int sym_index;
-} ObjectSymbol;
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-    ObjectSection section;
-    size_t offset;
-} ObjectLabel;
-
-typedef struct {
-    char name[COMPILER_IR_NAME_CAPACITY];
-    size_t offset;
-    uint32_t type;
-    int64_t addend;
-} ObjectFixup;
-
-typedef struct {
-    size_t offset;
-    ObjectSection section;
-    char name[COMPILER_IR_NAME_CAPACITY];
-    uint32_t type;
-    int64_t addend;
-} ObjectRelocation;
-
-typedef struct {
-    CompilerObjectWriter *writer;
-    unsigned char text[OBJECT_WRITER_MAX_TEXT];
-    unsigned char data[OBJECT_WRITER_MAX_DATA];
-    size_t text_size;
-    size_t data_size;
-    size_t bss_size;
-    ObjectSymbol symbols[OBJECT_WRITER_MAX_SYMBOLS];
-    unsigned int symbol_index[OBJECT_WRITER_SYMBOL_INDEX_CAPACITY];
-    size_t symbol_count;
-    ObjectLabel labels[OBJECT_WRITER_MAX_LABELS];
-    unsigned int label_index[OBJECT_WRITER_LABEL_INDEX_CAPACITY];
-    size_t label_count;
-    ObjectFixup fixups[OBJECT_WRITER_MAX_FIXUPS];
-    size_t fixup_count;
-    ObjectRelocation relocs[OBJECT_WRITER_MAX_RELOCS];
-    size_t reloc_count;
-    ObjectSection current_section;
-} ObjectAssembler;
+void object_writer_set_error(CompilerObjectWriter *writer, const char *message) {
+    rt_copy_string(writer->error_message, sizeof(writer->error_message), message != 0 ? message : "object writer error");
+}
 
 static void set_error(CompilerObjectWriter *writer, const char *message) {
-    rt_copy_string(writer->error_message, sizeof(writer->error_message), message != 0 ? message : "object writer error");
+    object_writer_set_error(writer, message);
 }
 
 static const char *skip_spaces(const char *text) {
@@ -365,202 +260,6 @@ static int append_u64(ObjectAssembler *assembler, ObjectSection section, uint64_
         return append_bytes(assembler->data, &assembler->data_size, sizeof(assembler->data), bytes, sizeof(bytes));
     }
     return -1;
-}
-
-static unsigned int object_hash_text(const char *text) {
-    unsigned int hash = 2166136261U;
-
-    while (text != 0 && *text != '\0') {
-        hash ^= (unsigned int)(unsigned char)*text++;
-        hash *= 16777619U;
-    }
-    return hash;
-}
-
-static size_t object_index_bucket(unsigned int hash, size_t capacity) {
-    return (size_t)(hash & (unsigned int)(capacity - 1U));
-}
-
-static int find_symbol_indexed(const ObjectAssembler *assembler, const char *name) {
-    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_SYMBOL_INDEX_CAPACITY);
-    size_t probe;
-
-    for (probe = 0; probe < OBJECT_WRITER_SYMBOL_INDEX_CAPACITY; ++probe) {
-        unsigned int stored = assembler->symbol_index[bucket];
-        int index;
-
-        if (stored == 0U) {
-            return -1;
-        }
-        index = (int)stored - 1;
-        if (index >= 0 && (size_t)index < assembler->symbol_count && names_equal(assembler->symbols[index].name, name)) {
-            return index;
-        }
-        bucket = (bucket + 1U) & (OBJECT_WRITER_SYMBOL_INDEX_CAPACITY - 1U);
-    }
-    return -1;
-}
-
-static void remember_symbol_index(ObjectAssembler *assembler, const char *name, unsigned int index) {
-    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_SYMBOL_INDEX_CAPACITY);
-    size_t probe;
-
-    for (probe = 0; probe < OBJECT_WRITER_SYMBOL_INDEX_CAPACITY; ++probe) {
-        unsigned int stored = assembler->symbol_index[bucket];
-        int existing = (int)stored - 1;
-
-        if (stored == 0U || (existing >= 0 && (size_t)existing < assembler->symbol_count && names_equal(assembler->symbols[existing].name, name))) {
-            assembler->symbol_index[bucket] = index + 1U;
-            return;
-        }
-        bucket = (bucket + 1U) & (OBJECT_WRITER_SYMBOL_INDEX_CAPACITY - 1U);
-    }
-}
-
-static int find_symbol(const ObjectAssembler *assembler, const char *name) {
-    int indexed = find_symbol_indexed(assembler, name);
-    size_t i;
-
-    if (indexed >= 0) {
-        return indexed;
-    }
-
-    for (i = 0; i < assembler->symbol_count; ++i) {
-        if (names_equal(assembler->symbols[i].name, name)) {
-            return (int)i;
-        }
-    }
-
-    return -1;
-}
-
-static int get_symbol(ObjectAssembler *assembler, const char *name) {
-    int existing = find_symbol(assembler, name);
-    unsigned int index;
-
-    if (existing >= 0) {
-        return existing;
-    }
-    if (assembler->symbol_count >= OBJECT_WRITER_MAX_SYMBOLS) {
-        set_error(assembler->writer, "too many symbols for current object writer");
-        return -1;
-    }
-
-    index = (unsigned int)assembler->symbol_count;
-    rt_copy_string(assembler->symbols[index].name, sizeof(assembler->symbols[index].name), name);
-    assembler->symbols[index].section = OBJECT_SECTION_NONE;
-    assembler->symbols[index].offset = 0;
-    assembler->symbols[index].defined = 0;
-    assembler->symbols[index].global = 0;
-    assembler->symbols[index].is_function = 0;
-    assembler->symbols[index].name_offset = 0U;
-    assembler->symbols[index].sym_index = 0;
-    remember_symbol_index(assembler, name, index);
-    assembler->symbol_count += 1U;
-    return (int)index;
-}
-
-static int find_label_indexed(const ObjectAssembler *assembler, const char *name) {
-    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_LABEL_INDEX_CAPACITY);
-    size_t probe;
-
-    for (probe = 0; probe < OBJECT_WRITER_LABEL_INDEX_CAPACITY; ++probe) {
-        unsigned int stored = assembler->label_index[bucket];
-        int index;
-
-        if (stored == 0U) {
-            return -1;
-        }
-        index = (int)stored - 1;
-        if (index >= 0 && (size_t)index < assembler->label_count && names_equal(assembler->labels[index].name, name)) {
-            return index;
-        }
-        bucket = (bucket + 1U) & (OBJECT_WRITER_LABEL_INDEX_CAPACITY - 1U);
-    }
-    return -1;
-}
-
-static void remember_label_index(ObjectAssembler *assembler, const char *name, unsigned int index) {
-    size_t bucket = object_index_bucket(object_hash_text(name), OBJECT_WRITER_LABEL_INDEX_CAPACITY);
-    size_t probe;
-
-    for (probe = 0; probe < OBJECT_WRITER_LABEL_INDEX_CAPACITY; ++probe) {
-        unsigned int stored = assembler->label_index[bucket];
-        int existing = (int)stored - 1;
-
-        if (stored == 0U || (existing >= 0 && (size_t)existing < assembler->label_count && names_equal(assembler->labels[existing].name, name))) {
-            assembler->label_index[bucket] = index + 1U;
-            return;
-        }
-        bucket = (bucket + 1U) & (OBJECT_WRITER_LABEL_INDEX_CAPACITY - 1U);
-    }
-}
-
-static int find_label(const ObjectAssembler *assembler, const char *name) {
-    int indexed = find_label_indexed(assembler, name);
-    size_t i;
-
-    if (indexed >= 0) {
-        return indexed;
-    }
-
-    for (i = 0; i < assembler->label_count; ++i) {
-        if (names_equal(assembler->labels[i].name, name)) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-static int add_label(ObjectAssembler *assembler, const char *name, ObjectSection section, size_t offset) {
-    int existing = find_label(assembler, name);
-
-    if (existing >= 0) {
-        assembler->labels[existing].section = section;
-        assembler->labels[existing].offset = offset;
-        return 0;
-    }
-
-    if (assembler->label_count >= OBJECT_WRITER_MAX_LABELS) {
-        set_error(assembler->writer, "too many labels for current object writer");
-        return -1;
-    }
-
-    rt_copy_string(assembler->labels[assembler->label_count].name, sizeof(assembler->labels[assembler->label_count].name), name);
-    assembler->labels[assembler->label_count].section = section;
-    assembler->labels[assembler->label_count].offset = offset;
-    remember_label_index(assembler, name, (unsigned int)assembler->label_count);
-    assembler->label_count += 1U;
-    return 0;
-}
-
-static int add_fixup(ObjectAssembler *assembler, const char *name, size_t offset, uint32_t type, int64_t addend) {
-    if (assembler->fixup_count >= OBJECT_WRITER_MAX_FIXUPS) {
-        set_error(assembler->writer, "too many relocations/fixups for current object writer");
-        return -1;
-    }
-
-    rt_copy_string(assembler->fixups[assembler->fixup_count].name, sizeof(assembler->fixups[assembler->fixup_count].name), name);
-    assembler->fixups[assembler->fixup_count].offset = offset;
-    assembler->fixups[assembler->fixup_count].type = type;
-    assembler->fixups[assembler->fixup_count].addend = addend;
-    assembler->fixup_count += 1U;
-    return 0;
-}
-
-static int add_relocation(ObjectAssembler *assembler, ObjectSection section, const char *name, size_t offset, uint32_t type, int64_t addend) {
-    if (assembler->reloc_count >= OBJECT_WRITER_MAX_RELOCS) {
-        set_error(assembler->writer, "too many relocation entries for current object writer");
-        return -1;
-    }
-
-    assembler->relocs[assembler->reloc_count].offset = offset;
-    assembler->relocs[assembler->reloc_count].section = section;
-    assembler->relocs[assembler->reloc_count].type = type;
-    assembler->relocs[assembler->reloc_count].addend = addend;
-    rt_copy_string(assembler->relocs[assembler->reloc_count].name, sizeof(assembler->relocs[assembler->reloc_count].name), name);
-    assembler->reloc_count += 1U;
-    return 0;
 }
 
 static int try_parse_register(const char *text,
@@ -929,7 +628,7 @@ static int encode_riprel(ObjectAssembler *assembler, unsigned char opcode, int r
 
     disp_offset = assembler->text_size;
     if (append_u32(assembler, OBJECT_SECTION_TEXT, 0U) != 0 ||
-        add_fixup(assembler, name, disp_offset, reloc_type, -4) != 0) {
+        object_writer_add_fixup(assembler, name, disp_offset, reloc_type, -4) != 0) {
         return -1;
     }
 
@@ -1052,7 +751,7 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
         }
         disp_offset = assembler->text_size;
         if (append_u32(assembler, OBJECT_SECTION_TEXT, 0U) != 0 ||
-            add_fixup(assembler, name, disp_offset, R_X86_64_PLT32, -4) != 0) {
+            object_writer_add_fixup(assembler, name, disp_offset, R_X86_64_PLT32, -4) != 0) {
             return -1;
         }
         return 0;
@@ -1082,7 +781,7 @@ static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
 
         disp_offset = assembler->text_size;
         if (append_u32(assembler, OBJECT_SECTION_TEXT, 0U) != 0 ||
-            add_fixup(assembler, name, disp_offset, R_X86_64_PC32, -4) != 0) {
+            object_writer_add_fixup(assembler, name, disp_offset, R_X86_64_PC32, -4) != 0) {
             return -1;
         }
         return 0;
@@ -1859,7 +1558,7 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             continue;
         }
         if (starts_with(line, ".globl ") || starts_with(line, ".global ")) {
-            int symbol_index = get_symbol(assembler, line + (starts_with(line, ".globl ") ? 7 : 8));
+            int symbol_index = object_writer_get_symbol(assembler, line + (starts_with(line, ".globl ") ? 7 : 8));
             if (symbol_index < 0) {
                 return -1;
             }
@@ -1867,7 +1566,7 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             continue;
         }
         if (starts_with(line, ".extern ")) {
-            int symbol_index = get_symbol(assembler, line + 8);
+            int symbol_index = object_writer_get_symbol(assembler, line + 8);
             if (symbol_index < 0) {
                 return -1;
             }
@@ -1885,12 +1584,12 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
                     name[i] = line[i];
                 }
                 name[i] = '\0';
-                if (add_label(assembler, name, assembler->current_section, offset) != 0) {
+                if (object_writer_add_label(assembler, name, assembler->current_section, offset) != 0) {
                     return -1;
                 }
                 if (assembler->current_section != OBJECT_SECTION_TEXT &&
                     assembler->current_section != OBJECT_SECTION_NONE) {
-                    int symbol_index = get_symbol(assembler, name);
+                    int symbol_index = object_writer_get_symbol(assembler, name);
                     if (symbol_index < 0) {
                         return -1;
                     }
@@ -1913,7 +1612,7 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
             }
             name[i] = '\0';
 
-            symbol_index = get_symbol(assembler, name);
+            symbol_index = object_writer_get_symbol(assembler, name);
             if (symbol_index < 0) {
                 return -1;
             }
@@ -1947,7 +1646,7 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
                     return -1;
                 }
             } else if (parse_symbol_operand(line + 6, name, sizeof(name)) == 0) {
-                int symbol_index = get_symbol(assembler, name);
+                int symbol_index = object_writer_get_symbol(assembler, name);
                 size_t offset = assembler->data_size;
 
                 if (symbol_index < 0 || append_u64(assembler, OBJECT_SECTION_DATA, 0U) != 0) {
@@ -1956,7 +1655,7 @@ static int assemble_from_source(ObjectAssembler *assembler, const CompilerSource
                 if (!assembler->symbols[symbol_index].defined) {
                     assembler->symbols[symbol_index].global = 1;
                 }
-                if (add_relocation(assembler, OBJECT_SECTION_DATA, name, offset, R_X86_64_64, 0) != 0) {
+                if (object_writer_add_relocation(assembler, OBJECT_SECTION_DATA, name, offset, R_X86_64_64, 0) != 0) {
                     return -1;
                 }
             } else {
@@ -2007,8 +1706,8 @@ static int resolve_fixups(ObjectAssembler *assembler) {
 
     for (i = 0; i < assembler->fixup_count; ++i) {
         ObjectFixup *fixup = &assembler->fixups[i];
-        int label_index = find_label(assembler, fixup->name);
-        int symbol_index = find_symbol(assembler, fixup->name);
+        int label_index = object_writer_find_label(assembler, fixup->name);
+        int symbol_index = object_writer_find_symbol(assembler, fixup->name);
 
         if (label_index >= 0 && assembler->labels[label_index].section == OBJECT_SECTION_TEXT) {
             int64_t delta = (int64_t)assembler->labels[label_index].offset + fixup->addend - (int64_t)fixup->offset;
@@ -2025,7 +1724,7 @@ static int resolve_fixups(ObjectAssembler *assembler) {
         }
 
         if (symbol_index < 0) {
-            symbol_index = get_symbol(assembler, fixup->name);
+            symbol_index = object_writer_get_symbol(assembler, fixup->name);
             if (symbol_index < 0) {
                 return -1;
             }
@@ -2035,7 +1734,7 @@ static int resolve_fixups(ObjectAssembler *assembler) {
             assembler->symbols[symbol_index].global = 1;
         }
 
-        if (add_relocation(assembler, OBJECT_SECTION_TEXT, fixup->name, fixup->offset, fixup->type, fixup->addend) != 0) {
+        if (object_writer_add_relocation(assembler, OBJECT_SECTION_TEXT, fixup->name, fixup->offset, fixup->type, fixup->addend) != 0) {
             return -1;
         }
     }
@@ -2191,7 +1890,7 @@ static int build_elf_object(ObjectAssembler *assembler, int fd) {
     }
 
     for (i = 0; i < assembler->reloc_count; ++i) {
-        int symbol_index = find_symbol(assembler, assembler->relocs[i].name);
+        int symbol_index = object_writer_find_symbol(assembler, assembler->relocs[i].name);
         unsigned char *rela;
         size_t *rela_size;
 
