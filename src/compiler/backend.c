@@ -1422,6 +1422,129 @@ int emit_move_value_register(BackendState *state, const char *dst_reg) {
     return emit_instruction(state, line);
 }
 
+void backend_invalidate_block_cache(BackendState *state) {
+    state->block_cache_local = -1;
+}
+
+void backend_invalidate_block_cache_name(BackendState *state, const char *name) {
+    if (state->block_cache_local >= 0 &&
+        state->block_cache_local < (int)state->local_count &&
+        names_equal(state->locals[state->block_cache_local].name, name)) {
+        backend_invalidate_block_cache(state);
+    }
+}
+
+static int backend_line_is_block_boundary(const char *line) {
+    return starts_with(line, "label ") ||
+           starts_with(line, "case ") ||
+           starts_with(line, "default") ||
+           starts_with(line, "brfalse ") ||
+           starts_with(line, "jump ") ||
+           starts_with(line, "ret") ||
+           starts_with(line, "switch ") ||
+           starts_with(line, "endswitch") ||
+           starts_with(line, "endfunc ");
+}
+
+static int backend_line_stores_name(const char *line, const char *name) {
+    const char *cursor;
+    char target[COMPILER_IR_NAME_CAPACITY];
+    size_t out = 0;
+
+    if (starts_with(line, "store ")) {
+        cursor = skip_spaces(line + 6);
+    } else if (starts_with(line, "eval ")) {
+        cursor = skip_spaces(line + 5);
+    } else {
+        return 0;
+    }
+    while (((*cursor >= 'a' && *cursor <= 'z') ||
+            (*cursor >= 'A' && *cursor <= 'Z') ||
+            (*cursor >= '0' && *cursor <= '9') ||
+            *cursor == '_') &&
+           out + 1U < sizeof(target)) {
+        target[out++] = *cursor++;
+    }
+    target[out] = '\0';
+    cursor = skip_spaces(cursor);
+    if (!starts_with(line, "store ") && (*cursor != '=' || cursor[1] == '=')) {
+        return 0;
+    }
+    return names_equal(target, name);
+}
+
+static int backend_local_can_use_block_cache(const BackendState *state, int local_index) {
+    return !backend_is_aarch64(state) &&
+           local_index >= 0 &&
+           local_index < (int)state->local_count &&
+           state->locals[local_index].cached_register < 0 &&
+           !state->locals[local_index].static_storage &&
+           !state->locals[local_index].is_array;
+}
+
+static int backend_local_future_uses_in_current_block(const BackendState *state, int local_index) {
+    size_t i;
+    const char *name;
+    int uses = 0;
+
+    if (state->ir == 0 || state->current_ir_index < 0 || local_index < 0 || local_index >= (int)state->local_count) {
+        return 0;
+    }
+    name = state->locals[local_index].name;
+    for (i = (size_t)state->current_ir_index + 1U; i < state->ir->count; ++i) {
+        const char *line = state->ir->lines[i];
+
+        if (backend_line_is_block_boundary(line)) {
+            return uses;
+        }
+        if (backend_line_stores_name(line, name)) {
+            return uses;
+        }
+        if (line_references_identifier(line, name)) {
+            uses += 1;
+        }
+    }
+    return uses;
+}
+
+static int emit_load_cached_block_local(BackendState *state, int local_index, const char *dst_reg, int access_size) {
+    if (state->block_cache_local == local_index) {
+        return emit_load_cached_register(state, "%r10", dst_reg, access_size) == 0 ? 1 : -1;
+    }
+    return 0;
+}
+
+int backend_seed_block_cache_from_register(BackendState *state, int local_index, const char *src_reg) {
+    int access_size;
+    int future_uses;
+    int minimum_future_uses;
+    char line[64];
+
+    if (!backend_local_can_use_block_cache(state, local_index)) {
+        return 0;
+    }
+    access_size = scalar_type_access_size(state->locals[local_index].type_text,
+                                          state->locals[local_index].prefers_word_index);
+    if (state->locals[local_index].pointer_depth > 0 && !state->locals[local_index].is_array) {
+        access_size = 0;
+    }
+    future_uses = backend_local_future_uses_in_current_block(state, local_index);
+    minimum_future_uses = access_size == 0 ? 1 : 2;
+    if (future_uses < minimum_future_uses) {
+        return 0;
+    }
+    if (!names_equal(src_reg, "%r10")) {
+        rt_copy_string(line, sizeof(line), "movq ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %r10");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    state->block_cache_local = local_index;
+    return 1;
+}
+
 int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value) {
     char line[64];
     int access_size = byte_value;
@@ -1461,6 +1584,7 @@ int emit_store_to_address_register(BackendState *state, const char *reg, int byt
 }
 
 int emit_pop_address_and_store(BackendState *state, int byte_value) {
+    backend_invalidate_block_cache(state);
     return emit_pop_to_register(state, backend_is_aarch64(state) ? "x1" : "%rcx") == 0 &&
            emit_store_to_address_register(state, backend_is_aarch64(state) ? "x1" : "%rcx", byte_value) == 0 ? 0 : -1;
 }
@@ -1694,6 +1818,10 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
     int constant_index = find_constant(state, name);
     long long builtin_value = 0;
 
+    if (!backend_is_aarch64(state) && names_equal(dst_reg, "%r10")) {
+        backend_invalidate_block_cache(state);
+    }
+
     if (local_index >= 0) {
         if (state->locals[local_index].cached_register >= 0) {
             const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
@@ -1735,10 +1863,17 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
             return emit_local_address(state, state->locals[local_index].offset, dst_reg);
         }
         {
+            int cached_load;
             int access_size =
                 scalar_type_access_size(state->locals[local_index].type_text, state->locals[local_index].prefers_word_index);
             if (state->locals[local_index].pointer_depth > 0 && !state->locals[local_index].is_array) {
                 access_size = 0;
+            }
+            if (!names_equal(dst_reg, "%r10") && backend_local_can_use_block_cache(state, local_index)) {
+                cached_load = emit_load_cached_block_local(state, local_index, dst_reg, access_size);
+                if (cached_load != 0) {
+                    return cached_load < 0 ? -1 : 0;
+                }
             }
             return emit_local_address(state, state->locals[local_index].offset, address_reg) == 0 &&
                    emit_load_from_address_into_register(state, address_reg, dst_reg, access_size) == 0 ? 0 : -1;
@@ -1839,10 +1974,17 @@ int emit_load_name(BackendState *state, const char *name) {
             return emit_address_of_name(state, name);
         }
         {
+            int cached_load;
             int access_size =
                 scalar_type_access_size(state->locals[local_index].type_text, state->locals[local_index].prefers_word_index);
             if (state->locals[local_index].pointer_depth > 0 && !state->locals[local_index].is_array) {
                 access_size = 0;
+            }
+            if (backend_local_can_use_block_cache(state, local_index)) {
+                cached_load = emit_load_cached_block_local(state, local_index, "%rax", access_size);
+                if (cached_load != 0) {
+                    return cached_load < 0 ? -1 : 0;
+                }
             }
             return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rax") == 0 &&
                    emit_load_from_address_register(state, backend_is_aarch64(state) ? "x9" : "%rax", access_size) == 0 ? 0 : -1;
@@ -1894,6 +2036,8 @@ int emit_store_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
 
+    backend_invalidate_block_cache_name(state, name);
+
     if (local_index >= 0) {
         if (state->locals[local_index].cached_register >= 0) {
             const char *dst_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
@@ -1930,8 +2074,11 @@ int emit_store_name(BackendState *state, const char *name) {
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rip)");
             return emit_instruction(state, line);
         }
-        return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rcx") == 0 &&
-               emit_store_to_address_register(state, backend_is_aarch64(state) ? "x9" : "%rcx", 0) == 0 ? 0 : -1;
+        if (emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rcx") != 0 ||
+            emit_store_to_address_register(state, backend_is_aarch64(state) ? "x9" : "%rcx", 0) != 0) {
+            return -1;
+        }
+        return backend_seed_block_cache_from_register(state, local_index, "%rax") < 0 ? -1 : 0;
     }
 
     if (global_index >= 0) {
@@ -2002,6 +2149,7 @@ static int emit_copy_memory_call(BackendState *state, int bytes, const char *dst
         if (emit_load_immediate_register(state, "x2", bytes) != 0) {
             return -1;
         }
+        backend_invalidate_block_cache(state);
         rt_copy_string(line, sizeof(line), "bl ");
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
         return emit_instruction(state, line);
@@ -2026,6 +2174,7 @@ static int emit_copy_memory_call(BackendState *state, int bytes, const char *dst
     if (emit_load_immediate_register(state, "%rdx", bytes) != 0) {
         return -1;
     }
+    backend_invalidate_block_cache(state);
     rt_copy_string(line, sizeof(line), "call ");
     rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
     return emit_instruction(state, line);

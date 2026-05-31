@@ -138,6 +138,8 @@ typedef struct {
     int cached_param_count;
     int cached_local_count;
     int local_decl_count;
+    int block_cache_local;
+    int current_ir_index;
     unsigned int label_counter;
 } BackendState;
 
@@ -176,6 +178,7 @@ int names_equal(const char *lhs, const char *rhs);
 int text_contains(const char *text, const char *needle);
 int starts_with(const char *text, const char *prefix);
 int name_looks_like_macro_constant(const char *name);
+int line_references_identifier(const char *line, const char *name);
 const char *skip_spaces(const char *text);
 int backend_is_aarch64(const BackendState *state);
 int backend_is_darwin(const BackendState *state);
@@ -217,6 +220,9 @@ int emit_local_address(BackendState *state, int offset, const char *reg);
 int emit_load_from_address_into_register(BackendState *state, const char *address_reg, const char *dst_reg, int byte_value);
 int emit_load_from_address_register(BackendState *state, const char *reg, int byte_value);
 int emit_move_value_register(BackendState *state, const char *dst_reg);
+void backend_invalidate_block_cache(BackendState *state);
+void backend_invalidate_block_cache_name(BackendState *state, const char *name);
+int backend_seed_block_cache_from_register(BackendState *state, int local_index, const char *src_reg);
 int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value);
 int emit_pop_address_and_store(BackendState *state, int byte_value);
 int backend_type_access_size(const char *type_text, int word_index);

@@ -97,6 +97,87 @@ assert_file_contains "$WORK_DIR/cached_mutable_local_linux.s" 'addq \$1, %rbx' "
 assert_file_contains "$WORK_DIR/cached_mutable_local_linux.s" 'movslq %ebx, %rax' "compiler x86_64 backend should read cached mutable int locals from registers"
 compile_and_check_native "$WORK_DIR/cached_mutable_local.c" "$WORK_DIR/cached_mutable_local_bin" 2 "compiler x86_64 backend should preserve cached mutable local semantics"
 
+cat > "$WORK_DIR/cached_index.c" <<'EOF'
+int main(int argc, char **argv) {
+    int i = 0;
+    if (argc > 1) {
+        ++i;
+    }
+    if (i < argc) {
+        return argv[i][0];
+    }
+    return i;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/cached_index.c" -o "$WORK_DIR/cached_index_linux.s"
+assert_file_contains "$WORK_DIR/cached_index_linux.s" 'movslq %ebx, %r11' "compiler x86_64 backend should extend cached int indexes from registers"
+assert_file_contains "$WORK_DIR/cached_index_linux.s" 'leaq (%rax,%r11,8), %rax' "compiler x86_64 backend should address cached-index pointer loads directly"
+
+cat > "$WORK_DIR/direct_branch_compare.c" <<'EOF'
+int main(int argc, char **argv) {
+    int i = 1;
+    (void)argv;
+    if (i < argc) {
+        return 2;
+    }
+    if (i > 1) {
+        return 3;
+    }
+    if (argc > 1) {
+        return 4;
+    }
+    return i;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/direct_branch_compare.c" -o "$WORK_DIR/direct_branch_compare_linux.s"
+assert_file_contains "$WORK_DIR/direct_branch_compare_linux.s" 'movslq (%rax), %rcx' "compiler x86_64 backend should load simple branch RHS directly"
+assert_file_contains "$WORK_DIR/direct_branch_compare_linux.s" 'cmpq %rcx, %rax' "compiler x86_64 backend should compare simple branch operands without expression stack"
+assert_file_contains "$WORK_DIR/direct_branch_compare_linux.s" 'cmpq \$1, %rax' "compiler x86_64 backend should compare simple branch immediates directly"
+compile_and_check_native "$WORK_DIR/direct_branch_compare.c" "$WORK_DIR/direct_branch_compare_bin" 1 "compiler x86_64 backend should preserve direct branch comparison semantics"
+
+cat > "$WORK_DIR/block_scratch_cache.c" <<'EOF'
+int main(int argc, char **argv) {
+    int left;
+    int right;
+    int extra;
+    (void)argv;
+    argc = argc + 1;
+    argc = argc - 1;
+    left = argc + 1;
+    right = argc + 2;
+    extra = argc + 3;
+    return left + right + extra;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/block_scratch_cache.c" -o "$WORK_DIR/block_scratch_cache_linux.s"
+assert_file_contains "$WORK_DIR/block_scratch_cache_linux.s" 'movq %rax, %r10' "compiler x86_64 backend should fill the intra-block scratch cache from stack locals"
+assert_file_contains "$WORK_DIR/block_scratch_cache_linux.s" 'movslq %r10d, %rax' "compiler x86_64 backend should reuse the intra-block scratch cache"
+compile_and_check_native "$WORK_DIR/block_scratch_cache.c" "$WORK_DIR/block_scratch_cache_bin" 9 "compiler x86_64 backend should preserve intra-block scratch cache semantics"
+
+cat > "$WORK_DIR/block_branch_seed.c" <<'EOF'
+int main(int argc, char **argv) {
+    int left;
+    int right;
+    (void)argv;
+    if (argc > 2) {
+        left = argc + 3;
+        right = argc + 4;
+        argc = argc + 1;
+        return left + right + argc;
+    }
+    return argc;
+}
+EOF
+
+"$ROOT_DIR/build/ncc" -S --target linux-x86_64 "$WORK_DIR/block_branch_seed.c" -o "$WORK_DIR/block_branch_seed_linux.s"
+assert_file_contains "$WORK_DIR/block_branch_seed_linux.s" 'cmpq \$2, %rax' "compiler x86_64 backend should directly compare branch operands before cache seeding"
+assert_file_contains "$WORK_DIR/block_branch_seed_linux.s" 'movq %rax, %r10' "compiler x86_64 backend should seed the intra-block scratch cache from direct branch compares"
+assert_file_contains "$WORK_DIR/block_branch_seed_linux.s" 'movslq %r10d, %rax' "compiler x86_64 backend should reuse branch-seeded scratch cache values"
+compile_and_check_native "$WORK_DIR/block_branch_seed.c" "$WORK_DIR/block_branch_seed_bin" 1 "compiler x86_64 backend should preserve branch-seeded scratch cache semantics"
+
 cat > "$WORK_DIR/mutated_local.c" <<'EOF'
 int main(void) {
     int value = 1;

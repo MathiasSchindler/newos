@@ -1149,6 +1149,94 @@ static int emit_index_address(BackendState *state, int element_scale) {
     return emit_instruction(state, "addq %rcx, %rax");
 }
 
+static int emit_x86_cached_index_address(BackendState *state, const char *base_name, const char *index_name, int element_scale) {
+    int index_local = find_local(state, index_name);
+    const char *index_reg;
+    const char *address_index_reg;
+    int index_access_size;
+    char line[96];
+
+    if (backend_is_aarch64(state) || index_local < 0 || state->locals[index_local].cached_register < 0) {
+        return 0;
+    }
+    index_reg = backend_x86_cached_register_name(state->locals[index_local].cached_register);
+    if (index_reg == 0) {
+        return -1;
+    }
+    if (emit_load_name_into_register(state, base_name, "%rax") != 0) {
+        return -1;
+    }
+    index_access_size = type_access_size(state->locals[index_local].type_text,
+                                         state->locals[index_local].prefers_word_index);
+    address_index_reg = index_reg;
+    if (index_access_size != 0) {
+        if (emit_load_name_into_register(state, index_name, "%r11") != 0) {
+            return -1;
+        }
+        address_index_reg = "%r11";
+    }
+    if (element_scale == 1 || element_scale == 2 || element_scale == 4 || element_scale == 8) {
+        char scale_text[8];
+
+        rt_unsigned_to_string((unsigned long long)element_scale, scale_text, sizeof(scale_text));
+        rt_copy_string(line, sizeof(line), "leaq (%rax,");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_index_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ",");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), scale_text);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), %rax");
+        return emit_instruction(state, line) == 0 ? 1 : -1;
+    }
+    rt_copy_string(line, sizeof(line), "movq ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_index_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %r11");
+    if (emit_instruction(state, line) != 0) {
+        return -1;
+    }
+    if (emit_load_immediate_register(state, "%rcx", element_scale) != 0 ||
+        emit_instruction(state, "imulq %rcx, %r11") != 0) {
+        return -1;
+    }
+    return emit_instruction(state, "addq %r11, %rax") == 0 ? 1 : -1;
+}
+
+static int expr_try_cached_identifier_index(ExprParser *parser,
+                                            const char *base_name,
+                                            const char *base_type,
+                                            int word_index,
+                                            char *element_type,
+                                            size_t element_type_size) {
+    ExprParser snapshot = *parser;
+    char index_name[COMPILER_IR_NAME_CAPACITY];
+    int element_scale;
+    int result;
+
+    if (backend_is_aarch64(parser->state) || snapshot.current.kind != EXPR_TOKEN_PUNCT ||
+        !names_equal(snapshot.current.text, "[")) {
+        return 0;
+    }
+    expr_next(&snapshot);
+    if (snapshot.current.kind != EXPR_TOKEN_IDENTIFIER) {
+        return 0;
+    }
+    rt_copy_string(index_name, sizeof(index_name), snapshot.current.text);
+    expr_next(&snapshot);
+    if (snapshot.current.kind != EXPR_TOKEN_PUNCT || !names_equal(snapshot.current.text, "]")) {
+        return 0;
+    }
+
+    copy_indexed_result_type(base_type, element_type, element_type_size);
+    element_scale = array_index_scale(parser->state, base_type, word_index);
+    result = emit_x86_cached_index_address(parser->state, base_name, index_name, element_scale);
+    if (result <= 0) {
+        return result;
+    }
+
+    expr_next(parser);
+    expr_next(parser);
+    expr_next(parser);
+    return 1;
+}
+
 static int emit_identifier_incdec(BackendState *state, const char *name, int delta, int return_old) {
     const char *result_register = backend_is_aarch64(state) ? "x0" : "%rax";
     const char *op = delta > 0 ? "+" : "-";
@@ -1835,6 +1923,7 @@ static int emit_named_call(ExprParser *parser, const char *name, const char *obj
             emit_instruction(parser->state, "xor %eax, %eax") != 0) {
             return -1;
         }
+        backend_invalidate_block_cache(parser->state);
         rt_copy_string(line, sizeof(line), backend_is_aarch64(parser->state) ? "bl " : "call ");
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
         if (emit_instruction(parser->state, line) != 0) {
@@ -1936,6 +2025,28 @@ static int expr_parse_primary(ExprParser *parser) {
         if (parser->current.kind == EXPR_TOKEN_PUNCT &&
             (names_equal(parser->current.text, ".") || names_equal(parser->current.text, "->"))) {
             saw_structish_suffix = 1;
+        }
+
+        if (!saw_structish_suffix && parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "[")) {
+            char element_type[128];
+            const char *base_type = lookup_name_type_text(parser->state, name);
+            int handled = expr_try_cached_identifier_index(parser,
+                                                           name,
+                                                           base_type,
+                                                           name_prefers_word_index(parser->state, name),
+                                                           element_type,
+                                                           sizeof(element_type));
+
+            if (handled < 0) {
+                return -1;
+            }
+            if (handled > 0) {
+                return expr_parse_postfix_suffixes(parser,
+                                                   0,
+                                                   1,
+                                                   member_result_decays_to_address(element_type) ? 0 : 1,
+                                                   element_type);
+            }
         }
 
         if (saw_structish_suffix) {
@@ -3184,6 +3295,154 @@ static int branch_expr_is_zero_literal(const char *expr) {
     return *cursor == '\0';
 }
 
+typedef enum {
+    BRANCH_COMPARE_OPERAND_NONE = 0,
+    BRANCH_COMPARE_OPERAND_IMMEDIATE,
+    BRANCH_COMPARE_OPERAND_NAME
+} BranchCompareOperandKind;
+
+typedef struct {
+    BranchCompareOperandKind kind;
+    char name[COMPILER_IR_NAME_CAPACITY];
+    long long value;
+} BranchCompareOperand;
+
+static int branch_name_is_direct_loadable(const BackendState *state, const char *name) {
+    return find_local(state, name) >= 0 ||
+           find_global(state, name) >= 0 ||
+           find_constant(state, name) >= 0 ||
+           is_function_name(state, name) ||
+           names_equal(name, "NULL") ||
+           names_equal(name, "errno") ||
+           name_looks_like_macro_constant(name);
+}
+
+static int branch_parse_simple_operand(BackendState *state, const char *expr, BranchCompareOperand *operand) {
+    const char *start = expr;
+    const char *end = expr + rt_strlen(expr);
+    char trimmed[COMPILER_IR_LINE_CAPACITY];
+    ExprParser parser;
+
+    operand->kind = BRANCH_COMPARE_OPERAND_NONE;
+    operand->name[0] = '\0';
+    operand->value = 0;
+
+    range_trim_outer_parens(&start, &end);
+    if (range_copy_trimmed(trimmed, sizeof(trimmed), start, end) != 0) {
+        return -1;
+    }
+
+    parser.cursor = trimmed;
+    parser.state = state;
+    expr_next(&parser);
+    if (parser.current.kind == EXPR_TOKEN_NUMBER || parser.current.kind == EXPR_TOKEN_CHAR) {
+        operand->kind = BRANCH_COMPARE_OPERAND_IMMEDIATE;
+        operand->value = parser.current.number_value;
+        expr_next(&parser);
+        return parser.current.kind == EXPR_TOKEN_EOF ? 1 : 0;
+    }
+    if (parser.current.kind == EXPR_TOKEN_IDENTIFIER && branch_name_is_direct_loadable(state, parser.current.text)) {
+        operand->kind = BRANCH_COMPARE_OPERAND_NAME;
+        rt_copy_string(operand->name, sizeof(operand->name), parser.current.text);
+        expr_next(&parser);
+        return parser.current.kind == EXPR_TOKEN_EOF ? 1 : 0;
+    }
+    return 0;
+}
+
+static int emit_branch_load_operand_to_register(BackendState *state, const BranchCompareOperand *operand, const char *reg) {
+    if (operand->kind == BRANCH_COMPARE_OPERAND_IMMEDIATE) {
+        return emit_load_immediate_register(state, reg, operand->value);
+    }
+    if (operand->kind == BRANCH_COMPARE_OPERAND_NAME) {
+        return emit_load_name_into_register(state, operand->name, reg);
+    }
+    return -1;
+}
+
+static int emit_x86_cmp_immediate_rax(BackendState *state, long long value) {
+    unsigned long long magnitude;
+    char digits[32];
+    char line[96];
+
+    if (value < -2147483648LL || value > 2147483647LL) {
+        if (emit_load_immediate_register(state, "%rcx", value) != 0) {
+            return -1;
+        }
+        return emit_instruction(state, "cmpq %rcx, %rax");
+    }
+
+    if (value < 0) {
+        magnitude = (unsigned long long)(-(value + 1LL)) + 1ULL;
+        rt_unsigned_to_string(magnitude, digits, sizeof(digits));
+        rt_copy_string(line, sizeof(line), "cmpq $-");
+    } else {
+        magnitude = (unsigned long long)value;
+        rt_unsigned_to_string(magnitude, digits, sizeof(digits));
+        rt_copy_string(line, sizeof(line), "cmpq $");
+    }
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rax");
+    return emit_instruction(state, line);
+}
+
+static int emit_x86_branch_false_simple_compare(BackendState *state,
+                                                const char *lhs,
+                                                const char *rhs,
+                                                const char *mnemonic,
+                                                const char *label) {
+    BranchCompareOperand lhs_operand;
+    BranchCompareOperand rhs_operand;
+    int lhs_simple;
+    int rhs_simple;
+
+    if (backend_is_aarch64(state)) {
+        return 0;
+    }
+    lhs_simple = branch_parse_simple_operand(state, lhs, &lhs_operand);
+    rhs_simple = branch_parse_simple_operand(state, rhs, &rhs_operand);
+    if (lhs_simple < 0 || rhs_simple < 0) {
+        return -1;
+    }
+    if (!lhs_simple || !rhs_simple) {
+        return 0;
+    }
+
+    if (rhs_operand.kind == BRANCH_COMPARE_OPERAND_NAME &&
+        emit_branch_load_operand_to_register(state, &rhs_operand, "%rcx") != 0) {
+        return -1;
+    }
+    if (emit_branch_load_operand_to_register(state, &lhs_operand, "%rax") != 0) {
+        return -1;
+    }
+    if (rhs_operand.kind == BRANCH_COMPARE_OPERAND_IMMEDIATE) {
+        if (emit_x86_cmp_immediate_rax(state, rhs_operand.value) != 0) {
+            return -1;
+        }
+    } else if (emit_instruction(state, "cmpq %rcx, %rax") != 0) {
+        return -1;
+    }
+    if (lhs_operand.kind == BRANCH_COMPARE_OPERAND_NAME) {
+        int lhs_local = find_local(state, lhs_operand.name);
+        int seeded = backend_seed_block_cache_from_register(state, lhs_local, "%rax");
+        if (seeded < 0) {
+            return -1;
+        }
+        if (seeded == 0 && rhs_operand.kind == BRANCH_COMPARE_OPERAND_NAME) {
+            int rhs_local = find_local(state, rhs_operand.name);
+            if (backend_seed_block_cache_from_register(state, rhs_local, "%rcx") < 0) {
+                return -1;
+            }
+        }
+    } else if (rhs_operand.kind == BRANCH_COMPARE_OPERAND_NAME) {
+        int rhs_local = find_local(state, rhs_operand.name);
+        if (backend_seed_block_cache_from_register(state, rhs_local, "%rcx") < 0) {
+            return -1;
+        }
+    }
+    return emit_jump_to_label(state, mnemonic, label) == 0 ? 1 : -1;
+}
+
 static const char *branch_false_jump_for_compare(BackendState *state, const char *op, int use_unsigned) {
     if (backend_is_aarch64(state)) {
         if (names_equal(op, "==")) return "b.ne";
@@ -3275,6 +3534,13 @@ static int emit_branch_false_compare(BackendState *state, const char *expr, cons
     mnemonic = branch_false_jump_for_compare(state, op, use_unsigned);
     if (mnemonic == 0) {
         return emit_branch_false_fallback(state, expr, label);
+    }
+
+    {
+        int simple_result = emit_x86_branch_false_simple_compare(state, lhs, rhs, mnemonic, label);
+        if (simple_result != 0) {
+            return simple_result < 0 ? -1 : 0;
+        }
     }
 
     if (emit_expression(state, lhs) != 0 || emit_push_value(state) != 0 || emit_expression(state, rhs) != 0) {

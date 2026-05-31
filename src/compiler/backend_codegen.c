@@ -1009,7 +1009,7 @@ static int is_identifier_char(char ch) {
            ch == '_';
 }
 
-static int line_references_identifier(const char *line, const char *name) {
+int line_references_identifier(const char *line, const char *name) {
     size_t name_length;
     size_t i = 0;
     int in_string = 0;
@@ -2277,6 +2277,8 @@ static int end_function(BackendState *state) {
     state->cached_param_count = 0;
     state->cached_local_count = 0;
     state->local_decl_count = 0;
+    backend_invalidate_block_cache(state);
+    state->current_ir_index = -1;
     state->current_function[0] = '\0';
     return 0;
 }
@@ -2600,6 +2602,8 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
     state.backend = backend;
     state.ir = ir;
     state.fd = fd;
+    state.block_cache_local = -1;
+    state.current_ir_index = -1;
 
     if (prescan_ir(&state, ir) != 0) {
         return -1;
@@ -2617,6 +2621,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
     for (i = 0; i < ir->count; ++i) {
         const char *line = ir->lines[i];
+        state.current_ir_index = (int)i;
 
         if (starts_with(line, "func ")) {
             char name[COMPILER_IR_NAME_CAPACITY];
@@ -2629,6 +2634,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             if (begin_function(&state, name) != 0) {
                 return -1;
             }
+            backend_invalidate_block_cache(&state);
             continue;
         }
 
@@ -2736,10 +2742,12 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         }
 
         if (starts_with(line, "asm-syscall")) {
+            backend_invalidate_block_cache(&state);
             if (emit_x86_64_syscall_inline_asm(&state) != 0) {
                 backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
             }
+            backend_invalidate_block_cache(&state);
             continue;
         }
 
@@ -2763,6 +2771,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 return -1;
             }
             state.saw_return_in_function = 1;
+            backend_invalidate_block_cache(&state);
             if (emit_function_return(&state) != 0) {
                 return -1;
             }
@@ -2770,6 +2779,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         }
 
         if (starts_with(line, "switch ")) {
+            backend_invalidate_block_cache(&state);
             if (emit_switch_dispatch(&state, ir, i, skip_spaces(line + 6)) != 0) {
                 backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
                 return -1;
@@ -2791,6 +2801,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 context->next_case_index += 1U;
                 write_label_name(&state, asm_label, sizeof(asm_label), case_label);
                 rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+                backend_invalidate_block_cache(&state);
                 if (emit_line(&state, asm_label) != 0) {
                     backend_set_error(state.backend, "failed to emit switch case label");
                     return -1;
@@ -2806,6 +2817,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
                 write_label_name(&state, asm_label, sizeof(asm_label), context->default_label);
                 rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+                backend_invalidate_block_cache(&state);
                 if (emit_line(&state, asm_label) != 0) {
                     backend_set_error(state.backend, "failed to emit switch default label");
                     return -1;
@@ -2821,6 +2833,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
 
                 write_label_name(&state, asm_label, sizeof(asm_label), context->end_label);
                 rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+                backend_invalidate_block_cache(&state);
                 if (emit_line(&state, asm_label) != 0) {
                     backend_set_error(state.backend, "failed to emit switch end label");
                     return -1;
@@ -2858,6 +2871,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             if (emit_jump_to_label(&state, asm_label, line + 5) != 0) {
                 return -1;
             }
+            backend_invalidate_block_cache(&state);
             continue;
         }
 
@@ -2865,6 +2879,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             char asm_label[96];
             write_label_name(&state, asm_label, sizeof(asm_label), line + 6);
             rt_copy_string(asm_label + rt_strlen(asm_label), sizeof(asm_label) - rt_strlen(asm_label), ":");
+            backend_invalidate_block_cache(&state);
             if (emit_line(&state, asm_label) != 0) {
                 backend_set_error(backend, "failed to emit branch label");
                 return -1;
