@@ -110,6 +110,13 @@ Apple's linker and libSystem. The current project-linked runtime supplies its ow
 environment handling, page-size `sysconf`, directory enumeration, user/group
 lookup, time formatting, network interface queries, and a Darwin syscall-backed
 layer for common file, process, terminal, network, and identity entry points.
+
+For `ncc` bootstrap experiments, `build-freestanding-newlinker.sh` also accepts
+`NEWLINKER_CC=build/host-linux-x86_64/ncc NEWLINKER_LTO=1`. In that mode each
+tool link is driven through `ncc -flto -nostdlib -static`, using the compiler's
+in-tree native ELF linker path. This currently builds the full 195-tool Linux
+x86-64 freestanding set and is useful for measuring native `ncc` whole-program
+object LTO separately from GCC/Clang LTO.
 The native no-CRT Windows PE path is `build-windows-freestanding.ps1`. It now
 builds the small text/core tools, comparison/checksum/image/path/filesystem
 tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as

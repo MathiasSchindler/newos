@@ -29,6 +29,10 @@ choices are isolated in the backend and target-description layers under
 - token, AST, and IR dumps for compiler debugging
 - assembly output with `-S` and object output with `-c`
 - default executable output on supported targets when linking succeeds
+- opt-in `-flto` multi-source linking that combines eligible C inputs into one
+  optimized ncc IR object before the final link, renaming file-scope `static`
+  symbols per translation unit and falling back to normal per-file objects when
+  separate translation-unit rules require it
 - target selection for `linux-x86_64`, `linux-aarch64`, and `macos-aarch64`
 - target-specific ABI and object-format details are routed through explicit
   compiler target descriptors instead of being hard-coded across the frontend
@@ -52,18 +56,27 @@ choices are isolated in the backend and target-description layers under
 - `--dump-tokens`, `--dump-ast`, `--dump-ir` — print intermediate compiler
   stages for inspection
 - `--target TARGET` — choose a backend target
+- `-flto`, `--lto` — during executable linking, compile multiple C inputs as a
+  single ncc whole-program object when it is safe to do so
 - `--help` — print command usage and supported targets
 - `--version` — print the compiler stage/version string
 
 ## LIMITATIONS
 
-- only one input source file is accepted per invocation
+- preprocessing and dump modes accept one source file per invocation; executable
+  linking can accept multiple C, object, archive, or assembly inputs
+- `-flto` is an ncc whole-program compile experiment, not serialized IR object
+  LTO; compile-only `-c -flto` still emits a normal object file, and executable
+  links still fall back for cases such as local statics or ambiguous local
+  shadowing of file-scope static names
 - not a complete ISO C implementation; the supported subset is aimed at the project's own code
 - final executable linking usually delegates to the host toolchain, but Linux
   x86-64 `-nostdlib -static` builds can use the in-tree native ELF linker
 - the native ELF linker supports relocatable objects and Unix `ar` archives,
-  but it is still narrower than a system linker and does not yet implement
-  section-level garbage collection or the full relocation surface of clang/lld
+  tiny layout, section-level garbage collection, safe identical code folding,
+  relocatable objects, and Unix `ar` archives, but it is still narrower than a
+  system linker and does not yet implement the full relocation surface of
+  clang/lld
 - Linux x86-64 is the best-supported target today; Linux AArch64 object output
   and native linking still report "not implemented yet"
 - macOS/AArch64 hosted self-builds are progressing with native object and
@@ -78,6 +91,7 @@ ncc hello.c -o hello
 ncc --dump-ir source.c
 ncc -S source.c -o source.s
 ncc -c file.c -o file.o
+ncc -flto main.c helper.c -o app
 ```
 
 ## JSON Output

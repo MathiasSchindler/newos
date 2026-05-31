@@ -456,11 +456,59 @@ compile_fail=0; link_fail=0; success=0
 FAILFILE="$WORK/failures.tsv"; : > "$FAILFILE"
 SUCCESSFILE="$WORK/successes.tsv"; : > "$SUCCESSFILE"
 TOOL_OBJROOT="$WORK/.tool-objects"; mkdir -p "$TOOL_OBJROOT"
+TOOL_SRCROOT="$WORK/.tool-sources"; mkdir -p "$TOOL_SRCROOT"
 LINK_RESULTROOT="$WORK/.link-results"; mkdir -p "$LINK_RESULTROOT"
 TOOL_QUEUE=()
+ncc_lto_link_enabled() {
+  [[ "$NEWLINKER_IS_NCC" == "1" && "$NEWLINKER_LTO" == "1" && "$LINKER_REPORTS" != "1" ]]
+}
 link_batch_enabled() {
+  ! ncc_lto_link_enabled || return 1
   [[ "$LINKER_REPORTS" != "1" ]] || return 1
   [[ "$NEWLINKER_LINK_BATCH" == "1" || "$NEWLINKER_LINK_BATCH" == "yes" || "$NEWLINKER_LINK_BATCH" == "true" || "$NEWLINKER_LINK_BATCH" == "auto" ]]
+}
+append_ncc_linker_flags() {
+  local -n args_ref=$1
+  local flag
+
+  for flag in "${LINKER_FLAGS_ARRAY[@]}"; do
+    args_ref+=("-Wl,$flag")
+  done
+}
+link_one_tool_lto() {
+  local tool="$1" sourcefile="$2" result="$3" stem outbin llog rc bytes
+  local tool_sources=()
+  local args=()
+
+  mapfile -t tool_sources < "$sourcefile"
+  stem=$(tool_stem "$tool")
+  outbin="$WORK/$tool"
+  llog="$LOGROOT/link-lto-$stem.log"
+
+  args=("$NEWLINKER_CC" "${CFLAGS[@]}")
+  case "$tool" in
+    ncc) args+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0) ;;
+    linker) args+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
+  esac
+  args+=(-nostdlib -static -flto)
+  append_ncc_linker_flags args
+  args+=(-o "$outbin" "$CRT_OBJ")
+  args+=("${tool_sources[@]}")
+  args+=("${REUSE_OBJS[@]}")
+
+  "${args[@]}" >"$llog" 2>&1
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf 'link\t%s\t%s\n' "$tool" "$(first_line "$llog")" > "$result"
+  else
+    if [[ -f "$outbin" ]]; then
+      bytes=$(wc -c < "$outbin")
+    else
+      bytes=0
+    fi
+    printf 'success\t%s\t%s\n' "$tool" "$bytes" > "$result"
+  fi
+  return 0
 }
 link_one_tool() {
   local tool="$1" objfile="$2" result="$3" stem outbin llog map_path rc bytes
@@ -555,6 +603,12 @@ for tool in $TOOLS; do
   if [[ "$NEWLINKER_PROFILE" == "1" || "$NEWLINKER_PROFILE" == "yes" || "$NEWLINKER_PROFILE" == "true" ]]; then
     append_unique_source tool_sources src/platform/linux/profiler_runtime.c
   fi
+  if ncc_lto_link_enabled; then
+    stem=$(tool_stem "$tool")
+    printf '%s\n' "${tool_sources[@]}" > "$TOOL_SRCROOT/$stem.list"
+    TOOL_QUEUE+=("$tool")
+    continue
+  fi
   tool_objs=()
   tfail=""
   if ! compile_sources "$tool" tool_sources tool_objs; then tfail="$COMPILE_ERROR"; fi
@@ -622,7 +676,11 @@ else
   active_links=0
   for tool in "${TOOL_QUEUE[@]}"; do
     stem=$(tool_stem "$tool")
-    link_one_tool "$tool" "$TOOL_OBJROOT/$stem.list" "$LINK_RESULTROOT/$stem.tsv" &
+    if ncc_lto_link_enabled; then
+      link_one_tool_lto "$tool" "$TOOL_SRCROOT/$stem.list" "$LINK_RESULTROOT/$stem.tsv" &
+    else
+      link_one_tool "$tool" "$TOOL_OBJROOT/$stem.list" "$LINK_RESULTROOT/$stem.tsv" &
+    fi
     active_links=$((active_links+1))
     if (( active_links >= NEWLINKER_LINK_JOBS )); then
       wait -n || true
@@ -658,6 +716,8 @@ done
   if [[ "$NEWLINKER_LTO" == "1" ]]; then
     if [[ "$NEWLINKER_IS_GCC" == "1" ]]; then
       echo "LTO_MODE: gcc-lto-cc (linker auto-prelinking via --lto-cc=$NEWLINKER_CC)"
+    elif ncc_lto_link_enabled; then
+      echo "LTO_MODE: ncc-whole-program-driver (-flto per tool link)"
     else
       echo "LTO_MODE: lto=1 but compiler is not gcc; prelink not applied"
     fi

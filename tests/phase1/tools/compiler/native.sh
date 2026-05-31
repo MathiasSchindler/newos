@@ -498,6 +498,107 @@ if [ -n "$RUN_TARGET" ]; then
     assert_text_equals "$actual_status" "0" "compiler multi-file linker flow did not produce a runnable executable"
 fi
 
+cat > "$WORK_DIR/lto_helper.c" <<'EOF'
+int lto_helper_value(void) {
+    return 17;
+}
+EOF
+
+cat > "$WORK_DIR/lto_main.c" <<'EOF'
+int lto_helper_value(void);
+
+int main(void) {
+    int value = lto_helper_value();
+    return value == 17 ? 0 : 1;
+}
+EOF
+
+cat > "$WORK_DIR/lto_static_a.c" <<'EOF'
+static int same_name(void) {
+    return 11;
+}
+
+int lto_left(void) {
+    return same_name();
+}
+EOF
+
+cat > "$WORK_DIR/lto_static_b.c" <<'EOF'
+static int same_name(void) {
+    return 31;
+}
+
+int lto_right(void) {
+    return same_name();
+}
+EOF
+
+cat > "$WORK_DIR/lto_static_main.c" <<'EOF'
+int lto_left(void);
+int lto_right(void);
+
+int main(void) {
+    return lto_left() + lto_right() == 42 ? 0 : 1;
+}
+EOF
+
+cat > "$WORK_DIR/lto_shadow_static.c" <<'EOF'
+static int shadowed = 40;
+
+int lto_shadow_local(void) {
+    int shadowed = 2;
+    return shadowed;
+}
+
+int lto_shadow_file(void) {
+    return shadowed;
+}
+EOF
+
+cat > "$WORK_DIR/lto_shadow_main.c" <<'EOF'
+int lto_shadow_local(void);
+int lto_shadow_file(void);
+
+int main(void) {
+    return lto_shadow_local() + lto_shadow_file() == 42 ? 0 : 1;
+}
+EOF
+
+if [ -n "$RUN_TARGET" ]; then
+    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_main.c" "$WORK_DIR/lto_helper.c" -o "$WORK_DIR/lto_multi_file_bin"
+    if "$WORK_DIR/lto_multi_file_bin"; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_text_equals "$actual_status" "0" "compiler -flto multi-file flow did not produce a runnable executable"
+
+    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_static_main.c" "$WORK_DIR/lto_static_a.c" "$WORK_DIR/lto_static_b.c" -o "$WORK_DIR/lto_static_renamed_bin"
+    if "$WORK_DIR/lto_static_renamed_bin"; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_text_equals "$actual_status" "0" "compiler -flto static renaming did not preserve duplicate static function names"
+
+    native_nm="$ROOT_DIR/build/nm"
+    if [ ! -x "$native_nm" ] && command -v nm >/dev/null 2>&1; then
+        native_nm=nm
+    fi
+    if [ -x "$native_nm" ] || command -v "$native_nm" >/dev/null 2>&1; then
+        "$native_nm" "$WORK_DIR/lto_static_renamed_bin" > "$WORK_DIR/lto_static_renamed_nm.out"
+        assert_file_contains "$WORK_DIR/lto_static_renamed_nm.out" '__ncc_lto_' "compiler -flto duplicate static helpers fell back instead of merging with renamed internals"
+    fi
+
+    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_shadow_main.c" "$WORK_DIR/lto_shadow_static.c" -o "$WORK_DIR/lto_shadow_bin"
+    if "$WORK_DIR/lto_shadow_bin"; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_text_equals "$actual_status" "0" "compiler -flto did not preserve local shadowing of a static symbol"
+fi
+
 cat > "$WORK_DIR/many_arg_call.c" <<'EOF'
 int check_many(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
     return a == 1 && b == 2 && c == 3 && d == 4 && e == 5 && f == 6 && g == 7 && h == 8 && i == 9 ? 0 : 1;
@@ -848,6 +949,60 @@ EOF
         native_archive_status=$?
     fi
     assert_text_equals "$native_archive_status" "42" "native linker did not pull a referenced object from an ar archive"
+
+    cat > "$WORK_DIR/native_gc_sections.s" <<'EOF'
+.globl _start
+_start:
+    call used
+    mov %rax, %rdi
+    mov $60, %rax
+    syscall
+.section .text.used,"ax",@progbits
+used:
+    xor %rax, %rax
+    ret
+.section .rodata.unused,"a",@progbits
+unused_marker:
+    .asciz "NATIVE_GC_DROP_ME"
+EOF
+    cc -x assembler -c "$WORK_DIR/native_gc_sections.s" -o "$WORK_DIR/native_gc_sections.o"
+    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static -Wl,--gc-sections \
+        "$WORK_DIR/native_gc_sections.o" -o "$WORK_DIR/native_gc_sections_bin"
+    "$WORK_DIR/native_gc_sections_bin"
+    if grep -aq 'NATIVE_GC_DROP_ME' "$WORK_DIR/native_gc_sections_bin"; then
+        fail "ncc native linker path did not pass --gc-sections through to the in-project linker"
+    fi
+
+    cat > "$WORK_DIR/native_lto_start.s" <<'EOF'
+.globl _start
+_start:
+    call native_lto_entry
+    mov %rax, %rdi
+    mov $60, %rax
+    syscall
+EOF
+    cat > "$WORK_DIR/native_lto_value.c" <<'EOF'
+int native_lto_value(void) {
+    return 23;
+}
+EOF
+    cat > "$WORK_DIR/native_lto_entry.c" <<'EOF'
+int native_lto_value(void);
+
+int native_lto_entry(void) {
+    return native_lto_value();
+}
+EOF
+    cc -x assembler -c "$WORK_DIR/native_lto_start.s" -o "$WORK_DIR/native_lto_start.o"
+    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static -flto \
+        "$WORK_DIR/native_lto_start.o" "$WORK_DIR/native_lto_entry.c" "$WORK_DIR/native_lto_value.c" \
+        -o "$WORK_DIR/native_lto_bin"
+    if "$WORK_DIR/native_lto_bin"; then
+        native_lto_status=0
+    else
+        native_lto_status=$?
+    fi
+    assert_text_equals "$native_lto_status" "23" "native linker -flto path did not link a combined ncc object"
 
     if command -v readelf >/dev/null 2>&1; then
         readelf -l "$WORK_DIR/native_archive_bin" > "$WORK_DIR/native_archive_readelf.out"
