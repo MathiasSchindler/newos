@@ -189,6 +189,7 @@ void format_symbol_name(const BackendState *state, const char *name, char *buffe
 const char *copy_next_word(const char *cursor, char *buffer, size_t buffer_size);
 void copy_last_word(const char *text, char *buffer, size_t buffer_size);
 int parse_signed_value(const char *text, long long *value_out);
+const char *extract_store_name(const char *cursor, char *name, size_t name_size);
 int add_function_name(BackendState *state, const char *name, int global, const char *return_type);
 int should_prefer_word_index(const char *name, const char *type_text);
 int is_function_name(const BackendState *state, const char *name);
@@ -244,6 +245,23 @@ int backend_array_index_scale(const BackendState *state, const char *base_type, 
 int find_string_literal(const BackendState *state, const char *text);
 int add_string_literal(BackendState *state, const char *text);
 int add_string_literal_bytes(BackendState *state, const char *text, size_t length);
+int decl_slot_size(const BackendState *state, const char *type_text);
+int decl_alignment_bytes(const BackendState *state, const char *type_text);
+void maybe_apply_array_initializer_length(char *type_text, size_t type_text_size, const char *expr);
+int decl_requires_object_storage(const char *type_text);
+int decl_pointer_depth(const char *type_text);
+int decl_char_based(const char *type_text);
+int resolve_static_value(const BackendState *state, const char *expr, long long *value_out);
+int backend_supports_named_sections(const BackendState *state);
+int backend_supports_subsections_via_symbols(const BackendState *state);
+int emit_named_section(BackendState *state,
+                       const char *section_name,
+                       const char *flags,
+                       const char *section_type,
+                       const char *error_message);
+void collect_global_initializers(BackendState *state, const CompilerIr *ir);
+int emit_globals(BackendState *state);
+int emit_string_literals(BackendState *state);
 int emit_address_of_name(BackendState *state, const char *name);
 int emit_load_string_literal(BackendState *state, const char *text);
 int emit_load_string_literal_bytes(BackendState *state, const char *text, size_t length);
@@ -261,6 +279,48 @@ int emit_cmp_zero(BackendState *state);
 int emit_set_condition(BackendState *state, const char *condition);
 int emit_jump_to_label(BackendState *state, const char *mnemonic, const char *label);
 
+void expr_next(ExprParser *parser);
+int expr_match_punct(ExprParser *parser, const char *text);
+int expr_expect_punct(ExprParser *parser, const char *text);
+int expr_is_assignment_operator_text(const char *text);
+int expr_is_assignment_stop_text(const char *text);
+const char *expr_binary_op_for_assignment(const char *op);
+int expr_is_incdec_text(const char *text);
+int expr_is_index_or_arrow_text(const char *text);
+int expr_is_unary_prefix_text(const char *text);
+int expr_operand_prefers_byte_load(ExprParser *parser);
+int expr_may_be_object_lvalue_source(ExprParser *parser);
+int name_prefers_word_index(const BackendState *state, const char *name);
+int type_access_size(const char *type_text, int word_index);
+int member_prefers_word_index(const char *name, const char *type_text);
+int member_result_decays_to_address(const char *type_text);
+int member_byte_offset(const BackendState *state, const char *base_type, const char *member_name);
+void copy_member_result_type(const BackendState *state,
+                             const char *base_type,
+                             const char *member_name,
+                             char *buffer,
+                             size_t buffer_size);
+int type_is_pointer_like(const char *base_type);
+void copy_indexed_result_type(const char *base_type, char *buffer, size_t buffer_size);
+int array_index_scale(const BackendState *state, const char *base_type, int word_index);
+int expr_looks_like_compound_literal(ExprParser *parser);
+int expr_looks_like_cast(ExprParser *parser);
+void copy_dereferenced_type(const char *base_type, char *buffer, size_t buffer_size);
+void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size);
+int emit_scale_current_value(BackendState *state, int scale);
+int emit_scale_top_of_stack(BackendState *state, int scale);
+int type_is_unsigned_like(const char *type_text);
+int expr_snapshot_looks_unsigned(ExprParser *parser);
+long long type_storage_bytes_text(const BackendState *state, const char *type_text);
+long long guess_identifier_size(const BackendState *state, const char *name);
+int emit_index_address(BackendState *state, int element_scale);
+int expr_try_cached_identifier_index(ExprParser *parser,
+                                     const char *base_name,
+                                     const char *base_type,
+                                     int word_index,
+                                     char *element_type,
+                                     size_t element_type_size);
+int expr_text_looks_unsigned(BackendState *state, const char *expr);
 int emit_expression(BackendState *state, const char *expr);
 int emit_branch_false(BackendState *state, const char *expr, const char *label);
 int emit_array_initializer_store(BackendState *state, const char *name, const char *expr);

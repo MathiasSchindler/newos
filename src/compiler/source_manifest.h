@@ -29,7 +29,12 @@
 
 #define FOREACH_COMPILER_SOURCE(X) \
     X("src/compiler/backend.c") \
+    X("src/compiler/backend_symbols.c") \
+    X("src/compiler/backend_data.c") \
     X("src/compiler/backend_types.c") \
+    X("src/compiler/backend_branch.c") \
+    X("src/compiler/backend_expr_syntax.c") \
+    X("src/compiler/backend_expr_helpers.c") \
     X("src/compiler/backend_expressions.c") \
     X("src/compiler/backend_codegen.c") \
     X("src/compiler/driver.c") \
