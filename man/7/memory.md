@@ -37,8 +37,8 @@ The userland has several distinct allocation patterns:
 - optional threaded tools, currently a minority, where allocator locking is
   needed only when the tool actually allocates across threads
 
-No single libc-style heap is optimal for all of these. The runtime should expose
-the small set of allocation patterns the project wants, then move callers toward
+No single libc-style heap is optimal for all of these. The runtime exposes the
+small set of allocation patterns the project wants, then callers can move toward
 those patterns.
 
 ## DESIGN PRINCIPLES
@@ -98,14 +98,14 @@ freestanding-ish builds.
 
 ## GENERAL HEAP
 
-The general heap should be a compact size-class allocator, not a first-fit
-coalescing malloc clone.
+The general heap is a compact size-class allocator, not a first-fit coalescing
+malloc clone.
 
-Small allocations should use fixed size classes. A starting class set is:
+Small allocations use fixed size classes. The current class set is:
 
     16, 32, 64, 128, 256, 512, 1024, 2048
 
-The exact classes should be benchmarked. The desired behavior is:
+The exact classes should continue to be benchmarked. The current behavior is:
 
 - `rt_malloc` rounds small requests to a size class and pops a slot from that
   class free list
@@ -113,7 +113,7 @@ The exact classes should be benchmarked. The desired behavior is:
   carves it into slots
 - `rt_free` of a small allocation pushes the slot back onto the class free list
 - large allocations are page-backed directly rather than stored in small bins
-- large freed allocations can return pages to the platform
+- large freed allocations enter a bounded cache or return pages to the platform
 
 This model favors speed, small code, and predictable behavior over perfect heap
 packing. That trade is appropriate for this userland: many tools are short-lived,
@@ -122,18 +122,17 @@ buffers than from a complex coalescing general heap.
 
 ## PAGE ALLOCATION
 
-The platform contract should grow from allocation-only to allocation plus
-release:
+The platform contract includes allocation plus release:
 
     void *platform_allocate_pages(size_t size);
     int platform_free_pages(void *ptr, size_t size);
 
-`platform_free_pages` should use `munmap` on Linux and POSIX/macOS backends, and
-`VirtualFree` on Windows. Runtime code should keep sizes page-aligned before
-calling either function.
+`platform_free_pages` uses `munmap` on Linux and POSIX/macOS backends, and
+`VirtualFree` on Windows. Runtime code keeps sizes page-aligned before calling
+either function.
 
-Large heap allocations and arena backing blocks should use this interface. This
-is important for long-running tools and for high-watermark workloads such as
+Large heap allocations and arena backing blocks use this interface. This is
+important for long-running tools and for high-watermark workloads such as
 linking, compiling, parsing large XML, reading image metadata, or handling large
 network responses.
 
@@ -181,10 +180,14 @@ migrated.
 
 ## ARENAS
 
-Arenas should be a first-class runtime facility for phase-lifetime allocation.
-The target API is:
+Arenas are a first-class runtime facility for phase-lifetime allocation. The API
+is:
 
-    typedef struct RtArena RtArena;
+    typedef struct RtArenaBlock RtArenaBlock;
+    typedef struct {
+        RtArenaBlock *blocks;
+        size_t default_block_size;
+    } RtArena;
 
     void rt_arena_init(RtArena *arena, size_t default_block_size);
     void *rt_arena_alloc(RtArena *arena, size_t size);
@@ -193,9 +196,9 @@ The target API is:
     void rt_arena_destroy(RtArena *arena);
 
 Arena allocation should be a bump-pointer fast path inside page-backed blocks.
-Passing `0` as `default_block_size` selects the runtime default block size.
-`rt_arena_reset` releases or rewinds all allocations in the arena as a group.
-`rt_arena_destroy` returns backing pages to the platform.
+Passing `0` as `default_block_size` selects the runtime default. `rt_arena_reset`
+rewinds all allocations in existing backing blocks as a group. `rt_arena_destroy`
+returns backing pages to the platform.
 
 Good arena candidates include:
 
@@ -245,16 +248,22 @@ normal binary size, normal fast paths, or the release ABI.
 
 ## MIGRATION PLAN
 
-The migration should happen in stages:
+The core runtime pieces are in place:
 
-1. Add `platform_free_pages` to all platform backends.
-2. Split memory primitives from heap policy if that improves link behavior.
-3. Add checked array allocation helpers and migrate vector-like call sites.
-4. Replace the first-fit heap with the size-class plus large-page design.
-5. Add arena support and migrate phase-lifetime subsystems one at a time.
-6. Make allocator locking opt-in and wire threaded tools explicitly.
-7. Tune size classes, arena block sizes, and large-allocation thresholds through
-   benchmark data.
+- `platform_free_pages` exists in the platform backends
+- checked array allocation helpers are available
+- the first-fit heap has been replaced by the size-class plus large-page design
+- arena support is available for phase-lifetime subsystems
+- allocator locking is selected by build policy
+
+The remaining migration should happen in stages:
+
+1. Split memory primitives from heap policy if that improves link behavior.
+2. Migrate vector-like call sites to checked array helpers.
+3. Migrate phase-lifetime subsystems to arenas one at a time.
+4. Wire threaded tools explicitly to the smallest correct allocator lock mode.
+5. Tune size classes, arena block sizes, large-allocation cache limits, and
+  large-allocation thresholds through benchmark data.
 
 Each stage should keep the full project buildable. Since all callers are in-tree,
 the preferred approach is to update callers to the better API rather than keep
