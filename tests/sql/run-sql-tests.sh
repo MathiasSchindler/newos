@@ -64,7 +64,7 @@ run_case() {
 run_scale_case() {
     name="06-generated-scale"
     rows=12000
-    cols=24
+    cols=48
     db="$TMP_DIR/$name.db"
     tsv="$TMP_DIR/$name.tsv"
     actual="$TMP_DIR/$name.actual"
@@ -110,11 +110,11 @@ run_scale_case() {
         echo "$rows rows"
         echo "count\tmax\tmin"
         echo "$rows\t$((rows + cols - 1))\t1"
-        echo "c1\tc24"
+        echo "c1\tc48"
         echo "$rows\t$((rows + cols - 1))"
     } >"$expected"
 
-    if ! "$SQL_BIN" "$db" "$create IMPORT big FROM '$tsv'; SELECT COUNT(*), MAX(c24), MIN(c1) FROM big; SELECT c1, c24 FROM big WHERE c1 = $rows;" >>"$actual" 2>>"$err"; then
+    if ! "$SQL_BIN" "$db" "$create IMPORT big FROM '$tsv'; SELECT COUNT(*), MAX(c48), MIN(c1) FROM big; SELECT c1, c48 FROM big WHERE c1 = $rows;" >>"$actual" 2>>"$err"; then
         echo "not ok - $name" >&2
         cat "$err" >&2
         failures=$((failures + 1))

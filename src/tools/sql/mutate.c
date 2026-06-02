@@ -146,7 +146,7 @@ static int sql_execute_delete(SqlDatabase *db, SqlParser *parser) {
             continue;
         }
         if (write_index != read_index) {
-            table->rows[write_index] = table->rows[read_index];
+            sql_copy_row_values(table, &table->rows[write_index], &table->rows[read_index]);
         }
         write_index += 1U;
     }
@@ -179,7 +179,7 @@ static int sql_execute_drop(SqlDatabase *db, SqlParser *parser) {
     for (i = 0U; i < db->table_count; ++i) {
         if (sql_equal_ignore_case(db->tables[i].name, table_name)) {
             unsigned int move;
-            sql_free_table_rows(&db->tables[i]);
+            sql_free_table_storage(&db->tables[i]);
             for (move = i + 1U; move < db->table_count; ++move) {
                 db->tables[move - 1U] = db->tables[move];
             }
@@ -384,7 +384,7 @@ static int sql_execute_alter(SqlDatabase *db, SqlParser *parser) {
             return -1;
         }
     }
-    if (table->column_count >= SQL_MAX_COLUMNS || sql_find_column(table, column_name) >= 0) {
+    if (table->column_count >= SQL_MAX_COLUMNS || sql_find_column(table, column_name) >= 0 || sql_ensure_column_capacity(table, table->column_count + 1U) != 0) {
         return -1;
     }
     if ((unique || primary_key) && table->row_count > 1U) {

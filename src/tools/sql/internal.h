@@ -8,7 +8,10 @@
 #define SQL_MAX_TABLES 1024U
 #endif
 #ifndef SQL_MAX_COLUMNS
-#define SQL_MAX_COLUMNS 32U
+#define SQL_MAX_COLUMNS 1024U
+#endif
+#ifndef SQL_INITIAL_COLUMN_CAPACITY
+#define SQL_INITIAL_COLUMN_CAPACITY 4U
 #endif
 #ifndef SQL_MAX_ROWS
 #define SQL_MAX_ROWS 1048576U
@@ -84,22 +87,24 @@
 #define SQL_DECIMAL_LIMIT 900000000000000000LL
 
 typedef struct {
-    unsigned int values[SQL_MAX_COLUMNS];
+    unsigned int *values;
 } SqlRow;
 
 typedef struct {
     char name[SQL_NAME_SIZE];
     unsigned int column_count;
-    char columns[SQL_MAX_COLUMNS][SQL_NAME_SIZE];
-    unsigned char column_types[SQL_MAX_COLUMNS];
-    unsigned char not_null[SQL_MAX_COLUMNS];
-    unsigned char has_default[SQL_MAX_COLUMNS];
-    unsigned char unique[SQL_MAX_COLUMNS];
-    unsigned char primary_key[SQL_MAX_COLUMNS];
-    unsigned int defaults[SQL_MAX_COLUMNS];
+    unsigned int column_capacity;
+    char (*columns)[SQL_NAME_SIZE];
+    unsigned char *column_types;
+    unsigned char *not_null;
+    unsigned char *has_default;
+    unsigned char *unique;
+    unsigned char *primary_key;
+    unsigned int *defaults;
     unsigned int row_count;
     unsigned int row_capacity;
     SqlRow *rows;
+    unsigned int *row_values;
 } SqlTable;
 
 typedef struct {
@@ -221,15 +226,19 @@ typedef struct {
 
 typedef struct {
     const SqlRow *rows[SQL_MAX_QUERY_TABLES];
-    unsigned int values[SQL_MAX_COLUMNS];
-    unsigned int aggregates[SQL_MAX_COLUMNS];
+    unsigned int *values;
+    unsigned int *aggregates;
     unsigned int count;
 } SqlResultRow;
 
 typedef struct {
     SqlResultRow *rows;
+    unsigned int *values;
+    unsigned int *aggregates;
     unsigned int count;
     unsigned int capacity;
+    unsigned int value_slots;
+    unsigned int aggregate_slots;
 } SqlResultBuffer;
 
 typedef struct {
@@ -246,8 +255,9 @@ extern SqlTextBuffer sql_import_line;
 typedef struct {
     SqlQuerySource sources[SQL_MAX_QUERY_TABLES];
     unsigned int source_count;
-    SqlSelectItem items[SQL_MAX_COLUMNS];
+    SqlSelectItem *items;
     unsigned int item_count;
+    unsigned int item_capacity;
     int select_all;
     SqlCondition joins[SQL_MAX_QUERY_TABLES - 1U];
     int join_types[SQL_MAX_QUERY_TABLES - 1U];
@@ -262,10 +272,19 @@ typedef struct {
     unsigned int limit;
     int has_offset;
     unsigned int offset;
-    SqlAggregate aggregates[SQL_MAX_COLUMNS];
+    SqlAggregate *aggregates;
     unsigned int aggregate_count;
+    unsigned int aggregate_capacity;
     int distinct;
 } SqlSelectQuery;
+
+typedef struct {
+    char (*raw_items)[SQL_VALUE_SIZE];
+    char (*raw_expr_right)[SQL_VALUE_SIZE];
+    int *raw_kinds;
+    char (*raw_labels)[SQL_VALUE_SIZE];
+    unsigned int capacity;
+} SqlSelectScratch;
 
 typedef struct {
     int fd;
@@ -315,11 +334,20 @@ static void *sql_resize_bytes(void *ptr, size_t old_size, size_t new_size);
 static void *sql_resize_array(void *ptr, unsigned int old_count, unsigned int new_count, size_t item_size);
 static int sql_ensure_value_capacity(SqlDatabase *db, unsigned int needed);
 static int sql_ensure_table_capacity(SqlDatabase *db, unsigned int needed);
+static int sql_ensure_column_capacity(SqlTable *table, unsigned int needed);
 static int sql_ensure_row_capacity(SqlTable *table, unsigned int needed);
 static int sql_ensure_result_capacity(SqlResultBuffer *buffer, unsigned int needed);
+static int sql_ensure_select_item_capacity(SqlSelectQuery *query, unsigned int needed);
+static int sql_ensure_select_aggregate_capacity(SqlSelectQuery *query, unsigned int needed);
+static int sql_ensure_select_scratch_capacity(SqlSelectScratch *scratch, unsigned int needed);
 static int sql_ensure_text_capacity(SqlTextBuffer *buffer, unsigned int needed, unsigned int max);
 static void sql_free_text_buffer(SqlTextBuffer *buffer);
+static void sql_free_select_query(SqlSelectQuery *query);
+static void sql_free_select_scratch(SqlSelectScratch *scratch);
+static void sql_copy_row_values(const SqlTable *table, SqlRow *dst, const SqlRow *src);
 static void sql_free_table_rows(SqlTable *table);
+static void sql_free_table_columns(SqlTable *table);
+static void sql_free_table_storage(SqlTable *table);
 static void sql_free_database_storage(SqlDatabase *db);
 static void sql_clear_table_metadata(SqlTable *table);
 static void sql_clear_database(SqlDatabase *db);
@@ -400,9 +428,9 @@ static int sql_read_optional_source_alias(SqlParser *parser, char *alias, size_t
 static int sql_add_query_source(SqlDatabase *db, SqlSelectQuery *query, const char *name, const char *alias);
 static int sql_select_tail_keyword(const char *word);
 static int sql_parse_select_aggregate(SqlParser *parser, int kind, SqlSelectItem *item, char *raw_argument, size_t raw_argument_size);
-static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]);
-static int sql_resolve_select_items(SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]);
-static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]);
+static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, SqlSelectScratch *scratch);
+static int sql_resolve_select_items(SqlSelectQuery *query, SqlSelectScratch *scratch);
+static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQuery *query, SqlSelectScratch *scratch);
 static int sql_find_select_label(const SqlSelectQuery *query, const char *label);
 static int sql_label_matches_item(const SqlSelectItem *item, const char *label);
 static int sql_find_row_location(const SqlRow *row, const SqlTable **table_out, unsigned int *row_index_out);
@@ -417,6 +445,10 @@ static void sql_index_equal_range(const SqlIndexCache *index, const char *value,
 static int sql_select_index_lookup(const SqlSelectQuery *query, unsigned int depth, const SqlResultRow *current, unsigned int *column_out, const char **value_out);
 static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int depth, SqlResultRow *current, SqlResultBuffer *result);
 static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups);
+static void sql_init_result_buffer(SqlResultBuffer *buffer, unsigned int value_slots, unsigned int aggregate_slots);
+static void sql_free_result_buffer(SqlResultBuffer *buffer);
+static void sql_copy_result_row(const SqlSelectQuery *query, SqlResultRow *dst, const SqlResultRow *src);
+static void sql_set_result_buffer_row(const SqlSelectQuery *query, SqlResultBuffer *buffer, unsigned int index, const SqlResultRow *src);
 static int sql_query_uses_aggregate(const SqlSelectQuery *query);
 static int sql_result_rows_same_group(const SqlResultRow *left, const SqlResultRow *right, const SqlSelectQuery *query);
 static int sql_compute_aggregate_value(const SqlSelectQuery *query, const SqlResultRow *representative, const SqlResultRow *rows, unsigned int row_count, const SqlAggregate *aggregate, char *buffer, size_t buffer_size);

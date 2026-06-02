@@ -108,6 +108,13 @@ static int sql_ensure_value_capacity(SqlDatabase *db, unsigned int needed) {
 static int sql_ensure_result_capacity(SqlResultBuffer *buffer, unsigned int needed) {
     unsigned int capacity;
     SqlResultRow *rows;
+    unsigned int *values = 0;
+    unsigned int *aggregates = 0;
+    size_t old_value_count;
+    size_t new_value_count;
+    size_t old_aggregate_count;
+    size_t new_aggregate_count;
+    unsigned int row_index;
 
     if (buffer == 0 || sql_next_capacity(buffer->capacity, needed, SQL_MAX_RESULT_ROWS, SQL_INITIAL_RESULT_CAPACITY, &capacity) != 0) {
         return -1;
@@ -120,8 +127,172 @@ static int sql_ensure_result_capacity(SqlResultBuffer *buffer, unsigned int need
         return -1;
     }
     buffer->rows = rows;
+    if (sql_multiply_size((size_t)buffer->capacity, (size_t)buffer->value_slots, &old_value_count) != 0 ||
+        sql_multiply_size((size_t)capacity, (size_t)buffer->value_slots, &new_value_count) != 0 ||
+        old_value_count > (size_t)((unsigned int)-1) || new_value_count > (size_t)((unsigned int)-1)) {
+        return -1;
+    }
+    if (buffer->value_slots != 0U) {
+        values = (unsigned int *)sql_resize_array(buffer->values, (unsigned int)old_value_count, (unsigned int)new_value_count, sizeof(unsigned int));
+        if (values == 0) {
+            return -1;
+        }
+        buffer->values = values;
+    }
+    if (sql_multiply_size((size_t)buffer->capacity, (size_t)buffer->aggregate_slots, &old_aggregate_count) != 0 ||
+        sql_multiply_size((size_t)capacity, (size_t)buffer->aggregate_slots, &new_aggregate_count) != 0 ||
+        old_aggregate_count > (size_t)((unsigned int)-1) || new_aggregate_count > (size_t)((unsigned int)-1)) {
+        return -1;
+    }
+    if (buffer->aggregate_slots != 0U) {
+        aggregates = (unsigned int *)sql_resize_array(buffer->aggregates, (unsigned int)old_aggregate_count, (unsigned int)new_aggregate_count, sizeof(unsigned int));
+        if (aggregates == 0) {
+            return -1;
+        }
+        buffer->aggregates = aggregates;
+    }
     buffer->capacity = capacity;
+    for (row_index = 0U; row_index < buffer->capacity; ++row_index) {
+        buffer->rows[row_index].values = buffer->value_slots == 0U ? 0 : buffer->values + ((size_t)row_index * buffer->value_slots);
+        buffer->rows[row_index].aggregates = buffer->aggregate_slots == 0U ? 0 : buffer->aggregates + ((size_t)row_index * buffer->aggregate_slots);
+    }
     return 0;
+}
+
+static void sql_init_result_buffer(SqlResultBuffer *buffer, unsigned int value_slots, unsigned int aggregate_slots) {
+    rt_memset(buffer, 0, sizeof(*buffer));
+    buffer->value_slots = value_slots;
+    buffer->aggregate_slots = aggregate_slots;
+}
+
+static void sql_free_result_buffer(SqlResultBuffer *buffer) {
+    if (buffer == 0) {
+        return;
+    }
+    sql_free_bytes(buffer->rows);
+    sql_free_bytes(buffer->values);
+    sql_free_bytes(buffer->aggregates);
+    rt_memset(buffer, 0, sizeof(*buffer));
+}
+
+static int sql_ensure_select_item_capacity(SqlSelectQuery *query, unsigned int needed) {
+    unsigned int capacity;
+    SqlSelectItem *items;
+
+    if (query == 0 || sql_next_capacity(query->item_capacity, needed, SQL_MAX_COLUMNS, SQL_INITIAL_COLUMN_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == query->item_capacity) {
+        return 0;
+    }
+    items = (SqlSelectItem *)sql_resize_array(query->items, query->item_capacity, capacity, sizeof(SqlSelectItem));
+    if (items == 0) {
+        return -1;
+    }
+    query->items = items;
+    query->item_capacity = capacity;
+    return 0;
+}
+
+static int sql_ensure_select_aggregate_capacity(SqlSelectQuery *query, unsigned int needed) {
+    unsigned int capacity;
+    SqlAggregate *aggregates;
+
+    if (query == 0 || sql_next_capacity(query->aggregate_capacity, needed, SQL_MAX_COLUMNS, SQL_INITIAL_COLUMN_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == query->aggregate_capacity) {
+        return 0;
+    }
+    aggregates = (SqlAggregate *)sql_resize_array(query->aggregates, query->aggregate_capacity, capacity, sizeof(SqlAggregate));
+    if (aggregates == 0) {
+        return -1;
+    }
+    query->aggregates = aggregates;
+    query->aggregate_capacity = capacity;
+    return 0;
+}
+
+static int sql_ensure_select_scratch_capacity(SqlSelectScratch *scratch, unsigned int needed) {
+    unsigned int capacity;
+    char (*raw_items)[SQL_VALUE_SIZE];
+    char (*raw_expr_right)[SQL_VALUE_SIZE];
+    int *raw_kinds;
+    char (*raw_labels)[SQL_VALUE_SIZE];
+
+    if (scratch == 0 || sql_next_capacity(scratch->capacity, needed, SQL_MAX_COLUMNS, SQL_INITIAL_COLUMN_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == scratch->capacity) {
+        return 0;
+    }
+    raw_items = (char (*)[SQL_VALUE_SIZE])sql_resize_array(scratch->raw_items, scratch->capacity, capacity, sizeof(char[SQL_VALUE_SIZE]));
+    if (raw_items == 0) {
+        return -1;
+    }
+    scratch->raw_items = raw_items;
+    raw_expr_right = (char (*)[SQL_VALUE_SIZE])sql_resize_array(scratch->raw_expr_right, scratch->capacity, capacity, sizeof(char[SQL_VALUE_SIZE]));
+    if (raw_expr_right == 0) {
+        return -1;
+    }
+    scratch->raw_expr_right = raw_expr_right;
+    raw_kinds = (int *)sql_resize_array(scratch->raw_kinds, scratch->capacity, capacity, sizeof(int));
+    if (raw_kinds == 0) {
+        return -1;
+    }
+    scratch->raw_kinds = raw_kinds;
+    raw_labels = (char (*)[SQL_VALUE_SIZE])sql_resize_array(scratch->raw_labels, scratch->capacity, capacity, sizeof(char[SQL_VALUE_SIZE]));
+    if (raw_labels == 0) {
+        return -1;
+    }
+    scratch->raw_labels = raw_labels;
+    scratch->capacity = capacity;
+    return 0;
+}
+
+static void sql_free_select_query(SqlSelectQuery *query) {
+    if (query == 0) {
+        return;
+    }
+    sql_free_bytes(query->items);
+    sql_free_bytes(query->aggregates);
+    query->items = 0;
+    query->aggregates = 0;
+    query->item_capacity = 0U;
+    query->aggregate_capacity = 0U;
+}
+
+static void sql_free_select_scratch(SqlSelectScratch *scratch) {
+    if (scratch == 0) {
+        return;
+    }
+    sql_free_bytes(scratch->raw_items);
+    sql_free_bytes(scratch->raw_expr_right);
+    sql_free_bytes(scratch->raw_kinds);
+    sql_free_bytes(scratch->raw_labels);
+    rt_memset(scratch, 0, sizeof(*scratch));
+}
+
+static void sql_copy_result_row(const SqlSelectQuery *query, SqlResultRow *dst, const SqlResultRow *src) {
+    unsigned int source_index;
+
+    if (dst == src) {
+        return;
+    }
+    for (source_index = 0U; source_index < SQL_MAX_QUERY_TABLES; ++source_index) {
+        dst->rows[source_index] = src->rows[source_index];
+    }
+    dst->count = src->count;
+    if (dst->values != 0 && src->values != 0 && query->item_count != 0U) {
+        memcpy(dst->values, src->values, (size_t)query->item_count * sizeof(unsigned int));
+    }
+    if (dst->aggregates != 0 && src->aggregates != 0 && query->aggregate_count != 0U) {
+        memcpy(dst->aggregates, src->aggregates, (size_t)query->aggregate_count * sizeof(unsigned int));
+    }
+}
+
+static void sql_set_result_buffer_row(const SqlSelectQuery *query, SqlResultBuffer *buffer, unsigned int index, const SqlResultRow *src) {
+    sql_copy_result_row(query, &buffer->rows[index], src);
 }
 
 static int sql_ensure_text_capacity(SqlTextBuffer *buffer, unsigned int needed, unsigned int max) {
@@ -154,11 +325,92 @@ static void sql_free_text_buffer(SqlTextBuffer *buffer) {
 
 static void sql_free_table_rows(SqlTable *table) {
     if (table != 0) {
+        sql_free_bytes(table->row_values);
+        table->row_values = 0;
         sql_free_bytes(table->rows);
         table->rows = 0;
         table->row_capacity = 0U;
         table->row_count = 0U;
     }
+}
+
+static void sql_bind_table_rows(SqlTable *table) {
+    unsigned int row_index;
+
+    if (table == 0 || table->rows == 0 || table->row_values == 0 || table->column_capacity == 0U) {
+        return;
+    }
+    for (row_index = 0U; row_index < table->row_capacity; ++row_index) {
+        table->rows[row_index].values = table->row_values + ((size_t)row_index * table->column_capacity);
+    }
+}
+
+static int sql_resize_table_row_values(SqlTable *table, unsigned int row_capacity, unsigned int column_capacity) {
+    unsigned int *values;
+    size_t new_value_count;
+    unsigned int row_index;
+    unsigned int copy_columns;
+
+    if (table == 0 || row_capacity == 0U || column_capacity == 0U) {
+        sql_free_bytes(table != 0 ? table->row_values : 0);
+        if (table != 0) {
+            table->row_values = 0;
+        }
+        return 0;
+    }
+    if (sql_multiply_size((size_t)row_capacity, (size_t)column_capacity, &new_value_count) != 0 || new_value_count > (size_t)((unsigned int)-1)) {
+        return -1;
+    }
+    values = (unsigned int *)sql_resize_array(0, 0U, (unsigned int)new_value_count, sizeof(unsigned int));
+    if (values == 0) {
+        return -1;
+    }
+    copy_columns = table->column_count < table->column_capacity ? table->column_count : table->column_capacity;
+    if (copy_columns > column_capacity) {
+        copy_columns = column_capacity;
+    }
+    for (row_index = 0U; row_index < table->row_count; ++row_index) {
+        memcpy(values + ((size_t)row_index * column_capacity),
+               table->row_values + ((size_t)row_index * table->column_capacity),
+               (size_t)copy_columns * sizeof(unsigned int));
+    }
+    sql_free_bytes(table->row_values);
+    table->row_values = values;
+    return 0;
+}
+
+static void sql_copy_row_values(const SqlTable *table, SqlRow *dst, const SqlRow *src) {
+    if (table == 0 || dst == 0 || src == 0 || dst == src || table->column_count == 0U) {
+        return;
+    }
+    memcpy(dst->values, src->values, (size_t)table->column_count * sizeof(unsigned int));
+}
+
+static void sql_free_table_columns(SqlTable *table) {
+    if (table == 0) {
+        return;
+    }
+    sql_free_bytes(table->columns);
+    sql_free_bytes(table->column_types);
+    sql_free_bytes(table->not_null);
+    sql_free_bytes(table->has_default);
+    sql_free_bytes(table->unique);
+    sql_free_bytes(table->primary_key);
+    sql_free_bytes(table->defaults);
+    table->columns = 0;
+    table->column_types = 0;
+    table->not_null = 0;
+    table->has_default = 0;
+    table->unique = 0;
+    table->primary_key = 0;
+    table->defaults = 0;
+    table->column_capacity = 0U;
+    table->column_count = 0U;
+}
+
+static void sql_free_table_storage(SqlTable *table) {
+    sql_free_table_rows(table);
+    sql_free_table_columns(table);
 }
 
 static int sql_ensure_table_capacity(SqlDatabase *db, unsigned int needed) {
@@ -185,7 +437,9 @@ static int sql_ensure_row_capacity(SqlTable *table, unsigned int needed) {
     unsigned int capacity;
     SqlRow *rows;
 
-    if (table == 0 || sql_next_capacity(table->row_capacity, needed, SQL_MAX_ROWS, SQL_INITIAL_ROW_CAPACITY, &capacity) != 0) {
+    if (table == 0 || table->column_count == 0U ||
+        sql_next_capacity(table->row_capacity, needed, SQL_MAX_ROWS, SQL_INITIAL_ROW_CAPACITY, &capacity) != 0 ||
+        sql_ensure_column_capacity(table, table->column_count) != 0) {
         return -1;
     }
     if (capacity == table->row_capacity) {
@@ -196,7 +450,80 @@ static int sql_ensure_row_capacity(SqlTable *table, unsigned int needed) {
         return -1;
     }
     table->rows = rows;
+    if (sql_resize_table_row_values(table, capacity, table->column_capacity) != 0) {
+        return -1;
+    }
     table->row_capacity = capacity;
+    sql_bind_table_rows(table);
+    return 0;
+}
+
+static int sql_ensure_column_capacity(SqlTable *table, unsigned int needed) {
+    unsigned int capacity;
+    char (*columns)[SQL_NAME_SIZE];
+    unsigned char *column_types;
+    unsigned char *not_null;
+    unsigned char *has_default;
+    unsigned char *unique;
+    unsigned char *primary_key;
+    unsigned int *defaults;
+    unsigned int column_index;
+
+    if (table == 0 || sql_next_capacity(table->column_capacity, needed, SQL_MAX_COLUMNS, SQL_INITIAL_COLUMN_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == table->column_capacity) {
+        return 0;
+    }
+    columns = (char (*)[SQL_NAME_SIZE])sql_resize_array(table->columns, table->column_capacity, capacity, sizeof(char[SQL_NAME_SIZE]));
+    if (columns == 0) {
+        return -1;
+    }
+    table->columns = columns;
+    column_types = (unsigned char *)sql_resize_array(table->column_types, table->column_capacity, capacity, sizeof(unsigned char));
+    if (column_types == 0) {
+        return -1;
+    }
+    table->column_types = column_types;
+    not_null = (unsigned char *)sql_resize_array(table->not_null, table->column_capacity, capacity, sizeof(unsigned char));
+    if (not_null == 0) {
+        return -1;
+    }
+    table->not_null = not_null;
+    has_default = (unsigned char *)sql_resize_array(table->has_default, table->column_capacity, capacity, sizeof(unsigned char));
+    if (has_default == 0) {
+        return -1;
+    }
+    table->has_default = has_default;
+    unique = (unsigned char *)sql_resize_array(table->unique, table->column_capacity, capacity, sizeof(unsigned char));
+    if (unique == 0) {
+        return -1;
+    }
+    table->unique = unique;
+    primary_key = (unsigned char *)sql_resize_array(table->primary_key, table->column_capacity, capacity, sizeof(unsigned char));
+    if (primary_key == 0) {
+        return -1;
+    }
+    table->primary_key = primary_key;
+    defaults = (unsigned int *)sql_resize_array(table->defaults, table->column_capacity, capacity, sizeof(unsigned int));
+    if (defaults == 0) {
+        return -1;
+    }
+    table->defaults = defaults;
+    for (column_index = table->column_capacity; column_index < capacity; ++column_index) {
+        table->columns[column_index][0] = '\0';
+        table->column_types[column_index] = SQL_TYPE_TEXT;
+        table->not_null[column_index] = 0U;
+        table->has_default[column_index] = 0U;
+        table->unique[column_index] = 0U;
+        table->primary_key[column_index] = 0U;
+        table->defaults[column_index] = 0U;
+    }
+    if (table->row_capacity != 0U && sql_resize_table_row_values(table, table->row_capacity, capacity) != 0) {
+        return -1;
+    }
+    table->column_capacity = capacity;
+    sql_bind_table_rows(table);
     return 0;
 }
 
@@ -207,7 +534,7 @@ static void sql_free_database_storage(SqlDatabase *db) {
         return;
     }
     for (table_index = 0U; table_index < db->table_count; ++table_index) {
-        sql_free_table_rows(&db->tables[table_index]);
+        sql_free_table_storage(&db->tables[table_index]);
     }
     sql_free_bytes(db->tables);
     db->tables = 0;
@@ -505,7 +832,7 @@ static const char *sql_aggregate_label(int kind) {
 static int sql_add_aggregate(SqlSelectQuery *query, int kind, const SqlColumnRef *column, int *index_out) {
     SqlAggregate *aggregate;
 
-    if (query->aggregate_count >= SQL_MAX_COLUMNS || index_out == 0) {
+    if (query->aggregate_count >= SQL_MAX_COLUMNS || index_out == 0 || sql_ensure_select_aggregate_capacity(query, query->aggregate_count + 1U) != 0) {
         return -1;
     }
     aggregate = &query->aggregates[query->aggregate_count];

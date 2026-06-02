@@ -12,14 +12,14 @@ static int sql_offset_is_null(unsigned int offset) {
 }
 
 static const char *sql_row_value(const SqlRow *row, unsigned int column) {
-    if (row == 0 || sql_offset_is_null(row->values[column])) {
+    if (row == 0 || row->values == 0 || sql_offset_is_null(row->values[column])) {
         return "";
     }
     return sql_value_at(row->values[column]);
 }
 
 static int sql_row_value_is_null(const SqlRow *row, unsigned int column) {
-    return row == 0 || sql_offset_is_null(row->values[column]);
+    return row == 0 || row->values == 0 || sql_offset_is_null(row->values[column]);
 }
 
 static const char *sql_row_display_value(const SqlRow *row, unsigned int column) {
@@ -52,11 +52,14 @@ static int sql_store_value(SqlDatabase *db, const char *value, unsigned int *off
 }
 
 static int sql_store_row_value(SqlDatabase *db, SqlRow *row, unsigned int column, const char *value) {
+    if (row == 0 || row->values == 0) {
+        return -1;
+    }
     return sql_store_value(db, value, &row->values[column]);
 }
 
 static int sql_store_row_null(SqlRow *row, unsigned int column) {
-    if (row == 0 || column >= SQL_MAX_COLUMNS) {
+    if (row == 0 || row->values == 0 || column >= SQL_MAX_COLUMNS) {
         return -1;
     }
     row->values[column] = SQL_NULL_OFFSET;

@@ -1,22 +1,14 @@
 #include "internal.h"
 
 static void sql_clear_table_metadata(SqlTable *table) {
-    unsigned int column_index;
-
+    sql_free_table_storage(table);
     table->name[0] = '\0';
     table->column_count = 0U;
+    table->column_capacity = 0U;
     table->row_count = 0U;
     table->row_capacity = 0U;
     table->rows = 0;
-    for (column_index = 0U; column_index < SQL_MAX_COLUMNS; ++column_index) {
-        table->columns[column_index][0] = '\0';
-        table->column_types[column_index] = SQL_TYPE_TEXT;
-        table->not_null[column_index] = 0U;
-        table->has_default[column_index] = 0U;
-        table->unique[column_index] = 0U;
-        table->primary_key[column_index] = 0U;
-        table->defaults[column_index] = 0U;
-    }
+    table->row_values = 0;
 }
 
 static void sql_clear_database(SqlDatabase *db) {
@@ -155,6 +147,9 @@ static int sql_parse_database_text(SqlDatabase *db, char *buffer) {
             current = &db->tables[db->table_count++];
             sql_clear_table_metadata(current);
             if (sql_copy_checked(current->name, sizeof(current->name), name) != 0) {
+                return -1;
+            }
+            if (sql_ensure_column_capacity(current, (unsigned int)column_count) != 0) {
                 return -1;
             }
             current->column_count = (unsigned int)column_count;

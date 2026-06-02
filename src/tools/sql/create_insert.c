@@ -114,6 +114,9 @@ static int sql_execute_create(SqlDatabase *db, SqlParser *parser) {
     if (sql_copy_checked(table->name, sizeof(table->name), table_name) != 0) {
         return -1;
     }
+    if (sql_ensure_column_capacity(table, column_count) != 0) {
+        return -1;
+    }
     for (copy_index = 0U; copy_index < column_count; ++copy_index) {
         if (sql_copy_checked(table->columns[copy_index], sizeof(table->columns[copy_index]), columns[copy_index]) != 0) {
             return -1;
@@ -150,12 +153,13 @@ static int sql_execute_create(SqlDatabase *db, SqlParser *parser) {
 static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
     char table_name[SQL_NAME_SIZE];
     SqlTable *table;
-    int target_columns[SQL_MAX_COLUMNS];
-    char values[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
-    int value_is_null[SQL_MAX_COLUMNS];
+    int *target_columns = 0;
+    char (*values)[SQL_VALUE_SIZE] = 0;
+    int *value_is_null = 0;
     unsigned int target_count = 0U;
     unsigned int value_count = 0U;
     unsigned int inserted = 0U;
+    int result = -1;
 
     if (!sql_expect_word(parser, "into") || sql_read_identifier(parser, table_name, sizeof(table_name)) != 0) {
         return -1;
@@ -164,6 +168,12 @@ static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
     if (table == 0 || table->row_count >= SQL_MAX_ROWS) {
         return -1;
     }
+    target_columns = (int *)sql_resize_array(0, 0U, table->column_count, sizeof(int));
+    values = (char (*)[SQL_VALUE_SIZE])sql_resize_array(0, 0U, table->column_count, sizeof(char[SQL_VALUE_SIZE]));
+    value_is_null = (int *)sql_resize_array(0, 0U, table->column_count, sizeof(int));
+    if (target_columns == 0 || values == 0 || value_is_null == 0) {
+        goto out;
+    }
     if (sql_try_symbol(parser, '(')) {
         for (;;) {
             char column_name[SQL_NAME_SIZE];
@@ -171,77 +181,80 @@ static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
             unsigned int i;
 
             if (target_count >= table->column_count || sql_read_identifier(parser, column_name, sizeof(column_name)) != 0) {
-                return -1;
+                goto out;
             }
             column = sql_find_column(table, column_name);
             if (column < 0) {
-                return -1;
+                goto out;
             }
             for (i = 0U; i < target_count; ++i) {
                 if (target_columns[i] == column) {
-                    return -1;
+                    goto out;
                 }
             }
             target_columns[target_count++] = column;
             if (sql_next_token(parser) != 0) {
-                return -1;
+                goto out;
             }
             if (parser->token_type == SQL_TOKEN_SYMBOL && parser->token[0] == ')') {
                 break;
             }
             if (parser->token_type != SQL_TOKEN_SYMBOL || parser->token[0] != ',') {
-                return -1;
+                goto out;
             }
         }
     } else {
+        if (table->column_count > SQL_MAX_COLUMNS) {
+            goto out;
+        }
         for (target_count = 0U; target_count < table->column_count; ++target_count) {
             target_columns[target_count] = (int)target_count;
         }
     }
     if (target_count == 0U || !sql_expect_word(parser, "values") || !sql_expect_symbol(parser, '(')) {
-        return -1;
+        goto out;
     }
     for (;;) {
         value_count = 0U;
         for (;;) {
             if (value_count >= target_count || sql_read_value_or_null(parser, values[value_count], SQL_VALUE_SIZE, &value_is_null[value_count]) != 0) {
-                return -1;
+                goto out;
             }
             value_count += 1U;
             if (sql_next_token(parser) != 0) {
-                return -1;
+                goto out;
             }
             if (parser->token_type == SQL_TOKEN_SYMBOL && parser->token[0] == ')') {
                 break;
             }
             if (parser->token_type != SQL_TOKEN_SYMBOL || parser->token[0] != ',') {
-                return -1;
+                goto out;
             }
         }
         if (value_count != target_count || table->row_count >= SQL_MAX_ROWS || sql_ensure_row_capacity(table, table->row_count + 1U) != 0 || sql_prepare_new_row(table, &table->rows[table->row_count]) != 0) {
-            return -1;
+            goto out;
         }
         for (value_count = 0U; value_count < target_count; ++value_count) {
             if (sql_store_row_value_or_null(db, &table->rows[table->row_count], (unsigned int)target_columns[value_count], values[value_count], value_is_null[value_count]) != 0) {
-                return -1;
+                goto out;
             }
         }
         if (sql_validate_row_constraints(table, &table->rows[table->row_count]) != 0) {
-            return -1;
+            goto out;
         }
         table->row_count += 1U;
         inserted += 1U;
         if (sql_next_token(parser) != 0) {
-            return -1;
+            goto out;
         }
         if (parser->token_type == SQL_TOKEN_END) {
             break;
         }
         if (parser->token_type != SQL_TOKEN_SYMBOL || parser->token[0] != ',') {
-            return -1;
+            goto out;
         }
         if (!sql_expect_symbol(parser, '(')) {
-            return -1;
+            goto out;
         }
     }
     if (inserted == 1U) {
@@ -250,6 +263,12 @@ static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
         sql_write_row_count(inserted);
     }
     sql_invalidate_table_runtime_caches(table);
-    return 1;
+    result = 1;
+
+out:
+    sql_free_bytes(target_columns);
+    sql_free_bytes(values);
+    sql_free_bytes(value_is_null);
+    return result;
 }
 

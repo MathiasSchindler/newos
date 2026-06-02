@@ -38,7 +38,7 @@ validate_number SQL_STRESS_COLS "$COLS"
 [ "$ROWS" -ge 1 ] || die "SQL_STRESS_ROWS must be at least 1"
 [ "$ROWS" -le "$ROW_LIMIT" ] || die "SQL_STRESS_ROWS must be at most SQL_STRESS_ROW_LIMIT ($ROW_LIMIT)"
 [ "$COLS" -ge 4 ] || die "SQL_STRESS_COLS must be at least 4"
-[ "$COLS" -le 32 ] || die "SQL_STRESS_COLS must be at most 32"
+[ "$COLS" -le 1024 ] || die "SQL_STRESS_COLS must be at most 1024"
 
 mkdir -p "$TMP_DIR"
 cd "$ROOT"

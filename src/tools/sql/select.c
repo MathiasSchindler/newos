@@ -34,7 +34,7 @@ static int sql_parse_select_aggregate(SqlParser *parser, int kind, SqlSelectItem
     return 1;
 }
 
-static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]) {
+static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, SqlSelectScratch *scratch) {
     if (sql_next_token(parser) != 0) {
         return -1;
     }
@@ -52,29 +52,31 @@ static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, char 
         return -1;
     }
     for (;;) {
-        if (query->item_count >= SQL_MAX_COLUMNS) {
+        if (query->item_count >= SQL_MAX_COLUMNS ||
+            sql_ensure_select_item_capacity(query, query->item_count + 1U) != 0 ||
+            sql_ensure_select_scratch_capacity(scratch, query->item_count + 1U) != 0) {
             return -1;
         }
-        raw_labels[query->item_count][0] = '\0';
-        raw_expr_right[query->item_count][0] = '\0';
+        scratch->raw_labels[query->item_count][0] = '\0';
+        scratch->raw_expr_right[query->item_count][0] = '\0';
         {
             int aggregate_kind = sql_aggregate_kind_from_name(parser->token);
             if (aggregate_kind >= 0) {
-            int rc = sql_parse_select_aggregate(parser, aggregate_kind, &query->items[query->item_count], raw_items[query->item_count], SQL_VALUE_SIZE);
+            int rc = sql_parse_select_aggregate(parser, aggregate_kind, &query->items[query->item_count], scratch->raw_items[query->item_count], SQL_VALUE_SIZE);
             if (rc < 0) {
                 return -1;
             }
             if (rc > 0) {
-                raw_kinds[query->item_count] = query->items[query->item_count].kind;
+                scratch->raw_kinds[query->item_count] = query->items[query->item_count].kind;
             } else {
-                raw_kinds[query->item_count] = SQL_SELECT_COLUMN;
-                if (sql_copy_checked(raw_items[query->item_count], SQL_VALUE_SIZE, parser->token) != 0) {
+                scratch->raw_kinds[query->item_count] = SQL_SELECT_COLUMN;
+                if (sql_copy_checked(scratch->raw_items[query->item_count], SQL_VALUE_SIZE, parser->token) != 0) {
                     return -1;
                 }
             }
         } else {
-            raw_kinds[query->item_count] = SQL_SELECT_COLUMN;
-            if (sql_copy_checked(raw_items[query->item_count], SQL_VALUE_SIZE, parser->token) != 0) {
+            scratch->raw_kinds[query->item_count] = SQL_SELECT_COLUMN;
+            if (sql_copy_checked(scratch->raw_items[query->item_count], SQL_VALUE_SIZE, parser->token) != 0) {
                 return -1;
             }
         }
@@ -89,22 +91,22 @@ static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, char 
                 if (!sql_expect_symbol(parser, '|')) {
                     return -1;
                 }
-                raw_kinds[expression_index] = SQL_SELECT_CONCAT;
+                scratch->raw_kinds[expression_index] = SQL_SELECT_CONCAT;
             } else {
-                raw_kinds[expression_index] = SQL_SELECT_ADD;
+                scratch->raw_kinds[expression_index] = SQL_SELECT_ADD;
             }
-            if (sql_read_value(parser, raw_expr_right[expression_index], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
+            if (sql_read_value(parser, scratch->raw_expr_right[expression_index], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
                 return -1;
             }
         } else if (parser->token_type == SQL_TOKEN_WORD && rt_strcmp(parser->token, "-") == 0) {
             unsigned int expression_index = query->item_count - 1U;
-            raw_kinds[expression_index] = SQL_SELECT_SUB;
-            if (sql_read_value(parser, raw_expr_right[expression_index], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
+            scratch->raw_kinds[expression_index] = SQL_SELECT_SUB;
+            if (sql_read_value(parser, scratch->raw_expr_right[expression_index], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
                 return -1;
             }
         }
         if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "as")) {
-            if (sql_read_identifier(parser, raw_labels[query->item_count - 1U], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
+            if (sql_read_identifier(parser, scratch->raw_labels[query->item_count - 1U], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
                 return -1;
             }
         }
@@ -179,7 +181,7 @@ static int sql_read_optional_source_alias(SqlParser *parser, char *alias, size_t
     return 0;
 }
 
-static int sql_resolve_select_items(SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]) {
+static int sql_resolve_select_items(SqlSelectQuery *query, SqlSelectScratch *scratch) {
     unsigned int source_index;
     unsigned int item_index;
 
@@ -190,7 +192,7 @@ static int sql_resolve_select_items(SqlSelectQuery *query, char raw_items[SQL_MA
             unsigned int column_index;
             for (column_index = 0U; column_index < table->column_count; ++column_index) {
                 SqlSelectItem *item;
-                if (query->item_count >= SQL_MAX_COLUMNS) {
+                if (query->item_count >= SQL_MAX_COLUMNS || sql_ensure_select_item_capacity(query, query->item_count + 1U) != 0) {
                     return -1;
                 }
                 item = &query->items[query->item_count++];
@@ -210,26 +212,26 @@ static int sql_resolve_select_items(SqlSelectQuery *query, char raw_items[SQL_MA
         return 0;
     }
     for (item_index = 0U; item_index < query->item_count; ++item_index) {
-        query->items[item_index].kind = raw_kinds[item_index];
-        if (raw_kinds[item_index] == SQL_SELECT_COLUMN || raw_kinds[item_index] == SQL_SELECT_ADD || raw_kinds[item_index] == SQL_SELECT_SUB || raw_kinds[item_index] == SQL_SELECT_CONCAT) {
-            if (sql_resolve_column(query, raw_items[item_index], &query->items[item_index].column) != 0 ||
-                sql_copy_checked(query->items[item_index].label, sizeof(query->items[item_index].label), raw_items[item_index]) != 0) {
+        query->items[item_index].kind = scratch->raw_kinds[item_index];
+        if (scratch->raw_kinds[item_index] == SQL_SELECT_COLUMN || scratch->raw_kinds[item_index] == SQL_SELECT_ADD || scratch->raw_kinds[item_index] == SQL_SELECT_SUB || scratch->raw_kinds[item_index] == SQL_SELECT_CONCAT) {
+            if (sql_resolve_column(query, scratch->raw_items[item_index], &query->items[item_index].column) != 0 ||
+                sql_copy_checked(query->items[item_index].label, sizeof(query->items[item_index].label), scratch->raw_items[item_index]) != 0) {
                 return -1;
             }
             query->items[item_index].has_right_column = 0;
             query->items[item_index].right_column.table_index = -1;
             query->items[item_index].right_column.column_index = -1;
-            if (raw_kinds[item_index] == SQL_SELECT_ADD || raw_kinds[item_index] == SQL_SELECT_SUB || raw_kinds[item_index] == SQL_SELECT_CONCAT) {
-                if (sql_copy_checked(query->items[item_index].literal, sizeof(query->items[item_index].literal), raw_expr_right[item_index]) != 0) {
+            if (scratch->raw_kinds[item_index] == SQL_SELECT_ADD || scratch->raw_kinds[item_index] == SQL_SELECT_SUB || scratch->raw_kinds[item_index] == SQL_SELECT_CONCAT) {
+                if (sql_copy_checked(query->items[item_index].literal, sizeof(query->items[item_index].literal), scratch->raw_expr_right[item_index]) != 0) {
                     return -1;
                 }
-                if (raw_kinds[item_index] == SQL_SELECT_CONCAT && sql_resolve_column(query, raw_expr_right[item_index], &query->items[item_index].right_column) == 0) {
+                if (scratch->raw_kinds[item_index] == SQL_SELECT_CONCAT && sql_resolve_column(query, scratch->raw_expr_right[item_index], &query->items[item_index].right_column) == 0) {
                     query->items[item_index].has_right_column = 1;
                 }
-                if (raw_labels[item_index][0] == '\0') {
-                    const char *operator_text = raw_kinds[item_index] == SQL_SELECT_ADD ? "+" : (raw_kinds[item_index] == SQL_SELECT_SUB ? "-" : "||");
-                    if (sql_copy_label(query->items[item_index].label, sizeof(query->items[item_index].label), raw_items[item_index], operator_text) != 0 ||
-                        sql_copy_label(query->items[item_index].label + rt_strlen(query->items[item_index].label), sizeof(query->items[item_index].label) - rt_strlen(query->items[item_index].label), raw_expr_right[item_index], 0) != 0) {
+                if (scratch->raw_labels[item_index][0] == '\0') {
+                    const char *operator_text = scratch->raw_kinds[item_index] == SQL_SELECT_ADD ? "+" : (scratch->raw_kinds[item_index] == SQL_SELECT_SUB ? "-" : "||");
+                    if (sql_copy_label(query->items[item_index].label, sizeof(query->items[item_index].label), scratch->raw_items[item_index], operator_text) != 0 ||
+                        sql_copy_label(query->items[item_index].label + rt_strlen(query->items[item_index].label), sizeof(query->items[item_index].label) - rt_strlen(query->items[item_index].label), scratch->raw_expr_right[item_index], 0) != 0) {
                         return -1;
                     }
                 }
@@ -237,27 +239,27 @@ static int sql_resolve_select_items(SqlSelectQuery *query, char raw_items[SQL_MA
         } else {
             SqlColumnRef column;
             SqlColumnRef *column_ptr = &column;
-            if (raw_kinds[item_index] == SQL_SELECT_COUNT_ALL) {
+            if (scratch->raw_kinds[item_index] == SQL_SELECT_COUNT_ALL) {
                 column_ptr = 0;
-            } else if (sql_resolve_column(query, raw_items[item_index], &column) != 0) {
+            } else if (sql_resolve_column(query, scratch->raw_items[item_index], &column) != 0) {
                 return -1;
             }
-            if (sql_add_aggregate(query, raw_kinds[item_index], column_ptr, &query->items[item_index].aggregate_index) != 0 ||
-                sql_copy_checked(query->items[item_index].label, sizeof(query->items[item_index].label), sql_aggregate_label(raw_kinds[item_index])) != 0) {
+            if (sql_add_aggregate(query, scratch->raw_kinds[item_index], column_ptr, &query->items[item_index].aggregate_index) != 0 ||
+                sql_copy_checked(query->items[item_index].label, sizeof(query->items[item_index].label), sql_aggregate_label(scratch->raw_kinds[item_index])) != 0) {
                 return -1;
             }
             if (column_ptr != 0) {
                 query->items[item_index].column = column;
             }
         }
-        if (raw_labels[item_index][0] != '\0' && sql_copy_checked(query->items[item_index].label, sizeof(query->items[item_index].label), raw_labels[item_index]) != 0) {
+        if (scratch->raw_labels[item_index][0] != '\0' && sql_copy_checked(query->items[item_index].label, sizeof(query->items[item_index].label), scratch->raw_labels[item_index]) != 0) {
             return -1;
         }
     }
     return 0;
 }
 
-static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]) {
+static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQuery *query, SqlSelectScratch *scratch) {
     char table_name[SQL_NAME_SIZE];
     char alias[SQL_NAME_SIZE];
     unsigned int join_index;
@@ -376,7 +378,7 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
             return -1;
         }
     }
-    if (sql_resolve_select_items(query, raw_items, raw_expr_right, raw_kinds, raw_labels) != 0) {
+    if (sql_resolve_select_items(query, scratch) != 0) {
         return -1;
     }
     if (sql_try_word(parser, "where")) {
@@ -565,7 +567,7 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
         if (result->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(result, result->count + 1U) != 0) {
             return -1;
         }
-        result->rows[result->count] = *current;
+        sql_set_result_buffer_row(query, result, result->count, current);
         result->rows[result->count].count = 1U;
         result->count += 1U;
         return 0;
@@ -611,7 +613,7 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
                     if (result->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(result, result->count + 1U) != 0) {
                         return -1;
                     }
-                    result->rows[result->count] = *current;
+                    sql_set_result_buffer_row(query, result, result->count, current);
                     result->rows[result->count].count = 1U;
                     result->count += 1U;
                 }
@@ -668,7 +670,7 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
             return -1;
         }
         for (row_index = 0U; row_index < row_count; ++row_index) {
-            groups->rows[row_index] = rows[row_index];
+            sql_set_result_buffer_row(query, groups, row_index, &rows[row_index]);
         }
         groups->count = row_count;
         return 0;
@@ -683,10 +685,10 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
         if (sql_ensure_result_capacity(groups, 1U) != 0) {
             return -1;
         }
-        rt_memset(&groups->rows[0], 0, sizeof(groups->rows[0]));
+        rt_memset(groups->rows[0].rows, 0, sizeof(groups->rows[0].rows));
         groups->rows[0].count = row_count;
         if (row_count > 0U) {
-            groups->rows[0] = rows[0];
+            sql_set_result_buffer_row(query, groups, 0U, &rows[0]);
             groups->rows[0].count = row_count;
         }
         groups->count = 1U;
@@ -704,7 +706,7 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
             if (groups->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
                 return -1;
             }
-            groups->rows[groups->count] = rows[row_index];
+            sql_set_result_buffer_row(query, groups, groups->count, &rows[row_index]);
             groups->rows[groups->count].count = 1U;
             groups->count += 1U;
         }
@@ -738,7 +740,7 @@ static int sql_project_select_rows(SqlDatabase *db, const SqlSelectQuery *query,
             continue;
         }
         if (write_index != read_index) {
-            rows[write_index] = rows[read_index];
+            sql_copy_result_row(query, &rows[write_index], &rows[read_index]);
         }
         for (item_index = 0U; item_index < query->item_count; ++item_index) {
             if (sql_select_item_offset(db, &query->items[item_index], &rows[write_index], &rows[write_index].values[item_index]) != 0) {
@@ -780,7 +782,7 @@ static void sql_distinct_select_rows(const SqlSelectQuery *query, SqlResultRow *
         }
         if (!seen) {
             if (write_index != read_index) {
-                rows[write_index] = rows[read_index];
+                sql_copy_result_row(query, &rows[write_index], &rows[read_index]);
             }
             write_index += 1U;
         }
@@ -909,22 +911,22 @@ static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
     SqlResultRow current;
     SqlResultBuffer result_rows;
     SqlResultBuffer group_rows;
-    char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
-    char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
-    int raw_kinds[SQL_MAX_COLUMNS];
-    char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
+    SqlSelectScratch scratch;
     int result = -1;
 
     sql_invalidate_runtime_caches();
     rt_memset(&query, 0, sizeof(query));
     rt_memset(&current, 0, sizeof(current));
-    rt_memset(&result_rows, 0, sizeof(result_rows));
-    rt_memset(&group_rows, 0, sizeof(group_rows));
-    rt_memset(raw_labels, 0, sizeof(raw_labels));
-    rt_memset(raw_expr_right, 0, sizeof(raw_expr_right));
-    if (sql_parse_select_list(parser, &query, raw_items, raw_expr_right, raw_kinds, raw_labels) != 0 ||
-        sql_parse_select_tail(db, parser, &query, raw_items, raw_expr_right, raw_kinds, raw_labels) != 0 ||
-        sql_collect_select_rows(&query, 0U, &current, &result_rows) != 0 ||
+    rt_memset(&scratch, 0, sizeof(scratch));
+    sql_init_result_buffer(&result_rows, 0U, 0U);
+    sql_init_result_buffer(&group_rows, 0U, 0U);
+    if (sql_parse_select_list(parser, &query, &scratch) != 0 ||
+        sql_parse_select_tail(db, parser, &query, &scratch) != 0) {
+        goto out;
+    }
+    group_rows.value_slots = query.item_count;
+    group_rows.aggregate_slots = query.aggregate_count;
+    if (sql_collect_select_rows(&query, 0U, &current, &result_rows) != 0 ||
         sql_group_select_rows(&query, result_rows.rows, result_rows.count, &group_rows) != 0 ||
         sql_compute_group_aggregates(db, &query, result_rows.rows, result_rows.count, group_rows.rows, group_rows.count) != 0 ||
         sql_project_select_rows(db, &query, group_rows.rows, &group_rows.count) != 0) {
@@ -936,8 +938,10 @@ static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
     result = 0;
 
 out:
-    sql_free_bytes(result_rows.rows);
-    sql_free_bytes(group_rows.rows);
+    sql_free_result_buffer(&result_rows);
+    sql_free_result_buffer(&group_rows);
+    sql_free_select_scratch(&scratch);
+    sql_free_select_query(&query);
     return result;
 }
 

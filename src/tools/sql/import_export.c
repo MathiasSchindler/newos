@@ -77,6 +77,10 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
                 (void)platform_close(fd);
                 return -1;
             }
+            if (sql_ensure_column_capacity(table, new_column_count + 1U) != 0) {
+                (void)platform_close(fd);
+                return -1;
+            }
             if (sql_copy_checked(table->columns[new_column_count], sizeof(table->columns[new_column_count]), field) != 0) {
                 (void)platform_close(fd);
                 return -1;

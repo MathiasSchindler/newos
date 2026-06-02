@@ -201,6 +201,7 @@ static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditio
 static int sql_row_condition_list_matches(const SqlRow *row, const SqlConditionList *where) {
     SqlResultRow result;
 
+    rt_memset(&result, 0, sizeof(result));
     result.rows[0] = row;
     return sql_condition_list_matches(where, &result);
 }
