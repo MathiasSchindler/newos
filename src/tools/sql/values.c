@@ -1,5 +1,10 @@
+#include "internal.h"
+
 static const char *sql_value_at(unsigned int offset) {
-    return offset < SQL_VALUE_ARENA_SIZE ? sql_value_arena + offset : "";
+    if (offset == 0U) {
+        return "";
+    }
+    return sql_database.values != 0 && offset < sql_database.value_capacity ? sql_database.values + offset : "";
 }
 
 static int sql_offset_is_null(unsigned int offset) {
@@ -33,11 +38,14 @@ static int sql_store_value(SqlDatabase *db, const char *value, unsigned int *off
         return 0;
     }
     length = rt_strlen(value);
-    if (length >= SQL_VALUE_SIZE || db->value_used + length + 1U > SQL_VALUE_ARENA_SIZE) {
+    if (length >= SQL_VALUE_SIZE || (size_t)db->value_used + length + 1U > (size_t)SQL_MAX_VALUE_BYTES) {
+        return -1;
+    }
+    if (sql_ensure_value_capacity(db, (unsigned int)((size_t)db->value_used + length + 1U)) != 0) {
         return -1;
     }
     offset = db->value_used;
-    memcpy(sql_value_arena + offset, value, length + 1U);
+    memcpy(db->values + offset, value, length + 1U);
     db->value_used += (unsigned int)(length + 1U);
     *offset_out = offset;
     return 0;

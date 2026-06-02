@@ -1,0 +1,6 @@
+{
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/src/shared",
+    "${workspaceFolder}/src/tools/sql"
+  ]
+}

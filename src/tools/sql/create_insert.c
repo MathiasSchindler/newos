@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_execute_create(SqlDatabase *db, SqlParser *parser) {
     SqlTable *table;
     char table_name[SQL_NAME_SIZE];

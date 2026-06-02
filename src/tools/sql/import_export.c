@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
     char table_name[SQL_NAME_SIZE];
     char path[SQL_VALUE_SIZE];
@@ -50,11 +52,11 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
         return -1;
     }
     sql_line_reader_init(&reader, fd);
-    if (sql_line_reader_next(&reader, sql_import_line, sizeof(sql_import_line), &has_line) != 0 || !has_line) {
+    if (sql_line_reader_next(&reader, &sql_import_line, &has_line) != 0 || !has_line) {
         (void)platform_close(fd);
         return -1;
     }
-    line = sql_import_line;
+    line = sql_import_line.data;
     if (create_table) {
         char *field_cursor = line;
         unsigned int new_column_count = 0U;
@@ -105,9 +107,9 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
             return -1;
         }
     }
-    while (sql_line_reader_next(&reader, sql_import_line, sizeof(sql_import_line), &has_line) == 0 && has_line) {
+    while (sql_line_reader_next(&reader, &sql_import_line, &has_line) == 0 && has_line) {
         char *field_cursor;
-        line = sql_import_line;
+        line = sql_import_line.data;
         if (line[0] == '\0') {
             continue;
         }

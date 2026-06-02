@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_like_match(const char *text, const char *pattern) {
     if (*pattern == '\0') {
         return *text == '\0';

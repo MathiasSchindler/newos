@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static void sql_clear_table_metadata(SqlTable *table) {
     unsigned int column_index;
 
@@ -20,7 +22,9 @@ static void sql_clear_table_metadata(SqlTable *table) {
 static void sql_clear_database(SqlDatabase *db) {
     sql_invalidate_runtime_caches();
     sql_free_database_storage(db);
-    sql_value_arena[0] = '\0';
+    sql_free_bytes(db->values);
+    db->values = 0;
+    db->value_capacity = 0U;
     db->value_used = 1U;
 }
 
@@ -217,10 +221,10 @@ static void sql_line_reader_init(SqlLineReader *reader, int fd) {
     reader->eof = 0;
 }
 
-static int sql_line_reader_next(SqlLineReader *reader, char *line, size_t line_size, int *read_out) {
+static int sql_line_reader_next(SqlLineReader *reader, SqlTextBuffer *line, int *read_out) {
     size_t out = 0U;
 
-    if (line_size == 0U || read_out == 0) {
+    if (line == 0 || read_out == 0) {
         return -1;
     }
     *read_out = 0;
@@ -230,10 +234,16 @@ static int sql_line_reader_next(SqlLineReader *reader, char *line, size_t line_s
             long bytes;
             if (reader->eof) {
                 if (out == 0U) {
-                    line[0] = '\0';
+                    if (sql_ensure_text_capacity(line, 1U, SQL_MAX_IMPORT_LINE_BYTES) != 0) {
+                        return -1;
+                    }
+                    line->data[0] = '\0';
                     return 0;
                 }
-                line[out] = '\0';
+                if (sql_ensure_text_capacity(line, (unsigned int)(out + 1U), SQL_MAX_IMPORT_LINE_BYTES) != 0) {
+                    return -1;
+                }
+                line->data[out] = '\0';
                 *read_out = 1;
                 return 0;
             }
@@ -250,53 +260,70 @@ static int sql_line_reader_next(SqlLineReader *reader, char *line, size_t line_s
         }
         ch = reader->buffer[reader->pos++];
         if (ch == '\n') {
-            if (out > 0U && line[out - 1U] == '\r') {
+            if (out > 0U && line->data[out - 1U] == '\r') {
                 out -= 1U;
             }
-            line[out] = '\0';
+            if (sql_ensure_text_capacity(line, (unsigned int)(out + 1U), SQL_MAX_IMPORT_LINE_BYTES) != 0) {
+                return -1;
+            }
+            line->data[out] = '\0';
             *read_out = 1;
             return 0;
         }
-        if (out + 1U >= line_size) {
+        if (out + 2U > (size_t)SQL_MAX_IMPORT_LINE_BYTES || sql_ensure_text_capacity(line, (unsigned int)(out + 2U), SQL_MAX_IMPORT_LINE_BYTES) != 0) {
             return -1;
         }
-        line[out++] = ch;
+        line->data[out++] = ch;
     }
 }
 
-static int sql_read_text_file(const char *path, char *buffer, size_t buffer_size);
+static char *sql_read_text_file(const char *path);
 static char *sql_next_import_field(char **cursor_io, int csv, int *ok_out);
 
 static int sql_load_database(const char *path, SqlDatabase *db) {
     PlatformDirEntry entry;
+    char *buffer;
+    int result;
 
     sql_clear_database(db);
     if (platform_get_path_info(path, &entry) != 0) {
         return 0;
     }
-    if (sql_read_text_file(path, sql_file_buffer, sizeof(sql_file_buffer)) != 0) {
+    buffer = sql_read_text_file(path);
+    if (buffer == 0) {
         return -1;
     }
-    return sql_parse_database_text(db, sql_file_buffer);
+    result = sql_parse_database_text(db, buffer);
+    sql_free_bytes(buffer);
+    return result;
 }
 
-static int sql_read_text_file(const char *path, char *buffer, size_t buffer_size) {
+static char *sql_read_text_file(const char *path) {
     PlatformDirEntry entry;
     int fd;
     size_t used = 0U;
+    size_t buffer_size;
+    char *buffer;
 
-    if (buffer_size == 0U || platform_get_path_info(path, &entry) != 0 || entry.size >= buffer_size) {
-        return -1;
+    if (platform_get_path_info(path, &entry) != 0 || entry.size > (unsigned long long)(((size_t)-1) - 1U)) {
+        return 0;
+    }
+    buffer_size = (size_t)entry.size + 1U;
+    buffer = (char *)sql_resize_bytes(0, 0U, buffer_size);
+    if (buffer == 0) {
+        return 0;
     }
     fd = platform_open_read(path);
     if (fd < 0) {
-        return -1;
+        sql_free_bytes(buffer);
+        return 0;
     }
     while (used + 1U < buffer_size) {
         long bytes = platform_read(fd, buffer + used, buffer_size - used - 1U);
         if (bytes < 0) {
             (void)platform_close(fd);
-            return -1;
+            sql_free_bytes(buffer);
+            return 0;
         }
         if (bytes == 0) {
             break;
@@ -304,11 +331,12 @@ static int sql_read_text_file(const char *path, char *buffer, size_t buffer_size
         used += (size_t)bytes;
     }
     (void)platform_close(fd);
-    if (used + 1U >= buffer_size) {
-        return -1;
+    if (used >= buffer_size) {
+        sql_free_bytes(buffer);
+        return 0;
     }
     buffer[used] = '\0';
-    return 0;
+    return buffer;
 }
 
 static int sql_write_name(int fd, const char *name) {

@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_parse_assignment(SqlParser *parser, const SqlTable *table, SqlAssignment *assignment) {
     char column_name[SQL_NAME_SIZE];
     char first_value[SQL_VALUE_SIZE];

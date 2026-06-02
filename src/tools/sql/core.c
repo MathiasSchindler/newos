@@ -1,11 +1,8 @@
+#define SQL_CORE_FRAGMENT 1
+#include "internal.h"
+#undef SQL_CORE_FRAGMENT
+
 static SqlDatabase sql_database;
-static char sql_value_arena[SQL_VALUE_ARENA_SIZE];
-static char sql_file_buffer[SQL_FILE_SIZE + 1U];
-static char sql_input_buffer[SQL_STATEMENT_SIZE];
-static char sql_statement_buffer[SQL_STATEMENT_SIZE];
-static SqlResultRow sql_result_rows[SQL_MAX_RESULT_ROWS];
-static SqlResultRow sql_group_rows[SQL_MAX_RESULT_ROWS];
-static char sql_import_line[SQL_IMPORT_LINE_SIZE];
 static SqlNumericCache sql_numeric_caches[SQL_NUMERIC_CACHE_SLOTS];
 static SqlIndexCache sql_index_caches[SQL_INDEX_SLOTS];
 
@@ -62,6 +59,8 @@ static void *sql_resize_array(void *ptr, unsigned int old_count, unsigned int ne
     return new_ptr;
 }
 
+static SqlTextBuffer sql_import_line;
+
 static int sql_next_capacity(unsigned int current, unsigned int needed, unsigned int max, unsigned int initial, unsigned int *capacity_out) {
     unsigned int capacity = current;
 
@@ -84,6 +83,73 @@ static int sql_next_capacity(unsigned int current, unsigned int needed, unsigned
     }
     *capacity_out = capacity;
     return 0;
+}
+
+static int sql_ensure_value_capacity(SqlDatabase *db, unsigned int needed) {
+    unsigned int capacity;
+    char *values;
+
+    if (db == 0 || sql_next_capacity(db->value_capacity, needed, SQL_MAX_VALUE_BYTES, SQL_INITIAL_VALUE_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == db->value_capacity) {
+        return 0;
+    }
+    values = (char *)sql_resize_array(db->values, db->value_capacity, capacity, sizeof(char));
+    if (values == 0) {
+        return -1;
+    }
+    db->values = values;
+    db->value_capacity = capacity;
+    db->values[0] = '\0';
+    return 0;
+}
+
+static int sql_ensure_result_capacity(SqlResultBuffer *buffer, unsigned int needed) {
+    unsigned int capacity;
+    SqlResultRow *rows;
+
+    if (buffer == 0 || sql_next_capacity(buffer->capacity, needed, SQL_MAX_RESULT_ROWS, SQL_INITIAL_RESULT_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == buffer->capacity) {
+        return 0;
+    }
+    rows = (SqlResultRow *)sql_resize_array(buffer->rows, buffer->capacity, capacity, sizeof(SqlResultRow));
+    if (rows == 0) {
+        return -1;
+    }
+    buffer->rows = rows;
+    buffer->capacity = capacity;
+    return 0;
+}
+
+static int sql_ensure_text_capacity(SqlTextBuffer *buffer, unsigned int needed, unsigned int max) {
+    unsigned int capacity;
+    char *data;
+
+    if (buffer == 0 || sql_next_capacity(buffer->capacity, needed, max, SQL_INITIAL_TEXT_CAPACITY, &capacity) != 0) {
+        return -1;
+    }
+    if (capacity == buffer->capacity) {
+        return 0;
+    }
+    data = (char *)sql_resize_array(buffer->data, buffer->capacity, capacity, sizeof(char));
+    if (data == 0) {
+        return -1;
+    }
+    buffer->data = data;
+    buffer->capacity = capacity;
+    return 0;
+}
+
+static void sql_free_text_buffer(SqlTextBuffer *buffer) {
+    if (buffer == 0) {
+        return;
+    }
+    sql_free_bytes(buffer->data);
+    buffer->data = 0;
+    buffer->capacity = 0U;
 }
 
 static void sql_free_table_rows(SqlTable *table) {

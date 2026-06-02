@@ -5,13 +5,13 @@
 #include "runtime.h"
 
 #ifndef SQL_MAX_TABLES
-#define SQL_MAX_TABLES 16U
+#define SQL_MAX_TABLES 1024U
 #endif
 #ifndef SQL_MAX_COLUMNS
 #define SQL_MAX_COLUMNS 32U
 #endif
 #ifndef SQL_MAX_ROWS
-#define SQL_MAX_ROWS 32768U
+#define SQL_MAX_ROWS 1048576U
 #endif
 #ifndef SQL_INITIAL_TABLE_CAPACITY
 #define SQL_INITIAL_TABLE_CAPACITY 4U
@@ -25,19 +25,24 @@
 #ifndef SQL_VALUE_SIZE
 #define SQL_VALUE_SIZE 128U
 #endif
-#ifndef SQL_STATEMENT_SIZE
-#define SQL_STATEMENT_SIZE 4096U
+#ifndef SQL_INITIAL_TEXT_CAPACITY
+#define SQL_INITIAL_TEXT_CAPACITY 4096U
 #endif
-#ifndef SQL_FILE_SIZE
-#define SQL_FILE_SIZE 16777216U
+#ifndef SQL_MAX_STATEMENT_BYTES
+#define SQL_MAX_STATEMENT_BYTES 1048576U
 #endif
-#ifndef SQL_VALUE_ARENA_SIZE
-#define SQL_VALUE_ARENA_SIZE 16777216U
+#ifndef SQL_MAX_IMPORT_LINE_BYTES
+#define SQL_MAX_IMPORT_LINE_BYTES 1048576U
+#endif
+#ifndef SQL_INITIAL_VALUE_CAPACITY
+#define SQL_INITIAL_VALUE_CAPACITY 4096U
+#endif
+#ifndef SQL_MAX_VALUE_BYTES
+#define SQL_MAX_VALUE_BYTES (SQL_NULL_OFFSET - 1U)
 #endif
 #ifndef SQL_IO_BUFFER_SIZE
 #define SQL_IO_BUFFER_SIZE 4096U
 #endif
-#define SQL_IMPORT_LINE_SIZE ((SQL_MAX_COLUMNS * SQL_VALUE_SIZE) + SQL_MAX_COLUMNS + 1U)
 #ifndef SQL_SET_CAPACITY
 #define SQL_SET_CAPACITY 32U
 #endif
@@ -45,7 +50,10 @@
 #define SQL_MAX_QUERY_TABLES 4U
 #endif
 #ifndef SQL_MAX_RESULT_ROWS
-#define SQL_MAX_RESULT_ROWS 32768U
+#define SQL_MAX_RESULT_ROWS 1048576U
+#endif
+#ifndef SQL_INITIAL_RESULT_CAPACITY
+#define SQL_INITIAL_RESULT_CAPACITY 256U
 #endif
 #ifndef SQL_MAX_GROUP_KEYS
 #define SQL_MAX_GROUP_KEYS 8U
@@ -98,6 +106,8 @@ typedef struct {
     unsigned int table_count;
     unsigned int table_capacity;
     unsigned int value_used;
+    unsigned int value_capacity;
+    char *values;
     SqlTable *tables;
 } SqlDatabase;
 
@@ -118,6 +128,14 @@ typedef struct {
     unsigned int row_count;
     int valid;
 } SqlIndexCache;
+
+#ifndef SQL_UNITY_BUILD
+#ifndef SQL_CORE_FRAGMENT
+extern SqlDatabase sql_database;
+extern SqlNumericCache sql_numeric_caches[SQL_NUMERIC_CACHE_SLOTS];
+extern SqlIndexCache sql_index_caches[SQL_INDEX_SLOTS];
+#endif
+#endif
 
 typedef struct {
     const char *input;
@@ -209,6 +227,23 @@ typedef struct {
 } SqlResultRow;
 
 typedef struct {
+    SqlResultRow *rows;
+    unsigned int count;
+    unsigned int capacity;
+} SqlResultBuffer;
+
+typedef struct {
+    char *data;
+    unsigned int capacity;
+} SqlTextBuffer;
+
+#ifndef SQL_UNITY_BUILD
+#ifndef SQL_CORE_FRAGMENT
+extern SqlTextBuffer sql_import_line;
+#endif
+#endif
+
+typedef struct {
     SqlQuerySource sources[SQL_MAX_QUERY_TABLES];
     unsigned int source_count;
     SqlSelectItem items[SQL_MAX_COLUMNS];
@@ -239,6 +274,171 @@ typedef struct {
     size_t used;
     int eof;
 } SqlLineReader;
+
+static char sql_fold(char ch);
+static int sql_equal_ignore_case(const char *left, const char *right);
+static int sql_copy_checked(char *dst, size_t dst_size, const char *src);
+static int sql_valid_identifier(const char *text);
+static int sql_identifier_char(char ch);
+static void sql_skip_space(SqlParser *parser);
+static void sql_parser_init(SqlParser *parser, const char *input);
+static int sql_next_token(SqlParser *parser);
+static int sql_expect_symbol(SqlParser *parser, char symbol);
+static int sql_try_symbol(SqlParser *parser, char symbol);
+static int sql_expect_word(SqlParser *parser, const char *word);
+static int sql_try_word(SqlParser *parser, const char *word);
+static int sql_at_end(SqlParser *parser);
+static int sql_read_identifier(SqlParser *parser, char *buffer, size_t buffer_size);
+static int sql_read_value(SqlParser *parser, char *buffer, size_t buffer_size);
+static int sql_read_value_or_null(SqlParser *parser, char *buffer, size_t buffer_size, int *is_null_out);
+static const char *sql_value_at(unsigned int offset);
+static int sql_offset_is_null(unsigned int offset);
+static const char *sql_row_value(const SqlRow *row, unsigned int column);
+static int sql_row_value_is_null(const SqlRow *row, unsigned int column);
+static const char *sql_row_display_value(const SqlRow *row, unsigned int column);
+static int sql_store_value(SqlDatabase *db, const char *value, unsigned int *offset_out);
+static int sql_store_row_null(SqlRow *row, unsigned int column);
+static int sql_store_row_value(SqlDatabase *db, SqlRow *row, unsigned int column, const char *value);
+static int sql_store_row_value_or_null(SqlDatabase *db, SqlRow *row, unsigned int column, const char *value, int is_null);
+static int sql_prepare_new_row(const SqlTable *table, SqlRow *row);
+static int sql_validate_typed_value(unsigned int column_type, int is_null, const char *value);
+static int sql_validate_row_constraints(const SqlTable *table, const SqlRow *row);
+static int sql_parse_decimal_scaled(const char *text, long long *scaled_out, int *integer_out);
+static int sql_store_decimal_scaled(long long scaled, char *buffer, size_t buffer_size);
+static int sql_compare_values(const char *left, const char *right);
+static void sql_store_uint_text(unsigned long long value, char *buffer, size_t buffer_size);
+static int sql_row_numeric_value(const SqlRow *row, unsigned int column, long long *value_out);
+static int sql_table_row_numeric_value(const SqlTable *table, unsigned int row_index, unsigned int column, long long *value_out);
+static int sql_multiply_size(size_t left, size_t right, size_t *out);
+static void sql_free_bytes(void *ptr);
+static void *sql_resize_bytes(void *ptr, size_t old_size, size_t new_size);
+static void *sql_resize_array(void *ptr, unsigned int old_count, unsigned int new_count, size_t item_size);
+static int sql_ensure_value_capacity(SqlDatabase *db, unsigned int needed);
+static int sql_ensure_table_capacity(SqlDatabase *db, unsigned int needed);
+static int sql_ensure_row_capacity(SqlTable *table, unsigned int needed);
+static int sql_ensure_result_capacity(SqlResultBuffer *buffer, unsigned int needed);
+static int sql_ensure_text_capacity(SqlTextBuffer *buffer, unsigned int needed, unsigned int max);
+static void sql_free_text_buffer(SqlTextBuffer *buffer);
+static void sql_free_table_rows(SqlTable *table);
+static void sql_free_database_storage(SqlDatabase *db);
+static void sql_clear_table_metadata(SqlTable *table);
+static void sql_clear_database(SqlDatabase *db);
+static SqlTable *sql_find_table(SqlDatabase *db, const char *name);
+static int sql_find_column(const SqlTable *table, const char *name);
+static const char *sql_column_type_name(unsigned int type);
+static int sql_column_type_from_name(const char *name);
+static void sql_invalidate_runtime_caches(void);
+static void sql_invalidate_table_runtime_caches(const SqlTable *table);
+static void sql_line_reader_init(SqlLineReader *reader, int fd);
+static int sql_line_reader_next(SqlLineReader *reader, SqlTextBuffer *line, int *read_out);
+static int sql_line_next(char **cursor_io, char **line_out);
+static char *sql_read_text_file(const char *path);
+static int sql_load_database(const char *path, SqlDatabase *db);
+static int sql_save_database(const char *path, const SqlDatabase *db);
+static int sql_write_database_file(const char *path, const SqlDatabase *db);
+static int sql_temp_save_path(const char *path, char *buffer, size_t buffer_size);
+static int sql_write_name(int fd, const char *name);
+static char *sql_next_import_field(char **cursor_io, int csv, int *ok_out);
+static char *sql_next_csv_field(char **cursor_io, int *ok_out);
+static char *sql_next_delimited_field(char **cursor_io, char delimiter);
+static int sql_write_csv_value(int fd, const char *value);
+static int sql_csv_value_needs_quotes(const char *value);
+static int sql_value_is_tsv_safe(const char *value);
+static int sql_execute_create(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_insert(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_select(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_update(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_delete(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_drop(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_schema(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_alter(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_import(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_export(SqlDatabase *db, SqlParser *parser);
+static int sql_execute_statement(SqlDatabase *db, const char *statement);
+static int sql_execute_script(SqlDatabase *db, const char *script, int *changed_out);
+static int sql_append_arg(SqlTextBuffer *buffer, unsigned int *used_io, const char *text, int add_space);
+static int sql_read_stdin(SqlTextBuffer *buffer, unsigned int *used_out);
+static int sql_parse_row_condition_list(SqlParser *parser, const SqlTable *table, SqlConditionList *list);
+static int sql_parse_row_condition_expr(SqlParser *parser, const SqlTable *table, SqlConditionList *list, int *node_out);
+static int sql_parse_row_condition_and(SqlParser *parser, const SqlTable *table, SqlConditionList *list, int *node_out);
+static int sql_parse_row_condition_primary(SqlParser *parser, const SqlTable *table, SqlConditionList *list, int *node_out);
+static int sql_parse_row_condition_leaf(SqlParser *parser, const SqlTable *table, SqlConditionList *list, int *node_out);
+static int sql_read_condition_literal(SqlParser *parser, SqlConditionValue *value);
+static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditionList *where_out);
+static int sql_row_condition_list_matches(const SqlRow *row, const SqlConditionList *where);
+static int sql_parse_condition_operator_current(SqlParser *parser, int *operator_out);
+static int sql_parse_condition_operator(SqlParser *parser, int *operator_out);
+static int sql_add_condition_leaf(SqlConditionList *list, const SqlCondition *condition);
+static int sql_add_condition_node(SqlConditionList *list, int kind, int left, int right);
+static const char *sql_condition_value_text(const SqlConditionValue *value, const SqlResultRow *row);
+static int sql_compare_condition_values(const SqlConditionValue *left, const SqlConditionValue *right, const SqlResultRow *row);
+static int sql_condition_value_numeric(const SqlConditionValue *value, const SqlResultRow *row, long long *number_out);
+static int sql_bound_condition_value_text(const SqlConditionValue *value, const SqlResultRow *row, const char **text_out);
+static int sql_condition_value_is_null(const SqlConditionValue *value, const SqlResultRow *row);
+static int sql_condition_matches(const SqlCondition *condition, const SqlResultRow *row);
+static int sql_condition_list_matches(const SqlConditionList *list, const SqlResultRow *row);
+static int sql_condition_node_matches(const SqlConditionList *list, int node_index, const SqlResultRow *row);
+static int sql_condition_list_uses_aggregate(const SqlConditionList *list);
+static int sql_condition_node_uses_aggregate(const SqlConditionList *list, int node_index);
+static int sql_condition_index_lookup(const SqlCondition *condition, unsigned int source_index, const SqlResultRow *row, unsigned int *column_out, const char **value_out);
+static int sql_condition_list_index_lookup(const SqlConditionList *list, unsigned int source_index, const SqlResultRow *row, unsigned int *column_out, const char **value_out);
+static int sql_condition_node_index_lookup(const SqlConditionList *list, int node_index, unsigned int source_index, const SqlResultRow *row, unsigned int *column_out, const char **value_out);
+static int sql_resolve_column(const SqlSelectQuery *query, const char *text, SqlColumnRef *ref_out);
+static int sql_parse_select_condition_expr(SqlParser *parser, SqlSelectQuery *query, SqlConditionList *list, int *node_out);
+static int sql_parse_select_condition_and(SqlParser *parser, SqlSelectQuery *query, SqlConditionList *list, int *node_out);
+static int sql_parse_select_condition_primary(SqlParser *parser, SqlSelectQuery *query, SqlConditionList *list, int *node_out);
+static int sql_parse_select_condition_leaf(SqlParser *parser, SqlSelectQuery *query, SqlConditionList *list, int *node_out);
+static int sql_parse_select_condition_list(SqlParser *parser, SqlSelectQuery *query, SqlConditionList *list);
+static int sql_parse_condition(SqlParser *parser, SqlSelectQuery *query, SqlCondition *condition);
+static int sql_parse_aggregate_call(SqlParser *parser, SqlSelectQuery *query, int kind, int allow_star, SqlColumnRef *column_out, int *aggregate_index_out);
+static int sql_aggregate_kind_from_name(const char *name);
+static const char *sql_aggregate_label(int kind);
+static int sql_add_aggregate(SqlSelectQuery *query, int kind, const SqlColumnRef *column, int *index_out);
+static int sql_copy_label(char *dst, size_t dst_size, const char *prefix, const char *suffix);
+static int sql_read_column_ref(SqlParser *parser, const SqlSelectQuery *query, SqlColumnRef *ref_out, char *label, size_t label_size);
+static int sql_read_optional_source_alias(SqlParser *parser, char *alias, size_t alias_size);
+static int sql_add_query_source(SqlDatabase *db, SqlSelectQuery *query, const char *name, const char *alias);
+static int sql_select_tail_keyword(const char *word);
+static int sql_parse_select_aggregate(SqlParser *parser, int kind, SqlSelectItem *item, char *raw_argument, size_t raw_argument_size);
+static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]);
+static int sql_resolve_select_items(SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]);
+static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQuery *query, char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE], int raw_kinds[SQL_MAX_COLUMNS], char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE]);
+static int sql_find_select_label(const SqlSelectQuery *query, const char *label);
+static int sql_label_matches_item(const SqlSelectItem *item, const char *label);
+static int sql_find_row_location(const SqlRow *row, const SqlTable **table_out, unsigned int *row_index_out);
+static SqlNumericCache *sql_numeric_cache_for_column(const SqlTable *table, unsigned int column);
+static SqlIndexCache *sql_index_cache_for_column(const SqlTable *table, unsigned int column);
+static int sql_compare_table_row_value_to_text(const SqlTable *table, unsigned int row_index, unsigned int column, const char *text);
+static int sql_compare_table_rows_by_column(const SqlTable *table, unsigned int left_row, unsigned int right_row, unsigned int column);
+static void sql_sort_index_cache(SqlIndexCache *cache);
+static void sql_sift_index_heap(SqlIndexCache *cache, unsigned int start, unsigned int end);
+static void sql_swap_uint(unsigned int *left, unsigned int *right);
+static void sql_index_equal_range(const SqlIndexCache *index, const char *value, unsigned int *start_out, unsigned int *end_out);
+static int sql_select_index_lookup(const SqlSelectQuery *query, unsigned int depth, const SqlResultRow *current, unsigned int *column_out, const char **value_out);
+static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int depth, SqlResultRow *current, SqlResultBuffer *result);
+static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups);
+static int sql_query_uses_aggregate(const SqlSelectQuery *query);
+static int sql_result_rows_same_group(const SqlResultRow *left, const SqlResultRow *right, const SqlSelectQuery *query);
+static int sql_compute_aggregate_value(const SqlSelectQuery *query, const SqlResultRow *representative, const SqlResultRow *rows, unsigned int row_count, const SqlAggregate *aggregate, char *buffer, size_t buffer_size);
+static int sql_compute_group_aggregates(SqlDatabase *db, const SqlSelectQuery *query, const SqlResultRow *all_rows, unsigned int all_row_count, SqlResultRow *groups, unsigned int group_count);
+static int sql_select_item_offset(SqlDatabase *db, const SqlSelectItem *item, const SqlResultRow *row, unsigned int *offset_out);
+static int sql_project_select_rows(SqlDatabase *db, const SqlSelectQuery *query, SqlResultRow *rows, unsigned int *row_count_io);
+static int sql_projected_rows_equal(const SqlSelectQuery *query, const SqlResultRow *left, const SqlResultRow *right);
+static void sql_distinct_select_rows(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int *row_count_io);
+static const char *sql_order_value(const SqlSelectQuery *query, const SqlOrderKey *key, const SqlResultRow *row);
+static int sql_compare_order_rows(const SqlSelectQuery *query, const SqlResultRow *left, const SqlResultRow *right);
+static void sql_swap_result_rows(SqlResultRow *left, SqlResultRow *right);
+static void sql_sift_order_heap(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int start, unsigned int end);
+static void sql_sort_select_rows(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int row_count);
+static void sql_write_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count);
+static int sql_parse_assignment(SqlParser *parser, const SqlTable *table, SqlAssignment *assignment);
+static int sql_apply_assignment(SqlDatabase *db, SqlRow *row, const SqlAssignment *assignment);
+static int sql_column_seen(char columns[SQL_MAX_COLUMNS][SQL_NAME_SIZE], unsigned int column_count, const char *name);
+static int sql_split_ref(const char *text, char *table_name, size_t table_size, char *column_name, size_t column_size);
+static void sql_trim_whitespace(char *text);
+static void sql_write_error(const char *message, const char *detail);
+static void sql_write_row_count(unsigned int count);
+static void sql_usage(const char *program_name);
 
 enum {
     SQL_SELECT_COLUMN = 0,

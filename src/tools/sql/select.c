@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_parse_select_aggregate(SqlParser *parser, int kind, SqlSelectItem *item, char *raw_argument, size_t raw_argument_size) {
     size_t saved = parser->pos;
 
@@ -546,7 +548,7 @@ static int sql_select_index_lookup(const SqlSelectQuery *query, unsigned int dep
     return sql_condition_list_index_lookup(&query->where, depth, current, column_out, value_out);
 }
 
-static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int depth, SqlResultRow *current, SqlResultRow *rows, unsigned int *count_io) {
+static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int depth, SqlResultRow *current, SqlResultBuffer *result) {
     SqlTable *table;
     unsigned int row_index;
     unsigned int index_column = 0U;
@@ -560,12 +562,12 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
         if (!sql_condition_list_matches(&query->where, current)) {
             return 0;
         }
-        if (*count_io >= SQL_MAX_RESULT_ROWS) {
+        if (result->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(result, result->count + 1U) != 0) {
             return -1;
         }
-        rows[*count_io] = *current;
-        rows[*count_io].count = 1U;
-        *count_io += 1U;
+        result->rows[result->count] = *current;
+        result->rows[result->count].count = 1U;
+        result->count += 1U;
         return 0;
     }
     table = query->sources[depth].table;
@@ -581,7 +583,7 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
         for (row_index = 0U; row_index < scan_count; ++row_index) {
             unsigned int source_row = use_index ? index->row_ids[index_start + row_index] : row_index;
             current->rows[depth] = &table->rows[source_row];
-            if (sql_collect_select_rows(query, depth + 1U, current, rows, count_io) != 0) {
+            if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
             }
         }
@@ -606,12 +608,12 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
                     if (!sql_condition_list_matches(&query->where, current)) {
                         continue;
                     }
-                    if (*count_io >= SQL_MAX_RESULT_ROWS) {
+                    if (result->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(result, result->count + 1U) != 0) {
                         return -1;
                     }
-                    rows[*count_io] = *current;
-                    rows[*count_io].count = 1U;
-                    *count_io += 1U;
+                    result->rows[result->count] = *current;
+                    result->rows[result->count].count = 1U;
+                    result->count += 1U;
                 }
             }
         }
@@ -628,13 +630,13 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
                 continue;
             }
             matched = 1;
-            if (sql_collect_select_rows(query, depth + 1U, current, rows, count_io) != 0) {
+            if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
             }
         }
         if (!matched && (query->join_types[join_index] == SQL_JOIN_LEFT || query->join_types[join_index] == SQL_JOIN_FULL)) {
             current->rows[depth] = 0;
-            if (sql_collect_select_rows(query, depth + 1U, current, rows, count_io) != 0) {
+            if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
             }
         }
@@ -656,16 +658,19 @@ static int sql_query_uses_aggregate(const SqlSelectQuery *query) {
     return sql_condition_list_uses_aggregate(&query->having);
 }
 
-static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultRow *groups, unsigned int *group_count_out) {
+static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups) {
     unsigned int row_index;
     int aggregate = sql_query_uses_aggregate(query);
 
-    *group_count_out = 0U;
+    groups->count = 0U;
     if (query->group_count == 0U && !aggregate) {
-        for (row_index = 0U; row_index < row_count; ++row_index) {
-            groups[row_index] = rows[row_index];
+        if (sql_ensure_result_capacity(groups, row_count) != 0) {
+            return -1;
         }
-        *group_count_out = row_count;
+        for (row_index = 0U; row_index < row_count; ++row_index) {
+            groups->rows[row_index] = rows[row_index];
+        }
+        groups->count = row_count;
         return 0;
     }
     if (query->group_count == 0U && aggregate) {
@@ -675,29 +680,33 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
                 return -1;
             }
         }
-        groups[0].count = row_count;
-        if (row_count > 0U) {
-            groups[0] = rows[0];
-            groups[0].count = row_count;
+        if (sql_ensure_result_capacity(groups, 1U) != 0) {
+            return -1;
         }
-        *group_count_out = 1U;
+        rt_memset(&groups->rows[0], 0, sizeof(groups->rows[0]));
+        groups->rows[0].count = row_count;
+        if (row_count > 0U) {
+            groups->rows[0] = rows[0];
+            groups->rows[0].count = row_count;
+        }
+        groups->count = 1U;
         return 0;
     }
     for (row_index = 0U; row_index < row_count; ++row_index) {
         unsigned int group_index;
-        for (group_index = 0U; group_index < *group_count_out; ++group_index) {
-            if (sql_result_rows_same_group(&groups[group_index], &rows[row_index], query)) {
-                groups[group_index].count += 1U;
+        for (group_index = 0U; group_index < groups->count; ++group_index) {
+            if (sql_result_rows_same_group(&groups->rows[group_index], &rows[row_index], query)) {
+                groups->rows[group_index].count += 1U;
                 break;
             }
         }
-        if (group_index == *group_count_out) {
-            if (*group_count_out >= SQL_MAX_RESULT_ROWS) {
+        if (group_index == groups->count) {
+            if (groups->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
                 return -1;
             }
-            groups[*group_count_out] = rows[row_index];
-            groups[*group_count_out].count = 1U;
-            *group_count_out += 1U;
+            groups->rows[groups->count] = rows[row_index];
+            groups->rows[groups->count].count = 1U;
+            groups->count += 1U;
         }
     }
     return 0;
@@ -898,29 +907,37 @@ static void sql_write_select_rows(const SqlSelectQuery *query, const SqlResultRo
 static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
     SqlSelectQuery query;
     SqlResultRow current;
+    SqlResultBuffer result_rows;
+    SqlResultBuffer group_rows;
     char raw_items[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
     char raw_expr_right[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
     int raw_kinds[SQL_MAX_COLUMNS];
     char raw_labels[SQL_MAX_COLUMNS][SQL_VALUE_SIZE];
-    unsigned int row_count = 0U;
-    unsigned int group_count = 0U;
+    int result = -1;
 
     sql_invalidate_runtime_caches();
     rt_memset(&query, 0, sizeof(query));
     rt_memset(&current, 0, sizeof(current));
+    rt_memset(&result_rows, 0, sizeof(result_rows));
+    rt_memset(&group_rows, 0, sizeof(group_rows));
     rt_memset(raw_labels, 0, sizeof(raw_labels));
     rt_memset(raw_expr_right, 0, sizeof(raw_expr_right));
     if (sql_parse_select_list(parser, &query, raw_items, raw_expr_right, raw_kinds, raw_labels) != 0 ||
         sql_parse_select_tail(db, parser, &query, raw_items, raw_expr_right, raw_kinds, raw_labels) != 0 ||
-        sql_collect_select_rows(&query, 0U, &current, sql_result_rows, &row_count) != 0 ||
-        sql_group_select_rows(&query, sql_result_rows, row_count, sql_group_rows, &group_count) != 0 ||
-        sql_compute_group_aggregates(db, &query, sql_result_rows, row_count, sql_group_rows, group_count) != 0 ||
-        sql_project_select_rows(db, &query, sql_group_rows, &group_count) != 0) {
-        return -1;
+        sql_collect_select_rows(&query, 0U, &current, &result_rows) != 0 ||
+        sql_group_select_rows(&query, result_rows.rows, result_rows.count, &group_rows) != 0 ||
+        sql_compute_group_aggregates(db, &query, result_rows.rows, result_rows.count, group_rows.rows, group_rows.count) != 0 ||
+        sql_project_select_rows(db, &query, group_rows.rows, &group_rows.count) != 0) {
+        goto out;
     }
-    sql_distinct_select_rows(&query, sql_group_rows, &group_count);
-    sql_sort_select_rows(&query, sql_group_rows, group_count);
-    sql_write_select_rows(&query, sql_group_rows, group_count);
-    return 0;
+    sql_distinct_select_rows(&query, group_rows.rows, &group_rows.count);
+    sql_sort_select_rows(&query, group_rows.rows, group_rows.count);
+    sql_write_select_rows(&query, group_rows.rows, group_rows.count);
+    result = 0;
+
+out:
+    sql_free_bytes(result_rows.rows);
+    sql_free_bytes(group_rows.rows);
+    return result;
 }
 

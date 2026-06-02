@@ -1,3 +1,4 @@
+#define SQL_UNITY_BUILD 1
 #include "sql/internal.h"
 
 /* Implementation fragments are unity-included to keep SQL helpers file-local while splitting the tool by subsystem. */

@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_find_row_location(const SqlRow *row, const SqlTable **table_out, unsigned int *row_index_out) {
     unsigned int table_index;
 

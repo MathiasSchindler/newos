@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_execute_statement(SqlDatabase *db, const char *statement) {
     SqlParser parser;
 
@@ -39,16 +41,20 @@ static int sql_execute_statement(SqlDatabase *db, const char *statement) {
 }
 
 static int sql_execute_script(SqlDatabase *db, const char *script, int *changed_out) {
+    SqlTextBuffer statement;
     size_t start = 0U;
     size_t pos = 0U;
     char quote = '\0';
     int changed_any = 0;
+    int result = -1;
+
+    rt_memset(&statement, 0, sizeof(statement));
 
     for (;;) {
         char ch = script[pos];
         if (quote != '\0') {
             if (ch == '\0') {
-                return -1;
+                goto out;
             }
             if (ch == '\\' && script[pos + 1U] != '\0') {
                 pos += 2U;
@@ -69,16 +75,16 @@ static int sql_execute_script(SqlDatabase *db, const char *script, int *changed_
             size_t length = pos - start;
             int changed;
 
-            if (length >= sizeof(sql_statement_buffer)) {
-                return -1;
+            if (length + 1U > SQL_MAX_STATEMENT_BYTES || sql_ensure_text_capacity(&statement, (unsigned int)(length + 1U), SQL_MAX_STATEMENT_BYTES) != 0) {
+                goto out;
             }
-            memcpy(sql_statement_buffer, script + start, length);
-            sql_statement_buffer[length] = '\0';
-            sql_trim_whitespace(sql_statement_buffer);
-            if (sql_statement_buffer[0] != '\0') {
-                changed = sql_execute_statement(db, sql_statement_buffer);
+            memcpy(statement.data, script + start, length);
+            statement.data[length] = '\0';
+            sql_trim_whitespace(statement.data);
+            if (statement.data[0] != '\0') {
+                changed = sql_execute_statement(db, statement.data);
                 if (changed < 0) {
-                    return -1;
+                    goto out;
                 }
                 changed_any = changed_any || changed;
             }
@@ -90,40 +96,55 @@ static int sql_execute_script(SqlDatabase *db, const char *script, int *changed_
         pos += 1U;
     }
     *changed_out = changed_any;
-    return 0;
+    result = 0;
+
+out:
+    sql_free_text_buffer(&statement);
+    return result;
 }
 
-static int sql_append_arg(char *buffer, size_t buffer_size, const char *text, int add_space) {
-    size_t used = rt_strlen(buffer);
+static int sql_append_arg(SqlTextBuffer *buffer, unsigned int *used_io, const char *text, int add_space) {
+    unsigned int used;
     size_t len = rt_strlen(text);
 
-    if (used + (size_t)add_space + len + 1U > buffer_size) {
+    if (buffer == 0 || used_io == 0 || len > (size_t)SQL_MAX_STATEMENT_BYTES) {
+        return -1;
+    }
+    used = *used_io;
+    if ((size_t)used + (size_t)add_space + len + 1U > (size_t)SQL_MAX_STATEMENT_BYTES ||
+        sql_ensure_text_capacity(buffer, (unsigned int)((size_t)used + (size_t)add_space + len + 1U), SQL_MAX_STATEMENT_BYTES) != 0) {
         return -1;
     }
     if (add_space) {
-        buffer[used++] = ' ';
+        buffer->data[used++] = ' ';
     }
-    memcpy(buffer + used, text, len + 1U);
+    memcpy(buffer->data + used, text, len + 1U);
+    *used_io = (unsigned int)((size_t)used + len);
     return 0;
 }
 
-static int sql_read_stdin(char *buffer, size_t buffer_size) {
-    size_t used = 0U;
+static int sql_read_stdin(SqlTextBuffer *buffer, unsigned int *used_out) {
+    unsigned int used = 0U;
 
-    while (used + 1U < buffer_size) {
-        long bytes = platform_read(0, buffer + used, buffer_size - used - 1U);
+    if (buffer == 0 || used_out == 0) {
+        return -1;
+    }
+    for (;;) {
+        long bytes;
+        if (used + 1U >= buffer->capacity && sql_ensure_text_capacity(buffer, used + SQL_INITIAL_TEXT_CAPACITY + 1U, SQL_MAX_STATEMENT_BYTES) != 0) {
+            return -1;
+        }
+        bytes = platform_read(0, buffer->data + used, buffer->capacity - used - 1U);
         if (bytes < 0) {
             return -1;
         }
         if (bytes == 0) {
             break;
         }
-        used += (size_t)bytes;
+        used += (unsigned int)bytes;
     }
-    if (used + 1U >= buffer_size) {
-        return -1;
-    }
-    buffer[used] = '\0';
+    buffer->data[used] = '\0';
+    *used_out = used;
     return 0;
 }
 
@@ -136,45 +157,56 @@ static void sql_usage(const char *program_name) {
 
 int main(int argc, char **argv) {
     const char *program_name = argc > 0 ? argv[0] : "sql";
+    SqlTextBuffer input;
     const char *path;
     int arg_index;
     int changed;
+    int exit_code = 1;
+    unsigned int input_used = 0U;
 
     if (argc < 2 || (argc == 2 && (rt_strcmp(argv[1], "-h") == 0 || rt_strcmp(argv[1], "--help") == 0))) {
         sql_usage(program_name);
         return argc < 2 ? 1 : 0;
     }
 
+    rt_memset(&input, 0, sizeof(input));
     path = argv[1];
-    sql_input_buffer[0] = '\0';
     if (argc > 2) {
         for (arg_index = 2; arg_index < argc; ++arg_index) {
-            if (sql_append_arg(sql_input_buffer, sizeof(sql_input_buffer), argv[arg_index], arg_index > 2) != 0) {
+            if (sql_append_arg(&input, &input_used, argv[arg_index], arg_index > 2) != 0) {
                 sql_write_error("statement too large", 0);
-                return 1;
+                goto out;
             }
         }
-    } else if (sql_read_stdin(sql_input_buffer, sizeof(sql_input_buffer)) != 0) {
+    } else if (sql_read_stdin(&input, &input_used) != 0) {
         sql_write_error("unable to read statement", 0);
-        return 1;
+        goto out;
     }
-    sql_trim_whitespace(sql_input_buffer);
-    if (sql_input_buffer[0] == '\0') {
+    if (input.data == 0) {
         sql_write_error("empty statement", 0);
-        return 1;
+        goto out;
+    }
+    sql_trim_whitespace(input.data);
+    if (input.data[0] == '\0') {
+        sql_write_error("empty statement", 0);
+        goto out;
     }
 
     if (sql_load_database(path, &sql_database) != 0) {
         sql_write_error("unable to load database: ", path);
-        return 1;
+        goto out;
     }
-    if (sql_execute_script(&sql_database, sql_input_buffer, &changed) != 0) {
+    if (sql_execute_script(&sql_database, input.data, &changed) != 0) {
         sql_write_error("invalid or unsupported SQL statement", 0);
-        return 1;
+        goto out;
     }
     if (changed && sql_save_database(path, &sql_database) != 0) {
         sql_write_error("unable to save database: ", path);
-        return 1;
+        goto out;
     }
-    return 0;
+    exit_code = 0;
+
+out:
+    sql_free_text_buffer(&input);
+    return exit_code;
 }

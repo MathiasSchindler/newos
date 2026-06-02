@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_identifier_char(char ch) {
     return (ch >= 'A' && ch <= 'Z') ||
            (ch >= 'a' && ch <= 'z') ||

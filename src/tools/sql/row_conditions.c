@@ -1,3 +1,5 @@
+#include "internal.h"
+
 static int sql_read_condition_literal(SqlParser *parser, SqlConditionValue *value) {
     rt_memset(value, 0, sizeof(*value));
     value->aggregate_index = -1;

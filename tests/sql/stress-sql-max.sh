@@ -2,9 +2,10 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-SQL_BIN="$ROOT/build/sql-hosted"
+SQL_BIN="$ROOT/build/sql"
 TMP_DIR=${SQL_STRESS_TMP:-"$ROOT/tests/tmp/sql-stress"}
-ROWS=${SQL_STRESS_ROWS:-32760}
+ROWS=${SQL_STRESS_ROWS:-40000}
+ROW_LIMIT=${SQL_STRESS_ROW_LIMIT:-1048576}
 COLS=${SQL_STRESS_COLS:-32}
 GROUP_ROWS=32
 KEEP=${SQL_STRESS_KEEP:-0}
@@ -31,16 +32,17 @@ validate_number() {
 }
 
 validate_number SQL_STRESS_ROWS "$ROWS"
+validate_number SQL_STRESS_ROW_LIMIT "$ROW_LIMIT"
 validate_number SQL_STRESS_COLS "$COLS"
 
 [ "$ROWS" -ge 1 ] || die "SQL_STRESS_ROWS must be at least 1"
-[ "$ROWS" -le 32768 ] || die "SQL_STRESS_ROWS must be at most 32768"
+[ "$ROWS" -le "$ROW_LIMIT" ] || die "SQL_STRESS_ROWS must be at most SQL_STRESS_ROW_LIMIT ($ROW_LIMIT)"
 [ "$COLS" -ge 4 ] || die "SQL_STRESS_COLS must be at least 4"
 [ "$COLS" -le 32 ] || die "SQL_STRESS_COLS must be at most 32"
 
 mkdir -p "$TMP_DIR"
 cd "$ROOT"
-make hosted >/dev/null
+make host >/dev/null
 
 if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ]; then
     TIME_MODE=darwin
