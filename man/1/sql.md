@@ -49,10 +49,31 @@ The on-disk database is a newline-oriented `SQS1` text file managed by `sql`. It
 
 `EXPORT TABLE TO PATH` writes a header row and all table rows. Add `CSV` to write comma-separated output. Use `-` as the path to write exported data to standard output.
 
+## CAPACITY AND MEMORY USE
+
+The implementation keeps hard limits so malformed input cannot force unbounded growth, but the larger limits are backed by grow-on-demand storage. Small databases do not preallocate the maximum number of tables, rows, columns, statement bytes, import-line bytes, or result rows.
+
+Current notable limits are:
+
+- up to 1024 tables per database
+- up to 1024 columns per table
+- up to 1,048,576 rows per table
+- up to 1,048,576 rows in a SELECT result
+- SQL statement text and import lines up to 1 MiB each
+- table and column names up to 31 bytes
+- values up to 127 bytes each
+- up to 4 tables in a single SELECT query
+- up to 8 GROUP BY keys and 8 ORDER BY keys
+- up to 32 condition tree nodes and 32 IN-list values
+
+Table metadata, row value slots, INSERT scratch space, SELECT parse scratch space, SELECT item and aggregate arrays, SELECT result rows, statement text, import lines, and the value arena grow through the runtime allocator. This means a three-column table remains compact even though the hard column cap is much higher.
+
+For plain `SELECT ... LIMIT` queries without ordering, grouping, aggregates, `DISTINCT`, or `HAVING`, row collection stops once enough rows have been found for the requested offset and limit. Queries that need whole-result visibility still collect the full bounded result before applying the final output step.
+
 ## LIMITATIONS
 
 - this is a compact project-local SQL subset, not SQLite or a full SQL implementation
-- database size, table count, column count, row count, statement length, value length, result rows, joins, grouping keys, ordering keys, and condition tree size are bounded by fixed implementation limits
+- database size, table count, column count, row count, statement length, value length, result rows, joins, grouping keys, ordering keys, and condition tree size are bounded by implementation limits
 - values are stored as text; `INTEGER` and `REAL` columns validate numeric input and comparisons use numeric ordering when both sides parse as numbers
 - there are no transactions, indexes persisted on disk, foreign keys, views, triggers, subqueries, prepared statements, or concurrent writers
 - `ALTER TABLE DROP COLUMN` refuses to drop the final remaining column

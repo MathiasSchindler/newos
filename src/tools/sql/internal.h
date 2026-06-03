@@ -275,6 +275,8 @@ typedef struct {
     SqlAggregate *aggregates;
     unsigned int aggregate_count;
     unsigned int aggregate_capacity;
+    int collection_limit_enabled;
+    unsigned int collection_limit;
     int distinct;
 } SqlSelectQuery;
 
@@ -329,6 +331,7 @@ static void sql_store_uint_text(unsigned long long value, char *buffer, size_t b
 static int sql_row_numeric_value(const SqlRow *row, unsigned int column, long long *value_out);
 static int sql_table_row_numeric_value(const SqlTable *table, unsigned int row_index, unsigned int column, long long *value_out);
 static int sql_multiply_size(size_t left, size_t right, size_t *out);
+static int sql_next_capacity(unsigned int current, unsigned int needed, unsigned int max, unsigned int initial, unsigned int *capacity_out);
 static void sql_free_bytes(void *ptr);
 static void *sql_resize_bytes(void *ptr, size_t old_size, size_t new_size);
 static void *sql_resize_array(void *ptr, unsigned int old_count, unsigned int new_count, size_t item_size);
@@ -465,7 +468,7 @@ static void sql_sort_select_rows(const SqlSelectQuery *query, SqlResultRow *rows
 static void sql_write_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count);
 static int sql_parse_assignment(SqlParser *parser, const SqlTable *table, SqlAssignment *assignment);
 static int sql_apply_assignment(SqlDatabase *db, SqlRow *row, const SqlAssignment *assignment);
-static int sql_column_seen(char columns[SQL_MAX_COLUMNS][SQL_NAME_SIZE], unsigned int column_count, const char *name);
+static int sql_column_seen(char (*columns)[SQL_NAME_SIZE], unsigned int column_count, const char *name);
 static int sql_split_ref(const char *text, char *table_name, size_t table_size, char *column_name, size_t column_size);
 static void sql_trim_whitespace(char *text);
 static void sql_write_error(const char *message, const char *detail);

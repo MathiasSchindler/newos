@@ -550,6 +550,10 @@ static int sql_select_index_lookup(const SqlSelectQuery *query, unsigned int dep
     return sql_condition_list_index_lookup(&query->where, depth, current, column_out, value_out);
 }
 
+static int sql_select_collection_limit_reached(const SqlSelectQuery *query, const SqlResultBuffer *result) {
+    return query->collection_limit_enabled && result->count >= query->collection_limit;
+}
+
 static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int depth, SqlResultRow *current, SqlResultBuffer *result) {
     SqlTable *table;
     unsigned int row_index;
@@ -560,6 +564,9 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
     unsigned int index_end = 0U;
     int use_index = 0;
 
+    if (sql_select_collection_limit_reached(query, result)) {
+        return 0;
+    }
     if (depth == query->source_count) {
         if (!sql_condition_list_matches(&query->where, current)) {
             return 0;
@@ -587,6 +594,9 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
             current->rows[depth] = &table->rows[source_row];
             if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
+            }
+            if (sql_select_collection_limit_reached(query, result)) {
+                return 0;
             }
         }
         if (query->source_count == 2U && query->join_count == 1U && (query->join_types[0] == SQL_JOIN_FULL || query->join_types[0] == SQL_JOIN_RIGHT)) {
@@ -616,6 +626,9 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
                     sql_set_result_buffer_row(query, result, result->count, current);
                     result->rows[result->count].count = 1U;
                     result->count += 1U;
+                    if (sql_select_collection_limit_reached(query, result)) {
+                        return 0;
+                    }
                 }
             }
         }
@@ -635,11 +648,17 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
             if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
             }
+            if (sql_select_collection_limit_reached(query, result)) {
+                return 0;
+            }
         }
         if (!matched && (query->join_types[join_index] == SQL_JOIN_LEFT || query->join_types[join_index] == SQL_JOIN_FULL)) {
             current->rows[depth] = 0;
             if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
+            }
+            if (sql_select_collection_limit_reached(query, result)) {
+                return 0;
             }
         }
         return 0;
@@ -658,6 +677,22 @@ static int sql_query_uses_aggregate(const SqlSelectQuery *query) {
         }
     }
     return sql_condition_list_uses_aggregate(&query->having);
+}
+
+static void sql_configure_select_collection_limit(SqlSelectQuery *query) {
+    unsigned long long needed;
+
+    if (query == 0 || !query->has_limit || query->order_count != 0U || query->distinct || query->group_count != 0U || query->having.count != 0U || sql_query_uses_aggregate(query)) {
+        return;
+    }
+    needed = (unsigned long long)query->offset + (unsigned long long)query->limit;
+    if (query->limit == 0U) {
+        needed = 0ULL;
+    } else if (needed > (unsigned long long)SQL_MAX_RESULT_ROWS) {
+        needed = (unsigned long long)SQL_MAX_RESULT_ROWS;
+    }
+    query->collection_limit_enabled = 1;
+    query->collection_limit = (unsigned int)needed;
 }
 
 static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups) {
@@ -924,6 +959,7 @@ static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
         sql_parse_select_tail(db, parser, &query, &scratch) != 0) {
         goto out;
     }
+    sql_configure_select_collection_limit(&query);
     group_rows.value_slots = query.item_count;
     group_rows.aggregate_slots = query.aggregate_count;
     if (sql_collect_select_rows(&query, 0U, &current, &result_rows) != 0 ||

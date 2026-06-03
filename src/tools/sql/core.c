@@ -657,7 +657,7 @@ static int sql_find_column(const SqlTable *table, const char *name) {
     return -1;
 }
 
-static int sql_column_seen(char columns[SQL_MAX_COLUMNS][SQL_NAME_SIZE], unsigned int column_count, const char *name) {
+static int sql_column_seen(char (*columns)[SQL_NAME_SIZE], unsigned int column_count, const char *name) {
     unsigned int i;
 
     for (i = 0U; i < column_count; ++i) {
