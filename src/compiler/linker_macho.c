@@ -259,10 +259,10 @@ static unsigned char *macho_make_code_signature(const unsigned char *image, size
     unsigned char *signature;
     MachoPageHasher hasher;
 
-    if (code_limit == 0ULL || (code_limit % MACHO_PAGE_SIZE) != 0ULL || code_limit > 0xffffffffULL || image_size > code_limit) {
+    if (code_limit == 0ULL || code_limit > 0xffffffffULL || image_size > code_limit) {
         return 0;
     }
-    code_slots = (uint32_t)(code_limit / MACHO_PAGE_SIZE);
+    code_slots = (uint32_t)((code_limit + MACHO_PAGE_SIZE - 1ULL) / MACHO_PAGE_SIZE);
     code_directory_size = hash_offset + code_slots * CRYPTO_SHA256_DIGEST_SIZE;
     signature_size = superblob_header_size + code_directory_size;
     signature = (unsigned char *)rt_malloc(signature_size);
@@ -274,7 +274,7 @@ static unsigned char *macho_make_code_signature(const unsigned char *image, size
         return 0;
     }
     if (macho_page_hasher_update(&hasher, image, image_size) != 0 ||
-        macho_page_hasher_update_zeroes(&hasher, code_limit - (uint64_t)image_size) != 0 ||
+        (code_limit > (uint64_t)image_size && macho_page_hasher_update_zeroes(&hasher, code_limit - (uint64_t)image_size) != 0) ||
         macho_page_hasher_finish(&hasher) != 0) {
         rt_free(hasher.hashes);
         rt_free(signature);
@@ -947,6 +947,56 @@ static void macho_copy_input_sections(MachoLinkImage *link, unsigned char *image
     }
 }
 
+static uint64_t macho_count_input_sections(const MachoLinkImage *link) {
+    uint64_t count = 0ULL;
+    size_t object_index;
+    for (object_index = 0; object_index < link->object_count; ++object_index) {
+        count += (uint64_t)link->objects[object_index].section_count;
+    }
+    return count;
+}
+
+static int macho_write_stats(const MachoLinkImage *link,
+                             uint64_t header_bytes,
+                             uint64_t text_payload_size,
+                             uint64_t text_file_size,
+                             uint64_t text_vm_size,
+                             uint64_t data_file_size,
+                             uint64_t data_vm_size,
+                             uint64_t signature_offset,
+                             uint64_t code_limit,
+                             uint64_t signature_size,
+                             int compact) {
+    if (rt_write_cstr(1, "Mach-O linker stats\nobjects: ") != 0) return -1;
+    if (rt_write_uint(1, (unsigned long long)link->object_count) != 0) return -1;
+    if (rt_write_cstr(1, "\nsections: ") != 0) return -1;
+    if (rt_write_uint(1, macho_count_input_sections(link)) != 0) return -1;
+    if (rt_write_cstr(1, "\ntext/const/cstring/data/bss payload: ") != 0) return -1;
+    if (rt_write_uint(1, link->text.size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, link->constant.size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, link->cstring.size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, link->data.size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, link->bss.size) != 0) return -1;
+    if (rt_write_cstr(1, "\nheaders/text-file/text-vm: ") != 0) return -1;
+    if (rt_write_uint(1, header_bytes) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, text_file_size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, text_vm_size) != 0) return -1;
+    if (rt_write_cstr(1, "\ntext-payload/data-file/data-vm: ") != 0) return -1;
+    if (rt_write_uint(1, text_payload_size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, data_file_size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, data_vm_size) != 0) return -1;
+    if (rt_write_cstr(1, "\nsignature-offset/code-limit/signature/file: ") != 0) return -1;
+    if (rt_write_uint(1, signature_offset) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, code_limit) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, signature_size) != 0 || rt_write_cstr(1, "/") != 0 ||
+        rt_write_uint(1, signature_offset + signature_size) != 0) return -1;
+    if (rt_write_cstr(1, "\nfile-padding-not-written: ") != 0) return -1;
+    if (rt_write_uint(1, code_limit > signature_offset ? code_limit - signature_offset : 0ULL) != 0) return -1;
+    if (rt_write_cstr(1, "\npolicy: ") != 0) return -1;
+    if (rt_write_cstr(1, compact ? "compact" : "page-aligned") != 0) return -1;
+    return rt_write_cstr(1, "\n");
+}
+
 static int macho_apply_all_relocations(MachoLinkImage *link, unsigned char *image, size_t image_size, char *error_out, size_t error_size) {
     size_t object_index;
     for (object_index = 0; object_index < link->object_count; ++object_index) {
@@ -957,21 +1007,26 @@ static int macho_apply_all_relocations(MachoLinkImage *link, unsigned char *imag
     return 0;
 }
 
-static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol, const char *output_path, char *error_out, size_t error_size) {
+static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol, const char *output_path, const CompilerLinkerOptions *options, char *error_out, size_t error_size) {
     enum { header_size = 32U, pagezero_command_size = 72U, segment_command_size = 72U, section_command_size = 80U, linkedit_command_size = 72U, dylinker_command_size = 32U, build_version_command_size = 32U, main_command_size = 24U, code_signature_command_size = 16U };
     uint32_t text_section_count;
     uint32_t data_section_count;
     uint32_t text_command_size;
     uint32_t data_command_size;
+    uint32_t build_version_size;
     uint32_t commands_size;
     uint32_t ncmds;
     uint64_t header_bytes;
     uint64_t cursor;
+    uint64_t text_payload_size;
     uint64_t text_file_size;
+    uint64_t text_vm_size;
     uint64_t data_fileoff = 0ULL;
     uint64_t data_file_size = 0ULL;
+    uint64_t data_vmaddr = 0ULL;
     uint64_t data_vm_size = 0ULL;
     uint64_t signature_offset;
+    uint64_t code_limit;
     uint64_t linkedit_vmaddr;
     unsigned char *signature;
     size_t signature_size;
@@ -979,6 +1034,7 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     uint64_t command_offset;
     uint32_t section_command_index;
     int output_fd;
+    int compact = options != 0 && (options->tiny || options->macho_compact);
 
     macho_init_output_sections(link);
     if (macho_compute_output_section_layout(link, MACHO_SECTION_CLASS_TEXT, error_out, error_size) != 0 ||
@@ -996,7 +1052,8 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     data_section_count = (link->data.size != 0ULL ? 1U : 0U) + (link->bss.size != 0ULL ? 1U : 0U);
     text_command_size = segment_command_size + section_command_size * text_section_count;
     data_command_size = data_section_count != 0U ? segment_command_size + section_command_size * data_section_count : 0U;
-    commands_size = pagezero_command_size + text_command_size + data_command_size + linkedit_command_size + dylinker_command_size + build_version_command_size + main_command_size + code_signature_command_size;
+    build_version_size = compact ? 24U : build_version_command_size;
+    commands_size = pagezero_command_size + text_command_size + data_command_size + linkedit_command_size + dylinker_command_size + build_version_size + main_command_size + code_signature_command_size;
     ncmds = data_section_count != 0U ? 8U : 7U;
     header_bytes = (uint64_t)header_size + commands_size;
     cursor = macho_align_up(header_bytes, 1ULL << link->text.align);
@@ -1012,22 +1069,27 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
         macho_apply_output_section_base(link, MACHO_SECTION_CLASS_CSTRING, cursor, MACHO_BASE_ADDRESS + cursor);
         cursor += link->cstring.size;
     }
+    text_payload_size = cursor;
     text_file_size = macho_align_up(cursor, MACHO_PAGE_SIZE);
+    text_vm_size = macho_align_up(cursor, MACHO_PAGE_SIZE);
     if (data_section_count != 0U) {
         uint64_t data_cursor;
+        uint64_t data_payload_end;
         data_fileoff = text_file_size;
+        data_vmaddr = MACHO_BASE_ADDRESS + text_vm_size;
         data_cursor = data_fileoff;
         if (link->data.size != 0ULL) {
             data_cursor = macho_align_up(data_cursor, 1ULL << link->data.align);
-            macho_apply_output_section_base(link, MACHO_SECTION_CLASS_DATA, data_cursor, MACHO_BASE_ADDRESS + data_cursor);
+            macho_apply_output_section_base(link, MACHO_SECTION_CLASS_DATA, data_cursor, data_vmaddr + (data_cursor - data_fileoff));
             data_cursor += link->data.size;
             data_file_size = macho_align_up(data_cursor - data_fileoff, MACHO_PAGE_SIZE);
         }
+        data_payload_end = data_fileoff + data_file_size;
         if (link->bss.size != 0ULL) {
-            uint64_t bss_addr_cursor = MACHO_BASE_ADDRESS + data_fileoff + (data_file_size != 0ULL ? data_file_size : 0ULL);
+            uint64_t bss_addr_cursor = data_vmaddr + (data_file_size != 0ULL ? data_file_size : 0ULL);
             bss_addr_cursor = macho_align_up(bss_addr_cursor, 1ULL << link->bss.align);
             macho_apply_output_section_base(link, MACHO_SECTION_CLASS_BSS, 0ULL, bss_addr_cursor);
-            data_vm_size = (bss_addr_cursor - (MACHO_BASE_ADDRESS + data_fileoff)) + link->bss.size;
+            data_vm_size = (bss_addr_cursor - data_vmaddr) + link->bss.size;
         } else {
             data_vm_size = data_file_size;
         }
@@ -1035,11 +1097,12 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
             data_vm_size = data_file_size;
         }
         data_vm_size = macho_align_up(data_vm_size, MACHO_PAGE_SIZE);
-        signature_offset = data_fileoff + data_file_size;
+        signature_offset = data_payload_end;
     } else {
         signature_offset = text_file_size;
     }
-    linkedit_vmaddr = data_section_count != 0U ? MACHO_BASE_ADDRESS + data_fileoff + data_vm_size : MACHO_BASE_ADDRESS + signature_offset;
+    code_limit = macho_align_up(signature_offset, MACHO_PAGE_SIZE);
+    linkedit_vmaddr = data_section_count != 0U ? data_vmaddr + data_vm_size : MACHO_BASE_ADDRESS + text_vm_size;
     if (macho_collect_global_symbols(link, entry_symbol, error_out, error_size) != 0) {
         return -1;
     }
@@ -1047,7 +1110,7 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
         set_link_error(error_out, error_size, "Mach-O output is too large", output_path);
         return -1;
     }
-    signature_size = 20U + 88U + MACHO_CODE_DIRECTORY_IDENT_SIZE + (size_t)(signature_offset / MACHO_PAGE_SIZE) * CRYPTO_SHA256_DIGEST_SIZE;
+    signature_size = 20U + 88U + MACHO_CODE_DIRECTORY_IDENT_SIZE + (size_t)((code_limit + MACHO_PAGE_SIZE - 1ULL) / MACHO_PAGE_SIZE) * CRYPTO_SHA256_DIGEST_SIZE;
     image = (unsigned char *)rt_malloc((size_t)signature_offset);
     if (image == 0) {
         set_link_error(error_out, error_size, "out of memory while writing Mach-O output", output_path);
@@ -1066,7 +1129,7 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     command_offset = 32ULL;
     macho_write_segment64(image + command_offset, "__PAGEZERO", 0ULL, MACHO_BASE_ADDRESS, 0ULL, 0ULL, 0U, 0U, 0U, 0U);
     command_offset += pagezero_command_size;
-    macho_write_segment64(image + command_offset, "__TEXT", MACHO_BASE_ADDRESS, text_file_size, 0ULL, text_file_size, MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, text_section_count, 0U);
+    macho_write_segment64(image + command_offset, "__TEXT", MACHO_BASE_ADDRESS, text_vm_size, 0ULL, text_file_size, MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, text_section_count, 0U);
     section_command_index = 0U;
     macho_write_section64(image + command_offset + 72U + 80U * section_command_index++, "__text", "__TEXT", link->text.out_addr, link->text.size, (uint32_t)link->text.out_offset, link->text.align, link->text.flags != 0U ? link->text.flags : MACHO_TEXT_SECTION_FLAGS);
     if (link->constant.size != 0ULL) {
@@ -1077,7 +1140,7 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     }
     command_offset += text_command_size;
     if (data_section_count != 0U) {
-        macho_write_segment64(image + command_offset, "__DATA", MACHO_BASE_ADDRESS + data_fileoff, data_vm_size, data_fileoff, data_file_size, MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, data_section_count, 0U);
+        macho_write_segment64(image + command_offset, "__DATA", data_vmaddr, data_vm_size, data_fileoff, data_file_size, MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, data_section_count, 0U);
         section_command_index = 0U;
         if (link->data.size != 0ULL) {
             macho_write_section64(image + command_offset + 72U + 80U * section_command_index++, "__data", "__DATA", link->data.out_addr, link->data.size, (uint32_t)link->data.out_offset, link->data.align, link->data.flags);
@@ -1097,13 +1160,15 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     command_offset += dylinker_command_size;
 
     write_u32(image + command_offset + 0U, MACHO_LC_BUILD_VERSION);
-    write_u32(image + command_offset + 4U, build_version_command_size);
+    write_u32(image + command_offset + 4U, build_version_size);
     write_u32(image + command_offset + 8U, 1U);
     write_u32(image + command_offset + 12U, 0x000b0000U);
     write_u32(image + command_offset + 16U, 0x000b0000U);
-    write_u32(image + command_offset + 20U, 1U);
-    write_u32(image + command_offset + 24U, 3U);
-    command_offset += build_version_command_size;
+    write_u32(image + command_offset + 20U, compact ? 0U : 1U);
+    if (!compact) {
+        write_u32(image + command_offset + 24U, 3U);
+    }
+    command_offset += build_version_size;
 
     write_u32(image + command_offset + 0U, MACHO_LC_MAIN);
     write_u32(image + command_offset + 4U, main_command_size);
@@ -1124,7 +1189,7 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
         return -1;
     }
 
-    signature = macho_make_code_signature(image, (size_t)signature_offset, signature_offset, &signature_size);
+    signature = macho_make_code_signature(image, (size_t)signature_offset, code_limit, &signature_size);
     if (signature == 0) {
         rt_free(image);
         set_link_error(error_out, error_size, "failed to create Mach-O ad-hoc code signature", output_path);
@@ -1156,6 +1221,12 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     if (platform_close(output_fd) != 0) {
         set_link_error(error_out, error_size, "failed to close Mach-O output", output_path);
         return -1;
+    }
+    if (options != 0 && options->stats) {
+        if (macho_write_stats(link, header_bytes, text_payload_size, text_file_size, text_vm_size, data_file_size, data_vm_size, signature_offset, code_limit, (uint64_t)signature_size, compact) != 0) {
+            set_link_error(error_out, error_size, "failed to write Mach-O linker stats", output_path);
+            return -1;
+        }
     }
     return 0;
 }
@@ -1450,7 +1521,7 @@ int compiler_link_macho64_aarch64_static_options(const char *const *object_paths
             }
             rt_copy_string(lto_prelink_path, sizeof(lto_prelink_path), output_path);
             rt_copy_string(lto_prelink_path + out_len, sizeof(lto_prelink_path) - out_len, ".lto-prelink.o");
-            if (run_clang_lto_prelink_macho64_aarch64(object_paths, object_count, entry_symbol, lto_cc, lto_prelink_path, error_out, error_size) != 0) {
+            if (run_clang_lto_prelink_macho64_aarch64(object_paths, object_count, entry_symbol, lto_cc, lto_prelink_path, options != 0 && options->gc_sections, error_out, error_size) != 0) {
                 return -1;
             }
             for (link_index = 0; link_index < original_object_count; ++link_index) {
@@ -1496,7 +1567,7 @@ int compiler_link_macho64_aarch64_static_options(const char *const *object_paths
         set_link_error(error_out, error_size, "no Mach-O arm64 input objects", output_path);
         return -1;
     }
-    result = macho_write_executable(&link, entry_symbol, output_path, error_out, error_size);
+    result = macho_write_executable(&link, entry_symbol, output_path, options, error_out, error_size);
     macho_free_link_image(&link);
     if (did_lto_prelink) {
         platform_remove_file(lto_prelink_path);

@@ -2,7 +2,7 @@
 
 ## NAME
 
-**linker** - link static ELF64 x86-64 executables
+**linker** - link static ELF64 x86-64 and project Mach-O arm64 executables
 
 ## SYNOPSIS
 
@@ -13,9 +13,11 @@ linker [-o OUTPUT] [-m elf_x86_64] [--target=TARGET] [options] object-or-archive
 ## DESCRIPTION
 
 `linker` combines ELF64 little-endian x86-64 relocatable objects and simple
-`ar` archives into a static Linux executable. It is intended as the project
-entry point for small freestanding binaries: no dynamic linker, no standard C
-library startup files, and no final section-header table are emitted.
+`ar` archives into a static Linux executable. It also has a project-owned
+Mach-O arm64 backend for the macOS freestanding build. It is intended as the
+project entry point for small freestanding binaries: no standard C library
+startup files are required, and the ELF backend emits no dynamic linker or final
+section-header table.
 
 The implemented target is intentionally narrow. Inputs must define `_start` or
 provide an archive member that defines it. The output is an `ET_EXEC` ELF64 file
@@ -56,14 +58,23 @@ path instead of hiding it behind ELF aliases.
   load segment. This minimizes file size by avoiding 4 KiB segment padding. If
   writable data or BSS is present, the segment is readable, writable, and
   executable. Trailing zero bytes in the load image may be omitted from the file
-  and represented by the ELF segment memory size instead.
+  and represented by the ELF segment memory size instead. On Mach-O arm64 this
+  selects the compact load-command policy described below.
 - `--separate-code`, `--page-align` - use the default page-aligned RX/RW segment
   layout.
 - `--gc-sections` - keep only sections reachable from the entry symbol through
   relocations. This is most useful with compiler inputs built using
-  `-ffunction-sections -fdata-sections`.
+  `-ffunction-sections -fdata-sections`. On Mach-O arm64, the final backend is
+  still conservative after Clang LTO materializes one native object, but this
+  option asks the Clang/ld64 LTO prelink step to use `-dead_strip`.
 - `--no-gc-sections` - disable section-level garbage collection and keep the
   current object-level reachability behavior.
+- `--macho-compact` - for Mach-O arm64 outputs, preserve loader-safe 16 KiB
+  page-aligned segment layout while omitting the optional `LC_BUILD_VERSION`
+  tool record. This saves load-command payload bytes and can reduce file size
+  when a binary is near a page/signature threshold. It deliberately keeps
+  `__PAGEZERO`, because omitting it produced kernel-rejected executables in
+  testing.
 - `--icf=safe`, `--icf` - fold identical live read-only sections that have no
   relocation records, and exact-size sections whose relocation records refer to
   equivalent targets. Conservative suffix folding is still limited to
@@ -119,9 +130,11 @@ defined symbols across input objects. The relocation pass supports the arm64
 by local and cross-object calls, `adrp`/`add` references, and clang's
 unsigned-offset load/store references to static data. The writer emits
 `__PAGEZERO`, `__TEXT`, optional `__DATA`, `__LINKEDIT`, `LC_LOAD_DYLINKER`,
-`LC_BUILD_VERSION`, `LC_MAIN`, and `LC_CODE_SIGNATURE`. Output uses the same 16
-KiB page/signature granularity as the macOS prototype container writer and
-includes an in-tree ad-hoc SHA-256 CodeDirectory signature.
+`LC_BUILD_VERSION`, `LC_MAIN`, and `LC_CODE_SIGNATURE`. With `--macho-compact`,
+the `LC_BUILD_VERSION` command uses `ntools 0` and omits the tool-version
+payload. Output uses the same 16 KiB page/signature granularity as the macOS
+prototype container writer and includes an in-tree ad-hoc SHA-256 CodeDirectory
+signature.
 
 This is enough for tiny syscall-only arm64 start objects and freestanding clang
 C start files split across several translation units, with local calls,
@@ -139,9 +152,13 @@ overall size result, and `-fno-partial-inlining` made the total output larger.
 
 ## Reporting Options
 
-- `--stats` - print link statistics to standard output, including live object and
-  section counts, relocation count, folded/discarded bytes, text/data/BSS sizes,
-  file size, memory size, header bytes, padding bytes, and active policy.
+- `--stats` - print link statistics to standard output. The ELF backend reports
+  live object and section counts, relocation count, folded/discarded bytes,
+  text/data/BSS sizes, file size, memory size, header bytes, padding bytes, and
+  active policy. The Mach-O backend reports input object/section counts,
+  file-backed section payloads, BSS bytes, header bytes, segment file and VM
+  sizes, signature offset/code limit/signature bytes, final file size, and the
+  active page-aligned or compact policy.
 - `--map FILE` - write a map file listing live sections, output virtual
   addresses, sizes, source objects, and the reason each section became live.
 - `--why-live SYMBOL_OR_SECTION` - print why a specific live symbol or section is
@@ -157,6 +174,7 @@ linker -m elf_x86_64 -o app start.o main.o
 linker --tiny --gc-sections --stats -o true crt0.o true.o runtime.o
 linker --tiny --gc-sections --print-gc-sections -o true crt0.o true.o runtime.o
 linker --tiny --gc-sections --map app.map --why-live main -o app @objects.rsp
+linker --target=mach-o-arm64 --macho-compact --gc-sections --lto-cc=clang -o app start.o app.o runtime.o
 ```
 
 ## TESTING

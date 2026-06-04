@@ -75,6 +75,10 @@ with the in-tree `linker --target=mach-o-arm64` backend.
 - builds the full declared 194-tool macOS surface by default
 - emits project-linked Mach-O executables that are intended to have no dylib
   imports and no C standard library dependency
+- links with `MACOS_NEWLINKER_LINK_FLAGS`, which defaults to
+  `--macho-compact --gc-sections`; compact mode keeps loader-safe 16 KiB segment
+  alignment while trimming optional load-command payload, and `--gc-sections`
+  asks the Clang LTO prelink step to dead-strip when LTO inputs are present
 - auto-parallelizes to the host core count when no `-j` option is supplied;
   pass `-jN` or other make jobserver flags to override that behavior
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific

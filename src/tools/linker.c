@@ -11,7 +11,7 @@
 #define LINKER_TOOL_MANIFEST_CAPACITY (4U * 1024U * 1024U)
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
 }
 
 static int starts_with(const char *text, const char *prefix) {
@@ -454,8 +454,13 @@ int main(int argc, char **argv) {
             options.tiny = 1;
             continue;
         }
+        if (parsing_options && rt_strcmp(arg, "--macho-compact") == 0) {
+            options.macho_compact = 1;
+            continue;
+        }
         if (parsing_options && (rt_strcmp(arg, "--separate-code") == 0 || rt_strcmp(arg, "--page-align") == 0)) {
             options.tiny = 0;
+            options.macho_compact = 0;
             continue;
         }
         if (parsing_options && rt_strcmp(arg, "--gc-sections") == 0) {

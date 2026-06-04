@@ -85,7 +85,11 @@ The plain `macos-newlinker-tools` target builds every declared macOS freestandin
 tool by default; `test-macos-newlinker-tools` builds that set before running the
 representative smoke assertions. The path compiles Mach-O arm64
 objects with Clang, performs the LTO prelink step with Clang when needed, and
-emits the final executable with the in-tree linker.
+emits the final executable with the in-tree linker. The project-linked macOS
+rules pass `MACOS_NEWLINKER_LINK_FLAGS`, defaulting to
+`--macho-compact --gc-sections`, so final links use the loader-safe compact
+Mach-O load-command policy and ask Clang's LTO prelink step to dead-strip where
+it can.
 It deliberately treats the resulting binaries as project-linked, no-import
 executables: representative smoke tests reject dylib imports. That is stricter
 than the explicit `freestanding-macos` comparison build, which still uses

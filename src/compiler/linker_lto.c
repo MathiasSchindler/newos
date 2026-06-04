@@ -209,7 +209,7 @@ static int lto_output_is_macho64_aarch64_object(const char *path) {
 }
 
 int run_clang_lto_prelink_macho64_aarch64(const char *const *paths, size_t count, const char *entry_symbol,
-                                          const char *lto_cc, const char *out_path,
+                                          const char *lto_cc, const char *out_path, int dead_strip,
                                           char *error_out, size_t error_size) {
     char entry_keep[COMPILER_PATH_CAPACITY];
     char entry_flag[COMPILER_PATH_CAPACITY];
@@ -253,7 +253,7 @@ int run_clang_lto_prelink_macho64_aarch64(const char *const *paths, size_t count
     rt_copy_string(final_path + out_len, sizeof(final_path) - out_len, ".final");
 
 retry_prelink:
-    argv = (char **)rt_malloc((24U + count + 3U) * sizeof(char *));
+    argv = (char **)rt_malloc((28U + count + 3U) * sizeof(char *));
     if (argv == 0) {
         set_link_error(error_out, error_size, "out of memory for Mach-O Clang LTO prelink argv", out_path);
         return -1;
@@ -279,6 +279,9 @@ retry_prelink:
     argv[argc++] = "-fno-stack-protector";
     argv[argc++] = "-fno-unwind-tables";
     argv[argc++] = "-fno-asynchronous-unwind-tables";
+    if (dead_strip) {
+        argv[argc++] = "-Wl,-dead_strip";
+    }
     argv[argc++] = entry_flag;
     argv[argc++] = entry_keep;
     argv[argc++] = object_path_lto;

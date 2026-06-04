@@ -298,6 +298,24 @@ C
             "$WORK_DIR/macho_split_lto" > "$WORK_DIR/macho_split_lto.run"
             assert_file_contains "$WORK_DIR/macho_split_lto.run" 'multi object ok' "Mach-O multi-input clang LTO executable did not run correctly"
         fi
+
+        "$LINKER" --target=mach-o-arm64 --macho-compact --gc-sections --stats --lto-cc=clang -o "$WORK_DIR/macho_split_lto_compact" "$WORK_DIR/macho_split_start_lto.o" "$WORK_DIR/macho_split_helper_lto.o" > "$WORK_DIR/linker_macho_split_lto_compact.stdout" 2> "$WORK_DIR/linker_macho_split_lto_compact.stderr"
+        assert_file_contains "$WORK_DIR/linker_macho_split_lto_compact.stdout" 'Mach-O linker stats' "Mach-O --stats did not print a stats header"
+        assert_file_contains "$WORK_DIR/linker_macho_split_lto_compact.stdout" 'policy: compact' "Mach-O --macho-compact did not report compact policy"
+        "$LINKER" --target=mach-o-arm64 --macho-compact --page-align --stats --lto-cc=clang -o "$WORK_DIR/macho_split_lto_page_align" "$WORK_DIR/macho_split_start_lto.o" "$WORK_DIR/macho_split_helper_lto.o" > "$WORK_DIR/linker_macho_split_lto_page_align.stdout" 2> "$WORK_DIR/linker_macho_split_lto_page_align.stderr"
+        assert_file_contains "$WORK_DIR/linker_macho_split_lto_page_align.stdout" 'policy: page-aligned' "Mach-O --page-align did not disable compact policy"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_split_lto_compact" > "$WORK_DIR/macho_split_lto_compact.otool"
+            assert_file_contains "$WORK_DIR/macho_split_lto_compact.otool" 'LC_CODE_SIGNATURE' "Mach-O compact output did not keep code signature load command"
+            assert_file_contains "$WORK_DIR/macho_split_lto_compact.otool" 'ntools 0' "Mach-O compact output did not omit the LC_BUILD_VERSION tool record"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_split_lto_compact" > "$WORK_DIR/macho_split_lto_compact_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_split_lto_compact" > "$WORK_DIR/macho_split_lto_compact.run"
+            assert_file_contains "$WORK_DIR/macho_split_lto_compact.run" 'multi object ok' "Mach-O compact LTO executable did not run correctly"
+        fi
     fi
 
     cat > "$WORK_DIR/macho_arm64.c" <<'C'
