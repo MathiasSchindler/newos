@@ -80,7 +80,7 @@ NEWLINKER_STANDALONE_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-newlinker
 WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_ARCH)
 MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTANDING_ARCH)
 MACOS_NEWLINKER_EXPERIMENT_DIR ?= $(BUILD_ROOT)/newlinker-macos-$(MACOS_FREESTANDING_ARCH)
-MACOS_NEWLINKER_TOOLS ?= true false echo
+MACOS_NEWLINKER_TOOLS ?= $(MACOS_FREESTANDING_TOOLS)
 MACOS_NEWLINKER_SMOKE_TOOLS ?= true false echo printf rev seq cat basename dirname cut tr wc
 MACOS_NEWLINKER_ALL_TOOLS = $(MACOS_FREESTANDING_TOOLS)
 MACOS_NEWLINKER_SMOKE_TARGETS := $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_NEWLINKER_SMOKE_TOOLS))
@@ -108,8 +108,8 @@ PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.l
 PHASE1_JOBS ?= $(PARALLEL_JOBS)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
 # Plain `make` keeps macOS local by default, but `make freestanding` is the
-# normal project path on both Linux and macOS. `make host` remains the POSIX
-# verification/bootstrap path for quick iteration and early platform bring-up.
+# normal project-linker path on both Linux and macOS. `make host` remains the
+# POSIX verification/bootstrap path for quick iteration and early platform bring-up.
 LOCAL_PLATFORM_ONLY ?= $(if $(filter Darwin,$(HOST_OS)),1,0)
 FREESTANDING_USE_NEWLINKER ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_64,$(TARGET_ARCH)),1,0),0)
 DEFAULT_ALL_TARGETS := host
@@ -402,7 +402,7 @@ endif
 ifeq ($(AUTO_PARALLEL),1)
 host: $(HOST_OUTPUTS) $(HOST_COMPAT_TARGETS)
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
-freestanding: freestanding-macos
+freestanding: $(MACOS_NEWLINKER_ALL_TOOL_TARGETS)
 else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
@@ -414,7 +414,7 @@ endif
 else ifneq ($(strip $(PARALLEL_MAKEFLAGS)),)
 host: $(HOST_OUTPUTS) $(HOST_COMPAT_TARGETS)
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
-freestanding: freestanding-macos
+freestanding: $(MACOS_NEWLINKER_ALL_TOOL_TARGETS)
 else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
@@ -428,7 +428,7 @@ host:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) host
 freestanding:
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
-	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding-macos
+	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding
 else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) host
 else

@@ -13,9 +13,10 @@ paths.
 
 For macOS and Linux work, the normal build is `make freestanding`. On Linux this
 builds the libc-free raw-syscall target; on macOS/aarch64 it builds the native
-freestanding-ish Darwin target. `make host` is still valuable, but it is the
-hosted POSIX verification path and the fast bring-up path for new platforms or
-features before native platform code exists.
+project-linked Mach-O target with Clang for object/LTO compilation and the
+in-tree linker for final executables. `make host` is still valuable, but it is
+the hosted POSIX verification path and the fast bring-up path for new platforms
+or features before native platform code exists.
 
 On Windows, the repository is expected to be built from an MSYS2 shell for now.
 MSYS2 provides the POSIX shell tools, GNU make, and hosted compiler path, while
@@ -59,15 +60,45 @@ runtime or the Microsoft C runtime.
 - currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
-## MACOS FREESTANDING-ISH BUILD
+## MACOS FREESTANDING BUILD
 
-The macOS freestanding-ish build is the first native Darwin arm64 step. It keeps
-tool and shared runtime code on the same universal path as the other targets,
-but uses the system-provided Mach-O entry path and links only `libSystem`, which
-modern macOS requires for runnable executables.
+The macOS freestanding build is the native Darwin arm64 project-linker path. It
+keeps tool and shared runtime code on the same universal path as the other
+targets, compiles Mach-O arm64 objects with Clang, and links final executables
+with the in-tree `linker --target=mach-o-arm64` backend.
 
 - built with `make freestanding` on local macOS/aarch64, or explicitly with
-  `make freestanding-macos`
+  `make macos-newlinker-tools`
+- writes binaries to `build/newlinker-macos-aarch64/`
+- uses the project `_start` shim, project runtime, and Darwin syscall-backed
+  platform layer
+- builds the full declared 194-tool macOS surface by default
+- emits project-linked Mach-O executables that are intended to have no dylib
+  imports and no C standard library dependency
+- auto-parallelizes to the host core count when no `-j` option is supplied;
+  pass `-jN` or other make jobserver flags to override that behavior
+- uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
+  behavior, with `src/platform/macos/newlinker_start.S` and
+  `src/platform/macos/newlinker_runtime.c` providing the project-linked entry and
+  runtime additions
+- `test-macos-newlinker-tools` builds the same declared set before running
+  representative smoke assertions and no-import checks
+
+The project-linked runtime supplies environment handling, page-size `sysconf`,
+directory enumeration, user/group lookup, time formatting, network interface
+queries, and a Darwin syscall-backed layer for common file, process, terminal,
+network, and identity entry points. Some privileged or host-mutating operations
+remain conservative on Darwin when the project does not yet have a validated
+safe implementation.
+
+## MACOS LIBSYSTEM COMPARISON BUILD
+
+The macOS libSystem comparison build is the older native Darwin arm64 step. It keeps
+tool and shared runtime code on the same universal path as the other targets,
+but uses the system-provided Mach-O entry path and links only `libSystem`, which
+is the usual Apple toolchain ABI library for launchable executables.
+
+- built explicitly with `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
 - currently builds the full 194-tool set, including the core/text/filesystem/process set,
   checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
@@ -81,7 +112,7 @@ modern macOS requires for runnable executables.
   the project code does not call the C standard library even though the binary
   has the unavoidable macOS system ABI dependency
 - strips unused sections, local symbols, and Mach-O function-start metadata by
-  default; LTO is enabled by default for the macOS freestanding-ish target and
+  default; LTO is enabled by default for the macOS libSystem comparison target and
   can be disabled with `MACOS_FREESTANDING_LTO=0`; XML tools and `ncc`
   currently opt out of LTO because they hit Apple-clang LTO-only crashes
 - size work on this path should compare pre-raster payload measurements as well
@@ -91,29 +122,6 @@ modern macOS requires for runnable executables.
   steps hide smaller gains or regressions. Save a report and rerun with
   `make macos-freestanding-size-compare BASELINE=previous.tsv` to get exact
   file-byte and file-section-byte deltas
-- the in-tree `linker --target=mach-o-arm64` backend is separate from this
-  Apple-clang/ld build path. It currently exists as a focused bring-up target
-  for small arm64 objects with `__TEXT,__text`, optional `__TEXT,__const`,
-  `__TEXT,__cstring`, `__DATA,__data`, and zero-fill `__DATA,__bss`, plus the
-  first local and cross-object arm64 relocation subset. It writes an ad-hoc
-  signed Mach-O executable. `make test-linker-cli` builds and verifies tiny
-  assembly fixtures plus freestanding clang C, archive, BSS, and clang LTO
-  syscall-style start files on Darwin hosts, while also pinning unsupported
-  undefined-symbol behavior.
-- `make macos-newlinker-tiny` is the explicit experimental integration target
-  for this backend. It compiles a two-file syscall-only macOS arm64 C fixture and
-  links both normal and clang-LTO variants with `build/linker`, writing
-  `build/newlinker-macos-aarch64/tiny` and `tiny-lto`. This target is the bridge
-  for newlinker work before the main `freestanding-macos` Apple-ld path is
-  replaced.
-- `make macos-newlinker-tools` is the first real-tool bridge target. It compiles
-  the `MACOS_NEWLINKER_TOOLS` subset with clang LTO, links with the in-tree
-  Mach-O backend, and writes outputs under `build/newlinker-macos-aarch64/`.
-  The default subset is currently `true`, `false`, and `echo`; all three are
-  dependency-free syscall-style executables using the project macOS runtime and a
-  project-owned `_start` shim, not Apple ld final linking. This target is still
-  intentionally separate from `make freestanding` until the subset expands to the
-  full `src/tools` list.
 - keeps privileged or host-mutating operations conservative on Darwin when the
   project does not yet have a validated macOS implementation, so some admin
   front-ends build and report unsupported operations instead of changing the host
@@ -134,8 +142,9 @@ and anything that adds new low-level dependencies.
 
     make               — on macOS build the local hosted set for compatibility symlinks; on Linux build host plus freestanding
     make host          — build the secondary hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
-    make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the freestanding-ish Darwin target
-    make freestanding-macos — build the early native macOS arm64 freestanding-ish subset under build/freestanding-macos-aarch64/
+    make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the project-linked Mach-O target under build/newlinker-macos-aarch64/
+    make freestanding-macos — build the older Apple-ld/libSystem comparison target under build/freestanding-macos-aarch64/
+    make macos-newlinker-tools — explicitly build the macOS project-linked Mach-O tool tree under build/newlinker-macos-aarch64/
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
@@ -197,7 +206,7 @@ If local PowerShell execution policy blocks scripts, use the command runner:
 
 `make freestanding` remains the main Makefile target: it builds Linux ABI
 binaries using the raw syscall backend under `src/platform/linux/` and
-`src/arch/*/linux/`, or the local macOS freestanding-ish target on supported
+`src/arch/*/linux/`, or the local macOS project-linked Mach-O target on supported
 Darwin hosts. `build-windows-freestanding.ps1` is the early native Windows path.
 It links PE executables directly against Kernel32, Ws2_32, and Bcrypt where
 needed. The Windows subset now covers the small text/core tools,

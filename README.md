@@ -20,7 +20,7 @@ The repository currently focuses on:
 
 The normal local workflow on macOS and Linux is now `make freestanding`. The hosted POSIX build remains active for verification, fast iteration, and early platform bring-up. Windows is a new contributor environment for the project; the current practical route is MSYS2 while native Windows platform support is developed.
 
-The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. Linux freestanding builds exercise the libc-free syscall path where available, macOS freestanding-ish builds cover the native Darwin path, hosted POSIX remains a useful comparison build, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
+The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. Linux freestanding builds exercise the libc-free syscall path where available, macOS freestanding builds now use the project Mach-O linker and Darwin runtime path, hosted POSIX remains a useful comparison build, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
 
 The repository also includes a lightweight manual browser and a growing set of manual pages for tools, subsystems, and design notes.
 
@@ -34,7 +34,7 @@ The repository includes a structured shell-based test suite under [tests](tests)
 - shared helpers live in [tests/lib](tests/lib)
 - grouped suites live in [tests/suites](tests/suites)
 
-On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default, but the normal local build path is still `make freestanding`: on local macOS/aarch64 it builds the macOS freestanding-ish target under `build/freestanding-macos-aarch64/`. That target uses project runtime and tool code while linking only the system ABI library that macOS requires for launch. The current Darwin subset covers the current 194-tool surface: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression, image metadata, object inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools. Use `make host` when you specifically want the hosted POSIX comparison build or a quicker bring-up loop for a platform feature that is not native yet.
+On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default, but the normal local build path is still `make freestanding`: on local macOS/aarch64 it builds the project-linked Mach-O target under `build/newlinker-macos-aarch64/`. That path compiles with Clang, links final executables with the in-tree linker, uses the project runtime and `_start`, and is intended to produce no-standard-library, no-dylib-import tools. The current Darwin project-linked surface covers the current 194-tool set: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression, image metadata, object inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools. Use `make host` when you specifically want the hosted POSIX comparison build or a quicker bring-up loop for a platform feature that is not native yet. Use `make freestanding-macos` for the older Apple-ld/libSystem comparison build.
 
 On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
 runtime, or the Microsoft C runtime. The important build-time tool is a C
@@ -69,35 +69,30 @@ final size passes. Use `make newlinker-lto-size-report` to rebuild no-LTO and
 GCC-LTO trees side by side and print total deltas plus the largest wins and
 regressions. Set `FREESTANDING_USE_NEWLINKER=0` only when you need the older
 system-linker freestanding path for comparison. On local macOS/aarch64, `make
-freestanding` still builds the macOS freestanding-ish target.
+freestanding` builds the project-linked Mach-O tool tree under
+`build/newlinker-macos-aarch64/` using Clang for object/LTO compilation and the
+in-tree linker for final executables. It auto-parallelizes to the host core
+count when no `-j` option is supplied.
 
-There is also an experimental macOS/aarch64 project-linker path:
+The explicit macOS/aarch64 project-linker path is also available as:
 
 ```
 make macos-newlinker-tools
 make -j4 test-macos-newlinker-tools
 ```
 
-The plain `macos-newlinker-tools` target builds the small default bring-up set;
-`test-macos-newlinker-tools` builds every declared macOS freestanding tool before
-running the representative smoke assertions. The path compiles Mach-O arm64
+The plain `macos-newlinker-tools` target builds every declared macOS freestanding
+tool by default; `test-macos-newlinker-tools` builds that set before running the
+representative smoke assertions. The path compiles Mach-O arm64
 objects with Clang, performs the LTO prelink step with Clang when needed, and
 emits the final executable with the in-tree linker.
 It deliberately treats the resulting binaries as project-linked, no-import
 executables: representative smoke tests reject dylib imports. That is stricter
-than the normal `freestanding-macos` build, which still uses macOS' required
-system ABI library for the final launchable binary. The project-linker path is
-therefore a bring-up track for shrinking the Mach-O backend and platform layer
-toward the same no-standard-library shape as the Linux freestanding binaries;
-tools that still need libSystem-only services must stay on the normal
-`freestanding-macos` path until those services are represented in project code or
-the linker grows explicit dynamic import support. The current project-linked
-runtime supplies its own empty `environ`, a page-size `sysconf`, and a small
-Darwin syscall-backed shim layer for common file, process, terminal, network, and
-identity entry points. All declared tools are expected to link on this path, but
-some higher-level libc services are still conservative fallback shims, so
-environment-sensitive tools, directory enumeration, user/group lookup, interface
-queries, and formatted local time output are not representative here yet.
+than the explicit `freestanding-macos` comparison build, which still uses
+Apple's linker and libSystem. The current project-linked runtime supplies its own
+environment handling, page-size `sysconf`, directory enumeration, user/group
+lookup, time formatting, network interface queries, and a Darwin syscall-backed
+layer for common file, process, terminal, network, and identity entry points.
 The native no-CRT Windows PE path is `build-windows-freestanding.ps1`. It now
 builds the small text/core tools, comparison/checksum/image/path/filesystem
 tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
