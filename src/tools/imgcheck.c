@@ -9,6 +9,9 @@
 #define IMGCHECK_PATH_CAPACITY 2048U
 
 #define IMGCHECK_MACHO_MAGIC_64 0xfeedfacfU
+#define IMGCHECK_MACHO_FAT_MAGIC_LE 0xbebafecaU
+#define IMGCHECK_MACHO_FAT_MAGIC_64_LE 0xbfbafecaU
+#define IMGCHECK_MACHO_CPU_TYPE_ARM64 0x0100000cU
 #define IMGCHECK_MACHO_TYPE_EXECUTE 2U
 #define IMGCHECK_MACHO_FLAG_PIE 0x200000U
 #define IMGCHECK_MACHO_LC_SEGMENT_64 0x19U
@@ -135,6 +138,38 @@ static unsigned int imgcheck_read_u32_be(const unsigned char *data) {
 
 static int imgcheck_is_macho64(const unsigned char *data, size_t size) {
     return size >= 32U && imgcheck_read_u32_le(data) == IMGCHECK_MACHO_MAGIC_64;
+}
+
+static int imgcheck_select_macho_fat_slice(const unsigned char *data, size_t size, const unsigned char **slice_out, size_t *slice_size_out) {
+    unsigned int magic;
+    unsigned int arch_count;
+    unsigned int index;
+
+    *slice_out = data;
+    *slice_size_out = size;
+    if (size < 8U) return -1;
+    magic = imgcheck_read_u32_le(data);
+    if (magic != IMGCHECK_MACHO_FAT_MAGIC_LE && magic != IMGCHECK_MACHO_FAT_MAGIC_64_LE) return -1;
+    arch_count = imgcheck_read_u32_be(data + 4U);
+    if (arch_count > 32U) return -1;
+    for (index = 0U; index < arch_count; ++index) {
+        unsigned int entry_size = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
+        size_t entry = 8U + (size_t)index * entry_size;
+        unsigned int cputype;
+        unsigned long long offset;
+        unsigned long long slice_size;
+        if (entry + entry_size > size) return -1;
+        cputype = imgcheck_read_u32_be(data + entry + 0U);
+        offset = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)imgcheck_read_u32_be(data + entry + 8U) << 32U) | (unsigned long long)imgcheck_read_u32_be(data + entry + 12U)) : (unsigned long long)imgcheck_read_u32_be(data + entry + 8U);
+        slice_size = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)imgcheck_read_u32_be(data + entry + 16U) << 32U) | (unsigned long long)imgcheck_read_u32_be(data + entry + 20U)) : (unsigned long long)imgcheck_read_u32_be(data + entry + 12U);
+        if (offset > (unsigned long long)size || slice_size > (unsigned long long)size || offset + slice_size > (unsigned long long)size) return -1;
+        if (cputype == IMGCHECK_MACHO_CPU_TYPE_ARM64 || index == 0U) {
+            *slice_out = data + offset;
+            *slice_size_out = (size_t)slice_size;
+            if (cputype == IMGCHECK_MACHO_CPU_TYPE_ARM64) return 0;
+        }
+    }
+    return *slice_out != data ? 0 : -1;
 }
 
 static void imgcheck_macho_fail(ImgcheckMachoValidation *validation, const char *message, size_t offset) {
@@ -567,9 +602,15 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
     if (read_all_input(path, &data, &size) != 0) {
         return -1;
     }
-    if (imgcheck_is_macho64(data, size)) {
+    {
+        const unsigned char *macho_data = data;
+        size_t macho_size = size;
+        if (!imgcheck_is_macho64(macho_data, macho_size)) {
+            (void)imgcheck_select_macho_fat_slice(data, size, &macho_data, &macho_size);
+        }
+        if (imgcheck_is_macho64(macho_data, macho_size)) {
         ImgcheckMachoValidation macho_validation;
-        imgcheck_validate_macho(data, size, options, &macho_validation);
+        imgcheck_validate_macho(macho_data, macho_size, options, &macho_validation);
         rt_free(data);
         if (!options->quiet) {
             if (options->json) {
@@ -581,6 +622,7 @@ static int check_path(const char *path, const ImgcheckOptions *options) {
             }
         }
         return macho_validation.valid ? 0 : -1;
+        }
     }
     validation_options.strict = options->strict;
     c2pa_options.trust_validation = options->c2pa_trust_validation;

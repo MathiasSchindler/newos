@@ -12,7 +12,7 @@ imgcheck [-q|--quiet] [-v|--verbose] [-p|--plain] [--json] [--strict] [--c2pa-tr
 
 ## DESCRIPTION
 
-`imgcheck` reads image files and reports whether each input is recognized and structurally valid according to the checks implemented by the shared image parser. It also automatically recognizes Mach-O 64-bit little-endian files and runs structural executable checks without requiring a format flag. When C2PA/JUMBF metadata is present, it reports C2PA structure, CBOR, COSE, certificate, content-hash, signature, and trust status alongside the normal image-container result.
+`imgcheck` reads image files and reports whether each input is recognized and structurally valid according to the checks implemented by the shared image parser. It also automatically recognizes Mach-O 64-bit little-endian files and Mach-O universal binaries with an arm64/arm64e slice, then runs structural executable checks without requiring a format flag. When C2PA/JUMBF metadata is present, it reports C2PA structure, CBOR, COSE, certificate, content-hash, signature, and trust status alongside the normal image-container result.
 
 The first validation passes perform real PNG, JPEG, GIF, TIFF, WebP, and BMP container checks. PNG checks include signature, required chunk order, IHDR fields, chunk lengths, CRC values, required IDAT data, and IEND termination. JPEG checks include marker sequencing, segment lengths, SOF dimensions and component tables, SOS presence, scan-data marker escaping, EOI termination, and trailing data. GIF checks include the header, logical screen descriptor, global and local color table bounds, extension blocks, image descriptors, image data sub-block termination, and trailer termination. TIFF checks include byte order, magic number, first IFD bounds, value offsets, and required first-image dimensions for classic TIFF. WebP checks include RIFF sizing, chunk bounds, and required image chunks. BMP checks include file and DIB headers, dimensions, plane count, bit depth, compression compatibility, color-table bounds, pixel-data offsets, and uncompressed pixel-array length. For uncompressed BMP files, the pixel-array span is verified against the decoded row layout.
 
@@ -28,7 +28,8 @@ When no file is provided, `imgcheck` reads from standard input.
 - WebP, with RIFF chunk validation
 - Mach-O 64-bit little-endian files, with load-command, segment, section,
   `LC_MAIN`, code-signature range and CodeDirectory SHA-256 verification,
-  dylib-import, and PIE/rebase metadata checks
+	dylib-import, and PIE/rebase metadata checks. Universal binaries are handled
+	by validating the preferred arm64/arm64e slice.
 
 ## OPTIONS
 

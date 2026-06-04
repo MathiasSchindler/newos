@@ -28,6 +28,9 @@
 #define MACHO_S_GB_ZEROFILL 12U
 #define MACHO_S_16BYTE_LITERALS 14U
 #define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
+#define MACHO_FAT_MAGIC_LE 0xbebafecaU
+#define MACHO_FAT_MAGIC_64_LE 0xbfbafecaU
+#define MACHO_CPU_TYPE_ARM64 0x0100000cU
 
 typedef struct {
     unsigned int name;
@@ -102,6 +105,7 @@ typedef struct {
 } PeSectionInfo;
 
 static int objdump_json;
+static unsigned long long objdump_object_base;
 
 static int json_field_string(const char *name, const char *value) {
     if (rt_write_cstr(1, ",\"") != 0) return -1;
@@ -225,10 +229,48 @@ static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *s
 }
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) {
+    if (platform_seek(fd, (long long)(objdump_object_base + offset), PLATFORM_SEEK_SET) < 0) {
         return -1;
     }
     return archive_read_exact(fd, buffer, size);
+}
+
+static int read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
+    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) return -1;
+    return archive_read_exact(fd, buffer, size);
+}
+
+static unsigned int read_u32_be_local(const unsigned char *bytes) {
+    return ((unsigned int)bytes[0] << 24U) |
+           ((unsigned int)bytes[1] << 16U) |
+           ((unsigned int)bytes[2] << 8U) |
+           (unsigned int)bytes[3];
+}
+
+static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
+    unsigned char header[8];
+    unsigned int magic;
+    unsigned int arch_count;
+    unsigned int index;
+    *offset_out = 0ULL;
+    if (read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    magic = read_u32_le_local(header + 0);
+    if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
+    arch_count = read_u32_be_local(header + 4);
+    if (arch_count > 32U) return -1;
+    for (index = 0U; index < arch_count; ++index) {
+        unsigned char raw[32];
+        unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
+        unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
+        unsigned int cputype;
+        if (read_file_region(fd, entry, raw, entry_size) != 0) return -1;
+        cputype = read_u32_be_local(raw + 0);
+        if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
+            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)read_u32_be_local(raw + 8) << 32U) | (unsigned long long)read_u32_be_local(raw + 12)) : (unsigned long long)read_u32_be_local(raw + 8);
+            if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
+        }
+    }
+    return *offset_out != 0ULL ? 0 : -1;
 }
 
 static const char *machine_name(unsigned short machine) {
@@ -1131,9 +1173,14 @@ int main(int argc, char **argv) {
             exit_code = 1;
             continue;
         }
+        objdump_object_base = 0ULL;
 
         if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
             load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
+            unsigned long long macho_slice_offset;
+            if (select_macho_fat_slice(fd, &macho_slice_offset) == 0) {
+                objdump_object_base = macho_slice_offset;
+            }
             if (parse_macho_header(fd, &macho) == 0 && load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0 && load_macho_symtab(fd, &macho, &macho_symtab) == 0) {
                 if (show_file) {
                     if (objdump_json) (void)json_file_header_event(argv[i], "mach-o-64", macho_machine_name(macho.cputype), macho_type_name(macho.filetype), 0ULL, (unsigned long long)macho.flags);

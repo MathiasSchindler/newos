@@ -93,6 +93,39 @@ assert_file_contains "$WORK_DIR/imgcheck_true.out" 'code-signature=verified' "im
 "$BUILD_DIR/imgcheck" --json "$BUILD_DIR/true" > "$WORK_DIR/imgcheck_true.jsonl"
 assert_file_contains "$WORK_DIR/imgcheck_true.jsonl" '"code_signature_verified":true' "imgcheck --json did not report verified Mach-O code signature"
 
+if [ -e /usr/bin/true ]; then
+    "$BUILD_DIR/file" --json /usr/bin/true > "$WORK_DIR/file_usr_bin_true.jsonl"
+    assert_file_contains "$WORK_DIR/file_usr_bin_true.jsonl" 'Mach-O universal binary with' "file --json did not describe /usr/bin/true as a universal Mach-O"
+    assert_file_contains "$WORK_DIR/file_usr_bin_true.jsonl" 'arm64e' "file --json did not report the arm64e slice in /usr/bin/true"
+
+    "$BUILD_DIR/readelf" -h -l -S -s -n /usr/bin/true > "$WORK_DIR/readelf_usr_bin_true.out"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'Mach-O Universal Binary' "readelf did not report the Mach-O fat header for /usr/bin/true"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'Selected Mach-O slice: arm64e' "readelf did not select the arm64e slice in /usr/bin/true"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'LC_DYLD_CHAINED_FIXUPS' "readelf did not name dyld chained fixups"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'LC_DYLD_EXPORTS_TRIE' "readelf did not name dyld exports trie"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'LC_LOAD_DYLIB' "readelf did not decode dylib imports"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'CDHash:' "readelf did not print the Mach-O CDHash"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.out" 'CMS Signature' "readelf did not report the CMS signature blob"
+
+    "$BUILD_DIR/readelf" --json -h -l -S -s -n /usr/bin/true > "$WORK_DIR/readelf_usr_bin_true.jsonl"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.jsonl" '"event":"macho_fat_arch"' "readelf --json did not emit Mach-O fat architecture events"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.jsonl" '"name":"LC_DYLD_CHAINED_FIXUPS"' "readelf --json did not name dyld chained fixups"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true.jsonl" '"cms_signature_size"' "readelf --json did not report CMS signature size"
+
+    "$BUILD_DIR/objdump" -f -h -t /usr/bin/true > "$WORK_DIR/objdump_usr_bin_true.out"
+    assert_file_contains "$WORK_DIR/objdump_usr_bin_true.out" 'file format mach-o-64' "objdump did not inspect the selected /usr/bin/true Mach-O slice"
+    assert_file_contains "$WORK_DIR/objdump_usr_bin_true.out" '__mh_execute_header' "objdump did not print /usr/bin/true Mach-O symbols"
+
+    "$BUILD_DIR/nm" /usr/bin/true > "$WORK_DIR/nm_usr_bin_true.out"
+    assert_file_contains "$WORK_DIR/nm_usr_bin_true.out" '__mh_execute_header' "nm did not inspect the selected /usr/bin/true Mach-O slice"
+
+    "$BUILD_DIR/size" /usr/bin/true > "$WORK_DIR/size_usr_bin_true.out"
+    assert_file_contains "$WORK_DIR/size_usr_bin_true.out" '/usr/bin/true' "size did not inspect the selected /usr/bin/true Mach-O slice"
+
+    "$BUILD_DIR/imgcheck" --json /usr/bin/true > "$WORK_DIR/imgcheck_usr_bin_true.jsonl"
+    assert_file_contains "$WORK_DIR/imgcheck_usr_bin_true.jsonl" '"code_signature_verified":true' "imgcheck did not verify the selected /usr/bin/true Mach-O slice"
+fi
+
 if command -v clang >/dev/null 2>&1; then
     cat > "$WORK_DIR/macho_symbols.c" <<'C'
 extern int ext;

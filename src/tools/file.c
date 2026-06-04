@@ -270,6 +270,14 @@ static const char *macho_machine_name(unsigned int cputype) {
     return "unknown architecture";
 }
 
+static const char *macho_arch_name(unsigned int cputype, unsigned int cpusubtype) {
+    unsigned int subtype = cpusubtype & 0x00ffffffU;
+    if (cputype == 0x01000007U) return "x86_64";
+    if (cputype == 0x0100000cU && subtype == 2U) return "arm64e";
+    if (cputype == 0x0100000cU) return "arm64";
+    return macho_machine_name(cputype);
+}
+
 static int describe_macho(const unsigned char *buffer, size_t length, FileTypeInfo *info) {
     unsigned int magic;
     unsigned int cputype;
@@ -279,8 +287,34 @@ static int describe_macho(const unsigned char *buffer, size_t length, FileTypeIn
 
     if (length < 16U) return 0;
     magic = read_u32_le(buffer);
-    if (magic == 0xcafebabeU || magic == 0xbebafecaU) {
-        info->description = "Mach-O universal binary";
+    if (magic == 0xbebafecaU || magic == 0xbfbafecaU) {
+        unsigned int arch_count = read_u32_be(buffer + 4);
+        unsigned int arch_index;
+        unsigned int entry_size = magic == 0xbfbafecaU ? 32U : 20U;
+        dynamic_set("Mach-O universal binary");
+        if (arch_count != 0U && 8U + arch_count * entry_size <= length) {
+            dynamic_append(" with ");
+            dynamic_append_uint(arch_count);
+            dynamic_append(arch_count == 1U ? " architecture" : " architectures");
+            details_clear();
+            details_append("  macho-fat-architectures:");
+            for (arch_index = 0U; arch_index < arch_count && arch_index < 8U; ++arch_index) {
+                size_t entry = 8U + (size_t)arch_index * entry_size;
+                unsigned int arch_cputype = read_u32_be(buffer + entry + 0U);
+                unsigned int arch_cpusubtype = read_u32_be(buffer + entry + 4U);
+                unsigned int align = read_u32_be(buffer + entry + (entry_size == 32U ? 24U : 16U));
+                dynamic_append(arch_index == 0U ? ": [" : " [");
+                dynamic_append(macho_arch_name(arch_cputype, arch_cpusubtype));
+                dynamic_append("]");
+                details_append(arch_index == 0U ? " " : ", ");
+                details_append(macho_arch_name(arch_cputype, arch_cpusubtype));
+                details_append(" align=2^");
+                details_append_uint(align);
+            }
+            details_append("\n");
+            info->details = dynamic_details;
+        }
+        info->description = dynamic_description;
         info->mime = "application/x-mach-binary";
         info->magic = "Mach-O fat";
         return 1;
@@ -304,7 +338,7 @@ static int describe_macho(const unsigned char *buffer, size_t length, FileTypeIn
     dynamic_append(is_64_bit ? "64-bit " : "32-bit ");
     dynamic_append(macho_type_name(filetype));
     dynamic_append(" ");
-    dynamic_append(macho_machine_name(cputype));
+    dynamic_append(macho_arch_name(cputype, is_big_endian ? read_u32_be(buffer + 8) : read_u32_le(buffer + 8)));
     info->description = dynamic_description;
     info->mime = "application/x-mach-binary";
     info->magic = "Mach-O";

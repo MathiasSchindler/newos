@@ -18,7 +18,8 @@ profiler workflows, especially producing `nm -n` symbol maps for `profiler`.
 For Mach-O, `nm` reads `LC_SYMTAB`, classifies common section-backed text, data,
 bss, absolute, indirect, undefined, private, external, and weak symbols, and
 works on both clang-produced objects and project-linked executables when a
-symbol table is present.
+symbol table is present. For Mach-O universal binaries, `nm` inspects the
+preferred arm64/arm64e slice.
 
 ## OPTIONS
 
@@ -43,6 +44,7 @@ the shared `json-output` envelope.
 ## LIMITATIONS
 
 ELF64 little-endian symbol tables and Mach-O `LC_SYMTAB` symbols are supported.
+Mach-O universal binaries are supported by selecting one arm64/arm64e slice.
 Archives, DWARF, and PE/COFF symbol tables are outside the initial scope.
 
 ## SEE ALSO

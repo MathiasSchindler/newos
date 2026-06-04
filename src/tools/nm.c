@@ -24,6 +24,9 @@
 #define MACHO_S_ZEROFILL 1U
 #define MACHO_S_GB_ZEROFILL 12U
 #define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
+#define MACHO_FAT_MAGIC_LE 0xbebafecaU
+#define MACHO_FAT_MAGIC_64_LE 0xbfbafecaU
+#define MACHO_CPU_TYPE_ARM64 0x0100000cU
 
 #define ELF_SHT_SYMTAB 2U
 #define ELF_SHT_STRTAB 3U
@@ -79,6 +82,7 @@ static int nm_undefined_only;
 static int nm_external_only;
 static int nm_json;
 static const char *nm_current_format = "elf";
+static unsigned long long nm_object_base;
 
 static int add_symbol(const char *name, unsigned long long value, unsigned long long size, unsigned char info, unsigned short shndx, char type);
 
@@ -90,15 +94,54 @@ static unsigned int read_u32_le(const unsigned char *bytes) {
     return archive_read_u32_le(bytes);
 }
 
+static unsigned int read_u32_be(const unsigned char *bytes) {
+    return ((unsigned int)bytes[0] << 24U) |
+           ((unsigned int)bytes[1] << 16U) |
+           ((unsigned int)bytes[2] << 8U) |
+           (unsigned int)bytes[3];
+}
+
 static unsigned long long read_u64_le(const unsigned char *bytes) {
     return archive_read_u64_le(bytes);
 }
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) {
+    if (platform_seek(fd, (long long)(nm_object_base + offset), PLATFORM_SEEK_SET) < 0) {
         return -1;
     }
     return archive_read_exact(fd, buffer, size);
+}
+
+static int read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
+    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) return -1;
+    return archive_read_exact(fd, buffer, size);
+}
+
+static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
+    unsigned char header[8];
+    unsigned int magic;
+    unsigned int arch_count;
+    unsigned int index;
+
+    *offset_out = 0ULL;
+    if (read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    magic = read_u32_le(header + 0);
+    if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
+    arch_count = read_u32_be(header + 4);
+    if (arch_count > 32U) return -1;
+    for (index = 0U; index < arch_count; ++index) {
+        unsigned char raw[32];
+        unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
+        unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
+        unsigned int cputype;
+        if (read_file_region(fd, entry, raw, entry_size) != 0) return -1;
+        cputype = read_u32_be(raw + 0);
+        if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
+            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)read_u32_be(raw + 8) << 32U) | (unsigned long long)read_u32_be(raw + 12)) : (unsigned long long)read_u32_be(raw + 8);
+            if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
+        }
+    }
+    return *offset_out != 0ULL ? 0 : -1;
 }
 
 static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
@@ -448,6 +491,7 @@ static int nm_file(const char *path) {
     int saw_symbols = 0;
 
     nm_symbol_count = 0U;
+    nm_object_base = 0ULL;
     if (fd < 0) {
         tool_write_error("nm", "cannot open ", path);
         return 1;
@@ -456,6 +500,17 @@ static int nm_file(const char *path) {
         platform_close(fd);
         tool_write_error("nm", "unsupported file: ", path);
         return 1;
+    }
+    if (read_u32_le(header) == MACHO_FAT_MAGIC_LE || read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
+        unsigned long long slice_offset;
+        if (select_macho_fat_slice(fd, &slice_offset) == 0) {
+            nm_object_base = slice_offset;
+            if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
+                platform_close(fd);
+                tool_write_error("nm", "unsupported file: ", path);
+                return 1;
+            }
+        }
     }
     if (read_u32_le(header) == 0xfeedfacfU) {
         nm_current_format = "macho";

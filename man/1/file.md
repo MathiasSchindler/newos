@@ -24,7 +24,8 @@ Recognises the following types by magic bytes or content inspection:
 - ELF executable and object files
 - ELF class, byte order, object type, and common machine architectures
 - 7-Zip, bzip2, xz archives
-- Mach-O word size, file type, and common CPU families
+- Mach-O word size, file type, common CPU families, universal/fat architecture
+	counts, and arm64e slices
 - PE/COFF (Windows) executables, including PE32/PE32+, common CPU architectures, subsystem, DLL/executable distinction, section count, and verbose header and section-table details
 - tar archives, ar static libraries
 - Python, Perl, awk, and shell scripts (shebang detection)
@@ -56,6 +57,7 @@ file -v /bin/ls
 file -b README.md
 file -i image.png
 file --json build/newlinker-macos-aarch64/true
+file --json /usr/bin/true
 file -L /proc/self/exe
 file *.c
 ```
@@ -66,6 +68,8 @@ With `--json`, `file` emits one `file_type` event per input using the common
 envelope documented in `json-output`. The `data` object includes `path`,
 `description`, `mime`, `magic`, `details`, `sampled_bytes`, and, when available,
 filesystem metadata such as `size` and `mode`. Symlink events include `target`.
+For Mach-O universal binaries, `description` names the slice architectures and
+`details` includes the per-slice alignment summary.
 
 Example event:
 

@@ -12,10 +12,10 @@ size [--json] FILE ...
 
 ## DESCRIPTION
 
-`size` reads ELF64 little-endian files and Mach-O 64-bit little-endian files and
-prints text, data, bss, total decimal, total hexadecimal, file size, and file
-name. It is useful for checking the effect of compiler flags, LTO, and newlinker
-size optimizations.
+`size` reads ELF64 little-endian files, Mach-O 64-bit little-endian files, and
+Mach-O universal binaries with an arm64/arm64e slice. It prints text, data, bss,
+total decimal, total hexadecimal, file size, and file name. It is useful for
+checking the effect of compiler flags, LTO, and newlinker size optimizations.
 
 For Mach-O inputs, `size` reads `LC_SEGMENT_64` section metadata. `__TEXT`
 sections count as text, writable initialized sections count as data, and
@@ -49,7 +49,8 @@ Diagnostics and usage messages follow the shared `json-output` envelope.
 - ELF64 support depends on section headers. Compact stripped ELF executables
 	without section headers cannot be broken down into text/data/bss.
 - Mach-O support covers 64-bit little-endian files with `LC_SEGMENT_64`
-	sections, including the arm64 binaries produced by the macOS newlinker path.
+	sections, including the arm64 binaries produced by the macOS newlinker path
+	and selected arm64/arm64e slices from universal binaries.
 - Mach-O totals are section-payload totals, not rounded segment or code-signature
 	sizes.
 
