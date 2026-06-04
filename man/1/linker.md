@@ -66,7 +66,10 @@ path instead of hiding it behind ELF aliases.
   relocations. This is most useful with compiler inputs built using
   `-ffunction-sections -fdata-sections`. On Mach-O arm64, the final backend is
   still conservative after Clang LTO materializes one native object, but this
-  option asks the Clang/ld64 LTO prelink step to use `-dead_strip`.
+  option asks the Clang/ld64 LTO prelink step to use `-dead_strip`. The macOS
+  project runtime depends on narrow `used` annotations for the Darwin/libc-shaped
+  wrappers ld64 must materialize; broad annotations defeat this dead-strip pass
+  and keep unused runtime wrappers in small tools.
 - `--no-gc-sections` - disable section-level garbage collection and keep the
   current object-level reachability behavior.
 - `--macho-compact` - for Mach-O arm64 outputs, preserve loader-safe 16 KiB
@@ -194,16 +197,19 @@ tools. Top-section and top-object lists focus on file-backed payload by omitting
 BSS and already folded sections. The report target is intended to guide
 feature-preserving size work.
 
-`make macos-freestanding-size-report` prints exact Mach-O file bytes and summed
-file-backed Mach-O section bytes for representative macOS freestanding-ish tools.
-Use the file-section byte column when judging linker or LTO changes on macOS,
-because final Mach-O file sizes can move in coarse 16 KiB-ish steps after page,
-segment, and signature layout effects are applied.
+`make macos-freestanding-size-report` prints exact Mach-O file bytes, summed
+file-backed Mach-O section bytes, raster/layout overhead, load-command counts,
+and `LC_BUILD_VERSION` tool-record counts for representative project-linked
+macOS freestanding tools. Use the file-section byte column when judging linker
+or LTO changes on macOS, because final Mach-O file sizes can move in coarse 16
+KiB-ish steps after page, segment, and signature layout effects are applied.
 
 Save a report and compare later with `make macos-freestanding-size-compare
 BASELINE=previous.tsv`. The compare output adds `delta_file_bytes` and
 `delta_file_section_bytes`; the latter is the main pre-raster signal for macOS
-size work.
+size work. The report target follows the normal macOS `make freestanding`
+default and measures `build/newlinker-macos-aarch64/` unless the build directory
+is overridden.
 
 `make test-newlinker-optimizations` runs small standalone linker fixtures for
 relocation-aware ICF, mergeable string pooling, and reporting output. The ICF

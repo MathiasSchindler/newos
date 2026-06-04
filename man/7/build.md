@@ -79,6 +79,10 @@ with the in-tree `linker --target=mach-o-arm64` backend.
   `--macho-compact --gc-sections`; compact mode keeps loader-safe 16 KiB segment
   alignment while trimming optional load-command payload, and `--gc-sections`
   asks the Clang LTO prelink step to dead-strip when LTO inputs are present
+- keeps macOS project-runtime exports visible but force-retains only the
+  Darwin/libc-shaped wrappers that ld64 must materialize from LTO; avoid adding
+  blanket `used` retention to new runtime wrappers, because that pins unused
+  syscall and libc-compatible entry points into otherwise small tools
 - auto-parallelizes to the host core count when no `-j` option is supplied;
   pass `-jN` or other make jobserver flags to override that behavior
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
@@ -87,6 +91,12 @@ with the in-tree `linker --target=mach-o-arm64` backend.
   runtime additions
 - `test-macos-newlinker-tools` builds the same declared set before running
   representative smoke assertions and no-import checks
+- `make macos-freestanding-size-report` follows this normal project-linked
+  build and reports exact file bytes, summed file-backed Mach-O section bytes,
+  raster/layout overhead, load-command counts, and `LC_BUILD_VERSION`
+  tool-record counts for representative tools; save a report and rerun with
+  `make macos-freestanding-size-compare BASELINE=previous.tsv` to get exact
+  file-byte and file-section-byte deltas
 
 The project-linked runtime supplies environment handling, page-size `sysconf`,
 directory enumeration, user/group lookup, time formatting, network interface
@@ -119,13 +129,8 @@ is the usual Apple toolchain ABI library for launchable executables.
   default; LTO is enabled by default for the macOS libSystem comparison target and
   can be disabled with `MACOS_FREESTANDING_LTO=0`; XML tools and `ncc`
   currently opt out of LTO because they hit Apple-clang LTO-only crashes
-- size work on this path should compare pre-raster payload measurements as well
-  as final file bytes. `make macos-freestanding-size-report` reports exact file
-  bytes and summed file-backed Mach-O section bytes for representative tools, so
-  linker or LTO changes can be judged before 16 KiB-ish Mach-O layout/signature
-  steps hide smaller gains or regressions. Save a report and rerun with
-  `make macos-freestanding-size-compare BASELINE=previous.tsv` to get exact
-  file-byte and file-section-byte deltas
+- use `make freestanding-macos` for explicit Apple-ld/libSystem size comparisons
+  against the project-linked default when needed
 - keeps privileged or host-mutating operations conservative on Darwin when the
   project does not yet have a validated macOS implementation, so some admin
   front-ends build and report unsupported operations instead of changing the host
@@ -279,7 +284,7 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 ## LIMITATIONS
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
-- On macOS, the default `make` behavior still favors local hosted binaries; `make freestanding` on local aarch64 routes to the early Darwin approximation, which still links the required system ABI library
+- On macOS/aarch64, `make freestanding` is the project-linked Mach-O path; use `make freestanding-macos` only for the older Apple-ld/libSystem comparison build
 - Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `build-windows-freestanding.ps1` for the native no-CRT PE backend
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks

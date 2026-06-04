@@ -324,12 +324,12 @@ newlinker-size-report: $(BUILD_DIR)/linker
 newlinker-lto-size-report: $(BUILD_DIR)/linker
 	LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash report-newlinker-lto-size.sh
 
-macos-freestanding-size-report: freestanding-macos
-	bash report-macos-freestanding-size.sh
+macos-freestanding-size-report: freestanding
+	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" bash report-macos-freestanding-size.sh
 
-macos-freestanding-size-compare: freestanding-macos
+macos-freestanding-size-compare: freestanding
 	@test -n "$(BASELINE)" || { echo "usage: make macos-freestanding-size-compare BASELINE=previous.tsv" >&2; exit 1; }
-	bash report-macos-freestanding-size.sh --compare "$(BASELINE)"
+	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" bash report-macos-freestanding-size.sh --compare "$(BASELINE)"
 
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 test-freestanding:

@@ -90,6 +90,10 @@ rules pass `MACOS_NEWLINKER_LINK_FLAGS`, defaulting to
 `--macho-compact --gc-sections`, so final links use the loader-safe compact
 Mach-O load-command policy and ask Clang's LTO prelink step to dead-strip where
 it can.
+The macOS project runtime keeps its wrappers visible for final symbol resolution
+but only force-retains the Darwin/libc-shaped entry points that ld64 needs to
+materialize from LTO. Keeping that retention list narrow lets unused runtime
+wrappers fall out of small tools instead of pinning them into every binary.
 It deliberately treats the resulting binaries as project-linked, no-import
 executables: representative smoke tests reject dylib imports. That is stricter
 than the explicit `freestanding-macos` comparison build, which still uses

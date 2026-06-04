@@ -53,10 +53,21 @@ assert_file_contains "$WORK_DIR/tr.out" '^ABC$' "tr output mismatch"
 assert_file_contains "$WORK_DIR/wc.out" ' 2 ' "wc line count mismatch"
 
 if command -v otool >/dev/null 2>&1; then
-    otool -L "$BUILD_DIR/rev" > "$WORK_DIR/rev.otool"
-    if grep -q '\.dylib' "$WORK_DIR/rev.otool"; then
-        fail "project-linked Mach-O tool should not import dylibs yet"
-    fi
+    checked_tools=0
+    for candidate in "$BUILD_DIR"/*; do
+        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+            checked_tools=$((checked_tools + 1))
+            otool -L "$candidate" > "$WORK_DIR/otool_L.out"
+            if grep -q '\.dylib' "$WORK_DIR/otool_L.out"; then
+                fail "project-linked Mach-O tool should not import dylibs: $candidate"
+            fi
+        fi
+    done
+    [ "$checked_tools" -gt 0 ] || fail "no project-linked Mach-O tools were checked"
+
+    otool -l "$BUILD_DIR/true" > "$WORK_DIR/true_load_commands.otool"
+    assert_file_contains "$WORK_DIR/true_load_commands.otool" 'LC_BUILD_VERSION' "project-linked Mach-O output should keep LC_BUILD_VERSION"
+    assert_file_contains "$WORK_DIR/true_load_commands.otool" 'ntools 0' "default macOS newlinker flags should use compact build-version load command"
 fi
 
 "$BUILD_DIR/file" "$BUILD_DIR/true" > "$WORK_DIR/file_true.out"

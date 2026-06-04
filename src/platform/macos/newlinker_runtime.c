@@ -12,7 +12,7 @@
 #define MACOS_NEWLINKER_MAXPATHLEN 1024U
 #define MACOS_NEWLINKER_CTL_KERN 1
 #define MACOS_NEWLINKER_KERN_HOSTNAME 10
-#define MACOS_NEWLINKER_EXPORT __attribute__((used, visibility("default")))
+#define MACOS_NEWLINKER_EXPORT __attribute__((visibility("default")))
 #define MACOS_NEWLINKER_AF_UNSPEC 0
 #define MACOS_NEWLINKER_AF_INET 2
 #define MACOS_NEWLINKER_AF_LINK 18
@@ -37,6 +37,10 @@
 #define MACOS_NEWLINKER_IFADDR_COUNT 64U
 
 typedef unsigned int macos_newlinker_socklen_t;
+
+/* Keep wrappers visible to the final project linker, but only force LTO
+ * materialization for Darwin/libc-shaped names that ld64 otherwise drops. */
+#define MACOS_NEWLINKER_RETAIN_EXPORT __attribute__((used, visibility("default")))
 
 struct sockaddr {
 	unsigned char sa_len;
@@ -965,7 +969,7 @@ MACOS_NEWLINKER_EXPORT long readlink(const char *path, char *buffer, size_t buff
 	return darwin_syscall3(DARWIN_SYS_READLINK, (long)path, (long)buffer, (long)buffer_size);
 }
 
-MACOS_NEWLINKER_EXPORT int kill(int pid, int signal_number) {
+MACOS_NEWLINKER_RETAIN_EXPORT int kill(int pid, int signal_number) {
 	return darwin_syscall2(DARWIN_SYS_KILL, (long)pid, (long)signal_number) < 0 ? -1 : 0;
 }
 
@@ -985,7 +989,7 @@ MACOS_NEWLINKER_EXPORT int dup2(int old_fd, int new_fd) {
 	return (int)darwin_syscall2(DARWIN_SYS_DUP2, (long)old_fd, (long)new_fd);
 }
 
-MACOS_NEWLINKER_EXPORT int waitpid(int pid, int *status, int options) {
+MACOS_NEWLINKER_RETAIN_EXPORT int waitpid(int pid, int *status, int options) {
 	long result = darwin_syscall4(DARWIN_SYS_WAIT4, (long)pid, (long)status, (long)options, 0);
 	if (result < 0 && pid > 0) {
 		result = darwin_syscall4(DARWIN_SYS_WAIT4, -1, (long)status, (long)options, 0);
@@ -1048,11 +1052,11 @@ MACOS_NEWLINKER_EXPORT int mknod(const char *path, unsigned int mode, unsigned i
 	return darwin_syscall3(DARWIN_SYS_MKNOD, (long)path, (long)mode, (long)device) < 0 ? -1 : 0;
 }
 
-MACOS_NEWLINKER_EXPORT int statfs(const char *path, void *buffer) {
+MACOS_NEWLINKER_RETAIN_EXPORT int statfs(const char *path, void *buffer) {
 	return darwin_syscall2(DARWIN_SYS_STATFS64, (long)path, (long)buffer) < 0 ? -1 : 0;
 }
 
-MACOS_NEWLINKER_EXPORT int listen(int fd, int backlog) {
+MACOS_NEWLINKER_RETAIN_EXPORT int listen(int fd, int backlog) {
 	return darwin_syscall2(DARWIN_SYS_LISTEN, (long)fd, (long)backlog) < 0 ? -1 : 0;
 }
 
@@ -1069,17 +1073,17 @@ MACOS_NEWLINKER_EXPORT int socket(int domain, int type, int protocol) {
 	return (int)darwin_syscall3(DARWIN_SYS_SOCKET, (long)domain, (long)type, (long)protocol);
 }
 
-MACOS_NEWLINKER_EXPORT int connect(int fd, const void *address, unsigned int address_length) {
+MACOS_NEWLINKER_RETAIN_EXPORT int connect(int fd, const void *address, unsigned int address_length) {
 	long result = darwin_syscall3(DARWIN_SYS_CONNECT, (long)fd, (long)address, (long)address_length);
 	return result < 0 ? -1 : (int)result;
 }
 
-MACOS_NEWLINKER_EXPORT int bind(int fd, const void *address, unsigned int address_length) {
+MACOS_NEWLINKER_RETAIN_EXPORT int bind(int fd, const void *address, unsigned int address_length) {
 	long result = darwin_syscall3(DARWIN_SYS_BIND, (long)fd, (long)address, (long)address_length);
 	return result < 0 ? -1 : (int)result;
 }
 
-MACOS_NEWLINKER_EXPORT int accept(int fd, void *address, unsigned int *address_length) {
+MACOS_NEWLINKER_RETAIN_EXPORT int accept(int fd, void *address, unsigned int *address_length) {
 	return (int)darwin_syscall3(DARWIN_SYS_ACCEPT, (long)fd, (long)address, (long)address_length);
 }
 
@@ -1088,19 +1092,19 @@ MACOS_NEWLINKER_EXPORT int setsockopt(int fd, int level, int option_name, const 
 	return result < 0 ? -1 : (int)result;
 }
 
-MACOS_NEWLINKER_EXPORT long recv(int fd, void *buffer, size_t length, int flags) {
+MACOS_NEWLINKER_RETAIN_EXPORT long recv(int fd, void *buffer, size_t length, int flags) {
 	return darwin_syscall6(DARWIN_SYS_RECVFROM, (long)fd, (long)buffer, (long)length, (long)flags, 0, 0);
 }
 
-MACOS_NEWLINKER_EXPORT long recvfrom(int fd, void *buffer, size_t length, int flags, void *address, unsigned int *address_length) {
+MACOS_NEWLINKER_RETAIN_EXPORT long recvfrom(int fd, void *buffer, size_t length, int flags, void *address, unsigned int *address_length) {
 	return darwin_syscall6(DARWIN_SYS_RECVFROM, (long)fd, (long)buffer, (long)length, (long)flags, (long)address, (long)address_length);
 }
 
-MACOS_NEWLINKER_EXPORT long sendto(int fd, const void *buffer, size_t length, int flags, const void *address, unsigned int address_length) {
+MACOS_NEWLINKER_RETAIN_EXPORT long sendto(int fd, const void *buffer, size_t length, int flags, const void *address, unsigned int address_length) {
 	return darwin_syscall6(DARWIN_SYS_SENDTO, (long)fd, (long)buffer, (long)length, (long)flags, (long)address, (long)address_length);
 }
 
-MACOS_NEWLINKER_EXPORT long send(int fd, const void *buffer, size_t length, int flags) {
+MACOS_NEWLINKER_RETAIN_EXPORT long send(int fd, const void *buffer, size_t length, int flags) {
 	return sendto(fd, buffer, length, flags, 0, 0);
 }
 
@@ -1387,7 +1391,7 @@ MACOS_NEWLINKER_EXPORT int inet_pton(int family, const char *text, void *address
 	return family == MACOS_NEWLINKER_AF_INET && macos_newlinker_parse_ipv4(text, (unsigned char *)address) == 0 ? 1 : 0;
 }
 
-MACOS_NEWLINKER_EXPORT size_t strftime(char *buffer, size_t buffer_size, const char *format, const void *time_value) {
+MACOS_NEWLINKER_RETAIN_EXPORT size_t strftime(char *buffer, size_t buffer_size, const char *format, const void *time_value) {
 	const struct macos_newlinker_tm *time_info = (const struct macos_newlinker_tm *)time_value;
 	size_t used = 0;
 	size_t index = 0;
@@ -1458,7 +1462,7 @@ MACOS_NEWLINKER_EXPORT int uname(void *name) {
 	return 0;
 }
 
-MACOS_NEWLINKER_EXPORT void *opendir(const char *path) {
+MACOS_NEWLINKER_RETAIN_EXPORT void *opendir(const char *path) {
 	size_t index;
 	long fd;
 	if (path == 0) {
@@ -1482,7 +1486,7 @@ MACOS_NEWLINKER_EXPORT void *opendir(const char *path) {
 	return 0;
 }
 
-MACOS_NEWLINKER_EXPORT void *readdir(void *directory) {
+MACOS_NEWLINKER_RETAIN_EXPORT void *readdir(void *directory) {
 	struct macos_newlinker_dir *dir = (struct macos_newlinker_dir *)directory;
 	if (dir == 0 || !dir->used) {
 		return 0;
@@ -1507,7 +1511,7 @@ MACOS_NEWLINKER_EXPORT void *readdir(void *directory) {
 	}
 }
 
-MACOS_NEWLINKER_EXPORT int closedir(void *directory) {
+MACOS_NEWLINKER_RETAIN_EXPORT int closedir(void *directory) {
 	struct macos_newlinker_dir *dir = (struct macos_newlinker_dir *)directory;
 	if (dir == 0 || !dir->used) {
 		return -1;
@@ -1522,7 +1526,7 @@ MACOS_NEWLINKER_EXPORT int ioctl(int fd, unsigned long request, void *argument) 
 	return result < 0 ? -1 : (int)result;
 }
 
-MACOS_NEWLINKER_EXPORT int poll(void *fds, unsigned long nfds, int timeout) {
+MACOS_NEWLINKER_RETAIN_EXPORT int poll(void *fds, unsigned long nfds, int timeout) {
 	long result = darwin_syscall3(DARWIN_SYS_POLL, (long)fds, (long)nfds, (long)timeout);
 	return result < 0 ? -1 : (int)result;
 }

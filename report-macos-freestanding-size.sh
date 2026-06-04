@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUILD_DIR=${MACOS_FREESTANDING_BUILD_DIR:-build/freestanding-macos-aarch64}
-TOOLS=${TOOLS:-true false cat ncc ssh wget nm size expack}
+BUILD_DIR=${NEWOS_MACOS_NEWLINKER_BUILD_DIR:-${MACOS_FREESTANDING_BUILD_DIR:-build/newlinker-macos-aarch64}}
+TOOLS=${TOOLS:-true false echo printf date ls cat sh readelf ncc ssh wget nm size expack}
 COMPARE_FILE=
 
 while [[ $# -gt 0 ]]; do
@@ -30,9 +30,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+
 if [[ ! -d "$BUILD_DIR" ]]; then
   echo "missing macOS freestanding build directory: $BUILD_DIR" >&2
-  echo "build it first with make freestanding-macos" >&2
+  echo "build it first with make freestanding" >&2
   exit 1
 fi
 if ! command -v otool >/dev/null 2>&1; then
@@ -68,37 +69,52 @@ section_bytes() {
   printf '%s' "$total"
 }
 
+load_command_summary() {
+  local file=$1 ncmds= build_tools=unknown build_seen=0 key value
+  ncmds=$(otool -h "$file" | awk 'NF >= 8 && $1 ~ /^0x/ { print $6; exit }')
+  while read -r key value _; do
+    if [[ "$key" == "cmd" && "$value" == "LC_BUILD_VERSION" ]]; then
+      build_seen=1
+    elif [[ "$build_seen" == 1 && "$key" == "ntools" ]]; then
+      build_tools=$value
+      build_seen=0
+    fi
+  done < <(otool -l "$file")
+  printf '%s\t%s' "${ncmds:-unknown}" "$build_tools"
+}
+
 if [[ -n "$COMPARE_FILE" ]]; then
-  printf 'tool\tfile_bytes\tfile_section_bytes\traster_delta\tdelta_file_bytes\tdelta_file_section_bytes\n'
+  printf 'tool\tfile_bytes\tfile_section_bytes\traster_delta\tload_commands\tbuild_tools\tdelta_file_bytes\tdelta_file_section_bytes\n'
 else
-  printf 'tool\tfile_bytes\tfile_section_bytes\traster_delta\n'
+  printf 'tool\tfile_bytes\tfile_section_bytes\traster_delta\tload_commands\tbuild_tools\n'
 fi
 for tool in $TOOLS; do
   file="$BUILD_DIR/$tool"
   if [[ ! -f "$file" ]]; then
     if [[ -n "$COMPARE_FILE" ]]; then
-      printf '%s\tmissing\tmissing\tmissing\tmissing\tmissing\n' "$tool"
+      printf '%s\tmissing\tmissing\tmissing\tmissing\tmissing\tmissing\tmissing\n' "$tool"
     else
-      printf '%s\tmissing\n' "$tool"
+      printf '%s\tmissing\tmissing\tmissing\tmissing\tmissing\n' "$tool"
     fi
     continue
   fi
   file_bytes=$(wc -c < "$file" | tr -d ' ')
   sections=$(section_bytes "$file")
+  load_summary=$(load_command_summary "$file")
   if [[ -n "$COMPARE_FILE" ]]; then
     previous=$(awk -F '\t' -v tool="$tool" 'NR > 1 && $1 == tool { print $2 "\t" $3; exit }' "$COMPARE_FILE")
     if [[ -n "$previous" ]]; then
       previous_file=${previous%%$'\t'*}
       previous_sections=${previous#*$'\t'}
       if [[ "$previous_file" =~ ^[0-9]+$ && "$previous_sections" =~ ^[0-9]+$ ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))" "$((file_bytes - previous_file))" "$((sections - previous_sections))"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))" "$load_summary" "$((file_bytes - previous_file))" "$((sections - previous_sections))"
       else
-        printf '%s\t%s\t%s\t%s\tmissing\tmissing\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))"
+        printf '%s\t%s\t%s\t%s\t%s\tmissing\tmissing\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))" "$load_summary"
       fi
     else
-      printf '%s\t%s\t%s\t%s\tnew\tnew\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))"
+      printf '%s\t%s\t%s\t%s\t%s\tnew\tnew\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))" "$load_summary"
     fi
   else
-    printf '%s\t%s\t%s\t%s\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$tool" "$file_bytes" "$sections" "$((file_bytes - sections))" "$load_summary"
   fi
 done
