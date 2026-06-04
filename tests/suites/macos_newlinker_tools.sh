@@ -80,6 +80,30 @@ assert_file_contains "$WORK_DIR/readelf_compare_different.out" 'sha256' "readelf
 "$BUILD_DIR/readelf" --json -h -l -S -n "$BUILD_DIR/true" > "$WORK_DIR/readelf_true.jsonl"
 assert_file_contains "$WORK_DIR/readelf_true.jsonl" '"event":"macho_code_signature"' "readelf --json did not emit Mach-O code-signature information"
 
+"$BUILD_DIR/readelf" --macho-map "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_map.out"
+assert_file_contains "$WORK_DIR/readelf_true_map.out" 'Mach-O File/VM Map' "readelf --macho-map did not print the Mach-O map"
+assert_file_contains "$WORK_DIR/readelf_true_map.out" 'Segment __TEXT' "readelf --macho-map did not report the __TEXT segment"
+
+"$BUILD_DIR/readelf" --signature-details "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_signature_details.out"
+assert_file_contains "$WORK_DIR/readelf_true_signature_details.out" 'Mach-O Signature Details' "readelf --signature-details did not print detailed signature information"
+assert_file_contains "$WORK_DIR/readelf_true_signature_details.out" 'CodeDirectory hash offset' "readelf --signature-details did not report CodeDirectory offsets"
+
+"$BUILD_DIR/readelf" --explain-address 0x1000002e8 "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_explain.out"
+assert_file_contains "$WORK_DIR/readelf_true_explain.out" 'Mach-O Address Explanation' "readelf --explain-address did not explain a Mach-O address"
+assert_file_contains "$WORK_DIR/readelf_true_explain.out" 'section: __TEXT,__text' "readelf --explain-address did not locate the __text section"
+
+"$BUILD_DIR/readelf" --compare --deep "$BUILD_DIR/true" "$BUILD_DIR/true" > "$WORK_DIR/readelf_compare_deep_equal.out"
+if "$BUILD_DIR/readelf" --compare --deep "$BUILD_DIR/true" "$BUILD_DIR/false" > "$WORK_DIR/readelf_compare_deep_different.out" 2>&1; then
+    fail "readelf --compare --deep should fail for different Mach-O tools"
+fi
+assert_file_contains "$WORK_DIR/readelf_compare_deep_different.out" 'load_commands_sha256' "readelf --compare --deep did not report load-command differences"
+
+"$BUILD_DIR/size" -m "$BUILD_DIR/true" > "$WORK_DIR/size_true_segments.out"
+assert_file_contains "$WORK_DIR/size_true_segments.out" 'Segment __TEXT' "size -m did not print Mach-O segment sizes"
+assert_file_contains "$WORK_DIR/size_true_segments.out" 'Section __text' "size -m did not print Mach-O section sizes"
+"$BUILD_DIR/size" --json -m "$BUILD_DIR/true" > "$WORK_DIR/size_true_segments.jsonl"
+assert_file_contains "$WORK_DIR/size_true_segments.jsonl" '"event":"macho_segment_size"' "size --json -m did not emit Mach-O segment-size events"
+
 "$BUILD_DIR/objdump" -f -h -r "$BUILD_DIR/true" > "$WORK_DIR/objdump_true.out"
 assert_file_contains "$WORK_DIR/objdump_true.out" 'file format mach-o-64' "objdump did not print the Mach-O file format"
 assert_file_contains "$WORK_DIR/objdump_true.out" 'No Mach-O relocations are available' "objdump did not handle Mach-O relocation output"
@@ -111,6 +135,10 @@ if [ -e /usr/bin/true ]; then
     assert_file_contains "$WORK_DIR/readelf_usr_bin_true.jsonl" '"event":"macho_fat_arch"' "readelf --json did not emit Mach-O fat architecture events"
     assert_file_contains "$WORK_DIR/readelf_usr_bin_true.jsonl" '"name":"LC_DYLD_CHAINED_FIXUPS"' "readelf --json did not name dyld chained fixups"
     assert_file_contains "$WORK_DIR/readelf_usr_bin_true.jsonl" '"cms_signature_size"' "readelf --json did not report CMS signature size"
+
+    "$BUILD_DIR/readelf" --macho-fixups /usr/bin/true > "$WORK_DIR/readelf_usr_bin_true_fixups.out"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true_fixups.out" 'Mach-O Chained Fixups' "readelf --macho-fixups did not report chained fixups for /usr/bin/true"
+    assert_file_contains "$WORK_DIR/readelf_usr_bin_true_fixups.out" 'fixup_pages=' "readelf --macho-fixups did not summarize fixup pages"
 
     "$BUILD_DIR/objdump" -f -h -t /usr/bin/true > "$WORK_DIR/objdump_usr_bin_true.out"
     assert_file_contains "$WORK_DIR/objdump_usr_bin_true.out" 'file format mach-o-64' "objdump did not inspect the selected /usr/bin/true Mach-O slice"

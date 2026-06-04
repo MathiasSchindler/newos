@@ -7,7 +7,7 @@ size - summarize ELF64 and Mach-O text, data, and bss sizes
 ## SYNOPSIS
 
 ```
-size [--json] FILE ...
+size [-m|--segments] [--json] FILE ...
 ```
 
 ## DESCRIPTION
@@ -23,9 +23,17 @@ zero-fill sections such as `__DATA,__bss` count as bss. `__LINKEDIT`, load
 commands, and code signatures are reflected in the file-size column but are not
 included in text/data/bss payload totals.
 
+With `-m` or `--segments`, Mach-O inputs are printed in an Apple `size -m` style:
+each segment is listed with its virtual size, followed by contained sections and
+section totals. This makes `__PAGEZERO`, `__LINKEDIT`, padding, and zero-fill
+memory costs visible without replacing the compact text/data/bss default.
+
 ## OPTIONS
 
-- `--json` - emit JSON Lines events instead of the text table.
+- `-m`, `--segments` - print Mach-O segment and section sizes.
+- `--json` - emit JSON Lines events instead of the text table. With `-m`, emits
+	`macho_segment_size` and `macho_section_size` events before the compact `size`
+	event.
 - `-h`, `--help` - show usage.
 
 ## OUTPUT

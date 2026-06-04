@@ -24,6 +24,7 @@
 #define MACHO_VM_PROT_EXECUTE 4U
 
 static int size_json;
+static int size_segments;
 static unsigned long long size_object_base;
 
 typedef struct {
@@ -217,6 +218,116 @@ static int size_macho64_file(int fd,
     return 0;
 }
 
+static int write_json_macho_segment_size(const char *path,
+                                         const char *segment,
+                                         const char *section,
+                                         unsigned long long size,
+                                         int zerofill,
+                                         unsigned long long fileoff,
+                                         unsigned long long vmaddr) {
+    if (tool_json_begin_event(1, "size", "stdout", section != 0 ? "macho_section_size" : "macho_segment_size") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
+    if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
+    if (rt_write_cstr(1, ",\"segment\":") != 0 || tool_json_write_string(1, segment) != 0) return -1;
+    if (section != 0 && (rt_write_cstr(1, ",\"section\":") != 0 || tool_json_write_string(1, section) != 0)) return -1;
+    if (rt_write_cstr(1, ",\"size\":") != 0 || rt_write_uint(1, size) != 0) return -1;
+    if (rt_write_cstr(1, ",\"zerofill\":") != 0 || rt_write_cstr(1, zerofill ? "true" : "false") != 0) return -1;
+    if (rt_write_cstr(1, ",\"file_offset\":") != 0 || rt_write_uint(1, fileoff) != 0) return -1;
+    if (rt_write_cstr(1, ",\"vmaddr\":") != 0 || rt_write_uint(1, vmaddr) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
+static int print_macho_segment_sizes(int fd, const char *path, const unsigned char *header, unsigned long long file_size) {
+    unsigned int ncmds = read_u32_le(header + 16);
+    unsigned int sizeofcmds = read_u32_le(header + 20);
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+    unsigned long long grand_total = 0ULL;
+
+    if (ncmds > SIZE_MAX_MACHO_COMMANDS || sizeofcmds > file_size || 32ULL + (unsigned long long)sizeofcmds > file_size) return -1;
+    for (command_index = 0U; command_index < ncmds; ++command_index) {
+        unsigned char command_header[8];
+        unsigned int command;
+        unsigned int command_size;
+        if (command_offset + 8ULL > file_size || read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) return -1;
+        command = read_u32_le(command_header + 0);
+        command_size = read_u32_le(command_header + 4);
+        if (command_size < 8U || command_offset + (unsigned long long)command_size > file_size) return -1;
+        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
+            unsigned char segment_command[72];
+            char segment_name[17];
+            unsigned long long vmaddr;
+            unsigned long long vmsize;
+            unsigned long long fileoff;
+            unsigned long long filesize;
+            unsigned int nsects;
+            unsigned int section_index;
+            unsigned long long section_total = 0ULL;
+
+            if (read_region(fd, command_offset, segment_command, sizeof(segment_command)) != 0) return -1;
+            copy_fixed_name(segment_name, sizeof(segment_name), segment_command + 8, 16U);
+            vmaddr = read_u64_le(segment_command + 24);
+            vmsize = read_u64_le(segment_command + 32);
+            fileoff = read_u64_le(segment_command + 40);
+            filesize = read_u64_le(segment_command + 48);
+            nsects = read_u32_le(segment_command + 64);
+            if (nsects > SIZE_MAX_SECTIONS || 72U + nsects * 80U > command_size) return -1;
+            if (size_json) {
+                if (write_json_macho_segment_size(path, segment_name, 0, vmsize, filesize == 0ULL && vmsize != 0ULL, fileoff, vmaddr) != 0) return -1;
+            } else {
+                rt_write_cstr(1, "Segment ");
+                rt_write_cstr(1, segment_name[0] != '\0' ? segment_name : "(none)");
+                rt_write_cstr(1, ": ");
+                rt_write_uint(1, vmsize);
+                if (filesize == 0ULL && vmsize != 0ULL) rt_write_cstr(1, " (zero fill)");
+                rt_write_char(1, '\n');
+            }
+            grand_total += vmsize;
+            for (section_index = 0U; section_index < nsects; ++section_index) {
+                unsigned char section_command[80];
+                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
+                char section_name[17];
+                unsigned long long section_addr;
+                unsigned long long section_size;
+                unsigned int section_fileoff;
+                unsigned int flags;
+                int zerofill;
+                if (read_region(fd, section_offset, section_command, sizeof(section_command)) != 0) return -1;
+                copy_fixed_name(section_name, sizeof(section_name), section_command + 0, 16U);
+                section_addr = read_u64_le(section_command + 32);
+                section_size = read_u64_le(section_command + 40);
+                section_fileoff = read_u32_le(section_command + 48);
+                flags = read_u32_le(section_command + 64);
+                zerofill = macho_is_zerofill_type(flags & 0xffU) || rt_strcmp(section_name, "__bss") == 0 || rt_strcmp(section_name, "__common") == 0;
+                section_total += section_size;
+                if (size_json) {
+                    if (write_json_macho_segment_size(path, segment_name, section_name, section_size, zerofill, (unsigned long long)section_fileoff, section_addr) != 0) return -1;
+                } else {
+                    rt_write_cstr(1, "\tSection ");
+                    rt_write_cstr(1, section_name);
+                    rt_write_cstr(1, ": ");
+                    rt_write_uint(1, section_size);
+                    if (zerofill) rt_write_cstr(1, " (zerofill)");
+                    rt_write_char(1, '\n');
+                }
+            }
+            if (!size_json && nsects != 0U) {
+                rt_write_cstr(1, "\ttotal ");
+                rt_write_uint(1, section_total);
+                rt_write_char(1, '\n');
+            }
+        }
+        command_offset += (unsigned long long)command_size;
+    }
+    if (!size_json) {
+        rt_write_cstr(1, "total ");
+        rt_write_uint(1, grand_total);
+        rt_write_char(1, '\n');
+    }
+    return 0;
+}
+
 static void write_hex(unsigned long long value) {
     const char *digits = "0123456789abcdef";
     char temp[32];
@@ -302,13 +413,24 @@ static int size_file(const char *path, int print_name) {
     }
     if (read_u32_le(header) == MACHO_MAGIC_64_LE) {
         int result = size_macho64_file(fd, header, file_size, &text, &data, &bss);
-        platform_close(fd);
         if (result != 0) {
+            platform_close(fd);
             tool_write_error("size", "invalid Mach-O file: ", path);
             return 1;
         }
         if (size_json) {
+            if (size_segments && print_macho_segment_sizes(fd, path, header, file_size) != 0) {
+                platform_close(fd);
+                return 1;
+            }
+            platform_close(fd);
             return write_json_size(path, text, data, bss, file_size) == 0 ? 0 : 1;
+        }
+        if (size_segments) {
+            int segment_result = print_macho_segment_sizes(fd, path, header, file_size);
+            platform_close(fd);
+            if (segment_result != 0) return 1;
+            return 0;
         }
         rt_write_uint(1, text);
         rt_write_char(1, '\t');
@@ -326,6 +448,7 @@ static int size_file(const char *path, int print_name) {
             rt_write_cstr(1, path);
         }
         rt_write_char(1, '\n');
+        platform_close(fd);
         return 0;
     }
     if (header[0] != 0x7fU || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
@@ -389,7 +512,7 @@ static int size_file(const char *path, int print_name) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("size", "[--json] FILE ...");
+    tool_write_usage("size", "[-m|--segments] [--json] FILE ...");
 }
 
 int main(int argc, char **argv) {
@@ -404,6 +527,8 @@ int main(int argc, char **argv) {
         } else if (rt_strcmp(argv[argi], "--json") == 0) {
             size_json = 1;
             tool_json_set_enabled(1);
+        } else if (rt_strcmp(argv[argi], "-m") == 0 || rt_strcmp(argv[argi], "--segments") == 0) {
+            size_segments = 1;
         } else {
             tool_write_error("size", "unknown option: ", argv[argi]);
             return 1;
@@ -414,7 +539,7 @@ int main(int argc, char **argv) {
         print_usage();
         return 1;
     }
-    if (!size_json) {
+    if (!size_json && !size_segments) {
         rt_write_line(1, "text\tdata\tbss\tdec\thex\tfile\tname");
     }
     for (i = argi; i < argc; ++i) {
