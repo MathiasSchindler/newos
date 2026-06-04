@@ -7,7 +7,8 @@
 ## SYNOPSIS
 
 ```
-readelf [-a] [-h] [-l] [-S] [-d] [-r] [-s] [-n] FILE ...
+readelf [-a] [-h] [-l] [-S] [-d] [-r] [-s] [-n] [--json] FILE ...
+readelf [--json] --compare LEFT RIGHT
 ```
 
 ## DESCRIPTION
@@ -34,7 +35,16 @@ Supported output modes:
 For Mach-O inputs, `-h` prints the Mach-O header, `-l` prints load commands such
 as `LC_SEGMENT_64`, `LC_MAIN`, `LC_BUILD_VERSION`, and `LC_CODE_SIGNATURE`, `-S`
 prints sections from segment commands, and `-s` prints `LC_SYMTAB` when present.
+`-r` decodes Mach-O arm64 relocation records from section relocation tables.
+`-n` inspects embedded Mach-O code signatures when `LC_CODE_SIGNATURE` is
+present. For the project's ad-hoc signatures it decodes the SuperBlob and
+CodeDirectory and verifies SHA-256 page hashes against the signed file range.
 ELF-only views such as `-d` report that the input has no ELF dynamic section.
+
+`--compare` auto-detects ELF and Mach-O inputs, compares their structural
+summary, and compares full-file SHA-256 digests. It exits with status 0 when the
+files are equivalent according to those checks and status 1 when differences are
+found.
 
 If no mode is selected, the ELF header is shown.
 
@@ -45,7 +55,10 @@ readelf -h a.out
 readelf -l tiny-static-tool
 readelf -S -s hello.o
 readelf -a /bin/ls
-readelf -h -l -S build/newlinker-macos-aarch64/echo
+readelf -h -l -S -r build/newlinker-macos-aarch64/echo
+readelf -n build/newlinker-macos-aarch64/true
+readelf --compare build/newlinker-macos-aarch64/true build/newlinker-macos-aarch64/false
+readelf --json -h -l -S -n build/newlinker-macos-aarch64/true
 ```
 
 ## LIMITATIONS
@@ -53,7 +66,8 @@ readelf -h -l -S build/newlinker-macos-aarch64/echo
 - Detailed ELF section and symbol inspection targets ELF64 little-endian files,
   which covers the project's Linux outputs on x86_64 and AArch64.
 - Mach-O support covers 64-bit little-endian headers, load commands,
-  `LC_SEGMENT_64` sections, and `LC_SYMTAB` symbols. It is intended for the
+  `LC_SEGMENT_64` sections, arm64 relocations, `LC_SYMTAB` symbols, and
+  project-style embedded CodeDirectory signatures. It is intended for the
   project's macOS freestanding and newlinker binaries, not as a complete
   replacement for `otool`.
 - Dynamic-section, relocation, and note views are intentionally compact. They
@@ -64,5 +78,18 @@ readelf -h -l -S build/newlinker-macos-aarch64/echo
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `readelf` emits JSON Lines using the common envelope documented
+in `json-output`. Implemented events include `elf_header`, `macho_header`,
+`macho_load_command`, `macho_section`, `macho_symbol`, `macho_relocation`,
+`macho_code_signature`, `compare_difference`, and `compare_summary`.
+
+Example event:
+
+```json
+{"schema":"newos.tool.v1","tool":"readelf","stream":"stdout","event":"macho_code_signature","seq":1,"data":{"file":"true","present":true,"verified":true,"checked_slots":1,"mismatches":0}}
+```
+
+`--compare --json` emits one `compare_difference` event per differing field and
+a final `compare_summary` event. A non-zero exit status still indicates that the
+inputs differ.
 

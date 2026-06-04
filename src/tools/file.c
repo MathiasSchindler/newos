@@ -14,6 +14,7 @@ typedef struct {
     int follow_symlinks;
     int brief;
     int verbose;
+    int json;
 } FileOptions;
 
 static char dynamic_description[256];
@@ -840,6 +841,33 @@ static int write_verbose_file_result(const char *path, const FileTypeInfo *info,
     return 0;
 }
 
+static int write_json_file_result(const char *path, const FileTypeInfo *info, const PlatformDirEntry *entry, long bytes_read) {
+    if (tool_json_begin_event(1, "file", "stdout", "file_type") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"path\":") != 0) return -1;
+    if (tool_json_write_string(1, path != 0 ? path : "stdin") != 0) return -1;
+    if (rt_write_cstr(1, ",\"description\":") != 0) return -1;
+    if (tool_json_write_string(1, info->description) != 0) return -1;
+    if (rt_write_cstr(1, ",\"mime\":") != 0) return -1;
+    if (tool_json_write_string(1, info->mime) != 0) return -1;
+    if (rt_write_cstr(1, ",\"magic\":") != 0) return -1;
+    if (tool_json_write_string(1, info->magic != 0 ? info->magic : "") != 0) return -1;
+    if (rt_write_cstr(1, ",\"details\":") != 0) return -1;
+    if (tool_json_write_string(1, info->details != 0 ? info->details : "") != 0) return -1;
+    if (rt_write_cstr(1, ",\"sampled_bytes\":") != 0) return -1;
+    if (rt_write_uint(1, bytes_read < 0 ? 0ULL : (unsigned long long)bytes_read) != 0) return -1;
+    if (entry != 0) {
+        if (rt_write_cstr(1, ",\"size\":") != 0 || rt_write_uint(1, entry->size) != 0) return -1;
+        if (rt_write_cstr(1, ",\"mode\":") != 0) return -1;
+        {
+            char mode_text[11];
+            platform_format_mode(entry->mode, mode_text);
+            if (tool_json_write_string(1, mode_text) != 0) return -1;
+        }
+    }
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
 static int write_verbose_node_result(const char *path, const char *type, const char *mime, const PlatformDirEntry *entry, const char *target) {
     rt_write_cstr(1, path != 0 ? path : "stdin");
     rt_write_line(1, ":");
@@ -849,6 +877,28 @@ static int write_verbose_node_result(const char *path, const char *type, const c
         if (rt_write_cstr(1, "  target: ") != 0 || rt_write_line(1, target) != 0) return -1;
     }
     return write_verbose_metadata(entry);
+}
+
+static int write_json_node_result(const char *path, const char *type, const char *mime, const PlatformDirEntry *entry, const char *target) {
+    if (tool_json_begin_event(1, "file", "stdout", "file_type") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"path\":") != 0) return -1;
+    if (tool_json_write_string(1, path != 0 ? path : "stdin") != 0) return -1;
+    if (rt_write_cstr(1, ",\"description\":") != 0) return -1;
+    if (tool_json_write_string(1, type) != 0) return -1;
+    if (rt_write_cstr(1, ",\"mime\":") != 0) return -1;
+    if (tool_json_write_string(1, mime) != 0) return -1;
+    if (rt_write_cstr(1, ",\"magic\":\"\",\"details\":\"\"") != 0) return -1;
+    if (target != 0 && target[0] != '\0') {
+        if (rt_write_cstr(1, ",\"target\":") != 0 || tool_json_write_string(1, target) != 0) return -1;
+    }
+    if (entry != 0) {
+        char mode_text[11];
+        platform_format_mode(entry->mode, mode_text);
+        if (rt_write_cstr(1, ",\"size\":") != 0 || rt_write_uint(1, entry->size) != 0) return -1;
+        if (rt_write_cstr(1, ",\"mode\":") != 0 || tool_json_write_string(1, mode_text) != 0) return -1;
+    }
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
 }
 
 static int describe_path(const char *path, const FileOptions *options) {
@@ -868,6 +918,7 @@ static int describe_path(const char *path, const FileOptions *options) {
     }
 
     if (path != 0 && !options->follow_symlinks && platform_read_symlink(path, target, sizeof(target)) == 0) {
+        if (options->json) return write_json_node_result(path, "symbolic link", "inode/symlink", have_entry ? &entry : 0, target);
         if (options->verbose) return write_verbose_node_result(path, "symbolic link", "inode/symlink", have_entry ? &entry : 0, target);
         if (options->mime_only) return write_single_line_result(path, options, "inode/symlink");
         rt_copy_string(dynamic_description, sizeof(dynamic_description), "symbolic link to ");
@@ -880,6 +931,7 @@ static int describe_path(const char *path, const FileOptions *options) {
     }
 
     if (have_entry && entry.is_dir) {
+        if (options->json) return write_json_node_result(path, "directory", "inode/directory", &entry, 0);
         if (options->verbose) return write_verbose_node_result(path, "directory", "inode/directory", &entry, 0);
         return write_single_line_result(path, options, options->mime_only ? "inode/directory" : "directory");
     }
@@ -895,12 +947,13 @@ static int describe_path(const char *path, const FileOptions *options) {
     }
 
     info = detect_type(buffer, (size_t)bytes_read);
+    if (options->json) return write_json_file_result(path, &info, have_entry ? &entry : 0, bytes_read);
     if (options->verbose) return write_verbose_file_result(path, &info, have_entry ? &entry : 0, bytes_read);
     return write_single_line_result(path, options, options->mime_only ? info.mime : info.description);
 }
 
 static void print_usage(void) {
-    tool_write_usage("file", "[-biv] [-L|-h] [file ...]");
+    tool_write_usage("file", "[-biv] [--json] [-L|-h] [file ...]");
 }
 
 int main(int argc, char **argv) {
@@ -913,6 +966,7 @@ int main(int argc, char **argv) {
     options.follow_symlinks = 0;
     options.brief = 0;
     options.verbose = 0;
+    options.json = 0;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "--") == 0) {
@@ -925,6 +979,9 @@ int main(int argc, char **argv) {
             options.brief = 1;
         } else if (rt_strcmp(argv[argi], "-v") == 0 || rt_strcmp(argv[argi], "--verbose") == 0) {
             options.verbose = 1;
+        } else if (rt_strcmp(argv[argi], "--json") == 0) {
+            options.json = 1;
+            tool_json_set_enabled(1);
         } else if (rt_strcmp(argv[argi], "-L") == 0 || rt_strcmp(argv[argi], "--dereference") == 0) {
             options.follow_symlinks = 1;
         } else if (rt_strcmp(argv[argi], "-h") == 0 || rt_strcmp(argv[argi], "--no-dereference") == 0) {

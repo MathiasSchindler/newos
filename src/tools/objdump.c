@@ -9,6 +9,17 @@
 
 #define MACHO_LC_SEGMENT_64 0x19U
 #define MACHO_LC_SYMTAB 0x2U
+#define MACHO_ARM64_RELOC_UNSIGNED 0U
+#define MACHO_ARM64_RELOC_SUBTRACTOR 1U
+#define MACHO_ARM64_RELOC_BRANCH26 2U
+#define MACHO_ARM64_RELOC_PAGE21 3U
+#define MACHO_ARM64_RELOC_PAGEOFF12 4U
+#define MACHO_ARM64_RELOC_GOT_LOAD_PAGE21 5U
+#define MACHO_ARM64_RELOC_GOT_LOAD_PAGEOFF12 6U
+#define MACHO_ARM64_RELOC_POINTER_TO_GOT 7U
+#define MACHO_ARM64_RELOC_TLVP_LOAD_PAGE21 8U
+#define MACHO_ARM64_RELOC_TLVP_LOAD_PAGEOFF12 9U
+#define MACHO_ARM64_RELOC_ADDEND 10U
 #define MACHO_S_ZEROFILL 1U
 #define MACHO_S_CSTRING_LITERALS 2U
 #define MACHO_S_4BYTE_LITERALS 3U
@@ -57,6 +68,8 @@ typedef struct {
     unsigned long long addr;
     unsigned long long size;
     unsigned int offset;
+    unsigned int reloff;
+    unsigned int nreloc;
     unsigned int flags;
 } MachSectionInfo;
 
@@ -87,6 +100,29 @@ typedef struct {
     unsigned int raw_offset;
     unsigned int characteristics;
 } PeSectionInfo;
+
+static int objdump_json;
+
+static int json_field_string(const char *name, const char *value) {
+    if (rt_write_cstr(1, ",\"") != 0) return -1;
+    if (rt_write_cstr(1, name) != 0) return -1;
+    if (rt_write_cstr(1, "\":") != 0) return -1;
+    return tool_json_write_string(1, value != 0 ? value : "");
+}
+
+static int json_field_uint(const char *name, unsigned long long value) {
+    if (rt_write_cstr(1, ",\"") != 0) return -1;
+    if (rt_write_cstr(1, name) != 0) return -1;
+    if (rt_write_cstr(1, "\":") != 0) return -1;
+    return rt_write_uint(1, value);
+}
+
+static int json_field_bool(const char *name, int value) {
+    if (rt_write_cstr(1, ",\"") != 0) return -1;
+    if (rt_write_cstr(1, name) != 0) return -1;
+    if (rt_write_cstr(1, "\":") != 0) return -1;
+    return rt_write_cstr(1, value ? "true" : "false");
+}
 
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
@@ -127,6 +163,21 @@ static const char *macho_section_type_name(unsigned int type) {
     if (type == MACHO_S_16BYTE_LITERALS) return "literal16";
     if (type == MACHO_S_THREAD_LOCAL_ZEROFILL) return "tlv-zerofill";
     return "other";
+}
+
+static const char *macho_arm64_relocation_name(unsigned int type) {
+    if (type == MACHO_ARM64_RELOC_UNSIGNED) return "UNSIGNED";
+    if (type == MACHO_ARM64_RELOC_SUBTRACTOR) return "SUBTRACTOR";
+    if (type == MACHO_ARM64_RELOC_BRANCH26) return "BRANCH26";
+    if (type == MACHO_ARM64_RELOC_PAGE21) return "PAGE21";
+    if (type == MACHO_ARM64_RELOC_PAGEOFF12) return "PAGEOFF12";
+    if (type == MACHO_ARM64_RELOC_GOT_LOAD_PAGE21) return "GOT_LOAD_PAGE21";
+    if (type == MACHO_ARM64_RELOC_GOT_LOAD_PAGEOFF12) return "GOT_LOAD_PAGEOFF12";
+    if (type == MACHO_ARM64_RELOC_POINTER_TO_GOT) return "POINTER_TO_GOT";
+    if (type == MACHO_ARM64_RELOC_TLVP_LOAD_PAGE21) return "TLVP_LOAD_PAGE21";
+    if (type == MACHO_ARM64_RELOC_TLVP_LOAD_PAGEOFF12) return "TLVP_LOAD_PAGEOFF12";
+    if (type == MACHO_ARM64_RELOC_ADDEND) return "ADDEND";
+    return "UNKNOWN";
 }
 
 static int macho_section_is_zerofill(const MachSectionInfo *section) {
@@ -327,6 +378,8 @@ static int load_macho_sections(int fd, const MachHeaderInfo *header, MachSection
                 sections[section_count].addr = read_u64_le_local(raw + 32);
                 sections[section_count].size = read_u64_le_local(raw + 40);
                 sections[section_count].offset = read_u32_le_local(raw + 48);
+                sections[section_count].reloff = read_u32_le_local(raw + 56);
+                sections[section_count].nreloc = read_u32_le_local(raw + 60);
                 sections[section_count].flags = read_u32_le_local(raw + 64);
                 section_count += 1U;
             }
@@ -585,6 +638,57 @@ static void print_pe_file_header(const char *path, const PeHeaderInfo *header) {
     rt_write_char(1, '\n');
 }
 
+static int json_file_header_event(const char *path, const char *format, const char *architecture, const char *type, unsigned long long entry, unsigned long long flags) {
+    if (tool_json_begin_event(1, "objdump", "stdout", "file_header") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (json_field_string("format", format) != 0) return -1;
+    if (json_field_string("architecture", architecture) != 0) return -1;
+    if (json_field_string("type", type) != 0) return -1;
+    if (json_field_uint("entry", entry) != 0) return -1;
+    if (json_field_uint("flags", flags) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
+static int json_section_event(const char *path, const char *format, unsigned int index, const char *name, unsigned long long addr, unsigned long long offset, unsigned long long size, const char *type, unsigned long long flags) {
+    if (tool_json_begin_event(1, "objdump", "stdout", "section") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (json_field_string("format", format) != 0) return -1;
+    if (json_field_uint("index", index) != 0) return -1;
+    if (json_field_string("name", name) != 0) return -1;
+    if (json_field_uint("addr", addr) != 0) return -1;
+    if (json_field_uint("offset", offset) != 0) return -1;
+    if (json_field_uint("size", size) != 0) return -1;
+    if (json_field_string("type", type) != 0) return -1;
+    if (json_field_uint("flags", flags) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
+static int json_macho_section_table(const char *path, const MachSectionInfo *sections, unsigned int section_count) {
+    unsigned int i;
+    for (i = 0U; i < section_count; ++i) {
+        char name[40];
+        rt_copy_string(name, sizeof(name), sections[i].segment);
+        if (rt_strlen(name) + 2U < sizeof(name)) {
+            rt_copy_string(name + rt_strlen(name), sizeof(name) - rt_strlen(name), ",");
+            rt_copy_string(name + rt_strlen(name), sizeof(name) - rt_strlen(name), sections[i].section);
+        }
+        if (json_section_event(path, "mach-o-64", i, name, sections[i].addr, (unsigned long long)sections[i].offset, sections[i].size, macho_section_type_name(sections[i].flags & 0xffU), (unsigned long long)sections[i].flags) != 0) return -1;
+    }
+    return 0;
+}
+
+static int json_elf_section_table(const char *path, const ElfHeaderInfo *header, const ElfSectionInfo *sections, const char *names, size_t names_size) {
+    unsigned short i;
+    for (i = 0U; i < header->shnum; ++i) {
+        if (json_section_event(path, "elf64", i, name_from_table(names, names_size, sections[i].name), sections[i].addr, sections[i].offset, sections[i].size, section_type_name(sections[i].type), sections[i].flags) != 0) return -1;
+    }
+    return 0;
+}
+
 static void print_section_table(const ElfHeaderInfo *header, const ElfSectionInfo *sections, const char *names, size_t names_size) {
     unsigned short i;
 
@@ -786,11 +890,192 @@ static void print_macho_symbols(int fd, const MachSymtabInfo *symtab) {
     }
 }
 
+static int json_symbol_event(const char *path, const char *format, unsigned long long value, const char *name, unsigned int type, unsigned int section) {
+    if (tool_json_begin_event(1, "objdump", "stdout", "symbol") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (json_field_string("format", format) != 0) return -1;
+    if (json_field_string("name", name) != 0) return -1;
+    if (json_field_uint("value", value) != 0) return -1;
+    if (json_field_uint("type", type) != 0) return -1;
+    if (json_field_uint("section", section) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
+static int json_macho_symbols(int fd, const char *path, const MachSymtabInfo *symtab) {
+    char strings[OBJDUMP_NAME_TABLE_CAPACITY];
+    size_t string_size = 0U;
+    unsigned int index;
+
+    if (symtab->symoff == 0U || symtab->nsyms == 0U || symtab->stroff == 0U || symtab->strsize == 0U) return 0;
+    if (symtab->strsize > 0U) {
+        size_t to_read = symtab->strsize < (unsigned int)(sizeof(strings) - 1U) ? (size_t)symtab->strsize : sizeof(strings) - 1U;
+        if (read_region(fd, (unsigned long long)symtab->stroff, (unsigned char *)strings, to_read) == 0) {
+            strings[to_read] = '\0';
+            string_size = to_read;
+        }
+    }
+    for (index = 0U; index < symtab->nsyms; ++index) {
+        unsigned char entry[16];
+        unsigned int strx;
+        if (read_region(fd, (unsigned long long)symtab->symoff + ((unsigned long long)index * 16ULL), entry, sizeof(entry)) != 0) return -1;
+        strx = read_u32_le_local(entry + 0);
+        if (json_symbol_event(path, "mach-o-64", read_u64_le_local(entry + 8), name_from_table(strings, string_size, strx), (unsigned int)entry[4], (unsigned int)entry[5]) != 0) return -1;
+    }
+    return 0;
+}
+
+static const char *macho_symbol_name_at(int fd, const MachSymtabInfo *symtab, unsigned int symbol_index, char *strings, size_t string_size) {
+    unsigned char entry[16];
+    unsigned int strx;
+
+    if (symtab == 0 || symbol_index >= symtab->nsyms || string_size == 0U) {
+        return "";
+    }
+    if (read_region(fd, (unsigned long long)symtab->symoff + ((unsigned long long)symbol_index * 16ULL), entry, sizeof(entry)) != 0) {
+        return "";
+    }
+    strx = read_u32_le_local(entry + 0);
+    return name_from_table(strings, string_size, strx);
+}
+
+static void print_macho_relocations(int fd, const MachSectionInfo *sections, unsigned int section_count, const MachSymtabInfo *symtab) {
+    char strings[OBJDUMP_NAME_TABLE_CAPACITY];
+    size_t string_size = 0U;
+    unsigned int section_index;
+    int saw_relocations = 0;
+
+    if (symtab != 0 && symtab->stroff != 0U && symtab->strsize != 0U) {
+        size_t to_read = symtab->strsize < (unsigned int)(sizeof(strings) - 1U) ? (size_t)symtab->strsize : sizeof(strings) - 1U;
+        if (read_region(fd, (unsigned long long)symtab->stroff, (unsigned char *)strings, to_read) == 0) {
+            strings[to_read] = '\0';
+            string_size = to_read;
+        }
+    }
+
+    for (section_index = 0U; section_index < section_count; ++section_index) {
+        const MachSectionInfo *section = &sections[section_index];
+        unsigned int reloc_index;
+        if (section->nreloc == 0U || section->reloff == 0U) {
+            continue;
+        }
+        saw_relocations = 1;
+        rt_write_cstr(1, "RELOCATION RECORDS FOR [");
+        rt_write_cstr(1, section->segment);
+        rt_write_char(1, ',');
+        rt_write_cstr(1, section->section);
+        rt_write_line(1, "]:");
+        for (reloc_index = 0U; reloc_index < section->nreloc; ++reloc_index) {
+            unsigned char raw[8];
+            unsigned int address;
+            unsigned int info;
+            unsigned int symbolnum;
+            unsigned int pcrel;
+            unsigned int length;
+            unsigned int external;
+            unsigned int type;
+            if (read_region(fd, (unsigned long long)section->reloff + ((unsigned long long)reloc_index * 8ULL), raw, sizeof(raw)) != 0) {
+                break;
+            }
+            address = read_u32_le_local(raw + 0);
+            info = read_u32_le_local(raw + 4);
+            symbolnum = info & 0x00ffffffU;
+            pcrel = (info >> 24U) & 1U;
+            length = (info >> 25U) & 3U;
+            external = (info >> 27U) & 1U;
+            type = (info >> 28U) & 0x0fU;
+            write_hex_value((unsigned long long)address);
+            rt_write_cstr(1, " ");
+            rt_write_cstr(1, macho_arm64_relocation_name(type));
+            rt_write_cstr(1, " length=");
+            rt_write_uint(1, (unsigned long long)length);
+            rt_write_cstr(1, " pcrel=");
+            rt_write_uint(1, (unsigned long long)pcrel);
+            rt_write_cstr(1, " extern=");
+            rt_write_uint(1, (unsigned long long)external);
+            rt_write_cstr(1, " ");
+            if (external) {
+                const char *name = macho_symbol_name_at(fd, symtab, symbolnum, strings, string_size);
+                if (name[0] != '\0') rt_write_cstr(1, name);
+                else {
+                    rt_write_cstr(1, "symbol[");
+                    rt_write_uint(1, (unsigned long long)symbolnum);
+                    rt_write_char(1, ']');
+                }
+            } else {
+                rt_write_cstr(1, "section[");
+                rt_write_uint(1, (unsigned long long)symbolnum);
+                rt_write_char(1, ']');
+            }
+            rt_write_char(1, '\n');
+        }
+    }
+    if (!saw_relocations) {
+        rt_write_line(1, "No Mach-O relocations are available.");
+    }
+}
+
+static int json_relocation_event(const char *path, const char *segment, const char *section, unsigned int offset, const char *type, unsigned int length, unsigned int pcrel, unsigned int external, const char *symbol, unsigned int section_ordinal) {
+    if (tool_json_begin_event(1, "objdump", "stdout", "relocation") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
+    if (tool_json_write_string(1, path) != 0) return -1;
+    if (json_field_string("format", "mach-o-64") != 0) return -1;
+    if (json_field_string("segment", segment) != 0) return -1;
+    if (json_field_string("section", section) != 0) return -1;
+    if (json_field_uint("offset", offset) != 0) return -1;
+    if (json_field_string("type", type) != 0) return -1;
+    if (json_field_uint("length", length) != 0) return -1;
+    if (json_field_bool("pcrel", pcrel != 0U) != 0) return -1;
+    if (json_field_bool("external", external != 0U) != 0) return -1;
+    if (external != 0U) {
+        if (json_field_string("symbol", symbol) != 0) return -1;
+    } else if (json_field_uint("section_ordinal", section_ordinal) != 0) return -1;
+    if (rt_write_char(1, '}') != 0) return -1;
+    return tool_json_end_event(1);
+}
+
+static int json_macho_relocations(int fd, const char *path, const MachSectionInfo *sections, unsigned int section_count, const MachSymtabInfo *symtab) {
+    char strings[OBJDUMP_NAME_TABLE_CAPACITY];
+    size_t string_size = 0U;
+    unsigned int section_index;
+
+    if (symtab != 0 && symtab->stroff != 0U && symtab->strsize != 0U) {
+        size_t to_read = symtab->strsize < (unsigned int)(sizeof(strings) - 1U) ? (size_t)symtab->strsize : sizeof(strings) - 1U;
+        if (read_region(fd, (unsigned long long)symtab->stroff, (unsigned char *)strings, to_read) == 0) {
+            strings[to_read] = '\0';
+            string_size = to_read;
+        }
+    }
+    for (section_index = 0U; section_index < section_count; ++section_index) {
+        unsigned int reloc_index;
+        for (reloc_index = 0U; reloc_index < sections[section_index].nreloc; ++reloc_index) {
+            unsigned char raw[8];
+            unsigned int address;
+            unsigned int info;
+            unsigned int symbolnum;
+            unsigned int external;
+            unsigned int type;
+            const char *symbol = "";
+            if (read_region(fd, (unsigned long long)sections[section_index].reloff + ((unsigned long long)reloc_index * 8ULL), raw, sizeof(raw)) != 0) return -1;
+            address = read_u32_le_local(raw + 0);
+            info = read_u32_le_local(raw + 4);
+            symbolnum = info & 0x00ffffffU;
+            external = (info >> 27U) & 1U;
+            type = (info >> 28U) & 0x0fU;
+            if (external) symbol = macho_symbol_name_at(fd, symtab, symbolnum, strings, string_size);
+            if (json_relocation_event(path, sections[section_index].segment, sections[section_index].section, address, macho_arm64_relocation_name(type), (info >> 25U) & 3U, (info >> 24U) & 1U, external, symbol, symbolnum) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int show_file = 0;
     int show_sections = 0;
     int show_contents = 0;
     int show_symbols = 0;
+    int show_relocations = 0;
     int argi = 1;
     int exit_code = 0;
     int i;
@@ -804,20 +1089,25 @@ int main(int argc, char **argv) {
             show_contents = 1;
         } else if (rt_strcmp(argv[argi], "-t") == 0) {
             show_symbols = 1;
+        } else if (rt_strcmp(argv[argi], "-r") == 0) {
+            show_relocations = 1;
+        } else if (rt_strcmp(argv[argi], "--json") == 0) {
+            objdump_json = 1;
+            tool_json_set_enabled(1);
         } else {
-            tool_write_usage("objdump", "[-f] [-h] [-s] [-t] file ...");
+            tool_write_usage("objdump", "[-f] [-h] [-s] [-t] [-r] [--json] file ...");
             return 1;
         }
         argi += 1;
     }
 
-    if (!show_file && !show_sections && !show_contents && !show_symbols) {
+    if (!show_file && !show_sections && !show_contents && !show_symbols && !show_relocations) {
         show_file = 1;
         show_sections = 1;
     }
 
     if (argi >= argc) {
-        tool_write_usage("objdump", "[-f] [-h] [-s] [-t] file ...");
+        tool_write_usage("objdump", "[-f] [-h] [-s] [-t] [-r] [--json] file ...");
         return 1;
     }
 
@@ -846,12 +1136,14 @@ int main(int argc, char **argv) {
             load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
             if (parse_macho_header(fd, &macho) == 0 && load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0 && load_macho_symtab(fd, &macho, &macho_symtab) == 0) {
                 if (show_file) {
-                    print_macho_file_header(argv[i], &macho);
+                    if (objdump_json) (void)json_file_header_event(argv[i], "mach-o-64", macho_machine_name(macho.cputype), macho_type_name(macho.filetype), 0ULL, (unsigned long long)macho.flags);
+                    else print_macho_file_header(argv[i], &macho);
                 }
                 if (show_sections) {
-                    print_macho_section_table(macho_sections, macho_section_count);
+                    if (objdump_json) (void)json_macho_section_table(argv[i], macho_sections, macho_section_count);
+                    else print_macho_section_table(macho_sections, macho_section_count);
                 }
-                if (show_contents) {
+                if (show_contents && !objdump_json) {
                     unsigned int macho_index;
                     for (macho_index = 0U; macho_index < macho_section_count; ++macho_index) {
                         char section_name[40];
@@ -867,7 +1159,12 @@ int main(int argc, char **argv) {
                     }
                 }
                 if (show_symbols) {
-                    print_macho_symbols(fd, &macho_symtab);
+                    if (objdump_json) (void)json_macho_symbols(fd, argv[i], &macho_symtab);
+                    else print_macho_symbols(fd, &macho_symtab);
+                }
+                if (show_relocations) {
+                    if (objdump_json) (void)json_macho_relocations(fd, argv[i], macho_sections, macho_section_count, &macho_symtab);
+                    else print_macho_relocations(fd, macho_sections, macho_section_count, &macho_symtab);
                 }
                 platform_close(fd);
                 continue;
@@ -880,7 +1177,7 @@ int main(int argc, char **argv) {
                 if (show_sections) {
                     print_pe_section_table(&pe, pe_sections);
                 }
-                if (show_contents) {
+                if (show_contents && !objdump_json) {
                     unsigned short pe_index;
                     for (pe_index = 0U; pe_index < pe.section_count; ++pe_index) {
                         if (pe_sections[pe_index].raw_size > 0U) {
@@ -894,6 +1191,9 @@ int main(int argc, char **argv) {
                 if (show_symbols) {
                     rt_write_line(1, "Symbol dumping for PE/COFF inputs is not implemented yet.");
                 }
+                if (show_relocations) {
+                    rt_write_line(1, "Relocation dumping for PE/COFF inputs is not implemented yet.");
+                }
                 platform_close(fd);
                 continue;
             }
@@ -906,20 +1206,25 @@ int main(int argc, char **argv) {
         }
 
         if (show_file) {
-            print_file_header(argv[i], &header);
+            if (objdump_json) (void)json_file_header_event(argv[i], "elf64", machine_name(header.machine), type_name(header.type), header.entry, 0ULL);
+            else print_file_header(argv[i], &header);
         }
         if (show_sections) {
-            print_section_table(&header, sections, names, names_size);
+            if (objdump_json) (void)json_elf_section_table(argv[i], &header, sections, names, names_size);
+            else print_section_table(&header, sections, names, names_size);
         }
         if (show_contents) {
-            for (section_index = 0U; section_index < header.shnum; ++section_index) {
+            if (!objdump_json) for (section_index = 0U; section_index < header.shnum; ++section_index) {
                 if (sections[section_index].size > 0ULL && sections[section_index].type != 8U) {
                     dump_section_bytes(fd, name_from_table(names, names_size, sections[section_index].name), &sections[section_index]);
                 }
             }
         }
         if (show_symbols) {
-            print_symbols(fd, &header, sections, names, names_size);
+            if (!objdump_json) print_symbols(fd, &header, sections, names, names_size);
+        }
+        if (show_relocations) {
+            if (!objdump_json) rt_write_line(1, "Relocation dumping for ELF inputs is available in readelf -r.");
         }
 
         platform_close(fd);

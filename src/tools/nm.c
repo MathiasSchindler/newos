@@ -7,6 +7,24 @@
 #define NM_MAX_SYMBOLS 8192U
 #define NM_NAME_TABLE_CAPACITY 65536U
 
+#define MACHO_MAX_COMMANDS 256U
+#define MACHO_MAX_SECTIONS 512U
+#define MACHO_LC_SEGMENT_64 0x19U
+#define MACHO_LC_SYMTAB 0x2U
+#define MACHO_N_STAB 0xe0U
+#define MACHO_N_PEXT 0x10U
+#define MACHO_N_TYPE 0x0eU
+#define MACHO_N_EXT 0x01U
+#define MACHO_N_UNDF 0x00U
+#define MACHO_N_ABS 0x02U
+#define MACHO_N_SECT 0x0eU
+#define MACHO_N_INDR 0x0aU
+#define MACHO_N_WEAK_REF 0x0040U
+#define MACHO_N_WEAK_DEF 0x0080U
+#define MACHO_S_ZEROFILL 1U
+#define MACHO_S_GB_ZEROFILL 12U
+#define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
+
 #define ELF_SHT_SYMTAB 2U
 #define ELF_SHT_STRTAB 3U
 #define ELF_SHT_NOBITS 8U
@@ -34,6 +52,23 @@ typedef struct {
     char name[NM_NAME_TABLE_CAPACITY / 256U];
 } NmSymbol;
 
+typedef struct {
+    char segment[17];
+    char section[17];
+    unsigned int flags;
+} NmMachSection;
+
+typedef struct {
+    unsigned int ncmds;
+} NmMachHeader;
+
+typedef struct {
+    unsigned int symoff;
+    unsigned int nsyms;
+    unsigned int stroff;
+    unsigned int strsize;
+} NmMachSymtab;
+
 static NmSection nm_sections[NM_MAX_SECTIONS];
 static NmSymbol nm_symbols[NM_MAX_SYMBOLS];
 static char nm_string_table[NM_NAME_TABLE_CAPACITY];
@@ -43,6 +78,9 @@ static int nm_sort_numeric = 1;
 static int nm_undefined_only;
 static int nm_external_only;
 static int nm_json;
+static const char *nm_current_format = "elf";
+
+static int add_symbol(const char *name, unsigned long long value, unsigned long long size, unsigned char info, unsigned short shndx, char type);
 
 static unsigned short read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8U);
@@ -61,6 +99,17 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
         return -1;
     }
     return archive_read_exact(fd, buffer, size);
+}
+
+static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
+    size_t i;
+
+    if (dest_size == 0U) return;
+    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
+        unsigned char ch = src[i];
+        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
+    }
+    dest[i] = '\0';
 }
 
 static void write_hex16(unsigned long long value) {
@@ -123,6 +172,180 @@ static const char *symbol_bind_name(unsigned char info) {
     return "other";
 }
 
+static int parse_macho_header(int fd, NmMachHeader *header) {
+    unsigned char raw[32];
+
+    if (read_region(fd, 0ULL, raw, sizeof(raw)) != 0 || read_u32_le(raw + 0) != 0xfeedfacfU) {
+        return -1;
+    }
+    header->ncmds = read_u32_le(raw + 16);
+    return header->ncmds <= MACHO_MAX_COMMANDS ? 0 : -1;
+}
+
+static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *sections, unsigned int *section_count_out, NmMachSymtab *symtab) {
+    unsigned int command_index;
+    unsigned long long command_offset = 32ULL;
+    unsigned int section_count = 0U;
+
+    *section_count_out = 0U;
+    symtab->symoff = 0U;
+    symtab->nsyms = 0U;
+    symtab->stroff = 0U;
+    symtab->strsize = 0U;
+    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
+        unsigned char command_header[24];
+        unsigned int command;
+        unsigned int command_size;
+
+        if (read_region(fd, command_offset, command_header, 8U) != 0) {
+            return -1;
+        }
+        command = read_u32_le(command_header + 0);
+        command_size = read_u32_le(command_header + 4);
+        if (command_size < 8U) {
+            return -1;
+        }
+        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
+            unsigned char segment[72];
+            unsigned int nsects;
+            unsigned int section_index;
+            char segment_name[17];
+
+            if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) {
+                return -1;
+            }
+            copy_fixed_name(segment_name, sizeof(segment_name), segment + 8, 16U);
+            nsects = read_u32_le(segment + 64);
+            if (72U + nsects * 80U > command_size) {
+                return -1;
+            }
+            for (section_index = 0U; section_index < nsects; ++section_index) {
+                unsigned char raw[80];
+                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
+
+                if (section_count >= MACHO_MAX_SECTIONS) {
+                    return -1;
+                }
+                if (read_region(fd, section_offset, raw, sizeof(raw)) != 0) {
+                    return -1;
+                }
+                copy_fixed_name(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
+                copy_fixed_name(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
+                if (sections[section_count].segment[0] == '\0') {
+                    rt_copy_string(sections[section_count].segment, sizeof(sections[section_count].segment), segment_name);
+                }
+                sections[section_count].flags = read_u32_le(raw + 64);
+                section_count += 1U;
+            }
+        } else if (command == MACHO_LC_SYMTAB && command_size >= 24U) {
+            if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
+                return -1;
+            }
+            symtab->symoff = read_u32_le(command_header + 8);
+            symtab->nsyms = read_u32_le(command_header + 12);
+            symtab->stroff = read_u32_le(command_header + 16);
+            symtab->strsize = read_u32_le(command_header + 20);
+        }
+        command_offset += (unsigned long long)command_size;
+    }
+    *section_count_out = section_count;
+    return 0;
+}
+
+static int names_equal(const char *left, const char *right) {
+    return rt_strcmp(left, right) == 0;
+}
+
+static char macho_symbol_type(const NmMachSection *sections, unsigned int section_count, unsigned char n_type, unsigned char n_sect) {
+    unsigned int type = n_type & MACHO_N_TYPE;
+    char out = '?';
+
+    if ((n_type & MACHO_N_STAB) != 0U) {
+        out = '-';
+    } else if (type == MACHO_N_UNDF) {
+        out = 'U';
+    } else if (type == MACHO_N_ABS) {
+        out = 'A';
+    } else if (type == MACHO_N_INDR) {
+        out = 'I';
+    } else if (type == MACHO_N_SECT && n_sect > 0U && (unsigned int)n_sect <= section_count) {
+        const NmMachSection *section = &sections[(unsigned int)n_sect - 1U];
+        unsigned int section_type = section->flags & 0xffU;
+        if (names_equal(section->segment, "__TEXT") && names_equal(section->section, "__text")) {
+            out = 'T';
+        } else if (section_type == MACHO_S_ZEROFILL || section_type == MACHO_S_GB_ZEROFILL || section_type == MACHO_S_THREAD_LOCAL_ZEROFILL) {
+            out = 'B';
+        } else if (names_equal(section->segment, "__DATA")) {
+            out = 'D';
+        } else if (names_equal(section->segment, "__TEXT")) {
+            out = 'S';
+        } else {
+            out = 'S';
+        }
+    }
+    if ((n_type & MACHO_N_EXT) == 0U && out >= 'A' && out <= 'Z') {
+        out = (char)(out - 'A' + 'a');
+    }
+    return out;
+}
+
+static int load_macho_symbols(int fd, const NmMachSymtab *symtab, const NmMachSection *sections, unsigned int section_count, const char *strings, size_t string_size) {
+    unsigned int index;
+
+    if (symtab->symoff == 0U || symtab->nsyms == 0U || symtab->stroff == 0U || symtab->strsize == 0U) {
+        return -1;
+    }
+    for (index = 0U; index < symtab->nsyms; ++index) {
+        unsigned char raw[16];
+        unsigned int strx;
+        unsigned char n_type;
+        unsigned char n_sect;
+        unsigned short n_desc;
+        unsigned long long value;
+        unsigned char info;
+        char type;
+
+        if (read_region(fd, (unsigned long long)symtab->symoff + ((unsigned long long)index * 16ULL), raw, sizeof(raw)) != 0) {
+            return -1;
+        }
+        strx = read_u32_le(raw + 0);
+        n_type = raw[4];
+        n_sect = raw[5];
+        n_desc = read_u16_le(raw + 6);
+        value = read_u64_le(raw + 8);
+        info = (unsigned char)(((n_type & MACHO_N_EXT) != 0U) ? (((n_desc & (MACHO_N_WEAK_REF | MACHO_N_WEAK_DEF)) != 0U) ? 0x20U : 0x10U) : 0x00U);
+        type = macho_symbol_type(sections, section_count, n_type, n_sect);
+        if ((n_desc & (MACHO_N_WEAK_REF | MACHO_N_WEAK_DEF)) != 0U && type >= 'A' && type <= 'Z') {
+            type = 'W';
+        }
+        if (add_symbol(string_at(strings, string_size, strx), value, 0ULL, info, (unsigned short)n_sect, type) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int nm_macho_file(int fd) {
+    NmMachHeader header;
+    NmMachSection sections[MACHO_MAX_SECTIONS];
+    NmMachSymtab symtab;
+    unsigned int section_count = 0U;
+    size_t read_size;
+
+    if (parse_macho_header(fd, &header) != 0 || load_macho_layout(fd, &header, sections, &section_count, &symtab) != 0) {
+        return -1;
+    }
+    if (symtab.strsize == 0U || symtab.stroff == 0U) {
+        return -1;
+    }
+    read_size = (size_t)(symtab.strsize < (unsigned int)sizeof(nm_string_table) ? symtab.strsize : (unsigned int)sizeof(nm_string_table));
+    if (read_size == 0U || read_region(fd, (unsigned long long)symtab.stroff, (unsigned char *)nm_string_table, read_size) != 0) {
+        return -1;
+    }
+    nm_string_table[read_size - 1U] = '\0';
+    return load_macho_symbols(fd, &symtab, sections, section_count, nm_string_table, read_size);
+}
+
 static int add_symbol(const char *name, unsigned long long value, unsigned long long size, unsigned char info, unsigned short shndx, char type) {
     unsigned int bind = (unsigned int)(info >> 4U);
 
@@ -156,6 +379,8 @@ static int write_json_symbol(const char *path, const NmSymbol *symbol) {
     if (tool_json_begin_event(1, "nm", "stdout", "symbol") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
     if (tool_json_write_string(1, path) != 0) return -1;
+    if (rt_write_cstr(1, ",\"format\":") != 0) return -1;
+    if (tool_json_write_string(1, nm_current_format) != 0) return -1;
     if (rt_write_cstr(1, ",\"name\":") != 0) return -1;
     if (tool_json_write_string(1, symbol->name) != 0) return -1;
     if (rt_write_cstr(1, ",\"type\":") != 0) return -1;
@@ -227,8 +452,24 @@ static int nm_file(const char *path) {
         tool_write_error("nm", "cannot open ", path);
         return 1;
     }
-    if (read_region(fd, 0ULL, header, sizeof(header)) != 0 ||
-        header[0] != 0x7fU || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
+    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
+        platform_close(fd);
+        tool_write_error("nm", "unsupported file: ", path);
+        return 1;
+    }
+    if (read_u32_le(header) == 0xfeedfacfU) {
+        nm_current_format = "macho";
+        if (nm_macho_file(fd) == 0) {
+            saw_symbols = 1;
+            platform_close(fd);
+            goto nm_have_symbols;
+        }
+        platform_close(fd);
+        tool_write_error("nm", "no Mach-O symbols: ", path);
+        return 1;
+    }
+    nm_current_format = "elf";
+    if (header[0] != 0x7fU || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
         header[4] != 2U || header[5] != 1U) {
         platform_close(fd);
         tool_write_error("nm", "unsupported file: ", path);
@@ -280,6 +521,7 @@ static int nm_file(const char *path) {
         }
     }
     platform_close(fd);
+nm_have_symbols:
     if (!saw_symbols || nm_symbol_count == 0U) {
         tool_write_error("nm", "no symbols: ", path);
         return 1;

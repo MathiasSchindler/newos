@@ -7,7 +7,7 @@ file - determine file type
 ## SYNOPSIS
 
 ```
-file [-biv] [-L|-h] [file ...]
+file [-biv] [--json] [-L|-h] [file ...]
 ```
 
 ## DESCRIPTION
@@ -37,6 +37,7 @@ Recognises the following types by magic bytes or content inspection:
 - `-b`, `--brief` — print only the description or MIME type, without the path prefix
 - `-i`, `--mime`, `--mime-type` — print MIME type instead of description
 - `-v`, `--verbose` — print a multi-line report with type, MIME, magic label when available, size, mode, inode, device, link count, owner, group, and modification time. Format-specific verbose fields are included when cheaply available, such as PE/COFF timestamp, linker version, entry RVA, image base, image/header size, alignment, checksum, characteristics, DLL hardening flags, and section table.
+- `--json` — emit one JSON Lines `file_type` event per input instead of text
 - `-L`, `--dereference` — follow symlinks
 - `-h`, `--no-dereference` — do not follow symlinks (default)
 
@@ -54,13 +55,23 @@ file /bin/ls
 file -v /bin/ls
 file -b README.md
 file -i image.png
+file --json build/newlinker-macos-aarch64/true
 file -L /proc/self/exe
 file *.c
 ```
 
 ## JSON Output
 
-JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
+With `--json`, `file` emits one `file_type` event per input using the common
+envelope documented in `json-output`. The `data` object includes `path`,
+`description`, `mime`, `magic`, `details`, `sampled_bytes`, and, when available,
+filesystem metadata such as `size` and `mode`. Symlink events include `target`.
+
+Example event:
+
+```json
+{"schema":"newos.tool.v1","tool":"file","stream":"stdout","event":"file_type","seq":1,"data":{"path":"true","description":"Mach-O 64-bit executable arm64","mime":"application/x-mach-binary","magic":"Mach-O","details":"","sampled_bytes":4096}}
+```
 
 ## SEE ALSO
 
