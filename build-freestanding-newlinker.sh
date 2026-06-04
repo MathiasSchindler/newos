@@ -551,6 +551,9 @@ for tool in $TOOLS; do
     expack)
       append_unique_source tool_sources src/shared/crypto/sha256.c
       ;;
+    readelf)
+      append_unique_source tool_sources src/shared/crypto/sha256.c
+      ;;
     ncc)
       for src in "${COMPILER_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       append_unique_source tool_sources src/shared/crypto/sha256.c
