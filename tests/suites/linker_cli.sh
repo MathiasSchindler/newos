@@ -31,12 +31,18 @@ _start:
     svc #0x80
 ASM
     if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_start.s" -o "$WORK_DIR/macho_start.o" > "$WORK_DIR/macho_start_compile.out" 2>&1; then
-        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_start" "$WORK_DIR/macho_start.o" > "$WORK_DIR/linker_macho_start.stdout" 2> "$WORK_DIR/linker_macho_start.stderr"
+        "$LINKER" --target=mach-o-arm64 --map "$WORK_DIR/macho_start.map" -o "$WORK_DIR/macho_start" "$WORK_DIR/macho_start.o" > "$WORK_DIR/linker_macho_start.stdout" 2> "$WORK_DIR/linker_macho_start.stderr"
+        assert_file_contains "$WORK_DIR/macho_start.map" 'newos macho linker map' "Mach-O backend did not write a map file"
+        assert_file_contains "$WORK_DIR/macho_start.map" 'Final sections' "Mach-O map did not report final sections"
+        assert_file_contains "$WORK_DIR/macho_start.map" 'input-section' "Mach-O map did not report input sections"
+        assert_file_contains "$WORK_DIR/macho_start.map" 'symbol .* _start ' "Mach-O map did not report input symbols"
         od -An -tx1 -N4 "$WORK_DIR/macho_start" | tr -d ' \n' > "$WORK_DIR/macho_start.magic"
         assert_file_contains "$WORK_DIR/macho_start.magic" '^cffaedfe$' "Mach-O backend did not write a 64-bit Mach-O executable"
         if command -v otool >/dev/null 2>&1; then
             otool -l "$WORK_DIR/macho_start" > "$WORK_DIR/macho_start.otool"
             assert_file_contains "$WORK_DIR/macho_start.otool" 'LC_MAIN' "Mach-O backend did not write LC_MAIN"
+            assert_file_contains "$WORK_DIR/macho_start.otool" 'LC_DYLD_INFO_ONLY' "Mach-O backend did not write dyld rebase metadata command"
+            assert_file_contains "$WORK_DIR/macho_start.otool" 'rebase_size 0' "Mach-O backend should report empty rebase metadata for relocation-free output"
             assert_file_contains "$WORK_DIR/macho_start.otool" 'LC_CODE_SIGNATURE' "Mach-O backend did not write LC_CODE_SIGNATURE"
         fi
         if command -v codesign >/dev/null 2>&1; then
@@ -197,6 +203,46 @@ C
         if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
             "$WORK_DIR/macho_clang_start" > "$WORK_DIR/macho_clang_start.run"
             assert_file_contains "$WORK_DIR/macho_clang_start.run" 'tiny clang ok' "Mach-O clang C executable did not run correctly"
+        fi
+    fi
+
+    cat > "$WORK_DIR/macho_rebase_pointer.c" <<'C'
+static const char message[] = "rebase ok\n";
+static const char *message_pointer = message;
+static long sys_write(long fd, const void *buf, unsigned long len) {
+    register long x0 __asm__("x0") = fd;
+    register long x1 __asm__("x1") = (long)buf;
+    register long x2 __asm__("x2") = (long)len;
+    register long x16 __asm__("x16") = 4;
+    __asm__ volatile("svc #0x80" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x16) : "memory");
+    return x0;
+}
+__attribute__((noreturn)) static void sys_exit(long code) {
+    register long x0 __asm__("x0") = code;
+    register long x16 __asm__("x16") = 1;
+    __asm__ volatile("svc #0x80" : : "r"(x0), "r"(x16) : "memory");
+    for (;;) {}
+}
+void _start(void) {
+    (void)sys_write(1, message_pointer, 10);
+    sys_exit(0);
+}
+C
+    if clang -target arm64-apple-macos11 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions \
+        -c "$WORK_DIR/macho_rebase_pointer.c" -o "$WORK_DIR/macho_rebase_pointer.o" > "$WORK_DIR/macho_rebase_pointer_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 --macho-compact --gc-sections -o "$WORK_DIR/macho_rebase_pointer" "$WORK_DIR/macho_rebase_pointer.o" > "$WORK_DIR/linker_macho_rebase_pointer.stdout" 2> "$WORK_DIR/linker_macho_rebase_pointer.stderr"
+        if command -v otool >/dev/null 2>&1; then
+            otool -l "$WORK_DIR/macho_rebase_pointer" > "$WORK_DIR/macho_rebase_pointer.otool"
+            assert_file_contains "$WORK_DIR/macho_rebase_pointer.otool" 'LC_DYLD_INFO_ONLY' "Mach-O pointer-rebase output did not write dyld info"
+            assert_file_contains "$WORK_DIR/macho_rebase_pointer.otool" 'rebase_size [1-9]' "Mach-O pointer-rebase output did not report rebase opcodes"
+        fi
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_rebase_pointer" > "$WORK_DIR/macho_rebase_pointer_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_rebase_pointer" > "$WORK_DIR/macho_rebase_pointer.run"
+            assert_file_contains "$WORK_DIR/macho_rebase_pointer.run" 'rebase ok' "Mach-O pointer-rebase executable did not run correctly"
         fi
     fi
 

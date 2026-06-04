@@ -75,6 +75,9 @@ with the in-tree `linker --target=mach-o-arm64` backend.
 - builds the full declared 194-tool macOS surface by default
 - emits project-linked Mach-O executables that are intended to have no dylib
   imports and no C standard library dependency
+- writes `LC_DYLD_INFO_ONLY` rebase metadata: empty when no absolute pointer
+  rebases are needed, and populated for 64-bit absolute pointer relocations that
+  remain in the linked image
 - links with `MACOS_NEWLINKER_LINK_FLAGS`, which defaults to
   `--macho-compact --gc-sections`; compact mode keeps loader-safe 16 KiB segment
   alignment while trimming optional load-command payload, and `--gc-sections`
@@ -94,9 +97,14 @@ with the in-tree `linker --target=mach-o-arm64` backend.
 - `make macos-freestanding-size-report` follows this normal project-linked
   build and reports exact file bytes, summed file-backed Mach-O section bytes,
   raster/layout overhead, load-command counts, and `LC_BUILD_VERSION`
-  tool-record counts for representative tools; save a report and rerun with
-  `make macos-freestanding-size-compare BASELINE=previous.tsv` to get exact
-  file-byte and file-section-byte deltas
+  tool-record counts plus top final sections for representative tools; save a
+  report and rerun with `make macos-freestanding-size-compare
+  BASELINE=previous.tsv` to get exact file-byte and file-section-byte deltas
+- the Mach-O linker supports `--map FILE` for build-time attribution without
+  keeping symbols in final executables. For per-tool maps in the Makefile path,
+  create a directory and pass `MACOS_NEWLINKER_MAP_DIR=DIR`; each link writes
+  `DIR/TOOL.map`. `report-macos-freestanding-size.sh --maps DIR` consumes those
+  files and appends top input-section and top-symbol contributor columns.
 
 The project-linked runtime supplies environment handling, page-size `sysconf`,
 directory enumeration, user/group lookup, time formatting, network interface

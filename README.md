@@ -94,6 +94,15 @@ The macOS project runtime keeps its wrappers visible for final symbol resolution
 but only force-retains the Darwin/libc-shaped entry points that ld64 needs to
 materialize from LTO. Keeping that retention list narrow lets unused runtime
 wrappers fall out of small tools instead of pinning them into every binary.
+Project-linked Mach-O outputs include `LC_DYLD_INFO_ONLY` rebase metadata,
+including real dyld rebase opcodes for remaining 64-bit absolute pointer
+relocations.
+For size work, `make macos-freestanding-size-report` shows final file bytes,
+file-backed section bytes, layout overhead, load-command counts, and top Mach-O
+sections. The Mach-O linker's `--map FILE` output can be fed to
+`report-macos-freestanding-size.sh --maps DIR` for build-time input-section and
+symbol attribution while keeping final tools symbol-free; pass
+`MACOS_NEWLINKER_MAP_DIR=DIR` to the Makefile path to write per-tool maps.
 It deliberately treats the resulting binaries as project-linked, no-import
 executables: representative smoke tests reject dylib imports. That is stricter
 than the explicit `freestanding-macos` comparison build, which still uses

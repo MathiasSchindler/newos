@@ -79,6 +79,8 @@ assert_file_contains "$WORK_DIR/file_true.jsonl" '"magic":"Mach-O"' "file --json
 
 "$BUILD_DIR/readelf" -h -l -S -r "$BUILD_DIR/true" > "$WORK_DIR/readelf_true.out"
 assert_file_contains "$WORK_DIR/readelf_true.out" 'Mach-O Header' "readelf did not print the Mach-O header"
+assert_file_contains "$WORK_DIR/readelf_true.out" 'LC_DYLD_INFO_ONLY' "readelf did not report Mach-O dyld rebase metadata"
+assert_file_contains "$WORK_DIR/readelf_true.out" 'rebase_size=0x0' "readelf did not report empty Mach-O rebase metadata for true"
 assert_file_contains "$WORK_DIR/readelf_true.out" 'There are no relocations in this Mach-O file' "readelf did not handle Mach-O relocation output"
 
 "$BUILD_DIR/readelf" -n "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_signature.out"
@@ -89,6 +91,8 @@ if "$BUILD_DIR/readelf" --compare "$BUILD_DIR/true" "$BUILD_DIR/false" > "$WORK_
 fi
 assert_file_contains "$WORK_DIR/readelf_compare_different.out" 'sha256' "readelf --compare did not report a content difference"
 "$BUILD_DIR/readelf" --json -h -l -S -n "$BUILD_DIR/true" > "$WORK_DIR/readelf_true.jsonl"
+assert_file_contains "$WORK_DIR/readelf_true.jsonl" '"name":"LC_DYLD_INFO_ONLY"' "readelf --json did not emit Mach-O dyld-info load command"
+assert_file_contains "$WORK_DIR/readelf_true.jsonl" '"rebase_size":0' "readelf --json did not emit Mach-O rebase size"
 assert_file_contains "$WORK_DIR/readelf_true.jsonl" '"event":"macho_code_signature"' "readelf --json did not emit Mach-O code-signature information"
 
 "$BUILD_DIR/readelf" --macho-map "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_map.out"
@@ -115,6 +119,11 @@ assert_file_contains "$WORK_DIR/size_true_segments.out" 'Section __text' "size -
 "$BUILD_DIR/size" --json -m "$BUILD_DIR/true" > "$WORK_DIR/size_true_segments.jsonl"
 assert_file_contains "$WORK_DIR/size_true_segments.jsonl" '"event":"macho_segment_size"' "size --json -m did not emit Mach-O segment-size events"
 
+TOOLS="true" NEWOS_MACOS_NEWLINKER_BUILD_DIR="$BUILD_DIR" bash "$ROOT_DIR/report-macos-freestanding-size.sh" > "$WORK_DIR/macos_size_report.tsv"
+assert_file_contains "$WORK_DIR/macos_size_report.tsv" 'top_file_sections' "macOS size report did not include top-section diagnostics"
+assert_file_contains "$WORK_DIR/macos_size_report.tsv" '__TEXT,__text=' "macOS size report did not report the top Mach-O text section"
+assert_file_contains "$WORK_DIR/macos_size_report.tsv" 'unavailable' "macOS size report should mark map-derived attribution unavailable without maps"
+
 "$BUILD_DIR/objdump" -f -h -r "$BUILD_DIR/true" > "$WORK_DIR/objdump_true.out"
 assert_file_contains "$WORK_DIR/objdump_true.out" 'file format mach-o-64' "objdump did not print the Mach-O file format"
 assert_file_contains "$WORK_DIR/objdump_true.out" 'No Mach-O relocations are available' "objdump did not handle Mach-O relocation output"
@@ -123,8 +132,7 @@ assert_file_contains "$WORK_DIR/objdump_true.jsonl" '"event":"file_header"' "obj
 assert_file_contains "$WORK_DIR/objdump_true.jsonl" '"event":"section"' "objdump --json did not emit section events"
 
 "$BUILD_DIR/imgcheck" "$BUILD_DIR/true" > "$WORK_DIR/imgcheck_true.out"
-assert_file_contains "$WORK_DIR/imgcheck_true.out" 'PIE has no dyld rebase metadata' "imgcheck did not report the Mach-O PIE/rebase warning"
-assert_file_contains "$WORK_DIR/imgcheck_true.out" 'code-signature=verified' "imgcheck did not verify the Mach-O code signature"
+assert_file_contains "$WORK_DIR/imgcheck_true.out" 'OK (macho)' "imgcheck did not accept the project-linked Mach-O executable"
 "$BUILD_DIR/imgcheck" --json "$BUILD_DIR/true" > "$WORK_DIR/imgcheck_true.jsonl"
 assert_file_contains "$WORK_DIR/imgcheck_true.jsonl" '"code_signature_verified":true' "imgcheck --json did not report verified Mach-O code signature"
 

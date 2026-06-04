@@ -132,12 +132,14 @@ defined symbols across input objects. The relocation pass supports the arm64
 `BRANCH26`, `PAGE21`, `PAGEOFF12`, and simple absolute `UNSIGNED` records needed
 by local and cross-object calls, `adrp`/`add` references, and clang's
 unsigned-offset load/store references to static data. The writer emits
-`__PAGEZERO`, `__TEXT`, optional `__DATA`, `__LINKEDIT`, `LC_LOAD_DYLINKER`,
-`LC_BUILD_VERSION`, `LC_MAIN`, and `LC_CODE_SIGNATURE`. With `--macho-compact`,
-the `LC_BUILD_VERSION` command uses `ntools 0` and omits the tool-version
-payload. Output uses the same 16 KiB page/signature granularity as the macOS
-prototype container writer and includes an in-tree ad-hoc SHA-256 CodeDirectory
-signature.
+`__PAGEZERO`, `__TEXT`, optional `__DATA`, `__LINKEDIT`, `LC_DYLD_INFO_ONLY`,
+`LC_LOAD_DYLINKER`, `LC_BUILD_VERSION`, `LC_MAIN`, and `LC_CODE_SIGNATURE`. With
+`--macho-compact`, the `LC_BUILD_VERSION` command uses `ntools 0` and omits the
+tool-version payload. PIE outputs include empty dyld rebase metadata when no
+absolute pointer rebases are needed, and classic dyld rebase opcodes for 64-bit
+absolute pointer relocations that remain in the linked image. Output uses the
+same 16 KiB page/signature granularity as the macOS prototype container writer
+and includes an in-tree ad-hoc SHA-256 CodeDirectory signature.
 
 This is enough for tiny syscall-only arm64 start objects and freestanding clang
 C start files split across several translation units, with local calls,
@@ -199,10 +201,19 @@ feature-preserving size work.
 
 `make macos-freestanding-size-report` prints exact Mach-O file bytes, summed
 file-backed Mach-O section bytes, raster/layout overhead, load-command counts,
-and `LC_BUILD_VERSION` tool-record counts for representative project-linked
-macOS freestanding tools. Use the file-section byte column when judging linker
-or LTO changes on macOS, because final Mach-O file sizes can move in coarse 16
-KiB-ish steps after page, segment, and signature layout effects are applied.
+`LC_BUILD_VERSION` tool-record counts, and top file-backed Mach-O sections for
+representative project-linked macOS freestanding tools. Use the file-section
+byte column when judging linker or LTO changes on macOS, because final Mach-O
+file sizes can move in coarse 16 KiB-ish steps after page, segment, and
+signature layout effects are applied.
+
+The Mach-O backend also honors `--map FILE`. Its map records final sections,
+input sections, and symbol-size attribution seen during linking; the final
+executables still omit `LC_SYMTAB`. For Makefile builds, create a directory and
+pass `MACOS_NEWLINKER_MAP_DIR=DIR` to write `DIR/TOOL.map` files. Pass
+`--maps DIR` to `report-macos-freestanding-size.sh`, and the report appends top
+input-section and top-symbol contributors. Without maps, those attribution
+columns are reported as unavailable.
 
 Save a report and compare later with `make macos-freestanding-size-compare
 BASELINE=previous.tsv`. The compare output adds `delta_file_bytes` and

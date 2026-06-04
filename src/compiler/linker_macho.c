@@ -8,6 +8,7 @@
 #define MACHO_FILETYPE_EXECUTE      2U
 #define MACHO_LC_SEGMENT_64         0x19U
 #define MACHO_LC_SYMTAB             0x2U
+#define MACHO_LC_DYLD_INFO_ONLY     0x80000022U
 #define MACHO_LC_LOAD_DYLINKER      0xeU
 #define MACHO_LC_BUILD_VERSION      0x32U
 #define MACHO_LC_MAIN               0x80000028U
@@ -27,6 +28,7 @@
 #define MACHO_FLAG_TWOLEVEL         0x80U
 #define MACHO_FLAG_PIE              0x200000U
 #define MACHO_N_UNDF                0x00U
+#define MACHO_N_STAB                0xe0U
 #define MACHO_N_TYPE_MASK           0x0eU
 #define MACHO_N_SECT                0x0eU
 #define MACHO_N_EXT                 0x01U
@@ -40,6 +42,12 @@
 #define MACHO_TEXT_SECTION_FLAGS    0x80000400U
 #define MACHO_CODE_DIRECTORY_IDENT  "newlinker"
 #define MACHO_CODE_DIRECTORY_IDENT_SIZE 10U
+#define MACHO_REBASE_TYPE_POINTER   1U
+#define MACHO_REBASE_OPCODE_DONE    0x00U
+#define MACHO_REBASE_OPCODE_SET_TYPE_IMM 0x10U
+#define MACHO_REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB 0x20U
+#define MACHO_REBASE_OPCODE_DO_REBASE_IMM_TIMES 0x50U
+#define MACHO_MAX_REBASES           8192U
 
 typedef enum {
     MACHO_SECTION_CLASS_NONE = 0,
@@ -67,6 +75,7 @@ typedef struct {
 } MachoInputSection;
 
 typedef struct {
+    char path[COMPILER_PATH_CAPACITY];
     unsigned char *file;
     size_t size;
     MachoInputSection sections[MACHO_MAX_SECTIONS];
@@ -92,6 +101,11 @@ typedef struct {
 } MachoGlobalSymbol;
 
 typedef struct {
+    unsigned char segment_index;
+    uint64_t segment_offset;
+} MachoRebaseEntry;
+
+typedef struct {
     const char *section_name;
     const char *segment_name;
     MachoSectionClass section_class;
@@ -107,6 +121,8 @@ typedef struct {
     size_t object_count;
     MachoGlobalSymbol globals[LINKER_MAX_GLOBALS];
     size_t global_count;
+    MachoRebaseEntry rebases[MACHO_MAX_REBASES];
+    size_t rebase_count;
     MachoOutputSection text;
     MachoOutputSection constant;
     MachoOutputSection cstring;
@@ -146,6 +162,19 @@ static void macho_copy_fixed_name(char *out, const unsigned char *name) {
 
 static int macho_name_equals(const char *name, const char *expected) {
     return rt_strcmp(name, expected) == 0;
+}
+
+static int macho_write_hex64(int fd, uint64_t value) {
+    char buffer[18];
+    const char *digits = "0123456789abcdef";
+    int i;
+
+    buffer[0] = '0';
+    buffer[1] = 'x';
+    for (i = 0; i < 16; ++i) {
+        buffer[2 + i] = digits[(value >> (uint64_t)((15 - i) * 4)) & 0xfU];
+    }
+    return rt_write_all(fd, buffer, sizeof(buffer));
 }
 
 static int64_t macho_sign_extend_24(uint32_t value) {
@@ -613,6 +642,7 @@ static int macho_parse_loaded_object(MachoInputObject *object, const char *path,
     size_t i;
 
     memset(object, 0, sizeof(*object));
+    rt_copy_string(object->path, sizeof(object->path), path);
     object->file = file;
     object->size = size;
     if (object->size < MACHO_HEADER64_SIZE || read_u32(object->file) != MACHO64_MAGIC) {
@@ -870,6 +900,132 @@ static void macho_apply_output_section_base(MachoLinkImage *link, MachoSectionCl
     }
 }
 
+static int macho_write_uleb128(unsigned char *buffer, size_t buffer_size, size_t *offset, uint64_t value) {
+    do {
+        unsigned char byte = (unsigned char)(value & 0x7fU);
+        value >>= 7U;
+        if (value != 0ULL) {
+            byte |= 0x80U;
+        }
+        if (*offset >= buffer_size) {
+            return -1;
+        }
+        buffer[*offset] = byte;
+        *offset += 1U;
+    } while (value != 0ULL);
+    return 0;
+}
+
+static int macho_section_rebase_segment(const MachoInputSection *section, uint64_t data_vmaddr, unsigned char *segment_index_out, uint64_t *segment_vmaddr_out) {
+    if (section->section_class == MACHO_SECTION_CLASS_TEXT || section->section_class == MACHO_SECTION_CLASS_CONST || section->section_class == MACHO_SECTION_CLASS_CSTRING) {
+        *segment_index_out = 1U;
+        *segment_vmaddr_out = MACHO_BASE_ADDRESS;
+        return 0;
+    }
+    if (section->section_class == MACHO_SECTION_CLASS_DATA) {
+        *segment_index_out = 2U;
+        *segment_vmaddr_out = data_vmaddr;
+        return 0;
+    }
+    return -1;
+}
+
+static int macho_add_rebase_entry(MachoLinkImage *link, unsigned char segment_index, uint64_t segment_offset, char *error_out, size_t error_size) {
+    if (link->rebase_count >= MACHO_MAX_REBASES) {
+        set_link_error(error_out, error_size, "too many Mach-O rebases", "");
+        return -1;
+    }
+    link->rebases[link->rebase_count].segment_index = segment_index;
+    link->rebases[link->rebase_count].segment_offset = segment_offset;
+    link->rebase_count += 1U;
+    return 0;
+}
+
+static int macho_collect_rebase_entries(MachoLinkImage *link, uint64_t data_vmaddr, char *error_out, size_t error_size) {
+    size_t object_index;
+    link->rebase_count = 0U;
+    for (object_index = 0; object_index < link->object_count; ++object_index) {
+        MachoInputObject *object = &link->objects[object_index];
+        size_t section_index;
+        for (section_index = 0; section_index < object->section_count; ++section_index) {
+            MachoInputSection *section = &object->sections[section_index];
+            uint32_t reloc_index;
+            if (section->nreloc == 0U || section->section_class == MACHO_SECTION_CLASS_BSS) {
+                continue;
+            }
+            for (reloc_index = 0U; reloc_index < section->nreloc; ++reloc_index) {
+                const unsigned char *reloc = object->file + section->reloff + (uint64_t)reloc_index * MACHO_RELOC_SIZE;
+                uint32_t address_word = read_u32(reloc);
+                uint32_t info = read_u32(reloc + 4U);
+                uint32_t type = (info >> 28U) & 0xfU;
+                uint32_t length = (info >> 25U) & 3U;
+                int pcrel = (int)((info >> 24U) & 1U);
+                uint64_t offset = (uint64_t)(address_word & 0x7fffffffU);
+                unsigned char segment_index;
+                uint64_t segment_vmaddr;
+                if ((address_word & 0x80000000U) != 0U || type != MACHO_ARM64_RELOC_UNSIGNED || length != 3U || pcrel) {
+                    continue;
+                }
+                if (offset + 8ULL > section->size) {
+                    set_link_error(error_out, error_size, "invalid Mach-O rebase relocation offset", section->sectname);
+                    return -1;
+                }
+                if (macho_section_rebase_segment(section, data_vmaddr, &segment_index, &segment_vmaddr) != 0) {
+                    continue;
+                }
+                if (section->out_addr + offset < segment_vmaddr) {
+                    set_link_error(error_out, error_size, "invalid Mach-O rebase address", section->sectname);
+                    return -1;
+                }
+                if (macho_add_rebase_entry(link, segment_index, section->out_addr + offset - segment_vmaddr, error_out, error_size) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static unsigned char *macho_make_rebase_info(const MachoLinkImage *link, size_t *size_out) {
+    size_t capacity = link->rebase_count == 0U ? 0U : 2U + link->rebase_count * 12U;
+    unsigned char *buffer;
+    size_t offset = 0U;
+    size_t i;
+
+    if (link->rebase_count == 0U) {
+        *size_out = 0U;
+        return 0;
+    }
+    buffer = (unsigned char *)rt_malloc(capacity);
+    if (buffer == 0) {
+        return 0;
+    }
+    buffer[offset++] = (unsigned char)(MACHO_REBASE_OPCODE_SET_TYPE_IMM | MACHO_REBASE_TYPE_POINTER);
+    for (i = 0U; i < link->rebase_count; ++i) {
+        if (offset >= capacity) {
+            rt_free(buffer);
+            return 0;
+        }
+        buffer[offset++] = (unsigned char)(MACHO_REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | (link->rebases[i].segment_index & 0xfU));
+        if (macho_write_uleb128(buffer, capacity, &offset, link->rebases[i].segment_offset) != 0) {
+            rt_free(buffer);
+            return 0;
+        }
+        if (offset >= capacity) {
+            rt_free(buffer);
+            return 0;
+        }
+        buffer[offset++] = (unsigned char)(MACHO_REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1U);
+    }
+    if (offset >= capacity) {
+        rt_free(buffer);
+        return 0;
+    }
+    buffer[offset++] = MACHO_REBASE_OPCODE_DONE;
+    *size_out = offset;
+    return buffer;
+}
+
 static int macho_add_global_symbol(MachoLinkImage *link, const char *name, size_t object_index, uint32_t symbol_index, uint64_t value, char *error_out, size_t error_size) {
     size_t i;
     for (i = 0; i < link->global_count; ++i) {
@@ -997,6 +1153,157 @@ static int macho_write_stats(const MachoLinkImage *link,
     return rt_write_cstr(1, "\n");
 }
 
+static uint64_t macho_symbol_approx_size(const MachoInputObject *object, uint32_t symbol_index, const MachoInputSection *section, uint64_t value) {
+    uint64_t next_value = section->addr + section->size;
+    uint32_t i;
+
+    for (i = 0U; i < object->nsyms; ++i) {
+        const unsigned char *candidate;
+        unsigned char type;
+        unsigned char sect;
+        uint64_t candidate_value;
+        if (i == symbol_index) {
+            continue;
+        }
+        candidate = object->file + object->symoff + (uint64_t)i * MACHO_NLIST64_SIZE;
+        type = candidate[4];
+        sect = candidate[5];
+        if ((type & MACHO_N_STAB) != 0U || (type & MACHO_N_TYPE_MASK) != MACHO_N_SECT || sect != section->ordinal) {
+            continue;
+        }
+        candidate_value = read_u64(candidate + 8U);
+        if (candidate_value > value && candidate_value < next_value) {
+            next_value = candidate_value;
+        }
+    }
+    return next_value > value ? next_value - value : 0ULL;
+}
+
+static int macho_write_map_output_section(int fd, const MachoOutputSection *section) {
+    if (section->size == 0ULL) {
+        return 0;
+    }
+    return rt_write_cstr(fd, "section ") != 0 ||
+           macho_write_hex64(fd, section->out_addr) != 0 ||
+           rt_write_cstr(fd, " ") != 0 ||
+           rt_write_uint(fd, section->size) != 0 ||
+           rt_write_cstr(fd, " ") != 0 ||
+           rt_write_cstr(fd, section->segment_name) != 0 ||
+           rt_write_cstr(fd, ",") != 0 ||
+           rt_write_cstr(fd, section->section_name) != 0 ||
+           rt_write_cstr(fd, "\n") != 0 ? -1 : 0;
+}
+
+static int macho_write_map(const char *path,
+                           const MachoLinkImage *link,
+                           const char *output_path,
+                           const char *entry_symbol,
+                           int compact,
+                           int gc_sections,
+                           uint64_t file_size,
+                           char *error_out,
+                           size_t error_size) {
+    int fd = platform_open_write(path, 0644U);
+    size_t object_index;
+
+    if (fd < 0) {
+        set_link_error(error_out, error_size, "failed to open Mach-O map file", path);
+        return -1;
+    }
+    if (rt_write_cstr(fd, "newos macho linker map\noutput: ") != 0 || rt_write_cstr(fd, output_path) != 0 ||
+        rt_write_cstr(fd, "\nentry: ") != 0 || rt_write_cstr(fd, entry_symbol) != 0 || rt_write_cstr(fd, " ") != 0 ||
+        macho_write_hex64(fd, MACHO_BASE_ADDRESS + link->entryoff) != 0 ||
+        rt_write_cstr(fd, "\npolicy: ") != 0 || rt_write_cstr(fd, compact ? "compact" : "page-aligned") != 0 ||
+        rt_write_cstr(fd, gc_sections ? " gc-sections\n" : " object-gc\n") != 0 ||
+        rt_write_cstr(fd, "text/const/cstring/data/bss/file: ") != 0 || rt_write_uint(fd, link->text.size) != 0 ||
+        rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, link->constant.size) != 0 ||
+        rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, link->cstring.size) != 0 ||
+        rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, link->data.size) != 0 ||
+        rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, link->bss.size) != 0 ||
+        rt_write_cstr(fd, "/") != 0 || rt_write_uint(fd, file_size) != 0 ||
+        rt_write_cstr(fd, "\n\nFinal sections:\n") != 0) {
+        (void)platform_close(fd);
+        set_link_error(error_out, error_size, "failed to write Mach-O map file", path);
+        return -1;
+    }
+    if (macho_write_map_output_section(fd, &link->text) != 0 ||
+        macho_write_map_output_section(fd, &link->constant) != 0 ||
+        macho_write_map_output_section(fd, &link->cstring) != 0 ||
+        macho_write_map_output_section(fd, &link->data) != 0 ||
+        macho_write_map_output_section(fd, &link->bss) != 0 ||
+        rt_write_cstr(fd, "\nInput sections:\n") != 0) {
+        (void)platform_close(fd);
+        set_link_error(error_out, error_size, "failed to write Mach-O map file", path);
+        return -1;
+    }
+    for (object_index = 0; object_index < link->object_count; ++object_index) {
+        const MachoInputObject *object = &link->objects[object_index];
+        size_t section_index;
+        for (section_index = 0; section_index < object->section_count; ++section_index) {
+            const MachoInputSection *section = &object->sections[section_index];
+            if (section->section_class == MACHO_SECTION_CLASS_NONE || section->size == 0ULL) {
+                continue;
+            }
+            if (rt_write_cstr(fd, "input-section ") != 0 || macho_write_hex64(fd, section->out_addr) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_uint(fd, section->size) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, section->segname) != 0 ||
+                rt_write_cstr(fd, ",") != 0 || rt_write_cstr(fd, section->sectname) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, object->path) != 0 || rt_write_cstr(fd, "\n") != 0) {
+                (void)platform_close(fd);
+                set_link_error(error_out, error_size, "failed to write Mach-O map file", path);
+                return -1;
+            }
+        }
+    }
+    if (rt_write_cstr(fd, "\nSymbols:\n") != 0) {
+        (void)platform_close(fd);
+        set_link_error(error_out, error_size, "failed to write Mach-O map file", path);
+        return -1;
+    }
+    for (object_index = 0; object_index < link->object_count; ++object_index) {
+        const MachoInputObject *object = &link->objects[object_index];
+        uint32_t symbol_index;
+        for (symbol_index = 0U; symbol_index < object->nsyms; ++symbol_index) {
+            const unsigned char *symbol = object->file + object->symoff + (uint64_t)symbol_index * MACHO_NLIST64_SIZE;
+            uint32_t strx = read_u32(symbol);
+            unsigned char type = symbol[4];
+            unsigned char sect = symbol[5];
+            uint64_t value = read_u64(symbol + 8U);
+            const MachoInputSection *section = macho_section_by_ordinal((MachoInputObject *)object, sect);
+            uint64_t runtime_value;
+            uint64_t approx_size;
+            const char *name;
+            if (strx >= object->strsize || (type & MACHO_N_STAB) != 0U || (type & MACHO_N_TYPE_MASK) != MACHO_N_SECT || section == 0 || section->section_class == MACHO_SECTION_CLASS_NONE || value < section->addr || value >= section->addr + section->size) {
+                continue;
+            }
+            name = (const char *)(object->file + object->stroff + strx);
+            if (name[0] == '\0') {
+                continue;
+            }
+            if (name[0] == 'L' || rt_strncmp(name, "ltmp", 4U) == 0) {
+                continue;
+            }
+            runtime_value = section->out_addr + (value - section->addr);
+            approx_size = macho_symbol_approx_size(object, symbol_index, section, value);
+            if (rt_write_cstr(fd, "symbol ") != 0 || macho_write_hex64(fd, runtime_value) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_uint(fd, approx_size) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, section->segname) != 0 ||
+                rt_write_cstr(fd, ",") != 0 || rt_write_cstr(fd, section->sectname) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, name) != 0 ||
+                rt_write_cstr(fd, " ") != 0 || rt_write_cstr(fd, object->path) != 0 || rt_write_cstr(fd, "\n") != 0) {
+                (void)platform_close(fd);
+                set_link_error(error_out, error_size, "failed to write Mach-O map file", path);
+                return -1;
+            }
+        }
+    }
+    if (platform_close(fd) != 0) {
+        set_link_error(error_out, error_size, "failed to close Mach-O map file", path);
+        return -1;
+    }
+    return 0;
+}
+
 static int macho_apply_all_relocations(MachoLinkImage *link, unsigned char *image, size_t image_size, char *error_out, size_t error_size) {
     size_t object_index;
     for (object_index = 0; object_index < link->object_count; ++object_index) {
@@ -1008,7 +1315,7 @@ static int macho_apply_all_relocations(MachoLinkImage *link, unsigned char *imag
 }
 
 static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol, const char *output_path, const CompilerLinkerOptions *options, char *error_out, size_t error_size) {
-    enum { header_size = 32U, pagezero_command_size = 72U, segment_command_size = 72U, section_command_size = 80U, linkedit_command_size = 72U, dylinker_command_size = 32U, build_version_command_size = 32U, main_command_size = 24U, code_signature_command_size = 16U };
+    enum { header_size = 32U, pagezero_command_size = 72U, segment_command_size = 72U, section_command_size = 80U, linkedit_command_size = 72U, dyld_info_command_size = 48U, dylinker_command_size = 32U, build_version_command_size = 32U, main_command_size = 24U, code_signature_command_size = 16U };
     uint32_t text_section_count;
     uint32_t data_section_count;
     uint32_t text_command_size;
@@ -1025,9 +1332,16 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     uint64_t data_file_size = 0ULL;
     uint64_t data_vmaddr = 0ULL;
     uint64_t data_vm_size = 0ULL;
+    uint64_t linkedit_data_offset;
+    uint64_t rebase_info_offset = 0ULL;
+    size_t rebase_info_size = 0U;
     uint64_t signature_offset;
     uint64_t code_limit;
     uint64_t linkedit_vmaddr;
+    uint64_t linkedit_fileoff;
+    uint64_t linkedit_file_size;
+    uint64_t linkedit_vm_size;
+    unsigned char *rebase_info = 0;
     unsigned char *signature;
     size_t signature_size;
     unsigned char *image;
@@ -1053,8 +1367,8 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     text_command_size = segment_command_size + section_command_size * text_section_count;
     data_command_size = data_section_count != 0U ? segment_command_size + section_command_size * data_section_count : 0U;
     build_version_size = compact ? 24U : build_version_command_size;
-    commands_size = pagezero_command_size + text_command_size + data_command_size + linkedit_command_size + dylinker_command_size + build_version_size + main_command_size + code_signature_command_size;
-    ncmds = data_section_count != 0U ? 8U : 7U;
+    commands_size = pagezero_command_size + text_command_size + data_command_size + linkedit_command_size + dyld_info_command_size + dylinker_command_size + build_version_size + main_command_size + code_signature_command_size;
+    ncmds = data_section_count != 0U ? 9U : 8U;
     header_bytes = (uint64_t)header_size + commands_size;
     cursor = macho_align_up(header_bytes, 1ULL << link->text.align);
     macho_apply_output_section_base(link, MACHO_SECTION_CLASS_TEXT, cursor, MACHO_BASE_ADDRESS + cursor);
@@ -1097,22 +1411,37 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
             data_vm_size = data_file_size;
         }
         data_vm_size = macho_align_up(data_vm_size, MACHO_PAGE_SIZE);
-        signature_offset = data_payload_end;
+        linkedit_data_offset = data_payload_end;
     } else {
-        signature_offset = text_file_size;
+        linkedit_data_offset = text_file_size;
     }
-    code_limit = macho_align_up(signature_offset, MACHO_PAGE_SIZE);
+    if (macho_collect_rebase_entries(link, data_vmaddr, error_out, error_size) != 0) {
+        return -1;
+    }
+    rebase_info = macho_make_rebase_info(link, &rebase_info_size);
+    if (link->rebase_count != 0U && rebase_info == 0) {
+        set_link_error(error_out, error_size, "failed to create Mach-O rebase info", output_path);
+        return -1;
+    }
+    if (rebase_info_size != 0U) {
+        rebase_info_offset = linkedit_data_offset;
+    }
+    signature_offset = linkedit_data_offset + (uint64_t)rebase_info_size;
+    code_limit = signature_offset;
     linkedit_vmaddr = data_section_count != 0U ? data_vmaddr + data_vm_size : MACHO_BASE_ADDRESS + text_vm_size;
     if (macho_collect_global_symbols(link, entry_symbol, error_out, error_size) != 0) {
+        rt_free(rebase_info);
         return -1;
     }
     if (header_bytes > 0xffffffffULL || signature_offset > 0xffffffffULL || link->text.size > 0xffffffffULL || link->constant.size > 0xffffffffULL || link->cstring.size > 0xffffffffULL || link->data.size > 0xffffffffULL || link->bss.size > 0xffffffffULL) {
         set_link_error(error_out, error_size, "Mach-O output is too large", output_path);
+        rt_free(rebase_info);
         return -1;
     }
     signature_size = 20U + 88U + MACHO_CODE_DIRECTORY_IDENT_SIZE + (size_t)((code_limit + MACHO_PAGE_SIZE - 1ULL) / MACHO_PAGE_SIZE) * CRYPTO_SHA256_DIGEST_SIZE;
     image = (unsigned char *)rt_malloc((size_t)signature_offset);
     if (image == 0) {
+        rt_free(rebase_info);
         set_link_error(error_out, error_size, "out of memory while writing Mach-O output", output_path);
         return -1;
     }
@@ -1150,8 +1479,25 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
         }
         command_offset += data_command_size;
     }
-    macho_write_segment64(image + command_offset, "__LINKEDIT", linkedit_vmaddr, MACHO_PAGE_SIZE, signature_offset, (uint64_t)signature_size, MACHO_VM_PROT_READ, MACHO_VM_PROT_READ, 0U, 0U);
+    linkedit_fileoff = rebase_info_size != 0U ? linkedit_data_offset : signature_offset;
+    linkedit_file_size = (signature_offset - linkedit_fileoff) + (uint64_t)signature_size;
+    linkedit_vm_size = macho_align_up(linkedit_file_size, MACHO_PAGE_SIZE);
+    macho_write_segment64(image + command_offset, "__LINKEDIT", linkedit_vmaddr, linkedit_vm_size, linkedit_fileoff, linkedit_file_size, MACHO_VM_PROT_READ, MACHO_VM_PROT_READ, 0U, 0U);
     command_offset += linkedit_command_size;
+
+    write_u32(image + command_offset + 0U, MACHO_LC_DYLD_INFO_ONLY);
+    write_u32(image + command_offset + 4U, dyld_info_command_size);
+    write_u32(image + command_offset + 8U, (uint32_t)rebase_info_offset);
+    write_u32(image + command_offset + 12U, (uint32_t)rebase_info_size);
+    write_u32(image + command_offset + 16U, 0U);
+    write_u32(image + command_offset + 20U, 0U);
+    write_u32(image + command_offset + 24U, 0U);
+    write_u32(image + command_offset + 28U, 0U);
+    write_u32(image + command_offset + 32U, 0U);
+    write_u32(image + command_offset + 36U, 0U);
+    write_u32(image + command_offset + 40U, 0U);
+    write_u32(image + command_offset + 44U, 0U);
+    command_offset += dyld_info_command_size;
 
     write_u32(image + command_offset + 0U, MACHO_LC_LOAD_DYLINKER);
     write_u32(image + command_offset + 4U, dylinker_command_size);
@@ -1185,9 +1531,14 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     macho_copy_input_sections(link, image, MACHO_SECTION_CLASS_CSTRING);
     macho_copy_input_sections(link, image, MACHO_SECTION_CLASS_DATA);
     if (macho_apply_all_relocations(link, image, (size_t)signature_offset, error_out, error_size) != 0) {
+        rt_free(rebase_info);
         rt_free(image);
         return -1;
     }
+    if (rebase_info_size != 0U) {
+        memcpy(image + rebase_info_offset, rebase_info, rebase_info_size);
+    }
+    rt_free(rebase_info);
 
     signature = macho_make_code_signature(image, (size_t)signature_offset, code_limit, &signature_size);
     if (signature == 0) {
@@ -1221,6 +1572,11 @@ static int macho_write_executable(MachoLinkImage *link, const char *entry_symbol
     if (platform_close(output_fd) != 0) {
         set_link_error(error_out, error_size, "failed to close Mach-O output", output_path);
         return -1;
+    }
+    if (options != 0 && options->map_path != 0 && options->map_path[0] != '\0') {
+        if (macho_write_map(options->map_path, link, output_path, entry_symbol, compact, options->gc_sections, signature_offset + (uint64_t)signature_size, error_out, error_size) != 0) {
+            return -1;
+        }
     }
     if (options != 0 && options->stats) {
         if (macho_write_stats(link, header_bytes, text_payload_size, text_file_size, text_vm_size, data_file_size, data_vm_size, signature_offset, code_limit, (uint64_t)signature_size, compact) != 0) {
