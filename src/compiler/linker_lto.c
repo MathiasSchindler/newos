@@ -101,6 +101,7 @@ int run_gcc_lto_prelink(const char *const *paths, size_t count, const char *entr
     argv[argc++] = "-Oz";
     argv[argc++] = "-ffreestanding";
     argv[argc++] = "-fno-builtin";
+    argv[argc++] = "-fno-common";
     argv[argc++] = "-fno-stack-protector";
     argv[argc++] = "-fno-unwind-tables";
     argv[argc++] = "-fno-asynchronous-unwind-tables";
@@ -160,6 +161,7 @@ int run_clang_lto_prelink_elf64_x86_64(const char *const *paths, size_t count, c
     argv[argc++] = "-Oz";
     argv[argc++] = "-ffreestanding";
     argv[argc++] = "-fno-builtin";
+    argv[argc++] = "-fno-common";
     argv[argc++] = "-fno-stack-protector";
     argv[argc++] = "-fno-unwind-tables";
     argv[argc++] = "-fno-asynchronous-unwind-tables";
@@ -273,6 +275,7 @@ retry_prelink:
     argv[argc++] = "-Oz";
     argv[argc++] = "-ffreestanding";
     argv[argc++] = "-fno-builtin";
+    argv[argc++] = "-fno-common";
     argv[argc++] = "-fno-stack-protector";
     argv[argc++] = "-fno-unwind-tables";
     argv[argc++] = "-fno-asynchronous-unwind-tables";

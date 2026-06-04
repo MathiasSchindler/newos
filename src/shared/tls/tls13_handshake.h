@@ -19,6 +19,7 @@
 #define TLS13_EXT_RECORD_SIZE_LIMIT 0x001c
 
 #define TLS13_GROUP_X25519 0x001d
+#define TLS13_CLIENT_HELLO_CAPACITY 2048U
 
 struct Tls13ServerHello {
 	unsigned short legacy_version;
@@ -44,14 +45,15 @@ int tls13_build_client_hello_rfc8448_1rtt(
 // Builds a minimal TLS 1.3 ClientHello suitable for real servers.
 // Includes: server_name (SNI), supported_versions (TLS 1.3), supported_groups (x25519),
 // signature_algorithms (RFC 8448 list), key_share (x25519), psk_key_exchange_modes (psk_dhe_ke).
-// Returns 0 on success, -1 on error.
-int tls13_build_client_hello(
+// Returns a pointer to an internal fixed-size buffer on success, or NULL on error.
+const unsigned char *tls13_build_client_hello(
 	const char *sni, size_t sni_len,
 	const unsigned char random32[32],
 	const unsigned char *legacy_session_id, size_t legacy_session_id_len,
 	const unsigned char x25519_pub[32],
-	unsigned char *out, size_t out_cap, size_t *out_len
+	size_t *out_len
 );
+const char *tls13_client_hello_last_error(void);
 
 // Parses a TLS 1.3 ServerHello handshake message (handshake header included).
 // Only extracts supported_versions and key_share (x25519) extensions.

@@ -137,6 +137,31 @@ ASM
         fi
     fi
 
+    cat > "$WORK_DIR/macho_addend_ref.s" <<'ASM'
+.cstring
+Lstr:
+    .asciz "0123456789"
+.text
+.globl _start
+.p2align 2
+_start:
+    adrp x1, Lstr@PAGE+4
+    add x1, x1, Lstr@PAGEOFF+4
+    ldrb w0, [x1]
+    sub w0, w0, #'4'
+    mov x16, #1
+    svc #0x80
+ASM
+    if clang -target arm64-apple-macos11 -c "$WORK_DIR/macho_addend_ref.s" -o "$WORK_DIR/macho_addend_ref.o" > "$WORK_DIR/macho_addend_ref_compile.out" 2>&1; then
+        "$LINKER" --target=mach-o-arm64 -o "$WORK_DIR/macho_addend_ref" "$WORK_DIR/macho_addend_ref.o" > "$WORK_DIR/linker_macho_addend_ref.stdout" 2> "$WORK_DIR/linker_macho_addend_ref.stderr"
+        if command -v codesign >/dev/null 2>&1; then
+            codesign --verify --strict "$WORK_DIR/macho_addend_ref" > "$WORK_DIR/macho_addend_ref_codesign.out" 2>&1
+        fi
+        if [ "$(uname -m 2>/dev/null || echo unknown)" = arm64 ]; then
+            "$WORK_DIR/macho_addend_ref"
+        fi
+    fi
+
     cat > "$WORK_DIR/macho_clang_start.c" <<'C'
 __attribute__((noreturn)) static void sys_exit(long code) {
     register long x0 __asm__("x0") = code;

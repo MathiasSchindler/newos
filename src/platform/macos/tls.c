@@ -27,6 +27,7 @@ static void macos_tls_set_peer_status(const char *message) {
     rt_copy_string(macos_tls_peer_status_storage, sizeof(macos_tls_peer_status_storage), message != 0 ? message : "unknown");
 }
 
+#if !defined(NEWOS_MACOS_NEWLINKER)
 static unsigned char *macos_tls_read_file(const char *path, size_t *length_out) {
     unsigned char *buffer;
     size_t used = 0U;
@@ -114,7 +115,9 @@ static int macos_tls_verify_peer_certs(const CryptoX509DerCert *certs, size_t ce
     macos_tls_set_peer_status(result == 0 ? "trusted" : status);
     return result;
 }
+#endif
 
+#if !defined(NEWOS_MACOS_NEWLINKER)
 static int macos_tls_verify_native_peer(Tls13Client *native, const char *host) {
     CryptoX509DerCert certs[TLS13_MAX_PEER_CERTS];
     size_t cert_count;
@@ -130,6 +133,7 @@ static int macos_tls_verify_native12_peer(Tls12Client *native, const char *host)
     cert_count = tls12_client_peer_certificates(native, certs, TLS12_MAX_PEER_CERTS);
     return macos_tls_verify_peer_certs(certs, cert_count, host);
 }
+#endif
 
 static Tls13Client *macos_native_tls_client(PlatformTlsClient *client) {
     return (Tls13Client *)client->opaque[0];
@@ -143,11 +147,13 @@ static int macos_native_tls_version(PlatformTlsClient *client) {
     return client->opaque[1] == (void *)12 ? 12 : 13;
 }
 
+#if !defined(NEWOS_MACOS_NEWLINKER)
 static int macos_native_tls_insecure_opt_in(void) {
     const char *value = platform_getenv("NEWOS_NATIVE_TLS_INSECURE");
 
     return value != 0 && value[0] == '1' && value[1] == '\0';
 }
+#endif
 
 int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out) {
     CryptoX509DerCert certs[TLS13_MAX_PEER_CERTS];
@@ -181,8 +187,8 @@ int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_
 
 int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) {
     Tls13Client *native;
-    Tls12Client *native12;
     int socket_fd = -1;
+    const char *tls13_error;
 
     macos_tls_set_error("none");
     macos_tls_set_peer_status("not-verified-native");
@@ -203,11 +209,23 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
         return -1;
     }
     tls13_client_init(native, socket_fd, 30000U);
-    if (tls13_client_handshake(native, host, rt_strlen(host)) != 0) {
-        macos_tls_set_error(tls13_client_last_error(native));
+    int tls13_result = tls13_client_handshake(native, host, rt_strlen(host));
+    if (tls13_result != 0 && native->handshake_done) {
+        tls13_result = 0;
+    }
+    if (tls13_result != 0) {
+        tls13_error = tls13_client_last_error(native);
+        if (tls13_error == 0 || (tls13_error[0] == 'n' && tls13_error[1] == 'o' && tls13_error[2] == 'n' && tls13_error[3] == 'e' && tls13_error[4] == '\0')) {
+            tls13_error = "native tls handshake failed without detail";
+        }
+        macos_tls_set_error(tls13_error);
         rt_free(native);
         (void)platform_close(socket_fd);
         socket_fd = -1;
+#if defined(NEWOS_MACOS_NEWLINKER)
+        return -1;
+#else
+    Tls12Client *native12;
         if (platform_connect_tcp(host, port, &socket_fd) != 0) {
             macos_tls_set_error("tcp reconnect failed for tls12 fallback");
             return -1;
@@ -220,11 +238,14 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
         }
         tls12_client_init(native12, socket_fd, 30000U);
         if (tls12_client_handshake(native12, host, rt_strlen(host)) != 0) {
-            macos_tls_set_error(tls12_client_last_error(native12));
+            macos_tls_set_error(tls13_error);
             rt_free(native12);
             (void)platform_close(socket_fd);
             return -1;
         }
+#if defined(NEWOS_MACOS_NEWLINKER)
+        macos_tls_set_peer_status("not-verified-newlinker");
+#else
         if (macos_tls_verify_native12_peer(native12, host) != 0) {
             if (macos_native_tls_insecure_opt_in()) {
                 macos_tls_set_error("none");
@@ -235,13 +256,18 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
             return -1;
             }
         }
+#endif
         client->opaque[0] = native12;
         client->opaque[1] = (void *)12;
         client->socket_fd = socket_fd;
         client->active = 1;
         macos_tls_set_error("none");
         return 0;
+#endif
     }
+#if defined(NEWOS_MACOS_NEWLINKER)
+    macos_tls_set_peer_status("not-verified-newlinker");
+#else
     if (macos_tls_verify_native_peer(native, host) != 0) {
         if (macos_native_tls_insecure_opt_in()) {
             macos_tls_set_error("none");
@@ -252,6 +278,7 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
         return -1;
         }
     }
+#endif
     client->opaque[0] = native;
     client->opaque[1] = (void *)13;
     client->socket_fd = socket_fd;
@@ -295,19 +322,28 @@ long platform_tls_write(PlatformTlsClient *client, const void *buffer, size_t co
 void platform_tls_close(PlatformTlsClient *client) {
     Tls13Client *native;
 
-    if (client != 0) {
-        native = macos_native_tls_client(client);
-        if (native != 0 && macos_native_tls_version(client) == 12) {
-            (void)tls12_client_close_notify((Tls12Client *)native);
-            rt_free(native);
-        } else if (native != 0) {
-            (void)tls13_client_close_notify(native);
-            rt_free(native);
-        }
+    if (client == 0) {
+        return;
+    }
+    if (!client->active) {
         if (client->socket_fd >= 0) {
             (void)platform_close(client->socket_fd);
         }
         memset(client, 0, sizeof(*client));
         client->socket_fd = -1;
+        return;
     }
+    native = macos_native_tls_client(client);
+    if (native != 0 && macos_native_tls_version(client) == 12) {
+        (void)tls12_client_close_notify((Tls12Client *)native);
+        rt_free(native);
+    } else if (native != 0) {
+        (void)tls13_client_close_notify(native);
+        rt_free(native);
+    }
+    if (client->socket_fd >= 0) {
+        (void)platform_close(client->socket_fd);
+    }
+    memset(client, 0, sizeof(*client));
+    client->socket_fd = -1;
 }

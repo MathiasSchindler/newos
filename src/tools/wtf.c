@@ -371,6 +371,7 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
     size_t request_length = 0U;
     size_t body_offset = 0U;
     int status = 0;
+    int tls_connected = 0;
     long bytes_read;
     int result = -1;
 
@@ -383,6 +384,7 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
             write_tls_error("tls connect", request_url);
             goto done;
         }
+        tls_connected = 1;
         fd = tls.socket_fd;
     } else if (platform_connect_tcp(url->host, url->port, &fd) != 0) goto done;
 
@@ -424,7 +426,7 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
     if (status < 200 || status >= 300) goto done;
     result = buffer_append(body, response.data + body_offset, response.size - body_offset);
 done:
-    if (use_tls) platform_tls_close(&tls);
+    if (use_tls && tls_connected) platform_tls_close(&tls);
     else if (fd >= 0) (void)platform_close(fd);
     buffer_free(&response);
     return result;

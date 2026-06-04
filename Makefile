@@ -81,6 +81,9 @@ WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_
 MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTANDING_ARCH)
 MACOS_NEWLINKER_EXPERIMENT_DIR ?= $(BUILD_ROOT)/newlinker-macos-$(MACOS_FREESTANDING_ARCH)
 MACOS_NEWLINKER_TOOLS ?= true false echo
+MACOS_NEWLINKER_SMOKE_TOOLS ?= true false echo printf rev seq cat basename dirname cut tr wc
+MACOS_NEWLINKER_ALL_TOOLS = $(MACOS_FREESTANDING_TOOLS)
+MACOS_NEWLINKER_SMOKE_TARGETS := $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_NEWLINKER_SMOKE_TOOLS))
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 HOST_SIZE_FLAGS ?= $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(HOST_SECTION_CFLAGS) $(HOST_GC_LDFLAGS))
 ifneq ($(findstring ncc,$(CC)),)
@@ -233,10 +236,11 @@ MACOS_FREESTANDING_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_F
 MACOS_FREESTANDING_LDFLAGS ?= -nodefaultlibs -lSystem -Wl$(COMMA)-dead_strip -Wl$(COMMA)-x -Wl$(COMMA)-no_function_starts -Wl$(COMMA)-adhoc_codesign $(MACOS_FREESTANDING_LTO_FLAGS)
 MACOS_FREESTANDING_NO_LTO_CFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_CFLAGS))
 MACOS_FREESTANDING_NO_LTO_LDFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_LDFLAGS))
-MACOS_NEWLINKER_EXPERIMENT_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions
+MACOS_NEWLINKER_EXPERIMENT_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-common -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -DNEWOS_MACOS_NEWLINKER=1 -DNEWOS_CRYPTO_CURVE25519_FORCE_64BIT=1
 MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS ?= $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -flto
 MACOS_NEWLINKER_RUNTIME_OBJECTS := $(patsubst %.c,$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o,$(MACOS_FREESTANDING_RUNTIME_SOURCES))
 MACOS_NEWLINKER_TOOL_TARGETS := $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_NEWLINKER_TOOLS))
+MACOS_NEWLINKER_ALL_TOOL_TARGETS = $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_NEWLINKER_ALL_TOOLS))
 # Keep this shell extraction comma-free for compatibility with older GNU make on macOS.
 TARGET_PLATFORM_MANIFEST_SOURCES := $(shell grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
 TARGET_PLATFORM_SOURCES := $(filter src/platform/linux/% $(TARGET_ARCH_DIR)/%,$(TARGET_PLATFORM_MANIFEST_SOURCES))
@@ -281,7 +285,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-newlinker freestanding-macos macos-newlinker-tiny macos-newlinker-tools selfhost inception experimental-multicall test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
+.PHONY: all host freestanding freestanding-newlinker freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
 
 test: test-freestanding test-phase1 test-smoke
 
@@ -300,6 +304,9 @@ test-linker-cli: $(BUILD_DIR)/linker
 macos-newlinker-tiny: $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny-lto
 
 macos-newlinker-tools: $(MACOS_NEWLINKER_TOOL_TARGETS)
+
+test-macos-newlinker-tools: $(MACOS_NEWLINKER_ALL_TOOL_TARGETS)
+	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" sh ./tests/suites/macos_newlinker_tools.sh
 
 freestanding-newlinker: $(BUILD_DIR)/linker
 	WORK="$(abspath $(NEWLINKER_STANDALONE_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" bash build-freestanding-newlinker.sh
@@ -571,6 +578,25 @@ EDITOR_TOOL_SOURCES := src/tools/editor/highlight.c
 MAIL_TOOL_SOURCES := src/tools/mail/imap.c src/tools/mail/message.c src/tools/mail/mime.c
 HOST_TLS_PLATFORM_SOURCE := src/platform/posix/tls.c
 TARGET_TLS_PLATFORM_SOURCE := src/platform/linux/tls.c
+MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE := src/platform/macos/newlinker_runtime.c
+macos_newlinker_objects = $(patsubst %.c,$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o,$(filter %.c,$(sort $(1))))
+MACOS_NEWLINKER_PLATFORM_SOURCES := $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE)
+MACOS_NEWLINKER_COMMON_OBJECTS := $(call macos_newlinker_objects,$(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_HASH_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_HASH_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_TLS_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_TLS_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_AWK_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_AWK_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_ARCHIVE_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_IMAGE_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_XML_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_XML_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_NCC_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_NCC_SOURCES) src/platform/macos/freestanding.c $(MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE))
+MACOS_NEWLINKER_SSH_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_SSH_SOURCES) src/platform/macos/freestanding.c $(MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE))
+MACOS_NEWLINKER_SSHD_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_SSHD_SOURCES) src/platform/macos/freestanding.c $(MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE))
+MACOS_NEWLINKER_HTTPD_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_HTTPD_SOURCES) src/platform/macos/freestanding.c $(MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE))
+MACOS_NEWLINKER_SHELL_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_SHELL_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_EDITOR_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_EDITOR_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_MAIL_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_MAIL_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_MAKE_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_MAKE_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_SERVICE_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_SERVICE_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
 
 $(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
@@ -591,7 +617,7 @@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o: src
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -c $< -o $@
 
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o: %.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
-	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -Isrc/shared -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
 
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o
@@ -599,8 +625,56 @@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EX
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny-lto: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.lto.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.lto.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o
 
-$(MACOS_NEWLINKER_TOOL_TARGETS): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_RUNTIME_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
-	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_RUNTIME_OBJECTS)
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_HASH_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_HASH_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_HASH_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_TLS_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_TLS_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_TLS_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_AWK_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_AWK_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_AWK_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_ARCHIVE_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_ARCHIVE_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_ARCHIVE_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_IMAGE_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_IMAGE_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_IMAGE_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_XML_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_XML_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_XML_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_NCC_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_NCC_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_NCC_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_SSH_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_SSH_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_SSH_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_SSHD_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_SSHD_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_SSHD_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_HTTPD_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_HTTPD_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_HTTPD_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_PING6_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/ping.lto.o $(MACOS_NEWLINKER_COMMON_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/ping.lto.o $(MACOS_NEWLINKER_COMMON_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_SHELL_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_SHELL_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_SHELL_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_TUI_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_EDITOR_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_EDITOR_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_MAIL_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_MAIL_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_MAIL_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_MAKE_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_MAKE_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_MAKE_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_SERVICE_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_SERVICE_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_SERVICE_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_GENERIC_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_COMMON_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_COMMON_OBJECTS)
 
 $(TARGET_BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(TARGET_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) $(TARGET_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

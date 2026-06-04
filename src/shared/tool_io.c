@@ -2,29 +2,32 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#if defined(NEWOS_MACOS_NEWLINKER)
+static int tool_global_color_mode = TOOL_COLOR_NEVER;
+#else
 static int tool_global_color_mode = TOOL_COLOR_AUTO;
+#endif
 
 static int env_value_is_nonzero(const char *value) {
     return value != 0 && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
 }
 
-static const char *tool_text_style_code(int style) {
-    switch (style) {
-        case TOOL_STYLE_BOLD: return "1";
-        case TOOL_STYLE_RED: return "31";
-        case TOOL_STYLE_GREEN: return "32";
-        case TOOL_STYLE_YELLOW: return "33";
-        case TOOL_STYLE_BLUE: return "34";
-        case TOOL_STYLE_MAGENTA: return "35";
-        case TOOL_STYLE_CYAN: return "36";
-        case TOOL_STYLE_BOLD_RED: return "1;31";
-        case TOOL_STYLE_BOLD_GREEN: return "1;32";
-        case TOOL_STYLE_BOLD_YELLOW: return "1;33";
-        case TOOL_STYLE_BOLD_BLUE: return "1;34";
-        case TOOL_STYLE_BOLD_MAGENTA: return "1;35";
-        case TOOL_STYLE_BOLD_CYAN: return "1;36";
-        default: return "";
-    }
+static int tool_write_style_code(int fd, int style) {
+    volatile int selected = style;
+    if (selected == TOOL_STYLE_BOLD) return rt_write_cstr(fd, "1") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_RED) return rt_write_cstr(fd, "31") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_GREEN) return rt_write_cstr(fd, "32") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_YELLOW) return rt_write_cstr(fd, "33") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BLUE) return rt_write_cstr(fd, "34") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_MAGENTA) return rt_write_cstr(fd, "35") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_CYAN) return rt_write_cstr(fd, "36") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_RED) return rt_write_cstr(fd, "1;31") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_GREEN) return rt_write_cstr(fd, "1;32") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_YELLOW) return rt_write_cstr(fd, "1;33") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_BLUE) return rt_write_cstr(fd, "1;34") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_MAGENTA) return rt_write_cstr(fd, "1;35") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_CYAN) return rt_write_cstr(fd, "1;36") == 0 ? 1 : -1;
+    return 0;
 }
 
 int tool_parse_color_mode(const char *text, int *mode_out) {
@@ -93,20 +96,19 @@ int tool_should_use_color_fd(int fd, int mode) {
 }
 
 void tool_style_begin(int fd, int mode, int style) {
-    const char *code;
+    int wrote_code;
 
     if (!tool_should_use_color_fd(fd, mode) || style == TOOL_STYLE_PLAIN) {
         return;
     }
 
-    code = tool_text_style_code(style);
-    if (code[0] == '\0') {
+    if (rt_write_cstr(fd, "\033[") != 0) {
         return;
     }
-
-    rt_write_cstr(fd, "\033[");
-    rt_write_cstr(fd, code);
-    rt_write_char(fd, 'm');
+    wrote_code = tool_write_style_code(fd, style);
+    if (wrote_code == 1) {
+        rt_write_char(fd, 'm');
+    }
 }
 
 void tool_style_end(int fd, int mode) {

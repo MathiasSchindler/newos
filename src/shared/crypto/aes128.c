@@ -5,6 +5,7 @@
 void crypto_aes_trace(unsigned int tag, const unsigned char st[16]);
 #endif
 
+#if 0
 static const unsigned char *aes_sbox_ptr(void) {
 	return (const unsigned char *)
 		"\x63\x7c\x77\x7b\xf2\x6b\x6f\xc5\x30\x01\x67\x2b\xfe\xd7\xab\x76"
@@ -24,6 +25,7 @@ static const unsigned char *aes_sbox_ptr(void) {
 		"\xe1\xf8\x98\x11\x69\xd9\x8e\x94\x9b\x1e\x87\xe9\xce\x55\x28\xdf"
 		"\x8c\xa1\x89\x0d\xbf\xe6\x42\x68\x41\x99\x2d\x0f\xb0\x54\xbb\x16";
 }
+#endif
 
 static const unsigned char *aes_inv_sbox_ptr(void) {
 	return (const unsigned char *)
@@ -53,13 +55,39 @@ static unsigned int rot_word(unsigned int w) {
 	return (w << 8) | (w >> 24);
 }
 
+static unsigned char aes_mul_byte(unsigned char a, unsigned char b) {
+	unsigned char r = 0;
+	for (unsigned int i = 0; i < 8; i++) {
+		if (b & 1u) r ^= a;
+		unsigned char hi = (unsigned char)(a & 0x80u);
+		a <<= 1;
+		if (hi) a ^= 0x1bu;
+		b >>= 1;
+	}
+	return r;
+}
+
+static unsigned char aes_rotl8(unsigned char value, unsigned int count) {
+	return (unsigned char)((value << count) | (value >> (8U - count)));
+}
+
+static unsigned char aes_sbox_byte(unsigned char value) {
+	unsigned char inverse = 0;
+	if (value != 0U) {
+		inverse = 1U;
+		for (unsigned int power = 0; power < 254U; ++power) {
+			inverse = aes_mul_byte(inverse, value);
+		}
+	}
+	return (unsigned char)(inverse ^ aes_rotl8(inverse, 1U) ^ aes_rotl8(inverse, 2U) ^ aes_rotl8(inverse, 3U) ^ aes_rotl8(inverse, 4U) ^ 0x63U);
+}
+
 static unsigned int sub_word(unsigned int w) {
-	const unsigned char *sbox = aes_sbox_ptr();
 	unsigned int out = 0;
-	out |= (unsigned int)sbox[(w >> 24) & 0xFFu] << 24;
-	out |= (unsigned int)sbox[(w >> 16) & 0xFFu] << 16;
-	out |= (unsigned int)sbox[(w >> 8) & 0xFFu] << 8;
-	out |= (unsigned int)sbox[(w >> 0) & 0xFFu] << 0;
+	out |= (unsigned int)aes_sbox_byte((unsigned char)(w >> 24)) << 24;
+	out |= (unsigned int)aes_sbox_byte((unsigned char)(w >> 16)) << 16;
+	out |= (unsigned int)aes_sbox_byte((unsigned char)(w >> 8)) << 8;
+	out |= (unsigned int)aes_sbox_byte((unsigned char)(w >> 0)) << 0;
 	return out;
 }
 
@@ -123,8 +151,7 @@ static void add_round_key(unsigned char st[16], const unsigned int *rk) {
 }
 
 static void sub_bytes(unsigned char st[16]) {
-	const unsigned char *sbox = aes_sbox_ptr();
-	for (unsigned int i = 0; i < 16; i++) st[i] = sbox[st[i]];
+	for (unsigned int i = 0; i < 16; i++) st[i] = aes_sbox_byte(st[i]);
 }
 
 static void inv_sub_bytes(unsigned char st[16]) {

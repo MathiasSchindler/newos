@@ -70,6 +70,34 @@ GCC-LTO trees side by side and print total deltas plus the largest wins and
 regressions. Set `FREESTANDING_USE_NEWLINKER=0` only when you need the older
 system-linker freestanding path for comparison. On local macOS/aarch64, `make
 freestanding` still builds the macOS freestanding-ish target.
+
+There is also an experimental macOS/aarch64 project-linker path:
+
+```
+make macos-newlinker-tools
+make -j4 test-macos-newlinker-tools
+```
+
+The plain `macos-newlinker-tools` target builds the small default bring-up set;
+`test-macos-newlinker-tools` builds every declared macOS freestanding tool before
+running the representative smoke assertions. The path compiles Mach-O arm64
+objects with Clang, performs the LTO prelink step with Clang when needed, and
+emits the final executable with the in-tree linker.
+It deliberately treats the resulting binaries as project-linked, no-import
+executables: representative smoke tests reject dylib imports. That is stricter
+than the normal `freestanding-macos` build, which still uses macOS' required
+system ABI library for the final launchable binary. The project-linker path is
+therefore a bring-up track for shrinking the Mach-O backend and platform layer
+toward the same no-standard-library shape as the Linux freestanding binaries;
+tools that still need libSystem-only services must stay on the normal
+`freestanding-macos` path until those services are represented in project code or
+the linker grows explicit dynamic import support. The current project-linked
+runtime supplies its own empty `environ`, a page-size `sysconf`, and a small
+Darwin syscall-backed shim layer for common file, process, terminal, network, and
+identity entry points. All declared tools are expected to link on this path, but
+some higher-level libc services are still conservative fallback shims, so
+environment-sensitive tools, directory enumeration, user/group lookup, interface
+queries, and formatted local time output are not representative here yet.
 The native no-CRT Windows PE path is `build-windows-freestanding.ps1`. It now
 builds the small text/core tools, comparison/checksum/image/path/filesystem
 tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as

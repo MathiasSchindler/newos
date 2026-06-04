@@ -34,6 +34,7 @@
 #define MACHO_ARM64_RELOC_BRANCH26  2U
 #define MACHO_ARM64_RELOC_PAGE21    3U
 #define MACHO_ARM64_RELOC_PAGEOFF12 4U
+#define MACHO_ARM64_RELOC_ADDEND    10U
 #define MACHO_SECTION_TYPE_MASK     0xffU
 #define MACHO_S_ZEROFILL            0x1U
 #define MACHO_TEXT_SECTION_FLAGS    0x80000400U
@@ -147,11 +148,19 @@ static int macho_name_equals(const char *name, const char *expected) {
     return rt_strcmp(name, expected) == 0;
 }
 
+static int64_t macho_sign_extend_24(uint32_t value) {
+    uint32_t bits = value & 0x00ffffffU;
+    if ((bits & 0x00800000U) != 0U) {
+        return (int64_t)(int32_t)(bits | 0xff000000U);
+    }
+    return (int64_t)bits;
+}
+
 static MachoSectionClass macho_classify_section(const char *segment_name, const char *section_name, uint32_t flags) {
     if (macho_name_equals(segment_name, "__TEXT") && macho_name_equals(section_name, "__text")) {
         return MACHO_SECTION_CLASS_TEXT;
     }
-    if (macho_name_equals(segment_name, "__TEXT") && macho_name_equals(section_name, "__const")) {
+    if ((macho_name_equals(segment_name, "__TEXT") || macho_name_equals(segment_name, "__DATA")) && macho_name_equals(section_name, "__const")) {
         return MACHO_SECTION_CLASS_CONST;
     }
     if (macho_name_equals(segment_name, "__TEXT") &&
@@ -164,7 +173,9 @@ static MachoSectionClass macho_classify_section(const char *segment_name, const 
     if (macho_name_equals(segment_name, "__DATA") && macho_name_equals(section_name, "__data")) {
         return MACHO_SECTION_CLASS_DATA;
     }
-    if (macho_name_equals(segment_name, "__DATA") && macho_name_equals(section_name, "__bss") && (flags & MACHO_SECTION_TYPE_MASK) == MACHO_S_ZEROFILL) {
+    if (macho_name_equals(segment_name, "__DATA") &&
+        (macho_name_equals(section_name, "__bss") || macho_name_equals(section_name, "__common")) &&
+        (flags & MACHO_SECTION_TYPE_MASK) == MACHO_S_ZEROFILL) {
         return MACHO_SECTION_CLASS_BSS;
     }
     return MACHO_SECTION_CLASS_NONE;
@@ -392,6 +403,9 @@ static int macho_apply_arm64_relocations(MachoLinkImage *link, size_t object_ind
     for (section_index = 0; section_index < object->section_count; ++section_index) {
         MachoInputSection *section = &object->sections[section_index];
         uint32_t reloc_index;
+        int has_addend = 0;
+        uint64_t addend_offset = 0ULL;
+        int64_t addend = 0;
 
         if (section->nreloc == 0U) {
             continue;
@@ -426,8 +440,34 @@ static int macho_apply_arm64_relocations(MachoLinkImage *link, size_t object_ind
             }
             place = section->out_addr + offset;
             patch = image + section->out_offset + offset;
+
+            if (type == MACHO_ARM64_RELOC_ADDEND) {
+                if (pcrel || length != 2U || external) {
+                    set_link_error(error_out, error_size, "invalid Mach-O arm64 addend relocation", section->sectname);
+                    return -1;
+                }
+                has_addend = 1;
+                addend_offset = offset;
+                addend = macho_sign_extend_24(symbol_index);
+                continue;
+            }
             if (macho_symbol_value(link, object_index, symbol_index, external, &target, error_out, error_size) != 0) {
                 return -1;
+            }
+            if (has_addend) {
+                int64_t adjusted_target;
+                if (offset != addend_offset || (type != MACHO_ARM64_RELOC_PAGE21 && type != MACHO_ARM64_RELOC_PAGEOFF12)) {
+                    set_link_error(error_out, error_size, "unpaired Mach-O arm64 addend relocation", section->sectname);
+                    return -1;
+                }
+                adjusted_target = (int64_t)target + addend;
+                if (adjusted_target < 0) {
+                    set_link_error(error_out, error_size, "Mach-O arm64 addend relocation is out of range", section->sectname);
+                    return -1;
+                }
+                target = (uint64_t)adjusted_target;
+                has_addend = 0;
+                addend = 0;
             }
 
             if (type == MACHO_ARM64_RELOC_BRANCH26) {
@@ -477,7 +517,10 @@ static int macho_apply_arm64_relocations(MachoLinkImage *link, size_t object_ind
                 instruction = read_u32(patch);
                 if ((instruction & 0x7f000000U) != 0x11000000U) {
                     if ((instruction & 0x3b000000U) == 0x39000000U) {
-                        uint32_t scale = instruction >> 30U;
+                        uint32_t scale = (instruction >> 30U) & 3U;
+                        if ((instruction & 0x04000000U) != 0U && ((instruction >> 22U) & 3U) == 3U) {
+                            scale = 4U;
+                        }
                         if ((pageoff & ((1U << scale) - 1U)) != 0U) {
                             set_link_error(error_out, error_size, "unaligned Mach-O arm64 load/store pageoff relocation", section->sectname);
                             return -1;
@@ -517,6 +560,10 @@ static int macho_apply_arm64_relocations(MachoLinkImage *link, size_t object_ind
                 set_link_error(error_out, error_size, "unsupported Mach-O arm64 relocation type", section->sectname);
                 return -1;
             }
+        }
+        if (has_addend) {
+            set_link_error(error_out, error_size, "unpaired Mach-O arm64 addend relocation", section->sectname);
+            return -1;
         }
     }
     return 0;
@@ -636,13 +683,14 @@ static int macho_parse_loaded_object(MachoInputObject *object, const char *path,
                 }
                 if (macho_name_equals(section->segname, "__TEXT") && macho_name_equals(section->sectname, "__text")) {
                     object->text_section = section;
-                } else if (macho_name_equals(section->segname, "__TEXT") && macho_name_equals(section->sectname, "__const")) {
+                } else if ((macho_name_equals(section->segname, "__TEXT") || macho_name_equals(section->segname, "__DATA")) && macho_name_equals(section->sectname, "__const")) {
                     object->const_section = section;
                 } else if (macho_name_equals(section->segname, "__TEXT") && macho_name_equals(section->sectname, "__cstring")) {
                     object->cstring_section = section;
                 } else if (macho_name_equals(section->segname, "__DATA") && macho_name_equals(section->sectname, "__data")) {
                     object->data_section = section;
-                } else if (macho_name_equals(section->segname, "__DATA") && macho_name_equals(section->sectname, "__bss")) {
+                } else if (macho_name_equals(section->segname, "__DATA") &&
+                           (macho_name_equals(section->sectname, "__bss") || macho_name_equals(section->sectname, "__common"))) {
                     /* BSS is handled by the section class and written as a zero-fill output section. */
                 }
             }

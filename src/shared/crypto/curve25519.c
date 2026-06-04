@@ -528,7 +528,10 @@ int x25519_scalarmult(u8 out[32], const u8 scalar[32], const u8 point[32]) {
 }
 
 int x25519_scalarmult_base(u8 out[32], const u8 scalar[32]) {
-    return x25519_scalarmult(out, scalar, g_x25519_basepoint);
+    u8 basepoint[32];
+    secure_bzero(basepoint, sizeof(basepoint));
+    basepoint[0] = 9U;
+    return x25519_scalarmult(out, scalar, basepoint);
 }
 
 #else
@@ -870,7 +873,10 @@ int x25519_scalarmult(u8 out[32], const u8 scalar[32], const u8 point[32]) {
 }
 
 int x25519_scalarmult_base(u8 out[32], const u8 scalar[32]) {
-    return x25519_scalarmult(out, scalar, g_x25519_basepoint);
+    u8 basepoint[32];
+    secure_bzero(basepoint, sizeof(basepoint));
+    basepoint[0] = 9U;
+    return x25519_scalarmult(out, scalar, basepoint);
 }
 
 #endif

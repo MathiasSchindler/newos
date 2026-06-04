@@ -202,7 +202,9 @@ int crypto_aes128_gcm_decrypt(
 	unsigned char exp_tag[16];
 	xor16(exp_tag, s, y);
 
-	if (!ct_memeq(exp_tag, tag, 16)) return -1;
+	if (!ct_memeq(exp_tag, tag, 16)) {
+		return -1;
+	}
 
 	unsigned char ctr[16];
 	memcpy(ctr, j0, sizeof(ctr));

@@ -113,7 +113,11 @@ static int tls13_client_fail(struct Tls13Client *c, const char *message) {
 static const char *tls13_plaintext_alert_error(unsigned char description) {
 	switch (description) {
 		case 40: return "native tls handshake failure alert";
+		case 47: return "native tls illegal parameter alert";
+		case 50: return "native tls decode error alert";
+		case 51: return "native tls decrypt error alert";
 		case 70: return "native tls protocol version alert; TLS 1.2 may be required";
+		case 71: return "native tls insufficient security alert";
 		case 80: return "native tls internal error alert";
 		case 112: return "native tls unrecognized name alert";
 		default: return "native tls plaintext alert";
@@ -274,26 +278,26 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	c->last_error = "none";
 	if (c->fd < 0) return tls13_client_fail(c, "native tls invalid socket");
 	if (sni && (sni_len == 0 || sni_len > 255u)) return tls13_client_fail(c, "native tls invalid sni");
+	c->last_error = "native tls preparing client hello";
 
 	// Build ClientHello
 	unsigned char ch_random[32];
-	unsigned char ch_sid[32];
 	unsigned char x25519_priv[32];
 	unsigned char x25519_pub[32];
-	(void)getrandom_best_effort(ch_random, sizeof(ch_random));
-	(void)getrandom_best_effort(ch_sid, sizeof(ch_sid));
-	(void)getrandom_best_effort(x25519_priv, sizeof(x25519_priv));
-	crypto_x25519_scalarmult_base(x25519_pub, x25519_priv);
+	if (!getrandom_best_effort(ch_random, sizeof(ch_random))) return tls13_client_fail(c, "native tls client random failed");
+	if (!getrandom_best_effort(x25519_priv, sizeof(x25519_priv))) return tls13_client_fail(c, "native tls key share random failed");
+	if (crypto_x25519_scalarmult_base(x25519_pub, x25519_priv) != 0) return tls13_client_fail(c, "native tls key share generation failed");
 
-	unsigned char ch[2048];
+	const unsigned char *ch;
 	size_t ch_len = 0;
-	if (tls13_build_client_hello(sni ? sni : "", sni ? sni_len : 0, ch_random, ch_sid, sizeof(ch_sid), x25519_pub, ch, sizeof(ch), &ch_len) != 0) {
-		return tls13_client_fail(c, "native tls client hello build failed");
+	ch = tls13_build_client_hello(sni ? sni : "", sni ? sni_len : 0, ch_random, 0, 0, x25519_pub, &ch_len);
+	if (ch == 0) {
+		return tls13_client_fail(c, tls13_client_hello_last_error());
 	}
 
 	// TLSPlaintext record wrapping the handshake message.
 	unsigned char rec[5 + 2048];
-	if (ch_len > 2048) return tls13_client_fail(c, "native tls client hello too large");
+	if (ch_len > TLS13_CLIENT_HELLO_CAPACITY) return tls13_client_fail(c, "native tls client hello too large");
 	rec[0] = 22;
 	rec[1] = 0x03;
 	rec[2] = 0x01;
@@ -301,15 +305,18 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	rec[4] = (unsigned char)(ch_len & 0xFFu);
 	memcpy(rec + 5, ch, ch_len);
 	if (!write_all_timeout(c->fd, rec, 5 + ch_len, c->timeout_ms)) return tls13_client_fail(c, "native tls client hello write failed");
+	tlsdbg(c, "tls13_client_hello_written\n");
 
 	// Read records until we see ServerHello.
 	unsigned char rhdr[5];
 	unsigned char payload[65536];
 	unsigned char sh_msg[2048];
+	c->last_error = "native tls waiting for server hello";
 	size_t sh_len = 0;
 	int got_sh = 0;
 	for (int iter = 0; iter < 32; iter++) {
-		if (!read_exact_timeout(c->fd, rhdr, 5, c->timeout_ms)) break;
+		if (!read_exact_timeout(c->fd, rhdr, 5, c->timeout_ms)) { tlsdbg(c, "tls13_server_hello_header_read_failed\n"); break; }
+		tlsdbg(c, "tls13_server_hello_header_read\n");
 		unsigned char rtype = rhdr[0];
 		unsigned short rlen = (unsigned short)(((unsigned short)rhdr[3] << 8) | (unsigned short)rhdr[4]);
 		if (!read_exact_timeout(c->fd, payload, (size_t)rlen, c->timeout_ms)) break;
@@ -338,6 +345,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 
 	struct Tls13ServerHello sh;
 	if (tls13_parse_server_hello(sh_msg, sh_len, &sh) != 0) return tls13_client_fail(c, "native tls server hello parse failed");
+	c->last_error = "native tls deriving handshake secrets";
 
 	struct Tls13Transcript t;
 	tls13_transcript_init(&t);
@@ -351,6 +359,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 
 	unsigned char ecdhe[32];
 	if (crypto_x25519_scalarmult(ecdhe, x25519_priv, sh.key_share) != 0) return tls13_client_fail(c, "native tls x25519 shared secret failed");
+	c->last_error = "native tls waiting for encrypted handshake";
 
 	unsigned char zeros32[32];
 	memset(zeros32, 0, sizeof(zeros32));
@@ -367,6 +376,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	unsigned char s_hs[32];
 	if (tls13_derive_secret(handshake_secret, "c hs traffic", chsh_hash, c_hs) != 0) return tls13_client_fail(c, "native tls client handshake traffic secret failed");
 	if (tls13_derive_secret(handshake_secret, "s hs traffic", chsh_hash, s_hs) != 0) return tls13_client_fail(c, "native tls server handshake traffic secret failed");
+	c->last_error = "native tls sending client finished";
 
 	unsigned char c_key[16];
 	unsigned char c_iv[12];
@@ -394,17 +404,17 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 
 		unsigned char record[5 + 65536];
 		size_t record_len = 5u + rlen;
-		if (record_len > sizeof(record)) break;
+		if (record_len > sizeof(record)) return tls13_client_fail(c, "native tls handshake record too large");
 		memcpy(record, rhdr, 5);
 		memcpy(record + 5, payload, rlen);
 
 		unsigned char inner_type = 0;
 		unsigned char pt[65536];
 		size_t pt_len = 0;
-		if (tls13_record_decrypt(s_key, s_iv, s_hs_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) break;
+		if (tls13_record_decrypt(s_key, s_iv, s_hs_seq, record, record_len, &inner_type, pt, &pt_len) != 0) return tls13_client_fail(c, "native tls handshake record decrypt failed");
 		s_hs_seq++;
 		if (inner_type != TLS_CONTENT_HANDSHAKE) continue;
-		if (hs_append(hs_buf, sizeof(hs_buf), &hs_buf_len, pt, pt_len) != 0) break;
+		if (hs_append(hs_buf, sizeof(hs_buf), &hs_buf_len, pt, pt_len) != 0) return tls13_client_fail(c, "native tls handshake buffer append failed");
 
 		for (;;) {
 			unsigned char msg_type = 0;
@@ -413,7 +423,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 			size_t msg_len = 0;
 			int cr = hs_consume_one(hs_buf, &hs_buf_len, &msg_type, &msg_body_len, msg, sizeof(msg), &msg_len);
 			if (cr == 1) break;
-			if (cr != 0) { iter = 9999; break; }
+			if (cr != 0) return tls13_client_fail(c, "native tls handshake message parse failed");
 
 			if (c->debug) {
 				tlsdbg(c, "hs_type ");
@@ -424,13 +434,13 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 			}
 
 			if (msg_type == TLS13_HS_CERTIFICATE) {
-				if (tls13_store_certificate_message(c, msg, msg_len) != 0) { iter = 9999; break; }
+				if (tls13_store_certificate_message(c, msg, msg_len) != 0) return tls13_client_fail(c, "native tls certificate message parse failed");
 			}
 
 			if (msg_type == TLS13_HS_CERTIFICATE_VERIFY) {
 				unsigned char th_cert_verify[32];
 				tls13_transcript_final(&t, th_cert_verify);
-				if (tls13_verify_certificate_verify(c, th_cert_verify, msg, msg_len) != 0) { iter = 9999; break; }
+				if (tls13_verify_certificate_verify(c, th_cert_verify, msg, msg_len) != 0) return tls13_client_fail(c, "native tls certificate verify failed");
 				verified_certificate_verify = 1;
 			}
 
@@ -438,12 +448,12 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 				unsigned char th_pre[32];
 				tls13_transcript_final(&t, th_pre);
 				unsigned char s_finished_key[32];
-				if (tls13_finished_key(s_hs, s_finished_key) != 0) { iter = 9999; break; }
+				if (tls13_finished_key(s_hs, s_finished_key) != 0) return tls13_client_fail(c, "native tls server finished key derivation failed");
 				unsigned char expected_verify[32];
 				tls13_finished_verify_data(s_finished_key, th_pre, expected_verify);
 				memset(s_finished_key, 0, sizeof(s_finished_key));
-				if (msg_body_len != 32 || msg_len != 36) { iter = 9999; break; }
-				if (!crypto_constant_time_equal(expected_verify, msg + 4, 32)) { iter = 9999; break; }
+				if (msg_body_len != 32 || msg_len != 36) return tls13_client_fail(c, "native tls server finished size rejected");
+				if (!crypto_constant_time_equal(expected_verify, msg + 4, 32)) return tls13_client_fail(c, "native tls server finished verification failed");
 				verified_server_finished = 1;
 			}
 
@@ -459,6 +469,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	unsigned char th_post_server_finished[32];
 	tls13_transcript_final(&t, th_post_server_finished);
 
+	c->last_error = "native tls deriving application secrets";
 	unsigned char c_finished_key[32];
 	if (tls13_finished_key(c_hs, c_finished_key) != 0) return tls13_client_fail(c, "native tls client finished key derivation failed");
 	unsigned char c_verify[32];
@@ -470,6 +481,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	cfin[1] = 0;
 	cfin[2] = 0;
 	cfin[3] = 32;
+	c->last_error = "native tls selecting application keys";
 	memcpy(cfin + 4, c_verify, 32);
 
 	unsigned char cfin_record[5 + 1024];
@@ -487,6 +499,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	unsigned char derived2[32];
 	if (tls13_derive_secret(handshake_secret, "derived", sha256_empty_hs_ptr(), derived2) != 0) return tls13_client_fail(c, "native tls master derived secret failed");
 
+	c->last_error = "native tls deriving application secrets";
 	struct tls13_ap_variant vars[4];
 	size_t nvars = 0;
 	for (int master_mode = 0; master_mode < 2; master_mode++) {
@@ -502,16 +515,16 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 			const unsigned char *th = (th_mode == 0) ? th_post_server_finished : th_post_client_finished;
 			unsigned char c_ap[32];
 			unsigned char s_ap[32];
-			if (tls13_derive_secret(master_secret, "c ap traffic", th, c_ap) != 0) return -1;
-			if (tls13_derive_secret(master_secret, "s ap traffic", th, s_ap) != 0) return -1;
+			if (tls13_derive_secret(master_secret, "c ap traffic", th, c_ap) != 0) return tls13_client_fail(c, "native tls client application traffic secret failed");
+			if (tls13_derive_secret(master_secret, "s ap traffic", th, s_ap) != 0) return tls13_client_fail(c, "native tls server application traffic secret failed");
 
 			struct tls13_ap_variant *v = &vars[nvars++];
 			v->which_master = (unsigned char)master_mode;
 			v->which_th = (unsigned char)th_mode;
-			if (tls13_hkdf_expand_label(c_ap, "key", 0, 0, v->c_key, sizeof(v->c_key)) != 0) return -1;
-			if (tls13_hkdf_expand_label(c_ap, "iv", 0, 0, v->c_iv, sizeof(v->c_iv)) != 0) return -1;
-			if (tls13_hkdf_expand_label(s_ap, "key", 0, 0, v->s_key, sizeof(v->s_key)) != 0) return -1;
-			if (tls13_hkdf_expand_label(s_ap, "iv", 0, 0, v->s_iv, sizeof(v->s_iv)) != 0) return -1;
+			if (tls13_hkdf_expand_label(c_ap, "key", 0, 0, v->c_key, sizeof(v->c_key)) != 0) return tls13_client_fail(c, "native tls client application key derivation failed");
+			if (tls13_hkdf_expand_label(c_ap, "iv", 0, 0, v->c_iv, sizeof(v->c_iv)) != 0) return tls13_client_fail(c, "native tls client application iv derivation failed");
+			if (tls13_hkdf_expand_label(s_ap, "key", 0, 0, v->s_key, sizeof(v->s_key)) != 0) return tls13_client_fail(c, "native tls server application key derivation failed");
+			if (tls13_hkdf_expand_label(s_ap, "iv", 0, 0, v->s_iv, sizeof(v->s_iv)) != 0) return tls13_client_fail(c, "native tls server application iv derivation failed");
 		}
 		memset(master_secret, 0, sizeof(master_secret));
 	}
@@ -526,6 +539,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 
 	// Pre-decrypt one record to select active keys.
 	{
+		c->last_error = "native tls pre-decrypting record to select active keys";
 		size_t rlen = 0;
 		if (record_read_timeout(c->fd, c->timeout_ms, rhdr, payload, sizeof(payload), &rlen)) {
 			unsigned char rtype = rhdr[0];
@@ -542,7 +556,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 					for (size_t vi = 0; vi < nvars && !have_active_ap; vi++) {
 						for (int seq_mode = 0; seq_mode < 2 && !have_active_ap; seq_mode++) {
 							unsigned long long try_seq = (seq_mode == 0) ? 0 : s_hs_seq;
-							if (tls13_record_decrypt(vars[vi].s_key, vars[vi].s_iv, try_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) == 0) {
+							if (tls13_record_decrypt(vars[vi].s_key, vars[vi].s_iv, try_seq, record, record_len, &inner_type, pt, &pt_len) == 0) {
 								memcpy(c_ap_key, vars[vi].c_key, sizeof(c_ap_key));
 								memcpy(c_ap_iv, vars[vi].c_iv, sizeof(c_ap_iv));
 								memcpy(s_ap_key, vars[vi].s_key, sizeof(s_ap_key));
@@ -574,6 +588,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	}
 
 	if (!have_active_ap) {
+		c->last_error = "native tls selecting default application keys";
 		memcpy(c_ap_key, vars[0].c_key, sizeof(c_ap_key));
 		memcpy(c_ap_iv, vars[0].c_iv, sizeof(c_ap_iv));
 		memcpy(s_ap_key, vars[0].s_key, sizeof(s_ap_key));
@@ -593,6 +608,7 @@ int tls13_client_handshake(struct Tls13Client *c, const char *sni, size_t sni_le
 	c->handshake_done = 1;
 
 	memset(x25519_priv, 0, sizeof(x25519_priv));
+	c->last_error = "none";
 	memset(ecdhe, 0, sizeof(ecdhe));
 	memset(handshake_secret, 0, sizeof(handshake_secret));
 	memset(c_hs, 0, sizeof(c_hs));
@@ -670,7 +686,7 @@ long tls13_client_read_app(struct Tls13Client *c, unsigned char *buf, size_t cap
 		unsigned char inner_type = 0;
 		unsigned char pt[65536];
 		size_t pt_len = 0;
-		if (tls13_record_decrypt(c->s_ap_key, c->s_ap_iv, c->s_ap_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) return tls13_client_fail(c, "native tls application record decrypt failed");
+		if (tls13_record_decrypt(c->s_ap_key, c->s_ap_iv, c->s_ap_seq, record, record_len, &inner_type, pt, &pt_len) != 0) return tls13_client_fail(c, "native tls application record decrypt failed");
 		c->s_ap_seq++;
 		if (c->debug) {
 			tlsdbg(c, "read_inner_type ");

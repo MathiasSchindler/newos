@@ -2,7 +2,6 @@
 
 #include "crypto/aes128_gcm.h"
 #include "runtime.h"
-
 static void store_be16(unsigned char *p, unsigned short v) {
 	p[0] = (unsigned char)(v >> 8);
 	p[1] = (unsigned char)(v >> 0);
@@ -66,7 +65,7 @@ int tls13_record_decrypt(
 	unsigned long long seq,
 	const unsigned char *record, size_t record_len,
 	unsigned char *inner_type_out,
-	unsigned char *plaintext_out, size_t plaintext_cap, size_t *pt_len_out
+	unsigned char *plaintext_out, size_t *pt_len_out
 ) {
 	if (!record || record_len < TLS_RECORD_HEADER_SIZE + CRYPTO_AES128_GCM_TAG_SIZE) return -1;
 	if (!inner_type_out || !plaintext_out || !pt_len_out) return -1;
@@ -84,7 +83,7 @@ int tls13_record_decrypt(
 	const unsigned char *ct = record + TLS_RECORD_HEADER_SIZE;
 	const unsigned char *tag = ct + ct_len;
 
-	if (ct_len > plaintext_cap) return -1;
+	if (ct_len > TLS13_RECORD_PLAINTEXT_CAPACITY) return -1;
 
 	unsigned char nonce[12];
 	make_nonce(nonce, iv, seq);

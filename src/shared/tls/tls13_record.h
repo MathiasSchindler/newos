@@ -9,6 +9,7 @@
 // padding/type scheme (no padding added currently).
 
 #define TLS_RECORD_HEADER_SIZE 5
+#define TLS13_RECORD_PLAINTEXT_CAPACITY 65536U
 
 #define TLS_CONTENT_CHANGE_CIPHER_SPEC 20
 #define TLS_CONTENT_ALERT 21
@@ -41,7 +42,7 @@ int tls13_record_decrypt(
 	unsigned long long seq,
 	const unsigned char *record, size_t record_len,
 	unsigned char *inner_type_out,
-	unsigned char *plaintext_out, size_t plaintext_cap, size_t *pt_len_out
+	unsigned char *plaintext_out, size_t *pt_len_out
 );
 
 #endif
