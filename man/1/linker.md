@@ -13,21 +13,23 @@ linker [-o OUTPUT] [-m elf_x86_64] [--target=TARGET] [options] object-or-archive
 ## DESCRIPTION
 
 `linker` combines ELF64 little-endian x86-64 relocatable objects and simple
-`ar` archives into a static Linux executable. It also has a project-owned
-Mach-O arm64 backend for the macOS freestanding build. It is intended as the
+`ar` archives into a static Linux executable. It also owns the Mach-O arm64
+backend for the macOS project-linked freestanding build. It is intended as the
 project entry point for small freestanding binaries: no standard C library
-startup files are required, and the ELF backend emits no dynamic linker or final
-section-header table.
+startup files are required, the ELF backend emits no dynamic linker or final
+section-header table, and the Mach-O backend writes ad-hoc signed executables
+with no intended dylib imports.
 
-The implemented target is intentionally narrow. Inputs must define `_start` or
-provide an archive member that defines it. The output is an `ET_EXEC` ELF64 file
-for Linux x86-64.
+The implemented targets are intentionally narrow. Inputs must define `_start` or
+provide an archive member that defines it. Linux output is an `ET_EXEC` ELF64
+file for x86-64; macOS output is a loader-safe arm64 Mach-O executable for the
+project runtime and Darwin syscall layer.
 
 The command-line parser has an explicit linker target boundary. The supported
 ELF spellings select the existing ELF64 x86-64 backend. Mach-O arm64 spellings
-select an early Darwin backend that can turn one small arm64 object into an
-ad-hoc signed Mach-O executable. This keeps Darwin work in a target-specific
-path instead of hiding it behind ELF aliases.
+select the Darwin backend used by `make freestanding` on local macOS/aarch64.
+This keeps Darwin work in a target-specific path instead of hiding it behind ELF
+aliases.
 
 ## OPTIONS
 
@@ -146,8 +148,9 @@ C start files split across several translation units, with local calls,
 cross-object calls, literal strings, static const data, initialized data,
 zero-initialized data, archive members, and the same shape after clang LTO
 prelinking. General Darwin linking still needs selective archive member loading,
-common-symbol handling, more section classes, libSystem/project runtime
-integration, and the rest of the arm64 relocation vocabulary.
+common-symbol handling, more section classes, and the rest of the arm64
+relocation vocabulary. The backend is aimed at the project's no-libSystem
+runtime rather than arbitrary Apple SDK applications.
 
 Use `make newlinker-lto-size-report` to rebuild both no-LTO and GCC-LTO
 freestanding trees and print total size deltas, largest regressions, and largest
@@ -260,10 +263,13 @@ almost all linker wall-clock overhead for 185 tools.
 
 ## LIMITATIONS
 
-- Only ELF64 little-endian x86-64 inputs are supported.
-- The output format is currently Linux `ET_EXEC` only.
-- Dynamic linking, shared libraries, linker scripts, symbol versioning, TLS,
-  debug-info preservation, and PIE output are not implemented.
+- ELF input support is limited to ELF64 little-endian x86-64 relocatables and
+  archives. Mach-O input support is limited to arm64 relocatables and simple
+  archives in the section/relocation subset used by the project.
+- Dynamic linking, shared libraries, linker scripts, symbol versioning,
+  debug-info preservation, and arbitrary SDK-style Darwin linking are not
+  implemented. The Mach-O backend does emit PIE-shaped project executables for
+  the macOS no-libSystem path.
 - Relocation support is limited to the relocation types used by the current
   freestanding path: absolute 64-bit, PC-relative 32-bit, PLT32 calls, and
   absolute 32-bit/32-bit signed references.

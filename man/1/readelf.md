@@ -2,7 +2,7 @@
 
 ## NAME
 
-**readelf** - inspect ELF file structure
+**readelf** - inspect ELF and Mach-O file structure
 
 ## SYNOPSIS
 
@@ -15,14 +15,16 @@ readelf [--json] --compare [--deep] LEFT RIGHT
 
 ## DESCRIPTION
 
-`readelf` prints structural information from ELF binaries and object files. On
-hosted macOS builds it can also recognize Mach-O 64-bit little-endian files and
-Mach-O universal binaries, reporting useful compatibility views for project
-diagnostics.
+`readelf` prints structural information from ELF binaries and object files. It
+also recognizes Mach-O 64-bit little-endian files and Mach-O universal binaries,
+reporting useful compatibility views for project diagnostics and for the macOS
+project-linked tool set.
 
 ELF executables without a section header table are accepted. This covers tiny
 freestanding outputs from the project linker, where program loading metadata is
 enough to run the binary and section metadata has intentionally been omitted.
+These files are valid for the project's run-time goals even when ordinary system
+inspection tools give incomplete or confusing output.
 
 Supported output modes:
 
@@ -72,7 +74,7 @@ found. With `--deep`, Mach-O comparisons also include load-command count,
 dylib count, chained-fixup page count, load-command digest, layout digest, and
 CodeDirectory CDHash.
 
-If no mode is selected, the ELF header is shown.
+If no mode is selected, the detected object header is shown.
 
 ## EXAMPLES
 
@@ -100,9 +102,9 @@ readelf --json -h -l -S -n build/newlinker-macos-aarch64/true
 - Mach-O support covers universal/fat containers, 64-bit little-endian headers,
   common modern dyld load commands, `LC_SEGMENT_64` sections, arm64 relocations,
   `LC_SYMTAB` symbols, and embedded CodeDirectory signatures. It is intended for
-  the project's macOS freestanding and newlinker binaries plus compact system
-  binaries such as `/usr/bin/true`, not as a complete replacement for `otool` or
-  `codesign`.
+  the project's macOS project-linked no-libSystem binaries, the older
+  `libSystem` comparison binaries, and compact system binaries such as
+  `/usr/bin/true`, not as a complete replacement for `otool` or `codesign`.
 - `--macho-fixups` walks ordinary chained page starts. Multi-start overflow page
   entries are detected but not expanded yet.
 - `--signature-details` reports CMS and requirements blob ranges but does not

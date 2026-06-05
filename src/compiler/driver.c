@@ -373,6 +373,19 @@ static void append_link_arg(char **argv, size_t *count, size_t capacity, const c
     }
 }
 
+static void append_target_link_arg(char **argv, size_t *count, size_t capacity, CompilerTarget target, const char *value) {
+    if (compiler_target_is_darwin(target)) {
+        if (text_equals(value, "-Wl,--gc-sections")) {
+            append_link_arg(argv, count, capacity, "-Wl,-dead_strip");
+            return;
+        }
+        if (text_equals(value, "-Wl,--no-gc-sections")) {
+            return;
+        }
+    }
+    append_link_arg(argv, count, capacity, value);
+}
+
 static void cleanup_temp_paths(char paths[][COMPILER_PATH_CAPACITY], size_t count) {
     size_t i;
 
@@ -1330,7 +1343,7 @@ static int link_executable_output(const CompilerOptions *options) {
         append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), "-flto");
     }
     for (i = 0; i < options->extra_link_arg_count; ++i) {
-        append_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), options->extra_link_args[i]);
+        append_target_link_arg(argv, &argc, sizeof(argv) / sizeof(argv[0]), options->target, options->extra_link_args[i]);
     }
 
     if (options->lto && count_c_inputs(options) > 1U) {

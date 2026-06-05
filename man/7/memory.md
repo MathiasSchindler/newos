@@ -94,7 +94,7 @@ The current byte-wise volatile implementations are conservative. The target is a
 careful word-at-a-time implementation with byte tails, while preserving the
 anti-recursion property through compiler flags, attributes, or implementation
 style. Any replacement must be checked on hosted, Linux freestanding, and macOS
-freestanding-ish builds.
+project-linked builds.
 
 ## GENERAL HEAP
 

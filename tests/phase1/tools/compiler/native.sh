@@ -1085,7 +1085,8 @@ else
     fi
     "$native_hexdump" "$WORK_DIR/default_host.o" > "$WORK_DIR/default_host_hex.out"
 fi
-if ! grep -q '7f 45 4c 46' "$WORK_DIR/default_host_hex.out" && ! grep -q 'cf fa ed fe' "$WORK_DIR/default_host_hex.out"; then
+if ! grep -q '7f[[:space:]][[:space:]]*45[[:space:]][[:space:]]*4c[[:space:]][[:space:]]*46' "$WORK_DIR/default_host_hex.out" &&
+   ! grep -q 'cf[[:space:]][[:space:]]*fa[[:space:]][[:space:]]*ed[[:space:]][[:space:]]*fe' "$WORK_DIR/default_host_hex.out"; then
     fail "compiler default target did not emit a supported object format"
 fi
 "$ROOT_DIR/build/ncc" "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host_bin"

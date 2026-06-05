@@ -1,6 +1,14 @@
 {
   "C_Cpp.default.includePath": [
     "${workspaceFolder}/src/shared",
+    "${workspaceFolder}/src/compiler",
+    "${workspaceFolder}/src/platform/common",
+    "${workspaceFolder}/src/platform/posix",
+    "${workspaceFolder}/src/platform/linux",
+    "${workspaceFolder}/src/platform/macos",
+    "${workspaceFolder}/src/arch/x86_64/linux",
+    "${workspaceFolder}/src/arch/aarch64/linux",
+    "${workspaceFolder}/src/arch/aarch64/macos",
     "${workspaceFolder}/src/tools/sql"
   ]
 }

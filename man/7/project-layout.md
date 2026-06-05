@@ -24,7 +24,7 @@ implementation files they live in a same-named subdirectory owned by that tool.
 - `src/compiler/` — the `ncc` frontend, IR, backends, and object writers
 - `src/platform/posix/` — hosted development and test implementation
 - `src/platform/linux/` — freestanding raw-syscall implementation
-- `src/platform/macos/` — early native macOS arm64 freestanding-ish backend
+- `src/platform/macos/` — native macOS arm64 project-linked backend
 - `src/platform/windows/` — native Windows freestanding PE backend and startup
   support
 - `src/arch/aarch64/linux/` — startup and syscall ABI glue for the freestanding
@@ -62,7 +62,7 @@ implementation files they live in a same-named subdirectory owned by that tool.
 ## LIMITATIONS
 
 - The Linux freestanding path currently targets AArch64 and x86-64
-- macOS is a first-class hosted development platform and has an early freestanding-ish arm64 subset; it is not yet a fully separate Darwin userland target in the Linux sense
+- macOS is a first-class hosted development platform and has a project-linked no-libSystem arm64 build; it is not a fully separate Darwin userland target in the Linux sense
 - Windows contributor work currently assumes MSYS2 for hosted POSIX builds; native Windows freestanding PE support is present but still growing
 - Manual pages are kept in-tree and may lag very recent behavior changes until they are refreshed alongside the code
 

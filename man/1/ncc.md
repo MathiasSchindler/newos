@@ -72,6 +72,9 @@ choices are isolated in the backend and target-description layers under
 - not a complete ISO C implementation; the supported subset is aimed at the project's own code
 - final executable linking usually delegates to the host toolchain, but Linux
   x86-64 `-nostdlib -static` builds can use the in-tree native ELF linker
+- target-specific linker-option compatibility is intentionally small; for
+  Darwin targets, `-Wl,--gc-sections` is translated to Apple ld's
+  `-Wl,-dead_strip` spelling when `ncc` delegates to the host linker driver
 - the native ELF linker supports relocatable objects and Unix `ar` archives,
   tiny layout, section-level garbage collection, safe identical code folding,
   relocatable objects, and Unix `ar` archives, but it is still narrower than a

@@ -1318,7 +1318,7 @@ static int macho_verify_code_directory_hashes(int fd, const MachCodeSignatureInf
 }
 
 static int inspect_macho_code_signature(int fd, const MachHeaderInfo *header, MachCodeSignatureInfo *signature) {
-    unsigned char raw[32];
+    unsigned char raw[44];
     long long file_size;
     unsigned int index;
 
@@ -1354,7 +1354,7 @@ static int inspect_macho_code_signature(int fd, const MachHeaderInfo *header, Ma
         }
         slot_type = read_u32_be_local(raw + 0);
         blob_offset = read_u32_be_local(raw + 4);
-        if (signature->slot_count < READELF_MAX_CODE_SIGNATURE_SLOTS && blob_offset + 8U <= signature->superblob_length && read_region(fd, (unsigned long long)signature->dataoff + (unsigned long long)blob_offset, raw, 8U) == 0) {
+        if (signature->slot_count < READELF_MAX_CODE_SIGNATURE_SLOTS && blob_offset <= signature->superblob_length - 8U && read_region(fd, (unsigned long long)signature->dataoff + (unsigned long long)blob_offset, raw, 8U) == 0) {
             signature->slots[signature->slot_count].type = slot_type;
             signature->slots[signature->slot_count].offset = blob_offset;
             signature->slots[signature->slot_count].magic = read_u32_be_local(raw + 0);
@@ -1365,7 +1365,7 @@ static int inspect_macho_code_signature(int fd, const MachHeaderInfo *header, Ma
             signature->code_directory_offset = blob_offset;
         }
     }
-    if (signature->code_directory_offset == 0U || signature->code_directory_offset + 44U > signature->superblob_length) {
+    if (signature->superblob_length < 44U || signature->code_directory_offset == 0U || signature->code_directory_offset > signature->superblob_length - 44U) {
         rt_copy_string(signature->message, sizeof(signature->message), "code signature has no CodeDirectory");
         return 0;
     }
@@ -1388,8 +1388,11 @@ static int inspect_macho_code_signature(int fd, const MachHeaderInfo *header, Ma
     signature->hash_size = (unsigned int)raw[36];
     signature->hash_type = (unsigned int)raw[37];
     signature->page_size_log2 = (unsigned int)raw[39];
-    if (signature->code_directory_length == 0U || signature->code_directory_offset + signature->code_directory_length > signature->superblob_length ||
-        signature->hash_offset + (signature->n_code_slots * signature->hash_size) > signature->code_directory_length ||
+    if (signature->code_directory_length == 0U || signature->code_directory_length > signature->superblob_length ||
+        signature->code_directory_offset > signature->superblob_length - signature->code_directory_length ||
+        (signature->hash_size != 0U && signature->n_code_slots > (0xffffffffU / signature->hash_size)) ||
+        signature->hash_offset > signature->code_directory_length ||
+        (signature->hash_size != 0U && signature->n_code_slots * signature->hash_size > signature->code_directory_length - signature->hash_offset) ||
         signature->code_limit > signature->dataoff) {
         rt_copy_string(signature->message, sizeof(signature->message), "invalid CodeDirectory bounds");
         return 0;

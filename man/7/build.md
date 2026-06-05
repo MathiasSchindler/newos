@@ -18,6 +18,17 @@ in-tree linker for final executables. `make host` is still valuable, but it is
 the hosted POSIX verification path and the fast bring-up path for new platforms
 or features before native platform code exists.
 
+The project deliberately uses size-oriented executable layouts. On Linux, the
+ELF path may omit section headers and pack program headers in ways that remain
+loader-compatible but surprise ordinary inspection tools. On macOS, the normal
+project-linked path avoids `libSystem` and other dylib imports even though that
+is not Apple's recommended model for general applications. The practical success
+criterion for these outputs is that the binary performs its job on the target
+OS/architecture without crashes and with reasonable resource use. For
+inspection, prefer the project tools such as `file`, `readelf`, `objdump`,
+`nm`, `size`, and `imgcheck`, which are taught about the project's compact ELF
+and Mach-O shapes.
+
 On Windows, the repository is expected to be built from an MSYS2 shell for now.
 MSYS2 provides the POSIX shell tools, GNU make, and hosted compiler path, while
 the UCRT64 Clang/lld toolchain can build both the existing Linux freestanding

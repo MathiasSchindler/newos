@@ -10,6 +10,9 @@ The platform component keeps shared code away from direct OS calls. Runtime and
 tool code are expected to program against `src/shared/platform.h`, which is then
 backed by the hosted POSIX implementation, the freestanding raw-Linux syscall
 implementation, or the native Windows freestanding PE implementation.
+On local macOS/aarch64 there is also a project-linked Darwin path: objects are
+Mach-O, final executables are written by the in-tree linker, and the platform
+layer uses Darwin syscalls rather than libc calls from the tools.
 
 Windows is being treated as a new contributor workstation environment first.
 Hosted Windows builds still run inside MSYS2 and use the POSIX backend, while
@@ -27,8 +30,11 @@ In practice:
 - the hosted build is for fast local iteration, testing, and early platform
   bring-up when native code is not ready yet
 - the Linux freestanding build is the raw Linux ABI and minimal startup path
-- the macOS freestanding-ish build is the native Darwin path, with the minimal
-  `libSystem` dependency required by modern macOS launch rules
+- the macOS freestanding build is the project-linked native Darwin path; the
+  intended outputs have no dylib imports and no C standard library dependency,
+  even though this is outside Apple's recommended executable model
+- `make freestanding-macos` is kept as the older Apple-ld/`libSystem`
+  comparison path
 - a bug that appears only in one mode usually means the abstraction boundary is
   missing an implementation detail or has leaked an assumption from the other
   side
@@ -71,14 +77,15 @@ directly and does not depend on libc.
 - `profiler_runtime.c` — GCC/Clang `-finstrument-functions` hooks for Linux
   profiling builds, using libc when hosted and raw syscalls when freestanding
 
-### Freestanding-ish macOS layer (`src/platform/macos`)
+### Project-linked macOS layer (`src/platform/macos`)
 
-Used by `make freestanding` on local macOS/aarch64, or explicitly with
-`make freestanding-macos`. This layer is the native Darwin arm64
-approximation of the freestanding idea: shared/tool code remains universal and
-the platform boundary owns the OS details, but the final executable still links
-`libSystem` because modern macOS does not run static no-libSystem user
-executables in the same way Linux runs static syscall-only binaries.
+Used by `make freestanding` on local macOS/aarch64 for the normal
+project-linked Mach-O build, and by `make freestanding-macos` for the older
+Apple-ld/`libSystem` comparison build. The normal path is the native Darwin
+arm64 approximation of the freestanding idea: shared/tool code remains
+universal, the platform boundary owns the OS details, and the final executable
+is intended to import no dylibs. This works for the project tools but is not the
+model Apple recommends for general macOS software.
 
 - `freestanding.c` — Darwin-backed read, write, close, open, seek,
   environment, metadata, symlink, sleep, checksum/file helper, basic filesystem
@@ -87,20 +94,14 @@ executables in the same way Linux runs static syscall-only binaries.
 - `src/arch/aarch64/macos/syscall.h` — inline Darwin syscall helpers for the
   platform adapter
 
-The supported set has grown to small argument-only tools, stdin/file text
-filters, environment printing, current-directory printing, metadata and symlink
-queries, file inspection, checksums, math through `bc`, directory enumeration,
-identity lookup, process spawning/waiting, process listing, terminal mode,
-basic TCP/TLS client networking for `wtf`, basic reporting, signal delivery,
-common filesystem mutation operations, archive/compression helpers, image
-metadata tools, object inspection tools, SQL, manual lookup, XML tooling, DNS
-lookups, simple TCP `netcat`, DHCP probing, ICMP ping, SSH/SSHD, HTTP serving,
-and read-only `ip` link/address inspection. The current set also includes
-`dmesg`, `mknod`, mount/admin command front-ends, `service`, `sh`, `editor`,
-`mail`, `make`, and the in-tree `ncc` compiler for object emission. The next
-steps are administrative network primitives, DHCP apply validation, route
-inspection, richer Darwin mount table reporting, and more exact process/session
-accounting.
+The normal project-linked path builds the declared macOS tool surface under
+`build/newlinker-macos-aarch64/`. The tools use the same project runtime and
+platform interface as other freestanding targets, with Darwin-specific syscall,
+startup, and Mach-O loader details hidden behind `src/platform/macos/`,
+`src/arch/aarch64/macos/`, and the in-tree linker. Some privileged or
+host-mutating operations remain conservative on Darwin when the implementation
+has not been validated; those commands may expose usage/read paths while
+reporting unsupported operations instead of changing the host.
 
 ### Architecture glue (`src/arch/*/linux`)
 
@@ -136,7 +137,8 @@ against the Windows trust store.
 ## LIMITATIONS
 
 - Hosted development assumes a POSIX environment; the Linux freestanding target currently focuses on AArch64 and x86-64
-- On macOS/aarch64, `make freestanding` routes to the native Darwin approximation with an unavoidable `libSystem` launch dependency; `make host` remains available as the hosted POSIX comparison path
+- On macOS/aarch64, `make freestanding` routes to the project-linked Mach-O path with no intended dylib imports; `make freestanding-macos` remains available as the older Apple-ld/`libSystem` comparison path, and `make host` remains the hosted POSIX path
+- Compact ELF and Mach-O outputs are judged by whether they execute correctly on the target platform with reasonable resource use. Some system inspection tools may handle these deliberately small files poorly; prefer the project `file`, `readelf`, `objdump`, `nm`, `size`, and `imgcheck` tools for diagnostics.
 - Native Windows freestanding support is early and intentionally narrower than the POSIX and Linux backends; MSYS2 remains the current Windows hosted bootstrap environment
 - The abstraction is intentionally small; the shared runtime now has targeted threading support where needed, but there is still no broad userland threading or async event layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment
