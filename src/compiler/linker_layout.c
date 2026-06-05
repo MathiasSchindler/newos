@@ -239,8 +239,8 @@ void copy_sections(LinkObject *objects, size_t object_count, unsigned char *outp
     }
 }
 
-static void write_load_header(unsigned char *output, uint16_t index, uint32_t flags, uint64_t offset, uint64_t file_size, uint64_t memory_size, uint64_t alignment) {
-    unsigned char *program = output + ELF64_EHDR_SIZE + ((uint64_t)index * ELF64_PHDR_SIZE);
+static void write_load_header(unsigned char *output, uint64_t program_header_offset, uint16_t index, uint32_t flags, uint64_t offset, uint64_t file_size, uint64_t memory_size, uint64_t alignment) {
+    unsigned char *program = output + program_header_offset + ((uint64_t)index * ELF64_PHDR_SIZE);
 
     write_u32(program + 0, PT_LOAD);
     write_u32(program + 4, flags);
@@ -264,6 +264,7 @@ void write_elf_header(unsigned char *output,
                       int tiny) {
     uint16_t program_count = tiny ? 1U : (data_size != 0 || bss_size != 0 ? 2U : 1U);
     uint64_t segment_alignment = tiny ? 1U : 0x1000U;
+    uint64_t program_header_offset = tiny ? ELF64_EHDR_SIZE - ELF64_TINY_PHDR_OVERLAP : ELF64_EHDR_SIZE;
 
     output[0] = 0x7fU;
     output[1] = 'E';
@@ -277,7 +278,7 @@ void write_elf_header(unsigned char *output,
     write_u16(output + 18, EM_X86_64);
     write_u32(output + 20, EV_CURRENT);
     write_u64(output + 24, entry);
-    write_u64(output + 32, ELF64_EHDR_SIZE);
+    write_u64(output + 32, program_header_offset);
     write_u64(output + 40, 0U);
     write_u32(output + 48, 0U);
     write_u16(output + 52, ELF64_EHDR_SIZE);
@@ -292,11 +293,11 @@ void write_elf_header(unsigned char *output,
         if (data_size != 0 || bss_size != 0) {
             flags |= PF_W;
         }
-        write_load_header(output, 0U, flags, 0U, file_size, memory_size, segment_alignment);
+        write_load_header(output, program_header_offset, 0U, flags, 0U, file_size, memory_size, segment_alignment);
         return;
     }
 
-    write_load_header(output, 0U, PF_R | PF_X, 0U, file_size < text_file_offset + text_size ? file_size : text_file_offset + text_size, text_file_offset + text_size, segment_alignment);
+    write_load_header(output, program_header_offset, 0U, PF_R | PF_X, 0U, file_size < text_file_offset + text_size ? file_size : text_file_offset + text_size, text_file_offset + text_size, segment_alignment);
     if (program_count > 1U) {
         uint64_t data_file_size = 0ULL;
 
@@ -306,6 +307,6 @@ void write_elf_header(unsigned char *output,
                 data_file_size = data_size;
             }
         }
-        write_load_header(output, 1U, PF_R | PF_W, data_file_offset, data_file_size, data_size + bss_size, segment_alignment);
+        write_load_header(output, program_header_offset, 1U, PF_R | PF_W, data_file_offset, data_file_size, data_size + bss_size, segment_alignment);
     }
 }

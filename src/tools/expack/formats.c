@@ -255,12 +255,30 @@ static int expack_range_end(size_t offset, size_t length, size_t limit, size_t *
     return 0;
 }
 
-static void expack_clear_section_header_fields(unsigned char *data, size_t size) {
+static void expack_zero_range_unless_overlaps(unsigned char *data, size_t size, size_t offset, size_t length, size_t protected_offset, size_t protected_length) {
+    size_t end;
+    size_t protected_end;
+
+    if (offset > size || length > size - offset) {
+        return;
+    }
+    if (protected_offset > (size_t)-1 - protected_length) {
+        return;
+    }
+    end = offset + length;
+    protected_end = protected_offset + protected_length;
+    if (length != 0U && protected_length != 0U && offset < protected_end && protected_offset < end) {
+        return;
+    }
+    memset(data + offset, 0, length);
+}
+
+static void expack_clear_section_header_fields(unsigned char *data, size_t size, size_t protected_offset, size_t protected_length) {
     if (size >= EXPACK_ELF_HEADER_SIZE) {
         archive_store_u64_le(data + 40U, 0ULL);
-        expack_store_u16_le(data + 58U, 0U);
-        expack_store_u16_le(data + 60U, 0U);
-        expack_store_u16_le(data + 62U, 0U);
+        expack_zero_range_unless_overlaps(data, size, 58U, 2U, protected_offset, protected_length);
+        expack_zero_range_unless_overlaps(data, size, 60U, 2U, protected_offset, protected_length);
+        expack_zero_range_unless_overlaps(data, size, 62U, 2U, protected_offset, protected_length);
     }
 }
 
@@ -739,7 +757,7 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
             expack_elf_zero_unused_dynamic_metadata(image_data, (size_t)needed_size64, loads, load_count, dynamic_new_offset, dynamic_file_size);
         }
     }
-    expack_clear_section_header_fields(image_data, (size_t)needed_size64);
+    expack_clear_section_header_fields(image_data, (size_t)needed_size64, phoff, compact_phdr_size);
 
     image_out->data = image_data;
     image_out->size = (size_t)needed_size64;

@@ -532,6 +532,41 @@ static const char *elf_program_type_name(unsigned int type) {
     return "OTHER";
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("O0")))
+#endif
+static void write_elf_program_type_name(unsigned int type) {
+    char token[16];
+    size_t length = 0U;
+
+    if (type == 0U) {
+        token[length++] = 'N'; token[length++] = 'U'; token[length++] = 'L'; token[length++] = 'L';
+    } else if (type == ELF_PT_LOAD) {
+        token[length++] = 'L'; token[length++] = 'O'; token[length++] = 'A'; token[length++] = 'D';
+    } else if (type == ELF_PT_DYNAMIC) {
+        token[length++] = 'D'; token[length++] = 'Y'; token[length++] = 'N'; token[length++] = 'A'; token[length++] = 'M'; token[length++] = 'I'; token[length++] = 'C';
+    } else if (type == ELF_PT_INTERP) {
+        token[length++] = 'I'; token[length++] = 'N'; token[length++] = 'T'; token[length++] = 'E'; token[length++] = 'R'; token[length++] = 'P';
+    } else if (type == ELF_PT_NOTE) {
+        token[length++] = 'N'; token[length++] = 'O'; token[length++] = 'T'; token[length++] = 'E';
+    } else if (type == 5U) {
+        token[length++] = 'S'; token[length++] = 'H'; token[length++] = 'L'; token[length++] = 'I'; token[length++] = 'B';
+    } else if (type == ELF_PT_PHDR) {
+        token[length++] = 'P'; token[length++] = 'H'; token[length++] = 'D'; token[length++] = 'R';
+    } else if (type == 0x6474e550U) {
+        token[length++] = 'G'; token[length++] = 'N'; token[length++] = 'U'; token[length++] = '_'; token[length++] = 'E'; token[length++] = 'H'; token[length++] = '_'; token[length++] = 'F'; token[length++] = 'R'; token[length++] = 'A'; token[length++] = 'M'; token[length++] = 'E';
+    } else if (type == 0x6474e551U) {
+        token[length++] = 'G'; token[length++] = 'N'; token[length++] = 'U'; token[length++] = '_'; token[length++] = 'S'; token[length++] = 'T'; token[length++] = 'A'; token[length++] = 'C'; token[length++] = 'K';
+    } else if (type == 0x6474e552U) {
+        token[length++] = 'G'; token[length++] = 'N'; token[length++] = 'U'; token[length++] = '_'; token[length++] = 'R'; token[length++] = 'E'; token[length++] = 'L'; token[length++] = 'R'; token[length++] = 'O';
+    } else if (type == 0x6474e553U) {
+        token[length++] = 'G'; token[length++] = 'N'; token[length++] = 'U'; token[length++] = '_'; token[length++] = 'P'; token[length++] = 'R'; token[length++] = 'O'; token[length++] = 'P'; token[length++] = 'E'; token[length++] = 'R'; token[length++] = 'T'; token[length++] = 'Y';
+    } else {
+        token[length++] = 'O'; token[length++] = 'T'; token[length++] = 'H'; token[length++] = 'E'; token[length++] = 'R';
+    }
+    (void)rt_write_all(1, token, length);
+}
+
 static const char *elf_osabi_name(unsigned int osabi) {
     if (osabi == 0U) return "UNIX - System V";
     if (osabi == 3U) return "UNIX - GNU";
@@ -1542,13 +1577,21 @@ static void print_header(const ElfHeaderInfo *info) {
     rt_write_char(1, '\n');
     rt_write_cstr(1, "  Section header entry size: ");
     rt_write_uint(1, info->shentsize);
-    rt_write_line(1, " bytes");
+    if (info->shnum == 0U) {
+        rt_write_line(1, " bytes (ignored; no section headers)");
+    } else {
+        rt_write_line(1, " bytes");
+    }
     rt_write_cstr(1, "  Section header count: ");
     rt_write_uint(1, info->shnum);
     rt_write_char(1, '\n');
     rt_write_cstr(1, "  Section header string table index: ");
-    rt_write_uint(1, info->shstrndx);
-    rt_write_char(1, '\n');
+    if (info->shnum == 0U) {
+        rt_write_line(1, "ignored");
+    } else {
+        rt_write_uint(1, info->shstrndx);
+        rt_write_char(1, '\n');
+    }
 }
 
 static void print_macho_header(const MachHeaderInfo *info) {
@@ -2987,7 +3030,7 @@ static void print_program_headers(int fd, const ElfHeaderInfo *header, const Elf
     }
     for (i = 0U; i < header->phnum; ++i) {
         rt_write_cstr(1, "  ");
-        rt_write_cstr(1, elf_program_type_name(programs[i].type));
+        write_elf_program_type_name(programs[i].type);
         rt_write_cstr(1, " off=");
         write_hex_value(programs[i].offset);
         rt_write_cstr(1, " vaddr=");

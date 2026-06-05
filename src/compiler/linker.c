@@ -152,6 +152,9 @@ static int link_elf64_x86_64_static_options(const char *const *object_paths,
     layout_objects(linker_objects, object_count, &text_size, &data_size, &bss_size);
     has_writable_segment = data_size != 0 || bss_size != 0;
     header_size = ELF64_EHDR_SIZE + ((uint64_t)((tiny || !has_writable_segment) ? 1U : 2U) * ELF64_PHDR_SIZE);
+    if (tiny) {
+        header_size -= ELF64_TINY_PHDR_OVERLAP;
+    }
     text_alignment = max_live_section_alignment(linker_objects, object_count, LINK_SECTION_TEXT);
     data_alignment = max_live_section_alignment(linker_objects, object_count, LINK_SECTION_DATA);
     bss_alignment = max_live_section_alignment(linker_objects, object_count, LINK_SECTION_BSS);

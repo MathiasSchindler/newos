@@ -115,5 +115,13 @@ if [[ "$pwd_output" != "$expected_pwd" ]]; then
     exit 1
 fi
 
+if [[ -x "$OUTPUT_DIR/sh" ]]; then
+    sh_output=$("$OUTPUT_DIR/sh" -c 'echo expack-sh-ok')
+    if [[ "$sh_output" != "expack-sh-ok" ]]; then
+        echo "packed sh output mismatch: got '$sh_output'" >&2
+        exit 1
+    fi
+fi
+
 count=$(printf '%s\n' $TOOLS | wc -l)
 echo "NEWLINKER_EXPACK_OK tools=$count jobs=$JOBS flags=${EXPACK_FLAGS:-none} output=$OUTPUT_DIR"

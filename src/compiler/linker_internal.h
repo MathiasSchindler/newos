@@ -67,6 +67,7 @@
 #define ELF64_SHDR_SIZE 64U
 #define ELF64_SYM_SIZE  24U
 #define ELF64_RELA_SIZE 24U
+#define ELF64_TINY_PHDR_OVERLAP 6U
 
 /* ── integer types ───────────────────────────────────────────────────────── */
 typedef unsigned short     uint16_t;

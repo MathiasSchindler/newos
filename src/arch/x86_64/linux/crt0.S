@@ -12,6 +12,6 @@ _start:
     mov (%rsp), %rdi
     lea 8(%rsp), %rsi
     call main
-    mov %rax, %rdi
-    mov $60, %rax
+    mov %eax, %edi
+    mov $60, %eax
     syscall
