@@ -33,8 +33,10 @@ implementation files they live in a same-named subdirectory owned by that tool.
   x86-64 target
 - `src/arch/aarch64/macos/` — Darwin syscall ABI helpers and experimental
   startup code for macOS arm64 work
-- `tests/` — smoke suites, helpers, benchmarks, and run-time logs under
-  `tests/tmp/`
+- `tests/` — smoke suites, helpers, benchmarks, Windows bring-up scripts, and
+  run-time logs under `tests/tmp/`
+- `scripts/` — build/reporting helpers and Makefile-backed convenience
+  launchers kept out of the repository root
 - `man/` — repository-local manuals; `man/1` and `man/7` are the active home for
   current documentation and contributor-facing project notes
 - `services/` — hosted daemon instance data such as document roots, configs, and logs; implementation still belongs under `src/tools/`
@@ -66,4 +68,4 @@ implementation files they live in a same-named subdirectory owned by that tool.
 
 ## SEE ALSO
 
-man, shell, compiler, runtime, platform, macos, testing, build, userland
+man, shell, compiler, runtime, platform, foundry, macos, testing, build, userland

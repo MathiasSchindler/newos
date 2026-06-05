@@ -211,7 +211,7 @@ The Mach-O backend also honors `--map FILE`. Its map records final sections,
 input sections, and symbol-size attribution seen during linking; the final
 executables still omit `LC_SYMTAB`. For Makefile builds, create a directory and
 pass `MACOS_NEWLINKER_MAP_DIR=DIR` to write `DIR/TOOL.map` files. Pass
-`--maps DIR` to `report-macos-freestanding-size.sh`, and the report appends top
+`--maps DIR` to `scripts/report-macos-freestanding-size.sh`, and the report appends top
 input-section and top-symbol contributors. Without maps, those attribution
 columns are reported as unavailable.
 
@@ -228,7 +228,7 @@ fixture verifies that two relocated functions fold to the same address while the
 linked executable still runs.
 
 On Linux x86-64, `make freestanding` is the default newlinker build. It runs
-`build-freestanding-newlinker.sh`, writes the canonical freestanding tree under
+`scripts/build-freestanding-newlinker.sh`, writes the canonical freestanding tree under
 `build/freestanding-linux-x86_64`, and uses `TARGET_CC` as the object compiler
 with this linker for the final links. The script supports both GCC and Clang;
 when run directly, set `NEWLINKER_CC` to choose the compiler. Its default
@@ -238,9 +238,6 @@ script compiles with `-fno-stack-protector` and disables the startup stack-guard
 initialization call so unused stack-protector support is not retained in tiny
 binaries. Set `FREESTANDING_USE_NEWLINKER=0` to use the older system-linker
 freestanding Makefile path for comparison.
-
-`make freestanding-newlinker` remains available as an explicit side build under
-`build/freestanding-linux-newlinker`.
 
 The build script compiles each needed object once, then links independent tools in
 parallel. Set `NEWLINKER_LINK_JOBS=N` to choose the number of simultaneous linker

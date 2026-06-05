@@ -13,7 +13,7 @@ implementation, or the native Windows freestanding PE implementation.
 
 Windows is being treated as a new contributor workstation environment first.
 Hosted Windows builds still run inside MSYS2 and use the POSIX backend, while
-`build-windows-freestanding.ps1` uses `src/platform/windows/` to build native
+`tests/windows/build-windows-freestanding.ps1` uses `src/platform/windows/` to build native
 PE executables without the MSYS POSIX runtime or the Microsoft C runtime.
 
 ## BUILD-MODE SUMMARY
@@ -110,7 +110,7 @@ accounting.
 
 ### Native Windows freestanding layer (`src/platform/windows`)
 
-Used by `build-windows-freestanding.ps1`. This layer links PE executables
+Used by `tests/windows/build-windows-freestanding.ps1`. This layer links PE executables
 directly against the minimal Windows system DLL imports needed by the tools and
 keeps Win32 details out of shared runtime and tool code.
 

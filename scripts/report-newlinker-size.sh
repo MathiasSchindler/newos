@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 WORK=${WORK:-build/freestanding-linux-newlinker-report}
 LINKER=${LINKER:-build/host-linux-x86_64/linker}
 BASE_DIR=${BASE_DIR:-build/freestanding-linux-x86_64}
@@ -8,7 +10,7 @@ TOOLS=${TOOLS:-true false cat linker ncc ssh wget}
 TOP=${TOP:-8}
 
 if [[ ! -d "$WORK/.maps" || ! -s "$WORK/successes.tsv" ]]; then
-  LINKER_REPORTS=1 WORK="$WORK" LINKER="$LINKER" bash build-freestanding-newlinker.sh >/dev/null
+  LINKER_REPORTS=1 WORK="$WORK" LINKER="$LINKER" bash "$SCRIPT_DIR/build-freestanding-newlinker.sh" >/dev/null
 fi
 
 printf 'tool\tfile\tbase\tdelta\ttext\tdata\tbss\tmemory\tfolded\tdiscarded\n'

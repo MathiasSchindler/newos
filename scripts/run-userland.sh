@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     cat <<'EOF'
-Usage: ./run-userland.sh [--no-build] [--build-dir DIR] [--] [COMMAND [ARG ...]]
+Usage: scripts/run-userland.sh [--no-build] [--build-dir DIR] [--] [COMMAND [ARG ...]]
 
 Start an isolated newos userland session using the freestanding binaries.
 
@@ -18,7 +18,7 @@ passed as positional parameters.
 EOF
 }
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TARGET_ARCH=${TARGET_ARCH:-$(uname -m)}
 BUILD_DIR=${NEWOS_FREESTANDING_BUILD_DIR:-"$ROOT_DIR/build/freestanding-linux-$TARGET_ARCH"}
 RUN_BUILD=1

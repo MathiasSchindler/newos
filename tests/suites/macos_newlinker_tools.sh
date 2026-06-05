@@ -119,7 +119,7 @@ assert_file_contains "$WORK_DIR/size_true_segments.out" 'Section __text' "size -
 "$BUILD_DIR/size" --json -m "$BUILD_DIR/true" > "$WORK_DIR/size_true_segments.jsonl"
 assert_file_contains "$WORK_DIR/size_true_segments.jsonl" '"event":"macho_segment_size"' "size --json -m did not emit Mach-O segment-size events"
 
-TOOLS="true" NEWOS_MACOS_NEWLINKER_BUILD_DIR="$BUILD_DIR" bash "$ROOT_DIR/report-macos-freestanding-size.sh" > "$WORK_DIR/macos_size_report.tsv"
+TOOLS="true" NEWOS_MACOS_NEWLINKER_BUILD_DIR="$BUILD_DIR" bash "$ROOT_DIR/scripts/report-macos-freestanding-size.sh" > "$WORK_DIR/macos_size_report.tsv"
 assert_file_contains "$WORK_DIR/macos_size_report.tsv" 'top_file_sections' "macOS size report did not include top-section diagnostics"
 assert_file_contains "$WORK_DIR/macos_size_report.tsv" '__TEXT,__text=' "macOS size report did not report the top Mach-O text section"
 assert_file_contains "$WORK_DIR/macos_size_report.tsv" 'unavailable' "macOS size report should mark map-derived attribution unavailable without maps"

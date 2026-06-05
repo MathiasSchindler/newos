@@ -9,7 +9,8 @@ testing - smoke-test and benchmark workflow for the project
 The repository relies on modular shell-script validation rather than a unit-test
 framework. `make test` builds the hosted binaries, runs the Phase 1 per-tool
 checks plus the remaining higher-level smoke suites, builds the freestanding
-Linux binaries where supported, and runs a freestanding smoke suite. This is
+Linux binaries where supported, and runs freestanding and isolated-userland
+smoke suites. This is
 the main correctness check contributors are expected to use before sending
 changes.
 
@@ -22,6 +23,8 @@ changes.
 - `tests/suites/` — remaining non-Phase-1 suites
 - `tests/suites/freestanding.sh` — libc-free binary smoke checks, including a
   static-PIE shape check and an `httpd`/`wget` loopback round trip
+- `tests/suites/userland.sh` — isolated shell-session checks run through
+  `scripts/test.sh` and `scripts/run-userland.sh`
 - `tests/benchmarks/` — performance comparisons against host-system tools
 - `tests/tmp/` — scratch output and per-suite logs; safe to delete
 

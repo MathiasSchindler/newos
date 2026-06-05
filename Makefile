@@ -77,7 +77,6 @@ LOCAL_MACOS_FREESTANDING := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter aarch
 DEFAULT_HOST_BUILD_DIR := $(BUILD_ROOT)/host-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
 TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
-NEWLINKER_STANDALONE_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-newlinker
 WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_ARCH)
 MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTANDING_ARCH)
 MACOS_NEWLINKER_EXPERIMENT_DIR ?= $(BUILD_ROOT)/newlinker-macos-$(MACOS_FREESTANDING_ARCH)
@@ -290,9 +289,18 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-newlinker freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall test test-phase1 test-smoke test-freestanding test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
+.PHONY: all host freestanding freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall run-userland test test-phase1 test-smoke test-freestanding test-userland test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
 
-test: test-freestanding test-phase1 test-smoke
+test: test-freestanding test-userland test-phase1 test-smoke
+
+ifeq ($(LOCAL_PLATFORM_ONLY),1)
+run-userland:
+	@echo "run-userland is only available for Linux freestanding builds" >&2
+	@exit 1
+else
+run-userland: freestanding
+	NEWOS_FREESTANDING_BUILD_DIR="$(abspath $(TARGET_BUILD_DIR))" scripts/run-userland.sh --no-build $(RUN_USERLAND_ARGS)
+endif
 
 test-phase1: host
 	PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
@@ -313,9 +321,6 @@ macos-newlinker-tools: $(MACOS_NEWLINKER_TOOL_TARGETS)
 test-macos-newlinker-tools: $(MACOS_NEWLINKER_ALL_TOOL_TARGETS)
 	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" sh ./tests/suites/macos_newlinker_tools.sh
 
-freestanding-newlinker: $(BUILD_DIR)/linker
-	WORK="$(abspath $(NEWLINKER_STANDALONE_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" bash build-freestanding-newlinker.sh
-
 test-newlinker-expack: $(BUILD_DIR)/expack
 	NEWOS_EXPACK="$(abspath $(BUILD_DIR)/expack)" bash ./tests/suites/newlinker_expack.sh
 
@@ -323,24 +328,30 @@ test-newlinker-optimizations: $(BUILD_DIR)/linker
 	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" bash ./tests/suites/newlinker_optimizations.sh
 
 newlinker-size-report: $(BUILD_DIR)/linker
-	LINKER="$(abspath $(BUILD_DIR)/linker)" bash report-newlinker-size.sh
+	LINKER="$(abspath $(BUILD_DIR)/linker)" bash scripts/report-newlinker-size.sh
 
 newlinker-lto-size-report: $(BUILD_DIR)/linker
-	LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash report-newlinker-lto-size.sh
+	LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" bash scripts/report-newlinker-lto-size.sh
 
 macos-freestanding-size-report: freestanding
-	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" bash report-macos-freestanding-size.sh
+	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" bash scripts/report-macos-freestanding-size.sh
 
 macos-freestanding-size-compare: freestanding
 	@test -n "$(BASELINE)" || { echo "usage: make macos-freestanding-size-compare BASELINE=previous.tsv" >&2; exit 1; }
-	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" bash report-macos-freestanding-size.sh --compare "$(BASELINE)"
+	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" bash scripts/report-macos-freestanding-size.sh --compare "$(BASELINE)"
 
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 test-freestanding:
 	@echo "Skipping freestanding tests on this host"
+
+test-userland:
+	@echo "Skipping userland tests on this host"
 else
 test-freestanding: freestanding
 	NEWOS_FREESTANDING_BUILD_DIR="$(abspath $(TARGET_BUILD_DIR))" sh ./tests/suites/freestanding.sh
+
+test-userland: freestanding
+	NEWOS_FREESTANDING_BUILD_DIR="$(abspath $(TARGET_BUILD_DIR))" scripts/test.sh --no-build
 endif
 
 benchmark: host
@@ -412,7 +423,7 @@ else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
 freestanding: $(BUILD_DIR)/linker
-	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" NEWLINKER_PROFILE="$(PROFILE)" bash build-freestanding-newlinker.sh
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" NEWLINKER_PROFILE="$(PROFILE)" bash scripts/build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
@@ -424,7 +435,7 @@ else ifeq ($(LOCAL_PLATFORM_ONLY),1)
 freestanding: host
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
 freestanding: $(BUILD_DIR)/linker
-	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" NEWLINKER_PROFILE="$(PROFILE)" bash build-freestanding-newlinker.sh
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_LTO="$(FREESTANDING_LTO)" NEWLINKER_PROFILE="$(PROFILE)" bash scripts/build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif

@@ -59,7 +59,7 @@ The Linux freestanding build is the primary Linux target without libc.
 The Windows freestanding build is the native PE target without the MSYS POSIX
 runtime or the Microsoft C runtime.
 
-- built from PowerShell with `./build-windows-freestanding.ps1`
+- built from PowerShell with `./tests/windows/build-windows-freestanding.ps1`
 - writes binaries to `build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/`
 - uses the minimal `src/platform/windows/` startup and Kernel32 imports
 - currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
@@ -108,7 +108,7 @@ with the in-tree `linker --target=mach-o-arm64` backend.
 - the Mach-O linker supports `--map FILE` for build-time attribution without
   keeping symbols in final executables. For per-tool maps in the Makefile path,
   create a directory and pass `MACOS_NEWLINKER_MAP_DIR=DIR`; each link writes
-  `DIR/TOOL.map`. `report-macos-freestanding-size.sh --maps DIR` consumes those
+  `DIR/TOOL.map`. `scripts/report-macos-freestanding-size.sh --maps DIR` consumes those
   files and appends top input-section and top-symbol contributor columns.
 
 The project-linked runtime supplies environment handling, page-size `sysconf`,
@@ -167,8 +167,9 @@ and anything that adds new low-level dependencies.
     make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the project-linked Mach-O target under build/newlinker-macos-aarch64/
     make freestanding-macos — build the older Apple-ld/libSystem comparison target under build/freestanding-macos-aarch64/
     make macos-newlinker-tools — explicitly build the macOS project-linked Mach-O tool tree under build/newlinker-macos-aarch64/
+    make run-userland  — on Linux build the freestanding tree and start an isolated shell using only those tools
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
-    make test          — build host binaries, run smoke/Phase 1 checks, and run the freestanding smoke suite
+    make test          — build host binaries, run smoke/Phase 1 checks, and on Linux run the freestanding and isolated userland smoke suites
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
     make clean         — remove build output
 
@@ -207,7 +208,7 @@ compiler/linker side as long as it can target `x86_64-w64-windows-gnu`; the
 PowerShell builder drives `clang.exe` directly and does not require `make` or a
 POSIX-style shell as build drivers. From PowerShell, use:
 
-  .\build-windows-freestanding.ps1
+  .\tests\windows\build-windows-freestanding.ps1
 
 The script uses `clang` from `PATH` by default, with common LLVM and MSYS2 Clang
 install locations as fallbacks.
@@ -220,16 +221,16 @@ runtime directory, such as `C:\msys64\usr\bin`, on `PATH`. Do not copy
 directory as its installation root, which breaks paths such as `.` and `/etc`.
 In PowerShell, dot-source the helper once per terminal session:
 
-  . .\activate-host-msys.ps1
+  . .\tests\windows\activate-host-msys.ps1
 
 If local PowerShell execution policy blocks scripts, use the command runner:
 
-  .\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
+  .\tests\windows\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
 
 `make freestanding` remains the main Makefile target: it builds Linux ABI
 binaries using the raw syscall backend under `src/platform/linux/` and
 `src/arch/*/linux/`, or the local macOS project-linked Mach-O target on supported
-Darwin hosts. `build-windows-freestanding.ps1` is the early native Windows path.
+Darwin hosts. `tests/windows/build-windows-freestanding.ps1` is the early native Windows path.
 It links PE executables directly against Kernel32, Ws2_32, and Bcrypt where
 needed. The Windows subset now covers the small text/core tools,
 comparison/checksum/image, path/filesystem, regex/archive/awk/XML groups, plus
@@ -298,10 +299,10 @@ linker, and `/bin/sh` to execute the actual compile and link steps.
 
 - The Linux freestanding build currently assumes a compiler/linker combination capable of `-nostdlib` static PIE output, normally Clang plus `lld`
 - On macOS/aarch64, `make freestanding` is the project-linked Mach-O path; use `make freestanding-macos` only for the older Apple-ld/libSystem comparison build
-- Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `build-windows-freestanding.ps1` for the native no-CRT PE backend
+- Windows native hosted binaries are not supported yet; use MSYS2 for hosted POSIX builds and `tests/windows/build-windows-freestanding.ps1` for the native no-CRT PE backend
 - There is no install or staging-prefix workflow yet
 - Hosted success and freestanding success should be treated as related but separate checks
 
 ## SEE ALSO
 
-man, project-layout, compiler, platform, macos, testing
+man, project-layout, foundry, compiler, platform, macos, testing

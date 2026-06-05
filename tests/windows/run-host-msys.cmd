@@ -10,8 +10,8 @@ if not exist "%MSYS_BIN%\msys-2.0.dll" (
 set "PATH=%MSYS_BIN%;%PATH%"
 
 if "%~1"=="" (
-    echo Usage: run-host-msys.cmd command [args ...] 1>&2
-    echo Example: run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe 1>&2
+    echo Usage: tests\windows\run-host-msys.cmd command [args ...] 1>&2
+    echo Example: tests\windows\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe 1>&2
     exit /b 2
 )
 

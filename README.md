@@ -43,7 +43,7 @@ lld is the preferred path. The native PowerShell build path does not invoke
 `make`, `sh`, or MSYS2 as build drivers:
 
 ```
-.\build-windows-freestanding.ps1
+.\tests\windows\build-windows-freestanding.ps1
 ```
 
 That script prefers `clang` on `PATH`, then common LLVM/MSYS2 Clang install
@@ -100,7 +100,7 @@ relocations.
 For size work, `make macos-freestanding-size-report` shows final file bytes,
 file-backed section bytes, layout overhead, load-command counts, and top Mach-O
 sections. The Mach-O linker's `--map FILE` output can be fed to
-`report-macos-freestanding-size.sh --maps DIR` for build-time input-section and
+`scripts/report-macos-freestanding-size.sh --maps DIR` for build-time input-section and
 symbol attribution while keeping final tools symbol-free; pass
 `MACOS_NEWLINKER_MAP_DIR=DIR` to the Makefile path to write per-tool maps.
 It deliberately treats the resulting binaries as project-linked, no-import
@@ -111,13 +111,13 @@ environment handling, page-size `sysconf`, directory enumeration, user/group
 lookup, time formatting, network interface queries, and a Darwin syscall-backed
 layer for common file, process, terminal, network, and identity entry points.
 
-For `ncc` bootstrap experiments, `build-freestanding-newlinker.sh` also accepts
+For `ncc` bootstrap experiments, `scripts/build-freestanding-newlinker.sh` also accepts
 `NEWLINKER_CC=build/host-linux-x86_64/ncc NEWLINKER_LTO=1`. In that mode each
 tool link is driven through `ncc -flto -nostdlib -static`, using the compiler's
 in-tree native ELF linker path. This currently builds the full 195-tool Linux
 x86-64 freestanding set and is useful for measuring native `ncc` whole-program
 object LTO separately from GCC/Clang LTO.
-The native no-CRT Windows PE path is `build-windows-freestanding.ps1`. It now
+The native no-CRT Windows PE path is `tests/windows/build-windows-freestanding.ps1`. It now
 builds the small text/core tools, comparison/checksum/image/path/filesystem
 tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
 `editor`, `mail`, and the `ncc` compiler executable. `wtf` and `mail` use the
@@ -132,23 +132,23 @@ root away from the installed environment.
 In PowerShell, dot-source the helper once per terminal session:
 
 ```
-. .\activate-host-msys.ps1
+. .\tests\windows\activate-host-msys.ps1
 ```
 
 If local PowerShell execution policy blocks scripts, use the command runner:
 
 ```
-.\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
+.\tests\windows\run-host-msys.cmd .\build\host-msys-posix-x86_64\ls.exe
 ```
 
 ## Userland shell
 
-On Linux, [run-userland.sh](run-userland.sh) starts an isolated terminal session backed by the freestanding build. It runs `make freestanding` by default, then execs the project `env` with an empty environment, `PATH` pointing only at `build/freestanding-linux-$(uname -m)`, `MANPATH` pointing at the repository manuals, and the project `sh` as the shell:
+On Linux, `make run-userland` starts an isolated terminal session backed by the freestanding build. It runs `make freestanding` first, then execs the project `env` with an empty environment, `PATH` pointing only at `build/freestanding-linux-$(uname -m)`, `MANPATH` pointing at the repository manuals, and the project `sh` as the shell:
 
 ```
-./run-userland.sh
-./run-userland.sh --no-build
-./run-userland.sh -- 'man ls'
+make run-userland
+scripts/run-userland.sh --no-build
+scripts/run-userland.sh -- 'man ls'
 ```
 
 This does not install files or change the host system; closing the shell returns to the normal Ubuntu environment.
@@ -156,8 +156,8 @@ This does not install files or change the host system; closing the shell returns
 For a smoke test from inside that environment, run:
 
 ```
-./test.sh
-./test.sh --no-build
+make test
+scripts/test.sh --no-build
 ```
 
 The test enters the freestanding shell with the isolated `PATH` and checks core command lookup, text tools, filesystem operations, archive tools, shell behavior, manuals, SQL, and a bounded local `httpd`/`wget` round trip.
@@ -168,7 +168,7 @@ Manual pages live under [man](man), with user-facing commands typically document
 
 The repository also includes its own man program at [src/tools/man.c](src/tools/man.c), so the same tree can provide and browse its own documentation after a build.
 
-Useful design pages include [man/7/userland.md](man/7/userland.md), [man/7/build.md](man/7/build.md), [man/7/testing.md](man/7/testing.md), [man/7/runtime.md](man/7/runtime.md), [man/7/memory.md](man/7/memory.md), and [man/7/unicode.md](man/7/unicode.md).
+Useful design pages include [man/7/foundry.md](man/7/foundry.md), [man/7/userland.md](man/7/userland.md), [man/7/build.md](man/7/build.md), [man/7/testing.md](man/7/testing.md), [man/7/runtime.md](man/7/runtime.md), [man/7/memory.md](man/7/memory.md), and [man/7/unicode.md](man/7/unicode.md).
 
 ## Benchmarks
 

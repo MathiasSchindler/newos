@@ -26,7 +26,7 @@ if command -v gcc >/dev/null 2>&1; then
 else
     LTO_CC=${NEWOS_LTO_CC:-}
 fi
-bash -n build-freestanding-newlinker.sh
+bash -n scripts/build-freestanding-newlinker.sh
 
 cat > "$WORK_DIR/icf_reloc.s" <<'ASM'
 .globl _start

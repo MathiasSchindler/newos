@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 LTO_WORK=${LTO_WORK:-build/freestanding-linux-newlinker-lto-report}
 BASE_WORK=${BASE_WORK:-build/freestanding-linux-newlinker-nolto-report}
 LINKER=${LINKER:-build/host-linux-x86_64/linker}
@@ -15,7 +17,7 @@ build_tree() {
     NEWLINKER_CC="$NEWLINKER_CC" \
     NEWLINKER_LTO="$lto" \
     NEWLINKER_LINK_JOBS="$NEWLINKER_LINK_JOBS" \
-    bash build-freestanding-newlinker.sh >/dev/null
+    bash "$SCRIPT_DIR/build-freestanding-newlinker.sh" >/dev/null
 }
 
 compare_sizes() {
