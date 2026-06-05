@@ -179,7 +179,9 @@ FONTTEST_SOURCE := tests/fixtures/fontrender/fonttest.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
 HASH_SOURCES := \
 	$(shell grep -oE '"src/shared/hash_util\.c"' src/compiler/source_manifest.h | tr -d '"') \
-	$(CRYPTO_SOURCES)
+	src/shared/crypto/md5.c \
+	src/shared/crypto/sha256.c \
+	src/shared/crypto/sha512.c
 SSH_TRANSPORT_SOURCES := $(shell grep -oE '"src/tools/ssh/ssh_(core|client_io)\.c"' src/compiler/source_manifest.h | tr -d '"')
 SSH_CLIENT_SOURCES := $(shell grep -oE '"src/tools/ssh/ssh_(core|known_hosts|client[^"]*)\.c"' src/compiler/source_manifest.h | tr -d '"')
 SSHD_TOOL_SOURCES := $(shell grep -oE '"src/tools/sshd/sshd_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
