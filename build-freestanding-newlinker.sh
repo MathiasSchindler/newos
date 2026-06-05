@@ -37,11 +37,20 @@ if [[ -n "${LINKER_FLAGS:-}" ]]; then
 else
   LINKER_FLAGS_ARRAY=("${LINKER_FLAGS_DEFAULT[@]}")
 fi
+NEWLINKER_SIZE_CFLAGS_ARRAY=()
+if [[ "$NEWLINKER_IS_NCC" != "1" ]]; then
+  for _flag in -fcf-protection=none -falign-functions=1 -falign-jumps=1 -falign-loops=1 -falign-labels=1 -fomit-frame-pointer -fno-ident; do
+    if printf 'int x;\n' | "$NEWLINKER_CC" "${NEWLINKER_TARGET_FLAGS[@]}" "$_flag" -x c - -c -o /tmp/newos-newlinker-size-flag-check.o >/dev/null 2>&1; then
+      NEWLINKER_SIZE_CFLAGS_ARRAY+=("$_flag")
+    fi
+    rm -f /tmp/newos-newlinker-size-flag-check.o
+  done
+fi
 if [[ -z "${NEWLINKER_EXTRA_CFLAGS+x}" ]]; then
   if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
     NEWLINKER_EXTRA_CFLAGS=""
   else
-    NEWLINKER_EXTRA_CFLAGS="-fmerge-all-constants"
+    NEWLINKER_EXTRA_CFLAGS="-fmerge-all-constants ${NEWLINKER_SIZE_CFLAGS_ARRAY[*]}"
   fi
 fi
 if [[ -n "${NEWLINKER_EXTRA_CFLAGS:-}" ]]; then
