@@ -44,8 +44,9 @@ assert_text_equals "$kill_term" '15' "kill -l TERM did not resolve to SIGTERM"
 kill_name=$("$ROOT_DIR/build/kill" -l 15 | tr -d '\r\n')
 assert_text_equals "$kill_name" 'TERM' "kill -l 15 did not resolve to the TERM name"
 
-"$ROOT_DIR/build/sleep" 5 &
+"$ROOT_DIR/build/sleep" 30 &
 sleep_pid=$!
+trap 'kill "$sleep_pid" 2>/dev/null || true' EXIT HUP INT TERM
 assert_command_succeeds "$ROOT_DIR/build/pgrep" -P $$ -x sleep > "$WORK_DIR/pgrep.out"
 assert_file_contains "$WORK_DIR/pgrep.out" "^$sleep_pid$" "pgrep did not find the child sleep process"
 
@@ -59,7 +60,9 @@ case "$pgrep_count" in
 esac
 
 assert_command_succeeds "$ROOT_DIR/build/pkill" -0 -P $$ -x sleep
-wait "$sleep_pid"
+kill "$sleep_pid"
+wait "$sleep_pid" || true
+trap - EXIT HUP INT TERM
 
 pgrep_none_status=0
 "$ROOT_DIR/build/pgrep" -P $$ -x sleep > /dev/null 2>&1 || pgrep_none_status=$?

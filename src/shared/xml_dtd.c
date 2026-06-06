@@ -16,7 +16,9 @@ typedef struct {
 } DtdIntStack;
 
 static char *dtd_slice_dup(const char *text, size_t length) {
-    char *copy = (char *)rt_malloc(length + 1U);
+    char *copy;
+    if (length == (size_t)~(size_t)0) return 0;
+    copy = (char *)rt_malloc(length + 1U);
     if (copy == 0) return 0;
     if (length > 0U) memcpy(copy, text, length);
     copy[length] = '\0';
@@ -72,8 +74,11 @@ static int dtd_ensure_elements(XmlDtd *dtd, unsigned int needed) {
     unsigned int next_capacity;
     if (needed <= dtd->element_capacity) return 0;
     next_capacity = dtd->element_capacity == 0U ? 16U : dtd->element_capacity;
-    while (next_capacity < needed) next_capacity *= 2U;
-    resized = (XmlDtdElementDecl *)rt_realloc(dtd->elements, (size_t)next_capacity * sizeof(*resized));
+    while (next_capacity < needed) {
+        if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
+        next_capacity *= 2U;
+    }
+    resized = (XmlDtdElementDecl *)rt_realloc_array(dtd->elements, next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     dtd->elements = resized;
     dtd->element_capacity = next_capacity;
@@ -85,8 +90,11 @@ static int dtd_ensure_attributes(XmlDtd *dtd, unsigned int needed) {
     unsigned int next_capacity;
     if (needed <= dtd->attribute_capacity) return 0;
     next_capacity = dtd->attribute_capacity == 0U ? 16U : dtd->attribute_capacity;
-    while (next_capacity < needed) next_capacity *= 2U;
-    resized = (XmlDtdAttributeDecl *)rt_realloc(dtd->attributes, (size_t)next_capacity * sizeof(*resized));
+    while (next_capacity < needed) {
+        if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
+        next_capacity *= 2U;
+    }
+    resized = (XmlDtdAttributeDecl *)rt_realloc_array(dtd->attributes, next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     dtd->attributes = resized;
     dtd->attribute_capacity = next_capacity;
@@ -352,8 +360,12 @@ static int string_list_add(DtdStringList *list, const char *value, size_t length
     const char **resized;
     char *copy;
     if (list->count == list->capacity) {
-        unsigned int next_capacity = list->capacity == 0U ? 16U : list->capacity * 2U;
-        resized = (const char **)rt_realloc(list->items, (size_t)next_capacity * sizeof(*resized));
+        unsigned int next_capacity = list->capacity == 0U ? 16U : list->capacity;
+        if (list->capacity != 0U) {
+            if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
+            next_capacity *= 2U;
+        }
+        resized = (const char **)rt_realloc_array(list->items, next_capacity, sizeof(*resized));
         if (resized == 0) return -1;
         list->items = resized;
         list->capacity = next_capacity;
@@ -379,8 +391,12 @@ static void string_list_free(DtdStringList *list) {
 static int int_stack_push(DtdIntStack *stack, int value) {
     int *resized;
     if (stack->count == stack->capacity) {
-        unsigned int next_capacity = stack->capacity == 0U ? 32U : stack->capacity * 2U;
-        resized = (int *)rt_realloc(stack->items, (size_t)next_capacity * sizeof(*resized));
+        unsigned int next_capacity = stack->capacity == 0U ? 32U : stack->capacity;
+        if (stack->capacity != 0U) {
+            if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
+            next_capacity *= 2U;
+        }
+        resized = (int *)rt_realloc_array(stack->items, next_capacity, sizeof(*resized));
         if (resized == 0) return -1;
         stack->items = resized;
         stack->capacity = next_capacity;

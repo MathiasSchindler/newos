@@ -56,11 +56,11 @@ static int namespace_state_push(NamespaceState *state, const char *prefix, unsig
     if (state->count == state->capacity) {
         new_capacity = state->capacity == 0U ? 64U : state->capacity * 2U;
         if (new_capacity <= state->capacity) return -1;
-        prefixes = (char **)rt_malloc(new_capacity * sizeof(*prefixes));
-        depths = (unsigned int *)rt_malloc(new_capacity * sizeof(*depths));
-        used = (int *)rt_malloc(new_capacity * sizeof(*used));
-        lines = (unsigned long long *)rt_malloc(new_capacity * sizeof(*lines));
-        columns = (unsigned long long *)rt_malloc(new_capacity * sizeof(*columns));
+        prefixes = (char **)rt_malloc_array(new_capacity, sizeof(*prefixes));
+        depths = (unsigned int *)rt_malloc_array(new_capacity, sizeof(*depths));
+        used = (int *)rt_malloc_array(new_capacity, sizeof(*used));
+        lines = (unsigned long long *)rt_malloc_array(new_capacity, sizeof(*lines));
+        columns = (unsigned long long *)rt_malloc_array(new_capacity, sizeof(*columns));
         if (prefixes == 0 || depths == 0 || used == 0 || lines == 0 || columns == 0) {
             rt_free(prefixes);
             rt_free(depths);
@@ -162,12 +162,17 @@ static void report_issue(const char *path, const XmlToken *token, const char *me
     rt_write_char(2, '\n');
 }
 
+static void free_seen_prefixes(char **seen, size_t seen_count) {
+    while (seen_count > 0U) rt_free(seen[--seen_count]);
+    rt_free(seen);
+}
+
 static int check_start(const char *path, const XmlToken *token, NamespaceState *state) {
     char **seen;
     size_t seen_count = 0U;
     size_t i;
 
-    seen = (char **)rt_malloc(token->attribute_count * sizeof(*seen));
+    seen = (char **)rt_malloc_array(token->attribute_count, sizeof(*seen));
     if (token->attribute_count > 0U && seen == 0) {
         report_issue(path, token, "out of memory", 0);
         return 1;
@@ -179,33 +184,34 @@ static int check_start(const char *path, const XmlToken *token, NamespaceState *
         size_t j;
         if (decl && prefix == 0) {
             report_issue(path, token, "out of memory", 0);
-            while (seen_count > 0U) rt_free(seen[--seen_count]);
-            rt_free(seen);
+            free_seen_prefixes(seen, seen_count);
             return 1;
         }
         if (!decl) continue;
         if (rt_strcmp(prefix, "xmlns") == 0) {
             report_issue(path, token, "reserved namespace prefix declared: ", prefix);
+            rt_free(prefix);
+            free_seen_prefixes(seen, seen_count);
             return 1;
         }
         if (rt_strcmp(prefix, "xml") == 0 && !(token->attributes[i].value_length == 36U && rt_strncmp(token->attributes[i].value, "http://www.w3.org/XML/1998/namespace", 36U) == 0)) {
             report_issue(path, token, "xml prefix must use its reserved namespace", 0);
+            rt_free(prefix);
+            free_seen_prefixes(seen, seen_count);
             return 1;
         }
         for (j = 0U; j < seen_count; ++j) {
             if (rt_strcmp(seen[j], prefix) == 0) {
                 report_issue(path, token, "duplicate namespace declaration: ", prefix[0] == '\0' ? "default" : prefix);
                 rt_free(prefix);
-                while (seen_count > 0U) rt_free(seen[--seen_count]);
-                rt_free(seen);
+                free_seen_prefixes(seen, seen_count);
                 return 1;
             }
         }
         seen[seen_count++] = prefix;
         if (prefix[0] != '\0' && namespace_state_push(state, prefix, token->depth + 1U, token) != 0) {
             report_issue(path, token, "out of memory", 0);
-            while (seen_count > 0U) rt_free(seen[--seen_count]);
-            rt_free(seen);
+            free_seen_prefixes(seen, seen_count);
             return 1;
         }
     }
@@ -215,15 +221,13 @@ static int check_start(const char *path, const XmlToken *token, NamespaceState *
         if (prefix != 0 && !prefix_bound(state, prefix, 1)) {
         report_issue(path, token, "unbound element prefix: ", prefix);
         rt_free(prefix);
-        while (seen_count > 0U) rt_free(seen[--seen_count]);
-        rt_free(seen);
+        free_seen_prefixes(seen, seen_count);
         return 1;
     }
         if (prefix != 0 && rt_strcmp(prefix, "xmlns") == 0) {
         report_issue(path, token, "element uses reserved prefix: ", prefix);
         rt_free(prefix);
-        while (seen_count > 0U) rt_free(seen[--seen_count]);
-        rt_free(seen);
+        free_seen_prefixes(seen, seen_count);
         return 1;
     }
         rt_free(prefix);
@@ -236,16 +240,14 @@ static int check_start(const char *path, const XmlToken *token, NamespaceState *
             if (rt_strcmp(prefix, "xmlns") == 0 || !prefix_bound(state, prefix, 1)) {
                 report_issue(path, token, "unbound attribute prefix: ", prefix);
                 rt_free(prefix);
-                while (seen_count > 0U) rt_free(seen[--seen_count]);
-                rt_free(seen);
+                free_seen_prefixes(seen, seen_count);
                 return 1;
             }
         }
             rt_free(prefix);
         }
     }
-    while (seen_count > 0U) rt_free(seen[--seen_count]);
-    rt_free(seen);
+    free_seen_prefixes(seen, seen_count);
     return 0;
 }
 

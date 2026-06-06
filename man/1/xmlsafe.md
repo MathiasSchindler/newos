@@ -7,7 +7,7 @@ xmlsafe - check XML against conservative safety rules
 ## SYNOPSIS
 
 ```
-xmlsafe [--allow-doctype] [--allow-pi] [--allow-comments]
+xmlsafe [--stream] [--buffered] [--allow-doctype] [--allow-pi] [--allow-comments]
   [--max-depth N] [--max-text N] [FILE ...]
 xmlsafe -h
 xmlsafe --help
@@ -24,9 +24,12 @@ The `xmlsafe` tool checks XML against conservative structural safety rules befor
 - enforce maximum element depth and maximum text or CDATA token size
 - report line and column diagnostics for unsafe constructs
 - still perform normal well-formedness checks
+- stream by default without loading the complete document into memory
 
 ## OPTIONS
 
+- `--stream` use streaming safety validation; this is the default
+- `--buffered` use the document-buffered parser, mainly for diagnostics comparison
 - `--allow-doctype` allow DOCTYPE declarations
 - `--allow-pi` allow processing instructions
 - `--allow-comments` allow comments
@@ -39,12 +42,13 @@ The `xmlsafe` tool checks XML against conservative structural safety rules befor
 
 - This is a conservative structural checker, not a complete XML security sandbox.
 - External resources are not loaded, and schemas are not validated.
-- Token-size checks happen after the document-buffered parser has read the complete input.
+- `--buffered` loads the complete document into memory.
 
 ## EXAMPLES
 
 ```
 xmlsafe input.xml
+xmlsafe --buffered input.xml
 xmlsafe --allow-comments input.xml
 xmlsafe --max-depth 32 --max-text 65536 input.xml
 ```

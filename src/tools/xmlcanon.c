@@ -23,7 +23,7 @@ static int attr_compare(const XmlAttribute *left, const XmlAttribute *right) {
 
 static void write_attrs(const XmlToken *token, int sort_attrs) {
     size_t inline_order[XML_INITIAL_ATTRIBUTES];
-    size_t *order = token->attribute_count <= XML_INITIAL_ATTRIBUTES ? inline_order : (size_t *)rt_malloc(token->attribute_count * sizeof(*order));
+    size_t *order = token->attribute_count <= XML_INITIAL_ATTRIBUTES ? inline_order : (size_t *)rt_malloc_array(token->attribute_count, sizeof(*order));
     size_t i;
     size_t j;
 

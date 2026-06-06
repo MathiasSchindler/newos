@@ -6,7 +6,7 @@
 #define XMLTAIL_INITIAL_ITEMS 64
 
 typedef struct {
-    const char *start;
+    char *text;
     size_t length;
 } TailItem;
 
@@ -24,23 +24,30 @@ static int tail_buffer_init(TailBuffer *buffer, size_t limit) {
         buffer->items = buffer->inline_items;
         return 0;
     }
-    if (limit > (size_t)(~(size_t)0 / sizeof(buffer->items[0]))) return -1;
-    buffer->items = (TailItem *)rt_malloc(limit * sizeof(buffer->items[0]));
+    buffer->items = (TailItem *)rt_malloc_array(limit, sizeof(buffer->items[0]));
     if (buffer->items == 0) return -1;
+    rt_memset(buffer->items, 0, limit * sizeof(buffer->items[0]));
     return 0;
 }
 
 static void tail_buffer_free(TailBuffer *buffer) {
+    size_t i;
+    for (i = 0U; i < buffer->limit; ++i) rt_free(buffer->items[i].text);
     if (buffer->items != buffer->inline_items) rt_free(buffer->items);
 }
 
-static void add_tail(TailBuffer *buffer, const char *start, size_t length) {
+static int add_tail(TailBuffer *buffer, const char *start, size_t length) {
+    char *copy;
     size_t slot;
-    if (buffer->limit == 0U) return;
+    if (buffer->limit == 0U) return 0;
+    copy = xml_slice_dup(start, length);
+    if (copy == 0) return -1;
     slot = buffer->count % buffer->limit;
-    buffer->items[slot].start = start;
+    rt_free(buffer->items[slot].text);
+    buffer->items[slot].text = copy;
     buffer->items[slot].length = length;
     buffer->count += 1U;
+    return 0;
 }
 
 static int tail_one(const char *selector, TailBuffer *buffer, const char *path) {
@@ -80,11 +87,23 @@ static int tail_one(const char *selector, TailBuffer *buffer, const char *path) 
                 xml_name_stack_free(&stack);
                 return 1;
             }
-            if (!capturing && xml_name_stack_matches_token(&stack, &token, &compiled_selector)) add_tail(buffer, token.raw, token.raw_length);
+            if (!capturing && xml_name_stack_matches_token(&stack, &token, &compiled_selector) && add_tail(buffer, token.raw, token.raw_length) != 0) {
+                tool_write_error("xmltail", "out of memory", 0);
+                xml_free_document(input);
+                xml_selector_free(&compiled_selector);
+                xml_name_stack_free(&stack);
+                return 1;
+            }
             xml_name_stack_pop(&stack);
         } else if (token.type == XML_TOKEN_END) {
             if (capturing && stack.count == capture_depth) {
-                add_tail(buffer, capture_start, (size_t)((token.raw + token.raw_length) - capture_start));
+                if (add_tail(buffer, capture_start, (size_t)((token.raw + token.raw_length) - capture_start)) != 0) {
+                    tool_write_error("xmltail", "out of memory", 0);
+                    xml_free_document(input);
+                    xml_selector_free(&compiled_selector);
+                    xml_name_stack_free(&stack);
+                    return 1;
+                }
                 capturing = 0;
             }
             xml_name_stack_pop(&stack);
@@ -97,6 +116,7 @@ static int tail_one(const char *selector, TailBuffer *buffer, const char *path) 
         xml_name_stack_free(&stack);
         return 1;
     }
+    xml_free_document(input);
     xml_selector_free(&compiled_selector);
     xml_name_stack_free(&stack);
     return 0;
@@ -108,7 +128,7 @@ static void write_tail(const TailBuffer *buffer) {
     size_t i;
     for (i = 0U; i < available; ++i) {
         size_t index = (start + i) % buffer->limit;
-        xml_write_raw(1, buffer->items[index].start, buffer->items[index].length);
+        xml_write_raw(1, buffer->items[index].text, buffer->items[index].length);
         rt_write_char(1, '\n');
     }
 }

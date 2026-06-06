@@ -4,6 +4,7 @@
 
 
 #define XMLSORT_INITIAL_ITEMS 128
+#define XMLSORT_INITIAL_INPUTS 8
 
 typedef struct {
     const char *start;
@@ -15,9 +16,13 @@ typedef struct {
 
 typedef struct {
     SortItem inline_items[XMLSORT_INITIAL_ITEMS];
+    char *inline_inputs[XMLSORT_INITIAL_INPUTS];
     SortItem *items;
+    char **inputs;
     size_t count;
     size_t capacity;
+    size_t input_count;
+    size_t input_capacity;
 } SortItems;
 
 static int sort_reverse = 0;
@@ -27,9 +32,14 @@ static void sort_items_init(SortItems *items) {
     rt_memset(items, 0, sizeof(*items));
     items->items = items->inline_items;
     items->capacity = XMLSORT_INITIAL_ITEMS;
+    items->inputs = items->inline_inputs;
+    items->input_capacity = XMLSORT_INITIAL_INPUTS;
 }
 
 static void sort_items_free(SortItems *items) {
+    size_t i;
+    for (i = 0U; i < items->input_count; ++i) xml_free_document(items->inputs[i]);
+    if (items->inputs != items->inline_inputs) rt_free(items->inputs);
     if (items->items != items->inline_items) rt_free(items->items);
 }
 
@@ -43,13 +53,33 @@ static int sort_items_ensure(SortItems *items, size_t needed) {
         if (next_capacity > (size_t)(~(size_t)0 / 2U)) return -1;
         next_capacity *= 2U;
     }
-    if (next_capacity > (size_t)(~(size_t)0 / sizeof(items->items[0]))) return -1;
-    next_items = (SortItem *)rt_malloc(next_capacity * sizeof(next_items[0]));
+    next_items = (SortItem *)rt_malloc_array(next_capacity, sizeof(next_items[0]));
     if (next_items == 0) return -1;
     for (i = 0U; i < items->count; ++i) next_items[i] = items->items[i];
     if (items->items != items->inline_items) rt_free(items->items);
     items->items = next_items;
     items->capacity = next_capacity;
+    return 0;
+}
+
+static int sort_items_add_input(SortItems *items, char *input) {
+    char **next_inputs;
+    size_t next_capacity;
+    size_t i;
+    if (items->input_count >= items->input_capacity) {
+        next_capacity = items->input_capacity == 0U ? XMLSORT_INITIAL_INPUTS : items->input_capacity;
+        while (next_capacity <= items->input_count) {
+            if (next_capacity > (size_t)(~(size_t)0 / 2U)) return -1;
+            next_capacity *= 2U;
+        }
+        next_inputs = (char **)rt_malloc_array(next_capacity, sizeof(next_inputs[0]));
+        if (next_inputs == 0) return -1;
+        for (i = 0U; i < items->input_count; ++i) next_inputs[i] = items->inputs[i];
+        if (items->inputs != items->inline_inputs) rt_free(items->inputs);
+        items->inputs = next_inputs;
+        items->input_capacity = next_capacity;
+    }
+    items->inputs[items->input_count++] = input;
     return 0;
 }
 
@@ -152,11 +182,17 @@ static int collect_one(const char *selector, const ToolXmlKeySpec *key_spec, con
     }
 
     if (xml_read_document(path, &input, &length, "xmlsort") != 0) { xml_selector_free(&compiled_selector); xml_name_stack_free(&stack); return 1; }
+    if (sort_items_add_input(items, input) != 0) {
+        tool_write_error("xmlsort", "out of memory", 0);
+        xml_free_document(input);
+        xml_selector_free(&compiled_selector);
+        xml_name_stack_free(&stack);
+        return 1;
+    }
     xml_parser_init(&parser, input, length);
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_START) {
             if (tool_xml_name_stack_push(&stack, token.name, "xmlsort") != 0) {
-                xml_free_document(input);
                 xml_selector_free(&compiled_selector);
                 xml_name_stack_free(&stack);
                 return 1;
@@ -172,7 +208,6 @@ static int collect_one(const char *selector, const ToolXmlKeySpec *key_spec, con
             }
         } else if (token.type == XML_TOKEN_EMPTY) {
             if (tool_xml_name_stack_push(&stack, token.name, "xmlsort") != 0) {
-                xml_free_document(input);
                 xml_selector_free(&compiled_selector);
                 xml_name_stack_free(&stack);
                 return 1;
@@ -181,7 +216,6 @@ static int collect_one(const char *selector, const ToolXmlKeySpec *key_spec, con
                 tool_xml_key_state_init(&key_state);
                 tool_xml_key_start(key_spec, &token, stack.count, stack.count, &key_state);
                 if (add_item(items, token.raw, token.raw_length, key_state.key, key_state.key_length) != 0) {
-                    xml_free_document(input);
                     xml_selector_free(&compiled_selector);
                     xml_name_stack_free(&stack);
                     return 1;
@@ -195,7 +229,6 @@ static int collect_one(const char *selector, const ToolXmlKeySpec *key_spec, con
         } else if (token.type == XML_TOKEN_END) {
             if (capturing && stack.count == capture_depth) {
                 if (add_item(items, capture_start, (size_t)((token.raw + token.raw_length) - capture_start), key_state.key, key_state.key_length) != 0) {
-                    xml_free_document(input);
                     xml_selector_free(&compiled_selector);
                     xml_name_stack_free(&stack);
                     return 1;
@@ -209,7 +242,6 @@ static int collect_one(const char *selector, const ToolXmlKeySpec *key_spec, con
     }
     if (result < 0 || xml_parse_complete(&parser) != 0) {
         xml_report_error("xmlsort", path, &parser);
-        xml_free_document(input);
         xml_selector_free(&compiled_selector);
         xml_name_stack_free(&stack);
         return 1;

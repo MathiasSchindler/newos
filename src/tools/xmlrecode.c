@@ -37,9 +37,22 @@ static int read_all_bytes(const char *path, unsigned char **buffer_out, size_t *
     for (;;) {
         long count;
         if (length + 8192U > capacity) {
-            size_t next_capacity = capacity == 0U ? 8192U : capacity * 2U;
+            size_t next_capacity;
             unsigned char *resized;
-            while (next_capacity < length + 8192U) next_capacity *= 2U;
+            if (length > (size_t)~(size_t)0 - 8192U) {
+                rt_free(buffer);
+                tool_close_input(fd, should_close);
+                return -1;
+            }
+            next_capacity = capacity == 0U ? 8192U : capacity;
+            while (next_capacity < length + 8192U) {
+                if (next_capacity > (size_t)(~(size_t)0 / 2U)) {
+                    rt_free(buffer);
+                    tool_close_input(fd, should_close);
+                    return -1;
+                }
+                next_capacity *= 2U;
+            }
             resized = (unsigned char *)rt_malloc(next_capacity);
             if (resized == 0) {
                 rt_free(buffer);

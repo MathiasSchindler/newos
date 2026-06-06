@@ -40,8 +40,7 @@ static int join_items_ensure(JoinItems *items, size_t needed) {
         if (next_capacity > (size_t)(~(size_t)0 / 2U)) return -1;
         next_capacity *= 2U;
     }
-    if (next_capacity > (size_t)(~(size_t)0 / sizeof(items->items[0]))) return -1;
-    next_items = (JoinItem *)rt_malloc(next_capacity * sizeof(next_items[0]));
+    next_items = (JoinItem *)rt_malloc_array(next_capacity, sizeof(next_items[0]));
     if (next_items == 0) return -1;
     for (i = 0U; i < items->count; ++i) next_items[i] = items->items[i];
     if (items->items != items->inline_items) rt_free(items->items);

@@ -6,6 +6,7 @@ typedef struct {
     int allow_doctype;
     int allow_pi;
     int allow_comments;
+    int buffered;
     unsigned int max_depth;
     unsigned long long max_text;
 } XmlSafeOptions;
@@ -25,11 +26,22 @@ static void write_safe_error(const char *path, const XmlToken *token, const char
 }
 
 static int safe_one(const char *path, const XmlSafeOptions *options) {
+    XmlStreamOptions stream_options;
     XmlParser parser;
     XmlToken token;
     char *input_buffer;
     size_t length;
     int result;
+
+    if (!options->buffered) {
+        stream_options.allow_doctype = options->allow_doctype;
+        stream_options.allow_pi = options->allow_pi;
+        stream_options.allow_comments = options->allow_comments;
+        stream_options.max_depth = options->max_depth;
+        stream_options.max_text = options->max_text;
+        stream_options.root_name = 0;
+        return xml_stream_validate_document_with_options(path, "xmlsafe", &stream_options);
+    }
 
     if (xml_read_document(path, &input_buffer, &length, "xmlsafe") != 0) {
         return 1;
@@ -81,12 +93,17 @@ int main(int argc, char **argv) {
     options.allow_doctype = 0;
     options.allow_pi = 0;
     options.allow_comments = 0;
+    options.buffered = 0;
     options.max_depth = 64U;
     options.max_text = 1048576ULL;
 
-    tool_opt_init(&opt, argc, argv, "xmlsafe", "[--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--max-text N] [FILE ...]");
+    tool_opt_init(&opt, argc, argv, "xmlsafe", "[--stream] [--buffered] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--max-text N] [FILE ...]");
     while ((option_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
-        if (rt_strcmp(opt.flag, "--allow-doctype") == 0) {
+        if (rt_strcmp(opt.flag, "--stream") == 0) {
+            options.buffered = 0;
+        } else if (rt_strcmp(opt.flag, "--buffered") == 0) {
+            options.buffered = 1;
+        } else if (rt_strcmp(opt.flag, "--allow-doctype") == 0) {
             options.allow_doctype = 1;
         } else if (rt_strcmp(opt.flag, "--allow-pi") == 0) {
             options.allow_pi = 1;
@@ -108,12 +125,12 @@ int main(int argc, char **argv) {
             options.max_text = value;
         } else {
             tool_write_error("xmlsafe", "unknown option: ", opt.flag);
-            tool_write_usage("xmlsafe", "[--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--max-text N] [FILE ...]");
+            tool_write_usage("xmlsafe", "[--stream] [--buffered] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--max-text N] [FILE ...]");
             return 1;
         }
     }
     if (option_result == TOOL_OPT_HELP) {
-        tool_write_usage("xmlsafe", "[--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--max-text N] [FILE ...]");
+        tool_write_usage("xmlsafe", "[--stream] [--buffered] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--max-text N] [FILE ...]");
         return 0;
     }
     if (opt.argi >= argc) {

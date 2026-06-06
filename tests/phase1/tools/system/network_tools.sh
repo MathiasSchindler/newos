@@ -4,7 +4,30 @@ set -eu
 . "$(dirname "$0")/common.inc"
 phase1_setup network_tools
 
-port=$((24000 + ($$ % 1000)))
+find_loopback_port() {
+    protocol=${1:-tcp}
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY' "$protocol"
+import socket
+import sys
+
+kind = socket.SOCK_DGRAM if sys.argv[1] == 'udp' else socket.SOCK_STREAM
+sock = socket.socket(socket.AF_INET, kind)
+try:
+    sock.bind(('127.0.0.1', 0))
+    print(sock.getsockname()[1])
+finally:
+    sock.close()
+PY
+        return
+    fi
+
+    port_index=$(cat "$WORK_DIR/next_port" 2>/dev/null || echo 0)
+    echo $((port_index + 1)) > "$WORK_DIR/next_port"
+    echo $((30000 + (($$ % 1000) * 10) + port_index))
+}
+
+port=$(find_loopback_port tcp)
 
 "$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$port" > "$WORK_DIR/netcat_server.out" &
 netcat_pid=$!
@@ -15,49 +38,50 @@ EOF
 wait "$netcat_pid"
 assert_file_contains "$WORK_DIR/netcat_server.out" 'phase1-netcat' "netcat loopback mode did not deliver the payload"
 
-scan_port=$((port + 400))
+scan_port=$(find_loopback_port tcp)
+scan_closed_port=$(find_loopback_port tcp)
 "$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$scan_port" > "$WORK_DIR/portscan_server.out" &
 portscan_pid=$!
 "$ROOT_DIR/build/sleep" 1
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s 127.0.0.1-1 "$scan_port,$((scan_port + 1))" > "$WORK_DIR/portscan.out" 2>&1
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s 127.0.0.1-1 "$scan_port,$scan_closed_port" > "$WORK_DIR/portscan.out" 2>&1
 wait "$portscan_pid"
 assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $scan_port open$" "portscan did not report the loopback listener as open"
-assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $((scan_port + 1)) closed$" "portscan did not report a closed loopback port with -a"
+assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $scan_closed_port closed$" "portscan did not report a closed loopback port with -a"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --services --summary --delay 1ms -w 1s 127.0.0.1 22 > "$WORK_DIR/portscan_services.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_services.out" '^127\.0\.0\.1 22 .* ssh$' "portscan --services did not show the SSH service hint"
 assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01] filtered=[01] unreachable=[01] error=[01] elapsed_ms=[0-9][0-9]* jobs=[0-9][0-9]* timeout_ms=[0-9][0-9]*$' "portscan --summary did not print totals"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 "$((scan_port + 1))" --summary > "$WORK_DIR/portscan_trailing_summary.out" 2>&1
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 "$scan_closed_port" --summary > "$WORK_DIR/portscan_trailing_summary.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_trailing_summary.out" '^summary scanned=1 open=0 closed=1 filtered=0 unreachable=0 error=0 elapsed_ms=[0-9][0-9]* jobs=[0-9][0-9]* timeout_ms=[0-9][0-9]*$' "portscan should accept --summary after host and port arguments"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --progress "$((scan_port + 1))" > "$WORK_DIR/portscan_progress.out" 2>&1
-assert_file_contains "$WORK_DIR/portscan_progress.out" "^127\.0\.0\.1 $((scan_port + 1)) closed$" "portscan --progress should print closed results as they complete"
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --progress "$scan_closed_port" > "$WORK_DIR/portscan_progress.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_progress.out" "^127\.0\.0\.1 $scan_closed_port closed$" "portscan --progress should print closed results as they complete"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --common --summary -w 1ms > "$WORK_DIR/portscan_trailing_common.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_trailing_common.out" '^summary scanned=' "portscan should accept --common after the host argument"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv.out" 2>&1
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_csv.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service,latency_ms,reason,change,' "portscan --csv did not print a header"
-assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$((scan_port + 1)),closed,,[0-9][0-9]*,connection_refused," "portscan --csv did not print a closed row"
+assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$scan_closed_port,closed,,[0-9][0-9]*,connection_refused," "portscan --csv did not print a closed row"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" --json -4 -a -n --summary -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_json.out" 2>&1
+assert_command_succeeds "$ROOT_DIR/build/portscan" --json -4 -a -n --summary -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_json.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_json.out" '"schema":"newos.tool.v1"' "portscan --json did not use the shared JSON envelope"
 assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"port_result"' "portscan --json did not emit port_result events"
-assert_file_contains "$WORK_DIR/portscan_json.out" "\"port\":$((scan_port + 1))" "portscan --json did not report the scanned port"
+assert_file_contains "$WORK_DIR/portscan_json.out" "\"port\":$scan_closed_port" "portscan --json did not report the scanned port"
 assert_file_contains "$WORK_DIR/portscan_json.out" '"state":"closed"' "portscan --json did not report the closed state"
 assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"scan_summary"' "portscan --json --summary did not emit scan_summary"
 
 portscan_csv_json_status=0
-"$ROOT_DIR/build/portscan" --csv --json -4 -n 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_csv_json.out" 2>&1 || portscan_csv_json_status=$?
+"$ROOT_DIR/build/portscan" --csv --json -4 -n 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_csv_json.out" 2>&1 || portscan_csv_json_status=$?
 assert_exit_code "$portscan_csv_json_status" 1 "portscan should reject --csv with --json"
 assert_file_contains "$WORK_DIR/portscan_csv_json.out" '"event":"diagnostic"' "portscan --csv --json should report a JSON diagnostic"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s not-a-numeric-host "$((scan_port + 1))" > "$WORK_DIR/portscan_unreachable.out" 2>&1
-assert_file_contains "$WORK_DIR/portscan_unreachable.out" "^not-a-numeric-host $((scan_port + 1)) unreachable$" "portscan did not print an unreachable state for an unresolvable numeric-only host"
+assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s not-a-numeric-host "$scan_closed_port" > "$WORK_DIR/portscan_unreachable.out" 2>&1
+assert_file_contains "$WORK_DIR/portscan_unreachable.out" "^not-a-numeric-host $scan_closed_port unreachable$" "portscan did not print an unreachable state for an unresolvable numeric-only host"
 
 portscan_fail_closed_status=0
-"$ROOT_DIR/build/portscan" -4 -a -n --fail-closed -w 1s 127.0.0.1 "$((scan_port + 1))" > "$WORK_DIR/portscan_fail_closed.out" 2>&1 || portscan_fail_closed_status=$?
+"$ROOT_DIR/build/portscan" -4 -a -n --fail-closed -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_fail_closed.out" 2>&1 || portscan_fail_closed_status=$?
 assert_exit_code "$portscan_fail_closed_status" 3 "portscan --fail-closed should return 3 when a closed port is found"
 
 assert_command_succeeds "$ROOT_DIR/build/portscan" --help > "$WORK_DIR/portscan_help.out" 2>&1
@@ -66,7 +90,7 @@ assert_file_contains "$WORK_DIR/portscan_help.out" 'common-port scanning' "ports
 assert_file_contains "$WORK_DIR/portscan_help.out" 'passively read any banner' "portscan --help did not describe the banner option"
 
 if command -v python3 >/dev/null 2>&1; then
-    banner_port=$((port + 500))
+    banner_port=$(find_loopback_port tcp)
     python3 - <<'PY' "$banner_port" > "$WORK_DIR/banner_server.out" 2>&1 &
 import socket, sys
 port = int(sys.argv[1])
@@ -95,7 +119,7 @@ PY
     assert_file_contains "$WORK_DIR/banner_server.out" 'MOCK_BANNER_OK' "mock banner server did not complete"
 fi
 
-quiet_port=$((port + 600))
+quiet_port=$(find_loopback_port tcp)
 "$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$quiet_port" > "$WORK_DIR/portscan_quiet_server.out" 2>&1 &
 quiet_pid=$!
 "$ROOT_DIR/build/sleep" 1
@@ -152,7 +176,7 @@ if grep -q '^PING ' "$WORK_DIR/traceroute6_loopback.out" || grep -q 'ping statis
 fi
 
 if command -v python3 >/dev/null 2>&1; then
-    whois_port=$((port + 300))
+    whois_port=$(find_loopback_port tcp)
     python3 - <<'PY' "$whois_port" > "$WORK_DIR/whois_server.out" 2>&1 &
 import socket, sys
 port = int(sys.argv[1])
@@ -193,7 +217,7 @@ PY
     assert_file_contains "$WORK_DIR/whois_json.out" '"text":"Domain Name: EXAMPLE.TEST' "whois --json did not include response text"
     assert_file_contains "$WORK_DIR/whois_json.out" '"event":"whois_query_complete"' "whois --json did not emit whois_query_complete"
 
-    silent_whois_port=$((port + 301))
+    silent_whois_port=$(find_loopback_port tcp)
     python3 - <<'PY' "$silent_whois_port" > "$WORK_DIR/whois_silent_server.out" 2>&1 &
 import socket, sys, time
 port = int(sys.argv[1])
@@ -271,8 +295,8 @@ assert_command_succeeds "$ROOT_DIR/build/dhcp" --help > "$WORK_DIR/dhcp_help.out
 assert_file_contains "$WORK_DIR/dhcp_help.out" 'DHCP' "dhcp --help did not describe lease acquisition"
 
 if command -v python3 >/dev/null 2>&1; then
-    dhcp_port=$((port + 100))
-    dhcp_client_port=$((port + 200))
+    dhcp_port=$(find_loopback_port udp)
+    dhcp_client_port=$(find_loopback_port udp)
     python3 - <<'PY' "$dhcp_port" > "$WORK_DIR/dhcp_server.out" 2>&1 &
 import socket, sys
 port = int(sys.argv[1])

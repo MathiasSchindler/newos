@@ -110,7 +110,7 @@ static int xml_ensure_parser_stack(XmlParser *parser, unsigned int needed) {
         }
         next_capacity *= 2U;
     }
-    resized = (XmlName *)rt_malloc((size_t)next_capacity * sizeof(*resized));
+    resized = (XmlName *)rt_malloc_array(next_capacity, sizeof(*resized));
     if (resized == 0) {
         xml_set_error(parser, "out of memory");
         return -1;
@@ -136,7 +136,7 @@ static int xml_ensure_parser_attributes(XmlParser *parser, size_t needed) {
         }
         next_capacity *= 2U;
     }
-    resized = (XmlAttribute *)rt_malloc(next_capacity * sizeof(*resized));
+    resized = (XmlAttribute *)rt_malloc_array(next_capacity, sizeof(*resized));
     if (resized == 0) {
         xml_set_error(parser, "out of memory");
         return -1;
@@ -267,7 +267,9 @@ int xml_copy_slice(const char *text, size_t length, char *buffer, size_t buffer_
 }
 
 char *xml_slice_dup(const char *text, size_t length) {
-    char *copy = (char *)rt_malloc(length + 1U);
+    char *copy;
+    if (length == (size_t)~(size_t)0) return 0;
+    copy = (char *)rt_malloc(length + 1U);
     if (copy == 0) return 0;
     if (length > 0U && text != 0) memcpy(copy, text, length);
     copy[length] = '\0';
@@ -313,9 +315,9 @@ static int xml_name_stack_ensure(XmlNameStack *stack, unsigned int needed) {
         if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
         next_capacity *= 2U;
     }
-    resized = (XmlName *)rt_malloc((size_t)next_capacity * sizeof(*resized));
+    resized = (XmlName *)rt_malloc_array(next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
-    position_resized = (unsigned int *)rt_malloc((size_t)next_capacity * sizeof(*position_resized));
+    position_resized = (unsigned int *)rt_malloc_array(next_capacity, sizeof(*position_resized));
     if (position_resized == 0) { rt_free(resized); return -1; }
     if (stack->count > 0U && stack->items != 0) memcpy(resized, stack->items, (size_t)stack->count * sizeof(*resized));
     if (stack->count > 0U && stack->positions != 0) memcpy(position_resized, stack->positions, (size_t)stack->count * sizeof(*position_resized));
@@ -337,7 +339,7 @@ static int xml_name_count_frame_ensure(XmlNameCountFrame *frame, unsigned int ne
         if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
         next_capacity *= 2U;
     }
-    resized = (XmlNameCount *)rt_realloc(frame->counts, (size_t)next_capacity * sizeof(*resized));
+    resized = (XmlNameCount *)rt_realloc_array(frame->counts, next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     frame->counts = resized;
     frame->capacity = next_capacity;
@@ -354,7 +356,7 @@ static int xml_name_stack_ensure_frames(XmlNameStack *stack, unsigned int needed
         if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
         next_capacity *= 2U;
     }
-    resized = (XmlNameCountFrame *)rt_realloc(stack->frames, (size_t)next_capacity * sizeof(*resized));
+    resized = (XmlNameCountFrame *)rt_realloc_array(stack->frames, next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     for (i = stack->frame_capacity; i < next_capacity; ++i) {
         resized[i].counts = 0;
@@ -1116,7 +1118,7 @@ static int xml_selector_ensure_components(XmlSelector *compiled, unsigned int ne
         if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
         next_capacity *= 2U;
     }
-    resized = (XmlSelectorComponent *)rt_realloc(compiled->components, (size_t)next_capacity * sizeof(*resized));
+    resized = (XmlSelectorComponent *)rt_realloc_array(compiled->components, next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     compiled->components = resized;
     compiled->component_capacity = next_capacity;
@@ -1132,7 +1134,7 @@ static int xml_selector_ensure_predicates(XmlSelector *compiled, unsigned int ne
         if (next_capacity > (unsigned int)(~0U / 2U)) return -1;
         next_capacity *= 2U;
     }
-    resized = (XmlSelectorPredicate *)rt_realloc(compiled->predicates, (size_t)next_capacity * sizeof(*resized));
+    resized = (XmlSelectorPredicate *)rt_realloc_array(compiled->predicates, next_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     compiled->predicates = resized;
     compiled->predicate_capacity = next_capacity;

@@ -39,8 +39,7 @@ static int csv_options_add_col(XmlCsvOptions *options, const char *col) {
         next_capacity = options->col_capacity == 0U ? XMLCSV_INITIAL_COLS : options->col_capacity;
         if (next_capacity > (size_t)(~(size_t)0 / 2U)) return -1;
         next_capacity *= 2U;
-        if (next_capacity > (size_t)(~(size_t)0 / sizeof(options->cols[0]))) return -1;
-        cols = (const char **)rt_malloc(next_capacity * sizeof(cols[0]));
+        cols = (const char **)rt_malloc_array(next_capacity, sizeof(cols[0]));
         if (cols == 0) return -1;
         for (i = 0U; i < options->col_count; ++i) cols[i] = options->cols[i];
         if (options->cols != options->inline_cols) rt_free(options->cols);
@@ -123,7 +122,7 @@ static int csv_one(const XmlCsvOptions *options, const char *path) {
         xml_name_stack_free(&stack);
         return 1;
     }
-    values = (CsvValue *)rt_malloc(options->col_count * sizeof(values[0]));
+    values = (CsvValue *)rt_malloc_array(options->col_count, sizeof(values[0]));
     if (values == 0) {
         xml_selector_free(&row_selector);
         xml_name_stack_free(&stack);

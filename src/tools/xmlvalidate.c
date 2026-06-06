@@ -31,6 +31,7 @@ static int validate_one(const ValidateOptions *options, const char *path) {
         stream_options.allow_pi = options->allow_pi;
         stream_options.allow_comments = options->allow_comments;
         stream_options.max_depth = options->max_depth;
+        stream_options.max_text = 0ULL;
         stream_options.root_name = options->root_name;
         return xml_stream_validate_document_with_options(path, "xmlvalidate", &stream_options);
     }
@@ -100,9 +101,11 @@ int main(int argc, char **argv) {
     int i;
 
     rt_memset(&options, 0, sizeof(options));
-    tool_opt_init(&opt, argc, argv, "xmlvalidate", "[--stream] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
+    options.stream = 1;
+    tool_opt_init(&opt, argc, argv, "xmlvalidate", "[--stream] [--buffered] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
     while ((option_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(opt.flag, "--stream") == 0) options.stream = 1;
+        else if (rt_strcmp(opt.flag, "--buffered") == 0) options.stream = 0;
         else if (rt_strcmp(opt.flag, "--allow-doctype") == 0) options.allow_doctype = 1;
         else if (rt_strcmp(opt.flag, "--allow-pi") == 0) options.allow_pi = 1;
         else if (rt_strcmp(opt.flag, "--allow-comments") == 0) options.allow_comments = 1;
@@ -119,18 +122,18 @@ int main(int argc, char **argv) {
             options.max_depth = (unsigned int)value;
         } else if (rt_strcmp(opt.flag, "--root") == 0) {
             if (tool_opt_require_value(&opt) != 0) {
-                tool_write_usage("xmlvalidate", "[--stream] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
+                tool_write_usage("xmlvalidate", "[--stream] [--buffered] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
                 return 1;
             }
             options.root_name = opt.value;
         } else {
             tool_write_error("xmlvalidate", "unknown option: ", opt.flag);
-            tool_write_usage("xmlvalidate", "[--stream] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
+            tool_write_usage("xmlvalidate", "[--stream] [--buffered] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
             return 1;
         }
     }
     if (option_result == TOOL_OPT_HELP) {
-        tool_write_usage("xmlvalidate", "[--stream] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
+        tool_write_usage("xmlvalidate", "[--stream] [--buffered] [--dtd FILE|auto] [--allow-doctype] [--allow-pi] [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]");
         return 0;
     }
     if (opt.argi >= argc) return validate_one(&options, 0);

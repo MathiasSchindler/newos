@@ -165,9 +165,10 @@ static int stream_stack_push(StringStack *stack, char *name) {
     char **resized;
     size_t next_capacity;
     if (stack->count == stack->capacity) {
+        if (stack->capacity > (size_t)(~(size_t)0 / 2U)) return -1;
         next_capacity = stack->capacity == 0U ? 128U : stack->capacity * 2U;
         if (next_capacity <= stack->capacity) return -1;
-        resized = (char **)rt_realloc(stack->items, next_capacity * sizeof(*resized));
+        resized = (char **)rt_realloc_array(stack->items, next_capacity, sizeof(*resized));
         if (resized == 0) return -1;
         stack->items = resized;
         stack->capacity = next_capacity;
@@ -205,6 +206,10 @@ static char *stream_parse_name(XmlStream *stream) {
                 if (dynamic == 0) return 0;
                 memcpy(dynamic, local, length);
             } else if (length + 1U >= capacity) {
+                if (capacity > (size_t)(~(size_t)0 / 2U)) {
+                    rt_free(dynamic);
+                    return 0;
+                }
                 capacity *= 2U;
                 resized = (char *)rt_realloc(dynamic, capacity);
                 if (resized == 0) {
@@ -462,8 +467,9 @@ static int stream_parse_attributes(XmlStream *stream, char ***attrs_out, size_t 
         }
         if (count == capacity) {
             char **resized;
+            if (capacity > (size_t)(~(size_t)0 / 2U)) { rt_free(name); goto fail; }
             capacity = capacity == 0U ? 16U : capacity * 2U;
-            resized = (char **)rt_realloc(attrs, capacity * sizeof(*attrs));
+            resized = (char **)rt_realloc_array(attrs, capacity, sizeof(*attrs));
             if (resized == 0) { rt_free(name); goto fail; }
             attrs = resized;
         }
@@ -542,6 +548,7 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
             unsigned long long text_line = stream.line;
             unsigned long long text_column = stream.column;
             if (stream_parse_text(&stream, stack.count != 0U, &text_length, &text_is_blank) != 0) break;
+            if (options != 0 && options->max_text > 0ULL && (unsigned long long)text_length > options->max_text) { stream_error(&stream, "text node is too large"); break; }
             if (text_length > 0U && stream_emit_event(callback, user_data, XML_TOKEN_TEXT, 0, 0U, 0U, text_length, text_line, text_column, stack.count, text_is_blank) != 0) {
                 stream_error(&stream, "stream callback failed");
                 break;
@@ -582,6 +589,7 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
                 size_t i;
                 for (i = 0U; rest[i] != '\0'; ++i) if (stream_expect(&stream, rest[i], "expected CDATA section") != 0) break;
                 if (rest[i] != '\0' || stream_parse_until_count(&stream, "]]>", "unterminated CDATA section", &text_length) != 0) break;
+                if (options != 0 && options->max_text > 0ULL && (unsigned long long)text_length > options->max_text) { stream_error(&stream, "text node is too large"); break; }
                 if (stream_emit_event(callback, user_data, XML_TOKEN_CDATA, 0, 0U, 0U, text_length, markup_line, markup_column, stack.count, text_length == 0U) != 0) { stream_error(&stream, "stream callback failed"); break; }
             } else if (ch == 'D') {
                 const char *rest = "OCTYPE";

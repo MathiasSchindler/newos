@@ -35,7 +35,7 @@ static int ensure_renamed_capacity(char ***renamed_io, size_t *capacity_io, size
         new_capacity *= 2U;
     }
     if (new_capacity == old_capacity) return 0;
-    resized = (char **)rt_realloc(*renamed_io, new_capacity * sizeof(*resized));
+    resized = (char **)rt_realloc_array(*renamed_io, new_capacity, sizeof(*resized));
     if (resized == 0) return -1;
     for (i = old_capacity; i < new_capacity; ++i) resized[i] = 0;
     *renamed_io = resized;

@@ -39,7 +39,7 @@ static int key_set_ensure(KeySet *set, size_t needed) {
         if (next_capacity > (size_t)(~(size_t)0 / 2U)) return -1;
         next_capacity *= 2U;
     }
-    keys = (Key *)rt_malloc(next_capacity * sizeof(*keys));
+    keys = (Key *)rt_malloc_array(next_capacity, sizeof(*keys));
     if (keys == 0) return -1;
     for (i = 0U; i < set->count; ++i) keys[i] = set->keys[i];
     if (set->keys != set->inline_keys) rt_free(set->keys);

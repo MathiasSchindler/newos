@@ -129,6 +129,7 @@ typedef struct {
     int allow_pi;
     int allow_comments;
     unsigned int max_depth;
+    unsigned long long max_text;
     const char *root_name;
 } XmlStreamOptions;
 

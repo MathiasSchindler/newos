@@ -49,7 +49,7 @@ static int ensure_child_counts(unsigned int **counts_io, size_t *capacity, unsig
         if (next_capacity > (size_t)(~(size_t)0 / 2U)) return -1;
         next_capacity *= 2U;
     }
-    counts = (unsigned int *)rt_malloc(next_capacity * sizeof(*counts));
+    counts = (unsigned int *)rt_malloc_array(next_capacity, sizeof(*counts));
     if (counts == 0) return -1;
     for (i = 0U; i < *capacity; ++i) counts[i] = (*counts_io)[i];
     for (; i < next_capacity; ++i) counts[i] = 0U;

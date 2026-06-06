@@ -7,7 +7,7 @@ xmlvalidate - check XML well-formedness and simple structural policy
 ## SYNOPSIS
 
 ```
-xmlvalidate [--stream] [--dtd FILE|auto] [--allow-doctype] [--allow-pi]
+xmlvalidate [--stream] [--buffered] [--dtd FILE|auto] [--allow-doctype] [--allow-pi]
   [--allow-comments] [--max-depth N] [--root NAME] [FILE ...]
 xmlvalidate -h
 xmlvalidate --help
@@ -19,19 +19,20 @@ The `xmlvalidate` tool checks XML well-formedness and can enforce a small set of
 
 ## CURRENT CAPABILITIES
 
-- perform the same document-buffered well-formedness parsing as the XML tools
+- perform streaming well-formedness and structural policy checks by default
 - reject malformed UTF-8 byte sequences and XML-disallowed Unicode code points
 - require a specific document root with `--root NAME`
 - enforce a maximum element depth with `--max-depth N`
 - reject DOCTYPE declarations, processing instructions, and comments unless allowed by option
-- use streaming validation for large inputs with `--stream`
+- use document-buffered validation when DTD validation or `--buffered` is requested
 - enforce the same structural policy options in streaming and buffered modes
 - validate a supported DTD subset with `--dtd FILE` or `--dtd auto`
 - enforce DTD root name, declared elements, `EMPTY` elements, required attributes, fixed attributes, unique IDs, and IDREF/IDREFS resolution
 
 ## OPTIONS
 
-- `--stream` use the streaming validator
+- `--stream` use the streaming validator; this is the default unless `--dtd` is used
+- `--buffered` use the document-buffered parser when DTD validation is not requested
 - `--dtd FILE|auto` validate against declarations in FILE, or against the document DOCTYPE when `auto` is used
 - `--allow-doctype` allow DOCTYPE declarations
 - `--allow-pi` allow processing instructions
@@ -45,6 +46,7 @@ The `xmlvalidate` tool checks XML well-formedness and can enforce a small set of
 
 - Streaming mode reports policy failures with stream positions rather than parser token positions.
 - `--dtd` uses buffered validation even when `--stream` is also supplied.
+- `--buffered` loads the complete document into memory.
 - No declarative policy file format is implemented yet for rules such as required children, forbidden elements, or per-element constraints.
 - DTD support is intentionally partial: full content-model validation, parameter entities, notations, conditional sections, and entity expansion are not implemented.
 - External DTD subsets are loaded only when passed explicitly with `--dtd FILE`; network loading is not implemented.
@@ -57,6 +59,7 @@ The `xmlvalidate` tool checks XML well-formedness and can enforce a small set of
 xmlvalidate --root feed input.xml
 xmlvalidate --max-depth 32 input.xml
 xmlvalidate --stream --root feed --max-depth 32 large.xml
+xmlvalidate --buffered --root feed input.xml
 xmlvalidate --dtd auto input.xml
 xmlvalidate --dtd schema.dtd input.xml
 ```

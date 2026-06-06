@@ -39,8 +39,9 @@ static int text_predicates_add(XmlQueryTextPredicates *predicates, const char *v
     XmlQueryTextPredicate *resized;
     unsigned int next_capacity;
     if (predicates->count == predicates->capacity) {
+        if (predicates->capacity > (unsigned int)(~0U / 2U)) return -1;
         next_capacity = predicates->capacity * 2U;
-        resized = (XmlQueryTextPredicate *)rt_malloc((size_t)next_capacity * sizeof(*resized));
+        resized = (XmlQueryTextPredicate *)rt_malloc_array(next_capacity, sizeof(*resized));
         if (resized == 0) return -1;
         memcpy(resized, predicates->items, (size_t)predicates->count * sizeof(*resized));
         if (predicates->items != predicates->inline_items) rt_free(predicates->items);
@@ -170,6 +171,7 @@ static int prepare_selector(const char *selector, char **base_selector_out, XmlQ
 
     if (find_final_component_start(selector, &final_start) != 0) return -1;
     selector_length = rt_strlen(selector);
+    if (selector_length == (size_t)~(size_t)0) return -1;
     base_selector = (char *)rt_malloc(selector_length + 1U);
     if (base_selector == 0) return -1;
     memcpy(base_selector, selector, final_start);

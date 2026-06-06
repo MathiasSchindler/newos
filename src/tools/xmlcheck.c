@@ -2,14 +2,14 @@
 #include "tool_util.h"
 #include "xml.h"
 
-static int check_one(const char *path, int stream) {
+static int check_one(const char *path, int buffered) {
     XmlParser parser;
     XmlToken token;
     char *input_buffer;
     size_t length;
     int result;
 
-    if (stream) return xml_stream_validate_document(path, "xmlcheck");
+    if (!buffered) return xml_stream_validate_document(path, "xmlcheck");
     if (xml_read_document(path, &input_buffer, &length, "xmlcheck") != 0) {
         return 1;
     }
@@ -29,29 +29,31 @@ int main(int argc, char **argv) {
     ToolOptState opt;
     int option_result;
     int exit_code = 0;
-    int stream = 0;
+    int buffered = 0;
     int i;
 
-    tool_opt_init(&opt, argc, argv, "xmlcheck", "[--stream] [FILE ...]");
+    tool_opt_init(&opt, argc, argv, "xmlcheck", "[--stream] [--buffered] [FILE ...]");
     while ((option_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(opt.flag, "--stream") == 0) {
-            stream = 1;
+            buffered = 0;
+        } else if (rt_strcmp(opt.flag, "--buffered") == 0) {
+            buffered = 1;
         } else {
             tool_write_error("xmlcheck", "unknown option: ", opt.flag);
-            tool_write_usage("xmlcheck", "[--stream] [FILE ...]");
+            tool_write_usage("xmlcheck", "[--stream] [--buffered] [FILE ...]");
             return 1;
         }
     }
     if (option_result == TOOL_OPT_HELP) {
-        tool_write_usage("xmlcheck", "[--stream] [FILE ...]");
+        tool_write_usage("xmlcheck", "[--stream] [--buffered] [FILE ...]");
         return 0;
     }
 
     if (opt.argi >= argc) {
-        return check_one(0, stream);
+        return check_one(0, buffered);
     }
     for (i = opt.argi; i < argc; ++i) {
-        if (check_one(argv[i], stream) != 0) {
+        if (check_one(argv[i], buffered) != 0) {
             exit_code = 1;
         }
     }
