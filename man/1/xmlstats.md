@@ -15,6 +15,7 @@ xmlstats --help
 ## DESCRIPTION
 
 The `xmlstats` tool reports document statistics and first-seen name histograms for element and attribute names.
+It uses the streaming XML parser, so input size does not need to fit in memory; only the distinct element and attribute names are retained.
 
 ## CURRENT CAPABILITIES
 
@@ -22,6 +23,7 @@ The `xmlstats` tool reports document statistics and first-seen name histograms f
 - report maximum element depth
 - print element-name and attribute-name histograms
 - grow name tables as new names are encountered
+- stream input while collecting aggregate counts and distinct-name histograms
 
 ## OPTIONS
 

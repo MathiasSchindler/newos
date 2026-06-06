@@ -443,8 +443,8 @@ static int stream_parse_doctype(XmlStream *stream) {
     return -1;
 }
 
-static int stream_parse_attributes(XmlStream *stream, char ***attrs_out, size_t *count_out) {
-    char **attrs = 0;
+static int stream_parse_attributes(XmlStream *stream, XmlAttribute **attrs_out, size_t *count_out) {
+    XmlAttribute *attrs = 0;
     size_t count = 0U;
     size_t capacity = 0U;
     char ch;
@@ -459,21 +459,24 @@ static int stream_parse_attributes(XmlStream *stream, char ***attrs_out, size_t 
         name = stream_parse_name(stream);
         if (name == 0) goto fail;
         for (i = 0U; i < count; ++i) {
-            if (rt_strcmp(attrs[i], name) == 0) {
+            if (rt_strcmp(attrs[i].name.start, name) == 0) {
                 rt_free(name);
                 stream_error(stream, "duplicate attribute");
                 goto fail;
             }
         }
         if (count == capacity) {
-            char **resized;
+            XmlAttribute *resized;
             if (capacity > (size_t)(~(size_t)0 / 2U)) { rt_free(name); goto fail; }
             capacity = capacity == 0U ? 16U : capacity * 2U;
-            resized = (char **)rt_realloc_array(attrs, capacity, sizeof(*attrs));
+            resized = (XmlAttribute *)rt_realloc_array(attrs, capacity, sizeof(*attrs));
             if (resized == 0) { rt_free(name); goto fail; }
             attrs = resized;
         }
-        attrs[count++] = name;
+        rt_memset(&attrs[count], 0, sizeof(attrs[count]));
+        attrs[count].name.start = name;
+        attrs[count].name.length = rt_strlen(name);
+        count += 1U;
         if (stream_skip_space(stream) != 0 || stream_expect(stream, '=', "expected '=' after attribute name") != 0 || stream_skip_space(stream) != 0) goto fail;
         if (stream_get(stream, &quote) != 1 || (quote != '\'' && quote != '"')) {
             stream_error(stream, "expected quoted attribute value");
@@ -490,13 +493,13 @@ static int stream_parse_attributes(XmlStream *stream, char ***attrs_out, size_t 
     *count_out = count;
     return 0;
 fail:
-    while (count > 0U) rt_free(attrs[--count]);
+    while (count > 0U) rt_free((char *)attrs[--count].name.start);
     rt_free(attrs);
     return -1;
 }
 
-static void free_attrs(char **attrs, size_t count) {
-    while (count > 0U) rt_free(attrs[--count]);
+static void free_attrs(XmlAttribute *attrs, size_t count) {
+    while (count > 0U) rt_free((char *)attrs[--count].name.start);
     rt_free(attrs);
 }
 
@@ -505,6 +508,7 @@ static int stream_emit_event(XmlStreamEventCallback callback,
                              XmlTokenType type,
                              const char *name,
                              size_t name_length,
+                             XmlAttribute *attributes,
                              size_t attribute_count,
                              size_t text_length,
                              unsigned long long line,
@@ -517,6 +521,7 @@ static int stream_emit_event(XmlStreamEventCallback callback,
     event.type = type;
     event.name.start = name;
     event.name.length = name_length;
+    event.attributes = attributes;
     event.attribute_count = attribute_count;
     event.text_length = text_length;
     event.line = line;
@@ -549,7 +554,7 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
             unsigned long long text_column = stream.column;
             if (stream_parse_text(&stream, stack.count != 0U, &text_length, &text_is_blank) != 0) break;
             if (options != 0 && options->max_text > 0ULL && (unsigned long long)text_length > options->max_text) { stream_error(&stream, "text node is too large"); break; }
-            if (text_length > 0U && stream_emit_event(callback, user_data, XML_TOKEN_TEXT, 0, 0U, 0U, text_length, text_line, text_column, stack.count, text_is_blank) != 0) {
+            if (text_length > 0U && stream_emit_event(callback, user_data, XML_TOKEN_TEXT, 0, 0U, 0, 0U, text_length, text_line, text_column, stack.count, text_is_blank) != 0) {
                 stream_error(&stream, "stream callback failed");
                 break;
             }
@@ -566,7 +571,7 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
             if (name == 0) break;
             if (stream_skip_space(&stream) != 0 || stream_expect(&stream, '>', "expected '>' after end tag") != 0) { rt_free(name); break; }
             if (stack.count == 0U || rt_strcmp(stack.items[stack.count - 1U], name) != 0) { rt_free(name); stream_error(&stream, "mismatched end tag"); break; }
-            if (stream_emit_event(callback, user_data, XML_TOKEN_END, name, rt_strlen(name), 0U, 0U, markup_line, markup_column, stack.count - 1U, 0) != 0) {
+            if (stream_emit_event(callback, user_data, XML_TOKEN_END, name, rt_strlen(name), 0, 0U, 0U, markup_line, markup_column, stack.count - 1U, 0) != 0) {
                 rt_free(name);
                 stream_error(&stream, "stream callback failed");
                 break;
@@ -576,13 +581,13 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
         } else if (ch == '?') {
             if (options != 0 && !options->allow_pi) { stream_error(&stream, "processing instruction is not allowed"); break; }
             if (stream_parse_pi(&stream, at_start) != 0) break;
-            if (stream_emit_event(callback, user_data, XML_TOKEN_PI, 0, 0U, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
+            if (stream_emit_event(callback, user_data, XML_TOKEN_PI, 0, 0U, 0, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
         } else if (ch == '!') {
             if (stream_get(&stream, &ch) != 1) { stream_error(&stream, "unterminated markup"); break; }
             if (ch == '-') {
                 if (options != 0 && !options->allow_comments) { stream_error(&stream, "comment is not allowed"); break; }
                 if (stream_expect(&stream, '-', "expected comment") != 0 || stream_parse_comment(&stream) != 0) break;
-                if (stream_emit_event(callback, user_data, XML_TOKEN_COMMENT, 0, 0U, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
+                if (stream_emit_event(callback, user_data, XML_TOKEN_COMMENT, 0, 0U, 0, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
             } else if (ch == '[') {
                 const char *rest = "CDATA[";
                 size_t text_length = 0U;
@@ -590,18 +595,18 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
                 for (i = 0U; rest[i] != '\0'; ++i) if (stream_expect(&stream, rest[i], "expected CDATA section") != 0) break;
                 if (rest[i] != '\0' || stream_parse_until_count(&stream, "]]>", "unterminated CDATA section", &text_length) != 0) break;
                 if (options != 0 && options->max_text > 0ULL && (unsigned long long)text_length > options->max_text) { stream_error(&stream, "text node is too large"); break; }
-                if (stream_emit_event(callback, user_data, XML_TOKEN_CDATA, 0, 0U, 0U, text_length, markup_line, markup_column, stack.count, text_length == 0U) != 0) { stream_error(&stream, "stream callback failed"); break; }
+                if (stream_emit_event(callback, user_data, XML_TOKEN_CDATA, 0, 0U, 0, 0U, text_length, markup_line, markup_column, stack.count, text_length == 0U) != 0) { stream_error(&stream, "stream callback failed"); break; }
             } else if (ch == 'D') {
                 const char *rest = "OCTYPE";
                 size_t i;
                 if (options != 0 && !options->allow_doctype) { stream_error(&stream, "doctype is not allowed"); break; }
                 for (i = 0U; rest[i] != '\0'; ++i) if (stream_expect(&stream, rest[i], "expected doctype") != 0) break;
                 if (rest[i] != '\0' || stream_parse_doctype(&stream) != 0) break;
-                if (stream_emit_event(callback, user_data, XML_TOKEN_DOCTYPE, 0, 0U, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
+                if (stream_emit_event(callback, user_data, XML_TOKEN_DOCTYPE, 0, 0U, 0, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
             } else { stream_error(&stream, "unknown markup declaration"); break; }
         } else {
             char *name;
-            char **attrs;
+            XmlAttribute *attrs;
             size_t attr_count;
             int empty = 0;
             stream.pos -= 1U;
@@ -617,7 +622,7 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
                 if (options != 0 && options->root_name != 0 && rt_strcmp(name, options->root_name) != 0) { free_attrs(attrs, attr_count); rt_free(name); stream_error(&stream, "unexpected root element"); break; }
             }
             if (options != 0 && options->max_depth > 0U && stack.count + 1U > options->max_depth) { free_attrs(attrs, attr_count); rt_free(name); stream_error(&stream, "maximum depth exceeded"); break; }
-            if (stream_emit_event(callback, user_data, empty ? XML_TOKEN_EMPTY : XML_TOKEN_START, name, rt_strlen(name), attr_count, 0U, markup_line, markup_column, stack.count, 0) != 0) {
+            if (stream_emit_event(callback, user_data, empty ? XML_TOKEN_EMPTY : XML_TOKEN_START, name, rt_strlen(name), attrs, attr_count, 0U, markup_line, markup_column, stack.count, 0) != 0) {
                 free_attrs(attrs, attr_count);
                 rt_free(name);
                 stream_error(&stream, "stream callback failed");

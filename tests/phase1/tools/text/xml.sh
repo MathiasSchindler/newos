@@ -9,6 +9,7 @@ bad_decl="$work_dir/leading-whitespace-declaration.xml"
 bad_decl_stream_err="$work_dir/leading-whitespace-declaration-stream.err"
 good_xml="$work_dir/basic.xml"
 tokens_out="$work_dir/tokens.out"
+stats_out="$work_dir/stats.out"
 bad_selector_err="$work_dir/bad-selector.err"
 bad_count_err="$work_dir/bad-count.err"
 
@@ -23,6 +24,12 @@ assert_command_succeeds "$ROOT_DIR/build/xmlcheck" "$good_xml"
 "$ROOT_DIR/build/xmltokens" "$good_xml" > "$tokens_out"
 assert_file_contains "$tokens_out" "start depth=0 name=root" "xmltokens reports root start token"
 assert_file_contains "$tokens_out" "text depth=2 text=\"alpha\"" "xmltokens reports text token"
+
+"$ROOT_DIR/build/xmlstats" "$good_xml" > "$stats_out"
+assert_file_contains "$stats_out" '^elements 3$' "xmlstats reports element count"
+assert_file_contains "$stats_out" '^attributes 2$' "xmlstats reports attribute count"
+assert_file_contains "$stats_out" '^    item 2$' "xmlstats reports repeated element names"
+assert_file_contains "$stats_out" '^    id 2$' "xmlstats reports repeated attribute names"
 
 if "$ROOT_DIR/build/xmlget" '[' "$good_xml" > /dev/null 2> "$bad_selector_err"; then
     fail "xmlget accepted an invalid selector"

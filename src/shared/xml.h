@@ -136,6 +136,7 @@ typedef struct {
 typedef struct {
     XmlTokenType type;
     XmlName name;
+    XmlAttribute *attributes;
     size_t attribute_count;
     size_t text_length;
     unsigned long long line;

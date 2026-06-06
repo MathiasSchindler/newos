@@ -182,62 +182,50 @@ static void write_stats(const XmlStats *stats) {
     write_name_counts("attribute-names", stats->attribute_names, stats->attribute_name_count);
 }
 
-static int stats_one(const char *path, XmlStats *stats) {
-    XmlParser parser;
-    XmlToken token;
-    char *input;
-    size_t length;
-    int result;
+static int stats_visit_event(const XmlStreamEvent *event, void *user_data) {
+    XmlStats *stats = (XmlStats *)user_data;
 
-    if (xml_read_document(path, &input, &length, "xmlstats") != 0) return 1;
-    xml_parser_init(&parser, input, length);
-    while ((result = xml_next_token(&parser, &token)) > 0) {
-        if (token.type == XML_TOKEN_START || token.type == XML_TOKEN_EMPTY) {
-            size_t i;
-            stats->elements += 1ULL;
-            stats->attributes += (unsigned long long)token.attribute_count;
-            if (token.depth + 1U > stats->max_depth) stats->max_depth = token.depth + 1U;
-            if (add_name(&stats->element_names,
-                         &stats->element_name_count,
-                         &stats->element_name_capacity,
-                         stats->inline_element_names,
-                         &stats->element_buckets,
-                         &stats->element_bucket_count,
-                         stats->inline_element_buckets,
-                         &token.name) != 0) {
-                xml_free_document(input);
-                return 1;
+    if (event->type == XML_TOKEN_START || event->type == XML_TOKEN_EMPTY) {
+        size_t i;
+        stats->elements += 1ULL;
+        stats->attributes += (unsigned long long)event->attribute_count;
+        if (event->depth + 1U > stats->max_depth) stats->max_depth = event->depth + 1U;
+        if (add_name(&stats->element_names,
+                     &stats->element_name_count,
+                     &stats->element_name_capacity,
+                     stats->inline_element_names,
+                     &stats->element_buckets,
+                     &stats->element_bucket_count,
+                     stats->inline_element_buckets,
+                     &event->name) != 0) {
+            return -1;
+        }
+        for (i = 0U; i < event->attribute_count; ++i) {
+            if (add_name(&stats->attribute_names,
+                         &stats->attribute_name_count,
+                         &stats->attribute_name_capacity,
+                         stats->inline_attribute_names,
+                         &stats->attribute_buckets,
+                         &stats->attribute_bucket_count,
+                         stats->inline_attribute_buckets,
+                         &event->attributes[i].name) != 0) {
+                return -1;
             }
-            for (i = 0U; i < token.attribute_count; ++i) {
-                if (add_name(&stats->attribute_names,
-                             &stats->attribute_name_count,
-                             &stats->attribute_name_capacity,
-                             stats->inline_attribute_names,
-                             &stats->attribute_buckets,
-                             &stats->attribute_bucket_count,
-                             stats->inline_attribute_buckets,
-                             &token.attributes[i].name) != 0) {
-                    xml_free_document(input);
-                    return 1;
-                }
-            }
-        } else if (token.type == XML_TOKEN_TEXT || token.type == XML_TOKEN_CDATA) {
-            if (!token.text_is_blank) {
-                stats->text_nodes += 1ULL;
-                stats->text_bytes += (unsigned long long)token.text_length;
-            }
-            if (token.type == XML_TOKEN_CDATA) stats->cdata += 1ULL;
-        } else if (token.type == XML_TOKEN_COMMENT) stats->comments += 1ULL;
-        else if (token.type == XML_TOKEN_PI) stats->pi += 1ULL;
-        else if (token.type == XML_TOKEN_DOCTYPE) stats->doctype += 1ULL;
-    }
-    if (result < 0 || xml_parse_complete(&parser) != 0) {
-        xml_report_error("xmlstats", path, &parser);
-        xml_free_document(input);
-        return 1;
-    }
-    xml_free_document(input);
+        }
+    } else if (event->type == XML_TOKEN_TEXT || event->type == XML_TOKEN_CDATA) {
+        if (!event->text_is_blank) {
+            stats->text_nodes += 1ULL;
+            stats->text_bytes += (unsigned long long)event->text_length;
+        }
+        if (event->type == XML_TOKEN_CDATA) stats->cdata += 1ULL;
+    } else if (event->type == XML_TOKEN_COMMENT) stats->comments += 1ULL;
+    else if (event->type == XML_TOKEN_PI) stats->pi += 1ULL;
+    else if (event->type == XML_TOKEN_DOCTYPE) stats->doctype += 1ULL;
     return 0;
+}
+
+static int stats_one(const char *path, XmlStats *stats) {
+    return xml_stream_visit_document(path, "xmlstats", stats_visit_event, stats);
 }
 
 int main(int argc, char **argv) {
