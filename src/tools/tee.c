@@ -2,6 +2,7 @@
 #include "runtime.h"
 
 #define TEE_MAX_OUTPUTS 32
+#define TEE_BUFFER_SIZE 8192U
 
 static void print_usage(const char *program_name) {
     rt_write_cstr(2, "Usage: ");
@@ -19,7 +20,7 @@ int main(int argc, char **argv) {
     int output_fds[TEE_MAX_OUTPUTS];
     const char *output_paths[TEE_MAX_OUTPUTS];
     int output_count = 0;
-    char buffer[4096];
+    char buffer[TEE_BUFFER_SIZE];
     long bytes_read;
     int append_mode = 0;
     int ignore_interrupt = 0;

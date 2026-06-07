@@ -5,10 +5,11 @@
 #define PASTE_MAX_FILES 64
 #define PASTE_LINE_CAPACITY 8192
 #define PASTE_DELIMITER_CAPACITY 64
+#define PASTE_IO_BUFFER_SIZE 4096
 
 typedef struct {
     int fd;
-    char chunk[4096];
+    char chunk[PASTE_IO_BUFFER_SIZE];
     long chunk_len;
     long chunk_pos;
     int eof;
@@ -165,7 +166,7 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
                 }
             }
 
-            if (has_line[i] && rt_write_cstr(1, lines[i]) != 0) {
+            if (has_line[i] && rt_write_all(1, lines[i], rt_strlen(lines[i])) != 0) {
                 return -1;
             }
         }
@@ -204,7 +205,7 @@ static int paste_serial(LineReader *readers, int file_count, const PasteOptions 
                 }
             }
 
-            if (rt_write_cstr(1, line) != 0) {
+            if (rt_write_all(1, line, rt_strlen(line)) != 0) {
                 return -1;
             }
 

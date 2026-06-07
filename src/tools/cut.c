@@ -4,6 +4,8 @@
 
 #include <limits.h>
 
+#define CUT_IO_BUFFER_SIZE 8192U
+
 typedef struct {
     unsigned long long start;
     unsigned long long end;
@@ -162,7 +164,9 @@ static int cut_position_matches(unsigned long long position,
 }
 
 static int cut_byte_stream(int fd, const CutOptions *options) {
-    char buffer[4096];
+    char buffer[CUT_IO_BUFFER_SIZE];
+    char out[CUT_IO_BUFFER_SIZE];
+    size_t out_len = 0U;
     long bytes_read;
     unsigned long long position = 1;
 
@@ -173,22 +177,43 @@ static int cut_byte_stream(int fd, const CutOptions *options) {
             char ch = buffer[i];
 
             if (ch == options->line_delimiter) {
-                if (rt_write_char(1, options->line_delimiter) != 0) {
+                if (out_len + 1U > sizeof(out)) {
+                    if (rt_write_all(1, out, out_len) != 0) {
+                        return -1;
+                    }
+                    out_len = 0U;
+                }
+                out[out_len++] = options->line_delimiter;
+                if (out_len == sizeof(out) && rt_write_all(1, out, out_len) != 0) {
                     return -1;
                 }
+                if (out_len == sizeof(out)) out_len = 0U;
                 position = 1;
                 continue;
             }
 
-            if (cut_position_matches(position, options->selections, options->complement) && rt_write_char(1, ch) != 0) {
-                return -1;
+            if (cut_position_matches(position, options->selections, options->complement)) {
+                if (out_len + 1U > sizeof(out)) {
+                    if (rt_write_all(1, out, out_len) != 0) {
+                        return -1;
+                    }
+                    out_len = 0U;
+                }
+                out[out_len++] = ch;
+                if (out_len == sizeof(out) && rt_write_all(1, out, out_len) != 0) {
+                    return -1;
+                }
+                if (out_len == sizeof(out)) out_len = 0U;
             }
 
             position += 1;
         }
     }
 
-    return bytes_read < 0 ? -1 : 0;
+    if (bytes_read < 0) {
+        return -1;
+    }
+    return out_len > 0U ? rt_write_all(1, out, out_len) : 0;
 }
 
 static int selection_includes(unsigned long long position, const CutOptions *options) {
@@ -253,7 +278,7 @@ static int consume_pending_codepoints(char *pending,
 }
 
 static int cut_codepoint_stream(int fd, const CutOptions *options) {
-    char chunk[4096];
+    char chunk[CUT_IO_BUFFER_SIZE];
     char pending[4];
     size_t pending_len = 0U;
     unsigned long long position = 1ULL;
@@ -313,7 +338,7 @@ static int finish_selected_empty_field(int selected, int *wrote_field, int *fiel
 }
 
 static int cut_field_stream(int fd, const CutOptions *options) {
-    char chunk[4096];
+    char chunk[CUT_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long field_no = 1;
     int wrote_field = 0;

@@ -2,6 +2,7 @@
 #include "runtime.h"
 
 #define TR_SET_CAPACITY 512
+#define TR_IO_BUFFER_SIZE 8192U
 
 typedef struct {
     int complement_set1;
@@ -484,10 +485,41 @@ static int parse_options(int argc, char **argv, TrOptions *options) {
     return 0;
 }
 
+static int tr_translation_is_identity(const TrOptions *options) {
+    unsigned int ch;
+
+    if (!options->translate_chars || options->delete_chars || options->squeeze_chars) {
+        return 0;
+    }
+    for (ch = 0U; ch <= 255U; ++ch) {
+        if (translate_codepoint(ch,
+                                options->set1,
+                                options->set1_len,
+                                options->set2,
+                                options->set2_len,
+                                options->complement_set1) != ch) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int tr_copy_raw_stdin(void) {
+    char buffer[TR_IO_BUFFER_SIZE];
+    long bytes_read;
+
+    while ((bytes_read = platform_read(0, buffer, sizeof(buffer))) > 0) {
+        if (rt_write_all(1, buffer, (size_t)bytes_read) != 0) {
+            return 1;
+        }
+    }
+    return bytes_read < 0 ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     TrOptions options;
-    char read_buffer[4096];
-    char input[4104];
+    char read_buffer[TR_IO_BUFFER_SIZE];
+    char input[TR_IO_BUFFER_SIZE + 8U];
     char carry[8];
     size_t carry_len = 0U;
     long bytes_read;
@@ -499,8 +531,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (tr_translation_is_identity(&options)) {
+        return tr_copy_raw_stdin();
+    }
+
     while ((bytes_read = platform_read(0, read_buffer, sizeof(read_buffer))) > 0) {
-        char out[4096];
+        char out[TR_IO_BUFFER_SIZE];
         size_t out_len = 0U;
         size_t total_len;
         size_t index = 0U;

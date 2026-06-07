@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#define HEAD_IO_BUFFER_SIZE 8192U
+
 typedef enum {
     HEAD_MODE_LINES,
     HEAD_MODE_BYTES
@@ -140,7 +142,7 @@ static int parse_options(int argc, char **argv, HeadOptions *options, int *arg_i
 }
 
 static int print_head_lines(int fd, unsigned long long limit) {
-    char buffer[4096];
+    char buffer[HEAD_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long lines_seen = 0;
 
@@ -150,18 +152,23 @@ static int print_head_lines(int fd, unsigned long long limit) {
 
     while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
         long i;
+        size_t write_len = (size_t)bytes_read;
 
         for (i = 0; i < bytes_read; ++i) {
-            if (rt_write_char(1, buffer[i]) != 0) {
-                return -1;
-            }
-
             if (buffer[i] == '\n') {
                 lines_seen += 1;
                 if (lines_seen >= limit) {
-                    return 0;
+                    write_len = (size_t)i + 1U;
+                    break;
                 }
             }
+        }
+
+        if (write_len > 0U && rt_write_all(1, buffer, write_len) != 0) {
+            return -1;
+        }
+        if (lines_seen >= limit) {
+            return 0;
         }
     }
 
@@ -169,7 +176,7 @@ static int print_head_lines(int fd, unsigned long long limit) {
 }
 
 static int print_head_bytes(int fd, unsigned long long limit) {
-    char buffer[4096];
+    char buffer[HEAD_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long bytes_written = 0;
 
@@ -198,9 +205,10 @@ static int print_head_bytes(int fd, unsigned long long limit) {
 }
 
 static int print_head_from_lines(int fd, unsigned long long start_line) {
-    char buffer[4096];
+    char buffer[HEAD_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long current_line = 1ULL;
+    int writing = 0;
 
     if (start_line <= 1ULL) {
         start_line = 1ULL;
@@ -209,9 +217,20 @@ static int print_head_from_lines(int fd, unsigned long long start_line) {
     while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
         long i;
 
-        for (i = 0; i < bytes_read; ++i) {
-            if (current_line >= start_line && rt_write_char(1, buffer[i]) != 0) {
+        if (writing) {
+            if (rt_write_all(1, buffer, (size_t)bytes_read) != 0) {
                 return -1;
+            }
+            continue;
+        }
+
+        for (i = 0; i < bytes_read; ++i) {
+            if (current_line >= start_line) {
+                if (rt_write_all(1, buffer + i, (size_t)(bytes_read - i)) != 0) {
+                    return -1;
+                }
+                writing = 1;
+                break;
             }
 
             if (buffer[i] == '\n') {
@@ -224,23 +243,32 @@ static int print_head_from_lines(int fd, unsigned long long start_line) {
 }
 
 static int print_head_from_bytes(int fd, unsigned long long start_byte) {
-    char buffer[4096];
+    char buffer[HEAD_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long current_byte = 1ULL;
+    int writing = 0;
 
     if (start_byte <= 1ULL) {
         start_byte = 1ULL;
     }
 
     while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
+        size_t start = 0U;
 
-        for (i = 0; i < bytes_read; ++i) {
-            if (current_byte >= start_byte && rt_write_char(1, buffer[i]) != 0) {
-                return -1;
+        if (!writing) {
+            if (current_byte + (unsigned long long)bytes_read <= start_byte) {
+                current_byte += (unsigned long long)bytes_read;
+                continue;
             }
-            current_byte += 1ULL;
+            if (start_byte > current_byte) {
+                start = (size_t)(start_byte - current_byte);
+            }
+            writing = 1;
         }
+        if (rt_write_all(1, buffer + start, (size_t)bytes_read - start) != 0) {
+            return -1;
+        }
+        current_byte += (unsigned long long)bytes_read;
     }
 
     return bytes_read < 0 ? -1 : 0;
@@ -279,7 +307,7 @@ static int flush_pending_prefix(char *pending,
 }
 
 static int print_head_excluding_lines(int fd, unsigned long long exclude_count) {
-    char chunk[4096];
+    char chunk[HEAD_IO_BUFFER_SIZE];
     char pending[65536];
     size_t newline_offsets[4096];
     size_t pending_len = 0U;
@@ -346,7 +374,7 @@ static int print_head_excluding_lines(int fd, unsigned long long exclude_count) 
 }
 
 static int print_head_excluding_bytes(int fd, unsigned long long exclude_count) {
-    char chunk[4096];
+    char chunk[HEAD_IO_BUFFER_SIZE];
     char ring[65536];
     size_t ring_size;
     size_t head = 0U;

@@ -3,6 +3,7 @@
 #include "tool_util.h"
 
 #define TAIL_BUFFER_SIZE 65536
+#define TAIL_IO_BUFFER_SIZE 8192
 #define TAIL_MAX_FOLLOW_FILES 32
 
 typedef enum {
@@ -152,7 +153,7 @@ static int parse_options(int argc, char **argv, TailOptions *options, int *arg_i
 }
 
 static int capture_tail_stream(int fd, char *storage, size_t storage_size, size_t *used_out) {
-    char chunk[4096];
+    char chunk[TAIL_IO_BUFFER_SIZE];
     size_t used = 0;
     long bytes_read;
 
@@ -234,7 +235,7 @@ static int print_tail_bytes(const char *storage, size_t used, unsigned long long
 }
 
 static int stream_to_stdout(int fd, unsigned long long *offset_out) {
-    char buffer[4096];
+    char buffer[TAIL_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long offset = offset_out != 0 ? *offset_out : 0ULL;
 
@@ -288,7 +289,7 @@ static int print_seekable_tail_bytes(int fd, unsigned long long byte_limit, unsi
 }
 
 static int print_seekable_tail_lines(int fd, unsigned long long line_limit, unsigned long long *offset_out) {
-    char buffer[4096];
+    char buffer[TAIL_IO_BUFFER_SIZE];
     long long end = platform_seek(fd, 0, PLATFORM_SEEK_END);
     long long scan_end = end;
     long long pos;
@@ -358,9 +359,10 @@ static int print_seekable_tail_lines(int fd, unsigned long long line_limit, unsi
 }
 
 static int print_from_start_lines(int fd, unsigned long long start_line) {
-    char buffer[4096];
+    char buffer[TAIL_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long current_line = 1ULL;
+    int writing = 0;
 
     if (start_line <= 1ULL) {
         start_line = 1ULL;
@@ -369,9 +371,20 @@ static int print_from_start_lines(int fd, unsigned long long start_line) {
     while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
         long i;
 
-        for (i = 0; i < bytes_read; ++i) {
-            if (current_line >= start_line && rt_write_char(1, buffer[i]) != 0) {
+        if (writing) {
+            if (rt_write_all(1, buffer, (size_t)bytes_read) != 0) {
                 return -1;
+            }
+            continue;
+        }
+
+        for (i = 0; i < bytes_read; ++i) {
+            if (current_line >= start_line) {
+                if (rt_write_all(1, buffer + i, (size_t)(bytes_read - i)) != 0) {
+                    return -1;
+                }
+                writing = 1;
+                break;
             }
             if (buffer[i] == '\n') {
                 current_line += 1ULL;
@@ -383,23 +396,32 @@ static int print_from_start_lines(int fd, unsigned long long start_line) {
 }
 
 static int print_from_start_bytes(int fd, unsigned long long start_byte) {
-    char buffer[4096];
+    char buffer[TAIL_IO_BUFFER_SIZE];
     long bytes_read;
     unsigned long long current_byte = 1ULL;
+    int writing = 0;
 
     if (start_byte <= 1ULL) {
         start_byte = 1ULL;
     }
 
     while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
+        size_t start = 0U;
 
-        for (i = 0; i < bytes_read; ++i) {
-            if (current_byte >= start_byte && rt_write_char(1, buffer[i]) != 0) {
-                return -1;
+        if (!writing) {
+            if (current_byte + (unsigned long long)bytes_read <= start_byte) {
+                current_byte += (unsigned long long)bytes_read;
+                continue;
             }
-            current_byte += 1ULL;
+            if (start_byte > current_byte) {
+                start = (size_t)(start_byte - current_byte);
+            }
+            writing = 1;
         }
+        if (rt_write_all(1, buffer + start, (size_t)bytes_read - start) != 0) {
+            return -1;
+        }
+        current_byte += (unsigned long long)bytes_read;
     }
 
     return bytes_read < 0 ? -1 : 0;

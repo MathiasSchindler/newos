@@ -3,6 +3,8 @@
 #include "tool_util.h"
 
 #define OD_MAX_WIDTH 32U
+#define OD_IO_BUFFER_SIZE 4096U
+#define OD_OUTPUT_BUFFER_SIZE 8192U
 
 typedef enum {
     OD_ADDRESS_OCTAL,
@@ -28,7 +30,54 @@ typedef struct {
     unsigned int width;
 } OdOptions;
 
-static void write_padded_base(unsigned long long value, unsigned int base, unsigned int width) {
+typedef struct {
+    char data[OD_OUTPUT_BUFFER_SIZE];
+    size_t len;
+} OdOutput;
+
+static int output_flush(OdOutput *output) {
+    if (output->len == 0U) {
+        return 0;
+    }
+    if (rt_write_all(1, output->data, output->len) != 0) {
+        return -1;
+    }
+    output->len = 0U;
+    return 0;
+}
+
+static int output_append(OdOutput *output, const char *data, size_t len) {
+    size_t i;
+
+    if (len > sizeof(output->data)) {
+        if (output_flush(output) != 0) {
+            return -1;
+        }
+        return rt_write_all(1, data, len);
+    }
+    if (output->len + len > sizeof(output->data) && output_flush(output) != 0) {
+        return -1;
+    }
+    for (i = 0U; i < len; ++i) {
+        output->data[output->len + i] = data[i];
+    }
+    output->len += len;
+    return 0;
+}
+
+static size_t append_char(char *dest, size_t pos, char ch) {
+    dest[pos++] = ch;
+    return pos;
+}
+
+static size_t append_cstr(char *dest, size_t pos, const char *text) {
+    while (*text != '\0') {
+        dest[pos++] = *text++;
+    }
+    return pos;
+}
+
+static size_t append_padded_base(char *dest, size_t pos, unsigned long long value, unsigned int base, unsigned int width) {
     const char *digits = "0123456789abcdef";
     char buffer[32];
     unsigned int i = 0U;
@@ -39,49 +88,47 @@ static void write_padded_base(unsigned long long value, unsigned int base, unsig
     } while (value > 0ULL && i < sizeof(buffer));
 
     while (i < width) {
-        rt_write_char(1, '0');
+        dest[pos++] = '0';
         width -= 1U;
     }
     while (i > 0U) {
         i -= 1U;
-        rt_write_char(1, buffer[i]);
+        dest[pos++] = buffer[i];
     }
+    return pos;
 }
 
-static void write_address(unsigned long long offset, OdAddressBase base) {
+static size_t append_address(char *dest, size_t pos, unsigned long long offset, OdAddressBase base) {
     if (base == OD_ADDRESS_NONE) {
-        return;
+        return pos;
     }
     if (base == OD_ADDRESS_DECIMAL) {
-        write_padded_base(offset, 10U, 7U);
+        return append_padded_base(dest, pos, offset, 10U, 7U);
     } else if (base == OD_ADDRESS_HEX) {
-        write_padded_base(offset, 16U, 7U);
-    } else {
-        write_padded_base(offset, 8U, 7U);
+        return append_padded_base(dest, pos, offset, 16U, 7U);
     }
+    return append_padded_base(dest, pos, offset, 8U, 7U);
 }
 
-static void write_byte(unsigned char value, OdOutputType type) {
+static size_t append_byte(char *dest, size_t pos, unsigned char value, OdOutputType type) {
     if (type == OD_TYPE_HEX_BYTE) {
-        write_padded_base(value, 16U, 2U);
+        return append_padded_base(dest, pos, value, 16U, 2U);
     } else if (type == OD_TYPE_DECIMAL_BYTE || type == OD_TYPE_UNSIGNED_BYTE) {
-        write_padded_base(value, 10U, 3U);
+        return append_padded_base(dest, pos, value, 10U, 3U);
     } else if (type == OD_TYPE_CHAR) {
         if (value >= 32U && value <= 126U) {
-            rt_write_cstr(1, "  ");
-            rt_write_char(1, (char)value);
+            pos = append_cstr(dest, pos, "  ");
+            return append_char(dest, pos, (char)value);
         } else if (value == '\n') {
-            rt_write_cstr(1, "\\n");
+            return append_cstr(dest, pos, "\\n");
         } else if (value == '\t') {
-            rt_write_cstr(1, "\\t");
+            return append_cstr(dest, pos, "\\t");
         } else if (value == '\0') {
-            rt_write_cstr(1, "\\0");
-        } else {
-            write_padded_base(value, 8U, 3U);
+            return append_cstr(dest, pos, "\\0");
         }
-    } else {
-        write_padded_base(value, 8U, 3U);
+        return append_padded_base(dest, pos, value, 8U, 3U);
     }
+    return append_padded_base(dest, pos, value, 8U, 3U);
 }
 
 static int parse_number(const char *text, unsigned long long *value_out) {
@@ -89,7 +136,7 @@ static int parse_number(const char *text, unsigned long long *value_out) {
 }
 
 static int discard_bytes(int fd, unsigned long long count) {
-    unsigned char buffer[256];
+    unsigned char buffer[OD_IO_BUFFER_SIZE];
 
     while (count > 0ULL) {
         size_t want = count > sizeof(buffer) ? sizeof(buffer) : (size_t)count;
@@ -106,22 +153,26 @@ static int discard_bytes(int fd, unsigned long long count) {
 }
 
 static int od_stream(int fd, const OdOptions *options) {
-    unsigned char buffer[OD_MAX_WIDTH];
+    unsigned char buffer[OD_IO_BUFFER_SIZE];
+    OdOutput output;
     unsigned long long offset = options->skip;
     unsigned long long remaining = options->limit;
     long bytes_read;
+
+    output.len = 0U;
 
     if (discard_bytes(fd, options->skip) != 0) {
         return -1;
     }
 
     while (!options->has_limit || remaining > 0ULL) {
-        size_t want = options->width;
-        long i;
+        size_t want = options->width * (sizeof(buffer) / options->width);
+        size_t cursor = 0U;
 
-        if (want > sizeof(buffer)) {
-            want = sizeof(buffer);
+        if (want == 0U) {
+            want = options->width;
         }
+
         if (options->has_limit && remaining < (unsigned long long)want) {
             want = (size_t)remaining;
         }
@@ -134,25 +185,44 @@ static int od_stream(int fd, const OdOptions *options) {
             break;
         }
 
-        write_address(offset, options->address_base);
-        for (i = 0; i < bytes_read; ++i) {
-            if (options->address_base != OD_ADDRESS_NONE || i > 0) {
-                rt_write_char(1, ' ');
+        while (cursor < (size_t)bytes_read) {
+            char row[160];
+            size_t row_pos = 0U;
+            size_t row_len = (size_t)bytes_read - cursor;
+            long i;
+
+            if (row_len > options->width) {
+                row_len = options->width;
             }
-            write_byte(buffer[i], options->output_type);
+
+            row_pos = append_address(row, row_pos, offset, options->address_base);
+            for (i = 0; i < (long)row_len; ++i) {
+                if (options->address_base != OD_ADDRESS_NONE || i > 0) {
+                    row_pos = append_char(row, row_pos, ' ');
+                }
+                row_pos = append_byte(row, row_pos, buffer[cursor + (size_t)i], options->output_type);
+            }
+            row_pos = append_char(row, row_pos, '\n');
+            if (output_append(&output, row, row_pos) != 0) {
+                return -1;
+            }
+            offset += (unsigned long long)row_len;
+            cursor += row_len;
         }
-        rt_write_char(1, '\n');
-        offset += (unsigned long long)bytes_read;
         if (options->has_limit) {
             remaining -= (unsigned long long)bytes_read;
         }
     }
 
-    write_address(offset, options->address_base);
     if (options->address_base != OD_ADDRESS_NONE) {
-        rt_write_char(1, '\n');
+        char row[16];
+        size_t row_pos = append_address(row, 0U, offset, options->address_base);
+        row_pos = append_char(row, row_pos, '\n');
+        if (output_append(&output, row, row_pos) != 0) {
+            return -1;
+        }
     }
-    return 0;
+    return output_flush(&output);
 }
 
 static int parse_options(int argc, char **argv, OdOptions *options, int *first_file) {

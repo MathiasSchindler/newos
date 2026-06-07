@@ -2,6 +2,9 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#define HEXDUMP_IO_BUFFER_SIZE 4096U
+#define HEXDUMP_OUTPUT_BUFFER_SIZE 8192U
+
 typedef enum {
     HEXDUMP_FORMAT_CANONICAL,
     HEXDUMP_FORMAT_HEX16,
@@ -16,38 +19,61 @@ typedef enum {
     HEXDUMP_ADDRESS_NONE
 } HexdumpAddressBase;
 
-static void write_hex_digit(unsigned int value) {
-    rt_write_char(1, (char)(value < 10U ? ('0' + value) : ('a' + (value - 10U))));
+typedef struct {
+    char data[HEXDUMP_OUTPUT_BUFFER_SIZE];
+    size_t len;
+} HexdumpOutput;
+
+static int output_flush(HexdumpOutput *output) {
+    if (output->len == 0U) {
+        return 0;
+    }
+    if (rt_write_all(1, output->data, output->len) != 0) {
+        return -1;
+    }
+    output->len = 0U;
+    return 0;
 }
 
-static void write_hex_byte(unsigned char value) {
-    write_hex_digit((unsigned int)((value >> 4) & 0x0fU));
-    write_hex_digit((unsigned int)(value & 0x0fU));
+static int output_append(HexdumpOutput *output, const char *data, size_t len) {
+    size_t i;
+
+    if (len > sizeof(output->data)) {
+        if (output_flush(output) != 0) {
+            return -1;
+        }
+        return rt_write_all(1, data, len);
+    }
+    if (output->len + len > sizeof(output->data) && output_flush(output) != 0) {
+        return -1;
+    }
+    for (i = 0U; i < len; ++i) {
+        output->data[output->len + i] = data[i];
+    }
+    output->len += len;
+    return 0;
 }
 
-static void write_hex_padded(unsigned long long value, unsigned int width) {
+static size_t append_char(char *dest, size_t pos, char ch) {
+    dest[pos++] = ch;
+    return pos;
+}
+
+static size_t append_cstr(char *dest, size_t pos, const char *text) {
+    while (*text != '\0') {
+        dest[pos++] = *text++;
+    }
+    return pos;
+}
+
+static size_t append_hex_byte(char *dest, size_t pos, unsigned char value) {
     const char *digits = "0123456789abcdef";
-    unsigned int base = 16U;
-    char buffer[32];
-    unsigned int i = 0;
-
-    do {
-        buffer[i++] = digits[value % base];
-        value /= base;
-    } while (value > 0ULL && i < sizeof(buffer));
-
-    while (i < width) {
-        rt_write_char(1, '0');
-        width -= 1U;
-    }
-
-    while (i > 0U) {
-        i -= 1U;
-        rt_write_char(1, buffer[i]);
-    }
+    dest[pos++] = digits[(value >> 4) & 0x0fU];
+    dest[pos++] = digits[value & 0x0fU];
+    return pos;
 }
 
-static void write_padded_base(unsigned long long value, unsigned int base, unsigned int width) {
+static size_t append_padded_base(char *dest, size_t pos, unsigned long long value, unsigned int base, unsigned int width) {
     char digits[32];
     unsigned int i = 0;
     const char *alphabet = "0123456789abcdef";
@@ -58,37 +84,36 @@ static void write_padded_base(unsigned long long value, unsigned int base, unsig
     } while (value > 0ULL && i < sizeof(digits));
 
     while (i < width) {
-        rt_write_char(1, '0');
+        dest[pos++] = '0';
         width -= 1U;
     }
 
     while (i > 0U) {
         i -= 1U;
-        rt_write_char(1, digits[i]);
+        dest[pos++] = digits[i];
     }
+    return pos;
 }
 
-static void write_address(unsigned long long offset, HexdumpAddressBase base) {
+static size_t append_address(char *dest, size_t pos, unsigned long long offset, HexdumpAddressBase base) {
     if (base == HEXDUMP_ADDRESS_NONE) {
-        return;
+        return pos;
     }
     if (base == HEXDUMP_ADDRESS_DECIMAL) {
-        write_padded_base(offset, 10U, 8U);
+        return append_padded_base(dest, pos, offset, 10U, 8U);
     } else if (base == HEXDUMP_ADDRESS_OCTAL) {
-        write_padded_base(offset, 8U, 8U);
-    } else {
-        write_hex_padded(offset, 8U);
+        return append_padded_base(dest, pos, offset, 8U, 8U);
     }
+    return append_padded_base(dest, pos, offset, 16U, 8U);
 }
 
-static void write_word(unsigned int value, HexdumpFormat format) {
+static size_t append_word(char *dest, size_t pos, unsigned int value, HexdumpFormat format) {
     if (format == HEXDUMP_FORMAT_DEC16) {
-        write_padded_base(value, 10U, 5U);
+        return append_padded_base(dest, pos, value, 10U, 5U);
     } else if (format == HEXDUMP_FORMAT_OCT16) {
-        write_padded_base(value, 8U, 6U);
-    } else {
-        write_padded_base(value, 16U, 4U);
+        return append_padded_base(dest, pos, value, 8U, 6U);
     }
+    return append_padded_base(dest, pos, value, 16U, 4U);
 }
 
 typedef struct {
@@ -100,7 +125,7 @@ typedef struct {
 } HexdumpOptions;
 
 static int discard_bytes(int fd, unsigned long long count) {
-    unsigned char buffer[256];
+    unsigned char buffer[HEXDUMP_IO_BUFFER_SIZE];
 
     while (count > 0ULL) {
         size_t want = count > sizeof(buffer) ? sizeof(buffer) : (size_t)count;
@@ -117,10 +142,13 @@ static int discard_bytes(int fd, unsigned long long count) {
 }
 
 static int hexdump_stream(int fd, const HexdumpOptions *options) {
-    unsigned char buffer[16];
+    unsigned char buffer[HEXDUMP_IO_BUFFER_SIZE];
+    HexdumpOutput output;
     unsigned long long offset = options->skip;
     unsigned long long remaining = options->limit;
     long bytes_read;
+
+    output.len = 0U;
 
     if (discard_bytes(fd, options->skip) != 0) {
         return -1;
@@ -128,7 +156,7 @@ static int hexdump_stream(int fd, const HexdumpOptions *options) {
 
     while (!options->has_limit || remaining > 0ULL) {
         size_t want = sizeof(buffer);
-        long i;
+        size_t cursor = 0U;
 
         if (options->has_limit && remaining < (unsigned long long)want) {
             want = (size_t)remaining;
@@ -141,43 +169,65 @@ static int hexdump_stream(int fd, const HexdumpOptions *options) {
             break;
         }
 
-        write_address(offset, options->address_base);
-        rt_write_cstr(1, "  ");
-        for (i = 0; i < 16; ++i) {
-            if (i < bytes_read) {
-                write_hex_byte(buffer[i]);
-            } else {
-                rt_write_cstr(1, "  ");
-            }
-            if (i != 15) {
-                rt_write_char(1, ' ');
-            }
-        }
+        while (cursor < (size_t)bytes_read) {
+            char row[96];
+            size_t row_pos = 0U;
+            size_t row_len = (size_t)bytes_read - cursor;
+            long i;
 
-        rt_write_cstr(1, "  |");
-        for (i = 0; i < bytes_read; ++i) {
-            unsigned char ch = buffer[i];
-            rt_write_char(1, (ch >= 32U && ch <= 126U) ? (char)ch : '.');
+            if (row_len > 16U) {
+                row_len = 16U;
+            }
+
+            row_pos = append_address(row, row_pos, offset, options->address_base);
+            row_pos = append_cstr(row, row_pos, "  ");
+            for (i = 0; i < 16; ++i) {
+                if (i < (long)row_len) {
+                    row_pos = append_hex_byte(row, row_pos, buffer[cursor + (size_t)i]);
+                } else {
+                    row_pos = append_cstr(row, row_pos, "  ");
+                }
+                if (i != 15) {
+                    row_pos = append_char(row, row_pos, ' ');
+                }
+            }
+
+            row_pos = append_cstr(row, row_pos, "  |");
+            for (i = 0; i < (long)row_len; ++i) {
+                unsigned char ch = buffer[cursor + (size_t)i];
+                row_pos = append_char(row, row_pos, (ch >= 32U && ch <= 126U) ? (char)ch : '.');
+            }
+            row_pos = append_cstr(row, row_pos, "|\n");
+            if (output_append(&output, row, row_pos) != 0) {
+                return -1;
+            }
+            offset += (unsigned long long)row_len;
+            cursor += row_len;
         }
-        rt_write_line(1, "|");
-        offset += (unsigned long long)bytes_read;
         if (options->has_limit) {
             remaining -= (unsigned long long)bytes_read;
         }
     }
 
-    write_address(offset, options->address_base);
     if (options->address_base != HEXDUMP_ADDRESS_NONE) {
-        rt_write_char(1, '\n');
+        char row[16];
+        size_t row_pos = append_address(row, 0U, offset, options->address_base);
+        row_pos = append_char(row, row_pos, '\n');
+        if (output_append(&output, row, row_pos) != 0) {
+            return -1;
+        }
     }
-    return 0;
+    return output_flush(&output);
 }
 
 static int hexdump_words_stream(int fd, const HexdumpOptions *options) {
-    unsigned char buffer[16];
+    unsigned char buffer[HEXDUMP_IO_BUFFER_SIZE];
+    HexdumpOutput output;
     unsigned long long offset = options->skip;
     unsigned long long remaining = options->limit;
     long bytes_read;
+
+    output.len = 0U;
 
     if (discard_bytes(fd, options->skip) != 0) {
         return -1;
@@ -185,7 +235,7 @@ static int hexdump_words_stream(int fd, const HexdumpOptions *options) {
 
     while (!options->has_limit || remaining > 0ULL) {
         size_t want = sizeof(buffer);
-        long i;
+        size_t cursor = 0U;
 
         if (options->has_limit && remaining < (unsigned long long)want) {
             want = (size_t)remaining;
@@ -198,29 +248,48 @@ static int hexdump_words_stream(int fd, const HexdumpOptions *options) {
             break;
         }
 
-        write_address(offset, options->address_base);
-        for (i = 0; i < bytes_read; i += 2) {
-            unsigned int value = buffer[i];
-            if (i + 1 < bytes_read) {
-                value |= (unsigned int)buffer[i + 1] << 8U;
+        while (cursor < (size_t)bytes_read) {
+            char row[96];
+            size_t row_pos = 0U;
+            size_t row_len = (size_t)bytes_read - cursor;
+            long i;
+
+            if (row_len > 16U) {
+                row_len = 16U;
             }
-            if (options->address_base != HEXDUMP_ADDRESS_NONE || i > 0) {
-                rt_write_char(1, ' ');
+
+            row_pos = append_address(row, row_pos, offset, options->address_base);
+            for (i = 0; i < (long)row_len; i += 2) {
+                unsigned int value = buffer[cursor + (size_t)i];
+                if (i + 1 < (long)row_len) {
+                    value |= (unsigned int)buffer[cursor + (size_t)i + 1U] << 8U;
+                }
+                if (options->address_base != HEXDUMP_ADDRESS_NONE || i > 0) {
+                    row_pos = append_char(row, row_pos, ' ');
+                }
+                row_pos = append_word(row, row_pos, value, options->format);
             }
-            write_word(value, options->format);
+            row_pos = append_char(row, row_pos, '\n');
+            if (output_append(&output, row, row_pos) != 0) {
+                return -1;
+            }
+            offset += (unsigned long long)row_len;
+            cursor += row_len;
         }
-        rt_write_char(1, '\n');
-        offset += (unsigned long long)bytes_read;
         if (options->has_limit) {
             remaining -= (unsigned long long)bytes_read;
         }
     }
 
-    write_address(offset, options->address_base);
     if (options->address_base != HEXDUMP_ADDRESS_NONE) {
-        rt_write_char(1, '\n');
+        char row[16];
+        size_t row_pos = append_address(row, 0U, offset, options->address_base);
+        row_pos = append_char(row, row_pos, '\n');
+        if (output_append(&output, row, row_pos) != 0) {
+            return -1;
+        }
     }
-    return 0;
+    return output_flush(&output);
 }
 
 static int dump_stream(int fd, const HexdumpOptions *options) {

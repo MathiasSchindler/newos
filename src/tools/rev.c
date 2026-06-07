@@ -3,6 +3,7 @@
 #include "tool_util.h"
 
 #define REV_RECORD_CAPACITY 65536U
+#define REV_IO_BUFFER_SIZE 8192U
 
 typedef struct {
     int zero_terminated;
@@ -182,7 +183,7 @@ static int emit_reversed_record(const char *line, size_t len, int terminated, co
 }
 
 static int rev_stream(int fd, const RevOptions *options) {
-    char chunk[4096];
+    char chunk[REV_IO_BUFFER_SIZE];
     char line[REV_RECORD_CAPACITY];
     size_t line_len = 0;
     char separator = options->zero_terminated ? '\0' : '\n';
