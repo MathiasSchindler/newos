@@ -171,7 +171,18 @@ static size_t awk_decode_codepoint(const char *text, size_t length, size_t start
 
 static int awk_unicode_space_at(const char *line, size_t length, size_t index, size_t *advance_out) {
     unsigned int codepoint = 0U;
-    size_t advance = awk_decode_codepoint(line, length, index, &codepoint);
+    size_t advance;
+
+    if (index < length && ((unsigned char)line[index]) < 0x80U) {
+        unsigned char ch = (unsigned char)line[index];
+
+        if (advance_out != 0) {
+            *advance_out = 1U;
+        }
+        return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
+    }
+
+    advance = awk_decode_codepoint(line, length, index, &codepoint);
 
     if (advance_out != 0) {
         *advance_out = advance;

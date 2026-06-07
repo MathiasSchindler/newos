@@ -34,6 +34,11 @@ assert_file_contains "$WORK_DIR/unicode_fixed.out" '^Äpfel$' "grep -i -F did no
 "$ROOT_DIR/build/grep" -iw 'öl' "$WORK_DIR/unicode.txt" > "$WORK_DIR/unicode_word.out"
 assert_file_contains "$WORK_DIR/unicode_word.out" '^Öl$' "grep -iw did not match a Unicode whole word"
 
+printf 'cat\nscatter\ncat_\n' > "$WORK_DIR/ascii_word.txt"
+"$ROOT_DIR/build/grep" -Fw 'cat' "$WORK_DIR/ascii_word.txt" > "$WORK_DIR/ascii_word.out"
+printf 'cat\n' > "$WORK_DIR/ascii_word.expected"
+assert_files_equal "$WORK_DIR/ascii_word.expected" "$WORK_DIR/ascii_word.out" "grep -Fw did not respect ASCII word boundaries"
+
 printf 'Hello\nNope\nHello\n' > "$WORK_DIR/count.txt"
 grep_count=$("$ROOT_DIR/build/grep" -c Hello "$WORK_DIR/count.txt" | tr -d '\r\n')
 assert_text_equals "$grep_count" '2' "grep -c reported the wrong match count"

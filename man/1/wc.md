@@ -18,7 +18,7 @@ The wc tool counts lines, words, bytes, characters, and maximum line length. Wit
 
 - count lines, words, and bytes by default
 - count UTF-8 characters with `-m`
-- report maximum terminal display width with `-L`, including common combining marks, tabs, ANSI escapes, and wide East Asian/emoji characters
+- report maximum terminal display width with `-L`, including common combining marks, tabs, ANSI escapes, emoji skin-tone modifiers, and wide East Asian/emoji characters
 - read from files or standard input
 
 ## OPTIONS
@@ -36,7 +36,7 @@ The wc tool counts lines, words, bytes, characters, and maximum line length. Wit
 
 - Character counting with `-m` is UTF-8-based and may be wrong for other encodings.
 - No `-0` mode is implemented.
-- display width (`-L`) uses compact in-tree Unicode tables, not a system locale database; ambiguous-width characters, grapheme clusters, and every terminal/emoji variation are not fully modeled.
+- display width (`-L`) uses compact in-tree Unicode tables, not a system locale database; ambiguous-width characters, full grapheme clusters such as every ZWJ emoji sequence, and every terminal/emoji variation are not fully modeled.
 - no NUL-delimited filename input mode or locale-specific word boundary rules
   are implemented.
 

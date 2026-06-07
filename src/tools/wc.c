@@ -20,6 +20,17 @@ typedef struct {
     unsigned long long max_line_length;
 } WcStats;
 
+typedef struct {
+    int lines;
+    int words;
+    int chars;
+    int bytes;
+    int max_line_length;
+} WcScanNeeds;
+
+#define WC_SCAN_BUFFER_SIZE 65536U
+#define WC_SCAN_CARRY_CAPACITY 128U
+
 static void write_json_wc_result(const WcStats *stats, const char *name) {
     if (tool_json_begin_event(1, "wc", "stdout", "wc_result") != 0) return;
     rt_write_cstr(1, ",\"data\":{");
@@ -83,6 +94,10 @@ static size_t utf8_expected_length(unsigned char lead) {
         return 4U;
     }
     return 1U;
+}
+
+static int wc_ascii_is_space(unsigned char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
 }
 
 static unsigned long long next_display_width(unsigned long long current_width, unsigned int codepoint) {
@@ -159,8 +174,100 @@ static void print_counts(const WcOptions *options, const WcStats *stats, const c
     rt_write_char(1, '\n');
 }
 
-static int count_stream(int fd, WcStats *stats_out) {
-    char buffer[4096 + 4];
+static void select_scan_needs(const WcOptions *options, WcScanNeeds *needs) {
+    int json_output = tool_json_is_enabled();
+
+    rt_memset(needs, 0, sizeof(*needs));
+    if (json_output) {
+        needs->lines = 1;
+        needs->words = 1;
+        needs->chars = 1;
+        needs->bytes = 1;
+        needs->max_line_length = 1;
+        return;
+    }
+
+    if (!options->explicit_selection || options->show_lines) {
+        needs->lines = 1;
+    }
+    if (!options->explicit_selection || options->show_words) {
+        needs->words = 1;
+    }
+    if (options->show_chars) {
+        needs->chars = 1;
+    }
+    if (!options->explicit_selection || options->show_bytes) {
+        needs->bytes = 1;
+    }
+    if (options->show_max_line_length) {
+        needs->max_line_length = 1;
+    }
+}
+
+static int count_stream_bytes_lines(int fd, const WcScanNeeds *needs, WcStats *stats_out) {
+    char buffer[WC_SCAN_BUFFER_SIZE];
+    long bytes_read;
+    unsigned long long lines = 0ULL;
+    unsigned long long bytes = 0ULL;
+
+    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
+        size_t length = (size_t)bytes_read;
+        size_t i;
+
+        bytes += (unsigned long long)bytes_read;
+        if (needs->lines) {
+            for (i = 0U; i < length; ++i) {
+                if (buffer[i] == '\n') {
+                    lines += 1ULL;
+                }
+            }
+        }
+    }
+
+    if (bytes_read < 0) {
+        return -1;
+    }
+
+    rt_memset(stats_out, 0, sizeof(*stats_out));
+    stats_out->lines = lines;
+    stats_out->bytes = bytes;
+    return 0;
+}
+
+static void account_codepoint(const WcScanNeeds *needs, unsigned int codepoint, int *in_word,
+                              unsigned long long *lines, unsigned long long *words,
+                              unsigned long long *chars, unsigned long long *current_line_length,
+                              unsigned long long *max_line_length) {
+    if (needs->chars) {
+        *chars += 1ULL;
+    }
+
+    if (codepoint == '\n') {
+        if (needs->lines) {
+            *lines += 1ULL;
+        }
+        if (needs->max_line_length) {
+            if (*current_line_length > *max_line_length) {
+                *max_line_length = *current_line_length;
+            }
+            *current_line_length = 0ULL;
+        }
+    } else if (needs->max_line_length) {
+        *current_line_length = next_display_width(*current_line_length, codepoint);
+    }
+
+    if (needs->words) {
+        if (rt_unicode_is_space(codepoint)) {
+            *in_word = 0;
+        } else if (!*in_word) {
+            *words += 1ULL;
+            *in_word = 1;
+        }
+    }
+}
+
+static int count_stream_text(int fd, const WcScanNeeds *needs, WcStats *stats_out) {
+    char buffer[WC_SCAN_BUFFER_SIZE + WC_SCAN_CARRY_CAPACITY];
     long bytes_read;
     size_t carry = 0;
     int in_word = 0;
@@ -171,7 +278,7 @@ static int count_stream(int fd, WcStats *stats_out) {
     unsigned long long current_line_length = 0ULL;
     unsigned long long max_line_length = 0ULL;
 
-    while ((bytes_read = platform_read(fd, buffer + carry, sizeof(buffer) - carry)) > 0) {
+    while ((bytes_read = platform_read(fd, buffer + carry, WC_SCAN_BUFFER_SIZE)) > 0) {
         size_t total = carry + (size_t)bytes_read;
         size_t i = 0;
 
@@ -181,12 +288,89 @@ static int count_stream(int fd, WcStats *stats_out) {
         while (i < total) {
             size_t before = i;
             unsigned int codepoint = 0;
-            size_t needed = utf8_expected_length((unsigned char)buffer[i]);
+            unsigned char ch = (unsigned char)buffer[i];
 
-            if (needed > 1U && needed > total - i) {
-                carry = total - i;
-                memmove(buffer, buffer + i, carry);
-                break;
+            if (ch == '\033' && needs->max_line_length) {
+                RtTextSegment segment;
+
+                if (rt_text_next_segment(buffer, total, i, &segment) == 0 &&
+                    (segment.flags & RT_TEXT_SEGMENT_ANSI) != 0U) {
+                    size_t ansi_index;
+
+                    if ((segment.flags & RT_TEXT_SEGMENT_INCOMPLETE) != 0U && total - i < WC_SCAN_CARRY_CAPACITY) {
+                        carry = total - i;
+                        memmove(buffer, buffer + i, carry);
+                        break;
+                    }
+
+                    if ((segment.flags & RT_TEXT_SEGMENT_INCOMPLETE) != 0U) {
+                        segment.end = i + 1U;
+                    }
+
+                    for (ansi_index = i; ansi_index < segment.end; ++ansi_index) {
+                        unsigned char ansi_ch = (unsigned char)buffer[ansi_index];
+
+                        if (needs->chars) {
+                            chars += 1ULL;
+                        }
+                        if (needs->lines && ansi_ch == '\n') {
+                            lines += 1ULL;
+                        }
+                        if (needs->words) {
+                            if (wc_ascii_is_space(ansi_ch)) {
+                                in_word = 0;
+                            } else if (!in_word) {
+                                words += 1ULL;
+                                in_word = 1;
+                            }
+                        }
+                    }
+                    i = segment.end;
+                    continue;
+                }
+            }
+
+            if (ch < 0x80U) {
+                i += 1U;
+                if (needs->chars) {
+                    chars += 1ULL;
+                }
+                if (ch == '\n') {
+                    if (needs->lines) {
+                        lines += 1ULL;
+                    }
+                    if (needs->max_line_length) {
+                        if (current_line_length > max_line_length) {
+                            max_line_length = current_line_length;
+                        }
+                        current_line_length = 0ULL;
+                    }
+                } else if (needs->max_line_length) {
+                    if (ch >= ' ' && ch != 0x7fU) {
+                        current_line_length += 1ULL;
+                    } else {
+                        current_line_length = next_display_width(current_line_length, (unsigned int)ch);
+                    }
+                }
+                if (needs->words) {
+                    if (wc_ascii_is_space(ch)) {
+                        in_word = 0;
+                    } else if (!in_word) {
+                        words += 1ULL;
+                        in_word = 1;
+                    }
+                }
+                continue;
+            }
+
+            {
+                size_t needed = utf8_expected_length(ch);
+
+                if (needed > 1U && needed > total - i) {
+                    carry = total - i;
+                    memmove(buffer, buffer + i, carry);
+                    break;
+                }
             }
 
             (void)rt_utf8_decode(buffer, total, &i, &codepoint);
@@ -195,23 +379,8 @@ static int count_stream(int fd, WcStats *stats_out) {
                 codepoint = 0xfffdU;
             }
 
-            chars += 1ULL;
-            if (codepoint == '\n') {
-                if (current_line_length > max_line_length) {
-                    max_line_length = current_line_length;
-                }
-                current_line_length = 0ULL;
-                lines += 1ULL;
-            } else {
-                current_line_length = next_display_width(current_line_length, codepoint);
-            }
-
-            if (rt_unicode_is_space(codepoint)) {
-                in_word = 0;
-            } else if (!in_word) {
-                words += 1ULL;
-                in_word = 1;
-            }
+            account_codepoint(needs, codepoint, &in_word, &lines, &words, &chars, &current_line_length,
+                              &max_line_length);
         }
     }
 
@@ -230,14 +399,8 @@ static int count_stream(int fd, WcStats *stats_out) {
             codepoint = 0xfffdU;
         }
 
-        chars += 1ULL;
-        current_line_length = next_display_width(current_line_length, codepoint);
-        if (rt_unicode_is_space(codepoint)) {
-            in_word = 0;
-        } else if (!in_word) {
-            words += 1ULL;
-            in_word = 1;
-        }
+        account_codepoint(needs, codepoint, &in_word, &lines, &words, &chars, &current_line_length,
+                          &max_line_length);
 
         if (index < carry) {
             memmove(buffer, buffer + index, carry - index);
@@ -245,7 +408,7 @@ static int count_stream(int fd, WcStats *stats_out) {
         carry -= index;
     }
 
-    if (current_line_length > max_line_length) {
+    if (needs->max_line_length && current_line_length > max_line_length) {
         max_line_length = current_line_length;
     }
 
@@ -255,6 +418,16 @@ static int count_stream(int fd, WcStats *stats_out) {
     stats_out->bytes = bytes;
     stats_out->max_line_length = max_line_length;
     return 0;
+}
+
+static int count_stream(int fd, const WcOptions *options, WcStats *stats_out) {
+    WcScanNeeds needs;
+
+    select_scan_needs(options, &needs);
+    if (!needs.words && !needs.chars && !needs.max_line_length) {
+        return count_stream_bytes_lines(fd, &needs, stats_out);
+    }
+    return count_stream_text(fd, &needs, stats_out);
 }
 
 static void print_usage(const char *program_name) {
@@ -352,7 +525,7 @@ int main(int argc, char **argv) {
     if (file_count <= 0) {
         WcStats stats;
 
-        if (count_stream(0, &stats) != 0) {
+        if (count_stream(0, &options, &stats) != 0) {
             tool_write_error("wc", "read error", 0);
             return 1;
         }
@@ -372,7 +545,7 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (count_stream(fd, &stats) != 0) {
+        if (count_stream(fd, &options, &stats) != 0) {
             tool_write_error("wc", "read error on ", argv[i]);
             exit_code = 1;
         } else {

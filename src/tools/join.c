@@ -103,10 +103,20 @@ static size_t join_decode_codepoint(const char *text, size_t length, size_t star
     return index - start;
 }
 
-static int join_unicode_space_at(const char *line, size_t index, size_t *advance_out) {
-    size_t length = rt_strlen(line);
+static int join_unicode_space_at(const char *line, size_t length, size_t index, size_t *advance_out) {
     unsigned int codepoint = 0U;
-    size_t advance = join_decode_codepoint(line, length, index, &codepoint);
+    size_t advance;
+
+    if (index < length && ((unsigned char)line[index]) < 0x80U) {
+        unsigned char ch = (unsigned char)line[index];
+
+        if (advance_out != 0) {
+            *advance_out = 1U;
+        }
+        return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
+    }
+
+    advance = join_decode_codepoint(line, length, index, &codepoint);
 
     if (advance_out != 0) {
         *advance_out = advance;
@@ -182,6 +192,7 @@ static int parse_join_source(const char *text, int *source_out) {
 
 static int extract_field(const char *line, unsigned long long field_no, char delimiter, char *out, size_t out_size) {
     size_t i = 0;
+    size_t line_length = rt_strlen(line);
     unsigned long long current_field = 1ULL;
     size_t out_len = 0;
 
@@ -189,7 +200,7 @@ static int extract_field(const char *line, unsigned long long field_no, char del
         while (line[i] != '\0') {
             size_t advance = 0U;
 
-            while (line[i] != '\0' && join_unicode_space_at(line, i, &advance)) {
+            while (line[i] != '\0' && join_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
             }
 
@@ -198,7 +209,7 @@ static int extract_field(const char *line, unsigned long long field_no, char del
             }
 
             if (current_field == field_no) {
-                while (line[i] != '\0' && !join_unicode_space_at(line, i, &advance)) {
+                while (line[i] != '\0' && !join_unicode_space_at(line, line_length, i, &advance)) {
                     if (out_len + advance < out_size) {
                         size_t j;
                         for (j = 0; j < advance; ++j) {
@@ -211,7 +222,7 @@ static int extract_field(const char *line, unsigned long long field_no, char del
                 return 0;
             }
 
-            while (line[i] != '\0' && !join_unicode_space_at(line, i, &advance)) {
+            while (line[i] != '\0' && !join_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
             }
             current_field += 1ULL;
@@ -267,11 +278,13 @@ static int emit_text_field(const char *text, size_t len, char delimiter, int *fi
 
 static int emit_fields_except(const char *line, unsigned long long skip_field, char delimiter, int *first_out) {
     size_t i = 0;
+    size_t line_length;
     unsigned long long field_no = 1ULL;
 
     if (line == 0) {
         return 0;
     }
+    line_length = rt_strlen(line);
 
     if (delimiter == '\0') {
         while (line[i] != '\0') {
@@ -279,7 +292,7 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
             size_t len = 0;
             size_t advance = 0U;
 
-            while (line[i] != '\0' && join_unicode_space_at(line, i, &advance)) {
+            while (line[i] != '\0' && join_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
             }
 
@@ -288,7 +301,7 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
             }
 
             start = i;
-            while (line[i] != '\0' && !join_unicode_space_at(line, i, &advance)) {
+            while (line[i] != '\0' && !join_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
                 len += advance;
             }

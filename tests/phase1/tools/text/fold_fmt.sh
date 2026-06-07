@@ -27,6 +27,11 @@ printf '🥹a\n' > "$WORK_DIR/fold_emoji.txt"
 assert_file_contains "$WORK_DIR/fold_emoji.out" '^🥹$' "fold did not treat newer emoji as wide"
 assert_file_contains "$WORK_DIR/fold_emoji.out" '^a$' "fold did not preserve text after newer emoji wrapping"
 
+printf '👍🏽a\n' > "$WORK_DIR/fold_emoji_modifier.txt"
+"$ROOT_DIR/build/fold" -w 2 "$WORK_DIR/fold_emoji_modifier.txt" > "$WORK_DIR/fold_emoji_modifier.out"
+assert_file_contains "$WORK_DIR/fold_emoji_modifier.out" '^👍🏽$' "fold counted an emoji skin-tone modifier as a separate display cell"
+assert_file_contains "$WORK_DIR/fold_emoji_modifier.out" '^a$' "fold did not preserve text after emoji skin-tone wrapping"
+
 printf '\033[31mred\033[0mblue\n' > "$WORK_DIR/fold_ansi.txt"
 "$ROOT_DIR/build/fold" -w 3 "$WORK_DIR/fold_ansi.txt" > "$WORK_DIR/fold_ansi.out"
 printf '\033[31mred\033[0m\nblu\ne\n' > "$WORK_DIR/fold_ansi.expected"

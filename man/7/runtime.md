@@ -22,7 +22,9 @@ hosted and freestanding builds.
 - `parse.c` — numeric parsing used by command-line tools
 - `io.c` — small buffered I/O wrappers over the platform layer
 - `unicode.c` — UTF-8 decoding/encoding, validation, simple folding,
-  whitespace/word classification, display width, and terminal text-segment scanning
+  whitespace/word classification, display width, and terminal text-segment scanning;
+  common ASCII text is handled by fast paths before falling back to the Unicode
+  range tables
 
 ### Shared utilities (`src/shared`)
 
@@ -55,6 +57,10 @@ hosted and freestanding builds.
 - This is a focused internal support layer, not a general-purpose standard library
 - There is no `FILE *`/stdio abstraction, locale database, or broad userland threading API; runtime threading support is limited to specific shared subsystems, and allocator locking should remain opt-in rather than a default cost
 - Formatting and parsing support cover the project's needs, not every libc edge case
+- Terminal display width is compact rather than locale-complete: ANSI escapes,
+  combining marks, wide CJK/emoji ranges, variation selectors, and emoji skin-tone
+  modifiers are handled, but full grapheme-cluster shaping such as every ZWJ emoji
+  family sequence remains approximate.
 
 ## SEE ALSO
 

@@ -23,6 +23,9 @@ assert_text_equals "$wc_chars" '5' "wc -m should count characters rather than by
 wc_width=$(printf 'ab\tc\nwide\n' | "$ROOT_DIR/build/wc" -L | tr -d ' \r\n')
 assert_text_equals "$wc_width" '9' "wc -L should report the maximum display width"
 
+wc_ansi_width=$(printf '\033[31mred\033[0m\n' | "$ROOT_DIR/build/wc" -L | tr -d ' \r\n')
+assert_text_equals "$wc_ansi_width" '3' "wc -L should ignore ANSI escape sequences when measuring display width"
+
 printf '界界\n' > "$WORK_DIR/unicode_width.txt"
 "$ROOT_DIR/build/wc" -L "$WORK_DIR/unicode_width.txt" > "$WORK_DIR/unicode_width.out"
 unicode_width=$(awk '{print $1}' "$WORK_DIR/unicode_width.out" | tr -d '\r\n ')
@@ -32,3 +35,8 @@ printf 'éx\n' > "$WORK_DIR/combining_width.txt"
 "$ROOT_DIR/build/wc" -L "$WORK_DIR/combining_width.txt" > "$WORK_DIR/combining_width.out"
 combining_width=$(awk '{print $1}' "$WORK_DIR/combining_width.out" | tr -d '\r\n ')
 assert_text_equals "$combining_width" '2' "wc counted a combining mark as an extra display column"
+
+printf '👍🏽x\n' > "$WORK_DIR/emoji_modifier_width.txt"
+"$ROOT_DIR/build/wc" -L "$WORK_DIR/emoji_modifier_width.txt" > "$WORK_DIR/emoji_modifier_width.out"
+emoji_modifier_width=$(awk '{print $1}' "$WORK_DIR/emoji_modifier_width.out" | tr -d '\r\n ')
+assert_text_equals "$emoji_modifier_width" '3' "wc counted an emoji skin-tone modifier as a separate display cell"

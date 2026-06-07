@@ -56,6 +56,11 @@ assert_files_equal "$WORK_DIR/no_line_number.expected" "$WORK_DIR/no_line_number
 "$ROOT_DIR/build/ripgrep" -F 'platform_value' "$WORK_DIR/tree/src/main.c" > "$WORK_DIR/fixed.out"
 assert_file_contains "$WORK_DIR/fixed.out" '^2:    return platform_value;$' "ripgrep -F did not find the literal match"
 
+printf 'cat\nscatter\ncat_\n' > "$WORK_DIR/tree/src/words.txt"
+"$ROOT_DIR/build/ripgrep" -Fw --no-line-number 'cat' "$WORK_DIR/tree/src/words.txt" > "$WORK_DIR/ascii_word.out"
+printf 'cat\n' > "$WORK_DIR/ascii_word.expected"
+assert_files_equal "$WORK_DIR/ascii_word.expected" "$WORK_DIR/ascii_word.out" "ripgrep -Fw did not respect ASCII word boundaries"
+
 assert_command_succeeds "$ROOT_DIR/build/rg" -q platform "$WORK_DIR/tree"
 no_match_status=0
 "$ROOT_DIR/build/rg" missing-pattern "$WORK_DIR/tree" > "$WORK_DIR/no_match.out" 2>&1 || no_match_status=$?

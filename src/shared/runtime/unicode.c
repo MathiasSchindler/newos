@@ -88,6 +88,10 @@ static const UnicodeRange unicode_zero_width_ranges[] = {
         {0x1e2aeU, 0x1e2efU}, {0x1e8d0U, 0x1e8d6U}, {0x1e944U, 0x1e94aU}, {0xe0100U, 0xe01efU}
     };
 
+static const UnicodeRange unicode_emoji_modifier_ranges[] = {
+    {0x1f3fbU, 0x1f3ffU}
+};
+
 static const UnicodeRange unicode_wide_ranges[] = {
     {0x1100U, 0x115fU}, {0x231aU, 0x231bU}, {0x2329U, 0x232aU}, {0x23e9U, 0x23ecU},
     {0x23f0U, 0x23f0U}, {0x23f3U, 0x23f3U}, {0x25fdU, 0x25feU}, {0x2614U, 0x2615U},
@@ -115,6 +119,9 @@ unsigned int rt_unicode_display_width(unsigned int codepoint) {
     if ((codepoint < 32U) || (codepoint >= 0x7fU && codepoint < 0xa0U)) {
         return 0U;
     }
+    if (codepoint_in_ranges(codepoint, unicode_emoji_modifier_ranges, sizeof(unicode_emoji_modifier_ranges) / sizeof(unicode_emoji_modifier_ranges[0]))) {
+        return 0U;
+    }
     if (codepoint_in_ranges(codepoint, unicode_zero_width_ranges, sizeof(unicode_zero_width_ranges) / sizeof(unicode_zero_width_ranges[0]))) {
         return 0U;
     }
@@ -127,6 +134,24 @@ unsigned int rt_unicode_display_width(unsigned int codepoint) {
 
 static int rt_text_is_ansi_final_byte(unsigned char ch) {
     return ch >= 0x40U && ch <= 0x7eU;
+}
+
+static int rt_text_ascii_fast_segment(unsigned char ch, size_t start, RtTextSegment *segment_out) {
+    if (ch >= 0x80U || ch == '\033') {
+        return 0;
+    }
+
+    segment_out->start = start;
+    segment_out->end = start + 1U;
+    segment_out->codepoint = (unsigned int)ch;
+    segment_out->display_width = (ch >= ' ' && ch != 0x7fU) ? 1U : 0U;
+    segment_out->flags = 0U;
+    if (ch == '\b') {
+        segment_out->flags = RT_TEXT_SEGMENT_BACKSPACE;
+    } else if (ch == '\r') {
+        segment_out->flags = RT_TEXT_SEGMENT_CARRIAGE_RETURN;
+    }
+    return 1;
 }
 
 static int rt_text_ansi_escape_end(const char *text, size_t text_length, size_t start, size_t *end_out, int *incomplete_out) {
@@ -193,6 +218,10 @@ int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtT
     segment_out->codepoint = 0xfffdU;
     segment_out->display_width = 1U;
     segment_out->flags = 0U;
+
+    if (rt_text_ascii_fast_segment((unsigned char)text[start], start, segment_out)) {
+        return 0;
+    }
 
     if (rt_text_ansi_escape_end(text, text_length, start, &end, &incomplete)) {
         segment_out->end = end;
@@ -276,8 +305,38 @@ unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text
     size_t index = 0U;
     unsigned long long width = initial_width;
     RtTextSegment segment;
+    unsigned long long tab = tab_width == 0U ? 8ULL : (unsigned long long)tab_width;
 
-    while (rt_text_next_segment(text, text_length, index, &segment) == 0) {
+    while (index < text_length) {
+        unsigned char ch = (unsigned char)text[index];
+
+        if (ch >= ' ' && ch < 0x7fU) {
+            width += 1ULL;
+            index += 1U;
+            continue;
+        }
+        if (ch == '\t') {
+            width += tab - (width % tab);
+            index += 1U;
+            continue;
+        }
+        if (ch == '\b') {
+            width = width > 0ULL ? width - 1ULL : 0ULL;
+            index += 1U;
+            continue;
+        }
+        if (ch == '\r') {
+            width = 0ULL;
+            index += 1U;
+            continue;
+        }
+        if (ch < 0x80U && ch != '\033') {
+            index += 1U;
+            continue;
+        }
+        if (rt_text_next_segment(text, text_length, index, &segment) != 0) {
+            break;
+        }
         width = rt_text_apply_segment_width_tabstop(width, &segment, tab_width);
         index = segment.end;
     }
@@ -294,8 +353,24 @@ size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsi
     unsigned long long width = initial_width;
     RtTextSegment segment;
 
-    while (rt_text_next_segment(text, text_length, index, &segment) == 0) {
-        unsigned long long next_width = rt_text_apply_segment_width(width, &segment);
+    while (index < text_length) {
+        unsigned char ch = (unsigned char)text[index];
+        unsigned long long next_width;
+
+        if (ch >= ' ' && ch < 0x7fU) {
+            next_width = width + 1ULL;
+            if (next_width > max_width) {
+                break;
+            }
+            width = next_width;
+            last_complete = index + 1U;
+            index += 1U;
+            continue;
+        }
+        if (rt_text_next_segment(text, text_length, index, &segment) != 0) {
+            break;
+        }
+        next_width = rt_text_apply_segment_width(width, &segment);
 
         if (next_width > max_width && (segment.flags & (RT_TEXT_SEGMENT_ANSI | RT_TEXT_SEGMENT_BACKSPACE | RT_TEXT_SEGMENT_CARRIAGE_RETURN)) == 0U) {
             break;

@@ -112,6 +112,15 @@ static int is_utf8_continuation_byte(unsigned char ch) {
     return (ch & 0xc0U) == 0x80U;
 }
 
+static unsigned char ascii_fold_byte(unsigned char ch) {
+    return (ch >= 'A' && ch <= 'Z') ? (unsigned char)(ch + ('a' - 'A')) : ch;
+}
+
+static int ascii_is_word_byte(unsigned char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') || ch == '_';
+}
+
 static size_t previous_codepoint_start(const char *text, size_t index) {
     if (index == 0U) {
         return 0U;
@@ -146,7 +155,11 @@ static int match_has_word_boundaries(const char *text, size_t start, size_t end)
         size_t index = prev;
         unsigned int codepoint = 0;
 
-        if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
+        if (((unsigned char)text[prev]) < 0x80U) {
+            if (ascii_is_word_byte((unsigned char)text[prev])) {
+                return 0;
+            }
+        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
             return 0;
         }
     }
@@ -155,7 +168,11 @@ static int match_has_word_boundaries(const char *text, size_t start, size_t end)
         size_t index = end;
         unsigned int codepoint = 0;
 
-        if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
+        if (((unsigned char)text[end]) < 0x80U) {
+            if (ascii_is_word_byte((unsigned char)text[end])) {
+                return 0;
+            }
+        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
             return 0;
         }
     }
@@ -172,8 +189,27 @@ static int starts_with_literal(const char *pattern, const char *text, int ignore
     while (pi < pattern_len) {
         unsigned int lhs = 0;
         unsigned int rhs = 0;
+        unsigned char pattern_ch;
+        unsigned char text_ch;
 
-        if (ti >= text_len || rt_utf8_decode(pattern, pattern_len, &pi, &lhs) != 0 ||
+        if (ti >= text_len) {
+            return 0;
+        }
+        pattern_ch = (unsigned char)pattern[pi];
+        text_ch = (unsigned char)text[ti];
+        if (pattern_ch < 0x80U && text_ch < 0x80U) {
+            if (ignore_case) {
+                pattern_ch = ascii_fold_byte(pattern_ch);
+                text_ch = ascii_fold_byte(text_ch);
+            }
+            if (pattern_ch != text_ch) {
+                return 0;
+            }
+            pi += 1U;
+            ti += 1U;
+            continue;
+        }
+        if (rt_utf8_decode(pattern, pattern_len, &pi, &lhs) != 0 ||
             rt_utf8_decode(text, text_len, &ti, &rhs) != 0) {
             return 0;
         }
@@ -217,7 +253,7 @@ static int find_fixed_match(const char *pattern,
         if (text[pos] == '\0') {
             break;
         }
-        pos = pos + next_codepoint_start(text + pos, 0U);
+        pos = ((unsigned char)text[pos]) < 0x80U ? pos + 1U : pos + next_codepoint_start(text + pos, 0U);
     }
 
     return 0;
