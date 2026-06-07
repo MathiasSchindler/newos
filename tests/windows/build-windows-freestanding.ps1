@@ -153,7 +153,7 @@ $variables["SSHD_TOOL_SOURCES"] = $sshdToolSources
 
 $runtimeSources = @(Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES")
 $imageSources = Add-Unique (@($imageManifestSources) + @("src/shared/compression/crc32.c", "src/shared/compression/zlib.c"))
-$hashSources = @("src/shared/hash_util.c", "src/shared/crypto/md5.c", "src/shared/crypto/sha256.c", "src/shared/crypto/sha512.c")
+$hashSources = @("src/shared/hash_util.c", "src/shared/crypto/md5.c", "src/shared/crypto/sha1.c", "src/shared/crypto/sha256.c", "src/shared/crypto/sha512.c")
 $archiveSources = @("src/shared/archive_util.c", "src/shared/compression/crc32.c", "src/shared/compression/lzss.c", "src/shared/crypto/sha256.c")
 $awkSources = @("src/tools/awk/awk_parse.c", "src/tools/awk/awk_exec.c")
 $xmlSources = @("src/shared/xml.c", "src/shared/xml_stream.c", "src/shared/xml_dtd.c", "src/shared/tool_xml.c")

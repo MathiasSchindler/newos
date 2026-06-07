@@ -12,7 +12,7 @@ require_tool() {
     [ -x "$BIN_DIR/$tool" ] || fail "inception build directory is missing expected tool: $BIN_DIR/$tool"
 }
 
-for tool in false true yes clear dirname echo basename tee whoami mkdir cat printenv od sleep strings sync hostname shutdown bunzip2 xz mknod bzip2 comm tac pwd tsort expand truncate unxz paste unexpand cut rmdir rev chmod groups readlink cmp umount uname uniq tr mktemp kill id logger realpath stty head ln free strip printf rm nl sha256sum shuf time xmlrecode which dd objdump chgrp gunzip sha512sum split df readelf who ar chown users mv test env pstree touch uptime wc tail seq md5sum cp stat date fold fmt timeout column '[' expr sort du gzip file diff less more watch nslookup xargs ps xmlmin patch xmlstrip xmlcount xmlfmt xml2yaml xmldiff dig xmltokens xmlcanon xml2json init ls xmlsafe xmlstats xml2lines getty netcat top xmlnscheck xmldtdinfo ping xmlget find; do
+for tool in false true yes clear dirname echo basename tee whoami mkdir cat printenv od sleep strings sync hostname shutdown bunzip2 xz mknod bzip2 comm tac pwd tsort expand truncate unxz paste unexpand cut rmdir rev chmod groups readlink cmp umount uname uniq tr mktemp kill id logger realpath stty head ln free strip printf rm nl sha1sum sha256sum shuf time xmlrecode which dd objdump chgrp gunzip sha512sum split df readelf who ar chown users mv test env pstree touch uptime wc tail seq md5sum cp stat date fold fmt timeout column '[' expr sort du gzip file diff less more watch nslookup xargs ps xmlmin patch xmlstrip xmlcount xmlfmt xml2yaml xmldiff dig xmltokens xmlcanon xml2json init ls xmlsafe xmlstats xml2lines getty netcat top xmlnscheck xmldtdinfo ping xmlget find; do
     require_tool "$tool"
 done
 
@@ -91,9 +91,11 @@ assert_files_equal "$WORK_DIR/lines.in" "$WORK_DIR/bzip2.in" "inception bzip2/bu
 "$BIN_DIR/unxz" "$WORK_DIR/xz.in.xz"
 assert_files_equal "$WORK_DIR/lines.in" "$WORK_DIR/xz.in" "inception xz/unxz round trip mismatch"
 "$BIN_DIR/md5sum" "$WORK_DIR/lines.in" > "$WORK_DIR/md5.out"
+"$BIN_DIR/sha1sum" "$WORK_DIR/lines.in" > "$WORK_DIR/sha1.out"
 "$BIN_DIR/sha256sum" "$WORK_DIR/lines.in" > "$WORK_DIR/sha256.out"
 "$BIN_DIR/sha512sum" "$WORK_DIR/lines.in" > "$WORK_DIR/sha512.out"
 assert_file_contains "$WORK_DIR/md5.out" '  .*lines\.in$' "inception md5sum output missing filename"
+assert_file_contains "$WORK_DIR/sha1.out" '  .*lines\.in$' "inception sha1sum output missing filename"
 assert_file_contains "$WORK_DIR/sha256.out" '  .*lines\.in$' "inception sha256sum output missing filename"
 assert_file_contains "$WORK_DIR/sha512.out" '  .*lines\.in$' "inception sha512sum output missing filename"
 

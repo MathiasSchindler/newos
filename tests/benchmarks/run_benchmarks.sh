@@ -93,6 +93,10 @@ benchmark_hashes() {
     fi
 
     if command -v shasum >/dev/null 2>&1; then
+        ours=$(measure_seconds '"$ROOT_DIR"/build/sha1sum "'$DATA_DIR'/compress_input.txt" > /dev/null')
+        system=$(measure_seconds 'shasum -a 1 "'$DATA_DIR'/compress_input.txt" > /dev/null')
+        print_result sha1 "$ours" "$system"
+
         ours=$(measure_seconds '"$ROOT_DIR"/build/sha256sum "'$DATA_DIR'/compress_input.txt" > /dev/null')
         system=$(measure_seconds 'shasum -a 256 "'$DATA_DIR'/compress_input.txt" > /dev/null')
         print_result sha256 "$ours" "$system"

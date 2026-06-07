@@ -1,5 +1,7 @@
 #include "runtime.h"
 
+#define PRINTF_REPEAT_BUFFER_SIZE 128U
+
 static int ascii_is_digit(char ch) {
     return ch >= '0' && ch <= '9';
 }
@@ -199,11 +201,19 @@ static int append_text_to_buffer(char *buffer, size_t buffer_size, size_t *lengt
 }
 
 static int write_repeated_char(char ch, int count) {
+    char buffer[PRINTF_REPEAT_BUFFER_SIZE];
+    size_t i;
+
+    for (i = 0U; i < sizeof(buffer); ++i) {
+        buffer[i] = ch;
+    }
+
     while (count > 0) {
-        if (rt_write_char(1, ch) != 0) {
+        size_t chunk = (size_t)count > sizeof(buffer) ? sizeof(buffer) : (size_t)count;
+        if (rt_write_all(1, buffer, chunk) != 0) {
             return -1;
         }
-        count -= 1;
+        count -= (int)chunk;
     }
     return 0;
 }
@@ -865,10 +875,16 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            if (rt_write_char(1, format[i]) != 0) {
-                return 1;
+            {
+                size_t start = i;
+                while (format[i] != '\0' && format[i] != '\\' && format[i] != '%') {
+                    i += 1U;
+                }
+                if (rt_write_all(1, format + start, i - start) != 0) {
+                    return 1;
+                }
             }
-            i += 1;
+            continue;
         }
 
         if (max_position > (unsigned long long)consumed_args) {

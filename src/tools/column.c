@@ -7,6 +7,7 @@
 #define COLUMN_CELL_CAPACITY 256
 #define COLUMN_LINE_CAPACITY 2048
 #define COLUMN_SEPARATOR_CAPACITY 32
+#define COLUMN_SPACE_BUFFER_SIZE 128U
 
 typedef struct {
     char input_separators[COLUMN_SEPARATOR_CAPACITY];
@@ -154,12 +155,19 @@ static int collect_rows_from_fd(int fd, ColumnRow *rows, size_t *row_count, cons
 }
 
 static int write_spaces(size_t count) {
+    char spaces[COLUMN_SPACE_BUFFER_SIZE];
     size_t i;
 
-    for (i = 0; i < count; ++i) {
-        if (rt_write_char(1, ' ') != 0) {
+    for (i = 0U; i < sizeof(spaces); ++i) {
+        spaces[i] = ' ';
+    }
+
+    while (count > 0U) {
+        size_t chunk = count > sizeof(spaces) ? sizeof(spaces) : count;
+        if (rt_write_all(1, spaces, chunk) != 0) {
             return -1;
         }
+        count -= chunk;
     }
 
     return 0;

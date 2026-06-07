@@ -3,6 +3,7 @@
 #include "tool_util.h"
 
 #define NL_LINE_CAPACITY 4096
+#define NL_PADDING_BUFFER_SIZE 128U
 
 typedef enum {
     NL_STYLE_NONEMPTY = 0,
@@ -40,12 +41,19 @@ static void print_usage(const char *program_name) {
 }
 
 static int write_padding(size_t count, char fill) {
+    char padding[NL_PADDING_BUFFER_SIZE];
     size_t i;
 
-    for (i = 0; i < count; ++i) {
-        if (rt_write_char(1, fill) != 0) {
+    for (i = 0U; i < sizeof(padding); ++i) {
+        padding[i] = fill;
+    }
+
+    while (count > 0U) {
+        size_t chunk = count > sizeof(padding) ? sizeof(padding) : count;
+        if (rt_write_all(1, padding, chunk) != 0) {
             return -1;
         }
+        count -= chunk;
     }
 
     return 0;

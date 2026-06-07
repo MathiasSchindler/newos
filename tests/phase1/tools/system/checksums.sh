@@ -11,6 +11,15 @@ assert_file_contains "$WORK_DIR/md5.out" '^[0-9a-f]\{32\}  .*/sample.txt$' "md5s
 assert_command_succeeds "$ROOT_DIR/build/md5sum" -c "$WORK_DIR/md5.out" > "$WORK_DIR/md5_check.out"
 assert_file_contains "$WORK_DIR/md5_check.out" 'OK$' "md5sum -c did not verify the checksum file"
 
+assert_command_succeeds "$ROOT_DIR/build/sha1sum" "$WORK_DIR/sample.txt" > "$WORK_DIR/sha1.out"
+assert_file_contains "$WORK_DIR/sha1.out" '^[0-9a-f]\{40\}  .*/sample.txt$' "sha1sum did not print a 40-hex digest"
+assert_command_succeeds "$ROOT_DIR/build/sha1sum" -c "$WORK_DIR/sha1.out" > "$WORK_DIR/sha1_check.out"
+assert_file_contains "$WORK_DIR/sha1_check.out" 'OK$' "sha1sum -c did not verify the checksum file"
+assert_command_succeeds "$ROOT_DIR/build/sha1sum" -b "$WORK_DIR/sample.txt" > "$WORK_DIR/sha1_binary.out"
+assert_file_contains "$WORK_DIR/sha1_binary.out" '^[0-9a-f]\{40\} \*.*/sample.txt$' "sha1sum -b did not print a binary marker"
+assert_command_succeeds "$ROOT_DIR/build/sha1sum" -c "$WORK_DIR/sha1_binary.out" > "$WORK_DIR/sha1_binary_check.out"
+assert_file_contains "$WORK_DIR/sha1_binary_check.out" 'OK$' "sha1sum -c did not verify a binary-mode checksum file"
+
 assert_command_succeeds "$ROOT_DIR/build/sha256sum" "$WORK_DIR/sample.txt" > "$WORK_DIR/sha256.out"
 assert_file_contains "$WORK_DIR/sha256.out" '^[0-9a-f]\{64\}  .*/sample.txt$' "sha256sum did not print a 64-hex digest"
 assert_command_succeeds "$ROOT_DIR/build/sha256sum" -c "$WORK_DIR/sha256.out" > "$WORK_DIR/sha256_check.out"

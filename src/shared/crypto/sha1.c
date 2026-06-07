@@ -91,6 +91,14 @@ void crypto_sha1_update(CryptoSha1Context *ctx, const unsigned char *data, size_
 
     if (ctx == 0 || (data == 0 && len != 0U)) return;
     ctx->bit_count += (unsigned long long)len * 8ULL;
+
+    if (ctx->buffer_len == 0U) {
+        while (len - offset >= CRYPTO_SHA1_BLOCK_SIZE) {
+            crypto_sha1_transform(ctx, data + offset);
+            offset += CRYPTO_SHA1_BLOCK_SIZE;
+        }
+    }
+
     while (offset < len) {
         size_t space = CRYPTO_SHA1_BLOCK_SIZE - ctx->buffer_len;
         size_t chunk = (len - offset < space) ? (len - offset) : space;

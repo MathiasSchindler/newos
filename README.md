@@ -34,7 +34,7 @@ The repository includes a structured shell-based test suite under [tests](tests)
 - shared helpers live in [tests/lib](tests/lib)
 - grouped suites live in [tests/suites](tests/suites)
 
-On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default, but the normal local build path is still `make freestanding`: on local macOS/aarch64 it builds the project-linked Mach-O target under `build/newlinker-macos-aarch64/`. That path compiles with Clang, links final executables with the in-tree linker, uses the project runtime and `_start`, and is intended to produce no-standard-library, no-dylib-import tools. The current Darwin project-linked surface covers the current 195-tool set: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression, image metadata, object inspection, USB inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools. Use `make host` when you specifically want the hosted POSIX comparison build or a quicker bring-up loop for a platform feature that is not native yet. Use `make freestanding-macos` for the older Apple-ld/libSystem comparison build.
+On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default, but the normal local build path is still `make freestanding`: on local macOS/aarch64 it builds the project-linked Mach-O target under `build/newlinker-macos-aarch64/`. That path compiles with Clang, links final executables with the in-tree linker, uses the project runtime and `_start`, and is intended to produce no-standard-library, no-dylib-import tools. The current Darwin project-linked surface covers the current 196-tool set: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression, image metadata, object inspection, USB inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools. Use `make host` when you specifically want the hosted POSIX comparison build or a quicker bring-up loop for a platform feature that is not native yet. Use `make freestanding-macos` for the older Apple-ld/libSystem comparison build.
 
 On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
 runtime, or the Microsoft C runtime. The important build-time tool is a C
@@ -114,7 +114,7 @@ layer for common file, process, terminal, network, and identity entry points.
 For `ncc` bootstrap experiments, `scripts/build-freestanding-newlinker.sh` also accepts
 `NEWLINKER_CC=build/host-linux-x86_64/ncc NEWLINKER_LTO=1`. In that mode each
 tool link is driven through `ncc -flto -nostdlib -static`, using the compiler's
-in-tree native ELF linker path. This currently builds the full 195-tool Linux
+in-tree native ELF linker path. This currently builds the full 197-tool Linux
 x86-64 freestanding set and is useful for measuring native `ncc` whole-program
 object LTO separately from GCC/Clang LTO.
 The native no-CRT Windows PE path is `tests/windows/build-windows-freestanding.ps1`. It now

@@ -51,4 +51,4 @@ JSON mode limitation: full structured output for this tool is not implemented ye
 
 ## SEE ALSO
 
-sha256sum, sha512sum, wc
+sha1sum, sha256sum, sha512sum, wc

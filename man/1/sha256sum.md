@@ -50,4 +50,4 @@ JSON mode limitation: full structured output for this tool is not implemented ye
 
 ## SEE ALSO
 
-md5sum, sha512sum
+md5sum, sha1sum, sha512sum

@@ -3,11 +3,52 @@
 #include "tool_util.h"
 
 #define BASE64_BUFFER_SIZE 4096U
+#define BASE64_OUTPUT_BUFFER_SIZE 8192U
 
 static const char BASE64_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static int decode_mode;
 static int wrap_columns = 76;
+
+typedef struct {
+    unsigned char data[BASE64_OUTPUT_BUFFER_SIZE];
+    size_t len;
+} Base64Output;
+
+static int output_flush(Base64Output *output) {
+    if (output->len == 0U) {
+        return 0;
+    }
+    if (rt_write_all(1, output->data, output->len) != 0) {
+        return -1;
+    }
+    output->len = 0U;
+    return 0;
+}
+
+static int output_append(Base64Output *output, const unsigned char *data, size_t len) {
+    size_t i;
+
+    if (len > sizeof(output->data)) {
+        if (output_flush(output) != 0) {
+            return -1;
+        }
+        return rt_write_all(1, data, len);
+    }
+    if (output->len + len > sizeof(output->data) && output_flush(output) != 0) {
+        return -1;
+    }
+    for (i = 0U; i < len; ++i) {
+        output->data[output->len + i] = data[i];
+    }
+    output->len += len;
+    return 0;
+}
+
+static int output_append_char(Base64Output *output, char ch) {
+    unsigned char value = (unsigned char)ch;
+    return output_append(output, &value, 1U);
+}
 
 static void print_usage(void) {
     tool_write_usage("base64", "[-d] [-w COLS] [FILE]");
@@ -25,9 +66,12 @@ static int base64_value(char ch) {
 static int encode_fd(int fd) {
     unsigned char input[BASE64_BUFFER_SIZE];
     unsigned char carry[3];
+    Base64Output output;
     int carry_count = 0;
     long bytes;
     int column = 0;
+
+    output.len = 0U;
 
     while ((bytes = platform_read(fd, input, sizeof(input))) > 0) {
         long i;
@@ -45,10 +89,10 @@ static int encode_fd(int fd) {
                 out[2] = BASE64_ALPHABET[((b1 << 2U) | (b2 >> 6U)) & 0x3fU];
                 out[3] = BASE64_ALPHABET[b2 & 0x3fU];
                 for (j = 0; j < 4; ++j) {
-                    if (rt_write_char(1, out[j]) != 0) return -1;
+                    if (output_append_char(&output, out[j]) != 0) return -1;
                     column += 1;
                     if (wrap_columns > 0 && column >= wrap_columns) {
-                        if (rt_write_char(1, '\n') != 0) return -1;
+                        if (output_append_char(&output, '\n') != 0) return -1;
                         column = 0;
                     }
                 }
@@ -69,35 +113,38 @@ static int encode_fd(int fd) {
             out[2] = carry_count > 1 ? BASE64_ALPHABET[((b1 << 2U) | (b2 >> 6U)) & 0x3fU] : '=';
             out[3] = '=';
             for (j = 0; j < 4; ++j) {
-                if (rt_write_char(1, out[j]) != 0) return -1;
+                if (output_append_char(&output, out[j]) != 0) return -1;
                 column += 1;
                 if (wrap_columns > 0 && column >= wrap_columns) {
-                    if (rt_write_char(1, '\n') != 0) return -1;
+                    if (output_append_char(&output, '\n') != 0) return -1;
                     column = 0;
                 }
             }
     }
     if (column != 0) {
-        return rt_write_char(1, '\n');
+        if (output_append_char(&output, '\n') != 0) return -1;
     }
-    return 0;
+    return output_flush(&output);
 }
 
-static int decode_quad(const int values[4], int pads) {
+static int decode_quad(Base64Output *output, const int values[4], int pads) {
     unsigned char out[3];
 
     out[0] = (unsigned char)((values[0] << 2U) | ((values[1] >> 4U) & 0x03U));
     out[1] = (unsigned char)(((values[1] & 0x0fU) << 4U) | ((values[2] >> 2U) & 0x0fU));
     out[2] = (unsigned char)(((values[2] & 0x03U) << 6U) | values[3]);
-    if (rt_write_all(1, out, (size_t)(3 - pads)) != 0) return -1;
-    return 0;
+    return output_append(output, out, (size_t)(3 - pads));
 }
 
 static int decode_fd(int fd) {
     char input[BASE64_BUFFER_SIZE];
+    Base64Output output;
     int values[4];
     int value_count = 0;
+    int pad_count = 0;
     long bytes;
+
+    output.len = 0U;
 
     while ((bytes = platform_read(fd, input, sizeof(input))) > 0) {
         long i;
@@ -108,20 +155,23 @@ static int decode_fd(int fd) {
             if (rt_is_space(ch)) continue;
             if (ch == '=') {
                 values[value_count++] = 0;
+                pad_count += 1;
             } else {
                 value = base64_value(ch);
                 if (value < 0) return -1;
+                if (pad_count > 0) return -1;
                 values[value_count++] = value;
             }
             if (value_count == 4) {
-                int pads = (input[i] == '=') ? 1 : 0;
-                if (i > 0 && input[i - 1] == '=') pads = 2;
-                if (decode_quad(values, pads) != 0) return -1;
+                if (pad_count > 2) return -1;
+                if (decode_quad(&output, values, pad_count) != 0) return -1;
                 value_count = 0;
+                pad_count = 0;
             }
         }
     }
-    return bytes < 0 || value_count != 0 ? -1 : 0;
+    if (bytes < 0 || value_count != 0) return -1;
+    return output_flush(&output);
 }
 
 int main(int argc, char **argv) {

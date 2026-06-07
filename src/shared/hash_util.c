@@ -2,7 +2,7 @@
 #include "platform.h"
 #include "runtime.h"
 
-#define HASH_STREAM_BUFFER_SIZE 4096
+#define HASH_STREAM_BUFFER_SIZE 65536
 
 void hash_to_hex(const unsigned char *digest, size_t digest_size, char *hex_out) {
     static const char digits[] = "0123456789abcdef";
@@ -32,6 +32,25 @@ int hash_md5_stream(int fd, unsigned char out[HASH_MD5_SIZE]) {
         crypto_md5_update(&ctx, buffer, (size_t)bytes);
     }
     crypto_md5_final(&ctx, out);
+    return 0;
+}
+
+int hash_sha1_stream(int fd, unsigned char out[HASH_SHA1_SIZE]) {
+    CryptoSha1Context ctx;
+    unsigned char buffer[HASH_STREAM_BUFFER_SIZE];
+
+    crypto_sha1_init(&ctx);
+    for (;;) {
+        long bytes = platform_read(fd, buffer, sizeof(buffer));
+        if (bytes < 0) {
+            return -1;
+        }
+        if (bytes == 0) {
+            break;
+        }
+        crypto_sha1_update(&ctx, buffer, (size_t)bytes);
+    }
+    crypto_sha1_final(&ctx, out);
     return 0;
 }
 

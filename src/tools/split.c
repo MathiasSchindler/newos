@@ -7,6 +7,7 @@
 #define SPLIT_MODE_LINES 1
 #define SPLIT_MODE_BYTES 2
 #define SPLIT_MODE_LINE_BYTES 3
+#define SPLIT_IO_BUFFER_SIZE 8192U
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-l COUNT | -b SIZE | -C SIZE | -n CHUNKS] [-a SUFFIX_LEN] [-d] [file [prefix]]");
@@ -363,7 +364,7 @@ int main(int argc, char **argv) {
     unsigned long long units_in_part = 0ULL;
     unsigned long long suffix_length = 2ULL;
     int numeric_suffixes = 0;
-    char buffer[4096];
+    char buffer[SPLIT_IO_BUFFER_SIZE];
     int saw_input = 0;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
@@ -502,7 +503,6 @@ int main(int argc, char **argv) {
 
     for (;;) {
         long bytes_read = platform_read(input_fd, buffer, sizeof(buffer));
-        long i;
 
         if (bytes_read < 0) {
             tool_close_input(input_fd, should_close);
@@ -517,30 +517,80 @@ int main(int argc, char **argv) {
         }
 
         saw_input = 1;
-        for (i = 0; i < bytes_read; ++i) {
-            if (ensure_output_open(&out_fd, prefix, &part_index, suffix_length, numeric_suffixes) != 0) {
-                tool_close_input(input_fd, should_close);
-                return 1;
-            }
+        if (mode == SPLIT_MODE_LINES) {
+            size_t start = 0U;
+            long i;
 
-            if (rt_write_all(out_fd, &buffer[i], 1U) != 0) {
-                tool_close_input(input_fd, should_close);
-                platform_close(out_fd);
-                tool_write_error("split", "write error", 0);
-                return 1;
-            }
-
-            if (mode == SPLIT_MODE_LINES) {
+            for (i = 0; i < bytes_read; ++i) {
                 if (buffer[i] == '\n') {
                     units_in_part += 1ULL;
                     if (units_in_part >= limit) {
+                        size_t write_len = (size_t)i + 1U - start;
+                        if (write_len > 0U) {
+                            if (ensure_output_open(&out_fd, prefix, &part_index, suffix_length, numeric_suffixes) != 0) {
+                                tool_close_input(input_fd, should_close);
+                                return 1;
+                            }
+                            if (rt_write_all(out_fd, buffer + start, write_len) != 0) {
+                                tool_close_input(input_fd, should_close);
+                                platform_close(out_fd);
+                                tool_write_error("split", "write error", 0);
+                                return 1;
+                            }
+                        }
                         platform_close(out_fd);
                         out_fd = -1;
                         units_in_part = 0ULL;
+                        start = (size_t)i + 1U;
                     }
                 }
-            } else {
-                units_in_part += 1ULL;
+            }
+
+            if (start < (size_t)bytes_read) {
+                size_t write_len = (size_t)bytes_read - start;
+                if (ensure_output_open(&out_fd, prefix, &part_index, suffix_length, numeric_suffixes) != 0) {
+                    tool_close_input(input_fd, should_close);
+                    return 1;
+                }
+                if (rt_write_all(out_fd, buffer + start, write_len) != 0) {
+                    tool_close_input(input_fd, should_close);
+                    platform_close(out_fd);
+                    tool_write_error("split", "write error", 0);
+                    return 1;
+                }
+            }
+        } else {
+            size_t offset = 0U;
+
+            while (offset < (size_t)bytes_read) {
+                unsigned long long remaining_in_part = limit - units_in_part;
+                size_t write_len = (size_t)bytes_read - offset;
+
+                if ((unsigned long long)write_len > remaining_in_part) {
+                    write_len = (size_t)remaining_in_part;
+                }
+                if (write_len == 0U) {
+                    if (out_fd >= 0) {
+                        platform_close(out_fd);
+                        out_fd = -1;
+                    }
+                    units_in_part = 0ULL;
+                    continue;
+                }
+
+                if (ensure_output_open(&out_fd, prefix, &part_index, suffix_length, numeric_suffixes) != 0) {
+                    tool_close_input(input_fd, should_close);
+                    return 1;
+                }
+                if (rt_write_all(out_fd, buffer + offset, write_len) != 0) {
+                    tool_close_input(input_fd, should_close);
+                    platform_close(out_fd);
+                    tool_write_error("split", "write error", 0);
+                    return 1;
+                }
+
+                offset += write_len;
+                units_in_part += (unsigned long long)write_len;
                 if (units_in_part >= limit) {
                     platform_close(out_fd);
                     out_fd = -1;
