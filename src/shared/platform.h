@@ -8,6 +8,7 @@
 #define PLATFORM_GROUP_CAPACITY 32
 #define PLATFORM_TERMINAL_STATE_CAPACITY 128
 #define PLATFORM_TLS_OPAQUE_WORDS 8
+#define PLATFORM_USB_PATH_CAPACITY 256
 #define PLATFORM_PING_DEFAULT_COUNT 4U
 #define PLATFORM_PING_DEFAULT_INTERVAL_SECONDS 1U
 #define PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS 1U
@@ -232,6 +233,29 @@ typedef struct {
     long long not_after;
 } PlatformTlsPeerInfo;
 
+typedef struct {
+    char path[PLATFORM_USB_PATH_CAPACITY];
+    unsigned int bus_number;
+    unsigned int device_address;
+    unsigned int vendor_id;
+    unsigned int product_id;
+    unsigned int device_class;
+    unsigned int device_subclass;
+    unsigned int device_protocol;
+    unsigned int configuration_count;
+} PlatformUsbDevice;
+
+typedef struct {
+    unsigned long long handle;
+    unsigned long long device_service;
+    unsigned long long interface_service;
+    unsigned long long interface_handle;
+    unsigned int claimed_interface;
+    unsigned int interface_endpoint_count;
+    int claimed;
+    int active;
+} PlatformUsbHandle;
+
 typedef int (*PlatformThreadMain)(void *arg);
 
 typedef struct {
@@ -411,6 +435,37 @@ int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_
 long platform_tls_read(PlatformTlsClient *client, void *buffer, size_t count);
 long platform_tls_write(PlatformTlsClient *client, const void *buffer, size_t count);
 void platform_tls_close(PlatformTlsClient *client);
+int platform_usb_list_devices(PlatformUsbDevice *entries_out, size_t entry_capacity, size_t *count_out);
+int platform_usb_open(const PlatformUsbDevice *device, PlatformUsbHandle *handle_out);
+int platform_usb_close(PlatformUsbHandle *handle);
+int platform_usb_claim_interface(PlatformUsbHandle *handle, unsigned int interface_number);
+int platform_usb_release_interface(PlatformUsbHandle *handle, unsigned int interface_number);
+int platform_usb_control_transfer(
+    PlatformUsbHandle *handle,
+    unsigned int request_type,
+    unsigned int request,
+    unsigned int value,
+    unsigned int index,
+    unsigned char *data,
+    size_t length,
+    unsigned int timeout_milliseconds,
+    size_t *transferred_out
+);
+int platform_usb_bulk_transfer(
+    PlatformUsbHandle *handle,
+    unsigned int endpoint,
+    unsigned char *data,
+    size_t length,
+    unsigned int timeout_milliseconds,
+    size_t *transferred_out
+);
+int platform_usb_read_configuration_descriptor(
+    PlatformUsbHandle *handle,
+    unsigned int configuration_index,
+    unsigned char *buffer,
+    size_t buffer_size,
+    size_t *length_out
+);
 int platform_list_network_links(PlatformNetworkLink *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_list_network_addresses(
     PlatformNetworkAddress *entries_out,

@@ -115,10 +115,13 @@
 
 #define FOREACH_CRYPTO_SOURCE(X) \
     X("src/shared/crypto/aes128.c") \
+    X("src/shared/crypto/aes_cmac.c") \
     X("src/shared/crypto/aes128_gcm.c") \
+    X("src/shared/crypto/brainpoolp256r1.c") \
     X("src/shared/crypto/crypto_util.c") \
     X("src/shared/crypto/curve25519.c") \
     X("src/shared/crypto/md5.c") \
+    X("src/shared/crypto/sha1.c") \
     X("src/shared/crypto/sha256.c") \
     X("src/shared/crypto/sha512.c") \
     X("src/shared/crypto/hmac_sha256.c") \
@@ -137,6 +140,11 @@
     X("src/shared/tls/tls13_handshake.c") \
     X("src/shared/tls/tls13_record.c") \
     X("src/shared/tls/tls13_transcript.c")
+
+/* -- USB descriptor parsing and platform transport ----------------------- */
+
+#define FOREACH_USB_SOURCE(X) \
+    X("src/shared/usb.c")
 
 /* ── terminal UI helpers ────────────────────────────────────────────────── */
 

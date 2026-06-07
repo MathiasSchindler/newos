@@ -172,11 +172,17 @@ IMAGE_SOURCES := $(shell grep -oE '"src/shared/(image/[^"]+|crypto/(sha256|p256)
 IMAGE_TOOLS := imginfo imgcheck imgmeta c2pa
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 TLS_SOURCES := $(shell grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+USB_SOURCES := $(shell grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"')
+HOST_USB_PLATFORM_SOURCES := src/platform/posix/usb.c
+TARGET_USB_PLATFORM_SOURCES := src/platform/linux/usb.c
+MACOS_USB_PLATFORM_SOURCES := src/platform/macos/iokit.c src/platform/macos/usb.c
+WINDOWS_USB_PLATFORM_SOURCES := src/platform/windows/usb.c
 TUI_SOURCES := $(shell grep -oE '"src/shared/tui\.c"' src/compiler/source_manifest.h | tr -d '"')
 FONTRENDER_SOURCES := $(shell grep -oE '"src/shared/(fontrender_runtime|fontrender/[^"]+)\.c"' src/compiler/source_manifest.h | tr -d '"')
 FONTRENDER_DEPS := $(FONTRENDER_SOURCES) src/shared/fontrender_runtime.h $(wildcard src/shared/fontrender/*.h src/shared/fontrender/fontrender/*.h)
 FONTTEST_SOURCE := tests/fixtures/fontrender/fonttest.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
+CRYPTO_USB_TEST_SOURCE := tests/fixtures/crypto_usb_test.c
 HASH_SOURCES := \
 	$(shell grep -oE '"src/shared/hash_util\.c"' src/compiler/source_manifest.h | tr -d '"') \
 	src/shared/crypto/md5.c \
@@ -289,9 +295,9 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall run-userland test test-phase1 test-smoke test-freestanding test-userland test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
+.PHONY: all host freestanding freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall run-userland test test-crypto-usb test-phase1 test-smoke test-freestanding test-userland test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
 
-test: test-freestanding test-userland test-phase1 test-smoke
+test: test-crypto-usb test-freestanding test-userland test-phase1 test-smoke
 
 ifeq ($(LOCAL_PLATFORM_ONLY),1)
 run-userland:
@@ -313,6 +319,12 @@ test-inception: inception
 
 test-linker-cli: $(BUILD_DIR)/linker
 	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" sh ./tests/suites/linker_cli.sh
+
+test-crypto-usb: $(BUILD_DIR)/tests/crypto_usb_test
+	$<
+
+$(BUILD_DIR)/tests/crypto_usb_test: $(CRYPTO_USB_TEST_SOURCE) src/shared/crypto/sha1.c src/shared/crypto/sha1.h src/shared/crypto/aes_cmac.c src/shared/crypto/aes_cmac.h src/shared/crypto/aes128.c src/shared/crypto/aes128.h src/shared/crypto/brainpoolp256r1.c src/shared/crypto/brainpoolp256r1.h $(USB_SOURCES) src/shared/usb.h src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime.h src/platform/posix/fs.c | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< src/shared/crypto/sha1.c src/shared/crypto/aes_cmac.c src/shared/crypto/aes128.c src/shared/crypto/brainpoolp256r1.c $(USB_SOURCES) src/shared/runtime/memory.c src/shared/runtime/string.c src/platform/posix/fs.c -o $@
 
 macos-newlinker-tiny: $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny-lto
 
@@ -366,6 +378,8 @@ MULTICALL_SUPPORT_SOURCES = $(sort \
 	$(TLS_SOURCES) \
 	$(TUI_SOURCES) \
 	$(HASH_SOURCES) \
+	$(USB_SOURCES) \
+	$(TARGET_USB_PLATFORM_SOURCES) \
 	$(SSH_TRANSPORT_SOURCES) \
 	$(SSH_CLIENT_SOURCES) \
 	$(SSHD_TOOL_SOURCES) \
