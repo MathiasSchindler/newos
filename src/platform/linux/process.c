@@ -15,6 +15,21 @@ static size_t linux_env_raw_used = 0U;
 static int linux_env_initialized = 0;
 static int linux_random_fd = -2;
 
+typedef struct {
+    long tv_sec;
+    long tv_usec;
+} LinuxProcessTimeval;
+
+typedef struct {
+    LinuxProcessTimeval ru_utime;
+    LinuxProcessTimeval ru_stime;
+    long rest[14];
+} LinuxProcessRusage;
+
+static unsigned long long linux_process_timeval_to_ns(const LinuxProcessTimeval *value) {
+    return ((unsigned long long)value->tv_sec * 1000000000ULL) + ((unsigned long long)value->tv_usec * 1000ULL);
+}
+
 static int linux_path_has_slash(const char *path) {
     unsigned long i = 0;
 
@@ -899,8 +914,9 @@ int platform_shutdown_system(int action) {
                           0) < 0 ? -1 : 0;
 }
 
-int platform_wait_process(int pid, int *exit_status_out) {
+int platform_wait_process_usage(int pid, int *exit_status_out, PlatformProcessUsage *usage_out) {
     int status = 0;
+    LinuxProcessRusage usage;
     long result;
 
     if (exit_status_out == 0) {
@@ -908,14 +924,22 @@ int platform_wait_process(int pid, int *exit_status_out) {
     }
 
     do {
-        result = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, 0, 0);
+        result = linux_syscall4(LINUX_SYS_WAIT4, pid, (long)&status, 0, (long)&usage);
     } while (result == -LINUX_EINTR);
     if (result < 0) {
         return -1;
     }
 
     *exit_status_out = linux_decode_wait_status(status);
+    if (usage_out != 0) {
+        usage_out->user_time_ns = linux_process_timeval_to_ns(&usage.ru_utime);
+        usage_out->system_time_ns = linux_process_timeval_to_ns(&usage.ru_stime);
+    }
     return 0;
+}
+
+int platform_wait_process(int pid, int *exit_status_out) {
+    return platform_wait_process_usage(pid, exit_status_out, 0);
 }
 
 int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {

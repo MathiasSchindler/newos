@@ -257,6 +257,20 @@ static int macos_newlinker_streq(const char *left, const char *right) {
 	return left[index] == '\0' && right[index] == '\0';
 }
 
+static int macos_newlinker_has_slash(const char *text) {
+	size_t index = 0;
+	if (text == 0) {
+		return 0;
+	}
+	while (text[index] != '\0') {
+		if (text[index] == '/') {
+			return 1;
+		}
+		index += 1U;
+	}
+	return 0;
+}
+
 static int macos_newlinker_env_name_matches(const char *entry, const char *name) {
 	size_t index = 0;
 	if (entry == 0 || name == 0 || name[0] == '\0') {
@@ -982,19 +996,31 @@ MACOS_NEWLINKER_EXPORT int fstat(int fd, void *stat_info) {
 }
 
 MACOS_NEWLINKER_EXPORT int fork(void) {
-	return (int)darwin_syscall0(DARWIN_SYS_FORK);
+	register long x16 __asm__("x16") = DARWIN_SYS_FORK;
+	register long x0 __asm__("x0");
+	register long x1 __asm__("x1");
+
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "=r"(x0), "=r"(x1), "+r"(x16) : : "memory", "cc");
+	if (x0 < 0) {
+		return (int)x0;
+	}
+	return x1 != 0 ? 0 : (int)x0;
 }
 
 MACOS_NEWLINKER_EXPORT int dup2(int old_fd, int new_fd) {
 	return (int)darwin_syscall2(DARWIN_SYS_DUP2, (long)old_fd, (long)new_fd);
 }
 
-MACOS_NEWLINKER_RETAIN_EXPORT int waitpid(int pid, int *status, int options) {
-	long result = darwin_syscall4(DARWIN_SYS_WAIT4, (long)pid, (long)status, (long)options, 0);
+MACOS_NEWLINKER_RETAIN_EXPORT int wait4(int pid, int *status, int options, void *usage) {
+	long result = darwin_syscall4(DARWIN_SYS_WAIT4, (long)pid, (long)status, (long)options, (long)usage);
 	if (result < 0 && pid > 0) {
-		result = darwin_syscall4(DARWIN_SYS_WAIT4, -1, (long)status, (long)options, 0);
+		result = darwin_syscall4(DARWIN_SYS_WAIT4, -1, (long)status, (long)options, (long)usage);
 	}
 	return (int)result;
+}
+
+MACOS_NEWLINKER_RETAIN_EXPORT int waitpid(int pid, int *status, int options) {
+	return wait4(pid, status, options, 0);
 }
 
 MACOS_NEWLINKER_EXPORT int chdir(const char *path) {
@@ -1122,9 +1148,68 @@ MACOS_NEWLINKER_EXPORT int pipe(int fds[2]) {
 	return 0;
 }
 
+static int macos_newlinker_execve_raw(const char *file, char *const argv[], char *const environment[]) {
+	long result = darwin_syscall3(DARWIN_SYS_EXECVE, (long)file, (long)argv, (long)environment);
+	if (result < 0) {
+		macos_newlinker_errno = (int)(-result);
+		return -1;
+	}
+	return 0;
+}
+
 MACOS_NEWLINKER_EXPORT int execvp(const char *file, char *const argv[]) {
-	char **environment = environ != 0 ? environ : macos_newlinker_empty_environment;
-	return darwin_syscall3(DARWIN_SYS_EXECVE, (long)file, (long)argv, (long)environment) < 0 ? -1 : 0;
+	char **environment = macos_newlinker_empty_environment;
+	const char *path;
+	size_t file_length;
+	size_t path_index = 0U;
+
+	if (file == 0 || file[0] == '\0' || argv == 0) {
+		macos_newlinker_errno = 2;
+		return -1;
+	}
+	if (macos_newlinker_has_slash(file)) {
+		return macos_newlinker_execve_raw(file, argv, environment);
+	}
+
+	path = "/bin:/usr/bin";
+	file_length = macos_newlinker_strlen(file);
+
+	for (;;) {
+		char candidate[MACOS_NEWLINKER_MAXPATHLEN];
+		size_t component_start = path_index;
+		size_t component_length;
+		size_t used = 0U;
+		size_t i;
+
+		while (path[path_index] != '\0' && path[path_index] != ':') {
+			path_index += 1U;
+		}
+		component_length = path_index - component_start;
+
+		if ((component_length == 0U ? 1U : component_length) + 1U + file_length + 1U <= sizeof(candidate)) {
+			if (component_length == 0U) {
+				candidate[used++] = '.';
+			} else {
+				for (i = 0U; i < component_length; ++i) {
+					candidate[used++] = path[component_start + i];
+				}
+			}
+			if (used > 0U && candidate[used - 1U] != '/') {
+				candidate[used++] = '/';
+			}
+			for (i = 0U; i < file_length; ++i) {
+				candidate[used++] = file[i];
+			}
+			candidate[used] = '\0';
+			(void)macos_newlinker_execve_raw(candidate, argv, environment);
+		}
+
+		if (path[path_index] == '\0') {
+			break;
+		}
+		path_index += 1U;
+	}
+	return -1;
 }
 
 MACOS_NEWLINKER_EXPORT int setenv(const char *name, const char *value, int overwrite) {

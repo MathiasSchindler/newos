@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/proc.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/stat.h>
@@ -1405,17 +1406,30 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
     return -1;
 }
 
-int platform_wait_process(int pid, int *exit_status_out) {
+static unsigned long long macos_timeval_to_ns(const struct timeval *value) {
+    return ((unsigned long long)value->tv_sec * 1000000000ULL) + ((unsigned long long)value->tv_usec * 1000ULL);
+}
+
+int platform_wait_process_usage(int pid, int *exit_status_out, PlatformProcessUsage *usage_out) {
     int status = 0;
+    struct rusage usage;
 
     if (exit_status_out == 0) {
         return -1;
     }
-    if (waitpid(pid, &status, 0) < 0) {
+    if (wait4(pid, &status, 0, &usage) < 0) {
         return -1;
     }
     *exit_status_out = decode_wait_status(status);
+    if (usage_out != 0) {
+        usage_out->user_time_ns = macos_timeval_to_ns(&usage.ru_utime);
+        usage_out->system_time_ns = macos_timeval_to_ns(&usage.ru_stime);
+    }
     return 0;
+}
+
+int platform_wait_process(int pid, int *exit_status_out) {
+    return platform_wait_process_usage(pid, exit_status_out, 0);
 }
 
 int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {

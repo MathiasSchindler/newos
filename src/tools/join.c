@@ -26,6 +26,8 @@ typedef struct {
     size_t output_field_count;
 } JoinOptions;
 
+static ToolOutputBuffer join_output;
+
 static int store_line(char lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY], size_t *count, const char *line, size_t len) {
     size_t copy_len = len;
 
@@ -252,7 +254,7 @@ static int write_separator(char delimiter, int *first_out) {
         return 0;
     }
 
-    return rt_write_char(1, delimiter == '\0' ? ' ' : delimiter);
+    return tool_output_buffer_write_char(&join_output, delimiter == '\0' ? ' ' : delimiter);
 }
 
 static int emit_text_field(const char *text, size_t len, char delimiter, int *first_out) {
@@ -260,7 +262,7 @@ static int emit_text_field(const char *text, size_t len, char delimiter, int *fi
         return -1;
     }
 
-    return rt_write_all(1, text, len);
+    return tool_output_buffer_write(&join_output, text, len);
 }
 
 static int emit_fields_except(const char *line, unsigned long long skip_field, char delimiter, int *first_out) {
@@ -410,7 +412,7 @@ static int emit_selected_line(const char *left, const char *right, const JoinOpt
         }
     }
 
-    return rt_write_char(1, '\n');
+    return tool_output_buffer_write_char(&join_output, '\n');
 }
 
 static int emit_default_line(const char *left, const char *right, const JoinOptions *options) {
@@ -429,7 +431,7 @@ static int emit_default_line(const char *left, const char *right, const JoinOpti
     if (emit_optional_value(key, found, options, &first) != 0 ||
         emit_fields_except(left, options->left_field, options->delimiter, &first) != 0 ||
         emit_fields_except(right, options->right_field, options->delimiter, &first) != 0 ||
-        rt_write_char(1, '\n') != 0) {
+        tool_output_buffer_write_char(&join_output, '\n') != 0) {
         return -1;
     }
 
@@ -447,16 +449,19 @@ static int emit_output_line(const char *left, const char *right, const JoinOptio
 static int join_files(const char *left_path, const char *right_path, const JoinOptions *options) {
     static char left_lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
     static char right_lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
-    int right_matched[JOIN_MAX_LINES];
+    static char left_keys[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
+    static char right_keys[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
     size_t left_count = 0;
     size_t right_count = 0;
     int left_fd;
     int left_close;
     int right_fd;
     int right_close;
+    size_t left_index = 0U;
+    size_t right_index = 0U;
     size_t i;
 
-    rt_memset(right_matched, 0, sizeof(right_matched));
+    tool_output_buffer_init(&join_output, 1);
 
     if (tool_open_input(left_path, &left_fd, &left_close) != 0) {
         tool_write_error("join", "cannot open ", left_path);
@@ -483,50 +488,73 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
     tool_close_input(right_fd, right_close);
 
     for (i = 0; i < left_count; ++i) {
-        char left_key[JOIN_LINE_CAPACITY];
-        int matched = 0;
-        size_t j;
-
-        if (extract_field(left_lines[i], options->left_field, options->delimiter, left_key, sizeof(left_key)) != 0) {
-            left_key[0] = '\0';
+        if (extract_field(left_lines[i], options->left_field, options->delimiter, left_keys[i], sizeof(left_keys[i])) != 0) {
+            left_keys[i][0] = '\0';
         }
+    }
+    for (i = 0; i < right_count; ++i) {
+        if (extract_field(right_lines[i], options->right_field, options->delimiter, right_keys[i], sizeof(right_keys[i])) != 0) {
+            right_keys[i][0] = '\0';
+        }
+    }
 
-        for (j = 0; j < right_count; ++j) {
-            char right_key[JOIN_LINE_CAPACITY];
+    while (left_index < left_count && right_index < right_count) {
+        int comparison = compare_keys(left_keys[left_index], right_keys[right_index], options->ignore_case);
 
-            if (extract_field(right_lines[j], options->right_field, options->delimiter, right_key, sizeof(right_key)) != 0) {
-                right_key[0] = '\0';
+        if (comparison < 0) {
+            if (options->print_unpaired_left && emit_output_line(left_lines[left_index], 0, options) != 0) {
+                return -1;
             }
+            left_index += 1U;
+        } else if (comparison > 0) {
+            if (options->print_unpaired_right && emit_output_line(0, right_lines[right_index], options) != 0) {
+                return -1;
+            }
+            right_index += 1U;
+        } else {
+            size_t left_start = left_index;
+            size_t right_start = right_index;
+            size_t left_end;
+            size_t right_end;
 
-            if (compare_keys(left_key, right_key, options->ignore_case) == 0) {
-                matched = 1;
-                right_matched[j] = 1;
-                if (!options->only_unpaired_left && !options->only_unpaired_right) {
-                    if (emit_output_line(left_lines[i], right_lines[j], options) != 0) {
-                        return -1;
+            while (left_index < left_count && compare_keys(left_keys[left_start], left_keys[left_index], options->ignore_case) == 0) {
+                left_index += 1U;
+            }
+            while (right_index < right_count && compare_keys(right_keys[right_start], right_keys[right_index], options->ignore_case) == 0) {
+                right_index += 1U;
+            }
+            left_end = left_index;
+            right_end = right_index;
+
+            if (!options->only_unpaired_left && !options->only_unpaired_right) {
+                size_t left_group;
+                for (left_group = left_start; left_group < left_end; ++left_group) {
+                    size_t right_group;
+                    for (right_group = right_start; right_group < right_end; ++right_group) {
+                        if (emit_output_line(left_lines[left_group], right_lines[right_group], options) != 0) {
+                            return -1;
+                        }
                     }
                 }
             }
         }
-
-        if (!matched && options->print_unpaired_left) {
-            if (emit_output_line(left_lines[i], 0, options) != 0) {
-                return -1;
-            }
-        }
     }
 
-    if (options->print_unpaired_right) {
-        for (i = 0; i < right_count; ++i) {
-            if (!right_matched[i]) {
-                if (emit_output_line(0, right_lines[i], options) != 0) {
-                    return -1;
-                }
-            }
+    while (left_index < left_count) {
+        if (options->print_unpaired_left && emit_output_line(left_lines[left_index], 0, options) != 0) {
+            return -1;
         }
+        left_index += 1U;
     }
 
-    return 0;
+    while (right_index < right_count) {
+        if (options->print_unpaired_right && emit_output_line(0, right_lines[right_index], options) != 0) {
+            return -1;
+        }
+        right_index += 1U;
+    }
+
+    return tool_output_buffer_flush(&join_output);
 }
 
 int main(int argc, char **argv) {

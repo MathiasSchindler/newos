@@ -2,93 +2,108 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define COMM_MAX_LINES 2048
 #define COMM_LINE_CAPACITY 2048
+#define COMM_INPUT_BUFFER_SIZE 8192
 
 typedef struct {
     int suppress[3];
 } CommOptions;
 
-static char left_lines[COMM_MAX_LINES][COMM_LINE_CAPACITY];
-static char right_lines[COMM_MAX_LINES][COMM_LINE_CAPACITY];
+typedef struct {
+    int fd;
+    int should_close;
+    int eof;
+    char buffer[COMM_INPUT_BUFFER_SIZE];
+    size_t buffer_pos;
+    size_t buffer_len;
+    char line[COMM_LINE_CAPACITY];
+    size_t line_len;
+} CommReader;
 
 static void print_usage(void) {
     tool_write_usage("comm", "[-123] FILE1 FILE2");
 }
 
-static int store_line(char lines[COMM_MAX_LINES][COMM_LINE_CAPACITY], size_t *count, const char *line, size_t len) {
-    size_t copy_len = len;
-
-    if (*count >= COMM_MAX_LINES) {
-        return -1;
-    }
-    if (copy_len >= COMM_LINE_CAPACITY) {
-        copy_len = COMM_LINE_CAPACITY - 1U;
-    }
-
-    memcpy(lines[*count], line, copy_len);
-    lines[*count][copy_len] = '\0';
-    *count += 1U;
-    return 0;
+static void comm_reader_init(CommReader *reader) {
+    rt_memset(reader, 0, sizeof(*reader));
+    reader->fd = -1;
 }
 
-static int collect_lines(int fd, char lines[COMM_MAX_LINES][COMM_LINE_CAPACITY], size_t *count) {
-    char chunk[4096];
-    char current[COMM_LINE_CAPACITY];
-    size_t current_len = 0U;
-    long bytes_read;
+static int comm_reader_open(CommReader *reader, const char *path) {
+    comm_reader_init(reader);
+    return tool_open_input(path, &reader->fd, &reader->should_close);
+}
 
-    *count = 0U;
-    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
-        long i;
+static void comm_reader_close(CommReader *reader) {
+    tool_close_input(reader->fd, reader->should_close);
+    reader->fd = -1;
+}
 
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = chunk[i];
+static int comm_reader_next(CommReader *reader) {
+    reader->line_len = 0U;
 
-            if (ch == '\n') {
-                if (store_line(lines, count, current, current_len) != 0) {
-                    return -1;
+    for (;;) {
+        if (reader->buffer_pos >= reader->buffer_len) {
+            long bytes_read;
+
+            if (reader->eof) {
+                if (reader->line_len > 0U) {
+                    reader->line[reader->line_len] = '\0';
+                    return 1;
                 }
-                current_len = 0U;
-            } else if (current_len + 1U < sizeof(current)) {
-                current[current_len++] = ch;
+                return 0;
+            }
+
+            bytes_read = platform_read(reader->fd, reader->buffer, sizeof(reader->buffer));
+            if (bytes_read < 0) {
+                return -1;
+            }
+            if (bytes_read == 0) {
+                reader->eof = 1;
+                continue;
+            }
+            reader->buffer_pos = 0U;
+            reader->buffer_len = (size_t)bytes_read;
+        }
+
+        while (reader->buffer_pos < reader->buffer_len) {
+            size_t start = reader->buffer_pos;
+            size_t span;
+
+            while (reader->buffer_pos < reader->buffer_len && reader->buffer[reader->buffer_pos] != '\n') {
+                reader->buffer_pos += 1U;
+            }
+            span = reader->buffer_pos - start;
+            if (span > 0U) {
+                size_t available = (sizeof(reader->line) - 1U) - reader->line_len;
+                if (span > available) {
+                    span = available;
+                }
+                if (span > 0U) {
+                    memcpy(reader->line + reader->line_len, reader->buffer + start, span);
+                    reader->line_len += span;
+                }
+            }
+            if (reader->buffer_pos < reader->buffer_len && reader->buffer[reader->buffer_pos] == '\n') {
+                reader->buffer_pos += 1U;
+                reader->line[reader->line_len] = '\0';
+                return 1;
             }
         }
     }
-
-    if (bytes_read < 0) {
-        return -1;
-    }
-    if (current_len > 0U) {
-        return store_line(lines, count, current, current_len);
-    }
-    return 0;
 }
 
-static int read_file_lines(const char *path, char lines[COMM_MAX_LINES][COMM_LINE_CAPACITY], size_t *count) {
-    int fd = -1;
-    int should_close = 0;
-    int result;
-
-    if (tool_open_input(path, &fd, &should_close) != 0) {
-        return -1;
-    }
-    result = collect_lines(fd, lines, count);
-    tool_close_input(fd, should_close);
-    return result;
-}
-
-static int emit_line(const CommOptions *options, int column, const char *line) {
+static int emit_line(ToolOutputBuffer *output, const CommOptions *options, int column, const char *line) {
     int previous;
 
     for (previous = 1; previous < column; ++previous) {
         if (!options->suppress[previous - 1]) {
-            if (rt_write_char(1, '\t') != 0) {
+            if (tool_output_buffer_write_char(output, '\t') != 0) {
                 return -1;
             }
         }
     }
-    if (rt_write_cstr(1, line) != 0 || rt_write_char(1, '\n') != 0) {
+    if (tool_output_buffer_write_cstr(output, line) != 0 || tool_output_buffer_write_char(output, '\n') != 0) {
         return -1;
     }
     return 0;
@@ -109,10 +124,11 @@ static int compare_lines(const char *left, const char *right) {
 int main(int argc, char **argv) {
     CommOptions options;
     int argi = 1;
-    size_t left_count = 0U;
-    size_t right_count = 0U;
-    size_t left_index = 0U;
-    size_t right_index = 0U;
+    CommReader left_reader;
+    CommReader right_reader;
+    ToolOutputBuffer output;
+    int left_status;
+    int right_status;
 
     rt_memset(&options, 0, sizeof(options));
 
@@ -148,44 +164,58 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (read_file_lines(argv[argi], left_lines, &left_count) != 0) {
+    if (comm_reader_open(&left_reader, argv[argi]) != 0) {
         tool_write_error("comm", "cannot read ", argv[argi]);
         return 1;
     }
-    if (read_file_lines(argv[argi + 1], right_lines, &right_count) != 0) {
+    if (comm_reader_open(&right_reader, argv[argi + 1]) != 0) {
+        comm_reader_close(&left_reader);
         tool_write_error("comm", "cannot read ", argv[argi + 1]);
         return 1;
     }
 
-    while (left_index < left_count || right_index < right_count) {
+    tool_output_buffer_init(&output, 1);
+    left_status = comm_reader_next(&left_reader);
+    right_status = comm_reader_next(&right_reader);
+
+    while (left_status > 0 || right_status > 0) {
         int cmp;
 
-        if (left_index >= left_count) {
+        if (left_status <= 0) {
             cmp = 1;
-        } else if (right_index >= right_count) {
+        } else if (right_status <= 0) {
             cmp = -1;
         } else {
-            cmp = compare_lines(left_lines[left_index], right_lines[right_index]);
+            cmp = compare_lines(left_reader.line, right_reader.line);
         }
 
         if (cmp < 0) {
-            if (!options.suppress[0] && emit_line(&options, 1, left_lines[left_index]) != 0) {
+            if (!options.suppress[0] && emit_line(&output, &options, 1, left_reader.line) != 0) {
                 return 1;
             }
-            left_index += 1U;
+            left_status = comm_reader_next(&left_reader);
         } else if (cmp > 0) {
-            if (!options.suppress[1] && emit_line(&options, 2, right_lines[right_index]) != 0) {
+            if (!options.suppress[1] && emit_line(&output, &options, 2, right_reader.line) != 0) {
                 return 1;
             }
-            right_index += 1U;
+            right_status = comm_reader_next(&right_reader);
         } else {
-            if (!options.suppress[2] && emit_line(&options, 3, left_lines[left_index]) != 0) {
+            if (!options.suppress[2] && emit_line(&output, &options, 3, left_reader.line) != 0) {
                 return 1;
             }
-            left_index += 1U;
-            right_index += 1U;
+            left_status = comm_reader_next(&left_reader);
+            right_status = comm_reader_next(&right_reader);
+        }
+
+        if (left_status < 0 || right_status < 0) {
+            tool_write_error("comm", "read error", 0);
+            comm_reader_close(&left_reader);
+            comm_reader_close(&right_reader);
+            return 1;
         }
     }
 
-    return 0;
+    comm_reader_close(&left_reader);
+    comm_reader_close(&right_reader);
+    return tool_output_buffer_flush(&output) == 0 ? 0 : 1;
 }

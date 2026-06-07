@@ -1377,6 +1377,14 @@ int platform_wait_process(int pid, int *exit_status_out) {
     return -1;
 }
 
+int platform_wait_process_usage(int pid, int *exit_status_out, PlatformProcessUsage *usage_out) {
+    if (usage_out != 0) {
+        usage_out->user_time_ns = 0ULL;
+        usage_out->system_time_ns = 0ULL;
+    }
+    return platform_wait_process(pid, exit_status_out);
+}
+
 int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out) {
     (void)pid;
     if (finished_out != 0) *finished_out = 0;

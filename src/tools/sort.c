@@ -4,10 +4,12 @@
 
 #include <limits.h>
 
-#define SORT_MAX_LINES 8192U
+#define SORT_MAX_LINES 16384U
 #define SORT_MAX_INPUTS 8U
 #define SORT_MAX_RUNS 128U
-#define SORT_STORAGE_CAPACITY (2U * 1024U * 1024U)
+#define SORT_IO_BUFFER_SIZE 8192U
+#define SORT_OUTPUT_BUFFER_SIZE 16384U
+#define SORT_STORAGE_CAPACITY (4U * 1024U * 1024U)
 #define SORT_LINE_CAPACITY (64U * 1024U)
 #define SORT_TEMP_PATH_CAPACITY 256U
 
@@ -56,7 +58,7 @@ typedef struct {
     int should_close;
     int finished;
     int have_current;
-    char buffer[2048];
+    char buffer[SORT_IO_BUFFER_SIZE];
     size_t buffer_pos;
     size_t buffer_len;
     SortLineBuilder builder;
@@ -65,10 +67,10 @@ typedef struct {
 
 typedef struct {
     size_t count;
-    SortLine fixed_lines[SORT_MAX_LINES];
-    SortLine *fixed_order[SORT_MAX_LINES];
-    SortLine *fixed_scratch[SORT_MAX_LINES];
-    char fixed_storage[SORT_STORAGE_CAPACITY];
+    SortLine *lines;
+    SortLine **order;
+    SortLine **scratch;
+    char *storage;
     size_t storage_used;
 } SortCollection;
 
@@ -76,6 +78,12 @@ typedef struct {
     size_t count;
     char paths[SORT_MAX_RUNS][SORT_TEMP_PATH_CAPACITY];
 } SortRunSet;
+
+typedef struct {
+    int fd;
+    char buffer[SORT_OUTPUT_BUFFER_SIZE];
+    size_t used;
+} SortOutput;
 
 typedef struct {
     int valid;
@@ -93,6 +101,7 @@ typedef struct {
 } SortHumanKey;
 
 static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs);
+static void sort_collection_free(SortCollection *collection);
 
 static void write_usage(int fd) {
     rt_write_line(fd, "Usage: sort [-bCcdfiMmnrsuV] [--human-numeric-sort] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
@@ -166,12 +175,16 @@ static int line_builder_ensure_capacity(SortLineBuilder *builder, size_t needed)
     return needed <= builder->capacity ? 0 : -1;
 }
 
-static int line_builder_append_char(SortLineBuilder *builder, char ch) {
-    if (line_builder_ensure_capacity(builder, builder->length + 2U) != 0) {
+static int line_builder_append_span(SortLineBuilder *builder, const char *text, size_t length) {
+    if (length == 0U) {
+        return 0;
+    }
+    if (line_builder_ensure_capacity(builder, builder->length + length + 1U) != 0) {
         return -1;
     }
 
-    builder->data[builder->length++] = ch;
+    memcpy(builder->data + builder->length, text, length);
+    builder->length += length;
     builder->data[builder->length] = '\0';
     return 0;
 }
@@ -244,24 +257,39 @@ static int sort_input_read_next(SortInput *input) {
         }
 
         while (input->buffer_pos < input->buffer_len) {
-            char ch = input->buffer[input->buffer_pos++];
+            size_t start = input->buffer_pos;
 
-            if (ch == '\n') {
+            while (input->buffer_pos < input->buffer_len && input->buffer[input->buffer_pos] != '\n') {
+                input->buffer_pos += 1U;
+            }
+
+            if (line_builder_append_span(&input->builder, input->buffer + start, input->buffer_pos - start) != 0) {
+                input->have_current = 0;
+                return SORT_COLLECT_MEMORY_ERROR;
+            }
+            if (input->buffer_pos < input->buffer_len && input->buffer[input->buffer_pos] == '\n') {
+                input->buffer_pos += 1U;
                 input->current.text = input->builder.data != 0 ? input->builder.data : "";
                 input->current.length = input->builder.length;
                 input->have_current = 1;
                 return 1;
             }
-            if (line_builder_append_char(&input->builder, ch) != 0) {
-                input->have_current = 0;
-                return SORT_COLLECT_MEMORY_ERROR;
-            }
         }
     }
 }
 
-static void sort_collection_init(SortCollection *collection) {
+static int sort_collection_init(SortCollection *collection) {
     rt_memset(collection, 0, sizeof(*collection));
+
+    collection->lines = (SortLine *)rt_malloc_array(SORT_MAX_LINES, sizeof(collection->lines[0]));
+    collection->order = (SortLine **)rt_malloc_array(SORT_MAX_LINES, sizeof(collection->order[0]));
+    collection->scratch = (SortLine **)rt_malloc_array(SORT_MAX_LINES, sizeof(collection->scratch[0]));
+    collection->storage = (char *)rt_malloc(SORT_STORAGE_CAPACITY);
+    if (collection->lines == 0 || collection->order == 0 || collection->scratch == 0 || collection->storage == 0) {
+        sort_collection_free(collection);
+        return -1;
+    }
+    return 0;
 }
 
 static void sort_collection_reset(SortCollection *collection) {
@@ -283,11 +311,11 @@ static int sort_collection_store_line(SortCollection *collection, const char *te
         return -1;
     }
 
-    remaining = sizeof(collection->fixed_storage) - collection->storage_used;
+    remaining = SORT_STORAGE_CAPACITY - collection->storage_used;
     if (length >= remaining) {
         return -1;
     }
-    stored_text = collection->fixed_storage + collection->storage_used;
+    stored_text = collection->storage + collection->storage_used;
     collection->storage_used += length + 1U;
 
     if (length > 0U) {
@@ -295,21 +323,25 @@ static int sort_collection_store_line(SortCollection *collection, const char *te
     }
     stored_text[length] = '\0';
 
-    collection->fixed_lines[collection->count].text = stored_text;
-    collection->fixed_lines[collection->count].length = length;
+    collection->lines[collection->count].text = stored_text;
+    collection->lines[collection->count].length = length;
     collection->count += 1U;
     return 0;
 }
 
 static void sort_collection_free(SortCollection *collection) {
-    (void)collection;
+    rt_free(collection->lines);
+    rt_free(collection->order);
+    rt_free(collection->scratch);
+    rt_free(collection->storage);
+    rt_memset(collection, 0, sizeof(*collection));
 }
 
 static void sort_collection_prepare_order(SortCollection *collection) {
     size_t i;
 
     for (i = 0U; i < collection->count; ++i) {
-        collection->fixed_order[i] = &collection->fixed_lines[i];
+        collection->order[i] = &collection->lines[i];
     }
 }
 
@@ -351,25 +383,32 @@ static int collect_external_from_fd(int fd,
                                     SortCollection *collection,
                                     const SortOptions *options,
                                     SortRunSet *runs) {
-    char buffer[2048];
+    char buffer[SORT_IO_BUFFER_SIZE];
     SortLineBuilder builder;
     long bytes_read;
 
     line_builder_init(&builder);
 
     while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
+        size_t index = 0U;
 
-        for (i = 0; i < bytes_read; ++i) {
-            if (buffer[i] == '\n') {
+        while (index < (size_t)bytes_read) {
+            size_t start = index;
+
+            while (index < (size_t)bytes_read && buffer[index] != '\n') {
+                index += 1U;
+            }
+            if (line_builder_append_span(&builder, buffer + start, index - start) != 0) {
+                line_builder_free(&builder);
+                return SORT_COLLECT_MEMORY_ERROR;
+            }
+            if (index < (size_t)bytes_read && buffer[index] == '\n') {
                 if (collect_external_line(collection, options, runs, builder.data != 0 ? builder.data : "", builder.length) != 0) {
                     line_builder_free(&builder);
                     return SORT_COLLECT_MEMORY_ERROR;
                 }
                 line_builder_reset(&builder);
-            } else if (line_builder_append_char(&builder, buffer[i]) != 0) {
-                line_builder_free(&builder);
-                return SORT_COLLECT_MEMORY_ERROR;
+                index += 1U;
             }
         }
     }
@@ -805,10 +844,6 @@ static int compare_human_keys(const SortHumanKey *left, const SortHumanKey *righ
 }
 
 static int parse_month_value(const char *text, size_t length) {
-    static const char *months[] = {
-        "jan", "feb", "mar", "apr", "may", "jun",
-        "jul", "aug", "sep", "oct", "nov", "dec"
-    };
     char folded[3];
     size_t index = 0U;
     int i;
@@ -825,10 +860,26 @@ static int parse_month_value(const char *text, size_t length) {
             return 0;
         }
     }
-    for (i = 0; i < 12; ++i) {
-        if (folded[0] == months[i][0] && folded[1] == months[i][1] && folded[2] == months[i][2]) {
-            return i + 1;
-        }
+    if (folded[0] == 'j') {
+        if (folded[1] == 'a' && folded[2] == 'n') return 1;
+        if (folded[1] == 'u' && folded[2] == 'n') return 6;
+        if (folded[1] == 'u' && folded[2] == 'l') return 7;
+    } else if (folded[0] == 'f') {
+        if (folded[1] == 'e' && folded[2] == 'b') return 2;
+    } else if (folded[0] == 'm') {
+        if (folded[1] == 'a' && folded[2] == 'r') return 3;
+        if (folded[1] == 'a' && folded[2] == 'y') return 5;
+    } else if (folded[0] == 'a') {
+        if (folded[1] == 'p' && folded[2] == 'r') return 4;
+        if (folded[1] == 'u' && folded[2] == 'g') return 8;
+    } else if (folded[0] == 's') {
+        if (folded[1] == 'e' && folded[2] == 'p') return 9;
+    } else if (folded[0] == 'o') {
+        if (folded[1] == 'c' && folded[2] == 't') return 10;
+    } else if (folded[0] == 'n') {
+        if (folded[1] == 'o' && folded[2] == 'v') return 11;
+    } else if (folded[0] == 'd') {
+        if (folded[1] == 'e' && folded[2] == 'c') return 12;
     }
     return 0;
 }
@@ -1003,29 +1054,83 @@ static void sort_lines(SortCollection *collection, const SortOptions *options) {
         return;
     }
 
-    merge_sort_lines(collection->fixed_order, collection->fixed_scratch, 0U, collection->count, options);
+    merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+}
+
+static void sort_output_init(SortOutput *output, int fd) {
+    output->fd = fd;
+    output->used = 0U;
+}
+
+static int sort_output_flush(SortOutput *output) {
+    if (output->used == 0U) {
+        return 0;
+    }
+    if (rt_write_all(output->fd, output->buffer, output->used) != 0) {
+        output->used = 0U;
+        return -1;
+    }
+    output->used = 0U;
+    return 0;
+}
+
+static int sort_output_write(SortOutput *output, const char *text, size_t length) {
+    if (length == 0U) {
+        return 0;
+    }
+    if (length > sizeof(output->buffer)) {
+        if (sort_output_flush(output) != 0) {
+            return -1;
+        }
+        return rt_write_all(output->fd, text, length);
+    }
+    if (output->used + length > sizeof(output->buffer) && sort_output_flush(output) != 0) {
+        return -1;
+    }
+
+    memcpy(output->buffer + output->used, text, length);
+    output->used += length;
+    return 0;
+}
+
+static int sort_output_write_char(SortOutput *output, char ch) {
+    if (output->used == sizeof(output->buffer) && sort_output_flush(output) != 0) {
+        return -1;
+    }
+    output->buffer[output->used++] = ch;
+    return 0;
+}
+
+static int sort_output_write_line(SortOutput *output, const SortLine *line) {
+    if (sort_output_write(output, line->text, line->length) != 0 ||
+        sort_output_write_char(output, '\n') != 0) {
+        return -1;
+    }
+    return 0;
 }
 
 static int write_sorted_output(int fd, const SortCollection *collection, const SortOptions *options) {
     size_t i;
     SortLine *previous = 0;
+    SortOutput output;
+
+    sort_output_init(&output, fd);
 
     for (i = 0U; i < collection->count; ++i) {
-        SortLine *line = collection->fixed_order[i];
+        SortLine *line = collection->order[i];
 
         if (options->unique && previous != 0 && compare_lines(previous, line, options) == 0) {
             continue;
         }
 
-        if ((line->length > 0U && rt_write_all(fd, line->text, line->length) != 0) ||
-            rt_write_char(fd, '\n') != 0) {
+        if (sort_output_write_line(&output, line) != 0) {
             return -1;
         }
 
         previous = line;
     }
 
-    return 0;
+    return sort_output_flush(&output);
 }
 
 static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs) {
@@ -1064,14 +1169,6 @@ static int flush_sort_run(SortCollection *collection, const SortOptions *options
 
     runs->count += 1U;
     sort_collection_reset(collection);
-    return 0;
-}
-
-static int write_sort_line(int fd, const SortLine *line) {
-    if ((line->length > 0U && rt_write_all(fd, line->text, line->length) != 0) ||
-        rt_write_char(fd, '\n') != 0) {
-        return -1;
-    }
     return 0;
 }
 
@@ -1196,10 +1293,12 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
     SortLine previous_line;
     SortInput fixed_inputs[SORT_MAX_INPUTS];
     SortInput *inputs = fixed_inputs;
+    SortOutput output;
     int have_previous = 0;
 
     rt_memset(&previous_line, 0, sizeof(previous_line));
     line_builder_init(&previous_builder);
+    sort_output_init(&output, output_fd);
 
     if ((size_t)input_count > SORT_MAX_INPUTS) {
         line_builder_free(&previous_builder);
@@ -1256,7 +1355,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
         }
 
         if (!options->unique || !have_previous || compare_lines(&previous_line, &inputs[best_index].current, options) != 0) {
-            if (write_sort_line(output_fd, &inputs[best_index].current) != 0) {
+            if (sort_output_write_line(&output, &inputs[best_index].current) != 0) {
                 rt_write_line(2, "sort: write error");
                 line_builder_free(&previous_builder);
                 for (i = 0; i < input_count; ++i) {
@@ -1300,6 +1399,15 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                 active_count -= 1;
             }
         }
+    }
+
+    if (sort_output_flush(&output) != 0) {
+        rt_write_line(2, "sort: write error");
+        line_builder_free(&previous_builder);
+        for (i = 0; i < input_count; ++i) {
+            sort_input_close(&inputs[i]);
+        }
+        return 1;
     }
 
     line_builder_free(&previous_builder);
@@ -1396,14 +1504,17 @@ static int output_conflicts_with_inputs(const char *output_path, int argc, char 
 }
 
 static int sort_regular_inputs(int argc, char **argv, int argi, const SortOptions *options) {
-    static SortCollection collection;
+    SortCollection collection;
     SortRunSet runs;
     int exit_code = 0;
     int output_fd = 1;
     int close_output = 0;
     int i;
 
-    sort_collection_init(&collection);
+    if (sort_collection_init(&collection) != 0) {
+        rt_write_line(2, "sort: input too large for available memory");
+        return 1;
+    }
     sort_run_set_init(&runs);
 
     if (argi == argc) {
@@ -1506,7 +1617,6 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
 }
 
 int main(int argc, char **argv) {
-    static SortCollection collection;
     int exit_code = 0;
     int argi = 1;
     SortOptions options;
@@ -1514,7 +1624,6 @@ int main(int argc, char **argv) {
     int close_output = 0;
 
     rt_memset(&options, 0, sizeof(options));
-    sort_collection_init(&collection);
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         const char *flag;
@@ -1525,7 +1634,6 @@ int main(int argc, char **argv) {
         }
         if (rt_strcmp(argv[argi], "-h") == 0 || rt_strcmp(argv[argi], "--help") == 0) {
             write_usage(1);
-            sort_collection_free(&collection);
             return 0;
         }
         if (rt_strcmp(argv[argi], "--dictionary-order") == 0) {
@@ -1557,7 +1665,6 @@ int main(int argc, char **argv) {
             const char *value = (rt_strcmp(argv[argi], "-k") == 0) ? ((argi + 1 < argc) ? argv[argi + 1] : 0) : argv[argi] + 2;
             if (parse_key_spec(value, &options) != 0) {
                 write_usage(2);
-                sort_collection_free(&collection);
                 return 1;
             }
             argi += (rt_strcmp(argv[argi], "-k") == 0) ? 2 : 1;
@@ -1567,7 +1674,6 @@ int main(int argc, char **argv) {
             const char *value = (rt_strcmp(argv[argi], "-t") == 0) ? ((argi + 1 < argc) ? argv[argi + 1] : 0) : argv[argi] + 2;
             if (value == 0 || value[0] == '\0' || value[1] != '\0') {
                 write_usage(2);
-                sort_collection_free(&collection);
                 return 1;
             }
             options.have_separator = 1;
@@ -1579,7 +1685,6 @@ int main(int argc, char **argv) {
             options.output_path = (rt_strcmp(argv[argi], "-o") == 0) ? ((argi + 1 < argc) ? argv[argi + 1] : 0) : argv[argi] + 2;
             if (options.output_path == 0 || options.output_path[0] == '\0') {
                 write_usage(2);
-                sort_collection_free(&collection);
                 return 1;
             }
             argi += (rt_strcmp(argv[argi], "-o") == 0) ? 2 : 1;
@@ -1617,7 +1722,6 @@ int main(int argc, char **argv) {
                 options.sort_mode = SORT_MODE_VERSION;
             } else {
                 write_usage(2);
-                sort_collection_free(&collection);
                 return 1;
             }
             flag += 1;
@@ -1627,7 +1731,6 @@ int main(int argc, char **argv) {
     }
 
     if (options.check_only) {
-        sort_collection_free(&collection);
         return check_input_sorted(argc, argv, argi, &options);
     }
 
@@ -1637,7 +1740,6 @@ int main(int argc, char **argv) {
             if (output_fd < 0) {
                 rt_write_cstr(2, "sort: cannot open output ");
                 rt_write_line(2, options.output_path);
-                sort_collection_free(&collection);
                 return 1;
             }
             close_output = 1;
@@ -1646,10 +1748,8 @@ int main(int argc, char **argv) {
         if (close_output) {
             (void)platform_close(output_fd);
         }
-        sort_collection_free(&collection);
         return exit_code;
     }
 
-    sort_collection_free(&collection);
     return sort_regular_inputs(argc, argv, argi, &options);
 }

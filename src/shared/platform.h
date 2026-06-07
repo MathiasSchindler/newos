@@ -124,6 +124,11 @@ typedef struct {
 } PlatformMemoryInfo;
 
 typedef struct {
+    unsigned long long user_time_ns;
+    unsigned long long system_time_ns;
+} PlatformProcessUsage;
+
+typedef struct {
     unsigned long long total_bytes;
     unsigned long long free_bytes;
     unsigned long long available_bytes;
@@ -537,6 +542,7 @@ int platform_spawn_process_ex(
 );
 int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out);
 int platform_wait_process(int pid, int *exit_status_out);
+int platform_wait_process_usage(int pid, int *exit_status_out, PlatformProcessUsage *usage_out);
 int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out);
 int platform_wait_process_timeout(
     int pid,

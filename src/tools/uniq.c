@@ -31,7 +31,27 @@ static int should_print_group(unsigned long long count, const UniqOptions *optio
     return 1;
 }
 
-static int emit_group(const char *line, unsigned long long count, const UniqOptions *options) {
+static int write_uint_buffered(ToolOutputBuffer *output, unsigned long long value) {
+    char digits[32];
+    size_t count = 0U;
+
+    if (value == 0ULL) {
+        return tool_output_buffer_write_char(output, '0');
+    }
+    while (value > 0ULL && count < sizeof(digits)) {
+        digits[count++] = (char)('0' + (value % 10ULL));
+        value /= 10ULL;
+    }
+    while (count > 0U) {
+        count -= 1U;
+        if (tool_output_buffer_write_char(output, digits[count]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int emit_group(ToolOutputBuffer *output, const char *line, unsigned long long count, const UniqOptions *options) {
     char terminator = options->zero_terminated ? '\0' : '\n';
 
     if (!should_print_group(count, options)) {
@@ -39,15 +59,15 @@ static int emit_group(const char *line, unsigned long long count, const UniqOpti
     }
 
     if (options->count_only) {
-        if (rt_write_uint(1, count) != 0 || rt_write_char(1, ' ') != 0) {
+        if (write_uint_buffered(output, count) != 0 || tool_output_buffer_write_char(output, ' ') != 0) {
             return -1;
         }
     }
 
-    if (rt_write_cstr(1, line) != 0) {
+    if (tool_output_buffer_write_cstr(output, line) != 0) {
         return -1;
     }
-    return rt_write_char(1, terminator);
+    return tool_output_buffer_write_char(output, terminator);
 }
 
 static char ascii_tolower(char ch) {
@@ -119,14 +139,34 @@ static int uniq_stream(int fd, const UniqOptions *options) {
     int have_previous = 0;
     char record_terminator = options->zero_terminated ? '\0' : '\n';
     long bytes_read;
+    ToolOutputBuffer output;
+
+    tool_output_buffer_init(&output, 1);
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
-        long i;
+        size_t index = 0U;
 
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = chunk[i];
+        while (index < (size_t)bytes_read) {
+            size_t start = index;
+            size_t span;
 
-            if (ch == record_terminator) {
+            while (index < (size_t)bytes_read && chunk[index] != record_terminator) {
+                index += 1U;
+            }
+
+            span = index - start;
+            if (span > 0U) {
+                size_t available = (sizeof(current) - 1U) - current_len;
+                if (span > available) {
+                    span = available;
+                }
+                if (span > 0U) {
+                    memcpy(current + current_len, chunk + start, span);
+                    current_len += span;
+                }
+            }
+
+            if (index < (size_t)bytes_read && chunk[index] == record_terminator) {
                 current[current_len] = '\0';
 
                 if (!have_previous) {
@@ -136,7 +176,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
                 } else if (lines_match(previous, current, options)) {
                     repeat_count += 1ULL;
                 } else {
-                    if (emit_group(previous, repeat_count, options) != 0) {
+                    if (emit_group(&output, previous, repeat_count, options) != 0) {
                         return -1;
                     }
                     rt_copy_string(previous, sizeof(previous), current);
@@ -144,8 +184,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
                 }
 
                 current_len = 0;
-            } else if (current_len + 1U < sizeof(current)) {
-                current[current_len++] = ch;
+                index += 1U;
             }
         }
     }
@@ -164,7 +203,7 @@ static int uniq_stream(int fd, const UniqOptions *options) {
         } else if (lines_match(previous, current, options)) {
             repeat_count += 1ULL;
         } else {
-            if (emit_group(previous, repeat_count, options) != 0) {
+            if (emit_group(&output, previous, repeat_count, options) != 0) {
                 return -1;
             }
             rt_copy_string(previous, sizeof(previous), current);
@@ -173,10 +212,12 @@ static int uniq_stream(int fd, const UniqOptions *options) {
     }
 
     if (have_previous) {
-        return emit_group(previous, repeat_count, options);
+        if (emit_group(&output, previous, repeat_count, options) != 0) {
+            return -1;
+        }
     }
 
-    return 0;
+    return tool_output_buffer_flush(&output);
 }
 
 int main(int argc, char **argv) {

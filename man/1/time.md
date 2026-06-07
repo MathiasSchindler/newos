@@ -17,7 +17,8 @@ time COMMAND [ARG ...]
 ## CURRENT CAPABILITIES
 
 - execute a command through the platform process-spawn interface
-- report wall-clock elapsed time as `real`
+- report monotonic wall-clock elapsed time as `real`
+- report child process user and system CPU time where the platform exposes it
 - preserve the wrapped command's exit status
 - report execution failures with conventional shell-style status values
 
@@ -26,15 +27,15 @@ time COMMAND [ARG ...]
 Timing is printed to standard error as:
 
 ```
-real SECONDS.00
-user 0.00
-sys 0.00
+real SECONDS.MICROS
+user 0.000000
+sys 0.000000
 ```
 
 ## LIMITATIONS
 
-- timing resolution is currently seconds because the shared platform API exposes epoch seconds
-- user and system CPU accounting are not available yet and are reported as zero
+- elapsed timing uses the platform monotonic clock and is printed with six fractional digits
+- user and system CPU accounting depends on platform wait/rusage support and may be zero on fallback platforms
 - shell-reserved-word features such as pipeline timing are outside the standalone tool scope
 
 ## EXAMPLES

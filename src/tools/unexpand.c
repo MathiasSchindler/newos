@@ -3,6 +3,7 @@
 #include "tool_util.h"
 
 #define UNEXPAND_MAX_TABSTOPS 32
+#define UNEXPAND_OUTPUT_BUFFER_SIZE 256U
 
 typedef struct {
     unsigned long long stops[UNEXPAND_MAX_TABSTOPS];
@@ -80,9 +81,23 @@ static unsigned long long next_tabstop(const UnexpandOptions *options, unsigned 
     return column + 1ULL;
 }
 
+static int append_blank_char(char *buffer, size_t *used, char ch) {
+    if (*used == UNEXPAND_OUTPUT_BUFFER_SIZE) {
+        if (rt_write_all(1, buffer, *used) != 0) {
+            return -1;
+        }
+        *used = 0U;
+    }
+    buffer[*used] = ch;
+    *used += 1U;
+    return 0;
+}
+
 static int write_blank_run(unsigned long long start_column,
                            unsigned long long count,
                            const UnexpandOptions *options) {
+    char output[UNEXPAND_OUTPUT_BUFFER_SIZE];
+    size_t used = 0U;
     unsigned long long column = start_column;
 
     while (count > 0ULL) {
@@ -90,13 +105,13 @@ static int write_blank_run(unsigned long long start_column,
         unsigned long long to_next_stop = stop > column ? stop - column : 1ULL;
 
         if (to_next_stop <= count && to_next_stop > 1ULL) {
-            if (rt_write_char(1, '\t') != 0) {
+            if (append_blank_char(output, &used, '\t') != 0) {
                 return -1;
             }
             column += to_next_stop;
             count -= to_next_stop;
         } else {
-            if (rt_write_char(1, ' ') != 0) {
+            if (append_blank_char(output, &used, ' ') != 0) {
                 return -1;
             }
             column += 1ULL;
@@ -104,7 +119,7 @@ static int write_blank_run(unsigned long long start_column,
         }
     }
 
-    return 0;
+    return used == 0U ? 0 : rt_write_all(1, output, used);
 }
 
 static int unexpand_stream(int fd, const UnexpandOptions *options) {

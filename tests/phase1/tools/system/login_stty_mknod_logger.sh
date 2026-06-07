@@ -33,3 +33,7 @@ assert_file_contains "$WORK_DIR/logger.log" '^<5>phase1\[[0-9][0-9]*\]: hello lo
 
 "$ROOT_DIR/build/logger" -s -t phase1 -p err mirrored message >"$WORK_DIR/logger_s.out" 2>"$WORK_DIR/logger_s.err"
 assert_file_contains "$WORK_DIR/logger_s.err" '^phase1\[[0-9][0-9]*\]: mirrored message$' "logger -s did not mirror to stderr"
+
+printf 'stdin one\nstdin two\n' | "$ROOT_DIR/build/logger" -f "$WORK_DIR/logger_stdin.log" -t phase1
+assert_file_contains "$WORK_DIR/logger_stdin.log" '^<6>phase1\[[0-9][0-9]*\]: stdin one$' "logger did not append the first stdin record"
+assert_file_contains "$WORK_DIR/logger_stdin.log" '^<6>phase1\[[0-9][0-9]*\]: stdin two$' "logger did not append the second stdin record"

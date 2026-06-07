@@ -3,6 +3,7 @@
 #include "tool_util.h"
 
 #define LOGGER_LINE_CAPACITY 2048
+#define LOGGER_INPUT_BUFFER_SIZE 4096
 #define LOGGER_TAG_CAPACITY 64
 
 static void logger_usage(const char *program_name) {
@@ -130,22 +131,28 @@ static int log_message(int log_fd, int mirror_stderr, int level, const char *tag
 }
 
 static int read_stdin_and_log(int log_fd, int mirror_stderr, int level, const char *tag) {
+    char input[LOGGER_INPUT_BUFFER_SIZE];
     char line[LOGGER_LINE_CAPACITY];
     size_t used = 0U;
-    char ch;
     long bytes;
     int status = 0;
 
-    while ((bytes = platform_read(0, &ch, 1U)) > 0) {
-        if (ch == '\n') {
-            line[used] = '\0';
-            if (log_message(log_fd, mirror_stderr, level, tag, line) != 0) {
-                status = -1;
+    while ((bytes = platform_read(0, input, sizeof(input))) > 0) {
+        size_t index;
+
+        for (index = 0U; index < (size_t)bytes; ++index) {
+            char ch = input[index];
+
+            if (ch == '\n') {
+                line[used] = '\0';
+                if (log_message(log_fd, mirror_stderr, level, tag, line) != 0) {
+                    status = -1;
+                }
+                used = 0U;
+            } else if (used + 1U < sizeof(line)) {
+                line[used] = ch;
+                used += 1U;
             }
-            used = 0U;
-        } else if (used + 1U < sizeof(line)) {
-            line[used] = ch;
-            used += 1U;
         }
     }
     if (bytes < 0) {
