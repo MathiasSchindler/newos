@@ -3,7 +3,7 @@
 #include "runtime.h"
 
 #define UNXZ_PATH_CAPACITY 1024
-#define UNXZ_BUFFER_SIZE 4096
+#define UNXZ_BUFFER_SIZE 65536U
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(input_path);
@@ -45,7 +45,7 @@ static int read_vli_from_memory(const unsigned char *buffer, size_t buffer_size,
 }
 
 static int skip_bytes(int fd, unsigned long long count) {
-    unsigned char buffer[256];
+    unsigned char buffer[4096];
 
     while (count > 0ULL) {
         size_t chunk = (count > sizeof(buffer)) ? sizeof(buffer) : (size_t)count;

@@ -4,7 +4,7 @@
 
 #define XZ_PATH_CAPACITY 1024
 #define XZ_CHUNK_SIZE 65536U
-#define XZ_SCAN_BUFFER 4096
+#define XZ_CHUNK_HEADER_SIZE 3U
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(input_path);
@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
     unsigned char block_header[12] = { 0x02, 0x00, 0x21, 0x01, 0x10, 0x00, 0x00, 0x00, 0, 0, 0, 0 };
     unsigned char index_bytes[64];
     unsigned char footer[12] = { 0 };
-    unsigned char buffer[XZ_SCAN_BUFFER];
+    unsigned char buffer[XZ_CHUNK_HEADER_SIZE + XZ_CHUNK_SIZE];
     unsigned int crc = 0xffffffffU;
     unsigned long long input_size = 0;
     unsigned long long block_data_size = 0;
@@ -64,31 +64,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    for (;;) {
-        long bytes_read = platform_read(input_fd, buffer, sizeof(buffer));
-
-        if (bytes_read < 0) {
-            platform_close(input_fd);
-            rt_write_line(2, "xz: read failed");
-            return 1;
-        }
-
-        if (bytes_read == 0) {
-            break;
-        }
-
-        crc = archive_crc32_update(crc, buffer, (size_t)bytes_read);
-        input_size += (unsigned long long)bytes_read;
-    }
-
-    platform_close(input_fd);
-
-    input_fd = platform_open_read(argv[1]);
-    if (input_fd < 0) {
-        rt_write_line(2, "xz: cannot reopen input");
-        return 1;
-    }
-
     output_fd = platform_open_write(output_path, 0644U);
     if (output_fd < 0) {
         platform_close(input_fd);
@@ -107,7 +82,7 @@ int main(int argc, char **argv) {
     }
 
     for (;;) {
-        long bytes_read = platform_read(input_fd, buffer, sizeof(buffer));
+        long bytes_read = platform_read(input_fd, buffer + XZ_CHUNK_HEADER_SIZE, XZ_CHUNK_SIZE);
 
         if (bytes_read < 0) {
             platform_close(input_fd);
@@ -121,20 +96,20 @@ int main(int argc, char **argv) {
         }
 
         {
-            unsigned char chunk_header[3];
             unsigned int chunk_size = (unsigned int)bytes_read - 1U;
 
-            chunk_header[0] = (unsigned char)(first_chunk ? 0x01U : 0x02U);
-            chunk_header[1] = (unsigned char)((chunk_size >> 8) & 0xffU);
-            chunk_header[2] = (unsigned char)(chunk_size & 0xffU);
+            buffer[0] = (unsigned char)(first_chunk ? 0x01U : 0x02U);
+            buffer[1] = (unsigned char)((chunk_size >> 8) & 0xffU);
+            buffer[2] = (unsigned char)(chunk_size & 0xffU);
 
-            if (rt_write_all(output_fd, chunk_header, sizeof(chunk_header)) != 0 ||
-                rt_write_all(output_fd, buffer, (size_t)bytes_read) != 0) {
+            if (rt_write_all(output_fd, buffer, XZ_CHUNK_HEADER_SIZE + (size_t)bytes_read) != 0) {
                 platform_close(input_fd);
                 platform_close(output_fd);
                 return 1;
             }
 
+            crc = archive_crc32_update(crc, buffer + XZ_CHUNK_HEADER_SIZE, (size_t)bytes_read);
+            input_size += (unsigned long long)bytes_read;
             block_data_size += (unsigned long long)bytes_read + 3ULL;
             first_chunk = 0;
         }

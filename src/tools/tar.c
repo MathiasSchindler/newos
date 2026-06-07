@@ -4,6 +4,7 @@
 #include "tool_util.h"
 
 #define TAR_BLOCK_SIZE 512
+#define TAR_IO_BUFFER_SIZE 65536U
 #define TAR_PATH_CAPACITY 1024
 #define TAR_ENTRY_CAPACITY 1024
 #define TAR_MAX_PATTERNS 64
@@ -50,7 +51,7 @@ static int read_exact(int fd, unsigned char *buffer, size_t count) {
 }
 
 static int skip_exact(int fd, unsigned long long count) {
-    unsigned char buffer[256];
+    unsigned char buffer[8192];
 
     while (count > 0ULL) {
         size_t chunk = (count > (unsigned long long)sizeof(buffer)) ? sizeof(buffer) : (size_t)count;
@@ -543,6 +544,21 @@ static int build_helper_path(const char *argv0, const char *tool_name, char *buf
     return tool_join_path(dir, tool_name, buffer, buffer_size);
 }
 
+static const char *resolve_helper_argv0_base(const char *argv0, char *buffer, size_t buffer_size) {
+    char cwd[TAR_PATH_CAPACITY];
+
+    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0) || path_is_absolute(argv0)) {
+        return argv0;
+    }
+
+    if (platform_get_current_directory(cwd, sizeof(cwd)) != 0 ||
+        tool_join_path(cwd, argv0, buffer, buffer_size) != 0) {
+        return argv0;
+    }
+
+    return buffer;
+}
+
 static int run_helper_tool(const char *argv0, const char *tool_name, const char *archive_path_name) {
     char helper_path[TAR_PATH_CAPACITY];
     char *const helper_argv[] = { helper_path, (char *)archive_path_name, 0 };
@@ -550,18 +566,26 @@ static int run_helper_tool(const char *argv0, const char *tool_name, const char 
     int status = 1;
 
     if (build_helper_path(argv0, tool_name, helper_path, sizeof(helper_path)) != 0) {
+        tool_write_error("tar", "cannot locate helper: ", tool_name);
         return -1;
     }
 
     if (platform_spawn_process(helper_argv, -1, -1, 0, 0, 0, &pid) != 0) {
+        tool_write_error("tar", "cannot run helper: ", helper_path);
         return -1;
     }
 
     if (platform_wait_process(pid, &status) != 0) {
+        tool_write_error("tar", "cannot wait for helper: ", helper_path);
         return -1;
     }
 
-    return (status == 0) ? 0 : -1;
+    if (status != 0) {
+        tool_write_error("tar", "helper failed: ", helper_path);
+        return -1;
+    }
+
+    return 0;
 }
 
 static unsigned int header_checksum(const TarHeader *header) {
@@ -721,7 +745,7 @@ static int archive_path(int archive_fd,
 
     {
         int file_fd;
-        unsigned char buffer[4096];
+        unsigned char buffer[TAR_IO_BUFFER_SIZE];
 
         if (is_symlink) {
             if (write_archive_header(archive_fd, stored_name, link_target, &entry, '2') != 0) {
@@ -1079,7 +1103,7 @@ static int extract_archive(int archive_fd,
 
         {
             int out_fd;
-            unsigned char data[4096];
+            unsigned char data[TAR_IO_BUFFER_SIZE];
             unsigned long long remaining = size;
 
             if (tar_validate_extract_target(output_path, 0) != 0) {
@@ -1127,7 +1151,11 @@ static int compress_archive_file(const char *argv0, TarCompression compression, 
 
     (void)platform_remove_file(final_archive_path);
     if (platform_rename_path(compressed_output, final_archive_path) != 0) {
-        return -1;
+        if (tool_copy_file(compressed_output, final_archive_path) != 0) {
+            tool_write_error("tar", "cannot move compressed archive to ", final_archive_path);
+            return -1;
+        }
+        (void)platform_remove_file(compressed_output);
     }
 
     (void)platform_remove_file(plain_archive_path);
@@ -1180,6 +1208,7 @@ int main(int argc, char **argv) {
     int allow_absolute_names = 0;
     TarCompression compression = TAR_COMPRESS_NONE;
     char archive_path_buffer[TAR_PATH_CAPACITY];
+    char helper_argv0_buffer[TAR_PATH_CAPACITY];
     char exclude_patterns[TAR_MAX_PATTERNS][TAR_PATH_CAPACITY];
     char member_patterns[TAR_MAX_PATTERNS][TAR_PATH_CAPACITY];
     size_t exclude_count = 0;
@@ -1189,6 +1218,7 @@ int main(int argc, char **argv) {
     unsigned int strip_components = 0U;
     int path_start = argc;
     int i;
+    const char *helper_argv0 = resolve_helper_argv0_base(argv[0], helper_argv0_buffer, sizeof(helper_argv0_buffer));
 
     archive_path_buffer[0] = '\0';
 
@@ -1405,7 +1435,7 @@ int main(int argc, char **argv) {
         }
 
         if (compression != TAR_COMPRESS_NONE) {
-            if (compress_archive_file(argv[0], compression, write_path, archive_path_name) != 0) {
+            if (compress_archive_file(helper_argv0, compression, write_path, archive_path_name) != 0) {
                 (void)platform_remove_file(write_path);
                 return 1;
             }
@@ -1431,7 +1461,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (prepare_archive_for_read(argv[0], compression, archive_path_name, temp_copy_path, sizeof(temp_copy_path), temp_plain_path, sizeof(temp_plain_path), &read_path) != 0) {
+        if (prepare_archive_for_read(helper_argv0, compression, archive_path_name, temp_copy_path, sizeof(temp_copy_path), temp_plain_path, sizeof(temp_plain_path), &read_path) != 0) {
             return 1;
         }
 

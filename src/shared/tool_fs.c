@@ -5,7 +5,7 @@
 int tool_copy_file(const char *source_path, const char *dest_path) {
     int src_fd = platform_open_read(source_path);
     int dst_fd;
-    char buffer[4096];
+    char buffer[65536];
 
     if (tool_paths_equal(source_path, dest_path)) {
         return -1;

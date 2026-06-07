@@ -1,9 +1,10 @@
 #include "archive_util.h"
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define BZIP_PATH_CAPACITY 1024
-#define BZIP_IO_BUFFER 4096
+#define BZIP_IO_BUFFER 65536U
 #define BZIP_PACKET_LIMIT 128
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
@@ -18,15 +19,14 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
     return 0;
 }
 
-static int flush_literal_packet(int fd, unsigned char *literal, size_t *literal_len) {
-    unsigned char header;
+static int flush_literal_packet(ToolOutputBuffer *output, unsigned char *literal, size_t *literal_len) {
 
     if (*literal_len == 0) {
         return 0;
     }
 
-    header = (unsigned char)(*literal_len - 1);
-    if (rt_write_all(fd, &header, 1) != 0 || rt_write_all(fd, literal, *literal_len) != 0) {
+    if (tool_output_buffer_write_char(output, (char)(*literal_len - 1U)) != 0 ||
+        tool_output_buffer_write(output, (const char *)literal, *literal_len) != 0) {
         return -1;
     }
 
@@ -34,14 +34,14 @@ static int flush_literal_packet(int fd, unsigned char *literal, size_t *literal_
     return 0;
 }
 
-static int write_run_packet(int fd, unsigned char value, size_t run_len) {
+static int write_run_packet(ToolOutputBuffer *output, unsigned char value, size_t run_len) {
     while (run_len > 0) {
         size_t chunk = (run_len > BZIP_PACKET_LIMIT) ? BZIP_PACKET_LIMIT : run_len;
         unsigned char packet[2];
 
         packet[0] = (unsigned char)(0x80U | (unsigned char)(chunk - 1));
         packet[1] = value;
-        if (rt_write_all(fd, packet, sizeof(packet)) != 0) {
+        if (tool_output_buffer_write(output, (const char *)packet, sizeof(packet)) != 0) {
             return -1;
         }
 
@@ -51,24 +51,26 @@ static int write_run_packet(int fd, unsigned char value, size_t run_len) {
     return 0;
 }
 
-static int append_literal_byte(int fd, unsigned char *literal, size_t *literal_len, unsigned char value) {
+static int append_literal_byte(ToolOutputBuffer *output, unsigned char *literal, size_t *literal_len, unsigned char value) {
     literal[*literal_len] = value;
     *literal_len += 1;
 
     if (*literal_len == BZIP_PACKET_LIMIT) {
-        return flush_literal_packet(fd, literal, literal_len);
+        return flush_literal_packet(output, literal, literal_len);
     }
 
     return 0;
 }
 
-static int compress_stream(int input_fd, int output_fd) {
+static int compress_stream(int input_fd, ToolOutputBuffer *output, unsigned int *crc_out, unsigned int *input_size_out) {
     unsigned char input[BZIP_IO_BUFFER];
     unsigned char literal[BZIP_PACKET_LIMIT];
     size_t literal_len = 0;
     int have_run = 0;
     unsigned char run_value = 0;
     size_t run_len = 0;
+    unsigned int crc = 0xffffffffU;
+    unsigned int input_size = 0;
 
     for (;;) {
         long bytes_read = platform_read(input_fd, input, sizeof(input));
@@ -81,6 +83,9 @@ static int compress_stream(int input_fd, int output_fd) {
         if (bytes_read == 0) {
             break;
         }
+
+        crc = archive_crc32_update(crc, input, (size_t)bytes_read);
+        input_size += (unsigned int)bytes_read;
 
         for (i = 0; i < bytes_read; ++i) {
             unsigned char value = input[i];
@@ -98,14 +103,14 @@ static int compress_stream(int input_fd, int output_fd) {
             }
 
             if (run_len >= 4) {
-                if (flush_literal_packet(output_fd, literal, &literal_len) != 0 ||
-                    write_run_packet(output_fd, run_value, run_len) != 0) {
+                if (flush_literal_packet(output, literal, &literal_len) != 0 ||
+                    write_run_packet(output, run_value, run_len) != 0) {
                     return -1;
                 }
             } else {
                 size_t j;
                 for (j = 0; j < run_len; ++j) {
-                    if (append_literal_byte(output_fd, literal, &literal_len, run_value) != 0) {
+                    if (append_literal_byte(output, literal, &literal_len, run_value) != 0) {
                         return -1;
                     }
                 }
@@ -118,29 +123,31 @@ static int compress_stream(int input_fd, int output_fd) {
 
     if (have_run) {
         if (run_len >= 4) {
-            if (flush_literal_packet(output_fd, literal, &literal_len) != 0 ||
-                write_run_packet(output_fd, run_value, run_len) != 0) {
+            if (flush_literal_packet(output, literal, &literal_len) != 0 ||
+                write_run_packet(output, run_value, run_len) != 0) {
                 return -1;
             }
         } else {
             size_t j;
             for (j = 0; j < run_len; ++j) {
-                if (append_literal_byte(output_fd, literal, &literal_len, run_value) != 0) {
+                if (append_literal_byte(output, literal, &literal_len, run_value) != 0) {
                     return -1;
                 }
             }
         }
     }
 
-    return flush_literal_packet(output_fd, literal, &literal_len);
+    *crc_out = archive_crc32_finish(crc);
+    *input_size_out = input_size;
+    return flush_literal_packet(output, literal, &literal_len);
 }
 
 int main(int argc, char **argv) {
     unsigned char header[12] = { 'B', 'Z', 'h', '0', 0, 0, 0, 0, 0, 0, 0, 0 };
-    unsigned char buffer[BZIP_IO_BUFFER];
+    ToolOutputBuffer output;
     char output_path[BZIP_PATH_CAPACITY];
-    unsigned int crc = 0xffffffffU;
     unsigned int input_size = 0;
+    unsigned int crc = 0;
     int input_fd;
     int output_fd;
 
@@ -160,34 +167,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    for (;;) {
-        long bytes_read = platform_read(input_fd, buffer, sizeof(buffer));
-
-        if (bytes_read < 0) {
-            platform_close(input_fd);
-            rt_write_line(2, "bzip2: read failed");
-            return 1;
-        }
-
-        if (bytes_read == 0) {
-            break;
-        }
-
-        crc = archive_crc32_update(crc, buffer, (size_t)bytes_read);
-        input_size += (unsigned int)bytes_read;
-    }
-
-    platform_close(input_fd);
-
-    archive_store_u32_le(header + 4, input_size);
-    archive_store_u32_le(header + 8, archive_crc32_finish(crc));
-
-    input_fd = platform_open_read(argv[1]);
-    if (input_fd < 0) {
-        rt_write_line(2, "bzip2: cannot reopen input");
-        return 1;
-    }
-
     output_fd = platform_open_write(output_path, 0644U);
     if (output_fd < 0) {
         platform_close(input_fd);
@@ -195,10 +174,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (rt_write_all(output_fd, header, sizeof(header)) != 0 || compress_stream(input_fd, output_fd) != 0) {
+    tool_output_buffer_init(&output, output_fd);
+    if (rt_write_all(output_fd, header, sizeof(header)) != 0 ||
+        compress_stream(input_fd, &output, &crc, &input_size) != 0 ||
+        tool_output_buffer_flush(&output) != 0) {
         platform_close(input_fd);
         platform_close(output_fd);
         rt_write_line(2, "bzip2: write failed");
+        return 1;
+    }
+
+    archive_store_u32_le(header + 4, input_size);
+    archive_store_u32_le(header + 8, crc);
+    if (platform_seek(output_fd, 4, PLATFORM_SEEK_SET) != 4 || rt_write_all(output_fd, header + 4, 8) != 0) {
+        platform_close(input_fd);
+        platform_close(output_fd);
+        rt_write_line(2, "bzip2: header update failed");
         return 1;
     }
 

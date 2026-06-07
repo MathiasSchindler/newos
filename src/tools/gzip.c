@@ -3,7 +3,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define GZIP_BLOCK_SIZE 65535
+#define GZIP_BLOCK_SIZE 65535U
+#define GZIP_BLOCK_PAYLOAD_OFFSET 5U
 #define GZIP_PATH_CAPACITY 1024
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
@@ -78,21 +79,16 @@ static int build_helper_path(const char *argv0, const char *tool_name, char *buf
     return tool_join_path(dir, tool_name, buffer, buffer_size);
 }
 
-static int write_stored_block(int fd, const unsigned char *data, unsigned int len, int is_last) {
-    unsigned char header[5];
+static int write_stored_block(int fd, unsigned char *block, unsigned int len, int is_last) {
     unsigned int nlen = 0xffffU - len;
 
-    header[0] = (unsigned char)(is_last ? 1 : 0);
-    header[1] = (unsigned char)(len & 0xffU);
-    header[2] = (unsigned char)((len >> 8) & 0xffU);
-    header[3] = (unsigned char)(nlen & 0xffU);
-    header[4] = (unsigned char)((nlen >> 8) & 0xffU);
+    block[0] = (unsigned char)(is_last ? 1 : 0);
+    block[1] = (unsigned char)(len & 0xffU);
+    block[2] = (unsigned char)((len >> 8) & 0xffU);
+    block[3] = (unsigned char)(nlen & 0xffU);
+    block[4] = (unsigned char)((nlen >> 8) & 0xffU);
 
-    if (rt_write_all(fd, header, sizeof(header)) != 0) {
-        return -1;
-    }
-
-    return rt_write_all(fd, data, len);
+    return rt_write_all(fd, block, GZIP_BLOCK_PAYLOAD_OFFSET + (size_t)len);
 }
 
 static int write_u32_le(int fd, unsigned int value) {
@@ -106,8 +102,10 @@ static int write_u32_le(int fd, unsigned int value) {
 }
 
 static int compress_stream(int input_fd, int output_fd) {
-    unsigned char current[GZIP_BLOCK_SIZE];
-    unsigned char next[GZIP_BLOCK_SIZE];
+    unsigned char block_a[GZIP_BLOCK_PAYLOAD_OFFSET + GZIP_BLOCK_SIZE];
+    unsigned char block_b[GZIP_BLOCK_PAYLOAD_OFFSET + GZIP_BLOCK_SIZE];
+    unsigned char *current = block_a;
+    unsigned char *next = block_b;
     const unsigned char header[10] = { 0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03 };
     long current_size;
     unsigned int crc = 0xffffffffU;
@@ -117,7 +115,7 @@ static int compress_stream(int input_fd, int output_fd) {
         return -1;
     }
 
-    current_size = platform_read(input_fd, current, sizeof(current));
+    current_size = platform_read(input_fd, current + GZIP_BLOCK_PAYLOAD_OFFSET, GZIP_BLOCK_SIZE);
     if (current_size < 0) {
         return -1;
     }
@@ -128,15 +126,16 @@ static int compress_stream(int input_fd, int output_fd) {
         }
     } else {
         for (;;) {
-            long next_size = platform_read(input_fd, next, sizeof(next));
+            long next_size = platform_read(input_fd, next + GZIP_BLOCK_PAYLOAD_OFFSET, GZIP_BLOCK_SIZE);
             int is_last;
+            unsigned char *swap;
 
             if (next_size < 0) {
                 return -1;
             }
 
             is_last = (next_size == 0);
-            crc = archive_crc32_update(crc, current, (size_t)current_size);
+            crc = archive_crc32_update(crc, current + GZIP_BLOCK_PAYLOAD_OFFSET, (size_t)current_size);
             input_size += (unsigned int)current_size;
 
             if (write_stored_block(output_fd, current, (unsigned int)current_size, is_last) != 0) {
@@ -147,7 +146,9 @@ static int compress_stream(int input_fd, int output_fd) {
                 break;
             }
 
-            memcpy(current, next, (size_t)next_size);
+            swap = current;
+            current = next;
+            next = swap;
             current_size = next_size;
         }
     }

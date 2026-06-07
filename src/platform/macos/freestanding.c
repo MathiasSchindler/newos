@@ -577,7 +577,7 @@ int platform_remove_file(const char *path) {
 }
 
 int platform_rename_path(const char *old_path, const char *new_path) {
-    return rename(old_path, new_path);
+    return darwin_syscall2(DARWIN_SYS_RENAME, (long)old_path, (long)new_path) < 0 ? -1 : 0;
 }
 
 int platform_create_hard_link(const char *target_path, const char *link_path) {

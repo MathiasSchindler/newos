@@ -3,7 +3,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define GUNZIP_BUFFER_SIZE 4096
+#define GUNZIP_BUFFER_SIZE 65536U
 #define GUNZIP_PATH_CAPACITY 1024
 
 static int read_exact(int fd, unsigned char *buffer, size_t count) {

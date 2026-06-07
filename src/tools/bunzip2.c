@@ -1,9 +1,10 @@
 #include "archive_util.h"
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define BUNZIP2_PATH_CAPACITY 1024
-#define BUNZIP2_IO_BUFFER 4096
+#define BUNZIP2_IO_BUFFER 65536U
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(input_path);
@@ -29,6 +30,7 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
 int main(int argc, char **argv) {
     unsigned char header[12];
     unsigned char buffer[BUNZIP2_IO_BUFFER];
+    ToolOutputBuffer output;
     char output_path[BUNZIP2_PATH_CAPACITY];
     unsigned int expected_size;
     unsigned int expected_crc;
@@ -70,6 +72,7 @@ int main(int argc, char **argv) {
 
     expected_size = archive_read_u32_le(header + 4);
     expected_crc = archive_read_u32_le(header + 8);
+    tool_output_buffer_init(&output, output_fd);
 
     while (output_size < expected_size) {
         unsigned char flag;
@@ -108,7 +111,7 @@ int main(int argc, char **argv) {
                     buffer[i] = value;
                 }
 
-                if (rt_write_all(output_fd, buffer, chunk) != 0) {
+                if (tool_output_buffer_write(&output, (const char *)buffer, chunk) != 0) {
                     platform_close(input_fd);
                     platform_close(output_fd);
                     return 1;
@@ -119,7 +122,7 @@ int main(int argc, char **argv) {
                 remaining -= chunk;
             }
         } else {
-            if (archive_read_exact(input_fd, buffer, count) != 0 || rt_write_all(output_fd, buffer, count) != 0) {
+            if (archive_read_exact(input_fd, buffer, count) != 0 || tool_output_buffer_write(&output, (const char *)buffer, count) != 0) {
                 platform_close(input_fd);
                 platform_close(output_fd);
                 return 1;
@@ -128,6 +131,12 @@ int main(int argc, char **argv) {
             actual_crc = archive_crc32_update(actual_crc, buffer, count);
             output_size += count;
         }
+    }
+
+    if (tool_output_buffer_flush(&output) != 0) {
+        platform_close(input_fd);
+        platform_close(output_fd);
+        return 1;
     }
 
     platform_close(input_fd);
