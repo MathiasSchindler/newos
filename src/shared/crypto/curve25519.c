@@ -26,8 +26,6 @@ struct fe {
     u64 v[5];
 };
 
-static const u8 g_x25519_basepoint[32] = { 9 };
-
 static SSHLAB_FORCE_INLINE u64 load64_le(const u8 *p) {
     return (u64)p[0]
         | ((u64)p[1] << 8)
@@ -542,8 +540,6 @@ int x25519_scalarmult_base(u8 out[32], const u8 scalar[32]) {
 struct fe {
     u64 v[FE_LIMBS];
 };
-
-static const u8 g_x25519_basepoint[32] = { 9 };
 
 static void secure_bzero(void *ptr, usize len) {
     crypto_secure_bzero(ptr, len);

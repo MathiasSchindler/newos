@@ -517,21 +517,6 @@ static const char *elf_section_type_name(unsigned int type) {
     return "OTHER";
 }
 
-static const char *elf_program_type_name(unsigned int type) {
-    if (type == 0U) return "NULL";
-    if (type == ELF_PT_LOAD) return "LOAD";
-    if (type == ELF_PT_DYNAMIC) return "DYNAMIC";
-    if (type == ELF_PT_INTERP) return "INTERP";
-    if (type == ELF_PT_NOTE) return "NOTE";
-    if (type == 5U) return "SHLIB";
-    if (type == ELF_PT_PHDR) return "PHDR";
-    if (type == 0x6474e550U) return "GNU_EH_FRAME";
-    if (type == 0x6474e551U) return "GNU_STACK";
-    if (type == 0x6474e552U) return "GNU_RELRO";
-    if (type == 0x6474e553U) return "GNU_PROPERTY";
-    return "OTHER";
-}
-
 #if defined(__GNUC__) && !defined(__clang__)
 __attribute__((noinline, optimize("O0")))
 #endif
