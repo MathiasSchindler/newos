@@ -18,6 +18,7 @@ input in more visible forms for inspection.
 ## CURRENT CAPABILITIES
 
 - concatenate multiple files or standard input
+- fast raw streaming for unmodified output
 - number all lines with `-n`
 - number non-blank lines with `-b`
 - squeeze repeated blank lines with `-s`
@@ -28,7 +29,7 @@ input in more visible forms for inspection.
 - `-n` number all output lines
 - `-b` number only non-blank lines
 - `-s` squeeze adjacent blank lines
-- `-u` unbuffered-style streaming behavior
+- `-u` accepted for compatibility; output is already direct syscall streaming
 - `-v`, `-E`, `-T`, `-A` make content more visible
 
 ## LIMITATIONS

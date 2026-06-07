@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#define CAT_BUFFER_SIZE 8192U
+
 typedef struct {
     int number_all;
     int number_nonblank;
@@ -47,13 +49,7 @@ static int write_line_number(unsigned long long value) {
 }
 
 static int write_literal(const char *text) {
-    while (text != 0 && *text != '\0') {
-        if (rt_write_char(1, *text) != 0) {
-            return -1;
-        }
-        text += 1;
-    }
-    return 0;
+    return rt_write_cstr(1, text != 0 ? text : "");
 }
 
 static int write_visible_char(unsigned char ch, const CatOptions *options) {
@@ -96,11 +92,34 @@ static int write_visible_char(unsigned char ch, const CatOptions *options) {
     return rt_write_char(1, (char)ch);
 }
 
-static int cat_from_fd(int fd, const CatOptions *options, CatState *state) {
-    char buffer[4096];
+static int cat_needs_transform(const CatOptions *options) {
+    return options->number_all || options->number_nonblank || options->squeeze_blank ||
+           options->show_nonprinting || options->show_tabs || options->show_ends;
+}
+
+static int cat_copy_raw_fd(int fd) {
+    char buffer[CAT_BUFFER_SIZE];
 
     for (;;) {
-        long bytes_read = platform_read(fd, buffer, options->unbuffered ? 1U : sizeof(buffer));
+        long bytes_read = platform_read(fd, buffer, sizeof(buffer));
+
+        if (bytes_read < 0) {
+            return -1;
+        }
+        if (bytes_read == 0) {
+            return 0;
+        }
+        if (rt_write_all(1, buffer, (size_t)bytes_read) != 0) {
+            return -1;
+        }
+    }
+}
+
+static int cat_transform_fd(int fd, const CatOptions *options, CatState *state) {
+    char buffer[CAT_BUFFER_SIZE];
+
+    for (;;) {
+        long bytes_read = platform_read(fd, buffer, sizeof(buffer));
         long i;
 
         if (bytes_read < 0) {
@@ -149,6 +168,13 @@ static int cat_from_fd(int fd, const CatOptions *options, CatState *state) {
             }
         }
     }
+}
+
+static int cat_from_fd(int fd, const CatOptions *options, CatState *state) {
+    if (!cat_needs_transform(options)) {
+        return cat_copy_raw_fd(fd);
+    }
+    return cat_transform_fd(fd, options, state);
 }
 
 static int cat_path(const char *path, const CatOptions *options, CatState *state) {

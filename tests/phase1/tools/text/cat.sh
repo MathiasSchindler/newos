@@ -10,6 +10,14 @@ note "phase1 text: cat"
 printf 'alpha\n' > "$WORK_DIR/left.txt"
 printf 'beta\ngamma\n' > "$WORK_DIR/right.txt"
 
+printf 'alpha\nbeta\ngamma\n' > "$WORK_DIR/raw.expected"
+"$ROOT_DIR/build/cat" "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/raw.out"
+assert_files_equal "$WORK_DIR/raw.expected" "$WORK_DIR/raw.out" "cat raw path did not concatenate files"
+"$ROOT_DIR/build/cat" -u "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/raw_u.out"
+assert_files_equal "$WORK_DIR/raw.expected" "$WORK_DIR/raw_u.out" "cat -u raw path did not concatenate files"
+printf 'stdin-data\n' | "$ROOT_DIR/build/cat" - > "$WORK_DIR/stdin.out"
+assert_file_contains "$WORK_DIR/stdin.out" '^stdin-data$' "cat raw path did not read stdin marker"
+
 "$ROOT_DIR/build/cat" -n "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/out.txt"
 
 assert_file_contains "$WORK_DIR/out.txt" '^[[:space:]]*1[[:space:]]alpha$' "cat -n did not number the first line"
