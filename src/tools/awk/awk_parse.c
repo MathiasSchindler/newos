@@ -159,6 +159,23 @@ static int parse_regex_literal(const char *text, size_t *index, char *buffer, si
     return 0;
 }
 
+static int regex_text_is_literal(const char *text) {
+    size_t i = 0U;
+
+    while (text[i] != '\0') {
+        char ch = text[i];
+        if (ch == '.' || ch == '^' || ch == '$' || ch == '*' ||
+            ch == '+' || ch == '?' || ch == '[' || ch == ']' ||
+            ch == '(' || ch == ')' || ch == '{' || ch == '}' ||
+            ch == '|' || ch == '\\') {
+            return 0;
+        }
+        i += 1U;
+    }
+
+    return 1;
+}
+
 static int parse_compare_operator(const char *text, size_t *index, AwkCompareOp *op_out) {
     if (text[*index] == '=' && text[*index + 1] == '=') {
         *op_out = AWK_COMPARE_EQ;
@@ -202,6 +219,8 @@ static int parse_pattern(const char *text, size_t *index, AwkClause *clause) {
             return -1;
         }
         clause->pattern_type = AWK_PATTERN_REGEX;
+        clause->pattern_is_literal = regex_text_is_literal(clause->pattern_text);
+        clause->pattern_length = rt_strlen(clause->pattern_text);
         return 0;
     }
 
@@ -221,7 +240,12 @@ static int parse_pattern(const char *text, size_t *index, AwkClause *clause) {
             clause->match_negated = (text[*index] == '!');
             *index += (clause->match_negated ? 2U : 1U);
             skip_spaces(text, index);
-            return parse_regex_literal(text, index, clause->pattern_text, sizeof(clause->pattern_text));
+            if (parse_regex_literal(text, index, clause->pattern_text, sizeof(clause->pattern_text)) != 0) {
+                return -1;
+            }
+            clause->pattern_is_literal = regex_text_is_literal(clause->pattern_text);
+            clause->pattern_length = rt_strlen(clause->pattern_text);
+            return 0;
         }
 
         if (expression.type == AWK_EXPR_NR || expression.type == AWK_EXPR_NF || expression.type == AWK_EXPR_FNR) {

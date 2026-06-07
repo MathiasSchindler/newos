@@ -95,6 +95,8 @@ typedef struct {
     AwkCompareOp compare_op;
     unsigned long long compare_value;
     int match_negated;
+    int pattern_is_literal;
+    size_t pattern_length;
     char pattern_text[AWK_MAX_TEXT];
     AwkExpression match_expression;
     size_t statement_count;
@@ -130,6 +132,7 @@ typedef struct {
     unsigned long long argc;
     unsigned long long fnr;
     AwkVariable variables[AWK_MAX_VARIABLES];
+    ToolOutputBuffer output;
 } AwkState;
 
 /* ── awk_parse.c ── */
@@ -142,5 +145,6 @@ int execute_clauses(const AwkProgram *program, AwkClauseKind kind, const AwkReco
 int awk_stream(int fd, const AwkProgram *program, AwkState *state, unsigned long long *line_number, unsigned long long *last_nf);
 int awk_assign_variable(AwkState *state, const char *name, const char *value);
 void awk_set_filename(AwkState *state, const char *filename);
+int awk_flush_output(AwkState *state);
 
 #endif /* AWK_IMPL_H */
