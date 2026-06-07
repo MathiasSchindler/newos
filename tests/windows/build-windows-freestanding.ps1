@@ -249,6 +249,13 @@ foreach ($tool in $selectedTools) {
             Write-Output ("[{0}/{1}] {2}" -f $script:BuiltCount, $script:RequestedToolCount, $tool)
             continue
         }
+        if ($tool -eq "rg") {
+            $sourceAlias = Join-Path $BuildDir "ripgrep.exe"
+            if (-not (Test-Path $sourceAlias)) { throw "Cannot create rg.exe before ripgrep.exe exists" }
+            Copy-Item -Force $sourceAlias $output
+            Write-Output ("[{0}/{1}] {2}" -f $script:BuiltCount, $script:RequestedToolCount, $tool)
+            continue
+        }
         throw "No alias rule for $tool"
     }
 

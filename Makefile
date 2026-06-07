@@ -122,7 +122,7 @@ WINDOWS_FREESTANDING_TOOLS ?= $(TOOLS)
 WINDOWS_FREESTANDING_BIGNUM_TOOLS := bc expr seq
 WINDOWS_FREESTANDING_HASH_TOOLS := md5sum sha256sum sha512sum
 WINDOWS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
-WINDOWS_FREESTANDING_REGEX_TOOLS := grep ripgrep rg sed csplit ed
+WINDOWS_FREESTANDING_REGEX_TOOLS := grep ripgrep sed csplit ed
 WINDOWS_FREESTANDING_ARCHIVE_TOOLS := ar readelf objdump strip expack gzip gunzip bzip2 bunzip2 xz unxz tar
 WINDOWS_FREESTANDING_AWK_TOOLS := awk
 WINDOWS_FREESTANDING_XML_TOOLS := xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
@@ -137,7 +137,7 @@ WINDOWS_FREESTANDING_SERVICE_TOOLS := service
 WINDOWS_FREESTANDING_SSH_TOOLS := ssh
 WINDOWS_FREESTANDING_SSHD_TOOLS := sshd
 WINDOWS_FREESTANDING_USB_TOOLS := lsusb
-WINDOWS_FREESTANDING_ALIAS_TOOLS := ping6
+WINDOWS_FREESTANDING_ALIAS_TOOLS := ping6 rg
 MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test [ nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od base64 md5sum sha256sum sha512sum dd touch truncate sync bc split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout profiler watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf awk gzip gunzip bzip2 bunzip2 xz unxz tar cpio ar nm size readelf objdump strip strace expack imgmeta imginfo imgcheck c2pa xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo wget sql jq man pstree ncc tree netcat portscan nslookup dig host ssh scp sshd traceroute whois lsof lsusb httpd ip ss ping ping6 sh mail editor make dhcp dmesg getty init login mknod mount rg ripgrep service shutdown top umount uptime users who
 MACOS_FREESTANDING_HASH_TOOLS := md5sum sha256sum sha512sum
 MACOS_FREESTANDING_TLS_TOOLS := wtf wget portscan
@@ -156,13 +156,15 @@ MACOS_FREESTANDING_TUI_TOOLS := editor
 MACOS_FREESTANDING_MAKE_TOOLS := make
 MACOS_FREESTANDING_SERVICE_TOOLS := service
 MACOS_FREESTANDING_USB_TOOLS := lsusb
-MACOS_FREESTANDING_GENERIC_TOOLS := $(filter-out $(MACOS_FREESTANDING_HASH_TOOLS) $(MACOS_FREESTANDING_TLS_TOOLS) $(MACOS_FREESTANDING_AWK_TOOLS) $(MACOS_FREESTANDING_IMAGE_TOOLS) $(MACOS_FREESTANDING_ARCHIVE_TOOLS) $(MACOS_FREESTANDING_XML_TOOLS) $(MACOS_FREESTANDING_NCC_TOOLS) $(MACOS_FREESTANDING_SSH_TOOLS) $(MACOS_FREESTANDING_SSHD_TOOLS) $(MACOS_FREESTANDING_HTTPD_TOOLS) $(MACOS_FREESTANDING_PING6_TOOLS) $(MACOS_FREESTANDING_SHELL_TOOLS) $(MACOS_FREESTANDING_MAIL_TOOLS) $(MACOS_FREESTANDING_TUI_TOOLS) $(MACOS_FREESTANDING_MAKE_TOOLS) $(MACOS_FREESTANDING_SERVICE_TOOLS) $(MACOS_FREESTANDING_USB_TOOLS),$(MACOS_FREESTANDING_TOOLS))
+MACOS_FREESTANDING_ALIAS_TOOLS := rg
+MACOS_FREESTANDING_GENERIC_TOOLS := $(filter-out $(MACOS_FREESTANDING_HASH_TOOLS) $(MACOS_FREESTANDING_TLS_TOOLS) $(MACOS_FREESTANDING_AWK_TOOLS) $(MACOS_FREESTANDING_IMAGE_TOOLS) $(MACOS_FREESTANDING_ARCHIVE_TOOLS) $(MACOS_FREESTANDING_XML_TOOLS) $(MACOS_FREESTANDING_NCC_TOOLS) $(MACOS_FREESTANDING_SSH_TOOLS) $(MACOS_FREESTANDING_SSHD_TOOLS) $(MACOS_FREESTANDING_HTTPD_TOOLS) $(MACOS_FREESTANDING_PING6_TOOLS) $(MACOS_FREESTANDING_SHELL_TOOLS) $(MACOS_FREESTANDING_MAIL_TOOLS) $(MACOS_FREESTANDING_TUI_TOOLS) $(MACOS_FREESTANDING_MAKE_TOOLS) $(MACOS_FREESTANDING_SERVICE_TOOLS) $(MACOS_FREESTANDING_USB_TOOLS) $(MACOS_FREESTANDING_ALIAS_TOOLS),$(MACOS_FREESTANDING_TOOLS))
 INCEPTION_BUILD_DIR ?= $(BUILD_ROOT)/inception-freestanding-$(TARGET_ARCH)
 INCEPTION_OBJECT_BUILD_DIR ?= $(INCEPTION_BUILD_DIR)/.obj
 FREESTANDING_OBJECT_BUILD_DIR ?= $(TARGET_BUILD_DIR)/.obj
 INCEPTION_JOBS ?= $(PARALLEL_JOBS)
 INCEPTION_TARGETS := $(addprefix $(INCEPTION_BUILD_DIR)/,$(INCEPTION_TOOLS))
-TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOLS)))
+TOOL_SOURCE_TOOLS := $(filter-out rg,$(TOOLS))
+TOOL_SOURCES := $(addprefix src/tools/,$(addsuffix .c,$(TOOL_SOURCE_TOOLS)))
 COMPILER_SOURCES := $(shell grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 COMPILER_IMPL_INCLUDES := \
 	src/compiler/backend_internal.h \
@@ -500,6 +502,12 @@ $(BUILD_DIR)/ping6: $(BUILD_DIR)/ping | $(BUILD_DIR)
 $(TARGET_BUILD_DIR)/ping6: $(TARGET_BUILD_DIR)/ping | $(TARGET_BUILD_DIR)
 	rm -f $@ && ln -sfn ping $@
 
+$(BUILD_DIR)/rg: $(BUILD_DIR)/ripgrep | $(BUILD_DIR)
+	rm -f $@ && ln -sfn ripgrep $@
+
+$(TARGET_BUILD_DIR)/rg: $(TARGET_BUILD_DIR)/ripgrep | $(TARGET_BUILD_DIR)
+	rm -f $@ && ln -sfn ripgrep $@
+
 $(BUILD_DIR)/.ssh_core_check: $(SSH_CLIENT_SOURCES) src/tools/ssh/ssh_core.h src/tools/ssh/ssh_known_hosts.h src/tools/ssh/ssh_client.h src/tools/ssh/ssh_client_internal.h src/tools/ssh/ssh_transport.h src/shared/platform.h src/shared/runtime.h src/shared/hash_util.h src/shared/crypto/crypto_util.h src/shared/crypto/sha256.h src/shared/crypto/sha512.h src/shared/crypto/curve25519.h src/shared/crypto/ed25519.h src/shared/crypto/chacha20_poly1305.h src/shared/crypto/ssh_kdf.h $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $(HOST_SECTION_CFLAGS) -fsyntax-only $(SSH_CLIENT_SOURCES) && : > $@
 
@@ -538,6 +546,9 @@ $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_HTTPD_TOOLS)):
 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_PING6_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/ping.c $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_ALIAS_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: $(MACOS_FREESTANDING_BUILD_DIR)/ripgrep | $(MACOS_FREESTANDING_BUILD_DIR)
+	rm -f $@ && ln -sfn ripgrep $@
 
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_SHELL_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_SHELL_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/tools/sh/shell_shared.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_SHELL_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
@@ -696,6 +707,9 @@ $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_HTTPD_TOOLS)
 $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_PING6_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/ping.lto.o $(MACOS_NEWLINKER_COMMON_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_NEWLINKER_LINK_FLAGS) $(MACOS_NEWLINKER_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/ping.lto.o $(MACOS_NEWLINKER_COMMON_OBJECTS)
 
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_ALIAS_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(MACOS_NEWLINKER_EXPERIMENT_DIR)/ripgrep | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	rm -f $@ && ln -sfn ripgrep $@
+
 $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_SHELL_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_SHELL_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_NEWLINKER_LINK_FLAGS) $(MACOS_NEWLINKER_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_SHELL_OBJECTS)
 
@@ -820,9 +834,6 @@ else
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) -Wno-pedantic $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
-$(BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
-
 $(BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/crypto/sha256.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_EXPACK_CFLAGS) $(EXPACK_HOST_THREAD_FLAGS) $(EXPACK_HOST_THREAD_DEFS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@ $(EXPACK_HOST_THREAD_FLAGS)
 
@@ -831,13 +842,6 @@ $(BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SO
 
 $(BUILD_DIR)/fonttest: $(FONTTEST_SOURCE) $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
-
-$(TARGET_BUILD_DIR)/rg: src/tools/rg.c src/tools/ripgrep.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
-else
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(PROFILE_RUNTIME_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
-endif
 
 $(TARGET_BUILD_DIR)/fonttest: $(FONTTEST_SOURCE) $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

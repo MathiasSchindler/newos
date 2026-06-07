@@ -13,17 +13,18 @@ rg --files [OPTIONS] [PATH ...]
 
 ## DESCRIPTION
 
-`rg` is the short entry point for `ripgrep`. It accepts the same options and behavior as `ripgrep`.
+`rg` is the short entry point for `ripgrep`. In normal builds it is an alias or
+symlink to the `ripgrep` binary, so it accepts the same options and behavior as
+`ripgrep` without compiling a separate implementation.
 
 ## LIMITATIONS
 
-- Same limitations as `ripgrep`; this is an alias-style entry point, not a
-  separate implementation.
+- Same limitations as `ripgrep`; this is an alias entry point, not a separate
+  implementation.
 - No additional `rg`-specific configuration, aliases, or compatibility behavior
   is provided beyond the shared `ripgrep` option parser.
-- Upstream ripgrep configuration files, ignore-file discovery, JSON output, and
-  parallel walker behavior are absent for the same reasons described in
-  `ripgrep`.
+- Upstream ripgrep configuration files, JSON output, PCRE2, and parallel walker
+  behavior are absent for the same reasons described in `ripgrep`.
 
 ## JSON Output
 

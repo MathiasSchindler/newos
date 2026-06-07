@@ -34,6 +34,42 @@ assert_file_contains "$WORK_DIR/rg_hidden.out" '\.hidden/secret\.c:1:needle hidd
 assert_file_contains "$WORK_DIR/rg_type.out" 'src/b\.md:1:NEEDLE two' "rg -t md -i did not find the Markdown match"
 "$ROOT_DIR/build/rg" --files -g '*.md' "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_files.out"
 assert_file_contains "$WORK_DIR/rg_files.out" 'src/b\.md$' "rg --files -g did not list the Markdown file"
+mkdir -p "$WORK_DIR/rg_tree/ignored_dir" "$WORK_DIR/rg_tree/src/nested"
+printf 'ignored needle\n' > "$WORK_DIR/rg_tree/ignored.log"
+printf 'ignored dir needle\n' > "$WORK_DIR/rg_tree/ignored_dir/hidden.txt"
+printf 'needle deep\n' > "$WORK_DIR/rg_tree/src/nested/deep.c"
+printf 'ignored.log\nignored_dir/\n' > "$WORK_DIR/rg_tree/.gitignore"
+"$ROOT_DIR/build/rg" needle "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_ignore.out"
+if grep -q 'ignored\.log\|ignored_dir' "$WORK_DIR/rg_ignore.out"; then
+    fail "rg should honor .gitignore entries by default"
+fi
+"$ROOT_DIR/build/rg" --no-ignore needle "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_no_ignore.out"
+assert_file_contains "$WORK_DIR/rg_no_ignore.out" 'ignored\.log:1:ignored needle' "rg --no-ignore did not include ignored files"
+"$ROOT_DIR/build/rg" -S needle "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_smart_lower.out"
+assert_file_contains "$WORK_DIR/rg_smart_lower.out" 'src/b\.md:1:NEEDLE two' "rg -S lowercase pattern should match case-insensitively"
+"$ROOT_DIR/build/rg" -S NEEDLE "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_smart_upper.out"
+assert_file_contains "$WORK_DIR/rg_smart_upper.out" 'src/b\.md:1:NEEDLE two' "rg -S uppercase pattern should match case-sensitively"
+if grep -q 'src/a\.c:2:needle one' "$WORK_DIR/rg_smart_upper.out"; then
+    fail "rg -S uppercase pattern should not match lowercase text"
+fi
+"$ROOT_DIR/build/rg" -e alpha -e 'NEEDLE two' "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_multi_pattern.out"
+assert_file_contains "$WORK_DIR/rg_multi_pattern.out" 'src/a\.c:1:alpha' "rg -e did not match the first explicit pattern"
+assert_file_contains "$WORK_DIR/rg_multi_pattern.out" 'src/b\.md:1:NEEDLE two' "rg -e did not match the second explicit pattern"
+"$ROOT_DIR/build/rg" -o --column needle "$WORK_DIR/rg_tree/src/a.c" > "$WORK_DIR/rg_only_column.out"
+assert_file_contains "$WORK_DIR/rg_only_column.out" '^2:1:needle$' "rg -o --column did not print the expected match span"
+"$ROOT_DIR/build/rg" --files --sort path --include '*.c' --exclude 'deep.c' "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_include_exclude.out"
+assert_file_contains "$WORK_DIR/rg_include_exclude.out" 'src/a\.c$' "rg --include did not keep a matching C file"
+if grep -q 'deep\.c' "$WORK_DIR/rg_include_exclude.out"; then
+    fail "rg --exclude did not remove the excluded file"
+fi
+"$ROOT_DIR/build/rg" --files --type-not md "$WORK_DIR/rg_tree" > "$WORK_DIR/rg_type_not.out"
+if grep -q 'b\.md' "$WORK_DIR/rg_type_not.out"; then
+    fail "rg --type-not md should exclude Markdown files"
+fi
+"$ROOT_DIR/build/rg" --type-list > "$WORK_DIR/rg_type_list.out"
+assert_file_contains "$WORK_DIR/rg_type_list.out" '^c: ' "rg --type-list did not print built-in types"
+"$ROOT_DIR/build/rg" -m 1 needle "$WORK_DIR/rg_tree/src/nested/deep.c" > "$WORK_DIR/rg_max_count.out"
+assert_file_contains "$WORK_DIR/rg_max_count.out" '^1:needle deep$' "rg -m did not keep the first matching line"
 
 printf 'streamed-data\n' | "$ROOT_DIR/build/gzip" -c | "$ROOT_DIR/build/gunzip" -c > "$WORK_DIR/gzip_stream.txt"
 assert_file_contains "$WORK_DIR/gzip_stream.txt" '^streamed-data$' "gzip/gunzip streaming pipeline failed"
