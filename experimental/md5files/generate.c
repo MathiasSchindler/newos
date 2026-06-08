@@ -20,6 +20,12 @@
 #define BACKEND_MAX_ARGS 32U
 #define PATH_BUFFER_SIZE 512U
 #define EXIT_NOT_A_COLLISION 2
+#define CONTROLLED_ELF_PREFIX_SIZE 128U
+#define CONTROLLED_ELF_PAYLOAD_SIZE 128U
+#define CONTROLLED_ELF_CODE_OFFSET 8192U
+#define CONTROLLED_ELF_FILE_SIZE 12288U
+#define CONTROLLED_ELF_BASE 0x400000ULL
+#define CONTROLLED_ELF_CODE_MAX 32U
 
 static const char collision_block_a_hex[] =
     "d131dd02c5e6eec4693d9a0698aff95c2fcab58712467eab4004583eb8fb7f89"
@@ -51,6 +57,39 @@ static const unsigned char elf_metadata_suffix[] =
     "note: fixed public blocks collide only for their controlled MD5 prefix state\n"
     "note: arbitrary ELF pairs need a chosen-prefix MD5 backend\n";
 
+static const unsigned char controlled_elf_prefix[CONTROLLED_ELF_PREFIX_SIZE] = {
+    0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x02, 0x00, 0x3e, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x20, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static const unsigned char controlled_payload_a[CONTROLLED_ELF_PAYLOAD_SIZE] = {
+    0x51, 0xdd, 0x83, 0xa1, 0xd7, 0x28, 0x11, 0x16, 0xce, 0x8b, 0xa9, 0xc6, 0x41, 0xe7, 0x29, 0xa8,
+    0x55, 0x24, 0xa4, 0xf8, 0xf7, 0x50, 0xf2, 0xd4, 0xf5, 0x89, 0x7f, 0xc2, 0x08, 0xb2, 0x3a, 0x9f,
+    0x47, 0x13, 0xcf, 0xcb, 0xd0, 0xbe, 0x86, 0xcf, 0xef, 0x3b, 0x4c, 0x64, 0xe2, 0x53, 0xa2, 0x72,
+    0x9d, 0xc0, 0x8c, 0x18, 0x97, 0x00, 0xaf, 0xfa, 0xb2, 0x89, 0xf9, 0xad, 0xc0, 0x33, 0x66, 0x29,
+    0x59, 0x53, 0xad, 0x6e, 0xc9, 0x7d, 0xf1, 0xf6, 0xcc, 0x50, 0xd0, 0xaa, 0x68, 0x23, 0x6b, 0x8e,
+    0x32, 0xf1, 0x3a, 0xb5, 0x74, 0x89, 0x52, 0xfd, 0x0e, 0xc9, 0xa9, 0xf6, 0xcb, 0x0b, 0x61, 0xbd,
+    0x6d, 0xc8, 0x72, 0x6a, 0xfd, 0xb9, 0xdd, 0xa7, 0xa2, 0x5d, 0xf5, 0x69, 0xa1, 0x64, 0x15, 0x9e,
+    0xbb, 0x04, 0x22, 0x81, 0xc3, 0xd0, 0xe3, 0xf5, 0xb9, 0x2c, 0x9a, 0xf3, 0x40, 0x0d, 0xdd, 0xc8
+};
+
+static const unsigned char controlled_payload_b[CONTROLLED_ELF_PAYLOAD_SIZE] = {
+    0x51, 0xdd, 0x83, 0xa1, 0xd7, 0x28, 0x11, 0x16, 0xce, 0x8b, 0xa9, 0xc6, 0x41, 0xe7, 0x29, 0xa8,
+    0x55, 0x24, 0xa4, 0x78, 0xf7, 0x50, 0xf2, 0xd4, 0xf5, 0x89, 0x7f, 0xc2, 0x08, 0xb2, 0x3a, 0x9f,
+    0x47, 0x13, 0xcf, 0xcb, 0xd0, 0xbe, 0x86, 0xcf, 0xef, 0x3b, 0x4c, 0x64, 0xe2, 0xd3, 0xa2, 0x72,
+    0x9d, 0xc0, 0x8c, 0x18, 0x97, 0x00, 0xaf, 0xfa, 0xb2, 0x89, 0xf9, 0x2d, 0xc0, 0x33, 0x66, 0x29,
+    0x59, 0x53, 0xad, 0x6e, 0xc9, 0x7d, 0xf1, 0xf6, 0xcc, 0x50, 0xd0, 0xaa, 0x68, 0x23, 0x6b, 0x8e,
+    0x32, 0xf1, 0x3a, 0x35, 0x74, 0x89, 0x52, 0xfd, 0x0e, 0xc9, 0xa9, 0xf6, 0xcb, 0x0b, 0x61, 0xbd,
+    0x6d, 0xc8, 0x72, 0x6a, 0xfd, 0xb9, 0xdd, 0xa7, 0xa2, 0x5d, 0xf5, 0x69, 0xa1, 0xe4, 0x14, 0x9e,
+    0xbb, 0x04, 0x22, 0x81, 0xc3, 0xd0, 0xe3, 0xf5, 0xb9, 0x2c, 0x9a, 0x73, 0x40, 0x0d, 0xdd, 0xc8
+};
+
 typedef struct {
     unsigned char *data;
     size_t size;
@@ -72,6 +111,19 @@ typedef struct {
     const char *out2;
     const char *backend;
 } ElfOptions;
+
+typedef struct {
+    const char *out_dir;
+    const char *out_true;
+    const char *out_false;
+} ControlledElfOptions;
+
+typedef struct {
+    int quiet;
+    const char *prefix_path;
+    const char *out1;
+    const char *out2;
+} ControlledFastcollOptions;
 
 static int hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -625,6 +677,292 @@ static int write_plain_file(const char *path,
     return 0;
 }
 
+static void md5_prefix_payload(const unsigned char *prefix,
+                               const unsigned char *payload,
+                               unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
+    CryptoMd5Context context;
+
+    crypto_md5_init(&context);
+    crypto_md5_update(&context, prefix, CONTROLLED_ELF_PREFIX_SIZE);
+    crypto_md5_update(&context, payload, CONTROLLED_ELF_PAYLOAD_SIZE);
+    crypto_md5_final(&context, digest);
+}
+
+static int verify_controlled_payloads(unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
+    unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
+
+    md5_prefix_payload(controlled_elf_prefix, controlled_payload_a, digest);
+    md5_prefix_payload(controlled_elf_prefix, controlled_payload_b, digest_b);
+    if (memcmp(digest, digest_b, CRYPTO_MD5_DIGEST_SIZE) != 0 ||
+        memcmp(controlled_payload_a, controlled_payload_b, CONTROLLED_ELF_PAYLOAD_SIZE) == 0) {
+        write_error_path("internal controlled collision payload is invalid", 0);
+        return 1;
+    }
+    return 0;
+}
+
+static int read_controlled_prefix(const char *path, unsigned char prefix[CONTROLLED_ELF_PREFIX_SIZE]) {
+    FileImage image;
+    int status = 1;
+
+    if (read_file_image(path, &image) != 0) {
+        return 1;
+    }
+    if (image.size != CONTROLLED_ELF_PREFIX_SIZE) {
+        write_error_path("prefix must be the controlled 128-byte ELF prefix: ", path);
+        goto cleanup;
+    }
+    memcpy(prefix, image.data, CONTROLLED_ELF_PREFIX_SIZE);
+    status = 0;
+
+cleanup:
+    free_file_image(&image);
+    return status;
+}
+
+static int write_controlled_prefix_payload(const char *path, const unsigned char *payload) {
+    int fd = platform_open_write(path, 0644U);
+
+    if (fd < 0) {
+        write_error_path("cannot open ", path);
+        return 1;
+    }
+    if (rt_write_all(fd, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0 ||
+        rt_write_all(fd, payload, CONTROLLED_ELF_PAYLOAD_SIZE) != 0) {
+        write_error_path("cannot write ", path);
+        (void)platform_close(fd);
+        return 1;
+    }
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
+        return 1;
+    }
+    return 0;
+}
+
+static int run_controlled_fastcoll(const ControlledFastcollOptions *options) {
+    unsigned char prefix[CONTROLLED_ELF_PREFIX_SIZE];
+    unsigned char digest[CRYPTO_MD5_DIGEST_SIZE];
+    char hex[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
+
+    if (read_controlled_prefix(options->prefix_path, prefix) != 0) {
+        return 1;
+    }
+    if (memcmp(prefix, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0) {
+        write_error_path("unsupported prefix; this tool only matches the controlled ELF demo prefix", 0);
+        return 1;
+    }
+    if (verify_controlled_payloads(digest) != 0) {
+        return 1;
+    }
+    if (write_controlled_prefix_payload(options->out1, controlled_payload_a) != 0 ||
+        write_controlled_prefix_payload(options->out2, controlled_payload_b) != 0) {
+        return 1;
+    }
+    if (!options->quiet) {
+        digest_to_hex(digest, hex);
+        print_path_line("same md5: ", hex);
+    }
+    return 0;
+}
+
+static int choose_controlled_behavior_bit(size_t *offset_out, unsigned int *bit_out, unsigned int *invert_out) {
+    size_t payload_offset;
+
+    for (payload_offset = 0U; payload_offset < CONTROLLED_ELF_PAYLOAD_SIZE; ++payload_offset) {
+        unsigned char left = controlled_payload_a[payload_offset];
+        unsigned char right = controlled_payload_b[payload_offset];
+        unsigned char diff = (unsigned char)(left ^ right);
+        unsigned int bit;
+
+        if (diff == 0U) {
+            continue;
+        }
+        for (bit = 0U; bit < 8U; ++bit) {
+            if ((diff & (unsigned char)(1U << bit)) != 0U) {
+                unsigned int left_bit = (left >> bit) & 1U;
+                unsigned int right_bit = (right >> bit) & 1U;
+                unsigned int invert = left_bit;
+
+                if (((left_bit ^ invert) == 0U) && ((right_bit ^ invert) == 1U)) {
+                    *offset_out = CONTROLLED_ELF_PREFIX_SIZE + payload_offset;
+                    *bit_out = bit;
+                    *invert_out = invert;
+                    return 0;
+                }
+            }
+        }
+    }
+    write_error_path("no usable differing controlled collision bit found", 0);
+    return 1;
+}
+
+static void write_u32_le(unsigned char *data, uint32_t value) {
+    data[0] = (unsigned char)(value & 0xffU);
+    data[1] = (unsigned char)((value >> 8U) & 0xffU);
+    data[2] = (unsigned char)((value >> 16U) & 0xffU);
+    data[3] = (unsigned char)((value >> 24U) & 0xffU);
+}
+
+static int build_controlled_exit_code(size_t selected_offset,
+                                      unsigned int bit,
+                                      unsigned int invert,
+                                      unsigned char code[CONTROLLED_ELF_CODE_MAX],
+                                      size_t *code_size_out) {
+    uint64_t entry = CONTROLLED_ELF_BASE + CONTROLLED_ELF_CODE_OFFSET;
+    uint64_t target = CONTROLLED_ELF_BASE + selected_offset;
+    uint64_t rip_after_mov = entry + 6U;
+    int64_t displacement = (int64_t)target - (int64_t)rip_after_mov;
+    size_t offset = 0U;
+
+    if (displacement < -2147483648LL || displacement > 2147483647LL) {
+        write_error_path("selected controlled byte is outside RIP-relative range", 0);
+        return 1;
+    }
+    code[offset++] = 0x0fU;
+    code[offset++] = 0xb6U;
+    code[offset++] = 0x3dU;
+    write_u32_le(code + offset, (uint32_t)displacement);
+    offset += 4U;
+    code[offset++] = 0xc1U;
+    code[offset++] = 0xefU;
+    code[offset++] = (unsigned char)bit;
+    code[offset++] = 0x83U;
+    code[offset++] = 0xe7U;
+    code[offset++] = 0x01U;
+    if (invert != 0U) {
+        code[offset++] = 0x83U;
+        code[offset++] = 0xf7U;
+        code[offset++] = 0x01U;
+    }
+    code[offset++] = 0xb8U;
+    code[offset++] = 0x3cU;
+    code[offset++] = 0x00U;
+    code[offset++] = 0x00U;
+    code[offset++] = 0x00U;
+    code[offset++] = 0x0fU;
+    code[offset++] = 0x05U;
+    *code_size_out = offset;
+    return 0;
+}
+
+static void md5_controlled_elf(const unsigned char *payload,
+                               const unsigned char *code,
+                               size_t code_size,
+                               unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
+    static const unsigned char zeroes[MD5_ALIGNMENT] = {0};
+    CryptoMd5Context context;
+    size_t image_size = CONTROLLED_ELF_PREFIX_SIZE + CONTROLLED_ELF_PAYLOAD_SIZE;
+    size_t padding_before_code = CONTROLLED_ELF_CODE_OFFSET - image_size;
+    size_t padding_after_code = CONTROLLED_ELF_FILE_SIZE - CONTROLLED_ELF_CODE_OFFSET - code_size;
+
+    crypto_md5_init(&context);
+    crypto_md5_update(&context, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE);
+    crypto_md5_update(&context, payload, CONTROLLED_ELF_PAYLOAD_SIZE);
+    while (padding_before_code != 0U) {
+        size_t chunk = padding_before_code < sizeof(zeroes) ? padding_before_code : sizeof(zeroes);
+
+        crypto_md5_update(&context, zeroes, chunk);
+        padding_before_code -= chunk;
+    }
+    crypto_md5_update(&context, code, code_size);
+    while (padding_after_code != 0U) {
+        size_t chunk = padding_after_code < sizeof(zeroes) ? padding_after_code : sizeof(zeroes);
+
+        crypto_md5_update(&context, zeroes, chunk);
+        padding_after_code -= chunk;
+    }
+    crypto_md5_final(&context, digest);
+}
+
+static int write_controlled_elf_image(const char *path,
+                                      const unsigned char *payload,
+                                      const unsigned char *code,
+                                      size_t code_size) {
+    size_t image_size = CONTROLLED_ELF_PREFIX_SIZE + CONTROLLED_ELF_PAYLOAD_SIZE;
+    int fd = platform_open_write(path, 0644U);
+
+    if (fd < 0) {
+        write_error_path("cannot open ", path);
+        return 1;
+    }
+    if (rt_write_all(fd, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0 ||
+        rt_write_all(fd, payload, CONTROLLED_ELF_PAYLOAD_SIZE) != 0 ||
+        write_zero_padding(fd, CONTROLLED_ELF_CODE_OFFSET - image_size, path) != 0 ||
+        rt_write_all(fd, code, code_size) != 0 ||
+        write_zero_padding(fd, CONTROLLED_ELF_FILE_SIZE - CONTROLLED_ELF_CODE_OFFSET - code_size, path) != 0) {
+        (void)platform_close(fd);
+        return 1;
+    }
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
+        return 1;
+    }
+    if (platform_change_mode(path, 0755U) != 0) {
+        write_error_path("cannot chmod ", path);
+        return 1;
+    }
+    return 0;
+}
+
+static int run_controlled_elf_demo(const ControlledElfOptions *options) {
+    unsigned char prefix_payload_digest[CRYPTO_MD5_DIGEST_SIZE];
+    unsigned char digest_a[CRYPTO_MD5_DIGEST_SIZE];
+    unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
+    unsigned char code[CONTROLLED_ELF_CODE_MAX];
+    char default_true[PATH_BUFFER_SIZE];
+    char default_false[PATH_BUFFER_SIZE];
+    char hex[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
+    const char *true_path = options->out_true;
+    const char *false_path = options->out_false;
+    size_t selected_offset;
+    size_t code_size;
+    unsigned int bit;
+    unsigned int invert;
+    int need_out_dir = true_path == 0 || false_path == 0;
+
+    if (need_out_dir && ensure_directory(options->out_dir) != 0) {
+        return 1;
+    }
+    if (true_path == 0) {
+        if (join_path(default_true, sizeof(default_true), options->out_dir, "elf-true") != 0) {
+            write_error_path("output path is too long", 0);
+            return 1;
+        }
+        true_path = default_true;
+    }
+    if (false_path == 0) {
+        if (join_path(default_false, sizeof(default_false), options->out_dir, "elf-false") != 0) {
+            write_error_path("output path is too long", 0);
+            return 1;
+        }
+        false_path = default_false;
+    }
+    if (verify_controlled_payloads(prefix_payload_digest) != 0 ||
+        choose_controlled_behavior_bit(&selected_offset, &bit, &invert) != 0 ||
+        build_controlled_exit_code(selected_offset, bit, invert, code, &code_size) != 0) {
+        return 1;
+    }
+    md5_controlled_elf(controlled_payload_a, code, code_size, digest_a);
+    md5_controlled_elf(controlled_payload_b, code, code_size, digest_b);
+    if (memcmp(digest_a, digest_b, CRYPTO_MD5_DIGEST_SIZE) != 0) {
+        write_error_path("controlled ELF files do not collide", 0);
+        return 1;
+    }
+    if (write_controlled_elf_image(true_path, controlled_payload_a, code, code_size) != 0 ||
+        write_controlled_elf_image(false_path, controlled_payload_b, code, code_size) != 0) {
+        return 1;
+    }
+    digest_to_hex(digest_a, hex);
+    print_path_line("wrote ", true_path);
+    print_path_line("wrote ", false_path);
+    print_path_line("same md5: ", hex);
+    write_text(1, "different files: yes\n");
+    write_text(1, "behavior bit: file offset "); write_size_value(1, selected_offset); write_text(1, ", bit "); (void)rt_write_uint(1, bit); write_text(1, ", invert "); (void)rt_write_uint(1, invert); write_text(1, "\n");
+    write_text(1, "sizes: "); write_size_value(1, CONTROLLED_ELF_FILE_SIZE); write_text(1, " bytes, "); write_size_value(1, CONTROLLED_ELF_FILE_SIZE); write_text(1, " bytes\n");
+    return 0;
+}
+
 static int run_plain_demo(const char *output_directory,
                           const unsigned char collision_block_a[COLLISION_BLOCK_SIZE],
                           const unsigned char collision_block_b[COLLISION_BLOCK_SIZE]) {
@@ -684,6 +1022,73 @@ static int parse_elf_options(int argc, char **argv, ElfOptions *options) {
     }
     if (options->in1 == 0 || options->in2 == 0) {
         write_error_path("--in1 and --in2 are required for ELF scaffold mode", 0);
+        return 1;
+    }
+    return 0;
+}
+
+static int parse_controlled_elf_options(int argc, char **argv, ControlledElfOptions *options) {
+    int argument;
+
+    memset(options, 0, sizeof(*options));
+    options->out_dir = "out";
+    for (argument = 2; argument < argc; ++argument) {
+        const char *option = argv[argument];
+
+        if (rt_strcmp(option, "--out-dir") == 0 || rt_strcmp(option, "--out1") == 0 || rt_strcmp(option, "--out2") == 0) {
+            if (argument + 1 >= argc) {
+                write_error_path("option needs an argument: ", option);
+                return 1;
+            }
+            ++argument;
+            if (rt_strcmp(option, "--out-dir") == 0) {
+                options->out_dir = argv[argument];
+            } else if (rt_strcmp(option, "--out1") == 0) {
+                options->out_true = argv[argument];
+            } else {
+                options->out_false = argv[argument];
+            }
+        } else {
+            write_error_path("unknown option ", option);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int parse_controlled_fastcoll_options(int argc, char **argv, ControlledFastcollOptions *options) {
+    int argument;
+
+    memset(options, 0, sizeof(*options));
+    for (argument = 2; argument < argc; ++argument) {
+        const char *option = argv[argument];
+
+        if (rt_strcmp(option, "-q") == 0 || rt_strcmp(option, "--quiet") == 0) {
+            options->quiet = 1;
+        } else if (rt_strcmp(option, "-p") == 0 || rt_strcmp(option, "--prefixfile") == 0) {
+            if (argument + 1 >= argc) {
+                write_error_path("option needs an argument: ", option);
+                return 1;
+            }
+            options->prefix_path = argv[++argument];
+        } else if (rt_strcmp(option, "-o") == 0 || rt_strcmp(option, "--out") == 0) {
+            if (argument + 2 >= argc) {
+                write_error_path("-o needs two output paths", 0);
+                return 1;
+            }
+            options->out1 = argv[++argument];
+            options->out2 = argv[++argument];
+            if (argument + 1 != argc) {
+                write_error_path("-o must be followed by the final two arguments", 0);
+                return 1;
+            }
+        } else {
+            write_error_path("unknown option ", option);
+            return 1;
+        }
+    }
+    if (options->prefix_path == 0 || options->out1 == 0 || options->out2 == 0) {
+        write_error_path("--controlled-fastcoll requires -p PREFIX -o OUT1 OUT2", 0);
         return 1;
     }
     return 0;
@@ -821,6 +1226,8 @@ cleanup:
 static void print_usage(void) {
     write_text(1, "usage:\n");
     write_text(1, "  generate [OUTDIR]\n");
+    write_text(1, "  generate --elf-demo [--out-dir DIR] [--out1 PATH] [--out2 PATH]\n");
+    write_text(1, "  generate --controlled-fastcoll [-q] -p PREFIX -o OUT1 OUT2\n");
     write_text(1, "  generate --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH] [--backend COMMAND]\n");
 }
 
@@ -828,6 +1235,8 @@ int main(int argc, char **argv) {
     unsigned char collision_block_a[COLLISION_BLOCK_SIZE];
     unsigned char collision_block_b[COLLISION_BLOCK_SIZE];
     ElfOptions options;
+    ControlledElfOptions controlled_options;
+    ControlledFastcollOptions fastcoll_options;
 
     if (decode_hex_block(collision_block_a_hex, collision_block_a) != 0 ||
         decode_hex_block(collision_block_b_hex, collision_block_b) != 0) {
@@ -837,6 +1246,20 @@ int main(int argc, char **argv) {
     if (argc >= 2 && (rt_strcmp(argv[1], "--help") == 0 || rt_strcmp(argv[1], "-h") == 0)) {
         print_usage();
         return 0;
+    }
+    if (argc >= 2 && rt_strcmp(argv[1], "--elf-demo") == 0) {
+        if (parse_controlled_elf_options(argc, argv, &controlled_options) != 0) {
+            print_usage();
+            return 1;
+        }
+        return run_controlled_elf_demo(&controlled_options);
+    }
+    if (argc >= 2 && rt_strcmp(argv[1], "--controlled-fastcoll") == 0) {
+        if (parse_controlled_fastcoll_options(argc, argv, &fastcoll_options) != 0) {
+            print_usage();
+            return 1;
+        }
+        return run_controlled_fastcoll(&fastcoll_options);
     }
     if (argc == 1 || argv[1][0] != '-') {
         const char *output_directory = argc > 1 ? argv[1] : "out";

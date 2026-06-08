@@ -70,11 +70,21 @@ make -C experimental/md5files elf-demo
 ```
 
 This writes `out/elf-true` and `out/elf-false`. They share an identical ELF
-prefix, the local `controlled-fastcoll` tool emits the colliding middle, and the
-script appends common code that exits differently based on a bit that differs in
-the generated collision payload. On Linux/x86-64, `elf-true` exits with status 0
-and `elf-false` exits with status 1. On macOS the files can be generated and
-hashed, but not executed directly.
+prefix, the generator emits the controlled colliding middle, and then appends
+common code that exits differently based on a bit that differs in the generated
+collision payload. On Linux/x86-64, `elf-true` exits with status 0 and
+`elf-false` exits with status 1. On macOS the files can be generated and hashed,
+but not executed directly.
+
+The same binary also keeps a tiny compatibility mode for the old fast-collision
+surface used during bring-up:
+
+```sh
+experimental/md5files/build/generate --controlled-fastcoll -q -p prefix.bin -o collision1.bin collision2.bin
+```
+
+That mode only accepts the controlled 128-byte ELF prefix. It is not a general
+MD5 collision search engine.
 
 The `examples/` fixture below is harder: it starts from preexisting binaries and
 therefore still needs a chosen-prefix backend.
@@ -157,11 +167,11 @@ so the Merkle-Damgard suffix property preserves the collision.
 For the controlled ELF demo, the shape is:
 
 ```text
-ELF prefix || controlled-fastcoll collision payload || identical executable suffix
+ELF prefix || controlled collision payload || identical executable suffix
 ```
 
-The executable suffix is selected after the local tool returns the collision payloads,
-but it is identical in both outputs, so the MD5 collision is preserved.
+The executable suffix is selected from the known differing payload bits, but it
+is identical in both outputs, so the MD5 collision is preserved.
 
 ## Next Step
 

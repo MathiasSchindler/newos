@@ -17,7 +17,6 @@ PLATFORM_SRCS := \
 	../../src/platform/posix/time.c \
 	../../src/platform/posix/process.c
 GENERATOR_SRCS := generate.c $(MD5_SRC) $(RUNTIME_SRCS) $(PLATFORM_SRCS)
-CONTROLLED_FASTCOLL_SRCS := controlled-fastcoll.c $(MD5_SRC) $(RUNTIME_SRCS) $(PLATFORM_SRCS)
 
 .PHONY: all files verify elf-demo elf-hashclash-demo scaffold-examples clean
 
@@ -32,17 +31,14 @@ $(OUT_DIR):
 $(BUILD_DIR)/generate: $(GENERATOR_SRCS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I../../src/shared -I../../src/platform/posix -I../../src/platform/common $(GENERATOR_SRCS) -o $(BUILD_DIR)/generate
 
-$(BUILD_DIR)/controlled-fastcoll: $(CONTROLLED_FASTCOLL_SRCS) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I../../src/shared -I../../src/platform/posix -I../../src/platform/common $(CONTROLLED_FASTCOLL_SRCS) -o $(BUILD_DIR)/controlled-fastcoll
-
 files: $(BUILD_DIR)/generate | $(OUT_DIR)
 	$(BUILD_DIR)/generate $(OUT_DIR)
 
 verify: files
 	sh ./verify.sh $(OUT_DIR)/md5file-a.bin $(OUT_DIR)/md5file-b.bin
 
-elf-demo: $(BUILD_DIR)/controlled-fastcoll | $(OUT_DIR)
-	FASTCOLL="$(BUILD_DIR)/controlled-fastcoll" OUT_DIR="$(OUT_DIR)" sh ./hashclash-elf-demo.sh
+elf-demo: $(BUILD_DIR)/generate | $(OUT_DIR)
+	$(BUILD_DIR)/generate --elf-demo --out-dir $(OUT_DIR)
 
 elf-hashclash-demo: elf-demo
 
