@@ -4,6 +4,19 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2
 BUILD_DIR := build
 OUT_DIR := out
 MD5_SRC := ../../src/shared/crypto/md5.c
+RUNTIME_SRCS := \
+	../../src/shared/runtime/io.c \
+	../../src/shared/runtime/memory.c \
+	../../src/shared/runtime/parse.c \
+	../../src/shared/runtime/string.c \
+	../../src/shared/runtime/unicode.c \
+	../../src/shared/runtime/unicode_utf8.c
+PLATFORM_SRCS := \
+	../../src/platform/posix/fs.c \
+	../../src/platform/posix/identity.c \
+	../../src/platform/posix/time.c \
+	../../src/platform/posix/process.c
+GENERATOR_SRCS := generate.c $(MD5_SRC) $(RUNTIME_SRCS) $(PLATFORM_SRCS)
 
 .PHONY: all files verify elf-hashclash-demo scaffold-examples clean
 
@@ -15,8 +28,8 @@ $(BUILD_DIR):
 $(OUT_DIR):
 	mkdir -p $(OUT_DIR)
 
-$(BUILD_DIR)/generate: generate.c $(MD5_SRC) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I../../src/shared generate.c $(MD5_SRC) -o $(BUILD_DIR)/generate
+$(BUILD_DIR)/generate: $(GENERATOR_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I../../src/shared -I../../src/platform/posix -I../../src/platform/common $(GENERATOR_SRCS) -o $(BUILD_DIR)/generate
 
 files: $(BUILD_DIR)/generate | $(OUT_DIR)
 	$(BUILD_DIR)/generate $(OUT_DIR)

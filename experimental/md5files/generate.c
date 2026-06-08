@@ -1,14 +1,7 @@
-#include <errno.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include "crypto/md5.h"
+#include "platform.h"
+#include "runtime.h"
+#include "stdint.h"
 
 #define ELF_EHDR_SIZE 64U
 #define ELF_PHDR_SIZE 56U
@@ -24,6 +17,8 @@
 #define MD5_ALIGNMENT 64U
 #define COLLISION_BLOCK_SIZE 128U
 #define BACKEND_MAX_PAYLOAD_SIZE (16U * 1024U * 1024U)
+#define BACKEND_MAX_ARGS 32U
+#define PATH_BUFFER_SIZE 512U
 #define EXIT_NOT_A_COLLISION 2
 
 static const char collision_block_a_hex[] =
@@ -59,7 +54,7 @@ static const unsigned char elf_metadata_suffix[] =
 typedef struct {
     unsigned char *data;
     size_t size;
-    mode_t mode;
+    unsigned int mode;
 } FileImage;
 
 typedef struct {
@@ -85,10 +80,44 @@ static int hex_value(char ch) {
     return -1;
 }
 
+static void write_text(int fd, const char *text) {
+    (void)rt_write_cstr(fd, text);
+}
+
+static void write_size_value(int fd, size_t value) {
+    (void)rt_write_uint(fd, (unsigned long long)value);
+}
+
+static void write_error_path(const char *message, const char *path) {
+    write_text(2, "generate: ");
+    write_text(2, message);
+    if (path != 0) {
+        write_text(2, path);
+    }
+    write_text(2, "\n");
+}
+
+static void write_error_size(const char *message, const char *path, size_t value) {
+    write_text(2, "generate: ");
+    write_text(2, message);
+    if (path != 0) {
+        write_text(2, path);
+    }
+    write_text(2, " ");
+    write_size_value(2, value);
+    write_text(2, "\n");
+}
+
+static void print_path_line(const char *label, const char *path) {
+    write_text(1, label);
+    write_text(1, path);
+    write_text(1, "\n");
+}
+
 static int decode_hex_block(const char *hex, unsigned char out[COLLISION_BLOCK_SIZE]) {
     size_t offset;
 
-    if (strlen(hex) != COLLISION_BLOCK_SIZE * 2U) {
+    if (rt_strlen(hex) != COLLISION_BLOCK_SIZE * 2U) {
         return 1;
     }
     for (offset = 0; offset < COLLISION_BLOCK_SIZE; ++offset) {
@@ -150,108 +179,86 @@ static void digest_to_hex(const unsigned char digest[CRYPTO_MD5_DIGEST_SIZE], ch
 }
 
 static int join_path(char *buffer, size_t buffer_size, const char *directory, const char *name) {
-    int written = snprintf(buffer, buffer_size, "%s/%s", directory, name);
-
-    return written > 0 && (size_t)written < buffer_size ? 0 : 1;
+    return rt_join_path(directory, name, buffer, buffer_size) == 0 ? 0 : 1;
 }
 
 static int ensure_directory(const char *path) {
-    struct stat metadata;
-
-    if (mkdir(path, 0777) == 0) {
+    if (platform_make_directory(path, 0777U) == 0 || platform_path_access(path, PLATFORM_ACCESS_EXISTS) == 0) {
         return 0;
     }
-    if (errno == EEXIST && stat(path, &metadata) == 0 && S_ISDIR(metadata.st_mode)) {
-        return 0;
-    }
-    fprintf(stderr, "generate: cannot create %s: %s\n", path, strerror(errno));
+    write_error_path("cannot create ", path);
     return 1;
 }
 
 static int set_backend_env_size(const char *name, size_t value) {
     char buffer[64];
-    int written = snprintf(buffer, sizeof(buffer), "%zu", value);
 
-    if (written <= 0 || (size_t)written >= sizeof(buffer) || setenv(name, buffer, 1) != 0) {
-        fprintf(stderr, "generate: cannot set %s\n", name);
+    rt_unsigned_to_string((unsigned long long)value, buffer, sizeof(buffer));
+    if (platform_setenv(name, buffer, 1) != 0) {
+        write_error_path("cannot set ", name);
         return 1;
     }
     return 0;
 }
 
 static int set_backend_env_path(const char *name, const char *path) {
-    if (setenv(name, path, 1) != 0) {
-        fprintf(stderr, "generate: cannot set %s: %s\n", name, strerror(errno));
-        return 1;
-    }
-    return 0;
-}
-
-static int make_temp_directory(char *buffer, size_t buffer_size) {
-    const char *base = getenv("TMPDIR");
-    int written;
-
-    if (base == NULL || base[0] == '\0') {
-        base = "/tmp";
-    }
-    written = snprintf(buffer, buffer_size, "%s/newos-md5files-XXXXXX", base);
-    if (written <= 0 || (size_t)written >= buffer_size) {
-        fprintf(stderr, "generate: temporary directory path is too long\n");
-        return 1;
-    }
-    if (mkdtemp(buffer) == NULL) {
-        fprintf(stderr, "generate: cannot create temporary directory: %s\n", strerror(errno));
+    if (platform_setenv(name, path, 1) != 0) {
+        write_error_path("cannot set ", name);
         return 1;
     }
     return 0;
 }
 
 static void free_file_image(FileImage *image) {
-    if (image != NULL) {
-        free(image->data);
-        image->data = NULL;
+    if (image != 0) {
+        rt_free(image->data);
+        image->data = 0;
         image->size = 0U;
     }
 }
 
 static int read_file_image(const char *path, FileImage *image) {
-    struct stat metadata;
-    FILE *file;
+    PlatformDirEntry entry;
+    int fd;
+    size_t offset = 0U;
 
     memset(image, 0, sizeof(*image));
-    if (stat(path, &metadata) != 0) {
-        fprintf(stderr, "generate: cannot stat %s: %s\n", path, strerror(errno));
+    fd = platform_open_read_secure(path, &entry);
+    if (fd < 0) {
+        write_error_path("cannot open ", path);
         return 1;
     }
-    if (!S_ISREG(metadata.st_mode)) {
-        fprintf(stderr, "generate: %s is not a regular file\n", path);
+    if (entry.is_dir) {
+        write_error_path("not a regular file: ", path);
+        (void)platform_close(fd);
         return 1;
     }
-    if ((uintmax_t)metadata.st_size > (uintmax_t)(size_t)-1) {
-        fprintf(stderr, "generate: %s is too large for this scaffold\n", path);
+    if (entry.size > (unsigned long long)(size_t)-1) {
+        write_error_path("too large for this scaffold: ", path);
+        (void)platform_close(fd);
         return 1;
     }
-    image->size = (size_t)metadata.st_size;
-    image->mode = metadata.st_mode & 07777;
-    image->data = (unsigned char *)malloc(image->size == 0U ? 1U : image->size);
-    if (image->data == NULL) {
-        fprintf(stderr, "generate: out of memory reading %s\n", path);
+    image->size = (size_t)entry.size;
+    image->mode = entry.mode & 07777U;
+    image->data = (unsigned char *)rt_malloc(image->size == 0U ? 1U : image->size);
+    if (image->data == 0) {
+        write_error_path("out of memory reading ", path);
+        (void)platform_close(fd);
         return 1;
     }
-    file = fopen(path, "rb");
-    if (file == NULL) {
-        fprintf(stderr, "generate: cannot open %s: %s\n", path, strerror(errno));
-        free_file_image(image);
-        return 1;
+    while (offset < image->size) {
+        long n = platform_read(fd, image->data + offset, image->size - offset);
+
+        if (n <= 0) {
+            write_error_path("cannot read ", path);
+            (void)platform_close(fd);
+            free_file_image(image);
+            return 1;
+        }
+        offset += (size_t)n;
     }
-    if (image->size != 0U && fread(image->data, 1U, image->size, file) != image->size) {
-        fprintf(stderr, "generate: cannot read %s: %s\n", path, ferror(file) ? strerror(errno) : "short read");
-        fclose(file);
-        free_file_image(image);
-        return 1;
-    }
-    if (fclose(file) != 0) {
-        fprintf(stderr, "generate: cannot close %s: %s\n", path, strerror(errno));
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
         free_file_image(image);
         return 1;
     }
@@ -267,32 +274,32 @@ static int validate_elf64(const char *path, const FileImage *image, ElfInfo *inf
     memset(info, 0, sizeof(*info));
     if (image->size < ELF_EHDR_SIZE ||
         image->data[0] != 0x7fU || image->data[1] != 'E' || image->data[2] != 'L' || image->data[3] != 'F') {
-        fprintf(stderr, "generate: %s is not an ELF file\n", path);
+        write_error_path("not an ELF file: ", path);
         return 1;
     }
     if (image->data[4] != ELFCLASS64 || image->data[5] != ELFDATA2LSB || image->data[6] != EV_CURRENT) {
-        fprintf(stderr, "generate: %s is not a little-endian ELF64 file\n", path);
+        write_error_path("not a little-endian ELF64 file: ", path);
         return 1;
     }
     info->type = read_u16_le(image->data + 16U);
     if (info->type != ET_EXEC && info->type != ET_DYN) {
-        fprintf(stderr, "generate: %s is not an executable/shared ELF image\n", path);
+        write_error_path("not an executable/shared ELF image: ", path);
         return 1;
     }
     info->phoff = read_u64_le(image->data + 32U);
     phentsize = read_u16_le(image->data + 54U);
     info->phnum = read_u16_le(image->data + 56U);
     if (info->phnum == 0U) {
-        fprintf(stderr, "generate: %s has no program headers\n", path);
+        write_error_path("has no program headers: ", path);
         return 1;
     }
     if (phentsize != ELF_PHDR_SIZE) {
-        fprintf(stderr, "generate: %s has unsupported ELF program header size %u\n", path, (unsigned int)phentsize);
+        write_error_size("has unsupported ELF program header size for ", path, phentsize);
         return 1;
     }
     ph_table_size = (uint64_t)info->phnum * phentsize;
     if (!range_valid_u64(info->phoff, ph_table_size, file_size)) {
-        fprintf(stderr, "generate: %s has program headers outside the file\n", path);
+        write_error_path("has program headers outside the file: ", path);
         return 1;
     }
 
@@ -307,11 +314,11 @@ static int validate_elf64(const char *path, const FileImage *image, ElfInfo *inf
             uint64_t end = offset + file_bytes;
 
             if (memory_bytes < file_bytes) {
-                fprintf(stderr, "generate: %s has a LOAD segment with p_memsz < p_filesz\n", path);
+                write_error_path("has a LOAD segment with p_memsz < p_filesz: ", path);
                 return 1;
             }
             if (!range_valid_u64(offset, file_bytes, file_size) || end < offset) {
-                fprintf(stderr, "generate: %s has a LOAD segment outside the file\n", path);
+                write_error_path("has a LOAD segment outside the file: ", path);
                 return 1;
             }
             if (end > info->loaded_end) {
@@ -320,7 +327,7 @@ static int validate_elf64(const char *path, const FileImage *image, ElfInfo *inf
         }
     }
     if (info->loaded_end == 0U) {
-        fprintf(stderr, "generate: %s has no loadable file bytes\n", path);
+        write_error_path("has no loadable file bytes: ", path);
         return 1;
     }
     return 0;
@@ -354,51 +361,139 @@ static int read_backend_payload_file(const char *path, unsigned char **payload_o
     FileImage image;
 
     if (read_file_image(path, &image) != 0) {
-        fprintf(stderr, "generate: backend did not produce a readable payload at %s\n", path);
+        write_error_path("backend did not produce a readable payload at ", path);
         return 1;
     }
     if (image.size == 0U || image.size > BACKEND_MAX_PAYLOAD_SIZE) {
-        fprintf(stderr, "generate: backend payload %s has unsupported size %zu\n", path, image.size);
+        write_error_size("backend payload has unsupported size at ", path, image.size);
         free_file_image(&image);
         return 1;
     }
     *payload_out = image.data;
     *payload_size_out = image.size;
-    image.data = NULL;
+    image.data = 0;
     free_file_image(&image);
     return 0;
 }
 
-static int write_prefix_file(const char *path, const FileImage *image, size_t collision_offset) {
+static int write_zero_padding(int fd, size_t padding, const char *path) {
     static const unsigned char zeroes[MD5_ALIGNMENT] = {0};
-    size_t prefix_size = image->size + sizeof(elf_metadata_prelude) - 1U;
-    size_t padding = collision_offset - prefix_size;
-    FILE *file = fopen(path, "wb");
 
-    if (file == NULL) {
-        fprintf(stderr, "generate: cannot open %s: %s\n", path, strerror(errno));
-        return 1;
-    }
-    if ((image->size != 0U && fwrite(image->data, 1U, image->size, file) != image->size) ||
-        fwrite(elf_metadata_prelude, 1U, sizeof(elf_metadata_prelude) - 1U, file) != sizeof(elf_metadata_prelude) - 1U) {
-        fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
-        fclose(file);
-        return 1;
-    }
     while (padding != 0U) {
         size_t chunk = padding < sizeof(zeroes) ? padding : sizeof(zeroes);
 
-        if (fwrite(zeroes, 1U, chunk, file) != chunk) {
-            fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
-            fclose(file);
+        if (rt_write_all(fd, zeroes, chunk) != 0) {
+            write_error_path("cannot write ", path);
             return 1;
         }
         padding -= chunk;
     }
-    if (fclose(file) != 0) {
-        fprintf(stderr, "generate: cannot close %s: %s\n", path, strerror(errno));
+    return 0;
+}
+
+static int write_prefix_fd(int fd, const char *path, const FileImage *image, size_t collision_offset) {
+    size_t prefix_size = image->size + sizeof(elf_metadata_prelude) - 1U;
+    size_t padding = collision_offset - prefix_size;
+
+    if ((image->size != 0U && rt_write_all(fd, image->data, image->size) != 0) ||
+        rt_write_all(fd, elf_metadata_prelude, sizeof(elf_metadata_prelude) - 1U) != 0) {
+        write_error_path("cannot write ", path);
         return 1;
     }
+
+    return write_zero_padding(fd, padding, path);
+}
+
+static int create_prefix_file(char *path, size_t path_size, const char *prefix, const FileImage *image, size_t collision_offset) {
+    int fd = platform_create_temp_file(path, path_size, prefix, 0600U);
+
+    if (fd < 0) {
+        write_error_path("cannot create temporary prefix file ", prefix);
+        return 1;
+    }
+    if (write_prefix_fd(fd, path, image, collision_offset) != 0) {
+        (void)platform_close(fd);
+        return 1;
+    }
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
+        return 1;
+    }
+    return 0;
+}
+
+static int create_backend_output_path(char *path, size_t path_size, const char *prefix) {
+    int fd = platform_create_temp_file(path, path_size, prefix, 0600U);
+
+    if (fd < 0) {
+        write_error_path("cannot create temporary backend output ", prefix);
+        return 1;
+    }
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
+        return 1;
+    }
+    return 0;
+}
+
+static int split_backend_command(const char *command, char *storage, size_t storage_size, char **argv, size_t argv_capacity) {
+    size_t in = 0U;
+    size_t out = 0U;
+    size_t argc = 0U;
+
+    if (command == 0 || command[0] == '\0') {
+        write_error_path("empty backend command", 0);
+        return 1;
+    }
+    while (command[in] != '\0') {
+        char quote = '\0';
+
+        while (command[in] == ' ' || command[in] == '\t' || command[in] == '\n' || command[in] == '\r') {
+            in += 1U;
+        }
+        if (command[in] == '\0') {
+            break;
+        }
+        if (argc + 1U >= argv_capacity) {
+            write_error_path("backend command has too many arguments", 0);
+            return 1;
+        }
+        argv[argc++] = storage + out;
+        while (command[in] != '\0') {
+            char ch = command[in++];
+
+            if (quote != '\0') {
+                if (ch == quote) {
+                    quote = '\0';
+                    continue;
+                }
+            } else if (ch == '\'' || ch == '"') {
+                quote = ch;
+                continue;
+            } else if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+                break;
+            }
+            if (out + 1U >= storage_size) {
+                write_error_path("backend command is too long", 0);
+                return 1;
+            }
+            storage[out++] = ch;
+        }
+        if (quote != '\0') {
+            write_error_path("backend command has an unterminated quote", 0);
+            return 1;
+        }
+        if (out >= storage_size) {
+            write_error_path("backend command is too long", 0);
+            return 1;
+        }
+        storage[out++] = '\0';
+    }
+    if (argc == 0U) {
+        write_error_path("empty backend command", 0);
+        return 1;
+    }
+    argv[argc] = 0;
     return 0;
 }
 
@@ -409,26 +504,20 @@ static int run_backend(const char *command,
                        unsigned char **payload_a_out,
                        unsigned char **payload_b_out,
                        size_t *payload_size_out) {
-    char temp_dir[512];
-    char prefix_a_path[512] = "";
-    char prefix_b_path[512] = "";
-    char block_a_path[512] = "";
-    char block_b_path[512] = "";
+    char prefix_a_path[PATH_BUFFER_SIZE] = "";
+    char prefix_b_path[PATH_BUFFER_SIZE] = "";
+    char block_a_path[PATH_BUFFER_SIZE] = "";
+    char block_b_path[PATH_BUFFER_SIZE] = "";
+    char backend_storage[PATH_BUFFER_SIZE];
+    char *backend_argv[BACKEND_MAX_ARGS];
+    int backend_pid;
     int backend_status;
     int status = 1;
 
-    if (make_temp_directory(temp_dir, sizeof(temp_dir)) != 0) {
-        return 1;
-    }
-    if (join_path(prefix_a_path, sizeof(prefix_a_path), temp_dir, "prefix-a.bin") != 0 ||
-        join_path(prefix_b_path, sizeof(prefix_b_path), temp_dir, "prefix-b.bin") != 0 ||
-        join_path(block_a_path, sizeof(block_a_path), temp_dir, "block-a.bin") != 0 ||
-        join_path(block_b_path, sizeof(block_b_path), temp_dir, "block-b.bin") != 0) {
-        fprintf(stderr, "generate: temporary path is too long\n");
-        goto cleanup;
-    }
-    if (write_prefix_file(prefix_a_path, image_a, collision_offset) != 0 ||
-        write_prefix_file(prefix_b_path, image_b, collision_offset) != 0) {
+    if (create_prefix_file(prefix_a_path, sizeof(prefix_a_path), "/tmp/newos-md5-prefix-a-", image_a, collision_offset) != 0 ||
+        create_prefix_file(prefix_b_path, sizeof(prefix_b_path), "/tmp/newos-md5-prefix-b-", image_b, collision_offset) != 0 ||
+        create_backend_output_path(block_a_path, sizeof(block_a_path), "/tmp/newos-md5-block-a-") != 0 ||
+        create_backend_output_path(block_b_path, sizeof(block_b_path), "/tmp/newos-md5-block-b-") != 0) {
         goto cleanup;
     }
     if (set_backend_env_path("NEWOS_MD5_PREFIX_A", prefix_a_path) != 0 ||
@@ -441,20 +530,24 @@ static int run_backend(const char *command,
         goto cleanup;
     }
 
-    printf("backend: %s\n", command);
-    printf("backend prefix A: %s\n", prefix_a_path);
-    printf("backend prefix B: %s\n", prefix_b_path);
-    backend_status = system(command);
-    if (backend_status == -1) {
-        fprintf(stderr, "generate: cannot run backend: %s\n", strerror(errno));
+    print_path_line("backend: ", command);
+    print_path_line("backend prefix A: ", prefix_a_path);
+    print_path_line("backend prefix B: ", prefix_b_path);
+    if (split_backend_command(command, backend_storage, sizeof(backend_storage), backend_argv, BACKEND_MAX_ARGS) != 0) {
         goto cleanup;
     }
-    if (!WIFEXITED(backend_status) || WEXITSTATUS(backend_status) != 0) {
-        fprintf(stderr, "generate: backend failed");
-        if (WIFEXITED(backend_status)) {
-            fprintf(stderr, " with exit status %d", WEXITSTATUS(backend_status));
-        }
-        fprintf(stderr, "\n");
+    if (platform_spawn_process(backend_argv, -1, -1, 0, 0, 0, &backend_pid) != 0) {
+        write_error_path("cannot run backend ", backend_argv[0]);
+        goto cleanup;
+    }
+    if (platform_wait_process(backend_pid, &backend_status) != 0) {
+        write_error_path("cannot wait for backend ", backend_argv[0]);
+        goto cleanup;
+    }
+    if (backend_status != 0) {
+        write_text(2, "generate: backend failed with exit status ");
+        (void)rt_write_int(2, backend_status);
+        write_text(2, "\n");
         goto cleanup;
     }
     if (read_backend_payload_file(block_a_path, payload_a_out, payload_size_out) != 0 ||
@@ -462,17 +555,20 @@ static int run_backend(const char *command,
         goto cleanup;
     }
     if (*payload_size_out != *(payload_size_out + 1)) {
-        fprintf(stderr, "generate: backend payload sizes differ: %zu vs %zu\n", *payload_size_out, *(payload_size_out + 1));
+        write_text(2, "generate: backend payload sizes differ: ");
+        write_size_value(2, *payload_size_out);
+        write_text(2, " vs ");
+        write_size_value(2, *(payload_size_out + 1));
+        write_text(2, "\n");
         goto cleanup;
     }
     status = 0;
 
 cleanup:
-    remove(prefix_a_path);
-    remove(prefix_b_path);
-    remove(block_a_path);
-    remove(block_b_path);
-    rmdir(temp_dir);
+    if (prefix_a_path[0] != '\0') (void)platform_remove_file(prefix_a_path);
+    if (prefix_b_path[0] != '\0') (void)platform_remove_file(prefix_b_path);
+    if (block_a_path[0] != '\0') (void)platform_remove_file(block_a_path);
+    if (block_b_path[0] != '\0') (void)platform_remove_file(block_b_path);
     return status;
 }
 
@@ -481,43 +577,28 @@ static int write_candidate(const char *path,
                            size_t collision_offset,
                            const unsigned char *collision_payload,
                            size_t collision_payload_size) {
-    static const unsigned char zeroes[MD5_ALIGNMENT] = {0};
-    size_t prefix_size = image->size + sizeof(elf_metadata_prelude) - 1U;
-    size_t padding = collision_offset - prefix_size;
-    FILE *file = fopen(path, "wb");
+    int fd = platform_open_write(path, 0644U);
 
-    if (file == NULL) {
-        fprintf(stderr, "generate: cannot open %s: %s\n", path, strerror(errno));
+    if (fd < 0) {
+        write_error_path("cannot open ", path);
         return 1;
     }
-    if ((image->size != 0U && fwrite(image->data, 1U, image->size, file) != image->size) ||
-        fwrite(elf_metadata_prelude, 1U, sizeof(elf_metadata_prelude) - 1U, file) != sizeof(elf_metadata_prelude) - 1U) {
-        fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
-        fclose(file);
+    if (write_prefix_fd(fd, path, image, collision_offset) != 0) {
+        (void)platform_close(fd);
         return 1;
     }
-    while (padding != 0U) {
-        size_t chunk = padding < sizeof(zeroes) ? padding : sizeof(zeroes);
-
-        if (fwrite(zeroes, 1U, chunk, file) != chunk) {
-            fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
-            fclose(file);
-            return 1;
-        }
-        padding -= chunk;
-    }
-    if (fwrite(collision_payload, 1U, collision_payload_size, file) != collision_payload_size ||
-        fwrite(elf_metadata_suffix, 1U, sizeof(elf_metadata_suffix) - 1U, file) != sizeof(elf_metadata_suffix) - 1U) {
-        fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
-        fclose(file);
+    if (rt_write_all(fd, collision_payload, collision_payload_size) != 0 ||
+        rt_write_all(fd, elf_metadata_suffix, sizeof(elf_metadata_suffix) - 1U) != 0) {
+        write_error_path("cannot write ", path);
+        (void)platform_close(fd);
         return 1;
     }
-    if (fclose(file) != 0) {
-        fprintf(stderr, "generate: cannot close %s: %s\n", path, strerror(errno));
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
         return 1;
     }
-    if (chmod(path, image->mode) != 0) {
-        fprintf(stderr, "generate: cannot chmod %s: %s\n", path, strerror(errno));
+    if (platform_change_mode(path, image->mode) != 0) {
+        write_error_path("cannot chmod ", path);
         return 1;
     }
     return 0;
@@ -525,20 +606,20 @@ static int write_candidate(const char *path,
 
 static int write_plain_file(const char *path,
                             const unsigned char collision_block[COLLISION_BLOCK_SIZE]) {
-    FILE *file = fopen(path, "wb");
+    int fd = platform_open_write(path, 0644U);
 
-    if (file == NULL) {
-        fprintf(stderr, "generate: cannot open %s: %s\n", path, strerror(errno));
+    if (fd < 0) {
+        write_error_path("cannot open ", path);
         return 1;
     }
-    if (fwrite(collision_block, 1U, COLLISION_BLOCK_SIZE, file) != COLLISION_BLOCK_SIZE ||
-        fwrite(plain_common_suffix, 1U, sizeof(plain_common_suffix) - 1U, file) != sizeof(plain_common_suffix) - 1U) {
-        fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
-        fclose(file);
+    if (rt_write_all(fd, collision_block, COLLISION_BLOCK_SIZE) != 0 ||
+        rt_write_all(fd, plain_common_suffix, sizeof(plain_common_suffix) - 1U) != 0) {
+        write_error_path("cannot write ", path);
+        (void)platform_close(fd);
         return 1;
     }
-    if (fclose(file) != 0) {
-        fprintf(stderr, "generate: cannot close %s: %s\n", path, strerror(errno));
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
         return 1;
     }
     return 0;
@@ -555,15 +636,15 @@ static int run_plain_demo(const char *output_directory,
     }
     if (join_path(path_a, sizeof(path_a), output_directory, "md5file-a.bin") != 0 ||
         join_path(path_b, sizeof(path_b), output_directory, "md5file-b.bin") != 0) {
-        fprintf(stderr, "generate: output path is too long\n");
+        write_error_path("output path is too long", 0);
         return 1;
     }
     if (write_plain_file(path_a, collision_block_a) != 0 ||
         write_plain_file(path_b, collision_block_b) != 0) {
         return 1;
     }
-    printf("wrote %s\n", path_a);
-    printf("wrote %s\n", path_b);
+    print_path_line("wrote ", path_a);
+    print_path_line("wrote ", path_b);
     return 0;
 }
 
@@ -575,34 +656,34 @@ static int parse_elf_options(int argc, char **argv, ElfOptions *options) {
     for (argument = 1; argument < argc; ++argument) {
         const char *option = argv[argument];
 
-        if (strcmp(option, "--in1") == 0 || strcmp(option, "--in2") == 0 ||
-            strcmp(option, "--out-dir") == 0 || strcmp(option, "--out1") == 0 ||
-            strcmp(option, "--out2") == 0 || strcmp(option, "--backend") == 0) {
+        if (rt_strcmp(option, "--in1") == 0 || rt_strcmp(option, "--in2") == 0 ||
+            rt_strcmp(option, "--out-dir") == 0 || rt_strcmp(option, "--out1") == 0 ||
+            rt_strcmp(option, "--out2") == 0 || rt_strcmp(option, "--backend") == 0) {
             if (argument + 1 >= argc) {
-                fprintf(stderr, "generate: %s needs an argument\n", option);
+                write_error_path("option needs an argument: ", option);
                 return 1;
             }
             ++argument;
-            if (strcmp(option, "--in1") == 0) {
+            if (rt_strcmp(option, "--in1") == 0) {
                 options->in1 = argv[argument];
-            } else if (strcmp(option, "--in2") == 0) {
+            } else if (rt_strcmp(option, "--in2") == 0) {
                 options->in2 = argv[argument];
-            } else if (strcmp(option, "--out-dir") == 0) {
+            } else if (rt_strcmp(option, "--out-dir") == 0) {
                 options->out_dir = argv[argument];
-            } else if (strcmp(option, "--out1") == 0) {
+            } else if (rt_strcmp(option, "--out1") == 0) {
                 options->out1 = argv[argument];
-            } else if (strcmp(option, "--backend") == 0) {
+            } else if (rt_strcmp(option, "--backend") == 0) {
                 options->backend = argv[argument];
             } else {
                 options->out2 = argv[argument];
             }
         } else {
-            fprintf(stderr, "generate: unknown option %s\n", option);
+            write_error_path("unknown option ", option);
             return 1;
         }
     }
-    if (options->in1 == NULL || options->in2 == NULL) {
-        fprintf(stderr, "generate: --in1 and --in2 are required for ELF scaffold mode\n");
+    if (options->in1 == 0 || options->in2 == 0) {
+        write_error_path("--in1 and --in2 are required for ELF scaffold mode", 0);
         return 1;
     }
     return 0;
@@ -619,8 +700,8 @@ static int run_elf_scaffold(const ElfOptions *options,
     unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
     unsigned char active_block_a[COLLISION_BLOCK_SIZE];
     unsigned char active_block_b[COLLISION_BLOCK_SIZE];
-    unsigned char *backend_payload_a = NULL;
-    unsigned char *backend_payload_b = NULL;
+    unsigned char *backend_payload_a = 0;
+    unsigned char *backend_payload_b = 0;
     size_t backend_payload_sizes[2];
     const unsigned char *active_payload_a;
     const unsigned char *active_payload_b;
@@ -639,16 +720,16 @@ static int run_elf_scaffold(const ElfOptions *options,
 
     memset(&image_a, 0, sizeof(image_a));
     memset(&image_b, 0, sizeof(image_b));
-    if (out1 == NULL) {
+    if (out1 == 0) {
         if (join_path(default_out1, sizeof(default_out1), options->out_dir, "elf-md5file-a.bin") != 0) {
-            fprintf(stderr, "generate: output path is too long\n");
+            write_error_path("output path is too long", 0);
             return 1;
         }
         out1 = default_out1;
     }
-    if (out2 == NULL) {
+    if (out2 == 0) {
         if (join_path(default_out2, sizeof(default_out2), options->out_dir, "elf-md5file-b.bin") != 0) {
-            fprintf(stderr, "generate: output path is too long\n");
+            write_error_path("output path is too long", 0);
             return 1;
         }
         out2 = default_out2;
@@ -662,7 +743,7 @@ static int run_elf_scaffold(const ElfOptions *options,
     }
     if (add_overflows_size(image_a.size, sizeof(elf_metadata_prelude) - 1U) ||
         add_overflows_size(image_b.size, sizeof(elf_metadata_prelude) - 1U)) {
-        fprintf(stderr, "generate: input is too large for scaffold metadata\n");
+        write_error_path("input is too large for scaffold metadata", 0);
         goto cleanup;
     }
     prefix_a_size = image_a.size + sizeof(elf_metadata_prelude) - 1U;
@@ -671,7 +752,7 @@ static int run_elf_scaffold(const ElfOptions *options,
     if (collision_offset < prefix_a_size || collision_offset < prefix_b_size ||
         add_overflows_size(collision_offset, COLLISION_BLOCK_SIZE) ||
         add_overflows_size(collision_offset + COLLISION_BLOCK_SIZE, sizeof(elf_metadata_suffix) - 1U)) {
-        fprintf(stderr, "generate: scaffold output would be too large\n");
+        write_error_path("scaffold output would be too large", 0);
         goto cleanup;
     }
     memcpy(active_block_a, collision_block_a, COLLISION_BLOCK_SIZE);
@@ -680,12 +761,12 @@ static int run_elf_scaffold(const ElfOptions *options,
     active_payload_b = active_block_b;
     active_payload_size = COLLISION_BLOCK_SIZE;
 
-    printf("input A: %s (%zu bytes, loaded bytes end at %llu)\n", options->in1, image_a.size, (unsigned long long)info_a.loaded_end);
-    printf("input B: %s (%zu bytes, loaded bytes end at %llu)\n", options->in2, image_b.size, (unsigned long long)info_b.loaded_end);
-    printf("metadata trailer A starts at %zu; metadata trailer B starts at %zu\n", image_a.size, image_b.size);
-    printf("collision block offset: %zu (64-byte aligned)\n", collision_offset);
+    write_text(1, "input A: "); write_text(1, options->in1); write_text(1, " ("); write_size_value(1, image_a.size); write_text(1, " bytes, loaded bytes end at "); (void)rt_write_uint(1, info_a.loaded_end); write_text(1, ")\n");
+    write_text(1, "input B: "); write_text(1, options->in2); write_text(1, " ("); write_size_value(1, image_b.size); write_text(1, " bytes, loaded bytes end at "); (void)rt_write_uint(1, info_b.loaded_end); write_text(1, ")\n");
+    write_text(1, "metadata trailer A starts at "); write_size_value(1, image_a.size); write_text(1, "; metadata trailer B starts at "); write_size_value(1, image_b.size); write_text(1, "\n");
+    write_text(1, "collision block offset: "); write_size_value(1, collision_offset); write_text(1, " (64-byte aligned)\n");
 
-    if (options->backend != NULL) {
+    if (options->backend != 0) {
         if (run_backend(options->backend, &image_a, &image_b, collision_offset, &backend_payload_a, &backend_payload_b, backend_payload_sizes) != 0) {
             goto cleanup;
         }
@@ -695,12 +776,12 @@ static int run_elf_scaffold(const ElfOptions *options,
     }
     if (add_overflows_size(collision_offset, active_payload_size) ||
         add_overflows_size(collision_offset + active_payload_size, sizeof(elf_metadata_suffix) - 1U)) {
-        fprintf(stderr, "generate: scaffold output would be too large\n");
+        write_error_path("scaffold output would be too large", 0);
         goto cleanup;
     }
     output_size = collision_offset + active_payload_size + sizeof(elf_metadata_suffix) - 1U;
-    printf("collision payload size: %zu bytes\n", active_payload_size);
-    printf("candidate output size: %zu bytes\n", output_size);
+    write_text(1, "collision payload size: "); write_size_value(1, active_payload_size); write_text(1, " bytes\n");
+    write_text(1, "candidate output size: "); write_size_value(1, output_size); write_text(1, " bytes\n");
 
     md5_candidate(&image_a, collision_offset, active_payload_a, active_payload_size, digest_a);
     md5_candidate(&image_b, collision_offset, active_payload_b, active_payload_size, digest_b);
@@ -711,38 +792,36 @@ static int run_elf_scaffold(const ElfOptions *options,
         write_candidate(out2, &image_b, collision_offset, active_payload_b, active_payload_size) != 0) {
         goto cleanup;
     }
-    printf("wrote %s\n", out1);
-    printf("wrote %s\n", out2);
-    printf("md5 A: %s\n", hex_a);
-    printf("md5 B: %s\n", hex_b);
+    print_path_line("wrote ", out1);
+    print_path_line("wrote ", out2);
+    print_path_line("md5 A: ", hex_a);
+    print_path_line("md5 B: ", hex_b);
 
     if (memcmp(digest_a, digest_b, sizeof(digest_a)) != 0) {
-        if (options->backend != NULL) {
-            fprintf(stderr,
-                    "generate: candidate outputs do not collide; backend payloads are not valid for these prefixes\n");
+        if (options->backend != 0) {
+            write_error_path("candidate outputs do not collide; backend payloads are not valid for these prefixes", 0);
         } else {
-            fprintf(stderr,
-                    "generate: candidate outputs do not collide; fixed public blocks need their controlled MD5 prefix state\n"
-                    "generate: arbitrary ELF inputs require a chosen-prefix collision backend\n");
+            write_error_path("candidate outputs do not collide; fixed public blocks need their controlled MD5 prefix state", 0);
+            write_error_path("arbitrary ELF inputs require a chosen-prefix collision backend", 0);
         }
         status = EXIT_NOT_A_COLLISION;
         goto cleanup;
     }
-    printf("same md5: %s\n", hex_a);
+    print_path_line("same md5: ", hex_a);
     status = 0;
 
 cleanup:
-    free(backend_payload_a);
-    free(backend_payload_b);
+    rt_free(backend_payload_a);
+    rt_free(backend_payload_b);
     free_file_image(&image_a);
     free_file_image(&image_b);
     return status;
 }
 
 static void print_usage(void) {
-    printf("usage:\n");
-    printf("  generate [OUTDIR]\n");
-    printf("  generate --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH] [--backend COMMAND]\n");
+    write_text(1, "usage:\n");
+    write_text(1, "  generate [OUTDIR]\n");
+    write_text(1, "  generate --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH] [--backend COMMAND]\n");
 }
 
 int main(int argc, char **argv) {
@@ -752,10 +831,10 @@ int main(int argc, char **argv) {
 
     if (decode_hex_block(collision_block_a_hex, collision_block_a) != 0 ||
         decode_hex_block(collision_block_b_hex, collision_block_b) != 0) {
-        fprintf(stderr, "generate: internal collision block is malformed\n");
+        write_error_path("internal collision block is malformed", 0);
         return 1;
     }
-    if (argc >= 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+    if (argc >= 2 && (rt_strcmp(argv[1], "--help") == 0 || rt_strcmp(argv[1], "-h") == 0)) {
         print_usage();
         return 0;
     }

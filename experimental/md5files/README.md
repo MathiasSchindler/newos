@@ -121,6 +121,11 @@ The Makefile target forwards `BACKEND` in the same way:
 make -C experimental/md5files scaffold-examples BACKEND='path/to/backend-command'
 ```
 
+The generator starts the backend directly through the project platform process
+API. It does not evaluate the string with a shell, so use a backend executable or
+script path with simple whitespace-separated arguments rather than shell
+redirection, variable assignment, or pipelines.
+
 The backend command receives paths through environment variables:
 
 - `NEWOS_MD5_PREFIX_A`: binary prefix for the first output
