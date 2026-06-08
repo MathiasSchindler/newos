@@ -7,7 +7,7 @@ c2pa - add development C2PA manifests to images
 ## SYNOPSIS
 
 ```
-c2pa add --dev-key -o OUTPUT [--claim-generator TEXT] [--action ACTION] FILE
+c2pa add --dev-key -o OUTPUT [--claim-generator TEXT] [--action ACTION]... FILE
 ```
 
 ## DESCRIPTION
@@ -30,7 +30,9 @@ and carrier-writing paths. It is not production provenance.
 - `--dev-key` - required; use the built-in development P-256 key and certificate
 - `-o`, `--output` - write the modified image to OUTPUT
 - `--claim-generator TEXT` - set the claim generator string
-- `--action ACTION` - set the simple action string stored in the claim
+- `--action ACTION` - set a simple action string stored in the claim; repeat to
+  write multiple action entries. If the first action is not `c2pa.created` or
+  `c2pa.opened`, `c2pa.created` is prepended for standard-manifest shape.
 - `-h`, `--help` - show usage
 
 ## SUPPORTED FORMATS
