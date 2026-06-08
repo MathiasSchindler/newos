@@ -6,6 +6,7 @@
 unsigned int archive_crc32_update(unsigned int crc, const unsigned char *data, size_t length);
 unsigned int archive_crc32_finish(unsigned int crc);
 int archive_read_exact(int fd, unsigned char *buffer, size_t count);
+unsigned short archive_read_u16_le(const unsigned char *bytes);
 unsigned int archive_read_u32_le(const unsigned char *bytes);
 unsigned long long archive_read_u64_le(const unsigned char *bytes);
 void archive_store_u32_le(unsigned char *bytes, unsigned int value);

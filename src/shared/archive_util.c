@@ -24,6 +24,10 @@ int archive_read_exact(int fd, unsigned char *buffer, size_t count) {
     return 0;
 }
 
+unsigned short archive_read_u16_le(const unsigned char *bytes) {
+    return (unsigned short)((unsigned short)bytes[0] | ((unsigned short)bytes[1] << 8));
+}
+
 unsigned int archive_read_u32_le(const unsigned char *bytes) {
     return (unsigned int)bytes[0] |
            ((unsigned int)bytes[1] << 8) |
