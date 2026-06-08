@@ -8,6 +8,7 @@
 #define WGET_BUFFER_CAPACITY 4096
 #define WGET_HEADER_CAPACITY 8192
 #define WGET_URL_CAPACITY 2048
+#define WGET_DEFAULT_TIMEOUT_MS 30000ULL
 
 typedef struct {
     int scheme;
@@ -165,6 +166,77 @@ static int parse_http_status(const char *headers) {
     return saw_digit ? code : -1;
 }
 
+static int parse_header_size_value(const char *text, size_t length, size_t *value_out) {
+    size_t index = 0U;
+    size_t value = 0U;
+    int saw_digit = 0;
+
+    while (index < length && (text[index] == ' ' || text[index] == '\t')) {
+        index += 1U;
+    }
+    while (index < length && text[index] >= '0' && text[index] <= '9') {
+        size_t digit = (size_t)(text[index] - '0');
+        size_t next = value * 10U + digit;
+        if (next < value) {
+            return -1;
+        }
+        value = next;
+        saw_digit = 1;
+        index += 1U;
+    }
+    while (index < length && (text[index] == ' ' || text[index] == '\t')) {
+        index += 1U;
+    }
+    if (!saw_digit || index != length) {
+        return -1;
+    }
+    *value_out = value;
+    return 0;
+}
+
+static int header_name_equals(const char *line, size_t name_length, const char *name) {
+    size_t index = 0U;
+
+    while (index < name_length && name[index] != '\0') {
+        if (to_lower_ascii(line[index]) != to_lower_ascii(name[index])) {
+            return 0;
+        }
+        index += 1U;
+    }
+    return index == name_length && name[index] == '\0';
+}
+
+static int is_safe_header_field_value_char(unsigned char ch) {
+    return ch >= ' ' && ch != 0x7fU;
+}
+
+static int copy_header_value(const char *value, size_t value_length, char *out, size_t out_size) {
+    size_t start = 0U;
+    size_t end = value_length;
+    size_t index;
+
+    if (out == 0 || out_size == 0U) {
+        return -1;
+    }
+    while (start < end && (value[start] == ' ' || value[start] == '\t')) {
+        start += 1U;
+    }
+    while (end > start && (value[end - 1U] == ' ' || value[end - 1U] == '\t')) {
+        end -= 1U;
+    }
+    if (end == start || end - start >= out_size) {
+        return -1;
+    }
+    for (index = start; index < end; ++index) {
+        if (!is_safe_header_field_value_char((unsigned char)value[index])) {
+            return -1;
+        }
+        out[index - start] = value[index];
+    }
+    out[end - start] = '\0';
+    return 0;
+}
+
 static int find_header_end(const char *buffer, size_t length, size_t *offset_out) {
     size_t index;
 
@@ -184,26 +256,6 @@ static int find_header_end(const char *buffer, size_t length, size_t *offset_out
     }
 
     return -1;
-}
-
-static void trim_ascii_whitespace(char *text) {
-    size_t start = 0;
-    size_t end = rt_strlen(text);
-    size_t index = 0;
-
-    while (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n') {
-        start += 1U;
-    }
-    while (end > start &&
-           (text[end - 1U] == ' ' || text[end - 1U] == '\t' || text[end - 1U] == '\r' || text[end - 1U] == '\n')) {
-        end -= 1U;
-    }
-
-    while (start + index < end) {
-        text[index] = text[start + index];
-        index += 1U;
-    }
-    text[index] = '\0';
 }
 
 static void derive_output_name(const char *path, char *buffer, size_t buffer_size) {
@@ -388,6 +440,21 @@ static int looks_like_absolute_uri(const char *text) {
     return 0;
 }
 
+static int is_safe_redirect_location(const char *text) {
+    size_t index;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+    for (index = 0U; text[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)text[index];
+        if (ch <= ' ' || ch == 0x7fU) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int compose_redirect_url(const WgetUrl *base, const char *location, char *buffer, size_t buffer_size) {
     size_t length = 0;
     char port_text[16];
@@ -398,11 +465,18 @@ static int compose_redirect_url(const WgetUrl *base, const char *location, char 
         return -1;
     }
 
+    if (!is_safe_redirect_location(location)) {
+        return -1;
+    }
+
     if (tool_starts_with(location, "file://")) {
         return -1;
     }
 
     if (tool_starts_with(location, "http://") || tool_starts_with(location, "https://")) {
+        if (rt_strlen(location) + 1U > buffer_size) {
+            return -1;
+        }
         rt_copy_string(buffer, buffer_size, location);
         return 0;
     }
@@ -424,8 +498,8 @@ static int compose_redirect_url(const WgetUrl *base, const char *location, char 
     }
 
     if (location[0] == '/') {
-        (void)buffer_append_cstr(buffer, buffer_size, length, location);
-        return 0;
+        length = buffer_append_cstr(buffer, buffer_size, length, location);
+        return rt_strlen(buffer) == length ? 0 : -1;
     }
 
     rt_copy_string(base_dir, sizeof(base_dir), base->path);
@@ -442,29 +516,32 @@ static int compose_redirect_url(const WgetUrl *base, const char *location, char 
         rt_copy_string(base_dir, sizeof(base_dir), "/");
     }
 
-    (void)buffer_append_cstr(buffer, buffer_size, length, base_dir);
+    length = buffer_append_cstr(buffer, buffer_size, length, base_dir);
     if (base_dir[rt_strlen(base_dir) - 1U] != '/') {
-        length = rt_strlen(buffer);
         length = buffer_append_char(buffer, buffer_size, length, '/');
     }
-    (void)buffer_append_cstr(buffer, buffer_size, rt_strlen(buffer), location);
-    return 0;
+    length = buffer_append_cstr(buffer, buffer_size, length, location);
+    return rt_strlen(buffer) == length ? 0 : -1;
 }
 
 static int parse_http_headers(
     const char *headers,
     int *status_code_out,
     char *location_out,
-    size_t location_size
+    size_t location_size,
+    size_t *content_length_out,
+    int *has_content_length_out
 ) {
     size_t line_start = 0;
     int line_index = 0;
 
-    if (status_code_out == 0 || location_out == 0) {
+    if (status_code_out == 0 || location_out == 0 || content_length_out == 0 || has_content_length_out == 0) {
         return -1;
     }
 
     location_out[0] = '\0';
+    *content_length_out = 0U;
+    *has_content_length_out = 0;
     *status_code_out = parse_http_status(headers);
     if (*status_code_out < 0) {
         return -1;
@@ -478,24 +555,35 @@ static int parse_http_headers(
             length -= 1U;
         }
 
-        if (line_index > 0 && length > 9U) {
-            char line[1024];
-            size_t copy_length = length < sizeof(line) - 1U ? length : sizeof(line) - 1U;
+        if (line_index > 0 && length > 0U) {
             size_t colon_index = 0;
 
-            memcpy(line, headers + line_start, copy_length);
-            line[copy_length] = '\0';
-
-            while (line[colon_index] != '\0' && line[colon_index] != ':') {
+            while (colon_index < length && headers[line_start + colon_index] != ':') {
                 colon_index += 1U;
             }
 
-            if (line[colon_index] == ':') {
-                line[colon_index] = '\0';
-                trim_ascii_whitespace(line);
-                trim_ascii_whitespace(line + colon_index + 1U);
-                if (equals_ignore_case_ascii(line, "Location")) {
-                    rt_copy_string(location_out, location_size, line + colon_index + 1U);
+            if (colon_index < length) {
+                size_t name_end = colon_index;
+                const char *value = headers + line_start + colon_index + 1U;
+                size_t value_length = length - colon_index - 1U;
+
+                while (name_end > 0U && (headers[line_start + name_end - 1U] == ' ' || headers[line_start + name_end - 1U] == '\t')) {
+                    name_end -= 1U;
+                }
+                if (header_name_equals(headers + line_start, name_end, "Location")) {
+                    if (copy_header_value(value, value_length, location_out, location_size) != 0) {
+                        return -1;
+                    }
+                } else if (header_name_equals(headers + line_start, name_end, "Content-Length")) {
+                    size_t parsed_length = 0U;
+                    if (parse_header_size_value(value, value_length, &parsed_length) != 0) {
+                        return -1;
+                    }
+                    if (*has_content_length_out && *content_length_out != parsed_length) {
+                        return -1;
+                    }
+                    *content_length_out = parsed_length;
+                    *has_content_length_out = 1;
                 }
             }
         }
@@ -507,7 +595,26 @@ static int parse_http_headers(
         line_index += 1;
     }
 
-    trim_ascii_whitespace(location_out);
+    return 0;
+}
+
+static int write_body_bytes(int output_fd, const char *data, size_t size, int has_content_length, size_t content_length, size_t *body_written) {
+    size_t write_size = size;
+
+    if (has_content_length) {
+        size_t remaining;
+        if (*body_written >= content_length) {
+            return 0;
+        }
+        remaining = content_length - *body_written;
+        if (write_size > remaining) {
+            write_size = remaining;
+        }
+    }
+    if (write_size > 0U && rt_write_all(output_fd, data, write_size) != 0) {
+        return -1;
+    }
+    *body_written += write_size;
     return 0;
 }
 
@@ -539,6 +646,9 @@ static int fetch_http_body(
     size_t header_length = 0;
     int header_complete = 0;
     int status_code = 0;
+    size_t content_length = 0U;
+    size_t body_written = 0U;
+    int has_content_length = 0;
     char buffer[WGET_BUFFER_CAPACITY];
     long bytes_read = 0;
 
@@ -604,7 +714,7 @@ static int fetch_http_body(
                     return -1;
                 }
 
-                if (parse_http_headers(header_buffer, &status_code, redirect_url, redirect_size) != 0) {
+                if (parse_http_headers(header_buffer, &status_code, redirect_url, redirect_size, &content_length, &has_content_length) != 0) {
                     wget_connection_close(&connection);
                     return -1;
                 }
@@ -632,19 +742,24 @@ static int fetch_http_body(
             }
 
             if (header_length > body_offset &&
-                rt_write_all(output_fd, header_buffer + body_offset, header_length - body_offset) != 0) {
+                write_body_bytes(output_fd, header_buffer + body_offset, header_length - body_offset, has_content_length, content_length, &body_written) != 0) {
                 if (should_close_output) {
                     (void)platform_close(output_fd);
                 }
                 wget_connection_close(&connection);
                 return -1;
             }
-        } else if (rt_write_all(output_fd, buffer, (size_t)bytes_read) != 0) {
+            if (has_content_length && body_written >= content_length) {
+                break;
+            }
+        } else if (write_body_bytes(output_fd, buffer, (size_t)bytes_read, has_content_length, content_length, &body_written) != 0) {
             if (should_close_output) {
                 (void)platform_close(output_fd);
             }
             wget_connection_close(&connection);
             return -1;
+        } else if (has_content_length && body_written >= content_length) {
+            break;
         }
     }
 
@@ -652,7 +767,7 @@ static int fetch_http_body(
     if (should_close_output) {
         (void)platform_close(output_fd);
     }
-    if (!header_complete || bytes_read < 0) {
+    if (!header_complete || bytes_read < 0 || (has_content_length && body_written < content_length)) {
         return -1;
     }
 
@@ -784,6 +899,7 @@ int main(int argc, char **argv) {
     int index;
 
     rt_memset(&options, 0, sizeof(options));
+    options.timeout_ms = WGET_DEFAULT_TIMEOUT_MS;
     tool_opt_init(&options_state, argc, argv, argv[0], "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
 
     while ((parse_result = tool_opt_next(&options_state)) == TOOL_OPT_FLAG) {

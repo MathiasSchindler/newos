@@ -271,6 +271,48 @@ dig_bad_status=0
 assert_exit_code "$dig_bad_status" 1 "dig should reject unsupported record types"
 assert_file_contains "$WORK_DIR/dig_bad.out" 'unsupported type' "dig did not report an unsupported record type error"
 
+if command -v python3 >/dev/null 2>&1; then
+    malformed_dns_port_file="$WORK_DIR/dig_malformed_dns_port.txt"
+    python3 - <<'PY' "$malformed_dns_port_file" > "$WORK_DIR/dig_malformed_dns_server.out" 2>&1 &
+import socket
+import sys
+
+port_file = sys.argv[1]
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("127.0.0.1", 0))
+sock.settimeout(5.0)
+with open(port_file, "w", encoding="utf-8") as handle:
+    handle.write(str(sock.getsockname()[1]) + "\n")
+data, addr = sock.recvfrom(512)
+end = 12
+while end < len(data) and data[end] != 0:
+    end += data[end] + 1
+question = data[12:end + 5]
+answer_name = bytes([0x40]) + b"a" * 64 + b"\x00"
+answer = answer_name + b"\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x7f\x00\x00\x01"
+response = data[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + question + answer
+sock.sendto(response, addr)
+sock.close()
+print("MOCK_DNS_MALFORMED_OK")
+PY
+    malformed_dns_pid=$!
+    waits=0
+    while [ ! -s "$malformed_dns_port_file" ] && [ "$waits" -lt 5 ]; do
+        "$ROOT_DIR/build/sleep" 1
+        waits=$((waits + 1))
+    done
+    [ -s "$malformed_dns_port_file" ] || fail "mock malformed DNS server did not publish a port"
+    malformed_dns_port=$(cat "$malformed_dns_port_file" | tr -d ' \r\n')
+    dig_malformed_status=0
+    "$ROOT_DIR/build/dig" -s 127.0.0.1 -p "$malformed_dns_port" malformed.test > "$WORK_DIR/dig_malformed_dns.out" 2>&1 || dig_malformed_status=$?
+    wait "$malformed_dns_pid" || true
+    assert_exit_code "$dig_malformed_status" 1 "dig should reject DNS names with reserved label types"
+    assert_file_contains "$WORK_DIR/dig_malformed_dns.out" 'lookup failed for malformed\.test' "dig did not report the malformed DNS lookup failure"
+    assert_file_contains "$WORK_DIR/dig_malformed_dns_server.out" 'MOCK_DNS_MALFORMED_OK' "mock malformed DNS server did not complete"
+else
+    note "python3 not available; skipping malformed DNS reply test"
+fi
+
 assert_command_succeeds "$ROOT_DIR/build/ping6" --help > "$WORK_DIR/ping6_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping6_help.out" 'IPv6' "ping6 --help did not describe IPv6 probing"
 

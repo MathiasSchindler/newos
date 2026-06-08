@@ -40,6 +40,8 @@ for quick inspection and troubleshooting, not for full protocol analysis.
 - output is focused on the answer section rather than full header/flag dumps
 - record support is intentionally limited to the common types listed above
 - numeric IPv4 server overrides are the most portable option across platforms
+- malformed DNS replies, including reserved label types, bad compression, and
+  truncated record data, are rejected rather than partially displayed
 
 ## EXAMPLES
 

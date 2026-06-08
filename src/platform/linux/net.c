@@ -1168,6 +1168,9 @@ static int linux_dns_skip_name(const unsigned char *message, size_t message_leng
             *offset_io = offset + 2U;
             return 0;
         }
+        if ((length & 0xc0U) != 0U || length > 63U) {
+            return -1;
+        }
         offset += 1U + (size_t)length;
     }
 
@@ -1228,6 +1231,9 @@ static int linux_dns_read_name(
             }
             offset = (size_t)pointer;
             continue;
+        }
+        if ((length & 0xc0U) != 0U || length > 63U) {
+            return -1;
         }
         offset += 1U;
         if (offset + (size_t)length > message_length) {

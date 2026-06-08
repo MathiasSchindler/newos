@@ -31,6 +31,11 @@ that many body bytes have arrived instead of waiting for the peer to close the
 connection. Plain ASCII extracts use a fast wrapping path; non-ASCII text still
 falls back to the shared Unicode display-width logic.
 
+Malformed JSON string escapes are rejected without reading past the response
+buffer. Decoded C0 control characters other than newlines and tabs are replaced
+with spaces before text output, so a malicious summary cannot inject terminal
+escape sequences through JSON `\u` escapes.
+
 ## OPTIONS
 
 - `-l LANG` / `--language LANG` / `--lang LANG` - use a two-letter Wikipedia
@@ -66,7 +71,8 @@ summaries.
 HTTP redirects are reported but not followed automatically yet.
 
 The JSON parser is intentionally narrow: it extracts the `title`, `description`,
-`extract`, and `page` string fields used by the REST summary response.
+`extract`, and `page` string fields used by the REST summary response. Oversized
+responses and oversized headers are rejected.
 
 ## EXAMPLES
 

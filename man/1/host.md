@@ -18,6 +18,9 @@ short human-readable form.
 
 Supported record types are `A`, `AAAA`, `MX`, `NS`, and `TXT`.
 
+The shared DNS parser rejects malformed replies such as reserved label types,
+bad compression pointers, and truncated record data before answers are printed.
+
 ## OPTIONS
 
 - `-4` - query IPv4 A records.

@@ -487,9 +487,16 @@ static int hex_value(char ch) {
     return -1;
 }
 
-static int append_utf8(char *out, size_t out_size, size_t *out_pos, unsigned int codepoint) {
+static int append_json_codepoint(char *out, size_t out_size, size_t *out_pos, unsigned int codepoint) {
     char encoded[4];
     size_t encoded_size = 0U;
+
+    if ((codepoint < 0x20U && codepoint != '\n' && codepoint != '\t') || codepoint == 0x7fU) {
+        codepoint = ' ';
+    }
+    if ((codepoint >= 0xd800U && codepoint <= 0xdfffU) || codepoint > 0x10ffffU) {
+        return -1;
+    }
     if (rt_utf8_encode(codepoint, encoded, sizeof(encoded), &encoded_size) != 0 || *out_pos + encoded_size >= out_size) return -1;
     memcpy(out + *out_pos, encoded, encoded_size);
     *out_pos += encoded_size;
@@ -497,10 +504,25 @@ static int append_utf8(char *out, size_t out_size, size_t *out_pos, unsigned int
     return 0;
 }
 
+static int append_json_byte(char *out, size_t out_size, size_t *out_pos, unsigned char ch) {
+    if ((ch < ' ' && ch != '\n' && ch != '\t') || ch == 0x7fU) {
+        ch = ' ';
+    }
+    if (*out_pos + 1U >= out_size) return -1;
+    out[(*out_pos)++] = (char)ch;
+    out[*out_pos] = '\0';
+    return 0;
+}
+
+static int json_copy_fail(char *out) {
+    if (out != 0) out[0] = '\0';
+    return -1;
+}
+
 static int json_copy_string(const char *json, size_t start, char *out, size_t out_size) {
     size_t pos = start;
     size_t out_pos = 0U;
-    if (out_size == 0U || json[pos] != '"') return -1;
+    if (out_size == 0U || json[pos] != '"') return json_copy_fail(out);
     pos += 1U;
     out[0] = '\0';
     while (json[pos] != '\0' && json[pos] != '"') {
@@ -508,29 +530,34 @@ static int json_copy_string(const char *json, size_t start, char *out, size_t ou
         if (ch == '\\') {
             char escape = json[pos++];
             if (escape == '"' || escape == '\\' || escape == '/') ch = (unsigned char)escape;
-            else if (escape == 'b') ch = '\b';
-            else if (escape == 'f') ch = '\f';
+            else if (escape == 'b') ch = ' ';
+            else if (escape == 'f') ch = ' ';
             else if (escape == 'n') ch = '\n';
-            else if (escape == 'r') ch = '\r';
+            else if (escape == 'r') ch = '\n';
             else if (escape == 't') ch = '\t';
             else if (escape == 'u') {
-                int a = hex_value(json[pos]);
-                int b = hex_value(json[pos + 1U]);
-                int c = hex_value(json[pos + 2U]);
-                int d = hex_value(json[pos + 3U]);
+                int a;
+                int b;
+                int c;
+                int d;
                 unsigned int codepoint;
-                if (a < 0 || b < 0 || c < 0 || d < 0) return -1;
+                if (json[pos] == '\0') return json_copy_fail(out);
+                a = hex_value(json[pos++]);
+                if (json[pos] == '\0') return json_copy_fail(out);
+                b = hex_value(json[pos++]);
+                if (json[pos] == '\0') return json_copy_fail(out);
+                c = hex_value(json[pos++]);
+                if (json[pos] == '\0') return json_copy_fail(out);
+                d = hex_value(json[pos++]);
+                if (a < 0 || b < 0 || c < 0 || d < 0) return json_copy_fail(out);
                 codepoint = ((unsigned int)a << 12U) | ((unsigned int)b << 8U) | ((unsigned int)c << 4U) | (unsigned int)d;
-                pos += 4U;
-                if (append_utf8(out, out_size, &out_pos, codepoint) != 0) return -1;
+                if (append_json_codepoint(out, out_size, &out_pos, codepoint) != 0) return json_copy_fail(out);
                 continue;
-            } else return -1;
+            } else return json_copy_fail(out);
         }
-        if (out_pos + 1U >= out_size) return -1;
-        out[out_pos++] = (char)ch;
-        out[out_pos] = '\0';
+        if (append_json_byte(out, out_size, &out_pos, ch) != 0) return json_copy_fail(out);
     }
-    return json[pos] == '"' ? 0 : -1;
+    return json[pos] == '"' ? 0 : json_copy_fail(out);
 }
 
 static int json_string_end(const char *json, size_t start, size_t *end_out) {

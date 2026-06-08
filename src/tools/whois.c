@@ -136,6 +136,35 @@ static void normalize_referral_server(char *server) {
     }
 }
 
+static int is_valid_referral_server(const char *server) {
+    size_t index;
+    int saw_alnum = 0;
+
+    if (server == 0 || server[0] == '\0' || rt_strlen(server) > 253U) {
+        return 0;
+    }
+    for (index = 0U; server[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)server[index];
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+            saw_alnum = 1;
+            continue;
+        }
+        if (ch == '.' || ch == '-') {
+            continue;
+        }
+        return 0;
+    }
+    return saw_alnum;
+}
+
+static int try_referral_field(const char *line, size_t line_length, const char *field, char *server_out, size_t server_size) {
+    if (copy_field_value(line, line_length, field, server_out, server_size) != 0) {
+        return -1;
+    }
+    normalize_referral_server(server_out);
+    return is_valid_referral_server(server_out) ? 0 : -1;
+}
+
 static int find_referral_server(const char *response, size_t response_length, char *server_out, size_t server_size) {
     size_t line_start = 0U;
 
@@ -144,8 +173,7 @@ static int find_referral_server(const char *response, size_t response_length, ch
         while (line_end < response_length && response[line_end] != '\n') {
             ++line_end;
         }
-        if (copy_field_value(response + line_start, line_end - line_start, "refer", server_out, server_size) == 0) {
-            normalize_referral_server(server_out);
+        if (try_referral_field(response + line_start, line_end - line_start, "refer", server_out, server_size) == 0) {
             return 0;
         }
         line_start = line_end < response_length ? line_end + 1U : response_length;
@@ -157,8 +185,7 @@ static int find_referral_server(const char *response, size_t response_length, ch
         while (line_end < response_length && response[line_end] != '\n') {
             ++line_end;
         }
-        if (copy_field_value(response + line_start, line_end - line_start, "referralserver", server_out, server_size) == 0) {
-            normalize_referral_server(server_out);
+        if (try_referral_field(response + line_start, line_end - line_start, "referralserver", server_out, server_size) == 0) {
             return 0;
         }
         line_start = line_end < response_length ? line_end + 1U : response_length;
@@ -170,8 +197,7 @@ static int find_referral_server(const char *response, size_t response_length, ch
         while (line_end < response_length && response[line_end] != '\n') {
             ++line_end;
         }
-        if (copy_field_value(response + line_start, line_end - line_start, "whois", server_out, server_size) == 0) {
-            normalize_referral_server(server_out);
+        if (try_referral_field(response + line_start, line_end - line_start, "whois", server_out, server_size) == 0) {
             return 0;
         }
         line_start = line_end < response_length ? line_end + 1U : response_length;

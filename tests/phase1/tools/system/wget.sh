@@ -117,3 +117,75 @@ if [ -s "$WORK_DIR/redirect_copy.txt" ]; then
     fail "wget should not copy local file contents after a redirect"
 fi
 assert_file_contains "$WORK_DIR/redirect_fetch.out" 'cannot follow redirect' "wget did not report the rejected redirect"
+
+if command -v python3 >/dev/null 2>&1; then
+    malformed_port_file="$WORK_DIR/wget_malformed_port.txt"
+    python3 - <<'PY' "$malformed_port_file" > "$WORK_DIR/wget_malformed_server.out" 2>&1 &
+import socket
+import sys
+
+port_file = sys.argv[1]
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", 0))
+sock.listen(3)
+with open(port_file, "w", encoding="utf-8") as handle:
+    handle.write(str(sock.getsockname()[1]) + "\n")
+
+for _ in range(3):
+    conn, _ = sock.accept()
+    request = conn.recv(4096)
+    if b"/length" in request:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA")
+        conn.settimeout(0.25)
+        try:
+            data = conn.recv(1)
+            if data == b"":
+                print("WGET_CLOSED_AFTER_LENGTH")
+            else:
+                print("WGET_SENT_EXTRA_DATA")
+        except (socket.timeout, TimeoutError):
+            print("WGET_WAITED_FOR_CLOSE")
+        except ConnectionResetError:
+            print("WGET_CLOSED_AFTER_LENGTH")
+    elif b"/duplicate-length" in request:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nxx")
+    elif b"/bad-redirect" in request:
+        conn.sendall(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/bad path\r\nContent-Length: 0\r\n\r\n")
+    conn.close()
+sock.close()
+print("MOCK_WGET_MALFORMED_OK")
+PY
+    malformed_pid=$!
+    waits=0
+    while [ ! -s "$malformed_port_file" ] && [ "$waits" -lt 5 ]; do
+        "$ROOT_DIR/build/sleep" 1
+        waits=$((waits + 1))
+    done
+    [ -s "$malformed_port_file" ] || fail "wget malformed mock server did not publish a port"
+    malformed_port=$(cat "$malformed_port_file" | tr -d ' \r\n')
+
+    assert_command_succeeds "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_length.out" "http://127.0.0.1:$malformed_port/length"
+    assert_text_equals "$(cat "$WORK_DIR/wget_length.out")" 'hello' "wget should write exactly Content-Length bytes"
+
+    wget_duplicate_status=0
+    "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_duplicate.out" "http://127.0.0.1:$malformed_port/duplicate-length" > "$WORK_DIR/wget_duplicate.err" 2>&1 || wget_duplicate_status=$?
+    assert_exit_code "$wget_duplicate_status" 1 "wget should reject conflicting Content-Length headers"
+    if [ -s "$WORK_DIR/wget_duplicate.out" ]; then
+        fail "wget should not write a body after conflicting Content-Length headers"
+    fi
+
+    wget_bad_redirect_status=0
+    "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_bad_redirect.out" "http://127.0.0.1:$malformed_port/bad-redirect" > "$WORK_DIR/wget_bad_redirect.err" 2>&1 || wget_bad_redirect_status=$?
+    assert_exit_code "$wget_bad_redirect_status" 1 "wget should reject redirects containing spaces"
+    if [ -s "$WORK_DIR/wget_bad_redirect.out" ]; then
+        fail "wget should not write a body after a malformed redirect"
+    fi
+
+    wait "$malformed_pid" || true
+    assert_file_contains "$WORK_DIR/wget_malformed_server.out" 'WGET_CLOSED_AFTER_LENGTH' "wget should close after declared Content-Length bytes"
+    assert_file_contains "$WORK_DIR/wget_malformed_server.out" 'MOCK_WGET_MALFORMED_OK' "mock wget malformed server did not complete"
+else
+    note "python3 not available; skipping malformed wget HTTP tests"
+fi

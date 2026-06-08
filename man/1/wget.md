@@ -28,14 +28,16 @@ external dependencies or a hosted libc requirement in the tool itself.
 - show server response headers with `-S`
 - apply a network timeout with `-T`
 - follow a small number of HTTP redirects
+- stop after the declared `Content-Length` bytes when that header is present
 
 ## OPTIONS
 
 - `-q` / `--quiet` - reduce status output
 - `-S` / `--server-response` - print the received HTTP response headers to
   stderr
-- `-T TIMEOUT` / `--timeout TIMEOUT` - set a socket timeout; accepts the same
-  duration syntax used by other tools such as `250ms`, `2s`, or `1.5m`
+- `-T TIMEOUT` / `--timeout TIMEOUT` - set an idle socket timeout; accepts the
+  same duration syntax used by other tools such as `250ms`, `2s`, or `1.5m`.
+  The default is 30 seconds.
 - `-O FILE` - write the result to FILE; use `-O -` to write to stdout
 
 ## LIMITATIONS
@@ -47,6 +49,9 @@ external dependencies or a hosted libc requirement in the tool itself.
 - no resume/download continuation support
 - no authentication, cookies, proxy support, or recursive mirroring
 - only simple GET-style retrieval is supported
+- conflicting or malformed `Content-Length` headers are rejected
+- redirects with unsafe control characters, spaces, unsupported schemes, or
+  oversized locations are rejected instead of being followed after truncation
 
 ## EXAMPLES
 

@@ -39,6 +39,8 @@ than a full diagnostic suite.
 - output currently focuses on address answers rather than the full DNS message
 - advanced record types, reverse lookups, and detailed flags are not yet shown
 - freestanding lookups work best with numeric name servers or the guest's default resolver configuration
+- DNS replies with malformed compression pointers, reserved label types, or
+	truncated record data are rejected by the shared DNS parser
 
 ## EXAMPLES
 
