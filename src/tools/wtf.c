@@ -2,7 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define WTF_BUFFER_CHUNK 4096U
+#define WTF_BUFFER_CHUNK 16384U
 #define WTF_HEADER_LIMIT 16384U
 #define WTF_URL_LIMIT 2048U
 #define WTF_DEFAULT_WRAP_COLUMNS 80U
@@ -281,17 +281,37 @@ static int parse_status(const char *headers) {
     return saw_digit ? code : -1;
 }
 
+static int parse_header_size(const char *text, size_t *value_out) {
+    size_t value = 0U;
+    int saw_digit = 0;
+
+    while (*text == ' ' || *text == '\t') text += 1;
+    while (*text >= '0' && *text <= '9') {
+        size_t next = value * 10U + (size_t)(*text - '0');
+        if (next < value) return -1;
+        value = next;
+        saw_digit = 1;
+        text += 1;
+    }
+    while (*text == ' ' || *text == '\t' || *text == '\r') text += 1;
+    if (!saw_digit || *text != '\0') return -1;
+    *value_out = value;
+    return 0;
+}
+
 static size_t line_end(const char *text, size_t start) {
     size_t index = start;
     while (text[index] != '\0' && text[index] != '\n') index += 1U;
     return index;
 }
 
-static void parse_headers(const char *headers, int *status_out, char *location, size_t location_size) {
+static void parse_headers(const char *headers, int *status_out, char *location, size_t location_size, size_t *content_length_out, int *has_content_length_out) {
     size_t line_start = 0U;
     int line_index = 0;
     location[0] = '\0';
     *status_out = parse_status(headers);
+    *content_length_out = 0U;
+    *has_content_length_out = 0;
     while (headers[line_start] != '\0') {
         size_t end = line_end(headers, line_start);
         size_t length = end > line_start ? end - line_start : 0U;
@@ -307,6 +327,9 @@ static void parse_headers(const char *headers, int *status_out, char *location, 
                 trim_ascii(line);
                 trim_ascii(line + colon + 1U);
                 if (equals_ignore_case(line, "Location")) rt_copy_string(location, location_size, line + colon + 1U);
+                else if (equals_ignore_case(line, "Content-Length") && parse_header_size(line + colon + 1U, content_length_out) == 0) {
+                    *has_content_length_out = 1;
+                }
             }
         }
         if (headers[end] == '\0') break;
@@ -370,7 +393,11 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
     WtfBuffer response;
     size_t request_length = 0U;
     size_t body_offset = 0U;
+    size_t content_length = 0U;
+    size_t body_size = 0U;
     int status = 0;
+    int has_content_length = 0;
+    int parsed_headers = 0;
     int tls_connected = 0;
     long bytes_read;
     int result = -1;
@@ -414,17 +441,28 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
         }
         if (bytes_read == 0) break;
         if (buffer_append(&response, chunk, (size_t)bytes_read) != 0 || response.size > 4U * 1024U * 1024U) goto done;
+        if (!parsed_headers) {
+            if (find_header_end(response.data, response.size, &body_offset) == 0) {
+                if (body_offset > WTF_HEADER_LIMIT) goto done;
+                response.data[body_offset - 1U] = '\0';
+                parse_headers(response.data, &status, redirect, redirect_size, &content_length, &has_content_length);
+                response.data[body_offset - 1U] = '\n';
+                parsed_headers = 1;
+                if (status >= 300 && status < 400 && redirect[0] != '\0') {
+                    result = 1;
+                    goto done;
+                }
+                if (status < 200 || status >= 300) goto done;
+            } else if (response.size > WTF_HEADER_LIMIT) {
+                goto done;
+            }
+        }
+        if (parsed_headers && has_content_length && response.size - body_offset >= content_length) break;
     }
-    if (find_header_end(response.data, response.size, &body_offset) != 0 || body_offset > WTF_HEADER_LIMIT) goto done;
-    response.data[body_offset - 1U] = '\0';
-    parse_headers(response.data, &status, redirect, redirect_size);
-    response.data[body_offset - 1U] = '\n';
-    if (status >= 300 && status < 400 && redirect[0] != '\0') {
-        result = 1;
-        goto done;
-    }
-    if (status < 200 || status >= 300) goto done;
-    result = buffer_append(body, response.data + body_offset, response.size - body_offset);
+    if (!parsed_headers || body_offset > response.size) goto done;
+    body_size = response.size - body_offset;
+    if (has_content_length && body_size > content_length) body_size = content_length;
+    result = buffer_append(body, response.data + body_offset, body_size);
 done:
     if (use_tls && tls_connected) platform_tls_close(&tls);
     else if (fd >= 0) (void)platform_close(fd);
@@ -495,34 +533,72 @@ static int json_copy_string(const char *json, size_t start, char *out, size_t ou
     return json[pos] == '"' ? 0 : -1;
 }
 
-static int json_find_string_value(const char *json, const char *key, char *out, size_t out_size) {
-    size_t pos = 0U;
+static int json_string_end(const char *json, size_t start, size_t *end_out) {
+    size_t pos = start;
+
+    if (json[pos] != '"') return -1;
+    pos += 1U;
     while (json[pos] != '\0') {
-        if (json[pos] == '"' && json_match_key(json, pos, key)) {
-            pos += rt_strlen(key) + 2U;
-            while (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n') pos += 1U;
-            if (json[pos] != ':') continue;
+        if (json[pos] == '"') {
+            *end_out = pos + 1U;
+            return 0;
+        }
+        if (json[pos] == '\\') {
             pos += 1U;
-            while (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n') pos += 1U;
-            if (json[pos] == '"') return json_copy_string(json, pos, out, out_size);
+            if (json[pos] == '\0') return -1;
         }
         pos += 1U;
     }
     return -1;
 }
 
-static int json_has_missing_type(const char *json) {
-    char type[64];
-    return json_find_string_value(json, "type", type, sizeof(type)) == 0 && rt_strcmp(type, "https://mediawiki.org/wiki/HyperSwitch/errors/not_found") == 0;
+static int json_key_value_start(const char *json, size_t key_pos, const char *key, size_t *value_pos_out) {
+    size_t pos;
+
+    if (!json_match_key(json, key_pos, key)) return 0;
+    pos = key_pos + rt_strlen(key) + 2U;
+    while (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n') pos += 1U;
+    if (json[pos] != ':') return 0;
+    pos += 1U;
+    while (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n') pos += 1U;
+    if (json[pos] != '"') return 0;
+    *value_pos_out = pos;
+    return 1;
 }
 
 static int parse_summary(const char *json, WtfSummary *summary) {
+    size_t pos = 0U;
     rt_memset(summary, 0, sizeof(*summary));
-    summary->missing = json_has_missing_type(json);
-    (void)json_find_string_value(json, "title", summary->title, sizeof(summary->title));
-    (void)json_find_string_value(json, "description", summary->description, sizeof(summary->description));
-    (void)json_find_string_value(json, "extract", summary->extract, sizeof(summary->extract));
-    (void)json_find_string_value(json, "page", summary->page_url, sizeof(summary->page_url));
+
+    while (json[pos] != '\0') {
+        size_t value_pos = 0U;
+        size_t next_pos = pos + 1U;
+
+        if (json[pos] == '"') {
+            if (json_key_value_start(json, pos, "title", &value_pos)) {
+                (void)json_copy_string(json, value_pos, summary->title, sizeof(summary->title));
+                (void)json_string_end(json, value_pos, &next_pos);
+            } else if (json_key_value_start(json, pos, "description", &value_pos)) {
+                (void)json_copy_string(json, value_pos, summary->description, sizeof(summary->description));
+                (void)json_string_end(json, value_pos, &next_pos);
+            } else if (json_key_value_start(json, pos, "extract", &value_pos)) {
+                (void)json_copy_string(json, value_pos, summary->extract, sizeof(summary->extract));
+                (void)json_string_end(json, value_pos, &next_pos);
+            } else if (json_key_value_start(json, pos, "page", &value_pos)) {
+                (void)json_copy_string(json, value_pos, summary->page_url, sizeof(summary->page_url));
+                (void)json_string_end(json, value_pos, &next_pos);
+            } else if (json_key_value_start(json, pos, "type", &value_pos)) {
+                char type[64];
+                if (json_copy_string(json, value_pos, type, sizeof(type)) == 0 && rt_strcmp(type, "https://mediawiki.org/wiki/HyperSwitch/errors/not_found") == 0) {
+                    summary->missing = 1;
+                }
+                (void)json_string_end(json, value_pos, &next_pos);
+            } else {
+                (void)json_string_end(json, pos, &next_pos);
+            }
+        }
+        pos = next_pos;
+    }
     return summary->extract[0] != '\0' || summary->missing ? 0 : -1;
 }
 
@@ -554,6 +630,81 @@ static size_t skip_leading_wrap_spaces(const char *text, size_t length, size_t s
         index = segment.end;
     }
     return index;
+}
+
+static int is_ascii_wrap_space(unsigned char ch) {
+    return ch == ' ' || ch == '\t';
+}
+
+static int can_wrap_ascii_fast(const char *text, size_t length) {
+    size_t index;
+
+    for (index = 0U; index < length; ++index) {
+        unsigned char ch = (unsigned char)text[index];
+        if (ch >= 0x80U || ch == 0x1bU || ch == 0x7fU) return 0;
+        if (ch < ' ' && ch != '\t') return 0;
+    }
+    return 1;
+}
+
+static size_t skip_leading_ascii_wrap_spaces(const char *text, size_t length, size_t start) {
+    while (start < length && is_ascii_wrap_space((unsigned char)text[start])) start += 1U;
+    return start;
+}
+
+static unsigned long long apply_ascii_wrap_width(unsigned long long width, unsigned char ch) {
+    if (ch == '\t') return width + (8ULL - (width % 8ULL));
+    return width + 1ULL;
+}
+
+static int write_wrapped_span_ascii(int fd, const char *text, size_t length, unsigned int columns) {
+    size_t start;
+
+    if (!can_wrap_ascii_fast(text, length)) return 1;
+
+    start = skip_leading_ascii_wrap_spaces(text, length, 0U);
+    while (start < length) {
+        size_t index = start;
+        size_t split = start;
+        size_t last_space_start = 0U;
+        size_t last_space_end = 0U;
+        size_t next_start = length;
+        unsigned long long width = 0ULL;
+
+        while (index < length) {
+            unsigned char ch = (unsigned char)text[index];
+            unsigned long long next_width = apply_ascii_wrap_width(width, ch);
+
+            if (next_width > (unsigned long long)columns) {
+                if (last_space_start > start) {
+                    split = last_space_start;
+                    next_start = skip_leading_ascii_wrap_spaces(text, length, last_space_end);
+                } else if (split > start) {
+                    next_start = split;
+                } else {
+                    split = index + 1U;
+                    next_start = split;
+                }
+                break;
+            }
+            if (is_ascii_wrap_space(ch)) {
+                last_space_start = index;
+                last_space_end = index + 1U;
+            }
+            split = index + 1U;
+            width = next_width;
+            index += 1U;
+        }
+
+        if (index >= length) {
+            split = length;
+            next_start = length;
+        }
+        if (split > start && rt_write_all(fd, text + start, split - start) != 0) return -1;
+        if (next_start < length && rt_write_char(fd, '\n') != 0) return -1;
+        start = skip_leading_ascii_wrap_spaces(text, length, next_start);
+    }
+    return 0;
 }
 
 static size_t find_wrap_split(const char *text, size_t length, size_t start, unsigned int columns, size_t *next_start_out) {
@@ -593,8 +744,12 @@ static size_t find_wrap_split(const char *text, size_t length, size_t start, uns
 }
 
 static int write_wrapped_span(int fd, const char *text, size_t length, unsigned int columns) {
-    size_t start = skip_leading_wrap_spaces(text, length, 0U);
+    size_t start;
+    int ascii_result = write_wrapped_span_ascii(fd, text, length, columns);
 
+    if (ascii_result <= 0) return ascii_result;
+
+    start = skip_leading_wrap_spaces(text, length, 0U);
     while (start < length) {
         size_t next_start = length;
         size_t split = find_wrap_split(text, length, start, columns, &next_start);

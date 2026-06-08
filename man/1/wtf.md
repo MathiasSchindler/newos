@@ -26,6 +26,11 @@ https://en.wikipedia.org/api/rest_v1/page/summary/TERM
 
 The term is URL-encoded and spaces are written as underscores.
 
+When the server sends a `Content-Length` header, `wtf` stops reading as soon as
+that many body bytes have arrived instead of waiting for the peer to close the
+connection. Plain ASCII extracts use a fast wrapping path; non-ASCII text still
+falls back to the shared Unicode display-width logic.
+
 ## OPTIONS
 
 - `-l LANG` / `--language LANG` / `--lang LANG` - use a two-letter Wikipedia
@@ -53,6 +58,10 @@ The term is URL-encoded and spaces are written as underscores.
 HTTPS is handled by the project-native TLS client. Certificate verification uses
 the platform trust bundle when one can be found. Set `NEWOS_NATIVE_TLS_INSECURE=1`
 only for controlled debugging against test endpoints.
+
+Public lookups still include DNS, TCP, TLS, certificate verification, server
+processing, and data-transfer time. Those external costs usually dominate short
+summaries.
 
 HTTP redirects are reported but not followed automatically yet.
 
