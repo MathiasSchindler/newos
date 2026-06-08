@@ -5,7 +5,7 @@ BUILD_DIR := build
 OUT_DIR := out
 MD5_SRC := ../../src/shared/crypto/md5.c
 
-.PHONY: all files verify clean
+.PHONY: all files verify elf-hashclash-demo scaffold-examples clean
 
 all: verify
 
@@ -23,6 +23,26 @@ files: $(BUILD_DIR)/generate | $(OUT_DIR)
 
 verify: files
 	sh ./verify.sh $(OUT_DIR)/md5file-a.bin $(OUT_DIR)/md5file-b.bin
+
+elf-hashclash-demo: | $(OUT_DIR)
+	HASHCLASH_DIR="$(HASHCLASH_DIR)" OUT_DIR="$(OUT_DIR)" sh ./hashclash-elf-demo.sh
+
+scaffold-examples: $(BUILD_DIR)/generate | $(OUT_DIR)
+	@set +e; \
+	if [ -n "$(BACKEND)" ]; then \
+		backend_command='$(value BACKEND)'; \
+		$(BUILD_DIR)/generate --in1 examples/true --in2 examples/false --out-dir $(OUT_DIR) --backend "$$backend_command"; \
+	else \
+		$(BUILD_DIR)/generate --in1 examples/true --in2 examples/false --out-dir $(OUT_DIR); \
+	fi; \
+	status=$$?; \
+	if [ $$status -eq 0 ]; then \
+		echo "scaffold-examples: true/false collision produced"; \
+	elif [ $$status -eq 2 ]; then \
+		echo "scaffold-examples: true/false needs a chosen-prefix backend"; \
+	else \
+		exit $$status; \
+	fi
 
 clean:
 	rm -rf $(BUILD_DIR) $(OUT_DIR)

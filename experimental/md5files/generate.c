@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "crypto/md5.h"
@@ -16,9 +17,13 @@
 #define EV_CURRENT 1U
 #define ET_EXEC 2U
 #define ET_DYN 3U
+#define EM_X86_64 62U
 #define PT_LOAD 1U
+#define PF_X 1U
+#define PF_R 4U
 #define MD5_ALIGNMENT 64U
 #define COLLISION_BLOCK_SIZE 128U
+#define BACKEND_MAX_PAYLOAD_SIZE (16U * 1024U * 1024U)
 #define EXIT_NOT_A_COLLISION 2
 
 static const char collision_block_a_hex[] =
@@ -70,6 +75,7 @@ typedef struct {
     const char *out_dir;
     const char *out1;
     const char *out2;
+    const char *backend;
 } ElfOptions;
 
 static int hex_value(char ch) {
@@ -160,6 +166,44 @@ static int ensure_directory(const char *path) {
     }
     fprintf(stderr, "generate: cannot create %s: %s\n", path, strerror(errno));
     return 1;
+}
+
+static int set_backend_env_size(const char *name, size_t value) {
+    char buffer[64];
+    int written = snprintf(buffer, sizeof(buffer), "%zu", value);
+
+    if (written <= 0 || (size_t)written >= sizeof(buffer) || setenv(name, buffer, 1) != 0) {
+        fprintf(stderr, "generate: cannot set %s\n", name);
+        return 1;
+    }
+    return 0;
+}
+
+static int set_backend_env_path(const char *name, const char *path) {
+    if (setenv(name, path, 1) != 0) {
+        fprintf(stderr, "generate: cannot set %s: %s\n", name, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+static int make_temp_directory(char *buffer, size_t buffer_size) {
+    const char *base = getenv("TMPDIR");
+    int written;
+
+    if (base == NULL || base[0] == '\0') {
+        base = "/tmp";
+    }
+    written = snprintf(buffer, buffer_size, "%s/newos-md5files-XXXXXX", base);
+    if (written <= 0 || (size_t)written >= buffer_size) {
+        fprintf(stderr, "generate: temporary directory path is too long\n");
+        return 1;
+    }
+    if (mkdtemp(buffer) == NULL) {
+        fprintf(stderr, "generate: cannot create temporary directory: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
 }
 
 static void free_file_image(FileImage *image) {
@@ -284,7 +328,8 @@ static int validate_elf64(const char *path, const FileImage *image, ElfInfo *inf
 
 static void md5_candidate(const FileImage *image,
                           size_t collision_offset,
-                          const unsigned char collision_block[COLLISION_BLOCK_SIZE],
+                          const unsigned char *collision_payload,
+                          size_t collision_payload_size,
                           unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
     static const unsigned char zeroes[MD5_ALIGNMENT] = {0};
     CryptoMd5Context context;
@@ -300,15 +345,31 @@ static void md5_candidate(const FileImage *image,
         crypto_md5_update(&context, zeroes, chunk);
         padding -= chunk;
     }
-    crypto_md5_update(&context, collision_block, COLLISION_BLOCK_SIZE);
+    crypto_md5_update(&context, collision_payload, collision_payload_size);
     crypto_md5_update(&context, elf_metadata_suffix, sizeof(elf_metadata_suffix) - 1U);
     crypto_md5_final(&context, digest);
 }
 
-static int write_candidate(const char *path,
-                           const FileImage *image,
-                           size_t collision_offset,
-                           const unsigned char collision_block[COLLISION_BLOCK_SIZE]) {
+static int read_backend_payload_file(const char *path, unsigned char **payload_out, size_t *payload_size_out) {
+    FileImage image;
+
+    if (read_file_image(path, &image) != 0) {
+        fprintf(stderr, "generate: backend did not produce a readable payload at %s\n", path);
+        return 1;
+    }
+    if (image.size == 0U || image.size > BACKEND_MAX_PAYLOAD_SIZE) {
+        fprintf(stderr, "generate: backend payload %s has unsupported size %zu\n", path, image.size);
+        free_file_image(&image);
+        return 1;
+    }
+    *payload_out = image.data;
+    *payload_size_out = image.size;
+    image.data = NULL;
+    free_file_image(&image);
+    return 0;
+}
+
+static int write_prefix_file(const char *path, const FileImage *image, size_t collision_offset) {
     static const unsigned char zeroes[MD5_ALIGNMENT] = {0};
     size_t prefix_size = image->size + sizeof(elf_metadata_prelude) - 1U;
     size_t padding = collision_offset - prefix_size;
@@ -334,7 +395,118 @@ static int write_candidate(const char *path,
         }
         padding -= chunk;
     }
-    if (fwrite(collision_block, 1U, COLLISION_BLOCK_SIZE, file) != COLLISION_BLOCK_SIZE ||
+    if (fclose(file) != 0) {
+        fprintf(stderr, "generate: cannot close %s: %s\n", path, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+static int run_backend(const char *command,
+                       const FileImage *image_a,
+                       const FileImage *image_b,
+                       size_t collision_offset,
+                       unsigned char **payload_a_out,
+                       unsigned char **payload_b_out,
+                       size_t *payload_size_out) {
+    char temp_dir[512];
+    char prefix_a_path[512] = "";
+    char prefix_b_path[512] = "";
+    char block_a_path[512] = "";
+    char block_b_path[512] = "";
+    int backend_status;
+    int status = 1;
+
+    if (make_temp_directory(temp_dir, sizeof(temp_dir)) != 0) {
+        return 1;
+    }
+    if (join_path(prefix_a_path, sizeof(prefix_a_path), temp_dir, "prefix-a.bin") != 0 ||
+        join_path(prefix_b_path, sizeof(prefix_b_path), temp_dir, "prefix-b.bin") != 0 ||
+        join_path(block_a_path, sizeof(block_a_path), temp_dir, "block-a.bin") != 0 ||
+        join_path(block_b_path, sizeof(block_b_path), temp_dir, "block-b.bin") != 0) {
+        fprintf(stderr, "generate: temporary path is too long\n");
+        goto cleanup;
+    }
+    if (write_prefix_file(prefix_a_path, image_a, collision_offset) != 0 ||
+        write_prefix_file(prefix_b_path, image_b, collision_offset) != 0) {
+        goto cleanup;
+    }
+    if (set_backend_env_path("NEWOS_MD5_PREFIX_A", prefix_a_path) != 0 ||
+        set_backend_env_path("NEWOS_MD5_PREFIX_B", prefix_b_path) != 0 ||
+        set_backend_env_path("NEWOS_MD5_BLOCK_A", block_a_path) != 0 ||
+        set_backend_env_path("NEWOS_MD5_BLOCK_B", block_b_path) != 0 ||
+        set_backend_env_size("NEWOS_MD5_COLLISION_OFFSET", collision_offset) != 0 ||
+        set_backend_env_size("NEWOS_MD5_BLOCK_SIZE", COLLISION_BLOCK_SIZE) != 0 ||
+        set_backend_env_size("NEWOS_MD5_MAX_PAYLOAD_SIZE", BACKEND_MAX_PAYLOAD_SIZE) != 0) {
+        goto cleanup;
+    }
+
+    printf("backend: %s\n", command);
+    printf("backend prefix A: %s\n", prefix_a_path);
+    printf("backend prefix B: %s\n", prefix_b_path);
+    backend_status = system(command);
+    if (backend_status == -1) {
+        fprintf(stderr, "generate: cannot run backend: %s\n", strerror(errno));
+        goto cleanup;
+    }
+    if (!WIFEXITED(backend_status) || WEXITSTATUS(backend_status) != 0) {
+        fprintf(stderr, "generate: backend failed");
+        if (WIFEXITED(backend_status)) {
+            fprintf(stderr, " with exit status %d", WEXITSTATUS(backend_status));
+        }
+        fprintf(stderr, "\n");
+        goto cleanup;
+    }
+    if (read_backend_payload_file(block_a_path, payload_a_out, payload_size_out) != 0 ||
+        read_backend_payload_file(block_b_path, payload_b_out, payload_size_out + 1) != 0) {
+        goto cleanup;
+    }
+    if (*payload_size_out != *(payload_size_out + 1)) {
+        fprintf(stderr, "generate: backend payload sizes differ: %zu vs %zu\n", *payload_size_out, *(payload_size_out + 1));
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    remove(prefix_a_path);
+    remove(prefix_b_path);
+    remove(block_a_path);
+    remove(block_b_path);
+    rmdir(temp_dir);
+    return status;
+}
+
+static int write_candidate(const char *path,
+                           const FileImage *image,
+                           size_t collision_offset,
+                           const unsigned char *collision_payload,
+                           size_t collision_payload_size) {
+    static const unsigned char zeroes[MD5_ALIGNMENT] = {0};
+    size_t prefix_size = image->size + sizeof(elf_metadata_prelude) - 1U;
+    size_t padding = collision_offset - prefix_size;
+    FILE *file = fopen(path, "wb");
+
+    if (file == NULL) {
+        fprintf(stderr, "generate: cannot open %s: %s\n", path, strerror(errno));
+        return 1;
+    }
+    if ((image->size != 0U && fwrite(image->data, 1U, image->size, file) != image->size) ||
+        fwrite(elf_metadata_prelude, 1U, sizeof(elf_metadata_prelude) - 1U, file) != sizeof(elf_metadata_prelude) - 1U) {
+        fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
+        fclose(file);
+        return 1;
+    }
+    while (padding != 0U) {
+        size_t chunk = padding < sizeof(zeroes) ? padding : sizeof(zeroes);
+
+        if (fwrite(zeroes, 1U, chunk, file) != chunk) {
+            fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
+            fclose(file);
+            return 1;
+        }
+        padding -= chunk;
+    }
+    if (fwrite(collision_payload, 1U, collision_payload_size, file) != collision_payload_size ||
         fwrite(elf_metadata_suffix, 1U, sizeof(elf_metadata_suffix) - 1U, file) != sizeof(elf_metadata_suffix) - 1U) {
         fprintf(stderr, "generate: cannot write %s: %s\n", path, strerror(errno));
         fclose(file);
@@ -404,7 +576,8 @@ static int parse_elf_options(int argc, char **argv, ElfOptions *options) {
         const char *option = argv[argument];
 
         if (strcmp(option, "--in1") == 0 || strcmp(option, "--in2") == 0 ||
-            strcmp(option, "--out-dir") == 0 || strcmp(option, "--out1") == 0 || strcmp(option, "--out2") == 0) {
+            strcmp(option, "--out-dir") == 0 || strcmp(option, "--out1") == 0 ||
+            strcmp(option, "--out2") == 0 || strcmp(option, "--backend") == 0) {
             if (argument + 1 >= argc) {
                 fprintf(stderr, "generate: %s needs an argument\n", option);
                 return 1;
@@ -418,6 +591,8 @@ static int parse_elf_options(int argc, char **argv, ElfOptions *options) {
                 options->out_dir = argv[argument];
             } else if (strcmp(option, "--out1") == 0) {
                 options->out1 = argv[argument];
+            } else if (strcmp(option, "--backend") == 0) {
+                options->backend = argv[argument];
             } else {
                 options->out2 = argv[argument];
             }
@@ -442,6 +617,14 @@ static int run_elf_scaffold(const ElfOptions *options,
     ElfInfo info_b;
     unsigned char digest_a[CRYPTO_MD5_DIGEST_SIZE];
     unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
+    unsigned char active_block_a[COLLISION_BLOCK_SIZE];
+    unsigned char active_block_b[COLLISION_BLOCK_SIZE];
+    unsigned char *backend_payload_a = NULL;
+    unsigned char *backend_payload_b = NULL;
+    size_t backend_payload_sizes[2];
+    const unsigned char *active_payload_a;
+    const unsigned char *active_payload_b;
+    size_t active_payload_size;
     char hex_a[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
     char hex_b[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
     char default_out1[512];
@@ -456,9 +639,6 @@ static int run_elf_scaffold(const ElfOptions *options,
 
     memset(&image_a, 0, sizeof(image_a));
     memset(&image_b, 0, sizeof(image_b));
-    if (ensure_directory(options->out_dir) != 0) {
-        return 1;
-    }
     if (out1 == NULL) {
         if (join_path(default_out1, sizeof(default_out1), options->out_dir, "elf-md5file-a.bin") != 0) {
             fprintf(stderr, "generate: output path is too long\n");
@@ -494,21 +674,41 @@ static int run_elf_scaffold(const ElfOptions *options,
         fprintf(stderr, "generate: scaffold output would be too large\n");
         goto cleanup;
     }
-    output_size = collision_offset + COLLISION_BLOCK_SIZE + sizeof(elf_metadata_suffix) - 1U;
+    memcpy(active_block_a, collision_block_a, COLLISION_BLOCK_SIZE);
+    memcpy(active_block_b, collision_block_b, COLLISION_BLOCK_SIZE);
+    active_payload_a = active_block_a;
+    active_payload_b = active_block_b;
+    active_payload_size = COLLISION_BLOCK_SIZE;
 
     printf("input A: %s (%zu bytes, loaded bytes end at %llu)\n", options->in1, image_a.size, (unsigned long long)info_a.loaded_end);
     printf("input B: %s (%zu bytes, loaded bytes end at %llu)\n", options->in2, image_b.size, (unsigned long long)info_b.loaded_end);
     printf("metadata trailer A starts at %zu; metadata trailer B starts at %zu\n", image_a.size, image_b.size);
     printf("collision block offset: %zu (64-byte aligned)\n", collision_offset);
+
+    if (options->backend != NULL) {
+        if (run_backend(options->backend, &image_a, &image_b, collision_offset, &backend_payload_a, &backend_payload_b, backend_payload_sizes) != 0) {
+            goto cleanup;
+        }
+        active_payload_a = backend_payload_a;
+        active_payload_b = backend_payload_b;
+        active_payload_size = backend_payload_sizes[0];
+    }
+    if (add_overflows_size(collision_offset, active_payload_size) ||
+        add_overflows_size(collision_offset + active_payload_size, sizeof(elf_metadata_suffix) - 1U)) {
+        fprintf(stderr, "generate: scaffold output would be too large\n");
+        goto cleanup;
+    }
+    output_size = collision_offset + active_payload_size + sizeof(elf_metadata_suffix) - 1U;
+    printf("collision payload size: %zu bytes\n", active_payload_size);
     printf("candidate output size: %zu bytes\n", output_size);
 
-    md5_candidate(&image_a, collision_offset, collision_block_a, digest_a);
-    md5_candidate(&image_b, collision_offset, collision_block_b, digest_b);
+    md5_candidate(&image_a, collision_offset, active_payload_a, active_payload_size, digest_a);
+    md5_candidate(&image_b, collision_offset, active_payload_b, active_payload_size, digest_b);
     digest_to_hex(digest_a, hex_a);
     digest_to_hex(digest_b, hex_b);
 
-    if (write_candidate(out1, &image_a, collision_offset, collision_block_a) != 0 ||
-        write_candidate(out2, &image_b, collision_offset, collision_block_b) != 0) {
+    if (write_candidate(out1, &image_a, collision_offset, active_payload_a, active_payload_size) != 0 ||
+        write_candidate(out2, &image_b, collision_offset, active_payload_b, active_payload_size) != 0) {
         goto cleanup;
     }
     printf("wrote %s\n", out1);
@@ -517,9 +717,14 @@ static int run_elf_scaffold(const ElfOptions *options,
     printf("md5 B: %s\n", hex_b);
 
     if (memcmp(digest_a, digest_b, sizeof(digest_a)) != 0) {
-        fprintf(stderr,
-                "generate: candidate outputs do not collide; fixed public blocks need their controlled MD5 prefix state\n"
-                "generate: arbitrary ELF inputs require a chosen-prefix collision backend\n");
+        if (options->backend != NULL) {
+            fprintf(stderr,
+                    "generate: candidate outputs do not collide; backend payloads are not valid for these prefixes\n");
+        } else {
+            fprintf(stderr,
+                    "generate: candidate outputs do not collide; fixed public blocks need their controlled MD5 prefix state\n"
+                    "generate: arbitrary ELF inputs require a chosen-prefix collision backend\n");
+        }
         status = EXIT_NOT_A_COLLISION;
         goto cleanup;
     }
@@ -527,6 +732,8 @@ static int run_elf_scaffold(const ElfOptions *options,
     status = 0;
 
 cleanup:
+    free(backend_payload_a);
+    free(backend_payload_b);
     free_file_image(&image_a);
     free_file_image(&image_b);
     return status;
@@ -535,7 +742,7 @@ cleanup:
 static void print_usage(void) {
     printf("usage:\n");
     printf("  generate [OUTDIR]\n");
-    printf("  generate --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH]\n");
+    printf("  generate --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH] [--backend COMMAND]\n");
 }
 
 int main(int argc, char **argv) {

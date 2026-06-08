@@ -13,6 +13,11 @@ experimental/md5files/*
 !experimental/md5files/Makefile
 !experimental/md5files/generate.c
 !experimental/md5files/verify.sh
+!experimental/md5files/hashclash-elf-demo.sh
+!experimental/md5files/examples/
+experimental/md5files/examples/*
+!experimental/md5files/examples/true
+!experimental/md5files/examples/false
 services/httpd/log/
 sequel/
 gui/

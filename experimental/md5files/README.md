@@ -60,6 +60,84 @@ collision blocks only work for their controlled MD5 prefix state. This gives us
 the binary-safe trailer layout and validation path without pretending to solve
 the chosen-prefix collision problem yet.
 
+## Controlled ELF Demo
+
+When HashClash is available, the experiment can produce a controlled Linux/x86-64
+ELF pair with matching MD5 hashes:
+
+```sh
+make -C experimental/md5files elf-hashclash-demo HASHCLASH_DIR=/path/to/hashclash
+```
+
+This writes `out/elf-true` and `out/elf-false`. They share an identical ELF
+prefix, HashClash `md5_fastcoll` generates the colliding middle, and the script
+appends common code that exits differently based on a bit that differs in the
+generated collision payload. On Linux/x86-64, `elf-true` exits with status 0 and
+`elf-false` exits with status 1. On macOS the files can be generated and hashed,
+but not executed directly.
+
+The `examples/` fixture below is harder: it starts from preexisting binaries and
+therefore still needs a chosen-prefix backend.
+
+## Arbitrary ELF Fixture
+
+The `examples/` directory contains tiny static ELF `true` and `false` binaries.
+The harmless proof of concept is for those two binaries to remain behaviorally
+different while having the same MD5 hash.
+
+The current scaffold can be run against them with:
+
+```sh
+make -C experimental/md5files scaffold-examples
+```
+
+For now this is expected to report that the pair needs a chosen-prefix backend.
+That is the correct checkpoint: the scaffold has proven where the labeled trailer
+can live without changing the loaded ELF bytes, but it cannot synthesize the
+input-specific MD5 collision blocks by itself.
+
+The scaffold now has a backend interface for a command that accepts the two
+validated ELF prefixes and returns a pair of chosen-prefix collision payloads for
+the exact MD5 state at the trailer position. Once a real chosen-prefix backend is
+connected, the same scaffold path should produce `out/elf-md5file-a.bin` and
+`out/elf-md5file-b.bin`, verify that their MD5 hashes match, and leave their
+original `true`/`false` behavior intact.
+
+## Backend Contract
+
+The ELF scaffold can now call an external backend:
+
+```sh
+experimental/md5files/build/generate \
+	--in1 experimental/md5files/examples/true \
+	--in2 experimental/md5files/examples/false \
+	--out-dir experimental/md5files/out \
+	--backend 'path/to/backend-command'
+```
+
+The Makefile target forwards `BACKEND` in the same way:
+
+```sh
+make -C experimental/md5files scaffold-examples BACKEND='path/to/backend-command'
+```
+
+The backend command receives paths through environment variables:
+
+- `NEWOS_MD5_PREFIX_A`: binary prefix for the first output
+- `NEWOS_MD5_PREFIX_B`: binary prefix for the second output
+- `NEWOS_MD5_BLOCK_A`: path where the backend must write the first binary payload
+- `NEWOS_MD5_BLOCK_B`: path where the backend must write the second binary payload
+- `NEWOS_MD5_COLLISION_OFFSET`: shared file offset for the collision payload
+- `NEWOS_MD5_BLOCK_SIZE`: `128`, the built-in public collision block size
+- `NEWOS_MD5_MAX_PAYLOAD_SIZE`: largest accepted backend payload size
+
+The prefix files already include the original ELF bytes, the labeled metadata
+prelude, and zero padding up to the shared 64-byte-aligned collision offset. The
+backend should return two non-empty binary payloads of the same size for those
+exact prefixes and exit with status 0. The generator then appends the common
+suffix, writes the final ELF files, computes both MD5 digests, and still exits
+with status 2 if the backend payloads do not actually collide.
+
 ## Shape
 
 Each generated file is:
@@ -71,8 +149,20 @@ Each generated file is:
 The collision block is treated as openly visible metadata. The suffix is common,
 so the Merkle-Damgard suffix property preserves the collision.
 
+For the controlled ELF demo, the shape is:
+
+```text
+ELF prefix || HashClash collision payload || identical executable suffix
+```
+
+The executable suffix is selected after HashClash returns the collision payloads,
+but it is identical in both outputs, so the MD5 collision is preserved.
+
 ## Next Step
 
-The remaining hard part is a real chosen-prefix MD5 backend. The current ELF
-mode has the loader-safe append point, equalized collision-block offset, and
-honest verification behavior needed to plug such a backend in later.
+The remaining hard part is a real chosen-prefix MD5 backend behind the arbitrary
+ELF fixture contract above. The practical path is to integrate an existing
+research implementation behind a small local adapter rather than reimplement the
+differential search from scratch. The adapter should take the two ELF trailer
+prefixes from this scaffold, produce same-size collision payloads, then let this
+generator write and verify the final binaries.
