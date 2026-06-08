@@ -142,6 +142,30 @@ assert_file_contains "$WORK_DIR/json.txt" '"probable_apk":true' "readapk --json 
 assert_file_contains "$WORK_DIR/json.txt" '"crc32":"00000000"' "readapk --json did not emit CRC32 text"
 assert_file_contains "$WORK_DIR/json.txt" '"apk_signature_v2":true' "readapk --json did not report v2 signing block"
 
+"$ROOT_DIR/build/readapk" --verify "$apk_path" > "$WORK_DIR/verify.txt"
+assert_file_contains "$WORK_DIR/verify.txt" 'Validation:' "readapk --verify did not print validation header"
+assert_file_contains "$WORK_DIR/verify.txt" 'checked entries: 8' "readapk --verify did not count entries"
+assert_file_contains "$WORK_DIR/verify.txt" 'structural errors: 0' "readapk --verify reported errors for fixture"
+assert_file_contains "$WORK_DIR/verify.txt" 'name mismatches: 0' "readapk --verify reported name mismatches for fixture"
+
+"$ROOT_DIR/build/readapk" --manifest "$apk_path" > "$WORK_DIR/manifest.txt"
+assert_file_contains "$WORK_DIR/manifest.txt" 'Manifest: AndroidManifest.xml is not Android binary XML' "readapk --manifest did not inspect manifest entry"
+
+"$ROOT_DIR/build/readapk" --resources "$apk_path" > "$WORK_DIR/resources.txt"
+assert_file_contains "$WORK_DIR/resources.txt" 'resources.arsc: not an Android resource table' "readapk --resources did not inspect resources entry"
+
+"$ROOT_DIR/build/readapk" --dex "$apk_path" > "$WORK_DIR/dex.txt"
+assert_file_contains "$WORK_DIR/dex.txt" 'DEX: classes.dex is not a DEX file' "readapk --dex did not inspect DEX entry"
+
+"$ROOT_DIR/build/readapk" --native "$apk_path" > "$WORK_DIR/native.txt"
+assert_file_contains "$WORK_DIR/native.txt" 'Native library: lib/arm64-v8a/libx.so is not ELF' "readapk --native did not inspect native library entry"
+
+"$ROOT_DIR/build/readapk" --signatures "$apk_path" > "$WORK_DIR/signatures.txt"
+assert_file_contains "$WORK_DIR/signatures.txt" 'Signatures:' "readapk --signatures did not print signature header"
+assert_file_contains "$WORK_DIR/signatures.txt" 'v2/v3/v3.1/source-stamp: yes/no/no/no' "readapk --signatures did not report signing block IDs"
+assert_file_contains "$WORK_DIR/signatures.txt" 'v2 signers/signatures: 0/0' "readapk --signatures did not report v2 signer counts"
+assert_file_contains "$WORK_DIR/signatures.txt" 'cryptographic verification: not implemented' "readapk --signatures did not state crypto validation status"
+
 if "$ROOT_DIR/build/readapk" "$bad_path" > "$WORK_DIR/bad.out" 2> "$WORK_DIR/bad.err"; then
     fail "readapk should reject non-ZIP input"
 fi

@@ -540,6 +540,36 @@ int compression_zlib_inflate(const unsigned char *input, size_t input_size, unsi
     return 0;
 }
 
+int compression_deflate_inflate_raw(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {
+    ZlibBitReader reader;
+    size_t output_offset = 0U;
+    int final_block = 0;
+
+    if (input == 0 || output == 0 || output_size_out == 0) {
+        return -1;
+    }
+    zlib_bit_reader_init(&reader, input, input_size);
+    while (!final_block) {
+        unsigned int value;
+        unsigned int block_type;
+
+        if (zlib_read_bits(&reader, 1U, &value) != 0) return -1;
+        final_block = value != 0U;
+        if (zlib_read_bits(&reader, 2U, &block_type) != 0) return -1;
+        if (block_type == 0U) {
+            if (zlib_inflate_stored(&reader, output, output_capacity, &output_offset) != 0) return -1;
+        } else if (block_type == 1U) {
+            if (zlib_inflate_fixed(&reader, output, output_capacity, &output_offset) != 0) return -1;
+        } else if (block_type == 2U) {
+            if (zlib_inflate_dynamic(&reader, output, output_capacity, &output_offset) != 0) return -1;
+        } else {
+            return -1;
+        }
+    }
+    *output_size_out = output_offset;
+    return 0;
+}
+
 size_t compression_zlib_store_bound(size_t input_size) {
     size_t block_count = input_size / 65535U + 1U;
 

@@ -1,5 +1,7 @@
 #include "archive_zip.h"
 #include "archive_util.h"
+#include "compression/crc32.h"
+#include "compression/zlib.h"
 #include "platform.h"
 #include "runtime.h"
 
@@ -7,10 +9,12 @@
 #define ZIP64_EOCD_SIG 0x06064b50U
 #define ZIP64_LOCATOR_SIG 0x07064b50U
 #define ZIP_CENTRAL_SIG 0x02014b50U
+#define ZIP_LOCAL_SIG 0x04034b50U
 
 #define ZIP_EOCD_MIN_SIZE 22ULL
 #define ZIP_EOCD_MAX_SEARCH (65535ULL + ZIP_EOCD_MIN_SIZE)
 #define ZIP_CENTRAL_HEADER_SIZE 46U
+#define ZIP_LOCAL_HEADER_SIZE 30U
 
 static unsigned long long zip_read_u64_or_u32(const unsigned char *bytes, size_t *offset_io) {
     unsigned long long value = archive_read_u64_le(bytes + *offset_io);
@@ -26,6 +30,115 @@ static int zip_read_at(int fd, unsigned long long offset, unsigned char *buffer,
         return -1;
     }
     return archive_read_exact(fd, buffer, count);
+}
+
+static int zip_range_valid(const ArchiveZipInfo *info, unsigned long long offset, unsigned long long size) {
+    if (offset > info->file_size || size > info->file_size) {
+        return 0;
+    }
+    if (offset + size < offset || offset + size > info->file_size) {
+        return 0;
+    }
+    return 1;
+}
+
+static int zip_read_u32_len_prefixed(const unsigned char *data, size_t size, size_t *offset_io, size_t *payload_offset_out, size_t *payload_size_out) {
+    unsigned int length;
+
+    if (*offset_io + 4U > size) return -1;
+    length = archive_read_u32_le(data + *offset_io);
+    *offset_io += 4U;
+    if ((size_t)length > size - *offset_io) return -1;
+    *payload_offset_out = *offset_io;
+    *payload_size_out = (size_t)length;
+    *offset_io += (size_t)length;
+    return 0;
+}
+
+static int zip_count_apk_signature_scheme(int fd, unsigned long long value_offset, unsigned long long value_size, int has_sdk_range,
+                                           unsigned int *signer_count_out, unsigned int *signature_count_out, unsigned int *certificate_count_out) {
+    unsigned char *value;
+    size_t outer_offset = 0U;
+    size_t sequence_offset;
+    size_t sequence_size;
+    size_t offset = 0U;
+    unsigned int signer_count = 0U;
+    unsigned int signature_count = 0U;
+    unsigned int certificate_count = 0U;
+
+    if (value_size > (unsigned long long)((size_t)-1)) return -1;
+    value = (unsigned char *)rt_malloc(value_size == 0ULL ? 1U : (size_t)value_size);
+    if (value == 0) return -1;
+    if (zip_read_at(fd, value_offset, value, (size_t)value_size) != 0) {
+        rt_free(value);
+        return -1;
+    }
+    if (zip_read_u32_len_prefixed(value, (size_t)value_size, &outer_offset, &sequence_offset, &sequence_size) != 0) {
+        rt_free(value);
+        return -1;
+    }
+    while (offset + 4U <= sequence_size) {
+        size_t signer_offset;
+        size_t signer_size;
+        size_t signer_cursor = 0U;
+        size_t signed_data_offset;
+        size_t signed_data_size;
+        size_t signatures_offset;
+        size_t signatures_size;
+        size_t public_key_offset;
+        size_t public_key_size;
+        size_t signatures_cursor;
+
+        if (zip_read_u32_len_prefixed(value + sequence_offset, sequence_size, &offset, &signer_offset, &signer_size) != 0) break;
+        signer_count += 1U;
+        if (zip_read_u32_len_prefixed(value + sequence_offset + signer_offset, signer_size, &signer_cursor, &signed_data_offset, &signed_data_size) != 0) continue;
+        if (has_sdk_range) {
+            if (signer_cursor + 8U > signer_size) continue;
+            signer_cursor += 8U;
+        }
+        if (zip_read_u32_len_prefixed(value + sequence_offset + signer_offset, signer_size, &signer_cursor, &signatures_offset, &signatures_size) != 0) continue;
+        if (zip_read_u32_len_prefixed(value + sequence_offset + signer_offset, signer_size, &signer_cursor, &public_key_offset, &public_key_size) != 0) continue;
+        (void)public_key_offset;
+        (void)public_key_size;
+        signatures_cursor = 0U;
+        while (signatures_cursor + 4U <= signatures_size) {
+            size_t record_offset;
+            size_t record_size;
+            if (zip_read_u32_len_prefixed(value + sequence_offset + signer_offset + signatures_offset, signatures_size, &signatures_cursor, &record_offset, &record_size) != 0) break;
+            if (record_size >= 8U) signature_count += 1U;
+        }
+        {
+            size_t signed_cursor = 0U;
+            size_t digests_offset;
+            size_t digests_size;
+            size_t certs_offset;
+            size_t certs_size;
+            size_t attrs_offset;
+            size_t attrs_size;
+            size_t cert_cursor = 0U;
+            if (zip_read_u32_len_prefixed(value + sequence_offset + signer_offset + signed_data_offset, signed_data_size, &signed_cursor, &digests_offset, &digests_size) == 0 &&
+                zip_read_u32_len_prefixed(value + sequence_offset + signer_offset + signed_data_offset, signed_data_size, &signed_cursor, &certs_offset, &certs_size) == 0 &&
+                zip_read_u32_len_prefixed(value + sequence_offset + signer_offset + signed_data_offset, signed_data_size, &signed_cursor, &attrs_offset, &attrs_size) == 0) {
+                (void)digests_offset;
+                (void)digests_size;
+                (void)attrs_offset;
+                (void)attrs_size;
+                while (cert_cursor + 4U <= certs_size) {
+                    size_t cert_offset;
+                    size_t cert_size;
+                    if (zip_read_u32_len_prefixed(value + sequence_offset + signer_offset + signed_data_offset + certs_offset, certs_size, &cert_cursor, &cert_offset, &cert_size) != 0) break;
+                    (void)cert_offset;
+                    (void)cert_size;
+                    certificate_count += 1U;
+                }
+            }
+        }
+    }
+    rt_free(value);
+    *signer_count_out = signer_count;
+    *signature_count_out = signature_count;
+    *certificate_count_out = certificate_count;
+    return 0;
 }
 
 static int zip_find_eocd(int fd, unsigned long long file_size, unsigned long long *offset_out, unsigned char **tail_out, size_t *tail_size_out) {
@@ -249,6 +362,201 @@ int archive_zip_iterate_entries(int fd, const ArchiveZipInfo *info, ArchiveZipEn
     return 0;
 }
 
+int archive_zip_read_local_info(int fd, const ArchiveZipInfo *info, const ArchiveZipEntry *entry, ArchiveZipLocalInfo *local_out) {
+    unsigned char header[ZIP_LOCAL_HEADER_SIZE];
+    unsigned short name_length;
+    unsigned short extra_length;
+    unsigned long long data_offset;
+
+    rt_memset(local_out, 0, sizeof(*local_out));
+    if (!zip_range_valid(info, entry->local_header_offset, ZIP_LOCAL_HEADER_SIZE)) {
+        return -1;
+    }
+    if (zip_read_at(fd, entry->local_header_offset, header, sizeof(header)) != 0 || archive_read_u32_le(header) != ZIP_LOCAL_SIG) {
+        return -1;
+    }
+    name_length = archive_read_u16_le(header + 26U);
+    extra_length = archive_read_u16_le(header + 28U);
+    data_offset = entry->local_header_offset + ZIP_LOCAL_HEADER_SIZE + (unsigned long long)name_length + (unsigned long long)extra_length;
+    if (!zip_range_valid(info, data_offset, entry->compressed_size)) {
+        return -1;
+    }
+    local_out->local_header_offset = entry->local_header_offset;
+    local_out->data_offset = data_offset;
+    local_out->compressed_size = entry->compressed_size;
+    local_out->uncompressed_size = entry->uncompressed_size;
+    local_out->crc32 = archive_read_u32_le(header + 14U);
+    local_out->flags = archive_read_u16_le(header + 6U);
+    local_out->method = archive_read_u16_le(header + 8U);
+    local_out->name_length = name_length;
+    local_out->extra_length = extra_length;
+    return 0;
+}
+
+int archive_zip_read_entry_data(int fd, const ArchiveZipInfo *info, const ArchiveZipEntry *entry, unsigned long long max_size, unsigned char **data_out, size_t *size_out) {
+    ArchiveZipLocalInfo local;
+    unsigned char *compressed = 0;
+    unsigned char *output = 0;
+    size_t output_size = 0U;
+    int result = -1;
+
+    *data_out = 0;
+    *size_out = 0U;
+    if (entry->uncompressed_size > max_size || entry->uncompressed_size > (unsigned long long)((size_t)-1) || entry->compressed_size > (unsigned long long)((size_t)-1)) {
+        return -1;
+    }
+    if ((entry->flags & ARCHIVE_ZIP_FLAG_ENCRYPTED) != 0U || archive_zip_read_local_info(fd, info, entry, &local) != 0) {
+        return -1;
+    }
+    compressed = (unsigned char *)rt_malloc(entry->compressed_size == 0ULL ? 1U : (size_t)entry->compressed_size);
+    output = (unsigned char *)rt_malloc(entry->uncompressed_size == 0ULL ? 1U : (size_t)entry->uncompressed_size);
+    if (compressed == 0 || output == 0) {
+        rt_free(compressed);
+        rt_free(output);
+        return -1;
+    }
+    if (zip_read_at(fd, local.data_offset, compressed, (size_t)entry->compressed_size) != 0) {
+        goto done;
+    }
+    if (entry->method == ARCHIVE_ZIP_METHOD_STORE) {
+        if (entry->compressed_size != entry->uncompressed_size) {
+            goto done;
+        }
+        memcpy(output, compressed, (size_t)entry->uncompressed_size);
+        output_size = (size_t)entry->uncompressed_size;
+    } else if (entry->method == ARCHIVE_ZIP_METHOD_DEFLATE) {
+        if (compression_deflate_inflate_raw(compressed, (size_t)entry->compressed_size, output, (size_t)entry->uncompressed_size, &output_size) != 0) {
+            goto done;
+        }
+        if (output_size != (size_t)entry->uncompressed_size) {
+            goto done;
+        }
+    } else {
+        goto done;
+    }
+    if (compression_crc32(output, output_size) != entry->crc32) {
+        goto done;
+    }
+    *data_out = output;
+    *size_out = output_size;
+    output = 0;
+    result = 0;
+
+done:
+    rt_free(compressed);
+    rt_free(output);
+    return result;
+}
+
+typedef struct {
+    const ArchiveZipInfo *info;
+    int fd;
+    ArchiveZipValidation *validation;
+    char **names;
+    size_t name_count;
+    size_t name_capacity;
+} ZipValidationContext;
+
+static int zip_name_suspicious(const char *name) {
+    const char *cursor = name;
+
+    if (name[0] == '/' || name[0] == '\\') return 1;
+    if (name[0] != '\0' && name[1] == ':') return 1;
+    while (*cursor != '\0') {
+        if (*cursor == '\\') return 1;
+        if ((cursor[0] == '.' && cursor[1] == '.' && (cursor[2] == '/' || cursor[2] == '\0')) ||
+            (cursor[0] == '/' && cursor[1] == '.' && cursor[2] == '.' && (cursor[3] == '/' || cursor[3] == '\0'))) {
+            return 1;
+        }
+        cursor += 1;
+    }
+    return 0;
+}
+
+static int zip_validation_remember_name(ZipValidationContext *context, const char *name) {
+    size_t index;
+
+    for (index = 0U; index < context->name_count; ++index) {
+        if (rt_strcmp(context->names[index], name) == 0) {
+            context->validation->duplicate_names += 1ULL;
+            return 0;
+        }
+    }
+    if (context->name_count == context->name_capacity) {
+        size_t next_capacity = context->name_capacity == 0U ? 64U : context->name_capacity * 2U;
+        char **resized = (char **)rt_realloc_array(context->names, next_capacity, sizeof(*resized));
+        if (resized == 0) return -1;
+        context->names = resized;
+        context->name_capacity = next_capacity;
+    }
+    context->names[context->name_count] = (char *)rt_malloc(rt_strlen(name) + 1U);
+    if (context->names[context->name_count] == 0) return -1;
+    rt_copy_string(context->names[context->name_count], rt_strlen(name) + 1U, name);
+    context->name_count += 1U;
+    return 0;
+}
+
+static int zip_validate_entry(const ArchiveZipEntry *entry, void *user_data) {
+    ZipValidationContext *context = (ZipValidationContext *)user_data;
+    ArchiveZipLocalInfo local;
+    unsigned char *data = 0;
+    size_t data_size = 0U;
+
+    context->validation->checked_entries += 1ULL;
+    if (zip_validation_remember_name(context, entry->name) != 0) return -1;
+    if (zip_name_suspicious(entry->name)) context->validation->suspicious_names += 1ULL;
+    if (entry->method != ARCHIVE_ZIP_METHOD_STORE && entry->method != ARCHIVE_ZIP_METHOD_DEFLATE) {
+        context->validation->unsupported_methods += 1ULL;
+    }
+    if (archive_zip_read_local_info(context->fd, context->info, entry, &local) != 0) {
+        context->validation->local_header_errors += 1ULL;
+        return 0;
+    }
+    if ((size_t)local.name_length != rt_strlen(entry->name)) {
+        context->validation->name_mismatch_errors += 1ULL;
+    } else if (local.name_length != 0U) {
+        unsigned char *local_name = (unsigned char *)rt_malloc((size_t)local.name_length);
+        if (local_name == 0) return -1;
+        if (zip_read_at(context->fd, entry->local_header_offset + ZIP_LOCAL_HEADER_SIZE, local_name, local.name_length) != 0) {
+            rt_free(local_name);
+            context->validation->local_header_errors += 1ULL;
+            return 0;
+        }
+        if (memcmp(local_name, entry->name, local.name_length) != 0) {
+            context->validation->name_mismatch_errors += 1ULL;
+        }
+        rt_free(local_name);
+    }
+    if (local.method != entry->method) context->validation->method_errors += 1ULL;
+    if (!zip_range_valid(context->info, local.data_offset, entry->compressed_size)) context->validation->range_errors += 1ULL;
+    if ((entry->flags & ARCHIVE_ZIP_FLAG_DATA_DESCRIPTOR) == 0U && local.crc32 != entry->crc32) context->validation->crc_errors += 1ULL;
+    if ((entry->method == ARCHIVE_ZIP_METHOD_STORE || entry->method == ARCHIVE_ZIP_METHOD_DEFLATE) &&
+        entry->uncompressed_size <= 33554432ULL && archive_zip_read_entry_data(context->fd, context->info, entry, 33554432ULL, &data, &data_size) != 0) {
+        context->validation->crc_errors += 1ULL;
+    }
+    rt_free(data);
+    (void)data_size;
+    return 0;
+}
+
+int archive_zip_validate(int fd, const ArchiveZipInfo *info, ArchiveZipValidation *validation_out) {
+    ZipValidationContext context;
+    size_t index;
+    int result;
+
+    rt_memset(validation_out, 0, sizeof(*validation_out));
+    rt_memset(&context, 0, sizeof(context));
+    context.info = info;
+    context.fd = fd;
+    context.validation = validation_out;
+    result = archive_zip_iterate_entries(fd, info, zip_validate_entry, &context);
+    for (index = 0U; index < context.name_count; ++index) {
+        rt_free(context.names[index]);
+    }
+    rt_free(context.names);
+    return result;
+}
+
 int archive_zip_read_signing_block(int fd, const ArchiveZipInfo *info, ArchiveZipSigningBlock *block_out) {
     unsigned char footer[24];
     unsigned char start_size_bytes[8];
@@ -297,8 +605,18 @@ int archive_zip_read_signing_block(int fd, const ArchiveZipInfo *info, ArchiveZi
         if (pair_size < 4ULL || cursor + 8ULL + pair_size > pairs_end) {
             return -1;
         }
-        if (pair_id == ARCHIVE_ZIP_SIG_V2) block_out->v2 = 1;
-        if (pair_id == ARCHIVE_ZIP_SIG_V3) block_out->v3 = 1;
+        if (pair_id == ARCHIVE_ZIP_SIG_V2) {
+            unsigned int cert_count = 0U;
+            block_out->v2 = 1;
+            (void)zip_count_apk_signature_scheme(fd, cursor + 12ULL, pair_size - 4ULL, 0, &block_out->v2_signer_count, &block_out->v2_signature_count, &cert_count);
+            block_out->certificate_count += cert_count;
+        }
+        if (pair_id == ARCHIVE_ZIP_SIG_V3) {
+            unsigned int cert_count = 0U;
+            block_out->v3 = 1;
+            (void)zip_count_apk_signature_scheme(fd, cursor + 12ULL, pair_size - 4ULL, 1, &block_out->v3_signer_count, &block_out->v3_signature_count, &cert_count);
+            block_out->certificate_count += cert_count;
+        }
         if (pair_id == ARCHIVE_ZIP_SIG_V31) block_out->v31 = 1;
         if (pair_id == 0x42726577U) block_out->source_stamp = 1;
         cursor += 8ULL + pair_size;
