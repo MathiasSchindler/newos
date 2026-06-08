@@ -1,17 +1,17 @@
 #!/bin/sh
 set -eu
 
-hashclash_dir=${HASHCLASH_DIR:-${1:-}}
 out_dir=${OUT_DIR:-out}
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fastcoll=${FASTCOLL:-$script_dir/build/controlled-fastcoll}
 
-if [ -z "$hashclash_dir" ]; then
-    echo "hashclash-elf-demo: set HASHCLASH_DIR or pass the HashClash directory" >&2
-    exit 1
-fi
-fastcoll=$hashclash_dir/bin/md5_fastcoll
+case $fastcoll in
+    /*) ;;
+    *) fastcoll=$script_dir/$fastcoll ;;
+esac
+
 if [ ! -x "$fastcoll" ]; then
-    echo "hashclash-elf-demo: cannot find executable md5_fastcoll under $hashclash_dir" >&2
+    echo "hashclash-elf-demo: cannot find executable controlled fastcoll tool at $fastcoll" >&2
     exit 1
 fi
 
@@ -74,7 +74,7 @@ if len(collision1) <= prefix_size:
 if len(collision1) >= code_offset:
     raise SystemExit('hashclash-elf-demo: collision payload is too large for the reserved code offset')
 if hashlib.md5(collision1).digest() != hashlib.md5(collision2).digest():
-    raise SystemExit('hashclash-elf-demo: HashClash outputs do not collide')
+    raise SystemExit('hashclash-elf-demo: collision helper outputs do not collide')
 
 chosen = None
 for offset, (left, right) in enumerate(zip(collision1, collision2)):

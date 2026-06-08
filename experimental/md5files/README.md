@@ -62,19 +62,19 @@ the chosen-prefix collision problem yet.
 
 ## Controlled ELF Demo
 
-When HashClash is available, the experiment can produce a controlled Linux/x86-64
-ELF pair with matching MD5 hashes:
+The experiment can produce a controlled Linux/x86-64 ELF pair with matching MD5
+hashes without external collision-generation dependencies:
 
 ```sh
-make -C experimental/md5files elf-hashclash-demo HASHCLASH_DIR=/path/to/hashclash
+make -C experimental/md5files elf-demo
 ```
 
 This writes `out/elf-true` and `out/elf-false`. They share an identical ELF
-prefix, HashClash `md5_fastcoll` generates the colliding middle, and the script
-appends common code that exits differently based on a bit that differs in the
-generated collision payload. On Linux/x86-64, `elf-true` exits with status 0 and
-`elf-false` exits with status 1. On macOS the files can be generated and hashed,
-but not executed directly.
+prefix, the local `controlled-fastcoll` tool emits the colliding middle, and the
+script appends common code that exits differently based on a bit that differs in
+the generated collision payload. On Linux/x86-64, `elf-true` exits with status 0
+and `elf-false` exits with status 1. On macOS the files can be generated and
+hashed, but not executed directly.
 
 The `examples/` fixture below is harder: it starts from preexisting binaries and
 therefore still needs a chosen-prefix backend.
@@ -157,10 +157,10 @@ so the Merkle-Damgard suffix property preserves the collision.
 For the controlled ELF demo, the shape is:
 
 ```text
-ELF prefix || HashClash collision payload || identical executable suffix
+ELF prefix || controlled-fastcoll collision payload || identical executable suffix
 ```
 
-The executable suffix is selected after HashClash returns the collision payloads,
+The executable suffix is selected after the local tool returns the collision payloads,
 but it is identical in both outputs, so the MD5 collision is preserved.
 
 ## Next Step

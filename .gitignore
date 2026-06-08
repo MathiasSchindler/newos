@@ -12,6 +12,7 @@ experimental/md5files/*
 !experimental/md5files/README.md
 !experimental/md5files/Makefile
 !experimental/md5files/generate.c
+!experimental/md5files/controlled-fastcoll.c
 !experimental/md5files/verify.sh
 !experimental/md5files/hashclash-elf-demo.sh
 !experimental/md5files/examples/
