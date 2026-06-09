@@ -12,12 +12,12 @@ ln -sf real "$WORK_DIR/link"
 
 pwd_logical=$(
     cd "$WORK_DIR/link/sub"
-    PWD="$WORK_DIR/link/sub" "$ROOT_DIR/build/pwd" -L | tr -d '\r\n'
+    PWD="$WORK_DIR/link/sub" "${TEST_BIN_DIR}/pwd" -L | tr -d '\r\n'
 )
 assert_text_equals "$pwd_logical" "$WORK_DIR/link/sub" "pwd -L did not honor a valid logical path"
 
 pwd_physical=$(
     cd "$WORK_DIR/link/sub"
-    PWD="$WORK_DIR/link/sub" "$ROOT_DIR/build/pwd" -P | tr -d '\r\n'
+    PWD="$WORK_DIR/link/sub" "${TEST_BIN_DIR}/pwd" -P | tr -d '\r\n'
 )
 assert_text_equals "$pwd_physical" "$WORK_DIR/real/sub" "pwd -P did not print the physical working directory"

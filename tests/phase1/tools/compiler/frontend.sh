@@ -13,17 +13,17 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-tokens "$WORK_DIR/sample.c" > "$WORK_DIR/tokens.out"
+"${TEST_BIN_DIR}/ncc" --dump-tokens "$WORK_DIR/sample.c" > "$WORK_DIR/tokens.out"
 assert_file_contains "$WORK_DIR/tokens.out" 'keyword int' "compiler token stream missing int keyword"
 assert_file_contains "$WORK_DIR/tokens.out" 'identifier main' "compiler token stream missing main identifier"
 assert_file_contains "$WORK_DIR/tokens.out" 'number 42' "compiler token stream missing numeric literal"
 assert_file_contains "$WORK_DIR/tokens.out" 'punct {' "compiler token stream missing punctuation"
 assert_file_contains "$WORK_DIR/tokens.out" 'eof <eof>' "compiler token stream missing eof marker"
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --target macos-aarch64 --dump-tokens "$WORK_DIR/sample.c" > /dev/null
-"$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/sample.c" > "$WORK_DIR/ast.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target macos-aarch64 --dump-tokens "$WORK_DIR/sample.c" > /dev/null
+"${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/sample.c" > "$WORK_DIR/ast.out"
 assert_file_contains "$WORK_DIR/ast.out" '^function main$' "compiler AST output missing main function"
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/sample.c" > "$WORK_DIR/ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/sample.c" > "$WORK_DIR/ir.out"
 assert_file_contains "$WORK_DIR/ir.out" '^func main' "compiler IR output missing function header"
 assert_file_contains "$WORK_DIR/ir.out" '^ret 42$' "compiler IR output missing return instruction"
 
@@ -33,7 +33,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/constant_fold.c" > "$WORK_DIR/constant_fold_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/constant_fold.c" > "$WORK_DIR/constant_fold_ir.out"
 assert_file_contains "$WORK_DIR/constant_fold_ir.out" '^ret 39$' "compiler IR optimizer did not fold a pure integer expression"
 
 cat > "$WORK_DIR/constant_branch.c" <<'EOF'
@@ -45,7 +45,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/constant_branch.c" > "$WORK_DIR/constant_branch_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/constant_branch.c" > "$WORK_DIR/constant_branch_ir.out"
 if grep -q '^brfalse ' "$WORK_DIR/constant_branch_ir.out"; then
     fail "compiler IR optimizer did not simplify a constant branch"
 fi
@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/identity_fold.c" > "$WORK_DIR/identity_fold_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/identity_fold.c" > "$WORK_DIR/identity_fold_ir.out"
 assert_file_contains "$WORK_DIR/identity_fold_ir.out" '^ret argc$' "compiler IR optimizer did not simplify neutral arithmetic identities"
 
 cat > "$WORK_DIR/identity_chain_fold.c" <<'EOF'
@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/identity_chain_fold.c" > "$WORK_DIR/identity_chain_fold_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/identity_chain_fold.c" > "$WORK_DIR/identity_chain_fold_ir.out"
 assert_file_contains "$WORK_DIR/identity_chain_fold_ir.out" '^store value <- argc$' "compiler IR optimizer did not propagate a tracked local through chained neutral identities"
 assert_file_contains "$WORK_DIR/identity_chain_fold_ir.out" '^ret value$' "compiler IR optimizer did not simplify a chained neutral return expression"
 if grep -q '\+ 0\|\* 1\|- 0\|\^ 0' "$WORK_DIR/identity_chain_fold_ir.out"; then
@@ -91,7 +91,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/side_effect_identity.c" > "$WORK_DIR/side_effect_identity_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/side_effect_identity.c" > "$WORK_DIR/side_effect_identity_ir.out"
 assert_file_contains "$WORK_DIR/side_effect_identity_ir.out" '^ret bump(&value)$' "compiler IR optimizer dropped a side-effecting call while folding a neutral arithmetic identity"
 
 
@@ -107,7 +107,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/logical_short_circuit_fold.c" > "$WORK_DIR/logical_short_circuit_fold_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/logical_short_circuit_fold.c" > "$WORK_DIR/logical_short_circuit_fold_ir.out"
 assert_file_contains "$WORK_DIR/logical_short_circuit_fold_ir.out" '^ret 1$' "compiler IR optimizer did not fold constant short-circuit logical expressions"
 if grep -q 'bump(&value)' "$WORK_DIR/logical_short_circuit_fold_ir.out"; then
     fail "compiler IR optimizer kept unreachable short-circuit calls"
@@ -125,7 +125,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/typedef_struct_local.c" > "$WORK_DIR/typedef_struct_local_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/typedef_struct_local.c" > "$WORK_DIR/typedef_struct_local_ir.out"
 assert_file_contains "$WORK_DIR/typedef_struct_local_ir.out" '^decl local obj struct:State state$' "compiler lost a typedef-backed struct local and lowered it as a plain scalar"
 
 cat > "$WORK_DIR/local.h" <<'EOF'
@@ -154,7 +154,7 @@ int expression_value = 4;
 int main(void) { return FEATURE_VALUE; }
 EOF
 
-"$ROOT_DIR/build/ncc" --preprocess --target macos-aarch64 "$WORK_DIR/preprocess.c" > "$WORK_DIR/preprocess.out"
+"${TEST_BIN_DIR}/ncc" --preprocess --target macos-aarch64 "$WORK_DIR/preprocess.c" > "$WORK_DIR/preprocess.out"
 assert_file_contains "$WORK_DIR/preprocess.out" 'int platform_value = 1;' "preprocessor did not keep the macOS branch"
 assert_file_contains "$WORK_DIR/preprocess.out" 'int expression_value = 3;' "preprocessor did not evaluate macro aliases and logical operators"
 assert_file_contains "$WORK_DIR/preprocess.out" 'return 7;' "preprocessor did not expand an object-like macro"
@@ -175,19 +175,19 @@ cat > "$WORK_DIR/include_chain.c" <<'EOF'
 int main(void) { return include_chain_value; }
 EOF
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-tokens "$WORK_DIR/include_chain.c" > "$WORK_DIR/include_chain_tokens.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-tokens "$WORK_DIR/include_chain.c" > "$WORK_DIR/include_chain_tokens.out"
 assert_file_contains "$WORK_DIR/include_chain_tokens.out" 'identifier include_chain_value' "preprocessor should handle nested includes without exhausting the stack"
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$ROOT_DIR/src/tools/printf.c" > "$WORK_DIR/repo_ast.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$ROOT_DIR/src/tools/printf.c" > "$WORK_DIR/repo_ast.out"
 repo_ast=$(tr -d '\r' < "$WORK_DIR/repo_ast.out")
 case "$repo_ast" in
     *"function parse_signed_value"* ) ;;
     * ) fail "compiler parser did not accept repo source or missed function summary" ;;
 esac
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$ROOT_DIR/src/tools/env.c" > "$WORK_DIR/repo_env_ast.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$ROOT_DIR/src/tools/env.c" > "$WORK_DIR/repo_env_ast.out"
 assert_file_contains "$WORK_DIR/repo_env_ast.out" '^function main$' "compiler parser did not accept env.c cleanly"
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$ROOT_DIR/src/tools/sh.c" > "$WORK_DIR/repo_sh_ast.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$ROOT_DIR/src/tools/sh.c" > "$WORK_DIR/repo_sh_ast.out"
 assert_file_contains "$WORK_DIR/repo_sh_ast.out" '^function sh_execute_pipeline$' "compiler parser did not accept sh.c cleanly"
 
 cat > "$WORK_DIR/extern_redecl.c" <<'EOF'
@@ -200,7 +200,7 @@ int main(void) {
 }
 EOF
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/extern_redecl.c" > "$WORK_DIR/extern_redecl.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/extern_redecl.c" > "$WORK_DIR/extern_redecl.out"
 assert_file_contains "$WORK_DIR/extern_redecl.out" '^function main$' "compiler rejected a compatible extern redeclaration"
 
 cat > "$WORK_DIR/gnu_attribute.c" <<'EOF'
@@ -222,7 +222,7 @@ int main(void) {
 }
 EOF
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/gnu_attribute.c" > "$WORK_DIR/gnu_attribute.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/gnu_attribute.c" > "$WORK_DIR/gnu_attribute.out"
 assert_file_contains "$WORK_DIR/gnu_attribute.out" '^function guarded_read$' "compiler rejected GNU attributes before a function declarator"
 assert_file_contains "$WORK_DIR/gnu_attribute.out" '^function stop_now$' "compiler rejected GNU attributes before declaration specifiers"
 
@@ -234,7 +234,7 @@ int main(void) {
 }
 EOF
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/gnu_asm.c" > "$WORK_DIR/gnu_asm.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/gnu_asm.c" > "$WORK_DIR/gnu_asm.out"
 assert_file_contains "$WORK_DIR/gnu_asm.out" '^function main$' "compiler rejected GNU asm labels or asm statements"
 
 cat > "$WORK_DIR/for_scope.c" <<'EOF'
@@ -247,7 +247,7 @@ int main(void) {
 }
 EOF
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/for_scope.c" > "$WORK_DIR/for_scope.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/for_scope.c" > "$WORK_DIR/for_scope.out"
 assert_file_contains "$WORK_DIR/for_scope.out" '^function main$' "compiler did not keep for-loop declarations scoped to the loop"
 
 cat > "$WORK_DIR/empty_external_declaration.c" <<'EOF'
@@ -258,9 +258,9 @@ int main(void) { return first(); }
 ;
 EOF
 
-assert_command_succeeds "$ROOT_DIR/build/ncc" --target macos-aarch64 --dump-ast "$WORK_DIR/empty_external_declaration.c" > "$WORK_DIR/empty_external_declaration_macos.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target macos-aarch64 --dump-ast "$WORK_DIR/empty_external_declaration.c" > "$WORK_DIR/empty_external_declaration_macos.out"
 assert_file_contains "$WORK_DIR/empty_external_declaration_macos.out" '^function main$' "compiler rejected empty external declarations for macOS target parsing"
-assert_command_succeeds "$ROOT_DIR/build/ncc" --target linux-x86_64 --dump-ast "$WORK_DIR/empty_external_declaration.c" > "$WORK_DIR/empty_external_declaration_linux.out"
+assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target linux-x86_64 --dump-ast "$WORK_DIR/empty_external_declaration.c" > "$WORK_DIR/empty_external_declaration_linux.out"
 assert_file_contains "$WORK_DIR/empty_external_declaration_linux.out" '^function first$' "compiler rejected empty external declarations for Linux target parsing"
 
 cat > "$WORK_DIR/array_param_decay.c" <<'EOF'
@@ -276,7 +276,7 @@ int main(void) {
 }
 EOF
 
-"$ROOT_DIR/build/ncc" --dump-ir "$WORK_DIR/array_param_decay.c" > "$WORK_DIR/array_param_decay_ir.out"
+"${TEST_BIN_DIR}/ncc" --dump-ir "$WORK_DIR/array_param_decay.c" > "$WORK_DIR/array_param_decay_ir.out"
 if ! grep -q '^decl param obj char\*\* argv$' "$WORK_DIR/array_param_decay_ir.out" &&
    ! grep -q '^decl param obj char\*\[\] argv$' "$WORK_DIR/array_param_decay_ir.out"; then
     fail "compiler did not preserve pointer-style array parameter lowering in IR"
@@ -290,7 +290,7 @@ int main(void) {
 }
 EOF
 
-if "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/invalid.c" > "$WORK_DIR/invalid.out" 2>&1; then
+if "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/invalid.c" > "$WORK_DIR/invalid.out" 2>&1; then
     fail "compiler parser unexpectedly accepted invalid syntax"
 fi
 assert_file_contains "$WORK_DIR/invalid.out" 'expected punctuation' "compiler parser missing syntax error message"
@@ -303,7 +303,7 @@ int main(void) {
 }
 EOF
 
-if "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/semantic_error.c" > "$WORK_DIR/semantic_error.out" 2>&1; then
+if "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/semantic_error.c" > "$WORK_DIR/semantic_error.out" 2>&1; then
     fail "compiler semantic analysis unexpectedly accepted duplicate or undeclared symbols"
 fi
 assert_file_contains "$WORK_DIR/semantic_error.out" 'duplicate declaration in the same scope\|use of undeclared identifier' "compiler semantic analysis missing symbol-table diagnostic"
@@ -312,7 +312,7 @@ cat > "$WORK_DIR/array_overflow.c" <<'EOF'
 int oversized[18446744073709551615ULL * 2ULL];
 EOF
 
-if "$ROOT_DIR/build/ncc" --dump-ast "$WORK_DIR/array_overflow.c" > "$WORK_DIR/array_overflow.out" 2>&1; then
+if "${TEST_BIN_DIR}/ncc" --dump-ast "$WORK_DIR/array_overflow.c" > "$WORK_DIR/array_overflow.out" 2>&1; then
     fail "compiler unexpectedly accepted an overflowing array bound"
 fi
 assert_file_contains "$WORK_DIR/array_overflow.out" 'array bound is too large\|array size exceeds compiler limits' "compiler did not report an overflowing array bound cleanly"
@@ -326,7 +326,7 @@ while [ "$i" -lt 80 ]; do
 done
 printf 'value;\n' >> "$pointer_file"
 
-if "$ROOT_DIR/build/ncc" --dump-ast "$pointer_file" > "$WORK_DIR/pointer_depth_limit.out" 2>&1; then
+if "${TEST_BIN_DIR}/ncc" --dump-ast "$pointer_file" > "$WORK_DIR/pointer_depth_limit.out" 2>&1; then
     fail "compiler unexpectedly accepted excessive pointer nesting"
 fi
 assert_file_contains "$WORK_DIR/pointer_depth_limit.out" 'pointer depth exceeds compiler limit' "compiler did not stop excessive pointer nesting"
@@ -346,7 +346,7 @@ while [ "$i" -lt 140 ]; do
 done
 printf ';\n' >> "$deep_init_file"
 
-if "$ROOT_DIR/build/ncc" --dump-ast "$deep_init_file" > "$WORK_DIR/deep_initializer.out" 2>&1; then
+if "${TEST_BIN_DIR}/ncc" --dump-ast "$deep_init_file" > "$WORK_DIR/deep_initializer.out" 2>&1; then
     fail "compiler unexpectedly accepted excessively deep initializer nesting"
 fi
 assert_file_contains "$WORK_DIR/deep_initializer.out" 'initializer nesting too deep' "compiler did not stop excessively deep initializer nesting"

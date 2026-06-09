@@ -58,11 +58,6 @@ typedef struct {
 } DarwinTimeval;
 
 typedef struct {
-    const char *name;
-    int value;
-} DarwinSignalEntry;
-
-typedef struct {
     unsigned char type;
     unsigned char code;
     unsigned short checksum;
@@ -77,30 +72,6 @@ typedef struct {
     unsigned short identifier;
     unsigned short sequence;
 } MacosIcmpv6Packet;
-
-static const DarwinSignalEntry DARWIN_SIGNAL_TABLE[] = {
-    { "HUP", SIGHUP },
-    { "INT", SIGINT },
-    { "QUIT", SIGQUIT },
-    { "ILL", SIGILL },
-    { "TRAP", SIGTRAP },
-    { "ABRT", SIGABRT },
-    { "BUS", SIGBUS },
-    { "FPE", SIGFPE },
-    { "KILL", SIGKILL },
-    { "USR1", SIGUSR1 },
-    { "SEGV", SIGSEGV },
-    { "USR2", SIGUSR2 },
-    { "PIPE", SIGPIPE },
-    { "ALRM", SIGALRM },
-    { "TERM", SIGTERM },
-    { "CHLD", SIGCHLD },
-    { "CONT", SIGCONT },
-    { "STOP", SIGSTOP },
-    { "TSTP", SIGTSTP },
-    { "TTIN", SIGTTIN },
-    { "TTOU", SIGTTOU }
-};
 
 static unsigned long long temp_path_counter;
 
@@ -849,7 +820,6 @@ int platform_send_signal(int pid, int signal_number) {
 
 int platform_parse_signal_name(const char *text, int *signal_out) {
     unsigned long long numeric;
-    size_t index;
 
     if (text == 0 || text[0] == '\0' || signal_out == 0) {
         return -1;
@@ -859,38 +829,61 @@ int platform_parse_signal_name(const char *text, int *signal_out) {
         return 0;
     }
 
-    for (index = 0; index < sizeof(DARWIN_SIGNAL_TABLE) / sizeof(DARWIN_SIGNAL_TABLE[0]); ++index) {
-        if (signal_name_matches(text, DARWIN_SIGNAL_TABLE[index].name)) {
-            *signal_out = DARWIN_SIGNAL_TABLE[index].value;
-            return 0;
-        }
-    }
+    if (signal_name_matches(text, "HUP")) *signal_out = SIGHUP;
+    else if (signal_name_matches(text, "INT")) *signal_out = SIGINT;
+    else if (signal_name_matches(text, "QUIT")) *signal_out = SIGQUIT;
+    else if (signal_name_matches(text, "ILL")) *signal_out = SIGILL;
+    else if (signal_name_matches(text, "TRAP")) *signal_out = SIGTRAP;
+    else if (signal_name_matches(text, "ABRT")) *signal_out = SIGABRT;
+    else if (signal_name_matches(text, "BUS")) *signal_out = SIGBUS;
+    else if (signal_name_matches(text, "FPE")) *signal_out = SIGFPE;
+    else if (signal_name_matches(text, "KILL")) *signal_out = SIGKILL;
+    else if (signal_name_matches(text, "USR1")) *signal_out = SIGUSR1;
+    else if (signal_name_matches(text, "SEGV")) *signal_out = SIGSEGV;
+    else if (signal_name_matches(text, "USR2")) *signal_out = SIGUSR2;
+    else if (signal_name_matches(text, "PIPE")) *signal_out = SIGPIPE;
+    else if (signal_name_matches(text, "ALRM")) *signal_out = SIGALRM;
+    else if (signal_name_matches(text, "TERM")) *signal_out = SIGTERM;
+    else if (signal_name_matches(text, "CHLD")) *signal_out = SIGCHLD;
+    else if (signal_name_matches(text, "CONT")) *signal_out = SIGCONT;
+    else if (signal_name_matches(text, "STOP")) *signal_out = SIGSTOP;
+    else if (signal_name_matches(text, "TSTP")) *signal_out = SIGTSTP;
+    else if (signal_name_matches(text, "TTIN")) *signal_out = SIGTTIN;
+    else if (signal_name_matches(text, "TTOU")) *signal_out = SIGTTOU;
+    else return -1;
 
-    return -1;
+    return 0;
 }
 
 const char *platform_signal_name(int signal_number) {
-    size_t index;
-
-    for (index = 0; index < sizeof(DARWIN_SIGNAL_TABLE) / sizeof(DARWIN_SIGNAL_TABLE[0]); ++index) {
-        if (DARWIN_SIGNAL_TABLE[index].value == signal_number) {
-            return DARWIN_SIGNAL_TABLE[index].name;
-        }
+    switch (signal_number) {
+    case SIGHUP: return "HUP";
+    case SIGINT: return "INT";
+    case SIGQUIT: return "QUIT";
+    case SIGILL: return "ILL";
+    case SIGTRAP: return "TRAP";
+    case SIGABRT: return "ABRT";
+    case SIGBUS: return "BUS";
+    case SIGFPE: return "FPE";
+    case SIGKILL: return "KILL";
+    case SIGUSR1: return "USR1";
+    case SIGSEGV: return "SEGV";
+    case SIGUSR2: return "USR2";
+    case SIGPIPE: return "PIPE";
+    case SIGALRM: return "ALRM";
+    case SIGTERM: return "TERM";
+    case SIGCHLD: return "CHLD";
+    case SIGCONT: return "CONT";
+    case SIGSTOP: return "STOP";
+    case SIGTSTP: return "TSTP";
+    case SIGTTIN: return "TTIN";
+    case SIGTTOU: return "TTOU";
+    default: return "UNKNOWN";
     }
-
-    return "UNKNOWN";
 }
 
 void platform_write_signal_list(int fd) {
-    size_t index;
-
-    for (index = 0; index < sizeof(DARWIN_SIGNAL_TABLE) / sizeof(DARWIN_SIGNAL_TABLE[0]); ++index) {
-        if (index > 0) {
-            (void)platform_write(fd, " ", 1U);
-        }
-        (void)platform_write(fd, DARWIN_SIGNAL_TABLE[index].name, rt_strlen(DARWIN_SIGNAL_TABLE[index].name));
-    }
-    (void)platform_write(fd, "\n", 1U);
+    rt_write_line(fd, "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP TSTP TTIN TTOU");
 }
 
 int platform_sleep_milliseconds(unsigned long long milliseconds) {
@@ -1770,6 +1763,150 @@ static int macos_fd_to_socket(int input_fd, int socket_fd) {
     }
 }
 
+static int macos_netcat_open_udp_listener(const char *host, unsigned int port, int *socket_fd_out) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int sock = -1;
+    int reuse = 1;
+
+    if (socket_fd_out == 0 || port == 0U || port > 65535U) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_flags = AI_PASSIVE;
+    rt_unsigned_to_string((unsigned long long)port, port_text, sizeof(port_text));
+
+    if (getaddrinfo(host != 0 && host[0] != '\0' ? host : 0, port_text, &hints, &results) != 0) {
+        errno = EHOSTUNREACH;
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sock < 0) {
+            continue;
+        }
+        (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        if (bind(sock, current->ai_addr, current->ai_addrlen) == 0) {
+            break;
+        }
+        (void)platform_close(sock);
+        sock = -1;
+    }
+
+    freeaddrinfo(results);
+    if (sock < 0) {
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+static int macos_netcat_bind_udp_socket(int socket_fd, const char *host, unsigned int port) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int bound = 0;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_flags = AI_PASSIVE;
+    rt_unsigned_to_string((unsigned long long)port, port_text, sizeof(port_text));
+
+    if (getaddrinfo(host != 0 && host[0] != '\0' ? host : 0, port_text, &hints, &results) != 0) {
+        errno = EHOSTUNREACH;
+        return -1;
+    }
+    for (current = results; current != 0; current = current->ai_next) {
+        if (bind(socket_fd, current->ai_addr, current->ai_addrlen) == 0) {
+            bound = 1;
+            break;
+        }
+    }
+    freeaddrinfo(results);
+    return bound ? 0 : -1;
+}
+
+static int macos_netcat_connect_udp(const char *host, unsigned int port, const PlatformNetcatOptions *options, int *socket_fd_out) {
+    struct addrinfo hints;
+    struct addrinfo *results = 0;
+    struct addrinfo *current;
+    char port_text[16];
+    int sock = -1;
+
+    if (host == 0 || host[0] == '\0' || socket_fd_out == 0 || port == 0U || port > 65535U) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    rt_unsigned_to_string((unsigned long long)port, port_text, sizeof(port_text));
+
+    if (getaddrinfo(host, port_text, &hints, &results) != 0) {
+        errno = EHOSTUNREACH;
+        return -1;
+    }
+
+    for (current = results; current != 0; current = current->ai_next) {
+        sock = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sock < 0) {
+            continue;
+        }
+        if (options->bind_host[0] != '\0' || options->bind_port != 0U) {
+            if (macos_netcat_bind_udp_socket(sock, options->bind_host[0] != '\0' ? options->bind_host : 0, options->bind_port) != 0) {
+                (void)platform_close(sock);
+                sock = -1;
+                continue;
+            }
+        }
+        if (connect(sock, current->ai_addr, current->ai_addrlen) == 0) {
+            break;
+        }
+        (void)platform_close(sock);
+        sock = -1;
+    }
+
+    freeaddrinfo(results);
+    if (sock < 0) {
+        return -1;
+    }
+
+    *socket_fd_out = sock;
+    return 0;
+}
+
+static int macos_netcat_udp_send_stdin(int socket_fd) {
+    char buffer[4096];
+    long amount;
+
+    for (;;) {
+        amount = platform_read(0, buffer, sizeof(buffer));
+        if (amount < 0) {
+            return -1;
+        }
+        if (amount == 0) {
+            return 0;
+        }
+        if (send(socket_fd, buffer, (size_t)amount, 0) != amount) {
+            return -1;
+        }
+    }
+}
+
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {
     PlatformNetcatOptions defaults;
     int sock = -1;
@@ -1781,16 +1918,44 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     if (options->connect_status_out != 0) {
         *options->connect_status_out = PLATFORM_CONNECT_STATUS_ERROR;
     }
-    if (options->use_udp) {
-        return -1;
-    }
 
     if (options->listen_mode) {
         int client = -1;
         const char *bind_host = options->bind_host[0] != '\0' ? options->bind_host : host;
         unsigned int listen_port = options->bind_port != 0U ? options->bind_port : port;
+        size_t ready_index = 0U;
+
+        if (options->use_udp) {
+            char buffer[4096];
+            long received;
+
+            if (macos_netcat_open_udp_listener(bind_host, listen_port, &sock) != 0) {
+                return -1;
+            }
+            if (options->timeout_milliseconds > 0U &&
+                platform_poll_fds(&sock, 1U, &ready_index, (int)options->timeout_milliseconds) <= 0) {
+                (void)platform_close(sock);
+                return -1;
+            }
+            received = recvfrom(sock, buffer, sizeof(buffer), 0, 0, 0);
+            if (received < 0) {
+                (void)platform_close(sock);
+                return -1;
+            }
+            if (!options->scan_mode && received > 0 && rt_write_all(1, buffer, (size_t)received) != 0) {
+                (void)platform_close(sock);
+                return -1;
+            }
+            (void)platform_close(sock);
+            return 0;
+        }
 
         if (platform_open_tcp_listener(bind_host, listen_port, &sock) != 0) {
+            return -1;
+        }
+        if (options->timeout_milliseconds > 0U &&
+            platform_poll_fds(&sock, 1U, &ready_index, (int)options->timeout_milliseconds) <= 0) {
+            (void)platform_close(sock);
             return -1;
         }
         if (platform_accept_tcp(sock, &client) != 0) {
@@ -1806,7 +1971,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
         return 0;
     }
 
-    if (platform_connect_tcp(host, port, &sock) != 0) {
+    if (options->use_udp) {
+        if (macos_netcat_connect_udp(host, port, options, &sock) != 0) {
+            if (options->connect_status_out != 0) {
+                *options->connect_status_out = macos_connect_status_from_errno(errno);
+            }
+            return -1;
+        }
+    } else if (platform_connect_tcp(host, port, &sock) != 0) {
         if (options->connect_status_out != 0) {
             *options->connect_status_out = macos_connect_status_from_errno(errno);
         }
@@ -1814,6 +1986,14 @@ int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOpt
     }
     if (options->connect_status_out != 0) {
         *options->connect_status_out = PLATFORM_CONNECT_STATUS_OPEN;
+    }
+    if (options->use_udp) {
+        if (!platform_isatty(0) && macos_netcat_udp_send_stdin(sock) != 0) {
+            (void)platform_close(sock);
+            return -1;
+        }
+        (void)platform_close(sock);
+        return 0;
     }
     if (options->scan_mode) {
         if (options->banner_received_length != 0) {
@@ -1896,6 +2076,320 @@ static int macos_add_dns_entry(
     return 0;
 }
 
+static int macos_add_dns_record(
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count,
+    const char *name,
+    int family,
+    unsigned short record_type,
+    const char *data,
+    unsigned int ttl,
+    unsigned short preference
+) {
+    PlatformDnsEntry *entry;
+
+    if (*count >= entry_capacity) {
+        return -1;
+    }
+    entry = &entries_out[*count];
+    memset(entry, 0, sizeof(*entry));
+    entry->family = family;
+    entry->record_type = record_type;
+    entry->ttl = ttl;
+    entry->preference = preference;
+    rt_copy_string(entry->name, sizeof(entry->name), name);
+    if (data != 0) {
+        if (record_type == PLATFORM_DNS_RECORD_A || record_type == PLATFORM_DNS_RECORD_AAAA) {
+            rt_copy_string(entry->address, sizeof(entry->address), data);
+        }
+        rt_copy_string(entry->data, sizeof(entry->data), data);
+    }
+    *count += 1U;
+    return 0;
+}
+
+static int macos_dns_parse_server_ipv4(const char *server, struct in_addr *address_out) {
+    if (server == 0 || server[0] == '\0') {
+        return -1;
+    }
+    if (rt_strcmp(server, "localhost") == 0) {
+        return inet_pton(AF_INET, "127.0.0.1", address_out) == 1 ? 0 : -1;
+    }
+    return inet_pton(AF_INET, server, address_out) == 1 ? 0 : -1;
+}
+
+static int macos_dns_encode_name(const char *name, unsigned char *buffer, size_t buffer_size, size_t *offset_io) {
+    const char *label = name;
+
+    if (name == 0 || buffer == 0 || offset_io == 0) {
+        return -1;
+    }
+
+    while (*label != '\0') {
+        const char *end = label;
+        size_t length;
+
+        while (*end != '\0' && *end != '.') {
+            end += 1;
+        }
+        length = (size_t)(end - label);
+        if (length == 0U || length > 63U || *offset_io + length + 2U > buffer_size) {
+            return -1;
+        }
+        buffer[(*offset_io)++] = (unsigned char)length;
+        memcpy(buffer + *offset_io, label, length);
+        *offset_io += length;
+        label = (*end == '.') ? (end + 1) : end;
+    }
+
+    if (*offset_io + 1U > buffer_size) {
+        return -1;
+    }
+    buffer[(*offset_io)++] = 0U;
+    return 0;
+}
+
+static int macos_dns_skip_name(const unsigned char *message, size_t message_length, size_t *offset_io) {
+    size_t offset;
+
+    if (message == 0 || offset_io == 0) {
+        return -1;
+    }
+    offset = *offset_io;
+    while (offset < message_length) {
+        unsigned char length = message[offset];
+        if (length == 0U) {
+            *offset_io = offset + 1U;
+            return 0;
+        }
+        if ((length & 0xc0U) == 0xc0U) {
+            if (offset + 1U >= message_length) {
+                return -1;
+            }
+            *offset_io = offset + 2U;
+            return 0;
+        }
+        if ((length & 0xc0U) != 0U || length > 63U) {
+            return -1;
+        }
+        offset += 1U + (size_t)length;
+    }
+    return -1;
+}
+
+static int macos_dns_read_name(
+    const unsigned char *message,
+    size_t message_length,
+    size_t start_offset,
+    size_t *next_offset_out,
+    char *buffer,
+    size_t buffer_size
+) {
+    size_t offset = start_offset;
+    size_t next_offset = start_offset;
+    size_t used = 0U;
+    unsigned int jumps = 0U;
+    int jumped = 0;
+
+    if (message == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    while (offset < message_length) {
+        unsigned char length = message[offset];
+        if (length == 0U) {
+            if (!jumped) {
+                next_offset = offset + 1U;
+            }
+            if (used == 0U) {
+                if (buffer_size < 2U) {
+                    return -1;
+                }
+                buffer[0] = '.';
+                buffer[1] = '\0';
+            } else {
+                buffer[used] = '\0';
+            }
+            if (next_offset_out != 0) {
+                *next_offset_out = next_offset;
+            }
+            return 0;
+        }
+        if ((length & 0xc0U) == 0xc0U) {
+            unsigned short pointer;
+            if (offset + 1U >= message_length) {
+                return -1;
+            }
+            pointer = (unsigned short)((((unsigned short)length & 0x3fU) << 8) | (unsigned short)message[offset + 1U]);
+            if (!jumped) {
+                next_offset = offset + 2U;
+                jumped = 1;
+            }
+            jumps += 1U;
+            if (jumps > 16U || (size_t)pointer >= message_length) {
+                return -1;
+            }
+            offset = (size_t)pointer;
+            continue;
+        }
+        if ((length & 0xc0U) != 0U || length > 63U) {
+            return -1;
+        }
+        offset += 1U;
+        if (offset + (size_t)length > message_length) {
+            return -1;
+        }
+        if (used != 0U) {
+            if (used + 1U >= buffer_size) {
+                return -1;
+            }
+            buffer[used++] = '.';
+        }
+        if (used + (size_t)length >= buffer_size) {
+            return -1;
+        }
+        memcpy(buffer + used, message + offset, (size_t)length);
+        used += (size_t)length;
+        offset += (size_t)length;
+        if (!jumped) {
+            next_offset = offset;
+        }
+    }
+    return -1;
+}
+
+static int macos_dns_query_server(
+    const char *server,
+    unsigned int port,
+    const char *name,
+    unsigned short query_type,
+    PlatformDnsEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out
+) {
+    struct in_addr server_address;
+    struct sockaddr_in destination;
+    unsigned char packet[512];
+    unsigned char reply[512];
+    size_t used = 12U;
+    unsigned short query_id;
+    int sock;
+    ssize_t sent;
+    ssize_t reply_bytes;
+    size_t offset;
+    unsigned int question_count;
+    unsigned int answer_count;
+    unsigned int i;
+    size_t count = 0U;
+    size_t ready_index = 0U;
+
+    if (macos_dns_parse_server_ipv4(server, &server_address) != 0 || name == 0 || entries_out == 0 || count_out == 0) {
+        return -1;
+    }
+    *count_out = 0U;
+    memset(packet, 0, sizeof(packet));
+    query_id = (unsigned short)(((unsigned int)platform_get_process_id() & 0xffffU) ^ 0x6d63U);
+    packet[0] = (unsigned char)(query_id >> 8);
+    packet[1] = (unsigned char)(query_id & 0xffU);
+    packet[2] = 0x01U;
+    packet[5] = 0x01U;
+    if (macos_dns_encode_name(name, packet, sizeof(packet), &used) != 0 || used + 4U > sizeof(packet)) {
+        return -1;
+    }
+    packet[used++] = (unsigned char)(query_type >> 8);
+    packet[used++] = (unsigned char)(query_type & 0xffU);
+    packet[used++] = 0U;
+    packet[used++] = 1U;
+
+    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        return -1;
+    }
+    memset(&destination, 0, sizeof(destination));
+    destination.sin_len = (unsigned char)sizeof(destination);
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons((unsigned short)(port == 0U ? 53U : port));
+    destination.sin_addr = server_address;
+    sent = sendto(sock, packet, used, 0, (struct sockaddr *)&destination, sizeof(destination));
+    if (sent != (ssize_t)used || platform_poll_fds(&sock, 1U, &ready_index, 2000) <= 0) {
+        (void)platform_close(sock);
+        return -1;
+    }
+    reply_bytes = recvfrom(sock, reply, sizeof(reply), 0, 0, 0);
+    (void)platform_close(sock);
+    if (reply_bytes < 12 || ((unsigned short)reply[0] << 8 | (unsigned short)reply[1]) != query_id || (reply[3] & 0x0fU) != 0U) {
+        return -1;
+    }
+
+    question_count = ((unsigned int)reply[4] << 8) | (unsigned int)reply[5];
+    answer_count = ((unsigned int)reply[6] << 8) | (unsigned int)reply[7];
+    offset = 12U;
+    for (i = 0U; i < question_count; ++i) {
+        if (macos_dns_skip_name(reply, (size_t)reply_bytes, &offset) != 0 || offset + 4U > (size_t)reply_bytes) {
+            return -1;
+        }
+        offset += 4U;
+    }
+
+    for (i = 0U; i < answer_count; ++i) {
+        char owner_name[PLATFORM_NAME_CAPACITY];
+        char data_text[PLATFORM_NETWORK_TEXT_CAPACITY];
+        unsigned short type;
+        unsigned short class_code;
+        unsigned int ttl;
+        unsigned short rdlength;
+        int family = PLATFORM_NETWORK_FAMILY_ANY;
+        int keep_record = 0;
+
+        if (macos_dns_read_name(reply, (size_t)reply_bytes, offset, &offset, owner_name, sizeof(owner_name)) != 0 ||
+            offset + 10U > (size_t)reply_bytes) {
+            return -1;
+        }
+        type = (unsigned short)(((unsigned int)reply[offset] << 8) | (unsigned int)reply[offset + 1U]);
+        class_code = (unsigned short)(((unsigned int)reply[offset + 2U] << 8) | (unsigned int)reply[offset + 3U]);
+        ttl = ((unsigned int)reply[offset + 4U] << 24) |
+              ((unsigned int)reply[offset + 5U] << 16) |
+              ((unsigned int)reply[offset + 6U] << 8) |
+              (unsigned int)reply[offset + 7U];
+        rdlength = (unsigned short)(((unsigned int)reply[offset + 8U] << 8) | (unsigned int)reply[offset + 9U]);
+        offset += 10U;
+        if (offset + rdlength > (size_t)reply_bytes) {
+            return -1;
+        }
+
+        data_text[0] = '\0';
+        if (class_code == 1U && type == PLATFORM_DNS_RECORD_A && rdlength == 4U) {
+            if (inet_ntop(AF_INET, reply + offset, data_text, sizeof(data_text)) != 0) {
+                family = PLATFORM_NETWORK_FAMILY_IPV4;
+                keep_record = 1;
+            }
+        } else if (class_code == 1U && type == PLATFORM_DNS_RECORD_AAAA && rdlength == 16U) {
+            if (inet_ntop(AF_INET6, reply + offset, data_text, sizeof(data_text)) != 0) {
+                family = PLATFORM_NETWORK_FAMILY_IPV6;
+                keep_record = 1;
+            }
+        }
+        if (keep_record && type == query_type) {
+            (void)macos_add_dns_record(
+                entries_out,
+                entry_capacity,
+                &count,
+                owner_name[0] == '\0' ? name : owner_name,
+                family,
+                type,
+                data_text,
+                ttl,
+                0U
+            );
+        }
+        offset += rdlength;
+    }
+
+    *count_out = count;
+    return count > 0U ? 0 : -1;
+}
+
 int platform_dns_lookup(
     const char *server,
     unsigned int port,
@@ -1916,6 +2410,20 @@ int platform_dns_lookup(
         return -1;
     }
     *count_out = 0U;
+
+    if (server != 0 && server[0] != '\0') {
+        size_t count = 0U;
+        if (family_filter == PLATFORM_NETWORK_FAMILY_ANY || family_filter == PLATFORM_NETWORK_FAMILY_IPV4) {
+            (void)macos_dns_query_server(server, port, name, PLATFORM_DNS_RECORD_A, entries_out, entry_capacity, &count);
+        }
+        if ((family_filter == PLATFORM_NETWORK_FAMILY_ANY || family_filter == PLATFORM_NETWORK_FAMILY_IPV6) && count < entry_capacity) {
+            size_t count6 = 0U;
+            (void)macos_dns_query_server(server, port, name, PLATFORM_DNS_RECORD_AAAA, entries_out + count, entry_capacity - count, &count6);
+            count += count6;
+        }
+        *count_out = count;
+        return count > 0U ? 0 : -1;
+    }
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = family_filter == PLATFORM_NETWORK_FAMILY_IPV4 ? AF_INET :
@@ -1961,6 +2469,9 @@ int platform_dns_query(
         family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
     } else {
         return -1;
+    }
+    if (server != 0 && server[0] != '\0') {
+        return macos_dns_query_server(server, port, name, record_type, entries_out, entry_capacity, count_out);
     }
     return platform_dns_lookup(server, port, name, family_filter, entries_out, entry_capacity, count_out);
 }

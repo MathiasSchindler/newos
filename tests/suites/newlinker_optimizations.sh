@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-LINKER=${NEWOS_LINKER:-$ROOT_DIR/build/host-linux-x86_64/linker}
+. "$ROOT_DIR/tests/lib/build.sh"
+newos_configure_test_tools
+
+LINKER=${NEWOS_LINKER:-$TEST_BIN_DIR/linker}
 WORK_DIR=${TMPDIR:-/tmp}/newos-newlinker-optimizations-$$
 
 cleanup() {

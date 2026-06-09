@@ -4,6 +4,9 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 LOG_DIR="$ROOT_DIR/tests/tmp/logs"
 
+. "$ROOT_DIR/tests/lib/build.sh"
+newos_configure_test_tools
+
 mkdir -p "$ROOT_DIR/tests/tmp"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"

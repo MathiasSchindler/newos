@@ -2,14 +2,18 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-SQL_BIN="$ROOT/build/sql"
+ROOT_DIR=$ROOT
+. "$ROOT/tests/lib/build.sh"
+newos_configure_test_tools
+
+SQL_BIN="$TEST_BIN_DIR/sql"
 CASE_DIR="$ROOT/tests/sql/cases"
 TMP_DIR="$ROOT/tests/tmp"
 
 mkdir -p "$TMP_DIR"
 
 cd "$ROOT"
-make host >/dev/null
+make freestanding >/dev/null
 
 failures=0
 count=0

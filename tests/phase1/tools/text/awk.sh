@@ -8,7 +8,7 @@ WORK_DIR=$(phase1_text_workdir awk)
 note "phase1 text: awk"
 
 printf 'alpha one\nbeta two three\nalpha four\n' > "$WORK_DIR/input.txt"
-"$ROOT_DIR/build/awk" 'BEGIN { print "begin" } /alpha/ { print NR, NF, $2 } END { print "end", NR }' "$WORK_DIR/input.txt" > "$WORK_DIR/out.txt"
+"${TEST_BIN_DIR}/awk" 'BEGIN { print "begin" } /alpha/ { print NR, NF, $2 } END { print "end", NR }' "$WORK_DIR/input.txt" > "$WORK_DIR/out.txt"
 cat > "$WORK_DIR/expected.txt" <<'INNER'
 begin
 1 2 one
@@ -18,7 +18,7 @@ INNER
 assert_files_equal "$WORK_DIR/expected.txt" "$WORK_DIR/out.txt" "awk BEGIN/END, NR, or NF handling regressed"
 
 printf 'eins\302\240zwei\n' > "$WORK_DIR/unicode_space.txt"
-"$ROOT_DIR/build/awk" '{ print NF }' "$WORK_DIR/unicode_space.txt" > "$WORK_DIR/unicode_nf.out"
+"${TEST_BIN_DIR}/awk" '{ print NF }' "$WORK_DIR/unicode_space.txt" > "$WORK_DIR/unicode_nf.out"
 assert_file_contains "$WORK_DIR/unicode_nf.out" '^2$' "awk did not split fields on Unicode whitespace"
 
 cat > "$WORK_DIR/script.awk" <<'INNER'
@@ -28,7 +28,7 @@ END { print "records", NR }
 INNER
 printf 'left:1\nleft:2\n' > "$WORK_DIR/left.txt"
 printf 'right:3\n' > "$WORK_DIR/right.txt"
-"$ROOT_DIR/build/awk" -F: -v prefix=tag -v OFS='|' -f "$WORK_DIR/script.awk" \
+"${TEST_BIN_DIR}/awk" -F: -v prefix=tag -v OFS='|' -f "$WORK_DIR/script.awk" \
     "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/script.out"
 cat > "$WORK_DIR/script.expected" <<EOF
 $WORK_DIR/left.txt
@@ -40,10 +40,10 @@ records|3
 EOF
 assert_files_equal "$WORK_DIR/script.expected" "$WORK_DIR/script.out" "awk -F/-v/-f or FNR/FILENAME handling regressed"
 
-"$ROOT_DIR/build/awk" 'BEGIN { print ARGC }' "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/argc.out"
+"${TEST_BIN_DIR}/awk" 'BEGIN { print ARGC }' "$WORK_DIR/left.txt" "$WORK_DIR/right.txt" > "$WORK_DIR/argc.out"
 assert_file_contains "$WORK_DIR/argc.out" '^3$' "awk ARGC did not include awk plus input files"
 
 printf 'alpha--beta--gamma' > "$WORK_DIR/records.txt"
-"$ROOT_DIR/build/awk" -v RS='--' -v ORS='|' '{ print $0 }' "$WORK_DIR/records.txt" > "$WORK_DIR/records.out"
+"${TEST_BIN_DIR}/awk" -v RS='--' -v ORS='|' '{ print $0 }' "$WORK_DIR/records.txt" > "$WORK_DIR/records.out"
 records_out=$(cat "$WORK_DIR/records.out")
 assert_text_equals "$records_out" 'alpha|beta|gamma|' "awk RS/ORS handling failed"

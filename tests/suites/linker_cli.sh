@@ -3,8 +3,11 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$ROOT_DIR/tests/lib/assert.sh"
+. "$ROOT_DIR/tests/lib/build.sh"
 
-LINKER=${NEWOS_LINKER:-$ROOT_DIR/build/linker}
+newos_configure_test_tools
+
+LINKER=${NEWOS_LINKER:-$TEST_BIN_DIR/linker}
 WORK_DIR="$ROOT_DIR/tests/tmp/linker_cli"
 
 rm -rf "$WORK_DIR"

@@ -4,22 +4,22 @@ set -eu
 . "$(dirname "$0")/common.inc"
 phase1_setup sshd
 
-assert_command_succeeds "$ROOT_DIR/build/sshd" --help > "$WORK_DIR/sshd_help.out"
+assert_command_succeeds "${TEST_BIN_DIR}/sshd" --help > "$WORK_DIR/sshd_help.out"
 assert_file_contains "$WORK_DIR/sshd_help.out" '^sshd - minimal newos-native SSH server$' "sshd --help did not print the tool summary"
 assert_file_contains "$WORK_DIR/sshd_help.out" '^Usage: sshd ' "sshd --help did not print usage"
 
 sshd_status=0
-"$ROOT_DIR/build/sshd" -p 0 -P secret -1 > "$WORK_DIR/sshd_bad_port.out" 2>&1 || sshd_status=$?
+"${TEST_BIN_DIR}/sshd" -p 0 -P secret -1 > "$WORK_DIR/sshd_bad_port.out" 2>&1 || sshd_status=$?
 assert_exit_code "$sshd_status" '1' "sshd should reject an invalid port number"
 assert_file_contains "$WORK_DIR/sshd_bad_port.out" '^Usage: sshd ' "sshd did not print usage for an invalid port"
 
 sshd_user_status=0
-"$ROOT_DIR/build/sshd" -u 'bad user' -P secret -1 > "$WORK_DIR/sshd_bad_user.out" 2>&1 || sshd_user_status=$?
+"${TEST_BIN_DIR}/sshd" -u 'bad user' -P secret -1 > "$WORK_DIR/sshd_bad_user.out" 2>&1 || sshd_user_status=$?
 assert_exit_code "$sshd_user_status" '1' "sshd should reject unsafe user names"
 assert_file_contains "$WORK_DIR/sshd_bad_user.out" 'invalid user' "sshd did not reject an unsafe user name"
 
 sshd_missing_password=0
-"$ROOT_DIR/build/sshd" -1 > "$WORK_DIR/sshd_missing_password.out" 2>&1 || sshd_missing_password=$?
+"${TEST_BIN_DIR}/sshd" -1 > "$WORK_DIR/sshd_missing_password.out" 2>&1 || sshd_missing_password=$?
 assert_exit_code "$sshd_missing_password" '1' "sshd should require a configured password"
 assert_file_contains "$WORK_DIR/sshd_missing_password.out" '^Usage: sshd ' "sshd did not print usage when password is missing"
 
@@ -30,7 +30,7 @@ if command -v ssh >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
     attempt=1
     while [ "$attempt" -le 2 ]; do
         port=$((31000 + (($$ + attempt * 173) % 10000)))
-        "$ROOT_DIR/build/sshd" -1 -l 127.0.0.1 -p "$port" -u demo -P secret -k "$WORK_DIR/host.seed" -s /bin/sh > "$WORK_DIR/sshd_smoke_server.out" 2>&1 &
+        "${TEST_BIN_DIR}/sshd" -1 -l 127.0.0.1 -p "$port" -u demo -P secret -k "$WORK_DIR/host.seed" -s /bin/sh > "$WORK_DIR/sshd_smoke_server.out" 2>&1 &
         sshd_pid=$!
         sleep 1
         ssh_smoke_status=0

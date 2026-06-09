@@ -23,7 +23,7 @@ w
 q
 EOF
 
-"$ROOT_DIR/build/ed" "$WORK_DIR/input.txt" < "$WORK_DIR/commands.ed" > "$WORK_DIR/ed.out"
+"${TEST_BIN_DIR}/ed" "$WORK_DIR/input.txt" < "$WORK_DIR/commands.ed" > "$WORK_DIR/ed.out"
 assert_file_contains "$WORK_DIR/ed.out" '^2[[:space:]]TWO$' "ed substitution or numbered printing failed"
 assert_file_contains "$WORK_DIR/ed.out" '^4[[:space:]]four$' "ed append command failed"
 cat > "$WORK_DIR/expected.txt" <<'EOF'
@@ -57,7 +57,7 @@ w
 q
 EOF
 
-"$ROOT_DIR/build/ed" "$WORK_DIR/advanced.txt" < "$WORK_DIR/advanced.ed" > "$WORK_DIR/advanced.out"
+"${TEST_BIN_DIR}/ed" "$WORK_DIR/advanced.txt" < "$WORK_DIR/advanced.ed" > "$WORK_DIR/advanced.out"
 assert_file_contains "$WORK_DIR/advanced.out" '^Alpha$' "ed global command or stepped range did not print the first expected line"
 assert_file_contains "$WORK_DIR/advanced.out" '^beta$' "ed stepped range did not include the expected boundary line"
 assert_file_contains "$WORK_DIR/advanced.out" '^4[[:space:]]42-foo$' "ed regex class/back-reference substitution failed"

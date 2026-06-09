@@ -31,7 +31,7 @@ compile_and_check_native() {
         return 0
     fi
 
-    "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" "$source_path" -o "$output_path"
+    "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" "$source_path" -o "$output_path"
     if "$output_path"; then
         actual_status=0
     else

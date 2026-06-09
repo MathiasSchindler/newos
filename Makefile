@@ -80,6 +80,7 @@ TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
 WINDOWS_TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-windows-$(WINDOWS_TARGET_ARCH)
 MACOS_FREESTANDING_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-macos-$(MACOS_FREESTANDING_ARCH)
 MACOS_NEWLINKER_EXPERIMENT_DIR ?= $(BUILD_ROOT)/newlinker-macos-$(MACOS_FREESTANDING_ARCH)
+TEST_FREESTANDING_BUILD_DIR ?= $(if $(LOCAL_MACOS_FREESTANDING),$(MACOS_NEWLINKER_EXPERIMENT_DIR),$(TARGET_BUILD_DIR))
 MACOS_NEWLINKER_TOOLS ?= $(MACOS_FREESTANDING_TOOLS)
 MACOS_NEWLINKER_SMOKE_TOOLS ?= true false echo printf rev seq cat basename dirname cut tr wc
 MACOS_NEWLINKER_ALL_TOOLS = $(MACOS_FREESTANDING_TOOLS)
@@ -315,17 +316,17 @@ run-userland: freestanding
 	NEWOS_FREESTANDING_BUILD_DIR="$(abspath $(TARGET_BUILD_DIR))" scripts/run-userland.sh --no-build $(RUN_USERLAND_ARGS)
 endif
 
-test-phase1: host
-	PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
+test-phase1: freestanding
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 
-test-smoke: host
-	SKIP_PHASE1=1 sh ./tests/run_smoke_tests.sh
+test-smoke: freestanding
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" SKIP_PHASE1=1 sh ./tests/run_smoke_tests.sh
 
 test-inception: inception
 	NEWOS_INCEPTION_BUILD_DIR="$(abspath $(INCEPTION_BUILD_DIR))" sh ./tests/suites/inception.sh
 
-test-linker-cli: $(BUILD_DIR)/linker
-	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" sh ./tests/suites/linker_cli.sh
+test-linker-cli: freestanding
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/linker_cli.sh
 
 test-crypto-usb: $(BUILD_DIR)/tests/crypto_usb_test
 	$<
@@ -340,11 +341,11 @@ macos-newlinker-tools: $(MACOS_NEWLINKER_TOOL_TARGETS)
 test-macos-newlinker-tools: $(MACOS_NEWLINKER_ALL_TOOL_TARGETS)
 	NEWOS_MACOS_NEWLINKER_BUILD_DIR="$(abspath $(MACOS_NEWLINKER_EXPERIMENT_DIR))" sh ./tests/suites/macos_newlinker_tools.sh
 
-test-newlinker-expack: $(BUILD_DIR)/expack
-	NEWOS_EXPACK="$(abspath $(BUILD_DIR)/expack)" bash ./tests/suites/newlinker_expack.sh
+test-newlinker-expack: freestanding
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" bash ./tests/suites/newlinker_expack.sh
 
-test-newlinker-optimizations: $(BUILD_DIR)/linker
-	NEWOS_LINKER="$(abspath $(BUILD_DIR)/linker)" bash ./tests/suites/newlinker_optimizations.sh
+test-newlinker-optimizations: freestanding
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" bash ./tests/suites/newlinker_optimizations.sh
 
 newlinker-size-report: $(BUILD_DIR)/linker
 	LINKER="$(abspath $(BUILD_DIR)/linker)" bash scripts/report-newlinker-size.sh

@@ -48,11 +48,6 @@ typedef struct {
 } PortscanOptions;
 
 typedef struct {
-    unsigned int port;
-    const char *name;
-} PortscanService;
-
-typedef struct {
     char host[PORTSCAN_HOST_SIZE];
     unsigned int port;
     int status;
@@ -84,28 +79,12 @@ typedef struct {
 static PortscanChild active_children[PORTSCAN_MAX_JOBS];
 static unsigned int active_child_count = 0U;
 
-static const char *common_port_spec = "20-23,25,53,67-69,80,110,123,135,137-139,143,161,162,389,443,445,465,587,636,853,993,995,1433,1521,2049,2375,2376,3000,3306,3389,5000,5432,5900,6379,8000,8080,8443,9200,9300";
-static const char *admin_port_spec = "22,23,53,80,443,445,3389,5900,8000,8080,8443";
-static const char *database_port_spec = "1433,1521,3306,5432,6379,9200,9300";
-static const char *windows_port_spec = "135,137-139,445,3389,5985,5986";
-static const char *web_port_spec = "80,443,8000,8080,8443,9000,9443";
-static const char *risky_port_spec = "21-23,135,139,445,1433,1521,2375,2376,3306,3389,5432,5900,6379,9200,9300";
-
-static const PortscanService known_services[] = {
-    {20U, "ftp-data"}, {21U, "ftp"},       {22U, "ssh"},       {23U, "telnet"},
-    {25U, "smtp"},     {53U, "domain"},    {67U, "dhcp"},      {68U, "dhcp"},
-    {69U, "tftp"},     {80U, "http"},      {110U, "pop3"},     {123U, "ntp"},
-    {135U, "msrpc"},   {137U, "netbios"},  {138U, "netbios"},  {139U, "netbios"},
-    {143U, "imap"},    {161U, "snmp"},     {162U, "snmptrap"}, {389U, "ldap"},
-    {443U, "https"},   {445U, "microsoft-ds"}, {465U, "smtps"}, {587U, "submission"},
-    {636U, "ldaps"},   {853U, "dot"},      {993U, "imaps"},    {995U, "pop3s"},
-    {1433U, "mssql"},  {1521U, "oracle"},  {2049U, "nfs"},     {2375U, "docker"},
-    {2376U, "docker-tls"}, {3000U, "dev"}, {3306U, "mysql"},   {3389U, "rdp"},
-    {5000U, "upnp"},   {5432U, "postgresql"}, {5900U, "vnc"},  {5985U, "winrm"},
-    {5986U, "winrm-tls"}, {6379U, "redis"},
-    {8000U, "http-alt"}, {8080U, "http-alt"}, {8443U, "https-alt"},
-    {9200U, "elasticsearch"}, {9300U, "elasticsearch"}
-};
+static const char common_port_spec[] = "20-23,25,53,67-69,80,110,123,135,137-139,143,161,162,389,443,445,465,587,636,853,993,995,1433,1521,2049,2375,2376,3000,3306,3389,5000,5432,5900,6379,8000,8080,8443,9200,9300";
+static const char admin_port_spec[] = "22,23,53,80,443,445,3389,5900,8000,8080,8443";
+static const char database_port_spec[] = "1433,1521,3306,5432,6379,9200,9300";
+static const char windows_port_spec[] = "135,137-139,445,3389,5985,5986";
+static const char web_port_spec[] = "80,443,8000,8080,8443,9000,9443";
+static const char risky_port_spec[] = "21-23,135,139,445,1433,1521,2375,2376,3306,3389,5432,5900,6379,9200,9300";
 
 static int streq(const char *left, const char *right) {
     return rt_strcmp(left, right) == 0;
@@ -198,15 +177,56 @@ static void print_help(const char *program_name) {
 }
 
 static const char *service_name_for_port(unsigned int port) {
-    size_t index = 0U;
-
-    while (index < sizeof(known_services) / sizeof(known_services[0])) {
-        if (known_services[index].port == port) {
-            return known_services[index].name;
-        }
-        ++index;
+    switch (port) {
+    case 20U: return "ftp-data";
+    case 21U: return "ftp";
+    case 22U: return "ssh";
+    case 23U: return "telnet";
+    case 25U: return "smtp";
+    case 53U: return "domain";
+    case 67U: return "dhcp";
+    case 68U: return "dhcp";
+    case 69U: return "tftp";
+    case 80U: return "http";
+    case 110U: return "pop3";
+    case 123U: return "ntp";
+    case 135U: return "msrpc";
+    case 137U: return "netbios";
+    case 138U: return "netbios";
+    case 139U: return "netbios";
+    case 143U: return "imap";
+    case 161U: return "snmp";
+    case 162U: return "snmptrap";
+    case 389U: return "ldap";
+    case 443U: return "https";
+    case 445U: return "microsoft-ds";
+    case 465U: return "smtps";
+    case 587U: return "submission";
+    case 636U: return "ldaps";
+    case 853U: return "dot";
+    case 993U: return "imaps";
+    case 995U: return "pop3s";
+    case 1433U: return "mssql";
+    case 1521U: return "oracle";
+    case 2049U: return "nfs";
+    case 2375U: return "docker";
+    case 2376U: return "docker-tls";
+    case 3000U: return "dev";
+    case 3306U: return "mysql";
+    case 3389U: return "rdp";
+    case 5000U: return "upnp";
+    case 5432U: return "postgresql";
+    case 5900U: return "vnc";
+    case 5985U: return "winrm";
+    case 5986U: return "winrm-tls";
+    case 6379U: return "redis";
+    case 8000U: return "http-alt";
+    case 8080U: return "http-alt";
+    case 8443U: return "https-alt";
+    case 9200U: return "elasticsearch";
+    case 9300U: return "elasticsearch";
+    default: return "";
     }
-    return "";
 }
 
 static void write_csv_field(const char *text) {

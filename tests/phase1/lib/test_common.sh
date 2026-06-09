@@ -2,6 +2,9 @@
 
 [ -n "${ROOT_DIR:-}" ] || ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 . "$ROOT_DIR/tests/lib/assert.sh"
+. "$ROOT_DIR/tests/lib/build.sh"
+
+newos_configure_test_tools
 
 phase1_prepare_workdir() {
     test_name="$1"

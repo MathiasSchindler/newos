@@ -29,10 +29,10 @@ PY
 
 port=$(find_loopback_port tcp)
 
-"$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$port" > "$WORK_DIR/netcat_server.out" &
+"${TEST_BIN_DIR}/netcat" -4 -l -s 127.0.0.1 -w 3 "$port" > "$WORK_DIR/netcat_server.out" &
 netcat_pid=$!
-"$ROOT_DIR/build/sleep" 1
-assert_command_succeeds "$ROOT_DIR/build/netcat" -4 -n -w 1 127.0.0.1 "$port" > "$WORK_DIR/netcat_client.out" <<'EOF'
+"${TEST_BIN_DIR}/sleep" 1
+assert_command_succeeds "${TEST_BIN_DIR}/netcat" -4 -n -w 1 127.0.0.1 "$port" > "$WORK_DIR/netcat_client.out" <<'EOF'
 phase1-netcat
 EOF
 wait "$netcat_pid"
@@ -40,32 +40,32 @@ assert_file_contains "$WORK_DIR/netcat_server.out" 'phase1-netcat' "netcat loopb
 
 scan_port=$(find_loopback_port tcp)
 scan_closed_port=$(find_loopback_port tcp)
-"$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$scan_port" > "$WORK_DIR/portscan_server.out" &
+"${TEST_BIN_DIR}/netcat" -4 -l -s 127.0.0.1 -w 3 "$scan_port" > "$WORK_DIR/portscan_server.out" &
 portscan_pid=$!
-"$ROOT_DIR/build/sleep" 1
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s 127.0.0.1-1 "$scan_port,$scan_closed_port" > "$WORK_DIR/portscan.out" 2>&1
+"${TEST_BIN_DIR}/sleep" 1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -a -n -w 1s 127.0.0.1-1 "$scan_port,$scan_closed_port" > "$WORK_DIR/portscan.out" 2>&1
 wait "$portscan_pid"
 assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $scan_port open$" "portscan did not report the loopback listener as open"
 assert_file_contains "$WORK_DIR/portscan.out" "^127\.0\.0\.1 $scan_closed_port closed$" "portscan did not report a closed loopback port with -a"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --services --summary --delay 1ms -w 1s 127.0.0.1 22 > "$WORK_DIR/portscan_services.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -a -n --services --summary --delay 1ms -w 1s 127.0.0.1 22 > "$WORK_DIR/portscan_services.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_services.out" '^127\.0\.0\.1 22 .* ssh$' "portscan --services did not show the SSH service hint"
 assert_file_contains "$WORK_DIR/portscan_services.out" '^summary scanned=1 open=[01] closed=[01] filtered=[01] unreachable=[01] error=[01] elapsed_ms=[0-9][0-9]* jobs=[0-9][0-9]* timeout_ms=[0-9][0-9]*$' "portscan --summary did not print totals"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 "$scan_closed_port" --summary > "$WORK_DIR/portscan_trailing_summary.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -n 127.0.0.1 "$scan_closed_port" --summary > "$WORK_DIR/portscan_trailing_summary.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_trailing_summary.out" '^summary scanned=1 open=0 closed=1 filtered=0 unreachable=0 error=0 elapsed_ms=[0-9][0-9]* jobs=[0-9][0-9]* timeout_ms=[0-9][0-9]*$' "portscan should accept --summary after host and port arguments"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --progress "$scan_closed_port" > "$WORK_DIR/portscan_progress.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -n 127.0.0.1 --progress "$scan_closed_port" > "$WORK_DIR/portscan_progress.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_progress.out" "^127\.0\.0\.1 $scan_closed_port closed$" "portscan --progress should print closed results as they complete"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n 127.0.0.1 --common --summary -w 1ms > "$WORK_DIR/portscan_trailing_common.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -n 127.0.0.1 --common --summary -w 1ms > "$WORK_DIR/portscan_trailing_common.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_trailing_common.out" '^summary scanned=' "portscan should accept --common after the host argument"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_csv.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -a -n --csv -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_csv.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_csv.out" '^host,port,state,service,latency_ms,reason,change,' "portscan --csv did not print a header"
 assert_file_contains "$WORK_DIR/portscan_csv.out" "^127\.0\.0\.1,$scan_closed_port,closed,,[0-9][0-9]*,connection_refused," "portscan --csv did not print a closed row"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" --json -4 -a -n --summary -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_json.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" --json -4 -a -n --summary -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_json.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_json.out" '"schema":"newos.tool.v1"' "portscan --json did not use the shared JSON envelope"
 assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"port_result"' "portscan --json did not emit port_result events"
 assert_file_contains "$WORK_DIR/portscan_json.out" "\"port\":$scan_closed_port" "portscan --json did not report the scanned port"
@@ -73,18 +73,18 @@ assert_file_contains "$WORK_DIR/portscan_json.out" '"state":"closed"' "portscan 
 assert_file_contains "$WORK_DIR/portscan_json.out" '"event":"scan_summary"' "portscan --json --summary did not emit scan_summary"
 
 portscan_csv_json_status=0
-"$ROOT_DIR/build/portscan" --csv --json -4 -n 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_csv_json.out" 2>&1 || portscan_csv_json_status=$?
+"${TEST_BIN_DIR}/portscan" --csv --json -4 -n 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_csv_json.out" 2>&1 || portscan_csv_json_status=$?
 assert_exit_code "$portscan_csv_json_status" 1 "portscan should reject --csv with --json"
 assert_file_contains "$WORK_DIR/portscan_csv_json.out" '"event":"diagnostic"' "portscan --csv --json should report a JSON diagnostic"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -a -n -w 1s not-a-numeric-host "$scan_closed_port" > "$WORK_DIR/portscan_unreachable.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -a -n -w 1s not-a-numeric-host "$scan_closed_port" > "$WORK_DIR/portscan_unreachable.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_unreachable.out" "^not-a-numeric-host $scan_closed_port unreachable$" "portscan did not print an unreachable state for an unresolvable numeric-only host"
 
 portscan_fail_closed_status=0
-"$ROOT_DIR/build/portscan" -4 -a -n --fail-closed -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_fail_closed.out" 2>&1 || portscan_fail_closed_status=$?
+"${TEST_BIN_DIR}/portscan" -4 -a -n --fail-closed -w 1s 127.0.0.1 "$scan_closed_port" > "$WORK_DIR/portscan_fail_closed.out" 2>&1 || portscan_fail_closed_status=$?
 assert_exit_code "$portscan_fail_closed_status" 3 "portscan --fail-closed should return 3 when a closed port is found"
 
-assert_command_succeeds "$ROOT_DIR/build/portscan" --help > "$WORK_DIR/portscan_help.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" --help > "$WORK_DIR/portscan_help.out" 2>&1
 assert_file_contains "$WORK_DIR/portscan_help.out" 'authorized hosts' "portscan --help did not describe authorized-host usage"
 assert_file_contains "$WORK_DIR/portscan_help.out" 'common-port scanning' "portscan --help did not describe common-port scanning"
 assert_file_contains "$WORK_DIR/portscan_help.out" 'passively read any banner' "portscan --help did not describe the banner option"
@@ -109,10 +109,10 @@ sock.close()
 print('MOCK_BANNER_OK')
 PY
     banner_server_pid=$!
-    "$ROOT_DIR/build/sleep" 1
-    assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner.out" 2>&1
+    "${TEST_BIN_DIR}/sleep" 1
+    assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -n -w 1s --banner --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner.out" 2>&1
     assert_file_contains "$WORK_DIR/portscan_banner.out" "^127\.0\.0\.1 $banner_port open SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi$" "portscan --banner did not display the escaped banner"
-    assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --csv --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner_csv.out" 2>&1
+    assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -n -w 1s --banner --csv --banner-timeout 500ms 127.0.0.1 "$banner_port" > "$WORK_DIR/portscan_banner_csv.out" 2>&1
     assert_file_contains "$WORK_DIR/portscan_banner_csv.out" '^host,port,state,service,latency_ms,reason,change,' "portscan --banner --csv header missing banner column"
     assert_file_contains "$WORK_DIR/portscan_banner_csv.out" "^127\.0\.0\.1,$banner_port,open,,[0-9][0-9]*,connected,,SSH-2\.0-portscan-test\\\\r\\\\n\\\\x01hi" "portscan --banner --csv did not include the escaped banner"
     wait "$banner_server_pid" || true
@@ -120,33 +120,33 @@ PY
 fi
 
 quiet_port=$(find_loopback_port tcp)
-"$ROOT_DIR/build/netcat" -4 -l -s 127.0.0.1 -w 3 "$quiet_port" > "$WORK_DIR/portscan_quiet_server.out" 2>&1 &
+"${TEST_BIN_DIR}/netcat" -4 -l -s 127.0.0.1 -w 3 "$quiet_port" > "$WORK_DIR/portscan_quiet_server.out" 2>&1 &
 quiet_pid=$!
-"$ROOT_DIR/build/sleep" 1
-assert_command_succeeds "$ROOT_DIR/build/portscan" -4 -n -w 1s --banner --banner-timeout 200ms 127.0.0.1 "$quiet_port" > "$WORK_DIR/portscan_quiet.out" 2>&1
+"${TEST_BIN_DIR}/sleep" 1
+assert_command_succeeds "${TEST_BIN_DIR}/portscan" -4 -n -w 1s --banner --banner-timeout 200ms 127.0.0.1 "$quiet_port" > "$WORK_DIR/portscan_quiet.out" 2>&1
 wait "$quiet_pid" 2>/dev/null || true
 assert_file_contains "$WORK_DIR/portscan_quiet.out" "^127\.0\.0\.1 $quiet_port open$" "portscan --banner on a quiet port should print the result without banner text"
 
 portscan_banner_bytes_status=0
-"$ROOT_DIR/build/portscan" --banner-bytes 0 -4 -n 127.0.0.1 1 > "$WORK_DIR/portscan_banner_bytes.out" 2>&1 || portscan_banner_bytes_status=$?
+"${TEST_BIN_DIR}/portscan" --banner-bytes 0 -4 -n 127.0.0.1 1 > "$WORK_DIR/portscan_banner_bytes.out" 2>&1 || portscan_banner_bytes_status=$?
 assert_exit_code "$portscan_banner_bytes_status" 1 "portscan --banner-bytes 0 should be rejected"
 portscan_banner_bytes_status=0
-"$ROOT_DIR/build/portscan" --banner-bytes 9999 -4 -n 127.0.0.1 1 > "$WORK_DIR/portscan_banner_bytes_big.out" 2>&1 || portscan_banner_bytes_status=$?
+"${TEST_BIN_DIR}/portscan" --banner-bytes 9999 -4 -n 127.0.0.1 1 > "$WORK_DIR/portscan_banner_bytes_big.out" 2>&1 || portscan_banner_bytes_status=$?
 assert_exit_code "$portscan_banner_bytes_status" 1 "portscan --banner-bytes above the cap should be rejected"
 
-assert_command_succeeds "$ROOT_DIR/build/ping" --help > "$WORK_DIR/ping_help.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/ping" --help > "$WORK_DIR/ping_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping_help.out" 'quiet output' "ping --help did not describe the extended options"
 
-assert_command_succeeds "$ROOT_DIR/build/traceroute" --help > "$WORK_DIR/traceroute_help.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/traceroute" --help > "$WORK_DIR/traceroute_help.out" 2>&1
 assert_file_contains "$WORK_DIR/traceroute_help.out" 'increasing ICMP TTL' "traceroute --help did not describe TTL probing"
 
 traceroute_bad_status=0
-"$ROOT_DIR/build/traceroute" -m 0 127.0.0.1 > "$WORK_DIR/traceroute_bad.out" 2>&1 || traceroute_bad_status=$?
+"${TEST_BIN_DIR}/traceroute" -m 0 127.0.0.1 > "$WORK_DIR/traceroute_bad.out" 2>&1 || traceroute_bad_status=$?
 assert_exit_code "$traceroute_bad_status" 1 "traceroute should reject a zero max TTL"
 assert_file_contains "$WORK_DIR/traceroute_bad.out" '^Usage: traceroute ' "traceroute did not print usage for an invalid max TTL"
 
 traceroute_status=0
-"$ROOT_DIR/build/traceroute" -4 -m 1 -q 1 -w 1 127.0.0.1 > "$WORK_DIR/traceroute_loopback.out" 2>&1 || traceroute_status=$?
+"${TEST_BIN_DIR}/traceroute" -4 -m 1 -q 1 -w 1 127.0.0.1 > "$WORK_DIR/traceroute_loopback.out" 2>&1 || traceroute_status=$?
 case "$traceroute_status" in
     0|1) ;;
     *) fail "traceroute returned an unexpected exit status: $traceroute_status" ;;
@@ -156,7 +156,7 @@ if grep -q '^PING ' "$WORK_DIR/traceroute_loopback.out" || grep -q 'ping statist
 fi
 
 traceroute_json_status=0
-"$ROOT_DIR/build/traceroute" --json -4 -m 1 -q 1 -w 1 127.0.0.1 > "$WORK_DIR/traceroute_json.out" 2>&1 || traceroute_json_status=$?
+"${TEST_BIN_DIR}/traceroute" --json -4 -m 1 -q 1 -w 1 127.0.0.1 > "$WORK_DIR/traceroute_json.out" 2>&1 || traceroute_json_status=$?
 case "$traceroute_json_status" in
     0|1) ;;
     *) fail "traceroute --json returned an unexpected exit status: $traceroute_json_status" ;;
@@ -166,7 +166,7 @@ assert_file_contains "$WORK_DIR/traceroute_json.out" '"event":"trace_start"' "tr
 assert_file_contains "$WORK_DIR/traceroute_json.out" '"host":"127.0.0.1"' "traceroute --json did not report the target host"
 
 traceroute6_status=0
-"$ROOT_DIR/build/traceroute" -6 -m 1 -q 1 -w 1 ::1 > "$WORK_DIR/traceroute6_loopback.out" 2>&1 || traceroute6_status=$?
+"${TEST_BIN_DIR}/traceroute" -6 -m 1 -q 1 -w 1 ::1 > "$WORK_DIR/traceroute6_loopback.out" 2>&1 || traceroute6_status=$?
 case "$traceroute6_status" in
     0|1) ;;
     *) fail "traceroute -6 returned an unexpected exit status: $traceroute6_status" ;;
@@ -198,11 +198,11 @@ sock.close()
 print('MOCK_WHOIS_OK')
 PY
     whois_server_pid=$!
-    "$ROOT_DIR/build/sleep" 1
+    "${TEST_BIN_DIR}/sleep" 1
     whois_status=0
-    "$ROOT_DIR/build/whois" -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois.out" 2>&1 || whois_status=$?
+    "${TEST_BIN_DIR}/whois" -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois.out" 2>&1 || whois_status=$?
     whois_json_status=0
-    "$ROOT_DIR/build/whois" --json -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois_json.out" 2>&1 || whois_json_status=$?
+    "${TEST_BIN_DIR}/whois" --json -h 127.0.0.1 -p "$whois_port" example.test > "$WORK_DIR/whois_json.out" 2>&1 || whois_json_status=$?
     if [ "$whois_status" -ne 0 ]; then
         kill "$whois_server_pid" 2>/dev/null || true
     fi
@@ -235,9 +235,9 @@ finally:
 print('MOCK_WHOIS_SILENT_OK')
 PY
     silent_whois_pid=$!
-    "$ROOT_DIR/build/sleep" 1
+    "${TEST_BIN_DIR}/sleep" 1
     whois_timeout_status=0
-    "$ROOT_DIR/build/whois" -w 1 -h 127.0.0.1 -p "$silent_whois_port" example.test > "$WORK_DIR/whois_timeout.out" 2>&1 || whois_timeout_status=$?
+    "${TEST_BIN_DIR}/whois" -w 1 -h 127.0.0.1 -p "$silent_whois_port" example.test > "$WORK_DIR/whois_timeout.out" 2>&1 || whois_timeout_status=$?
     wait "$silent_whois_pid" || true
     assert_exit_code "$whois_timeout_status" 1 "whois should fail instead of hanging on a silent server"
     assert_file_contains "$WORK_DIR/whois_timeout.out" 'read timeout from 127\.0\.0\.1' "whois did not report the silent server timeout"
@@ -245,29 +245,29 @@ PY
 fi
 
 lookup_status=0
-"$ROOT_DIR/build/nslookup" localhost > "$WORK_DIR/nslookup.out" 2>&1 || lookup_status=$?
+"${TEST_BIN_DIR}/nslookup" localhost > "$WORK_DIR/nslookup.out" 2>&1 || lookup_status=$?
 assert_exit_code "$lookup_status" 0 "nslookup localhost should succeed"
 assert_file_contains "$WORK_DIR/nslookup.out" '^Name:[[:space:]]*localhost$' "nslookup did not print the queried name"
 assert_file_contains "$WORK_DIR/nslookup.out" '127\.0\.0\.1' "nslookup did not report a loopback address"
 
-assert_command_succeeds "$ROOT_DIR/build/dig" --help > "$WORK_DIR/dig_help.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/dig" --help > "$WORK_DIR/dig_help.out" 2>&1
 assert_file_contains "$WORK_DIR/dig_help.out" 'A, AAAA, MX, NS, TXT' "dig --help did not describe the supported record types"
 
 dig_status=0
-"$ROOT_DIR/build/dig" localhost > "$WORK_DIR/dig.out" 2>&1 || dig_status=$?
+"${TEST_BIN_DIR}/dig" localhost > "$WORK_DIR/dig.out" 2>&1 || dig_status=$?
 assert_exit_code "$dig_status" 0 "dig localhost should succeed"
 assert_file_contains "$WORK_DIR/dig.out" '^;; QUESTION SECTION:$' "dig did not print a question section"
 assert_file_contains "$WORK_DIR/dig.out" '^;; ANSWER SECTION:$' "dig did not print an answer section"
 assert_file_contains "$WORK_DIR/dig.out" '127\.0\.0\.1' "dig did not report the IPv4 localhost answer"
 
 dig6_status=0
-"$ROOT_DIR/build/dig" -t AAAA localhost > "$WORK_DIR/dig_aaaa.out" 2>&1 || dig6_status=$?
+"${TEST_BIN_DIR}/dig" -t AAAA localhost > "$WORK_DIR/dig_aaaa.out" 2>&1 || dig6_status=$?
 assert_exit_code "$dig6_status" 0 "dig AAAA localhost should succeed"
 assert_file_contains "$WORK_DIR/dig_aaaa.out" '^; <<>> dig <<>> localhost AAAA$' "dig -t AAAA did not show the requested record type"
 assert_file_contains "$WORK_DIR/dig_aaaa.out" '::1' "dig -t AAAA did not report the IPv6 loopback answer"
 
 dig_bad_status=0
-"$ROOT_DIR/build/dig" -t BOGUS localhost > "$WORK_DIR/dig_bad.out" 2>&1 || dig_bad_status=$?
+"${TEST_BIN_DIR}/dig" -t BOGUS localhost > "$WORK_DIR/dig_bad.out" 2>&1 || dig_bad_status=$?
 assert_exit_code "$dig_bad_status" 1 "dig should reject unsupported record types"
 assert_file_contains "$WORK_DIR/dig_bad.out" 'unsupported type' "dig did not report an unsupported record type error"
 
@@ -298,13 +298,13 @@ PY
     malformed_dns_pid=$!
     waits=0
     while [ ! -s "$malformed_dns_port_file" ] && [ "$waits" -lt 5 ]; do
-        "$ROOT_DIR/build/sleep" 1
+        "${TEST_BIN_DIR}/sleep" 1
         waits=$((waits + 1))
     done
     [ -s "$malformed_dns_port_file" ] || fail "mock malformed DNS server did not publish a port"
     malformed_dns_port=$(cat "$malformed_dns_port_file" | tr -d ' \r\n')
     dig_malformed_status=0
-    "$ROOT_DIR/build/dig" -s 127.0.0.1 -p "$malformed_dns_port" malformed.test > "$WORK_DIR/dig_malformed_dns.out" 2>&1 || dig_malformed_status=$?
+    "${TEST_BIN_DIR}/dig" -s 127.0.0.1 -p "$malformed_dns_port" malformed.test > "$WORK_DIR/dig_malformed_dns.out" 2>&1 || dig_malformed_status=$?
     wait "$malformed_dns_pid" || true
     assert_exit_code "$dig_malformed_status" 1 "dig should reject DNS names with reserved label types"
     assert_file_contains "$WORK_DIR/dig_malformed_dns.out" 'lookup failed for malformed\.test' "dig did not report the malformed DNS lookup failure"
@@ -313,11 +313,11 @@ else
     note "python3 not available; skipping malformed DNS reply test"
 fi
 
-assert_command_succeeds "$ROOT_DIR/build/ping6" --help > "$WORK_DIR/ping6_help.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/ping6" --help > "$WORK_DIR/ping6_help.out" 2>&1
 assert_file_contains "$WORK_DIR/ping6_help.out" 'IPv6' "ping6 --help did not describe IPv6 probing"
 
 ping_ipv6_status=0
-"$ROOT_DIR/build/ping" -6 ::1 > "$WORK_DIR/ping_ipv6.out" 2>&1 || ping_ipv6_status=$?
+"${TEST_BIN_DIR}/ping" -6 ::1 > "$WORK_DIR/ping_ipv6.out" 2>&1 || ping_ipv6_status=$?
 case "$ping_ipv6_status" in
     0|1) ;;
     *) fail "ping -6 returned an unexpected exit status: $ping_ipv6_status" ;;
@@ -326,14 +326,14 @@ assert_file_contains "$WORK_DIR/ping_ipv6.out" '^PING ::1 ' "ping -6 did not pri
 assert_file_contains "$WORK_DIR/ping_ipv6.out" 'ping statistics' "ping -6 did not print the final statistics block"
 
 ping6_status=0
-"$ROOT_DIR/build/ping6" ::1 > "$WORK_DIR/ping6.out" 2>&1 || ping6_status=$?
+"${TEST_BIN_DIR}/ping6" ::1 > "$WORK_DIR/ping6.out" 2>&1 || ping6_status=$?
 case "$ping6_status" in
     0|1) ;;
     *) fail "ping6 returned an unexpected exit status: $ping6_status" ;;
 esac
 assert_file_contains "$WORK_DIR/ping6.out" '^PING ::1 ' "ping6 did not behave like an IPv6 ping wrapper"
 
-assert_command_succeeds "$ROOT_DIR/build/dhcp" --help > "$WORK_DIR/dhcp_help.out" 2>&1
+assert_command_succeeds "${TEST_BIN_DIR}/dhcp" --help > "$WORK_DIR/dhcp_help.out" 2>&1
 assert_file_contains "$WORK_DIR/dhcp_help.out" 'DHCP' "dhcp --help did not describe lease acquisition"
 
 if command -v python3 >/dev/null 2>&1; then
@@ -385,9 +385,9 @@ sock.close()
 print('MOCK_DHCP_OK')
 PY
     dhcp_server_pid=$!
-    "$ROOT_DIR/build/sleep" 1
+    "${TEST_BIN_DIR}/sleep" 1
     dhcp_status=0
-    "$ROOT_DIR/build/dhcp" -s 127.0.0.1 -p "$dhcp_port" -P "$dhcp_client_port" -t 2s > "$WORK_DIR/dhcp.out" 2>&1 || dhcp_status=$?
+    "${TEST_BIN_DIR}/dhcp" -s 127.0.0.1 -p "$dhcp_port" -P "$dhcp_client_port" -t 2s > "$WORK_DIR/dhcp.out" 2>&1 || dhcp_status=$?
     if [ "$dhcp_status" -ne 0 ]; then
         kill "$dhcp_server_pid" 2>/dev/null || true
     fi
@@ -399,7 +399,7 @@ PY
 fi
 
 ping_status=0
-"$ROOT_DIR/build/ping" -c 1 127.0.0.1 > "$WORK_DIR/ping.out" 2>&1 || ping_status=$?
+"${TEST_BIN_DIR}/ping" -c 1 127.0.0.1 > "$WORK_DIR/ping.out" 2>&1 || ping_status=$?
 case "$ping_status" in
     0|1) ;;
     *) fail "ping returned an unexpected exit status: $ping_status" ;;

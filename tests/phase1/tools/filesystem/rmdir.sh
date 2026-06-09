@@ -10,7 +10,7 @@ note "phase1 filesystem rmdir"
 mkdir -p "$WORK_DIR/tree/a/b"
 (
     cd "$WORK_DIR/tree" &&
-    "$ROOT_DIR/build/rmdir" -pv a/b
+    "${TEST_BIN_DIR}/rmdir" -pv a/b
 ) > "$WORK_DIR/remove.out"
 assert_file_contains "$WORK_DIR/remove.out" 'removed directory ' "rmdir -pv did not report removals"
 [ ! -d "$WORK_DIR/tree/a/b" ] || fail "rmdir -p left the leaf directory behind"
@@ -18,6 +18,6 @@ assert_file_contains "$WORK_DIR/remove.out" 'removed directory ' "rmdir -pv did 
 
 mkdir -p "$WORK_DIR/ignore/parent/child"
 printf 'stay\n' > "$WORK_DIR/ignore/parent/keep.txt"
-assert_command_succeeds "$ROOT_DIR/build/rmdir" -p --ignore-fail-on-non-empty "$WORK_DIR/ignore/parent/child"
+assert_command_succeeds "${TEST_BIN_DIR}/rmdir" -p --ignore-fail-on-non-empty "$WORK_DIR/ignore/parent/child"
 [ ! -d "$WORK_DIR/ignore/parent/child" ] || fail "rmdir --ignore-fail-on-non-empty did not remove the requested leaf"
 [ -d "$WORK_DIR/ignore/parent" ] || fail "rmdir --ignore-fail-on-non-empty removed a non-empty parent"

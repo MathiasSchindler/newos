@@ -13,7 +13,7 @@ lib app
 base docs
 EOF
 
-"$ROOT_DIR/build/tsort" "$WORK_DIR/pairs.txt" > "$WORK_DIR/order.out"
+"${TEST_BIN_DIR}/tsort" "$WORK_DIR/pairs.txt" > "$WORK_DIR/order.out"
 base_line=$(grep -n '^base$' "$WORK_DIR/order.out" | cut -d: -f1)
 lib_line=$(grep -n '^lib$' "$WORK_DIR/order.out" | cut -d: -f1)
 app_line=$(grep -n '^app$' "$WORK_DIR/order.out" | cut -d: -f1)
@@ -24,6 +24,6 @@ docs_line=$(grep -n '^docs$' "$WORK_DIR/order.out" | cut -d: -f1)
 [ "$base_line" -lt "$docs_line" ] || fail "tsort did not place base before docs"
 
 cycle_status=0
-printf 'a b\nb a\n' | "$ROOT_DIR/build/tsort" > "$WORK_DIR/cycle.out" 2> "$WORK_DIR/cycle.err" || cycle_status=$?
+printf 'a b\nb a\n' | "${TEST_BIN_DIR}/tsort" > "$WORK_DIR/cycle.out" 2> "$WORK_DIR/cycle.err" || cycle_status=$?
 [ "$cycle_status" -ne 0 ] || fail "tsort should reject a dependency cycle"
 assert_file_contains "$WORK_DIR/cycle.err" 'cycle' "tsort cycle diagnostic did not mention the cycle"

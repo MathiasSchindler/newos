@@ -15,6 +15,7 @@
 #define MACOS_NEWLINKER_EXPORT __attribute__((visibility("default")))
 #define MACOS_NEWLINKER_AF_UNSPEC 0
 #define MACOS_NEWLINKER_AF_INET 2
+#define MACOS_NEWLINKER_AF_INET6 30
 #define MACOS_NEWLINKER_AF_LINK 18
 #define MACOS_NEWLINKER_SOCK_STREAM 1
 #define MACOS_NEWLINKER_SOCK_DGRAM 2
@@ -54,6 +55,15 @@ struct macos_newlinker_sockaddr_in {
 	unsigned short sin_port;
 	unsigned char sin_addr[4];
 	char sin_zero[8];
+};
+
+struct macos_newlinker_sockaddr_in6 {
+	unsigned char sin6_len;
+	unsigned char sin6_family;
+	unsigned short sin6_port;
+	unsigned int sin6_flowinfo;
+	unsigned char sin6_addr[16];
+	unsigned int sin6_scope_id;
 };
 
 struct addrinfo {
@@ -166,6 +176,14 @@ static struct macos_newlinker_dir macos_newlinker_dirs[MACOS_NEWLINKER_DIR_COUNT
 static int macos_newlinker_errno;
 
 MACOS_NEWLINKER_EXPORT __attribute__((nocommon)) char **environ = 0;
+
+static int macos_newlinker_return_int(long result) {
+	if (result < 0) {
+		macos_newlinker_errno = (int)(-result);
+		return -1;
+	}
+	return (int)result;
+}
 
 static size_t macos_newlinker_strlen(const char *text) {
 	size_t length = 0;
@@ -913,7 +931,7 @@ static int macos_newlinker_dns_query_a(const char *name, unsigned char out[4]) {
 	return -1;
 }
 
-static int macos_newlinker_fill_addrinfo(const unsigned char address[4], unsigned int port, const void *hints, struct addrinfo **result) {
+static int macos_newlinker_fill_addrinfo4(const unsigned char address[4], unsigned int port, const void *hints, struct addrinfo **result) {
 	static struct addrinfo entry;
 	static struct macos_newlinker_sockaddr_in socket_address;
 	const struct addrinfo *requested = (const struct addrinfo *)hints;
@@ -928,6 +946,30 @@ static int macos_newlinker_fill_addrinfo(const unsigned char address[4], unsigne
 	socket_address.sin_port = macos_newlinker_htons(port);
 	macos_newlinker_copy_bytes(socket_address.sin_addr, address, 4U);
 	entry.ai_family = MACOS_NEWLINKER_AF_INET;
+	entry.ai_socktype = requested != 0 && requested->ai_socktype != 0 ? requested->ai_socktype : MACOS_NEWLINKER_SOCK_STREAM;
+	entry.ai_protocol = requested != 0 && requested->ai_protocol != 0 ? requested->ai_protocol : MACOS_NEWLINKER_IPPROTO_TCP;
+	entry.ai_addrlen = (macos_newlinker_socklen_t)sizeof(socket_address);
+	entry.ai_addr = (struct sockaddr *)&socket_address;
+	entry.ai_next = 0;
+	*result = &entry;
+	return 0;
+}
+
+static int macos_newlinker_fill_addrinfo6_loopback(unsigned int port, const void *hints, struct addrinfo **result) {
+	static struct addrinfo entry;
+	static struct macos_newlinker_sockaddr_in6 socket_address;
+	const struct addrinfo *requested = (const struct addrinfo *)hints;
+
+	if (result == 0) {
+		return -1;
+	}
+	macos_newlinker_zero(&entry, sizeof(entry));
+	macos_newlinker_zero(&socket_address, sizeof(socket_address));
+	socket_address.sin6_len = (unsigned char)sizeof(socket_address);
+	socket_address.sin6_family = MACOS_NEWLINKER_AF_INET6;
+	socket_address.sin6_port = macos_newlinker_htons(port);
+	socket_address.sin6_addr[15] = 1U;
+	entry.ai_family = MACOS_NEWLINKER_AF_INET6;
 	entry.ai_socktype = requested != 0 && requested->ai_socktype != 0 ? requested->ai_socktype : MACOS_NEWLINKER_SOCK_STREAM;
 	entry.ai_protocol = requested != 0 && requested->ai_protocol != 0 ? requested->ai_protocol : MACOS_NEWLINKER_IPPROTO_TCP;
 	entry.ai_addrlen = (macos_newlinker_socklen_t)sizeof(socket_address);
@@ -1092,21 +1134,21 @@ MACOS_NEWLINKER_EXPORT int shutdown(int fd, int how) {
 
 MACOS_NEWLINKER_EXPORT int getsockopt(int fd, int level, int option_name, void *option_value, unsigned int *option_length) {
 	long result = darwin_syscall5(DARWIN_SYS_GETSOCKOPT, (long)fd, (long)level, (long)option_name, (long)option_value, (long)option_length);
-	return result < 0 ? -1 : (int)result;
+	return macos_newlinker_return_int(result);
 }
 
 MACOS_NEWLINKER_EXPORT int socket(int domain, int type, int protocol) {
-	return (int)darwin_syscall3(DARWIN_SYS_SOCKET, (long)domain, (long)type, (long)protocol);
+	return macos_newlinker_return_int(darwin_syscall3(DARWIN_SYS_SOCKET, (long)domain, (long)type, (long)protocol));
 }
 
 MACOS_NEWLINKER_RETAIN_EXPORT int connect(int fd, const void *address, unsigned int address_length) {
 	long result = darwin_syscall3(DARWIN_SYS_CONNECT, (long)fd, (long)address, (long)address_length);
-	return result < 0 ? -1 : (int)result;
+	return macos_newlinker_return_int(result);
 }
 
 MACOS_NEWLINKER_RETAIN_EXPORT int bind(int fd, const void *address, unsigned int address_length) {
 	long result = darwin_syscall3(DARWIN_SYS_BIND, (long)fd, (long)address, (long)address_length);
-	return result < 0 ? -1 : (int)result;
+	return macos_newlinker_return_int(result);
 }
 
 MACOS_NEWLINKER_RETAIN_EXPORT int accept(int fd, void *address, unsigned int *address_length) {
@@ -1115,7 +1157,7 @@ MACOS_NEWLINKER_RETAIN_EXPORT int accept(int fd, void *address, unsigned int *ad
 
 MACOS_NEWLINKER_EXPORT int setsockopt(int fd, int level, int option_name, const void *option_value, unsigned int option_length) {
 	long result = darwin_syscall5(DARWIN_SYS_SETSOCKOPT, (long)fd, (long)level, (long)option_name, (long)option_value, (long)option_length);
-	return result < 0 ? -1 : (int)result;
+	return macos_newlinker_return_int(result);
 }
 
 MACOS_NEWLINKER_RETAIN_EXPORT long recv(int fd, void *buffer, size_t length, int flags) {
@@ -1158,7 +1200,7 @@ static int macos_newlinker_execve_raw(const char *file, char *const argv[], char
 }
 
 MACOS_NEWLINKER_EXPORT int execvp(const char *file, char *const argv[]) {
-	char **environment = macos_newlinker_empty_environment;
+	char **environment = environ != 0 ? environ : macos_newlinker_empty_environment;
 	const char *path;
 	size_t file_length;
 	size_t path_index = 0U;
@@ -1295,13 +1337,23 @@ MACOS_NEWLINKER_EXPORT int getaddrinfo(const char *node, const char *service, co
 	if (result != 0) {
 		*result = 0;
 	}
-	if (result == 0 || service == 0 || macos_newlinker_parse_uint16(service, &port) != 0 || port == 0U) {
+	if (result == 0) {
 		return -1;
 	}
-	if (requested != 0 && requested->ai_family != MACOS_NEWLINKER_AF_UNSPEC && requested->ai_family != MACOS_NEWLINKER_AF_INET) {
+	if (service != 0 && service[0] != '\0' && macos_newlinker_parse_uint16(service, &port) != 0) {
+		return -1;
+	}
+	if (requested != 0 && requested->ai_family != MACOS_NEWLINKER_AF_UNSPEC &&
+	    requested->ai_family != MACOS_NEWLINKER_AF_INET && requested->ai_family != MACOS_NEWLINKER_AF_INET6) {
 		return -1;
 	}
 	if (requested != 0 && requested->ai_socktype != 0 && requested->ai_socktype != MACOS_NEWLINKER_SOCK_STREAM && requested->ai_socktype != MACOS_NEWLINKER_SOCK_DGRAM) {
+		return -1;
+	}
+	if (requested != 0 && requested->ai_family == MACOS_NEWLINKER_AF_INET6) {
+		if (node == 0 || node[0] == '\0' || macos_newlinker_streq(node, "::1") || macos_newlinker_streq(node, "localhost")) {
+			return macos_newlinker_fill_addrinfo6_loopback(port, hints, (struct addrinfo **)result);
+		}
 		return -1;
 	}
 	if (node == 0 || node[0] == '\0') {
@@ -1309,10 +1361,15 @@ MACOS_NEWLINKER_EXPORT int getaddrinfo(const char *node, const char *service, co
 		address[1] = 0;
 		address[2] = 0;
 		address[3] = 0;
+	} else if (macos_newlinker_streq(node, "localhost")) {
+		address[0] = 127U;
+		address[1] = 0;
+		address[2] = 0;
+		address[3] = 1U;
 	} else if (macos_newlinker_parse_ipv4(node, address) != 0 && macos_newlinker_dns_query_a(node, address) != 0) {
 		return -1;
 	}
-	return macos_newlinker_fill_addrinfo(address, port, hints, (struct addrinfo **)result);
+	return macos_newlinker_fill_addrinfo4(address, port, hints, (struct addrinfo **)result);
 }
 
 MACOS_NEWLINKER_EXPORT void freeaddrinfo(void *address_info) {
@@ -1422,7 +1479,23 @@ MACOS_NEWLINKER_EXPORT char *inet_ntop(int family, const void *address, char *bu
 	unsigned int part;
 	unsigned int index;
 
-	if (family != MACOS_NEWLINKER_AF_INET || address == 0 || buffer == 0 || buffer_size == 0U) {
+	if (address == 0 || buffer == 0 || buffer_size == 0U) {
+		return 0;
+	}
+	if (family == MACOS_NEWLINKER_AF_INET6) {
+		int loopback = 1;
+		for (index = 0; index < 15U; ++index) {
+			if (bytes[index] != 0U) {
+				loopback = 0;
+				break;
+			}
+		}
+		if (loopback && bytes[15] == 1U) {
+			return macos_newlinker_copy_string(buffer, buffer_size, "::1") == 0 ? buffer : 0;
+		}
+		return 0;
+	}
+	if (family != MACOS_NEWLINKER_AF_INET) {
 		return 0;
 	}
 	buffer[0] = '\0';
@@ -1536,11 +1609,15 @@ MACOS_NEWLINKER_EXPORT void *gmtime_r(const long *time_value, void *result) {
 
 MACOS_NEWLINKER_EXPORT int uname(void *name) {
 	char *fields = (char *)name;
+	char hostname[256];
 	if (fields == 0) {
 		return -1;
 	}
+	if (gethostname(hostname, sizeof(hostname)) != 0 || hostname[0] == '\0') {
+		(void)macos_newlinker_copy_string(hostname, sizeof(hostname), "newos");
+	}
 	(void)macos_newlinker_copy_string(fields + 0, 256U, "Darwin");
-	(void)macos_newlinker_copy_string(fields + 256U, 256U, "newos");
+	(void)macos_newlinker_copy_string(fields + 256U, 256U, hostname);
 	(void)macos_newlinker_copy_string(fields + 512U, 256U, "0");
 	(void)macos_newlinker_copy_string(fields + 768U, 256U, "newos");
 	(void)macos_newlinker_copy_string(fields + 1024U, 256U, "arm64");

@@ -43,13 +43,13 @@ PY
     wtf_server_pid=$!
     waits=0
     while [ ! -s "$port_file" ] && [ "$waits" -lt 5 ]; do
-        "$ROOT_DIR/build/sleep" 1
+        "${TEST_BIN_DIR}/sleep" 1
         waits=$((waits + 1))
     done
     [ -s "$port_file" ] || fail "wtf mock server did not publish a port"
     wtf_port=$(cat "$port_file" | tr -d ' \r\n')
     wtf_status=0
-    "$ROOT_DIR/build/wtf" --json --base-url "http://127.0.0.1:$wtf_port/api/rest_v1/page/summary" Ada Lovelace > "$WORK_DIR/wtf_json.out" 2>&1 || wtf_status=$?
+    "${TEST_BIN_DIR}/wtf" --json --base-url "http://127.0.0.1:$wtf_port/api/rest_v1/page/summary" Ada Lovelace > "$WORK_DIR/wtf_json.out" 2>&1 || wtf_status=$?
     wait "$wtf_server_pid" || true
     assert_exit_code "$wtf_status" 0 "wtf --json did not complete against the mock endpoint"
     assert_file_contains "$WORK_DIR/wtf_server.out" 'MOCK_WTF_OK' "mock wtf server did not complete"
@@ -105,13 +105,13 @@ PY
     wtf_length_server_pid=$!
     waits=0
     while [ ! -s "$port_file" ] && [ "$waits" -lt 5 ]; do
-        "$ROOT_DIR/build/sleep" 1
+        "${TEST_BIN_DIR}/sleep" 1
         waits=$((waits + 1))
     done
     [ -s "$port_file" ] || fail "wtf content-length mock server did not publish a port"
     wtf_length_port=$(cat "$port_file" | tr -d ' \r\n')
     wtf_length_status=0
-    "$ROOT_DIR/build/wtf" --base-url "http://127.0.0.1:$wtf_length_port/api/rest_v1/page/summary" --only-title Length Test > "$WORK_DIR/wtf_length.out" 2>&1 || wtf_length_status=$?
+    "${TEST_BIN_DIR}/wtf" --base-url "http://127.0.0.1:$wtf_length_port/api/rest_v1/page/summary" --only-title Length Test > "$WORK_DIR/wtf_length.out" 2>&1 || wtf_length_status=$?
     wait "$wtf_length_server_pid" || true
     assert_exit_code "$wtf_length_status" 0 "wtf did not complete against content-length endpoint"
     assert_file_contains "$WORK_DIR/wtf_length.out" '^Length Test$' "wtf did not parse the content-length response"
@@ -151,12 +151,12 @@ PY
     wtf_control_server_pid=$!
     waits=0
     while [ ! -s "$port_file" ] && [ "$waits" -lt 5 ]; do
-        "$ROOT_DIR/build/sleep" 1
+        "${TEST_BIN_DIR}/sleep" 1
         waits=$((waits + 1))
     done
     [ -s "$port_file" ] || fail "wtf control mock server did not publish a port"
     wtf_control_port=$(cat "$port_file" | tr -d ' \r\n')
-    assert_command_succeeds "$ROOT_DIR/build/wtf" --base-url "http://127.0.0.1:$wtf_control_port/api/rest_v1/page/summary" --only-extract Control > "$WORK_DIR/wtf_control.out" 2>&1
+    assert_command_succeeds "${TEST_BIN_DIR}/wtf" --base-url "http://127.0.0.1:$wtf_control_port/api/rest_v1/page/summary" --only-extract Control > "$WORK_DIR/wtf_control.out" 2>&1
     assert_file_contains "$WORK_DIR/wtf_control.out" 'safe  \[31m text' "wtf should sanitize decoded terminal control characters"
     python3 - <<'PY' "$WORK_DIR/wtf_control.out"
 import sys
@@ -165,7 +165,7 @@ if b"\x1b" in data:
     raise SystemExit("wtf emitted a raw escape byte")
 PY
     wtf_broken_status=0
-    "$ROOT_DIR/build/wtf" --base-url "http://127.0.0.1:$wtf_control_port/api/rest_v1/page/summary" --only-extract Broken > "$WORK_DIR/wtf_broken.out" 2>&1 || wtf_broken_status=$?
+    "${TEST_BIN_DIR}/wtf" --base-url "http://127.0.0.1:$wtf_control_port/api/rest_v1/page/summary" --only-extract Broken > "$WORK_DIR/wtf_broken.out" 2>&1 || wtf_broken_status=$?
     wait "$wtf_control_server_pid" || true
     assert_exit_code "$wtf_broken_status" 1 "wtf should reject truncated JSON unicode escapes without crashing"
     assert_file_contains "$WORK_DIR/wtf_broken.out" 'could not parse summary' "wtf did not report the malformed JSON summary"

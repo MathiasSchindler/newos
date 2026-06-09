@@ -3,8 +3,9 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$ROOT_DIR/tests/lib/assert.sh"
+. "$ROOT_DIR/tests/lib/build.sh"
 
-BIN_DIR=${NEWOS_FREESTANDING_BUILD_DIR:-"$ROOT_DIR/build/freestanding-linux-$(uname -m)"}
+BIN_DIR=$(newos_test_tool_dir)
 WORK_DIR="$ROOT_DIR/tests/tmp/freestanding"
 
 find_loopback_port() {

@@ -2,8 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-BUILD_DIR=${NEWOS_NEWLINKER_BUILD_DIR:-$ROOT_DIR/build/freestanding-linux-$(uname -m)}
-EXPACK=${NEWOS_EXPACK:-$ROOT_DIR/build/host-linux-x86_64/expack}
+. "$ROOT_DIR/tests/lib/build.sh"
+newos_configure_test_tools
+
+BUILD_DIR=${NEWOS_NEWLINKER_BUILD_DIR:-$TEST_BIN_DIR}
+EXPACK=${NEWOS_EXPACK:-$TEST_BIN_DIR/expack}
 OUTPUT_DIR=${NEWOS_NEWLINKER_EXPACK_OUT:-$ROOT_DIR/build/freestanding-linux-expack}
 EXPACK_FLAGS=${NEWOS_EXPACK_FLAGS---all}
 JOBS=${PARALLEL_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}

@@ -119,7 +119,7 @@ emit_u16_to "$apk_path" 0
 
 printf 'not an apk\n' > "$bad_path"
 
-"$ROOT_DIR/build/readapk" "$apk_path" > "$WORK_DIR/summary.txt"
+"${TEST_BIN_DIR}/readapk" "$apk_path" > "$WORK_DIR/summary.txt"
 assert_file_contains "$WORK_DIR/summary.txt" 'Type: Android APK / ZIP archive' "readapk did not classify APK-like ZIP"
 assert_file_contains "$WORK_DIR/summary.txt" 'Entries: 8' "readapk did not count entries"
 assert_file_contains "$WORK_DIR/summary.txt" 'AndroidManifest.xml: 1' "readapk did not count manifest"
@@ -132,55 +132,55 @@ assert_file_contains "$WORK_DIR/summary.txt" 'APK v1 signature files: 1 cert, 1 
 assert_file_contains "$WORK_DIR/summary.txt" 'APK Signing Block: yes offset' "readapk did not detect APK Signing Block"
 assert_file_contains "$WORK_DIR/summary.txt" 'v2 yes' "readapk did not detect APK signature v2 ID"
 
-"$ROOT_DIR/build/readapk" --dates "$apk_path" > "$WORK_DIR/dates.txt"
+"${TEST_BIN_DIR}/readapk" --dates "$apk_path" > "$WORK_DIR/dates.txt"
 assert_file_contains "$WORK_DIR/dates.txt" 'Dates:' "readapk --dates did not print header"
 assert_file_contains "$WORK_DIR/dates.txt" 'unknown  AndroidManifest.xml' "readapk --dates did not print manifest timestamp"
 
-"$ROOT_DIR/build/readapk" --files-detail "$apk_path" > "$WORK_DIR/files-detail.txt"
+"${TEST_BIN_DIR}/readapk" --files-detail "$apk_path" > "$WORK_DIR/files-detail.txt"
 assert_file_contains "$WORK_DIR/files-detail.txt" 'Files:' "readapk --files-detail did not print header"
 assert_file_contains "$WORK_DIR/files-detail.txt" 'manifest: compressed 0, uncompressed 0, method stored, AndroidManifest.xml' "readapk --files-detail did not classify manifest"
 
-"$ROOT_DIR/build/readapk" --resources-detail "$apk_path" > "$WORK_DIR/resources-detail.txt"
+"${TEST_BIN_DIR}/readapk" --resources-detail "$apk_path" > "$WORK_DIR/resources-detail.txt"
 assert_file_contains "$WORK_DIR/resources-detail.txt" 'Resource files:' "readapk --resources-detail did not print resource file header"
 assert_file_contains "$WORK_DIR/resources-detail.txt" 'table: 0 bytes resources.arsc' "readapk --resources-detail did not include resources.arsc"
 assert_file_contains "$WORK_DIR/resources-detail.txt" 'res: 0 bytes res/layout/main.xml' "readapk --resources-detail did not list res/ entries"
 
-"$ROOT_DIR/build/readapk" --code-detail "$apk_path" > "$WORK_DIR/code-detail.txt"
+"${TEST_BIN_DIR}/readapk" --code-detail "$apk_path" > "$WORK_DIR/code-detail.txt"
 assert_file_contains "$WORK_DIR/code-detail.txt" 'Code detail:' "readapk --code-detail did not print header"
 assert_file_contains "$WORK_DIR/code-detail.txt" 'DEX: classes.dex is not a DEX file' "readapk --code-detail did not inspect DEX entries"
 assert_file_contains "$WORK_DIR/code-detail.txt" 'Native library: lib/arm64-v8a/libx.so is not ELF' "readapk --code-detail did not inspect native entries"
 
-"$ROOT_DIR/build/readapk" --capabilities "$apk_path" > "$WORK_DIR/capabilities.txt"
+"${TEST_BIN_DIR}/readapk" --capabilities "$apk_path" > "$WORK_DIR/capabilities.txt"
 assert_file_contains "$WORK_DIR/capabilities.txt" 'Capabilities: manifest is not Android binary XML' "readapk --capabilities did not inspect manifest"
 
-"$ROOT_DIR/build/readapk" --security "$apk_path" > "$WORK_DIR/security.txt"
+"${TEST_BIN_DIR}/readapk" --security "$apk_path" > "$WORK_DIR/security.txt"
 assert_file_contains "$WORK_DIR/security.txt" 'Security: manifest is not Android binary XML' "readapk --security did not inspect manifest"
 assert_file_contains "$WORK_DIR/security.txt" 'Validation:' "readapk --security did not include ZIP validation"
 assert_file_contains "$WORK_DIR/security.txt" 'Signatures:' "readapk --security did not include signature details"
 
-"$ROOT_DIR/build/readapk" -l "$apk_path" > "$WORK_DIR/list.txt"
+"${TEST_BIN_DIR}/readapk" -l "$apk_path" > "$WORK_DIR/list.txt"
 assert_file_contains "$WORK_DIR/list.txt" 'offset	method	compressed	uncompressed	crc32	flags	name' "readapk list header changed"
 assert_file_contains "$WORK_DIR/list.txt" 'stored	0	0	00000000	--U-	AndroidManifest.xml' "readapk did not list manifest entry"
 assert_file_contains "$WORK_DIR/list.txt" 'lib/arm64-v8a/libx.so' "readapk did not list native library"
 
-"$ROOT_DIR/build/readapk" --json -a "$apk_path" > "$WORK_DIR/json.txt"
+"${TEST_BIN_DIR}/readapk" --json -a "$apk_path" > "$WORK_DIR/json.txt"
 assert_file_contains "$WORK_DIR/json.txt" '"event":"apk_entry"' "readapk --json did not emit entries"
 assert_file_contains "$WORK_DIR/json.txt" '"event":"apk_summary"' "readapk --json did not emit summary"
 assert_file_contains "$WORK_DIR/json.txt" '"probable_apk":true' "readapk --json did not mark probable APK"
 assert_file_contains "$WORK_DIR/json.txt" '"crc32":"00000000"' "readapk --json did not emit CRC32 text"
 assert_file_contains "$WORK_DIR/json.txt" '"apk_signature_v2":true' "readapk --json did not report v2 signing block"
 
-"$ROOT_DIR/build/readapk" --verify "$apk_path" > "$WORK_DIR/verify.txt"
+"${TEST_BIN_DIR}/readapk" --verify "$apk_path" > "$WORK_DIR/verify.txt"
 assert_file_contains "$WORK_DIR/verify.txt" 'Validation:' "readapk --verify did not print validation header"
 assert_file_contains "$WORK_DIR/verify.txt" 'checked entries: 8' "readapk --verify did not count entries"
 assert_file_contains "$WORK_DIR/verify.txt" 'structural errors: 0' "readapk --verify reported errors for fixture"
 assert_file_contains "$WORK_DIR/verify.txt" 'name mismatches: 0' "readapk --verify reported name mismatches for fixture"
 
-"$ROOT_DIR/build/readapk" --manifest "$apk_path" > "$WORK_DIR/manifest.txt"
+"${TEST_BIN_DIR}/readapk" --manifest "$apk_path" > "$WORK_DIR/manifest.txt"
 assert_file_contains "$WORK_DIR/manifest.txt" 'Manifest: AndroidManifest.xml is not Android binary XML' "readapk --manifest did not inspect manifest entry"
 
 extract_path="$WORK_DIR/extract"
-"$ROOT_DIR/build/readapk" --extract-manifest "$extract_path/manifest" --extract-dex "$extract_path/dex" --extract-native "$extract_path/native" --extract-signatures "$extract_path/signatures" "$apk_path" > "$WORK_DIR/extract.txt"
+"${TEST_BIN_DIR}/readapk" --extract-manifest "$extract_path/manifest" --extract-dex "$extract_path/dex" --extract-native "$extract_path/native" --extract-signatures "$extract_path/signatures" "$apk_path" > "$WORK_DIR/extract.txt"
 assert_file_contains "$WORK_DIR/extract.txt" 'extracted ' "readapk extraction modes did not report extracted files"
 assert_file_contains "$extract_path/manifest/AndroidManifest.txt" 'Manifest: AndroidManifest.xml is not Android binary XML' "readapk --extract-manifest did not write decoded manifest text"
 if [ ! -f "$extract_path/dex/classes.dex" ]; then
@@ -267,30 +267,30 @@ with zipfile.ZipFile(out_path, 'w') as archive:
     archive.writestr('AndroidManifest.xml', axml_manifest(), compress_type=zipfile.ZIP_STORED)
     archive.writestr('resources.arsc', resources_table(), compress_type=zipfile.ZIP_STORED)
 PY
-    "$ROOT_DIR/build/readapk" --manifest "$resolved_apk_path" > "$WORK_DIR/resolved-manifest.txt"
+    "${TEST_BIN_DIR}/readapk" --manifest "$resolved_apk_path" > "$WORK_DIR/resolved-manifest.txt"
     assert_file_contains "$WORK_DIR/resolved-manifest.txt" 'application label: Synthetic Clock' "readapk --manifest did not resolve resources.arsc string references"
-    "$ROOT_DIR/build/readapk" --extract-resource 0x7f010000 "$resolved_apk_path" > "$WORK_DIR/resource.txt"
+    "${TEST_BIN_DIR}/readapk" --extract-resource 0x7f010000 "$resolved_apk_path" > "$WORK_DIR/resource.txt"
     assert_file_contains "$WORK_DIR/resource.txt" '0x7f010000: Synthetic Clock' "readapk --extract-resource did not print resolved resource value"
 else
     note "python3 not available; skipping readapk resource-resolution fixture"
 fi
 
-"$ROOT_DIR/build/readapk" --resources "$apk_path" > "$WORK_DIR/resources.txt"
+"${TEST_BIN_DIR}/readapk" --resources "$apk_path" > "$WORK_DIR/resources.txt"
 assert_file_contains "$WORK_DIR/resources.txt" 'resources.arsc: not an Android resource table' "readapk --resources did not inspect resources entry"
 
-"$ROOT_DIR/build/readapk" --dex "$apk_path" > "$WORK_DIR/dex.txt"
+"${TEST_BIN_DIR}/readapk" --dex "$apk_path" > "$WORK_DIR/dex.txt"
 assert_file_contains "$WORK_DIR/dex.txt" 'DEX: classes.dex is not a DEX file' "readapk --dex did not inspect DEX entry"
 
-"$ROOT_DIR/build/readapk" --native "$apk_path" > "$WORK_DIR/native.txt"
+"${TEST_BIN_DIR}/readapk" --native "$apk_path" > "$WORK_DIR/native.txt"
 assert_file_contains "$WORK_DIR/native.txt" 'Native library: lib/arm64-v8a/libx.so is not ELF' "readapk --native did not inspect native library entry"
 
-"$ROOT_DIR/build/readapk" --signatures "$apk_path" > "$WORK_DIR/signatures.txt"
+"${TEST_BIN_DIR}/readapk" --signatures "$apk_path" > "$WORK_DIR/signatures.txt"
 assert_file_contains "$WORK_DIR/signatures.txt" 'Signatures:' "readapk --signatures did not print signature header"
 assert_file_contains "$WORK_DIR/signatures.txt" 'v2/v3/v3.1/source-stamp: yes/no/no/no' "readapk --signatures did not report signing block IDs"
 assert_file_contains "$WORK_DIR/signatures.txt" 'v2 signers/signatures: 0/0' "readapk --signatures did not report v2 signer counts"
 assert_file_contains "$WORK_DIR/signatures.txt" 'cryptographic verification: not implemented' "readapk --signatures did not state crypto validation status"
 
-if "$ROOT_DIR/build/readapk" "$bad_path" > "$WORK_DIR/bad.out" 2> "$WORK_DIR/bad.err"; then
+if "${TEST_BIN_DIR}/readapk" "$bad_path" > "$WORK_DIR/bad.out" 2> "$WORK_DIR/bad.err"; then
     fail "readapk should reject non-ZIP input"
 fi
 assert_file_contains "$WORK_DIR/bad.err" 'not a readable ZIP/APK' "readapk did not explain non-ZIP input"

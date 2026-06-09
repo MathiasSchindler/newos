@@ -2,7 +2,11 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-SQL_BIN="$ROOT/build/sql"
+ROOT_DIR=$ROOT
+. "$ROOT/tests/lib/build.sh"
+newos_configure_test_tools
+
+SQL_BIN="$TEST_BIN_DIR/sql"
 TMP_DIR=${SQL_STRESS_TMP:-"$ROOT/tests/tmp/sql-stress"}
 ROWS=${SQL_STRESS_ROWS:-40000}
 ROW_LIMIT=${SQL_STRESS_ROW_LIMIT:-1048576}
@@ -42,7 +46,7 @@ validate_number SQL_STRESS_COLS "$COLS"
 
 mkdir -p "$TMP_DIR"
 cd "$ROOT"
-make host >/dev/null
+make freestanding >/dev/null
 
 if [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ]; then
     TIME_MODE=darwin

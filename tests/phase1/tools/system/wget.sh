@@ -5,10 +5,10 @@ set -eu
 phase1_setup wget
 
 printf 'wget sample\n' > "$WORK_DIR/source.txt"
-assert_command_succeeds "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/copy.txt" "file://$WORK_DIR/source.txt"
+assert_command_succeeds "${TEST_BIN_DIR}/wget" -q -O "$WORK_DIR/copy.txt" "file://$WORK_DIR/source.txt"
 assert_files_equal "$WORK_DIR/source.txt" "$WORK_DIR/copy.txt" "wget file:// download failed"
 
-wget_stdout=$("$ROOT_DIR/build/wget" -q -O - "file://$WORK_DIR/source.txt" | tr -d '\r\n')
+wget_stdout=$("${TEST_BIN_DIR}/wget" -q -O - "file://$WORK_DIR/source.txt" | tr -d '\r\n')
 assert_text_equals "$wget_stdout" 'wget sample' "wget -O - did not stream the fetched content"
 
 redirect_pid=
@@ -101,13 +101,13 @@ trap 'cleanup_redirect_server' EXIT HUP INT TERM
 redirect_pid=$!
 redirect_waits=0
 while [ ! -s "$redirect_port_file" ] && [ "$redirect_waits" -lt 5 ]; do
-    "$ROOT_DIR/build/sleep" 1
+    "${TEST_BIN_DIR}/sleep" 1
     redirect_waits=$((redirect_waits + 1))
 done
 [ -s "$redirect_port_file" ] || fail "redirect test server did not publish a port"
 redirect_port=$(cat "$redirect_port_file" | tr -d ' \r\n')
 redirect_status=0
-"$ROOT_DIR/build/wget" -q -T 2s -O "$WORK_DIR/redirect_copy.txt" "http://127.0.0.1:$redirect_port/redirect" > "$WORK_DIR/redirect_fetch.out" 2>&1 || redirect_status=$?
+"${TEST_BIN_DIR}/wget" -q -T 2s -O "$WORK_DIR/redirect_copy.txt" "http://127.0.0.1:$redirect_port/redirect" > "$WORK_DIR/redirect_fetch.out" 2>&1 || redirect_status=$?
 cleanup_redirect_server
 trap - EXIT HUP INT TERM
 if [ "$redirect_status" -eq 0 ]; then
@@ -160,24 +160,24 @@ PY
     malformed_pid=$!
     waits=0
     while [ ! -s "$malformed_port_file" ] && [ "$waits" -lt 5 ]; do
-        "$ROOT_DIR/build/sleep" 1
+        "${TEST_BIN_DIR}/sleep" 1
         waits=$((waits + 1))
     done
     [ -s "$malformed_port_file" ] || fail "wget malformed mock server did not publish a port"
     malformed_port=$(cat "$malformed_port_file" | tr -d ' \r\n')
 
-    assert_command_succeeds "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_length.out" "http://127.0.0.1:$malformed_port/length"
+    assert_command_succeeds "${TEST_BIN_DIR}/wget" -q -O "$WORK_DIR/wget_length.out" "http://127.0.0.1:$malformed_port/length"
     assert_text_equals "$(cat "$WORK_DIR/wget_length.out")" 'hello' "wget should write exactly Content-Length bytes"
 
     wget_duplicate_status=0
-    "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_duplicate.out" "http://127.0.0.1:$malformed_port/duplicate-length" > "$WORK_DIR/wget_duplicate.err" 2>&1 || wget_duplicate_status=$?
+    "${TEST_BIN_DIR}/wget" -q -O "$WORK_DIR/wget_duplicate.out" "http://127.0.0.1:$malformed_port/duplicate-length" > "$WORK_DIR/wget_duplicate.err" 2>&1 || wget_duplicate_status=$?
     assert_exit_code "$wget_duplicate_status" 1 "wget should reject conflicting Content-Length headers"
     if [ -s "$WORK_DIR/wget_duplicate.out" ]; then
         fail "wget should not write a body after conflicting Content-Length headers"
     fi
 
     wget_bad_redirect_status=0
-    "$ROOT_DIR/build/wget" -q -O "$WORK_DIR/wget_bad_redirect.out" "http://127.0.0.1:$malformed_port/bad-redirect" > "$WORK_DIR/wget_bad_redirect.err" 2>&1 || wget_bad_redirect_status=$?
+    "${TEST_BIN_DIR}/wget" -q -O "$WORK_DIR/wget_bad_redirect.out" "http://127.0.0.1:$malformed_port/bad-redirect" > "$WORK_DIR/wget_bad_redirect.err" 2>&1 || wget_bad_redirect_status=$?
     assert_exit_code "$wget_bad_redirect_status" 1 "wget should reject redirects containing spaces"
     if [ -s "$WORK_DIR/wget_bad_redirect.out" ]; then
         fail "wget should not write a body after a malformed redirect"

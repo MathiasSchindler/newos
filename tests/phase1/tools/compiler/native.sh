@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
 }
 EOF
 
-    "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -S -std=c11 -O2 -ffreestanding -ffunction-sections -fdata-sections "$WORK_DIR/tiny_leaf_return.c" -o "$WORK_DIR/tiny_leaf_return.s"
+    "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -S -std=c11 -O2 -ffreestanding -ffunction-sections -fdata-sections "$WORK_DIR/tiny_leaf_return.c" -o "$WORK_DIR/tiny_leaf_return.s"
     if grep -q 'pushq %rbp\|subq.*%rsp\|movq %rdi\|movq %rsi\|leave' "$WORK_DIR/tiny_leaf_return.s"; then
         fail "compiler emitted a stack frame or unused parameter spills for a tiny leaf return"
     fi
@@ -174,7 +174,7 @@ int main(void) {
 EOF
 
 if [ -n "$RUN_TARGET" ]; then
-    "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -ffunction-sections -fdata-sections -Wl,--gc-sections "$WORK_DIR/function_sections_gc.c" -o "$WORK_DIR/function_sections_gc_bin"
+    "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -ffunction-sections -fdata-sections -Wl,--gc-sections "$WORK_DIR/function_sections_gc.c" -o "$WORK_DIR/function_sections_gc_bin"
     "$WORK_DIR/function_sections_gc_bin"
 fi
 
@@ -489,7 +489,7 @@ int main(void) {
 EOF
 
 if [ -n "$RUN_TARGET" ]; then
-    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" "$WORK_DIR/multi_file_main.c" "$WORK_DIR/multi_file_helper.c" -o "$WORK_DIR/multi_file_bin"
+    assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" "$WORK_DIR/multi_file_main.c" "$WORK_DIR/multi_file_helper.c" -o "$WORK_DIR/multi_file_bin"
     if "$WORK_DIR/multi_file_bin"; then
         actual_status=0
     else
@@ -565,7 +565,7 @@ int main(void) {
 EOF
 
 if [ -n "$RUN_TARGET" ]; then
-    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_main.c" "$WORK_DIR/lto_helper.c" -o "$WORK_DIR/lto_multi_file_bin"
+    assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_main.c" "$WORK_DIR/lto_helper.c" -o "$WORK_DIR/lto_multi_file_bin"
     if "$WORK_DIR/lto_multi_file_bin"; then
         actual_status=0
     else
@@ -573,7 +573,7 @@ if [ -n "$RUN_TARGET" ]; then
     fi
     assert_text_equals "$actual_status" "0" "compiler -flto multi-file flow did not produce a runnable executable"
 
-    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_static_main.c" "$WORK_DIR/lto_static_a.c" "$WORK_DIR/lto_static_b.c" -o "$WORK_DIR/lto_static_renamed_bin"
+    assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_static_main.c" "$WORK_DIR/lto_static_a.c" "$WORK_DIR/lto_static_b.c" -o "$WORK_DIR/lto_static_renamed_bin"
     if "$WORK_DIR/lto_static_renamed_bin"; then
         actual_status=0
     else
@@ -581,7 +581,7 @@ if [ -n "$RUN_TARGET" ]; then
     fi
     assert_text_equals "$actual_status" "0" "compiler -flto static renaming did not preserve duplicate static function names"
 
-    native_nm="$ROOT_DIR/build/nm"
+    native_nm="${TEST_BIN_DIR}/nm"
     if [ ! -x "$native_nm" ] && command -v nm >/dev/null 2>&1; then
         native_nm=nm
     fi
@@ -590,7 +590,7 @@ if [ -n "$RUN_TARGET" ]; then
         assert_file_contains "$WORK_DIR/lto_static_renamed_nm.out" '__ncc_lto_' "compiler -flto duplicate static helpers fell back instead of merging with renamed internals"
     fi
 
-    assert_command_succeeds "$ROOT_DIR/build/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_shadow_main.c" "$WORK_DIR/lto_shadow_static.c" -o "$WORK_DIR/lto_shadow_bin"
+    assert_command_succeeds "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -flto "$WORK_DIR/lto_shadow_main.c" "$WORK_DIR/lto_shadow_static.c" -o "$WORK_DIR/lto_shadow_bin"
     if "$WORK_DIR/lto_shadow_bin"; then
         actual_status=0
     else
@@ -918,7 +918,7 @@ EOF
 compile_and_check_native "$WORK_DIR/int128_cast.c" "$WORK_DIR/int128_cast_bin" "0" "compiler failed on __int128 cast expressions"
 
 if [ "$RUN_TARGET" = "linux-x86_64" ] && command -v cc >/dev/null 2>&1; then
-    native_ar="$ROOT_DIR/build/ar"
+    native_ar="${TEST_BIN_DIR}/ar"
     if [ ! -x "$native_ar" ] && command -v ar >/dev/null 2>&1; then
         native_ar=ar
     fi
@@ -940,7 +940,7 @@ EOF
     cc -x assembler -c "$WORK_DIR/native_archive_start.s" -o "$WORK_DIR/native_archive_start.o"
     cc -x assembler -c "$WORK_DIR/native_archive_helper.s" -o "$WORK_DIR/native_archive_helper.o"
     "$native_ar" rc "$WORK_DIR/libnative_helper.a" "$WORK_DIR/native_archive_helper.o"
-    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
+    "${TEST_BIN_DIR}/ncc" --target linux-x86_64 -nostdlib -static \
         "$WORK_DIR/native_archive_start.o" "$WORK_DIR/libnative_helper.a" \
         -o "$WORK_DIR/native_archive_bin"
     if "$WORK_DIR/native_archive_bin"; then
@@ -966,7 +966,7 @@ unused_marker:
     .asciz "NATIVE_GC_DROP_ME"
 EOF
     cc -x assembler -c "$WORK_DIR/native_gc_sections.s" -o "$WORK_DIR/native_gc_sections.o"
-    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static -Wl,--gc-sections \
+    "${TEST_BIN_DIR}/ncc" --target linux-x86_64 -nostdlib -static -Wl,--gc-sections \
         "$WORK_DIR/native_gc_sections.o" -o "$WORK_DIR/native_gc_sections_bin"
     "$WORK_DIR/native_gc_sections_bin"
     if grep -aq 'NATIVE_GC_DROP_ME' "$WORK_DIR/native_gc_sections_bin"; then
@@ -994,7 +994,7 @@ int native_lto_entry(void) {
 }
 EOF
     cc -x assembler -c "$WORK_DIR/native_lto_start.s" -o "$WORK_DIR/native_lto_start.o"
-    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static -flto \
+    "${TEST_BIN_DIR}/ncc" --target linux-x86_64 -nostdlib -static -flto \
         "$WORK_DIR/native_lto_start.o" "$WORK_DIR/native_lto_entry.c" "$WORK_DIR/native_lto_value.c" \
         -o "$WORK_DIR/native_lto_bin"
     if "$WORK_DIR/native_lto_bin"; then
@@ -1021,7 +1021,7 @@ value:
     .quad 7
 EOF
     cc -x assembler -c "$WORK_DIR/native_data_segment.s" -o "$WORK_DIR/native_data_segment.o"
-    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
+    "${TEST_BIN_DIR}/ncc" --target linux-x86_64 -nostdlib -static \
         "$WORK_DIR/native_data_segment.o" -o "$WORK_DIR/native_data_segment_bin"
     if "$WORK_DIR/native_data_segment_bin"; then
         native_data_status=0
@@ -1068,18 +1068,18 @@ suffix:
     .asciz "tail"
 EOF
     cc -x assembler -c "$WORK_DIR/native_merge_strings.s" -o "$WORK_DIR/native_merge_strings.o"
-    "$ROOT_DIR/build/ncc" --target linux-x86_64 -nostdlib -static \
+    "${TEST_BIN_DIR}/ncc" --target linux-x86_64 -nostdlib -static \
         "$WORK_DIR/native_merge_strings.o" -o "$WORK_DIR/native_merge_strings_bin"
     "$WORK_DIR/native_merge_strings_bin"
     merge_string_count=$(grep -ao 'shared-tail' "$WORK_DIR/native_merge_strings_bin" | wc -l | tr -d ' ')
     assert_text_equals "$merge_string_count" "1" "native linker did not merge duplicate SHF_MERGE strings"
 fi
 
-"$ROOT_DIR/build/ncc" -c "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host.o"
+"${TEST_BIN_DIR}/ncc" -c "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host.o"
 if command -v od >/dev/null 2>&1; then
     od -An -tx1 -N4 "$WORK_DIR/default_host.o" > "$WORK_DIR/default_host_hex.out"
 else
-    native_hexdump="$ROOT_DIR/build/hexdump"
+    native_hexdump="${TEST_BIN_DIR}/hexdump"
     if [ ! -x "$native_hexdump" ] && command -v hexdump >/dev/null 2>&1; then
         native_hexdump=hexdump
     fi
@@ -1089,7 +1089,7 @@ if ! grep -q '7f[[:space:]][[:space:]]*45[[:space:]][[:space:]]*4c[[:space:]][[:
    ! grep -q 'cf[[:space:]][[:space:]]*fa[[:space:]][[:space:]]*ed[[:space:]][[:space:]]*fe' "$WORK_DIR/default_host_hex.out"; then
     fail "compiler default target did not emit a supported object format"
 fi
-"$ROOT_DIR/build/ncc" "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host_bin"
+"${TEST_BIN_DIR}/ncc" "$WORK_DIR/sample.c" -o "$WORK_DIR/default_host_bin"
 if "$WORK_DIR/default_host_bin"; then
     default_link_status=0
 else
