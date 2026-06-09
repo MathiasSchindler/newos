@@ -867,6 +867,85 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     return 0;
 }
 
+#if defined(__linux__)
+static int posix_is_decimal_text(const char *text) {
+    size_t index = 0U;
+
+    if (text == NULL || text[0] == '\0') {
+        return 0;
+    }
+    while (text[index] != '\0') {
+        if (text[index] < '0' || text[index] > '9') {
+            return 0;
+        }
+        index += 1U;
+    }
+    return 1;
+}
+#endif
+
+int platform_list_process_open_files(int pid, PlatformOpenFileEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+#if defined(__linux__)
+    char pid_text[32];
+    char proc_pid_dir[64];
+    char fd_dir[64];
+    DIR *dir;
+    struct dirent *de;
+    size_t count = 0U;
+
+    if (pid < 0 || entries_out == NULL || count_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *count_out = 0;
+
+    rt_unsigned_to_string((unsigned long long)pid, pid_text, sizeof(pid_text));
+    if (posix_join_path("/proc", pid_text, proc_pid_dir, sizeof(proc_pid_dir)) != 0 ||
+        posix_join_path(proc_pid_dir, "fd", fd_dir, sizeof(fd_dir)) != 0) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    dir = opendir(fd_dir);
+    if (dir == NULL) {
+        return -1;
+    }
+
+    while ((de = readdir(dir)) != NULL) {
+        char fd_path[PLATFORM_OPEN_FILE_PATH_CAPACITY];
+        char target[PLATFORM_OPEN_FILE_PATH_CAPACITY];
+
+        if (!posix_is_decimal_text(de->d_name)) {
+            continue;
+        }
+        if (count >= entry_capacity) {
+            closedir(dir);
+            errno = ENOSPC;
+            return -1;
+        }
+        if (posix_join_path(fd_dir, de->d_name, fd_path, sizeof(fd_path)) == 0 &&
+            platform_read_symlink(fd_path, target, sizeof(target)) == 0) {
+            rt_copy_string(entries_out[count].fd_name, sizeof(entries_out[count].fd_name), de->d_name);
+            rt_copy_string(entries_out[count].path, sizeof(entries_out[count].path), target);
+            count += 1U;
+        }
+    }
+
+    closedir(dir);
+    *count_out = count;
+    return 0;
+#else
+    (void)pid;
+    (void)entries_out;
+    if (count_out != NULL) {
+        *count_out = 0;
+    }
+    (void)entry_capacity;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out) {
     struct statvfs info;
 

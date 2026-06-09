@@ -703,6 +703,85 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     return 0;
 }
 
+static int linux_is_decimal_text(const char *text) {
+    size_t index = 0;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+    while (text[index] != '\0') {
+        if (text[index] < '0' || text[index] > '9') {
+            return 0;
+        }
+        index += 1U;
+    }
+    return 1;
+}
+
+int platform_list_process_open_files(int pid, PlatformOpenFileEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    char pid_text[32];
+    char proc_pid_dir[64];
+    char fd_dir[64];
+    long fd;
+    char buffer[4096];
+    size_t count = 0;
+
+    if (pid < 0 || entries_out == 0 || count_out == 0) {
+        return -1;
+    }
+    *count_out = 0;
+
+    unsigned_to_string((unsigned long long)pid, pid_text, sizeof(pid_text));
+    if (join_path("/proc", pid_text, proc_pid_dir, sizeof(proc_pid_dir)) != 0 ||
+        join_path(proc_pid_dir, "fd", fd_dir, sizeof(fd_dir)) != 0) {
+        return -1;
+    }
+
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)fd_dir, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    for (;;) {
+        long bytes = linux_syscall3(LINUX_SYS_GETDENTS64, fd, (long)buffer, sizeof(buffer));
+        unsigned long offset = 0;
+
+        if (bytes == 0) {
+            break;
+        }
+        if (bytes < 0) {
+            linux_syscall1(LINUX_SYS_CLOSE, fd);
+            return -1;
+        }
+
+        while (offset < (unsigned long)bytes) {
+            struct linux_dirent64 *entry = (struct linux_dirent64 *)(buffer + offset);
+            const char *name = entry->d_name;
+
+            if (linux_is_decimal_text(name)) {
+                char fd_path[PLATFORM_OPEN_FILE_PATH_CAPACITY];
+                char target[PLATFORM_OPEN_FILE_PATH_CAPACITY];
+
+                if (count >= entry_capacity) {
+                    linux_syscall1(LINUX_SYS_CLOSE, fd);
+                    return -1;
+                }
+                if (join_path(fd_dir, name, fd_path, sizeof(fd_path)) == 0 &&
+                    platform_read_symlink(fd_path, target, sizeof(target)) == 0) {
+                    copy_string(entries_out[count].fd_name, sizeof(entries_out[count].fd_name), name);
+                    copy_string(entries_out[count].path, sizeof(entries_out[count].path), target);
+                    count += 1U;
+                }
+            }
+            offset += entry->d_reclen;
+        }
+    }
+
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    *count_out = count;
+    return 0;
+}
+
 int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out) {
     struct linux_statfs info;
     unsigned long long fragment_size;

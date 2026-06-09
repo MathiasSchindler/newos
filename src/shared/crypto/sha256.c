@@ -3,7 +3,7 @@
 
 #define CRYPTO_ROTR32(value, count) (((value) >> (count)) | ((value) << (32U - (count))))
 
-#if defined(NEWOS_MACOS_NEWLINKER)
+#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
 static unsigned int crypto_load_be32(const unsigned char *p) {
     return ((unsigned int)p[0] << 24) |
            ((unsigned int)p[1] << 16) |
@@ -12,7 +12,7 @@ static unsigned int crypto_load_be32(const unsigned char *p) {
 }
 #endif
 
-#if defined(NEWOS_MACOS_NEWLINKER)
+#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
 static const unsigned char *crypto_sha256_initial_ptr(void) {
     return (const unsigned char *)"\x6a\x09\xe6\x67\xbb\x67\xae\x85\x3c\x6e\xf3\x72\xa5\x4f\xf5\x3a\x51\x0e\x52\x7f\x9b\x05\x68\x8c\x1f\x83\xd9\xab\x5b\xe0\xcd\x19";
 }
@@ -38,7 +38,7 @@ static const unsigned char *crypto_sha256_k_bytes_ptr(void) {
 }
 #endif
 
-#if !defined(NEWOS_MACOS_NEWLINKER)
+#if !(defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES)
 static const unsigned int g_sha256_k[64] = {
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
     0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
@@ -59,11 +59,11 @@ static const unsigned int g_sha256_k[64] = {
 };
 #endif
 
-#if defined(NEWOS_MACOS_NEWLINKER)
+#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
 __attribute__((noinline,optnone))
 #endif
 static unsigned int crypto_sha256_k(unsigned int index) {
-#if defined(NEWOS_MACOS_NEWLINKER)
+#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
     return crypto_load_be32(crypto_sha256_k_bytes_ptr() + ((size_t)index * 4U));
 #if 0
     switch (index) {
@@ -176,7 +176,7 @@ void crypto_sha256_init(CryptoSha256Context *ctx) {
     }
 
     for (unsigned int state_index = 0; state_index < 8U; ++state_index) {
-#if defined(NEWOS_MACOS_NEWLINKER)
+#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
         ctx->state[state_index] = crypto_load_be32(crypto_sha256_initial_ptr() + ((size_t)state_index * 4U));
 #else
         static const unsigned int initial_state[8] = {

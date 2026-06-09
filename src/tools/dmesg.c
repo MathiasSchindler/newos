@@ -360,12 +360,7 @@ static int read_stream_lines(int fd, int raw_output, const DmesgLevelFilter *fil
 }
 
 static int open_follow_source(void) {
-    int fd = platform_open_read("/dev/kmsg");
-    if (fd >= 0) {
-        return fd;
-    }
-
-    return platform_open_read("/proc/kmsg");
+    return platform_open_kernel_log_stream();
 }
 
 int main(int argc, char **argv) {

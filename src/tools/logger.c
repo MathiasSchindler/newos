@@ -227,7 +227,7 @@ int main(int argc, char **argv) {
             return 1;
         }
     } else {
-        log_fd = platform_open_append_existing("/dev/kmsg");
+        log_fd = platform_open_kernel_log_writer();
     }
 
     if (argi < argc) {

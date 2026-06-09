@@ -665,6 +665,16 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     return 0;
 }
 
+int platform_list_process_open_files(int pid, PlatformOpenFileEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)pid;
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out != 0) {
+        *count_out = 0;
+    }
+    return -1;
+}
+
 int platform_path_access(const char *path, int mode) {
     return darwin_syscall2(DARWIN_SYS_ACCESS, (long)path, (long)access_mode_to_darwin(mode)) < 0 ? -1 : 0;
 }
@@ -1234,6 +1244,14 @@ int platform_clear_kernel_log(void) {
 
 int platform_set_console_log_level(int level) {
     (void)level;
+    return -1;
+}
+
+int platform_open_kernel_log_stream(void) {
+    return -1;
+}
+
+int platform_open_kernel_log_writer(void) {
     return -1;
 }
 

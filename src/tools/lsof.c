@@ -4,61 +4,9 @@
 
 #define LSOF_MAX_PROCESSES 4096U
 #define LSOF_MAX_FDS 4096U
-#define LSOF_PATH_CAPACITY 512U
 
 static PlatformProcessEntry lsof_processes[LSOF_MAX_PROCESSES];
-static PlatformDirEntry lsof_fd_entries[LSOF_MAX_FDS];
-
-static int is_decimal_text(const char *text) {
-    size_t i = 0U;
-
-    if (text == 0 || text[0] == '\0') {
-        return 0;
-    }
-    while (text[i] != '\0') {
-        if (text[i] < '0' || text[i] > '9') {
-            return 0;
-        }
-        i += 1U;
-    }
-    return 1;
-}
-
-static int append_path(char *buffer, size_t buffer_size, const char *left, const char *right) {
-    size_t used = 0U;
-    size_t i = 0U;
-
-    while (left[i] != '\0') {
-        if (used + 1U >= buffer_size) return -1;
-        buffer[used++] = left[i++];
-    }
-    if (used == 0U || buffer[used - 1U] != '/') {
-        if (used + 1U >= buffer_size) return -1;
-        buffer[used++] = '/';
-    }
-    i = 0U;
-    while (right[i] != '\0') {
-        if (used + 1U >= buffer_size) return -1;
-        buffer[used++] = right[i++];
-    }
-    buffer[used] = '\0';
-    return 0;
-}
-
-static int append_text(char *buffer, size_t buffer_size, size_t *used_io, const char *text) {
-    size_t i = 0U;
-
-    while (text[i] != '\0') {
-        if (*used_io + 1U >= buffer_size) {
-            return -1;
-        }
-        buffer[*used_io] = text[i];
-        *used_io += 1U;
-        buffer[*used_io] = '\0';
-        i += 1U;
-    }
-    return 0;
-}
+static PlatformOpenFileEntry lsof_open_files[LSOF_MAX_FDS];
 
 static int contains_text(const char *text, const char *needle) {
     size_t i;
@@ -115,41 +63,17 @@ static void print_row(const PlatformProcessEntry *process, const char *fd_name, 
 static int list_pid_fds(int pid, const PlatformProcessEntry *processes, size_t process_count, char **filters, int filter_count, size_t *rows_out) {
     size_t count = 0U;
     size_t i;
-    int is_dir = 0;
-    char pid_text[32];
-    char fd_dir[LSOF_PATH_CAPACITY];
-    size_t used = 0U;
     const PlatformProcessEntry *process;
 
-    rt_unsigned_to_string((unsigned long long)pid, pid_text, sizeof(pid_text));
-    fd_dir[0] = '\0';
-    if (append_text(fd_dir, sizeof(fd_dir), &used, "/proc/") != 0 ||
-        append_text(fd_dir, sizeof(fd_dir), &used, pid_text) != 0 ||
-        append_text(fd_dir, sizeof(fd_dir), &used, "/fd") != 0) {
-        return -1;
-    }
-
-    if (platform_collect_entries(fd_dir, 0, lsof_fd_entries, sizeof(lsof_fd_entries) / sizeof(lsof_fd_entries[0]), &count, &is_dir) != 0 || !is_dir) {
+    if (platform_list_process_open_files(pid, lsof_open_files, sizeof(lsof_open_files) / sizeof(lsof_open_files[0]), &count) != 0) {
         return 0;
     }
     process = find_process(processes, process_count, pid);
     for (i = 0U; i < count; ++i) {
-        char fd_path[LSOF_PATH_CAPACITY];
-        char target[LSOF_PATH_CAPACITY];
-
-        if (!is_decimal_text(lsof_fd_entries[i].name)) {
+        if (!path_matches_filters(lsof_open_files[i].path, filters, filter_count)) {
             continue;
         }
-        if (append_path(fd_path, sizeof(fd_path), fd_dir, lsof_fd_entries[i].name) != 0) {
-            continue;
-        }
-        if (platform_read_symlink(fd_path, target, sizeof(target)) != 0) {
-            continue;
-        }
-        if (!path_matches_filters(target, filters, filter_count)) {
-            continue;
-        }
-        print_row(process, lsof_fd_entries[i].name, target);
+        print_row(process, lsof_open_files[i].fd_name, lsof_open_files[i].path);
         *rows_out += 1U;
     }
     return 0;
@@ -158,7 +82,7 @@ static int list_pid_fds(int pid, const PlatformProcessEntry *processes, size_t p
 static void print_help(void) {
     rt_write_line(1, "lsof - list open files");
     rt_write_line(1, "Usage: lsof [-p PID] [PATH ...]");
-    rt_write_line(1, "On platforms with /proc/<pid>/fd, lsof prints COMMAND PID USER FD NAME rows. PATH arguments filter NAME by substring.");
+    rt_write_line(1, "When platform open-file data is available, lsof prints COMMAND PID USER FD NAME rows. PATH arguments filter NAME by substring.");
 }
 
 int main(int argc, char **argv) {

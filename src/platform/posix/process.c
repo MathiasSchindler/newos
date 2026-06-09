@@ -405,6 +405,28 @@ int platform_set_console_log_level(int level) {
 #endif
 }
 
+int platform_open_kernel_log_stream(void) {
+#ifdef __linux__
+    int fd = open("/dev/kmsg", O_RDONLY);
+    if (fd >= 0) {
+        return fd;
+    }
+    return open("/proc/kmsg", O_RDONLY);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int platform_open_kernel_log_writer(void) {
+#ifdef __linux__
+    return open("/dev/kmsg", O_WRONLY | O_APPEND);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 int platform_shutdown_system(int action) {
 #ifdef __linux__
     int command = RB_POWER_OFF;

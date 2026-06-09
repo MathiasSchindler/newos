@@ -9,6 +9,8 @@
 #define PLATFORM_TERMINAL_STATE_CAPACITY 128
 #define PLATFORM_TLS_OPAQUE_WORDS 8
 #define PLATFORM_USB_PATH_CAPACITY 256
+#define PLATFORM_OPEN_FILE_FD_CAPACITY 32
+#define PLATFORM_OPEN_FILE_PATH_CAPACITY 512
 #define PLATFORM_PING_DEFAULT_COUNT 4U
 #define PLATFORM_PING_DEFAULT_INTERVAL_SECONDS 1U
 #define PLATFORM_PING_DEFAULT_TIMEOUT_SECONDS 1U
@@ -339,6 +341,11 @@ typedef struct {
 } PlatformSocketEntry;
 
 typedef struct {
+    char fd_name[PLATFORM_OPEN_FILE_FD_CAPACITY];
+    char path[PLATFORM_OPEN_FILE_PATH_CAPACITY];
+} PlatformOpenFileEntry;
+
+typedef struct {
     int entering;
     long number;
     long args[6];
@@ -408,6 +415,8 @@ int platform_isatty(int fd);
 int platform_get_terminal_size(int fd, unsigned int *rows_out, unsigned int *columns_out);
 int platform_get_process_id(void);
 long platform_read_kernel_log(char *buffer, size_t buffer_size, int clear_after_read);
+int platform_open_kernel_log_stream(void);
+int platform_open_kernel_log_writer(void);
 int platform_clear_kernel_log(void);
 int platform_set_console_log_level(int level);
 int platform_random_bytes(unsigned char *buffer, size_t count);
@@ -553,6 +562,7 @@ int platform_wait_process_timeout(
     int *exit_status_out
 );
 int platform_list_processes(PlatformProcessEntry *entries_out, size_t entry_capacity, size_t *count_out);
+int platform_list_process_open_files(int pid, PlatformOpenFileEntry *entries_out, size_t entry_capacity, size_t *count_out);
 int platform_get_identity(PlatformIdentity *identity_out);
 int platform_lookup_identity(const char *username, PlatformIdentity *identity_out);
 int platform_lookup_group(const char *groupname, unsigned int *gid_out);

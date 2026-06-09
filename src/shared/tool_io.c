@@ -2,7 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#if defined(NEWOS_MACOS_NEWLINKER)
+#if defined(NEWOS_TOOL_DEFAULT_COLOR_NEVER) && NEWOS_TOOL_DEFAULT_COLOR_NEVER
 static int tool_global_color_mode = TOOL_COLOR_NEVER;
 #else
 static int tool_global_color_mode = TOOL_COLOR_AUTO;

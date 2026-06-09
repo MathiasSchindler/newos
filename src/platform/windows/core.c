@@ -696,6 +696,14 @@ int platform_set_console_log_level(int level) {
     return -1;
 }
 
+int platform_open_kernel_log_stream(void) {
+    return -1;
+}
+
+int platform_open_kernel_log_writer(void) {
+    return -1;
+}
+
 long long platform_get_epoch_time(void) {
     WinFileTime file_time;
     unsigned long long ticks;
@@ -1588,6 +1596,16 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
     (void)path;
     (void)buffer;
     (void)buffer_size;
+    return -1;
+}
+
+int platform_list_process_open_files(int pid, PlatformOpenFileEntry *entries_out, size_t entry_capacity, size_t *count_out) {
+    (void)pid;
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out != 0) {
+        *count_out = 0U;
+    }
     return -1;
 }
 

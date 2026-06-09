@@ -458,6 +458,18 @@ int platform_set_console_log_level(int level) {
     return linux_syscall3(LINUX_SYS_SYSLOG, 8, 0, level) < 0 ? -1 : 0;
 }
 
+int platform_open_kernel_log_stream(void) {
+    int fd = platform_open_read("/dev/kmsg");
+    if (fd >= 0) {
+        return fd;
+    }
+    return platform_open_read("/proc/kmsg");
+}
+
+int platform_open_kernel_log_writer(void) {
+    return platform_open_append_existing("/dev/kmsg");
+}
+
 int platform_random_bytes(unsigned char *buffer, size_t count) {
     long fd;
     size_t offset = 0;
