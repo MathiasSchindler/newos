@@ -1007,13 +1007,9 @@ static BcValue bc_math_bessel(BcParser *parser, BcValue order_value, BcValue val
     return bc_math_rescale(parser, sum, target_scale);
 }
 
-static int bc_is_name_start(char ch) {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
-}
+#define bc_is_name_start tool_ascii_is_identifier_start
 
-static int bc_is_name_char(char ch) {
-    return bc_is_name_start(ch) || (ch >= '0' && ch <= '9');
-}
+#define bc_is_name_char tool_ascii_is_identifier_char
 
 static int bc_hex_digit_value(char ch) {
     if (ch >= '0' && ch <= '9') {

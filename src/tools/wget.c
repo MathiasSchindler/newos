@@ -101,24 +101,9 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
 }
 
-static size_t buffer_append_char(char *buffer, size_t buffer_size, size_t length, char ch) {
-    if (length + 1U < buffer_size) {
-        buffer[length++] = ch;
-        buffer[length] = '\0';
-    }
-    return length;
-}
+#define buffer_append_char tool_buffer_append_char
 
-static size_t buffer_append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text) {
-    size_t index = 0;
-
-    while (text != 0 && text[index] != '\0') {
-        length = buffer_append_char(buffer, buffer_size, length, text[index]);
-        index += 1U;
-    }
-
-    return length;
-}
+#define buffer_append_cstr tool_buffer_append_cstr
 
 static size_t find_line_end(const char *text, size_t start) {
     size_t index = start;

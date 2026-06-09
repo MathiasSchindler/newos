@@ -3,13 +3,12 @@
 #include "platform.h"
 #include "runtime.h"
 #include "ssh_core.h"
+#include "tool_util.h"
 
 #define SSH_FILE_TYPE_MASK 0170000U
 #define SSH_FILE_TYPE_REGULAR 0100000U
 
-static int ssh_local_is_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
-}
+#define ssh_local_is_space tool_ascii_is_token_space
 
 static int ssh_copy_text(char *dst, size_t dst_size, const char *src, size_t src_length) {
     size_t i;

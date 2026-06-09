@@ -49,9 +49,7 @@ static int read_response_file(const char *path, char **buffer_out) {
     return 0;
 }
 
-static int response_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
-}
+#define response_space tool_ascii_is_token_space
 
 static int append_expanded_arg(const char *program_name,
                                const char *arg,

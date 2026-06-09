@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "tool_util.h"
 
 #define PRINTF_REPEAT_BUFFER_SIZE 128U
 
@@ -177,28 +178,8 @@ static void format_unsigned(unsigned long long value, unsigned int base, int upp
     buffer[i] = '\0';
 }
 
-static int append_char_to_buffer(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
-    if (*length_io + 1U >= buffer_size) {
-        return -1;
-    }
-    buffer[*length_io] = ch;
-    *length_io += 1U;
-    buffer[*length_io] = '\0';
-    return 0;
-}
-
-static int append_text_to_buffer(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
-    size_t index = 0;
-
-    while (text[index] != '\0') {
-        if (append_char_to_buffer(buffer, buffer_size, length_io, text[index]) != 0) {
-            return -1;
-        }
-        index += 1U;
-    }
-
-    return 0;
-}
+#define append_char_to_buffer tool_buffer_append_char_checked
+#define append_text_to_buffer tool_buffer_append_text_checked
 
 static int write_repeated_char(char ch, int count) {
     char buffer[PRINTF_REPEAT_BUFFER_SIZE];

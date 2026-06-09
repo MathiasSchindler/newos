@@ -126,22 +126,9 @@ static int buffer_append(WtfBuffer *buffer, const char *data, size_t size) {
     return 0;
 }
 
-static size_t append_char(char *buffer, size_t buffer_size, size_t length, char ch) {
-    if (length + 1U < buffer_size) {
-        buffer[length++] = ch;
-        buffer[length] = '\0';
-    }
-    return length;
-}
+#define append_char tool_buffer_append_char
 
-static size_t append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text) {
-    size_t index = 0U;
-    while (text != 0 && text[index] != '\0') {
-        length = append_char(buffer, buffer_size, length, text[index]);
-        index += 1U;
-    }
-    return length;
-}
+#define append_cstr tool_buffer_append_cstr
 
 static int parse_http_url(const char *text, WtfUrl *url) {
     size_t index = 0U;

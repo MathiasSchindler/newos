@@ -61,11 +61,11 @@ static int shell_grow_string_array(char ***items_io, size_t *capacity_io, size_t
 }
 
 int sh_is_name_start_char(char ch) {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
+    return tool_ascii_is_identifier_start(ch);
 }
 
 int sh_is_name_char(char ch) {
-    return sh_is_name_start_char(ch) || (ch >= '0' && ch <= '9');
+    return tool_ascii_is_identifier_char(ch);
 }
 
 void sh_add_history_entry(const char *line) {

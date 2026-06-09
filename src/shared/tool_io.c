@@ -387,7 +387,7 @@ int tool_prompt_yes_no(const char *message, const char *path) {
     return answer == 'y' || answer == 'Y';
 }
 
-static size_t tool_buffer_append_char(char *buffer, size_t buffer_size, size_t length, char ch) {
+size_t tool_buffer_append_char(char *buffer, size_t buffer_size, size_t length, char ch) {
     if (buffer_size == 0) {
         return 0;
     }
@@ -403,7 +403,7 @@ static size_t tool_buffer_append_char(char *buffer, size_t buffer_size, size_t l
     return length;
 }
 
-static size_t tool_buffer_append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text) {
+size_t tool_buffer_append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text) {
     size_t i = 0;
 
     while (text != 0 && text[i] != '\0') {
@@ -412,6 +412,13 @@ static size_t tool_buffer_append_cstr(char *buffer, size_t buffer_size, size_t l
     }
 
     return length;
+}
+
+size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, unsigned long long value) {
+    char digits[32];
+
+    rt_unsigned_to_string(value, digits, sizeof(digits));
+    return tool_buffer_append_cstr(buffer, buffer_size, length, digits);
 }
 
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size) {
@@ -652,6 +659,18 @@ char tool_ascii_tolower(char ch) {
     return ch;
 }
 
+int tool_ascii_is_token_space(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+int tool_ascii_is_identifier_start(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
+}
+
+int tool_ascii_is_identifier_char(char ch) {
+    return tool_ascii_is_identifier_start(ch) || (ch >= '0' && ch <= '9');
+}
+
 int tool_str_equal_ignore_case_ascii(const char *left, const char *right) {
     size_t index = 0U;
 
@@ -680,4 +699,33 @@ int tool_text_is_decimal(const char *text) {
         index += 1U;
     }
     return 1;
+}
+
+int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
+    if (*length_io + 1U >= buffer_size) {
+        return -1;
+    }
+    buffer[*length_io] = ch;
+    *length_io += 1U;
+    buffer[*length_io] = '\0';
+    return 0;
+}
+
+int tool_buffer_append_text_checked(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
+    size_t index = 0U;
+
+    while (text[index] != '\0') {
+        if (tool_buffer_append_char_checked(buffer, buffer_size, length_io, text[index]) != 0) {
+            return -1;
+        }
+        index += 1U;
+    }
+    return 0;
+}
+
+int tool_buffer_append_uint_checked(char *buffer, size_t buffer_size, size_t *length_io, unsigned long long value) {
+    char text[32];
+
+    rt_unsigned_to_string(value, text, sizeof(text));
+    return tool_buffer_append_text_checked(buffer, buffer_size, length_io, text);
 }

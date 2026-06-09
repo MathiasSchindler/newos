@@ -508,15 +508,7 @@ static int find_page_in_section(const char *man_root, const char *section, const
     return tool_path_exists(path_out) ? 0 : -1;
 }
 
-static int buffer_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
-    if (*length_io + 1U >= buffer_size) {
-        return -1;
-    }
-    buffer[*length_io] = ch;
-    *length_io += 1U;
-    buffer[*length_io] = '\0';
-    return 0;
-}
+#define buffer_append_char tool_buffer_append_char_checked
 
 static void trim_range(const char **start_io, const char **end_io) {
     while (*start_io < *end_io && ((**start_io == ' ') || (**start_io == '\t'))) {

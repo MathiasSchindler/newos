@@ -8,13 +8,9 @@
 
 #include "awk_impl.h"
 
-static int is_identifier_char(char ch) {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
-}
+#define is_identifier_char tool_ascii_is_identifier_char
 
-static int is_identifier_start(char ch) {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
-}
+#define is_identifier_start tool_ascii_is_identifier_start
 
 static int starts_with_keyword(const char *text, size_t index, const char *keyword) {
     size_t i = 0;

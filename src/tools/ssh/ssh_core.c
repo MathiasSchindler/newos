@@ -1,10 +1,9 @@
 #include "ssh_core.h"
 #include "crypto/sha256.h"
 #include "runtime.h"
+#include "tool_util.h"
 
-static int ssh_is_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
-}
+#define ssh_is_space tool_ascii_is_token_space
 
 static int ssh_string_equals_cstr(const unsigned char *data, size_t length, const char *text) {
     size_t i = 0;

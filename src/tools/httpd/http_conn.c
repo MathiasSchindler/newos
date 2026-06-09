@@ -1,31 +1,13 @@
 #include "httpd_impl.h"
 
 #include "runtime.h"
+#include "tool_util.h"
 
-static size_t httpd_append_char(char *buffer, size_t buffer_size, size_t used, char ch) {
-    if (used + 1U < buffer_size) {
-        buffer[used++] = ch;
-        buffer[used] = '\0';
-    }
-    return used;
-}
+#define httpd_append_char tool_buffer_append_char
 
-static size_t httpd_append_text(char *buffer, size_t buffer_size, size_t used, const char *text) {
-    size_t index = 0U;
+#define httpd_append_text tool_buffer_append_cstr
 
-    while (text != NULL && text[index] != '\0') {
-        used = httpd_append_char(buffer, buffer_size, used, text[index]);
-        index += 1U;
-    }
-    return used;
-}
-
-static size_t httpd_append_uint(char *buffer, size_t buffer_size, size_t used, unsigned long long value) {
-    char number[32];
-
-    rt_unsigned_to_string(value, number, sizeof(number));
-    return httpd_append_text(buffer, buffer_size, used, number);
-}
+#define httpd_append_uint tool_buffer_append_uint
 
 static int httpd_request_complete(const char *buffer, size_t length) {
     size_t index;

@@ -233,37 +233,9 @@ static void write_right_cell(const char *text, size_t width) {
     (void)rt_write_char(1, ' ');
 }
 
-static size_t append_char(char *buffer, size_t buffer_size, size_t length, char ch) {
-    if (buffer_size == 0U) {
-        return 0U;
-    }
-
-    if (length + 1U < buffer_size) {
-        buffer[length++] = ch;
-        buffer[length] = '\0';
-    } else {
-        buffer[buffer_size - 1U] = '\0';
-    }
-
-    return length;
-}
-
-static size_t append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text) {
-    size_t i = 0;
-
-    while (text != NULL && text[i] != '\0') {
-        length = append_char(buffer, buffer_size, length, text[i]);
-        i += 1U;
-    }
-
-    return length;
-}
-
-static size_t append_uint(char *buffer, size_t buffer_size, size_t length, unsigned long long value) {
-    char digits[32];
-    rt_unsigned_to_string(value, digits, sizeof(digits));
-    return append_cstr(buffer, buffer_size, length, digits);
-}
+#define append_char tool_buffer_append_char
+#define append_cstr tool_buffer_append_cstr
+#define append_uint tool_buffer_append_uint
 
 static void format_uptime_compact(unsigned long long total_seconds, char *buffer, size_t buffer_size) {
     unsigned long long days = total_seconds / 86400ULL;

@@ -15,13 +15,9 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-F SEP] [-v VAR=VALUE] [-f PROGRAM_FILE]... ['program'] [file ...]");
 }
 
-static int is_identifier_start(char ch) {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
-}
+#define is_identifier_start tool_ascii_is_identifier_start
 
-static int is_identifier_char(char ch) {
-    return is_identifier_start(ch) || (ch >= '0' && ch <= '9');
-}
+#define is_identifier_char tool_ascii_is_identifier_char
 
 static int append_program_text(char *buffer, size_t *length, size_t capacity, const char *text) {
     size_t i = 0;

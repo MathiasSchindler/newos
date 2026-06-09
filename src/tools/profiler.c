@@ -76,9 +76,7 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  0000000000401000 T function_name\n");
 }
 
-static int is_space_char(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
-}
+#define is_space_char tool_ascii_is_token_space
 
 static int hex_value(char ch, unsigned int *value_out) {
     if (ch >= '0' && ch <= '9') {

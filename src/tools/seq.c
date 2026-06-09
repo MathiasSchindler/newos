@@ -27,27 +27,8 @@ typedef struct {
     char suffix[SEQ_LITERAL_CAPACITY];
 } FormatSpec;
 
-static int append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
-    if (*length_io + 1U >= buffer_size) {
-        return -1;
-    }
-    buffer[*length_io] = ch;
-    *length_io += 1U;
-    buffer[*length_io] = '\0';
-    return 0;
-}
-
-static int append_text(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
-    size_t index = 0U;
-
-    while (text[index] != '\0') {
-        if (append_char(buffer, buffer_size, length_io, text[index]) != 0) {
-            return -1;
-        }
-        index += 1U;
-    }
-    return 0;
-}
+#define append_char tool_buffer_append_char_checked
+#define append_text tool_buffer_append_text_checked
 
 static int parse_uint_limited(const char *text, size_t *index_io, int *value_out) {
     size_t index = *index_io;

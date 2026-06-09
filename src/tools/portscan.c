@@ -317,29 +317,8 @@ static void escape_banner(const unsigned char *raw, unsigned int raw_length, cha
     }
 }
 
-static int append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
-    if (*length_io + 1U >= buffer_size) {
-        return -1;
-    }
-    buffer[*length_io] = ch;
-    *length_io += 1U;
-    buffer[*length_io] = '\0';
-    return 0;
-}
-
-static int append_uint(char *buffer, size_t buffer_size, size_t *length_io, unsigned int value) {
-    char text[16];
-    size_t index = 0U;
-
-    rt_unsigned_to_string((unsigned long long)value, text, sizeof(text));
-    while (text[index] != '\0') {
-        if (append_char(buffer, buffer_size, length_io, text[index]) != 0) {
-            return -1;
-        }
-        ++index;
-    }
-    return 0;
-}
+#define append_char tool_buffer_append_char_checked
+#define append_uint tool_buffer_append_uint_checked
 
 static int copy_slice(char *buffer, size_t buffer_size, const char *start, size_t length) {
     size_t index = 0U;
