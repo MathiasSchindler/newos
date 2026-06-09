@@ -52,6 +52,19 @@ static int grep_use_color(const GrepOptions *options) {
     return tool_should_use_color_fd(1, options->color_mode);
 }
 
+static int grep_can_use_simple_output(const GrepOptions *options, int show_label) {
+    return !show_label &&
+           !options->show_line_no &&
+           !options->invert_match &&
+           !options->count_only &&
+           !options->quiet &&
+           !options->list_files &&
+           !options->only_matching &&
+           options->before_context == 0ULL &&
+           options->after_context == 0ULL &&
+           !grep_use_color(options);
+}
+
 static int write_plain_segment(const char *text, size_t length) {
     return length == 0U ? 0 : rt_write_all(1, text, length);
 }
@@ -573,6 +586,7 @@ static int grep_stream(int fd,
                        int *matched_out) {
     char chunk[16384];
     char line[GREP_LINE_CAPACITY];
+    ToolOutputBuffer simple_output;
     char before_lines[GREP_CONTEXT_CAPACITY][GREP_LINE_CAPACITY];
     unsigned long long before_line_numbers[GREP_CONTEXT_CAPACITY];
     size_t line_len = 0;
@@ -586,6 +600,51 @@ static int grep_stream(int fd,
     int listed = 0;
     int printed_any_output = 0;
     long bytes_read;
+
+    if (grep_can_use_simple_output(options, show_label)) {
+        tool_output_buffer_init(&simple_output, 1);
+        while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
+            long i;
+
+            for (i = 0; i < bytes_read; ++i) {
+                char ch = chunk[i];
+
+                if (ch == '\n') {
+                    size_t start = 0U;
+                    size_t end = 0U;
+
+                    line[line_len] = '\0';
+                    if (find_next_match(options, pattern, line, 0U, &start, &end)) {
+                        matched = 1;
+                        if (tool_output_buffer_write_cstr(&simple_output, line) != 0 ||
+                            tool_output_buffer_write_char(&simple_output, '\n') != 0) {
+                            return -1;
+                        }
+                    }
+                    line_len = 0U;
+                } else if (line_len + 1U < sizeof(line)) {
+                    line[line_len++] = ch;
+                }
+            }
+        }
+        if (bytes_read < 0) return -1;
+        if (line_len > 0U) {
+            size_t start = 0U;
+            size_t end = 0U;
+
+            line[line_len] = '\0';
+            if (find_next_match(options, pattern, line, 0U, &start, &end)) {
+                matched = 1;
+                if (tool_output_buffer_write_cstr(&simple_output, line) != 0 ||
+                    tool_output_buffer_write_char(&simple_output, '\n') != 0) {
+                    return -1;
+                }
+            }
+        }
+        if (tool_output_buffer_flush(&simple_output) != 0) return -1;
+        if (matched_out != 0) *matched_out = matched;
+        return 0;
+    }
 
     if (options->before_context > GREP_CONTEXT_CAPACITY) {
         before_capacity = GREP_CONTEXT_CAPACITY;

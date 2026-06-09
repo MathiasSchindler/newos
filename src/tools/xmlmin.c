@@ -5,6 +5,7 @@
 static int minify_one(const char *path) {
     XmlParser parser;
     XmlToken token;
+    ToolOutputBuffer output;
     char *input_buffer;
     size_t length;
     int result;
@@ -13,11 +14,19 @@ static int minify_one(const char *path) {
         return 1;
     }
     xml_parser_init(&parser, input_buffer, length);
+    tool_output_buffer_init(&output, 1);
     while ((result = xml_next_token(&parser, &token)) > 0) {
         if (token.type == XML_TOKEN_TEXT && token.text_is_blank) {
             continue;
         }
-        xml_write_raw(1, token.raw, token.raw_length);
+        if (tool_output_buffer_write(&output, token.raw, token.raw_length) != 0) {
+            xml_free_document(input_buffer);
+            return 1;
+        }
+    }
+    if (tool_output_buffer_flush(&output) != 0) {
+        xml_free_document(input_buffer);
+        return 1;
     }
     if (result < 0 || xml_parse_complete(&parser) != 0) {
         xml_report_error("xmlmin", path, &parser);

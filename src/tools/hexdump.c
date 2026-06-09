@@ -2,8 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define HEXDUMP_IO_BUFFER_SIZE 4096U
-#define HEXDUMP_OUTPUT_BUFFER_SIZE 8192U
+#define HEXDUMP_IO_BUFFER_SIZE 16384U
+#define HEXDUMP_OUTPUT_BUFFER_SIZE 16384U
 
 typedef enum {
     HEXDUMP_FORMAT_CANONICAL,

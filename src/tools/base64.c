@@ -2,8 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define BASE64_BUFFER_SIZE 4096U
-#define BASE64_OUTPUT_BUFFER_SIZE 8192U
+#define BASE64_BUFFER_SIZE 16384U
+#define BASE64_OUTPUT_BUFFER_SIZE 16384U
 
 static const char BASE64_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -46,8 +46,37 @@ static int output_append(Base64Output *output, const unsigned char *data, size_t
 }
 
 static int output_append_char(Base64Output *output, char ch) {
-    unsigned char value = (unsigned char)ch;
-    return output_append(output, &value, 1U);
+    if (output->len == sizeof(output->data) && output_flush(output) != 0) {
+        return -1;
+    }
+    output->data[output->len++] = (unsigned char)ch;
+    return 0;
+}
+
+static int encode_append_char(Base64Output *output, char ch, int *column_io) {
+    if (output_append_char(output, ch) != 0) return -1;
+    *column_io += 1;
+    if (wrap_columns > 0 && *column_io >= wrap_columns) {
+        if (output_append_char(output, '\n') != 0) return -1;
+        *column_io = 0;
+    }
+    return 0;
+}
+
+static int encode_append_quad(Base64Output *output, const char out[4], int *column_io) {
+    if (wrap_columns <= 0 || *column_io + 4 < wrap_columns) {
+        if (output->len + 4U > sizeof(output->data) && output_flush(output) != 0) return -1;
+        output->data[output->len++] = (unsigned char)out[0];
+        output->data[output->len++] = (unsigned char)out[1];
+        output->data[output->len++] = (unsigned char)out[2];
+        output->data[output->len++] = (unsigned char)out[3];
+        *column_io += 4;
+        return 0;
+    }
+    return encode_append_char(output, out[0], column_io) != 0 ||
+           encode_append_char(output, out[1], column_io) != 0 ||
+           encode_append_char(output, out[2], column_io) != 0 ||
+           encode_append_char(output, out[3], column_io) != 0 ? -1 : 0;
 }
 
 static void print_usage(void) {
@@ -82,20 +111,12 @@ static int encode_fd(int fd) {
                 unsigned int b1 = carry[1];
                 unsigned int b2 = carry[2];
                 char out[4];
-                int j;
 
                 out[0] = BASE64_ALPHABET[(b0 >> 2U) & 0x3fU];
                 out[1] = BASE64_ALPHABET[((b0 << 4U) | (b1 >> 4U)) & 0x3fU];
                 out[2] = BASE64_ALPHABET[((b1 << 2U) | (b2 >> 6U)) & 0x3fU];
                 out[3] = BASE64_ALPHABET[b2 & 0x3fU];
-                for (j = 0; j < 4; ++j) {
-                    if (output_append_char(&output, out[j]) != 0) return -1;
-                    column += 1;
-                    if (wrap_columns > 0 && column >= wrap_columns) {
-                        if (output_append_char(&output, '\n') != 0) return -1;
-                        column = 0;
-                    }
-                }
+                if (encode_append_quad(&output, out, &column) != 0) return -1;
                 carry_count = 0;
             }
         }
@@ -106,20 +127,12 @@ static int encode_fd(int fd) {
             unsigned int b1 = carry_count > 1 ? carry[1] : 0U;
             unsigned int b2 = 0U;
             char out[4];
-            int j;
 
             out[0] = BASE64_ALPHABET[(b0 >> 2U) & 0x3fU];
             out[1] = BASE64_ALPHABET[((b0 << 4U) | (b1 >> 4U)) & 0x3fU];
             out[2] = carry_count > 1 ? BASE64_ALPHABET[((b1 << 2U) | (b2 >> 6U)) & 0x3fU] : '=';
             out[3] = '=';
-            for (j = 0; j < 4; ++j) {
-                if (output_append_char(&output, out[j]) != 0) return -1;
-                column += 1;
-                if (wrap_columns > 0 && column >= wrap_columns) {
-                    if (output_append_char(&output, '\n') != 0) return -1;
-                    column = 0;
-                }
-            }
+            if (encode_append_quad(&output, out, &column) != 0) return -1;
     }
     if (column != 0) {
         if (output_append_char(&output, '\n') != 0) return -1;
@@ -129,11 +142,16 @@ static int encode_fd(int fd) {
 
 static int decode_quad(Base64Output *output, const int values[4], int pads) {
     unsigned char out[3];
+    size_t length = (size_t)(3 - pads);
 
     out[0] = (unsigned char)((values[0] << 2U) | ((values[1] >> 4U) & 0x03U));
     out[1] = (unsigned char)(((values[1] & 0x0fU) << 4U) | ((values[2] >> 2U) & 0x0fU));
     out[2] = (unsigned char)(((values[2] & 0x03U) << 6U) | values[3]);
-    return output_append(output, out, (size_t)(3 - pads));
+    if (output->len + length > sizeof(output->data) && output_flush(output) != 0) return -1;
+    if (length > 0U) output->data[output->len++] = out[0];
+    if (length > 1U) output->data[output->len++] = out[1];
+    if (length > 2U) output->data[output->len++] = out[2];
+    return 0;
 }
 
 static int decode_fd(int fd) {

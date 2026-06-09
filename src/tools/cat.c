@@ -2,7 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define CAT_BUFFER_SIZE 8192U
+#define CAT_BUFFER_SIZE 16384U
 
 typedef struct {
     int number_all;

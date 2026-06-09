@@ -3,8 +3,8 @@
 #include "tool_util.h"
 
 #define OD_MAX_WIDTH 32U
-#define OD_IO_BUFFER_SIZE 4096U
-#define OD_OUTPUT_BUFFER_SIZE 8192U
+#define OD_IO_BUFFER_SIZE 16384U
+#define OD_OUTPUT_BUFFER_SIZE 16384U
 
 typedef enum {
     OD_ADDRESS_OCTAL,
@@ -112,7 +112,11 @@ static size_t append_address(char *dest, size_t pos, unsigned long long offset, 
 
 static size_t append_byte(char *dest, size_t pos, unsigned char value, OdOutputType type) {
     if (type == OD_TYPE_HEX_BYTE) {
-        return append_padded_base(dest, pos, value, 16U, 2U);
+        static const char digits[] = "0123456789abcdef";
+
+        dest[pos++] = digits[(value >> 4U) & 0x0fU];
+        dest[pos++] = digits[value & 0x0fU];
+        return pos;
     } else if (type == OD_TYPE_DECIMAL_BYTE || type == OD_TYPE_UNSIGNED_BYTE) {
         return append_padded_base(dest, pos, value, 10U, 3U);
     } else if (type == OD_TYPE_CHAR) {

@@ -57,6 +57,29 @@ and basic local network/build contracts.
   path on Linux. Running `make freestanding` alone is still useful when you
   only need to check the target build.
 
+## PERFORMANCE CHECKS
+
+For speed work, compare both hosted and freestanding binaries against the same
+fixtures, and keep the freestanding size goal visible throughout the pass. On
+macOS, compact project-linked binaries are rounded in coarse pages, so an
+unchanged final file size does not prove a change is size-free; also review the
+source-level code and data added by the optimization.
+
+Recent size-conscious wins came from:
+
+- batching output with `ToolOutputBuffer` in tools that write many small fields
+  or records, such as `sed` and `xmlmin`
+- adding narrow fast paths for common cases, such as plain literal regex search,
+  ASCII case-insensitive literal matching, and simple `.`-wildcard patterns
+- increasing streaming buffers to 16 KiB where stack use remains acceptable for
+  the tool, such as raw text and byte-formatting filters
+- using compact middle-ground tables only when they replace much slower loops,
+  such as the 16-entry CRC32 nibble table used by compression-related tools
+
+Avoid broad speedups that trade a large table or a much bigger generic runtime
+for a narrow benchmark result. Prefer benchmarked tool-local changes first, then
+promote helpers to `src/shared/` only when several tools use the same pattern.
+
 ## HOSTED VS FREESTANDING VALIDATION
 
 The hosted test path is the broadest behavior check because it is fast and

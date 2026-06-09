@@ -613,6 +613,37 @@ static int rg_use_color(const RgOptions *options) {
     return tool_should_use_color_fd(1, options->color_mode);
 }
 
+static int rg_write_uint_buffered(ToolOutputBuffer *output, unsigned long long value) {
+    char digits[32];
+
+    rt_unsigned_to_string(value, digits, sizeof(digits));
+    return tool_output_buffer_write_cstr(output, digits);
+}
+
+static int rg_can_use_simple_output(const RgOptions *options, int show_path) {
+    return !show_path &&
+           !options->column_numbers &&
+           !options->invert_match &&
+           !options->count_only &&
+           !options->quiet &&
+           !options->files_with_matches &&
+           !options->files_without_match &&
+           !options->only_matching &&
+           !options->heading &&
+           !options->stats &&
+           !options->has_max_count &&
+           !rg_use_color(options);
+}
+
+static int rg_write_simple_line(ToolOutputBuffer *output, const RgOptions *options, unsigned long long line_no, const char *line) {
+    if (options->line_numbers &&
+        (rg_write_uint_buffered(output, line_no) != 0 || tool_output_buffer_write_char(output, ':') != 0)) {
+        return -1;
+    }
+    return tool_output_buffer_write_cstr(output, line) != 0 ||
+           tool_output_buffer_write_char(output, '\n') != 0 ? -1 : 0;
+}
+
 static int write_segment(const char *text, size_t length) {
     return length == 0U ? 0 : rt_write_all(1, text, length);
 }
@@ -783,7 +814,7 @@ static int process_rg_line(RgOptions *options,
         occurrences = line_matches ? 1ULL : 0ULL;
         start = 0U;
     } else if (line_matches) {
-        occurrences = count_line_matches(options, line);
+        occurrences = options->stats ? count_line_matches(options, line) : 1ULL;
     }
     if (!line_matches) return 0;
 
@@ -819,6 +850,7 @@ static int rg_stream_file(int fd,
                           int *matched_out) {
     char chunk[16384];
     char line[RG_LINE_CAPACITY];
+    ToolOutputBuffer simple_output;
     size_t line_len = 0U;
     unsigned long long line_no = 1ULL;
     unsigned long long match_count = 0ULL;
@@ -826,6 +858,53 @@ static int rg_stream_file(int fd,
     int matched = 0;
     int stop = 0;
     long bytes_read;
+
+    if (rg_can_use_simple_output(options, show_path)) {
+        tool_output_buffer_init(&simple_output, 1);
+        while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
+            long i;
+
+            for (i = 0; i < bytes_read; ++i) {
+                char ch = chunk[i];
+                if (ch == '\0') {
+                    if (matched_out != 0) *matched_out = 0;
+                    return 0;
+                }
+                if (ch == '\n') {
+                    size_t start = 0U;
+                    size_t end = 0U;
+
+                    line[line_len] = '\0';
+                    if (find_next_match(options, line, 0U, &start, &end)) {
+                        matched = 1;
+                        if (rg_write_simple_line(&simple_output, options, line_no, line) != 0) {
+                            return -1;
+                        }
+                    }
+                    line_len = 0U;
+                    line_no += 1ULL;
+                } else if (line_len + 1U < sizeof(line)) {
+                    line[line_len++] = ch;
+                }
+            }
+        }
+        if (bytes_read < 0) return -1;
+        if (line_len > 0U) {
+            size_t start = 0U;
+            size_t end = 0U;
+
+            line[line_len] = '\0';
+            if (find_next_match(options, line, 0U, &start, &end)) {
+                matched = 1;
+                if (rg_write_simple_line(&simple_output, options, line_no, line) != 0) {
+                    return -1;
+                }
+            }
+        }
+        if (tool_output_buffer_flush(&simple_output) != 0) return -1;
+        if (matched_out != 0) *matched_out = matched;
+        return 0;
+    }
 
     while (!stop && (bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
         long i;

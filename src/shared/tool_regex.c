@@ -8,6 +8,8 @@ typedef struct {
 
 #define TOOL_REGEX_REPEAT_UNBOUNDED (~0ULL)
 
+static size_t tool_regex_decode_codepoint(const char *text, unsigned int *codepoint_out);
+
 static int tool_regex_is_utf8_continuation(unsigned char ch) {
     return (ch & 0xc0U) == 0x80U;
 }
@@ -38,10 +40,37 @@ static int tool_regex_is_plain_replacement(const char *replacement) {
     return 1;
 }
 
+static int tool_regex_is_simple_dot_pattern(const char *pattern) {
+    size_t index = 0U;
+    int saw_dot = 0;
+
+    while (pattern[index] != '\0') {
+        char ch = pattern[index];
+        if (((unsigned char)ch & 0x80U) != 0U ||
+            ch == '\\' || ch == '^' || ch == '$' || ch == '*' ||
+            ch == '+' || ch == '?' || ch == '{' || ch == '[' || ch == '(' ||
+            ch == '|') {
+            return 0;
+        }
+        if (ch == '.') saw_dot = 1;
+        index += 1U;
+    }
+    return saw_dot;
+}
+
+static int tool_regex_literal_byte_equal(unsigned char pattern_ch, unsigned char text_ch, int ignore_case) {
+    if (ignore_case) {
+        if (pattern_ch >= (unsigned char)'A' && pattern_ch <= (unsigned char)'Z') pattern_ch = (unsigned char)(pattern_ch - (unsigned char)'A' + (unsigned char)'a');
+        if (text_ch >= (unsigned char)'A' && text_ch <= (unsigned char)'Z') text_ch = (unsigned char)(text_ch - (unsigned char)'A' + (unsigned char)'a');
+    }
+    return pattern_ch == text_ch;
+}
+
 static int tool_regex_search_literal(const char *pattern,
                                      size_t pattern_len,
                                      const char *text,
                                      size_t search_start,
+                                     int ignore_case,
                                      size_t *start_out,
                                      size_t *end_out,
                                      ToolRegexCaptures *captures_out) {
@@ -61,9 +90,10 @@ static int tool_regex_search_literal(const char *pattern,
 
     first = (unsigned char)pattern[0];
     while (text[pos] != '\0') {
-        if ((unsigned char)text[pos] == first) {
+        if (tool_regex_literal_byte_equal(first, (unsigned char)text[pos], ignore_case)) {
             size_t index = 1U;
-            while (index < pattern_len && text[pos + index] != '\0' && text[pos + index] == pattern[index]) {
+            while (index < pattern_len && text[pos + index] != '\0' &&
+                   tool_regex_literal_byte_equal((unsigned char)pattern[index], (unsigned char)text[pos + index], ignore_case)) {
                 index += 1U;
             }
             if (index == pattern_len) {
@@ -78,6 +108,59 @@ static int tool_regex_search_literal(const char *pattern,
             }
         }
         pos += 1U;
+    }
+    return 0;
+}
+
+static int tool_regex_match_simple_dot_at(const char *pattern, const char *text, size_t text_start, int ignore_case, size_t *end_out) {
+    size_t pattern_pos = 0U;
+    size_t text_pos = text_start;
+
+    while (pattern[pattern_pos] != '\0') {
+        unsigned char pattern_ch = (unsigned char)pattern[pattern_pos];
+
+        if (text[text_pos] == '\0') return 0;
+        if (pattern_ch == (unsigned char)'.') {
+            size_t advance = ((unsigned char)text[text_pos] < 0x80U) ? 1U : tool_regex_decode_codepoint(text + text_pos, 0);
+            text_pos += advance > 0U ? advance : 1U;
+        } else {
+            if (!tool_regex_literal_byte_equal(pattern_ch, (unsigned char)text[text_pos], ignore_case)) return 0;
+            text_pos += 1U;
+        }
+        pattern_pos += 1U;
+    }
+    *end_out = text_pos;
+    return 1;
+}
+
+static int tool_regex_search_simple_dot(const char *pattern,
+                                        const char *text,
+                                        size_t search_start,
+                                        int ignore_case,
+                                        size_t *start_out,
+                                        size_t *end_out,
+                                        ToolRegexCaptures *captures_out) {
+    size_t pos = search_start;
+
+    while (text[pos] != '\0') {
+        size_t end = 0U;
+
+        if (tool_regex_match_simple_dot_at(pattern, text, pos, ignore_case, &end)) {
+            *start_out = pos;
+            *end_out = end;
+            if (captures_out != 0) {
+                rt_memset(captures_out, 0, sizeof(*captures_out));
+                captures_out->starts[0] = text + pos;
+                captures_out->ends[0] = text + end;
+            }
+            return 1;
+        }
+        if (tool_regex_is_utf8_continuation((unsigned char)text[pos])) {
+            pos += 1U;
+        } else {
+            size_t advance = tool_regex_decode_codepoint(text + pos, 0);
+            pos += advance > 0U ? advance : 1U;
+        }
     }
     return 0;
 }
@@ -1091,8 +1174,11 @@ static int tool_regex_search_internal(const char *pattern,
         return 0;
     }
     pattern_end = rt_strlen(pattern);
-    if (!ignore_case && tool_regex_is_plain_literal(pattern)) {
-        return tool_regex_search_literal(pattern, pattern_end, text, search_start, start_out, end_out, captures_out);
+    if (tool_regex_is_plain_literal(pattern)) {
+        return tool_regex_search_literal(pattern, pattern_end, text, search_start, ignore_case, start_out, end_out, captures_out);
+    }
+    if (tool_regex_is_simple_dot_pattern(pattern)) {
+        return tool_regex_search_simple_dot(pattern, text, search_start, ignore_case, start_out, end_out, captures_out);
     }
 
     while (1) {
@@ -1170,7 +1256,7 @@ static int tool_regex_replace_literal(const char *pattern,
         size_t match_start = 0U;
         size_t match_end = 0U;
 
-        if (!tool_regex_search_literal(pattern, pattern_len, input, in_pos, &match_start, &match_end, 0)) break;
+        if (!tool_regex_search_literal(pattern, pattern_len, input, in_pos, 0, &match_start, &match_end, 0)) break;
         if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, match_start - in_pos) != 0 ||
             tool_regex_append_text(output, output_size, &out_pos, replacement, replacement_len) != 0) {
             return -1;
