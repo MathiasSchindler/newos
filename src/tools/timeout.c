@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"

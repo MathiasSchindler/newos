@@ -13,7 +13,7 @@ timeout [--preserve-status] [-s SIGNAL|--signal SIGNAL]
 
 ## DESCRIPTION
 
-timeout executes COMMAND with its ARGs and sends it a signal if it has not exited within DURATION. The default signal is TERM. An optional kill signal can be sent as a backstop after a further delay.
+timeout executes COMMAND with its ARGs and sends it a signal if it has not exited within DURATION. The default signal is TERM. An optional KILL signal can be sent as a backstop after a further delay.
 
 ## CURRENT CAPABILITIES
 
@@ -27,14 +27,12 @@ timeout executes COMMAND with its ARGs and sends it a signal if it has not exite
 - `--preserve-status` — exit with the same status as the child even when a timeout occurred (instead of exit 124)
 - `-s SIGNAL` / `--signal SIGNAL` — signal to send on timeout; SIGNAL may be a name (`TERM`, `HUP`, …) or a number
 - `-k DURATION` / `--kill-after DURATION` — send SIGKILL after DURATION if the command is still running after the primary signal
-- `DURATION` — time in seconds; may include suffix `s` (seconds), `m` (minutes), `h` (hours), `d` (days), or decimal fractions (e.g. `1.5`)
+- `DURATION` — time in seconds by default; may include suffix `ms` (milliseconds), `s` (seconds), `m` (minutes), `h` (hours), `d` (days), or decimal fractions (e.g. `1.5`)
 
 ## LIMITATIONS
 
-- no `--foreground` option for use in shell pipelines
 - timeout accuracy depends on the platform timer resolution; sub-millisecond durations are not guaranteed
-- no `--preserve-status` or `--kill-after` compatibility options are
-  implemented
+- no `--foreground` option for use in shell pipelines
 - signal delivery and child cleanup depend on platform process-group support
 
 ## EXAMPLES
