@@ -500,52 +500,12 @@ static int ssh_prompt_password(const char *user, const char *host, char *passwor
     return used == 0U ? -1 : 0;
 }
 
-static void ssh_sha256_update_u32be(CryptoSha256Context *ctx, unsigned int value) {
-    unsigned char tmp[4];
-    ssh_store_be32(tmp, value);
-    crypto_sha256_update(ctx, tmp, sizeof(tmp));
-}
-
-static void ssh_sha256_update_string(CryptoSha256Context *ctx, const unsigned char *data, size_t len) {
-    ssh_sha256_update_u32be(ctx, (unsigned int)len);
-    if (len != 0U) {
-        crypto_sha256_update(ctx, data, len);
-    }
-}
-
-static void ssh_sha256_update_cstring(CryptoSha256Context *ctx, const char *text) {
-    ssh_sha256_update_string(ctx, (const unsigned char *)text, rt_strlen(text));
-}
-
 static void ssh_sha256_update_view(CryptoSha256Context *ctx, const SshStringView *view) {
     if (view == 0) {
-        ssh_sha256_update_u32be(ctx, 0U);
+        ssh_sha256_update_u32(ctx, 0U);
         return;
     }
     ssh_sha256_update_string(ctx, view->data, view->length);
-}
-
-static void ssh_sha256_update_mpint_bytes(CryptoSha256Context *ctx, const unsigned char *bytes, size_t len) {
-    size_t start = 0U;
-    size_t used;
-    unsigned char zero = 0U;
-
-    while (start < len && bytes[start] == 0U) {
-        start += 1U;
-    }
-    used = len - start;
-    if (used == 0U) {
-        ssh_sha256_update_u32be(ctx, 0U);
-        return;
-    }
-
-    if ((bytes[start] & 0x80U) != 0U) {
-        ssh_sha256_update_u32be(ctx, (unsigned int)(used + 1U));
-        crypto_sha256_update(ctx, &zero, 1U);
-    } else {
-        ssh_sha256_update_u32be(ctx, (unsigned int)used);
-    }
-    crypto_sha256_update(ctx, bytes + start, used);
 }
 
 static int ssh_compute_curve25519_session_hash(

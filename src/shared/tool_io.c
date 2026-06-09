@@ -214,6 +214,13 @@ int tool_write_visible_line(int fd, const char *text) {
     return rt_write_char(fd, '\n');
 }
 
+int tool_hex_value(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
 void tool_output_buffer_init(ToolOutputBuffer *output, int fd) {
     output->fd = fd;
     output->length = 0U;
@@ -419,6 +426,48 @@ size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, 
 
     rt_unsigned_to_string(value, digits, sizeof(digits));
     return tool_buffer_append_cstr(buffer, buffer_size, length, digits);
+}
+
+int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io) {
+    if (*length_io == 0U) {
+        return 0;
+    }
+    if (rt_write_all(fd, buffer, *length_io) != 0) {
+        return -1;
+    }
+    *length_io = 0U;
+    return 0;
+}
+
+int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size) {
+    if (data_size > buffer_size) {
+        if (tool_output_flush_buffer(fd, buffer, length_io) != 0) {
+            return -1;
+        }
+        return rt_write_all(fd, data, data_size);
+    }
+    if (*length_io + data_size > buffer_size && tool_output_flush_buffer(fd, buffer, length_io) != 0) {
+        return -1;
+    }
+    memcpy(buffer + *length_io, data, data_size);
+    *length_io += data_size;
+    return 0;
+}
+
+unsigned int tool_pager_page_lines(unsigned int default_lines) {
+    const char *text = platform_getenv("LINES");
+    unsigned long long value = 0;
+    unsigned int rows = 0U;
+
+    if (text != 0 && rt_parse_uint(text, &value) == 0 && value > 1ULL && value < 1000ULL) {
+        return (unsigned int)(value - 1ULL);
+    }
+
+    if (platform_get_terminal_size(1, &rows, 0) == 0 && rows > 1U && rows < 1000U) {
+        return rows - 1U;
+    }
+
+    return default_lines;
 }
 
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size) {
@@ -684,6 +733,50 @@ int tool_str_equal_ignore_case_ascii(const char *left, const char *right) {
         index += 1U;
     }
     return left[index] == '\0' && right[index] == '\0';
+}
+
+int tool_contains_case_insensitive(const char *text, const char *needle) {
+    size_t text_len = rt_strlen(text);
+    size_t needle_len = rt_strlen(needle);
+    size_t pos = 0U;
+
+    if (needle_len == 0U) {
+        return 1;
+    }
+
+    while (pos < text_len) {
+        size_t ti = pos;
+        size_t ni = 0U;
+        int matched = 1;
+
+        while (ni < needle_len) {
+            unsigned int lhs = 0U;
+            unsigned int rhs = 0U;
+
+            if (ti >= text_len || rt_utf8_decode(text, text_len, &ti, &lhs) != 0 ||
+                rt_utf8_decode(needle, needle_len, &ni, &rhs) != 0) {
+                matched = 0;
+                break;
+            }
+            if (rt_unicode_simple_fold(lhs) != rt_unicode_simple_fold(rhs)) {
+                matched = 0;
+                break;
+            }
+        }
+
+        if (matched) {
+            return 1;
+        }
+
+        {
+            unsigned int ignored = 0U;
+            if (rt_utf8_decode(text, text_len, &pos, &ignored) != 0) {
+                pos += 1U;
+            }
+        }
+    }
+
+    return 0;
 }
 
 int tool_text_is_decimal(const char *text) {

@@ -76,12 +76,7 @@ static int sshd_copy_arg(char *dst, size_t dst_size, const char *src, const char
     return 0;
 }
 
-static int sshd_hex_nibble(char ch) {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-}
+#define sshd_hex_nibble tool_hex_value
 
 static int sshd_parse_seed_text(const char *text, unsigned char seed[32]) {
     size_t len = rt_strlen(text);

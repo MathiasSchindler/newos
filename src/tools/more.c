@@ -32,65 +32,9 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-N] [-p PATTERN] [--color[=WHEN]] [+/PATTERN] [file ...]");
 }
 
-static unsigned int pager_page_lines(void) {
-    const char *text = platform_getenv("LINES");
-    unsigned long long value = 0;
-    unsigned int rows = 0U;
+#define pager_page_lines() tool_pager_page_lines(DEFAULT_PAGE_LINES)
 
-    if (text != 0 && rt_parse_uint(text, &value) == 0 && value > 1 && value < 1000) {
-        return (unsigned int)(value - 1);
-    }
-
-    if (platform_get_terminal_size(1, &rows, 0) == 0 && rows > 1U && rows < 1000U) {
-        return rows - 1U;
-    }
-
-    return DEFAULT_PAGE_LINES;
-}
-
-static int contains_case_insensitive(const char *text, const char *needle) {
-    size_t text_len = rt_strlen(text);
-    size_t needle_len = rt_strlen(needle);
-    size_t pos = 0U;
-
-    if (needle_len == 0U) {
-        return 1;
-    }
-
-    while (pos < text_len) {
-        size_t ti = pos;
-        size_t ni = 0U;
-        int matched = 1;
-
-        while (ni < needle_len) {
-            unsigned int lhs = 0U;
-            unsigned int rhs = 0U;
-
-            if (ti >= text_len || rt_utf8_decode(text, text_len, &ti, &lhs) != 0 ||
-                rt_utf8_decode(needle, needle_len, &ni, &rhs) != 0) {
-                matched = 0;
-                break;
-            }
-            if (rt_unicode_simple_fold(lhs) != rt_unicode_simple_fold(rhs)) {
-                matched = 0;
-                break;
-            }
-        }
-
-        if (matched) {
-            return 1;
-        }
-
-        {
-            unsigned int ignored = 0U;
-            if (rt_utf8_decode(text, text_len, &pos, &ignored) != 0) {
-                pos += 1U;
-            }
-        }
-    }
-
-    return 0;
-}
+#define contains_case_insensitive tool_contains_case_insensitive
 
 static int find_case_insensitive_match(const char *text, const char *needle, size_t *start_out, size_t *end_out) {
     size_t text_len = rt_strlen(text);

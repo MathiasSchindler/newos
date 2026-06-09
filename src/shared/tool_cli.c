@@ -98,6 +98,23 @@ int tool_starts_with(const char *text, const char *prefix) {
     return 1;
 }
 
+int tool_token_equals(const char *text, size_t text_length, const char *token) {
+    size_t index = 0U;
+
+    if (text == 0 || token == 0) {
+        return 0;
+    }
+
+    while (index < text_length && token[index] != '\0') {
+        if (text[index] != token[index]) {
+            return 0;
+        }
+        index += 1U;
+    }
+
+    return index == text_length && token[index] == '\0';
+}
+
 void tool_trim_whitespace(char *text) {
     size_t start = 0U;
     size_t end;

@@ -48,6 +48,48 @@ static int ssh_contains_colon(const char *text) {
     return 0;
 }
 
+void ssh_sha256_update_u32(CryptoSha256Context *ctx, unsigned int value) {
+    unsigned char tmp[4];
+    tmp[0] = (unsigned char)(value >> 24);
+    tmp[1] = (unsigned char)(value >> 16);
+    tmp[2] = (unsigned char)(value >> 8);
+    tmp[3] = (unsigned char)value;
+    crypto_sha256_update(ctx, tmp, sizeof(tmp));
+}
+
+void ssh_sha256_update_string(CryptoSha256Context *ctx, const unsigned char *data, size_t length) {
+    ssh_sha256_update_u32(ctx, (unsigned int)length);
+    if (length != 0U) {
+        crypto_sha256_update(ctx, data, length);
+    }
+}
+
+void ssh_sha256_update_cstring(CryptoSha256Context *ctx, const char *text) {
+    ssh_sha256_update_string(ctx, (const unsigned char *)text, rt_strlen(text));
+}
+
+void ssh_sha256_update_mpint_bytes(CryptoSha256Context *ctx, const unsigned char *bytes, size_t length) {
+    size_t start = 0U;
+    size_t used;
+    unsigned char zero = 0U;
+
+    while (start < length && bytes[start] == 0U) {
+        start += 1U;
+    }
+    used = length - start;
+    if (used == 0U) {
+        ssh_sha256_update_u32(ctx, 0U);
+        return;
+    }
+    if ((bytes[start] & 0x80U) != 0U) {
+        ssh_sha256_update_u32(ctx, (unsigned int)(used + 1U));
+        crypto_sha256_update(ctx, &zero, 1U);
+    } else {
+        ssh_sha256_update_u32(ctx, (unsigned int)used);
+    }
+    crypto_sha256_update(ctx, bytes + start, used);
+}
+
 static int ssh_is_restricted_text_char(unsigned char ch) {
     return ch < 33U || ch > 126U;
 }

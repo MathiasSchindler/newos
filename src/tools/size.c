@@ -39,17 +39,8 @@ typedef struct {
 #define read_u32_be tool_read_u32_be
 #define read_u64_le tool_read_u64_le
 
-static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)(size_object_base + offset), PLATFORM_SEEK_SET) < 0) {
-        return -1;
-    }
-    return archive_read_exact(fd, buffer, size);
-}
-
-static int read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) return -1;
-    return archive_read_exact(fd, buffer, size);
-}
+#define read_region(fd, offset, buffer, count) archive_read_region((fd), size_object_base, (offset), (buffer), (count))
+#define read_file_region archive_read_file_region
 
 static int select_macho_fat_slice(int fd, unsigned long long *offset_out, unsigned long long *size_out) {
     unsigned char header[8];

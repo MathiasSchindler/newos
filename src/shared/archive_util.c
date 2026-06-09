@@ -25,6 +25,17 @@ int archive_read_exact(int fd, unsigned char *buffer, size_t count) {
     return 0;
 }
 
+int archive_read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t count) {
+    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) {
+        return -1;
+    }
+    return archive_read_exact(fd, buffer, count);
+}
+
+int archive_read_region(int fd, unsigned long long base, unsigned long long offset, unsigned char *buffer, size_t count) {
+    return archive_read_file_region(fd, base + offset, buffer, count);
+}
+
 unsigned short archive_read_u16_le(const unsigned char *bytes) {
     return tool_read_u16_le(bytes);
 }

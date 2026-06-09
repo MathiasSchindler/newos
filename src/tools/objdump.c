@@ -212,17 +212,8 @@ static const char *pe_type_name(unsigned short characteristics) {
 
 #define copy_fixed_name tool_copy_printable_bytes
 
-static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)(objdump_object_base + offset), PLATFORM_SEEK_SET) < 0) {
-        return -1;
-    }
-    return archive_read_exact(fd, buffer, size);
-}
-
-static int read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) return -1;
-    return archive_read_exact(fd, buffer, size);
-}
+#define read_region(fd, offset, buffer, count) archive_read_region((fd), objdump_object_base, (offset), (buffer), (count))
+#define read_file_region archive_read_file_region
 
 static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
     unsigned char header[8];

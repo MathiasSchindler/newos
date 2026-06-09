@@ -103,35 +103,7 @@ static int resolve_shell_name(const char *name) {
     return -1;
 }
 
-static void set_self_dir(const char *argv0, char *buffer, size_t buffer_size) {
-    size_t len;
-    size_t i;
-
-    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0)) {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    len = rt_strlen(argv0);
-    if (len + 1U > buffer_size) {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    memcpy(buffer, argv0, len + 1U);
-    for (i = len; i > 0; --i) {
-        if (buffer[i - 1U] == '/') {
-            if (i == 1U) {
-                buffer[1] = '\0';
-            } else {
-                buffer[i - 1U] = '\0';
-            }
-            return;
-        }
-    }
-
-    rt_copy_string(buffer, buffer_size, ".");
-}
+#define set_self_dir tool_path_dirname
 
 static int search_in_list(const char *dirs, const char *name, char *buffer, size_t buffer_size) {
     size_t i = 0;

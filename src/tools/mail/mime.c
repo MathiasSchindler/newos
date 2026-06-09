@@ -1,6 +1,7 @@
 #include "mime.h"
 
 #include "runtime.h"
+#include "tool_util.h"
 
 #define MAIL_MIME_MAX_PARTS 16U
 
@@ -100,12 +101,7 @@ static void mail_mime_set_encoding(MailMimePart *part, const char *raw, size_t s
     }
 }
 
-static int mail_mime_hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-}
+#define mail_mime_hex_value tool_hex_value
 
 static int mail_mime_base64_value(char ch) {
     if (ch >= 'A' && ch <= 'Z') return ch - 'A';

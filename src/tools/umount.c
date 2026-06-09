@@ -9,18 +9,7 @@ static int mount_is_octal_digit(char ch) {
     return ch >= '0' && ch <= '7';
 }
 
-static void mount_copy_trimmed(char *buffer, size_t buffer_size, const char *text) {
-    size_t length = rt_strlen(text);
-
-    while (length > 1U && text[length - 1U] == '/') {
-        length -= 1U;
-    }
-    if (length + 1U > buffer_size) {
-        length = buffer_size - 1U;
-    }
-    memcpy(buffer, text, length);
-    buffer[length] = '\0';
-}
+#define mount_copy_trimmed tool_path_copy_trimmed
 
 static int mount_value_matches(const char *left, const char *right) {
     char normalized_left[UMOUNT_FIELD_CAPACITY];

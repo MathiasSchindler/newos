@@ -46,12 +46,7 @@ static int skip_cstring(int fd) {
     return 0;
 }
 
-static unsigned int read_u32_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] |
-           ((unsigned int)bytes[1] << 8) |
-           ((unsigned int)bytes[2] << 16) |
-           ((unsigned int)bytes[3] << 24);
-}
+#define read_u32_le tool_read_u32_le
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(input_path);

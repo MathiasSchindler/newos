@@ -25,45 +25,6 @@ typedef struct {
     unsigned int remote_max_packet;
 } SshdChannel;
 
-static void sshd_sha256_u32(CryptoSha256Context *ctx, unsigned int value) {
-    unsigned char tmp[4];
-    ssh_store_be32(tmp, value);
-    crypto_sha256_update(ctx, tmp, sizeof(tmp));
-}
-
-static void sshd_sha256_string(CryptoSha256Context *ctx, const unsigned char *data, size_t length) {
-    sshd_sha256_u32(ctx, (unsigned int)length);
-    if (length != 0U) {
-        crypto_sha256_update(ctx, data, length);
-    }
-}
-
-static void sshd_sha256_cstring(CryptoSha256Context *ctx, const char *text) {
-    sshd_sha256_string(ctx, (const unsigned char *)text, rt_strlen(text));
-}
-
-static void sshd_sha256_mpint(CryptoSha256Context *ctx, const unsigned char *bytes, size_t length) {
-    size_t start = 0U;
-    size_t used;
-    unsigned char zero = 0U;
-
-    while (start < length && bytes[start] == 0U) {
-        start += 1U;
-    }
-    used = length - start;
-    if (used == 0U) {
-        sshd_sha256_u32(ctx, 0U);
-        return;
-    }
-    if ((bytes[start] & 0x80U) != 0U) {
-        sshd_sha256_u32(ctx, (unsigned int)(used + 1U));
-        crypto_sha256_update(ctx, &zero, 1U);
-    } else {
-        sshd_sha256_u32(ctx, (unsigned int)used);
-    }
-    crypto_sha256_update(ctx, bytes + start, used);
-}
-
 static int sshd_compute_hash(
     const char *client_banner,
     const unsigned char *client_kex,
@@ -84,14 +45,14 @@ static int sshd_compute_hash(
         return -1;
     }
     crypto_sha256_init(&ctx);
-    sshd_sha256_cstring(&ctx, client_banner);
-    sshd_sha256_cstring(&ctx, SSH_SERVER_BANNER_TEXT);
-    sshd_sha256_string(&ctx, client_kex, client_kex_len);
-    sshd_sha256_string(&ctx, server_kex, server_kex_len);
-    sshd_sha256_string(&ctx, host_key_blob, host_key_blob_len);
-    sshd_sha256_string(&ctx, client_public, 32U);
-    sshd_sha256_string(&ctx, server_public, 32U);
-    sshd_sha256_mpint(&ctx, shared_secret, 32U);
+    ssh_sha256_update_cstring(&ctx, client_banner);
+    ssh_sha256_update_cstring(&ctx, SSH_SERVER_BANNER_TEXT);
+    ssh_sha256_update_string(&ctx, client_kex, client_kex_len);
+    ssh_sha256_update_string(&ctx, server_kex, server_kex_len);
+    ssh_sha256_update_string(&ctx, host_key_blob, host_key_blob_len);
+    ssh_sha256_update_string(&ctx, client_public, 32U);
+    ssh_sha256_update_string(&ctx, server_public, 32U);
+    ssh_sha256_update_mpint_bytes(&ctx, shared_secret, 32U);
     crypto_sha256_final(&ctx, out);
     crypto_secure_bzero(&ctx, sizeof(ctx));
     return 0;

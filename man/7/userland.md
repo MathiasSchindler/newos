@@ -91,8 +91,9 @@ multiple tools can reuse:
 
 - **tool_util.h** - common tool argument parsing, error reporting, and small
   direct mechanics that recur across tools, such as byte-order loads/stores,
-  fixed printable byte copies, ASCII string predicates, and path-name tests.
-  Keep these helpers boring and dependency-free; avoid moving command-specific
+  fixed printable byte copies, hex digit parsing, token equality, ASCII string
+  predicates, buffered output, whole-input reads, and path-name tests. Keep
+  these helpers boring and dependency-free; avoid moving command-specific
   policy or callback/context abstractions into the shared layer.
 
 - **simple_config.{c,h}** and **server_log.{c,h}** - small shared config and

@@ -1,6 +1,8 @@
 #ifndef NEWOS_SSH_CORE_H
 #define NEWOS_SSH_CORE_H
 
+#include "crypto/sha256.h"
+
 #include <stddef.h>
 
 #define SSH_DEFAULT_PORT 22U
@@ -100,6 +102,10 @@ int ssh_cursor_take_u8(SshCursor *cursor, unsigned char *value_out);
 int ssh_cursor_take_u32(SshCursor *cursor, unsigned int *value_out);
 int ssh_cursor_take_bytes(SshCursor *cursor, const unsigned char **data_out, size_t length);
 int ssh_cursor_take_string(SshCursor *cursor, SshStringView *view_out);
+void ssh_sha256_update_u32(CryptoSha256Context *ctx, unsigned int value);
+void ssh_sha256_update_string(CryptoSha256Context *ctx, const unsigned char *data, size_t length);
+void ssh_sha256_update_cstring(CryptoSha256Context *ctx, const char *text);
+void ssh_sha256_update_mpint_bytes(CryptoSha256Context *ctx, const unsigned char *bytes, size_t length);
 
 void ssh_builder_init(SshBuilder *builder, unsigned char *buffer, size_t capacity);
 int ssh_builder_put_u8(SshBuilder *builder, unsigned char value);

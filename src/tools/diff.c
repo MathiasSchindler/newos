@@ -23,9 +23,7 @@ static void diff_print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-u|-c] [-q] [-r] [-w] [-b] [-B] [-i] [--color[=WHEN]] file1 file2");
 }
 
-static int diff_use_color(const DiffOptions *options) {
-    return tool_should_use_color_fd(1, options->color_mode);
-}
+#define diff_use_color(options) tool_should_use_color_fd(1, (options)->color_mode)
 
 static void diff_write_line_styled(const DiffOptions *options, int style, const char *prefix, const char *line) {
     if (diff_use_color(options)) {

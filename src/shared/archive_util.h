@@ -6,6 +6,8 @@
 unsigned int archive_crc32_update(unsigned int crc, const unsigned char *data, size_t length);
 unsigned int archive_crc32_finish(unsigned int crc);
 int archive_read_exact(int fd, unsigned char *buffer, size_t count);
+int archive_read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t count);
+int archive_read_region(int fd, unsigned long long base, unsigned long long offset, unsigned char *buffer, size_t count);
 unsigned short archive_read_u16_le(const unsigned char *bytes);
 unsigned int archive_read_u32_le(const unsigned char *bytes);
 unsigned long long archive_read_u64_le(const unsigned char *bytes);

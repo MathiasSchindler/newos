@@ -600,9 +600,7 @@ static unsigned long long count_line_matches(const RgOptions *options, const cha
     return count;
 }
 
-static int rg_use_color(const RgOptions *options) {
-    return tool_should_use_color_fd(1, options->color_mode);
-}
+#define rg_use_color(options) tool_should_use_color_fd(1, (options)->color_mode)
 
 static int rg_write_uint_buffered(ToolOutputBuffer *output, unsigned long long value) {
     char digits[32];

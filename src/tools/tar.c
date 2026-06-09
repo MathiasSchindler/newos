@@ -172,18 +172,7 @@ static const char *tar_base_name(const char *path) {
     return (base[0] != '\0') ? base : "item";
 }
 
-static void tar_copy_trimmed_path(char *dst, size_t dst_size, const char *src) {
-    size_t len = rt_strlen(src);
-
-    while (len > 1 && src[len - 1] == '/') {
-        len -= 1;
-    }
-    if (len + 1 > dst_size) {
-        len = dst_size - 1;
-    }
-    memcpy(dst, src, len);
-    dst[len] = '\0';
-}
+#define tar_copy_trimmed_path tool_path_copy_trimmed
 
 static int tar_split_header_path(TarHeader *header, const char *stored_name) {
     char normalized[TAR_PATH_CAPACITY];
@@ -491,35 +480,7 @@ static int create_temp_file_near_archive(const char *archive_path_name,
     return *fd_out < 0 ? -1 : 0;
 }
 
-static void get_program_dir(const char *argv0, char *buffer, size_t buffer_size) {
-    size_t len;
-    size_t i;
-
-    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0)) {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    len = rt_strlen(argv0);
-    if (len + 1 > buffer_size) {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    memcpy(buffer, argv0, len + 1);
-    for (i = len; i > 0; --i) {
-        if (buffer[i - 1] == '/') {
-            if (i == 1) {
-                buffer[1] = '\0';
-            } else {
-                buffer[i - 1] = '\0';
-            }
-            return;
-        }
-    }
-
-    rt_copy_string(buffer, buffer_size, ".");
-}
+#define get_program_dir tool_path_dirname
 
 static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
     char dir[TAR_PATH_CAPACITY];

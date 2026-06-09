@@ -1,5 +1,6 @@
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define TR_SET_CAPACITY 512
 #define TR_IO_BUFFER_SIZE 8192U
@@ -24,18 +25,7 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-c] [-d] [-s] SET1 [SET2]");
 }
 
-static int class_name_equals(const char *name, size_t name_len, const char *literal) {
-    size_t i = 0U;
-
-    while (i < name_len && literal[i] != '\0') {
-        if (name[i] != literal[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return i == name_len && literal[i] == '\0';
-}
+#define class_name_equals tool_token_equals
 
 static int tr_is_upper(unsigned char ch) {
     return ch >= 'A' && ch <= 'Z';

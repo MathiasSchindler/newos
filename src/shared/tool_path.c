@@ -39,6 +39,58 @@ int tool_path_is_dash(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
 }
 
+void tool_path_dirname(const char *path, char *buffer, size_t buffer_size) {
+    size_t len;
+    size_t i;
+
+    if (path == 0 || path[0] == '\0' || !tool_path_has_separator(path)) {
+        rt_copy_string(buffer, buffer_size, ".");
+        return;
+    }
+
+    len = rt_strlen(path);
+    if (len + 1U > buffer_size) {
+        rt_copy_string(buffer, buffer_size, ".");
+        return;
+    }
+
+    memcpy(buffer, path, len + 1U);
+    for (i = len; i > 0U; --i) {
+        if (buffer[i - 1U] == '/') {
+            if (i == 1U) {
+                buffer[1] = '\0';
+            } else {
+                buffer[i - 1U] = '\0';
+            }
+            return;
+        }
+    }
+
+    rt_copy_string(buffer, buffer_size, ".");
+}
+
+void tool_path_copy_trimmed(char *buffer, size_t buffer_size, const char *path) {
+    size_t length;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return;
+    }
+    if (path == 0) {
+        buffer[0] = '\0';
+        return;
+    }
+
+    length = rt_strlen(path);
+    while (length > 1U && path[length - 1U] == '/') {
+        length -= 1U;
+    }
+    if (length + 1U > buffer_size) {
+        length = buffer_size - 1U;
+    }
+    memcpy(buffer, path, length);
+    buffer[length] = '\0';
+}
+
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size) {
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }

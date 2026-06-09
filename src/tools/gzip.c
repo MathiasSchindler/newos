@@ -26,35 +26,7 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
 
 #define is_dash_path tool_path_is_dash
 
-static void get_program_dir(const char *argv0, char *buffer, size_t buffer_size) {
-    size_t len;
-    size_t i;
-
-    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0)) {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    len = rt_strlen(argv0);
-    if (len + 1U > buffer_size) {
-        rt_copy_string(buffer, buffer_size, ".");
-        return;
-    }
-
-    memcpy(buffer, argv0, len + 1U);
-    for (i = len; i > 0; --i) {
-        if (buffer[i - 1] == '/') {
-            if (i == 1U) {
-                buffer[1] = '\0';
-            } else {
-                buffer[i - 1] = '\0';
-            }
-            return;
-        }
-    }
-
-    rt_copy_string(buffer, buffer_size, ".");
-}
+#define get_program_dir tool_path_dirname
 
 static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
     char dir[GZIP_PATH_CAPACITY];

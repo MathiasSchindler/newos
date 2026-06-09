@@ -24,35 +24,9 @@ typedef struct {
     size_t len;
 } HexdumpOutput;
 
-static int output_flush(HexdumpOutput *output) {
-    if (output->len == 0U) {
-        return 0;
-    }
-    if (rt_write_all(1, output->data, output->len) != 0) {
-        return -1;
-    }
-    output->len = 0U;
-    return 0;
-}
+#define output_flush(output) tool_output_flush_buffer(1, (unsigned char *)(output)->data, &(output)->len)
 
-static int output_append(HexdumpOutput *output, const char *data, size_t len) {
-    size_t i;
-
-    if (len > sizeof(output->data)) {
-        if (output_flush(output) != 0) {
-            return -1;
-        }
-        return rt_write_all(1, data, len);
-    }
-    if (output->len + len > sizeof(output->data) && output_flush(output) != 0) {
-        return -1;
-    }
-    for (i = 0U; i < len; ++i) {
-        output->data[output->len + i] = data[i];
-    }
-    output->len += len;
-    return 0;
-}
+#define output_append(output, source, length) tool_output_append_buffer(1, (unsigned char *)(output)->data, sizeof((output)->data), &(output)->len, (const unsigned char *)(source), (length))
 
 static size_t append_char(char *dest, size_t pos, char ch) {
     dest[pos++] = ch;

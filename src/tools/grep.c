@@ -48,9 +48,7 @@ static int print_count(const char *label, int show_label, unsigned long long cou
     return 0;
 }
 
-static int grep_use_color(const GrepOptions *options) {
-    return tool_should_use_color_fd(1, options->color_mode);
-}
+#define grep_use_color(options) tool_should_use_color_fd(1, (options)->color_mode)
 
 static int grep_can_use_simple_output(const GrepOptions *options, int show_label) {
     return !show_label &&

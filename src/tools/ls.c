@@ -237,9 +237,7 @@ static void filter_entries(PlatformDirEntry *entries, size_t *count_io, const Ls
     *count_io = output;
 }
 
-static int ls_use_color(const LsOptions *options) {
-    return tool_should_use_color_fd(1, options->color_mode);
-}
+#define ls_use_color(options) tool_should_use_color_fd(1, (options)->color_mode)
 
 static char classify_suffix(const PlatformDirEntry *entry, const LsOptions *options) {
     unsigned int file_type = entry->mode & LS_MODE_TYPE_MASK;
