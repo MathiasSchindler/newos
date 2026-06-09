@@ -47,6 +47,28 @@ startxref
 %%EOF
 EOF
 
+cat > "$WORK_DIR/array-filter.pdf" <<'EOF'
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Parent 2 0 R /Type /Page /MediaBox [0 0 612 792] /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 8 /Filter [/ASCII85Decode /FlateDecode] >>
+stream
+encoded!
+endstream
+endobj
+trailer
+<< /Root 1 0 R /Size 5 >>
+%%EOF
+EOF
+
 "${TEST_BIN_DIR}/pdfinfo" --plain "$WORK_DIR/sample.pdf" > "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/plain.txt" 'version=1.7' "pdfinfo --plain did not report version"
 assert_file_contains "$WORK_DIR/plain.txt" 'pages=1' "pdfinfo --plain did not count pages"
@@ -90,6 +112,9 @@ assert_file_contains "$WORK_DIR/json.txt" "\"modification_date\":\"D:20260609123
 assert_file_contains "$WORK_DIR/json.txt" '"modification_date_formatted":"2026-06-09 12:30:00 UTC+01:00"' "pdfinfo --json did not report formatted modification date"
 assert_file_contains "$WORK_DIR/json.txt" '"name":"FlateDecode"' "pdfinfo --json did not report filters"
 assert_file_contains "$WORK_DIR/json.txt" '"name":"WinAnsiEncoding"' "pdfinfo --json did not report encodings"
+
+"${TEST_BIN_DIR}/pdfinfo" "$WORK_DIR/array-filter.pdf" > "$WORK_DIR/array-filter.txt"
+assert_file_contains "$WORK_DIR/array-filter.txt" 'filters: ASCII85Decode(1), FlateDecode(1)' "pdfinfo did not advance through filter arrays"
 
 assert_file_contains "$WORK_DIR/sample.pdf" '%PDF-1.7' "test fixture sanity check failed"
 assert_text_equals "$(cat "$WORK_DIR/sample.pdf" | "${TEST_BIN_DIR}/pdfinfo" --plain)" "stdin version=1.7 bytes=$(wc -c < "$WORK_DIR/sample.pdf" | tr -d ' ') pages=1 objects=7 streams=2 fonts=1 images=1" "pdfinfo did not parse stdin"

@@ -37,10 +37,27 @@ static int pdf_text_at(const unsigned char *data, size_t size, size_t offset, co
     return 1;
 }
 
+static int pdf_text_at_len(const unsigned char *data, size_t size, size_t offset, const char *text, size_t length) {
+    size_t index;
+
+    if (offset > size || length > size - offset) return 0;
+    for (index = 0U; index < length; ++index) {
+        if (data[offset + index] != (unsigned char)text[index]) return 0;
+    }
+    return 1;
+}
+
 static int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
     size_t length = rt_strlen(text);
 
-    if (!pdf_text_at(data, size, offset, text)) return 0;
+    if (!pdf_text_at_len(data, size, offset, text, length)) return 0;
+    if (offset != 0U && !pdf_is_delim(data[offset - 1U])) return 0;
+    if (offset + length < size && !pdf_is_delim(data[offset + length])) return 0;
+    return 1;
+}
+
+static int pdf_keyword_at_len(const unsigned char *data, size_t size, size_t offset, const char *text, size_t length) {
+    if (!pdf_text_at_len(data, size, offset, text, length)) return 0;
     if (offset != 0U && !pdf_is_delim(data[offset - 1U])) return 0;
     if (offset + length < size && !pdf_is_delim(data[offset + length])) return 0;
     return 1;
@@ -49,11 +66,13 @@ static int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset,
 static size_t pdf_find_keyword(const unsigned char *data, size_t size, size_t start, size_t end, const char *text) {
     size_t length = rt_strlen(text);
     size_t offset;
+    unsigned char first;
 
     if (end > size) end = size;
     if (length == 0U || start >= end || length > end - start) return size;
+    first = (unsigned char)text[0];
     for (offset = start; offset + length <= end; ++offset) {
-        if (pdf_keyword_at(data, size, offset, text)) return offset;
+        if (data[offset] == first && pdf_keyword_at_len(data, size, offset, text, length)) return offset;
     }
     return size;
 }
@@ -387,6 +406,29 @@ static int pdf_find_top_number_value(const unsigned char *data, size_t size, con
     return pdf_parse_fixed(data, size, &offset, value_out) == 0;
 }
 
+static int pdf_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
+    size_t key_offset;
+    size_t offset;
+    size_t after_value;
+    unsigned long long value;
+
+    if (!pdf_find_top_key(data, size, key, &key_offset)) return 0;
+    offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
+    if (pdf_parse_u64(data, size, &offset, &value) != 0) return 0;
+    after_value = pdf_skip_ws(data, size, offset);
+    if (after_value < size && pdf_is_digit(data[after_value])) {
+        size_t ref_offset = after_value;
+        unsigned long long generation;
+
+        if (pdf_parse_u64(data, size, &ref_offset, &generation) == 0) {
+            ref_offset = pdf_skip_ws(data, size, ref_offset);
+            if (pdf_keyword_at(data, size, ref_offset, "R")) return 0;
+        }
+    }
+    *value_out = value;
+    return 1;
+}
+
 static int pdf_find_top_box_value(const unsigned char *data, size_t size, const char *key, long long values[4]) {
     size_t key_offset;
     size_t offset;
@@ -483,6 +525,7 @@ static int pdf_collect_filter_value(const unsigned char *data, size_t size, size
             if (offset < size && data[offset] == (unsigned char)'/') {
                 pdf_copy_name(data, size, offset + 1U, name, sizeof(name));
                 if (pdf_add_name_count(&info->filters, &info->filters_len, &info->filters_cap, name) != 0) return -1;
+                offset += 1U;
                 while (offset < size && !pdf_is_delim(data[offset])) offset += 1U;
             } else if (offset < size) {
                 offset += 1U;
@@ -604,6 +647,27 @@ static size_t pdf_stream_body_start(const unsigned char *data, size_t size, size
         offset += 1U;
     }
     return offset;
+}
+
+static size_t pdf_find_endstream_from_length(const unsigned char *data, size_t size, size_t content_start, unsigned long long stream_length) {
+    size_t expected;
+    size_t probe;
+    size_t near_end;
+
+    if (stream_length > (unsigned long long)(size - content_start)) return size;
+    expected = content_start + (size_t)stream_length;
+    probe = expected;
+    if (probe < size && data[probe] == (unsigned char)'\r') {
+        probe += 1U;
+        if (probe < size && data[probe] == (unsigned char)'\n') probe += 1U;
+    } else if (probe < size && data[probe] == (unsigned char)'\n') {
+        probe += 1U;
+    }
+    probe = pdf_skip_ws(data, size, probe);
+    if (pdf_keyword_at(data, size, probe, "endstream")) return probe;
+    near_end = expected + 128U;
+    if (near_end < expected || near_end > size) near_end = size;
+    return pdf_find_keyword(data, size, expected, near_end, "endstream");
 }
 
 static void pdf_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io) {
@@ -828,7 +892,14 @@ int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
         object_end = first_endobj;
         dict_end = stream_offset < size ? stream_offset : first_endobj;
         if (stream_offset < size) {
-            endstream_offset = pdf_find_keyword(data, size, stream_offset + 6U, size, "endstream");
+            unsigned long long stream_length;
+            size_t content_start = pdf_stream_body_start(data, size, stream_offset);
+
+            endstream_offset = size;
+            if (dict_end > body_start && pdf_find_top_u64_direct_value(data + body_start, dict_end - body_start, "/Length", &stream_length)) {
+                endstream_offset = pdf_find_endstream_from_length(data, size, content_start, stream_length);
+            }
+            if (endstream_offset == size) endstream_offset = pdf_find_keyword(data, size, stream_offset + 6U, size, "endstream");
             if (endstream_offset < size) {
                 object_end = pdf_find_keyword(data, size, endstream_offset + 9U, size, "endobj");
                 if (object_end == size) object_end = endstream_offset + 9U;
