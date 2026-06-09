@@ -61,6 +61,18 @@ for pe_fixture in "$ROOT_DIR"/tests/fixtures/pe/*.exe; do
     pe_name=$(basename "$pe_fixture")
     assert_command_succeeds "${TEST_BIN_DIR}/file" "$pe_fixture" > "$WORK_DIR/file_pe_fixture_$pe_name.out"
     assert_file_contains "$WORK_DIR/file_pe_fixture_$pe_name.out" 'PE/COFF executable PE32+ x86-64' "PE fixture is not recognized as a PE32+ executable"
+
+    pe_run_expack=0
+    case "$pe_name" in
+        echo.exe|bc.exe) pe_run_expack=1 ;;
+    esac
+    if [ "${NEWOS_SLOW_TESTS:-0}" = 1 ]; then
+        pe_run_expack=1
+    fi
+    if [ "$pe_run_expack" != 1 ]; then
+        continue
+    fi
+
     assert_command_succeeds "${TEST_BIN_DIR}/expack" --analyze "$pe_fixture" > "$WORK_DIR/expack_pe_$pe_name.out"
     assert_file_contains "$WORK_DIR/expack_pe_$pe_name.out" 'format PE/COFF PE32+ x86-64' "expack did not analyze PE/COFF input"
     assert_file_contains "$WORK_DIR/expack_pe_$pe_name.out" '^selected: ' "expack did not select a PE/COFF compression candidate"

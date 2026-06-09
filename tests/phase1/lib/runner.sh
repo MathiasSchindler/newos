@@ -75,6 +75,17 @@ phase1_detect_jobs() {
 phase1_wait_for_any() {
     job_dir=$1
     max_index=$2
+    wait_loops=0
+    wait_note_seconds=${PHASE1_WAIT_NOTE_SECONDS:-15}
+
+    case "$wait_note_seconds" in
+        ''|*[!0-9]*)
+            wait_note_seconds=15
+            ;;
+    esac
+    if [ "$wait_note_seconds" -lt 1 ]; then
+        wait_note_seconds=15
+    fi
 
     while :; do
         idx=1
@@ -108,6 +119,32 @@ phase1_wait_for_any() {
         done
 
         sleep 1
+        wait_loops=$((wait_loops + 1))
+        if [ "$wait_loops" -ge "$wait_note_seconds" ]; then
+            wait_loops=0
+            idx=1
+            waiting_names=
+            while [ "$idx" -le "$max_index" ]; do
+                if [ ! -f "$job_dir/$idx.done" ] && [ -f "$job_dir/$idx.pid" ]; then
+                    pid=$(cat "$job_dir/$idx.pid")
+                    if kill -0 "$pid" 2>/dev/null; then
+                        display_name=
+                        if [ -f "$job_dir/$idx.name" ]; then
+                            display_name=$(cat "$job_dir/$idx.name")
+                        fi
+                        if [ -n "$display_name" ]; then
+                            waiting_names="$waiting_names${waiting_names:+, }$display_name"
+                        else
+                            waiting_names="$waiting_names${waiting_names:+, }#$idx"
+                        fi
+                    fi
+                fi
+                idx=$((idx + 1))
+            done
+            if [ -n "$waiting_names" ]; then
+                note "Phase 1 waiting on: $waiting_names"
+            fi
+        fi
     done
 }
 
@@ -128,6 +165,41 @@ phase1_replay_logs() {
             fi
         else
             status=1
+        fi
+        idx=$((idx + 1))
+    done
+
+    return "$status"
+}
+
+phase1_report_failures() {
+    job_dir=$1
+    max_index=$2
+    status=0
+    idx=1
+
+    while [ "$idx" -le "$max_index" ]; do
+        display_name=
+        if [ -f "$job_dir/$idx.name" ]; then
+            display_name=$(cat "$job_dir/$idx.name")
+        fi
+        if [ -f "$job_dir/$idx.status" ]; then
+            rc=$(cat "$job_dir/$idx.status")
+            if [ "$rc" -ne 0 ]; then
+                status=1
+                if [ -n "$display_name" ]; then
+                    note "Phase 1 failed group: $display_name (exit $rc)"
+                else
+                    note "Phase 1 failed group: #$idx (exit $rc)"
+                fi
+            fi
+        else
+            status=1
+            if [ -n "$display_name" ]; then
+                note "Phase 1 missing status: $display_name"
+            else
+                note "Phase 1 missing status: #$idx"
+            fi
         fi
         idx=$((idx + 1))
     done
@@ -208,5 +280,6 @@ run_phase1_tests() {
         phase1_wait_for_any "$job_dir" "$selected"
     done
 
+    phase1_report_failures "$job_dir" "$selected" || true
     phase1_replay_logs "$job_dir" "$selected"
 }
