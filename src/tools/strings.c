@@ -33,20 +33,9 @@ static int is_printable_byte(unsigned char ch) {
     return ch >= 32U && ch <= 126U;
 }
 
-static unsigned short read_u16_le(const unsigned char *bytes) {
-    return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8U);
-}
-
-static unsigned int read_u32_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] |
-           ((unsigned int)bytes[1] << 8U) |
-           ((unsigned int)bytes[2] << 16U) |
-           ((unsigned int)bytes[3] << 24U);
-}
-
-static unsigned long long read_u64_le(const unsigned char *bytes) {
-    return (unsigned long long)read_u32_le(bytes) | ((unsigned long long)read_u32_le(bytes + 4U) << 32U);
-}
+#define read_u16_le tool_read_u16_le
+#define read_u32_le tool_read_u32_le
+#define read_u64_le tool_read_u64_le
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
     size_t total = 0U;

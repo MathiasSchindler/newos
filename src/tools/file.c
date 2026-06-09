@@ -132,27 +132,11 @@ static int looks_like_xml(const unsigned char *buffer, size_t length) {
     return starts_with_ci(buffer + start, length - start, "<?xml") || starts_with_ci(buffer + start, length - start, "<svg");
 }
 
-static unsigned short read_u16_le(const unsigned char *buffer) {
-    return (unsigned short)((unsigned short)buffer[0] | ((unsigned short)buffer[1] << 8U));
-}
-
-static unsigned short read_u16_be(const unsigned char *buffer) {
-    return (unsigned short)(((unsigned short)buffer[0] << 8U) | (unsigned short)buffer[1]);
-}
-
-static unsigned int read_u32_le(const unsigned char *buffer) {
-    return (unsigned int)buffer[0] |
-           ((unsigned int)buffer[1] << 8U) |
-           ((unsigned int)buffer[2] << 16U) |
-           ((unsigned int)buffer[3] << 24U);
-}
-
-static unsigned int read_u32_be(const unsigned char *buffer) {
-    return ((unsigned int)buffer[0] << 24U) |
-           ((unsigned int)buffer[1] << 16U) |
-           ((unsigned int)buffer[2] << 8U) |
-           (unsigned int)buffer[3];
-}
+#define read_u16_le tool_read_u16_le
+#define read_u16_be tool_read_u16_be
+#define read_u32_le tool_read_u32_le
+#define read_u32_be tool_read_u32_be
+#define read_u64_le tool_read_u64_le
 
 static void dynamic_set(const char *text) {
     rt_copy_string(dynamic_description, sizeof(dynamic_description), text);
@@ -201,10 +185,6 @@ static void details_append_hex(unsigned long long value) {
         single[1] = '\0';
         details_append(single);
     }
-}
-
-static unsigned long long read_u64_le(const unsigned char *buffer) {
-    return (unsigned long long)read_u32_le(buffer) | ((unsigned long long)read_u32_le(buffer + 4U) << 32U);
 }
 
 static const char *elf_type_name(unsigned int type) {

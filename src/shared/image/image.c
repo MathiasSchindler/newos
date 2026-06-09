@@ -1,29 +1,24 @@
 #include "image_internal.h"
+#include "tool_util.h"
 
 unsigned int image_read_u16_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] | ((unsigned int)bytes[1] << 8);
+    return (unsigned int)tool_read_u16_le(bytes);
 }
 
 unsigned int image_read_u16_be(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 8) | (unsigned int)bytes[1];
+    return (unsigned int)tool_read_u16_be(bytes);
 }
 
 unsigned int image_read_u24_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] | ((unsigned int)bytes[1] << 8) | ((unsigned int)bytes[2] << 16);
+    return tool_read_u24_le(bytes);
 }
 
 unsigned int image_read_u32_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] |
-           ((unsigned int)bytes[1] << 8) |
-           ((unsigned int)bytes[2] << 16) |
-           ((unsigned int)bytes[3] << 24);
+    return tool_read_u32_le(bytes);
 }
 
 unsigned int image_read_u32_be(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 24) |
-           ((unsigned int)bytes[1] << 16) |
-           ((unsigned int)bytes[2] << 8) |
-           (unsigned int)bytes[3];
+    return tool_read_u32_be(bytes);
 }
 
 int image_bytes_equal(const unsigned char *bytes, const char *text, size_t length) {

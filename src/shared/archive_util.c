@@ -1,6 +1,7 @@
 #include "archive_util.h"
 #include "compression/crc32.h"
 #include "platform.h"
+#include "tool_util.h"
 
 unsigned int archive_crc32_update(unsigned int crc, const unsigned char *data, size_t length) {
     return compression_crc32_update(crc, data, length);
@@ -25,40 +26,23 @@ int archive_read_exact(int fd, unsigned char *buffer, size_t count) {
 }
 
 unsigned short archive_read_u16_le(const unsigned char *bytes) {
-    return (unsigned short)((unsigned short)bytes[0] | ((unsigned short)bytes[1] << 8));
+    return tool_read_u16_le(bytes);
 }
 
 unsigned int archive_read_u32_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] |
-           ((unsigned int)bytes[1] << 8) |
-           ((unsigned int)bytes[2] << 16) |
-           ((unsigned int)bytes[3] << 24);
+    return tool_read_u32_le(bytes);
 }
 
 unsigned long long archive_read_u64_le(const unsigned char *bytes) {
-    unsigned long long value = 0;
-    size_t i;
-
-    for (i = 0; i < 8; ++i) {
-        value |= ((unsigned long long)bytes[i]) << (i * 8);
-    }
-
-    return value;
+    return tool_read_u64_le(bytes);
 }
 
 void archive_store_u32_le(unsigned char *bytes, unsigned int value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
-    bytes[2] = (unsigned char)((value >> 16) & 0xffU);
-    bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+    tool_store_u32_le(bytes, value);
 }
 
 void archive_store_u64_le(unsigned char *bytes, unsigned long long value) {
-    size_t i;
-
-    for (i = 0; i < 8; ++i) {
-        bytes[i] = (unsigned char)((value >> (i * 8)) & 0xffU);
-    }
+    tool_store_u64_le(bytes, value);
 }
 
 void archive_write_octal(char *field, size_t field_size, unsigned long long value) {

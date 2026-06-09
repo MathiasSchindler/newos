@@ -555,3 +555,75 @@ const char *tool_signal_name(int signal_number) {
 void tool_write_signal_list(int fd) {
     platform_write_signal_list(fd);
 }
+
+unsigned short tool_read_u16_le(const unsigned char *bytes) {
+    return (unsigned short)((unsigned short)bytes[0] | ((unsigned short)bytes[1] << 8U));
+}
+
+unsigned short tool_read_u16_be(const unsigned char *bytes) {
+    return (unsigned short)(((unsigned short)bytes[0] << 8U) | (unsigned short)bytes[1]);
+}
+
+unsigned int tool_read_u24_le(const unsigned char *bytes) {
+    return (unsigned int)bytes[0] |
+           ((unsigned int)bytes[1] << 8U) |
+           ((unsigned int)bytes[2] << 16U);
+}
+
+unsigned int tool_read_u32_le(const unsigned char *bytes) {
+    return (unsigned int)bytes[0] |
+           ((unsigned int)bytes[1] << 8U) |
+           ((unsigned int)bytes[2] << 16U) |
+           ((unsigned int)bytes[3] << 24U);
+}
+
+unsigned int tool_read_u32_be(const unsigned char *bytes) {
+    return ((unsigned int)bytes[0] << 24U) |
+           ((unsigned int)bytes[1] << 16U) |
+           ((unsigned int)bytes[2] << 8U) |
+           (unsigned int)bytes[3];
+}
+
+unsigned long long tool_read_u64_le(const unsigned char *bytes) {
+    return (unsigned long long)tool_read_u32_le(bytes) |
+           ((unsigned long long)tool_read_u32_le(bytes + 4U) << 32U);
+}
+
+unsigned long long tool_read_u64_be(const unsigned char *bytes) {
+    return ((unsigned long long)tool_read_u32_be(bytes) << 32U) |
+           (unsigned long long)tool_read_u32_be(bytes + 4U);
+}
+
+void tool_store_u16_le(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)(value & 0xffU);
+    bytes[1] = (unsigned char)((value >> 8U) & 0xffU);
+}
+
+void tool_store_u16_be(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)((value >> 8U) & 0xffU);
+    bytes[1] = (unsigned char)(value & 0xffU);
+}
+
+void tool_store_u32_le(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)(value & 0xffU);
+    bytes[1] = (unsigned char)((value >> 8U) & 0xffU);
+    bytes[2] = (unsigned char)((value >> 16U) & 0xffU);
+    bytes[3] = (unsigned char)((value >> 24U) & 0xffU);
+}
+
+void tool_store_u32_be(unsigned char *bytes, unsigned int value) {
+    bytes[0] = (unsigned char)((value >> 24U) & 0xffU);
+    bytes[1] = (unsigned char)((value >> 16U) & 0xffU);
+    bytes[2] = (unsigned char)((value >> 8U) & 0xffU);
+    bytes[3] = (unsigned char)(value & 0xffU);
+}
+
+void tool_store_u64_le(unsigned char *bytes, unsigned long long value) {
+    tool_store_u32_le(bytes, (unsigned int)(value & 0xffffffffULL));
+    tool_store_u32_le(bytes + 4U, (unsigned int)((value >> 32U) & 0xffffffffULL));
+}
+
+void tool_store_u64_be(unsigned char *bytes, unsigned long long value) {
+    tool_store_u32_be(bytes, (unsigned int)((value >> 32U) & 0xffffffffULL));
+    tool_store_u32_be(bytes + 4U, (unsigned int)(value & 0xffffffffULL));
+}

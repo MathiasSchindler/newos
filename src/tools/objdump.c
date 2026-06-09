@@ -128,17 +128,10 @@ static int json_field_bool(const char *name, int value) {
     return rt_write_cstr(1, value ? "true" : "false");
 }
 
-static unsigned short read_u16_le(const unsigned char *bytes) {
-    return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
-}
-
-static unsigned int read_u32_le_local(const unsigned char *bytes) {
-    return archive_read_u32_le(bytes);
-}
-
-static unsigned long long read_u64_le_local(const unsigned char *bytes) {
-    return archive_read_u64_le(bytes);
-}
+#define read_u16_le tool_read_u16_le
+#define read_u32_le_local tool_read_u32_le
+#define read_u32_be_local tool_read_u32_be
+#define read_u64_le_local tool_read_u64_le
 
 static const char *macho_machine_name(unsigned int cputype) {
     unsigned int family = cputype & 0x00ffffffU;
@@ -238,13 +231,6 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
 static int read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
     if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) return -1;
     return archive_read_exact(fd, buffer, size);
-}
-
-static unsigned int read_u32_be_local(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 24U) |
-           ((unsigned int)bytes[1] << 16U) |
-           ((unsigned int)bytes[2] << 8U) |
-           (unsigned int)bytes[3];
 }
 
 static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {

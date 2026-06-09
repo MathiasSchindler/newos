@@ -292,29 +292,11 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
 static const char *macho_symbol_name_at(int fd, const MachSymtabInfo *symtab, unsigned int symbol_index, char *strings, size_t string_size);
 static int json_macho_section_event(const char *path, unsigned int index, const MachSectionInfo *section);
 
-static unsigned short read_u16_le(const unsigned char *bytes) {
-    return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
-}
-
-static unsigned int read_u32_le_local(const unsigned char *bytes) {
-    return archive_read_u32_le(bytes);
-}
-
-static unsigned int read_u32_be_local(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 24U) |
-           ((unsigned int)bytes[1] << 16U) |
-           ((unsigned int)bytes[2] << 8U) |
-           (unsigned int)bytes[3];
-}
-
-static unsigned long long read_u64_le_local(const unsigned char *bytes) {
-    return archive_read_u64_le(bytes);
-}
-
-static unsigned long long read_u64_be_local(const unsigned char *bytes) {
-    return ((unsigned long long)read_u32_be_local(bytes) << 32U) |
-           (unsigned long long)read_u32_be_local(bytes + 4);
-}
+#define read_u16_le tool_read_u16_le
+#define read_u32_le_local tool_read_u32_le
+#define read_u32_be_local tool_read_u32_be
+#define read_u64_le_local tool_read_u64_le
+#define read_u64_be_local tool_read_u64_be
 
 static const char *macho_hash_type_name(unsigned int type) {
     if (type == MACHO_CODE_SIGNATURE_HASH_SHA256) return "sha256";

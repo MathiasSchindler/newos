@@ -117,24 +117,9 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
     return 0;
 }
 
-static unsigned int imgcheck_read_u32_le(const unsigned char *data) {
-    return (unsigned int)data[0] |
-           ((unsigned int)data[1] << 8U) |
-           ((unsigned int)data[2] << 16U) |
-           ((unsigned int)data[3] << 24U);
-}
-
-static unsigned long long imgcheck_read_u64_le(const unsigned char *data) {
-    return (unsigned long long)imgcheck_read_u32_le(data) |
-           ((unsigned long long)imgcheck_read_u32_le(data + 4) << 32U);
-}
-
-static unsigned int imgcheck_read_u32_be(const unsigned char *data) {
-    return ((unsigned int)data[0] << 24U) |
-           ((unsigned int)data[1] << 16U) |
-           ((unsigned int)data[2] << 8U) |
-           (unsigned int)data[3];
-}
+#define imgcheck_read_u32_le tool_read_u32_le
+#define imgcheck_read_u32_be tool_read_u32_be
+#define imgcheck_read_u64_le tool_read_u64_le
 
 static int imgcheck_is_macho64(const unsigned char *data, size_t size) {
     return size >= 32U && imgcheck_read_u32_le(data) == IMGCHECK_MACHO_MAGIC_64;

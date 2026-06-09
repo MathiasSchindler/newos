@@ -36,27 +36,10 @@ typedef struct {
     unsigned int signature_index;
 } ImgmetaC2paVerboseState;
 
-static unsigned int read_u16_be(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 8) | (unsigned int)bytes[1];
-}
-
-static unsigned int read_u16_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] | ((unsigned int)bytes[1] << 8);
-}
-
-static unsigned int read_u32_be(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 24) |
-           ((unsigned int)bytes[1] << 16) |
-           ((unsigned int)bytes[2] << 8) |
-           (unsigned int)bytes[3];
-}
-
-static unsigned int read_u32_le(const unsigned char *bytes) {
-    return (unsigned int)bytes[0] |
-           ((unsigned int)bytes[1] << 8) |
-           ((unsigned int)bytes[2] << 16) |
-           ((unsigned int)bytes[3] << 24);
-}
+#define read_u16_be tool_read_u16_be
+#define read_u16_le tool_read_u16_le
+#define read_u32_be tool_read_u32_be
+#define read_u32_le tool_read_u32_le
 
 static unsigned int read_tiff_u16(const unsigned char *bytes, int little_endian) {
     return little_endian ? read_u16_le(bytes) : read_u16_be(bytes);
@@ -66,29 +49,10 @@ static unsigned int read_tiff_u32(const unsigned char *bytes, int little_endian)
     return little_endian ? read_u32_le(bytes) : read_u32_be(bytes);
 }
 
-static void write_u16_le(unsigned char *bytes, unsigned int value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
-}
-
-static void write_u16_be(unsigned char *bytes, unsigned int value) {
-    bytes[0] = (unsigned char)((value >> 8) & 0xffU);
-    bytes[1] = (unsigned char)(value & 0xffU);
-}
-
-static void write_u32_le(unsigned char *bytes, unsigned int value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
-    bytes[2] = (unsigned char)((value >> 16) & 0xffU);
-    bytes[3] = (unsigned char)((value >> 24) & 0xffU);
-}
-
-static void write_u32_be(unsigned char *bytes, unsigned int value) {
-    bytes[0] = (unsigned char)((value >> 24) & 0xffU);
-    bytes[1] = (unsigned char)((value >> 16) & 0xffU);
-    bytes[2] = (unsigned char)((value >> 8) & 0xffU);
-    bytes[3] = (unsigned char)(value & 0xffU);
-}
+#define write_u16_le tool_store_u16_le
+#define write_u16_be tool_store_u16_be
+#define write_u32_le tool_store_u32_le
+#define write_u32_be tool_store_u32_be
 
 static void write_tiff_u16(unsigned char *bytes, unsigned int value, int little_endian) {
     if (little_endian) {

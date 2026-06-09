@@ -53,40 +53,12 @@ typedef struct {
     const char *action;
 } StripPlan;
 
-static unsigned short read_u16_le(const unsigned char *bytes) {
-    return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
-}
-
-static unsigned int read_u32_le_local(const unsigned char *bytes) {
-    return archive_read_u32_le(bytes);
-}
-
-static unsigned long long read_u64_le_local(const unsigned char *bytes) {
-    return archive_read_u64_le(bytes);
-}
-
-static void write_u16_le_local(unsigned char *bytes, unsigned short value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
-}
-
-static void write_u32_le_local(unsigned char *bytes, unsigned int value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
-    bytes[2] = (unsigned char)((value >> 16) & 0xffU);
-    bytes[3] = (unsigned char)((value >> 24) & 0xffU);
-}
-
-static void write_u64_le_local(unsigned char *bytes, unsigned long long value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
-    bytes[2] = (unsigned char)((value >> 16) & 0xffU);
-    bytes[3] = (unsigned char)((value >> 24) & 0xffU);
-    bytes[4] = (unsigned char)((value >> 32) & 0xffU);
-    bytes[5] = (unsigned char)((value >> 40) & 0xffU);
-    bytes[6] = (unsigned char)((value >> 48) & 0xffU);
-    bytes[7] = (unsigned char)((value >> 56) & 0xffU);
-}
+#define read_u16_le tool_read_u16_le
+#define read_u32_le_local tool_read_u32_le
+#define read_u64_le_local tool_read_u64_le
+#define write_u16_le_local tool_store_u16_le
+#define write_u32_le_local tool_store_u32_le
+#define write_u64_le_local tool_store_u64_le
 
 static void build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size) {
     size_t slash = 0U;
