@@ -55,6 +55,29 @@ typedef struct {
 } PdfDocumentInfo;
 
 typedef struct {
+    unsigned char *data;
+    size_t size;
+    size_t capacity;
+} PdfBuffer;
+
+typedef struct {
+    unsigned int number;
+    unsigned int generation;
+    size_t object_offset;
+    size_t body_start;
+    size_t body_end;
+    size_t stream_offset;
+    size_t endstream_offset;
+    char type[PDF_NAME_CAPACITY];
+    char subtype[PDF_NAME_CAPACITY];
+} PdfObjectSpan;
+
+typedef struct {
+    unsigned int object_number;
+    unsigned int generation;
+} PdfPageRef;
+
+typedef struct {
     int has_header;
     int has_eof;
     unsigned int major_version;
@@ -103,10 +126,43 @@ typedef struct {
     size_t font_names_cap;
 } PdfInfo;
 
+typedef struct {
+    const unsigned char *data;
+    size_t size;
+    PdfInfo info;
+    PdfObjectSpan *objects;
+    size_t objects_len;
+    size_t objects_cap;
+    PdfPageRef *pages;
+    size_t pages_len;
+    size_t pages_cap;
+    unsigned int catalog_object_number;
+    unsigned int catalog_generation;
+    unsigned int max_object_number;
+    size_t startxref_offset;
+} PdfDocument;
+
+typedef struct {
+    const PdfDocument *document;
+    size_t first_page;
+    size_t page_count;
+} PdfPageSelection;
+
 void pdf_info_init(PdfInfo *info);
 void pdf_info_free(PdfInfo *info);
 int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info);
 const char *pdf_page_format_name(long long width, long long height);
 int pdf_format_date(const char *pdf_date, char *buffer, size_t buffer_size);
+void pdf_buffer_init(PdfBuffer *buffer);
+void pdf_buffer_free(PdfBuffer *buffer);
+void pdf_document_init(PdfDocument *document);
+void pdf_document_free(PdfDocument *document);
+int pdf_document_parse(const unsigned char *data, size_t size, PdfDocument *document);
+int pdf_document_info_has_fields(const PdfDocumentInfo *info);
+int pdf_document_info_set_field(PdfDocumentInfo *info, const char *field, const char *value);
+int pdf_document_info_remove_field(PdfDocumentInfo *info, const char *field);
+int pdf_write_join(const PdfPageSelection *selections, size_t selection_count, const PdfDocumentInfo *metadata, PdfBuffer *output);
+int pdf_write_split_part(const PdfDocument *document, size_t first_page, size_t page_count, const PdfDocumentInfo *metadata, PdfBuffer *output);
+int pdf_write_info_update(const PdfDocument *document, const PdfDocumentInfo *metadata, PdfBuffer *output);
 
 #endif

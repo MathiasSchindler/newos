@@ -670,18 +670,21 @@ static int pdf_copy_info_field(const unsigned char *dict, size_t dict_size, cons
 
 static void pdf_collect_document_info(PdfInfo *info, unsigned long long number, unsigned long long generation, const unsigned char *dict, size_t dict_size) {
     PdfDocumentInfo *document = &info->document_info;
+    PdfDocumentInfo next;
     int found = 0;
 
-    found += pdf_copy_info_field(dict, dict_size, "/Title", document->title, sizeof(document->title));
-    found += pdf_copy_info_field(dict, dict_size, "/Author", document->author, sizeof(document->author));
-    found += pdf_copy_info_field(dict, dict_size, "/Subject", document->subject, sizeof(document->subject));
-    found += pdf_copy_info_field(dict, dict_size, "/Keywords", document->keywords, sizeof(document->keywords));
-    found += pdf_copy_info_field(dict, dict_size, "/Creator", document->creator, sizeof(document->creator));
-    found += pdf_copy_info_field(dict, dict_size, "/Producer", document->producer, sizeof(document->producer));
-    found += pdf_copy_info_field(dict, dict_size, "/CreationDate", document->creation_date, sizeof(document->creation_date));
-    found += pdf_copy_info_field(dict, dict_size, "/ModDate", document->modification_date, sizeof(document->modification_date));
+    rt_memset(&next, 0, sizeof(next));
+    found += pdf_copy_info_field(dict, dict_size, "/Title", next.title, sizeof(next.title));
+    found += pdf_copy_info_field(dict, dict_size, "/Author", next.author, sizeof(next.author));
+    found += pdf_copy_info_field(dict, dict_size, "/Subject", next.subject, sizeof(next.subject));
+    found += pdf_copy_info_field(dict, dict_size, "/Keywords", next.keywords, sizeof(next.keywords));
+    found += pdf_copy_info_field(dict, dict_size, "/Creator", next.creator, sizeof(next.creator));
+    found += pdf_copy_info_field(dict, dict_size, "/Producer", next.producer, sizeof(next.producer));
+    found += pdf_copy_info_field(dict, dict_size, "/CreationDate", next.creation_date, sizeof(next.creation_date));
+    found += pdf_copy_info_field(dict, dict_size, "/ModDate", next.modification_date, sizeof(next.modification_date));
     if (found != 0) {
         info->info_dictionary_count += 1ULL;
+        *document = next;
         document->object_number = (unsigned int)number;
         document->generation = (unsigned int)generation;
     }

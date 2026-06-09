@@ -115,7 +115,8 @@
 /* -- PDF metadata parsing ------------------------------------------------ */
 
 #define FOREACH_PDF_SOURCE(X) \
-    X("src/shared/pdf.c")
+    X("src/shared/pdf.c") \
+    X("src/shared/pdf_writer.c")
 
 /* ── crypto primitives ───────────────────────────────────────────────────── */
 
