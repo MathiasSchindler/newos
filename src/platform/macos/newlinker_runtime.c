@@ -1,6 +1,6 @@
 #include <stddef.h>
 
-#include "syscall.h"
+#include "../../arch/aarch64/macos/syscall.h"
 
 #define MACOS_NEWLINKER_TIOCGETA  1078490131UL
 #define MACOS_NEWLINKER_TIOCSETA  2152231956UL

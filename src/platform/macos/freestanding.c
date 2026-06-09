@@ -27,7 +27,7 @@
 
 #include "platform.h"
 #include "runtime.h"
-#include "syscall.h"
+#include "../../arch/aarch64/macos/syscall.h"
 
 #define DARWIN_PROT_READ 1
 #define DARWIN_PROT_WRITE 2
