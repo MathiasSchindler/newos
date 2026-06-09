@@ -16,7 +16,8 @@ pdfinfo [-p|--plain] [-d|--details] [--pages] [--objects] [--fonts] [--json] [fi
 without executing PDF content or inflating compressed streams. It recognizes the
 PDF header, indirect objects, streams, xref markers, trailers, pages, page
 boxes, fonts, image and form XObjects, filters, encodings, annotations,
-metadata objects, and a small set of visible content-stream operators.
+metadata objects, classic document-info fields, and a small set of visible
+content-stream operators.
 
 When no file is provided, `pdfinfo` reads from standard input.
 
@@ -41,6 +42,12 @@ The default output is a labeled summary:
 file: document.pdf
 pdf_version: 1.7
 bytes: 10240
+title: Example Document
+author: A. Writer
+creator: WriterApp
+producer: PDF Library
+creation_date: 2026-06-09 12:00:00 UTC (raw D:20260609120000Z)
+modification_date: 2026-06-09 12:30:00 UTC+01:00 (raw D:20260609123000+01'00')
 objects: 43
 streams: 18
 pages: 2
@@ -56,6 +63,15 @@ encodings: WinAnsiEncoding(1)
 `--details` adds structural counters, page entries, and font entries. `--json`
 prints a JSON object with the same summary counters and name histograms.
 
+Document-info metadata is printed when present. Supported fields are `title`,
+`author`, `subject`, `keywords`, `creator`, `producer`, `creation_date`, and
+`modification_date`. Human output formats PDF date strings as
+`YYYY-MM-DD HH:MM:SS UTC` or `YYYY-MM-DD HH:MM:SS UTC+HH:MM` and keeps the raw
+PDF value in parentheses. In PDF date strings, `Z` means UTC, and suffixes such
+as `+01'00'` or `-05'30'` are timezone offsets. JSON output preserves the raw
+`creation_date` and `modification_date` values and also includes
+`creation_date_formatted` and `modification_date_formatted`.
+
 Page dimensions are reported in PDF points. Known page boxes are matched
 approximately against common formats such as Letter, Legal, A3, A4, and A5.
 
@@ -66,6 +82,9 @@ approximately against common formats such as Letter, Legal, A3, A4, and A5.
   revisions, or execute page content.
 - Filter and encoding names are counted when they are visible in object
   dictionaries. Filtered stream contents are not interpreted.
+- Classic document-info metadata is read from visible object dictionaries using
+  literal strings, name values, and hex strings with UTF-16 byte-order marks.
+  XMP packet fields inside compressed metadata streams are not decoded.
 - Font embedding is detected from visible `FontFile`, `FontFile2`, or
   `FontFile3` entries in the same object dictionary.
 - The encrypted flag is reported when an `/Encrypt` key is visible to the

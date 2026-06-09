@@ -117,6 +117,132 @@ static int pdf_parse_fixed(const unsigned char *data, size_t size, size_t *offse
     return 0;
 }
 
+static int pdf_append_utf8(char *buffer, size_t buffer_size, size_t *used_io, unsigned int codepoint) {
+    char encoded[4];
+    size_t encoded_length = 0U;
+    size_t index;
+
+    if (buffer_size == 0U || *used_io + 1U >= buffer_size) return 0;
+    if (codepoint == 0U) return 0;
+    if (rt_utf8_encode(codepoint, encoded, sizeof(encoded), &encoded_length) != 0) return 0;
+    for (index = 0U; index < encoded_length && *used_io + 1U < buffer_size; ++index) {
+        buffer[*used_io] = encoded[index];
+        *used_io += 1U;
+    }
+    buffer[*used_io] = '\0';
+    return encoded_length != 0U;
+}
+
+static int pdf_hex_value(unsigned char ch) {
+    if (ch >= (unsigned char)'0' && ch <= (unsigned char)'9') return (int)(ch - (unsigned char)'0');
+    if (ch >= (unsigned char)'A' && ch <= (unsigned char)'F') return (int)(ch - (unsigned char)'A') + 10;
+    if (ch >= (unsigned char)'a' && ch <= (unsigned char)'f') return (int)(ch - (unsigned char)'a') + 10;
+    return -1;
+}
+
+static size_t pdf_bytes_to_text(const unsigned char *bytes, size_t length, char *buffer, size_t buffer_size) {
+    size_t used = 0U;
+    size_t index;
+
+    if (buffer_size == 0U) return 0U;
+    buffer[0] = '\0';
+    if (length >= 2U && bytes[0] == 0xfeU && bytes[1] == 0xffU) {
+        for (index = 2U; index + 1U < length; index += 2U) {
+            unsigned int codepoint = ((unsigned int)bytes[index] << 8U) | (unsigned int)bytes[index + 1U];
+            (void)pdf_append_utf8(buffer, buffer_size, &used, codepoint);
+        }
+        return used;
+    }
+    if (length >= 2U && bytes[0] == 0xffU && bytes[1] == 0xfeU) {
+        for (index = 2U; index + 1U < length; index += 2U) {
+            unsigned int codepoint = ((unsigned int)bytes[index + 1U] << 8U) | (unsigned int)bytes[index];
+            (void)pdf_append_utf8(buffer, buffer_size, &used, codepoint);
+        }
+        return used;
+    }
+    for (index = 0U; index < length && used + 1U < buffer_size; ++index) {
+        if (bytes[index] != 0U) buffer[used++] = (char)bytes[index];
+    }
+    buffer[used] = '\0';
+    return used;
+}
+
+static size_t pdf_literal_to_text(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
+    unsigned char bytes[PDF_TEXT_CAPACITY * 2U];
+    size_t byte_count = 0U;
+    int depth = 1;
+
+    if (buffer_size != 0U) buffer[0] = '\0';
+    if (offset >= size || data[offset] != (unsigned char)'(') return 0U;
+    offset += 1U;
+    while (offset < size && depth > 0) {
+        unsigned char ch = data[offset++];
+
+        if (ch == (unsigned char)'\\') {
+            unsigned int octal = 0U;
+            int octal_digits = 0;
+
+            if (offset >= size) break;
+            ch = data[offset++];
+            if (ch >= (unsigned char)'0' && ch <= (unsigned char)'7') {
+                octal = (unsigned int)(ch - (unsigned char)'0');
+                octal_digits = 1;
+                while (offset < size && octal_digits < 3 && data[offset] >= (unsigned char)'0' && data[offset] <= (unsigned char)'7') {
+                    octal = octal * 8U + (unsigned int)(data[offset] - (unsigned char)'0');
+                    offset += 1U;
+                    octal_digits += 1;
+                }
+                ch = (unsigned char)(octal & 0xffU);
+            } else if (ch == (unsigned char)'n') ch = (unsigned char)'\n';
+            else if (ch == (unsigned char)'r') ch = (unsigned char)'\r';
+            else if (ch == (unsigned char)'t') ch = (unsigned char)'\t';
+            else if (ch == (unsigned char)'b') ch = 8U;
+            else if (ch == (unsigned char)'f') ch = 12U;
+            else if (ch == (unsigned char)'\r') {
+                if (offset < size && data[offset] == (unsigned char)'\n') offset += 1U;
+                continue;
+            } else if (ch == (unsigned char)'\n') {
+                continue;
+            }
+            if (byte_count < sizeof(bytes)) bytes[byte_count++] = ch;
+        } else {
+            if (ch == (unsigned char)'(') depth += 1;
+            if (ch == (unsigned char)')') depth -= 1;
+            if (depth > 0 && byte_count < sizeof(bytes)) bytes[byte_count++] = ch;
+        }
+    }
+    return pdf_bytes_to_text(bytes, byte_count, buffer, buffer_size);
+}
+
+static size_t pdf_hex_to_text(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
+    unsigned char bytes[PDF_TEXT_CAPACITY * 2U];
+    size_t byte_count = 0U;
+    int high_nibble = -1;
+
+    if (buffer_size != 0U) buffer[0] = '\0';
+    if (offset >= size || data[offset] != (unsigned char)'<') return 0U;
+    offset += 1U;
+    while (offset < size && data[offset] != (unsigned char)'>') {
+        int value;
+
+        if (pdf_is_space(data[offset])) {
+            offset += 1U;
+            continue;
+        }
+        value = pdf_hex_value(data[offset]);
+        if (value < 0) break;
+        if (high_nibble < 0) {
+            high_nibble = value;
+        } else {
+            if (byte_count < sizeof(bytes)) bytes[byte_count++] = (unsigned char)((high_nibble << 4) | value);
+            high_nibble = -1;
+        }
+        offset += 1U;
+    }
+    if (high_nibble >= 0 && byte_count < sizeof(bytes)) bytes[byte_count++] = (unsigned char)(high_nibble << 4);
+    return pdf_bytes_to_text(bytes, byte_count, buffer, buffer_size);
+}
+
 static void pdf_copy_name(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
     size_t used = 0U;
 
@@ -127,6 +253,8 @@ static void pdf_copy_name(const unsigned char *data, size_t size, size_t offset,
     }
     buffer[used] = '\0';
 }
+
+static void pdf_skip_literal_string(const unsigned char *data, size_t size, size_t *offset_io);
 
 static int pdf_find_key_from(const unsigned char *data, size_t size, size_t start, const char *key, size_t *offset_out) {
     size_t key_length = rt_strlen(key);
@@ -145,12 +273,60 @@ static int pdf_find_key(const unsigned char *data, size_t size, const char *key,
     return pdf_find_key_from(data, size, 0U, key, offset_out);
 }
 
+static int pdf_find_top_key(const unsigned char *data, size_t size, const char *key, size_t *offset_out) {
+    size_t key_length = rt_strlen(key);
+    size_t offset = 0U;
+    unsigned int depth = 0U;
+
+    while (offset < size) {
+        if (data[offset] == (unsigned char)'%') {
+            while (offset < size && data[offset] != (unsigned char)'\n' && data[offset] != (unsigned char)'\r') offset += 1U;
+        } else if (data[offset] == (unsigned char)'(') {
+            pdf_skip_literal_string(data, size, &offset);
+        } else if (data[offset] == (unsigned char)'<' && offset + 1U < size && data[offset + 1U] == (unsigned char)'<') {
+            depth += 1U;
+            offset += 2U;
+        } else if (data[offset] == (unsigned char)'>' && offset + 1U < size && data[offset + 1U] == (unsigned char)'>') {
+            if (depth != 0U) depth -= 1U;
+            offset += 2U;
+        } else if (data[offset] == (unsigned char)'<' && offset + 1U < size) {
+            offset += 1U;
+            while (offset < size && data[offset] != (unsigned char)'>') offset += 1U;
+            if (offset < size) offset += 1U;
+        } else if (data[offset] == (unsigned char)'[') {
+            depth += 1U;
+            offset += 1U;
+        } else if (data[offset] == (unsigned char)']') {
+            if (depth != 0U) depth -= 1U;
+            offset += 1U;
+        } else if (depth == 1U && data[offset] == (unsigned char)'/' && offset + key_length <= size && pdf_text_at(data, size, offset, key) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
+            *offset_out = offset;
+            return 1;
+        } else {
+            offset += 1U;
+        }
+    }
+    return 0;
+}
+
 static int pdf_find_name_value(const unsigned char *data, size_t size, const char *key, char *buffer, size_t buffer_size) {
     size_t key_offset;
     size_t value_offset;
 
     if (buffer_size != 0U) buffer[0] = '\0';
     if (!pdf_find_key(data, size, key, &key_offset)) return 0;
+    value_offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
+    if (value_offset >= size || data[value_offset] != (unsigned char)'/') return 0;
+    pdf_copy_name(data, size, value_offset + 1U, buffer, buffer_size);
+    return buffer_size != 0U && buffer[0] != '\0';
+}
+
+static int pdf_find_top_name_value(const unsigned char *data, size_t size, const char *key, char *buffer, size_t buffer_size) {
+    size_t key_offset;
+    size_t value_offset;
+
+    if (buffer_size != 0U) buffer[0] = '\0';
+    if (!pdf_find_top_key(data, size, key, &key_offset)) return 0;
     value_offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
     if (value_offset >= size || data[value_offset] != (unsigned char)'/') return 0;
     pdf_copy_name(data, size, value_offset + 1U, buffer, buffer_size);
@@ -185,21 +361,38 @@ static int pdf_find_literal_value(const unsigned char *data, size_t size, const 
     return used != 0U;
 }
 
-static int pdf_find_number_value(const unsigned char *data, size_t size, const char *key, long long *value_out) {
+static int pdf_find_top_text_value(const unsigned char *data, size_t size, const char *key, char *buffer, size_t buffer_size) {
+    size_t key_offset;
+    size_t value_offset;
+
+    if (buffer_size != 0U) buffer[0] = '\0';
+    if (!pdf_find_top_key(data, size, key, &key_offset)) return 0;
+    value_offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
+    if (value_offset >= size) return 0;
+    if (data[value_offset] == (unsigned char)'(') return pdf_literal_to_text(data, size, value_offset, buffer, buffer_size) != 0U;
+    if (data[value_offset] == (unsigned char)'<' && value_offset + 1U < size && data[value_offset + 1U] != (unsigned char)'<') return pdf_hex_to_text(data, size, value_offset, buffer, buffer_size) != 0U;
+    if (data[value_offset] == (unsigned char)'/') {
+        pdf_copy_name(data, size, value_offset + 1U, buffer, buffer_size);
+        return buffer_size != 0U && buffer[0] != '\0';
+    }
+    return 0;
+}
+
+static int pdf_find_top_number_value(const unsigned char *data, size_t size, const char *key, long long *value_out) {
     size_t key_offset;
     size_t offset;
 
-    if (!pdf_find_key(data, size, key, &key_offset)) return 0;
+    if (!pdf_find_top_key(data, size, key, &key_offset)) return 0;
     offset = key_offset + rt_strlen(key);
     return pdf_parse_fixed(data, size, &offset, value_out) == 0;
 }
 
-static int pdf_find_box_value(const unsigned char *data, size_t size, const char *key, long long values[4]) {
+static int pdf_find_top_box_value(const unsigned char *data, size_t size, const char *key, long long values[4]) {
     size_t key_offset;
     size_t offset;
     size_t index;
 
-    if (!pdf_find_key(data, size, key, &key_offset)) return 0;
+    if (!pdf_find_top_key(data, size, key, &key_offset)) return 0;
     offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
     if (offset >= size || data[offset] != (unsigned char)'[') return 0;
     offset += 1U;
@@ -440,9 +633,9 @@ static int pdf_add_page(PdfInfo *info, unsigned long long number, unsigned long 
     rt_memset(page, 0, sizeof(*page));
     page->object_number = (unsigned int)number;
     page->generation = (unsigned int)generation;
-    page->has_media_box = pdf_find_box_value(dict, dict_size, "/MediaBox", page->media_box);
-    page->has_crop_box = pdf_find_box_value(dict, dict_size, "/CropBox", page->crop_box);
-    page->has_rotate = pdf_find_number_value(dict, dict_size, "/Rotate", &page->rotate);
+    page->has_media_box = pdf_find_top_box_value(dict, dict_size, "/MediaBox", page->media_box);
+    page->has_crop_box = pdf_find_top_box_value(dict, dict_size, "/CropBox", page->crop_box);
+    page->has_rotate = pdf_find_top_number_value(dict, dict_size, "/Rotate", &page->rotate);
     return 0;
 }
 
@@ -457,14 +650,41 @@ static int pdf_add_font(PdfInfo *info, unsigned long long number, unsigned long 
     font->object_number = (unsigned int)number;
     font->generation = (unsigned int)generation;
     rt_copy_string(font->subtype, sizeof(font->subtype), subtype != 0 ? subtype : "");
-    if (pdf_find_name_value(dict, dict_size, "/BaseFont", name, sizeof(name))) {
+    if (pdf_find_top_name_value(dict, dict_size, "/BaseFont", name, sizeof(name))) {
         rt_copy_string(font->base_font, sizeof(font->base_font), name);
         if (pdf_add_name_count(&info->font_names, &info->font_names_len, &info->font_names_cap, name) != 0) return -1;
     }
-    if (pdf_find_name_value(dict, dict_size, "/Encoding", name, sizeof(name))) rt_copy_string(font->encoding, sizeof(font->encoding), name);
+    if (pdf_find_top_name_value(dict, dict_size, "/Encoding", name, sizeof(name))) rt_copy_string(font->encoding, sizeof(font->encoding), name);
     font->has_to_unicode = pdf_find_key(dict, dict_size, "/ToUnicode", &key_offset);
     font->embedded_program_in_object = pdf_find_key(dict, dict_size, "/FontFile", &key_offset) || pdf_find_key(dict, dict_size, "/FontFile2", &key_offset) || pdf_find_key(dict, dict_size, "/FontFile3", &key_offset);
     return 0;
+}
+
+static int pdf_copy_info_field(const unsigned char *dict, size_t dict_size, const char *key, char *dest, size_t dest_size) {
+    char value[PDF_TEXT_CAPACITY];
+
+    if (!pdf_find_top_text_value(dict, dict_size, key, value, sizeof(value))) return 0;
+    rt_copy_string(dest, dest_size, value);
+    return 1;
+}
+
+static void pdf_collect_document_info(PdfInfo *info, unsigned long long number, unsigned long long generation, const unsigned char *dict, size_t dict_size) {
+    PdfDocumentInfo *document = &info->document_info;
+    int found = 0;
+
+    found += pdf_copy_info_field(dict, dict_size, "/Title", document->title, sizeof(document->title));
+    found += pdf_copy_info_field(dict, dict_size, "/Author", document->author, sizeof(document->author));
+    found += pdf_copy_info_field(dict, dict_size, "/Subject", document->subject, sizeof(document->subject));
+    found += pdf_copy_info_field(dict, dict_size, "/Keywords", document->keywords, sizeof(document->keywords));
+    found += pdf_copy_info_field(dict, dict_size, "/Creator", document->creator, sizeof(document->creator));
+    found += pdf_copy_info_field(dict, dict_size, "/Producer", document->producer, sizeof(document->producer));
+    found += pdf_copy_info_field(dict, dict_size, "/CreationDate", document->creation_date, sizeof(document->creation_date));
+    found += pdf_copy_info_field(dict, dict_size, "/ModDate", document->modification_date, sizeof(document->modification_date));
+    if (found != 0) {
+        info->info_dictionary_count += 1ULL;
+        document->object_number = (unsigned int)number;
+        document->generation = (unsigned int)generation;
+    }
 }
 
 static int pdf_is_font_type(const char *type, const char *subtype) {
@@ -483,8 +703,8 @@ static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t s
 
     type[0] = '\0';
     subtype[0] = '\0';
-    (void)pdf_find_name_value(dict, dict_size, "/Type", type, sizeof(type));
-    (void)pdf_find_name_value(dict, dict_size, "/Subtype", subtype, sizeof(subtype));
+    (void)pdf_find_top_name_value(dict, dict_size, "/Type", type, sizeof(type));
+    (void)pdf_find_top_name_value(dict, dict_size, "/Subtype", subtype, sizeof(subtype));
     if (pdf_add_object(info, number, generation, object_offset, has_stream, type, subtype) != 0) return -1;
     info->object_count += 1ULL;
     if (has_stream) {
@@ -493,11 +713,12 @@ static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t s
 
         info->stream_count += 1ULL;
         pdf_trim_stream_end(data, content_start, &content_end);
-        if (pdf_find_key(dict, dict_size, "/Filter", &key_offset)) info->filtered_stream_count += 1ULL;
+        if (pdf_find_top_key(dict, dict_size, "/Filter", &key_offset)) info->filtered_stream_count += 1ULL;
         else if (content_start <= content_end && content_end <= size) pdf_scan_content_stream(data, content_start, content_end, info);
     }
     if (pdf_collect_filters(dict, dict_size, info) != 0) return -1;
     if (pdf_collect_encodings(dict, dict_size, info) != 0) return -1;
+    pdf_collect_document_info(info, number, generation, dict, dict_size);
     if (pdf_find_key(dict, dict_size, "/Encrypt", &key_offset)) info->encrypted = 1ULL;
     if (pdf_find_key(dict, dict_size, "/FontFile", &key_offset) || pdf_find_key(dict, dict_size, "/FontFile2", &key_offset) || pdf_find_key(dict, dict_size, "/FontFile3", &key_offset)) info->embedded_font_program_count += 1ULL;
     if (type[0] != '\0' && rt_strcmp(type, "Catalog") == 0) info->catalog_count += 1ULL;
@@ -649,4 +870,105 @@ const char *pdf_page_format_name(long long width, long long height) {
     if (pdf_page_matches(width, height, 842LL, 1191LL)) return "A3";
     if (pdf_page_matches(width, height, 420LL, 595LL)) return "A5";
     return "custom";
+}
+
+static int pdf_date_digit(char ch) {
+    if (ch < '0' || ch > '9') return -1;
+    return ch - '0';
+}
+
+static int pdf_parse_date_digits(const char *text, size_t offset, size_t count, unsigned int *value_out) {
+    unsigned int value = 0U;
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        int digit = pdf_date_digit(text[offset + index]);
+        if (digit < 0) return 0;
+        value = value * 10U + (unsigned int)digit;
+    }
+    *value_out = value;
+    return 1;
+}
+
+static int pdf_append_char(char *buffer, size_t buffer_size, size_t *used_io, char ch) {
+    if (buffer_size == 0U || *used_io + 1U >= buffer_size) return 0;
+    buffer[*used_io] = ch;
+    *used_io += 1U;
+    buffer[*used_io] = '\0';
+    return 1;
+}
+
+static int pdf_append_cstr(char *buffer, size_t buffer_size, size_t *used_io, const char *text) {
+    size_t index;
+
+    for (index = 0U; text[index] != '\0'; ++index) {
+        if (!pdf_append_char(buffer, buffer_size, used_io, text[index])) return 0;
+    }
+    return 1;
+}
+
+static int pdf_append_two_digits(char *buffer, size_t buffer_size, size_t *used_io, unsigned int value) {
+    return pdf_append_char(buffer, buffer_size, used_io, (char)('0' + ((value / 10U) % 10U))) && pdf_append_char(buffer, buffer_size, used_io, (char)('0' + (value % 10U)));
+}
+
+static int pdf_append_four_digits(char *buffer, size_t buffer_size, size_t *used_io, unsigned int value) {
+    return pdf_append_char(buffer, buffer_size, used_io, (char)('0' + ((value / 1000U) % 10U))) &&
+           pdf_append_char(buffer, buffer_size, used_io, (char)('0' + ((value / 100U) % 10U))) &&
+           pdf_append_char(buffer, buffer_size, used_io, (char)('0' + ((value / 10U) % 10U))) &&
+           pdf_append_char(buffer, buffer_size, used_io, (char)('0' + (value % 10U)));
+}
+
+int pdf_format_date(const char *pdf_date, char *buffer, size_t buffer_size) {
+    size_t length;
+    size_t offset = 0U;
+    size_t used = 0U;
+    unsigned int year;
+    unsigned int month = 1U;
+    unsigned int day = 1U;
+    unsigned int hour = 0U;
+    unsigned int minute = 0U;
+    unsigned int second = 0U;
+
+    if (buffer_size == 0U) return 0;
+    buffer[0] = '\0';
+    if (pdf_date == 0 || pdf_date[0] == '\0') return 0;
+    length = rt_strlen(pdf_date);
+    if (length >= 2U && pdf_date[0] == 'D' && pdf_date[1] == ':') offset = 2U;
+    if (length < offset + 4U || !pdf_parse_date_digits(pdf_date, offset, 4U, &year)) return 0;
+    offset += 4U;
+    if (length >= offset + 2U && !pdf_parse_date_digits(pdf_date, offset, 2U, &month)) return 0;
+    if (length >= offset + 2U) offset += 2U;
+    if (length >= offset + 2U && !pdf_parse_date_digits(pdf_date, offset, 2U, &day)) return 0;
+    if (length >= offset + 2U) offset += 2U;
+    if (length >= offset + 2U && !pdf_parse_date_digits(pdf_date, offset, 2U, &hour)) return 0;
+    if (length >= offset + 2U) offset += 2U;
+    if (length >= offset + 2U && !pdf_parse_date_digits(pdf_date, offset, 2U, &minute)) return 0;
+    if (length >= offset + 2U) offset += 2U;
+    if (length >= offset + 2U && !pdf_parse_date_digits(pdf_date, offset, 2U, &second)) return 0;
+    if (length >= offset + 2U) offset += 2U;
+    if (month < 1U || month > 12U || day < 1U || day > 31U || hour > 23U || minute > 59U || second > 60U) return 0;
+    if (!pdf_append_four_digits(buffer, buffer_size, &used, year) || !pdf_append_char(buffer, buffer_size, &used, '-') || !pdf_append_two_digits(buffer, buffer_size, &used, month) || !pdf_append_char(buffer, buffer_size, &used, '-') || !pdf_append_two_digits(buffer, buffer_size, &used, day)) return 0;
+    if (!pdf_append_char(buffer, buffer_size, &used, ' ') || !pdf_append_two_digits(buffer, buffer_size, &used, hour) || !pdf_append_char(buffer, buffer_size, &used, ':') || !pdf_append_two_digits(buffer, buffer_size, &used, minute) || !pdf_append_char(buffer, buffer_size, &used, ':') || !pdf_append_two_digits(buffer, buffer_size, &used, second)) return 0;
+    if (offset < length) {
+        char zone = pdf_date[offset];
+        unsigned int zone_hour = 0U;
+        unsigned int zone_minute = 0U;
+
+        if (zone == 'Z' || zone == 'z') {
+            if (!pdf_append_cstr(buffer, buffer_size, &used, " UTC")) return 0;
+        } else if (zone == '+' || zone == '-') {
+            offset += 1U;
+            if (length < offset + 2U || !pdf_parse_date_digits(pdf_date, offset, 2U, &zone_hour)) return used != 0U;
+            offset += 2U;
+            if (offset < length && pdf_date[offset] == '\'') offset += 1U;
+            if (length >= offset + 2U) {
+                if (!pdf_parse_date_digits(pdf_date, offset, 2U, &zone_minute)) return used != 0U;
+            }
+            if (zone_hour > 23U || zone_minute > 59U) return used != 0U;
+            if (!pdf_append_cstr(buffer, buffer_size, &used, " UTC")) return 0;
+            if (zone_hour == 0U && zone_minute == 0U) return 1;
+            if (!pdf_append_char(buffer, buffer_size, &used, zone) || !pdf_append_two_digits(buffer, buffer_size, &used, zone_hour) || !pdf_append_char(buffer, buffer_size, &used, ':') || !pdf_append_two_digits(buffer, buffer_size, &used, zone_minute)) return 0;
+        }
+    }
+    return used != 0U;
 }

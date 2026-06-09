@@ -111,6 +111,29 @@ static void write_metric(const char *label, unsigned long long value) {
     rt_write_char(1, '\n');
 }
 
+static void write_text_field(const char *label, const char *value) {
+    if (value == 0 || value[0] == '\0') return;
+    rt_write_cstr(1, label);
+    rt_write_cstr(1, ": ");
+    rt_write_line(1, value);
+}
+
+static void write_date_field(const char *label, const char *value) {
+    char formatted[PDF_TEXT_CAPACITY];
+
+    if (value == 0 || value[0] == '\0') return;
+    rt_write_cstr(1, label);
+    rt_write_cstr(1, ": ");
+    if (pdf_format_date(value, formatted, sizeof(formatted))) {
+        rt_write_cstr(1, formatted);
+        rt_write_cstr(1, " (raw ");
+        rt_write_cstr(1, value);
+        rt_write_cstr(1, ")\n");
+    } else {
+        rt_write_line(1, value);
+    }
+}
+
 static void write_name_counts(const char *label, const PdfNameCount *items, size_t length) {
     size_t index;
 
@@ -143,6 +166,14 @@ static void write_summary(const char *path, size_t size, const PdfInfo *info) {
         rt_write_line(1, "unknown");
     }
     write_metric("bytes", (unsigned long long)size);
+    write_text_field("title", info->document_info.title);
+    write_text_field("author", info->document_info.author);
+    write_text_field("subject", info->document_info.subject);
+    write_text_field("keywords", info->document_info.keywords);
+    write_text_field("creator", info->document_info.creator);
+    write_text_field("producer", info->document_info.producer);
+    write_date_field("creation_date", info->document_info.creation_date);
+    write_date_field("modification_date", info->document_info.modification_date);
     write_metric("objects", info->object_count);
     write_metric("streams", info->stream_count);
     write_metric("pages", info->page_count);
@@ -185,6 +216,7 @@ static void write_plain(const char *path, size_t size, const PdfInfo *info) {
 
 static void write_details(const PdfInfo *info) {
     write_metric("catalogs", info->catalog_count);
+    write_metric("info_dictionaries", info->info_dictionary_count);
     write_metric("page_trees", info->pages_tree_count);
     write_metric("xref_tables", info->xref_table_count);
     write_metric("xref_streams", info->xref_stream_count);
@@ -327,6 +359,13 @@ static void write_json_name_counts(const char *key, const PdfNameCount *items, s
 
 static void write_json_output(const char *path, size_t size, const PdfInfo *info) {
     int first = 1;
+    char creation_date_formatted[PDF_TEXT_CAPACITY];
+    char modification_date_formatted[PDF_TEXT_CAPACITY];
+
+    creation_date_formatted[0] = '\0';
+    modification_date_formatted[0] = '\0';
+    (void)pdf_format_date(info->document_info.creation_date, creation_date_formatted, sizeof(creation_date_formatted));
+    (void)pdf_format_date(info->document_info.modification_date, modification_date_formatted, sizeof(modification_date_formatted));
 
     rt_write_char(1, '{');
     json_string_field("file", path ? path : "stdin", &first);
@@ -335,6 +374,17 @@ static void write_json_output(const char *path, size_t size, const PdfInfo *info
     json_bool_field("has_eof", info->has_eof, &first);
     json_uint_field("major_version", info->major_version, &first);
     json_uint_field("minor_version", info->minor_version, &first);
+    json_string_field("title", info->document_info.title, &first);
+    json_string_field("author", info->document_info.author, &first);
+    json_string_field("subject", info->document_info.subject, &first);
+    json_string_field("keywords", info->document_info.keywords, &first);
+    json_string_field("creator", info->document_info.creator, &first);
+    json_string_field("producer", info->document_info.producer, &first);
+    json_string_field("creation_date", info->document_info.creation_date, &first);
+    json_string_field("creation_date_formatted", creation_date_formatted, &first);
+    json_string_field("modification_date", info->document_info.modification_date, &first);
+    json_string_field("modification_date_formatted", modification_date_formatted, &first);
+    json_uint_field("info_dictionaries", info->info_dictionary_count, &first);
     json_uint_field("objects", info->object_count, &first);
     json_uint_field("streams", info->stream_count, &first);
     json_uint_field("filtered_streams", info->filtered_stream_count, &first);

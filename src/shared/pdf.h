@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #define PDF_NAME_CAPACITY 64U
+#define PDF_TEXT_CAPACITY 256U
 
 typedef struct {
     char name[PDF_NAME_CAPACITY];
@@ -41,6 +42,19 @@ typedef struct {
 } PdfFontInfo;
 
 typedef struct {
+    unsigned int object_number;
+    unsigned int generation;
+    char title[PDF_TEXT_CAPACITY];
+    char author[PDF_TEXT_CAPACITY];
+    char subject[PDF_TEXT_CAPACITY];
+    char keywords[PDF_TEXT_CAPACITY];
+    char creator[PDF_TEXT_CAPACITY];
+    char producer[PDF_TEXT_CAPACITY];
+    char creation_date[PDF_TEXT_CAPACITY];
+    char modification_date[PDF_TEXT_CAPACITY];
+} PdfDocumentInfo;
+
+typedef struct {
     int has_header;
     int has_eof;
     unsigned int major_version;
@@ -51,6 +65,7 @@ typedef struct {
     unsigned long long xref_table_count;
     unsigned long long xref_stream_count;
     unsigned long long trailer_count;
+    unsigned long long info_dictionary_count;
     unsigned long long object_stream_count;
     unsigned long long catalog_count;
     unsigned long long pages_tree_count;
@@ -67,6 +82,7 @@ typedef struct {
     unsigned long long path_operator_count;
     unsigned long long xobject_paint_count;
     unsigned long long inline_image_count;
+    PdfDocumentInfo document_info;
     PdfObjectInfo *objects;
     size_t objects_len;
     size_t objects_cap;
@@ -91,5 +107,6 @@ void pdf_info_init(PdfInfo *info);
 void pdf_info_free(PdfInfo *info);
 int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info);
 const char *pdf_page_format_name(long long width, long long height);
+int pdf_format_date(const char *pdf_date, char *buffer, size_t buffer_size);
 
 #endif
