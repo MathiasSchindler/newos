@@ -130,6 +130,7 @@ if ($unknownTools.Count -gt 0) { throw "Unknown tool(s): $($unknownTools -join '
 $compilerSources = @(Read-ManifestSources $manifestText "FOREACH_COMPILER_SOURCE")
 $sharedSources = @(Read-ManifestSources $manifestText "FOREACH_SHARED_SOURCE")
 $imageManifestSources = @(Read-ManifestSources $manifestText "FOREACH_IMAGE_SOURCE")
+$pdfManifestSources = @(Read-ManifestSources $manifestText "FOREACH_PDF_SOURCE")
 $cryptoSources = @(Read-ManifestSources $manifestText "FOREACH_CRYPTO_SOURCE")
 $tlsSources = @(Read-ManifestSources $manifestText "FOREACH_TLS_SOURCE")
 $tuiSources = @(Read-ManifestSources $manifestText "FOREACH_TUI_SOURCE")
@@ -153,6 +154,7 @@ $variables["SSHD_TOOL_SOURCES"] = $sshdToolSources
 
 $runtimeSources = @(Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES")
 $imageSources = Add-Unique (@($imageManifestSources) + @("src/shared/compression/crc32.c", "src/shared/compression/zlib.c"))
+$pdfSources = @($pdfManifestSources)
 $hashSources = @("src/shared/hash_util.c", "src/shared/crypto/md5.c", "src/shared/crypto/sha1.c", "src/shared/crypto/sha256.c", "src/shared/crypto/sha512.c")
 $archiveSources = @("src/shared/archive_util.c", "src/shared/compression/crc32.c", "src/shared/compression/lzss.c", "src/shared/crypto/sha256.c")
 $awkSources = @("src/tools/awk/awk_parse.c", "src/tools/awk/awk_exec.c")
@@ -172,6 +174,7 @@ $sshdSources = Add-Unique (@($sshdToolSources) + @($sshTransportSources) + @($ss
 $bignumTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_BIGNUM_TOOLS"
 $hashTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_HASH_TOOLS"
 $imageTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_IMAGE_TOOLS"
+$pdfTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_PDF_TOOLS"
 $regexTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_REGEX_TOOLS"
 $archiveTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_ARCHIVE_TOOLS"
 $awkTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_AWK_TOOLS"
@@ -188,12 +191,13 @@ $sshTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSH_TOOLS"
 $sshdTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSHD_TOOLS"
 $aliasTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_ALIAS_TOOLS"
 
-$specialTools = Add-Unique (@("wtf") + $imageTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $nccTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
+$specialTools = Add-Unique (@("wtf") + $imageTools + $pdfTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $nccTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
 $genericTools = Remove-Tools $allTools $specialTools
 
 $toolKinds = @{}
 foreach ($tool in $genericTools) { $toolKinds[$tool] = "generic" }
 foreach ($tool in $imageTools) { $toolKinds[$tool] = "image" }
+foreach ($tool in $pdfTools) { $toolKinds[$tool] = "pdf" }
 foreach ($tool in $bignumTools) { $toolKinds[$tool] = "bignum" }
 foreach ($tool in $hashTools) { $toolKinds[$tool] = "hash" }
 foreach ($tool in $regexTools) { $toolKinds[$tool] = "regex" }
@@ -268,6 +272,7 @@ foreach ($tool in $selectedTools) {
         "generic" { $sources += $runtimeSources }
         "wtf" { $sources += $runtimeSources + $tlsSources + $cryptoSources + @("src/platform/windows/tls.c"); $linkFlags = $windowsTlsLdFlags }
         "image" { $sources += $imageSources + $runtimeSources }
+        "pdf" { $sources += $pdfSources + $runtimeSources }
         "bignum" { $extraCFlags += "-Wno-pedantic"; $sources += @("src/shared/bignum.c") + $runtimeSources }
         "hash" { $sources += $hashSources + $runtimeSources }
         "regex" { $sources += $runtimeSources }

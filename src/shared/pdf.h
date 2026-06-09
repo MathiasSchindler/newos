@@ -1,0 +1,95 @@
+#ifndef NEWOS_PDF_H
+#define NEWOS_PDF_H
+
+#include <stddef.h>
+
+#define PDF_NAME_CAPACITY 64U
+
+typedef struct {
+    char name[PDF_NAME_CAPACITY];
+    unsigned long long count;
+} PdfNameCount;
+
+typedef struct {
+    unsigned int number;
+    unsigned int generation;
+    size_t offset;
+    int has_stream;
+    char type[PDF_NAME_CAPACITY];
+    char subtype[PDF_NAME_CAPACITY];
+} PdfObjectInfo;
+
+typedef struct {
+    unsigned int object_number;
+    unsigned int generation;
+    int has_media_box;
+    long long media_box[4];
+    int has_crop_box;
+    long long crop_box[4];
+    int has_rotate;
+    long long rotate;
+} PdfPageInfo;
+
+typedef struct {
+    unsigned int object_number;
+    unsigned int generation;
+    char subtype[PDF_NAME_CAPACITY];
+    char base_font[PDF_NAME_CAPACITY];
+    char encoding[PDF_NAME_CAPACITY];
+    int has_to_unicode;
+    int embedded_program_in_object;
+} PdfFontInfo;
+
+typedef struct {
+    int has_header;
+    int has_eof;
+    unsigned int major_version;
+    unsigned int minor_version;
+    unsigned long long object_count;
+    unsigned long long stream_count;
+    unsigned long long filtered_stream_count;
+    unsigned long long xref_table_count;
+    unsigned long long xref_stream_count;
+    unsigned long long trailer_count;
+    unsigned long long object_stream_count;
+    unsigned long long catalog_count;
+    unsigned long long pages_tree_count;
+    unsigned long long page_count;
+    unsigned long long font_count;
+    unsigned long long embedded_font_program_count;
+    unsigned long long image_count;
+    unsigned long long form_xobject_count;
+    unsigned long long annotation_count;
+    unsigned long long metadata_count;
+    unsigned long long encrypted;
+    unsigned long long text_object_count;
+    unsigned long long text_show_count;
+    unsigned long long path_operator_count;
+    unsigned long long xobject_paint_count;
+    unsigned long long inline_image_count;
+    PdfObjectInfo *objects;
+    size_t objects_len;
+    size_t objects_cap;
+    PdfPageInfo *pages;
+    size_t pages_len;
+    size_t pages_cap;
+    PdfFontInfo *fonts;
+    size_t fonts_len;
+    size_t fonts_cap;
+    PdfNameCount *filters;
+    size_t filters_len;
+    size_t filters_cap;
+    PdfNameCount *encodings;
+    size_t encodings_len;
+    size_t encodings_cap;
+    PdfNameCount *font_names;
+    size_t font_names_len;
+    size_t font_names_cap;
+} PdfInfo;
+
+void pdf_info_init(PdfInfo *info);
+void pdf_info_free(PdfInfo *info);
+int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info);
+const char *pdf_page_format_name(long long width, long long height);
+
+#endif

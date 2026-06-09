@@ -112,6 +112,11 @@
     X("src/shared/crypto/p256.c") \
     X("src/shared/image/validate.c")
 
+/* -- PDF metadata parsing ------------------------------------------------ */
+
+#define FOREACH_PDF_SOURCE(X) \
+    X("src/shared/pdf.c")
+
 /* ── crypto primitives ───────────────────────────────────────────────────── */
 
 #define FOREACH_CRYPTO_SOURCE(X) \
