@@ -39,7 +39,7 @@ int tool_output_buffer_write(ToolOutputBuffer *output, const char *text, size_t 
 int tool_output_buffer_write_char(ToolOutputBuffer *output, char ch);
 int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text);
 
-#define TOOL_RECORD_READER_BUFFER_SIZE 4096U
+#define TOOL_RECORD_READER_BUFFER_SIZE 16384U
 
 typedef struct {
     int fd;

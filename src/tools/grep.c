@@ -571,7 +571,7 @@ static int grep_stream(int fd,
                        const char *label,
                        int show_label,
                        int *matched_out) {
-    char chunk[4096];
+    char chunk[16384];
     char line[GREP_LINE_CAPACITY];
     char before_lines[GREP_CONTEXT_CAPACITY][GREP_LINE_CAPACITY];
     unsigned long long before_line_numbers[GREP_CONTEXT_CAPACITY];

@@ -817,7 +817,7 @@ static int rg_stream_file(int fd,
                           RgOptions *options,
                           int show_path,
                           int *matched_out) {
-    char chunk[4096];
+    char chunk[16384];
     char line[RG_LINE_CAPACITY];
     size_t line_len = 0U;
     unsigned long long line_no = 1ULL;

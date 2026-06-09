@@ -401,33 +401,33 @@ static int process_line(SedProgram *program,
     return 0;
 }
 
-static int write_record(int output_fd, const char *text, char delimiter) {
-    return rt_write_cstr(output_fd, text) != 0 ? -1 : rt_write_char(output_fd, delimiter);
+static int write_record(ToolOutputBuffer *output, const char *text, char delimiter) {
+    return tool_output_buffer_write_cstr(output, text) != 0 ? -1 : tool_output_buffer_write_char(output, delimiter);
 }
 
-static int write_result_output(int output_fd, const SedProgram *program, const char *out, SedExecutionResult *result) {
+static int write_result_output(ToolOutputBuffer *output, const SedProgram *program, const char *out, SedExecutionResult *result) {
     unsigned int i;
 
     for (i = 0U; i < result->before_count; ++i) {
-        if (write_record(output_fd, result->before_texts[i], program->record_delimiter) != 0) {
+        if (write_record(output, result->before_texts[i], program->record_delimiter) != 0) {
             return -1;
         }
     }
 
     if (!result->deleted) {
         while (result->explicit_prints > 0U) {
-            if (write_record(output_fd, out, program->record_delimiter) != 0) {
+            if (write_record(output, out, program->record_delimiter) != 0) {
                 return -1;
             }
             result->explicit_prints -= 1U;
         }
-        if (!program->suppress_default_output && write_record(output_fd, out, program->record_delimiter) != 0) {
+        if (!program->suppress_default_output && write_record(output, out, program->record_delimiter) != 0) {
             return -1;
         }
     }
 
     for (i = 0U; i < result->after_count; ++i) {
-        if (write_record(output_fd, result->after_texts[i], program->record_delimiter) != 0) {
+        if (write_record(output, result->after_texts[i], program->record_delimiter) != 0) {
             return -1;
         }
     }
@@ -440,27 +440,45 @@ static int sed_stream_to_fd(int input_fd, int output_fd, SedProgram *program) {
     char out[SED_LINE_CAPACITY];
     SedExecutionResult result;
     ToolRecordReader reader;
+    ToolOutputBuffer output;
     unsigned long long line_no = 1;
     int has_record = 0;
     int read_status;
 
+    if (!program->suppress_default_output &&
+        program->count == 1U &&
+        program->commands[0].kind == SED_COMMAND_SUBSTITUTE &&
+        program->commands[0].start.type == SED_ADDRESS_NONE &&
+        program->commands[0].end.type == SED_ADDRESS_NONE) {
+        tool_output_buffer_init(&output, output_fd);
+        tool_record_reader_init(&reader, input_fd, program->record_delimiter);
+        while ((read_status = tool_record_reader_next(&reader, line, sizeof(line), &has_record)) == 0 && has_record) {
+            if (apply_substitution(program, &program->commands[0], line, out, sizeof(out)) != 0 ||
+                write_record(&output, out, program->record_delimiter) != 0) {
+                return -1;
+            }
+        }
+        return read_status == 0 && tool_output_buffer_flush(&output) == 0 ? 0 : -1;
+    }
+
     reset_program_state(program);
+    tool_output_buffer_init(&output, output_fd);
     tool_record_reader_init(&reader, input_fd, program->record_delimiter);
 
     while ((read_status = tool_record_reader_next(&reader, line, sizeof(line), &has_record)) == 0 && has_record) {
         if (process_line(program, line_no, line, out, sizeof(out), &result) != 0) {
             return -1;
         }
-        if (write_result_output(output_fd, program, out, &result) != 0) {
+        if (write_result_output(&output, program, out, &result) != 0) {
             return -1;
         }
         line_no += 1;
         if (result.quit) {
-            return 0;
+            return tool_output_buffer_flush(&output);
         }
     }
 
-    return read_status == 0 ? 0 : -1;
+    return read_status == 0 && tool_output_buffer_flush(&output) == 0 ? 0 : -1;
 }
 
 static int build_appended_path(const char *path, const char *suffix, char *buffer, size_t buffer_size) {

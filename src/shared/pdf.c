@@ -826,10 +826,10 @@ static void pdf_scan_header(const unsigned char *data, size_t size, PdfInfo *inf
 static void pdf_scan_markers(const unsigned char *data, size_t size, PdfInfo *info) {
     size_t offset;
 
-    for (offset = 0U; offset + 5U <= size; ++offset) {
-        if (!info->has_eof && pdf_text_at(data, size, offset, "%%EOF")) info->has_eof = 1;
-        if (pdf_keyword_at(data, size, offset, "xref")) info->xref_table_count += 1ULL;
-        if (pdf_keyword_at(data, size, offset, "trailer")) info->trailer_count += 1ULL;
+    for (offset = 0U; offset < size; ++offset) {
+        if (!info->has_eof && data[offset] == (unsigned char)'%' && pdf_text_at_len(data, size, offset, "%%EOF", 5U)) info->has_eof = 1;
+        if (data[offset] == (unsigned char)'x' && pdf_keyword_at_len(data, size, offset, "xref", 4U)) info->xref_table_count += 1ULL;
+        if (data[offset] == (unsigned char)'t' && pdf_keyword_at_len(data, size, offset, "trailer", 7U)) info->trailer_count += 1ULL;
     }
 }
 

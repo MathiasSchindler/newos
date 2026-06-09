@@ -12,6 +12,76 @@ static int tool_regex_is_utf8_continuation(unsigned char ch) {
     return (ch & 0xc0U) == 0x80U;
 }
 
+static int tool_regex_is_plain_literal(const char *pattern) {
+    size_t index = 0U;
+
+    while (pattern[index] != '\0') {
+        char ch = pattern[index];
+        if (((unsigned char)ch & 0x80U) != 0U ||
+            ch == '\\' || ch == '.' || ch == '^' || ch == '$' || ch == '*' ||
+            ch == '+' || ch == '?' || ch == '{' || ch == '[' || ch == '(' ||
+            ch == '|') {
+            return 0;
+        }
+        index += 1U;
+    }
+    return 1;
+}
+
+static int tool_regex_is_plain_replacement(const char *replacement) {
+    size_t index = 0U;
+
+    while (replacement[index] != '\0') {
+        if (replacement[index] == '\\' || replacement[index] == '&') return 0;
+        index += 1U;
+    }
+    return 1;
+}
+
+static int tool_regex_search_literal(const char *pattern,
+                                     size_t pattern_len,
+                                     const char *text,
+                                     size_t search_start,
+                                     size_t *start_out,
+                                     size_t *end_out,
+                                     ToolRegexCaptures *captures_out) {
+    size_t pos = search_start;
+    unsigned char first;
+
+    if (pattern_len == 0U) {
+        *start_out = search_start;
+        *end_out = search_start;
+        if (captures_out != 0) {
+            rt_memset(captures_out, 0, sizeof(*captures_out));
+            captures_out->starts[0] = text + search_start;
+            captures_out->ends[0] = text + search_start;
+        }
+        return 1;
+    }
+
+    first = (unsigned char)pattern[0];
+    while (text[pos] != '\0') {
+        if ((unsigned char)text[pos] == first) {
+            size_t index = 1U;
+            while (index < pattern_len && text[pos + index] != '\0' && text[pos + index] == pattern[index]) {
+                index += 1U;
+            }
+            if (index == pattern_len) {
+                *start_out = pos;
+                *end_out = pos + pattern_len;
+                if (captures_out != 0) {
+                    rt_memset(captures_out, 0, sizeof(*captures_out));
+                    captures_out->starts[0] = text + pos;
+                    captures_out->ends[0] = text + pos + pattern_len;
+                }
+                return 1;
+            }
+        }
+        pos += 1U;
+    }
+    return 0;
+}
+
 static size_t tool_regex_decode_codepoint(const char *text, unsigned int *codepoint_out) {
     size_t index = 0U;
     size_t length;
@@ -1015,10 +1085,14 @@ static int tool_regex_search_internal(const char *pattern,
                                       size_t *end_out,
                                       ToolRegexCaptures *captures_out) {
     size_t pos = search_start;
-    size_t pattern_end = rt_strlen(pattern);
+    size_t pattern_end;
 
     if (pattern == 0 || text == 0 || start_out == 0 || end_out == 0) {
         return 0;
+    }
+    pattern_end = rt_strlen(pattern);
+    if (!ignore_case && tool_regex_is_plain_literal(pattern)) {
+        return tool_regex_search_literal(pattern, pattern_end, text, search_start, start_out, end_out, captures_out);
     }
 
     while (1) {
@@ -1075,6 +1149,38 @@ static int tool_regex_append_text(char *buffer, size_t buffer_size, size_t *used
         *used += length;
     }
     buffer[*used] = '\0';
+    return 0;
+}
+
+static int tool_regex_replace_literal(const char *pattern,
+                                      size_t pattern_len,
+                                      const char *replacement,
+                                      size_t replacement_len,
+                                      const char *input,
+                                      int global,
+                                      char *output,
+                                      size_t output_size,
+                                      int *changed_out) {
+    size_t in_pos = 0U;
+    size_t out_pos = 0U;
+    int changed = 0;
+
+    output[0] = '\0';
+    while (input[in_pos] != '\0') {
+        size_t match_start = 0U;
+        size_t match_end = 0U;
+
+        if (!tool_regex_search_literal(pattern, pattern_len, input, in_pos, &match_start, &match_end, 0)) break;
+        if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, match_start - in_pos) != 0 ||
+            tool_regex_append_text(output, output_size, &out_pos, replacement, replacement_len) != 0) {
+            return -1;
+        }
+        changed = 1;
+        in_pos = match_end;
+        if (!global) break;
+    }
+    if (tool_regex_append_text(output, output_size, &out_pos, input + in_pos, rt_strlen(input + in_pos)) != 0) return -1;
+    if (changed_out != 0) *changed_out = changed;
     return 0;
 }
 
@@ -1152,11 +1258,15 @@ int tool_regex_replace(const char *pattern,
         *changed_out = 0;
     }
 
-    output[0] = '\0';
     if (pattern[0] == '\0') {
+        output[0] = '\0';
         return tool_regex_append_text(output, output_size, &out_pos, input, rt_strlen(input));
     }
+    if (!ignore_case && tool_regex_is_plain_literal(pattern) && tool_regex_is_plain_replacement(replacement)) {
+        return tool_regex_replace_literal(pattern, rt_strlen(pattern), replacement, rt_strlen(replacement), input, global, output, output_size, changed_out);
+    }
 
+    output[0] = '\0';
     while (1) {
         size_t match_start = 0U;
         size_t match_end = 0U;
