@@ -72,9 +72,7 @@ static void format_percent_text(unsigned long long used, unsigned long long tota
     buffer[length + 1U] = '\0';
 }
 
-static int same_row_path(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
+#define same_row_path tool_str_equal
 
 static int same_filesystem_info(const PlatformFilesystemInfo *left, const PlatformFilesystemInfo *right) {
     return left->total_bytes == right->total_bytes &&

@@ -1351,7 +1351,7 @@ int platform_spawn_process_ex(
         }
 
         if (output_path != 0) {
-            fd = platform_open_write_mode(output_path, 0644U, output_append ? 0 : 1);
+            fd = output_append ? platform_open_append(output_path, 0644U) : platform_open_write_mode(output_path, 0644U, 1);
             if (fd < 0) {
                 _exit(126);
             }

@@ -13,9 +13,7 @@ typedef struct {
     const char *value;
 } InitEnvSetting;
 
-static int is_stdio_path(const char *path) {
-    return path != 0 && path[0] == '-' && path[1] == '\0';
-}
+#define is_stdio_path tool_path_is_dash
 
 static int validate_program_path(const char *path) {
     if (path == 0 || path[0] != '/') {

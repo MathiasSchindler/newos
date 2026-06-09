@@ -99,16 +99,9 @@ static int has_extraction_mode(const ReadApkOptions *options) {
            options->extract_signatures_dir != 0 || options->extract_resource;
 }
 
-static int text_starts_with(const char *text, const char *prefix) {
-    return rt_strncmp(text, prefix, rt_strlen(prefix)) == 0;
-}
+#define text_starts_with tool_starts_with
 
-static char ascii_lower(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
+#define ascii_lower tool_ascii_tolower
 
 static int text_ends_with_ignore_case(const char *text, const char *suffix) {
     size_t text_length = rt_strlen(text);

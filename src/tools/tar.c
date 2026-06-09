@@ -87,9 +87,7 @@ static int has_suffix(const char *text, const char *suffix) {
     return rt_strcmp(text + text_len - suffix_len, suffix) == 0;
 }
 
-static int is_dash_path(const char *path) {
-    return path != 0 && path[0] == '-' && path[1] == '\0';
-}
+#define is_dash_path tool_path_is_dash
 
 static TarCompression detect_compression(const char *archive_name) {
     if (has_suffix(archive_name, ".tar.gz") || has_suffix(archive_name, ".tgz") || has_suffix(archive_name, ".gz")) {
@@ -125,16 +123,7 @@ static const char *decompressor_name(TarCompression compression) {
     return "";
 }
 
-static int contains_slash(const char *text) {
-    size_t i = 0;
-    while (text[i] != '\0') {
-        if (text[i] == '/') {
-            return 1;
-        }
-        i += 1;
-    }
-    return 0;
-}
+#define contains_slash tool_path_has_separator
 
 static int path_is_absolute(const char *path) {
     return path != 0 && path[0] == '/';

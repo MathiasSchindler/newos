@@ -449,12 +449,7 @@ static int is_sort_printable(unsigned char ch) {
     return ch >= 0x20U && ch < 0x7fU;
 }
 
-static char sort_fold_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
+#define sort_fold_ascii tool_ascii_tolower
 
 static int sort_char_is_ignored(unsigned char ch, const SortOptions *options) {
     if (options->ignore_nonprinting && !is_sort_printable(ch)) {

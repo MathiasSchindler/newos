@@ -65,16 +65,7 @@ static unsigned long long next_random(void) {
     return shuf_rng_state;
 }
 
-static int starts_with_text(const char *text, const char *prefix) {
-    size_t i = 0U;
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-    return 1;
-}
+#define starts_with_text tool_starts_with
 
 static int parse_signed_value(const char *text, long long *value_out) {
     long long sign = 1;

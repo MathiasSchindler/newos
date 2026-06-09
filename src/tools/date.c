@@ -25,31 +25,13 @@ typedef struct {
     const char *reference_path;
 } DateOptions;
 
-static char date_to_lower_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
+#define date_to_lower_ascii tool_ascii_tolower
 
 static int date_is_alpha(char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
-static int date_equals_ignore_case(const char *lhs, const char *rhs) {
-    size_t index = 0;
-
-    if (lhs == 0 || rhs == 0) {
-        return 0;
-    }
-    while (lhs[index] != '\0' && rhs[index] != '\0') {
-        if (date_to_lower_ascii(lhs[index]) != date_to_lower_ascii(rhs[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-    return lhs[index] == '\0' && rhs[index] == '\0';
-}
+#define date_equals_ignore_case tool_str_equal_ignore_case_ascii
 
 static int date_word_at(const char *text, size_t index, const char *word, size_t *end_out) {
     size_t offset = 0;

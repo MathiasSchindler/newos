@@ -9,9 +9,7 @@ static int show_udp = 0;
 static int show_listen = 0;
 static int ss_json;
 
-static int streq(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
+#define streq tool_str_equal
 
 static void print_usage(void) {
     tool_write_usage("ss", "[-t] [-u] [-l] [-a] [--json]");

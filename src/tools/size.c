@@ -79,16 +79,7 @@ static int select_macho_fat_slice(int fd, unsigned long long *offset_out, unsign
     return *offset_out != 0ULL ? 0 : -1;
 }
 
-static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
-    size_t i;
-
-    if (dest_size == 0U) return;
-    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
-        unsigned char ch = src[i];
-        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
-    }
-    dest[i] = '\0';
-}
+#define copy_fixed_name tool_copy_printable_bytes
 
 static int macho_is_zerofill_type(unsigned int type) {
     return type == MACHO_S_ZEROFILL || type == MACHO_S_GB_ZEROFILL || type == MACHO_S_THREAD_LOCAL_ZEROFILL;

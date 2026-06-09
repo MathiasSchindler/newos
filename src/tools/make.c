@@ -57,20 +57,7 @@ static void refresh_makeflags(MakeProgram *program) {
     (void)platform_setenv("MAKE", get_variable_value(program, "MAKE"), 1);
 }
 
-static int text_is_decimal(const char *text) {
-    size_t i = 0U;
-
-    if (text == 0 || text[0] == '\0') {
-        return 0;
-    }
-    while (text[i] != '\0') {
-        if (text[i] < '0' || text[i] > '9') {
-            return 0;
-        }
-        i += 1U;
-    }
-    return 1;
-}
+#define text_is_decimal tool_text_is_decimal
 
 static void apply_makeflags_env(MakeProgram *program) {
     const char *env_flags = platform_getenv("MAKEFLAGS");

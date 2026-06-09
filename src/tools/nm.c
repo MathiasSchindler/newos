@@ -130,16 +130,7 @@ static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
     return *offset_out != 0ULL ? 0 : -1;
 }
 
-static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
-    size_t i;
-
-    if (dest_size == 0U) return;
-    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
-        unsigned char ch = src[i];
-        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
-    }
-    dest[i] = '\0';
-}
+#define copy_fixed_name tool_copy_printable_bytes
 
 static void write_hex16(unsigned long long value) {
     static const char digits[] = "0123456789abcdef";
@@ -281,9 +272,7 @@ static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *
     return 0;
 }
 
-static int names_equal(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
+#define names_equal tool_str_equal
 
 static char macho_symbol_type(const NmMachSection *sections, unsigned int section_count, unsigned char n_type, unsigned char n_sect) {
     unsigned int type = n_type & MACHO_N_TYPE;

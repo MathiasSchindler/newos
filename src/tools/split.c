@@ -130,16 +130,7 @@ static int ensure_output_open(int *fd_out,
     return 0;
 }
 
-static int starts_with_text(const char *text, const char *prefix) {
-    size_t i = 0U;
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-    return 1;
-}
+#define starts_with_text tool_starts_with
 
 static const char *option_attached_value(const char *arg, const char *short_name, const char *long_name) {
     size_t short_len = rt_strlen(short_name);

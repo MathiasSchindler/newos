@@ -86,9 +86,7 @@ static const char windows_port_spec[] = "135,137-139,445,3389,5985,5986";
 static const char web_port_spec[] = "80,443,8000,8080,8443,9000,9443";
 static const char risky_port_spec[] = "21-23,135,139,445,1433,1521,2375,2376,3306,3389,5432,5900,6379,9200,9300";
 
-static int streq(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
+#define streq tool_str_equal
 
 static const char *profile_port_spec(const char *name) {
     if (streq(name, "admin")) return admin_port_spec;

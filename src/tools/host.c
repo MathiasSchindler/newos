@@ -4,25 +4,9 @@
 
 #define HOST_MAX_RESULTS 48U
 
-static int streq(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
-
-static char ascii_tolower(char ch) {
-    return (ch >= 'A' && ch <= 'Z') ? (char)(ch - 'A' + 'a') : ch;
-}
-
-static int streq_ignore_case(const char *left, const char *right) {
-    size_t index = 0U;
-
-    while (left[index] != '\0' && right[index] != '\0') {
-        if (ascii_tolower(left[index]) != ascii_tolower(right[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-    return left[index] == '\0' && right[index] == '\0';
-}
+#define streq tool_str_equal
+#define ascii_tolower tool_ascii_tolower
+#define streq_ignore_case tool_str_equal_ignore_case_ascii
 
 static int parse_type(const char *text, unsigned short *type_out) {
     if (streq_ignore_case(text, "A")) {

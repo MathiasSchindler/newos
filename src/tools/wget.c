@@ -94,25 +94,8 @@ static void wget_connection_close(WgetConnection *connection) {
     connection->socket_fd = -1;
 }
 
-static char to_lower_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
-static int equals_ignore_case_ascii(const char *left, const char *right) {
-    size_t index = 0;
-
-    while (left[index] != '\0' && right[index] != '\0') {
-        if (to_lower_ascii(left[index]) != to_lower_ascii(right[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return left[index] == '\0' && right[index] == '\0';
-}
+#define to_lower_ascii tool_ascii_tolower
+#define equals_ignore_case_ascii tool_str_equal_ignore_case_ascii
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");

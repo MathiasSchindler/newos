@@ -74,9 +74,7 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
     return 0;
 }
 
-static int is_dash_path(const char *path) {
-    return path != 0 && path[0] == '-' && path[1] == '\0';
-}
+#define is_dash_path tool_path_is_dash
 
 static int decompress_stream(int input_fd, int output_fd) {
     unsigned char header[10];

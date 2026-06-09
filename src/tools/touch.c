@@ -11,46 +11,11 @@ typedef struct {
     long long mtime;
 } TouchOptions;
 
-static char touch_to_lower_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
+#define touch_to_lower_ascii tool_ascii_tolower
 
-static int touch_equals_ignore_case(const char *lhs, const char *rhs) {
-    size_t index = 0;
+#define touch_equals_ignore_case tool_str_equal_ignore_case_ascii
 
-    if (lhs == 0 || rhs == 0) {
-        return 0;
-    }
-
-    while (lhs[index] != '\0' && rhs[index] != '\0') {
-        if (touch_to_lower_ascii(lhs[index]) != touch_to_lower_ascii(rhs[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return lhs[index] == '\0' && rhs[index] == '\0';
-}
-
-static int touch_starts_with(const char *text, const char *prefix) {
-    size_t index = 0;
-
-    if (text == 0 || prefix == 0) {
-        return 0;
-    }
-
-    while (prefix[index] != '\0') {
-        if (text[index] != prefix[index]) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return 1;
-}
+#define touch_starts_with tool_starts_with
 
 static int touch_matches_zone_name(const char *text, size_t index, const char *name) {
     size_t offset = 0;

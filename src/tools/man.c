@@ -334,22 +334,7 @@ static int contains_case_insensitive(const char *text, const char *needle) {
     return 0;
 }
 
-static int is_section_name(const char *text) {
-    size_t i = 0;
-
-    if (text == 0 || text[0] == '\0') {
-        return 0;
-    }
-
-    while (text[i] != '\0') {
-        if (text[i] < '0' || text[i] > '9') {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return 1;
-}
+#define is_section_name tool_text_is_decimal
 
 static void set_self_dir(const char *argv0, char *buffer, size_t buffer_size) {
     size_t len;

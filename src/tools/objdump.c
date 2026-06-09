@@ -210,16 +210,7 @@ static const char *pe_type_name(unsigned short characteristics) {
     return "object";
 }
 
-static void copy_fixed_name(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
-    size_t i;
-
-    if (dest_size == 0U) return;
-    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
-        unsigned char ch = src[i];
-        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
-    }
-    dest[i] = '\0';
-}
+#define copy_fixed_name tool_copy_printable_bytes
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
     if (platform_seek(fd, (long long)(objdump_object_base + offset), PLATFORM_SEEK_SET) < 0) {

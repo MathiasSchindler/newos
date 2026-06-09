@@ -27,9 +27,7 @@ static void ar_write_usage(void) {
     rt_write_line(2, "Usage: ar [rcstpxvq] archive [file ...]");
 }
 
-static int text_equals(const char *lhs, const char *rhs) {
-    return rt_strcmp(lhs, rhs) == 0;
-}
+#define text_equals tool_str_equal
 
 static int has_archive_magic(const char *buffer) {
     return buffer[0] == '!' &&

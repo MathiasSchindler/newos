@@ -627,3 +627,57 @@ void tool_store_u64_be(unsigned char *bytes, unsigned long long value) {
     tool_store_u32_be(bytes, (unsigned int)((value >> 32U) & 0xffffffffULL));
     tool_store_u32_be(bytes + 4U, (unsigned int)(value & 0xffffffffULL));
 }
+
+void tool_copy_printable_bytes(char *dest, size_t dest_size, const unsigned char *src, size_t src_size) {
+    size_t i;
+
+    if (dest_size == 0U) {
+        return;
+    }
+    for (i = 0U; i + 1U < dest_size && i < src_size && src[i] != 0U; ++i) {
+        unsigned char ch = src[i];
+        dest[i] = (ch >= 32U && ch <= 126U) ? (char)ch : '?';
+    }
+    dest[i] = '\0';
+}
+
+int tool_str_equal(const char *left, const char *right) {
+    return rt_strcmp(left, right) == 0;
+}
+
+char tool_ascii_tolower(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+int tool_str_equal_ignore_case_ascii(const char *left, const char *right) {
+    size_t index = 0U;
+
+    if (left == 0 || right == 0) {
+        return 0;
+    }
+    while (left[index] != '\0' && right[index] != '\0') {
+        if (tool_ascii_tolower(left[index]) != tool_ascii_tolower(right[index])) {
+            return 0;
+        }
+        index += 1U;
+    }
+    return left[index] == '\0' && right[index] == '\0';
+}
+
+int tool_text_is_decimal(const char *text) {
+    size_t index = 0U;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+    while (text[index] != '\0') {
+        if (text[index] < '0' || text[index] > '9') {
+            return 0;
+        }
+        index += 1U;
+    }
+    return 1;
+}

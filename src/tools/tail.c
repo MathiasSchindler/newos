@@ -61,22 +61,7 @@ static int parse_count_value(const char *value_text, TailCountStyle *style_out, 
     return 0;
 }
 
-static int is_digit_text(const char *text) {
-    size_t i = 0;
-
-    if (text == 0 || text[0] == '\0') {
-        return 0;
-    }
-
-    while (text[i] != '\0') {
-        if (text[i] < '0' || text[i] > '9') {
-            return 0;
-        }
-        i += 1;
-    }
-
-    return 1;
-}
+#define is_digit_text tool_text_is_decimal
 
 static int parse_options(int argc, char **argv, TailOptions *options, int *arg_index_out) {
     int arg_index = 1;

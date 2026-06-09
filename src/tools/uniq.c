@@ -70,12 +70,7 @@ static int emit_group(ToolOutputBuffer *output, const char *line, unsigned long 
     return tool_output_buffer_write_char(output, terminator);
 }
 
-static char ascii_tolower(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
+#define ascii_tolower tool_ascii_tolower
 
 static const char *skip_compare_prefix(const char *line, const UniqOptions *options) {
     unsigned long long fields = options->skip_fields;

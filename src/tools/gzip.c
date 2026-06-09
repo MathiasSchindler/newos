@@ -22,20 +22,9 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
     return 0;
 }
 
-static int contains_slash(const char *text) {
-    size_t i = 0;
-    while (text[i] != '\0') {
-        if (text[i] == '/') {
-            return 1;
-        }
-        i += 1U;
-    }
-    return 0;
-}
+#define contains_slash tool_path_has_separator
 
-static int is_dash_path(const char *path) {
-    return path != 0 && path[0] == '-' && path[1] == '\0';
-}
+#define is_dash_path tool_path_is_dash
 
 static void get_program_dir(const char *argv0, char *buffer, size_t buffer_size) {
     size_t len;

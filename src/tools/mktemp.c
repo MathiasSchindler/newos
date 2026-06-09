@@ -6,15 +6,7 @@
 
 #define MKTEMP_PATH_CAPACITY 1024
 
-static int contains_slash(const char *text) {
-    while (text != 0 && *text != '\0') {
-        if (*text == '/') {
-            return 1;
-        }
-        text += 1;
-    }
-    return 0;
-}
+#define contains_slash tool_path_has_separator
 
 static int path_exists(const char *path) {
     PlatformDirEntry entry;

@@ -20,6 +20,25 @@ const char *tool_base_name(const char *path) {
     return last;
 }
 
+int tool_path_has_separator(const char *path) {
+    size_t i = 0U;
+
+    if (path == 0) {
+        return 0;
+    }
+    while (path[i] != '\0') {
+        if (path[i] == '/') {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+int tool_path_is_dash(const char *path) {
+    return path != 0 && path[0] == '-' && path[1] == '\0';
+}
+
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size) {
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }

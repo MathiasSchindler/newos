@@ -4,31 +4,9 @@
 
 #define DIG_MAX_RESULTS 48U
 
-static int streq(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
-
-static char ascii_tolower(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
-static int streq_ignore_case(const char *left, const char *right) {
-    size_t index = 0U;
-
-    if (left == 0 || right == 0) {
-        return 0;
-    }
-    while (left[index] != '\0' && right[index] != '\0') {
-        if (ascii_tolower(left[index]) != ascii_tolower(right[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-    return left[index] == '\0' && right[index] == '\0';
-}
+#define streq tool_str_equal
+#define ascii_tolower tool_ascii_tolower
+#define streq_ignore_case tool_str_equal_ignore_case_ascii
 
 static const char *dns_type_name(unsigned short record_type) {
     switch (record_type) {

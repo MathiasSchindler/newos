@@ -33,24 +33,8 @@ typedef struct {
     char header[PS_HEADER_CAPACITY];
 } PsColumn;
 
-static char ascii_fold_char(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
-static int string_equal_ignore_case(const char *left, const char *right) {
-    size_t i = 0;
-
-    while (left[i] != '\0' && right[i] != '\0') {
-        if (ascii_fold_char(left[i]) != ascii_fold_char(right[i])) {
-            return 0;
-        }
-        i += 1;
-    }
-    return left[i] == '\0' && right[i] == '\0';
-}
+#define ascii_fold_char tool_ascii_tolower
+#define string_equal_ignore_case tool_str_equal_ignore_case_ascii
 
 static int string_has_prefix_ignore_case(const char *text, const char *prefix) {
     size_t i = 0;

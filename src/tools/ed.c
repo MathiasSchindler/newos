@@ -31,18 +31,7 @@ static void ed_trim_newline(char *text) {
     rt_trim_newline(text);
 }
 
-static int ed_starts_with(const char *text, const char *prefix) {
-    size_t i = 0;
-
-    while (prefix[i] != '\0') {
-        if (text[i] != prefix[i]) {
-            return 0;
-        }
-        i += 1;
-    }
-
-    return 1;
-}
+#define ed_starts_with tool_starts_with
 
 static int ed_read_line(InputReader *reader, char *line, size_t line_size) {
     size_t used = 0;

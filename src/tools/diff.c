@@ -55,12 +55,7 @@ static int diff_is_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\f' || ch == '\v';
 }
 
-static char diff_ascii_tolower(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
+#define diff_ascii_tolower tool_ascii_tolower
 
 static void normalize_compare_line(char *line, const DiffOptions *options) {
     char normalized[DIFF_MAX_LINE_LENGTH];

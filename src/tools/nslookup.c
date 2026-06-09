@@ -4,9 +4,7 @@
 
 #define NSLOOKUP_MAX_RESULTS 32U
 
-static int streq(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
+#define streq tool_str_equal
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-4|-6] [-s SERVER] [-p PORT] NAME");

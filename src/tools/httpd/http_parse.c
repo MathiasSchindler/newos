@@ -1,6 +1,7 @@
 #include "httpd_impl.h"
 
 #include "runtime.h"
+#include "tool_util.h"
 
 static int httpd_hex_value(char ch) {
     if (ch >= '0' && ch <= '9') {
@@ -58,24 +59,7 @@ static int httpd_decode_path(const char *source, char *dest, size_t dest_size) {
     return 0;
 }
 
-static int httpd_ascii_tolower(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (int)(ch - 'A' + 'a');
-    }
-    return (int)ch;
-}
-
-static int httpd_header_name_equals(const char *header, const char *expected) {
-    size_t index = 0U;
-
-    while (header[index] != '\0' && expected[index] != '\0') {
-        if (httpd_ascii_tolower(header[index]) != httpd_ascii_tolower(expected[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-    return header[index] == '\0' && expected[index] == '\0';
-}
+#define httpd_header_name_equals tool_str_equal_ignore_case_ascii
 
 static void httpd_trim_spaces(char *text) {
     size_t start = 0U;

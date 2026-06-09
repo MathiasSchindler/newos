@@ -2,9 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static int streq(const char *left, const char *right) {
-    return rt_strcmp(left, right) == 0;
-}
+#define streq tool_str_equal
 
 static int contains_char(const char *text, char ch) {
     size_t i = 0U;

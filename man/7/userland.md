@@ -89,7 +89,11 @@ multiple tools can reuse:
 - **fontrender_runtime.c** and **fontrender/** - embedded font-rendering support
   for render-oriented tools and UI work, backed by the shared runtime.
 
-- **tool_util.h** - common tool argument parsing and error reporting
+- **tool_util.h** - common tool argument parsing, error reporting, and small
+  direct mechanics that recur across tools, such as byte-order loads/stores,
+  fixed printable byte copies, ASCII string predicates, and path-name tests.
+  Keep these helpers boring and dependency-free; avoid moving command-specific
+  policy or callback/context abstractions into the shared layer.
 
 - **simple_config.{c,h}** and **server_log.{c,h}** - small shared config and
   escaped logging helpers used by `httpd`, `service`, and related daemon-style

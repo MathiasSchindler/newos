@@ -102,16 +102,7 @@ static const char *path_extension(const char *path) {
     return extension;
 }
 
-static int has_path_separator(const char *text) {
-    size_t i = 0;
-    while (text[i] != '\0') {
-        if (text[i] == '/') {
-            return 1;
-        }
-        i += 1U;
-    }
-    return 0;
-}
+#define has_path_separator tool_path_has_separator
 
 static int glob_matches_path(const char *glob, const char *path) {
     if (tool_wildcard_match(glob, path)) {

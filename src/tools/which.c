@@ -15,18 +15,7 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-a] COMMAND...");
 }
 
-static int contains_slash(const char *text) {
-    size_t i = 0;
-
-    while (text[i] != '\0') {
-        if (text[i] == '/') {
-            return 1;
-        }
-        i += 1U;
-    }
-
-    return 0;
-}
+#define contains_slash tool_path_has_separator
 
 static int path_exists_as_file(const char *path) {
     PlatformDirEntry entry;
