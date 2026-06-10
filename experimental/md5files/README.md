@@ -9,6 +9,25 @@ This does not make MD5 useful or trustworthy. The point is the opposite: MD5 is
 structurally broken, and equal MD5 hashes are not meaningful evidence that two
 files are identical.
 
+## Security Research and Safety Notice
+
+This directory is security research and educational material. It demonstrates why
+MD5 must not be used for identity, integrity, signing, allowlisting, cache trust,
+or any other security decision. The generated files are intentionally labeled and
+the source is kept in `experimental/` so that the security nature of the work is
+visible.
+
+Do not use this code to mislead users, bypass trust checks, distribute disguised
+executables, or attack systems that still depend on MD5 or SHA-1. Harmful use is
+not condoned. If a system still treats MD5 or SHA-1 equality as proof that two
+files are the same or trustworthy, the appropriate response is to migrate that
+system to collision-resistant hashing and authenticated signatures, not to exploit
+the weakness.
+
+This experiment is intended to support defensive review, compatibility testing,
+and clear demonstrations that legacy hashes are broken. Questions or concerns
+about misuse can be raised through the repository's normal issue/contact channel.
+
 ## Usage
 
 From the repository root:
@@ -167,11 +186,11 @@ ELF prefix || controlled collision payload || identical executable suffix
 The executable suffix is selected from the known differing payload bits, but it
 is identical in both outputs, so the MD5 collision is preserved.
 
-## Next Step
+## Optional Backend Path
 
-The remaining hard part is a real chosen-prefix MD5 backend behind the arbitrary
-ELF fixture contract above. The practical path is to integrate an existing
-research implementation behind a small local adapter rather than reimplement the
-differential search from scratch. The adapter should take the two ELF trailer
-prefixes from this scaffold, produce same-size collision payloads, then let this
-generator write and verify the final binaries.
+The wrapper mode above handles arbitrary Linux/x86-64 ELF pairs by embedding both
+inputs behind a controlled collision prefix. A separate chosen-prefix backend is
+only needed if you specifically want the appended trailer layout described in the
+backend contract, where each output starts with a different original ELF prefix.
+Such a backend should be treated as security research material and kept behind the
+same explicit safety framing as this experiment.
