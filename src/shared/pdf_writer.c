@@ -1,11 +1,19 @@
 #include "pdf.h"
 #include "runtime.h"
 
+#define PDFW_OBJECT_STREAM_MAX_OBJECTS 8192U
+
 typedef struct {
     const PdfDocument *document;
     unsigned int *map;
     size_t map_len;
 } PdfRewriteMap;
+
+typedef struct {
+    unsigned int number;
+    size_t offset;
+    size_t end;
+} PdfwObjectStreamEntry;
 
 static int pdfw_is_space(unsigned char ch) {
     return ch == 0U || ch == 9U || ch == 10U || ch == 12U || ch == 13U || ch == 32U;
@@ -240,8 +248,11 @@ void pdf_document_init(PdfDocument *document) {
 }
 
 void pdf_document_free(PdfDocument *document) {
+    size_t index;
+
     if (document == 0) return;
     pdf_info_free(&document->info);
+    for (index = 0U; index < document->objects_len; ++index) rt_free(document->objects[index].owned_data);
     rt_free(document->objects);
     rt_free(document->pages);
     pdf_document_init(document);
@@ -273,6 +284,15 @@ static int pdfw_grow_pages(PdfDocument *document) {
     return 0;
 }
 
+static const unsigned char *pdfw_span_data(const PdfDocument *document, const PdfObjectSpan *span, size_t *size_out) {
+    if (span->data != 0) {
+        if (size_out != 0) *size_out = span->data_size;
+        return span->data;
+    }
+    if (size_out != 0) *size_out = document->size;
+    return document->data;
+}
+
 static int pdfw_add_page_ref(PdfDocument *document, unsigned int number, unsigned int generation) {
     PdfPageRef *page;
 
@@ -280,6 +300,158 @@ static int pdfw_add_page_ref(PdfDocument *document, unsigned int number, unsigne
     page = &document->pages[document->pages_len++];
     page->object_number = number;
     page->generation = generation;
+    return 0;
+}
+
+static int pdfw_find_object_span(const PdfDocument *document, unsigned int number, unsigned int generation, size_t *index_out) {
+    size_t index;
+
+    for (index = 0U; index < document->objects_len; ++index) {
+        if (document->objects[index].number == number && document->objects[index].generation == generation) {
+            if (index_out != 0) *index_out = index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int pdfw_find_top_u64_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
+    size_t key_offset;
+    size_t value_offset;
+
+    if (!pdfw_find_top_key(data, size, key, &key_offset)) return 0;
+    value_offset = pdfw_skip_ws(data, size, key_offset + rt_strlen(key));
+    if (pdfw_parse_u64(data, size, &value_offset, value_out) != 0) return 0;
+    if (value_offset < size && !pdfw_is_delim(data[value_offset])) return 0;
+    return 1;
+}
+
+static size_t pdfw_trim_object_stream_body_end(const unsigned char *data, size_t start, size_t end) {
+    while (end > start && pdfw_is_space(data[end - 1U])) end -= 1U;
+    return end;
+}
+
+static int pdfw_compare_object_stream_entries(const void *left_ptr, const void *right_ptr) {
+    const PdfwObjectStreamEntry *left = (const PdfwObjectStreamEntry *)left_ptr;
+    const PdfwObjectStreamEntry *right = (const PdfwObjectStreamEntry *)right_ptr;
+
+    if (left->offset < right->offset) return -1;
+    if (left->offset > right->offset) return 1;
+    if (left->number < right->number) return -1;
+    if (left->number > right->number) return 1;
+    return 0;
+}
+
+static int pdfw_add_materialized_object(PdfDocument *document, unsigned int number, const unsigned char *body, size_t body_size) {
+    unsigned char *copy;
+    PdfObjectSpan *span;
+
+    if (number == 0U || body == 0 || body_size == 0U) return 0;
+    if (pdfw_find_object_span(document, number, 0U, 0)) return 0;
+    copy = (unsigned char *)rt_malloc(body_size);
+    if (copy == 0) return -1;
+    memcpy(copy, body, body_size);
+    if (pdfw_grow_spans(document) != 0) {
+        rt_free(copy);
+        return -1;
+    }
+    span = &document->objects[document->objects_len++];
+    rt_memset(span, 0, sizeof(*span));
+    span->number = number;
+    span->generation = 0U;
+    span->data = copy;
+    span->data_size = body_size;
+    span->owned_data = copy;
+    span->body_start = 0U;
+    span->body_end = body_size;
+    span->stream_offset = body_size;
+    span->endstream_offset = body_size;
+    (void)pdfw_find_top_name_value(copy, body_size, "/Type", span->type, sizeof(span->type));
+    (void)pdfw_find_top_name_value(copy, body_size, "/Subtype", span->subtype, sizeof(span->subtype));
+    if (span->type[0] != '\0' && rt_strcmp(span->type, "Catalog") == 0) {
+        document->catalog_object_number = span->number;
+        document->catalog_generation = 0U;
+    }
+    if (span->type[0] != '\0' && rt_strcmp(span->type, "Page") == 0) {
+        if (pdfw_add_page_ref(document, span->number, 0U) != 0) return -1;
+    }
+    if (span->number > document->max_object_number) document->max_object_number = span->number;
+    return 0;
+}
+
+static int pdfw_materialize_object_stream(PdfDocument *document, const PdfObjectSpan *object) {
+    const unsigned char *source;
+    size_t source_size;
+    const unsigned char *dict;
+    size_t dict_size;
+    unsigned long long n_value;
+    unsigned long long first_value;
+    PdfBuffer decoded;
+    PdfwObjectStreamEntry *entries = 0;
+    size_t offset = 0U;
+    size_t count;
+    size_t index;
+    int result = -1;
+
+    source = pdfw_span_data(document, object, &source_size);
+    if (object->stream_offset > source_size || object->body_start > object->stream_offset) return -1;
+    dict = source + object->body_start;
+    dict_size = object->stream_offset - object->body_start;
+    if (!pdfw_find_top_u64_value(dict, dict_size, "/N", &n_value) || !pdfw_find_top_u64_value(dict, dict_size, "/First", &first_value)) return -1;
+    if (n_value == 0ULL || n_value > PDFW_OBJECT_STREAM_MAX_OBJECTS || first_value > (unsigned long long)((size_t)-1)) return -1;
+    pdf_buffer_init(&decoded);
+    if (pdf_object_stream_data(document, object, 1, &decoded) != 0) goto done;
+    if (first_value > (unsigned long long)decoded.size) goto done;
+    count = (size_t)n_value;
+    entries = (PdfwObjectStreamEntry *)rt_malloc_array(count, sizeof(entries[0]));
+    if (entries == 0) goto done;
+    for (index = 0U; index < count; ++index) {
+        unsigned long long number;
+        unsigned long long relative;
+
+        offset = pdfw_skip_ws(decoded.data, (size_t)first_value, offset);
+        if (pdfw_parse_u64(decoded.data, (size_t)first_value, &offset, &number) != 0) goto done;
+        offset = pdfw_skip_ws(decoded.data, (size_t)first_value, offset);
+        if (pdfw_parse_u64(decoded.data, (size_t)first_value, &offset, &relative) != 0) goto done;
+        if (number > 4294967295ULL || relative > (unsigned long long)(decoded.size - (size_t)first_value)) goto done;
+        entries[index].number = (unsigned int)number;
+        entries[index].offset = (size_t)first_value + (size_t)relative;
+        entries[index].end = decoded.size;
+    }
+    rt_sort(entries, count, sizeof(entries[0]), pdfw_compare_object_stream_entries);
+    for (index = 0U; index < count; ++index) {
+        size_t body_start = entries[index].offset;
+        size_t body_end = index + 1U < count ? entries[index + 1U].offset : decoded.size;
+
+        if (body_start >= decoded.size || body_end > decoded.size || body_end <= body_start) goto done;
+        entries[index].end = body_end;
+    }
+    for (index = 0U; index < count; ++index) {
+        size_t body_start = entries[index].offset;
+        size_t body_end = entries[index].end;
+
+        body_end = pdfw_trim_object_stream_body_end(decoded.data, body_start, body_end);
+        if (body_end <= body_start) goto done;
+        if (pdfw_add_materialized_object(document, entries[index].number, decoded.data + body_start, body_end - body_start) != 0) goto done;
+    }
+    result = 0;
+done:
+    rt_free(entries);
+    pdf_buffer_free(&decoded);
+    return result;
+}
+
+static int pdfw_materialize_object_streams(PdfDocument *document) {
+    size_t initial_len = document->objects_len;
+    size_t index;
+
+    for (index = 0U; index < initial_len; ++index) {
+        PdfObjectSpan *span = &document->objects[index];
+
+        if (span->type[0] != '\0' && rt_strcmp(span->type, "ObjStm") == 0) {
+            if (pdfw_materialize_object_stream(document, span) != 0) return -1;
+        }
+    }
     return 0;
 }
 
@@ -395,14 +567,20 @@ int pdf_document_scan(const unsigned char *data, size_t size, PdfDocument *docum
 }
 
 int pdf_document_parse(const unsigned char *data, size_t size, PdfDocument *document) {
-    if (pdf_document_scan(data, size, document) != 0) return -1;
-    if (document->info.encrypted != 0ULL || document->info.object_stream_count != 0ULL || document->info.xref_stream_count != 0ULL) {
+    if (pdf_document_scan(data, size, document) != 0) return PDF_DOCUMENT_PARSE_UNREADABLE;
+    if (document->info.encrypted != 0ULL) {
         pdf_document_free(document);
-        return -2;
+        return PDF_DOCUMENT_PARSE_ENCRYPTED;
+    }
+    if (document->info.object_stream_count != 0ULL) {
+        if (pdfw_materialize_object_streams(document) != 0 || document->info.pages_len > document->pages_len) {
+            pdf_document_free(document);
+            return PDF_DOCUMENT_PARSE_OBJECT_STREAM_UNSUPPORTED;
+        }
     }
     if (document->catalog_object_number == 0U || document->pages_len == 0U) {
         pdf_document_free(document);
-        return -1;
+        return PDF_DOCUMENT_PARSE_UNREADABLE;
     }
     return 0;
 }
@@ -594,16 +772,20 @@ static int pdfw_write_rewritten_range(PdfBuffer *buffer, const unsigned char *da
 static int pdfw_write_copied_object(PdfBuffer *buffer, const PdfObjectSpan *span, const PdfRewriteMap *map, unsigned int pages_object_number) {
     int is_page = span->type[0] != '\0' && rt_strcmp(span->type, "Page") == 0;
     unsigned int new_number = 0U;
+    const unsigned char *source;
+    size_t source_size;
 
     if ((size_t)span->number >= map->map_len) return -1;
     new_number = map->map[span->number];
     if (new_number == 0U) return 0;
+    source = pdfw_span_data(map->document, span, &source_size);
+    if (span->body_start > source_size || span->body_end > source_size || span->stream_offset > source_size) return -1;
     if (pdfw_append_uint(buffer, new_number) != 0 || pdfw_append_cstr(buffer, " 0 obj\n") != 0) return -1;
-    if (span->stream_offset < map->document->size && span->stream_offset < span->body_end) {
-        if (pdfw_write_rewritten_range(buffer, map->document->data, span->body_start, span->stream_offset, map, is_page, pages_object_number) != 0) return -1;
-        if (pdfw_append_bytes(buffer, map->document->data + span->stream_offset, span->body_end - span->stream_offset) != 0) return -1;
+    if (span->stream_offset < source_size && span->stream_offset < span->body_end) {
+        if (pdfw_write_rewritten_range(buffer, source, span->body_start, span->stream_offset, map, is_page, pages_object_number) != 0) return -1;
+        if (pdfw_append_bytes(buffer, source + span->stream_offset, span->body_end - span->stream_offset) != 0) return -1;
     } else {
-        if (pdfw_write_rewritten_range(buffer, map->document->data, span->body_start, span->body_end, map, is_page, pages_object_number) != 0) return -1;
+        if (pdfw_write_rewritten_range(buffer, source, span->body_start, span->body_end, map, is_page, pages_object_number) != 0) return -1;
     }
     return pdfw_append_cstr(buffer, "\nendobj\n");
 }

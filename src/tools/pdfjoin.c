@@ -81,6 +81,16 @@ static void apply_metadata_overrides(PdfDocumentInfo *metadata, const PdfJoinMet
     if (overrides->producer) rt_copy_string(metadata->producer, sizeof(metadata->producer), overrides->producer_value);
 }
 
+static void write_parse_error(const char *path, int parse_status) {
+    if (parse_status == PDF_DOCUMENT_PARSE_ENCRYPTED) {
+        tool_write_error("pdfjoin", "encrypted PDF is not supported: ", path);
+    } else if (parse_status == PDF_DOCUMENT_PARSE_OBJECT_STREAM_UNSUPPORTED) {
+        tool_write_error("pdfjoin", "unsupported compressed object stream in PDF: ", path);
+    } else {
+        tool_write_error("pdfjoin", "unsupported or unreadable PDF: ", path);
+    }
+}
+
 int main(int argc, char **argv) {
     const char *output_path = 0;
     int first_input = 1;
@@ -154,10 +164,13 @@ int main(int argc, char **argv) {
             status = 1;
             break;
         }
-        if (pdf_document_parse(input->data, input->size, &input->document) != 0) {
-            tool_write_error("pdfjoin", "unsupported or unreadable PDF: ", input->path);
-            status = 1;
-            break;
+        {
+            int parse_status = pdf_document_parse(input->data, input->size, &input->document);
+            if (parse_status != 0) {
+                write_parse_error(input->path, parse_status);
+                status = 1;
+                break;
+            }
         }
         if (index == 0) {
             metadata = input->document.info.document_info;

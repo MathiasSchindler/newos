@@ -63,6 +63,9 @@ typedef struct {
 typedef struct {
     unsigned int number;
     unsigned int generation;
+    const unsigned char *data;
+    size_t data_size;
+    unsigned char *owned_data;
     size_t object_offset;
     size_t body_start;
     size_t body_end;
@@ -147,6 +150,10 @@ typedef struct {
     size_t first_page;
     size_t page_count;
 } PdfPageSelection;
+
+#define PDF_DOCUMENT_PARSE_UNREADABLE (-1)
+#define PDF_DOCUMENT_PARSE_ENCRYPTED (-2)
+#define PDF_DOCUMENT_PARSE_OBJECT_STREAM_UNSUPPORTED (-3)
 
 void pdf_info_init(PdfInfo *info);
 void pdf_info_free(PdfInfo *info);

@@ -49,3 +49,11 @@ assert_file_contains "$WORK_DIR/decoded.txt" 'Decoded PDF' "pdfextract --decoded
 "${TEST_BIN_DIR}/pdfextract" --metadata "$WORK_DIR/extract.pdf" > "$WORK_DIR/metadata.txt"
 assert_file_contains "$WORK_DIR/metadata.txt" 'title: Extract Fixture' "pdfextract did not print title metadata"
 assert_file_contains "$WORK_DIR/metadata.txt" 'author: NewOS Tests' "pdfextract did not print author metadata"
+
+"${TEST_BIN_DIR}/pdfextract" --list-streams "$WORK_DIR/extract.pdf" > "$WORK_DIR/streams.txt"
+assert_file_contains "$WORK_DIR/streams.txt" 'object generation raw raw_size decoded decoded_size filter type subtype' "pdfextract --list-streams did not print a header"
+assert_file_contains "$WORK_DIR/streams.txt" '5 0 raw=yes' "pdfextract --list-streams did not list the raw stream"
+assert_file_contains "$WORK_DIR/streams.txt" 'filter=none' "pdfextract --list-streams did not report unfiltered streams"
+assert_file_contains "$WORK_DIR/streams.txt" '6 0 raw=yes' "pdfextract --list-streams did not list the compressed stream"
+assert_file_contains "$WORK_DIR/streams.txt" 'filter=FlateDecode' "pdfextract --list-streams did not report FlateDecode"
+assert_file_contains "$WORK_DIR/streams.txt" 'decoded_size=unknown' "pdfextract --list-streams should not inflate just to size compressed streams"

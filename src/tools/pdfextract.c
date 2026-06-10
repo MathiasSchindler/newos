@@ -5,6 +5,7 @@
 typedef struct {
     int want_stream;
     int want_metadata;
+    int want_list_streams;
     int decode;
     unsigned int object_number;
     unsigned int generation;
@@ -12,7 +13,240 @@ typedef struct {
 } PdfExtractOptions;
 
 static void print_usage(void) {
-    tool_write_usage("pdfextract", "--stream OBJ[:GEN] [--raw|--decoded] PDF | --metadata PDF");
+    tool_write_usage("pdfextract", "--stream OBJ[:GEN] [--raw|--decoded] PDF | --metadata PDF | --list-streams PDF");
+}
+
+static int px_is_space(unsigned char ch) {
+    return ch == 0U || ch == 9U || ch == 10U || ch == 12U || ch == 13U || ch == 32U;
+}
+
+static int px_is_digit(unsigned char ch) {
+    return ch >= (unsigned char)'0' && ch <= (unsigned char)'9';
+}
+
+static int px_is_delim(unsigned char ch) {
+    return px_is_space(ch) || ch == (unsigned char)'(' || ch == (unsigned char)')' || ch == (unsigned char)'<' || ch == (unsigned char)'>' || ch == (unsigned char)'[' || ch == (unsigned char)']' || ch == (unsigned char)'{' || ch == (unsigned char)'}' || ch == (unsigned char)'/' || ch == (unsigned char)'%';
+}
+
+static size_t px_skip_ws(const unsigned char *data, size_t size, size_t offset) {
+    while (offset < size) {
+        if (px_is_space(data[offset])) offset += 1U;
+        else if (data[offset] == (unsigned char)'%') {
+            while (offset < size && data[offset] != (unsigned char)'\n' && data[offset] != (unsigned char)'\r') offset += 1U;
+        } else break;
+    }
+    return offset;
+}
+
+static int px_text_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
+    size_t length = rt_strlen(text);
+    size_t index;
+
+    if (offset > size || length > size - offset) return 0;
+    for (index = 0U; index < length; ++index) {
+        if (data[offset + index] != (unsigned char)text[index]) return 0;
+    }
+    return 1;
+}
+
+static void px_skip_literal_string(const unsigned char *data, size_t size, size_t *offset_io) {
+    size_t offset = *offset_io + 1U;
+    int depth = 1;
+
+    while (offset < size && depth > 0) {
+        unsigned char ch = data[offset++];
+
+        if (ch == (unsigned char)'\\') {
+            if (offset < size) offset += 1U;
+        } else if (ch == (unsigned char)'(') depth += 1;
+        else if (ch == (unsigned char)')') depth -= 1;
+    }
+    *offset_io = offset;
+}
+
+static int px_find_top_key(const unsigned char *data, size_t size, const char *key, size_t *offset_out) {
+    size_t key_length = rt_strlen(key);
+    size_t offset = 0U;
+    unsigned int depth = 0U;
+
+    while (offset < size) {
+        if (data[offset] == (unsigned char)'%') {
+            while (offset < size && data[offset] != (unsigned char)'\n' && data[offset] != (unsigned char)'\r') offset += 1U;
+        } else if (data[offset] == (unsigned char)'(') {
+            px_skip_literal_string(data, size, &offset);
+        } else if (data[offset] == (unsigned char)'<' && offset + 1U < size && data[offset + 1U] == (unsigned char)'<') {
+            depth += 1U;
+            offset += 2U;
+        } else if (data[offset] == (unsigned char)'>' && offset + 1U < size && data[offset + 1U] == (unsigned char)'>') {
+            if (depth != 0U) depth -= 1U;
+            offset += 2U;
+        } else if (data[offset] == (unsigned char)'<' && offset + 1U < size) {
+            offset += 1U;
+            while (offset < size && data[offset] != (unsigned char)'>') offset += 1U;
+            if (offset < size) offset += 1U;
+        } else if (data[offset] == (unsigned char)'[') {
+            depth += 1U;
+            offset += 1U;
+        } else if (data[offset] == (unsigned char)']') {
+            if (depth != 0U) depth -= 1U;
+            offset += 1U;
+        } else if (depth == 1U && data[offset] == (unsigned char)'/' && offset + key_length <= size && px_text_at(data, size, offset, key) && (offset + key_length >= size || px_is_delim(data[offset + key_length]))) {
+            *offset_out = offset;
+            return 1;
+        } else {
+            offset += 1U;
+        }
+    }
+    return 0;
+}
+
+static int px_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out) {
+    unsigned long long value = 0ULL;
+    size_t offset = *offset_io;
+    int saw_digit = 0;
+
+    while (offset < size && px_is_digit(data[offset])) {
+        unsigned int digit = (unsigned int)(data[offset] - (unsigned char)'0');
+
+        if (value > (18446744073709551615ULL - (unsigned long long)digit) / 10ULL) return -1;
+        value = value * 10ULL + (unsigned long long)digit;
+        offset += 1U;
+        saw_digit = 1;
+    }
+    if (!saw_digit) return -1;
+    *offset_io = offset;
+    *value_out = value;
+    return 0;
+}
+
+static int px_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
+    size_t length = rt_strlen(text);
+
+    if (!px_text_at(data, size, offset, text)) return 0;
+    if (offset != 0U && !px_is_delim(data[offset - 1U])) return 0;
+    if (offset + length < size && !px_is_delim(data[offset + length])) return 0;
+    return 1;
+}
+
+static int px_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
+    size_t key_offset;
+    size_t offset;
+    size_t after_value;
+    unsigned long long value;
+
+    if (!px_find_top_key(data, size, key, &key_offset)) return 0;
+    offset = px_skip_ws(data, size, key_offset + rt_strlen(key));
+    if (px_parse_u64(data, size, &offset, &value) != 0) return 0;
+    after_value = px_skip_ws(data, size, offset);
+    if (after_value < size && px_is_digit(data[after_value])) {
+        size_t ref_offset = after_value;
+        unsigned long long generation;
+
+        if (px_parse_u64(data, size, &ref_offset, &generation) == 0) {
+            ref_offset = px_skip_ws(data, size, ref_offset);
+            if (px_keyword_at(data, size, ref_offset, "R")) return 0;
+        }
+    }
+    *value_out = value;
+    return 1;
+}
+
+static size_t px_stream_body_start(const unsigned char *data, size_t size, size_t stream_offset) {
+    size_t offset = stream_offset + 6U;
+
+    if (offset < size && data[offset] == (unsigned char)'\r') {
+        offset += 1U;
+        if (offset < size && data[offset] == (unsigned char)'\n') offset += 1U;
+    } else if (offset < size && data[offset] == (unsigned char)'\n') offset += 1U;
+    return offset;
+}
+
+static void px_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io) {
+    while (*end_io > start && (data[*end_io - 1U] == (unsigned char)'\n' || data[*end_io - 1U] == (unsigned char)'\r')) *end_io -= 1U;
+}
+
+static void px_copy_name(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
+    size_t used = 0U;
+
+    if (buffer_size == 0U) return;
+    while (offset < size && !px_is_delim(data[offset])) {
+        if (used + 1U < buffer_size) buffer[used++] = (char)data[offset];
+        offset += 1U;
+    }
+    buffer[used] = '\0';
+}
+
+static int px_name_is_flate(const char *name) {
+    return rt_strcmp(name, "FlateDecode") == 0 || rt_strcmp(name, "Fl") == 0;
+}
+
+static int px_stream_filter_kind(const unsigned char *dict, size_t dict_size) {
+    size_t key_offset;
+    size_t offset;
+    char name[PDF_NAME_CAPACITY];
+
+    if (!px_find_top_key(dict, dict_size, "/Filter", &key_offset)) return 0;
+    offset = px_skip_ws(dict, dict_size, key_offset + 7U);
+    if (offset >= dict_size) return -1;
+    if (dict[offset] == (unsigned char)'/') {
+        px_copy_name(dict, dict_size, offset + 1U, name, sizeof(name));
+        return px_name_is_flate(name) ? 1 : -1;
+    }
+    if (dict[offset] == (unsigned char)'[') {
+        int saw_filter = 0;
+
+        offset += 1U;
+        while (offset < dict_size) {
+            offset = px_skip_ws(dict, dict_size, offset);
+            if (offset >= dict_size) break;
+            if (dict[offset] == (unsigned char)']') return saw_filter == 1 ? 1 : -1;
+            if (dict[offset] != (unsigned char)'/') return -1;
+            if (saw_filter) return -1;
+            px_copy_name(dict, dict_size, offset + 1U, name, sizeof(name));
+            if (!px_name_is_flate(name)) return -1;
+            saw_filter = 1;
+            offset += 1U;
+            while (offset < dict_size && !px_is_delim(dict[offset])) offset += 1U;
+        }
+    }
+    return -1;
+}
+
+static void write_filter_value(const unsigned char *dict, size_t dict_size) {
+    size_t key_offset;
+    size_t offset;
+    char name[PDF_NAME_CAPACITY];
+    int first = 1;
+
+    if (!px_find_top_key(dict, dict_size, "/Filter", &key_offset)) {
+        rt_write_cstr(1, "none");
+        return;
+    }
+    offset = px_skip_ws(dict, dict_size, key_offset + 7U);
+    if (offset >= dict_size) {
+        rt_write_cstr(1, "unknown");
+    } else if (dict[offset] == (unsigned char)'/') {
+        px_copy_name(dict, dict_size, offset + 1U, name, sizeof(name));
+        rt_write_cstr(1, name[0] != '\0' ? name : "unknown");
+    } else if (dict[offset] == (unsigned char)'[') {
+        rt_write_char(1, '[');
+        offset += 1U;
+        while (offset < dict_size) {
+            offset = px_skip_ws(dict, dict_size, offset);
+            if (offset >= dict_size || dict[offset] == (unsigned char)']') break;
+            if (dict[offset] == (unsigned char)'/') {
+                px_copy_name(dict, dict_size, offset + 1U, name, sizeof(name));
+                if (!first) rt_write_char(1, ',');
+                rt_write_cstr(1, name[0] != '\0' ? name : "unknown");
+                first = 0;
+                offset += 1U;
+                while (offset < dict_size && !px_is_delim(dict[offset])) offset += 1U;
+            } else break;
+        }
+        rt_write_char(1, ']');
+    } else {
+        rt_write_cstr(1, "unknown");
+    }
 }
 
 static int parse_object_spec(const char *text, unsigned int *number_out, unsigned int *generation_out, int *have_generation_out) {
@@ -111,6 +345,77 @@ static int extract_stream(const PdfDocument *document, const PdfExtractOptions *
     return result;
 }
 
+static int stream_raw_size(const PdfDocument *document, const PdfObjectSpan *object, size_t *size_out) {
+    const unsigned char *dict;
+    size_t dict_size;
+    size_t content_start;
+    size_t content_end;
+    unsigned long long stream_length;
+
+    if (object->stream_offset >= document->size || object->endstream_offset > document->size || object->body_start > object->stream_offset) return -1;
+    dict = document->data + object->body_start;
+    dict_size = object->stream_offset - object->body_start;
+    content_start = px_stream_body_start(document->data, document->size, object->stream_offset);
+    if (content_start > object->endstream_offset) return -1;
+    content_end = object->endstream_offset;
+    if (px_find_top_u64_direct_value(dict, dict_size, "/Length", &stream_length) && stream_length <= (unsigned long long)(document->size - content_start)) {
+        content_end = content_start + (size_t)stream_length;
+    } else {
+        px_trim_stream_end(document->data, content_start, &content_end);
+    }
+    if (content_end < content_start || content_end > document->size) return -1;
+    *size_out = content_end - content_start;
+    return 0;
+}
+
+static void write_object_kind(const char *label, const char *value) {
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, label);
+    rt_write_char(1, '=');
+    rt_write_cstr(1, value != 0 && value[0] != '\0' ? value : "-");
+}
+
+static int list_streams(const PdfDocument *document) {
+    size_t index;
+
+    rt_write_line(1, "object generation raw raw_size decoded decoded_size filter type subtype");
+    for (index = 0U; index < document->objects_len; ++index) {
+        const PdfObjectSpan *object = &document->objects[index];
+        const unsigned char *dict;
+        size_t dict_size;
+        size_t raw_size = 0U;
+        int have_raw_size;
+        int filter_kind;
+
+        if (object->stream_offset >= document->size) continue;
+        dict = document->data + object->body_start;
+        dict_size = object->stream_offset > object->body_start ? object->stream_offset - object->body_start : 0U;
+        have_raw_size = stream_raw_size(document, object, &raw_size) == 0;
+        filter_kind = px_stream_filter_kind(dict, dict_size);
+        rt_write_uint(1, object->number);
+        rt_write_char(1, ' ');
+        rt_write_uint(1, object->generation);
+        rt_write_cstr(1, " raw=yes raw_size=");
+        if (have_raw_size) rt_write_uint(1, raw_size);
+        else rt_write_cstr(1, "unknown");
+        if (filter_kind == 0) {
+            rt_write_cstr(1, " decoded=yes decoded_size=");
+            if (have_raw_size) rt_write_uint(1, raw_size);
+            else rt_write_cstr(1, "unknown");
+        } else if (filter_kind == 1) {
+            rt_write_cstr(1, " decoded=yes decoded_size=unknown");
+        } else {
+            rt_write_cstr(1, " decoded=no decoded_size=-");
+        }
+        rt_write_cstr(1, " filter=");
+        write_filter_value(dict, dict_size);
+        write_object_kind("type", object->type);
+        write_object_kind("subtype", object->subtype);
+        rt_write_char(1, '\n');
+    }
+    return 0;
+}
+
 static int process_path(const char *path, const PdfExtractOptions *options) {
     unsigned char *data;
     size_t size;
@@ -124,6 +429,7 @@ static int process_path(const char *path, const PdfExtractOptions *options) {
         return 1;
     }
     if (options->want_metadata) status = write_metadata(&document.info.document_info);
+    else if (options->want_list_streams) status = list_streams(&document);
     else status = extract_stream(&document, options);
     pdf_document_free(&document);
     rt_free(data);
@@ -154,6 +460,8 @@ int main(int argc, char **argv) {
             options.decode = 1;
         } else if (rt_strcmp(arg, "--metadata") == 0) {
             options.want_metadata = 1;
+        } else if (rt_strcmp(arg, "--list-streams") == 0) {
+            options.want_list_streams = 1;
         } else if (rt_strcmp(arg, "--stream") == 0) {
             if (index + 1 >= argc || parse_object_spec(argv[index + 1], &options.object_number, &options.generation, &options.have_generation) != 0) {
                 tool_write_error("pdfextract", "invalid object number: ", index + 1 < argc ? argv[index + 1] : "");
@@ -170,7 +478,7 @@ int main(int argc, char **argv) {
             break;
         }
     }
-    if ((options.want_stream && options.want_metadata) || (!options.want_stream && !options.want_metadata)) {
+    if (options.want_stream + options.want_metadata + options.want_list_streams != 1) {
         tool_write_error("pdfextract", "choose exactly one extraction mode", "");
         print_usage();
         return 1;

@@ -40,9 +40,13 @@ PY
 
 "${TEST_BIN_DIR}/pdfgrep" 'Plain Visible' "$WORK_DIR/grep.pdf" > "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/plain.txt" 'Plain Visible' "pdfgrep did not find uncompressed visible text"
+assert_file_contains "$WORK_DIR/plain.txt" '5:Plain Visible' "pdfgrep did not include the matching stream object number"
 
 "${TEST_BIN_DIR}/pdfgrep" 'Decoded Visible' "$WORK_DIR/grep.pdf" > "$WORK_DIR/decoded.txt"
 assert_file_contains "$WORK_DIR/decoded.txt" 'Decoded Visible' "pdfgrep did not find decoded FlateDecode visible text"
+
+"${TEST_BIN_DIR}/pdfgrep" -n -C 2 'Visible' "$WORK_DIR/grep.pdf" > "$WORK_DIR/context.txt"
+assert_file_contains "$WORK_DIR/context.txt" '5:...n Visible' "pdfgrep context output did not include object number and clipped context"
 
 if "${TEST_BIN_DIR}/pdfgrep" 'Not Present' "$WORK_DIR/grep.pdf" > "$WORK_DIR/no-match.txt" 2>&1; then
     fail "pdfgrep should return nonzero when no match is found"

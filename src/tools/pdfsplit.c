@@ -211,6 +211,16 @@ static int write_selections(const PdfPageSelection *selections, size_t selection
     return result;
 }
 
+static void write_parse_error(const char *path, int parse_status) {
+    if (parse_status == PDF_DOCUMENT_PARSE_ENCRYPTED) {
+        tool_write_error("pdfsplit", "encrypted PDF is not supported: ", path);
+    } else if (parse_status == PDF_DOCUMENT_PARSE_OBJECT_STREAM_UNSUPPORTED) {
+        tool_write_error("pdfsplit", "unsupported compressed object stream in PDF: ", path);
+    } else {
+        tool_write_error("pdfsplit", "unsupported or unreadable PDF: ", path);
+    }
+}
+
 int main(int argc, char **argv) {
     const char *output = 0;
     const char *input_path = 0;
@@ -287,11 +297,14 @@ int main(int argc, char **argv) {
         free_page_selectors(&selectors);
         return 1;
     }
-    if (pdf_document_parse(data, size, &document) != 0) {
-        tool_write_error("pdfsplit", "unsupported or unreadable PDF: ", input_path);
-        rt_free(data);
-        free_page_selectors(&selectors);
-        return 1;
+    {
+        int parse_status = pdf_document_parse(data, size, &document);
+        if (parse_status != 0) {
+            write_parse_error(input_path, parse_status);
+            rt_free(data);
+            free_page_selectors(&selectors);
+            return 1;
+        }
     }
     if (selectors.len != 0U || select_odd || select_even) {
         const char *path = output != 0 ? output : "split.pdf";

@@ -7,13 +7,16 @@ typedef struct {
     int ignore_case;
     int list_files;
     int quiet;
+    int object_number;
+    int have_context;
+    unsigned int context_chars;
     int multiple;
     const char *path;
     int matched;
 } PdfGrepContext;
 
 static void print_usage(void) {
-    tool_write_usage("pdfgrep", "[-i] [-l] [-q] PATTERN [PDF ...]");
+    tool_write_usage("pdfgrep", "[-i] [-l] [-q] [-n] [-C NUM] PATTERN [PDF ...]");
 }
 
 static int append_bytes(PdfBuffer *buffer, const unsigned char *data, size_t size) {
@@ -66,12 +69,15 @@ static char lower_ascii(char ch) {
     return ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
 }
 
-static int contains_text(const unsigned char *text, size_t text_size, const char *pattern, int ignore_case) {
+static int find_text(const unsigned char *text, size_t text_size, const char *pattern, int ignore_case, size_t *offset_out) {
     size_t pattern_size = rt_strlen(pattern);
     size_t offset;
     size_t index;
 
-    if (pattern_size == 0U) return 1;
+    if (pattern_size == 0U) {
+        *offset_out = 0U;
+        return 1;
+    }
     if (pattern_size > text_size) return 0;
     for (offset = 0U; offset + pattern_size <= text_size; ++offset) {
         int same = 1;
@@ -89,9 +95,26 @@ static int contains_text(const unsigned char *text, size_t text_size, const char
                 break;
             }
         }
-        if (same) return 1;
+        if (same) {
+            *offset_out = offset;
+            return 1;
+        }
     }
     return 0;
+}
+
+static int parse_context_count(const char *text, unsigned int *value_out) {
+    unsigned long long value;
+
+    if (text == 0 || rt_parse_uint(text, &value) != 0 || value > 4294967295ULL) return -1;
+    *value_out = (unsigned int)value;
+    return 0;
+}
+
+static int starts_with(const char *text, const char *prefix) {
+    size_t length = rt_strlen(prefix);
+
+    return rt_strncmp(text, prefix, length) == 0;
 }
 
 static size_t append_literal(const unsigned char *data, size_t size, size_t offset, PdfBuffer *pending) {
@@ -173,8 +196,11 @@ static int token_equals(const unsigned char *data, size_t start, size_t end, con
 }
 
 static int emit_pending(PdfGrepContext *context, const PdfObjectSpan *object, PdfBuffer *pending) {
+    size_t match_offset = 0U;
+    size_t pattern_size = rt_strlen(context->pattern);
+
     if (pending->size == 0U) return 0;
-    if (!contains_text(pending->data, pending->size, context->pattern, context->ignore_case)) {
+    if (!find_text(pending->data, pending->size, context->pattern, context->ignore_case, &match_offset)) {
         pending->size = 0U;
         if (pending->data != 0) pending->data[0] = 0U;
         return 0;
@@ -185,9 +211,23 @@ static int emit_pending(PdfGrepContext *context, const PdfObjectSpan *object, Pd
             rt_write_cstr(1, context->path ? context->path : "stdin");
             rt_write_char(1, ':');
         }
-        rt_write_uint(1, object->number);
-        rt_write_char(1, ':');
-        (void)rt_write_all(1, pending->data, pending->size);
+        if (context->object_number) {
+            rt_write_uint(1, object->number);
+            rt_write_char(1, ':');
+        }
+        if (context->have_context) {
+            size_t start = match_offset > (size_t)context->context_chars ? match_offset - (size_t)context->context_chars : 0U;
+            size_t end = match_offset + pattern_size;
+
+            if (end < match_offset) end = pending->size;
+            if (pending->size - end > (size_t)context->context_chars) end += (size_t)context->context_chars;
+            else end = pending->size;
+            if (start != 0U) rt_write_cstr(1, "...");
+            (void)rt_write_all(1, pending->data + start, end - start);
+            if (end != pending->size) rt_write_cstr(1, "...");
+        } else {
+            (void)rt_write_all(1, pending->data, pending->size);
+        }
         rt_write_char(1, '\n');
     }
     pending->size = 0U;
@@ -283,6 +323,7 @@ int main(int argc, char **argv) {
     int path_count;
 
     rt_memset(&context, 0, sizeof(context));
+    context.object_number = 1;
     for (index = 1; index < argc; ++index) {
         const char *arg = argv[index];
 
@@ -297,6 +338,23 @@ int main(int argc, char **argv) {
         if (rt_strcmp(arg, "-i") == 0 || rt_strcmp(arg, "--ignore-case") == 0) context.ignore_case = 1;
         else if (rt_strcmp(arg, "-l") == 0 || rt_strcmp(arg, "--files-with-matches") == 0) context.list_files = 1;
         else if (rt_strcmp(arg, "-q") == 0 || rt_strcmp(arg, "--quiet") == 0) context.quiet = 1;
+        else if (rt_strcmp(arg, "-n") == 0 || rt_strcmp(arg, "--object-number") == 0) context.object_number = 1;
+        else if (rt_strcmp(arg, "-C") == 0 || rt_strcmp(arg, "--context") == 0) {
+            if (index + 1 >= argc || parse_context_count(argv[index + 1], &context.context_chars) != 0) {
+                tool_write_error("pdfgrep", "invalid context count: ", index + 1 < argc ? argv[index + 1] : "");
+                print_usage();
+                return 2;
+            }
+            context.have_context = 1;
+            index += 1;
+        } else if (starts_with(arg, "--context=")) {
+            if (parse_context_count(arg + 10, &context.context_chars) != 0) {
+                tool_write_error("pdfgrep", "invalid context count: ", arg + 10);
+                print_usage();
+                return 2;
+            }
+            context.have_context = 1;
+        }
         else if (arg[0] == '-' && rt_strcmp(arg, "-") != 0) {
             tool_write_error("pdfgrep", "unknown option: ", arg);
             print_usage();

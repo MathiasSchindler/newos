@@ -20,7 +20,8 @@ pdfsplit --odd|--even [-o OUTPUT] PDF
 `--even`, it writes a single selected document.
 
 Output PDFs are rebuilt with a fresh catalog, page tree, and cross-reference
-table.
+table. Inputs may use ordinary cross-reference tables or modern xref streams
+when the needed page and support objects are discoverable.
 
 ## Options
 
@@ -34,9 +35,13 @@ table.
 
 ## Limitations
 
-The writer supports normal indirect object PDFs and rejects encrypted files,
-xref streams, and compressed object streams. It copies support objects
-conservatively, so outputs may retain resources not used by the selected pages.
+The writer supports normal indirect-object PDFs, xref-stream PDFs, and simple
+object-stream PDFs whose page/resource dictionaries can be decoded with the
+in-tree FlateDecode path. Encrypted files and object streams that cannot be
+decoded or faithfully materialized are rejected with a specific error. It copies
+support objects conservatively, so outputs may retain resources not used by the
+selected pages. Decoded Flate output is capped at 64 MiB, object streams at 8192
+objects, and xref streams at 65536 entries.
 
 ## Examples
 

@@ -90,6 +90,9 @@ arrays, `rotation`, and `page_format` when those values are visible in the PDF.
   single `FlateDecode`/`Fl` streams for xref streams, object streams, and simple
   content scanning, but it does not repair malformed files, follow every
   incremental update revision, or execute page content.
+- Defensive caps reject or ignore expensive modern structures: decoded Flate
+  output is capped at 64 MiB, object streams at 8192 objects, and xref streams
+  at 65536 entries.
 - Filter and encoding names are counted when they are visible in object
   dictionaries. Unsupported filtered stream contents are not interpreted.
 - Classic document-info metadata is read from visible object dictionaries using

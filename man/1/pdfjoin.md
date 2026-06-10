@@ -13,8 +13,9 @@ pdfjoin -o OUTPUT [--no-metadata] [--title TEXT] [--author TEXT] [--subject TEXT
 ## Description
 
 `pdfjoin` writes a new PDF containing the pages from two or more input PDFs in
-argument order. It copies ordinary indirect objects, renumbers references, builds
-a fresh catalog and page tree, and writes a new cross-reference table.
+argument order. It copies writable indirect objects, materializes simple
+FlateDecode object-stream dictionaries, renumbers references, builds a fresh
+catalog and page tree, and writes a new cross-reference table.
 
 By default, the first input document's document-info metadata is used for the
 output. Metadata options can override selected fields. Use `--no-metadata` to
@@ -36,11 +37,15 @@ write the joined PDF without a document-info dictionary.
 
 ## Limitations
 
-This first writer is intentionally conservative. It supports normal indirect
-object PDFs and rejects encrypted files, xref streams, and compressed object
-streams. Page dictionaries with direct resource dictionaries are handled best;
-very complex inherited page-tree resources may need a future, deeper page-tree
-model.
+This writer is intentionally conservative. It supports normal indirect-object
+PDFs, PDFs with xref streams when the needed objects are discoverable, and
+simple object-stream PDFs whose page/resource dictionaries can be decoded with
+the in-tree FlateDecode path. Encrypted files and object streams that cannot be
+decoded or faithfully materialized are rejected with a specific error. Page
+dictionaries with direct resource dictionaries are handled best; very complex
+inherited page-tree resources may need a future, deeper page-tree model.
+Decoded Flate output is capped at 64 MiB, object streams at 8192 objects, and
+xref streams at 65536 entries.
 
 Bookmarks and outlines are not preserved yet; the current writer focuses on
 page/object joining and document-info metadata.
