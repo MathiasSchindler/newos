@@ -8,7 +8,7 @@ endif
 
 BUILD_DIR := build
 OUT_DIR := out
-MD5_SRC := ../../src/shared/crypto/md5.c
+HASH_SRCS := ../../src/shared/crypto/md5.c
 RUNTIME_SRCS := \
 	../../src/shared/runtime/io.c \
 	../../src/shared/runtime/memory.c \
@@ -21,7 +21,7 @@ PLATFORM_SRCS := \
 	../../src/platform/posix/identity.c \
 	../../src/platform/posix/time.c \
 	../../src/platform/posix/process.c
-GENERATOR_SRCS := generate.c $(MD5_SRC) $(RUNTIME_SRCS) $(PLATFORM_SRCS)
+GENERATOR_SRCS := generate.c $(HASH_SRCS) $(RUNTIME_SRCS) $(PLATFORM_SRCS)
 
 .PHONY: all files verify elf-demo elf-hashclash-demo scaffold-examples clean
 

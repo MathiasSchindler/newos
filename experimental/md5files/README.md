@@ -49,6 +49,11 @@ The verifier checks two properties:
 It prefers the project `build/md5sum` tool when present, then falls back to the
 host `md5sum` or macOS `md5` command.
 
+The generator is internally organized around a small collision-profile interface
+so other legacy hash demonstrations can be added later without moving
+experiment-specific code into the main project. The only active profile today is
+MD5.
+
 ## ELF Wrapper
 
 The generator also has an ELF-aware wrapper mode:

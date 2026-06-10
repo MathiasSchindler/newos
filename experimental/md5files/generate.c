@@ -14,9 +14,11 @@
 #define PT_LOAD 1U
 #define PF_X 1U
 #define PF_R 4U
-#define MD5_ALIGNMENT 64U
+#define COLLISION_ALIGNMENT 64U
+#define COLLISION_MAX_DIGEST_SIZE 64U
+#define COLLISION_MAX_PAYLOAD_SIZE 4096U
 #define ZERO_CHUNK_SIZE 4096U
-#define COLLISION_BLOCK_SIZE 128U
+#define MD5_COLLISION_BLOCK_SIZE 128U
 #define BACKEND_MAX_PAYLOAD_SIZE (16U * 1024U * 1024U)
 #define BACKEND_MAX_ARGS 32U
 #define PATH_BUFFER_SIZE 512U
@@ -37,13 +39,13 @@
 #define WRAPPER_LOADER_B_OFFSET_OFFSET 47U
 #define WRAPPER_LOADER_B_SIZE_OFFSET 57U
 
-static const char collision_block_a_hex[] =
+static const char md5_collision_block_a_hex[] =
     "d131dd02c5e6eec4693d9a0698aff95c2fcab58712467eab4004583eb8fb7f89"
     "55ad340609f4b30283e488832571415a085125e8f7cdc99fd91dbdf280373c5b"
     "d8823e3156348f5bae6dacd436c919c6dd53e2b487da03fd02396306d248cda0"
     "e99f33420f577ee8ce54b67080a80d1ec69821bcb6a8839396f9652b6ff72a70";
 
-static const char collision_block_b_hex[] =
+static const char md5_collision_block_b_hex[] =
     "d131dd02c5e6eec4693d9a0698aff95c2fcab50712467eab4004583eb8fb7f89"
     "55ad340609f4b30283e4888325f1415a085125e8f7cdc99fd91dbd7280373c5b"
     "d8823e3156348f5bae6dacd436c919c6dd53e23487da03fd02396306d248cda0"
@@ -159,6 +161,58 @@ typedef struct {
     const char *out2;
 } ControlledFastcollOptions;
 
+typedef struct {
+    CryptoMd5Context md5;
+} CollisionDigestContext;
+
+typedef struct {
+    const char *name;
+    const char *uppercase_name;
+    size_t digest_size;
+    size_t block_alignment;
+    size_t collision_block_size;
+    const char *collision_block_a_hex;
+    const char *collision_block_b_hex;
+    const unsigned char *controlled_prefix;
+    size_t controlled_prefix_size;
+    const unsigned char *controlled_payload_a;
+    const unsigned char *controlled_payload_b;
+    size_t controlled_payload_size;
+    void (*digest_init)(CollisionDigestContext *context);
+    void (*digest_update)(CollisionDigestContext *context, const unsigned char *data, size_t size);
+    void (*digest_final)(CollisionDigestContext *context, unsigned char *digest);
+} CollisionProfile;
+
+static void md5_digest_init(CollisionDigestContext *context) {
+    crypto_md5_init(&context->md5);
+}
+
+static void md5_digest_update(CollisionDigestContext *context, const unsigned char *data, size_t size) {
+    crypto_md5_update(&context->md5, data, size);
+}
+
+static void md5_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    crypto_md5_final(&context->md5, digest);
+}
+
+static const CollisionProfile md5_profile = {
+    "md5",
+    "MD5",
+    CRYPTO_MD5_DIGEST_SIZE,
+    COLLISION_ALIGNMENT,
+    MD5_COLLISION_BLOCK_SIZE,
+    md5_collision_block_a_hex,
+    md5_collision_block_b_hex,
+    controlled_elf_prefix,
+    CONTROLLED_ELF_PREFIX_SIZE,
+    controlled_payload_a,
+    controlled_payload_b,
+    CONTROLLED_ELF_PAYLOAD_SIZE,
+    md5_digest_init,
+    md5_digest_update,
+    md5_digest_final
+};
+
 static int hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
     if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
@@ -200,13 +254,13 @@ static void print_path_line(const char *label, const char *path) {
     write_text(1, "\n");
 }
 
-static int decode_hex_block(const char *hex, unsigned char out[COLLISION_BLOCK_SIZE]) {
+static int decode_hex_bytes(const char *hex, unsigned char *out, size_t out_size) {
     size_t offset;
 
-    if (rt_strlen(hex) != COLLISION_BLOCK_SIZE * 2U) {
+    if (rt_strlen(hex) != out_size * 2U) {
         return 1;
     }
-    for (offset = 0; offset < COLLISION_BLOCK_SIZE; ++offset) {
+    for (offset = 0; offset < out_size; ++offset) {
         int high = hex_value(hex[offset * 2U]);
         int low = hex_value(hex[offset * 2U + 1U]);
 
@@ -253,15 +307,15 @@ static int range_valid_u64(uint64_t offset, uint64_t size, uint64_t file_size) {
     return offset <= file_size && size <= file_size - offset;
 }
 
-static void digest_to_hex(const unsigned char digest[CRYPTO_MD5_DIGEST_SIZE], char hex[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U]) {
+static void digest_to_hex(const CollisionProfile *profile, const unsigned char *digest, char *hex) {
     static const char digits[] = "0123456789abcdef";
     size_t offset;
 
-    for (offset = 0; offset < CRYPTO_MD5_DIGEST_SIZE; ++offset) {
+    for (offset = 0; offset < profile->digest_size; ++offset) {
         hex[offset * 2U] = digits[(digest[offset] >> 4) & 0x0fU];
         hex[offset * 2U + 1U] = digits[digest[offset] & 0x0fU];
     }
-    hex[CRYPTO_MD5_DIGEST_SIZE * 2U] = '\0';
+    hex[profile->digest_size * 2U] = '\0';
 }
 
 static int join_path(char *buffer, size_t buffer_size, const char *directory, const char *name) {
@@ -419,27 +473,28 @@ static int validate_elf64(const char *path, const FileImage *image, ElfInfo *inf
     return 0;
 }
 
-static void md5_candidate(const FileImage *image,
-                          size_t collision_offset,
-                          const unsigned char *collision_payload,
-                          size_t collision_payload_size,
-                          unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
-    CryptoMd5Context context;
+static void collision_candidate_digest(const CollisionProfile *profile,
+                                       const FileImage *image,
+                                       size_t collision_offset,
+                                       const unsigned char *collision_payload,
+                                       size_t collision_payload_size,
+                                       unsigned char *digest) {
+    CollisionDigestContext context;
     size_t prefix_size = image->size + sizeof(elf_metadata_prelude) - 1U;
     size_t padding = collision_offset - prefix_size;
 
-    crypto_md5_init(&context);
-    crypto_md5_update(&context, image->data, image->size);
-    crypto_md5_update(&context, elf_metadata_prelude, sizeof(elf_metadata_prelude) - 1U);
+    profile->digest_init(&context);
+    profile->digest_update(&context, image->data, image->size);
+    profile->digest_update(&context, elf_metadata_prelude, sizeof(elf_metadata_prelude) - 1U);
     while (padding != 0U) {
         size_t chunk = padding < sizeof(zero_chunk) ? padding : sizeof(zero_chunk);
 
-        crypto_md5_update(&context, zero_chunk, chunk);
+        profile->digest_update(&context, zero_chunk, chunk);
         padding -= chunk;
     }
-    crypto_md5_update(&context, collision_payload, collision_payload_size);
-    crypto_md5_update(&context, elf_metadata_suffix, sizeof(elf_metadata_suffix) - 1U);
-    crypto_md5_final(&context, digest);
+    profile->digest_update(&context, collision_payload, collision_payload_size);
+    profile->digest_update(&context, elf_metadata_suffix, sizeof(elf_metadata_suffix) - 1U);
+    profile->digest_final(&context, digest);
 }
 
 static int read_backend_payload_file(const char *path, unsigned char **payload_out, size_t *payload_size_out) {
@@ -606,7 +661,8 @@ static int split_backend_command(const char *command, char *storage, size_t stor
     return 0;
 }
 
-static int run_backend(const char *command,
+static int run_backend(const CollisionProfile *profile,
+                       const char *command,
                        const FileImage *image_a,
                        const FileImage *image_b,
                        size_t collision_offset,
@@ -634,7 +690,7 @@ static int run_backend(const char *command,
         set_backend_env_path("NEWOS_MD5_BLOCK_A", block_a_path) != 0 ||
         set_backend_env_path("NEWOS_MD5_BLOCK_B", block_b_path) != 0 ||
         set_backend_env_size("NEWOS_MD5_COLLISION_OFFSET", collision_offset) != 0 ||
-        set_backend_env_size("NEWOS_MD5_BLOCK_SIZE", COLLISION_BLOCK_SIZE) != 0 ||
+        set_backend_env_size("NEWOS_MD5_BLOCK_SIZE", profile->collision_block_size) != 0 ||
         set_backend_env_size("NEWOS_MD5_MAX_PAYLOAD_SIZE", BACKEND_MAX_PAYLOAD_SIZE) != 0) {
         goto cleanup;
     }
@@ -713,15 +769,16 @@ static int write_candidate(const char *path,
     return 0;
 }
 
-static int write_plain_file(const char *path,
-                            const unsigned char collision_block[COLLISION_BLOCK_SIZE]) {
+static int write_plain_file(const CollisionProfile *profile,
+                            const char *path,
+                            const unsigned char *collision_block) {
     int fd = platform_open_write(path, 0644U);
 
     if (fd < 0) {
         write_error_path("cannot open ", path);
         return 1;
     }
-    if (rt_write_all(fd, collision_block, COLLISION_BLOCK_SIZE) != 0 ||
+    if (rt_write_all(fd, collision_block, profile->collision_block_size) != 0 ||
         rt_write_all(fd, plain_common_suffix, sizeof(plain_common_suffix) - 1U) != 0) {
         write_error_path("cannot write ", path);
         (void)platform_close(fd);
@@ -734,24 +791,25 @@ static int write_plain_file(const char *path,
     return 0;
 }
 
-static void md5_prefix_payload(const unsigned char *prefix,
-                               const unsigned char *payload,
-                               unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
-    CryptoMd5Context context;
+static void collision_prefix_payload_digest(const CollisionProfile *profile,
+                                            const unsigned char *prefix,
+                                            const unsigned char *payload,
+                                            unsigned char *digest) {
+    CollisionDigestContext context;
 
-    crypto_md5_init(&context);
-    crypto_md5_update(&context, prefix, CONTROLLED_ELF_PREFIX_SIZE);
-    crypto_md5_update(&context, payload, CONTROLLED_ELF_PAYLOAD_SIZE);
-    crypto_md5_final(&context, digest);
+    profile->digest_init(&context);
+    profile->digest_update(&context, prefix, profile->controlled_prefix_size);
+    profile->digest_update(&context, payload, profile->controlled_payload_size);
+    profile->digest_final(&context, digest);
 }
 
-static int verify_controlled_payloads(unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
-    unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
+static int verify_controlled_payloads(const CollisionProfile *profile, unsigned char *digest) {
+    unsigned char digest_b[COLLISION_MAX_DIGEST_SIZE];
 
-    md5_prefix_payload(controlled_elf_prefix, controlled_payload_a, digest);
-    md5_prefix_payload(controlled_elf_prefix, controlled_payload_b, digest_b);
-    if (memcmp(digest, digest_b, CRYPTO_MD5_DIGEST_SIZE) != 0 ||
-        memcmp(controlled_payload_a, controlled_payload_b, CONTROLLED_ELF_PAYLOAD_SIZE) == 0) {
+    collision_prefix_payload_digest(profile, profile->controlled_prefix, profile->controlled_payload_a, digest);
+    collision_prefix_payload_digest(profile, profile->controlled_prefix, profile->controlled_payload_b, digest_b);
+    if (memcmp(digest, digest_b, profile->digest_size) != 0 ||
+        memcmp(profile->controlled_payload_a, profile->controlled_payload_b, profile->controlled_payload_size) == 0) {
         write_error_path("internal controlled collision payload is invalid", 0);
         return 1;
     }
@@ -777,15 +835,15 @@ cleanup:
     return status;
 }
 
-static int write_controlled_prefix_payload(const char *path, const unsigned char *payload) {
+static int write_controlled_prefix_payload(const CollisionProfile *profile, const char *path, const unsigned char *payload) {
     int fd = platform_open_write(path, 0644U);
 
     if (fd < 0) {
         write_error_path("cannot open ", path);
         return 1;
     }
-    if (rt_write_all(fd, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0 ||
-        rt_write_all(fd, payload, CONTROLLED_ELF_PAYLOAD_SIZE) != 0) {
+    if (rt_write_all(fd, profile->controlled_prefix, profile->controlled_prefix_size) != 0 ||
+        rt_write_all(fd, payload, profile->controlled_payload_size) != 0) {
         write_error_path("cannot write ", path);
         (void)platform_close(fd);
         return 1;
@@ -797,38 +855,39 @@ static int write_controlled_prefix_payload(const char *path, const unsigned char
     return 0;
 }
 
-static int run_controlled_fastcoll(const ControlledFastcollOptions *options) {
+static int run_controlled_fastcoll(const CollisionProfile *profile, const ControlledFastcollOptions *options) {
     unsigned char prefix[CONTROLLED_ELF_PREFIX_SIZE];
-    unsigned char digest[CRYPTO_MD5_DIGEST_SIZE];
-    char hex[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
+    unsigned char digest[COLLISION_MAX_DIGEST_SIZE];
+    char hex[COLLISION_MAX_DIGEST_SIZE * 2U + 1U];
 
     if (read_controlled_prefix(options->prefix_path, prefix) != 0) {
         return 1;
     }
-    if (memcmp(prefix, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0) {
+    if (profile->controlled_prefix_size != CONTROLLED_ELF_PREFIX_SIZE ||
+        memcmp(prefix, profile->controlled_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0) {
         write_error_path("unsupported prefix; this tool only matches the controlled ELF demo prefix", 0);
         return 1;
     }
-    if (verify_controlled_payloads(digest) != 0) {
+    if (verify_controlled_payloads(profile, digest) != 0) {
         return 1;
     }
-    if (write_controlled_prefix_payload(options->out1, controlled_payload_a) != 0 ||
-        write_controlled_prefix_payload(options->out2, controlled_payload_b) != 0) {
+    if (write_controlled_prefix_payload(profile, options->out1, profile->controlled_payload_a) != 0 ||
+        write_controlled_prefix_payload(profile, options->out2, profile->controlled_payload_b) != 0) {
         return 1;
     }
     if (!options->quiet) {
-        digest_to_hex(digest, hex);
-        print_path_line("same md5: ", hex);
+        digest_to_hex(profile, digest, hex);
+        write_text(1, "same "); write_text(1, profile->name); write_text(1, ": "); write_text(1, hex); write_text(1, "\n");
     }
     return 0;
 }
 
-static int choose_controlled_behavior_bit(size_t *offset_out, unsigned int *bit_out, unsigned int *invert_out) {
+static int choose_controlled_behavior_bit(const CollisionProfile *profile, size_t *offset_out, unsigned int *bit_out, unsigned int *invert_out) {
     size_t payload_offset;
 
-    for (payload_offset = 0U; payload_offset < CONTROLLED_ELF_PAYLOAD_SIZE; ++payload_offset) {
-        unsigned char left = controlled_payload_a[payload_offset];
-        unsigned char right = controlled_payload_b[payload_offset];
+    for (payload_offset = 0U; payload_offset < profile->controlled_payload_size; ++payload_offset) {
+        unsigned char left = profile->controlled_payload_a[payload_offset];
+        unsigned char right = profile->controlled_payload_b[payload_offset];
         unsigned char diff = (unsigned char)(left ^ right);
         unsigned int bit;
 
@@ -842,7 +901,7 @@ static int choose_controlled_behavior_bit(size_t *offset_out, unsigned int *bit_
                 unsigned int invert = left_bit;
 
                 if (((left_bit ^ invert) == 0U) && ((right_bit ^ invert) == 1U)) {
-                    *offset_out = CONTROLLED_ELF_PREFIX_SIZE + payload_offset;
+                    *offset_out = profile->controlled_prefix_size + payload_offset;
                     *bit_out = bit;
                     *invert_out = invert;
                     return 0;
@@ -869,11 +928,11 @@ static void write_u64_le(unsigned char *data, unsigned long long value) {
     }
 }
 
-static void md5_zero_padding(CryptoMd5Context *context, size_t padding) {
+static void collision_digest_zero_padding(const CollisionProfile *profile, CollisionDigestContext *context, size_t padding) {
     while (padding != 0U) {
         size_t chunk = padding < sizeof(zero_chunk) ? padding : sizeof(zero_chunk);
 
-        crypto_md5_update(context, zero_chunk, chunk);
+        profile->digest_update(context, zero_chunk, chunk);
         padding -= chunk;
     }
 }
@@ -967,59 +1026,62 @@ static int build_wrapper_loader_code(size_t selected_offset,
     return 0;
 }
 
-static void md5_controlled_elf(const unsigned char *payload,
-                               const unsigned char *code,
-                               size_t code_size,
-                               unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
-    CryptoMd5Context context;
-    size_t image_size = CONTROLLED_ELF_PREFIX_SIZE + CONTROLLED_ELF_PAYLOAD_SIZE;
+static void collision_controlled_elf_digest(const CollisionProfile *profile,
+                                            const unsigned char *payload,
+                                            const unsigned char *code,
+                                            size_t code_size,
+                                            unsigned char *digest) {
+    CollisionDigestContext context;
+    size_t image_size = profile->controlled_prefix_size + profile->controlled_payload_size;
     size_t padding_before_code = CONTROLLED_ELF_CODE_OFFSET - image_size;
     size_t padding_after_code = CONTROLLED_ELF_FILE_SIZE - CONTROLLED_ELF_CODE_OFFSET - code_size;
 
-    crypto_md5_init(&context);
-    crypto_md5_update(&context, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE);
-    crypto_md5_update(&context, payload, CONTROLLED_ELF_PAYLOAD_SIZE);
-    md5_zero_padding(&context, padding_before_code);
-    crypto_md5_update(&context, code, code_size);
-    md5_zero_padding(&context, padding_after_code);
-    crypto_md5_final(&context, digest);
+    profile->digest_init(&context);
+    profile->digest_update(&context, profile->controlled_prefix, profile->controlled_prefix_size);
+    profile->digest_update(&context, payload, profile->controlled_payload_size);
+    collision_digest_zero_padding(profile, &context, padding_before_code);
+    profile->digest_update(&context, code, code_size);
+    collision_digest_zero_padding(profile, &context, padding_after_code);
+    profile->digest_final(&context, digest);
 }
 
-static void md5_wrapped_elf(const unsigned char *payload,
-                            const unsigned char *code,
-                            size_t code_size,
-                            const FileImage *image_a,
-                            const FileImage *image_b,
-                            unsigned char digest[CRYPTO_MD5_DIGEST_SIZE]) {
-    CryptoMd5Context context;
-    size_t image_size = CONTROLLED_ELF_PREFIX_SIZE + CONTROLLED_ELF_PAYLOAD_SIZE;
+static void collision_wrapped_elf_digest(const CollisionProfile *profile,
+                                         const unsigned char *payload,
+                                         const unsigned char *code,
+                                         size_t code_size,
+                                         const FileImage *image_a,
+                                         const FileImage *image_b,
+                                         unsigned char *digest) {
+    CollisionDigestContext context;
+    size_t image_size = profile->controlled_prefix_size + profile->controlled_payload_size;
     size_t padding_before_code = CONTROLLED_ELF_CODE_OFFSET - image_size;
     size_t padding_before_embed = WRAPPER_EMBED_OFFSET - CONTROLLED_ELF_CODE_OFFSET - code_size;
 
-    crypto_md5_init(&context);
-    crypto_md5_update(&context, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE);
-    crypto_md5_update(&context, payload, CONTROLLED_ELF_PAYLOAD_SIZE);
-    md5_zero_padding(&context, padding_before_code);
-    crypto_md5_update(&context, code, code_size);
-    md5_zero_padding(&context, padding_before_embed);
-    crypto_md5_update(&context, image_a->data, image_a->size);
-    crypto_md5_update(&context, image_b->data, image_b->size);
-    crypto_md5_final(&context, digest);
+    profile->digest_init(&context);
+    profile->digest_update(&context, profile->controlled_prefix, profile->controlled_prefix_size);
+    profile->digest_update(&context, payload, profile->controlled_payload_size);
+    collision_digest_zero_padding(profile, &context, padding_before_code);
+    profile->digest_update(&context, code, code_size);
+    collision_digest_zero_padding(profile, &context, padding_before_embed);
+    profile->digest_update(&context, image_a->data, image_a->size);
+    profile->digest_update(&context, image_b->data, image_b->size);
+    profile->digest_final(&context, digest);
 }
 
-static int write_controlled_elf_image(const char *path,
+static int write_controlled_elf_image(const CollisionProfile *profile,
+                                      const char *path,
                                       const unsigned char *payload,
                                       const unsigned char *code,
                                       size_t code_size) {
-    size_t image_size = CONTROLLED_ELF_PREFIX_SIZE + CONTROLLED_ELF_PAYLOAD_SIZE;
+    size_t image_size = profile->controlled_prefix_size + profile->controlled_payload_size;
     int fd = platform_open_write(path, 0644U);
 
     if (fd < 0) {
         write_error_path("cannot open ", path);
         return 1;
     }
-    if (rt_write_all(fd, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0 ||
-        rt_write_all(fd, payload, CONTROLLED_ELF_PAYLOAD_SIZE) != 0 ||
+    if (rt_write_all(fd, profile->controlled_prefix, profile->controlled_prefix_size) != 0 ||
+        rt_write_all(fd, payload, profile->controlled_payload_size) != 0 ||
         seek_zero_padding(fd, CONTROLLED_ELF_CODE_OFFSET - image_size, path) != 0 ||
         rt_write_all(fd, code, code_size) != 0 ||
         finish_zero_padding(fd, CONTROLLED_ELF_FILE_SIZE - CONTROLLED_ELF_CODE_OFFSET - code_size, path) != 0) {
@@ -1037,21 +1099,22 @@ static int write_controlled_elf_image(const char *path,
     return 0;
 }
 
-static int write_wrapped_elf_image(const char *path,
+static int write_wrapped_elf_image(const CollisionProfile *profile,
+                                   const char *path,
                                    const unsigned char *payload,
                                    const unsigned char *code,
                                    size_t code_size,
                                    const FileImage *image_a,
                                    const FileImage *image_b) {
-    size_t image_size = CONTROLLED_ELF_PREFIX_SIZE + CONTROLLED_ELF_PAYLOAD_SIZE;
+    size_t image_size = profile->controlled_prefix_size + profile->controlled_payload_size;
     int fd = platform_open_write(path, 0644U);
 
     if (fd < 0) {
         write_error_path("cannot open ", path);
         return 1;
     }
-    if (rt_write_all(fd, controlled_elf_prefix, CONTROLLED_ELF_PREFIX_SIZE) != 0 ||
-        rt_write_all(fd, payload, CONTROLLED_ELF_PAYLOAD_SIZE) != 0 ||
+    if (rt_write_all(fd, profile->controlled_prefix, profile->controlled_prefix_size) != 0 ||
+        rt_write_all(fd, payload, profile->controlled_payload_size) != 0 ||
         seek_zero_padding(fd, CONTROLLED_ELF_CODE_OFFSET - image_size, path) != 0 ||
         rt_write_all(fd, code, code_size) != 0 ||
         seek_zero_padding(fd, WRAPPER_EMBED_OFFSET - CONTROLLED_ELF_CODE_OFFSET - code_size, path) != 0 ||
@@ -1071,14 +1134,15 @@ static int write_wrapped_elf_image(const char *path,
     return 0;
 }
 
-static int run_wrapped_elf_pair(const char *out1,
+static int run_wrapped_elf_pair(const CollisionProfile *profile,
+                                const char *out1,
                                 const char *out2,
                                 const FileImage *image_a,
                                 const FileImage *image_b) {
-    unsigned char digest_a[CRYPTO_MD5_DIGEST_SIZE];
-    unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
+    unsigned char digest_a[COLLISION_MAX_DIGEST_SIZE];
+    unsigned char digest_b[COLLISION_MAX_DIGEST_SIZE];
     unsigned char code[WRAPPER_CODE_MAX];
-    char hex[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
+    char hex[COLLISION_MAX_DIGEST_SIZE * 2U + 1U];
     size_t selected_offset;
     size_t code_size;
     size_t embed_a_offset = WRAPPER_EMBED_OFFSET;
@@ -1094,8 +1158,8 @@ static int run_wrapped_elf_pair(const char *out1,
     }
     embed_b_offset = embed_a_offset + image_a->size;
     output_size = embed_b_offset + image_b->size;
-    if (verify_controlled_payloads(digest_a) != 0 ||
-        choose_controlled_behavior_bit(&selected_offset, &bit, &invert) != 0 ||
+    if (verify_controlled_payloads(profile, digest_a) != 0 ||
+        choose_controlled_behavior_bit(profile, &selected_offset, &bit, &invert) != 0 ||
         build_wrapper_loader_code(selected_offset, bit, invert,
                                   embed_a_offset, image_a->size,
                                   embed_b_offset, image_b->size,
@@ -1106,34 +1170,34 @@ static int run_wrapped_elf_pair(const char *out1,
         write_error_path("wrapper loader does not fit in controlled ELF image", 0);
         return 1;
     }
-    md5_wrapped_elf(controlled_payload_a, code, code_size, image_a, image_b, digest_a);
-    md5_wrapped_elf(controlled_payload_b, code, code_size, image_a, image_b, digest_b);
-    if (memcmp(digest_a, digest_b, CRYPTO_MD5_DIGEST_SIZE) != 0) {
+    collision_wrapped_elf_digest(profile, profile->controlled_payload_a, code, code_size, image_a, image_b, digest_a);
+    collision_wrapped_elf_digest(profile, profile->controlled_payload_b, code, code_size, image_a, image_b, digest_b);
+    if (memcmp(digest_a, digest_b, profile->digest_size) != 0) {
         write_error_path("wrapped ELF files do not collide", 0);
         return 1;
     }
-    if (write_wrapped_elf_image(out1, controlled_payload_a, code, code_size, image_a, image_b) != 0 ||
-        write_wrapped_elf_image(out2, controlled_payload_b, code, code_size, image_a, image_b) != 0) {
+    if (write_wrapped_elf_image(profile, out1, profile->controlled_payload_a, code, code_size, image_a, image_b) != 0 ||
+        write_wrapped_elf_image(profile, out2, profile->controlled_payload_b, code, code_size, image_a, image_b) != 0) {
         return 1;
     }
-    digest_to_hex(digest_a, hex);
+    digest_to_hex(profile, digest_a, hex);
     print_path_line("wrote ", out1);
     print_path_line("wrote ", out2);
-    print_path_line("same md5: ", hex);
+    write_text(1, "same "); write_text(1, profile->name); write_text(1, ": "); write_text(1, hex); write_text(1, "\n");
     write_text(1, "different files: yes\n");
     write_text(1, "wrapper output size: "); write_size_value(1, output_size); write_text(1, " bytes\n");
     write_text(1, "embedded A offset: "); write_size_value(1, embed_a_offset); write_text(1, "; embedded B offset: "); write_size_value(1, embed_b_offset); write_text(1, "\n");
     return 0;
 }
 
-static int run_controlled_elf_demo(const ControlledElfOptions *options) {
-    unsigned char prefix_payload_digest[CRYPTO_MD5_DIGEST_SIZE];
-    unsigned char digest_a[CRYPTO_MD5_DIGEST_SIZE];
-    unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
+static int run_controlled_elf_demo(const CollisionProfile *profile, const ControlledElfOptions *options) {
+    unsigned char prefix_payload_digest[COLLISION_MAX_DIGEST_SIZE];
+    unsigned char digest_a[COLLISION_MAX_DIGEST_SIZE];
+    unsigned char digest_b[COLLISION_MAX_DIGEST_SIZE];
     unsigned char code[CONTROLLED_ELF_CODE_MAX];
     char default_true[PATH_BUFFER_SIZE];
     char default_false[PATH_BUFFER_SIZE];
-    char hex[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
+    char hex[COLLISION_MAX_DIGEST_SIZE * 2U + 1U];
     const char *true_path = options->out_true;
     const char *false_path = options->out_false;
     size_t selected_offset;
@@ -1159,34 +1223,35 @@ static int run_controlled_elf_demo(const ControlledElfOptions *options) {
         }
         false_path = default_false;
     }
-    if (verify_controlled_payloads(prefix_payload_digest) != 0 ||
-        choose_controlled_behavior_bit(&selected_offset, &bit, &invert) != 0 ||
+    if (verify_controlled_payloads(profile, prefix_payload_digest) != 0 ||
+        choose_controlled_behavior_bit(profile, &selected_offset, &bit, &invert) != 0 ||
         build_controlled_exit_code(selected_offset, bit, invert, code, &code_size) != 0) {
         return 1;
     }
-    md5_controlled_elf(controlled_payload_a, code, code_size, digest_a);
-    md5_controlled_elf(controlled_payload_b, code, code_size, digest_b);
-    if (memcmp(digest_a, digest_b, CRYPTO_MD5_DIGEST_SIZE) != 0) {
+    collision_controlled_elf_digest(profile, profile->controlled_payload_a, code, code_size, digest_a);
+    collision_controlled_elf_digest(profile, profile->controlled_payload_b, code, code_size, digest_b);
+    if (memcmp(digest_a, digest_b, profile->digest_size) != 0) {
         write_error_path("controlled ELF files do not collide", 0);
         return 1;
     }
-    if (write_controlled_elf_image(true_path, controlled_payload_a, code, code_size) != 0 ||
-        write_controlled_elf_image(false_path, controlled_payload_b, code, code_size) != 0) {
+    if (write_controlled_elf_image(profile, true_path, profile->controlled_payload_a, code, code_size) != 0 ||
+        write_controlled_elf_image(profile, false_path, profile->controlled_payload_b, code, code_size) != 0) {
         return 1;
     }
-    digest_to_hex(digest_a, hex);
+    digest_to_hex(profile, digest_a, hex);
     print_path_line("wrote ", true_path);
     print_path_line("wrote ", false_path);
-    print_path_line("same md5: ", hex);
+    write_text(1, "same "); write_text(1, profile->name); write_text(1, ": "); write_text(1, hex); write_text(1, "\n");
     write_text(1, "different files: yes\n");
     write_text(1, "behavior bit: file offset "); write_size_value(1, selected_offset); write_text(1, ", bit "); (void)rt_write_uint(1, bit); write_text(1, ", invert "); (void)rt_write_uint(1, invert); write_text(1, "\n");
     write_text(1, "sizes: "); write_size_value(1, CONTROLLED_ELF_FILE_SIZE); write_text(1, " bytes, "); write_size_value(1, CONTROLLED_ELF_FILE_SIZE); write_text(1, " bytes\n");
     return 0;
 }
 
-static int run_plain_demo(const char *output_directory,
-                          const unsigned char collision_block_a[COLLISION_BLOCK_SIZE],
-                          const unsigned char collision_block_b[COLLISION_BLOCK_SIZE]) {
+static int run_plain_demo(const CollisionProfile *profile,
+                          const char *output_directory,
+                          const unsigned char *collision_block_a,
+                          const unsigned char *collision_block_b) {
     char path_a[512];
     char path_b[512];
 
@@ -1198,8 +1263,8 @@ static int run_plain_demo(const char *output_directory,
         write_error_path("output path is too long", 0);
         return 1;
     }
-    if (write_plain_file(path_a, collision_block_a) != 0 ||
-        write_plain_file(path_b, collision_block_b) != 0) {
+    if (write_plain_file(profile, path_a, collision_block_a) != 0 ||
+        write_plain_file(profile, path_b, collision_block_b) != 0) {
         return 1;
     }
     print_path_line("wrote ", path_a);
@@ -1315,25 +1380,26 @@ static int parse_controlled_fastcoll_options(int argc, char **argv, ControlledFa
     return 0;
 }
 
-static int run_elf_scaffold(const ElfOptions *options,
-                            const unsigned char collision_block_a[COLLISION_BLOCK_SIZE],
-                            const unsigned char collision_block_b[COLLISION_BLOCK_SIZE]) {
+static int run_elf_scaffold(const CollisionProfile *profile,
+                            const ElfOptions *options,
+                            const unsigned char *collision_block_a,
+                            const unsigned char *collision_block_b) {
     FileImage image_a;
     FileImage image_b;
     ElfInfo info_a;
     ElfInfo info_b;
-    unsigned char digest_a[CRYPTO_MD5_DIGEST_SIZE];
-    unsigned char digest_b[CRYPTO_MD5_DIGEST_SIZE];
-    unsigned char active_block_a[COLLISION_BLOCK_SIZE];
-    unsigned char active_block_b[COLLISION_BLOCK_SIZE];
+    unsigned char digest_a[COLLISION_MAX_DIGEST_SIZE];
+    unsigned char digest_b[COLLISION_MAX_DIGEST_SIZE];
+    unsigned char active_block_a[COLLISION_MAX_PAYLOAD_SIZE];
+    unsigned char active_block_b[COLLISION_MAX_PAYLOAD_SIZE];
     unsigned char *backend_payload_a = 0;
     unsigned char *backend_payload_b = 0;
     size_t backend_payload_sizes[2];
     const unsigned char *active_payload_a;
     const unsigned char *active_payload_b;
     size_t active_payload_size;
-    char hex_a[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
-    char hex_b[CRYPTO_MD5_DIGEST_SIZE * 2U + 1U];
+    char hex_a[COLLISION_MAX_DIGEST_SIZE * 2U + 1U];
+    char hex_b[COLLISION_MAX_DIGEST_SIZE * 2U + 1U];
     char default_out1[512];
     char default_out2[512];
     const char *out1 = options->out1;
@@ -1375,7 +1441,7 @@ static int run_elf_scaffold(const ElfOptions *options,
     write_text(1, "input B: "); write_text(1, options->in2); write_text(1, " ("); write_size_value(1, image_b.size); write_text(1, " bytes, loaded bytes end at "); (void)rt_write_uint(1, info_b.loaded_end); write_text(1, ")\n");
     if (options->backend == 0) {
         write_text(1, "mode: controlled collision ELF wrapper\n");
-        status = run_wrapped_elf_pair(out1, out2, &image_a, &image_b);
+        status = run_wrapped_elf_pair(profile, out1, out2, &image_a, &image_b);
         goto cleanup;
     }
     if (add_overflows_size(image_a.size, sizeof(elf_metadata_prelude) - 1U) ||
@@ -1385,25 +1451,29 @@ static int run_elf_scaffold(const ElfOptions *options,
     }
     prefix_a_size = image_a.size + sizeof(elf_metadata_prelude) - 1U;
     prefix_b_size = image_b.size + sizeof(elf_metadata_prelude) - 1U;
-    collision_offset = align_up_size(prefix_a_size > prefix_b_size ? prefix_a_size : prefix_b_size, MD5_ALIGNMENT);
+    collision_offset = align_up_size(prefix_a_size > prefix_b_size ? prefix_a_size : prefix_b_size, profile->block_alignment);
     if (collision_offset < prefix_a_size || collision_offset < prefix_b_size ||
-        add_overflows_size(collision_offset, COLLISION_BLOCK_SIZE) ||
-        add_overflows_size(collision_offset + COLLISION_BLOCK_SIZE, sizeof(elf_metadata_suffix) - 1U)) {
+        add_overflows_size(collision_offset, profile->collision_block_size) ||
+        add_overflows_size(collision_offset + profile->collision_block_size, sizeof(elf_metadata_suffix) - 1U)) {
         write_error_path("scaffold output would be too large", 0);
         goto cleanup;
     }
-    memcpy(active_block_a, collision_block_a, COLLISION_BLOCK_SIZE);
-    memcpy(active_block_b, collision_block_b, COLLISION_BLOCK_SIZE);
+    if (profile->collision_block_size > sizeof(active_block_a)) {
+        write_error_path("built-in collision block is too large", 0);
+        goto cleanup;
+    }
+    memcpy(active_block_a, collision_block_a, profile->collision_block_size);
+    memcpy(active_block_b, collision_block_b, profile->collision_block_size);
     active_payload_a = active_block_a;
     active_payload_b = active_block_b;
-    active_payload_size = COLLISION_BLOCK_SIZE;
+    active_payload_size = profile->collision_block_size;
 
     write_text(1, "mode: backend trailer scaffold\n");
     write_text(1, "metadata trailer A starts at "); write_size_value(1, image_a.size); write_text(1, "; metadata trailer B starts at "); write_size_value(1, image_b.size); write_text(1, "\n");
     write_text(1, "collision block offset: "); write_size_value(1, collision_offset); write_text(1, " (64-byte aligned)\n");
 
     if (options->backend != 0) {
-        if (run_backend(options->backend, &image_a, &image_b, collision_offset, &backend_payload_a, &backend_payload_b, backend_payload_sizes) != 0) {
+        if (run_backend(profile, options->backend, &image_a, &image_b, collision_offset, &backend_payload_a, &backend_payload_b, backend_payload_sizes) != 0) {
             goto cleanup;
         }
         active_payload_a = backend_payload_a;
@@ -1419,10 +1489,10 @@ static int run_elf_scaffold(const ElfOptions *options,
     write_text(1, "collision payload size: "); write_size_value(1, active_payload_size); write_text(1, " bytes\n");
     write_text(1, "candidate output size: "); write_size_value(1, output_size); write_text(1, " bytes\n");
 
-    md5_candidate(&image_a, collision_offset, active_payload_a, active_payload_size, digest_a);
-    md5_candidate(&image_b, collision_offset, active_payload_b, active_payload_size, digest_b);
-    digest_to_hex(digest_a, hex_a);
-    digest_to_hex(digest_b, hex_b);
+    collision_candidate_digest(profile, &image_a, collision_offset, active_payload_a, active_payload_size, digest_a);
+    collision_candidate_digest(profile, &image_b, collision_offset, active_payload_b, active_payload_size, digest_b);
+    digest_to_hex(profile, digest_a, hex_a);
+    digest_to_hex(profile, digest_b, hex_b);
 
     if (write_candidate(out1, &image_a, collision_offset, active_payload_a, active_payload_size) != 0 ||
         write_candidate(out2, &image_b, collision_offset, active_payload_b, active_payload_size) != 0) {
@@ -1433,7 +1503,7 @@ static int run_elf_scaffold(const ElfOptions *options,
     print_path_line("md5 A: ", hex_a);
     print_path_line("md5 B: ", hex_b);
 
-    if (memcmp(digest_a, digest_b, sizeof(digest_a)) != 0) {
+    if (memcmp(digest_a, digest_b, profile->digest_size) != 0) {
         if (options->backend != 0) {
             write_error_path("candidate outputs do not collide; backend payloads are not valid for these prefixes", 0);
         } else {
@@ -1463,14 +1533,21 @@ static void print_usage(void) {
 }
 
 int main(int argc, char **argv) {
-    unsigned char collision_block_a[COLLISION_BLOCK_SIZE];
-    unsigned char collision_block_b[COLLISION_BLOCK_SIZE];
+    const CollisionProfile *profile = &md5_profile;
+    unsigned char collision_block_a[COLLISION_MAX_PAYLOAD_SIZE];
+    unsigned char collision_block_b[COLLISION_MAX_PAYLOAD_SIZE];
     ElfOptions options;
     ControlledElfOptions controlled_options;
     ControlledFastcollOptions fastcoll_options;
 
-    if (decode_hex_block(collision_block_a_hex, collision_block_a) != 0 ||
-        decode_hex_block(collision_block_b_hex, collision_block_b) != 0) {
+    if (profile->digest_size > COLLISION_MAX_DIGEST_SIZE ||
+        profile->collision_block_size > COLLISION_MAX_PAYLOAD_SIZE ||
+        profile->controlled_payload_size > COLLISION_MAX_PAYLOAD_SIZE) {
+        write_error_path("selected collision profile exceeds internal limits", 0);
+        return 1;
+    }
+    if (decode_hex_bytes(profile->collision_block_a_hex, collision_block_a, profile->collision_block_size) != 0 ||
+        decode_hex_bytes(profile->collision_block_b_hex, collision_block_b, profile->collision_block_size) != 0) {
         write_error_path("internal collision block is malformed", 0);
         return 1;
     }
@@ -1483,23 +1560,23 @@ int main(int argc, char **argv) {
             print_usage();
             return 1;
         }
-        return run_controlled_elf_demo(&controlled_options);
+        return run_controlled_elf_demo(profile, &controlled_options);
     }
     if (argc >= 2 && rt_strcmp(argv[1], "--controlled-fastcoll") == 0) {
         if (parse_controlled_fastcoll_options(argc, argv, &fastcoll_options) != 0) {
             print_usage();
             return 1;
         }
-        return run_controlled_fastcoll(&fastcoll_options);
+        return run_controlled_fastcoll(profile, &fastcoll_options);
     }
     if (argc == 1 || argv[1][0] != '-') {
         const char *output_directory = argc > 1 ? argv[1] : "out";
 
-        return run_plain_demo(output_directory, collision_block_a, collision_block_b);
+        return run_plain_demo(profile, output_directory, collision_block_a, collision_block_b);
     }
     if (parse_elf_options(argc, argv, &options) != 0) {
         print_usage();
         return 1;
     }
-    return run_elf_scaffold(&options, collision_block_a, collision_block_b);
+    return run_elf_scaffold(profile, &options, collision_block_a, collision_block_b);
 }
