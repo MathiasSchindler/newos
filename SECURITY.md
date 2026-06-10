@@ -74,6 +74,16 @@ Useful reports include:
 - build or release issues that could misrepresent generated artifacts
 - misuse concerns related to security research or dual-use experiments
 
+## Versions, Releases, and Advisories
+
+This project does not currently publish formal releases. The latest commit on the
+main branch should be treated as the most recent version of the project.
+
+As a private research project, the maintainer does not plan to request CVE entries
+or publish formal security advisories. Security-relevant changes may be documented
+in the corresponding commit messages, but they are not collected into a separate
+advisory database, changelog, or vulnerability history.
+
 ## Disclosure Expectations
 
 Because this repository is a research project and is not production software, the
