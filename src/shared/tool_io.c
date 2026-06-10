@@ -882,6 +882,24 @@ void tool_format_uptime_compact(unsigned long long total_seconds, char *buffer, 
     }
 }
 
+static int tool_is_leap_year(int year) {
+    if ((year % 400) == 0) return 1;
+    if ((year % 100) == 0) return 0;
+    return (year % 4) == 0;
+}
+
+int tool_days_in_month(int year, unsigned int month) {
+    static const unsigned char days[] = { 31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U };
+
+    if (month == 0U || month > 12U) {
+        return 0;
+    }
+    if (month == 2U && tool_is_leap_year(year)) {
+        return 29;
+    }
+    return (int)days[month - 1U];
+}
+
 long long tool_days_from_civil(int year, unsigned int month, unsigned int day) {
     int adjusted_year = year - (month <= 2U ? 1 : 0);
     int era = (adjusted_year >= 0 ? adjusted_year : adjusted_year - 399) / 400;
@@ -890,6 +908,42 @@ long long tool_days_from_civil(int year, unsigned int month, unsigned int day) {
     unsigned int day_of_year = ((153U * shifted_month) + 2U) / 5U + day - 1U;
     unsigned int day_of_era = year_of_era * 365U + year_of_era / 4U - year_of_era / 100U + day_of_year;
     return (long long)era * 146097LL + (long long)day_of_era - 719468LL;
+}
+
+void tool_civil_from_days(long long days, int *year_out, unsigned int *month_out, unsigned int *day_out) {
+    long long z = days + 719468LL;
+    long long era = (z >= 0LL ? z : z - 146096LL) / 146097LL;
+    unsigned int day_of_era = (unsigned int)(z - era * 146097LL);
+    unsigned int year_of_era = (day_of_era - day_of_era / 1460U + day_of_era / 36524U - day_of_era / 146096U) / 365U;
+    int year = (int)year_of_era + (int)(era * 400LL);
+    unsigned int day_of_year = day_of_era - (365U * year_of_era + year_of_era / 4U - year_of_era / 100U);
+    unsigned int month_index = (5U * day_of_year + 2U) / 153U;
+    unsigned int day = day_of_year - (153U * month_index + 2U) / 5U + 1U;
+    unsigned int month = month_index + (month_index < 10U ? 3U : (unsigned int)-9);
+
+    year += (month <= 2U) ? 1 : 0;
+    if (year_out != 0) {
+        *year_out = year;
+    }
+    if (month_out != 0) {
+        *month_out = month;
+    }
+    if (day_out != 0) {
+        *day_out = day;
+    }
+}
+
+int tool_build_epoch_timestamp(int year, unsigned int month, unsigned int day, unsigned int hour, unsigned int minute, unsigned int second, long long *epoch_out) {
+    long long days;
+
+    if (epoch_out == 0 || month < 1U || month > 12U || day < 1U || day > (unsigned int)tool_days_in_month(year, month) ||
+        hour > 23U || minute > 59U || second > 59U) {
+        return -1;
+    }
+
+    days = tool_days_from_civil(year, month, day);
+    *epoch_out = days * 86400LL + (long long)hour * 3600LL + (long long)minute * 60LL + (long long)second;
+    return 0;
 }
 
 int tool_text_is_decimal(const char *text) {

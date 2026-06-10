@@ -33,9 +33,6 @@ static int is_printable_byte(unsigned char ch) {
     return ch >= 32U && ch <= 126U;
 }
 
-#define read_u16_le tool_read_u16_le
-#define read_u32_le tool_read_u32_le
-#define read_u64_le tool_read_u64_le
 
 static int read_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
     size_t total = 0U;
@@ -265,9 +262,9 @@ static int load_elf_ranges(int fd, StringsRange *ranges, size_t *count) {
     if (!(header[0] == 0x7fU && header[1] == 'E' && header[2] == 'L' && header[3] == 'F')) return -1;
     if (header[4] != 2U || header[5] != 1U) return -1;
 
-    shoff = read_u64_le(header + 40);
-    shentsize = read_u16_le(header + 58);
-    shnum = read_u16_le(header + 60);
+    shoff = tool_read_u64_le(header + 40);
+    shentsize = tool_read_u16_le(header + 58);
+    shnum = tool_read_u16_le(header + 60);
     if (shnum > STRINGS_MAX_SECTIONS || shentsize < 64U) return -1;
 
     for (i = 0U; i < shnum; ++i) {
@@ -278,10 +275,10 @@ static int load_elf_ranges(int fd, StringsRange *ranges, size_t *count) {
         unsigned long long size;
 
         if (read_region(fd, shoff + ((unsigned long long)i * (unsigned long long)shentsize), section, sizeof(section)) != 0) return -1;
-        type = read_u32_le(section + 4);
-        flags = read_u64_le(section + 8);
-        offset = read_u64_le(section + 24);
-        size = read_u64_le(section + 32);
+        type = tool_read_u32_le(section + 4);
+        flags = tool_read_u64_le(section + 8);
+        offset = tool_read_u64_le(section + 24);
+        size = tool_read_u64_le(section + 32);
         if (type != 8U && (flags & 0x2ULL) != 0ULL) {
             if (add_range(ranges, count, offset, size) != 0) return -1;
         }
@@ -299,9 +296,9 @@ static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
     long long end_offset;
 
     if (read_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
-    magic = read_u32_le(header);
+    magic = tool_read_u32_le(header);
     if (magic != 0xfeedfacfU) return -1;
-    ncmds = read_u32_le(header + 16);
+    ncmds = tool_read_u32_le(header + 16);
     if (ncmds > STRINGS_MAX_MACHO_COMMANDS) return -1;
     end_offset = platform_seek(fd, 0, PLATFORM_SEEK_END);
     if (end_offset > 0) file_size = (unsigned long long)end_offset;
@@ -312,8 +309,8 @@ static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
         unsigned int command_size;
 
         if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) return -1;
-        command = read_u32_le(command_header);
-        command_size = read_u32_le(command_header + 4);
+        command = tool_read_u32_le(command_header);
+        command_size = tool_read_u32_le(command_header + 4);
         if (command_size < 8U) return -1;
         if (command == 0x19U && command_size >= 72U) {
             unsigned char segment[72];
@@ -321,7 +318,7 @@ static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
             unsigned int section_index;
 
             if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) return -1;
-            nsects = read_u32_le(segment + 64);
+            nsects = tool_read_u32_le(segment + 64);
             if (72U + nsects * 80U > command_size) return -1;
             for (section_index = 0U; section_index < nsects; ++section_index) {
                 unsigned char section[80];
@@ -332,9 +329,9 @@ static int load_macho_ranges(int fd, StringsRange *ranges, size_t *count) {
                 unsigned int type;
 
                 if (read_region(fd, section_offset, section, sizeof(section)) != 0) return -1;
-                size = read_u64_le(section + 40);
-                offset = read_u32_le(section + 48);
-                flags = read_u32_le(section + 64);
+                size = tool_read_u64_le(section + 40);
+                offset = tool_read_u32_le(section + 48);
+                flags = tool_read_u32_le(section + 64);
                 type = flags & 0xffU;
                 if (type != 1U && type != 8U && type != 12U && type != 18U && offset != 0U && size != 0ULL &&
                     (file_size == 0ULL || ((unsigned long long)offset <= file_size && size <= file_size - (unsigned long long)offset))) {
@@ -358,11 +355,11 @@ static int load_pe_ranges(int fd, StringsRange *ranges, size_t *count) {
 
     if (read_region(fd, 0ULL, dos, sizeof(dos)) != 0) return -1;
     if (dos[0] != 'M' || dos[1] != 'Z') return -1;
-    pe_offset = read_u32_le(dos + 0x3cU);
+    pe_offset = tool_read_u32_le(dos + 0x3cU);
     if (read_region(fd, (unsigned long long)pe_offset, coff, sizeof(coff)) != 0) return -1;
     if (!(coff[0] == 'P' && coff[1] == 'E' && coff[2] == 0U && coff[3] == 0U)) return -1;
-    section_count = read_u16_le(coff + 6);
-    optional_size = read_u16_le(coff + 20);
+    section_count = tool_read_u16_le(coff + 6);
+    optional_size = tool_read_u16_le(coff + 20);
     if (section_count > STRINGS_MAX_SECTIONS) return -1;
     section_offset = (unsigned long long)pe_offset + 24ULL + (unsigned long long)optional_size;
 
@@ -373,9 +370,9 @@ static int load_pe_ranges(int fd, StringsRange *ranges, size_t *count) {
         unsigned int characteristics;
 
         if (read_region(fd, section_offset + ((unsigned long long)i * 40ULL), section, sizeof(section)) != 0) return -1;
-        raw_size = read_u32_le(section + 16);
-        raw_offset = read_u32_le(section + 20);
-        characteristics = read_u32_le(section + 36);
+        raw_size = tool_read_u32_le(section + 16);
+        raw_offset = tool_read_u32_le(section + 20);
+        characteristics = tool_read_u32_le(section + 36);
         if (raw_size > 0U && (characteristics & 0x02000000U) == 0U) {
             if (add_range(ranges, count, (unsigned long long)raw_offset, (unsigned long long)raw_size) != 0) return -1;
         }

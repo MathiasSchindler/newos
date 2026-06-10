@@ -34,7 +34,6 @@ static void print_usage(const char *program_name) {
 
 #define pager_page_lines() tool_pager_page_lines(DEFAULT_PAGE_LINES)
 
-#define contains_case_insensitive tool_contains_case_insensitive
 
 static int find_case_insensitive_match(const char *text, const char *needle, size_t *start_out, size_t *end_out) {
     size_t text_len = rt_strlen(text);
@@ -258,7 +257,7 @@ static int pager_seek_to_next_match(PagerState *state) {
         if (eof && line[0] == '\0') {
             break;
         }
-        if (contains_case_insensitive(line, state->search_pattern)) {
+        if (tool_contains_case_insensitive(line, state->search_pattern)) {
             return pager_seek_to(state, line_offset, line_number);
         }
         current_line += 1ULL;

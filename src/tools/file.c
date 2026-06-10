@@ -132,11 +132,6 @@ static int looks_like_xml(const unsigned char *buffer, size_t length) {
     return starts_with_ci(buffer + start, length - start, "<?xml") || starts_with_ci(buffer + start, length - start, "<svg");
 }
 
-#define read_u16_le tool_read_u16_le
-#define read_u16_be tool_read_u16_be
-#define read_u32_le tool_read_u32_le
-#define read_u32_be tool_read_u32_be
-#define read_u64_le tool_read_u64_le
 
 static void dynamic_set(const char *text) {
     rt_copy_string(dynamic_description, sizeof(dynamic_description), text);
@@ -219,8 +214,8 @@ static int describe_elf(const unsigned char *buffer, size_t length, FileTypeInfo
         info->magic = "ELF";
         return 1;
     }
-    type = data == 1U ? read_u16_le(buffer + 16) : read_u16_be(buffer + 16);
-    machine = data == 1U ? read_u16_le(buffer + 18) : read_u16_be(buffer + 18);
+    type = data == 1U ? tool_read_u16_le(buffer + 16) : tool_read_u16_be(buffer + 16);
+    machine = data == 1U ? tool_read_u16_le(buffer + 18) : tool_read_u16_be(buffer + 18);
     dynamic_set("ELF ");
     dynamic_append(file_class == 1U ? "32-bit " : "64-bit ");
     dynamic_append(data == 1U ? "LSB " : "MSB ");
@@ -266,9 +261,9 @@ static int describe_macho(const unsigned char *buffer, size_t length, FileTypeIn
     int is_64_bit = 0;
 
     if (length < 16U) return 0;
-    magic = read_u32_le(buffer);
+    magic = tool_read_u32_le(buffer);
     if (magic == 0xbebafecaU || magic == 0xbfbafecaU) {
-        unsigned int arch_count = read_u32_be(buffer + 4);
+        unsigned int arch_count = tool_read_u32_be(buffer + 4);
         unsigned int arch_index;
         unsigned int entry_size = magic == 0xbfbafecaU ? 32U : 20U;
         dynamic_set("Mach-O universal binary");
@@ -280,9 +275,9 @@ static int describe_macho(const unsigned char *buffer, size_t length, FileTypeIn
             details_append("  macho-fat-architectures:");
             for (arch_index = 0U; arch_index < arch_count && arch_index < 8U; ++arch_index) {
                 size_t entry = 8U + (size_t)arch_index * entry_size;
-                unsigned int arch_cputype = read_u32_be(buffer + entry + 0U);
-                unsigned int arch_cpusubtype = read_u32_be(buffer + entry + 4U);
-                unsigned int align = read_u32_be(buffer + entry + (entry_size == 32U ? 24U : 16U));
+                unsigned int arch_cputype = tool_read_u32_be(buffer + entry + 0U);
+                unsigned int arch_cpusubtype = tool_read_u32_be(buffer + entry + 4U);
+                unsigned int align = tool_read_u32_be(buffer + entry + (entry_size == 32U ? 24U : 16U));
                 dynamic_append(arch_index == 0U ? ": [" : " [");
                 dynamic_append(macho_arch_name(arch_cputype, arch_cpusubtype));
                 dynamic_append("]");
@@ -312,13 +307,13 @@ static int describe_macho(const unsigned char *buffer, size_t length, FileTypeIn
     } else {
         return 0;
     }
-    cputype = is_big_endian ? read_u32_be(buffer + 4) : read_u32_le(buffer + 4);
-    filetype = is_big_endian ? read_u32_be(buffer + 12) : read_u32_le(buffer + 12);
+    cputype = is_big_endian ? tool_read_u32_be(buffer + 4) : tool_read_u32_le(buffer + 4);
+    filetype = is_big_endian ? tool_read_u32_be(buffer + 12) : tool_read_u32_le(buffer + 12);
     dynamic_set("Mach-O ");
     dynamic_append(is_64_bit ? "64-bit " : "32-bit ");
     dynamic_append(macho_type_name(filetype));
     dynamic_append(" ");
-    dynamic_append(macho_arch_name(cputype, is_big_endian ? read_u32_be(buffer + 8) : read_u32_le(buffer + 8)));
+    dynamic_append(macho_arch_name(cputype, is_big_endian ? tool_read_u32_be(buffer + 8) : tool_read_u32_le(buffer + 8)));
     info->description = dynamic_description;
     info->mime = "application/x-mach-binary";
     info->magic = "Mach-O";
@@ -430,7 +425,7 @@ static int describe_pe(const unsigned char *buffer, size_t length, FileTypeInfo 
     unsigned int section_index;
 
     if (length < 64U || buffer[0] != 'M' || buffer[1] != 'Z') return 0;
-    pe_offset = read_u32_le(buffer + 0x3cU);
+    pe_offset = tool_read_u32_le(buffer + 0x3cU);
     if (pe_offset > 4096U || pe_offset + 24U > length) {
         info->description = "DOS/PE executable";
         info->mime = "application/vnd.microsoft.portable-executable";
@@ -444,32 +439,32 @@ static int describe_pe(const unsigned char *buffer, size_t length, FileTypeInfo 
         return 1;
     }
 
-    machine = read_u16_le(buffer + pe_offset + 4U);
-    section_count = read_u16_le(buffer + pe_offset + 6U);
-    timestamp = read_u32_le(buffer + pe_offset + 8U);
-    optional_size = read_u16_le(buffer + pe_offset + 20U);
-    characteristics = read_u16_le(buffer + pe_offset + 22U);
+    machine = tool_read_u16_le(buffer + pe_offset + 4U);
+    section_count = tool_read_u16_le(buffer + pe_offset + 6U);
+    timestamp = tool_read_u32_le(buffer + pe_offset + 8U);
+    optional_size = tool_read_u16_le(buffer + pe_offset + 20U);
+    characteristics = tool_read_u16_le(buffer + pe_offset + 22U);
     optional_offset = (size_t)pe_offset + 24U;
     if (optional_size >= 2U && optional_offset + 2U <= length) {
-        optional_magic = read_u16_le(buffer + optional_offset);
+        optional_magic = tool_read_u16_le(buffer + optional_offset);
     }
     if (optional_size >= 70U && optional_offset + 70U <= length && (optional_magic == 0x010bU || optional_magic == 0x020bU)) {
         linker_major = buffer[optional_offset + 2U];
         linker_minor = buffer[optional_offset + 3U];
-        entry_rva = read_u32_le(buffer + optional_offset + 16U);
-        if (optional_magic == 0x020bU && optional_offset + 32U <= length) image_base = read_u64_le(buffer + optional_offset + 24U);
-        else if (optional_magic == 0x010bU && optional_offset + 32U <= length) image_base = read_u32_le(buffer + optional_offset + 28U);
-        section_alignment = read_u32_le(buffer + optional_offset + 32U);
-        file_alignment = read_u32_le(buffer + optional_offset + 36U);
-        major_os = read_u16_le(buffer + optional_offset + 40U);
-        minor_os = read_u16_le(buffer + optional_offset + 42U);
-        major_subsystem = read_u16_le(buffer + optional_offset + 48U);
-        minor_subsystem = read_u16_le(buffer + optional_offset + 50U);
-        size_of_image = read_u32_le(buffer + optional_offset + 56U);
-        size_of_headers = read_u32_le(buffer + optional_offset + 60U);
-        checksum = read_u32_le(buffer + optional_offset + 64U);
-        subsystem = read_u16_le(buffer + optional_offset + 68U);
-        if (optional_size >= 72U && optional_offset + 72U <= length) dll_characteristics = read_u16_le(buffer + optional_offset + 70U);
+        entry_rva = tool_read_u32_le(buffer + optional_offset + 16U);
+        if (optional_magic == 0x020bU && optional_offset + 32U <= length) image_base = tool_read_u64_le(buffer + optional_offset + 24U);
+        else if (optional_magic == 0x010bU && optional_offset + 32U <= length) image_base = tool_read_u32_le(buffer + optional_offset + 28U);
+        section_alignment = tool_read_u32_le(buffer + optional_offset + 32U);
+        file_alignment = tool_read_u32_le(buffer + optional_offset + 36U);
+        major_os = tool_read_u16_le(buffer + optional_offset + 40U);
+        minor_os = tool_read_u16_le(buffer + optional_offset + 42U);
+        major_subsystem = tool_read_u16_le(buffer + optional_offset + 48U);
+        minor_subsystem = tool_read_u16_le(buffer + optional_offset + 50U);
+        size_of_image = tool_read_u32_le(buffer + optional_offset + 56U);
+        size_of_headers = tool_read_u32_le(buffer + optional_offset + 60U);
+        checksum = tool_read_u32_le(buffer + optional_offset + 64U);
+        subsystem = tool_read_u16_le(buffer + optional_offset + 68U);
+        if (optional_size >= 72U && optional_offset + 72U <= length) dll_characteristics = tool_read_u16_le(buffer + optional_offset + 70U);
     }
 
     dynamic_set("PE/COFF ");
@@ -543,13 +538,13 @@ static int describe_pe(const unsigned char *buffer, size_t length, FileTypeInfo 
             details_append("    ");
             pe_append_section_name(buffer + offset);
             details_append(": rva=");
-            details_append_hex(read_u32_le(buffer + offset + 12U));
+            details_append_hex(tool_read_u32_le(buffer + offset + 12U));
             details_append(" vsize=");
-            details_append_uint(read_u32_le(buffer + offset + 8U));
+            details_append_uint(tool_read_u32_le(buffer + offset + 8U));
             details_append(" raw=");
-            details_append_uint(read_u32_le(buffer + offset + 16U));
+            details_append_uint(tool_read_u32_le(buffer + offset + 16U));
             details_append(" flags=");
-            details_append_hex(read_u32_le(buffer + offset + 36U));
+            details_append_hex(tool_read_u32_le(buffer + offset + 36U));
             details_append("\n");
         }
         if (section_count > 12U) details_append("    ...\n");
@@ -564,9 +559,9 @@ static int describe_png(const unsigned char *buffer, size_t length, FileTypeInfo
     dynamic_set("PNG image data");
     if (buffer[12] == 'I' && buffer[13] == 'H' && buffer[14] == 'D' && buffer[15] == 'R') {
         dynamic_append(", ");
-        dynamic_append_uint(read_u32_be(buffer + 16));
+        dynamic_append_uint(tool_read_u32_be(buffer + 16));
         dynamic_append(" x ");
-        dynamic_append_uint(read_u32_be(buffer + 20));
+        dynamic_append_uint(tool_read_u32_be(buffer + 20));
     }
     info->description = dynamic_description;
     info->mime = "image/png";
@@ -578,9 +573,9 @@ static int describe_gif(const unsigned char *buffer, size_t length, FileTypeInfo
     if (length < 10U || !(buffer[0] == 'G' && buffer[1] == 'I' && buffer[2] == 'F' &&
         buffer[3] == '8' && (buffer[4] == '7' || buffer[4] == '9') && buffer[5] == 'a')) return 0;
     dynamic_set("GIF image data, ");
-    dynamic_append_uint(read_u16_le(buffer + 6));
+    dynamic_append_uint(tool_read_u16_le(buffer + 6));
     dynamic_append(" x ");
-    dynamic_append_uint(read_u16_le(buffer + 8));
+    dynamic_append_uint(tool_read_u16_le(buffer + 8));
     info->description = dynamic_description;
     info->mime = "image/gif";
     info->magic = "GIF";
@@ -590,9 +585,9 @@ static int describe_gif(const unsigned char *buffer, size_t length, FileTypeInfo
 static int describe_bmp(const unsigned char *buffer, size_t length, FileTypeInfo *info) {
     if (length < 26U || !(buffer[0] == 'B' && buffer[1] == 'M')) return 0;
     dynamic_set("BMP image data, ");
-    dynamic_append_uint(read_u32_le(buffer + 18));
+    dynamic_append_uint(tool_read_u32_le(buffer + 18));
     dynamic_append(" x ");
-    dynamic_append_uint(read_u32_le(buffer + 22));
+    dynamic_append_uint(tool_read_u32_le(buffer + 22));
     info->description = dynamic_description;
     info->mime = "image/bmp";
     info->magic = "BMP";
@@ -609,13 +604,13 @@ static int jpeg_dimensions(const unsigned char *buffer, size_t length, unsigned 
         marker = buffer[pos++];
         if (marker == 0xd9U || marker == 0xdaU) break;
         if (pos + 2U > length) break;
-        segment_length = read_u16_be(buffer + pos);
+        segment_length = tool_read_u16_be(buffer + pos);
         if (segment_length < 2U || pos + segment_length > length) break;
         if ((marker >= 0xc0U && marker <= 0xc3U) || (marker >= 0xc5U && marker <= 0xc7U) ||
             (marker >= 0xc9U && marker <= 0xcbU) || (marker >= 0xcdU && marker <= 0xcfU)) {
             if (segment_length >= 7U) {
-                *height_out = read_u16_be(buffer + pos + 3U);
-                *width_out = read_u16_be(buffer + pos + 5U);
+                *height_out = tool_read_u16_be(buffer + pos + 3U);
+                *width_out = tool_read_u16_be(buffer + pos + 5U);
                 return 0;
             }
             break;

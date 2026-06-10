@@ -31,7 +31,6 @@ static void ed_trim_newline(char *text) {
     rt_trim_newline(text);
 }
 
-#define ed_starts_with tool_starts_with
 
 static int ed_read_line(InputReader *reader, char *line, size_t line_size) {
     size_t used = 0;
@@ -779,7 +778,7 @@ int main(int argc, char **argv) {
             if (ed_restore_undo(&undo, &buffer) != 0) {
                 ed_print_error();
             }
-        } else if (ed_starts_with(command + pos, "H")) {
+        } else if (tool_starts_with(command + pos, "H")) {
             rt_write_line(1, "p n a i c d s g r u w q");
         } else {
             ed_print_error();

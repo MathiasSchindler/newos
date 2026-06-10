@@ -2,9 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define append_char tool_buffer_append_char
-#define append_cstr tool_buffer_append_cstr
-#define append_uint tool_buffer_append_uint
 
 static size_t append_uptime_part(
     char *buffer,
@@ -20,16 +17,15 @@ static size_t append_uptime_part(
     }
 
     if (*parts_written > 0) {
-        length = append_cstr(buffer, buffer_size, length, ", ");
+        length = tool_buffer_append_cstr(buffer, buffer_size, length, ", ");
     }
-    length = append_uint(buffer, buffer_size, length, value);
-    length = append_char(buffer, buffer_size, length, ' ');
-    length = append_cstr(buffer, buffer_size, length, value == 1ULL ? singular : plural);
+    length = tool_buffer_append_uint(buffer, buffer_size, length, value);
+    length = tool_buffer_append_char(buffer, buffer_size, length, ' ');
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, value == 1ULL ? singular : plural);
     *parts_written += 1;
     return length;
 }
 
-#define format_uptime_compact tool_format_uptime_compact
 
 static void format_uptime_pretty(unsigned long long total_seconds, char *buffer, size_t buffer_size) {
     unsigned long long days = total_seconds / 86400ULL;
@@ -48,9 +44,9 @@ static void format_uptime_pretty(unsigned long long total_seconds, char *buffer,
     length = append_uptime_part(buffer, buffer_size, length, hours, "hour", "hours", &parts_written);
     length = append_uptime_part(buffer, buffer_size, length, minutes, "minute", "minutes", &parts_written);
     if (parts_written == 0) {
-        length = append_uint(buffer, buffer_size, length, seconds);
-        length = append_char(buffer, buffer_size, length, ' ');
-        (void)append_cstr(buffer, buffer_size, length, seconds == 1ULL ? "second" : "seconds");
+        length = tool_buffer_append_uint(buffer, buffer_size, length, seconds);
+        length = tool_buffer_append_char(buffer, buffer_size, length, ' ');
+        (void)tool_buffer_append_cstr(buffer, buffer_size, length, seconds == 1ULL ? "second" : "seconds");
     }
 }
 
@@ -83,7 +79,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    format_uptime_compact(info.uptime_seconds, uptime_text, sizeof(uptime_text));
+    tool_format_uptime_compact(info.uptime_seconds, uptime_text, sizeof(uptime_text));
 
     if (pretty) {
         format_uptime_pretty(info.uptime_seconds, uptime_text, sizeof(uptime_text));

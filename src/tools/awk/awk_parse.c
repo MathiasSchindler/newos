@@ -8,9 +8,7 @@
 
 #include "awk_impl.h"
 
-#define is_identifier_char tool_ascii_is_identifier_char
 
-#define is_identifier_start tool_ascii_is_identifier_start
 
 static int starts_with_keyword(const char *text, size_t index, const char *keyword) {
     size_t i = 0;
@@ -22,7 +20,7 @@ static int starts_with_keyword(const char *text, size_t index, const char *keywo
         i += 1;
     }
 
-    return !is_identifier_char(text[index + i]);
+    return !tool_ascii_is_identifier_char(text[index + i]);
 }
 
 static void skip_spaces(const char *text, size_t *index) {
@@ -51,11 +49,11 @@ static int parse_uint_token(const char *text, size_t *index, unsigned long long 
 static int parse_identifier(const char *text, size_t *index, char *buffer, size_t buffer_size) {
     size_t out = 0;
 
-    if (!is_identifier_start(text[*index]) || buffer == 0 || buffer_size == 0) {
+    if (!tool_ascii_is_identifier_start(text[*index]) || buffer == 0 || buffer_size == 0) {
         return -1;
     }
 
-    while (is_identifier_char(text[*index])) {
+    while (tool_ascii_is_identifier_char(text[*index])) {
         if (out + 1 >= buffer_size) {
             return -1;
         }
@@ -345,7 +343,7 @@ static int parse_expression(const char *text, size_t *index, AwkExpression *expr
         return parse_uint_token(text, index, &expression->number);
     }
 
-    if (is_identifier_start(text[*index])) {
+    if (tool_ascii_is_identifier_start(text[*index])) {
         expression->type = AWK_EXPR_VARIABLE;
         return parse_identifier(text, index, expression->text, sizeof(expression->text));
     }

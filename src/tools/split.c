@@ -130,16 +130,15 @@ static int ensure_output_open(int *fd_out,
     return 0;
 }
 
-#define starts_with_text tool_starts_with
 
 static const char *option_attached_value(const char *arg, const char *short_name, const char *long_name) {
     size_t short_len = rt_strlen(short_name);
     size_t long_len = rt_strlen(long_name);
 
-    if (starts_with_text(arg, short_name) && arg[short_len] != '\0') {
+    if (tool_starts_with(arg, short_name) && arg[short_len] != '\0') {
         return arg + short_len;
     }
-    if (starts_with_text(arg, long_name) && arg[long_len] == '=') {
+    if (tool_starts_with(arg, long_name) && arg[long_len] == '=') {
         return arg + long_len + 1U;
     }
     return 0;
@@ -444,7 +443,7 @@ int main(int argc, char **argv) {
             numeric_suffixes = 1;
             part_index = 0ULL;
             argi += 1;
-        } else if (starts_with_text(argv[argi], "--numeric-suffixes=")) {
+        } else if (tool_starts_with(argv[argi], "--numeric-suffixes=")) {
             numeric_suffixes = 1;
             if (tool_parse_uint_arg(argv[argi] + 19, &part_index, "split", "numeric suffix start") != 0) {
                 print_usage(argv[0]);

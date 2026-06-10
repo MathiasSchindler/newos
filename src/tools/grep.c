@@ -119,7 +119,6 @@ static int write_match_highlighted_line(const char *pattern, const GrepOptions *
     return rt_write_line(1, line + rendered);
 }
 
-#define is_utf8_continuation_byte tool_utf8_is_continuation_byte
 
 static unsigned char ascii_fold_byte(unsigned char ch) {
     return (ch >= 'A' && ch <= 'Z') ? (unsigned char)(ch + ('a' - 'A')) : ch;
@@ -136,7 +135,7 @@ static size_t previous_codepoint_start(const char *text, size_t index) {
     }
 
     index -= 1U;
-    while (index > 0U && is_utf8_continuation_byte((unsigned char)text[index])) {
+    while (index > 0U && tool_utf8_is_continuation_byte((unsigned char)text[index])) {
         index -= 1U;
     }
     return index;

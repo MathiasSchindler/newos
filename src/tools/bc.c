@@ -1007,9 +1007,7 @@ static BcValue bc_math_bessel(BcParser *parser, BcValue order_value, BcValue val
     return bc_math_rescale(parser, sum, target_scale);
 }
 
-#define bc_is_name_start tool_ascii_is_identifier_start
 
-#define bc_is_name_char tool_ascii_is_identifier_char
 
 static int bc_hex_digit_value(char ch) {
     if (ch >= '0' && ch <= '9') {
@@ -1343,10 +1341,10 @@ static void bc_read_token(BcParser *parser) {
         
         parser->token.number.scale = scale;
         parser->token.type = BC_TOKEN_NUMBER;
-    } else if (bc_is_name_start(ch)) {
+    } else if (tool_ascii_is_identifier_start(ch)) {
         size_t used = 0;
 
-        while (bc_is_name_char(parser->text[parser->pos])) {
+        while (tool_ascii_is_identifier_char(parser->text[parser->pos])) {
             if (used + 1 >= sizeof(parser->token.text)) {
                 bc_set_error(parser, "identifier too long");
                 return;

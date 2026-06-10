@@ -4,7 +4,6 @@
 
 #define NSLOOKUP_MAX_RESULTS 32U
 
-#define streq tool_str_equal
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-4|-6] [-s SERVER] [-p PORT] NAME");
@@ -50,22 +49,22 @@ int main(int argc, char **argv) {
     size_t i;
 
     while (argi < argc) {
-        if (streq(argv[argi], "-4")) {
+        if (tool_str_equal(argv[argi], "-4")) {
             family = PLATFORM_NETWORK_FAMILY_IPV4;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-6")) {
+        if (tool_str_equal(argv[argi], "-6")) {
             family = PLATFORM_NETWORK_FAMILY_IPV6;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "--json")) {
+        if (tool_str_equal(argv[argi], "--json")) {
             tool_json_set_enabled(1);
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-s")) {
+        if (tool_str_equal(argv[argi], "-s")) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 return 1;
@@ -74,7 +73,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-p")) {
+        if (tool_str_equal(argv[argi], "-p")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &port_value, "nslookup", "port") != 0 ||
                 port_value == 0ULL || port_value > 65535ULL) {
                 print_usage(argv[0]);
@@ -83,7 +82,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
         }

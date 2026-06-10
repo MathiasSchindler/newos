@@ -59,7 +59,6 @@ static int httpd_decode_path(const char *source, char *dest, size_t dest_size) {
     return 0;
 }
 
-#define httpd_header_name_equals tool_str_equal_ignore_case_ascii
 
 static void httpd_trim_spaces(char *text) {
     size_t start = 0U;
@@ -230,9 +229,9 @@ int httpd_parse_request(const char *buffer, HttpRequest *request, char *detail, 
             httpd_trim_spaces(header_line);
             httpd_trim_spaces(colon + 1U);
 
-            if (httpd_header_name_equals(header_line, "Content-Length") ||
-                httpd_header_name_equals(header_line, "Transfer-Encoding") ||
-                httpd_header_name_equals(header_line, "Expect")) {
+            if (tool_str_equal_ignore_case_ascii(header_line, "Content-Length") ||
+                tool_str_equal_ignore_case_ascii(header_line, "Transfer-Encoding") ||
+                tool_str_equal_ignore_case_ascii(header_line, "Expect")) {
                 rt_copy_string(detail, detail_size, "request body framing is not supported");
                 return 400;
             }

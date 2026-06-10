@@ -5,37 +5,14 @@
 #define UMOUNT_USAGE "[-flv] TARGET..."
 #define UMOUNT_FIELD_CAPACITY 1024
 
-#define mount_copy_trimmed tool_path_copy_trimmed
 
 static int mount_value_matches(const char *left, const char *right) {
     char normalized_left[UMOUNT_FIELD_CAPACITY];
     char normalized_right[UMOUNT_FIELD_CAPACITY];
 
-    mount_copy_trimmed(normalized_left, sizeof(normalized_left), left);
-    mount_copy_trimmed(normalized_right, sizeof(normalized_right), right);
+    tool_path_copy_trimmed(normalized_left, sizeof(normalized_left), left);
+    tool_path_copy_trimmed(normalized_right, sizeof(normalized_right), right);
     return rt_strcmp(normalized_left, normalized_right) == 0;
-}
-
-#define decode_mount_field tool_decode_mount_field
-
-static int next_mount_field(const char *line,
-                            size_t line_length,
-                            size_t *index_io,
-                            char *buffer,
-                            size_t buffer_size) {
-    size_t start;
-
-    while (*index_io < line_length && (line[*index_io] == ' ' || line[*index_io] == '\t')) {
-        *index_io += 1U;
-    }
-    start = *index_io;
-    while (*index_io < line_length && line[*index_io] != ' ' && line[*index_io] != '\t') {
-        *index_io += 1U;
-    }
-    if (start == *index_io) {
-        return -1;
-    }
-    return decode_mount_field(line + start, *index_io - start, buffer, buffer_size);
 }
 
 static int resolve_mount_target_from_table(const char *table_path,
@@ -72,8 +49,8 @@ static int resolve_mount_target_from_table(const char *table_path,
                 size_t index = 0U;
 
                 line[line_used] = '\0';
-                if (next_mount_field(line, line_used, &index, source, sizeof(source)) == 0 &&
-                    next_mount_field(line, line_used, &index, target, sizeof(target)) == 0 &&
+                if (tool_next_mount_field(line, line_used, &index, source, sizeof(source)) == 0 &&
+                    tool_next_mount_field(line, line_used, &index, target, sizeof(target)) == 0 &&
                     (mount_value_matches(source, input) || mount_value_matches(target, input))) {
                     rt_copy_string(buffer, buffer_size, target);
                     platform_close(fd);

@@ -8,7 +8,6 @@
 #define GETTY_MAX_LOGIN_NAME 64U
 #define GETTY_SAFE_PATH "/bin:/usr/bin"
 
-#define is_stdio_path tool_path_is_dash
 
 static int validate_program_path(const char *path) {
     if (path == 0 || path[0] != '/') {
@@ -87,7 +86,7 @@ static void write_banner(const char *tty_path,
 
     if (!quiet) {
         (void)platform_write(fd, "\r\nnewos getty on ", 17U);
-        write_text_to_fd(fd, is_stdio_path(tty_path) ? "stdio" : tty_path);
+        write_text_to_fd(fd, tool_path_is_dash(tty_path) ? "stdio" : tty_path);
         if (restart_count > 0) {
             (void)platform_write(fd, " (restart ", 10U);
             rt_write_uint(fd, (unsigned long long)restart_count);
@@ -368,8 +367,8 @@ int main(int argc, char **argv) {
         if (platform_spawn_process((char *const *)spawn_argv,
                                    -1,
                                    -1,
-                                   is_stdio_path(tty_path) ? 0 : tty_path,
-                                   is_stdio_path(tty_path) ? 0 : tty_path,
+                                   tool_path_is_dash(tty_path) ? 0 : tty_path,
+                                   tool_path_is_dash(tty_path) ? 0 : tty_path,
                                    1,
                                    &pid) != 0) {
             tool_write_error("getty", "failed to start ", spawn_argv[0]);

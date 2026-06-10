@@ -3,11 +3,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define httpd_append_char tool_buffer_append_char
 
-#define httpd_append_text tool_buffer_append_cstr
 
-#define httpd_append_uint tool_buffer_append_uint
 
 static int httpd_request_complete(const char *buffer, size_t length) {
     size_t index;
@@ -54,18 +51,18 @@ void httpd_send_response(int fd, const HttpResponse *response) {
     }
 
     header[0] = '\0';
-    used = httpd_append_text(header, sizeof(header), used, "HTTP/1.1 ");
-    used = httpd_append_uint(header, sizeof(header), used, (unsigned long long)response->status_code);
-    used = httpd_append_char(header, sizeof(header), used, ' ');
-    used = httpd_append_text(header, sizeof(header), used, response->status_text != NULL ? response->status_text : "OK");
-    used = httpd_append_text(header, sizeof(header), used, "\r\nContent-Length: ");
-    used = httpd_append_uint(header, sizeof(header), used, response->content_length);
-    used = httpd_append_text(header, sizeof(header), used, "\r\nContent-Type: ");
-    used = httpd_append_text(header, sizeof(header), used, response->content_type[0] != '\0' ? response->content_type : "text/plain; charset=utf-8");
-    used = httpd_append_text(header, sizeof(header), used, "\r\nX-Content-Type-Options: nosniff");
-    used = httpd_append_text(header, sizeof(header), used, "\r\nX-Frame-Options: DENY");
-    used = httpd_append_text(header, sizeof(header), used, "\r\nReferrer-Policy: no-referrer");
-    used = httpd_append_text(header, sizeof(header), used, "\r\nConnection: close\r\n\r\n");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "HTTP/1.1 ");
+    used = tool_buffer_append_uint(header, sizeof(header), used, (unsigned long long)response->status_code);
+    used = tool_buffer_append_char(header, sizeof(header), used, ' ');
+    used = tool_buffer_append_cstr(header, sizeof(header), used, response->status_text != NULL ? response->status_text : "OK");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "\r\nContent-Length: ");
+    used = tool_buffer_append_uint(header, sizeof(header), used, response->content_length);
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "\r\nContent-Type: ");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, response->content_type[0] != '\0' ? response->content_type : "text/plain; charset=utf-8");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "\r\nX-Content-Type-Options: nosniff");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "\r\nX-Frame-Options: DENY");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "\r\nReferrer-Policy: no-referrer");
+    used = tool_buffer_append_cstr(header, sizeof(header), used, "\r\nConnection: close\r\n\r\n");
 
     (void)rt_write_all(fd, header, used);
     if (response->head_only) {

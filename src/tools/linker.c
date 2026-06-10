@@ -14,7 +14,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
 }
 
-#define starts_with tool_starts_with
 
 static int read_response_file(const char *path, char **buffer_out) {
     int fd;
@@ -47,7 +46,6 @@ static int read_response_file(const char *path, char **buffer_out) {
     return 0;
 }
 
-#define response_space tool_ascii_is_token_space
 
 static int append_expanded_arg(const char *program_name,
                                const char *arg,
@@ -70,7 +68,7 @@ static int expand_response_text(const char *program_name,
         char *token;
         char *write;
 
-        while (response_space(*read)) {
+        while (tool_ascii_is_token_space(*read)) {
             read += 1;
         }
         if (*read == '\0') {
@@ -78,7 +76,7 @@ static int expand_response_text(const char *program_name,
         }
         token = read;
         write = read;
-        while (*read != '\0' && !response_space(*read)) {
+        while (*read != '\0' && !tool_ascii_is_token_space(*read)) {
             if (*read == '\'' || *read == '"') {
                 char quote = *read++;
                 while (*read != '\0' && *read != quote) {
@@ -406,7 +404,7 @@ int main(int argc, char **argv) {
             link_manifest_path = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "--link-manifest=")) {
+        if (parsing_options && tool_starts_with(arg, "--link-manifest=")) {
             link_manifest_path = arg + 16;
             continue;
         }
@@ -418,11 +416,11 @@ int main(int argc, char **argv) {
             link_result_path = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "--link-results=")) {
+        if (parsing_options && tool_starts_with(arg, "--link-results=")) {
             link_result_path = arg + 15;
             continue;
         }
-        if (parsing_options && starts_with(arg, "--output=")) {
+        if (parsing_options && tool_starts_with(arg, "--output=")) {
             output_path = arg + 9;
             continue;
         }
@@ -438,7 +436,7 @@ int main(int argc, char **argv) {
             }
             continue;
         }
-        if (parsing_options && starts_with(arg, "--target=")) {
+        if (parsing_options && tool_starts_with(arg, "--target=")) {
             const char *target = arg + 9;
             if (compiler_linker_target_parse(target, &options.target) != 0) {
                 tool_write_error(expanded_args[0], "unsupported target: ", target);
@@ -488,7 +486,7 @@ int main(int argc, char **argv) {
             options.map_path = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "--map=")) {
+        if (parsing_options && tool_starts_with(arg, "--map=")) {
             options.map_path = arg + 6;
             continue;
         }
@@ -501,7 +499,7 @@ int main(int argc, char **argv) {
             options.why_live = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "--why-live=")) {
+        if (parsing_options && tool_starts_with(arg, "--why-live=")) {
             options.why_live = arg + 11;
             continue;
         }
@@ -514,7 +512,7 @@ int main(int argc, char **argv) {
             options.entry_symbol = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "--entry=")) {
+        if (parsing_options && tool_starts_with(arg, "--entry=")) {
             options.entry_symbol = arg + 8;
             continue;
         }
@@ -527,7 +525,7 @@ int main(int argc, char **argv) {
             options.lto_cc = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "--lto-cc=")) {
+        if (parsing_options && tool_starts_with(arg, "--lto-cc=")) {
             options.lto_cc = arg + 9;
             continue;
         }
@@ -545,7 +543,7 @@ int main(int argc, char **argv) {
             library_dirs[library_dir_count++] = expanded_args[++i];
             continue;
         }
-        if (parsing_options && starts_with(arg, "-L") && arg[2] != '\0') {
+        if (parsing_options && tool_starts_with(arg, "-L") && arg[2] != '\0') {
             if (library_dir_count >= LINKER_TOOL_MAX_LIBRARY_DIRS) {
                 tool_write_error(expanded_args[0], "too many library search paths", "");
                 return 1;
@@ -553,7 +551,7 @@ int main(int argc, char **argv) {
             library_dirs[library_dir_count++] = arg + 2;
             continue;
         }
-        if (parsing_options && starts_with(arg, "-l") && arg[2] != '\0') {
+        if (parsing_options && tool_starts_with(arg, "-l") && arg[2] != '\0') {
             if (input_count >= LINKER_TOOL_MAX_INPUTS || library_path_count >= LINKER_TOOL_MAX_INPUTS || resolve_library(arg + 2, library_dirs, library_dir_count, library_paths[library_path_count]) != 0) {
                 tool_write_error(expanded_args[0], "failed to resolve library: ", arg + 2);
                 return 1;

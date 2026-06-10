@@ -27,8 +27,6 @@ typedef struct {
     char suffix[SEQ_LITERAL_CAPACITY];
 } FormatSpec;
 
-#define append_char tool_buffer_append_char_checked
-#define append_text tool_buffer_append_text_checked
 
 static int parse_uint_limited(const char *text, size_t *index_io, int *value_out) {
     size_t index = *index_io;
@@ -363,11 +361,11 @@ static int append_grouped_whole(char *buffer, size_t buffer_size, size_t *length
         first_group = 3U;
     }
     while (index < whole_len) {
-        if (index > 0U && append_char(buffer, buffer_size, length_io, ',') != 0) {
+        if (index > 0U && tool_buffer_append_char_checked(buffer, buffer_size, length_io, ',') != 0) {
             return -1;
         }
         do {
-            if (append_char(buffer, buffer_size, length_io, whole[index]) != 0) {
+            if (tool_buffer_append_char_checked(buffer, buffer_size, length_io, whole[index]) != 0) {
                 return -1;
             }
             index += 1U;
@@ -425,22 +423,22 @@ static int format_fixed_number(const Bignum *value, unsigned int scale, int prec
         }
     }
     buffer[0] = '\0';
-    if (negative && append_char(buffer, buffer_size, &length, '-') != 0) {
+    if (negative && tool_buffer_append_char_checked(buffer, buffer_size, &length, '-') != 0) {
         return -1;
     }
     if (grouping) {
         if (append_grouped_whole(buffer, buffer_size, &length, whole) != 0) {
             return -1;
         }
-    } else if (append_text(buffer, buffer_size, &length, whole) != 0) {
+    } else if (tool_buffer_append_text_checked(buffer, buffer_size, &length, whole) != 0) {
         return -1;
     }
     if (fraction_len > 0U) {
-        if (append_char(buffer, buffer_size, &length, '.') != 0) {
+        if (tool_buffer_append_char_checked(buffer, buffer_size, &length, '.') != 0) {
             return -1;
         }
         for (index = 0U; index < fraction_len; ++index) {
-            if (append_char(buffer, buffer_size, &length, rounded[whole_len + index]) != 0) {
+            if (tool_buffer_append_char_checked(buffer, buffer_size, &length, rounded[whole_len + index]) != 0) {
                 return -1;
             }
         }
@@ -492,34 +490,34 @@ static int format_exponential_number(const Bignum *value, unsigned int scale, in
         }
     }
     buffer[0] = '\0';
-    if (negative && append_char(buffer, buffer_size, &length, '-') != 0) {
+    if (negative && tool_buffer_append_char_checked(buffer, buffer_size, &length, '-') != 0) {
         return -1;
     }
-    if (append_char(buffer, buffer_size, &length, significant[0]) != 0) {
+    if (tool_buffer_append_char_checked(buffer, buffer_size, &length, significant[0]) != 0) {
         return -1;
     }
     if (precision > 0) {
-        if (append_char(buffer, buffer_size, &length, '.') != 0) {
+        if (tool_buffer_append_char_checked(buffer, buffer_size, &length, '.') != 0) {
             return -1;
         }
         for (index = 1U; index <= (size_t)precision; ++index) {
-            if (append_char(buffer, buffer_size, &length, significant[index]) != 0) {
+            if (tool_buffer_append_char_checked(buffer, buffer_size, &length, significant[index]) != 0) {
                 return -1;
             }
         }
     }
-    if (append_char(buffer, buffer_size, &length, uppercase ? 'E' : 'e') != 0 ||
-        append_char(buffer, buffer_size, &length, exponent < 0 ? '-' : '+') != 0) {
+    if (tool_buffer_append_char_checked(buffer, buffer_size, &length, uppercase ? 'E' : 'e') != 0 ||
+        tool_buffer_append_char_checked(buffer, buffer_size, &length, exponent < 0 ? '-' : '+') != 0) {
         return -1;
     }
     if (exponent < 0) {
         exponent = -exponent;
     }
     rt_unsigned_to_string((unsigned long long)exponent, exponent_text, sizeof(exponent_text));
-    if (exponent < 10 && append_char(buffer, buffer_size, &length, '0') != 0) {
+    if (exponent < 10 && tool_buffer_append_char_checked(buffer, buffer_size, &length, '0') != 0) {
         return -1;
     }
-    return append_text(buffer, buffer_size, &length, exponent_text);
+    return tool_buffer_append_text_checked(buffer, buffer_size, &length, exponent_text);
 }
 
 static int decimal_exponent(const Bignum *value, unsigned int scale) {

@@ -13,7 +13,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-0] [file ...]");
 }
 
-#define is_utf8_continuation tool_utf8_is_continuation_byte
 
 static int decode_previous_codepoint(const char *text, size_t end, size_t *start_out, unsigned int *codepoint_out) {
     size_t start;
@@ -25,7 +24,7 @@ static int decode_previous_codepoint(const char *text, size_t end, size_t *start
     }
 
     start = end - 1U;
-    while (start > 0U && is_utf8_continuation((unsigned char)text[start])) {
+    while (start > 0U && tool_utf8_is_continuation_byte((unsigned char)text[start])) {
         start -= 1U;
     }
 

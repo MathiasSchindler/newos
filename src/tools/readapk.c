@@ -99,9 +99,7 @@ static int has_extraction_mode(const ReadApkOptions *options) {
            options->extract_signatures_dir != 0 || options->extract_resource;
 }
 
-#define text_starts_with tool_starts_with
 
-#define ascii_lower tool_ascii_tolower
 
 static int text_ends_with_ignore_case(const char *text, const char *suffix) {
     size_t text_length = rt_strlen(text);
@@ -112,7 +110,7 @@ static int text_ends_with_ignore_case(const char *text, const char *suffix) {
         return 0;
     }
     for (index = 0U; index < suffix_length; ++index) {
-        if (ascii_lower(text[text_length - suffix_length + index]) != ascii_lower(suffix[index])) {
+        if (tool_ascii_tolower(text[text_length - suffix_length + index]) != tool_ascii_tolower(suffix[index])) {
             return 0;
         }
     }
@@ -185,10 +183,10 @@ static const char *entry_category(const ArchiveZipEntry *entry) {
     if (rt_strcmp(name, "AndroidManifest.xml") == 0) return "manifest";
     if (rt_strcmp(name, "resources.arsc") == 0) return "resource-table";
     if (text_ends_with_ignore_case(name, ".dex")) return "dex";
-    if (text_starts_with(name, "lib/") && text_ends_with_ignore_case(name, ".so")) return "native";
-    if (text_starts_with(name, "res/")) return "resource-file";
-    if (text_starts_with(name, "assets/")) return "asset";
-    if (text_starts_with(name, "META-INF/")) return "signature/meta";
+    if (tool_starts_with(name, "lib/") && text_ends_with_ignore_case(name, ".so")) return "native";
+    if (tool_starts_with(name, "res/")) return "resource-file";
+    if (tool_starts_with(name, "assets/")) return "asset";
+    if (tool_starts_with(name, "META-INF/")) return "signature/meta";
     return "file";
 }
 
@@ -292,25 +290,25 @@ static void classify_entry(const ArchiveZipEntry *entry, ReadApkStats *stats) {
         stats->dex_count += 1ULL;
         stats->dex_uncompressed_size += entry->uncompressed_size;
     }
-    if (text_starts_with(name, "lib/") && text_ends_with_ignore_case(name, ".so")) {
+    if (tool_starts_with(name, "lib/") && text_ends_with_ignore_case(name, ".so")) {
         stats->native_library_count += 1ULL;
         stats->native_uncompressed_size += entry->uncompressed_size;
-        if (text_starts_with(name, "lib/arm64-v8a/")) stats->abi_arm64_count += 1ULL;
-        else if (text_starts_with(name, "lib/armeabi-v7a/")) stats->abi_armv7_count += 1ULL;
-        else if (text_starts_with(name, "lib/x86_64/")) stats->abi_x86_64_count += 1ULL;
-        else if (text_starts_with(name, "lib/x86/")) stats->abi_x86_count += 1ULL;
+        if (tool_starts_with(name, "lib/arm64-v8a/")) stats->abi_arm64_count += 1ULL;
+        else if (tool_starts_with(name, "lib/armeabi-v7a/")) stats->abi_armv7_count += 1ULL;
+        else if (tool_starts_with(name, "lib/x86_64/")) stats->abi_x86_64_count += 1ULL;
+        else if (tool_starts_with(name, "lib/x86/")) stats->abi_x86_count += 1ULL;
     }
-    if (text_starts_with(name, "assets/")) {
+    if (tool_starts_with(name, "assets/")) {
         stats->asset_count += 1ULL;
     }
-    if (text_starts_with(name, "res/")) {
+    if (tool_starts_with(name, "res/")) {
         stats->res_count += 1ULL;
-        if (text_starts_with(name, "res/layout")) stats->layout_resource_count += 1ULL;
-        if (text_starts_with(name, "res/xml")) stats->xml_resource_count += 1ULL;
-        if (text_starts_with(name, "res/raw")) stats->raw_resource_count += 1ULL;
-        if (text_starts_with(name, "res/drawable") || text_starts_with(name, "res/mipmap")) stats->image_resource_count += 1ULL;
+        if (tool_starts_with(name, "res/layout")) stats->layout_resource_count += 1ULL;
+        if (tool_starts_with(name, "res/xml")) stats->xml_resource_count += 1ULL;
+        if (tool_starts_with(name, "res/raw")) stats->raw_resource_count += 1ULL;
+        if (tool_starts_with(name, "res/drawable") || tool_starts_with(name, "res/mipmap")) stats->image_resource_count += 1ULL;
     }
-    if (text_starts_with(name, "META-INF/")) {
+    if (tool_starts_with(name, "META-INF/")) {
         stats->meta_inf_count += 1ULL;
         if (text_ends_with_ignore_case(name, ".RSA") || text_ends_with_ignore_case(name, ".DSA") || text_ends_with_ignore_case(name, ".EC")) {
             stats->v1_signature_count += 1ULL;
@@ -1155,10 +1153,10 @@ static int inspect_dex_data(const unsigned char *data, size_t size, const char *
 }
 
 static const char *abi_from_path(const char *name) {
-    if (text_starts_with(name, "lib/arm64-v8a/")) return "arm64-v8a";
-    if (text_starts_with(name, "lib/armeabi-v7a/")) return "armeabi-v7a";
-    if (text_starts_with(name, "lib/x86_64/")) return "x86_64";
-    if (text_starts_with(name, "lib/x86/")) return "x86";
+    if (tool_starts_with(name, "lib/arm64-v8a/")) return "arm64-v8a";
+    if (tool_starts_with(name, "lib/armeabi-v7a/")) return "armeabi-v7a";
+    if (tool_starts_with(name, "lib/x86_64/")) return "x86_64";
+    if (tool_starts_with(name, "lib/x86/")) return "x86";
     return "unknown";
 }
 
@@ -1323,8 +1321,8 @@ static int print_file_detail_entry(const ArchiveZipEntry *entry) {
 static int print_resource_file_detail_entry(const ArchiveZipEntry *entry) {
     if (entry_name_matches(entry, "resources.arsc")) {
         if (rt_write_cstr(1, "  table: ") != 0 || rt_write_uint(1, entry->uncompressed_size) != 0 || rt_write_cstr(1, " bytes ") != 0 || rt_write_line(1, entry->name) != 0) return -1;
-    } else if (text_starts_with(entry->name, "res/") || text_starts_with(entry->name, "assets/")) {
-        if (rt_write_cstr(1, "  ") != 0 || rt_write_cstr(1, text_starts_with(entry->name, "res/") ? "res" : "asset") != 0 || rt_write_cstr(1, ": ") != 0 || rt_write_uint(1, entry->uncompressed_size) != 0 || rt_write_cstr(1, " bytes ") != 0 || rt_write_line(1, entry->name) != 0) return -1;
+    } else if (tool_starts_with(entry->name, "res/") || tool_starts_with(entry->name, "assets/")) {
+        if (rt_write_cstr(1, "  ") != 0 || rt_write_cstr(1, tool_starts_with(entry->name, "res/") ? "res" : "asset") != 0 || rt_write_cstr(1, ": ") != 0 || rt_write_uint(1, entry->uncompressed_size) != 0 || rt_write_cstr(1, " bytes ") != 0 || rt_write_line(1, entry->name) != 0) return -1;
     }
     return 0;
 }
@@ -1350,10 +1348,10 @@ static int print_entry(const ArchiveZipEntry *entry, void *user_data) {
     if (context->options->show_manifest && entry_name_matches(entry, "AndroidManifest.xml")) should_read_payload = 1;
     if (context->options->show_resources && entry_name_matches(entry, "resources.arsc")) should_read_payload = 1;
     if (context->options->show_dex && text_ends_with_ignore_case(entry->name, ".dex")) should_read_payload = 1;
-    if (context->options->show_native && text_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) should_read_payload = 1;
+    if (context->options->show_native && tool_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) should_read_payload = 1;
     if ((context->options->show_capabilities || context->options->show_security) && entry_name_matches(entry, "AndroidManifest.xml")) should_read_payload = 1;
     if (context->options->show_resources_detail && entry_name_matches(entry, "resources.arsc")) should_read_payload = 1;
-    if (context->options->show_code_detail && (text_ends_with_ignore_case(entry->name, ".dex") || (text_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")))) should_read_payload = 1;
+    if (context->options->show_code_detail && (text_ends_with_ignore_case(entry->name, ".dex") || (tool_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")))) should_read_payload = 1;
     if (should_read_payload && !context->options->json) {
         if (archive_zip_read_entry_data(context->fd, context->info, entry, READAPK_MAX_ENTRY_SIZE, &data, &data_size) != 0) {
             if (rt_write_cstr(1, "Cannot read entry payload: ") != 0 || rt_write_line(1, entry->name) != 0) return -1;
@@ -1361,12 +1359,12 @@ static int print_entry(const ArchiveZipEntry *entry, void *user_data) {
             if (context->options->show_manifest && entry_name_matches(entry, "AndroidManifest.xml")) payload_result = inspect_manifest_data(data, data_size, entry->name, context);
             if (payload_result == 0 && context->options->show_resources && entry_name_matches(entry, "resources.arsc")) payload_result = inspect_resources_data(data, data_size, entry->name);
             if (payload_result == 0 && context->options->show_dex && text_ends_with_ignore_case(entry->name, ".dex")) payload_result = inspect_dex_data(data, data_size, entry->name);
-            if (payload_result == 0 && context->options->show_native && text_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) payload_result = inspect_native_data(data, data_size, entry->name);
+            if (payload_result == 0 && context->options->show_native && tool_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) payload_result = inspect_native_data(data, data_size, entry->name);
             if (payload_result == 0 && context->options->show_capabilities && entry_name_matches(entry, "AndroidManifest.xml")) payload_result = inspect_manifest_capabilities_data(data, data_size, context, 0);
             if (payload_result == 0 && context->options->show_security && entry_name_matches(entry, "AndroidManifest.xml")) payload_result = inspect_manifest_capabilities_data(data, data_size, context, 1);
             if (payload_result == 0 && context->options->show_resources_detail && entry_name_matches(entry, "resources.arsc")) payload_result = inspect_resources_data(data, data_size, entry->name);
             if (payload_result == 0 && context->options->show_code_detail && text_ends_with_ignore_case(entry->name, ".dex")) payload_result = inspect_dex_data(data, data_size, entry->name);
-            if (payload_result == 0 && context->options->show_code_detail && text_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) payload_result = inspect_native_data(data, data_size, entry->name);
+            if (payload_result == 0 && context->options->show_code_detail && tool_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) payload_result = inspect_native_data(data, data_size, entry->name);
             rt_free(data);
             if (payload_result != 0) return payload_result;
         }
@@ -1374,8 +1372,8 @@ static int print_entry(const ArchiveZipEntry *entry, void *user_data) {
     if (!context->options->json && !entry_name_is_directory(entry)) {
         if (context->options->extract_manifest_dir != 0 && entry_name_matches(entry, "AndroidManifest.xml")) (void)readapk_extract_manifest_text(context, entry);
         if (context->options->extract_dex_dir != 0 && text_ends_with_ignore_case(entry->name, ".dex")) (void)readapk_extract_entry_payload(context, entry, context->options->extract_dex_dir);
-        if (context->options->extract_native_dir != 0 && text_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) (void)readapk_extract_entry_payload(context, entry, context->options->extract_native_dir);
-        if (context->options->extract_signatures_dir != 0 && text_starts_with(entry->name, "META-INF/")) (void)readapk_extract_entry_payload(context, entry, context->options->extract_signatures_dir);
+        if (context->options->extract_native_dir != 0 && tool_starts_with(entry->name, "lib/") && text_ends_with_ignore_case(entry->name, ".so")) (void)readapk_extract_entry_payload(context, entry, context->options->extract_native_dir);
+        if (context->options->extract_signatures_dir != 0 && tool_starts_with(entry->name, "META-INF/")) (void)readapk_extract_entry_payload(context, entry, context->options->extract_signatures_dir);
     }
     if (context->options->json && context->options->show_entries) {
         return write_json_entry(context->path, entry);

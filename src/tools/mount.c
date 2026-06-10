@@ -5,41 +5,16 @@
 #define MOUNT_USAGE "[-rvwBp] [-t TYPE] [-o OPTIONS] [SOURCE [TARGET]]"
 #define MOUNT_FIELD_CAPACITY 1024
 
-#define token_equals tool_token_equals
 
-#define mount_copy_trimmed tool_path_copy_trimmed
 
 static int mount_value_matches(const char *left, const char *right) {
     char normalized_left[MOUNT_FIELD_CAPACITY];
     char normalized_right[MOUNT_FIELD_CAPACITY];
 
-    mount_copy_trimmed(normalized_left, sizeof(normalized_left), left);
-    mount_copy_trimmed(normalized_right, sizeof(normalized_right), right);
+    tool_path_copy_trimmed(normalized_left, sizeof(normalized_left), left);
+    tool_path_copy_trimmed(normalized_right, sizeof(normalized_right), right);
     return rt_strcmp(normalized_left, normalized_right) == 0;
 }
-
-#define decode_mount_field tool_decode_mount_field
-
-static int next_mount_field(const char *line,
-                            size_t line_length,
-                            size_t *index_io,
-                            char *buffer,
-                            size_t buffer_size) {
-    size_t start;
-
-    while (*index_io < line_length && (line[*index_io] == ' ' || line[*index_io] == '\t')) {
-        *index_io += 1U;
-    }
-    start = *index_io;
-    while (*index_io < line_length && line[*index_io] != ' ' && line[*index_io] != '\t') {
-        *index_io += 1U;
-    }
-    if (start == *index_io) {
-        return -1;
-    }
-    return decode_mount_field(line + start, *index_io - start, buffer, buffer_size);
-}
-
 static int mount_matches_filter(const char *source, const char *target, const char *filesystem_type, const char *filter) {
     if (filter == 0 || filter[0] == '\0') {
         return 1;
@@ -67,10 +42,10 @@ static void process_mount_line(const char *line, size_t line_length, const char 
     char options[MOUNT_FIELD_CAPACITY];
     size_t index = 0U;
 
-    if (next_mount_field(line, line_length, &index, source, sizeof(source)) != 0 ||
-        next_mount_field(line, line_length, &index, target, sizeof(target)) != 0 ||
-        next_mount_field(line, line_length, &index, filesystem_type, sizeof(filesystem_type)) != 0 ||
-        next_mount_field(line, line_length, &index, options, sizeof(options)) != 0) {
+    if (tool_next_mount_field(line, line_length, &index, source, sizeof(source)) != 0 ||
+        tool_next_mount_field(line, line_length, &index, target, sizeof(target)) != 0 ||
+        tool_next_mount_field(line, line_length, &index, filesystem_type, sizeof(filesystem_type)) != 0 ||
+        tool_next_mount_field(line, line_length, &index, options, sizeof(options)) != 0) {
         return;
     }
     if (!mount_matches_filter(source, target, filesystem_type, filter)) {
@@ -190,41 +165,41 @@ static int parse_option_token(
         return 0;
     }
 
-    if (token_equals(token, token_length, "ro")) {
+    if (tool_token_equals(token, token_length, "ro")) {
         *flags_io |= PLATFORM_MOUNT_RDONLY;
-    } else if (token_equals(token, token_length, "rw")) {
+    } else if (tool_token_equals(token, token_length, "rw")) {
         *flags_io &= ~PLATFORM_MOUNT_RDONLY;
-    } else if (token_equals(token, token_length, "nosuid")) {
+    } else if (tool_token_equals(token, token_length, "nosuid")) {
         *flags_io |= PLATFORM_MOUNT_NOSUID;
-    } else if (token_equals(token, token_length, "nodev")) {
+    } else if (tool_token_equals(token, token_length, "nodev")) {
         *flags_io |= PLATFORM_MOUNT_NODEV;
-    } else if (token_equals(token, token_length, "noexec")) {
+    } else if (tool_token_equals(token, token_length, "noexec")) {
         *flags_io |= PLATFORM_MOUNT_NOEXEC;
-    } else if (token_equals(token, token_length, "sync")) {
+    } else if (tool_token_equals(token, token_length, "sync")) {
         *flags_io |= PLATFORM_MOUNT_SYNC;
-    } else if (token_equals(token, token_length, "remount")) {
+    } else if (tool_token_equals(token, token_length, "remount")) {
         *flags_io |= PLATFORM_MOUNT_REMOUNT;
-    } else if (token_equals(token, token_length, "mand")) {
+    } else if (tool_token_equals(token, token_length, "mand")) {
         *flags_io |= PLATFORM_MOUNT_MANDLOCK;
-    } else if (token_equals(token, token_length, "dirsync")) {
+    } else if (tool_token_equals(token, token_length, "dirsync")) {
         *flags_io |= PLATFORM_MOUNT_DIRSYNC;
-    } else if (token_equals(token, token_length, "noatime")) {
+    } else if (tool_token_equals(token, token_length, "noatime")) {
         *flags_io |= PLATFORM_MOUNT_NOATIME;
-    } else if (token_equals(token, token_length, "nodiratime")) {
+    } else if (tool_token_equals(token, token_length, "nodiratime")) {
         *flags_io |= PLATFORM_MOUNT_NODIRATIME;
-    } else if (token_equals(token, token_length, "bind")) {
+    } else if (tool_token_equals(token, token_length, "bind")) {
         *flags_io |= PLATFORM_MOUNT_BIND;
-    } else if (token_equals(token, token_length, "rbind") || token_equals(token, token_length, "bind,rec")) {
+    } else if (tool_token_equals(token, token_length, "rbind") || tool_token_equals(token, token_length, "bind,rec")) {
         *flags_io |= PLATFORM_MOUNT_BIND | PLATFORM_MOUNT_REC;
-    } else if (token_equals(token, token_length, "rec")) {
+    } else if (tool_token_equals(token, token_length, "rec")) {
         *flags_io |= PLATFORM_MOUNT_REC;
-    } else if (token_equals(token, token_length, "silent")) {
+    } else if (tool_token_equals(token, token_length, "silent")) {
         *flags_io |= PLATFORM_MOUNT_SILENT;
-    } else if (token_equals(token, token_length, "relatime")) {
+    } else if (tool_token_equals(token, token_length, "relatime")) {
         *flags_io |= PLATFORM_MOUNT_RELATIME;
-    } else if (token_equals(token, token_length, "strictatime")) {
+    } else if (tool_token_equals(token, token_length, "strictatime")) {
         *flags_io |= PLATFORM_MOUNT_STRICTATIME;
-    } else if (token_equals(token, token_length, "lazytime")) {
+    } else if (tool_token_equals(token, token_length, "lazytime")) {
         *flags_io |= PLATFORM_MOUNT_LAZYTIME;
     } else {
         if (append_data_token(data_buffer, data_buffer_size, data_used_io, token, token_length) != 0) {

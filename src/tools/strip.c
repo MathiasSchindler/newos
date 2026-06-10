@@ -53,12 +53,6 @@ typedef struct {
     const char *action;
 } StripPlan;
 
-#define read_u16_le tool_read_u16_le
-#define read_u32_le_local tool_read_u32_le
-#define read_u64_le_local tool_read_u64_le
-#define write_u16_le_local tool_store_u16_le
-#define write_u32_le_local tool_store_u32_le
-#define write_u64_le_local tool_store_u64_le
 
 static void build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size) {
     size_t slash = 0U;
@@ -140,7 +134,7 @@ static int analyze_elf(int input_fd, const unsigned char *header, unsigned long 
 
     plan->format = STRIP_FORMAT_ELF64_LE;
     plan->format_name = "ELF64 little-endian";
-    plan->elf_type = read_u16_le(header + 16);
+    plan->elf_type = tool_read_u16_le(header + 16);
     plan->copy_size = file_size;
     plan->output_size = file_size;
 
@@ -150,9 +144,9 @@ static int analyze_elf(int input_fd, const unsigned char *header, unsigned long 
         return 0;
     }
 
-    phoff = read_u64_le_local(header + 32);
-    phentsize = read_u16_le(header + 54);
-    phnum = read_u16_le(header + 56);
+    phoff = tool_read_u64_le(header + 32);
+    phentsize = tool_read_u16_le(header + 54);
+    phnum = tool_read_u16_le(header + 56);
     if (phnum == 0U) {
         plan->action = "safe copy: no program headers";
         return 0;
@@ -178,9 +172,9 @@ static int analyze_elf(int input_fd, const unsigned char *header, unsigned long 
             archive_read_exact(input_fd, phdr, sizeof(phdr)) != 0) {
             return -1;
         }
-        ph_type = read_u32_le_local(phdr + 0);
-        ph_offset = read_u64_le_local(phdr + 8);
-        ph_filesz = read_u64_le_local(phdr + 32);
+        ph_type = tool_read_u32_le(phdr + 0);
+        ph_offset = tool_read_u64_le(phdr + 8);
+        ph_filesz = tool_read_u64_le(phdr + 32);
         if (ph_type != 1U || ph_filesz == 0ULL) {
             continue;
         }
@@ -222,7 +216,7 @@ static int analyze_pe(int input_fd, const unsigned char *header, unsigned long l
     if (file_size < 64ULL || header[0] != 'M' || header[1] != 'Z') {
         return 0;
     }
-    pe_offset = read_u32_le_local(header + 0x3cU);
+    pe_offset = tool_read_u32_le(header + 0x3cU);
     if (!checked_range((unsigned long long)pe_offset, sizeof(coff), file_size)) {
         return 0;
     }
@@ -233,10 +227,10 @@ static int analyze_pe(int input_fd, const unsigned char *header, unsigned long l
         return 0;
     }
 
-    symbol_offset = read_u32_le_local(coff + 12);
-    symbol_count = read_u32_le_local(coff + 16);
-    section_count = read_u16_le(coff + 6);
-    optional_size = read_u16_le(coff + 20);
+    symbol_offset = tool_read_u32_le(coff + 12);
+    symbol_count = tool_read_u32_le(coff + 16);
+    section_count = tool_read_u16_le(coff + 6);
+    optional_size = tool_read_u16_le(coff + 20);
     plan->format = STRIP_FORMAT_PE_COFF;
     plan->format_name = "PE/COFF";
     plan->pe_offset = pe_offset;
@@ -249,12 +243,12 @@ static int analyze_pe(int input_fd, const unsigned char *header, unsigned long l
         if (platform_seek(input_fd, (long long)pe_offset + 24LL, PLATFORM_SEEK_SET) < 0 || archive_read_exact(input_fd, optional, optional_size) != 0) {
             return -1;
         }
-        optional_magic = read_u16_le(optional + 0);
+        optional_magic = tool_read_u16_le(optional + 0);
         if (optional_magic == 0x020bU && optional_size >= 168U) data_directory_offset = 112U;
         else if (optional_magic == 0x010bU && optional_size >= 152U) data_directory_offset = 96U;
         if (data_directory_offset != 0U) {
-            debug_rva = read_u32_le_local(optional + data_directory_offset + 48U);
-            debug_size = read_u32_le_local(optional + data_directory_offset + 52U);
+            debug_rva = tool_read_u32_le(optional + data_directory_offset + 48U);
+            debug_size = tool_read_u32_le(optional + data_directory_offset + 52U);
             if (debug_rva != 0U || debug_size != 0U) {
                 unsigned long long section_table = (unsigned long long)pe_offset + 24ULL + (unsigned long long)optional_size;
                 unsigned short i;
@@ -270,10 +264,10 @@ static int analyze_pe(int input_fd, const unsigned char *header, unsigned long l
                             archive_read_exact(input_fd, section, sizeof(section)) != 0) {
                             return -1;
                         }
-                        virtual_size = read_u32_le_local(section + 8);
-                        virtual_address = read_u32_le_local(section + 12);
-                        raw_size = read_u32_le_local(section + 16);
-                        raw_offset = read_u32_le_local(section + 20);
+                        virtual_size = tool_read_u32_le(section + 8);
+                        virtual_address = tool_read_u32_le(section + 12);
+                        raw_size = tool_read_u32_le(section + 16);
+                        raw_offset = tool_read_u32_le(section + 20);
                         mapped_size = virtual_size > raw_size ? virtual_size : raw_size;
                         if (debug_rva >= virtual_address && debug_rva - virtual_address < mapped_size) {
                             debug_file_offset = raw_offset + (debug_rva - virtual_address);
@@ -313,13 +307,13 @@ static int analyze_macho(int input_fd, const unsigned char *header, unsigned lon
     plan->format_name = "Mach-O 64-bit little-endian";
     plan->copy_size = file_size;
     plan->output_size = file_size;
-    if (read_u32_le_local(header + 12) == 1U) {
+    if (tool_read_u32_le(header + 12) == 1U) {
         plan->unsupported_relocatable = 1;
         plan->action = "rejected relocatable object";
         return 0;
     }
 
-    ncmds = read_u32_le_local(header + 16);
+    ncmds = tool_read_u32_le(header + 16);
     plan->macho_ncmds = ncmds;
     if (ncmds > 256U) {
         plan->action = "safe copy: too many Mach-O load commands";
@@ -336,8 +330,8 @@ static int analyze_macho(int input_fd, const unsigned char *header, unsigned lon
             archive_read_exact(input_fd, command_header, sizeof(command_header)) != 0) {
             return -1;
         }
-        command = read_u32_le_local(command_header + 0);
-        command_size = read_u32_le_local(command_header + 4);
+        command = tool_read_u32_le(command_header + 0);
+        command_size = tool_read_u32_le(command_header + 4);
         if (command_size < 8U || !checked_range(command_offset, command_size, file_size)) {
             plan->action = "safe copy: invalid Mach-O load-command range";
             return 0;
@@ -348,17 +342,17 @@ static int analyze_macho(int input_fd, const unsigned char *header, unsigned lon
             if (platform_seek(input_fd, (long long)command_offset, PLATFORM_SEEK_SET) < 0 || archive_read_exact(input_fd, symtab, sizeof(symtab)) != 0) {
                 return -1;
             }
-            plan->macho_symoff = read_u32_le_local(symtab + 8);
-            plan->macho_nsyms = read_u32_le_local(symtab + 12);
-            plan->macho_stroff = read_u32_le_local(symtab + 16);
-            plan->macho_strsize = read_u32_le_local(symtab + 20);
+            plan->macho_symoff = tool_read_u32_le(symtab + 8);
+            plan->macho_nsyms = tool_read_u32_le(symtab + 12);
+            plan->macho_stroff = tool_read_u32_le(symtab + 16);
+            plan->macho_strsize = tool_read_u32_le(symtab + 20);
         } else if (command == 0x1dU && command_size >= 16U) {
             unsigned char linkedit[16];
             if (platform_seek(input_fd, (long long)command_offset, PLATFORM_SEEK_SET) < 0 || archive_read_exact(input_fd, linkedit, sizeof(linkedit)) != 0) {
                 return -1;
             }
-            plan->macho_code_signature_offset = read_u32_le_local(linkedit + 8);
-            plan->macho_code_signature_size = read_u32_le_local(linkedit + 12);
+            plan->macho_code_signature_offset = tool_read_u32_le(linkedit + 8);
+            plan->macho_code_signature_size = tool_read_u32_le(linkedit + 12);
         }
 
         command_offset += (unsigned long long)command_size;
@@ -445,7 +439,7 @@ static void analyze_file(int input_fd, const unsigned char *header, unsigned lon
         return;
     }
 
-    if (file_size >= 32ULL && read_u32_le_local(header) == 0xfeedfacfU) {
+    if (file_size >= 32ULL && tool_read_u32_le(header) == 0xfeedfacfU) {
         if (analyze_macho(input_fd, header, file_size, plan) != 0) {
             plan->action = "safe copy: Mach-O analysis failed";
         }
@@ -587,10 +581,10 @@ static int strip_one_file(const char *input_path, const StripOptions *options, i
     }
 
     if (plan.patch_elf_header) {
-        write_u64_le_local(header + 40, 0ULL);
-        write_u16_le_local(header + 58, 0U);
-        write_u16_le_local(header + 60, 0U);
-        write_u16_le_local(header + 62, 0U);
+        tool_store_u64_le(header + 40, 0ULL);
+        tool_store_u16_le(header + 58, 0U);
+        tool_store_u16_le(header + 60, 0U);
+        tool_store_u16_le(header + 62, 0U);
 
         if (platform_seek(output_fd, 0, PLATFORM_SEEK_SET) < 0 || rt_write_all(output_fd, header, sizeof(header)) != 0) {
             rt_write_cstr(2, "strip: failed to patch ELF header for ");
@@ -606,8 +600,8 @@ static int strip_one_file(const char *input_path, const StripOptions *options, i
 
     if (plan.patch_pe_symbols) {
         unsigned char pe_patch[8];
-        write_u32_le_local(pe_patch + 0, 0U);
-        write_u32_le_local(pe_patch + 4, 0U);
+        tool_store_u32_le(pe_patch + 0, 0U);
+        tool_store_u32_le(pe_patch + 4, 0U);
         if (platform_seek(output_fd, (long long)plan.pe_offset + 12LL, PLATFORM_SEEK_SET) < 0 || rt_write_all(output_fd, pe_patch, sizeof(pe_patch)) != 0) {
             rt_write_cstr(2, "strip: failed to patch PE/COFF header for ");
             rt_write_line(2, input_path);
@@ -622,8 +616,8 @@ static int strip_one_file(const char *input_path, const StripOptions *options, i
 
     if (plan.patch_pe_debug_directory) {
         unsigned char pe_debug_patch[8];
-        write_u32_le_local(pe_debug_patch + 0, 0U);
-        write_u32_le_local(pe_debug_patch + 4, 0U);
+        tool_store_u32_le(pe_debug_patch + 0, 0U);
+        tool_store_u32_le(pe_debug_patch + 4, 0U);
         if (platform_seek(output_fd, (long long)plan.pe_debug_directory_offset, PLATFORM_SEEK_SET) < 0 || rt_write_all(output_fd, pe_debug_patch, sizeof(pe_debug_patch)) != 0) {
             rt_write_cstr(2, "strip: failed to patch PE/COFF debug directory for ");
             rt_write_line(2, input_path);

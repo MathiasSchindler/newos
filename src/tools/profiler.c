@@ -76,7 +76,6 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  0000000000401000 T function_name\n");
 }
 
-#define is_space_char tool_ascii_is_token_space
 
 static int hex_value(char ch, unsigned int *value_out) {
     if (ch >= '0' && ch <= '9') {
@@ -168,14 +167,14 @@ static int next_token(const char **cursor_io, char *token, size_t token_size) {
     const char *cursor = *cursor_io;
     size_t length = 0U;
 
-    while (*cursor != '\0' && is_space_char(*cursor)) {
+    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) {
         cursor++;
     }
     if (*cursor == '\0' || *cursor == '#') {
         *cursor_io = cursor;
         return 0;
     }
-    while (*cursor != '\0' && !is_space_char(*cursor)) {
+    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
         if (length + 1U < token_size) {
             token[length++] = *cursor;
         }

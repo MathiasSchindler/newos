@@ -36,55 +36,47 @@ typedef struct {
     unsigned int signature_index;
 } ImgmetaC2paVerboseState;
 
-#define read_u16_be tool_read_u16_be
-#define read_u16_le tool_read_u16_le
-#define read_u32_be tool_read_u32_be
-#define read_u32_le tool_read_u32_le
 
 static unsigned int read_tiff_u16(const unsigned char *bytes, int little_endian) {
-    return little_endian ? read_u16_le(bytes) : read_u16_be(bytes);
+    return little_endian ? tool_read_u16_le(bytes) : tool_read_u16_be(bytes);
 }
 
 static unsigned int read_tiff_u32(const unsigned char *bytes, int little_endian) {
-    return little_endian ? read_u32_le(bytes) : read_u32_be(bytes);
+    return little_endian ? tool_read_u32_le(bytes) : tool_read_u32_be(bytes);
 }
 
-#define write_u16_le tool_store_u16_le
-#define write_u16_be tool_store_u16_be
-#define write_u32_le tool_store_u32_le
-#define write_u32_be tool_store_u32_be
 
 static void write_tiff_u16(unsigned char *bytes, unsigned int value, int little_endian) {
     if (little_endian) {
-        write_u16_le(bytes, value);
+        tool_store_u16_le(bytes, value);
     } else {
-        write_u16_be(bytes, value);
+        tool_store_u16_be(bytes, value);
     }
 }
 
 static void write_tiff_u32(unsigned char *bytes, unsigned int value, int little_endian) {
     if (little_endian) {
-        write_u32_le(bytes, value);
+        tool_store_u32_le(bytes, value);
     } else {
-        write_u32_be(bytes, value);
+        tool_store_u32_be(bytes, value);
     }
 }
 
 static int tiff_u64_high_is_zero(const unsigned char *bytes, int little_endian) {
-    return little_endian ? read_u32_le(bytes + 4U) == 0U : read_u32_be(bytes) == 0U;
+    return little_endian ? tool_read_u32_le(bytes + 4U) == 0U : tool_read_u32_be(bytes) == 0U;
 }
 
 static unsigned int read_tiff_u64_low(const unsigned char *bytes, int little_endian) {
-    return little_endian ? read_u32_le(bytes) : read_u32_be(bytes + 4U);
+    return little_endian ? tool_read_u32_le(bytes) : tool_read_u32_be(bytes + 4U);
 }
 
 static void write_tiff_u64_low(unsigned char *bytes, unsigned int value, int little_endian) {
     if (little_endian) {
-        write_u32_le(bytes, value);
-        write_u32_le(bytes + 4U, 0U);
+        tool_store_u32_le(bytes, value);
+        tool_store_u32_le(bytes + 4U, 0U);
     } else {
-        write_u32_be(bytes, 0U);
-        write_u32_be(bytes + 4U, value);
+        tool_store_u32_be(bytes, 0U);
+        tool_store_u32_be(bytes + 4U, value);
     }
 }
 
@@ -974,7 +966,7 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
 
     if (depth > 16U) return;
     while (offset + 8U <= size) {
-        unsigned long long box_size = (unsigned long long)read_u32_be(data + offset);
+        unsigned long long box_size = (unsigned long long)tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         size_t header_size = 8U;
         size_t payload_offset;
@@ -983,7 +975,7 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
 
         if (box_size == 1ULL) {
             if (offset + 16U > size) return;
-            box_size = ((unsigned long long)read_u32_be(data + offset + 8U) << 32U) | (unsigned long long)read_u32_be(data + offset + 12U);
+            box_size = ((unsigned long long)tool_read_u32_be(data + offset + 8U) << 32U) | (unsigned long long)tool_read_u32_be(data + offset + 12U);
             header_size = 16U;
         } else if (box_size == 0ULL) {
             box_size = (unsigned long long)(size - offset);
@@ -994,7 +986,7 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
 
         if (bytes_equal(type, "jumb", 4U)) {
             if (payload_size >= 8U && bytes_equal(data + payload_offset + 4U, "jumd", 4U)) {
-                unsigned long long jumd_size = (unsigned long long)read_u32_be(data + payload_offset);
+                unsigned long long jumd_size = (unsigned long long)tool_read_u32_be(data + payload_offset);
                 if (jumd_size >= 8ULL && jumd_size <= (unsigned long long)payload_size) {
                     (void)imgmeta_jumd_label(data + payload_offset + 8U, (size_t)jumd_size - 8U, &label);
                 }
@@ -1037,7 +1029,7 @@ static void imgmeta_verbose_c2pa_png(const unsigned char *data, size_t size, Img
 
     if (size < 8U || !bytes_equal(data, (const char *)signature, 8U)) return;
     while (offset + 12U <= size) {
-        unsigned int chunk_size = read_u32_be(data + offset);
+        unsigned int chunk_size = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         size_t payload_offset = offset + 8U;
         if ((size_t)chunk_size > size - payload_offset || payload_offset + (size_t)chunk_size + 4U > size) return;
@@ -1066,7 +1058,7 @@ static void imgmeta_verbose_c2pa_jpeg(const unsigned char *data, size_t size, Im
         if (marker == 0xd9U || marker == 0xdaU) return;
         if (marker == 0x01U || (marker >= 0xd0U && marker <= 0xd7U)) continue;
         if (offset + 2U > size) return;
-        segment_size = read_u16_be(data + offset);
+        segment_size = tool_read_u16_be(data + offset);
         if (segment_size < 2U || offset + (size_t)segment_size > size) return;
         payload = data + offset + 2U;
         payload_size = (size_t)segment_size - 2U;
@@ -1220,7 +1212,7 @@ static int strip_png(const unsigned char *data, size_t size, unsigned char **out
     memcpy(output, data, 8U);
     output_size = 8U;
     while (input_offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + input_offset);
+        unsigned int length = tool_read_u32_be(data + input_offset);
         const unsigned char *type = data + input_offset + 4U;
         size_t chunk_size;
 
@@ -1249,7 +1241,7 @@ static int png_metadata_chunks_size(const unsigned char *data, size_t size, size
 
     *metadata_size_out = 0U;
     while (offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + offset);
+        unsigned int length = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         size_t chunk_size;
 
@@ -1299,7 +1291,7 @@ static int copy_png_metadata(const unsigned char *metadata_data,
     }
     memcpy(output, image_data, 8U);
     while (input_offset + 12U <= image_size) {
-        unsigned int length = read_u32_be(image_data + input_offset);
+        unsigned int length = tool_read_u32_be(image_data + input_offset);
         const unsigned char *type = image_data + input_offset + 4U;
         size_t chunk_size;
 
@@ -1311,7 +1303,7 @@ static int copy_png_metadata(const unsigned char *metadata_data,
         if (!inserted && (bytes_equal(type, "IDAT", 4U) || bytes_equal(type, "IEND", 4U))) {
             source_offset = 8U;
             while (source_offset + 12U <= metadata_size) {
-                unsigned int source_length = read_u32_be(metadata_data + source_offset);
+                unsigned int source_length = tool_read_u32_be(metadata_data + source_offset);
                 const unsigned char *source_type = metadata_data + source_offset + 4U;
                 size_t source_chunk_size;
 
@@ -1393,13 +1385,13 @@ static void write_png_text_chunk(unsigned char *output, size_t offset, const cha
     unsigned int crc;
     unsigned int payload_length = (unsigned int)(key_length + 1U + value_length);
 
-    write_u32_be(output + offset, payload_length);
+    tool_store_u32_be(output + offset, payload_length);
     memcpy(output + offset + 4U, "tEXt", 4U);
     memcpy(output + offset + 8U, key, key_length);
     output[offset + 8U + key_length] = 0U;
     memcpy(output + offset + 9U + key_length, value, value_length);
     crc = compression_crc32(output + offset + 4U, (size_t)payload_length + 4U);
-    write_u32_be(output + offset + 8U + payload_length, crc);
+    tool_store_u32_be(output + offset + 8U + payload_length, crc);
 }
 
 static void write_png_itxt_chunk(unsigned char *output,
@@ -1415,7 +1407,7 @@ static void write_png_itxt_chunk(unsigned char *output,
     unsigned int payload_length = (unsigned int)(key_length + 5U + language_length + value_length);
     size_t cursor;
 
-    write_u32_be(output + offset, payload_length);
+    tool_store_u32_be(output + offset, payload_length);
     memcpy(output + offset + 4U, "iTXt", 4U);
     cursor = offset + 8U;
     memcpy(output + cursor, key, key_length);
@@ -1431,7 +1423,7 @@ static void write_png_itxt_chunk(unsigned char *output,
     output[cursor++] = 0U;
     memcpy(output + cursor, value, value_length);
     crc = compression_crc32(output + offset + 4U, (size_t)payload_length + 4U);
-    write_u32_be(output + offset + 8U + payload_length, crc);
+    tool_store_u32_be(output + offset + 8U + payload_length, crc);
 }
 
 static int edit_png_text(const unsigned char *data,
@@ -1461,7 +1453,7 @@ static int edit_png_text(const unsigned char *data,
     }
     memcpy(output, data, 8U);
     while (input_offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + input_offset);
+        unsigned int length = tool_read_u32_be(data + input_offset);
         const unsigned char *type = data + input_offset + 4U;
         const unsigned char *payload = data + input_offset + 8U;
         size_t chunk_size;
@@ -1558,7 +1550,7 @@ static int edit_png_itxt(const unsigned char *data,
     }
     memcpy(output, data, 8U);
     while (input_offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + input_offset);
+        unsigned int length = tool_read_u32_be(data + input_offset);
         const unsigned char *type = data + input_offset + 4U;
         const unsigned char *payload = data + input_offset + 8U;
         size_t chunk_size;
@@ -1628,7 +1620,7 @@ static int remove_png_text(const unsigned char *data,
     }
     memcpy(output, data, 8U);
     while (input_offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + input_offset);
+        unsigned int length = tool_read_u32_be(data + input_offset);
         const unsigned char *type = data + input_offset + 4U;
         const unsigned char *payload = data + input_offset + 8U;
         size_t chunk_size;
@@ -1668,7 +1660,7 @@ static int list_png_text(const unsigned char *data, size_t size, const char *lab
         return -1;
     }
     while (offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + offset);
+        unsigned int length = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         const unsigned char *payload = data + offset + 8U;
         size_t key_length;
@@ -1809,7 +1801,7 @@ static int strip_jpeg(const unsigned char *data, size_t size, unsigned char **ou
             rt_free(output);
             return -1;
         }
-        segment_size = read_u16_be(data + input_offset);
+        segment_size = tool_read_u16_be(data + input_offset);
         if (segment_size < 2U || (size_t)segment_size > size - input_offset) {
             rt_free(output);
             return -1;
@@ -1846,7 +1838,7 @@ static int strip_webp(const unsigned char *data, size_t size, unsigned char **ou
     memcpy(output, data, 12U);
     while (input_offset + 8U <= size) {
         const unsigned char *type = data + input_offset;
-        unsigned int chunk_length = read_u32_le(data + input_offset + 4U);
+        unsigned int chunk_length = tool_read_u32_le(data + input_offset + 4U);
         size_t chunk_total = 8U + (size_t)chunk_length + ((chunk_length & 1U) != 0U ? 1U : 0U);
 
         if (chunk_total < 8U || chunk_total > size - input_offset) {
@@ -1866,7 +1858,7 @@ static int strip_webp(const unsigned char *data, size_t size, unsigned char **ou
         rt_free(output);
         return -1;
     }
-    write_u32_le(output + 4U, (unsigned int)(output_size - 8U));
+    tool_store_u32_le(output + 4U, (unsigned int)(output_size - 8U));
     *out_data = output;
     *out_size = output_size;
     return 0;

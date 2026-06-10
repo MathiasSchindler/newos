@@ -276,9 +276,7 @@ static int text_ends_with(const char *text, const char *suffix) {
     return 1;
 }
 
-#define contains_case_insensitive tool_contains_case_insensitive
 
-#define is_section_name tool_text_is_decimal
 
 static void set_self_dir(const char *argv0, char *buffer, size_t buffer_size) {
     size_t len;
@@ -452,7 +450,6 @@ static int find_page_in_section(const char *man_root, const char *section, const
     return tool_path_exists(path_out) ? 0 : -1;
 }
 
-#define buffer_append_char tool_buffer_append_char_checked
 
 static void trim_range(const char **start_io, const char **end_io) {
     while (*start_io < *end_io && ((**start_io == ' ') || (**start_io == '\t'))) {
@@ -524,7 +521,7 @@ static int format_inline_markdown(const char *text, char *buffer, size_t buffer_
             if (text[lookahead] == ']' && text[lookahead + 1U] == '(') {
                 i += 1U;
                 while (text[i] != '\0' && text[i] != ']') {
-                    if (buffer_append_char(buffer, buffer_size, &out, text[i]) != 0) {
+                    if (tool_buffer_append_char_checked(buffer, buffer_size, &out, text[i]) != 0) {
                         return -1;
                     }
                     i += 1U;
@@ -550,7 +547,7 @@ static int format_inline_markdown(const char *text, char *buffer, size_t buffer_
             i += 1U;
             continue;
         }
-        if (buffer_append_char(buffer, buffer_size, &out, text[i]) != 0) {
+        if (tool_buffer_append_char_checked(buffer, buffer_size, &out, text[i]) != 0) {
             return -1;
         }
         i += 1U;
@@ -1318,7 +1315,7 @@ static int file_contains_keyword(const char *path, const char *keyword) {
         size_t total = carry + (size_t)bytes_read;
         buffer[total] = '\0';
 
-        if (contains_case_insensitive(buffer, keyword)) {
+        if (tool_contains_case_insensitive(buffer, keyword)) {
             platform_close(fd);
             return 1;
         }
@@ -1416,7 +1413,7 @@ static int search_keyword(const ManContext *context, const char *keyword) {
                 if (tool_join_path(section_dir, entries[i].name, page_path, sizeof(page_path)) != 0) {
                     continue;
                 }
-                if (!contains_case_insensitive(entries[i].name, keyword) && !file_contains_keyword(page_path, keyword)) {
+                if (!tool_contains_case_insensitive(entries[i].name, keyword) && !file_contains_keyword(page_path, keyword)) {
                     continue;
                 }
                 if (!should_emit_search_result(sections[section_index].name, entries[i].name, seen_results, &seen_count)) {
@@ -1547,7 +1544,7 @@ int main(int argc, char **argv) {
         return search_keyword(&context, keyword);
     }
 
-    if (argi < argc && is_section_name(argv[argi])) {
+    if (argi < argc && tool_text_is_decimal(argv[argi])) {
         section = argv[argi++];
     }
     if (argi < argc) {

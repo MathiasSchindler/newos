@@ -257,7 +257,6 @@ static int is_primary_token(const char *arg) {
            rt_strcmp(arg, "-prune") == 0 || rt_strcmp(arg, "-exec") == 0;
 }
 
-#define ascii_tolower_char tool_ascii_tolower
 
 static void lowercase_copy(char *buffer, size_t buffer_size, const char *text) {
     size_t i = 0U;
@@ -267,7 +266,7 @@ static void lowercase_copy(char *buffer, size_t buffer_size, const char *text) {
     }
 
     while (text[i] != '\0' && i + 1U < buffer_size) {
-        buffer[i] = ascii_tolower_char(text[i]);
+        buffer[i] = tool_ascii_tolower(text[i]);
         i += 1U;
     }
     buffer[i] = '\0';

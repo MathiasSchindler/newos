@@ -65,7 +65,6 @@ static unsigned long long next_random(void) {
     return shuf_rng_state;
 }
 
-#define starts_with_text tool_starts_with
 
 static int parse_signed_value(const char *text, long long *value_out) {
     long long sign = 1;
@@ -248,7 +247,7 @@ int main(int argc, char **argv) {
             }
             output_path = argv[argi + 1];
             argi += 2;
-        } else if (starts_with_text(argv[argi], "--output=")) {
+        } else if (tool_starts_with(argv[argi], "--output=")) {
             output_path = argv[argi] + 9;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "--random-source") == 0) {
@@ -258,7 +257,7 @@ int main(int argc, char **argv) {
             }
             random_source_path = argv[argi + 1];
             argi += 2;
-        } else if (starts_with_text(argv[argi], "--random-source=")) {
+        } else if (tool_starts_with(argv[argi], "--random-source=")) {
             random_source_path = argv[argi] + 16;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-e") == 0) {

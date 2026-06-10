@@ -429,36 +429,33 @@ static int collect_external_from_fd(int fd,
     return 0;
 }
 
-#define is_sort_space tool_ascii_is_blank
 
-#define is_sort_digit tool_ascii_is_digit
 
 static int is_sort_alpha(char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
 }
 
 static int is_sort_alnum(char ch) {
-    return is_sort_alpha(ch) || is_sort_digit(ch);
+    return is_sort_alpha(ch) || tool_ascii_is_digit(ch);
 }
 
 static int is_sort_printable(unsigned char ch) {
     return ch >= 0x20U && ch < 0x7fU;
 }
 
-#define sort_fold_ascii tool_ascii_tolower
 
 static int sort_char_is_ignored(unsigned char ch, const SortOptions *options) {
     if (options->ignore_nonprinting && !is_sort_printable(ch)) {
         return 1;
     }
-    if (options->dictionary_order && !is_sort_alnum((char)ch) && !is_sort_space((char)ch)) {
+    if (options->dictionary_order && !is_sort_alnum((char)ch) && !tool_ascii_is_blank((char)ch)) {
         return 1;
     }
     return 0;
 }
 
 static void sort_trim_leading_blanks(const char **text, size_t *length) {
-    while (*length > 0U && is_sort_space((*text)[0])) {
+    while (*length > 0U && tool_ascii_is_blank((*text)[0])) {
         *text += 1;
         *length -= 1U;
     }
@@ -487,8 +484,8 @@ static int compare_text_spans(const char *left,
             break;
         }
 
-        lhs = (unsigned char)(options->ignore_case ? sort_fold_ascii(left[left_index]) : left[left_index]);
-        rhs = (unsigned char)(options->ignore_case ? sort_fold_ascii(right[right_index]) : right[right_index]);
+        lhs = (unsigned char)(options->ignore_case ? tool_ascii_tolower(left[left_index]) : left[left_index]);
+        rhs = (unsigned char)(options->ignore_case ? tool_ascii_tolower(right[right_index]) : right[right_index]);
 
         if (lhs != rhs) {
             return lhs < rhs ? -1 : 1;
@@ -575,7 +572,7 @@ static void extract_key_span(const SortLine *line,
         int have_end = 0;
 
         while (i < line->length) {
-            while (i < line->length && is_sort_space(line->text[i])) {
+            while (i < line->length && tool_ascii_is_blank(line->text[i])) {
                 i += 1U;
             }
             if (i >= line->length) {
@@ -588,7 +585,7 @@ static void extract_key_span(const SortLine *line,
                 have_start = 1;
             }
 
-            while (i < line->length && !is_sort_space(line->text[i])) {
+            while (i < line->length && !tool_ascii_is_blank(line->text[i])) {
                 i += 1U;
             }
 
@@ -629,7 +626,7 @@ static void parse_numeric_key(const char *text, size_t length, SortNumericKey *k
 
     rt_memset(key, 0, sizeof(*key));
 
-    while (index < length && is_sort_space(text[index])) {
+    while (index < length && tool_ascii_is_blank(text[index])) {
         index += 1U;
     }
 
@@ -657,7 +654,7 @@ static void parse_numeric_key(const char *text, size_t length, SortNumericKey *k
         return;
     }
 
-    while (index < length && is_sort_space(text[index])) {
+    while (index < length && tool_ascii_is_blank(text[index])) {
         index += 1U;
     }
     if (index != length) {
@@ -690,7 +687,7 @@ static unsigned long long clamp_multiply_ull(unsigned long long value, unsigned 
 }
 
 static int suffix_scale(char ch) {
-    switch (sort_fold_ascii(ch)) {
+    switch (tool_ascii_tolower(ch)) {
         case 'k': return 1;
         case 'm': return 2;
         case 'g': return 3;
@@ -711,7 +708,7 @@ static void parse_human_key(const char *text, size_t length, SortHumanKey *key) 
 
     rt_memset(key, 0, sizeof(*key));
 
-    while (index < length && is_sort_space(text[index])) {
+    while (index < length && tool_ascii_is_blank(text[index])) {
         index += 1U;
     }
 
@@ -720,7 +717,7 @@ static void parse_human_key(const char *text, size_t length, SortHumanKey *key) 
         index += 1U;
     }
 
-    while (index < length && is_sort_digit(text[index])) {
+    while (index < length && tool_ascii_is_digit(text[index])) {
         have_digit = 1;
         if (value <= (ULLONG_MAX - (unsigned long long)(text[index] - '0')) / 10ULL) {
             value = value * 10ULL + (unsigned long long)(text[index] - '0');
@@ -733,7 +730,7 @@ static void parse_human_key(const char *text, size_t length, SortHumanKey *key) 
     value = clamp_multiply_ull(value, 1000ULL);
     if (index < length && text[index] == '.') {
         index += 1U;
-        while (index < length && is_sort_digit(text[index])) {
+        while (index < length && tool_ascii_is_digit(text[index])) {
             have_digit = 1;
             if (frac_digits < 3U && value != ULLONG_MAX) {
                 unsigned long long add = (unsigned long long)(text[index] - '0') *
@@ -767,7 +764,7 @@ static void parse_human_key(const char *text, size_t length, SortHumanKey *key) 
         }
     }
 
-    while (index < length && is_sort_space(text[index])) {
+    while (index < length && tool_ascii_is_blank(text[index])) {
         index += 1U;
     }
     if (index != length) {
@@ -839,14 +836,14 @@ static int parse_month_value(const char *text, size_t length) {
     size_t index = 0U;
     int i;
 
-    while (index < length && is_sort_space(text[index])) {
+    while (index < length && tool_ascii_is_blank(text[index])) {
         index += 1U;
     }
     if (index + 3U > length) {
         return 0;
     }
     for (i = 0; i < 3; ++i) {
-        folded[i] = sort_fold_ascii(text[index + (size_t)i]);
+        folded[i] = tool_ascii_tolower(text[index + (size_t)i]);
         if (!is_sort_alpha(folded[i])) {
             return 0;
         }
@@ -885,7 +882,7 @@ static int compare_version_spans(const char *left,
 
     while (left_index < left_len || right_index < right_len) {
         if (left_index < left_len && right_index < right_len &&
-            is_sort_digit(left[left_index]) && is_sort_digit(right[right_index])) {
+            tool_ascii_is_digit(left[left_index]) && tool_ascii_is_digit(right[right_index])) {
             size_t left_start = left_index;
             size_t right_start = right_index;
             size_t left_sig;
@@ -894,10 +891,10 @@ static int compare_version_spans(const char *left,
             size_t right_sig_len;
             size_t i;
 
-            while (left_index < left_len && is_sort_digit(left[left_index])) {
+            while (left_index < left_len && tool_ascii_is_digit(left[left_index])) {
                 left_index += 1U;
             }
-            while (right_index < right_len && is_sort_digit(right[right_index])) {
+            while (right_index < right_len && tool_ascii_is_digit(right[right_index])) {
                 right_index += 1U;
             }
 
@@ -932,8 +929,8 @@ static int compare_version_spans(const char *left,
             return 1;
         }
         {
-            unsigned char lhs = (unsigned char)(options->ignore_case ? sort_fold_ascii(left[left_index]) : left[left_index]);
-            unsigned char rhs = (unsigned char)(options->ignore_case ? sort_fold_ascii(right[right_index]) : right[right_index]);
+            unsigned char lhs = (unsigned char)(options->ignore_case ? tool_ascii_tolower(left[left_index]) : left[left_index]);
+            unsigned char rhs = (unsigned char)(options->ignore_case ? tool_ascii_tolower(right[right_index]) : right[right_index]);
             if (lhs != rhs) {
                 return lhs < rhs ? -1 : 1;
             }

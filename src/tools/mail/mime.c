@@ -101,7 +101,6 @@ static void mail_mime_set_encoding(MailMimePart *part, const char *raw, size_t s
     }
 }
 
-#define mail_mime_hex_value tool_hex_value
 
 static int mail_mime_base64_value(char ch) {
     if (ch >= 'A' && ch <= 'Z') return ch - 'A';
@@ -148,8 +147,8 @@ static void mail_mime_decode_qp_range(const char *raw, size_t start, size_t end,
 
     output[0] = '\0';
     while (start < end && used + 1U < output_size) {
-        if (raw[start] == '=' && start + 2U < end && mail_mime_hex_value(raw[start + 1U]) >= 0 && mail_mime_hex_value(raw[start + 2U]) >= 0) {
-            output[used++] = (char)((mail_mime_hex_value(raw[start + 1U]) << 4) | mail_mime_hex_value(raw[start + 2U]));
+        if (raw[start] == '=' && start + 2U < end && tool_hex_value(raw[start + 1U]) >= 0 && tool_hex_value(raw[start + 2U]) >= 0) {
+            output[used++] = (char)((tool_hex_value(raw[start + 1U]) << 4) | tool_hex_value(raw[start + 2U]));
             start += 3U;
         } else if (raw[start] == '=' && start + 1U < end && raw[start + 1U] == '\n') {
             start += 2U;
@@ -238,7 +237,7 @@ static void mail_mime_append_entity(const char *html, size_t *index, char *outpu
             cursor += 1U;
         }
         while (cursor < end) {
-            int digit = hex ? mail_mime_hex_value(html[cursor]) : (html[cursor] >= '0' && html[cursor] <= '9' ? html[cursor] - '0' : -1);
+            int digit = hex ? tool_hex_value(html[cursor]) : (html[cursor] >= '0' && html[cursor] <= '9' ? html[cursor] - '0' : -1);
             if (digit < 0) break;
             value = hex ? value * 16U + (unsigned int)digit : value * 10U + (unsigned int)digit;
             cursor += 1U;

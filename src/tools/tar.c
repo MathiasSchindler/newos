@@ -87,7 +87,6 @@ static int has_suffix(const char *text, const char *suffix) {
     return rt_strcmp(text + text_len - suffix_len, suffix) == 0;
 }
 
-#define is_dash_path tool_path_is_dash
 
 static TarCompression detect_compression(const char *archive_name) {
     if (has_suffix(archive_name, ".tar.gz") || has_suffix(archive_name, ".tgz") || has_suffix(archive_name, ".gz")) {
@@ -123,7 +122,6 @@ static const char *decompressor_name(TarCompression compression) {
     return "";
 }
 
-#define contains_slash tool_path_has_separator
 
 static int path_is_absolute(const char *path) {
     return path != 0 && path[0] == '/';
@@ -135,7 +133,7 @@ static int remember_archive_path(const char *path, char *buffer, size_t buffer_s
     if (path == 0) {
         return -1;
     }
-    if (is_dash_path(path) || path_is_absolute(path)) {
+    if (tool_path_is_dash(path) || path_is_absolute(path)) {
         rt_copy_string(buffer, buffer_size, path);
         return 0;
     }
@@ -172,14 +170,13 @@ static const char *tar_base_name(const char *path) {
     return (base[0] != '\0') ? base : "item";
 }
 
-#define tar_copy_trimmed_path tool_path_copy_trimmed
 
 static int tar_split_header_path(TarHeader *header, const char *stored_name) {
     char normalized[TAR_PATH_CAPACITY];
     size_t len;
     size_t i;
 
-    tar_copy_trimmed_path(normalized, sizeof(normalized), stored_name);
+    tool_path_copy_trimmed(normalized, sizeof(normalized), stored_name);
     len = rt_strlen(normalized);
     if (len == 0) {
         return -1;
@@ -237,10 +234,10 @@ static int tar_path_matches(const char *path, char patterns[][TAR_PATH_CAPACITY]
         return 1;
     }
 
-    tar_copy_trimmed_path(normalized_path, sizeof(normalized_path), path);
+    tool_path_copy_trimmed(normalized_path, sizeof(normalized_path), path);
     for (i = 0; i < pattern_count; ++i) {
         char normalized_pattern[TAR_PATH_CAPACITY];
-        tar_copy_trimmed_path(normalized_pattern, sizeof(normalized_pattern), patterns[i]);
+        tool_path_copy_trimmed(normalized_pattern, sizeof(normalized_pattern), patterns[i]);
         if (tool_wildcard_match(normalized_pattern, normalized_path)) {
             return 1;
         }
@@ -249,7 +246,6 @@ static int tar_path_matches(const char *path, char patterns[][TAR_PATH_CAPACITY]
     return 0;
 }
 
-#define tar_path_is_unsafe tool_path_is_unsafe_relative
 
 static int tar_append_path_component(char *buffer,
                                      size_t buffer_size,
@@ -446,7 +442,7 @@ static int create_temp_file_near_archive(const char *archive_path_name,
                                          int *fd_out) {
     char prefix[TAR_PATH_CAPACITY];
 
-    if (fd_out == 0 || is_dash_path(archive_path_name) ||
+    if (fd_out == 0 || tool_path_is_dash(archive_path_name) ||
         build_temp_prefix(archive_path_name, stem, prefix, sizeof(prefix)) != 0) {
         return -1;
     }
@@ -455,24 +451,23 @@ static int create_temp_file_near_archive(const char *archive_path_name,
     return *fd_out < 0 ? -1 : 0;
 }
 
-#define get_program_dir tool_path_dirname
 
 static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
     char dir[TAR_PATH_CAPACITY];
 
-    if (argv0 == 0 || !contains_slash(argv0)) {
+    if (argv0 == 0 || !tool_path_has_separator(argv0)) {
         rt_copy_string(buffer, buffer_size, tool_name);
         return 0;
     }
 
-    get_program_dir(argv0, dir, sizeof(dir));
+    tool_path_dirname(argv0, dir, sizeof(dir));
     return tool_join_path(dir, tool_name, buffer, buffer_size);
 }
 
 static const char *resolve_helper_argv0_base(const char *argv0, char *buffer, size_t buffer_size) {
     char cwd[TAR_PATH_CAPACITY];
 
-    if (argv0 == 0 || argv0[0] == '\0' || !contains_slash(argv0) || path_is_absolute(argv0)) {
+    if (argv0 == 0 || argv0[0] == '\0' || !tool_path_has_separator(argv0) || path_is_absolute(argv0)) {
         return argv0;
     }
 
@@ -941,8 +936,8 @@ static int extract_archive(int archive_fd,
         }
 
         if (!list_only && !allow_absolute_names &&
-            (tar_path_is_unsafe(stored_path) ||
-             ((typeflag == '1' || typeflag == '2') && link_target[0] != '\0' && tar_path_is_unsafe(link_target)))) {
+            (tool_path_is_unsafe_relative(stored_path) ||
+             ((typeflag == '1' || typeflag == '2') && link_target[0] != '\0' && tool_path_is_unsafe_relative(link_target)))) {
             tool_write_error("tar", "refusing unsafe path in archive: ", stored_path);
             return -1;
         }
@@ -1291,7 +1286,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (is_dash_path(archive_path_name) && compression != TAR_COMPRESS_NONE) {
+        if (tool_path_is_dash(archive_path_name) && compression != TAR_COMPRESS_NONE) {
             rt_write_line(2, "tar: compressed output to stdout is not supported yet");
             return 1;
         }
@@ -1307,7 +1302,7 @@ int main(int argc, char **argv) {
             }
             write_path = plain_archive_path;
             temp_archive_created = 1;
-        } else if (is_dash_path(write_path)) {
+        } else if (tool_path_is_dash(write_path)) {
             archive_fd = 1;
             close_archive_fd = 0;
         } else {
@@ -1330,8 +1325,8 @@ int main(int argc, char **argv) {
 
         rt_memset(zeros, 0, sizeof(zeros));
         for (i = path_start; i < argc; ++i) {
-            if ((!is_dash_path(archive_path_name) && tool_paths_equal(argv[i], archive_path_name)) ||
-                (!is_dash_path(write_path) && tool_paths_equal(argv[i], write_path))) {
+            if ((!tool_path_is_dash(archive_path_name) && tool_paths_equal(argv[i], archive_path_name)) ||
+                (!tool_path_is_dash(write_path) && tool_paths_equal(argv[i], write_path))) {
                 continue;
             }
             if (archive_path(archive_fd, argv[i], argv[i], verbose_mode, exclude_patterns, exclude_count) != 0) {
@@ -1381,7 +1376,7 @@ int main(int argc, char **argv) {
         temp_copy_path[0] = '\0';
         temp_plain_path[0] = '\0';
 
-        if (is_dash_path(archive_path_name) && compression != TAR_COMPRESS_NONE) {
+        if (tool_path_is_dash(archive_path_name) && compression != TAR_COMPRESS_NONE) {
             rt_write_line(2, "tar: compressed input from stdin is not supported yet");
             return 1;
         }
@@ -1390,7 +1385,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (is_dash_path(read_path)) {
+        if (tool_path_is_dash(read_path)) {
             archive_fd = 0;
             close_archive_fd = 0;
         } else {

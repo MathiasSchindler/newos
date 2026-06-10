@@ -13,7 +13,6 @@ typedef struct {
     const char *value;
 } InitEnvSetting;
 
-#define is_stdio_path tool_path_is_dash
 
 static int validate_program_path(const char *path) {
     if (path == 0 || path[0] != '/') {
@@ -94,7 +93,7 @@ static void write_start_message(char *const argv[], const char *console_path, un
     write_command_line(argv);
     if (console_path != 0) {
         rt_write_cstr(2, " on ");
-        rt_write_cstr(2, is_stdio_path(console_path) ? "stdio" : console_path);
+        rt_write_cstr(2, tool_path_is_dash(console_path) ? "stdio" : console_path);
     }
     if (restart_count > 0) {
         rt_write_cstr(2, " (restart ");
@@ -253,8 +252,8 @@ int main(int argc, char **argv) {
         if (platform_spawn_process((char *const *)spawn_argv,
                                    -1,
                                    -1,
-                                   is_stdio_path(console_path) ? 0 : console_path,
-                                   is_stdio_path(console_path) ? 0 : console_path,
+                                   tool_path_is_dash(console_path) ? 0 : console_path,
+                                   tool_path_is_dash(console_path) ? 0 : console_path,
                                    console_path != 0,
                                    &pid) != 0) {
             tool_write_error("init", "failed to execute ", spawn_argv[0]);

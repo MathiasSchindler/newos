@@ -61,7 +61,6 @@ static int parse_count_value(const char *value_text, TailCountStyle *style_out, 
     return 0;
 }
 
-#define is_digit_text tool_text_is_decimal
 
 static int parse_options(int argc, char **argv, TailOptions *options, int *arg_index_out) {
     int arg_index = 1;
@@ -101,7 +100,7 @@ static int parse_options(int argc, char **argv, TailOptions *options, int *arg_i
             continue;
         }
 
-        if (is_digit_text(arg + 1)) {
+        if (tool_text_is_decimal(arg + 1)) {
             options->mode = TAIL_MODE_LINES;
             options->style = TAIL_COUNT_LAST;
             if (tool_parse_uint_arg(arg + 1, &options->count, "tail", "count") != 0) {

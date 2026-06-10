@@ -117,12 +117,9 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
     return 0;
 }
 
-#define imgcheck_read_u32_le tool_read_u32_le
-#define imgcheck_read_u32_be tool_read_u32_be
-#define imgcheck_read_u64_le tool_read_u64_le
 
 static int imgcheck_is_macho64(const unsigned char *data, size_t size) {
-    return size >= 32U && imgcheck_read_u32_le(data) == IMGCHECK_MACHO_MAGIC_64;
+    return size >= 32U && tool_read_u32_le(data) == IMGCHECK_MACHO_MAGIC_64;
 }
 
 static int imgcheck_select_macho_fat_slice(const unsigned char *data, size_t size, const unsigned char **slice_out, size_t *slice_size_out) {
@@ -133,9 +130,9 @@ static int imgcheck_select_macho_fat_slice(const unsigned char *data, size_t siz
     *slice_out = data;
     *slice_size_out = size;
     if (size < 8U) return -1;
-    magic = imgcheck_read_u32_le(data);
+    magic = tool_read_u32_le(data);
     if (magic != IMGCHECK_MACHO_FAT_MAGIC_LE && magic != IMGCHECK_MACHO_FAT_MAGIC_64_LE) return -1;
-    arch_count = imgcheck_read_u32_be(data + 4U);
+    arch_count = tool_read_u32_be(data + 4U);
     if (arch_count > 32U) return -1;
     for (index = 0U; index < arch_count; ++index) {
         unsigned int entry_size = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
@@ -144,9 +141,9 @@ static int imgcheck_select_macho_fat_slice(const unsigned char *data, size_t siz
         unsigned long long offset;
         unsigned long long slice_size;
         if (entry + entry_size > size) return -1;
-        cputype = imgcheck_read_u32_be(data + entry + 0U);
-        offset = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)imgcheck_read_u32_be(data + entry + 8U) << 32U) | (unsigned long long)imgcheck_read_u32_be(data + entry + 12U)) : (unsigned long long)imgcheck_read_u32_be(data + entry + 8U);
-        slice_size = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)imgcheck_read_u32_be(data + entry + 16U) << 32U) | (unsigned long long)imgcheck_read_u32_be(data + entry + 20U)) : (unsigned long long)imgcheck_read_u32_be(data + entry + 12U);
+        cputype = tool_read_u32_be(data + entry + 0U);
+        offset = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(data + entry + 8U) << 32U) | (unsigned long long)tool_read_u32_be(data + entry + 12U)) : (unsigned long long)tool_read_u32_be(data + entry + 8U);
+        slice_size = magic == IMGCHECK_MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(data + entry + 16U) << 32U) | (unsigned long long)tool_read_u32_be(data + entry + 20U)) : (unsigned long long)tool_read_u32_be(data + entry + 12U);
         if (offset > (unsigned long long)size || slice_size > (unsigned long long)size || offset + slice_size > (unsigned long long)size) return -1;
         if (cputype == IMGCHECK_MACHO_CPU_TYPE_ARM64 || index == 0U) {
             *slice_out = data + offset;
@@ -201,9 +198,9 @@ static int imgcheck_verify_macho_code_signature(const unsigned char *data, size_
     if ((unsigned long long)dataoff + (unsigned long long)datasize > (unsigned long long)size || datasize < 12U) {
         return -1;
     }
-    super_magic = imgcheck_read_u32_be(data + dataoff + 0U);
-    super_length = imgcheck_read_u32_be(data + dataoff + 4U);
-    super_count = imgcheck_read_u32_be(data + dataoff + 8U);
+    super_magic = tool_read_u32_be(data + dataoff + 0U);
+    super_length = tool_read_u32_be(data + dataoff + 4U);
+    super_count = tool_read_u32_be(data + dataoff + 8U);
     if (super_magic != IMGCHECK_MACHO_CSMAGIC_EMBEDDED_SIGNATURE || super_length > datasize || super_length < 12U) {
         return -1;
     }
@@ -212,19 +209,19 @@ static int imgcheck_verify_macho_code_signature(const unsigned char *data, size_
         unsigned int slot_type;
         unsigned int blob_offset;
         if (entry_offset + 8U > super_length) return -1;
-        slot_type = imgcheck_read_u32_be(data + dataoff + entry_offset + 0U);
-        blob_offset = imgcheck_read_u32_be(data + dataoff + entry_offset + 4U);
+        slot_type = tool_read_u32_be(data + dataoff + entry_offset + 0U);
+        blob_offset = tool_read_u32_be(data + dataoff + entry_offset + 4U);
         if (slot_type == IMGCHECK_MACHO_CSSLOT_CODEDIRECTORY) {
             code_directory_offset = blob_offset;
             break;
         }
     }
     if (code_directory_offset == 0U || code_directory_offset + 44U > super_length) return -1;
-    if (imgcheck_read_u32_be(data + dataoff + code_directory_offset) != IMGCHECK_MACHO_CSMAGIC_CODEDIRECTORY) return -1;
-    code_directory_length = imgcheck_read_u32_be(data + dataoff + code_directory_offset + 4U);
-    hash_offset = imgcheck_read_u32_be(data + dataoff + code_directory_offset + 16U);
-    n_code_slots = imgcheck_read_u32_be(data + dataoff + code_directory_offset + 28U);
-    code_limit = imgcheck_read_u32_be(data + dataoff + code_directory_offset + 32U);
+    if (tool_read_u32_be(data + dataoff + code_directory_offset) != IMGCHECK_MACHO_CSMAGIC_CODEDIRECTORY) return -1;
+    code_directory_length = tool_read_u32_be(data + dataoff + code_directory_offset + 4U);
+    hash_offset = tool_read_u32_be(data + dataoff + code_directory_offset + 16U);
+    n_code_slots = tool_read_u32_be(data + dataoff + code_directory_offset + 28U);
+    code_limit = tool_read_u32_be(data + dataoff + code_directory_offset + 32U);
     hash_size = (unsigned int)data[dataoff + code_directory_offset + 36U];
     hash_type = (unsigned int)data[dataoff + code_directory_offset + 37U];
     page_size_log2 = (unsigned int)data[dataoff + code_directory_offset + 39U];
@@ -285,10 +282,10 @@ static void imgcheck_validate_macho(const unsigned char *data, size_t size, cons
         imgcheck_macho_fail(validation, "not a Mach-O 64-bit little-endian file", 0U);
         return;
     }
-    filetype = imgcheck_read_u32_le(data + 12);
-    ncmds = imgcheck_read_u32_le(data + 16);
-    sizeofcmds = imgcheck_read_u32_le(data + 20);
-    flags = imgcheck_read_u32_le(data + 24);
+    filetype = tool_read_u32_le(data + 12);
+    ncmds = tool_read_u32_le(data + 16);
+    sizeofcmds = tool_read_u32_le(data + 20);
+    flags = tool_read_u32_le(data + 24);
     if (ncmds > 1024U || 32ULL + (unsigned long long)sizeofcmds > (unsigned long long)size) {
         imgcheck_macho_fail(validation, "invalid Mach-O load-command table", 32U);
         return;
@@ -302,18 +299,18 @@ static void imgcheck_validate_macho(const unsigned char *data, size_t size, cons
             imgcheck_macho_fail(validation, "truncated Mach-O load command", (size_t)command_offset);
             return;
         }
-        command = imgcheck_read_u32_le(data + command_offset);
-        command_size = imgcheck_read_u32_le(data + command_offset + 4ULL);
+        command = tool_read_u32_le(data + command_offset);
+        command_size = tool_read_u32_le(data + command_offset + 4ULL);
         if (command_size < 8U || command_offset + (unsigned long long)command_size > (unsigned long long)size) {
             imgcheck_macho_fail(validation, "invalid Mach-O load-command size", (size_t)command_offset);
             return;
         }
         if (command == IMGCHECK_MACHO_LC_SEGMENT_64 && command_size >= 72U) {
-            unsigned long long vmaddr = imgcheck_read_u64_le(data + command_offset + 24ULL);
-            unsigned long long vmsize = imgcheck_read_u64_le(data + command_offset + 32ULL);
-            unsigned long long fileoff = imgcheck_read_u64_le(data + command_offset + 40ULL);
-            unsigned long long filesize = imgcheck_read_u64_le(data + command_offset + 48ULL);
-            unsigned int nsects = imgcheck_read_u32_le(data + command_offset + 64ULL);
+            unsigned long long vmaddr = tool_read_u64_le(data + command_offset + 24ULL);
+            unsigned long long vmsize = tool_read_u64_le(data + command_offset + 32ULL);
+            unsigned long long fileoff = tool_read_u64_le(data + command_offset + 40ULL);
+            unsigned long long filesize = tool_read_u64_le(data + command_offset + 48ULL);
+            unsigned int nsects = tool_read_u32_le(data + command_offset + 64ULL);
             unsigned int section_index;
 
             if (fileoff + filesize < fileoff || fileoff + filesize > (unsigned long long)size) {
@@ -332,9 +329,9 @@ static void imgcheck_validate_macho(const unsigned char *data, size_t size, cons
             }
             for (section_index = 0U; section_index < nsects; ++section_index) {
                 unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
-                unsigned long long section_size = imgcheck_read_u64_le(data + section_offset + 40ULL);
-                unsigned int section_fileoff = imgcheck_read_u32_le(data + section_offset + 48ULL);
-                unsigned int section_flags = imgcheck_read_u32_le(data + section_offset + 64ULL);
+                unsigned long long section_size = tool_read_u64_le(data + section_offset + 40ULL);
+                unsigned int section_fileoff = tool_read_u32_le(data + section_offset + 48ULL);
+                unsigned int section_flags = tool_read_u32_le(data + section_offset + 64ULL);
                 if (!imgcheck_macho_section_is_zerofill(section_flags) && section_size != 0ULL &&
                     ((unsigned long long)section_fileoff + section_size < (unsigned long long)section_fileoff ||
                      (unsigned long long)section_fileoff + section_size > (unsigned long long)size)) {
@@ -344,10 +341,10 @@ static void imgcheck_validate_macho(const unsigned char *data, size_t size, cons
             }
         } else if (command == IMGCHECK_MACHO_LC_MAIN && command_size >= 24U) {
             has_main = 1;
-            entryoff = imgcheck_read_u64_le(data + command_offset + 8ULL);
+            entryoff = tool_read_u64_le(data + command_offset + 8ULL);
         } else if (command == IMGCHECK_MACHO_LC_CODE_SIGNATURE && command_size >= 16U) {
-            unsigned int dataoff = imgcheck_read_u32_le(data + command_offset + 8ULL);
-            unsigned int datasize = imgcheck_read_u32_le(data + command_offset + 12ULL);
+            unsigned int dataoff = tool_read_u32_le(data + command_offset + 8ULL);
+            unsigned int datasize = tool_read_u32_le(data + command_offset + 12ULL);
             has_code_signature = 1;
             validation->code_signature_present = 1;
             if ((unsigned long long)dataoff + (unsigned long long)datasize > (unsigned long long)size) {

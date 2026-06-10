@@ -33,14 +33,12 @@ typedef struct {
     char header[PS_HEADER_CAPACITY];
 } PsColumn;
 
-#define ascii_fold_char tool_ascii_tolower
-#define string_equal_ignore_case tool_str_equal_ignore_case_ascii
 
 static int string_has_prefix_ignore_case(const char *text, const char *prefix) {
     size_t i = 0;
 
     while (prefix[i] != '\0') {
-        if (text[i] == '\0' || ascii_fold_char(text[i]) != ascii_fold_char(prefix[i])) {
+        if (text[i] == '\0' || tool_ascii_tolower(text[i]) != tool_ascii_tolower(prefix[i])) {
             return 0;
         }
         i += 1;
@@ -324,7 +322,7 @@ static int parse_state_filters(const char *spec,
             return -1;
         }
         for (j = 0; token[j] != '\0'; ++j) {
-            token[j] = ascii_fold_char(token[j]);
+            token[j] = tool_ascii_tolower(token[j]);
         }
         rt_copy_string(states_out[count++], sizeof(states_out[0]), token);
 
@@ -368,7 +366,7 @@ static int user_is_selected(const PlatformProcessEntry *entry,
             if (entry->uid == uids[i]) {
                 return 1;
             }
-        } else if (string_equal_ignore_case(entry->user, names[i])) {
+        } else if (tool_str_equal_ignore_case_ascii(entry->user, names[i])) {
             return 1;
         }
     }

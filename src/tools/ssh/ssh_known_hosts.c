@@ -8,7 +8,6 @@
 #define SSH_FILE_TYPE_MASK 0170000U
 #define SSH_FILE_TYPE_REGULAR 0100000U
 
-#define ssh_local_is_space tool_ascii_is_token_space
 
 static int ssh_copy_text(char *dst, size_t dst_size, const char *src, size_t src_length) {
     size_t i;
@@ -183,7 +182,7 @@ static int ssh_split_known_hosts_line(char *line, char **hosts_out, char **algo_
         return -1;
     }
 
-    while (*cursor != '\0' && ssh_local_is_space(*cursor)) {
+    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
     if (*cursor == '\0' || *cursor == '#') {
@@ -191,7 +190,7 @@ static int ssh_split_known_hosts_line(char *line, char **hosts_out, char **algo_
     }
 
     start = cursor;
-    while (*cursor != '\0' && !ssh_local_is_space(*cursor)) {
+    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
     if (*cursor == '\0') {
@@ -200,14 +199,14 @@ static int ssh_split_known_hosts_line(char *line, char **hosts_out, char **algo_
     *cursor++ = '\0';
     *hosts_out = start;
 
-    while (*cursor != '\0' && ssh_local_is_space(*cursor)) {
+    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
     if (*cursor == '\0') {
         return -1;
     }
     start = cursor;
-    while (*cursor != '\0' && !ssh_local_is_space(*cursor)) {
+    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
     if (*cursor == '\0') {
@@ -216,14 +215,14 @@ static int ssh_split_known_hosts_line(char *line, char **hosts_out, char **algo_
     *cursor++ = '\0';
     *algo_out = start;
 
-    while (*cursor != '\0' && ssh_local_is_space(*cursor)) {
+    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
     if (*cursor == '\0') {
         return -1;
     }
     start = cursor;
-    while (*cursor != '\0' && !ssh_local_is_space(*cursor)) {
+    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
     *cursor = '\0';

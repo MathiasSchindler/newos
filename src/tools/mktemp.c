@@ -6,7 +6,6 @@
 
 #define MKTEMP_PATH_CAPACITY 1024
 
-#define contains_slash tool_path_has_separator
 
 static int path_exists(const char *path) {
     PlatformDirEntry entry;
@@ -88,7 +87,7 @@ static int resolve_template_path(const char *directory, const char *templ, char 
         templ = local_template;
     }
 
-    if (contains_slash(templ)) {
+    if (tool_path_has_separator(templ)) {
         if (rt_strlen(templ) + 1 > buffer_size) {
             return -1;
         }

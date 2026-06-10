@@ -22,21 +22,18 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
     return 0;
 }
 
-#define contains_slash tool_path_has_separator
 
-#define is_dash_path tool_path_is_dash
 
-#define get_program_dir tool_path_dirname
 
 static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
     char dir[GZIP_PATH_CAPACITY];
 
-    if (argv0 == 0 || !contains_slash(argv0)) {
+    if (argv0 == 0 || !tool_path_has_separator(argv0)) {
         rt_copy_string(buffer, buffer_size, tool_name);
         return 0;
     }
 
-    get_program_dir(argv0, dir, sizeof(dir));
+    tool_path_dirname(argv0, dir, sizeof(dir));
     return tool_join_path(dir, tool_name, buffer, buffer_size);
 }
 
@@ -136,7 +133,7 @@ static int process_path(const char *input_path, int to_stdout, int force_overwri
         return 1;
     }
 
-    if (to_stdout || input_path == 0 || is_dash_path(input_path)) {
+    if (to_stdout || input_path == 0 || tool_path_is_dash(input_path)) {
         output_fd = 1;
     } else {
         if (build_output_path(input_path, output_path, sizeof(output_path)) != 0) {
@@ -166,7 +163,7 @@ static int process_path(const char *input_path, int to_stdout, int force_overwri
     }
     if (status != 0 && have_output_path) {
         (void)platform_remove_file(output_path);
-    } else if (status == 0 && have_output_path && !keep_input && input_path != 0 && !is_dash_path(input_path)) {
+    } else if (status == 0 && have_output_path && !keep_input && input_path != 0 && !tool_path_is_dash(input_path)) {
         (void)platform_remove_file(input_path);
     }
     return status;

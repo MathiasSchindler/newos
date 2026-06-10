@@ -149,7 +149,6 @@ static void add_field(AwkRecord *record, const char *start, size_t length) {
     record->nf += 1;
 }
 
-#define awk_unicode_space_at tool_unicode_space_at
 
 static void split_fields_whitespace(AwkRecord *record, const char *line) {
     size_t i = 0;
@@ -160,7 +159,7 @@ static void split_fields_whitespace(AwkRecord *record, const char *line) {
         size_t length = 0;
         size_t advance = 0U;
 
-        while (line[i] != '\0' && awk_unicode_space_at(line, line_length, i, &advance)) {
+        while (line[i] != '\0' && tool_unicode_space_at(line, line_length, i, &advance)) {
             i += advance;
         }
         if (line[i] == '\0') {
@@ -168,7 +167,7 @@ static void split_fields_whitespace(AwkRecord *record, const char *line) {
         }
 
         start = i;
-        while (line[i] != '\0' && !awk_unicode_space_at(line, line_length, i, &advance)) {
+        while (line[i] != '\0' && !tool_unicode_space_at(line, line_length, i, &advance)) {
             i += advance;
             length += advance;
         }

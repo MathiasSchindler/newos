@@ -103,7 +103,6 @@ static size_t join_decode_codepoint(const char *text, size_t length, size_t star
     return index - start;
 }
 
-#define join_unicode_space_at tool_unicode_space_at
 
 static int compare_keys(const char *left, const char *right, int ignore_case) {
     size_t left_index = 0U;
@@ -181,7 +180,7 @@ static int extract_field(const char *line, unsigned long long field_no, char del
         while (line[i] != '\0') {
             size_t advance = 0U;
 
-            while (line[i] != '\0' && join_unicode_space_at(line, line_length, i, &advance)) {
+            while (line[i] != '\0' && tool_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
             }
 
@@ -190,7 +189,7 @@ static int extract_field(const char *line, unsigned long long field_no, char del
             }
 
             if (current_field == field_no) {
-                while (line[i] != '\0' && !join_unicode_space_at(line, line_length, i, &advance)) {
+                while (line[i] != '\0' && !tool_unicode_space_at(line, line_length, i, &advance)) {
                     if (out_len + advance < out_size) {
                         size_t j;
                         for (j = 0; j < advance; ++j) {
@@ -203,7 +202,7 @@ static int extract_field(const char *line, unsigned long long field_no, char del
                 return 0;
             }
 
-            while (line[i] != '\0' && !join_unicode_space_at(line, line_length, i, &advance)) {
+            while (line[i] != '\0' && !tool_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
             }
             current_field += 1ULL;
@@ -273,7 +272,7 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
             size_t len = 0;
             size_t advance = 0U;
 
-            while (line[i] != '\0' && join_unicode_space_at(line, line_length, i, &advance)) {
+            while (line[i] != '\0' && tool_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
             }
 
@@ -282,7 +281,7 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
             }
 
             start = i;
-            while (line[i] != '\0' && !join_unicode_space_at(line, line_length, i, &advance)) {
+            while (line[i] != '\0' && !tool_unicode_space_at(line, line_length, i, &advance)) {
                 i += advance;
                 len += advance;
             }

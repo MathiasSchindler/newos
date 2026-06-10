@@ -53,7 +53,6 @@ static int diff_is_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\f' || ch == '\v';
 }
 
-#define diff_ascii_tolower tool_ascii_tolower
 
 static void normalize_compare_line(char *line, const DiffOptions *options) {
     char normalized[DIFF_MAX_LINE_LENGTH];
@@ -82,7 +81,7 @@ static void normalize_compare_line(char *line, const DiffOptions *options) {
         }
 
         if (options->ignore_case) {
-            ch = diff_ascii_tolower(ch);
+            ch = tool_ascii_tolower(ch);
         }
         normalized[out_pos++] = ch;
     }

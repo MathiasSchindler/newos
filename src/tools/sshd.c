@@ -76,7 +76,6 @@ static int sshd_copy_arg(char *dst, size_t dst_size, const char *src, const char
     return 0;
 }
 
-#define sshd_hex_nibble tool_hex_value
 
 static int sshd_parse_seed_text(const char *text, unsigned char seed[32]) {
     size_t len = rt_strlen(text);
@@ -86,8 +85,8 @@ static int sshd_parse_seed_text(const char *text, unsigned char seed[32]) {
         return -1;
     }
     for (i = 0U; i < 32U; ++i) {
-        int hi = sshd_hex_nibble(text[i * 2U]);
-        int lo = sshd_hex_nibble(text[i * 2U + 1U]);
+        int hi = tool_hex_value(text[i * 2U]);
+        int lo = tool_hex_value(text[i * 2U + 1U]);
         if (hi < 0 || lo < 0) {
             return -1;
         }

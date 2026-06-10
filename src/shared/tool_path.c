@@ -499,6 +499,26 @@ int tool_decode_mount_field(const char *text, size_t text_length, char *buffer, 
     return 0;
 }
 
+int tool_next_mount_field(const char *line, size_t line_length, size_t *index_io, char *buffer, size_t buffer_size) {
+    size_t start;
+
+    if (line == 0 || index_io == 0) {
+        return -1;
+    }
+
+    while (*index_io < line_length && (line[*index_io] == ' ' || line[*index_io] == '\t')) {
+        *index_io += 1U;
+    }
+    start = *index_io;
+    while (*index_io < line_length && line[*index_io] != ' ' && line[*index_io] != '\t') {
+        *index_io += 1U;
+    }
+    if (start == *index_io) {
+        return -1;
+    }
+    return tool_decode_mount_field(line + start, *index_io - start, buffer, buffer_size);
+}
+
 int tool_path_is_unsafe_relative(const char *path) {
     size_t index = 0U;
 

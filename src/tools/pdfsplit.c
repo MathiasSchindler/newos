@@ -14,7 +14,6 @@ static void print_usage(void) {
     tool_write_usage("pdfsplit", "--every N -o PREFIX PDF | --pages A-B [-o OUTPUT] PDF");
 }
 
-#define read_all_input tool_read_all_input
 
 static int write_all_output(const char *path, const unsigned char *data, size_t size) {
     int fd = platform_open_write(path, 0644U);
@@ -154,7 +153,7 @@ int main(int argc, char **argv) {
         print_usage();
         return 2;
     }
-    if (read_all_input(input_path, &data, &size) != 0) {
+    if (tool_read_all_input(input_path, &data, &size) != 0) {
         tool_write_error("pdfsplit", "read failed: ", input_path);
         return 1;
     }

@@ -9,7 +9,6 @@ static int show_udp = 0;
 static int show_listen = 0;
 static int ss_json;
 
-#define streq tool_str_equal
 
 static void print_usage(void) {
     tool_write_usage("ss", "[-t] [-u] [-l] [-a] [--json]");
@@ -49,18 +48,18 @@ int main(int argc, char **argv) {
     int argi;
 
     for (argi = 1; argi < argc; ++argi) {
-        if (streq(argv[argi], "-t") || streq(argv[argi], "--tcp")) {
+        if (tool_str_equal(argv[argi], "-t") || tool_str_equal(argv[argi], "--tcp")) {
             show_tcp = 1;
-        } else if (streq(argv[argi], "-u") || streq(argv[argi], "--udp")) {
+        } else if (tool_str_equal(argv[argi], "-u") || tool_str_equal(argv[argi], "--udp")) {
             show_udp = 1;
-        } else if (streq(argv[argi], "-l") || streq(argv[argi], "--listening")) {
+        } else if (tool_str_equal(argv[argi], "-l") || tool_str_equal(argv[argi], "--listening")) {
             show_listen = 1;
-        } else if (streq(argv[argi], "-a") || streq(argv[argi], "--all")) {
+        } else if (tool_str_equal(argv[argi], "-a") || tool_str_equal(argv[argi], "--all")) {
             show_listen = 0;
-        } else if (streq(argv[argi], "--json")) {
+        } else if (tool_str_equal(argv[argi], "--json")) {
             ss_json = 1;
             tool_json_set_enabled(1);
-        } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        } else if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_usage();
             return 0;
         } else {

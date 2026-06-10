@@ -5,7 +5,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define mail_starts_with tool_starts_with
 
 static int mail_ascii_lower(int ch) {
     if (ch >= 'A' && ch <= 'Z') {
@@ -25,7 +24,6 @@ static int mail_starts_with_ci(const char *text, const char *prefix) {
     return 1;
 }
 
-#define mail_hex_value tool_hex_value
 
 static void mail_decode_rfc2047_q(char *text) {
     char decoded[MAIL_TEXT_CAPACITY];
@@ -41,8 +39,8 @@ static void mail_decode_rfc2047_q(char *text) {
                 if (text[word] == '_') {
                     decoded[output++] = ' ';
                     word += 1U;
-                } else if (text[word] == '=' && mail_hex_value(text[word + 1U]) >= 0 && mail_hex_value(text[word + 2U]) >= 0) {
-                    decoded[output++] = (char)((mail_hex_value(text[word + 1U]) << 4) | mail_hex_value(text[word + 2U]));
+                } else if (text[word] == '=' && tool_hex_value(text[word + 1U]) >= 0 && tool_hex_value(text[word + 2U]) >= 0) {
+                    decoded[output++] = (char)((tool_hex_value(text[word + 1U]) << 4) | tool_hex_value(text[word + 2U]));
                     word += 3U;
                 } else {
                     decoded[output++] = text[word++];
@@ -70,8 +68,8 @@ static void mail_decode_quoted_printable_line(char *text, size_t text_size) {
     size_t output = 0U;
 
     while (text[input] != '\0' && output + 1U < sizeof(decoded)) {
-        if (text[input] == '=' && mail_hex_value(text[input + 1U]) >= 0 && mail_hex_value(text[input + 2U]) >= 0) {
-            decoded[output++] = (char)((mail_hex_value(text[input + 1U]) << 4) | mail_hex_value(text[input + 2U]));
+        if (text[input] == '=' && tool_hex_value(text[input + 1U]) >= 0 && tool_hex_value(text[input + 2U]) >= 0) {
+            decoded[output++] = (char)((tool_hex_value(text[input + 1U]) << 4) | tool_hex_value(text[input + 2U]));
             input += 3U;
         } else if (text[input] == '=' && text[input + 1U] == '\0') {
             break;
@@ -120,10 +118,10 @@ static void mail_append_body_line(MailMessage *message, const char *line) {
 }
 
 void mail_message_capture_line(MailMessage *message, const char *line) {
-    if (message == 0 || line == 0 || line[0] == ')' || mail_starts_with(line, "a004 ")) {
+    if (message == 0 || line == 0 || line[0] == ')' || tool_starts_with(line, "a004 ")) {
         return;
     }
-    if (mail_starts_with(line, " BODY[TEXT]")) {
+    if (tool_starts_with(line, " BODY[TEXT]")) {
         message->body_started = 1;
         return;
     }
@@ -131,7 +129,7 @@ void mail_message_capture_line(MailMessage *message, const char *line) {
         mail_append_body_line(message, line);
         return;
     }
-    if (line[0] == '*' || mail_starts_with(line, " BODY[")) {
+    if (line[0] == '*' || tool_starts_with(line, " BODY[")) {
         return;
     }
     if (line[0] == '\0') {
@@ -142,7 +140,7 @@ void mail_message_capture_line(MailMessage *message, const char *line) {
         while (*folded != '\0' && rt_is_space(*folded)) {
             folded += 1;
         }
-        if (mail_starts_with(folded, "BODY[") || mail_starts_with(folded, "FLAGS ")) {
+        if (tool_starts_with(folded, "BODY[") || tool_starts_with(folded, "FLAGS ")) {
             return;
         }
         while (*line != '\0' && rt_is_space(*line)) {
@@ -170,8 +168,8 @@ void mail_message_capture_line(MailMessage *message, const char *line) {
                !mail_starts_with_ci(line, "Message-ID:") &&
                !mail_starts_with_ci(line, "Content-") &&
                !mail_starts_with_ci(line, "MIME-") &&
-               !mail_starts_with(line, " BODY[") &&
-               !mail_starts_with(line, "--") &&
+               !tool_starts_with(line, " BODY[") &&
+               !tool_starts_with(line, "--") &&
                message->preview[0] == '\0') {
         rt_copy_string(message->preview, MAIL_PREVIEW_CAPACITY, line);
         mail_decode_quoted_printable_line(message->preview, MAIL_PREVIEW_CAPACITY);

@@ -14,7 +14,6 @@ static void print_usage(void) {
     tool_write_usage("pdfjoin", "-o OUTPUT PDF...");
 }
 
-#define read_all_input tool_read_all_input
 
 static int write_all_output(const char *path, const unsigned char *data, size_t size) {
     int fd = platform_open_write(path, 0644U);
@@ -91,7 +90,7 @@ int main(int argc, char **argv) {
         PdfJoinInput *input = &inputs[index];
 
         input->path = argv[first_input + index];
-        if (read_all_input(input->path, &input->data, &input->size) != 0) {
+        if (tool_read_all_input(input->path, &input->data, &input->size) != 0) {
             tool_write_error("pdfjoin", "read failed: ", input->path);
             status = 1;
             break;

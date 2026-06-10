@@ -7,7 +7,6 @@
 #define IP_MAX_ADDRESSES 512U
 #define IP_MAX_ROUTES 256U
 
-#define streq tool_str_equal
 
 static int contains_char(const char *text, char ch) {
     size_t i = 0U;
@@ -22,7 +21,7 @@ static int contains_char(const char *text, char ch) {
 }
 
 static int is_object_name(const char *text, const char *long_name, const char *medium_name, const char *short_name) {
-    return streq(text, long_name) || streq(text, medium_name) || streq(text, short_name);
+    return tool_str_equal(text, long_name) || tool_str_equal(text, medium_name) || tool_str_equal(text, short_name);
 }
 
 static void print_help(const char *program_name) {
@@ -331,9 +330,9 @@ static int route_matches_filter(const PlatformRouteEntry *route, const char *fil
         return 1;
     }
     if (route->is_default) {
-        return streq(filter, "default");
+        return tool_str_equal(filter, "default");
     }
-    if (streq(filter, route->destination)) {
+    if (tool_str_equal(filter, route->destination)) {
         return 1;
     }
 
@@ -345,7 +344,7 @@ static int route_matches_filter(const PlatformRouteEntry *route, const char *fil
             return 0;
         }
     }
-    return streq(filter, destination);
+    return tool_str_equal(filter, destination);
 }
 
 static int link_exists(const char *dev_name) {
@@ -469,7 +468,7 @@ static int parse_optional_dev_name(int argc, char **argv, int *argi_in_out, cons
     if (argi >= argc) {
         return 0;
     }
-    if (streq(argv[argi], "dev")) {
+    if (tool_str_equal(argv[argi], "dev")) {
         if (argi + 1 >= argc) {
             tool_write_error("ip", "missing device name after dev in ", context);
             return 1;
@@ -494,7 +493,7 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
     }
 
     command = argv[argi];
-    if (streq(command, "show") || streq(command, "list")) {
+    if (tool_str_equal(command, "show") || tool_str_equal(command, "list")) {
         argi += 1;
         if (argi < argc) {
             if (parse_optional_dev_name(argc, argv, &argi, &dev_name, "address show") != 0) {
@@ -508,7 +507,7 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
         return show_addresses(dev_name, family_filter, brief_mode);
     }
 
-    if (streq(command, "flush")) {
+    if (tool_str_equal(command, "flush")) {
         argi += 1;
         if (argi < argc && parse_optional_dev_name(argc, argv, &argi, &dev_name, "address flush") != 0) {
             return 1;
@@ -520,12 +519,12 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
         return flush_addresses(dev_name, family_filter);
     }
 
-    if (!(streq(command, "add") || streq(command, "replace") || streq(command, "del") || streq(command, "delete"))) {
+    if (!(tool_str_equal(command, "add") || tool_str_equal(command, "replace") || tool_str_equal(command, "del") || tool_str_equal(command, "delete"))) {
         tool_write_error("ip", "unknown address action: ", command);
         return 1;
     }
 
-    add = !(streq(command, "del") || streq(command, "delete"));
+    add = !(tool_str_equal(command, "del") || tool_str_equal(command, "delete"));
     argi += 1;
     if (argi >= argc) {
         print_help(argv[0]);
@@ -534,7 +533,7 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
     cidr = argv[argi++];
 
     while (argi < argc) {
-        if (streq(argv[argi], "dev") && argi + 1 < argc) {
+        if (tool_str_equal(argv[argi], "dev") && argi + 1 < argc) {
             dev_name = argv[argi + 1];
             argi += 2;
         } else {
@@ -570,7 +569,7 @@ static int handle_link_command(int argc, char **argv, int argi, int brief_mode) 
     }
 
     command = argv[argi];
-    if (streq(command, "show") || streq(command, "list")) {
+    if (tool_str_equal(command, "show") || tool_str_equal(command, "list")) {
         argi += 1;
         if (argi < argc) {
             if (parse_optional_dev_name(argc, argv, &argi, &dev_name, "link show") != 0) {
@@ -584,23 +583,23 @@ static int handle_link_command(int argc, char **argv, int argi, int brief_mode) 
         return brief_mode ? show_links_brief(dev_name) : show_links(dev_name);
     }
 
-    if (!streq(command, "set")) {
+    if (!tool_str_equal(command, "set")) {
         tool_write_error("ip", "unknown link action: ", command);
         return 1;
     }
     argi += 1;
 
     while (argi < argc) {
-        if (streq(argv[argi], "dev") && argi + 1 < argc) {
+        if (tool_str_equal(argv[argi], "dev") && argi + 1 < argc) {
             dev_name = argv[argi + 1];
             argi += 2;
-        } else if (streq(argv[argi], "up")) {
+        } else if (tool_str_equal(argv[argi], "up")) {
             want_up = 1;
             argi += 1;
-        } else if (streq(argv[argi], "down")) {
+        } else if (tool_str_equal(argv[argi], "down")) {
             want_up = 0;
             argi += 1;
-        } else if (streq(argv[argi], "mtu") && argi + 1 < argc) {
+        } else if (tool_str_equal(argv[argi], "mtu") && argi + 1 < argc) {
             if (tool_parse_uint_arg(argv[argi + 1], &mtu_value, "ip", "mtu") != 0 ||
                 mtu_value == 0ULL || mtu_value > 65535ULL) {
                 return 1;
@@ -641,14 +640,14 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
     }
 
     command = argv[argi];
-    if (streq(command, "show") || streq(command, "list")) {
+    if (tool_str_equal(command, "show") || tool_str_equal(command, "list")) {
         argi += 1;
         while (argi < argc) {
-            if (streq(argv[argi], "dev") && argi + 1 < argc) {
+            if (tool_str_equal(argv[argi], "dev") && argi + 1 < argc) {
                 dev_name = argv[argi + 1];
                 argi += 2;
             } else if (route_filter == 0 &&
-                       (streq(argv[argi], "default") ||
+                       (tool_str_equal(argv[argi], "default") ||
                         contains_char(argv[argi], '/') ||
                         contains_char(argv[argi], '.') ||
                         contains_char(argv[argi], ':'))) {
@@ -665,12 +664,12 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
         return show_routes(dev_name, family_filter, route_filter);
     }
 
-    if (!(streq(command, "add") || streq(command, "del") || streq(command, "delete"))) {
+    if (!(tool_str_equal(command, "add") || tool_str_equal(command, "del") || tool_str_equal(command, "delete"))) {
         tool_write_error("ip", "unknown route action: ", command);
         return 1;
     }
 
-    add = !(streq(command, "del") || streq(command, "delete"));
+    add = !(tool_str_equal(command, "del") || tool_str_equal(command, "delete"));
     argi += 1;
     if (argi >= argc) {
         print_help(argv[0]);
@@ -679,10 +678,10 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
     destination = argv[argi++];
 
     while (argi < argc) {
-        if (streq(argv[argi], "via") && argi + 1 < argc) {
+        if (tool_str_equal(argv[argi], "via") && argi + 1 < argc) {
             gateway = argv[argi + 1];
             argi += 2;
-        } else if (streq(argv[argi], "dev") && argi + 1 < argc) {
+        } else if (tool_str_equal(argv[argi], "dev") && argi + 1 < argc) {
             dev_name = argv[argi + 1];
             argi += 2;
         } else {
@@ -710,14 +709,14 @@ int main(int argc, char **argv) {
     int brief_mode = 0;
 
     while (argi < argc && argv[argi][0] == '-') {
-        if (streq(argv[argi], "-4")) {
+        if (tool_str_equal(argv[argi], "-4")) {
             family_filter = PLATFORM_NETWORK_FAMILY_IPV4;
-        } else if (streq(argv[argi], "-6")) {
+        } else if (tool_str_equal(argv[argi], "-6")) {
             family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
-        } else if (streq(argv[argi], "-br") || streq(argv[argi], "-brief") ||
-                   streq(argv[argi], "-o") || streq(argv[argi], "--oneline")) {
+        } else if (tool_str_equal(argv[argi], "-br") || tool_str_equal(argv[argi], "-brief") ||
+                   tool_str_equal(argv[argi], "-o") || tool_str_equal(argv[argi], "--oneline")) {
             brief_mode = 1;
-        } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        } else if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
         } else {

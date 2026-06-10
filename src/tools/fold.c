@@ -20,7 +20,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-bcs] [-w WIDTH] [file ...]");
 }
 
-#define is_digit_text tool_text_is_decimal
 
 static int flush_prefix(const char *buffer, size_t count) {
     if (count == 0U) {
@@ -249,7 +248,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 1;
-        } else if (is_digit_text(argv[argi] + 1)) {
+        } else if (tool_text_is_decimal(argv[argi] + 1)) {
             if (tool_parse_uint_arg(argv[argi] + 1, &options.width, "fold", "width") != 0 || options.width == 0ULL) {
                 print_usage(argv[0]);
                 return 1;

@@ -15,9 +15,7 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-F SEP] [-v VAR=VALUE] [-f PROGRAM_FILE]... ['program'] [file ...]");
 }
 
-#define is_identifier_start tool_ascii_is_identifier_start
 
-#define is_identifier_char tool_ascii_is_identifier_char
 
 static int append_program_text(char *buffer, size_t *length, size_t capacity, const char *text) {
     size_t i = 0;
@@ -91,8 +89,8 @@ static int parse_v_assignment(const char *text, AwkState *state) {
     }
 
     while (text[split] != '\0' && text[split] != '=') {
-        if ((split == 0U && !is_identifier_start(text[split])) ||
-            (split > 0U && !is_identifier_char(text[split])) ||
+        if ((split == 0U && !tool_ascii_is_identifier_start(text[split])) ||
+            (split > 0U && !tool_ascii_is_identifier_char(text[split])) ||
             split + 1U >= sizeof(name)) {
             return -1;
         }

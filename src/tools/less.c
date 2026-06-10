@@ -22,7 +22,6 @@ static void print_usage(const char *program_name) {
 
 #define pager_page_lines() tool_pager_page_lines(DEFAULT_PAGE_LINES)
 
-#define contains_case_insensitive tool_contains_case_insensitive
 
 static void pager_init(LessPager *pager, int color_mode) {
     rt_memset(pager, 0, sizeof(*pager));
@@ -179,7 +178,7 @@ static int search_forward(const char *buffer,
         }
         memcpy(line, buffer + line_offsets[i], copy_len);
         line[copy_len] = '\0';
-        if (contains_case_insensitive(line, pattern)) {
+        if (tool_contains_case_insensitive(line, pattern)) {
             *match_line_out = i;
             return 0;
         }

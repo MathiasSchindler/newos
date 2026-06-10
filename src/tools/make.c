@@ -57,7 +57,6 @@ static void refresh_makeflags(MakeProgram *program) {
     (void)platform_setenv("MAKE", get_variable_value(program, "MAKE"), 1);
 }
 
-#define text_is_decimal tool_text_is_decimal
 
 static void apply_makeflags_env(MakeProgram *program) {
     const char *env_flags = platform_getenv("MAKEFLAGS");
@@ -173,7 +172,7 @@ int main(int argc, char **argv) {
             program.jobs_flag_present = 1;
             if (rt_strcmp(s.flag, "-j") == 0 && s.argi < argc) {
                 const char *jobs_arg = argv[s.argi];
-                if (text_is_decimal(jobs_arg)) {
+                if (tool_text_is_decimal(jobs_arg)) {
                     (void)tool_parse_uint_arg(jobs_arg, &program.requested_jobs, "make", "jobs");
                     s.argi += 1;
                 }
@@ -256,7 +255,7 @@ int main(int argc, char **argv) {
                 program.jobs_flag_present = 1;
                 if (argv[i][2] == '\0' && i + 1 < argc) {
                     const char *jobs_arg = argv[i + 1];
-                    if (text_is_decimal(jobs_arg)) {
+                    if (tool_text_is_decimal(jobs_arg)) {
                         if (tool_parse_uint_arg(jobs_arg, &program.requested_jobs, "make", "jobs") != 0) {
                             return 1;
                         }

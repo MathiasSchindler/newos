@@ -123,7 +123,6 @@ static int mail_imap_quote(char *buffer, size_t buffer_size, const char *text) {
     return 0;
 }
 
-#define mail_starts_with tool_starts_with
 
 static int mail_imap_line_is_tagged(const char *line, const char *tag) {
     size_t tag_len = rt_strlen(tag);
@@ -317,7 +316,7 @@ static void mail_imap_capture_exists(const char *line, unsigned int *exists_out)
         value = value * 10ULL + (unsigned long long)(line[index] - '0');
         index += 1U;
     }
-    if (line[index] == ' ' && mail_starts_with(line + index + 1U, "EXISTS") && value <= 0xffffffffULL) {
+    if (line[index] == ' ' && tool_starts_with(line + index + 1U, "EXISTS") && value <= 0xffffffffULL) {
         *exists_out = (unsigned int)value;
     }
 }
@@ -382,7 +381,7 @@ static void mail_imap_capture_list_folder(const char *line, MailFolder *folders,
     const char *name_start;
     size_t name_length = 0U;
 
-    if (folders == 0 || folder_count_out == 0 || *folder_count_out >= folder_capacity || !mail_starts_with(line, "* LIST ")) {
+    if (folders == 0 || folder_count_out == 0 || *folder_count_out >= folder_capacity || !tool_starts_with(line, "* LIST ")) {
         return;
     }
     while (*cursor != '\0' && *cursor != ')') {
@@ -662,9 +661,9 @@ static int mail_imap_read_greeting(MailTransport *transport, int verbose) {
         return -1;
     }
     if (verbose) {
-        mail_imap_diag_text("imap.greeting=", mail_starts_with(line, "* OK") ? "ok" : "unexpected");
+        mail_imap_diag_text("imap.greeting=", tool_starts_with(line, "* OK") ? "ok" : "unexpected");
     }
-    return mail_starts_with(line, "* OK") ? 0 : -1;
+    return tool_starts_with(line, "* OK") ? 0 : -1;
 }
 
 static int mail_imap_open_authenticated(MailTransport *transport, const MailConfig *config, const char *password, int verbose) {

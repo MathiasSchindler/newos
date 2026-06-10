@@ -2,7 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define streq tool_str_equal
 
 static int contains_char(const char *text, char ch) {
     size_t i = 0U;
@@ -57,36 +56,36 @@ int main(int argc, char **argv) {
     int numeric_only = 0;
     const char *base_name = tool_base_name(argv[0]);
 
-    if (base_name != 0 && streq(base_name, "ping6")) {
+    if (base_name != 0 && tool_str_equal(base_name, "ping6")) {
         family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
     }
 
     while (argi < argc) {
-        if (streq(argv[argi], "-4")) {
+        if (tool_str_equal(argv[argi], "-4")) {
             family_filter = PLATFORM_NETWORK_FAMILY_IPV4;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-6")) {
+        if (tool_str_equal(argv[argi], "-6")) {
             family_filter = PLATFORM_NETWORK_FAMILY_IPV6;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-n")) {
+        if (tool_str_equal(argv[argi], "-n")) {
             numeric_only = 1;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-q")) {
+        if (tool_str_equal(argv[argi], "-q")) {
             quiet = 1;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
         }
-        if (streq(argv[argi], "-c")) {
+        if (tool_str_equal(argv[argi], "-c")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &count, "ping", "count") != 0 || count == 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -94,7 +93,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-i")) {
+        if (tool_str_equal(argv[argi], "-i")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &interval_seconds, "ping", "interval") != 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -102,7 +101,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-W")) {
+        if (tool_str_equal(argv[argi], "-W")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &timeout_seconds, "ping", "timeout") != 0 || timeout_seconds == 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -110,7 +109,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-w")) {
+        if (tool_str_equal(argv[argi], "-w")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &deadline_seconds, "ping", "deadline") != 0 || deadline_seconds == 0) {
                 print_usage(argv[0]);
                 return 1;
@@ -118,7 +117,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-s")) {
+        if (tool_str_equal(argv[argi], "-s")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &payload_size, "ping", "size") != 0 || payload_size > PLATFORM_PING_MAX_PAYLOAD_SIZE) {
                 print_usage(argv[0]);
                 return 1;
@@ -126,7 +125,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-t")) {
+        if (tool_str_equal(argv[argi], "-t")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &ttl, "ping", "ttl") != 0 || ttl > PLATFORM_PING_MAX_TTL) {
                 print_usage(argv[0]);
                 return 1;

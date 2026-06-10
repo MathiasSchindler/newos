@@ -46,7 +46,6 @@ static int skip_cstring(int fd) {
     return 0;
 }
 
-#define read_u32_le tool_read_u32_le
 
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(input_path);
@@ -69,7 +68,6 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
     return 0;
 }
 
-#define is_dash_path tool_path_is_dash
 
 static int decompress_stream(int input_fd, int output_fd) {
     unsigned char header[10];
@@ -144,7 +142,7 @@ static int decompress_stream(int input_fd, int output_fd) {
     }
 
     crc ^= 0xffffffffU;
-    if (read_u32_le(trailer) != crc || read_u32_le(trailer + 4) != output_size) {
+    if (tool_read_u32_le(trailer) != crc || tool_read_u32_le(trailer + 4) != output_size) {
         rt_write_line(2, "gunzip: CRC or size check failed");
         return 1;
     }
@@ -166,7 +164,7 @@ static int process_path(const char *input_path, int to_stdout, int force_overwri
         return 1;
     }
 
-    if (to_stdout || input_path == 0 || is_dash_path(input_path)) {
+    if (to_stdout || input_path == 0 || tool_path_is_dash(input_path)) {
         output_fd = 1;
     } else {
         if (build_output_path(input_path, output_path, sizeof(output_path)) != 0) {
@@ -196,7 +194,7 @@ static int process_path(const char *input_path, int to_stdout, int force_overwri
     }
     if (status != 0 && have_output_path) {
         (void)platform_remove_file(output_path);
-    } else if (status == 0 && have_output_path && !keep_input && input_path != 0 && !is_dash_path(input_path)) {
+    } else if (status == 0 && have_output_path && !keep_input && input_path != 0 && !tool_path_is_dash(input_path)) {
         (void)platform_remove_file(input_path);
     }
     return status;

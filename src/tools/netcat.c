@@ -2,7 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define streq tool_str_equal
 
 static void print_usage(const char *program_name) {
     tool_write_usage(
@@ -47,35 +46,35 @@ int main(int argc, char **argv) {
     rt_memset(&options, 0, sizeof(options));
 
     while (argi < argc && argv[argi][0] == '-') {
-        if (streq(argv[argi], "-4")) {
+        if (tool_str_equal(argv[argi], "-4")) {
             family = PLATFORM_NETWORK_FAMILY_IPV4;
-        } else if (streq(argv[argi], "-6")) {
+        } else if (tool_str_equal(argv[argi], "-6")) {
             family = PLATFORM_NETWORK_FAMILY_IPV6;
-        } else if (streq(argv[argi], "-l")) {
+        } else if (tool_str_equal(argv[argi], "-l")) {
             listen_mode = 1;
-        } else if (streq(argv[argi], "-k")) {
+        } else if (tool_str_equal(argv[argi], "-k")) {
             keep_listening = 1;
-        } else if (streq(argv[argi], "-u")) {
+        } else if (tool_str_equal(argv[argi], "-u")) {
             use_udp = 1;
-        } else if (streq(argv[argi], "-z")) {
+        } else if (tool_str_equal(argv[argi], "-z")) {
             scan_mode = 1;
-        } else if (streq(argv[argi], "-n")) {
+        } else if (tool_str_equal(argv[argi], "-n")) {
             numeric_only = 1;
-        } else if (streq(argv[argi], "-s")) {
+        } else if (tool_str_equal(argv[argi], "-s")) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 return 1;
             }
             bind_host = argv[argi + 1];
             argi += 1;
-        } else if (streq(argv[argi], "-p")) {
+        } else if (tool_str_equal(argv[argi], "-p")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &bind_port, "netcat", "port") != 0 ||
                 bind_port == 0 || bind_port > 65535ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
             argi += 1;
-        } else if (streq(argv[argi], "-w")) {
+        } else if (tool_str_equal(argv[argi], "-w")) {
             unsigned long long timeout_value = 0;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &timeout_value) != 0 || timeout_value > 0xffffffffULL) {
                 print_usage(argv[0]);
@@ -83,9 +82,9 @@ int main(int argc, char **argv) {
             }
             options.timeout_milliseconds = (unsigned int)timeout_value;
             argi += 1;
-        } else if (streq(argv[argi], "-v")) {
+        } else if (tool_str_equal(argv[argi], "-v")) {
             verbose = 1;
-        } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        } else if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
         } else {
@@ -115,7 +114,7 @@ int main(int argc, char **argv) {
         if (positional_count == 2) {
             if (bind_host == 0) {
                 bind_host = argv[argi];
-            } else if (!streq(bind_host, argv[argi])) {
+            } else if (!tool_str_equal(bind_host, argv[argi])) {
                 tool_write_error("netcat", "conflicting bind addresses: ", argv[argi]);
                 return 1;
             }

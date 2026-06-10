@@ -126,9 +126,7 @@ static int buffer_append(WtfBuffer *buffer, const char *data, size_t size) {
     return 0;
 }
 
-#define append_char tool_buffer_append_char
 
-#define append_cstr tool_buffer_append_cstr
 
 static int parse_http_url(const char *text, WtfUrl *url) {
     size_t index = 0U;
@@ -211,9 +209,9 @@ static int compose_url(const char *base_url, const char *term, char *buffer, siz
     char encoded[1024];
     size_t length = 0U;
     if (url_encode_term(term, encoded, sizeof(encoded)) != 0) return -1;
-    length = append_cstr(buffer, buffer_size, length, base_url);
-    if (length == 0U || buffer[length - 1U] != '/') length = append_char(buffer, buffer_size, length, '/');
-    length = append_cstr(buffer, buffer_size, length, encoded);
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base_url);
+    if (length == 0U || buffer[length - 1U] != '/') length = tool_buffer_append_char(buffer, buffer_size, length, '/');
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, encoded);
     return rt_strlen(buffer) == length ? 0 : -1;
 }
 
@@ -231,13 +229,12 @@ static int parse_language_code(const char *text, char out[3]) {
 static int compose_default_base_url(const char language[3], char *buffer, size_t buffer_size) {
     size_t length = 0U;
     if (language == 0 || language[0] == '\0') return -1;
-    length = append_cstr(buffer, buffer_size, length, "https://");
-    length = append_cstr(buffer, buffer_size, length, language);
-    length = append_cstr(buffer, buffer_size, length, ".wikipedia.org/api/rest_v1/page/summary");
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, "https://");
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, language);
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, ".wikipedia.org/api/rest_v1/page/summary");
     return rt_strlen(buffer) == length ? 0 : -1;
 }
 
-#define find_header_end tool_find_http_header_end
 
 static int parse_status(const char *headers) {
     size_t index = 0U;
@@ -322,9 +319,9 @@ static void write_tls_error(const char *phase, const char *url) {
     if (tool_json_is_enabled()) {
         char message[128];
         size_t length = 0U;
-        length = append_cstr(message, sizeof(message), length, phase);
-        length = append_cstr(message, sizeof(message), length, " failed for ");
-        length = append_cstr(message, sizeof(message), length, url);
+        length = tool_buffer_append_cstr(message, sizeof(message), length, phase);
+        length = tool_buffer_append_cstr(message, sizeof(message), length, " failed for ");
+        length = tool_buffer_append_cstr(message, sizeof(message), length, url);
         if (rt_strlen(message) != length) {
             rt_copy_string(message, sizeof(message), "TLS operation failed");
         }
@@ -387,17 +384,17 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
         fd = tls.socket_fd;
     } else if (platform_connect_tcp(url->host, url->port, &fd) != 0) goto done;
 
-    request_length = append_cstr(request, sizeof(request), request_length, "GET ");
-    request_length = append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
-    request_length = append_cstr(request, sizeof(request), request_length, use_tls ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
-    request_length = append_cstr(request, sizeof(request), request_length, url->host);
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "GET ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, use_tls ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->host);
     if ((!use_tls && url->port != 80U) || (use_tls && url->port != 443U)) {
         char port_text[16];
         rt_unsigned_to_string(url->port, port_text, sizeof(port_text));
-        request_length = append_char(request, sizeof(request), request_length, ':');
-        request_length = append_cstr(request, sizeof(request), request_length, port_text);
+        request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, port_text);
     }
-    request_length = append_cstr(request, sizeof(request), request_length,
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length,
         "\r\nUser-Agent: Wikipedia Terminal Facts (https://github.com/MathiasSchindler/newos)\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
     if (write_all_transport(fd, &tls, use_tls, request, request_length) != 0) {
         if (use_tls) write_tls_error("tls write", request_url);
@@ -414,7 +411,7 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
         if (bytes_read == 0) break;
         if (buffer_append(&response, chunk, (size_t)bytes_read) != 0 || response.size > 4U * 1024U * 1024U) goto done;
         if (!parsed_headers) {
-            if (find_header_end(response.data, response.size, &body_offset) == 0) {
+            if (tool_find_http_header_end(response.data, response.size, &body_offset) == 0) {
                 if (body_offset > WTF_HEADER_LIMIT) goto done;
                 response.data[body_offset - 1U] = '\0';
                 parse_headers(response.data, &status, redirect, redirect_size, &content_length, &has_content_length);
@@ -833,8 +830,8 @@ static void select_only(WtfOptions *options, int title, int description, int ext
 static int join_terms(int argc, char **argv, int argi, char *buffer, size_t buffer_size) {
     size_t length = 0U;
     while (argi < argc) {
-        if (length > 0U) length = append_char(buffer, buffer_size, length, ' ');
-        length = append_cstr(buffer, buffer_size, length, argv[argi]);
+        if (length > 0U) length = tool_buffer_append_char(buffer, buffer_size, length, ' ');
+        length = tool_buffer_append_cstr(buffer, buffer_size, length, argv[argi]);
         argi += 1;
     }
     return rt_strlen(buffer) == length && length > 0U ? 0 : -1;

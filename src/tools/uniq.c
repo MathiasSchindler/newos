@@ -70,7 +70,6 @@ static int emit_group(ToolOutputBuffer *output, const char *line, unsigned long 
     return tool_output_buffer_write_char(output, terminator);
 }
 
-#define ascii_tolower tool_ascii_tolower
 
 static const char *skip_compare_prefix(const char *line, const UniqOptions *options) {
     unsigned long long fields = options->skip_fields;
@@ -107,8 +106,8 @@ static int lines_match(const char *left, const char *right, const UniqOptions *o
             return 1;
         }
 
-        lhs_char = options->ignore_case ? ascii_tolower(*lhs) : *lhs;
-        rhs_char = options->ignore_case ? ascii_tolower(*rhs) : *rhs;
+        lhs_char = options->ignore_case ? tool_ascii_tolower(*lhs) : *lhs;
+        rhs_char = options->ignore_case ? tool_ascii_tolower(*rhs) : *rhs;
         if (lhs_char != rhs_char) {
             return 0;
         }

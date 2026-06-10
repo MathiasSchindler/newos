@@ -2,7 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define streq tool_str_equal
 
 static int format_cidr(const PlatformDhcpLease *lease, char *buffer, size_t buffer_size) {
     char digits[16];
@@ -57,12 +56,12 @@ int main(int argc, char **argv) {
     rt_memset(&lease, 0, sizeof(lease));
 
     while (argi < argc) {
-        if (streq(argv[argi], "-A")) {
+        if (tool_str_equal(argv[argi], "-A")) {
             apply = 1;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-i")) {
+        if (tool_str_equal(argv[argi], "-i")) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 return 1;
@@ -71,7 +70,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-s")) {
+        if (tool_str_equal(argv[argi], "-s")) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 return 1;
@@ -80,7 +79,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-p")) {
+        if (tool_str_equal(argv[argi], "-p")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &server_port, "dhcp", "server port") != 0 ||
                 server_port == 0ULL || server_port > 65535ULL) {
                 print_usage(argv[0]);
@@ -89,7 +88,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-P")) {
+        if (tool_str_equal(argv[argi], "-P")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &client_port, "dhcp", "client port") != 0 ||
                 client_port == 0ULL || client_port > 65535ULL) {
                 print_usage(argv[0]);
@@ -98,7 +97,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-t")) {
+        if (tool_str_equal(argv[argi], "-t")) {
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &timeout_ms) != 0 || timeout_ms == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -106,7 +105,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
         }

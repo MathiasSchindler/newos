@@ -3,7 +3,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define ssh_is_space tool_ascii_is_token_space
 
 static int ssh_string_equals_cstr(const unsigned char *data, size_t length, const char *text) {
     size_t i = 0;
@@ -654,7 +653,7 @@ int ssh_base64_decode(const char *text, unsigned char *buffer, size_t buffer_siz
         unsigned int value;
         char ch = text[i++];
 
-        if (ssh_is_space(ch)) {
+        if (tool_ascii_is_token_space(ch)) {
             continue;
         }
         if (ch == '=') {

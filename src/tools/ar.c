@@ -27,7 +27,6 @@ static void ar_write_usage(void) {
     rt_write_line(2, "Usage: ar [rcstpxvq] archive [file ...]");
 }
 
-#define text_equals tool_str_equal
 
 static int has_archive_magic(const char *buffer) {
     return buffer[0] == '!' &&
@@ -215,7 +214,7 @@ static int member_selected(const char *name, int argc, char **argv, int start_in
     }
 
     for (i = start_index; i < argc; ++i) {
-        if (text_equals(name, tool_base_name(argv[i])) || text_equals(name, argv[i])) {
+        if (tool_str_equal(name, tool_base_name(argv[i])) || tool_str_equal(name, argv[i])) {
             return 1;
         }
     }
@@ -260,7 +259,7 @@ static int read_member_info(int fd,
 
     copy_trimmed_field(info->name, sizeof(info->name), raw_name, 16U);
 
-    if (text_equals(info->name, "//")) {
+    if (tool_str_equal(info->name, "//")) {
         info->is_string_table = 1;
         if (payload_size < AR_STRING_TABLE_CAPACITY) {
             if (archive_read_exact(fd, (unsigned char *)string_table, (size_t)payload_size) != 0) {

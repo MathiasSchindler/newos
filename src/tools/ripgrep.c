@@ -102,13 +102,12 @@ static const char *path_extension(const char *path) {
     return extension;
 }
 
-#define has_path_separator tool_path_has_separator
 
 static int glob_matches_path(const char *glob, const char *path) {
     if (tool_wildcard_match(glob, path)) {
         return 1;
     }
-    if (!has_path_separator(glob) && tool_wildcard_match(glob, path_base_name(path))) {
+    if (!tool_path_has_separator(glob) && tool_wildcard_match(glob, path_base_name(path))) {
         return 1;
     }
     return 0;
@@ -261,7 +260,7 @@ static int ignore_pattern_matches(const RgIgnorePattern *pattern, const char *pa
 
     if (relative == 0) return 0;
     if (pattern->directory_only && !is_directory) return 0;
-    if (has_path_separator(pattern->pattern)) {
+    if (tool_path_has_separator(pattern->pattern)) {
         return tool_wildcard_match(pattern->pattern, relative);
     }
     return tool_wildcard_match(pattern->pattern, path_base_name(path));
@@ -471,7 +470,6 @@ static int find_fixed_match(const char *pattern,
     return 0;
 }
 
-#define is_utf8_continuation_byte tool_utf8_is_continuation_byte
 
 static int ascii_is_word_byte(unsigned char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
@@ -483,7 +481,7 @@ static size_t previous_codepoint_start(const char *text, size_t index) {
         return 0U;
     }
     index -= 1U;
-    while (index > 0U && is_utf8_continuation_byte((unsigned char)text[index])) {
+    while (index > 0U && tool_utf8_is_continuation_byte((unsigned char)text[index])) {
         index -= 1U;
     }
     return index;

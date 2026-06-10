@@ -77,13 +77,12 @@ static int build_backup_path(const char *path, char *buffer, size_t buffer_size)
     return 0;
 }
 
-#define patch_path_is_unsafe tool_path_is_unsafe_relative
 
 static int validate_patch_header_path(const char *path) {
     if (rt_strcmp(path, "/dev/null") == 0) {
         return 0;
     }
-    if (patch_path_is_unsafe(path)) {
+    if (tool_path_is_unsafe_relative(path)) {
         tool_write_error("patch", "refusing unsafe path in patch: ", path);
         return -1;
     }

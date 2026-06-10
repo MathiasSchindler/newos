@@ -86,13 +86,8 @@ static unsigned long long nm_object_base;
 
 static int add_symbol(const char *name, unsigned long long value, unsigned long long size, unsigned char info, unsigned short shndx, char type);
 
-#define read_u16_le tool_read_u16_le
-#define read_u32_le tool_read_u32_le
-#define read_u32_be tool_read_u32_be
-#define read_u64_le tool_read_u64_le
 
 #define read_region(fd, offset, buffer, count) archive_read_region((fd), nm_object_base, (offset), (buffer), (count))
-#define read_file_region archive_read_file_region
 
 static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
     unsigned char header[8];
@@ -101,27 +96,26 @@ static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
     unsigned int index;
 
     *offset_out = 0ULL;
-    if (read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
-    magic = read_u32_le(header + 0);
+    if (archive_read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    magic = tool_read_u32_le(header + 0);
     if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
-    arch_count = read_u32_be(header + 4);
+    arch_count = tool_read_u32_be(header + 4);
     if (arch_count > 32U) return -1;
     for (index = 0U; index < arch_count; ++index) {
         unsigned char raw[32];
         unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
         unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
         unsigned int cputype;
-        if (read_file_region(fd, entry, raw, entry_size) != 0) return -1;
-        cputype = read_u32_be(raw + 0);
+        if (archive_read_file_region(fd, entry, raw, entry_size) != 0) return -1;
+        cputype = tool_read_u32_be(raw + 0);
         if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
-            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)read_u32_be(raw + 8) << 32U) | (unsigned long long)read_u32_be(raw + 12)) : (unsigned long long)read_u32_be(raw + 8);
+            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 8) << 32U) | (unsigned long long)tool_read_u32_be(raw + 12)) : (unsigned long long)tool_read_u32_be(raw + 8);
             if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
         }
     }
     return *offset_out != 0ULL ? 0 : -1;
 }
 
-#define copy_fixed_name tool_copy_printable_bytes
 
 static void write_hex16(unsigned long long value) {
     static const char digits[] = "0123456789abcdef";
@@ -186,10 +180,10 @@ static const char *symbol_bind_name(unsigned char info) {
 static int parse_macho_header(int fd, NmMachHeader *header) {
     unsigned char raw[32];
 
-    if (read_region(fd, 0ULL, raw, sizeof(raw)) != 0 || read_u32_le(raw + 0) != 0xfeedfacfU) {
+    if (read_region(fd, 0ULL, raw, sizeof(raw)) != 0 || tool_read_u32_le(raw + 0) != 0xfeedfacfU) {
         return -1;
     }
-    header->ncmds = read_u32_le(raw + 16);
+    header->ncmds = tool_read_u32_le(raw + 16);
     return header->ncmds <= MACHO_MAX_COMMANDS ? 0 : -1;
 }
 
@@ -211,8 +205,8 @@ static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *
         if (read_region(fd, command_offset, command_header, 8U) != 0) {
             return -1;
         }
-        command = read_u32_le(command_header + 0);
-        command_size = read_u32_le(command_header + 4);
+        command = tool_read_u32_le(command_header + 0);
+        command_size = tool_read_u32_le(command_header + 4);
         if (command_size < 8U) {
             return -1;
         }
@@ -225,8 +219,8 @@ static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *
             if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) {
                 return -1;
             }
-            copy_fixed_name(segment_name, sizeof(segment_name), segment + 8, 16U);
-            nsects = read_u32_le(segment + 64);
+            tool_copy_printable_bytes(segment_name, sizeof(segment_name), segment + 8, 16U);
+            nsects = tool_read_u32_le(segment + 64);
             if (72U + nsects * 80U > command_size) {
                 return -1;
             }
@@ -240,22 +234,22 @@ static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *
                 if (read_region(fd, section_offset, raw, sizeof(raw)) != 0) {
                     return -1;
                 }
-                copy_fixed_name(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
-                copy_fixed_name(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
+                tool_copy_printable_bytes(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
+                tool_copy_printable_bytes(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
                 if (sections[section_count].segment[0] == '\0') {
                     rt_copy_string(sections[section_count].segment, sizeof(sections[section_count].segment), segment_name);
                 }
-                sections[section_count].flags = read_u32_le(raw + 64);
+                sections[section_count].flags = tool_read_u32_le(raw + 64);
                 section_count += 1U;
             }
         } else if (command == MACHO_LC_SYMTAB && command_size >= 24U) {
             if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
                 return -1;
             }
-            symtab->symoff = read_u32_le(command_header + 8);
-            symtab->nsyms = read_u32_le(command_header + 12);
-            symtab->stroff = read_u32_le(command_header + 16);
-            symtab->strsize = read_u32_le(command_header + 20);
+            symtab->symoff = tool_read_u32_le(command_header + 8);
+            symtab->nsyms = tool_read_u32_le(command_header + 12);
+            symtab->stroff = tool_read_u32_le(command_header + 16);
+            symtab->strsize = tool_read_u32_le(command_header + 20);
         }
         command_offset += (unsigned long long)command_size;
     }
@@ -263,7 +257,6 @@ static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *
     return 0;
 }
 
-#define names_equal tool_str_equal
 
 static char macho_symbol_type(const NmMachSection *sections, unsigned int section_count, unsigned char n_type, unsigned char n_sect) {
     unsigned int type = n_type & MACHO_N_TYPE;
@@ -280,13 +273,13 @@ static char macho_symbol_type(const NmMachSection *sections, unsigned int sectio
     } else if (type == MACHO_N_SECT && n_sect > 0U && (unsigned int)n_sect <= section_count) {
         const NmMachSection *section = &sections[(unsigned int)n_sect - 1U];
         unsigned int section_type = section->flags & 0xffU;
-        if (names_equal(section->segment, "__TEXT") && names_equal(section->section, "__text")) {
+        if (tool_str_equal(section->segment, "__TEXT") && tool_str_equal(section->section, "__text")) {
             out = 'T';
         } else if (section_type == MACHO_S_ZEROFILL || section_type == MACHO_S_GB_ZEROFILL || section_type == MACHO_S_THREAD_LOCAL_ZEROFILL) {
             out = 'B';
-        } else if (names_equal(section->segment, "__DATA")) {
+        } else if (tool_str_equal(section->segment, "__DATA")) {
             out = 'D';
-        } else if (names_equal(section->segment, "__TEXT")) {
+        } else if (tool_str_equal(section->segment, "__TEXT")) {
             out = 'S';
         } else {
             out = 'S';
@@ -317,11 +310,11 @@ static int load_macho_symbols(int fd, const NmMachSymtab *symtab, const NmMachSe
         if (read_region(fd, (unsigned long long)symtab->symoff + ((unsigned long long)index * 16ULL), raw, sizeof(raw)) != 0) {
             return -1;
         }
-        strx = read_u32_le(raw + 0);
+        strx = tool_read_u32_le(raw + 0);
         n_type = raw[4];
         n_sect = raw[5];
-        n_desc = read_u16_le(raw + 6);
-        value = read_u64_le(raw + 8);
+        n_desc = tool_read_u16_le(raw + 6);
+        value = tool_read_u64_le(raw + 8);
         info = (unsigned char)(((n_type & MACHO_N_EXT) != 0U) ? (((n_desc & (MACHO_N_WEAK_REF | MACHO_N_WEAK_DEF)) != 0U) ? 0x20U : 0x10U) : 0x00U);
         type = macho_symbol_type(sections, section_count, n_type, n_sect);
         if ((n_desc & (MACHO_N_WEAK_REF | MACHO_N_WEAK_DEF)) != 0U && type >= 'A' && type <= 'Z') {
@@ -430,11 +423,11 @@ static int load_symbols_from_table(int fd, const NmSection *symtab, const char *
         if (read_region(fd, symtab->offset + (index * symtab->entsize), raw, sizeof(raw)) != 0) {
             return -1;
         }
-        name_offset = read_u32_le(raw + 0);
+        name_offset = tool_read_u32_le(raw + 0);
         info = raw[4];
-        shndx = read_u16_le(raw + 6);
-        value = read_u64_le(raw + 8);
-        size = read_u64_le(raw + 16);
+        shndx = tool_read_u16_le(raw + 6);
+        value = tool_read_u64_le(raw + 8);
+        size = tool_read_u64_le(raw + 16);
         if (shndx != ELF_SHN_UNDEF && shndx != ELF_SHN_ABS && shndx < NM_MAX_SECTIONS) {
             section = &nm_sections[shndx];
         }
@@ -467,7 +460,7 @@ static int nm_file(const char *path) {
         tool_write_error("nm", "unsupported file: ", path);
         return 1;
     }
-    if (read_u32_le(header) == MACHO_FAT_MAGIC_LE || read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
+    if (tool_read_u32_le(header) == MACHO_FAT_MAGIC_LE || tool_read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
         unsigned long long slice_offset;
         if (select_macho_fat_slice(fd, &slice_offset) == 0) {
             nm_object_base = slice_offset;
@@ -478,7 +471,7 @@ static int nm_file(const char *path) {
             }
         }
     }
-    if (read_u32_le(header) == 0xfeedfacfU) {
+    if (tool_read_u32_le(header) == 0xfeedfacfU) {
         nm_current_format = "macho";
         if (nm_macho_file(fd) == 0) {
             saw_symbols = 1;
@@ -496,10 +489,10 @@ static int nm_file(const char *path) {
         tool_write_error("nm", "unsupported file: ", path);
         return 1;
     }
-    shoff = read_u64_le(header + 40);
-    shentsize = read_u16_le(header + 58);
-    shnum = read_u16_le(header + 60);
-    shstrndx = read_u16_le(header + 62);
+    shoff = tool_read_u64_le(header + 40);
+    shentsize = tool_read_u16_le(header + 58);
+    shnum = tool_read_u16_le(header + 60);
+    shstrndx = tool_read_u16_le(header + 62);
     if (shnum == 0U || shnum > NM_MAX_SECTIONS || shentsize < 64U || shstrndx >= shnum) {
         platform_close(fd);
         tool_write_error("nm", "invalid section table: ", path);
@@ -511,14 +504,14 @@ static int nm_file(const char *path) {
             platform_close(fd);
             return 1;
         }
-        nm_sections[i].name = read_u32_le(raw + 0);
-        nm_sections[i].type = read_u32_le(raw + 4);
-        nm_sections[i].flags = read_u64_le(raw + 8);
-        nm_sections[i].addr = read_u64_le(raw + 16);
-        nm_sections[i].offset = read_u64_le(raw + 24);
-        nm_sections[i].size = read_u64_le(raw + 32);
-        nm_sections[i].link = read_u32_le(raw + 40);
-        nm_sections[i].entsize = read_u64_le(raw + 56);
+        nm_sections[i].name = tool_read_u32_le(raw + 0);
+        nm_sections[i].type = tool_read_u32_le(raw + 4);
+        nm_sections[i].flags = tool_read_u64_le(raw + 8);
+        nm_sections[i].addr = tool_read_u64_le(raw + 16);
+        nm_sections[i].offset = tool_read_u64_le(raw + 24);
+        nm_sections[i].size = tool_read_u64_le(raw + 32);
+        nm_sections[i].link = tool_read_u32_le(raw + 40);
+        nm_sections[i].entsize = tool_read_u64_le(raw + 56);
     }
     for (i = 0U; i < shnum; ++i) {
         if (nm_sections[i].type == ELF_SHT_SYMTAB) {

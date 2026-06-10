@@ -3,7 +3,6 @@
 
 #define PRINTF_REPEAT_BUFFER_SIZE 128U
 
-#define ascii_is_digit tool_ascii_is_digit
 
 static int parse_signed_value(const char *text, long long *value_out) {
     long long value = 0;
@@ -113,14 +112,14 @@ static int parse_float_value(const char *text, double *value_out) {
         text += 1;
     }
 
-    while (ascii_is_digit(*text)) {
+    while (tool_ascii_is_digit(*text)) {
         value = (value * 10.0) + (double)(*text - '0');
         text += 1;
     }
 
     if (*text == '.') {
         text += 1;
-        while (ascii_is_digit(*text)) {
+        while (tool_ascii_is_digit(*text)) {
             value += (double)(*text - '0') * fraction_scale;
             fraction_scale /= 10.0;
             text += 1;
@@ -135,7 +134,7 @@ static int parse_float_value(const char *text, double *value_out) {
         } else if (*text == '+') {
             text += 1;
         }
-        while (ascii_is_digit(*text)) {
+        while (tool_ascii_is_digit(*text)) {
             exponent = (exponent * 10) + (int)(*text - '0');
             text += 1;
         }
@@ -176,8 +175,6 @@ static void format_unsigned(unsigned long long value, unsigned int base, int upp
     buffer[i] = '\0';
 }
 
-#define append_char_to_buffer tool_buffer_append_char_checked
-#define append_text_to_buffer tool_buffer_append_text_checked
 
 static int write_repeated_char(char ch, int count) {
     char buffer[PRINTF_REPEAT_BUFFER_SIZE];
@@ -247,20 +244,20 @@ static int shell_quote_argument(const char *text, char *buffer, size_t buffer_si
     if (buffer_size == 0U) {
         return -1;
     }
-    if (append_char_to_buffer(buffer, buffer_size, &out, '\'') != 0) {
+    if (tool_buffer_append_char_checked(buffer, buffer_size, &out, '\'') != 0) {
         return -1;
     }
     while (text != 0 && text[i] != '\0') {
         if (text[i] == '\'') {
-            if (append_text_to_buffer(buffer, buffer_size, &out, "'\\''") != 0) {
+            if (tool_buffer_append_text_checked(buffer, buffer_size, &out, "'\\''") != 0) {
                 return -1;
             }
-        } else if (append_char_to_buffer(buffer, buffer_size, &out, text[i]) != 0) {
+        } else if (tool_buffer_append_char_checked(buffer, buffer_size, &out, text[i]) != 0) {
             return -1;
         }
         i += 1U;
     }
-    return append_char_to_buffer(buffer, buffer_size, &out, '\'');
+    return tool_buffer_append_char_checked(buffer, buffer_size, &out, '\'');
 }
 
 static int parse_escape_sequence(const char *text, char *out_char, size_t *consumed_out, int *stop_output) {
@@ -454,12 +451,12 @@ static int format_fixed_double(double value, int precision, char *buffer, size_t
     }
 
     buffer[0] = '\0';
-    if (negative && append_char_to_buffer(buffer, buffer_size, &length, '-') != 0) {
+    if (negative && tool_buffer_append_char_checked(buffer, buffer_size, &length, '-') != 0) {
         return -1;
     }
 
     format_unsigned(whole, 10U, 0, whole_buffer, sizeof(whole_buffer));
-    if (append_text_to_buffer(buffer, buffer_size, &length, whole_buffer) != 0) {
+    if (tool_buffer_append_text_checked(buffer, buffer_size, &length, whole_buffer) != 0) {
         return -1;
     }
 
@@ -467,7 +464,7 @@ static int format_fixed_double(double value, int precision, char *buffer, size_t
         char fraction_buffer[32];
         int digit_index;
 
-        if (append_char_to_buffer(buffer, buffer_size, &length, '.') != 0) {
+        if (tool_buffer_append_char_checked(buffer, buffer_size, &length, '.') != 0) {
             return -1;
         }
 
@@ -477,7 +474,7 @@ static int format_fixed_double(double value, int precision, char *buffer, size_t
         }
         fraction_buffer[precision] = '\0';
 
-        if (append_text_to_buffer(buffer, buffer_size, &length, fraction_buffer) != 0) {
+        if (tool_buffer_append_text_checked(buffer, buffer_size, &length, fraction_buffer) != 0) {
             return -1;
         }
     }
@@ -543,23 +540,23 @@ static int format_exponential_double(double value, int precision, int uppercase,
     }
 
     buffer[0] = '\0';
-    if (append_text_to_buffer(buffer, buffer_size, &length, mantissa) != 0) {
+    if (tool_buffer_append_text_checked(buffer, buffer_size, &length, mantissa) != 0) {
         return -1;
     }
-    if (append_char_to_buffer(buffer, buffer_size, &length, uppercase ? 'E' : 'e') != 0) {
+    if (tool_buffer_append_char_checked(buffer, buffer_size, &length, uppercase ? 'E' : 'e') != 0) {
         return -1;
     }
-    if (append_char_to_buffer(buffer, buffer_size, &length, exponent < 0 ? '-' : '+') != 0) {
+    if (tool_buffer_append_char_checked(buffer, buffer_size, &length, exponent < 0 ? '-' : '+') != 0) {
         return -1;
     }
 
     exponent_negative = exponent < 0;
     exponent_value = (unsigned long long)(exponent_negative ? -exponent : exponent);
     format_unsigned(exponent_value, 10U, 0, exponent_digits, sizeof(exponent_digits));
-    if (exponent_value < 10ULL && append_char_to_buffer(buffer, buffer_size, &length, '0') != 0) {
+    if (exponent_value < 10ULL && tool_buffer_append_char_checked(buffer, buffer_size, &length, '0') != 0) {
         return -1;
     }
-    if (append_text_to_buffer(buffer, buffer_size, &length, exponent_digits) != 0) {
+    if (tool_buffer_append_text_checked(buffer, buffer_size, &length, exponent_digits) != 0) {
         return -1;
     }
 
@@ -603,7 +600,7 @@ static int format_general_double(double value, int precision, int uppercase, cha
                 *marker = '\0';
                 trim_fractional_zeros(buffer);
                 length = text_length(buffer);
-                if (append_text_to_buffer(buffer, buffer_size, &length, suffix) != 0) {
+                if (tool_buffer_append_text_checked(buffer, buffer_size, &length, suffix) != 0) {
                     return -1;
                 }
             }
@@ -679,7 +676,7 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                while (ascii_is_digit(format[scan])) {
+                while (tool_ascii_is_digit(format[scan])) {
                     position = (position * 10ULL) + (unsigned long long)(format[scan] - '0');
                     scan += 1U;
                 }

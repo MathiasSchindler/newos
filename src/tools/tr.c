@@ -25,7 +25,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-c] [-d] [-s] SET1 [SET2]");
 }
 
-#define class_name_equals tool_token_equals
 
 static int tr_is_upper(unsigned char ch) {
     return ch >= 'A' && ch <= 'Z';
@@ -74,40 +73,40 @@ static int tr_is_punct(unsigned char ch) {
 }
 
 static int tr_class_matches(const char *name, size_t name_len, unsigned char ch) {
-    if (class_name_equals(name, name_len, "digit")) {
+    if (tool_token_equals(name, name_len, "digit")) {
         return tr_is_digit(ch);
     }
-    if (class_name_equals(name, name_len, "lower")) {
+    if (tool_token_equals(name, name_len, "lower")) {
         return tr_is_lower(ch);
     }
-    if (class_name_equals(name, name_len, "upper")) {
+    if (tool_token_equals(name, name_len, "upper")) {
         return tr_is_upper(ch);
     }
-    if (class_name_equals(name, name_len, "alpha")) {
+    if (tool_token_equals(name, name_len, "alpha")) {
         return tr_is_alpha(ch);
     }
-    if (class_name_equals(name, name_len, "alnum")) {
+    if (tool_token_equals(name, name_len, "alnum")) {
         return tr_is_alnum(ch);
     }
-    if (class_name_equals(name, name_len, "space")) {
+    if (tool_token_equals(name, name_len, "space")) {
         return tr_is_space(ch);
     }
-    if (class_name_equals(name, name_len, "blank")) {
+    if (tool_token_equals(name, name_len, "blank")) {
         return tr_is_blank(ch);
     }
-    if (class_name_equals(name, name_len, "xdigit")) {
+    if (tool_token_equals(name, name_len, "xdigit")) {
         return tr_is_xdigit(ch);
     }
-    if (class_name_equals(name, name_len, "cntrl")) {
+    if (tool_token_equals(name, name_len, "cntrl")) {
         return tr_is_cntrl(ch);
     }
-    if (class_name_equals(name, name_len, "print")) {
+    if (tool_token_equals(name, name_len, "print")) {
         return tr_is_print(ch);
     }
-    if (class_name_equals(name, name_len, "graph")) {
+    if (tool_token_equals(name, name_len, "graph")) {
         return tr_is_graph(ch);
     }
-    if (class_name_equals(name, name_len, "punct")) {
+    if (tool_token_equals(name, name_len, "punct")) {
         return tr_is_punct(ch);
     }
     return 0;

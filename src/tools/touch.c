@@ -11,11 +11,8 @@ typedef struct {
     long long mtime;
 } TouchOptions;
 
-#define touch_to_lower_ascii tool_ascii_tolower
 
-#define touch_equals_ignore_case tool_str_equal_ignore_case_ascii
 
-#define touch_starts_with tool_starts_with
 
 static int touch_matches_zone_name(const char *text, size_t index, const char *name) {
     size_t offset = 0;
@@ -26,7 +23,7 @@ static int touch_matches_zone_name(const char *text, size_t index, const char *n
 
     while (name[offset] != '\0') {
         if (text[index + offset] == '\0' ||
-            touch_to_lower_ascii(text[index + offset]) != touch_to_lower_ascii(name[offset])) {
+            tool_ascii_tolower(text[index + offset]) != tool_ascii_tolower(name[offset])) {
             return 0;
         }
         offset += 1U;
@@ -56,55 +53,6 @@ static int parse_fixed_digits(const char *text, size_t start, size_t digits, uns
     }
 
     *value_out = (unsigned int)value;
-    return 0;
-}
-
-static int is_leap_year(int year) {
-    if ((year % 400) == 0) return 1;
-    if ((year % 100) == 0) return 0;
-    return (year % 4) == 0;
-}
-
-static int days_in_month(int year, unsigned int month) {
-    static const unsigned char days[] = { 31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U };
-    if (month == 0U || month > 12U) {
-        return 0;
-    }
-    if (month == 2U && is_leap_year(year)) {
-        return 29;
-    }
-    return (int)days[month - 1U];
-}
-
-#define days_from_civil tool_days_from_civil
-
-static void civil_from_days(long long days, int *year_out, unsigned int *month_out, unsigned int *day_out) {
-    long long z = days + 719468LL;
-    long long era = (z >= 0 ? z : z - 146096LL) / 146097LL;
-    unsigned int day_of_era = (unsigned int)(z - era * 146097LL);
-    unsigned int year_of_era = (day_of_era - day_of_era / 1460U + day_of_era / 36524U - day_of_era / 146096U) / 365U;
-    int year = (int)year_of_era + (int)(era * 400LL);
-    unsigned int day_of_year = day_of_era - (365U * year_of_era + year_of_era / 4U - year_of_era / 100U);
-    unsigned int mp = (5U * day_of_year + 2U) / 153U;
-    unsigned int day = day_of_year - (153U * mp + 2U) / 5U + 1U;
-    unsigned int month = mp + (mp < 10U ? 3U : (unsigned int)-9);
-
-    year += (month <= 2U) ? 1 : 0;
-    *year_out = year;
-    *month_out = month;
-    *day_out = day;
-}
-
-static int build_epoch_timestamp(int year, unsigned int month, unsigned int day, unsigned int hour, unsigned int minute, unsigned int second, long long *epoch_out) {
-    long long days;
-
-    if (epoch_out == 0 || month < 1U || month > 12U || day < 1U || day > (unsigned int)days_in_month(year, month) ||
-        hour > 23U || minute > 59U || second > 59U) {
-        return -1;
-    }
-
-    days = days_from_civil(year, month, day);
-    *epoch_out = days * 86400LL + (long long)hour * 3600LL + (long long)minute * 60LL + (long long)second;
     return 0;
 }
 
@@ -162,7 +110,7 @@ static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset
         return 0;
     }
 
-    if (touch_to_lower_ascii(text[index]) == 'z') {
+    if (tool_ascii_tolower(text[index]) == 'z') {
         *offset_seconds_out = 0;
         *index_io = index + 1U;
         return 0;
@@ -236,7 +184,7 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
         }
 
         if (text[offset] == '+' || text[offset] == '-' || text[offset] == 'Z' ||
-            touch_to_lower_ascii(text[offset]) == 'u' || touch_to_lower_ascii(text[offset]) == 'g') {
+            tool_ascii_tolower(text[offset]) == 'u' || tool_ascii_tolower(text[offset]) == 'g') {
             if (parse_timezone_suffix(text, &offset, &timezone_offset_seconds) != 0) {
                 return -1;
             }
@@ -277,7 +225,7 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
         }
     }
 
-    if (build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out) != 0) {
+    if (tool_build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out) != 0) {
         return -1;
     }
     *epoch_out -= (long long)timezone_offset_seconds;
@@ -295,7 +243,7 @@ static int current_year(void) {
         return 1970;
     }
 
-    civil_from_days(days, &year, &month, &day);
+    tool_civil_from_days(days, &year, &month, &day);
     return year;
 }
 
@@ -358,7 +306,7 @@ static int parse_touch_stamp(const char *text, long long *epoch_out) {
         return -1;
     }
 
-    return build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out);
+    return tool_build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out);
 }
 
 static int load_reference_times(const char *path, TouchOptions *options) {
@@ -385,15 +333,15 @@ static int parse_time_selector(const char *text, TouchOptions *options) {
         return -1;
     }
 
-    if (touch_equals_ignore_case(text, "access") ||
-        touch_equals_ignore_case(text, "atime") ||
-        touch_equals_ignore_case(text, "use")) {
+    if (tool_str_equal_ignore_case_ascii(text, "access") ||
+        tool_str_equal_ignore_case_ascii(text, "atime") ||
+        tool_str_equal_ignore_case_ascii(text, "use")) {
         options->update_access = 1;
         return 0;
     }
 
-    if (touch_equals_ignore_case(text, "modify") ||
-        touch_equals_ignore_case(text, "mtime")) {
+    if (tool_str_equal_ignore_case_ascii(text, "modify") ||
+        tool_str_equal_ignore_case_ascii(text, "mtime")) {
         options->update_modify = 1;
         return 0;
     }
@@ -461,7 +409,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (touch_starts_with(argv[argi], "--date=")) {
+        if (tool_starts_with(argv[argi], "--date=")) {
             if (parse_datetime_text(argv[argi] + 7, &timestamp) != 0) {
                 tool_write_error("touch", "invalid date ", argv[argi] + 7);
                 return 1;
@@ -472,7 +420,7 @@ int main(int argc, char **argv) {
             argi += 1;
             continue;
         }
-        if (touch_starts_with(argv[argi], "--reference=")) {
+        if (tool_starts_with(argv[argi], "--reference=")) {
             if (load_reference_times(argv[argi] + 12, &options) != 0) {
                 tool_write_error("touch", "cannot read reference ", argv[argi] + 12);
                 return 1;
@@ -480,7 +428,7 @@ int main(int argc, char **argv) {
             argi += 1;
             continue;
         }
-        if (touch_starts_with(argv[argi], "--time=")) {
+        if (tool_starts_with(argv[argi], "--time=")) {
             if (parse_time_selector(argv[argi] + 7, &options) != 0) {
                 tool_write_error("touch", "invalid time selector ", argv[argi] + 7);
                 return 1;

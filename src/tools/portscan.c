@@ -86,15 +86,14 @@ static const char windows_port_spec[] = "135,137-139,445,3389,5985,5986";
 static const char web_port_spec[] = "80,443,8000,8080,8443,9000,9443";
 static const char risky_port_spec[] = "21-23,135,139,445,1433,1521,2375,2376,3306,3389,5432,5900,6379,9200,9300";
 
-#define streq tool_str_equal
 
 static const char *profile_port_spec(const char *name) {
-    if (streq(name, "admin")) return admin_port_spec;
-    if (streq(name, "databases") || streq(name, "database")) return database_port_spec;
-    if (streq(name, "windows")) return windows_port_spec;
-    if (streq(name, "web")) return web_port_spec;
-    if (streq(name, "risky")) return risky_port_spec;
-    if (streq(name, "common")) return common_port_spec;
+    if (tool_str_equal(name, "admin")) return admin_port_spec;
+    if (tool_str_equal(name, "databases") || tool_str_equal(name, "database")) return database_port_spec;
+    if (tool_str_equal(name, "windows")) return windows_port_spec;
+    if (tool_str_equal(name, "web")) return web_port_spec;
+    if (tool_str_equal(name, "risky")) return risky_port_spec;
+    if (tool_str_equal(name, "common")) return common_port_spec;
     return 0;
 }
 
@@ -317,8 +316,6 @@ static void escape_banner(const unsigned char *raw, unsigned int raw_length, cha
     }
 }
 
-#define append_char tool_buffer_append_char_checked
-#define append_uint tool_buffer_append_uint_checked
 
 static int copy_slice(char *buffer, size_t buffer_size, const char *start, size_t length) {
     size_t index = 0U;
@@ -990,7 +987,7 @@ static int scan_host_token(const char *token, size_t token_length, int port_coun
                 return -1;
             }
             length = rt_strlen(host);
-            if (append_uint(host, sizeof(host), &length, first) != 0) {
+            if (tool_buffer_append_uint_checked(host, sizeof(host), &length, first) != 0) {
                 return -1;
             }
             if (scan_host_with_all_ports(host, port_count, ports, options, baseline) != 0) {
@@ -1032,8 +1029,8 @@ static int scan_hosts(const char *host_spec, int port_count, char **ports, Ports
 }
 
 static int state_name_known(const char *state) {
-    return streq(state, "open") || streq(state, "closed") || streq(state, "filtered") ||
-           streq(state, "unreachable") || streq(state, "error");
+    return tool_str_equal(state, "open") || tool_str_equal(state, "closed") || tool_str_equal(state, "filtered") ||
+           tool_str_equal(state, "unreachable") || tool_str_equal(state, "error");
 }
 
 static int baseline_add(PortscanBaseline *baseline, const char *host, unsigned int port, const char *state) {
@@ -1223,17 +1220,17 @@ int main(int argc, char **argv) {
     }
 
     while (argi < argc) {
-        if (streq(argv[argi], "--worker")) {
+        if (tool_str_equal(argv[argi], "--worker")) {
             options.worker_mode = 1;
-        } else if (streq(argv[argi], "-4")) {
+        } else if (tool_str_equal(argv[argi], "-4")) {
             options.family = PLATFORM_NETWORK_FAMILY_IPV4;
-        } else if (streq(argv[argi], "-6")) {
+        } else if (tool_str_equal(argv[argi], "-6")) {
             options.family = PLATFORM_NETWORK_FAMILY_IPV6;
-        } else if (streq(argv[argi], "-a")) {
+        } else if (tool_str_equal(argv[argi], "-a")) {
             options.show_all = 1;
-        } else if (streq(argv[argi], "-n")) {
+        } else if (tool_str_equal(argv[argi], "-n")) {
             options.numeric_only = 1;
-        } else if (streq(argv[argi], "-w")) {
+        } else if (tool_str_equal(argv[argi], "-w")) {
             unsigned long long timeout_value = 0ULL;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &timeout_value) != 0 || timeout_value > 0xffffffffULL) {
                 print_usage(argv[0]);
@@ -1242,9 +1239,9 @@ int main(int argc, char **argv) {
             }
             options.timeout_milliseconds = (unsigned int)timeout_value;
             argi += 1;
-        } else if (streq(argv[argi], "--common")) {
+        } else if (tool_str_equal(argv[argi], "--common")) {
             options.use_common_ports = 1;
-        } else if (streq(argv[argi], "--profile")) {
+        } else if (tool_str_equal(argv[argi], "--profile")) {
             const char *spec;
             if (argi + 1 >= argc || options.profile_count >= sizeof(options.profile_specs) / sizeof(options.profile_specs[0])) {
                 print_usage(argv[0]);
@@ -1259,7 +1256,7 @@ int main(int argc, char **argv) {
             }
             options.profile_specs[options.profile_count++] = spec;
             argi += 1;
-        } else if (streq(argv[argi], "--jobs")) {
+        } else if (tool_str_equal(argv[argi], "--jobs")) {
             unsigned long long value = 0ULL;
             if (argi + 1 >= argc || rt_parse_uint(argv[argi + 1], &value) != 0 || value == 0ULL || value > PORTSCAN_MAX_JOBS) {
                 print_usage(argv[0]);
@@ -1268,7 +1265,7 @@ int main(int argc, char **argv) {
             }
             options.jobs = (unsigned int)value;
             argi += 1;
-        } else if (streq(argv[argi], "--per-host")) {
+        } else if (tool_str_equal(argv[argi], "--per-host")) {
             unsigned long long value = 0ULL;
             if (argi + 1 >= argc || rt_parse_uint(argv[argi + 1], &value) != 0 || value == 0ULL || value > PORTSCAN_MAX_JOBS) {
                 print_usage(argv[0]);
@@ -1277,14 +1274,14 @@ int main(int argc, char **argv) {
             }
             options.per_host_jobs = (unsigned int)value;
             argi += 1;
-        } else if (streq(argv[argi], "--rate")) {
+        } else if (tool_str_equal(argv[argi], "--rate")) {
             if (argi + 1 >= argc || parse_rate_arg(argv[argi + 1], &options.rate_per_second) != 0) {
                 print_usage(argv[0]);
                 rt_free(positionals);
                 return 1;
             }
             argi += 1;
-        } else if (streq(argv[argi], "--delay")) {
+        } else if (tool_str_equal(argv[argi], "--delay")) {
             unsigned long long delay_value = 0ULL;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &delay_value) != 0 || delay_value > 0xffffffffULL) {
                 print_usage(argv[0]);
@@ -1293,19 +1290,19 @@ int main(int argc, char **argv) {
             }
             options.delay_milliseconds = (unsigned int)delay_value;
             argi += 1;
-        } else if (streq(argv[argi], "--services")) {
+        } else if (tool_str_equal(argv[argi], "--services")) {
             options.show_services = 1;
-        } else if (streq(argv[argi], "--summary")) {
+        } else if (tool_str_equal(argv[argi], "--summary")) {
             options.show_summary = 1;
-        } else if (streq(argv[argi], "--progress")) {
+        } else if (tool_str_equal(argv[argi], "--progress")) {
             options.show_progress = 1;
-        } else if (streq(argv[argi], "--csv")) {
+        } else if (tool_str_equal(argv[argi], "--csv")) {
             options.csv_output = 1;
-        } else if (streq(argv[argi], "--json")) {
+        } else if (tool_str_equal(argv[argi], "--json")) {
             tool_json_set_enabled(1);
-        } else if (streq(argv[argi], "--details")) {
+        } else if (tool_str_equal(argv[argi], "--details")) {
             options.show_details = 1;
-        } else if (streq(argv[argi], "--baseline")) {
+        } else if (tool_str_equal(argv[argi], "--baseline")) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 rt_free(positionals);
@@ -1313,20 +1310,20 @@ int main(int argc, char **argv) {
             }
             options.baseline_path = argv[argi + 1];
             argi += 1;
-        } else if (streq(argv[argi], "--diff")) {
+        } else if (tool_str_equal(argv[argi], "--diff")) {
             options.diff_only = 1;
-        } else if (streq(argv[argi], "--fail-open")) {
+        } else if (tool_str_equal(argv[argi], "--fail-open")) {
             options.fail_open = 1;
-        } else if (streq(argv[argi], "--fail-closed")) {
+        } else if (tool_str_equal(argv[argi], "--fail-closed")) {
             options.fail_closed = 1;
-        } else if (streq(argv[argi], "--banner")) {
+        } else if (tool_str_equal(argv[argi], "--banner")) {
             options.read_banner = 1;
-        } else if (streq(argv[argi], "--tls-cert")) {
+        } else if (tool_str_equal(argv[argi], "--tls-cert")) {
             options.tls_cert = 1;
             options.show_details = 1;
-        } else if (streq(argv[argi], "--tls-insecure")) {
+        } else if (tool_str_equal(argv[argi], "--tls-insecure")) {
             options.tls_insecure = 1;
-        } else if (streq(argv[argi], "--banner-bytes")) {
+        } else if (tool_str_equal(argv[argi], "--banner-bytes")) {
             unsigned long long value = 0ULL;
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &value, "portscan", "banner byte limit") != 0 ||
                 value == 0ULL || value > (unsigned long long)PORTSCAN_BANNER_MAX) {
@@ -1336,7 +1333,7 @@ int main(int argc, char **argv) {
             }
             options.banner_byte_limit = (unsigned int)value;
             argi += 1;
-        } else if (streq(argv[argi], "--banner-timeout")) {
+        } else if (tool_str_equal(argv[argi], "--banner-timeout")) {
             unsigned long long banner_timeout = 0ULL;
             if (argi + 1 >= argc || tool_parse_duration_ms(argv[argi + 1], &banner_timeout) != 0 || banner_timeout > 0xffffffffULL) {
                 print_usage(argv[0]);
@@ -1345,7 +1342,7 @@ int main(int argc, char **argv) {
             }
             options.banner_timeout_milliseconds = (unsigned int)banner_timeout;
             argi += 1;
-        } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        } else if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             rt_free(positionals);
             return 0;

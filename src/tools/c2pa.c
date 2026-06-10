@@ -110,8 +110,6 @@ static int prepend_default_created_action(const char **actions, unsigned int *ac
     return 0;
 }
 
-#define read_u16_be tool_read_u16_be
-#define read_u32_be tool_read_u32_be
 
 static void buf_init(ByteBuffer *buf) {
     buf->data = 0;
@@ -438,7 +436,7 @@ static int insert_png_cabx(const unsigned char *data, size_t size, const unsigne
     size_t offset = 8U;
     if (size < 8U || !byte_arrays_equal(data, sig, sizeof(sig))) return -1;
     while (offset + 12U <= size) {
-        unsigned int length = read_u32_be(data + offset);
+        unsigned int length = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         if ((size_t)length > size - offset - 12U) return -1;
         if (bytes_equal(type, "IEND", 4U)) {
@@ -471,7 +469,7 @@ static int jpeg_insert_offset(const unsigned char *data, size_t size, size_t *of
         if (marker == 0xd9U) return -1;
         if (marker == 0x01U || (marker >= 0xd0U && marker <= 0xd7U)) continue;
         if (offset + 2U > size) return -1;
-        segment_size = read_u16_be(data + offset);
+        segment_size = tool_read_u16_be(data + offset);
         if (segment_size < 2U || (size_t)segment_size > size - offset) return -1;
         offset += (size_t)segment_size;
     }

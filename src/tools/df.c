@@ -72,7 +72,6 @@ static void format_percent_text(unsigned long long used, unsigned long long tota
     buffer[length + 1U] = '\0';
 }
 
-#define same_row_path tool_str_equal
 
 static int same_filesystem_info(const PlatformFilesystemInfo *left, const PlatformFilesystemInfo *right) {
     return left->total_bytes == right->total_bytes &&
@@ -103,7 +102,7 @@ static int add_row(DfRow *rows, size_t *count, const char *path, int dedupe_by_f
     }
 
     for (i = 0; i < *count; ++i) {
-        if (same_row_path(rows[i].path, lookup_path)) {
+        if (tool_str_equal(rows[i].path, lookup_path)) {
             return 0;
         }
         if (dedupe_by_filesystem && same_filesystem_info(&rows[i].info, &info)) {

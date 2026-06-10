@@ -38,16 +38,15 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-w WIDTH] [-s] [-u] [-c] [-p PREFIX] [file ...]");
 }
 
-#define starts_with_text tool_starts_with
 
 static const char *option_attached_value(const char *arg, const char *short_name, const char *long_name) {
     size_t short_len = rt_strlen(short_name);
     size_t long_len = rt_strlen(long_name);
 
-    if (starts_with_text(arg, short_name) && arg[short_len] != '\0') {
+    if (tool_starts_with(arg, short_name) && arg[short_len] != '\0') {
         return arg + short_len;
     }
-    if (starts_with_text(arg, long_name) && arg[long_len] == '=') {
+    if (tool_starts_with(arg, long_name) && arg[long_len] == '=') {
         return arg + long_len + 1U;
     }
     return 0;
@@ -280,7 +279,7 @@ static int process_input_line(FmtState *state, const char *raw_line) {
 
     if (state->options->have_prefix_filter) {
         size_t prefix_len = rt_strlen(state->options->prefix_filter);
-        if (!starts_with_text(raw_line, state->options->prefix_filter)) {
+        if (!tool_starts_with(raw_line, state->options->prefix_filter)) {
             if (fmt_flush_paragraph(state) != 0) {
                 return -1;
             }

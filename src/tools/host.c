@@ -4,20 +4,17 @@
 
 #define HOST_MAX_RESULTS 48U
 
-#define streq tool_str_equal
-#define ascii_tolower tool_ascii_tolower
-#define streq_ignore_case tool_str_equal_ignore_case_ascii
 
 static int parse_type(const char *text, unsigned short *type_out) {
-    if (streq_ignore_case(text, "A")) {
+    if (tool_str_equal_ignore_case_ascii(text, "A")) {
         *type_out = PLATFORM_DNS_RECORD_A;
-    } else if (streq_ignore_case(text, "AAAA")) {
+    } else if (tool_str_equal_ignore_case_ascii(text, "AAAA")) {
         *type_out = PLATFORM_DNS_RECORD_AAAA;
-    } else if (streq_ignore_case(text, "MX")) {
+    } else if (tool_str_equal_ignore_case_ascii(text, "MX")) {
         *type_out = PLATFORM_DNS_RECORD_MX;
-    } else if (streq_ignore_case(text, "NS")) {
+    } else if (tool_str_equal_ignore_case_ascii(text, "NS")) {
         *type_out = PLATFORM_DNS_RECORD_NS;
-    } else if (streq_ignore_case(text, "TXT")) {
+    } else if (tool_str_equal_ignore_case_ascii(text, "TXT")) {
         *type_out = PLATFORM_DNS_RECORD_TXT;
     } else {
         return -1;
@@ -95,32 +92,32 @@ int main(int argc, char **argv) {
     int json = 0;
 
     while (argi < argc) {
-        if (streq(argv[argi], "-4")) {
+        if (tool_str_equal(argv[argi], "-4")) {
             query_type = PLATFORM_DNS_RECORD_A;
             family = PLATFORM_NETWORK_FAMILY_IPV4;
             argi += 1;
-        } else if (streq(argv[argi], "-6")) {
+        } else if (tool_str_equal(argv[argi], "-6")) {
             query_type = PLATFORM_DNS_RECORD_AAAA;
             family = PLATFORM_NETWORK_FAMILY_IPV6;
             argi += 1;
-        } else if (streq(argv[argi], "-t")) {
+        } else if (tool_str_equal(argv[argi], "-t")) {
             if (argi + 1 >= argc || parse_type(argv[argi + 1], &query_type) != 0) {
                 print_usage();
                 return 1;
             }
             argi += 2;
-        } else if (streq(argv[argi], "-s")) {
+        } else if (tool_str_equal(argv[argi], "-s")) {
             if (argi + 1 >= argc) {
                 print_usage();
                 return 1;
             }
             server = argv[argi + 1];
             argi += 2;
-        } else if (streq(argv[argi], "--json")) {
+        } else if (tool_str_equal(argv[argi], "--json")) {
             json = 1;
             tool_json_set_enabled(1);
             argi += 1;
-        } else if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        } else if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_usage();
             return 0;
         } else {

@@ -15,7 +15,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-a] COMMAND...");
 }
 
-#define contains_slash tool_path_has_separator
 
 static int path_exists_as_file(const char *path) {
     PlatformDirEntry entry;
@@ -103,7 +102,6 @@ static int resolve_shell_name(const char *name) {
     return -1;
 }
 
-#define set_self_dir tool_path_dirname
 
 static int search_in_list(const char *dirs, const char *name, char *buffer, size_t buffer_size) {
     size_t i = 0;
@@ -136,7 +134,7 @@ static int search_in_list(const char *dirs, const char *name, char *buffer, size
 }
 
 static int resolve_command(const SearchContext *ctx, const char *name, char *buffer, size_t buffer_size) {
-    if (contains_slash(name)) {
+    if (tool_path_has_separator(name)) {
         if (path_exists_as_file(name)) {
             rt_copy_string(buffer, buffer_size, name);
             return 0;
@@ -172,7 +170,7 @@ static int print_all_matches(const SearchContext *ctx, const char *name) {
     char path[WHICH_PATH_CAPACITY];
     size_t i = 0;
 
-    if (contains_slash(name)) {
+    if (tool_path_has_separator(name)) {
         if (path_exists_as_file(name)) {
             rt_write_line(1, name);
             return 0;
@@ -232,7 +230,7 @@ int main(int argc, char **argv) {
     int print_all = 0;
     int argi = 1;
 
-    set_self_dir((argc > 0) ? argv[0] : "which", ctx.self_dir, sizeof(ctx.self_dir));
+    tool_path_dirname((argc > 0) ? argv[0] : "which", ctx.self_dir, sizeof(ctx.self_dir));
     ctx.path_env = platform_getenv("PATH");
     if (ctx.path_env == 0) {
         ctx.path_env = "/bin:/usr/bin:/usr/local/bin";

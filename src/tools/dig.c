@@ -4,9 +4,6 @@
 
 #define DIG_MAX_RESULTS 48U
 
-#define streq tool_str_equal
-#define ascii_tolower tool_ascii_tolower
-#define streq_ignore_case tool_str_equal_ignore_case_ascii
 
 static const char *dns_type_name(unsigned short record_type) {
     switch (record_type) {
@@ -31,23 +28,23 @@ static int parse_type(const char *text, unsigned short *record_type_out) {
     if (text == 0 || record_type_out == 0) {
         return -1;
     }
-    if (streq_ignore_case(text, "A")) {
+    if (tool_str_equal_ignore_case_ascii(text, "A")) {
         *record_type_out = PLATFORM_DNS_RECORD_A;
         return 0;
     }
-    if (streq_ignore_case(text, "AAAA")) {
+    if (tool_str_equal_ignore_case_ascii(text, "AAAA")) {
         *record_type_out = PLATFORM_DNS_RECORD_AAAA;
         return 0;
     }
-    if (streq_ignore_case(text, "MX")) {
+    if (tool_str_equal_ignore_case_ascii(text, "MX")) {
         *record_type_out = PLATFORM_DNS_RECORD_MX;
         return 0;
     }
-    if (streq_ignore_case(text, "NS")) {
+    if (tool_str_equal_ignore_case_ascii(text, "NS")) {
         *record_type_out = PLATFORM_DNS_RECORD_NS;
         return 0;
     }
-    if (streq_ignore_case(text, "TXT")) {
+    if (tool_str_equal_ignore_case_ascii(text, "TXT")) {
         *record_type_out = PLATFORM_DNS_RECORD_TXT;
         return 0;
     }
@@ -165,24 +162,24 @@ int main(int argc, char **argv) {
     int family_hint = PLATFORM_NETWORK_FAMILY_ANY;
 
     while (argi < argc) {
-        if (streq(argv[argi], "-4")) {
+        if (tool_str_equal(argv[argi], "-4")) {
             query_type = PLATFORM_DNS_RECORD_A;
             family_hint = PLATFORM_NETWORK_FAMILY_IPV4;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-6")) {
+        if (tool_str_equal(argv[argi], "-6")) {
             query_type = PLATFORM_DNS_RECORD_AAAA;
             family_hint = PLATFORM_NETWORK_FAMILY_IPV6;
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "--json")) {
+        if (tool_str_equal(argv[argi], "--json")) {
             tool_json_set_enabled(1);
             argi += 1;
             continue;
         }
-        if (streq(argv[argi], "-t")) {
+        if (tool_str_equal(argv[argi], "-t")) {
             if (argi + 1 >= argc || parse_type(argv[argi + 1], &query_type) != 0) {
                 tool_write_error("dig", "unsupported type: ", argi + 1 < argc ? argv[argi + 1] : "(missing)");
                 print_usage(argv[0]);
@@ -191,7 +188,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-s")) {
+        if (tool_str_equal(argv[argi], "-s")) {
             if (argi + 1 >= argc) {
                 print_usage(argv[0]);
                 return 1;
@@ -200,7 +197,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-p")) {
+        if (tool_str_equal(argv[argi], "-p")) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &port_value, "dig", "port") != 0 ||
                 port_value == 0ULL || port_value > 65535ULL) {
                 print_usage(argv[0]);
@@ -209,7 +206,7 @@ int main(int argc, char **argv) {
             argi += 2;
             continue;
         }
-        if (streq(argv[argi], "-h") || streq(argv[argi], "--help")) {
+        if (tool_str_equal(argv[argi], "-h") || tool_str_equal(argv[argi], "--help")) {
             print_help(argv[0]);
             return 0;
         }

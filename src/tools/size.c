@@ -34,13 +34,8 @@ typedef struct {
     unsigned long long size;
 } SizeSection;
 
-#define read_u16_le tool_read_u16_le
-#define read_u32_le tool_read_u32_le
-#define read_u32_be tool_read_u32_be
-#define read_u64_le tool_read_u64_le
 
 #define read_region(fd, offset, buffer, count) archive_read_region((fd), size_object_base, (offset), (buffer), (count))
-#define read_file_region archive_read_file_region
 
 static int select_macho_fat_slice(int fd, unsigned long long *offset_out, unsigned long long *size_out) {
     unsigned char header[8];
@@ -49,28 +44,27 @@ static int select_macho_fat_slice(int fd, unsigned long long *offset_out, unsign
     unsigned int index;
     *offset_out = 0ULL;
     *size_out = 0ULL;
-    if (read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
-    magic = read_u32_le(header + 0);
+    if (archive_read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    magic = tool_read_u32_le(header + 0);
     if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
-    arch_count = read_u32_be(header + 4);
+    arch_count = tool_read_u32_be(header + 4);
     if (arch_count > 32U) return -1;
     for (index = 0U; index < arch_count; ++index) {
         unsigned char raw[32];
         unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
         unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
         unsigned int cputype;
-        if (read_file_region(fd, entry, raw, entry_size) != 0) return -1;
-        cputype = read_u32_be(raw + 0);
+        if (archive_read_file_region(fd, entry, raw, entry_size) != 0) return -1;
+        cputype = tool_read_u32_be(raw + 0);
         if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
-            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)read_u32_be(raw + 8) << 32U) | (unsigned long long)read_u32_be(raw + 12)) : (unsigned long long)read_u32_be(raw + 8);
-            *size_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)read_u32_be(raw + 16) << 32U) | (unsigned long long)read_u32_be(raw + 20)) : (unsigned long long)read_u32_be(raw + 12);
+            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 8) << 32U) | (unsigned long long)tool_read_u32_be(raw + 12)) : (unsigned long long)tool_read_u32_be(raw + 8);
+            *size_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 16) << 32U) | (unsigned long long)tool_read_u32_be(raw + 20)) : (unsigned long long)tool_read_u32_be(raw + 12);
             if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
         }
     }
     return *offset_out != 0ULL ? 0 : -1;
 }
 
-#define copy_fixed_name tool_copy_printable_bytes
 
 static int macho_is_zerofill_type(unsigned int type) {
     return type == MACHO_S_ZEROFILL || type == MACHO_S_GB_ZEROFILL || type == MACHO_S_THREAD_LOCAL_ZEROFILL;
@@ -116,8 +110,8 @@ static int size_macho64_file(int fd,
                              unsigned long long *text,
                              unsigned long long *data,
                              unsigned long long *bss) {
-    unsigned int ncmds = read_u32_le(header + 16);
-    unsigned int sizeofcmds = read_u32_le(header + 20);
+    unsigned int ncmds = tool_read_u32_le(header + 16);
+    unsigned int sizeofcmds = tool_read_u32_le(header + 20);
     unsigned int command_index;
     unsigned long long command_offset = 32ULL;
 
@@ -137,8 +131,8 @@ static int size_macho64_file(int fd,
         if (command_offset + 8ULL > file_size || read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
             return -1;
         }
-        command = read_u32_le(command_header + 0);
-        command_size = read_u32_le(command_header + 4);
+        command = tool_read_u32_le(command_header + 0);
+        command_size = tool_read_u32_le(command_header + 4);
         if (command_size < 8U || command_offset + (unsigned long long)command_size > file_size) {
             return -1;
         }
@@ -153,9 +147,9 @@ static int size_macho64_file(int fd,
             if (read_region(fd, command_offset, segment_command, sizeof(segment_command)) != 0) {
                 return -1;
             }
-            copy_fixed_name(segment_name, sizeof(segment_name), segment_command + 8, 16U);
-            initprot = read_u32_le(segment_command + 60);
-            nsects = read_u32_le(segment_command + 64);
+            tool_copy_printable_bytes(segment_name, sizeof(segment_name), segment_command + 8, 16U);
+            initprot = tool_read_u32_le(segment_command + 60);
+            nsects = tool_read_u32_le(segment_command + 64);
             if (nsects > SIZE_MAX_SECTIONS || 72U + nsects * 80U > command_size) {
                 return -1;
             }
@@ -170,13 +164,13 @@ static int size_macho64_file(int fd,
                 if (read_region(fd, section_offset, section_command, sizeof(section_command)) != 0) {
                     return -1;
                 }
-                copy_fixed_name(section_name, sizeof(section_name), section_command + 0, 16U);
-                copy_fixed_name(section_segment, sizeof(section_segment), section_command + 16, 16U);
+                tool_copy_printable_bytes(section_name, sizeof(section_name), section_command + 0, 16U);
+                tool_copy_printable_bytes(section_segment, sizeof(section_segment), section_command + 16, 16U);
                 if (section_segment[0] == '\0') {
                     rt_copy_string(section_segment, sizeof(section_segment), segment_name);
                 }
-                section_size = read_u64_le(section_command + 40);
-                section_flags = read_u32_le(section_command + 64);
+                section_size = tool_read_u64_le(section_command + 40);
+                section_flags = tool_read_u32_le(section_command + 64);
                 add_macho_section_size(section_segment, section_name, initprot, section_flags, section_size, text, data, bss);
             }
         }
@@ -207,8 +201,8 @@ static int write_json_macho_segment_size(const char *path,
 }
 
 static int print_macho_segment_sizes(int fd, const char *path, const unsigned char *header, unsigned long long file_size) {
-    unsigned int ncmds = read_u32_le(header + 16);
-    unsigned int sizeofcmds = read_u32_le(header + 20);
+    unsigned int ncmds = tool_read_u32_le(header + 16);
+    unsigned int sizeofcmds = tool_read_u32_le(header + 20);
     unsigned int command_index;
     unsigned long long command_offset = 32ULL;
     unsigned long long grand_total = 0ULL;
@@ -219,8 +213,8 @@ static int print_macho_segment_sizes(int fd, const char *path, const unsigned ch
         unsigned int command;
         unsigned int command_size;
         if (command_offset + 8ULL > file_size || read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) return -1;
-        command = read_u32_le(command_header + 0);
-        command_size = read_u32_le(command_header + 4);
+        command = tool_read_u32_le(command_header + 0);
+        command_size = tool_read_u32_le(command_header + 4);
         if (command_size < 8U || command_offset + (unsigned long long)command_size > file_size) return -1;
         if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
             unsigned char segment_command[72];
@@ -234,12 +228,12 @@ static int print_macho_segment_sizes(int fd, const char *path, const unsigned ch
             unsigned long long section_total = 0ULL;
 
             if (read_region(fd, command_offset, segment_command, sizeof(segment_command)) != 0) return -1;
-            copy_fixed_name(segment_name, sizeof(segment_name), segment_command + 8, 16U);
-            vmaddr = read_u64_le(segment_command + 24);
-            vmsize = read_u64_le(segment_command + 32);
-            fileoff = read_u64_le(segment_command + 40);
-            filesize = read_u64_le(segment_command + 48);
-            nsects = read_u32_le(segment_command + 64);
+            tool_copy_printable_bytes(segment_name, sizeof(segment_name), segment_command + 8, 16U);
+            vmaddr = tool_read_u64_le(segment_command + 24);
+            vmsize = tool_read_u64_le(segment_command + 32);
+            fileoff = tool_read_u64_le(segment_command + 40);
+            filesize = tool_read_u64_le(segment_command + 48);
+            nsects = tool_read_u32_le(segment_command + 64);
             if (nsects > SIZE_MAX_SECTIONS || 72U + nsects * 80U > command_size) return -1;
             if (size_json) {
                 if (write_json_macho_segment_size(path, segment_name, 0, vmsize, filesize == 0ULL && vmsize != 0ULL, fileoff, vmaddr) != 0) return -1;
@@ -262,11 +256,11 @@ static int print_macho_segment_sizes(int fd, const char *path, const unsigned ch
                 unsigned int flags;
                 int zerofill;
                 if (read_region(fd, section_offset, section_command, sizeof(section_command)) != 0) return -1;
-                copy_fixed_name(section_name, sizeof(section_name), section_command + 0, 16U);
-                section_addr = read_u64_le(section_command + 32);
-                section_size = read_u64_le(section_command + 40);
-                section_fileoff = read_u32_le(section_command + 48);
-                flags = read_u32_le(section_command + 64);
+                tool_copy_printable_bytes(section_name, sizeof(section_name), section_command + 0, 16U);
+                section_addr = tool_read_u64_le(section_command + 32);
+                section_size = tool_read_u64_le(section_command + 40);
+                section_fileoff = tool_read_u32_le(section_command + 48);
+                flags = tool_read_u32_le(section_command + 64);
                 zerofill = macho_is_zerofill_type(flags & 0xffU) || rt_strcmp(section_name, "__bss") == 0 || rt_strcmp(section_name, "__common") == 0;
                 section_total += section_size;
                 if (size_json) {
@@ -366,7 +360,7 @@ static int size_file(const char *path, int print_name) {
         tool_write_error("size", "unsupported file: ", path);
         return 1;
     }
-    if (read_u32_le(header) == MACHO_FAT_MAGIC_LE || read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
+    if (tool_read_u32_le(header) == MACHO_FAT_MAGIC_LE || tool_read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
         unsigned long long slice_offset;
         unsigned long long slice_size;
         if (select_macho_fat_slice(fd, &slice_offset, &slice_size) == 0) {
@@ -379,7 +373,7 @@ static int size_file(const char *path, int print_name) {
             }
         }
     }
-    if (read_u32_le(header) == MACHO_MAGIC_64_LE) {
+    if (tool_read_u32_le(header) == MACHO_MAGIC_64_LE) {
         int result = size_macho64_file(fd, header, file_size, &text, &data, &bss);
         if (result != 0) {
             platform_close(fd);
@@ -425,9 +419,9 @@ static int size_file(const char *path, int print_name) {
         tool_write_error("size", "unsupported file: ", path);
         return 1;
     }
-    shoff = read_u64_le(header + 40);
-    shentsize = read_u16_le(header + 58);
-    shnum = read_u16_le(header + 60);
+    shoff = tool_read_u64_le(header + 40);
+    shentsize = tool_read_u16_le(header + 58);
+    shnum = tool_read_u16_le(header + 60);
     if (shnum > SIZE_MAX_SECTIONS || shentsize < 64U) {
         platform_close(fd);
         tool_write_error("size", "invalid section table: ", path);
@@ -439,10 +433,10 @@ static int size_file(const char *path, int print_name) {
             platform_close(fd);
             return 1;
         }
-        sections[i].type = read_u32_le(raw + 4);
-        sections[i].flags = read_u64_le(raw + 8);
-        sections[i].offset = read_u64_le(raw + 24);
-        sections[i].size = read_u64_le(raw + 32);
+        sections[i].type = tool_read_u32_le(raw + 4);
+        sections[i].flags = tool_read_u64_le(raw + 8);
+        sections[i].offset = tool_read_u64_le(raw + 24);
+        sections[i].size = tool_read_u64_le(raw + 32);
         if ((sections[i].flags & ELF_SHF_ALLOC) == 0ULL) {
             continue;
         }

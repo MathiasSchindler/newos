@@ -192,7 +192,10 @@ int tool_parse_tabstop_list(const char *text, unsigned long long *stops, size_t 
 int tool_find_http_header_end(const char *buffer, size_t length, size_t *offset_out);
 int tool_unicode_space_at(const char *text, size_t length, size_t index, size_t *advance_out);
 void tool_format_uptime_compact(unsigned long long total_seconds, char *buffer, size_t buffer_size);
+int tool_days_in_month(int year, unsigned int month);
 long long tool_days_from_civil(int year, unsigned int month, unsigned int day);
+void tool_civil_from_days(long long days, int *year_out, unsigned int *month_out, unsigned int *day_out);
+int tool_build_epoch_timestamp(int year, unsigned int month, unsigned int day, unsigned int hour, unsigned int minute, unsigned int second, long long *epoch_out);
 size_t tool_buffer_append_char(char *buffer, size_t buffer_size, size_t length, char ch);
 size_t tool_buffer_append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text);
 size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, unsigned long long value);
@@ -225,6 +228,7 @@ int tool_paths_equal(const char *left_path, const char *right_path);
 int tool_path_is_root(const char *path);
 int tool_path_is_same_or_child(const char *path, const char *prefix, char *scratch, size_t scratch_size);
 int tool_decode_mount_field(const char *text, size_t text_length, char *buffer, size_t buffer_size);
+int tool_next_mount_field(const char *line, size_t line_length, size_t *index_io, char *buffer, size_t buffer_size);
 int tool_path_is_unsafe_relative(const char *path);
 int tool_copy_file(const char *source_path, const char *dest_path);
 int tool_copy_path(const char *source_path, const char *dest_path, int recursive, int preserve_mode, int preserve_symlinks);

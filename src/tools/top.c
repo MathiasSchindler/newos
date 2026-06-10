@@ -233,7 +233,6 @@ static void write_right_cell(const char *text, size_t width) {
     (void)rt_write_char(1, ' ');
 }
 
-#define format_uptime_compact tool_format_uptime_compact
 
 static void format_memory_value(unsigned long long bytes, char *buffer, size_t buffer_size) {
     tool_format_size(bytes, 1, buffer, buffer_size);
@@ -293,7 +292,7 @@ static void write_summary(const PlatformProcessEntry *entries, size_t count) {
         now_text[0] = '\0';
     }
     if (have_uptime) {
-        format_uptime_compact(uptime.uptime_seconds, uptime_text, sizeof(uptime_text));
+        tool_format_uptime_compact(uptime.uptime_seconds, uptime_text, sizeof(uptime_text));
     }
 
     (void)rt_write_cstr(1, "top - ");

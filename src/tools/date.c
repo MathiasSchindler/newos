@@ -25,19 +25,17 @@ typedef struct {
     const char *reference_path;
 } DateOptions;
 
-#define date_to_lower_ascii tool_ascii_tolower
 
 static int date_is_alpha(char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
-#define date_equals_ignore_case tool_str_equal_ignore_case_ascii
 
 static int date_word_at(const char *text, size_t index, const char *word, size_t *end_out) {
     size_t offset = 0;
 
     while (word[offset] != '\0') {
-        if (text[index + offset] == '\0' || date_to_lower_ascii(text[index + offset]) != date_to_lower_ascii(word[offset])) {
+        if (text[index + offset] == '\0' || tool_ascii_tolower(text[index + offset]) != tool_ascii_tolower(word[offset])) {
             return 0;
         }
         offset += 1U;
@@ -128,55 +126,6 @@ static int parse_signed_prefix(const char *text, size_t *index_io, long long *va
     return 0;
 }
 
-static int is_leap_year(int year) {
-    if ((year % 400) == 0) return 1;
-    if ((year % 100) == 0) return 0;
-    return (year % 4) == 0;
-}
-
-static int days_in_month(int year, unsigned int month) {
-    static const unsigned char days[] = { 31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U };
-
-    if (month == 0U || month > 12U) {
-        return 0;
-    }
-    if (month == 2U && is_leap_year(year)) {
-        return 29;
-    }
-    return (int)days[month - 1U];
-}
-
-#define days_from_civil tool_days_from_civil
-
-static void civil_from_days(long long days, int *year_out, unsigned int *month_out, unsigned int *day_out) {
-    long long z = days + 719468LL;
-    long long era = (z >= 0LL ? z : z - 146096LL) / 146097LL;
-    unsigned int day_of_era = (unsigned int)(z - era * 146097LL);
-    unsigned int year_of_era = (day_of_era - day_of_era / 1460U + day_of_era / 36524U - day_of_era / 146096U) / 365U;
-    int year = (int)year_of_era + (int)(era * 400LL);
-    unsigned int day_of_year = day_of_era - (365U * year_of_era + year_of_era / 4U - year_of_era / 100U);
-    unsigned int month_index = (5U * day_of_year + 2U) / 153U;
-    unsigned int day = day_of_year - (153U * month_index + 2U) / 5U + 1U;
-    unsigned int month = month_index + (month_index < 10U ? 3U : (unsigned int)-9);
-
-    year += (month <= 2U) ? 1 : 0;
-    *year_out = year;
-    *month_out = month;
-    *day_out = day;
-}
-
-static int build_epoch_timestamp(int year, unsigned int month, unsigned int day, unsigned int hour, unsigned int minute, unsigned int second, long long *epoch_out) {
-    long long days;
-
-    if (epoch_out == 0 || month < 1U || month > 12U || day < 1U || day > (unsigned int)days_in_month(year, month) ||
-        hour > 23U || minute > 59U || second > 59U) {
-        return -1;
-    }
-    days = days_from_civil(year, month, day);
-    *epoch_out = days * 86400LL + (long long)hour * 3600LL + (long long)minute * 60LL + (long long)second;
-    return 0;
-}
-
 static void split_epoch_timestamp(long long epoch, int *year_out, unsigned int *month_out, unsigned int *day_out, unsigned int *hour_out, unsigned int *minute_out, unsigned int *second_out) {
     long long days = epoch / 86400LL;
     long long remainder = epoch % 86400LL;
@@ -185,7 +134,7 @@ static void split_epoch_timestamp(long long epoch, int *year_out, unsigned int *
         days -= 1LL;
         remainder += 86400LL;
     }
-    civil_from_days(days, year_out, month_out, day_out);
+    tool_civil_from_days(days, year_out, month_out, day_out);
     *hour_out = (unsigned int)(remainder / 3600LL);
     *minute_out = (unsigned int)((remainder % 3600LL) / 60LL);
     *second_out = (unsigned int)(remainder % 60LL);
@@ -241,7 +190,7 @@ static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset
     size_t end;
 
     skip_spaces(text, &index);
-    if (date_to_lower_ascii(text[index]) == 'z') {
+    if (tool_ascii_tolower(text[index]) == 'z') {
         *offset_seconds_out = 0;
         *index_io = index + 1U;
         return 0;
@@ -314,7 +263,7 @@ static int parse_calendar_value(const char *text, size_t *index_io, long long *e
     if (parse_timezone_suffix(text, &index, &timezone_offset_seconds) != 0) {
         timezone_offset_seconds = 0;
     }
-    if (build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out) != 0) {
+    if (tool_build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out) != 0) {
         return -1;
     }
     *epoch_out -= (long long)timezone_offset_seconds;
@@ -399,11 +348,11 @@ static int apply_month_delta(long long *epoch_io, int sign, unsigned long long a
         return -1;
     }
     new_month = (unsigned int)(total_months - new_year * 12LL) + 1U;
-    max_day = days_in_month((int)new_year, new_month);
+    max_day = tool_days_in_month((int)new_year, new_month);
     if (day > (unsigned int)max_day) {
         day = (unsigned int)max_day;
     }
-    return build_epoch_timestamp((int)new_year, new_month, day, hour, minute, second, epoch_io);
+    return tool_build_epoch_timestamp((int)new_year, new_month, day, hour, minute, second, epoch_io);
 }
 
 static int unit_matches(const char *text, size_t start, size_t length, const char *word) {
@@ -427,19 +376,19 @@ static int parse_relative_unit(const char *text, size_t *index_io, int sign, uns
     if (length == 0U) {
         return -1;
     }
-    if ((length == 1U && date_to_lower_ascii(text[start]) == 's') || unit_matches(text, start, length, "sec") || unit_matches(text, start, length, "second") || unit_matches(text, start, length, "seconds")) {
+    if ((length == 1U && tool_ascii_tolower(text[start]) == 's') || unit_matches(text, start, length, "sec") || unit_matches(text, start, length, "second") || unit_matches(text, start, length, "seconds")) {
         multiplier = 1LL;
-    } else if ((length == 1U && date_to_lower_ascii(text[start]) == 'm') || unit_matches(text, start, length, "min") || unit_matches(text, start, length, "minute") || unit_matches(text, start, length, "minutes")) {
+    } else if ((length == 1U && tool_ascii_tolower(text[start]) == 'm') || unit_matches(text, start, length, "min") || unit_matches(text, start, length, "minute") || unit_matches(text, start, length, "minutes")) {
         multiplier = 60LL;
-    } else if ((length == 1U && date_to_lower_ascii(text[start]) == 'h') || unit_matches(text, start, length, "hr") || unit_matches(text, start, length, "hour") || unit_matches(text, start, length, "hours")) {
+    } else if ((length == 1U && tool_ascii_tolower(text[start]) == 'h') || unit_matches(text, start, length, "hr") || unit_matches(text, start, length, "hour") || unit_matches(text, start, length, "hours")) {
         multiplier = 3600LL;
-    } else if ((length == 1U && date_to_lower_ascii(text[start]) == 'd') || unit_matches(text, start, length, "day") || unit_matches(text, start, length, "days")) {
+    } else if ((length == 1U && tool_ascii_tolower(text[start]) == 'd') || unit_matches(text, start, length, "day") || unit_matches(text, start, length, "days")) {
         multiplier = 86400LL;
-    } else if ((length == 1U && date_to_lower_ascii(text[start]) == 'w') || unit_matches(text, start, length, "week") || unit_matches(text, start, length, "weeks")) {
+    } else if ((length == 1U && tool_ascii_tolower(text[start]) == 'w') || unit_matches(text, start, length, "week") || unit_matches(text, start, length, "weeks")) {
         multiplier = 604800LL;
     } else if (unit_matches(text, start, length, "mon") || unit_matches(text, start, length, "month") || unit_matches(text, start, length, "months")) {
         months_per_unit = 1;
-    } else if ((length == 1U && date_to_lower_ascii(text[start]) == 'y') || unit_matches(text, start, length, "year") || unit_matches(text, start, length, "years")) {
+    } else if ((length == 1U && tool_ascii_tolower(text[start]) == 'y') || unit_matches(text, start, length, "year") || unit_matches(text, start, length, "years")) {
         months_per_unit = 12;
     } else {
         return -1;
@@ -571,23 +520,23 @@ static int date_format_time(long long epoch_seconds, int use_local_time, const c
 }
 
 static int parse_iso_precision(const char *text, DateFormatKind *kind_out) {
-    if (text == 0 || text[0] == '\0' || date_equals_ignore_case(text, "date")) {
+    if (text == 0 || text[0] == '\0' || tool_str_equal_ignore_case_ascii(text, "date")) {
         *kind_out = DATE_FORMAT_ISO_DATE;
         return 0;
     }
-    if (date_equals_ignore_case(text, "hours")) {
+    if (tool_str_equal_ignore_case_ascii(text, "hours")) {
         *kind_out = DATE_FORMAT_ISO_HOURS;
         return 0;
     }
-    if (date_equals_ignore_case(text, "minutes")) {
+    if (tool_str_equal_ignore_case_ascii(text, "minutes")) {
         *kind_out = DATE_FORMAT_ISO_MINUTES;
         return 0;
     }
-    if (date_equals_ignore_case(text, "seconds")) {
+    if (tool_str_equal_ignore_case_ascii(text, "seconds")) {
         *kind_out = DATE_FORMAT_ISO_SECONDS;
         return 0;
     }
-    if (date_equals_ignore_case(text, "ns") || date_equals_ignore_case(text, "nanoseconds")) {
+    if (tool_str_equal_ignore_case_ascii(text, "ns") || tool_str_equal_ignore_case_ascii(text, "nanoseconds")) {
         *kind_out = DATE_FORMAT_ISO_NS;
         return 0;
     }
@@ -595,15 +544,15 @@ static int parse_iso_precision(const char *text, DateFormatKind *kind_out) {
 }
 
 static int parse_rfc3339_precision(const char *text, DateFormatKind *kind_out) {
-    if (date_equals_ignore_case(text, "date")) {
+    if (tool_str_equal_ignore_case_ascii(text, "date")) {
         *kind_out = DATE_FORMAT_RFC3339_DATE;
         return 0;
     }
-    if (date_equals_ignore_case(text, "seconds")) {
+    if (tool_str_equal_ignore_case_ascii(text, "seconds")) {
         *kind_out = DATE_FORMAT_RFC3339_SECONDS;
         return 0;
     }
-    if (date_equals_ignore_case(text, "ns") || date_equals_ignore_case(text, "nanoseconds")) {
+    if (tool_str_equal_ignore_case_ascii(text, "ns") || tool_str_equal_ignore_case_ascii(text, "nanoseconds")) {
         *kind_out = DATE_FORMAT_RFC3339_NS;
         return 0;
     }

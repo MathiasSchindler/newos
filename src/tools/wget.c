@@ -94,16 +94,12 @@ static void wget_connection_close(WgetConnection *connection) {
     connection->socket_fd = -1;
 }
 
-#define to_lower_ascii tool_ascii_tolower
-#define equals_ignore_case_ascii tool_str_equal_ignore_case_ascii
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
 }
 
-#define buffer_append_char tool_buffer_append_char
 
-#define buffer_append_cstr tool_buffer_append_cstr
 
 static size_t find_line_end(const char *text, size_t start) {
     size_t index = start;
@@ -166,7 +162,7 @@ static int header_name_equals(const char *line, size_t name_length, const char *
     size_t index = 0U;
 
     while (index < name_length && name[index] != '\0') {
-        if (to_lower_ascii(line[index]) != to_lower_ascii(name[index])) {
+        if (tool_ascii_tolower(line[index]) != tool_ascii_tolower(name[index])) {
             return 0;
         }
         index += 1U;
@@ -205,7 +201,6 @@ static int copy_header_value(const char *value, size_t value_length, char *out, 
     return 0;
 }
 
-#define find_header_end tool_find_http_header_end
 
 static void derive_output_name(const char *path, char *buffer, size_t buffer_size) {
     size_t length = 0;
@@ -437,17 +432,17 @@ static int compose_redirect_url(const WgetUrl *base, const char *location, char 
         return -1;
     }
 
-    length = buffer_append_cstr(buffer, buffer_size, length, base->scheme == WGET_SCHEME_HTTPS ? "https://" : "http://");
-    length = buffer_append_cstr(buffer, buffer_size, length, base->host);
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base->scheme == WGET_SCHEME_HTTPS ? "https://" : "http://");
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base->host);
     if ((base->scheme == WGET_SCHEME_HTTP && base->port != 80U) ||
         (base->scheme == WGET_SCHEME_HTTPS && base->port != 443U)) {
         rt_unsigned_to_string(base->port, port_text, sizeof(port_text));
-        length = buffer_append_char(buffer, buffer_size, length, ':');
-        length = buffer_append_cstr(buffer, buffer_size, length, port_text);
+        length = tool_buffer_append_char(buffer, buffer_size, length, ':');
+        length = tool_buffer_append_cstr(buffer, buffer_size, length, port_text);
     }
 
     if (location[0] == '/') {
-        length = buffer_append_cstr(buffer, buffer_size, length, location);
+        length = tool_buffer_append_cstr(buffer, buffer_size, length, location);
         return rt_strlen(buffer) == length ? 0 : -1;
     }
 
@@ -465,11 +460,11 @@ static int compose_redirect_url(const WgetUrl *base, const char *location, char 
         rt_copy_string(base_dir, sizeof(base_dir), "/");
     }
 
-    length = buffer_append_cstr(buffer, buffer_size, length, base_dir);
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base_dir);
     if (base_dir[rt_strlen(base_dir) - 1U] != '/') {
-        length = buffer_append_char(buffer, buffer_size, length, '/');
+        length = tool_buffer_append_char(buffer, buffer_size, length, '/');
     }
-    length = buffer_append_cstr(buffer, buffer_size, length, location);
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, location);
     return rt_strlen(buffer) == length ? 0 : -1;
 }
 
@@ -605,17 +600,17 @@ static int fetch_http_body(
         return -1;
     }
 
-    request_length = buffer_append_cstr(request, sizeof(request), request_length, "GET ");
-    request_length = buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
-    request_length = buffer_append_cstr(request, sizeof(request), request_length, url->scheme == WGET_SCHEME_HTTPS ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
-    request_length = buffer_append_cstr(request, sizeof(request), request_length, url->host);
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "GET ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->scheme == WGET_SCHEME_HTTPS ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->host);
     if (url->port != default_port_for_scheme(url->scheme)) {
         char port_text[16];
         rt_unsigned_to_string(url->port, port_text, sizeof(port_text));
-        request_length = buffer_append_char(request, sizeof(request), request_length, ':');
-        request_length = buffer_append_cstr(request, sizeof(request), request_length, port_text);
+        request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, port_text);
     }
-    request_length = buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
 
     if (wget_connection_write_all(&connection, request, request_length) != 0) {
         wget_connection_close(&connection);
@@ -649,7 +644,7 @@ static int fetch_http_body(
             header_length += (size_t)bytes_read;
             header_buffer[header_length] = '\0';
 
-            if (find_header_end(header_buffer, header_length, &body_offset) != 0) {
+            if (tool_find_http_header_end(header_buffer, header_length, &body_offset) != 0) {
                 continue;
             }
 
@@ -890,7 +885,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (options.output_path != 0 && equals_ignore_case_ascii(options.output_path, "-")) {
+    if (options.output_path != 0 && tool_str_equal_ignore_case_ascii(options.output_path, "-")) {
         options.output_path = 0;
         options.output_to_stdout = 1;
     }
