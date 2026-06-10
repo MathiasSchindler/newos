@@ -13,11 +13,11 @@ pdfinfo [-p|--plain] [-d|--details] [--pages] [--objects] [--fonts] [--json] [fi
 ## DESCRIPTION
 
 `pdfinfo` scans PDF files and reports document structure that can be discovered
-without executing PDF content or inflating compressed streams. It recognizes the
-PDF header, indirect objects, streams, xref markers, trailers, pages, page
-boxes, fonts, image and form XObjects, filters, encodings, annotations,
-metadata objects, classic document-info fields, and a small set of visible
-content-stream operators.
+without executing PDF content. It recognizes the PDF header, indirect objects,
+streams, xref markers and xref streams, trailers, pages, page boxes, fonts,
+image and form XObjects, filters, encodings, annotations, metadata objects,
+classic document-info fields, compressed object streams, and a small set of
+visible content-stream operators.
 
 When no file is provided, `pdfinfo` reads from standard input.
 
@@ -61,7 +61,8 @@ encodings: WinAnsiEncoding(1)
 
 `--plain` prints a single line with key/value pairs suitable for scripts.
 `--details` adds structural counters, page entries, and font entries. `--json`
-prints a JSON object with the same summary counters and name histograms.
+prints one JSON object per input with the same summary counters, name
+histograms, and page details.
 
 Document-info metadata is printed when present. Supported fields are `title`,
 `author`, `subject`, `keywords`, `creator`, `producer`, `creation_date`, and
@@ -75,13 +76,22 @@ as `+01'00'` or `-05'30'` are timezone offsets. JSON output preserves the raw
 Page dimensions are reported in PDF points. Known page boxes are matched
 approximately against common formats such as Letter, Legal, A3, A4, and A5.
 
+## JSON Output
+
+With `--json`, `pdfinfo` emits one compact JSON object per input file. Existing
+summary fields are preserved, and `page_details` contains one object for each
+discovered page. Each page detail includes `page_number`, `object_number`, and
+`generation`; it also includes `media_box` and `crop_box` four-number point
+arrays, `rotation`, and `page_format` when those values are visible in the PDF.
+
 ## LIMITATIONS
 
-- The analyzer is a shallow structural scanner. It does not decompress streams,
-  repair malformed files, evaluate object streams, follow incremental update
-  revisions, or execute page content.
+- The analyzer is a shallow structural scanner. It can decode unfiltered and
+  single `FlateDecode`/`Fl` streams for xref streams, object streams, and simple
+  content scanning, but it does not repair malformed files, follow every
+  incremental update revision, or execute page content.
 - Filter and encoding names are counted when they are visible in object
-  dictionaries. Filtered stream contents are not interpreted.
+  dictionaries. Unsupported filtered stream contents are not interpreted.
 - Classic document-info metadata is read from visible object dictionaries using
   literal strings, name values, and hex strings with UTF-16 byte-order marks.
   XMP packet fields inside compressed metadata streams are not decoded.

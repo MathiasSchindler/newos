@@ -39,12 +39,15 @@ else
 fi
 NEWLINKER_SIZE_CFLAGS_ARRAY=()
 if [[ "$NEWLINKER_IS_NCC" != "1" ]]; then
+  FLAG_CHECK_DIR="$WORK/.checks"
+  mkdir -p "$FLAG_CHECK_DIR"
   for _flag in -fcf-protection=none -falign-functions=1 -falign-jumps=1 -falign-loops=1 -falign-labels=1 -fomit-frame-pointer -fno-ident; do
-    if printf 'int x;\n' | "$NEWLINKER_CC" "${NEWLINKER_TARGET_FLAGS[@]}" "$_flag" -x c - -c -o /tmp/newos-newlinker-size-flag-check.o >/dev/null 2>&1; then
+    if printf 'int x;\n' | "$NEWLINKER_CC" "${NEWLINKER_TARGET_FLAGS[@]}" "$_flag" -x c - -c -o "$FLAG_CHECK_DIR/newos-newlinker-size-flag-check.o" >/dev/null 2>&1; then
       NEWLINKER_SIZE_CFLAGS_ARRAY+=("$_flag")
     fi
-    rm -f /tmp/newos-newlinker-size-flag-check.o
+    rm -f "$FLAG_CHECK_DIR/newos-newlinker-size-flag-check.o"
   done
+  rmdir "$FLAG_CHECK_DIR" 2>/dev/null || true
 fi
 if [[ -z "${NEWLINKER_EXTRA_CFLAGS+x}" ]]; then
   if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
@@ -586,7 +589,7 @@ for tool in $TOOLS; do
     imginfo|imgcheck|imgmeta|c2pa)
       for src in "${IMAGE_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
-    pdfinfo|pdfjoin|pdfsplit|pdfinfoedit)
+    pdfinfo|pdfjoin|pdfsplit|pdfinfoedit|pdfextract|pdfgrep|pdfcheck)
       for src in "${PDF_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
     wget|wtf|portscan)

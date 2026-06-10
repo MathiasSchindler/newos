@@ -15,7 +15,7 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Parent 2 0 R /MediaBox [0 0 612 792] /Group << /Type /Group /S /Transparency >> /Rotate 0 /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 6 0 R >> >> /Contents 5 0 R /Type /Page >>
+<< /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [18 36 594 756] /Group << /Type /Group /S /Transparency >> /Rotate 0 /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 6 0 R >> >> /Contents 5 0 R /Type /Page >>
 endobj
 4 0 obj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
@@ -112,6 +112,14 @@ assert_file_contains "$WORK_DIR/json.txt" "\"modification_date\":\"D:20260609123
 assert_file_contains "$WORK_DIR/json.txt" '"modification_date_formatted":"2026-06-09 12:30:00 UTC+01:00"' "pdfinfo --json did not report formatted modification date"
 assert_file_contains "$WORK_DIR/json.txt" '"name":"FlateDecode"' "pdfinfo --json did not report filters"
 assert_file_contains "$WORK_DIR/json.txt" '"name":"WinAnsiEncoding"' "pdfinfo --json did not report encodings"
+assert_file_contains "$WORK_DIR/json.txt" '"page_details":\[' "pdfinfo --json did not include page details"
+assert_file_contains "$WORK_DIR/json.txt" '"page_number":1' "pdfinfo --json did not report page number"
+assert_file_contains "$WORK_DIR/json.txt" '"object_number":3' "pdfinfo --json did not report page object number"
+assert_file_contains "$WORK_DIR/json.txt" '"generation":0' "pdfinfo --json did not report page generation"
+assert_file_contains "$WORK_DIR/json.txt" '"media_box":\[0,0,612,792\]' "pdfinfo --json did not report page media box"
+assert_file_contains "$WORK_DIR/json.txt" '"crop_box":\[18,36,594,756\]' "pdfinfo --json did not report page crop box"
+assert_file_contains "$WORK_DIR/json.txt" '"rotation":0' "pdfinfo --json did not report page rotation"
+assert_file_contains "$WORK_DIR/json.txt" '"page_format":"Letter"' "pdfinfo --json did not report page format"
 
 "${TEST_BIN_DIR}/pdfinfo" "$WORK_DIR/array-filter.pdf" > "$WORK_DIR/array-filter.txt"
 assert_file_contains "$WORK_DIR/array-filter.txt" 'filters: ASCII85Decode(1), FlateDecode(1)' "pdfinfo did not advance through filter arrays"

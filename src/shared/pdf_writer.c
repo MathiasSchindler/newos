@@ -377,7 +377,7 @@ static void pdfw_scan_startxref(PdfDocument *document) {
     }
 }
 
-int pdf_document_parse(const unsigned char *data, size_t size, PdfDocument *document) {
+int pdf_document_scan(const unsigned char *data, size_t size, PdfDocument *document) {
     if (data == 0 || document == 0) return -1;
     pdf_document_init(document);
     document->data = data;
@@ -386,15 +386,24 @@ int pdf_document_parse(const unsigned char *data, size_t size, PdfDocument *docu
         pdf_document_free(document);
         return -1;
     }
-    if (document->info.encrypted != 0ULL || document->info.object_stream_count != 0ULL || document->info.xref_stream_count != 0ULL) {
-        pdf_document_free(document);
-        return -2;
-    }
-    if (pdfw_scan_objects(document) != 0 || document->catalog_object_number == 0U || document->pages_len == 0U) {
+    if (pdfw_scan_objects(document) != 0) {
         pdf_document_free(document);
         return -1;
     }
     pdfw_scan_startxref(document);
+    return 0;
+}
+
+int pdf_document_parse(const unsigned char *data, size_t size, PdfDocument *document) {
+    if (pdf_document_scan(data, size, document) != 0) return -1;
+    if (document->info.encrypted != 0ULL || document->info.object_stream_count != 0ULL || document->info.xref_stream_count != 0ULL) {
+        pdf_document_free(document);
+        return -2;
+    }
+    if (document->catalog_object_number == 0U || document->pages_len == 0U) {
+        pdf_document_free(document);
+        return -1;
+    }
     return 0;
 }
 

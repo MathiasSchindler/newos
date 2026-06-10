@@ -7,7 +7,7 @@ pdfjoin - combine PDF files into one PDF
 ## Synopsis
 
 ```text
-pdfjoin -o OUTPUT PDF...
+pdfjoin -o OUTPUT [--no-metadata] [--title TEXT] [--author TEXT] [--subject TEXT] [--keywords TEXT] [--creator TEXT] [--producer TEXT] PDF...
 ```
 
 ## Description
@@ -16,12 +16,23 @@ pdfjoin -o OUTPUT PDF...
 argument order. It copies ordinary indirect objects, renumbers references, builds
 a fresh catalog and page tree, and writes a new cross-reference table.
 
-The first input document's document-info metadata is used for the output.
+By default, the first input document's document-info metadata is used for the
+output. Metadata options can override selected fields. Use `--no-metadata` to
+write the joined PDF without a document-info dictionary.
 
 ## Options
 
 - `-o`, `--output` - write the combined PDF to this path
+- `--no-metadata` - omit document-info metadata from the output
+- `--title TEXT` - set the output title metadata
+- `--author TEXT` - set the output author metadata
+- `--subject TEXT` - set the output subject metadata
+- `--keywords TEXT` - set the output keywords metadata
+- `--creator TEXT` - set the output creator metadata
+- `--producer TEXT` - set the output producer metadata
 - `-h`, `--help` - show usage
+
+`--no-metadata` cannot be combined with metadata override options.
 
 ## Limitations
 
@@ -30,6 +41,9 @@ object PDFs and rejects encrypted files, xref streams, and compressed object
 streams. Page dictionaries with direct resource dictionaries are handled best;
 very complex inherited page-tree resources may need a future, deeper page-tree
 model.
+
+Bookmarks and outlines are not preserved yet; the current writer focuses on
+page/object joining and document-info metadata.
 
 ## Examples
 

@@ -112,7 +112,7 @@
     X("src/shared/crypto/p256.c") \
     X("src/shared/image/validate.c")
 
-/* -- PDF metadata parsing ------------------------------------------------ */
+/* -- PDF parsing and writing --------------------------------------------- */
 
 #define FOREACH_PDF_SOURCE(X) \
     X("src/shared/pdf.c") \

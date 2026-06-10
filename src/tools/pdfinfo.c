@@ -357,6 +357,57 @@ static void write_json_name_counts(const char *key, const PdfNameCount *items, s
     rt_write_char(1, ']');
 }
 
+static void write_json_fixed_array4(const long long values[4]) {
+    size_t index;
+
+    rt_write_char(1, '[');
+    for (index = 0U; index < 4U; ++index) {
+        if (index != 0U) rt_write_char(1, ',');
+        write_fixed(values[index]);
+    }
+    rt_write_char(1, ']');
+}
+
+static void write_json_page_details(const PdfInfo *info, int *first) {
+    size_t index;
+
+    if (!*first) rt_write_char(1, ',');
+    *first = 0;
+    json_key("page_details");
+    rt_write_char(1, '[');
+    for (index = 0U; index < info->pages_len; ++index) {
+        const PdfPageInfo *page = &info->pages[index];
+        int page_first = 1;
+
+        if (index != 0U) rt_write_char(1, ',');
+        rt_write_char(1, '{');
+        json_uint_field("page_number", (unsigned long long)(index + 1U), &page_first);
+        json_uint_field("object_number", page->object_number, &page_first);
+        json_uint_field("generation", page->generation, &page_first);
+        if (page->has_media_box) {
+            if (!page_first) rt_write_char(1, ',');
+            page_first = 0;
+            json_key("media_box");
+            write_json_fixed_array4(page->media_box);
+            json_string_field("page_format", pdf_page_format_name(page_width(page), page_height(page)), &page_first);
+        }
+        if (page->has_crop_box) {
+            if (!page_first) rt_write_char(1, ',');
+            page_first = 0;
+            json_key("crop_box");
+            write_json_fixed_array4(page->crop_box);
+        }
+        if (page->has_rotate) {
+            if (!page_first) rt_write_char(1, ',');
+            page_first = 0;
+            json_key("rotation");
+            write_fixed(page->rotate);
+        }
+        rt_write_char(1, '}');
+    }
+    rt_write_char(1, ']');
+}
+
 static void write_json_output(const char *path, size_t size, const PdfInfo *info) {
     int first = 1;
     char creation_date_formatted[PDF_TEXT_CAPACITY];
@@ -398,6 +449,7 @@ static void write_json_output(const char *path, size_t size, const PdfInfo *info
     write_json_name_counts("filters", info->filters, info->filters_len, &first);
     write_json_name_counts("encodings", info->encodings, info->encodings_len, &first);
     write_json_name_counts("font_names", info->font_names, info->font_names_len, &first);
+    write_json_page_details(info, &first);
     rt_write_cstr(1, "}\n");
 }
 
