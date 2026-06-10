@@ -1,5 +1,10 @@
 CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2
+ifneq ($(findstring ncc,$(CC)),)
+  SHARED_INC_FLAG := -I../../src/shared
+else
+  SHARED_INC_FLAG := -idirafter ../../src/shared
+endif
 
 BUILD_DIR := build
 OUT_DIR := out
@@ -29,7 +34,7 @@ $(OUT_DIR):
 	mkdir -p $(OUT_DIR)
 
 $(BUILD_DIR)/generate: $(GENERATOR_SRCS) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I../../src/shared -I../../src/platform/posix -I../../src/platform/common $(GENERATOR_SRCS) -o $(BUILD_DIR)/generate
+	$(CC) $(CFLAGS) $(SHARED_INC_FLAG) -I../../src/platform/posix -I../../src/platform/common $(GENERATOR_SRCS) -o $(BUILD_DIR)/generate
 
 files: $(BUILD_DIR)/generate | $(OUT_DIR)
 	$(BUILD_DIR)/generate $(OUT_DIR)

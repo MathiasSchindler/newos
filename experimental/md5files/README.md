@@ -30,9 +30,9 @@ The verifier checks two properties:
 It prefers the project `build/md5sum` tool when present, then falls back to the
 host `md5sum` or macOS `md5` command.
 
-## ELF Scaffold
+## ELF Wrapper
 
-The generator also has an ELF-aware scaffold mode:
+The generator also has an ELF-aware wrapper mode:
 
 ```sh
 make -C experimental/md5files build/generate
@@ -46,19 +46,17 @@ With that command this writes:
 
 You can override those with `--out-dir`, `--out1`, and `--out2`.
 
-This mode parses both inputs as little-endian ELF64 executables, checks that the
-program header table is inside the file, checks that every `PT_LOAD` segment is
-inside the original file, and appends a labeled
-`newos-md5-collision-metadata` trailer after the original bytes. The collision
-block is placed at the same 64-byte-aligned file offset in both outputs, and the
-original file modes are preserved so executable inputs remain executable.
+Without `--backend`, this mode parses both inputs as little-endian ELF64
+executables, then emits two Linux/x86-64 ELF wrapper executables. The wrappers
+share the controlled MD5-collision prefix and append both original input binaries
+as identical suffix data. At runtime, a bit that differs inside the collision
+payload selects which embedded ELF is copied to a memfd and executed with the
+original argument vector and environment.
 
-The scaffold computes the MD5 of both candidate outputs before returning. With
-arbitrary existing ELF files it is expected to exit with status 2 and explain
-that the candidate outputs do not collide. That is intentional: the fixed public
-collision blocks only work for their controlled MD5 prefix state. This gives us
-the binary-safe trailer layout and validation path without pretending to solve
-the chosen-prefix collision problem yet.
+Because both outputs have the same prefix collision state and the same suffix,
+their MD5 hashes match even when the input ELF files have very different sizes.
+The wrappers are intentionally Linux/x86-64 specific and rely on `/proc/self/exe`,
+`memfd_create`, and `execveat`.
 
 ## Controlled ELF Demo
 
@@ -95,23 +93,19 @@ The `examples/` directory contains tiny static ELF `true` and `false` binaries.
 The harmless proof of concept is for those two binaries to remain behaviorally
 different while having the same MD5 hash.
 
-The current scaffold can be run against them with:
+The wrapper can be run against them with:
 
 ```sh
 make -C experimental/md5files scaffold-examples
 ```
 
-For now this is expected to report that the pair needs a chosen-prefix backend.
-That is the correct checkpoint: the scaffold has proven where the labeled trailer
-can live without changing the loaded ELF bytes, but it cannot synthesize the
-input-specific MD5 collision blocks by itself.
+This now produces `out/elf-md5file-a.bin` and `out/elf-md5file-b.bin` with the
+same MD5 hash while preserving the selected embedded program behavior.
 
-The scaffold now has a backend interface for a command that accepts the two
+The generator also keeps a backend interface for a command that accepts the two
 validated ELF prefixes and returns a pair of chosen-prefix collision payloads for
-the exact MD5 state at the trailer position. Once a real chosen-prefix backend is
-connected, the same scaffold path should produce `out/elf-md5file-a.bin` and
-`out/elf-md5file-b.bin`, verify that their MD5 hashes match, and leave their
-original `true`/`false` behavior intact.
+the exact MD5 state at the trailer position. Use that path when you specifically
+want an appended trailer layout instead of the controlled wrapper layout.
 
 ## Backend Contract
 

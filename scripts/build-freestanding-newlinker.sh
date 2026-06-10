@@ -128,16 +128,19 @@ if [[ ! -x "$LINKER" ]]; then
 fi
 
 TOOLS=${TOOLS:-$(awk '/^TOOLS[[:space:]]*:=/{sub(/^[^:]*:=/,""); print; exit}' Makefile)}
-mapfile -t SHARED_SOURCES < <(grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+mapfile -t SHARED_SOURCES < <(grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|archive_zip|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t PLATFORM_SOURCES < <(grep -oE '"src/platform/linux/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t COMPILER_SOURCES < <(grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t IMAGE_SOURCES < <(grep -oE '"src/shared/(image/[^"]+|crypto/(sha256|p256))\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+mapfile -t PDF_SOURCES < <(grep -oE '"src/shared/pdf(_writer)?\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t CRYPTO_SOURCES < <(grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t TLS_SOURCES < <(grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+mapfile -t USB_SOURCES < <(grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 REUSE_SOURCES=("${SHARED_SOURCES[@]}" "${PLATFORM_SOURCES[@]}" src/arch/x86_64/linux/syscall_stubs.S)
 SSH_CRYPTO_SOURCES=("${CRYPTO_SOURCES[@]}" src/shared/crypto/curve25519.c src/shared/crypto/ed25519.c src/shared/crypto/chacha20_poly1305.c src/shared/crypto/ssh_kdf.c)
-HASH_SOURCES=(src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c)
+HASH_SOURCES=(src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c)
 TLS_PLATFORM_SOURCE=src/platform/linux/tls.c
+USB_PLATFORM_SOURCE=src/platform/linux/usb.c
 TUI_SOURCE=src/shared/tui.c
 CRT_SRC=src/arch/x86_64/linux/crt0.S
 if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
@@ -550,6 +553,7 @@ for tool in $TOOLS; do
   tool_sources=()
   if [[ -f "src/tools/$tool.c" ]]; then append_unique_source tool_sources "src/tools/$tool.c"
   elif [[ "$tool" == "ping6" && -f src/tools/ping.c ]]; then append_unique_source tool_sources src/tools/ping.c
+  elif [[ "$tool" == "rg" && -f src/tools/ripgrep.c ]]; then append_unique_source tool_sources src/tools/ripgrep.c
   elif [[ "$tool" == "[" && -f 'src/tools/[.c' ]]; then append_unique_source tool_sources "src/tools/[.c"
   elif [[ "$tool" == "[" && -f src/tools/test.c ]]; then append_unique_source tool_sources src/tools/test.c
   else compile_fail=$((compile_fail+1)); printf 'compile\t%s\t%s\n' "$tool" "missing main source" >> "$FAILFILE"; continue
@@ -576,11 +580,14 @@ for tool in $TOOLS; do
         append_unique_source tool_sources "$src"
       done
       ;;
-    md5sum|sha256sum|sha512sum)
+    md5sum|sha1sum|sha256sum|sha512sum)
       for src in "${HASH_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
     imginfo|imgcheck|imgmeta|c2pa)
       for src in "${IMAGE_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      ;;
+    pdfinfo|pdfjoin|pdfsplit|pdfinfoedit)
+      for src in "${PDF_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
     wget|wtf|portscan)
       for src in "${TLS_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
@@ -597,6 +604,10 @@ for tool in $TOOLS; do
     editor)
       append_dir_sources tool_sources src/tools/editor
       append_unique_source tool_sources "$TUI_SOURCE"
+      ;;
+    lsusb)
+      for src in "${USB_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      append_unique_source tool_sources "$USB_PLATFORM_SOURCE"
       ;;
     ssh)
       append_dir_sources tool_sources src/tools/ssh
