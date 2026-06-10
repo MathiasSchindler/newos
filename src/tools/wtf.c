@@ -237,22 +237,7 @@ static int compose_default_base_url(const char language[3], char *buffer, size_t
     return rt_strlen(buffer) == length ? 0 : -1;
 }
 
-static int find_header_end(const char *buffer, size_t length, size_t *offset_out) {
-    size_t index;
-    for (index = 0U; index + 3U < length; ++index) {
-        if (buffer[index] == '\r' && buffer[index + 1U] == '\n' && buffer[index + 2U] == '\r' && buffer[index + 3U] == '\n') {
-            *offset_out = index + 4U;
-            return 0;
-        }
-    }
-    for (index = 0U; index + 1U < length; ++index) {
-        if (buffer[index] == '\n' && buffer[index + 1U] == '\n') {
-            *offset_out = index + 2U;
-            return 0;
-        }
-    }
-    return -1;
-}
+#define find_header_end tool_find_http_header_end
 
 static int parse_status(const char *headers) {
     size_t index = 0U;
@@ -646,9 +631,7 @@ static size_t skip_leading_wrap_spaces(const char *text, size_t length, size_t s
     return index;
 }
 
-static int is_ascii_wrap_space(unsigned char ch) {
-    return ch == ' ' || ch == '\t';
-}
+#define is_ascii_wrap_space(ch) tool_ascii_is_blank((char)(ch))
 
 static int can_wrap_ascii_fast(const char *text, size_t length) {
     size_t index;

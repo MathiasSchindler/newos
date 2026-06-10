@@ -427,6 +427,105 @@ int tool_paths_equal(const char *left_path, const char *right_path) {
     return rt_strcmp(left, right) == 0;
 }
 
+int tool_path_is_same_or_child(const char *path, const char *prefix, char *scratch, size_t scratch_size) {
+    char *normalized_path;
+    char *normalized_prefix;
+    size_t path_capacity;
+    size_t prefix_capacity;
+    size_t index = 0U;
+
+    if (path == 0 || prefix == 0 || scratch == 0 || scratch_size < 8U) {
+        return 0;
+    }
+
+    path_capacity = scratch_size / 2U;
+    prefix_capacity = scratch_size - path_capacity;
+    normalized_path = scratch;
+    normalized_prefix = scratch + path_capacity;
+
+    if (tool_canonicalize_path(path, 0, 1, normalized_path, path_capacity) != 0) {
+        rt_copy_string(normalized_path, path_capacity, path);
+    }
+    if (tool_canonicalize_path(prefix, 0, 1, normalized_prefix, prefix_capacity) != 0) {
+        rt_copy_string(normalized_prefix, prefix_capacity, prefix);
+    }
+
+    if (normalized_prefix[0] == '/' && normalized_prefix[1] == '\0') {
+        return 1;
+    }
+
+    while (normalized_prefix[index] != '\0' && normalized_path[index] == normalized_prefix[index]) {
+        index += 1U;
+    }
+    if (normalized_prefix[index] != '\0') {
+        return 0;
+    }
+    return normalized_path[index] == '\0' || normalized_path[index] == '/';
+}
+
+static int tool_mount_is_octal_digit(char ch) {
+    return ch >= '0' && ch <= '7';
+}
+
+int tool_decode_mount_field(const char *text, size_t text_length, char *buffer, size_t buffer_size) {
+    size_t source_index = 0U;
+    size_t target_index = 0U;
+
+    if (text == 0 || buffer == 0 || buffer_size == 0U) {
+        return -1;
+    }
+
+    while (source_index < text_length) {
+        char ch = text[source_index];
+
+        if (target_index + 1U >= buffer_size) {
+            return -1;
+        }
+        if (ch == '\\' &&
+            source_index + 3U < text_length &&
+            tool_mount_is_octal_digit(text[source_index + 1U]) &&
+            tool_mount_is_octal_digit(text[source_index + 2U]) &&
+            tool_mount_is_octal_digit(text[source_index + 3U])) {
+            buffer[target_index++] = (char)(((text[source_index + 1U] - '0') << 6) |
+                                            ((text[source_index + 2U] - '0') << 3) |
+                                            (text[source_index + 3U] - '0'));
+            source_index += 4U;
+            continue;
+        }
+        buffer[target_index++] = ch;
+        source_index += 1U;
+    }
+    buffer[target_index] = '\0';
+    return 0;
+}
+
+int tool_path_is_unsafe_relative(const char *path) {
+    size_t index = 0U;
+
+    if (path == 0 || path[0] == '\0' || path[0] == '/') {
+        return 1;
+    }
+
+    while (path[index] != '\0') {
+        size_t start;
+        size_t length;
+
+        while (path[index] == '/') {
+            index += 1U;
+        }
+        start = index;
+        while (path[index] != '\0' && path[index] != '/') {
+            index += 1U;
+        }
+        length = index - start;
+        if (length == 2U && path[start] == '.' && path[start + 1U] == '.') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 int tool_path_is_root(const char *path) {
     char normalized[2048];
 

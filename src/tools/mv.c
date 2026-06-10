@@ -17,31 +17,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-i] [-f] [-n] [-u] [-v] source... destination");
 }
 
-static int path_is_same_or_child(const char *path, const char *prefix) {
-    char normalized_path[MV_PATH_CAPACITY];
-    char normalized_prefix[MV_PATH_CAPACITY];
-    size_t i = 0U;
-
-    if (tool_canonicalize_path(path, 0, 1, normalized_path, sizeof(normalized_path)) != 0) {
-        rt_copy_string(normalized_path, sizeof(normalized_path), path);
-    }
-    if (tool_canonicalize_path(prefix, 0, 1, normalized_prefix, sizeof(normalized_prefix)) != 0) {
-        rt_copy_string(normalized_prefix, sizeof(normalized_prefix), prefix);
-    }
-
-    if (normalized_prefix[0] == '/' && normalized_prefix[1] == '\0') {
-        return 1;
-    }
-
-    while (normalized_prefix[i] != '\0' && normalized_path[i] == normalized_prefix[i]) {
-        i += 1U;
-    }
-    if (normalized_prefix[i] != '\0') {
-        return 0;
-    }
-    return normalized_path[i] == '\0' || normalized_path[i] == '/';
-}
-
 static int should_replace(const char *source_path, const char *target_path, int source_is_dir, const MvOptions *options) {
     PlatformDirEntry source_info;
     PlatformDirEntry target_info;
@@ -67,6 +42,7 @@ static int should_replace(const char *source_path, const char *target_path, int 
 
 static int move_one_path(const char *source_path, const char *dest_path, const MvOptions *options) {
     char target_path[MV_PATH_CAPACITY];
+    char path_scratch[MV_PATH_CAPACITY * 2U];
     int source_is_dir;
     int path_status;
 
@@ -86,7 +62,7 @@ static int move_one_path(const char *source_path, const char *dest_path, const M
         return 1;
     }
 
-    if (source_is_dir && path_is_same_or_child(target_path, source_path)) {
+    if (source_is_dir && tool_path_is_same_or_child(target_path, source_path, path_scratch, sizeof(path_scratch))) {
         rt_write_cstr(2, "mv: cannot move directory into itself: ");
         rt_write_line(2, source_path);
         return 1;

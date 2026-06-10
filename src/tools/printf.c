@@ -3,9 +3,7 @@
 
 #define PRINTF_REPEAT_BUFFER_SIZE 128U
 
-static int ascii_is_digit(char ch) {
-    return ch >= '0' && ch <= '9';
-}
+#define ascii_is_digit tool_ascii_is_digit
 
 static int parse_signed_value(const char *text, long long *value_out) {
     long long value = 0;

@@ -233,45 +233,7 @@ static void write_right_cell(const char *text, size_t width) {
     (void)rt_write_char(1, ' ');
 }
 
-#define append_char tool_buffer_append_char
-#define append_cstr tool_buffer_append_cstr
-#define append_uint tool_buffer_append_uint
-
-static void format_uptime_compact(unsigned long long total_seconds, char *buffer, size_t buffer_size) {
-    unsigned long long days = total_seconds / 86400ULL;
-    unsigned long long hours = (total_seconds % 86400ULL) / 3600ULL;
-    unsigned long long minutes = (total_seconds % 3600ULL) / 60ULL;
-    unsigned long long seconds = total_seconds % 60ULL;
-    size_t length = 0;
-
-    if (buffer_size == 0U) {
-        return;
-    }
-
-    buffer[0] = '\0';
-    if (days > 0ULL) {
-        length = append_uint(buffer, buffer_size, length, days);
-        length = append_char(buffer, buffer_size, length, 'd');
-        length = append_char(buffer, buffer_size, length, ' ');
-        length = append_uint(buffer, buffer_size, length, hours);
-        length = append_char(buffer, buffer_size, length, 'h');
-        length = append_char(buffer, buffer_size, length, ' ');
-        length = append_uint(buffer, buffer_size, length, minutes);
-        (void)append_char(buffer, buffer_size, length, 'm');
-    } else if (hours > 0ULL) {
-        length = append_uint(buffer, buffer_size, length, hours);
-        length = append_char(buffer, buffer_size, length, 'h');
-        length = append_char(buffer, buffer_size, length, ' ');
-        length = append_uint(buffer, buffer_size, length, minutes);
-        (void)append_char(buffer, buffer_size, length, 'm');
-    } else if (minutes > 0ULL) {
-        length = append_uint(buffer, buffer_size, length, minutes);
-        (void)append_char(buffer, buffer_size, length, 'm');
-    } else {
-        length = append_uint(buffer, buffer_size, length, seconds);
-        (void)append_char(buffer, buffer_size, length, 's');
-    }
-}
+#define format_uptime_compact tool_format_uptime_compact
 
 static void format_memory_value(unsigned long long bytes, char *buffer, size_t buffer_size) {
     tool_format_size(bytes, 1, buffer, buffer_size);

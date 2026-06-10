@@ -103,26 +103,7 @@ static size_t join_decode_codepoint(const char *text, size_t length, size_t star
     return index - start;
 }
 
-static int join_unicode_space_at(const char *line, size_t length, size_t index, size_t *advance_out) {
-    unsigned int codepoint = 0U;
-    size_t advance;
-
-    if (index < length && ((unsigned char)line[index]) < 0x80U) {
-        unsigned char ch = (unsigned char)line[index];
-
-        if (advance_out != 0) {
-            *advance_out = 1U;
-        }
-        return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
-    }
-
-    advance = join_decode_codepoint(line, length, index, &codepoint);
-
-    if (advance_out != 0) {
-        *advance_out = advance;
-    }
-    return advance > 0U && rt_unicode_is_space(codepoint);
-}
+#define join_unicode_space_at tool_unicode_space_at
 
 static int compare_keys(const char *left, const char *right, int ignore_case) {
     size_t left_index = 0U;

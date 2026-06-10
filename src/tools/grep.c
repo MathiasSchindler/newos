@@ -119,9 +119,7 @@ static int write_match_highlighted_line(const char *pattern, const GrepOptions *
     return rt_write_line(1, line + rendered);
 }
 
-static int is_utf8_continuation_byte(unsigned char ch) {
-    return (ch & 0xc0U) == 0x80U;
-}
+#define is_utf8_continuation_byte tool_utf8_is_continuation_byte
 
 static unsigned char ascii_fold_byte(unsigned char ch) {
     return (ch >= 'A' && ch <= 'Z') ? (unsigned char)(ch + ('a' - 'A')) : ch;

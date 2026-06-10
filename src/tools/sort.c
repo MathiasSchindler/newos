@@ -429,13 +429,9 @@ static int collect_external_from_fd(int fd,
     return 0;
 }
 
-static int is_sort_space(char ch) {
-    return ch == ' ' || ch == '\t';
-}
+#define is_sort_space tool_ascii_is_blank
 
-static int is_sort_digit(char ch) {
-    return ch >= '0' && ch <= '9';
-}
+#define is_sort_digit tool_ascii_is_digit
 
 static int is_sort_alpha(char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');

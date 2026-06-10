@@ -16,49 +16,7 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-aiz] [-t TABSTOP[,TABSTOP...]] [file ...]");
 }
 
-static int parse_tabstop_list(const char *text, UnexpandOptions *options) {
-    unsigned long long previous = 0ULL;
-    size_t count = 0;
-    size_t start = 0;
-    size_t i = 0;
-
-    while (1) {
-        char ch = text[i];
-        if (ch == ',' || ch == '\0') {
-            char token[32];
-            size_t length;
-            unsigned long long value = 0ULL;
-
-            if (count >= UNEXPAND_MAX_TABSTOPS || i == start) {
-                return -1;
-            }
-            length = i - start;
-            if (length + 1U > sizeof(token)) {
-                return -1;
-            }
-            memcpy(token, text + start, length);
-            token[length] = '\0';
-            if (rt_parse_uint(token, &value) != 0 || value == 0ULL) {
-                return -1;
-            }
-            if (count > 0U && value <= previous) {
-                return -1;
-            }
-
-            options->stops[count++] = value;
-            previous = value;
-
-            if (ch == '\0') {
-                break;
-            }
-            start = i + 1U;
-        }
-        i += 1;
-    }
-
-    options->stop_count = count;
-    return count > 0U ? 0 : -1;
-}
+#define parse_tabstop_list(text, options) tool_parse_tabstop_list((text), (options)->stops, UNEXPAND_MAX_TABSTOPS, &(options)->stop_count)
 
 static unsigned long long next_tabstop(const UnexpandOptions *options, unsigned long long column) {
     size_t i;

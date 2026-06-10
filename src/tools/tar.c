@@ -249,32 +249,7 @@ static int tar_path_matches(const char *path, char patterns[][TAR_PATH_CAPACITY]
     return 0;
 }
 
-static int tar_path_is_unsafe(const char *path) {
-    size_t i = 0;
-
-    if (path == 0 || path[0] == '\0' || path[0] == '/') {
-        return 1;
-    }
-
-    while (path[i] != '\0') {
-        size_t start;
-        size_t len;
-
-        while (path[i] == '/') {
-            i += 1;
-        }
-        start = i;
-        while (path[i] != '\0' && path[i] != '/') {
-            i += 1;
-        }
-        len = i - start;
-        if (len == 2 && path[start] == '.' && path[start + 1] == '.') {
-            return 1;
-        }
-    }
-
-    return 0;
-}
+#define tar_path_is_unsafe tool_path_is_unsafe_relative
 
 static int tar_append_path_component(char *buffer,
                                      size_t buffer_size,

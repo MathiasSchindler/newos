@@ -35,9 +35,7 @@ static int tr_is_lower(unsigned char ch) {
     return ch >= 'a' && ch <= 'z';
 }
 
-static int tr_is_digit(unsigned char ch) {
-    return ch >= '0' && ch <= '9';
-}
+#define tr_is_digit(ch) tool_ascii_is_digit((char)(ch))
 
 static int tr_is_alpha(unsigned char ch) {
     return tr_is_upper(ch) || tr_is_lower(ch);
@@ -51,9 +49,7 @@ static int tr_is_space(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
 }
 
-static int tr_is_blank(unsigned char ch) {
-    return ch == ' ' || ch == '\t';
-}
+#define tr_is_blank(ch) tool_ascii_is_blank((char)(ch))
 
 static int tr_is_xdigit(unsigned char ch) {
     return tr_is_digit(ch) ||

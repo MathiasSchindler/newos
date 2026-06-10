@@ -471,9 +471,7 @@ static int find_fixed_match(const char *pattern,
     return 0;
 }
 
-static int is_utf8_continuation_byte(unsigned char ch) {
-    return (ch & 0xc0U) == 0x80U;
-}
+#define is_utf8_continuation_byte tool_utf8_is_continuation_byte
 
 static int ascii_is_word_byte(unsigned char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||

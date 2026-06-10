@@ -5,9 +5,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static int mail_starts_with(const char *text, const char *prefix) {
-    return rt_strncmp(text, prefix, rt_strlen(prefix)) == 0;
-}
+#define mail_starts_with tool_starts_with
 
 static int mail_ascii_lower(int ch) {
     if (ch >= 'A' && ch <= 'Z') {

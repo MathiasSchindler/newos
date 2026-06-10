@@ -29,41 +29,7 @@ static size_t append_uptime_part(
     return length;
 }
 
-static void format_uptime_compact(unsigned long long total_seconds, char *buffer, size_t buffer_size) {
-    unsigned long long days = total_seconds / 86400ULL;
-    unsigned long long hours = (total_seconds % 86400ULL) / 3600ULL;
-    unsigned long long minutes = (total_seconds % 3600ULL) / 60ULL;
-    unsigned long long seconds = total_seconds % 60ULL;
-    size_t length = 0;
-
-    if (buffer_size == 0) {
-        return;
-    }
-
-    buffer[0] = '\0';
-    if (days > 0) {
-        length = append_uint(buffer, buffer_size, length, days);
-        length = append_char(buffer, buffer_size, length, 'd');
-        length = append_char(buffer, buffer_size, length, ' ');
-        length = append_uint(buffer, buffer_size, length, hours);
-        length = append_char(buffer, buffer_size, length, 'h');
-        length = append_char(buffer, buffer_size, length, ' ');
-        length = append_uint(buffer, buffer_size, length, minutes);
-        (void)append_char(buffer, buffer_size, length, 'm');
-    } else if (hours > 0) {
-        length = append_uint(buffer, buffer_size, length, hours);
-        length = append_char(buffer, buffer_size, length, 'h');
-        length = append_char(buffer, buffer_size, length, ' ');
-        length = append_uint(buffer, buffer_size, length, minutes);
-        (void)append_char(buffer, buffer_size, length, 'm');
-    } else if (minutes > 0) {
-        length = append_uint(buffer, buffer_size, length, minutes);
-        (void)append_char(buffer, buffer_size, length, 'm');
-    } else {
-        length = append_uint(buffer, buffer_size, length, seconds);
-        (void)append_char(buffer, buffer_size, length, 's');
-    }
-}
+#define format_uptime_compact tool_format_uptime_compact
 
 static void format_uptime_pretty(unsigned long long total_seconds, char *buffer, size_t buffer_size) {
     unsigned long long days = total_seconds / 86400ULL;

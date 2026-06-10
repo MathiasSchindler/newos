@@ -13,9 +13,7 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-0] [file ...]");
 }
 
-static int is_utf8_continuation(unsigned char byte) {
-    return (byte & 0xC0U) == 0x80U;
-}
+#define is_utf8_continuation tool_utf8_is_continuation_byte
 
 static int decode_previous_codepoint(const char *text, size_t end, size_t *start_out, unsigned int *codepoint_out) {
     size_t start;

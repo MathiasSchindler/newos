@@ -3,6 +3,7 @@
 #include "message.h"
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #include <stddef.h>
 
@@ -122,9 +123,7 @@ static int mail_imap_quote(char *buffer, size_t buffer_size, const char *text) {
     return 0;
 }
 
-static int mail_starts_with(const char *text, const char *prefix) {
-    return rt_strncmp(text, prefix, rt_strlen(prefix)) == 0;
-}
+#define mail_starts_with tool_starts_with
 
 static int mail_imap_line_is_tagged(const char *line, const char *tag) {
     size_t tag_len = rt_strlen(tag);

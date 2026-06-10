@@ -708,6 +708,14 @@ char tool_ascii_tolower(char ch) {
     return ch;
 }
 
+int tool_ascii_is_digit(char ch) {
+    return ch >= '0' && ch <= '9';
+}
+
+int tool_ascii_is_blank(char ch) {
+    return ch == ' ' || ch == '\t';
+}
+
 int tool_ascii_is_token_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
 }
@@ -733,6 +741,41 @@ int tool_str_equal_ignore_case_ascii(const char *left, const char *right) {
         index += 1U;
     }
     return left[index] == '\0' && right[index] == '\0';
+}
+
+int tool_utf8_is_continuation_byte(unsigned char byte) {
+    return (byte & 0xc0U) == 0x80U;
+}
+
+int tool_unicode_space_at(const char *text, size_t length, size_t index, size_t *advance_out) {
+    unsigned int codepoint = 0U;
+    size_t next = index;
+
+    if (text == 0) {
+        if (advance_out != 0) {
+            *advance_out = 0U;
+        }
+        return 0;
+    }
+    if (index < length && ((unsigned char)text[index]) < 0x80U) {
+        unsigned char ch = (unsigned char)text[index];
+        if (advance_out != 0) {
+            *advance_out = 1U;
+        }
+        return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
+    }
+
+    if (text == 0 || index >= length || rt_utf8_decode(text, length, &next, &codepoint) != 0 || next <= index) {
+        if (advance_out != 0) {
+            *advance_out = index < length ? 1U : 0U;
+        }
+        return 0;
+    }
+
+    if (advance_out != 0) {
+        *advance_out = next - index;
+    }
+    return rt_unicode_is_space(codepoint);
 }
 
 int tool_contains_case_insensitive(const char *text, const char *needle) {
@@ -777,6 +820,76 @@ int tool_contains_case_insensitive(const char *text, const char *needle) {
     }
 
     return 0;
+}
+
+int tool_find_http_header_end(const char *buffer, size_t length, size_t *offset_out) {
+    size_t index;
+
+    if (buffer == 0 || offset_out == 0) {
+        return -1;
+    }
+
+    for (index = 0U; index + 3U < length; ++index) {
+        if (buffer[index] == '\r' && buffer[index + 1U] == '\n' &&
+            buffer[index + 2U] == '\r' && buffer[index + 3U] == '\n') {
+            *offset_out = index + 4U;
+            return 0;
+        }
+    }
+
+    for (index = 0U; index + 1U < length; ++index) {
+        if (buffer[index] == '\n' && buffer[index + 1U] == '\n') {
+            *offset_out = index + 2U;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+void tool_format_uptime_compact(unsigned long long total_seconds, char *buffer, size_t buffer_size) {
+    unsigned long long days = total_seconds / 86400ULL;
+    unsigned long long hours = (total_seconds % 86400ULL) / 3600ULL;
+    unsigned long long minutes = (total_seconds % 3600ULL) / 60ULL;
+    unsigned long long seconds = total_seconds % 60ULL;
+    size_t length = 0U;
+
+    if (buffer_size == 0U) {
+        return;
+    }
+
+    buffer[0] = '\0';
+    if (days > 0ULL) {
+        length = tool_buffer_append_uint(buffer, buffer_size, length, days);
+        length = tool_buffer_append_char(buffer, buffer_size, length, 'd');
+        length = tool_buffer_append_char(buffer, buffer_size, length, ' ');
+        length = tool_buffer_append_uint(buffer, buffer_size, length, hours);
+        length = tool_buffer_append_char(buffer, buffer_size, length, 'h');
+        length = tool_buffer_append_char(buffer, buffer_size, length, ' ');
+        length = tool_buffer_append_uint(buffer, buffer_size, length, minutes);
+        (void)tool_buffer_append_char(buffer, buffer_size, length, 'm');
+    } else if (hours > 0ULL) {
+        length = tool_buffer_append_uint(buffer, buffer_size, length, hours);
+        length = tool_buffer_append_char(buffer, buffer_size, length, 'h');
+        length = tool_buffer_append_char(buffer, buffer_size, length, ' ');
+        length = tool_buffer_append_uint(buffer, buffer_size, length, minutes);
+        (void)tool_buffer_append_char(buffer, buffer_size, length, 'm');
+    } else if (minutes > 0ULL) {
+        length = tool_buffer_append_uint(buffer, buffer_size, length, minutes);
+        (void)tool_buffer_append_char(buffer, buffer_size, length, 'm');
+    } else {
+        length = tool_buffer_append_uint(buffer, buffer_size, length, seconds);
+        (void)tool_buffer_append_char(buffer, buffer_size, length, 's');
+    }
+}
+
+long long tool_days_from_civil(int year, unsigned int month, unsigned int day) {
+    int adjusted_year = year - (month <= 2U ? 1 : 0);
+    int era = (adjusted_year >= 0 ? adjusted_year : adjusted_year - 399) / 400;
+    unsigned int year_of_era = (unsigned int)(adjusted_year - (era * 400));
+    unsigned int shifted_month = month + (month > 2U ? (unsigned int)-3 : 9U);
+    unsigned int day_of_year = ((153U * shifted_month) + 2U) / 5U + day - 1U;
+    unsigned int day_of_era = year_of_era * 365U + year_of_era / 4U - year_of_era / 100U + day_of_year;
+    return (long long)era * 146097LL + (long long)day_of_era - 719468LL;
 }
 
 int tool_text_is_decimal(const char *text) {

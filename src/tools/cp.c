@@ -21,33 +21,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-a] [-f] [-i] [-n] [-p] [-r|-R] [-u] [-v] source... destination");
 }
 
-static int path_is_same_or_child(const char *path, const char *prefix) {
-    char normalized_path[CP_PATH_CAPACITY];
-    char normalized_prefix[CP_PATH_CAPACITY];
-    size_t i = 0;
-
-    if (tool_canonicalize_path(path, 0, 1, normalized_path, sizeof(normalized_path)) != 0) {
-        rt_copy_string(normalized_path, sizeof(normalized_path), path);
-    }
-    if (tool_canonicalize_path(prefix, 0, 1, normalized_prefix, sizeof(normalized_prefix)) != 0) {
-        rt_copy_string(normalized_prefix, sizeof(normalized_prefix), prefix);
-    }
-
-    if (normalized_prefix[0] == '/' && normalized_prefix[1] == '\0') {
-        return 1;
-    }
-
-    while (normalized_prefix[i] != '\0' && normalized_path[i] == normalized_prefix[i]) {
-        i += 1U;
-    }
-
-    if (normalized_prefix[i] != '\0') {
-        return 0;
-    }
-
-    return normalized_path[i] == '\0' || normalized_path[i] == '/';
-}
-
 static int resolve_copy_target(const char *source_path, const char *dest_path, int source_is_directory, char *buffer, size_t buffer_size) {
     int dest_is_directory = 0;
 
@@ -111,6 +84,7 @@ static void preserve_copy_metadata(const char *source_path, const char *target_p
 
 static int copy_one_path(const char *source_path, const char *dest_path, const CpOptions *options) {
     char target_path[CP_PATH_CAPACITY];
+    char path_scratch[CP_PATH_CAPACITY * 2U];
     int source_is_directory = 0;
 
     if (platform_path_is_directory(source_path, &source_is_directory) != 0) {
@@ -135,7 +109,7 @@ static int copy_one_path(const char *source_path, const char *dest_path, const C
         return 1;
     }
 
-    if (source_is_directory && path_is_same_or_child(target_path, source_path)) {
+    if (source_is_directory && tool_path_is_same_or_child(target_path, source_path, path_scratch, sizeof(path_scratch))) {
         rt_write_cstr(2, "cp: cannot copy directory into itself: ");
         rt_write_line(2, source_path);
         return 1;

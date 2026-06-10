@@ -115,6 +115,54 @@ int tool_token_equals(const char *text, size_t text_length, const char *token) {
     return index == text_length && token[index] == '\0';
 }
 
+int tool_parse_tabstop_list(const char *text, unsigned long long *stops, size_t max_stops, size_t *count_out) {
+    unsigned long long previous = 0ULL;
+    size_t count = 0U;
+    size_t start = 0U;
+    size_t index = 0U;
+
+    if (text == 0 || stops == 0 || count_out == 0 || max_stops == 0U) {
+        return -1;
+    }
+
+    while (1) {
+        char ch = text[index];
+        if (ch == ',' || ch == '\0') {
+            char token[32];
+            size_t length;
+            unsigned long long value = 0ULL;
+
+            if (count >= max_stops || index == start) {
+                return -1;
+            }
+            length = index - start;
+            if (length + 1U > sizeof(token)) {
+                return -1;
+            }
+            memcpy(token, text + start, length);
+            token[length] = '\0';
+            if (rt_parse_uint(token, &value) != 0 || value == 0ULL) {
+                return -1;
+            }
+            if (count > 0U && value <= previous) {
+                return -1;
+            }
+
+            stops[count++] = value;
+            previous = value;
+
+            if (ch == '\0') {
+                break;
+            }
+            start = index + 1U;
+        }
+        index += 1U;
+    }
+
+    *count_out = count;
+    return count > 0U ? 0 : -1;
+}
+
 void tool_trim_whitespace(char *text) {
     size_t start = 0U;
     size_t end;

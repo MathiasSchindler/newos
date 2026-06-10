@@ -205,26 +205,7 @@ static int copy_header_value(const char *value, size_t value_length, char *out, 
     return 0;
 }
 
-static int find_header_end(const char *buffer, size_t length, size_t *offset_out) {
-    size_t index;
-
-    for (index = 0; index + 3U < length; ++index) {
-        if (buffer[index] == '\r' && buffer[index + 1U] == '\n' &&
-            buffer[index + 2U] == '\r' && buffer[index + 3U] == '\n') {
-            *offset_out = index + 4U;
-            return 0;
-        }
-    }
-
-    for (index = 0; index + 1U < length; ++index) {
-        if (buffer[index] == '\n' && buffer[index + 1U] == '\n') {
-            *offset_out = index + 2U;
-            return 0;
-        }
-    }
-
-    return -1;
-}
+#define find_header_end tool_find_http_header_end
 
 static void derive_output_name(const char *path, char *buffer, size_t buffer_size) {
     size_t length = 0;

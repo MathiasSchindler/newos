@@ -146,15 +146,7 @@ static int days_in_month(int year, unsigned int month) {
     return (int)days[month - 1U];
 }
 
-static long long days_from_civil(int year, unsigned int month, unsigned int day) {
-    int adjusted_year = year - (month <= 2U ? 1 : 0);
-    int era = (adjusted_year >= 0 ? adjusted_year : adjusted_year - 399) / 400;
-    unsigned int year_of_era = (unsigned int)(adjusted_year - era * 400);
-    unsigned int shifted_month = month + (month > 2U ? (unsigned int)-3 : 9U);
-    unsigned int day_of_year = ((153U * shifted_month) + 2U) / 5U + day - 1U;
-    unsigned int day_of_era = year_of_era * 365U + year_of_era / 4U - year_of_era / 100U + day_of_year;
-    return (long long)era * 146097LL + (long long)day_of_era - 719468LL;
-}
+#define days_from_civil tool_days_from_civil
 
 static void civil_from_days(long long days, int *year_out, unsigned int *month_out, unsigned int *day_out) {
     long long z = days + 719468LL;

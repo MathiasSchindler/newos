@@ -7,10 +7,6 @@
 
 #define token_equals tool_token_equals
 
-static int mount_is_octal_digit(char ch) {
-    return ch >= '0' && ch <= '7';
-}
-
 #define mount_copy_trimmed tool_path_copy_trimmed
 
 static int mount_value_matches(const char *left, const char *right) {
@@ -22,37 +18,7 @@ static int mount_value_matches(const char *left, const char *right) {
     return rt_strcmp(normalized_left, normalized_right) == 0;
 }
 
-static int decode_mount_field(const char *text, size_t text_length, char *buffer, size_t buffer_size) {
-    size_t source_index = 0U;
-    size_t target_index = 0U;
-
-    if (buffer_size == 0U) {
-        return -1;
-    }
-
-    while (source_index < text_length) {
-        char ch = text[source_index];
-
-        if (target_index + 1U >= buffer_size) {
-            return -1;
-        }
-        if (ch == '\\' &&
-            source_index + 3U < text_length &&
-            mount_is_octal_digit(text[source_index + 1U]) &&
-            mount_is_octal_digit(text[source_index + 2U]) &&
-            mount_is_octal_digit(text[source_index + 3U])) {
-            buffer[target_index++] = (char)(((text[source_index + 1U] - '0') << 6) |
-                                            ((text[source_index + 2U] - '0') << 3) |
-                                            (text[source_index + 3U] - '0'));
-            source_index += 4U;
-            continue;
-        }
-        buffer[target_index++] = ch;
-        source_index += 1U;
-    }
-    buffer[target_index] = '\0';
-    return 0;
-}
+#define decode_mount_field tool_decode_mount_field
 
 static int next_mount_field(const char *line,
                             size_t line_length,

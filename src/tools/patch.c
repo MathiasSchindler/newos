@@ -77,32 +77,7 @@ static int build_backup_path(const char *path, char *buffer, size_t buffer_size)
     return 0;
 }
 
-static int patch_path_is_unsafe(const char *path) {
-    size_t i = 0U;
-
-    if (path == 0 || path[0] == '\0' || path[0] == '/') {
-        return 1;
-    }
-
-    while (path[i] != '\0') {
-        size_t start;
-        size_t length;
-
-        while (path[i] == '/') {
-            i += 1U;
-        }
-        start = i;
-        while (path[i] != '\0' && path[i] != '/') {
-            i += 1U;
-        }
-        length = i - start;
-        if (length == 2U && path[start] == '.' && path[start + 1U] == '.') {
-            return 1;
-        }
-    }
-
-    return 0;
-}
+#define patch_path_is_unsafe tool_path_is_unsafe_relative
 
 static int validate_patch_header_path(const char *path) {
     if (rt_strcmp(path, "/dev/null") == 0) {

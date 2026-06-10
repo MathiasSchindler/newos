@@ -149,46 +149,7 @@ static void add_field(AwkRecord *record, const char *start, size_t length) {
     record->nf += 1;
 }
 
-static size_t awk_decode_codepoint(const char *text, size_t length, size_t start, unsigned int *codepoint_out) {
-    size_t index = start;
-
-    if (start >= length) {
-        if (codepoint_out != 0) {
-            *codepoint_out = 0U;
-        }
-        return 0U;
-    }
-
-    if (rt_utf8_decode(text, length, &index, codepoint_out) != 0 || index <= start) {
-        if (codepoint_out != 0) {
-            *codepoint_out = (unsigned char)text[start];
-        }
-        return 1U;
-    }
-
-    return index - start;
-}
-
-static int awk_unicode_space_at(const char *line, size_t length, size_t index, size_t *advance_out) {
-    unsigned int codepoint = 0U;
-    size_t advance;
-
-    if (index < length && ((unsigned char)line[index]) < 0x80U) {
-        unsigned char ch = (unsigned char)line[index];
-
-        if (advance_out != 0) {
-            *advance_out = 1U;
-        }
-        return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
-    }
-
-    advance = awk_decode_codepoint(line, length, index, &codepoint);
-
-    if (advance_out != 0) {
-        *advance_out = advance;
-    }
-    return advance > 0U && rt_unicode_is_space(codepoint);
-}
+#define awk_unicode_space_at tool_unicode_space_at
 
 static void split_fields_whitespace(AwkRecord *record, const char *line) {
     size_t i = 0;
