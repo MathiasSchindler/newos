@@ -10,8 +10,11 @@ experimental/multicall/*
 !experimental/md5files/
 experimental/md5files/*
 !experimental/md5files/README.md
+!experimental/md5files/research-sha1.md
 !experimental/md5files/Makefile
 !experimental/md5files/generate.c
+!experimental/md5files/toy_sha1_backend.c
+!experimental/md5files/toy_sha1_cuda_backend.cu
 !experimental/md5files/verify.sh
 !experimental/md5files/examples/
 experimental/md5files/examples/*

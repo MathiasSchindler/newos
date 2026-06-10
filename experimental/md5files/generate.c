@@ -1,4 +1,5 @@
 #include "crypto/md5.h"
+#include "crypto/sha1.h"
 #include "platform.h"
 #include "runtime.h"
 #include "stdint.h"
@@ -19,6 +20,7 @@
 #define COLLISION_MAX_PAYLOAD_SIZE 4096U
 #define ZERO_CHUNK_SIZE 4096U
 #define MD5_COLLISION_BLOCK_SIZE 128U
+#define SHA1_COLLISION_BLOCK_SIZE 128U
 #define BACKEND_MAX_PAYLOAD_SIZE (16U * 1024U * 1024U)
 #define BACKEND_MAX_ARGS 32U
 #define PATH_BUFFER_SIZE 512U
@@ -51,23 +53,69 @@ static const char md5_collision_block_b_hex[] =
     "d8823e3156348f5bae6dacd436c919c6dd53e23487da03fd02396306d248cda0"
     "e99f33420f577ee8ce54b67080280d1ec69821bcb6a8839396f965ab6ff72a70";
 
-static const unsigned char plain_common_suffix[] =
+static const char sha1_collision_block_a_hex[] =
+    "7346dc9166b67e118f029ab621b2560ff9ca67cca8c7f85ba84c79030c2b3de2"
+    "18f86db3a90901d5df45c14f26fedfb3dc38e96ac22fe7bd728f0e45bce046d"
+    "23c570feb141398bb552ef5a0a82be331fea48037b8b5d71f0e332edf93ac350"
+    "0eb4ddc0decc1a864790c782c76215660dd309791d06bd0af3f98cda4bc4629b1";
+
+static const char sha1_collision_block_b_hex[] =
+    "7f46dc93a6b67e013b029aaa1db2560b45ca67d688c7f84b8c4c791fe02b3df6"
+    "14f86db1690901c56b45c1530afedfb76038e972722fe7ad728f0e4904e046c"
+    "230570fe9d41398abe12ef5bc942be33542a4802d98b5d70f2a332ec37fac351"
+    "4e74ddc0f2cc1a874cd0c78305a21566461309789606bd0bf3f98cda8044629a1";
+
+static const char toy_collision_block_a_hex[] =
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+static const char toy_collision_block_b_hex[] =
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000001";
+
+static const unsigned char sha1_plain_prefix[] = {
+    0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x33, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a, 0x0a,
+    0x0a, 0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x57, 0x69, 0x64, 0x74,
+    0x68, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x2f, 0x48, 0x65, 0x69, 0x67, 0x68, 0x74, 0x20, 0x33,
+    0x20, 0x30, 0x20, 0x52, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x20, 0x34, 0x20, 0x30, 0x20, 0x52, 0x2f,
+    0x53, 0x75, 0x62, 0x74, 0x79, 0x70, 0x65, 0x20, 0x35, 0x20, 0x30, 0x20, 0x52, 0x2f, 0x46, 0x69,
+    0x6c, 0x74, 0x65, 0x72, 0x20, 0x36, 0x20, 0x30, 0x20, 0x52, 0x2f, 0x43, 0x6f, 0x6c, 0x6f, 0x72,
+    0x53, 0x70, 0x61, 0x63, 0x65, 0x20, 0x37, 0x20, 0x30, 0x20, 0x52, 0x2f, 0x4c, 0x65, 0x6e, 0x67,
+    0x74, 0x68, 0x20, 0x38, 0x20, 0x30, 0x20, 0x52, 0x2f, 0x42, 0x69, 0x74, 0x73, 0x50, 0x65, 0x72,
+    0x43, 0x6f, 0x6d, 0x70, 0x6f, 0x6e, 0x65, 0x6e, 0x74, 0x20, 0x38, 0x3e, 0x3e, 0x0a, 0x73, 0x74,
+    0x72, 0x65, 0x61, 0x6d, 0x0a, 0xff, 0xd8, 0xff, 0xfe, 0x00, 0x24, 0x53, 0x48, 0x41, 0x2d, 0x31,
+    0x20, 0x69, 0x73, 0x20, 0x64, 0x65, 0x61, 0x64, 0x21, 0x21, 0x21, 0x21, 0x21, 0x85, 0x2f, 0xec,
+    0x09, 0x23, 0x39, 0x75, 0x9c, 0x39, 0xb1, 0xa1, 0xc6, 0x3c, 0x4c, 0x97, 0xe1, 0xff, 0xfe, 0x01,
+};
+
+static const unsigned char md5_plain_suffix[] =
     "\n"
     "newos experimental/md5files\n"
     "These files intentionally differ in the first 128 bytes.\n"
     "The remainder is identical, openly visible metadata text.\n"
     "Do not use MD5 as an identity or integrity check.\n";
 
+static const unsigned char sha1_plain_suffix[] =
+    "\n"
+    "newos experimental/md5files\n"
+    "These files intentionally differ in the 128-byte SHA-1 collision block.\n"
+    "The prefix and suffix are identical and come from the public SHAttered collision structure.\n"
+    "Do not use SHA-1 as an identity or integrity check.\n";
+
 static const unsigned char elf_metadata_prelude[] =
-    "\nnewos-md5-collision-metadata\n"
+    "\nnewos-legacy-hash-collision-metadata\n"
     "format: elf-trailer-scaffold-v1\n"
     "status: candidate trailer; collision block follows after zero padding\n";
 
 static const unsigned char elf_metadata_suffix[] =
-    "\nnewos-md5-collision-metadata-end\n"
+    "\nnewos-legacy-hash-collision-metadata-end\n"
     "note: appended bytes are outside the original ELF load segments\n"
-    "note: fixed public blocks collide only for their controlled MD5 prefix state\n"
-    "note: arbitrary ELF pairs need a chosen-prefix MD5 backend\n";
+    "note: fixed public blocks collide only for their controlled profile prefix state\n"
+    "note: arbitrary ELF pairs need a chosen-prefix backend for the selected hash\n";
 
 static unsigned char zero_chunk[ZERO_CHUNK_SIZE];
 
@@ -163,6 +211,7 @@ typedef struct {
 
 typedef struct {
     CryptoMd5Context md5;
+    CryptoSha1Context sha1;
 } CollisionDigestContext;
 
 typedef struct {
@@ -173,6 +222,15 @@ typedef struct {
     size_t collision_block_size;
     const char *collision_block_a_hex;
     const char *collision_block_b_hex;
+    const unsigned char *plain_prefix;
+    size_t plain_prefix_size;
+    const unsigned char *plain_suffix;
+    size_t plain_suffix_size;
+    const char *plain_output_a;
+    const char *plain_output_b;
+    int supports_plain;
+    const char *elf_output_a;
+    const char *elf_output_b;
     const unsigned char *controlled_prefix;
     size_t controlled_prefix_size;
     const unsigned char *controlled_payload_a;
@@ -195,6 +253,60 @@ static void md5_digest_final(CollisionDigestContext *context, unsigned char *dig
     crypto_md5_final(&context->md5, digest);
 }
 
+static void sha1_digest_init(CollisionDigestContext *context) {
+    crypto_sha1_init(&context->sha1);
+}
+
+static void sha1_digest_update(CollisionDigestContext *context, const unsigned char *data, size_t size) {
+    crypto_sha1_update(&context->sha1, data, size);
+}
+
+static void sha1_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    crypto_sha1_final(&context->sha1, digest);
+}
+
+static void sha1_24_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    unsigned char full_digest[CRYPTO_SHA1_DIGEST_SIZE];
+
+    crypto_sha1_final(&context->sha1, full_digest);
+    memcpy(digest, full_digest, 3U);
+}
+
+static void sha1_32_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    unsigned char full_digest[CRYPTO_SHA1_DIGEST_SIZE];
+
+    crypto_sha1_final(&context->sha1, full_digest);
+    memcpy(digest, full_digest, 4U);
+}
+
+static void sha1_40_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    unsigned char full_digest[CRYPTO_SHA1_DIGEST_SIZE];
+
+    crypto_sha1_final(&context->sha1, full_digest);
+    memcpy(digest, full_digest, 5U);
+}
+
+static void sha1_48_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    unsigned char full_digest[CRYPTO_SHA1_DIGEST_SIZE];
+
+    crypto_sha1_final(&context->sha1, full_digest);
+    memcpy(digest, full_digest, 6U);
+}
+
+static void sha1_56_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    unsigned char full_digest[CRYPTO_SHA1_DIGEST_SIZE];
+
+    crypto_sha1_final(&context->sha1, full_digest);
+    memcpy(digest, full_digest, 7U);
+}
+
+static void sha1_64_digest_final(CollisionDigestContext *context, unsigned char *digest) {
+    unsigned char full_digest[CRYPTO_SHA1_DIGEST_SIZE];
+
+    crypto_sha1_final(&context->sha1, full_digest);
+    memcpy(digest, full_digest, 8U);
+}
+
 static const CollisionProfile md5_profile = {
     "md5",
     "MD5",
@@ -203,6 +315,15 @@ static const CollisionProfile md5_profile = {
     MD5_COLLISION_BLOCK_SIZE,
     md5_collision_block_a_hex,
     md5_collision_block_b_hex,
+    NULL,
+    0U,
+    md5_plain_suffix,
+    sizeof(md5_plain_suffix) - 1U,
+    "md5file-a.bin",
+    "md5file-b.bin",
+    1,
+    "elf-md5file-a.bin",
+    "elf-md5file-b.bin",
     controlled_elf_prefix,
     CONTROLLED_ELF_PREFIX_SIZE,
     controlled_payload_a,
@@ -212,6 +333,211 @@ static const CollisionProfile md5_profile = {
     md5_digest_update,
     md5_digest_final
 };
+
+static const CollisionProfile sha1_profile = {
+    "sha1",
+    "SHA-1",
+    CRYPTO_SHA1_DIGEST_SIZE,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    sha1_collision_block_a_hex,
+    sha1_collision_block_b_hex,
+    sha1_plain_prefix,
+    sizeof(sha1_plain_prefix),
+    sha1_plain_suffix,
+    sizeof(sha1_plain_suffix) - 1U,
+    "sha1file-a.bin",
+    "sha1file-b.bin",
+    1,
+    "elf-sha1file-a.bin",
+    "elf-sha1file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_digest_final
+};
+
+static const CollisionProfile sha1_24_profile = {
+    "sha1-24",
+    "SHA1-24",
+    3U,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    toy_collision_block_a_hex,
+    toy_collision_block_b_hex,
+    NULL,
+    0U,
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0,
+    "elf-sha1-24file-a.bin",
+    "elf-sha1-24file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_24_digest_final
+};
+
+static const CollisionProfile sha1_32_profile = {
+    "sha1-32",
+    "SHA1-32",
+    4U,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    toy_collision_block_a_hex,
+    toy_collision_block_b_hex,
+    NULL,
+    0U,
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0,
+    "elf-sha1-32file-a.bin",
+    "elf-sha1-32file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_32_digest_final
+};
+
+static const CollisionProfile sha1_40_profile = {
+    "sha1-40",
+    "SHA1-40",
+    5U,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    toy_collision_block_a_hex,
+    toy_collision_block_b_hex,
+    NULL,
+    0U,
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0,
+    "elf-sha1-40file-a.bin",
+    "elf-sha1-40file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_40_digest_final
+};
+
+static const CollisionProfile sha1_48_profile = {
+    "sha1-48",
+    "SHA1-48",
+    6U,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    toy_collision_block_a_hex,
+    toy_collision_block_b_hex,
+    NULL,
+    0U,
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0,
+    "elf-sha1-48file-a.bin",
+    "elf-sha1-48file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_48_digest_final
+};
+
+static const CollisionProfile sha1_56_profile = {
+    "sha1-56",
+    "SHA1-56",
+    7U,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    toy_collision_block_a_hex,
+    toy_collision_block_b_hex,
+    NULL,
+    0U,
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0,
+    "elf-sha1-56file-a.bin",
+    "elf-sha1-56file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_56_digest_final
+};
+
+static const CollisionProfile sha1_64_profile = {
+    "sha1-64",
+    "SHA1-64",
+    8U,
+    CRYPTO_SHA1_BLOCK_SIZE,
+    SHA1_COLLISION_BLOCK_SIZE,
+    toy_collision_block_a_hex,
+    toy_collision_block_b_hex,
+    NULL,
+    0U,
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0,
+    "elf-sha1-64file-a.bin",
+    "elf-sha1-64file-b.bin",
+    NULL,
+    0U,
+    NULL,
+    NULL,
+    0U,
+    sha1_digest_init,
+    sha1_digest_update,
+    sha1_64_digest_final
+};
+
+static const CollisionProfile *find_collision_profile(const char *name) {
+    if (rt_strcmp(name, md5_profile.name) == 0) return &md5_profile;
+    if (rt_strcmp(name, sha1_profile.name) == 0 || rt_strcmp(name, "sha-1") == 0) return &sha1_profile;
+    if (rt_strcmp(name, sha1_24_profile.name) == 0) return &sha1_24_profile;
+    if (rt_strcmp(name, sha1_32_profile.name) == 0) return &sha1_32_profile;
+    if (rt_strcmp(name, sha1_40_profile.name) == 0) return &sha1_40_profile;
+    if (rt_strcmp(name, sha1_48_profile.name) == 0) return &sha1_48_profile;
+    if (rt_strcmp(name, sha1_56_profile.name) == 0) return &sha1_56_profile;
+    if (rt_strcmp(name, sha1_64_profile.name) == 0) return &sha1_64_profile;
+    return NULL;
+}
+
+static int profile_supports_controlled_elf(const CollisionProfile *profile) {
+    return profile->controlled_prefix && profile->controlled_payload_a && profile->controlled_payload_b;
+}
 
 static int hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -343,6 +669,14 @@ static int set_backend_env_size(const char *name, size_t value) {
 
 static int set_backend_env_path(const char *name, const char *path) {
     if (platform_setenv(name, path, 1) != 0) {
+        write_error_path("cannot set ", name);
+        return 1;
+    }
+    return 0;
+}
+
+static int set_backend_env_text(const char *name, const char *value) {
+    if (platform_setenv(name, value, 1) != 0) {
         write_error_path("cannot set ", name);
         return 1;
     }
@@ -600,6 +934,25 @@ static int create_backend_output_path(char *path, size_t path_size, const char *
     return 0;
 }
 
+static int create_backend_suffix_file(char *path, size_t path_size) {
+    int fd = platform_create_temp_file(path, path_size, "/tmp/newos-hash-suffix-", 0600U);
+
+    if (fd < 0) {
+        write_error_path("cannot create temporary backend suffix", 0);
+        return 1;
+    }
+    if (rt_write_all(fd, elf_metadata_suffix, sizeof(elf_metadata_suffix) - 1U) != 0) {
+        write_error_path("cannot write ", path);
+        (void)platform_close(fd);
+        return 1;
+    }
+    if (platform_close(fd) != 0) {
+        write_error_path("cannot close ", path);
+        return 1;
+    }
+    return 0;
+}
+
 static int split_backend_command(const char *command, char *storage, size_t storage_size, char **argv, size_t argv_capacity) {
     size_t in = 0U;
     size_t out = 0U;
@@ -673,25 +1026,41 @@ static int run_backend(const CollisionProfile *profile,
     char prefix_b_path[PATH_BUFFER_SIZE] = "";
     char block_a_path[PATH_BUFFER_SIZE] = "";
     char block_b_path[PATH_BUFFER_SIZE] = "";
+    char suffix_path[PATH_BUFFER_SIZE] = "";
     char backend_storage[PATH_BUFFER_SIZE];
     char *backend_argv[BACKEND_MAX_ARGS];
     int backend_pid;
     int backend_status;
     int status = 1;
 
-    if (create_prefix_file(prefix_a_path, sizeof(prefix_a_path), "/tmp/newos-md5-prefix-a-", image_a, collision_offset) != 0 ||
-        create_prefix_file(prefix_b_path, sizeof(prefix_b_path), "/tmp/newos-md5-prefix-b-", image_b, collision_offset) != 0 ||
-        create_backend_output_path(block_a_path, sizeof(block_a_path), "/tmp/newos-md5-block-a-") != 0 ||
-        create_backend_output_path(block_b_path, sizeof(block_b_path), "/tmp/newos-md5-block-b-") != 0) {
+    if (create_prefix_file(prefix_a_path, sizeof(prefix_a_path), "/tmp/newos-hash-prefix-a-", image_a, collision_offset) != 0 ||
+        create_prefix_file(prefix_b_path, sizeof(prefix_b_path), "/tmp/newos-hash-prefix-b-", image_b, collision_offset) != 0 ||
+        create_backend_output_path(block_a_path, sizeof(block_a_path), "/tmp/newos-hash-block-a-") != 0 ||
+        create_backend_output_path(block_b_path, sizeof(block_b_path), "/tmp/newos-hash-block-b-") != 0 ||
+        create_backend_suffix_file(suffix_path, sizeof(suffix_path)) != 0) {
         goto cleanup;
     }
-    if (set_backend_env_path("NEWOS_MD5_PREFIX_A", prefix_a_path) != 0 ||
-        set_backend_env_path("NEWOS_MD5_PREFIX_B", prefix_b_path) != 0 ||
-        set_backend_env_path("NEWOS_MD5_BLOCK_A", block_a_path) != 0 ||
-        set_backend_env_path("NEWOS_MD5_BLOCK_B", block_b_path) != 0 ||
-        set_backend_env_size("NEWOS_MD5_COLLISION_OFFSET", collision_offset) != 0 ||
-        set_backend_env_size("NEWOS_MD5_BLOCK_SIZE", profile->collision_block_size) != 0 ||
-        set_backend_env_size("NEWOS_MD5_MAX_PAYLOAD_SIZE", BACKEND_MAX_PAYLOAD_SIZE) != 0) {
+    if (set_backend_env_text("NEWOS_HASH_NAME", profile->name) != 0 ||
+        set_backend_env_text("NEWOS_HASH_UPPERCASE_NAME", profile->uppercase_name) != 0 ||
+        set_backend_env_path("NEWOS_HASH_PREFIX_A", prefix_a_path) != 0 ||
+        set_backend_env_path("NEWOS_HASH_PREFIX_B", prefix_b_path) != 0 ||
+        set_backend_env_path("NEWOS_HASH_BLOCK_A", block_a_path) != 0 ||
+        set_backend_env_path("NEWOS_HASH_BLOCK_B", block_b_path) != 0 ||
+        set_backend_env_path("NEWOS_HASH_SUFFIX", suffix_path) != 0 ||
+        set_backend_env_size("NEWOS_HASH_COLLISION_OFFSET", collision_offset) != 0 ||
+        set_backend_env_size("NEWOS_HASH_BLOCK_SIZE", profile->collision_block_size) != 0 ||
+        set_backend_env_size("NEWOS_HASH_MAX_PAYLOAD_SIZE", BACKEND_MAX_PAYLOAD_SIZE) != 0) {
+        goto cleanup;
+    }
+    if (rt_strcmp(profile->name, "md5") == 0 &&
+        (set_backend_env_path("NEWOS_MD5_PREFIX_A", prefix_a_path) != 0 ||
+         set_backend_env_path("NEWOS_MD5_PREFIX_B", prefix_b_path) != 0 ||
+         set_backend_env_path("NEWOS_MD5_BLOCK_A", block_a_path) != 0 ||
+         set_backend_env_path("NEWOS_MD5_BLOCK_B", block_b_path) != 0 ||
+         set_backend_env_path("NEWOS_MD5_SUFFIX", suffix_path) != 0 ||
+         set_backend_env_size("NEWOS_MD5_COLLISION_OFFSET", collision_offset) != 0 ||
+         set_backend_env_size("NEWOS_MD5_BLOCK_SIZE", profile->collision_block_size) != 0 ||
+         set_backend_env_size("NEWOS_MD5_MAX_PAYLOAD_SIZE", BACKEND_MAX_PAYLOAD_SIZE) != 0)) {
         goto cleanup;
     }
 
@@ -734,6 +1103,7 @@ cleanup:
     if (prefix_b_path[0] != '\0') (void)platform_remove_file(prefix_b_path);
     if (block_a_path[0] != '\0') (void)platform_remove_file(block_a_path);
     if (block_b_path[0] != '\0') (void)platform_remove_file(block_b_path);
+    if (suffix_path[0] != '\0') (void)platform_remove_file(suffix_path);
     return status;
 }
 
@@ -778,8 +1148,10 @@ static int write_plain_file(const CollisionProfile *profile,
         write_error_path("cannot open ", path);
         return 1;
     }
-    if (rt_write_all(fd, collision_block, profile->collision_block_size) != 0 ||
-        rt_write_all(fd, plain_common_suffix, sizeof(plain_common_suffix) - 1U) != 0) {
+    if ((profile->plain_prefix_size != 0U &&
+         rt_write_all(fd, profile->plain_prefix, profile->plain_prefix_size) != 0) ||
+        rt_write_all(fd, collision_block, profile->collision_block_size) != 0 ||
+        rt_write_all(fd, profile->plain_suffix, profile->plain_suffix_size) != 0) {
         write_error_path("cannot write ", path);
         (void)platform_close(fd);
         return 1;
@@ -860,6 +1232,10 @@ static int run_controlled_fastcoll(const CollisionProfile *profile, const Contro
     unsigned char digest[COLLISION_MAX_DIGEST_SIZE];
     char hex[COLLISION_MAX_DIGEST_SIZE * 2U + 1U];
 
+    if (!profile_supports_controlled_elf(profile)) {
+        write_error_path("selected hash profile only supports plain-file collisions: ", profile->name);
+        return 1;
+    }
     if (read_controlled_prefix(options->prefix_path, prefix) != 0) {
         return 1;
     }
@@ -1206,6 +1582,10 @@ static int run_controlled_elf_demo(const CollisionProfile *profile, const Contro
     unsigned int invert;
     int need_out_dir = true_path == 0 || false_path == 0;
 
+    if (!profile_supports_controlled_elf(profile)) {
+        write_error_path("selected hash profile only supports plain-file collisions: ", profile->name);
+        return 1;
+    }
     if (need_out_dir && ensure_directory(options->out_dir) != 0) {
         return 1;
     }
@@ -1258,8 +1638,8 @@ static int run_plain_demo(const CollisionProfile *profile,
     if (ensure_directory(output_directory) != 0) {
         return 1;
     }
-    if (join_path(path_a, sizeof(path_a), output_directory, "md5file-a.bin") != 0 ||
-        join_path(path_b, sizeof(path_b), output_directory, "md5file-b.bin") != 0) {
+    if (join_path(path_a, sizeof(path_a), output_directory, profile->plain_output_a) != 0 ||
+        join_path(path_b, sizeof(path_b), output_directory, profile->plain_output_b) != 0) {
         write_error_path("output path is too long", 0);
         return 1;
     }
@@ -1417,14 +1797,14 @@ static int run_elf_scaffold(const CollisionProfile *profile,
         return 1;
     }
     if (out1 == 0) {
-        if (join_path(default_out1, sizeof(default_out1), options->out_dir, "elf-md5file-a.bin") != 0) {
+        if (join_path(default_out1, sizeof(default_out1), options->out_dir, profile->elf_output_a) != 0) {
             write_error_path("output path is too long", 0);
             return 1;
         }
         out1 = default_out1;
     }
     if (out2 == 0) {
-        if (join_path(default_out2, sizeof(default_out2), options->out_dir, "elf-md5file-b.bin") != 0) {
+        if (join_path(default_out2, sizeof(default_out2), options->out_dir, profile->elf_output_b) != 0) {
             write_error_path("output path is too long", 0);
             return 1;
         }
@@ -1440,6 +1820,10 @@ static int run_elf_scaffold(const CollisionProfile *profile,
     write_text(1, "input A: "); write_text(1, options->in1); write_text(1, " ("); write_size_value(1, image_a.size); write_text(1, " bytes, loaded bytes end at "); (void)rt_write_uint(1, info_a.loaded_end); write_text(1, ")\n");
     write_text(1, "input B: "); write_text(1, options->in2); write_text(1, " ("); write_size_value(1, image_b.size); write_text(1, " bytes, loaded bytes end at "); (void)rt_write_uint(1, info_b.loaded_end); write_text(1, ")\n");
     if (options->backend == 0) {
+        if (!profile_supports_controlled_elf(profile)) {
+            write_error_path("selected hash profile needs a chosen-prefix backend for ELF output: ", profile->name);
+            goto cleanup;
+        }
         write_text(1, "mode: controlled collision ELF wrapper\n");
         status = run_wrapped_elf_pair(profile, out1, out2, &image_a, &image_b);
         goto cleanup;
@@ -1500,20 +1884,22 @@ static int run_elf_scaffold(const CollisionProfile *profile,
     }
     print_path_line("wrote ", out1);
     print_path_line("wrote ", out2);
-    print_path_line("md5 A: ", hex_a);
-    print_path_line("md5 B: ", hex_b);
+    write_text(1, profile->name); print_path_line(" A: ", hex_a);
+    write_text(1, profile->name); print_path_line(" B: ", hex_b);
 
     if (memcmp(digest_a, digest_b, profile->digest_size) != 0) {
         if (options->backend != 0) {
             write_error_path("candidate outputs do not collide; backend payloads are not valid for these prefixes", 0);
         } else {
-            write_error_path("candidate outputs do not collide; fixed public blocks need their controlled MD5 prefix state", 0);
+            write_text(2, "generate: candidate outputs do not collide; fixed public blocks need their controlled ");
+            write_text(2, profile->uppercase_name);
+            write_text(2, " prefix state\n");
             write_error_path("arbitrary ELF inputs require a chosen-prefix collision backend", 0);
         }
         status = EXIT_NOT_A_COLLISION;
         goto cleanup;
     }
-    print_path_line("same md5: ", hex_a);
+    write_text(1, "same "); write_text(1, profile->name); print_path_line(": ", hex_a);
     status = 0;
 
 cleanup:
@@ -1526,10 +1912,10 @@ cleanup:
 
 static void print_usage(void) {
     write_text(1, "usage:\n");
-    write_text(1, "  generate [OUTDIR]\n");
-    write_text(1, "  generate --elf-demo [--out-dir DIR] [--out1 PATH] [--out2 PATH]\n");
-    write_text(1, "  generate --controlled-fastcoll [-q] -p PREFIX -o OUT1 OUT2\n");
-    write_text(1, "  generate --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH] [--backend COMMAND]\n");
+    write_text(1, "  generate [--hash md5|sha1] [OUTDIR]\n");
+    write_text(1, "  generate [--hash md5] --elf-demo [--out-dir DIR] [--out1 PATH] [--out2 PATH]\n");
+    write_text(1, "  generate [--hash md5] --controlled-fastcoll [-q] -p PREFIX -o OUT1 OUT2\n");
+    write_text(1, "  generate [--hash md5|sha1] --in1 ELF-A --in2 ELF-B [--out-dir DIR] [--out1 PATH] [--out2 PATH] [--backend COMMAND]\n");
 }
 
 int main(int argc, char **argv) {
@@ -1540,6 +1926,21 @@ int main(int argc, char **argv) {
     ControlledElfOptions controlled_options;
     ControlledFastcollOptions fastcoll_options;
 
+    if (argc >= 2 && rt_strcmp(argv[1], "--hash") == 0) {
+        if (argc < 3) {
+            write_error_path("--hash needs md5 or sha1", 0);
+            print_usage();
+            return 1;
+        }
+        profile = find_collision_profile(argv[2]);
+        if (profile == 0) {
+            write_error_path("unknown hash profile: ", argv[2]);
+            print_usage();
+            return 1;
+        }
+        argc -= 2;
+        argv += 2;
+    }
     if (profile->digest_size > COLLISION_MAX_DIGEST_SIZE ||
         profile->collision_block_size > COLLISION_MAX_PAYLOAD_SIZE ||
         profile->controlled_payload_size > COLLISION_MAX_PAYLOAD_SIZE) {
@@ -1572,6 +1973,10 @@ int main(int argc, char **argv) {
     if (argc == 1 || argv[1][0] != '-') {
         const char *output_directory = argc > 1 ? argv[1] : "out";
 
+        if (!profile->supports_plain) {
+            write_error_path("selected hash profile is only available for backend ELF scaffolds: ", profile->name);
+            return 1;
+        }
         return run_plain_demo(profile, output_directory, collision_block_a, collision_block_b);
     }
     if (parse_elf_options(argc, argv, &options) != 0) {
