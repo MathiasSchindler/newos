@@ -233,6 +233,13 @@ int tool_write_file_all(const char *path, const unsigned char *data, size_t size
     return platform_close(fd) == 0 ? 0 : -1;
 }
 
+void tool_restore_terminal_mode_if_enabled(int fd, int *enabled_io, const PlatformTerminalState *state) {
+    if (enabled_io != 0 && *enabled_io && state != 0) {
+        (void)platform_terminal_restore_mode(fd, state);
+        *enabled_io = 0;
+    }
+}
+
 int tool_hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
     if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;

@@ -155,10 +155,7 @@ static void pager_init(PagerState *state, int fd, int interactive, int show_numb
 }
 
 static void pager_finish(PagerState *state) {
-    if (state->raw_mode_enabled) {
-        (void)platform_terminal_restore_mode(0, &state->saved_state);
-        state->raw_mode_enabled = 0;
-    }
+    tool_restore_terminal_mode_if_enabled(0, &state->raw_mode_enabled, &state->saved_state);
 }
 
 static void pager_write_text(int fd, int color_mode, int style, const char *text) {

@@ -87,10 +87,7 @@ static void pager_init(ManPager *pager) {
 }
 
 static void pager_finish(ManPager *pager) {
-    if (pager->raw_mode_enabled) {
-        (void)platform_terminal_restore_mode(0, &pager->saved_state);
-        pager->raw_mode_enabled = 0;
-    }
+    tool_restore_terminal_mode_if_enabled(0, &pager->raw_mode_enabled, &pager->saved_state);
 }
 
 static int pager_prompt(ManPager *pager) {
