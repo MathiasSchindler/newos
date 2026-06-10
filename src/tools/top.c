@@ -20,23 +20,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-b] [-n ROWS] [-p PID[,PID...]] [-o FIELD] [-r]");
 }
 
-static void trim_token(char *text) {
-    size_t start = 0;
-    size_t end = rt_strlen(text);
-
-    while (start < end && rt_is_space(text[start])) {
-        start += 1U;
-    }
-    while (end > start && rt_is_space(text[end - 1U])) {
-        end -= 1U;
-    }
-
-    if (start > 0U) {
-        memmove(text, text + start, end - start);
-    }
-    text[end - start] = '\0';
-}
-
 static int parse_pid_filters(const char *spec, int *pids_out, size_t *count_out) {
     size_t count = 0;
     size_t i = 0;
@@ -53,7 +36,7 @@ static int parse_pid_filters(const char *spec, int *pids_out, size_t *count_out)
             token[token_len++] = spec[i++];
         }
         token[token_len] = '\0';
-        trim_token(token);
+        tool_trim_whitespace(token);
 
         if (token[0] == '\0' || count >= TOP_MAX_FILTER_PIDS ||
             tool_parse_int_arg(token, &pid_value, "top", "pid") != 0 || pid_value <= 0) {

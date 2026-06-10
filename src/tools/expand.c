@@ -28,27 +28,6 @@ static int write_spaces(unsigned long long count) {
 
 #define parse_tabstop_list(text, options) tool_parse_tabstop_list((text), (options)->stops, EXPAND_MAX_TABSTOPS, &(options)->stop_count)
 
-static unsigned long long next_tabstop(const ExpandOptions *options, unsigned long long column) {
-    size_t i;
-
-    if (options->stop_count == 0U) {
-        return column + 8ULL - (column % 8ULL);
-    }
-
-    if (options->stop_count == 1U) {
-        unsigned long long stop = options->stops[0];
-        return column + stop - (column % stop);
-    }
-
-    for (i = 0; i < options->stop_count; ++i) {
-        if (options->stops[i] > column) {
-            return options->stops[i];
-        }
-    }
-
-    return column + 1ULL;
-}
-
 static int expand_stream(int fd, const ExpandOptions *options) {
     char buffer[4096 + 8];
     size_t carry = 0U;
@@ -75,7 +54,7 @@ static int expand_stream(int fd, const ExpandOptions *options) {
             }
 
             if (segment.codepoint == '\t' && (!options->initial_only || leading)) {
-                unsigned long long stop = next_tabstop(options, column);
+                unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
                 unsigned long long spaces = stop > column ? stop - column : 1ULL;
                 if (write_spaces(spaces) != 0) {
                     return -1;
@@ -90,7 +69,7 @@ static int expand_stream(int fd, const ExpandOptions *options) {
                     column = 0ULL;
                     leading = 1;
                 } else if (segment.codepoint == '\t') {
-                    unsigned long long stop = next_tabstop(options, column);
+                    unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
                     column = stop > column ? stop : column + 1ULL;
                 } else if ((segment.flags & RT_TEXT_SEGMENT_ANSI) != 0U) {
                     column = rt_text_apply_segment_width_tabstop(column, &segment, 8U);
@@ -121,7 +100,7 @@ static int expand_stream(int fd, const ExpandOptions *options) {
         }
         segment.flags &= ~RT_TEXT_SEGMENT_INCOMPLETE;
         if (segment.codepoint == '\t' && (!options->initial_only || leading)) {
-            unsigned long long stop = next_tabstop(options, column);
+            unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
             unsigned long long spaces = stop > column ? stop - column : 1ULL;
             if (write_spaces(spaces) != 0) {
                 return -1;

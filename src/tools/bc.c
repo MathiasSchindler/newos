@@ -1008,20 +1008,6 @@ static BcValue bc_math_bessel(BcParser *parser, BcValue order_value, BcValue val
 }
 
 
-
-static int bc_hex_digit_value(char ch) {
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return 10 + (ch - 'a');
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return 10 + (ch - 'A');
-    }
-    return -1;
-}
-
 static char bc_digit_char(int value) {
     static const char digits[] = "0123456789ABCDEF";
 
@@ -1298,7 +1284,7 @@ static void bc_read_token(BcParser *parser) {
                 }
                 parser->pos += 1;
             } else {
-                int digit = bc_hex_digit_value(ch);
+                int digit = tool_hex_value(ch);
 
                 if (digit < 0 || digit >= base) {
                     break;

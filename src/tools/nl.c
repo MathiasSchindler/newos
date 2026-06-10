@@ -59,17 +59,6 @@ static int write_padding(size_t count, char fill) {
     return 0;
 }
 
-static size_t count_digits(unsigned long long value) {
-    size_t digits = 1U;
-
-    while (value >= 10ULL) {
-        value /= 10ULL;
-        digits += 1U;
-    }
-
-    return digits;
-}
-
 static int parse_style_value(const char *text, NlStyle *style_out) {
     if (rt_strcmp(text, "a") == 0) {
         *style_out = NL_STYLE_ALL;
@@ -135,7 +124,7 @@ static int detect_section_marker(const char *line, const NlOptions *options, NlS
 
 static int emit_line(const char *line, int should_number, unsigned long long *line_no, const NlOptions *options) {
     if (should_number) {
-        size_t digits = count_digits(*line_no);
+        size_t digits = tool_count_decimal_digits(*line_no);
         size_t padding = 0;
         char fill = options->format == NL_FORMAT_RIGHT_ZERO ? '0' : ' ';
 

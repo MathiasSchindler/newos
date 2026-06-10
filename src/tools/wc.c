@@ -56,19 +56,8 @@ static void write_json_wc_result(const WcStats *stats, const char *name) {
     tool_json_end_event(1);
 }
 
-static unsigned int count_digits(unsigned long long value) {
-    unsigned int digits = 1U;
-
-    while (value >= 10ULL) {
-        value /= 10ULL;
-        digits += 1U;
-    }
-
-    return digits;
-}
-
 static int write_padded_uint(int fd, unsigned long long value, unsigned int minimum_width) {
-    unsigned int digits = count_digits(value);
+    unsigned int digits = (unsigned int)tool_count_decimal_digits(value);
     unsigned int i;
 
     for (i = digits; i < minimum_width; ++i) {
@@ -94,10 +83,6 @@ static size_t utf8_expected_length(unsigned char lead) {
         return 4U;
     }
     return 1U;
-}
-
-static int wc_ascii_is_space(unsigned char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
 }
 
 static unsigned long long next_display_width(unsigned long long current_width, unsigned int codepoint) {
@@ -317,7 +302,7 @@ static int count_stream_text(int fd, const WcScanNeeds *needs, WcStats *stats_ou
                             lines += 1ULL;
                         }
                         if (needs->words) {
-                            if (wc_ascii_is_space(ansi_ch)) {
+                            if (tool_ascii_is_space((char)ansi_ch)) {
                                 in_word = 0;
                             } else if (!in_word) {
                                 words += 1ULL;
@@ -353,7 +338,7 @@ static int count_stream_text(int fd, const WcScanNeeds *needs, WcStats *stats_ou
                     }
                 }
                 if (needs->words) {
-                    if (wc_ascii_is_space(ch)) {
+                    if (tool_ascii_is_space((char)ch)) {
                         in_word = 0;
                     } else if (!in_word) {
                         words += 1ULL;

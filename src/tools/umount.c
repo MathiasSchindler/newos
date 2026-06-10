@@ -6,15 +6,6 @@
 #define UMOUNT_FIELD_CAPACITY 1024
 
 
-static int mount_value_matches(const char *left, const char *right) {
-    char normalized_left[UMOUNT_FIELD_CAPACITY];
-    char normalized_right[UMOUNT_FIELD_CAPACITY];
-
-    tool_path_copy_trimmed(normalized_left, sizeof(normalized_left), left);
-    tool_path_copy_trimmed(normalized_right, sizeof(normalized_right), right);
-    return rt_strcmp(normalized_left, normalized_right) == 0;
-}
-
 static int resolve_mount_target_from_table(const char *table_path,
                                            const char *input,
                                            char *buffer,
@@ -51,7 +42,7 @@ static int resolve_mount_target_from_table(const char *table_path,
                 line[line_used] = '\0';
                 if (tool_next_mount_field(line, line_used, &index, source, sizeof(source)) == 0 &&
                     tool_next_mount_field(line, line_used, &index, target, sizeof(target)) == 0 &&
-                    (mount_value_matches(source, input) || mount_value_matches(target, input))) {
+                    (tool_path_trimmed_equal(source, input) || tool_path_trimmed_equal(target, input))) {
                     rt_copy_string(buffer, buffer_size, target);
                     platform_close(fd);
                     return 0;

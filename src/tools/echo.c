@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "tool_util.h"
 
 static int is_echo_option(const char *arg) {
     size_t i = 1;
@@ -15,19 +16,6 @@ static int is_echo_option(const char *arg) {
     }
 
     return 1;
-}
-
-static int hex_digit_value(char ch) {
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return 10 + (ch - 'a');
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return 10 + (ch - 'A');
-    }
-    return -1;
 }
 
 static int append_output_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
@@ -84,7 +72,7 @@ static int write_escaped_text(const char *text, char *buffer, size_t buffer_size
             int digits = 0;
             int digit;
 
-            while (digits < 2 && (digit = hex_digit_value(text[i + 1])) >= 0) {
+            while (digits < 2 && (digit = tool_hex_value(text[i + 1])) >= 0) {
                 value = (value * 16) + digit;
                 i += 1;
                 digits += 1;

@@ -91,6 +91,15 @@ void tool_path_copy_trimmed(char *buffer, size_t buffer_size, const char *path) 
     buffer[length] = '\0';
 }
 
+int tool_path_trimmed_equal(const char *left, const char *right) {
+    char normalized_left[1024];
+    char normalized_right[1024];
+
+    tool_path_copy_trimmed(normalized_left, sizeof(normalized_left), left);
+    tool_path_copy_trimmed(normalized_right, sizeof(normalized_right), right);
+    return rt_strcmp(normalized_left, normalized_right) == 0;
+}
+
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size) {
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }

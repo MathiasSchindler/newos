@@ -92,12 +92,14 @@ multiple tools can reuse:
 - **tool_util.h** - common tool argument parsing, error reporting, and small
   direct mechanics that recur across tools, such as byte-order loads/stores,
   fixed printable byte copies, hex digit parsing, token equality, ASCII string
-  predicates, UTF-8 byte predicates, tabstop-list parsing, mount-table field
-  decoding/iteration, Unicode-space probing, compact duration formatting,
-  civil-date arithmetic, HTTP header delimiter scanning, buffered output,
-  whole-input reads, and path-name tests. Keep these helpers boring and
-  dependency-free; avoid moving command-specific policy or callback/context
-  abstractions into the shared layer.
+  predicates, byte-array equality, base64/hex digit decoding, ASCII/UTF-8 byte
+  predicates, Unicode word-boundary checks, tabstop-list parsing and stepping,
+  mount-table field decoding/iteration, Unicode-space probing, compact duration
+  formatting, civil-date arithmetic, decimal digit counting, HTTP header
+  delimiter scanning, buffered output, whole-input reads, whole-file writes,
+  and path-name tests. Keep these helpers boring and dependency-free; avoid
+  moving command-specific policy or callback/context abstractions into the
+  shared layer.
 
 - **simple_config.{c,h}** and **server_log.{c,h}** - small shared config and
   escaped logging helpers used by `httpd`, `service`, and related daemon-style

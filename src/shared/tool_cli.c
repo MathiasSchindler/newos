@@ -163,6 +163,30 @@ int tool_parse_tabstop_list(const char *text, unsigned long long *stops, size_t 
     return count > 0U ? 0 : -1;
 }
 
+unsigned long long tool_next_tabstop(const unsigned long long *stops, size_t stop_count, unsigned long long column) {
+    size_t index;
+
+    if (stop_count == 0U) {
+        return column + 8ULL - (column % 8ULL);
+    }
+
+    if (stop_count == 1U) {
+        unsigned long long stop = stops[0];
+        if (stop == 0ULL) {
+            return column + 1ULL;
+        }
+        return column + stop - (column % stop);
+    }
+
+    for (index = 0U; index < stop_count; ++index) {
+        if (stops[index] > column) {
+            return stops[index];
+        }
+    }
+
+    return column + 1ULL;
+}
+
 void tool_trim_whitespace(char *text) {
     size_t start = 0U;
     size_t end;

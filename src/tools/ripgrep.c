@@ -471,51 +471,6 @@ static int find_fixed_match(const char *pattern,
 }
 
 
-static int ascii_is_word_byte(unsigned char ch) {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-           (ch >= '0' && ch <= '9') || ch == '_';
-}
-
-static size_t previous_codepoint_start(const char *text, size_t index) {
-    if (index == 0U) {
-        return 0U;
-    }
-    index -= 1U;
-    while (index > 0U && tool_utf8_is_continuation_byte((unsigned char)text[index])) {
-        index -= 1U;
-    }
-    return index;
-}
-
-static int match_has_word_boundaries(const char *text, size_t start, size_t end) {
-    size_t length = rt_strlen(text);
-
-    if (start > 0U) {
-        size_t prev = previous_codepoint_start(text, start);
-        size_t index = prev;
-        unsigned int codepoint = 0;
-        if (((unsigned char)text[prev]) < 0x80U) {
-            if (ascii_is_word_byte((unsigned char)text[prev])) {
-                return 0;
-            }
-        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
-            return 0;
-        }
-    }
-    if (end < length) {
-        size_t index = end;
-        unsigned int codepoint = 0;
-        if (((unsigned char)text[end]) < 0x80U) {
-            if (ascii_is_word_byte((unsigned char)text[end])) {
-                return 0;
-            }
-        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static int find_next_match_for_pattern(const RgOptions *options,
                                        const char *pattern,
                                        const char *text,
@@ -537,7 +492,7 @@ static int find_next_match_for_pattern(const RgOptions *options,
         if (!found) {
             return 0;
         }
-        if (!options->whole_word || match_has_word_boundaries(text, candidate_start, candidate_end)) {
+        if (!options->whole_word || tool_text_match_has_word_boundaries(text, candidate_start, candidate_end)) {
             *start_out = candidate_start;
             *end_out = candidate_end;
             return 1;

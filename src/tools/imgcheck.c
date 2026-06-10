@@ -173,14 +173,6 @@ static int imgcheck_macho_command_is_dylib(unsigned int command) {
            command == IMGCHECK_MACHO_LC_LOAD_UPWARD_DYLIB;
 }
 
-static int imgcheck_bytes_equal(const unsigned char *left, const unsigned char *right, size_t size) {
-    size_t index;
-    for (index = 0U; index < size; ++index) {
-        if (left[index] != right[index]) return 0;
-    }
-    return 1;
-}
-
 static int imgcheck_verify_macho_code_signature(const unsigned char *data, size_t size, unsigned int dataoff, unsigned int datasize, ImgcheckMachoValidation *validation) {
     unsigned int super_magic;
     unsigned int super_length;
@@ -244,7 +236,7 @@ static int imgcheck_verify_macho_code_signature(const unsigned char *data, size_
         crypto_sha256_final(&sha, digest);
         expected = data + dataoff + code_directory_offset + hash_offset + index * hash_size;
         validation->code_signature_checked_slots += 1U;
-        if (!imgcheck_bytes_equal(expected, digest, sizeof(digest))) {
+        if (!tool_bytes_equal(expected, digest, sizeof(digest))) {
             validation->code_signature_mismatches += 1U;
         }
     }

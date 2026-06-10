@@ -44,10 +44,6 @@ static int tr_is_alnum(unsigned char ch) {
     return tr_is_alpha(ch) || tr_is_digit(ch);
 }
 
-static int tr_is_space(unsigned char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
-}
-
 #define tr_is_blank(ch) tool_ascii_is_blank((char)(ch))
 
 static int tr_is_xdigit(unsigned char ch) {
@@ -89,7 +85,7 @@ static int tr_class_matches(const char *name, size_t name_len, unsigned char ch)
         return tr_is_alnum(ch);
     }
     if (tool_token_equals(name, name_len, "space")) {
-        return tr_is_space(ch);
+        return tool_ascii_is_space((char)ch);
     }
     if (tool_token_equals(name, name_len, "blank")) {
         return tr_is_blank(ch);

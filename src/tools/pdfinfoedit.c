@@ -18,24 +18,6 @@ static void print_usage(void) {
     tool_write_usage("pdfinfoedit", "--set FIELD=VALUE [--remove FIELD] -o OUTPUT PDF");
 }
 
-
-static int write_all_output(const char *path, const unsigned char *data, size_t size) {
-    int fd = platform_open_write(path, 0644U);
-    size_t written = 0U;
-
-    if (fd < 0) return -1;
-    while (written < size) {
-        long chunk = platform_write(fd, data + written, size - written);
-
-        if (chunk <= 0) {
-            platform_close(fd);
-            return -1;
-        }
-        written += (size_t)chunk;
-    }
-    return platform_close(fd) == 0 ? 0 : -1;
-}
-
 static int split_assignment(char *text, char **field_out, char **value_out) {
     size_t index;
 
@@ -159,7 +141,7 @@ int main(int argc, char **argv) {
     if (pdf_write_info_update(&document, &metadata, &output) != 0) {
         tool_write_error("pdfinfoedit", "could not update metadata", 0);
         status = 1;
-    } else if (write_all_output(output_path, output.data, output.size) != 0) {
+    } else if (tool_write_file_all(output_path, output.data, output.size) != 0) {
         tool_write_error("pdfinfoedit", "write failed: ", output_path);
         status = 1;
     }

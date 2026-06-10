@@ -57,15 +57,6 @@ static void print_usage(void) {
     tool_write_usage("base64", "[-d] [-w COLS] [FILE]");
 }
 
-static int base64_value(char ch) {
-    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
-    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
-    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
-    if (ch == '+') return 62;
-    if (ch == '/') return 63;
-    return -1;
-}
-
 static int encode_fd(int fd) {
     unsigned char input[BASE64_BUFFER_SIZE];
     unsigned char carry[3];
@@ -149,7 +140,7 @@ static int decode_fd(int fd) {
                 values[value_count++] = 0;
                 pad_count += 1;
             } else {
-                value = base64_value(ch);
+                value = tool_base64_value(ch);
                 if (value < 0) return -1;
                 if (pad_count > 0) return -1;
                 values[value_count++] = value;

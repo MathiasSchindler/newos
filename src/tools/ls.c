@@ -96,15 +96,6 @@ static void sort_entries(PlatformDirEntry *entries, size_t count, const LsOption
     }
 }
 
-static size_t count_digits_unsigned(unsigned long long value) {
-    size_t digits = 1;
-    while (value >= 10ULL) {
-        value /= 10ULL;
-        digits += 1U;
-    }
-    return digits;
-}
-
 static int is_dot_or_dotdot(const char *name) {
     return rt_strcmp(name, ".") == 0 || rt_strcmp(name, "..") == 0;
 }
@@ -182,13 +173,13 @@ static void build_layout(PlatformDirEntry *entries, size_t count, const LsOption
 
     for (i = 0; i < count; ++i) {
         if (options->show_inode) {
-            size_t width = count_digits_unsigned(entries[i].inode);
+            size_t width = tool_count_decimal_digits(entries[i].inode);
             if (width > layout->inode_width) {
                 layout->inode_width = width;
             }
         }
         if (options->show_blocks || options->long_format) {
-            size_t width = count_digits_unsigned(ls_entry_blocks(&entries[i]));
+            size_t width = tool_count_decimal_digits(ls_entry_blocks(&entries[i]));
             if (width > layout->block_width) {
                 layout->block_width = width;
             }
@@ -197,7 +188,7 @@ static void build_layout(PlatformDirEntry *entries, size_t count, const LsOption
             char owner_buffer[32];
             char group_buffer[32];
             char size_buffer[32];
-            size_t link_width = count_digits_unsigned((unsigned long long)entries[i].nlink);
+            size_t link_width = tool_count_decimal_digits((unsigned long long)entries[i].nlink);
 
             format_identity(entries[i].uid, entries[i].owner, options->numeric_ids, owner_buffer, sizeof(owner_buffer));
             format_identity(entries[i].gid, entries[i].group, options->numeric_ids, group_buffer, sizeof(group_buffer));
@@ -291,7 +282,7 @@ static int entry_color_style(const PlatformDirEntry *entry, const LsOptions *opt
 }
 
 static void print_numeric_prefix(unsigned long long value, size_t width) {
-    write_padding(count_digits_unsigned(value), width);
+    write_padding(tool_count_decimal_digits(value), width);
     rt_write_uint(1, value);
     rt_write_char(1, ' ');
 }
@@ -350,7 +341,7 @@ static void print_long_entry(const PlatformDirEntry *entry, const char *full_pat
     print_entry_prefix(entry, options, layout);
     rt_write_cstr(1, mode_buffer);
     rt_write_char(1, ' ');
-    write_padding(count_digits_unsigned((unsigned long long)entry->nlink), layout->link_width);
+    write_padding(tool_count_decimal_digits((unsigned long long)entry->nlink), layout->link_width);
     rt_write_uint(1, (unsigned long long)entry->nlink);
     rt_write_char(1, ' ');
     rt_write_cstr(1, owner_buffer);
@@ -408,10 +399,10 @@ static int print_single_path(const char *path, const LsOptions *options) {
 
     rt_memset(&layout, 0, sizeof(layout));
     if (options->show_inode) {
-        layout.inode_width = count_digits_unsigned(entry.inode);
+        layout.inode_width = tool_count_decimal_digits(entry.inode);
     }
     if (options->show_blocks) {
-        layout.block_width = count_digits_unsigned(ls_entry_blocks(&entry));
+        layout.block_width = tool_count_decimal_digits(ls_entry_blocks(&entry));
     }
 
     if (options->long_format) {

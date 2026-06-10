@@ -14,24 +14,6 @@ static void print_usage(void) {
     tool_write_usage("pdfsplit", "--every N -o PREFIX PDF | --pages A-B [-o OUTPUT] PDF");
 }
 
-
-static int write_all_output(const char *path, const unsigned char *data, size_t size) {
-    int fd = platform_open_write(path, 0644U);
-    size_t written = 0U;
-
-    if (fd < 0) return -1;
-    while (written < size) {
-        long chunk = platform_write(fd, data + written, size - written);
-
-        if (chunk <= 0) {
-            platform_close(fd);
-            return -1;
-        }
-        written += (size_t)chunk;
-    }
-    return platform_close(fd) == 0 ? 0 : -1;
-}
-
 static unsigned int parse_uint_text(const char *text, size_t *offset_io) {
     unsigned int value = 0U;
     size_t offset = *offset_io;
@@ -94,7 +76,7 @@ static int write_part(const PdfDocument *document, size_t first_page_zero, size_
 
     pdf_buffer_init(&output);
     result = pdf_write_split_part(document, first_page_zero, page_count, &document->info.document_info, &output);
-    if (result == 0) result = write_all_output(path, output.data, output.size);
+    if (result == 0) result = tool_write_file_all(path, output.data, output.size);
     pdf_buffer_free(&output);
     return result;
 }

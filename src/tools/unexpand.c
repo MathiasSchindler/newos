@@ -18,27 +18,6 @@ static void print_usage(const char *program_name) {
 
 #define parse_tabstop_list(text, options) tool_parse_tabstop_list((text), (options)->stops, UNEXPAND_MAX_TABSTOPS, &(options)->stop_count)
 
-static unsigned long long next_tabstop(const UnexpandOptions *options, unsigned long long column) {
-    size_t i;
-
-    if (options->stop_count == 0U) {
-        return column + 8ULL - (column % 8ULL);
-    }
-
-    if (options->stop_count == 1U) {
-        unsigned long long stop = options->stops[0];
-        return column + stop - (column % stop);
-    }
-
-    for (i = 0; i < options->stop_count; ++i) {
-        if (options->stops[i] > column) {
-            return options->stops[i];
-        }
-    }
-
-    return column + 1ULL;
-}
-
 static int append_blank_char(char *buffer, size_t *used, char ch) {
     if (*used == UNEXPAND_OUTPUT_BUFFER_SIZE) {
         if (rt_write_all(1, buffer, *used) != 0) {
@@ -59,7 +38,7 @@ static int write_blank_run(unsigned long long start_column,
     unsigned long long column = start_column;
 
     while (count > 0ULL) {
-        unsigned long long stop = next_tabstop(options, column);
+        unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
         unsigned long long to_next_stop = stop > column ? stop - column : 1ULL;
 
         if (to_next_stop <= count && to_next_stop > 1ULL) {
@@ -131,7 +110,7 @@ static int unexpand_stream(int fd, const UnexpandOptions *options) {
                     return -1;
                 }
                 {
-                    unsigned long long stop = next_tabstop(options, column);
+                    unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
                     column = stop > column ? stop : column + 1ULL;
                 }
                 if (!options->convert_all) {

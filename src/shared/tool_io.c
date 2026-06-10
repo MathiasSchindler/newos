@@ -214,11 +214,56 @@ int tool_write_visible_line(int fd, const char *text) {
     return rt_write_char(fd, '\n');
 }
 
+int tool_write_file_all(const char *path, const unsigned char *data, size_t size) {
+    int fd = platform_open_write(path, 0644U);
+    size_t written = 0U;
+
+    if (fd < 0) {
+        return -1;
+    }
+    while (written < size) {
+        long chunk = platform_write(fd, data + written, size - written);
+
+        if (chunk <= 0) {
+            platform_close(fd);
+            return -1;
+        }
+        written += (size_t)chunk;
+    }
+    return platform_close(fd) == 0 ? 0 : -1;
+}
+
 int tool_hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
     if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
     if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
     return -1;
+}
+
+int tool_base64_value(char ch) {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    return -1;
+}
+
+int tool_bytes_equal(const unsigned char *left, const unsigned char *right, size_t size) {
+    size_t index;
+
+    if (size == 0U) {
+        return 1;
+    }
+    if (left == 0 || right == 0) {
+        return 0;
+    }
+    for (index = 0U; index < size; ++index) {
+        if (left[index] != right[index]) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 void tool_output_buffer_init(ToolOutputBuffer *output, int fd) {
@@ -716,6 +761,15 @@ int tool_ascii_is_blank(char ch) {
     return ch == ' ' || ch == '\t';
 }
 
+int tool_ascii_is_space(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
+}
+
+int tool_ascii_is_word_byte(unsigned char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') || ch == '_';
+}
+
 int tool_ascii_is_token_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
 }
@@ -745,6 +799,56 @@ int tool_str_equal_ignore_case_ascii(const char *left, const char *right) {
 
 int tool_utf8_is_continuation_byte(unsigned char byte) {
     return (byte & 0xc0U) == 0x80U;
+}
+
+size_t tool_previous_utf8_codepoint_start(const char *text, size_t index) {
+    if (text == 0 || index == 0U) {
+        return 0U;
+    }
+
+    index -= 1U;
+    while (index > 0U && tool_utf8_is_continuation_byte((unsigned char)text[index])) {
+        index -= 1U;
+    }
+    return index;
+}
+
+int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t end) {
+    size_t length;
+
+    if (text == 0) {
+        return 0;
+    }
+
+    length = rt_strlen(text);
+    if (start > 0U) {
+        size_t prev = tool_previous_utf8_codepoint_start(text, start);
+        size_t index = prev;
+        unsigned int codepoint = 0U;
+
+        if (((unsigned char)text[prev]) < 0x80U) {
+            if (tool_ascii_is_word_byte((unsigned char)text[prev])) {
+                return 0;
+            }
+        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
+            return 0;
+        }
+    }
+
+    if (end < length) {
+        size_t index = end;
+        unsigned int codepoint = 0U;
+
+        if (((unsigned char)text[end]) < 0x80U) {
+            if (tool_ascii_is_word_byte((unsigned char)text[end])) {
+                return 0;
+            }
+        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 int tool_unicode_space_at(const char *text, size_t length, size_t index, size_t *advance_out) {
@@ -959,6 +1063,17 @@ int tool_text_is_decimal(const char *text) {
         index += 1U;
     }
     return 1;
+}
+
+size_t tool_count_decimal_digits(unsigned long long value) {
+    size_t digits = 1U;
+
+    while (value >= 10ULL) {
+        value /= 10ULL;
+        digits += 1U;
+    }
+
+    return digits;
 }
 
 int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch) {

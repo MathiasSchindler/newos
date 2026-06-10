@@ -7,20 +7,12 @@
 
 
 
-static int mount_value_matches(const char *left, const char *right) {
-    char normalized_left[MOUNT_FIELD_CAPACITY];
-    char normalized_right[MOUNT_FIELD_CAPACITY];
-
-    tool_path_copy_trimmed(normalized_left, sizeof(normalized_left), left);
-    tool_path_copy_trimmed(normalized_right, sizeof(normalized_right), right);
-    return rt_strcmp(normalized_left, normalized_right) == 0;
-}
 static int mount_matches_filter(const char *source, const char *target, const char *filesystem_type, const char *filter) {
     if (filter == 0 || filter[0] == '\0') {
         return 1;
     }
-    return mount_value_matches(source, filter) ||
-           mount_value_matches(target, filter) ||
+    return tool_path_trimmed_equal(source, filter) ||
+           tool_path_trimmed_equal(target, filter) ||
            rt_strcmp(filesystem_type, filter) == 0;
 }
 

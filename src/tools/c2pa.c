@@ -79,14 +79,6 @@ static int bytes_equal(const unsigned char *bytes, const char *text, size_t leng
     return 1;
 }
 
-static int byte_arrays_equal(const unsigned char *left, const unsigned char *right, size_t length) {
-    size_t index;
-    for (index = 0U; index < length; ++index) {
-        if (left[index] != right[index]) return 0;
-    }
-    return 1;
-}
-
 static int action_can_start_manifest(const char *action) {
     return rt_strcmp(action, "c2pa.created") == 0 || rt_strcmp(action, "c2pa.opened") == 0;
 }
@@ -434,7 +426,7 @@ static int make_store(const unsigned char *input, size_t input_size, const char 
 static int insert_png_cabx(const unsigned char *data, size_t size, const unsigned char *payload, size_t payload_size, ByteBuffer *out) {
     static const unsigned char sig[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
     size_t offset = 8U;
-    if (size < 8U || !byte_arrays_equal(data, sig, sizeof(sig))) return -1;
+    if (size < 8U || !tool_bytes_equal(data, sig, sizeof(sig))) return -1;
     while (offset + 12U <= size) {
         unsigned int length = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;

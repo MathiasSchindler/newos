@@ -101,16 +101,6 @@ static void mail_mime_set_encoding(MailMimePart *part, const char *raw, size_t s
     }
 }
 
-
-static int mail_mime_base64_value(char ch) {
-    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
-    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
-    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
-    if (ch == '+') return 62;
-    if (ch == '/') return 63;
-    return -1;
-}
-
 static void mail_mime_append_char(char *output, size_t output_size, size_t *used, char ch) {
     if (*used + 1U >= output_size) return;
     output[*used] = ch;
@@ -170,7 +160,7 @@ static void mail_mime_decode_base64_range(const char *raw, size_t start, size_t 
     while (start < end && used + 1U < output_size) {
         int value;
         if (raw[start] == '=') break;
-        value = mail_mime_base64_value(raw[start]);
+        value = tool_base64_value(raw[start]);
         start += 1U;
         if (value < 0) continue;
         accum = (accum << 6) | (unsigned int)value;
