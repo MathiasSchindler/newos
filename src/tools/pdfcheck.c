@@ -74,6 +74,10 @@ static int object_exists(const PdfInfo *info, unsigned long long number, unsigne
     return 0;
 }
 
+static int is_null_reference(unsigned long long number, unsigned long long generation) {
+    return number == 0ULL && generation == 0ULL;
+}
+
 static int find_key_ref(const unsigned char *data, size_t size, const char *key, unsigned long long *number_out, unsigned long long *generation_out) {
     size_t offset;
     size_t key_length = rt_strlen(key);
@@ -402,7 +406,7 @@ static int scan_dangling_refs(const unsigned char *data, size_t size, const PdfD
         }
         parse_offset = skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
-            if (!object_exists(&document->info, number, generation)) {
+            if (!is_null_reference(number, generation) && !object_exists(&document->info, number, generation)) {
                 rt_write_cstr(1, "error: dangling ref ");
                 rt_write_uint(1, number);
                 rt_write_char(1, ' ');
@@ -448,7 +452,7 @@ static int scan_dangling_refs_report(const unsigned char *data, size_t size, con
         }
         parse_offset = skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
-            if (!object_exists(&document->info, number, generation)) {
+            if (!is_null_reference(number, generation) && !object_exists(&document->info, number, generation)) {
                 report->ok = 0;
                 (void)message_list_add_ref(&report->errors, "dangling ref ", number, generation, " R");
                 errors = 1;

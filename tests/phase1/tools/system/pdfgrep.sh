@@ -21,10 +21,11 @@ flate = zlib.compress(b"BT /F1 12 Tf 72 700 Td [(Decoded) 20 ( Visible)] TJ ET\n
 objects = [
     b"<< /Type /Catalog /Pages 2 0 R >>",
     b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents [5 0 R 6 0 R] >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> /XObject << /BadImage 7 0 R >> >> /Contents [5 0 R 6 0 R] >>",
     b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     b"<< /Length %d >>\nstream\n" % len(plain) + plain + b"endstream",
     b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(flate) + flate + b"\nendstream",
+    b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /Length 8 /Filter /FlateDecode >>\nstream\nnotzlib!\nendstream",
 ]
 pdf = bytearray(b"%PDF-1.7\n")
 for number, body in enumerate(objects, 1):

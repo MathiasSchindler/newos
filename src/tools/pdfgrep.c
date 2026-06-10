@@ -279,7 +279,6 @@ static int process_path(const char *path, PdfGrepContext *context) {
     size_t size;
     PdfDocument document;
     size_t index;
-    int error = 0;
 
     if (tool_read_all_input(path, &data, &size) != 0) return 2;
     if (pdf_document_scan(data, size, &document) != 0) {
@@ -302,15 +301,12 @@ static int process_path(const char *path, PdfGrepContext *context) {
                 pdf_buffer_free(&stream);
                 break;
             }
-        } else if (result != -2) {
-            error = 1;
         }
         pdf_buffer_free(&stream);
     }
     if (context->matched && context->list_files && !context->quiet) rt_write_line(1, path ? path : "stdin");
     pdf_document_free(&document);
     rt_free(data);
-    if (error) return 2;
     return context->matched ? 0 : 1;
 }
 
