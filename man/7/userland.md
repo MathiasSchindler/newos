@@ -57,6 +57,9 @@ When adding or extending userland tools:
 
 - prefer statically linked, freestanding-friendly implementations whenever
   practical
+- keep `make freestanding` outputs independent of the host C library: generic
+  tool code should not call libc directly, and hosted POSIX conveniences belong
+  behind the platform layer rather than in freestanding tool paths
 - keep one public entry point per tool in `src/tools/`
 - if a tool grows internal modules, place them in `src/tools/<tool>/`
 - keep only genuinely reusable cross-tool behavior in `src/shared/`
@@ -71,11 +74,13 @@ The project maintains shared implementation primitives in `src/shared/` that
 multiple tools can reuse:
 
 - **bignum.{c,h}** - freestanding arbitrary-precision signed integer arithmetic,
-  used by `expr` and `bc` to provide high-range numeric support without libc or
-  heap allocation. The implementation uses base-1000000000 representation with
-  up to 256 digits (approximately 2300 decimal digits capacity) and supports
-  addition, subtraction, multiplication, division, modulo, comparisons, and
-  power/scale operations.
+  used by `bc`, `expr`, and `seq` to provide high-range numeric support without
+  libc or heap allocation. The implementation uses base-1000000000
+  representation with `BN_MAX_DIGITS` fixed-capacity limbs; the default is 8192
+  limbs, or approximately 73728 decimal digits. It supports addition,
+  subtraction, multiplication, division, modulo, comparisons, conversions,
+  integer power, decimal scaling, square root, greatest common divisor, least
+  common multiple, and factorial operations.
 
 - **platform.h** - OS abstraction for syscalls and platform-specific features
 

@@ -58,8 +58,10 @@ None.
 
 `expr` uses the shared signed big-number primitives from `src/shared/bignum.{c,h}`
 to provide arbitrary-precision integer arithmetic. The implementation supports
-integers up to approximately 2300 decimal digits (256 base-1000000000 digits),
-well beyond the limits of native integer types.
+integers up to `BN_MAX_DECIMAL_DIGITS`; with the default `BN_MAX_DIGITS=8192`
+and base-1000000000 storage, that is approximately 73728 decimal digits. This
+is well beyond the limits of native integer types while still using fixed-size,
+freestanding storage.
 
 Arithmetic operations (`+`, `-`, `*`, `/`, `%`) and numeric comparisons (`<`,
 `<=`, `>`, `>=`) all benefit from this arbitrary-precision support. String
@@ -69,7 +71,7 @@ operations and logical operators work as documented without numeric limits.
 
 - No `match` or `:` (regex match) operator.
 - No floating-point arithmetic.
-- Numeric values exceeding the bignum capacity (approximately 2300 digits) will trigger an overflow error.
+- Numeric values exceeding the configured bignum capacity will trigger an overflow error.
 - Each operator and operand must be a separate shell argument.
 
 ## EXAMPLES
