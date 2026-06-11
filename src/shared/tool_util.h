@@ -28,6 +28,9 @@ int tool_json_write_string_n(int fd, const char *text, size_t length);
 int tool_json_write_base64(int fd, const unsigned char *data, size_t length);
 int tool_json_begin_event(int fd, const char *tool_name, const char *stream_name, const char *event_name);
 int tool_json_end_event(int fd);
+int tool_json_field_string(int fd, const char *name, const char *value);
+int tool_json_field_uint(int fd, const char *name, unsigned long long value);
+int tool_json_field_bool(int fd, const char *name, int value);
 int tool_json_write_diagnostic(const char *tool_name, const char *level, const char *message, const char *detail);
 int tool_json_write_usage(const char *tool_name, const char *usage_suffix);
 
@@ -211,6 +214,7 @@ size_t tool_buffer_append_cstr(char *buffer, size_t buffer_size, size_t length, 
 size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, unsigned long long value);
 int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io);
 int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size);
+void tool_write_hex_value(int fd, unsigned long long value);
 unsigned int tool_pager_page_lines(unsigned int default_lines);
 int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch);
 int tool_buffer_append_text_checked(char *buffer, size_t buffer_size, size_t *length_io, const char *text);

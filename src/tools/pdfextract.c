@@ -16,39 +16,6 @@ static void print_usage(void) {
     tool_write_usage("pdfextract", "--stream OBJ[:GEN] [--raw|--decoded] PDF | --metadata PDF | --list-streams PDF");
 }
 
-static int px_is_space(unsigned char ch) {
-    return ch == 0U || ch == 9U || ch == 10U || ch == 12U || ch == 13U || ch == 32U;
-}
-
-static int px_is_digit(unsigned char ch) {
-    return ch >= (unsigned char)'0' && ch <= (unsigned char)'9';
-}
-
-static int px_is_delim(unsigned char ch) {
-    return px_is_space(ch) || ch == (unsigned char)'(' || ch == (unsigned char)')' || ch == (unsigned char)'<' || ch == (unsigned char)'>' || ch == (unsigned char)'[' || ch == (unsigned char)']' || ch == (unsigned char)'{' || ch == (unsigned char)'}' || ch == (unsigned char)'/' || ch == (unsigned char)'%';
-}
-
-static size_t px_skip_ws(const unsigned char *data, size_t size, size_t offset) {
-    while (offset < size) {
-        if (px_is_space(data[offset])) offset += 1U;
-        else if (data[offset] == (unsigned char)'%') {
-            while (offset < size && data[offset] != (unsigned char)'\n' && data[offset] != (unsigned char)'\r') offset += 1U;
-        } else break;
-    }
-    return offset;
-}
-
-static int px_text_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
-    size_t length = rt_strlen(text);
-    size_t index;
-
-    if (offset > size || length > size - offset) return 0;
-    for (index = 0U; index < length; ++index) {
-        if (data[offset + index] != (unsigned char)text[index]) return 0;
-    }
-    return 1;
-}
-
 static void px_skip_literal_string(const unsigned char *data, size_t size, size_t *offset_io) {
     size_t offset = *offset_io + 1U;
     int depth = 1;
@@ -90,7 +57,7 @@ static int px_find_top_key(const unsigned char *data, size_t size, const char *k
         } else if (data[offset] == (unsigned char)']') {
             if (depth != 0U) depth -= 1U;
             offset += 1U;
-        } else if (depth == 1U && data[offset] == (unsigned char)'/' && offset + key_length <= size && px_text_at(data, size, offset, key) && (offset + key_length >= size || px_is_delim(data[offset + key_length]))) {
+        } else if (depth == 1U && data[offset] == (unsigned char)'/' && offset + key_length <= size && pdf_text_at(data, size, offset, key) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
             *offset_out = offset;
             return 1;
         } else {
@@ -100,33 +67,7 @@ static int px_find_top_key(const unsigned char *data, size_t size, const char *k
     return 0;
 }
 
-static int px_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out) {
-    unsigned long long value = 0ULL;
-    size_t offset = *offset_io;
-    int saw_digit = 0;
 
-    while (offset < size && px_is_digit(data[offset])) {
-        unsigned int digit = (unsigned int)(data[offset] - (unsigned char)'0');
-
-        if (value > (18446744073709551615ULL - (unsigned long long)digit) / 10ULL) return -1;
-        value = value * 10ULL + (unsigned long long)digit;
-        offset += 1U;
-        saw_digit = 1;
-    }
-    if (!saw_digit) return -1;
-    *offset_io = offset;
-    *value_out = value;
-    return 0;
-}
-
-static int px_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
-    size_t length = rt_strlen(text);
-
-    if (!px_text_at(data, size, offset, text)) return 0;
-    if (offset != 0U && !px_is_delim(data[offset - 1U])) return 0;
-    if (offset + length < size && !px_is_delim(data[offset + length])) return 0;
-    return 1;
-}
 
 static int px_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
     size_t key_offset;
@@ -135,16 +76,16 @@ static int px_find_top_u64_direct_value(const unsigned char *data, size_t size, 
     unsigned long long value;
 
     if (!px_find_top_key(data, size, key, &key_offset)) return 0;
-    offset = px_skip_ws(data, size, key_offset + rt_strlen(key));
-    if (px_parse_u64(data, size, &offset, &value) != 0) return 0;
-    after_value = px_skip_ws(data, size, offset);
-    if (after_value < size && px_is_digit(data[after_value])) {
+    offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
+    if (pdf_parse_u64(data, size, &offset, &value) != 0) return 0;
+    after_value = pdf_skip_ws(data, size, offset);
+    if (after_value < size && pdf_is_digit(data[after_value])) {
         size_t ref_offset = after_value;
         unsigned long long generation;
 
-        if (px_parse_u64(data, size, &ref_offset, &generation) == 0) {
-            ref_offset = px_skip_ws(data, size, ref_offset);
-            if (px_keyword_at(data, size, ref_offset, "R")) return 0;
+        if (pdf_parse_u64(data, size, &ref_offset, &generation) == 0) {
+            ref_offset = pdf_skip_ws(data, size, ref_offset);
+            if (pdf_keyword_at(data, size, ref_offset, "R")) return 0;
         }
     }
     *value_out = value;
@@ -169,7 +110,7 @@ static void px_copy_name(const unsigned char *data, size_t size, size_t offset, 
     size_t used = 0U;
 
     if (buffer_size == 0U) return;
-    while (offset < size && !px_is_delim(data[offset])) {
+    while (offset < size && !pdf_is_delim(data[offset])) {
         if (used + 1U < buffer_size) buffer[used++] = (char)data[offset];
         offset += 1U;
     }
@@ -186,7 +127,7 @@ static int px_stream_filter_kind(const unsigned char *dict, size_t dict_size) {
     char name[PDF_NAME_CAPACITY];
 
     if (!px_find_top_key(dict, dict_size, "/Filter", &key_offset)) return 0;
-    offset = px_skip_ws(dict, dict_size, key_offset + 7U);
+    offset = pdf_skip_ws(dict, dict_size, key_offset + 7U);
     if (offset >= dict_size) return -1;
     if (dict[offset] == (unsigned char)'/') {
         px_copy_name(dict, dict_size, offset + 1U, name, sizeof(name));
@@ -197,7 +138,7 @@ static int px_stream_filter_kind(const unsigned char *dict, size_t dict_size) {
 
         offset += 1U;
         while (offset < dict_size) {
-            offset = px_skip_ws(dict, dict_size, offset);
+            offset = pdf_skip_ws(dict, dict_size, offset);
             if (offset >= dict_size) break;
             if (dict[offset] == (unsigned char)']') return saw_filter == 1 ? 1 : -1;
             if (dict[offset] != (unsigned char)'/') return -1;
@@ -206,7 +147,7 @@ static int px_stream_filter_kind(const unsigned char *dict, size_t dict_size) {
             if (!px_name_is_flate(name)) return -1;
             saw_filter = 1;
             offset += 1U;
-            while (offset < dict_size && !px_is_delim(dict[offset])) offset += 1U;
+            while (offset < dict_size && !pdf_is_delim(dict[offset])) offset += 1U;
         }
     }
     return -1;
@@ -222,7 +163,7 @@ static void write_filter_value(const unsigned char *dict, size_t dict_size) {
         rt_write_cstr(1, "none");
         return;
     }
-    offset = px_skip_ws(dict, dict_size, key_offset + 7U);
+    offset = pdf_skip_ws(dict, dict_size, key_offset + 7U);
     if (offset >= dict_size) {
         rt_write_cstr(1, "unknown");
     } else if (dict[offset] == (unsigned char)'/') {
@@ -232,7 +173,7 @@ static void write_filter_value(const unsigned char *dict, size_t dict_size) {
         rt_write_char(1, '[');
         offset += 1U;
         while (offset < dict_size) {
-            offset = px_skip_ws(dict, dict_size, offset);
+            offset = pdf_skip_ws(dict, dict_size, offset);
             if (offset >= dict_size || dict[offset] == (unsigned char)']') break;
             if (dict[offset] == (unsigned char)'/') {
                 px_copy_name(dict, dict_size, offset + 1U, name, sizeof(name));
@@ -240,7 +181,7 @@ static void write_filter_value(const unsigned char *dict, size_t dict_size) {
                 rt_write_cstr(1, name[0] != '\0' ? name : "unknown");
                 first = 0;
                 offset += 1U;
-                while (offset < dict_size && !px_is_delim(dict[offset])) offset += 1U;
+                while (offset < dict_size && !pdf_is_delim(dict[offset])) offset += 1U;
             } else break;
         }
         rt_write_char(1, ']');

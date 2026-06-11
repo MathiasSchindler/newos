@@ -6,62 +6,11 @@ static void print_usage(void) {
     tool_write_usage("pdfcheck", "[--json] PDF ...");
 }
 
-static int is_space(unsigned char ch) {
-    return ch == 0U || ch == 9U || ch == 10U || ch == 12U || ch == 13U || ch == 32U;
-}
-
-static int is_digit(unsigned char ch) {
-    return ch >= (unsigned char)'0' && ch <= (unsigned char)'9';
-}
-
-static int is_delim(unsigned char ch) {
-    return is_space(ch) || ch == (unsigned char)'(' || ch == (unsigned char)')' || ch == (unsigned char)'<' || ch == (unsigned char)'>' || ch == (unsigned char)'[' || ch == (unsigned char)']' || ch == (unsigned char)'{' || ch == (unsigned char)'}' || ch == (unsigned char)'/' || ch == (unsigned char)'%';
-}
-
-static size_t skip_ws(const unsigned char *data, size_t size, size_t offset) {
-    while (offset < size) {
-        if (is_space(data[offset])) offset += 1U;
-        else if (data[offset] == (unsigned char)'%') {
-            while (offset < size && data[offset] != (unsigned char)'\n' && data[offset] != (unsigned char)'\r') offset += 1U;
-        } else break;
-    }
-    return offset;
-}
-
-static int parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out) {
-    unsigned long long value = 0ULL;
-    size_t offset = *offset_io;
-    int saw = 0;
-
-    while (offset < size && is_digit(data[offset])) {
-        unsigned int digit = (unsigned int)(data[offset] - (unsigned char)'0');
-        if (value > (18446744073709551615ULL - (unsigned long long)digit) / 10ULL) return -1;
-        value = value * 10ULL + (unsigned long long)digit;
-        offset += 1U;
-        saw = 1;
-    }
-    if (!saw) return -1;
-    *offset_io = offset;
-    *value_out = value;
-    return 0;
-}
-
-static int text_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
-    size_t length = rt_strlen(text);
-    size_t index;
-
-    if (offset > size || length > size - offset) return 0;
-    for (index = 0U; index < length; ++index) {
-        if (data[offset + index] != (unsigned char)text[index]) return 0;
-    }
-    return 1;
-}
-
 static int key_at(const unsigned char *data, size_t size, size_t offset, const char *key) {
     size_t length = rt_strlen(key);
 
-    if (!text_at(data, size, offset, key)) return 0;
-    return offset + length >= size || is_delim(data[offset + length]);
+    if (!pdf_text_at(data, size, offset, key)) return 0;
+    return offset + length >= size || pdf_is_delim(data[offset + length]);
 }
 
 static int object_exists(const PdfInfo *info, unsigned long long number, unsigned long long generation) {
@@ -88,11 +37,11 @@ static int find_key_ref(const unsigned char *data, size_t size, const char *key,
         unsigned long long generation;
 
         if (data[offset] != (unsigned char)'/' || !key_at(data, size, offset, key)) continue;
-        parse_offset = skip_ws(data, size, offset + key_length);
-        if (parse_u64(data, size, &parse_offset, &number) != 0) continue;
-        parse_offset = skip_ws(data, size, parse_offset);
-        if (parse_u64(data, size, &parse_offset, &generation) != 0) continue;
-        parse_offset = skip_ws(data, size, parse_offset);
+        parse_offset = pdf_skip_ws(data, size, offset + key_length);
+        if (pdf_parse_u64(data, size, &parse_offset, &number) != 0) continue;
+        parse_offset = pdf_skip_ws(data, size, parse_offset);
+        if (pdf_parse_u64(data, size, &parse_offset, &generation) != 0) continue;
+        parse_offset = pdf_skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
             *number_out = number;
             *generation_out = generation;
@@ -390,21 +339,21 @@ static int scan_dangling_refs(const unsigned char *data, size_t size, const PdfD
             offset = stream_end > offset ? stream_end : offset + 1U;
             continue;
         }
-        if ((offset != 0U && !is_delim(data[offset - 1U])) || !is_digit(data[offset])) {
+        if ((offset != 0U && !pdf_is_delim(data[offset - 1U])) || !pdf_is_digit(data[offset])) {
             offset += 1U;
             continue;
         }
         parse_offset = offset;
-        if (parse_u64(data, size, &parse_offset, &number) != 0) {
+        if (pdf_parse_u64(data, size, &parse_offset, &number) != 0) {
             offset += 1U;
             continue;
         }
-        parse_offset = skip_ws(data, size, parse_offset);
-        if (parse_u64(data, size, &parse_offset, &generation) != 0) {
+        parse_offset = pdf_skip_ws(data, size, parse_offset);
+        if (pdf_parse_u64(data, size, &parse_offset, &generation) != 0) {
             offset += 1U;
             continue;
         }
-        parse_offset = skip_ws(data, size, parse_offset);
+        parse_offset = pdf_skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
             if (!is_null_reference(number, generation) && !object_exists(&document->info, number, generation)) {
                 rt_write_cstr(1, "error: dangling ref ");
@@ -436,21 +385,21 @@ static int scan_dangling_refs_report(const unsigned char *data, size_t size, con
             offset = stream_end > offset ? stream_end : offset + 1U;
             continue;
         }
-        if ((offset != 0U && !is_delim(data[offset - 1U])) || !is_digit(data[offset])) {
+        if ((offset != 0U && !pdf_is_delim(data[offset - 1U])) || !pdf_is_digit(data[offset])) {
             offset += 1U;
             continue;
         }
         parse_offset = offset;
-        if (parse_u64(data, size, &parse_offset, &number) != 0) {
+        if (pdf_parse_u64(data, size, &parse_offset, &number) != 0) {
             offset += 1U;
             continue;
         }
-        parse_offset = skip_ws(data, size, parse_offset);
-        if (parse_u64(data, size, &parse_offset, &generation) != 0) {
+        parse_offset = pdf_skip_ws(data, size, parse_offset);
+        if (pdf_parse_u64(data, size, &parse_offset, &generation) != 0) {
             offset += 1U;
             continue;
         }
-        parse_offset = skip_ws(data, size, parse_offset);
+        parse_offset = pdf_skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
             if (!is_null_reference(number, generation) && !object_exists(&document->info, number, generation)) {
                 report->ok = 0;

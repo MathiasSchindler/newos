@@ -100,6 +100,27 @@ int tool_json_end_event(int fd) {
     return rt_write_cstr(fd, "}\n");
 }
 
+int tool_json_field_string(int fd, const char *name, const char *value) {
+    if (rt_write_cstr(fd, ",\"") != 0) return -1;
+    if (rt_write_cstr(fd, name) != 0) return -1;
+    if (rt_write_cstr(fd, "\":") != 0) return -1;
+    return tool_json_write_string(fd, value != 0 ? value : "");
+}
+
+int tool_json_field_uint(int fd, const char *name, unsigned long long value) {
+    if (rt_write_cstr(fd, ",\"") != 0) return -1;
+    if (rt_write_cstr(fd, name) != 0) return -1;
+    if (rt_write_cstr(fd, "\":") != 0) return -1;
+    return rt_write_uint(fd, value);
+}
+
+int tool_json_field_bool(int fd, const char *name, int value) {
+    if (rt_write_cstr(fd, ",\"") != 0) return -1;
+    if (rt_write_cstr(fd, name) != 0) return -1;
+    if (rt_write_cstr(fd, "\":") != 0) return -1;
+    return rt_write_cstr(fd, value ? "true" : "false");
+}
+
 int tool_json_write_diagnostic(const char *tool_name, const char *level, const char *message, const char *detail) {
     if (tool_json_begin_event(2, tool_name, "stderr", "diagnostic") != 0) return -1;
     if (rt_write_cstr(2, ",\"level\":") != 0) return -1;

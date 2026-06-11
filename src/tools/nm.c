@@ -2,6 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 #include "archive_util.h"
+#include "object_util.h"
 
 #define NM_MAX_SECTIONS 512U
 #define NM_MAX_SYMBOLS 8192U
@@ -9,8 +10,6 @@
 
 #define MACHO_MAX_COMMANDS 256U
 #define MACHO_MAX_SECTIONS 512U
-#define MACHO_LC_SEGMENT_64 0x19U
-#define MACHO_LC_SYMTAB 0x2U
 #define MACHO_N_STAB 0xe0U
 #define MACHO_N_PEXT 0x10U
 #define MACHO_N_TYPE 0x0eU
@@ -24,9 +23,6 @@
 #define MACHO_S_ZEROFILL 1U
 #define MACHO_S_GB_ZEROFILL 12U
 #define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
-#define MACHO_FAT_MAGIC_LE 0xbebafecaU
-#define MACHO_FAT_MAGIC_64_LE 0xbfbafecaU
-#define MACHO_CPU_TYPE_ARM64 0x0100000cU
 
 #define ELF_SHT_SYMTAB 2U
 #define ELF_SHT_STRTAB 3U
@@ -55,22 +51,9 @@ typedef struct {
     char name[NM_NAME_TABLE_CAPACITY / 256U];
 } NmSymbol;
 
-typedef struct {
-    char segment[17];
-    char section[17];
-    unsigned int flags;
-} NmMachSection;
-
-typedef struct {
-    unsigned int ncmds;
-} NmMachHeader;
-
-typedef struct {
-    unsigned int symoff;
-    unsigned int nsyms;
-    unsigned int stroff;
-    unsigned int strsize;
-} NmMachSymtab;
+typedef ObjectMachSectionInfo NmMachSection;
+typedef ObjectMachHeaderInfo NmMachHeader;
+typedef ObjectMachSymtabInfo NmMachSymtab;
 
 static NmSection nm_sections[NM_MAX_SECTIONS];
 static NmSymbol nm_symbols[NM_MAX_SYMBOLS];
@@ -88,34 +71,6 @@ static int add_symbol(const char *name, unsigned long long value, unsigned long 
 
 
 #define read_region(fd, offset, buffer, count) archive_read_region((fd), nm_object_base, (offset), (buffer), (count))
-
-static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
-    unsigned char header[8];
-    unsigned int magic;
-    unsigned int arch_count;
-    unsigned int index;
-
-    *offset_out = 0ULL;
-    if (archive_read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
-    magic = tool_read_u32_le(header + 0);
-    if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
-    arch_count = tool_read_u32_be(header + 4);
-    if (arch_count > 32U) return -1;
-    for (index = 0U; index < arch_count; ++index) {
-        unsigned char raw[32];
-        unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
-        unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
-        unsigned int cputype;
-        if (archive_read_file_region(fd, entry, raw, entry_size) != 0) return -1;
-        cputype = tool_read_u32_be(raw + 0);
-        if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
-            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 8) << 32U) | (unsigned long long)tool_read_u32_be(raw + 12)) : (unsigned long long)tool_read_u32_be(raw + 8);
-            if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
-        }
-    }
-    return *offset_out != 0ULL ? 0 : -1;
-}
-
 
 static void write_hex16(unsigned long long value) {
     static const char digits[] = "0123456789abcdef";
@@ -176,87 +131,6 @@ static const char *symbol_bind_name(unsigned char info) {
     if (bind == 2U) return "weak";
     return "other";
 }
-
-static int parse_macho_header(int fd, NmMachHeader *header) {
-    unsigned char raw[32];
-
-    if (read_region(fd, 0ULL, raw, sizeof(raw)) != 0 || tool_read_u32_le(raw + 0) != 0xfeedfacfU) {
-        return -1;
-    }
-    header->ncmds = tool_read_u32_le(raw + 16);
-    return header->ncmds <= MACHO_MAX_COMMANDS ? 0 : -1;
-}
-
-static int load_macho_layout(int fd, const NmMachHeader *header, NmMachSection *sections, unsigned int *section_count_out, NmMachSymtab *symtab) {
-    unsigned int command_index;
-    unsigned long long command_offset = 32ULL;
-    unsigned int section_count = 0U;
-
-    *section_count_out = 0U;
-    symtab->symoff = 0U;
-    symtab->nsyms = 0U;
-    symtab->stroff = 0U;
-    symtab->strsize = 0U;
-    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
-        unsigned char command_header[24];
-        unsigned int command;
-        unsigned int command_size;
-
-        if (read_region(fd, command_offset, command_header, 8U) != 0) {
-            return -1;
-        }
-        command = tool_read_u32_le(command_header + 0);
-        command_size = tool_read_u32_le(command_header + 4);
-        if (command_size < 8U) {
-            return -1;
-        }
-        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
-            unsigned char segment[72];
-            unsigned int nsects;
-            unsigned int section_index;
-            char segment_name[17];
-
-            if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) {
-                return -1;
-            }
-            tool_copy_printable_bytes(segment_name, sizeof(segment_name), segment + 8, 16U);
-            nsects = tool_read_u32_le(segment + 64);
-            if (72U + nsects * 80U > command_size) {
-                return -1;
-            }
-            for (section_index = 0U; section_index < nsects; ++section_index) {
-                unsigned char raw[80];
-                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
-
-                if (section_count >= MACHO_MAX_SECTIONS) {
-                    return -1;
-                }
-                if (read_region(fd, section_offset, raw, sizeof(raw)) != 0) {
-                    return -1;
-                }
-                tool_copy_printable_bytes(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
-                tool_copy_printable_bytes(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
-                if (sections[section_count].segment[0] == '\0') {
-                    rt_copy_string(sections[section_count].segment, sizeof(sections[section_count].segment), segment_name);
-                }
-                sections[section_count].flags = tool_read_u32_le(raw + 64);
-                section_count += 1U;
-            }
-        } else if (command == MACHO_LC_SYMTAB && command_size >= 24U) {
-            if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
-                return -1;
-            }
-            symtab->symoff = tool_read_u32_le(command_header + 8);
-            symtab->nsyms = tool_read_u32_le(command_header + 12);
-            symtab->stroff = tool_read_u32_le(command_header + 16);
-            symtab->strsize = tool_read_u32_le(command_header + 20);
-        }
-        command_offset += (unsigned long long)command_size;
-    }
-    *section_count_out = section_count;
-    return 0;
-}
-
 
 static char macho_symbol_type(const NmMachSection *sections, unsigned int section_count, unsigned char n_type, unsigned char n_sect) {
     unsigned int type = n_type & MACHO_N_TYPE;
@@ -334,7 +208,8 @@ static int nm_macho_file(int fd) {
     unsigned int section_count = 0U;
     size_t read_size;
 
-    if (parse_macho_header(fd, &header) != 0 || load_macho_layout(fd, &header, sections, &section_count, &symtab) != 0) {
+    if (object_macho_parse_header(fd, nm_object_base, 0ULL, &header) != 0 ||
+        object_macho_load_layout(fd, nm_object_base, 0ULL, &header, sections, MACHO_MAX_SECTIONS, MACHO_MAX_COMMANDS, &section_count, &symtab) != 0) {
         return -1;
     }
     if (symtab.strsize == 0U || symtab.stroff == 0U) {
@@ -460,9 +335,9 @@ static int nm_file(const char *path) {
         tool_write_error("nm", "unsupported file: ", path);
         return 1;
     }
-    if (tool_read_u32_le(header) == MACHO_FAT_MAGIC_LE || tool_read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
+    if (tool_read_u32_le(header) == OBJECT_MACHO_FAT_MAGIC_LE || tool_read_u32_le(header) == OBJECT_MACHO_FAT_MAGIC_64_LE) {
         unsigned long long slice_offset;
-        if (select_macho_fat_slice(fd, &slice_offset) == 0) {
+        if (object_macho_select_fat_slice(fd, OBJECT_MACHO_CPU_TYPE_ARM64, 32U, &slice_offset, 0) == 0) {
             nm_object_base = slice_offset;
             if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
                 platform_close(fd);

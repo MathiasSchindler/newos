@@ -14,15 +14,15 @@
  * unbounded memory use.
  */
 
-static int pdf_is_space(unsigned char ch) {
+int pdf_is_space(unsigned char ch) {
     return ch == 0U || ch == 9U || ch == 10U || ch == 12U || ch == 13U || ch == 32U;
 }
 
-static int pdf_is_digit(unsigned char ch) {
+int pdf_is_digit(unsigned char ch) {
     return ch >= (unsigned char)'0' && ch <= (unsigned char)'9';
 }
 
-static int pdf_is_delim(unsigned char ch) {
+int pdf_is_delim(unsigned char ch) {
     return pdf_is_space(ch) || ch == (unsigned char)'(' || ch == (unsigned char)')' || ch == (unsigned char)'<' || ch == (unsigned char)'>' || ch == (unsigned char)'[' || ch == (unsigned char)']' || ch == (unsigned char)'{' || ch == (unsigned char)'}' || ch == (unsigned char)'/' || ch == (unsigned char)'%';
 }
 
@@ -49,7 +49,7 @@ static int pdf_compare_object_stream_entries(const void *left_ptr, const void *r
     return 0;
 }
 
-static size_t pdf_skip_ws(const unsigned char *data, size_t size, size_t offset) {
+size_t pdf_skip_ws(const unsigned char *data, size_t size, size_t offset) {
     while (offset < size) {
         if (pdf_is_space(data[offset])) {
             offset += 1U;
@@ -62,7 +62,7 @@ static size_t pdf_skip_ws(const unsigned char *data, size_t size, size_t offset)
     return offset;
 }
 
-static int pdf_text_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
+int pdf_text_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
     size_t length = rt_strlen(text);
     size_t index;
 
@@ -73,7 +73,7 @@ static int pdf_text_at(const unsigned char *data, size_t size, size_t offset, co
     return 1;
 }
 
-static int pdf_text_at_len(const unsigned char *data, size_t size, size_t offset, const char *text, size_t length) {
+int pdf_text_at_len(const unsigned char *data, size_t size, size_t offset, const char *text, size_t length) {
     size_t index;
 
     if (offset > size || length > size - offset) return 0;
@@ -83,7 +83,7 @@ static int pdf_text_at_len(const unsigned char *data, size_t size, size_t offset
     return 1;
 }
 
-static int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
+int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
     size_t length = rt_strlen(text);
 
     if (!pdf_text_at_len(data, size, offset, text, length)) return 0;
@@ -113,7 +113,7 @@ static size_t pdf_find_keyword(const unsigned char *data, size_t size, size_t st
     return size;
 }
 
-static int pdf_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out) {
+int pdf_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out) {
     unsigned long long value = 0ULL;
     size_t offset = *offset_io;
     int saw_digit = 0;

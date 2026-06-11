@@ -158,6 +158,14 @@ typedef struct {
 void pdf_info_init(PdfInfo *info);
 void pdf_info_free(PdfInfo *info);
 int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info);
+int pdf_is_space(unsigned char ch);
+int pdf_is_digit(unsigned char ch);
+int pdf_is_delim(unsigned char ch);
+size_t pdf_skip_ws(const unsigned char *data, size_t size, size_t offset);
+int pdf_text_at(const unsigned char *data, size_t size, size_t offset, const char *text);
+int pdf_text_at_len(const unsigned char *data, size_t size, size_t offset, const char *text, size_t length);
+int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text);
+int pdf_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out);
 const char *pdf_page_format_name(long long width, long long height);
 int pdf_format_date(const char *pdf_date, char *buffer, size_t buffer_size);
 void pdf_buffer_init(PdfBuffer *buffer);

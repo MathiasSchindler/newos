@@ -506,6 +506,23 @@ int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size,
     return 0;
 }
 
+void tool_write_hex_value(int fd, unsigned long long value) {
+    char digits[32];
+    size_t count = 0U;
+
+    rt_write_cstr(fd, "0x");
+    do {
+        unsigned int nibble = (unsigned int)(value & 0xfULL);
+        digits[count++] = (char)(nibble < 10U ? ('0' + nibble) : ('a' + (nibble - 10U)));
+        value >>= 4ULL;
+    } while (value != 0ULL && count < sizeof(digits));
+
+    while (count > 0U) {
+        count -= 1U;
+        rt_write_char(fd, digits[count]);
+    }
+}
+
 unsigned int tool_pager_page_lines(unsigned int default_lines) {
     const char *text = platform_getenv("LINES");
     unsigned long long value = 0;

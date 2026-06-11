@@ -2,6 +2,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 #include "archive_util.h"
+#include "object_util.h"
 
 #define SIZE_MAX_SECTIONS 512U
 #define SIZE_MAX_MACHO_COMMANDS 256U
@@ -13,9 +14,6 @@
 #define ELF_SHF_EXECINSTR 4ULL
 
 #define MACHO_MAGIC_64_LE 0xfeedfacfU
-#define MACHO_FAT_MAGIC_LE 0xbebafecaU
-#define MACHO_FAT_MAGIC_64_LE 0xbfbafecaU
-#define MACHO_CPU_TYPE_ARM64 0x0100000cU
 #define MACHO_LC_SEGMENT_64 0x19U
 #define MACHO_S_ZEROFILL 1U
 #define MACHO_S_GB_ZEROFILL 12U
@@ -36,35 +34,6 @@ typedef struct {
 
 
 #define read_region(fd, offset, buffer, count) archive_read_region((fd), size_object_base, (offset), (buffer), (count))
-
-static int select_macho_fat_slice(int fd, unsigned long long *offset_out, unsigned long long *size_out) {
-    unsigned char header[8];
-    unsigned int magic;
-    unsigned int arch_count;
-    unsigned int index;
-    *offset_out = 0ULL;
-    *size_out = 0ULL;
-    if (archive_read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
-    magic = tool_read_u32_le(header + 0);
-    if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
-    arch_count = tool_read_u32_be(header + 4);
-    if (arch_count > 32U) return -1;
-    for (index = 0U; index < arch_count; ++index) {
-        unsigned char raw[32];
-        unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
-        unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
-        unsigned int cputype;
-        if (archive_read_file_region(fd, entry, raw, entry_size) != 0) return -1;
-        cputype = tool_read_u32_be(raw + 0);
-        if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
-            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 8) << 32U) | (unsigned long long)tool_read_u32_be(raw + 12)) : (unsigned long long)tool_read_u32_be(raw + 8);
-            *size_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 16) << 32U) | (unsigned long long)tool_read_u32_be(raw + 20)) : (unsigned long long)tool_read_u32_be(raw + 12);
-            if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
-        }
-    }
-    return *offset_out != 0ULL ? 0 : -1;
-}
-
 
 static int macho_is_zerofill_type(unsigned int type) {
     return type == MACHO_S_ZEROFILL || type == MACHO_S_GB_ZEROFILL || type == MACHO_S_THREAD_LOCAL_ZEROFILL;
@@ -360,10 +329,10 @@ static int size_file(const char *path, int print_name) {
         tool_write_error("size", "unsupported file: ", path);
         return 1;
     }
-    if (tool_read_u32_le(header) == MACHO_FAT_MAGIC_LE || tool_read_u32_le(header) == MACHO_FAT_MAGIC_64_LE) {
+    if (tool_read_u32_le(header) == OBJECT_MACHO_FAT_MAGIC_LE || tool_read_u32_le(header) == OBJECT_MACHO_FAT_MAGIC_64_LE) {
         unsigned long long slice_offset;
         unsigned long long slice_size;
-        if (select_macho_fat_slice(fd, &slice_offset, &slice_size) == 0) {
+        if (object_macho_select_fat_slice(fd, OBJECT_MACHO_CPU_TYPE_ARM64, 32U, &slice_offset, &slice_size) == 0) {
             size_object_base = slice_offset;
             file_size = slice_size;
             if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {

@@ -50,14 +50,6 @@ static int append_char(PdfBuffer *buffer, unsigned char ch) {
     return append_bytes(buffer, &ch, 1U);
 }
 
-static int is_space(unsigned char ch) {
-    return ch == 0U || ch == 9U || ch == 10U || ch == 12U || ch == 13U || ch == 32U;
-}
-
-static int is_delim(unsigned char ch) {
-    return is_space(ch) || ch == (unsigned char)'(' || ch == (unsigned char)')' || ch == (unsigned char)'<' || ch == (unsigned char)'>' || ch == (unsigned char)'[' || ch == (unsigned char)']' || ch == (unsigned char)'{' || ch == (unsigned char)'}' || ch == (unsigned char)'/' || ch == (unsigned char)'%';
-}
-
 static int hex_value(unsigned char ch) {
     if (ch >= (unsigned char)'0' && ch <= (unsigned char)'9') return (int)(ch - (unsigned char)'0');
     if (ch >= (unsigned char)'A' && ch <= (unsigned char)'F') return (int)(ch - (unsigned char)'A') + 10;
@@ -167,7 +159,7 @@ static size_t append_hex_string(const unsigned char *data, size_t size, size_t o
     while (offset < size && data[offset] != (unsigned char)'>') {
         int value;
 
-        if (is_space(data[offset])) {
+        if (pdf_is_space(data[offset])) {
             offset += 1U;
             continue;
         }
@@ -242,7 +234,7 @@ static int scan_text_stream(PdfGrepContext *context, const PdfObjectSpan *object
 
     pdf_buffer_init(&pending);
     while (offset < size && !stop) {
-        if (is_space(data[offset])) {
+        if (pdf_is_space(data[offset])) {
             offset += 1U;
         } else if (data[offset] == (unsigned char)'%') {
             while (offset < size && data[offset] != (unsigned char)'\n' && data[offset] != (unsigned char)'\r') offset += 1U;
@@ -252,16 +244,16 @@ static int scan_text_stream(PdfGrepContext *context, const PdfObjectSpan *object
             offset = append_hex_string(data, size, offset, &pending);
         } else if (data[offset] == (unsigned char)'/') {
             offset += 1U;
-            while (offset < size && !is_delim(data[offset])) offset += 1U;
+            while (offset < size && !pdf_is_delim(data[offset])) offset += 1U;
         } else if (data[offset] == (unsigned char)'\'' || data[offset] == (unsigned char)'"') {
             stop = emit_pending(context, object, &pending);
             offset += 1U;
-        } else if (is_delim(data[offset])) {
+        } else if (pdf_is_delim(data[offset])) {
             offset += 1U;
         } else {
             size_t start = offset;
 
-            while (offset < size && !is_delim(data[offset])) offset += 1U;
+            while (offset < size && !pdf_is_delim(data[offset])) offset += 1U;
             if (token_equals(data, start, offset, "Tj") || token_equals(data, start, offset, "TJ")) {
                 stop = emit_pending(context, object, &pending);
             } else if (token_equals(data, start, offset, "BT") || token_equals(data, start, offset, "ET")) {

@@ -2,13 +2,12 @@
 #include "runtime.h"
 #include "tool_util.h"
 #include "archive_util.h"
+#include "object_util.h"
 
 #define OBJDUMP_MAX_SECTIONS 256U
 #define OBJDUMP_NAME_TABLE_CAPACITY 65536U
 #define OBJDUMP_MACHO_MAX_COMMANDS 256U
 
-#define MACHO_LC_SEGMENT_64 0x19U
-#define MACHO_LC_SYMTAB 0x2U
 #define MACHO_ARM64_RELOC_UNSIGNED 0U
 #define MACHO_ARM64_RELOC_SUBTRACTOR 1U
 #define MACHO_ARM64_RELOC_BRANCH26 2U
@@ -28,9 +27,6 @@
 #define MACHO_S_GB_ZEROFILL 12U
 #define MACHO_S_16BYTE_LITERALS 14U
 #define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
-#define MACHO_FAT_MAGIC_LE 0xbebafecaU
-#define MACHO_FAT_MAGIC_64_LE 0xbfbafecaU
-#define MACHO_CPU_TYPE_ARM64 0x0100000cU
 
 typedef struct {
     unsigned int name;
@@ -55,33 +51,9 @@ typedef struct {
     unsigned short shentsize;
 } ElfHeaderInfo;
 
-typedef struct {
-    unsigned int magic;
-    unsigned int cputype;
-    unsigned int cpusubtype;
-    unsigned int filetype;
-    unsigned int ncmds;
-    unsigned int sizeofcmds;
-    unsigned int flags;
-} MachHeaderInfo;
-
-typedef struct {
-    char segment[17];
-    char section[17];
-    unsigned long long addr;
-    unsigned long long size;
-    unsigned int offset;
-    unsigned int reloff;
-    unsigned int nreloc;
-    unsigned int flags;
-} MachSectionInfo;
-
-typedef struct {
-    unsigned int symoff;
-    unsigned int nsyms;
-    unsigned int stroff;
-    unsigned int strsize;
-} MachSymtabInfo;
+typedef ObjectMachHeaderInfo MachHeaderInfo;
+typedef ObjectMachSectionInfo MachSectionInfo;
+typedef ObjectMachSymtabInfo MachSymtabInfo;
 
 typedef struct {
     unsigned short machine;
@@ -108,24 +80,15 @@ static int objdump_json;
 static unsigned long long objdump_object_base;
 
 static int json_field_string(const char *name, const char *value) {
-    if (rt_write_cstr(1, ",\"") != 0) return -1;
-    if (rt_write_cstr(1, name) != 0) return -1;
-    if (rt_write_cstr(1, "\":") != 0) return -1;
-    return tool_json_write_string(1, value != 0 ? value : "");
+    return tool_json_field_string(1, name, value);
 }
 
 static int json_field_uint(const char *name, unsigned long long value) {
-    if (rt_write_cstr(1, ",\"") != 0) return -1;
-    if (rt_write_cstr(1, name) != 0) return -1;
-    if (rt_write_cstr(1, "\":") != 0) return -1;
-    return rt_write_uint(1, value);
+    return tool_json_field_uint(1, name, value);
 }
 
 static int json_field_bool(const char *name, int value) {
-    if (rt_write_cstr(1, ",\"") != 0) return -1;
-    if (rt_write_cstr(1, name) != 0) return -1;
-    if (rt_write_cstr(1, "\":") != 0) return -1;
-    return rt_write_cstr(1, value ? "true" : "false");
+    return tool_json_field_bool(1, name, value);
 }
 
 
@@ -209,32 +172,6 @@ static const char *pe_type_name(unsigned short characteristics) {
 
 #define read_region(fd, offset, buffer, count) archive_read_region((fd), objdump_object_base, (offset), (buffer), (count))
 
-static int select_macho_fat_slice(int fd, unsigned long long *offset_out) {
-    unsigned char header[8];
-    unsigned int magic;
-    unsigned int arch_count;
-    unsigned int index;
-    *offset_out = 0ULL;
-    if (archive_read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
-    magic = tool_read_u32_le(header + 0);
-    if (magic != MACHO_FAT_MAGIC_LE && magic != MACHO_FAT_MAGIC_64_LE) return -1;
-    arch_count = tool_read_u32_be(header + 4);
-    if (arch_count > 32U) return -1;
-    for (index = 0U; index < arch_count; ++index) {
-        unsigned char raw[32];
-        unsigned int entry_size = magic == MACHO_FAT_MAGIC_64_LE ? 32U : 20U;
-        unsigned long long entry = 8ULL + (unsigned long long)index * (unsigned long long)entry_size;
-        unsigned int cputype;
-        if (archive_read_file_region(fd, entry, raw, entry_size) != 0) return -1;
-        cputype = tool_read_u32_be(raw + 0);
-        if (cputype == MACHO_CPU_TYPE_ARM64 || index == 0U) {
-            *offset_out = magic == MACHO_FAT_MAGIC_64_LE ? (((unsigned long long)tool_read_u32_be(raw + 8) << 32U) | (unsigned long long)tool_read_u32_be(raw + 12)) : (unsigned long long)tool_read_u32_be(raw + 8);
-            if (cputype == MACHO_CPU_TYPE_ARM64) return 0;
-        }
-    }
-    return *offset_out != 0ULL ? 0 : -1;
-}
-
 static const char *machine_name(unsigned short machine) {
     if (machine == 62U) return "x86-64";
     if (machine == 183U) return "aarch64";
@@ -259,20 +196,7 @@ static const char *section_type_name(unsigned int type) {
 }
 
 static void write_hex_value(unsigned long long value) {
-    char digits[32];
-    size_t count = 0U;
-
-    rt_write_cstr(1, "0x");
-    do {
-        unsigned int nibble = (unsigned int)(value & 0xfULL);
-        digits[count++] = (char)(nibble < 10U ? ('0' + nibble) : ('a' + (nibble - 10U)));
-        value >>= 4ULL;
-    } while (value != 0ULL && count < sizeof(digits));
-
-    while (count > 0U) {
-        count -= 1U;
-        rt_write_char(1, digits[count]);
-    }
+    tool_write_hex_value(1, value);
 }
 
 static void write_hex_byte(unsigned char value) {
@@ -301,138 +225,6 @@ static int parse_elf_header(int fd, ElfHeaderInfo *info) {
     info->shentsize = tool_read_u16_le(header + 58);
     info->shnum = tool_read_u16_le(header + 60);
     info->shstrndx = tool_read_u16_le(header + 62);
-    return 0;
-}
-
-static int parse_macho_header(int fd, MachHeaderInfo *info) {
-    unsigned char header[32];
-    unsigned int magic;
-
-    if (read_region(fd, 0ULL, header, sizeof(header)) != 0) {
-        return -1;
-    }
-    magic = tool_read_u32_le(header + 0);
-    if (magic != 0xfeedfacfU) {
-        return -1;
-    }
-
-    info->magic = magic;
-    info->cputype = tool_read_u32_le(header + 4);
-    info->cpusubtype = tool_read_u32_le(header + 8);
-    info->filetype = tool_read_u32_le(header + 12);
-    info->ncmds = tool_read_u32_le(header + 16);
-    info->sizeofcmds = tool_read_u32_le(header + 20);
-    info->flags = tool_read_u32_le(header + 24);
-    return 0;
-}
-
-static int load_macho_sections(int fd, const MachHeaderInfo *header, MachSectionInfo *sections, unsigned int *section_count_out) {
-    unsigned int command_index;
-    unsigned long long command_offset = 32ULL;
-    unsigned int section_count = 0U;
-
-    *section_count_out = 0U;
-    if (header->ncmds > OBJDUMP_MACHO_MAX_COMMANDS) {
-        return -1;
-    }
-
-    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
-        unsigned char command_header[8];
-        unsigned int command;
-        unsigned int command_size;
-
-        if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
-            return -1;
-        }
-        command = tool_read_u32_le(command_header + 0);
-        command_size = tool_read_u32_le(command_header + 4);
-        if (command_size < 8U) {
-            return -1;
-        }
-
-        if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U) {
-            unsigned char segment[72];
-            unsigned int nsects;
-            unsigned int section_index;
-            char segment_name[17];
-
-            if (read_region(fd, command_offset, segment, sizeof(segment)) != 0) {
-                return -1;
-            }
-            tool_copy_printable_bytes(segment_name, sizeof(segment_name), segment + 8, 16U);
-            nsects = tool_read_u32_le(segment + 64);
-            if (72U + nsects * 80U > command_size) {
-                return -1;
-            }
-            for (section_index = 0U; section_index < nsects; ++section_index) {
-                unsigned char raw[80];
-                unsigned long long section_offset = command_offset + 72ULL + ((unsigned long long)section_index * 80ULL);
-
-                if (section_count >= OBJDUMP_MAX_SECTIONS) {
-                    return -1;
-                }
-                if (read_region(fd, section_offset, raw, sizeof(raw)) != 0) {
-                    return -1;
-                }
-                tool_copy_printable_bytes(sections[section_count].section, sizeof(sections[section_count].section), raw + 0, 16U);
-                tool_copy_printable_bytes(sections[section_count].segment, sizeof(sections[section_count].segment), raw + 16, 16U);
-                if (sections[section_count].segment[0] == '\0') {
-                    rt_copy_string(sections[section_count].segment, sizeof(sections[section_count].segment), segment_name);
-                }
-                sections[section_count].addr = tool_read_u64_le(raw + 32);
-                sections[section_count].size = tool_read_u64_le(raw + 40);
-                sections[section_count].offset = tool_read_u32_le(raw + 48);
-                sections[section_count].reloff = tool_read_u32_le(raw + 56);
-                sections[section_count].nreloc = tool_read_u32_le(raw + 60);
-                sections[section_count].flags = tool_read_u32_le(raw + 64);
-                section_count += 1U;
-            }
-        }
-
-        command_offset += (unsigned long long)command_size;
-    }
-
-    *section_count_out = section_count;
-    return 0;
-}
-
-static int load_macho_symtab(int fd, const MachHeaderInfo *header, MachSymtabInfo *symtab) {
-    unsigned int command_index;
-    unsigned long long command_offset = 32ULL;
-
-    symtab->symoff = 0U;
-    symtab->nsyms = 0U;
-    symtab->stroff = 0U;
-    symtab->strsize = 0U;
-    if (header->ncmds > OBJDUMP_MACHO_MAX_COMMANDS) {
-        return -1;
-    }
-
-    for (command_index = 0U; command_index < header->ncmds; ++command_index) {
-        unsigned char command_header[24];
-        unsigned int command;
-        unsigned int command_size;
-
-        if (read_region(fd, command_offset, command_header, 8U) != 0) {
-            return -1;
-        }
-        command = tool_read_u32_le(command_header + 0);
-        command_size = tool_read_u32_le(command_header + 4);
-        if (command_size < 8U) {
-            return -1;
-        }
-        if (command == MACHO_LC_SYMTAB && command_size >= 24U) {
-            if (read_region(fd, command_offset, command_header, sizeof(command_header)) != 0) {
-                return -1;
-            }
-            symtab->symoff = tool_read_u32_le(command_header + 8);
-            symtab->nsyms = tool_read_u32_le(command_header + 12);
-            symtab->stroff = tool_read_u32_le(command_header + 16);
-            symtab->strsize = tool_read_u32_le(command_header + 20);
-            return 0;
-        }
-        command_offset += (unsigned long long)command_size;
-    }
     return 0;
 }
 
@@ -558,25 +350,8 @@ static int load_name_table(int fd,
                            char *buffer,
                            size_t buffer_capacity,
                            size_t *size_out) {
-    const ElfSectionInfo *section;
-    size_t to_read;
-
-    *size_out = 0U;
-    if (header->shstrndx >= header->shnum) {
-        return 0;
-    }
-
-    section = &sections[header->shstrndx];
-    to_read = (size_t)(section->size < (unsigned long long)(buffer_capacity - 1U) ? section->size : (unsigned long long)(buffer_capacity - 1U));
-    if (to_read == 0U) {
-        return 0;
-    }
-    if (read_region(fd, section->offset, (unsigned char *)buffer, to_read) != 0) {
-        return -1;
-    }
-    buffer[to_read] = '\0';
-    *size_out = to_read;
-    return 0;
+    const ElfSectionInfo *section = header->shstrndx < header->shnum ? &sections[header->shstrndx] : 0;
+    return object_elf_load_name_table(fd, objdump_object_base, 0ULL, header->shstrndx, header->shnum, section != 0 ? section->offset : 0ULL, section != 0 ? section->size : 0ULL, buffer, buffer_capacity, size_out);
 }
 
 static const char *name_from_table(const char *table, size_t table_size, unsigned int offset) {
@@ -1140,10 +915,11 @@ int main(int argc, char **argv) {
         if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
             load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
             unsigned long long macho_slice_offset;
-            if (select_macho_fat_slice(fd, &macho_slice_offset) == 0) {
+            if (object_macho_select_fat_slice(fd, OBJECT_MACHO_CPU_TYPE_ARM64, 32U, &macho_slice_offset, 0) == 0) {
                 objdump_object_base = macho_slice_offset;
             }
-            if (parse_macho_header(fd, &macho) == 0 && load_macho_sections(fd, &macho, macho_sections, &macho_section_count) == 0 && load_macho_symtab(fd, &macho, &macho_symtab) == 0) {
+            if (object_macho_parse_header(fd, objdump_object_base, 0ULL, &macho) == 0 &&
+                object_macho_load_layout(fd, objdump_object_base, 0ULL, &macho, macho_sections, OBJDUMP_MAX_SECTIONS, OBJDUMP_MACHO_MAX_COMMANDS, &macho_section_count, &macho_symtab) == 0) {
                 if (show_file) {
                     if (objdump_json) (void)json_file_header_event(argv[i], "mach-o-64", macho_machine_name(macho.cputype), macho_type_name(macho.filetype), 0ULL, (unsigned long long)macho.flags);
                     else print_macho_file_header(argv[i], &macho);
