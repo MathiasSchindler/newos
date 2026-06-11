@@ -22,21 +22,6 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
     return 0;
 }
 
-
-
-
-static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
-    char dir[GZIP_PATH_CAPACITY];
-
-    if (argv0 == 0 || !tool_path_has_separator(argv0)) {
-        rt_copy_string(buffer, buffer_size, tool_name);
-        return 0;
-    }
-
-    tool_path_dirname(argv0, dir, sizeof(dir));
-    return tool_join_path(dir, tool_name, buffer, buffer_size);
-}
-
 static int write_stored_block(int fd, unsigned char *block, unsigned int len, int is_last) {
     unsigned int nlen = 0xffffU - len;
 
@@ -179,7 +164,7 @@ static int dispatch_to_gunzip(const char *argv0, int argc, char **argv) {
     int pid = 0;
     int status = 1;
 
-    if (build_helper_path(argv0, "gunzip", helper_path, sizeof(helper_path)) != 0) {
+    if (tool_build_sibling_program_path(argv0, "gunzip", helper_path, sizeof(helper_path)) != 0) {
         tool_write_error("gzip", "cannot locate ", "gunzip");
         return 1;
     }

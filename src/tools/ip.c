@@ -7,19 +7,6 @@
 #define IP_MAX_ADDRESSES 512U
 #define IP_MAX_ROUTES 256U
 
-
-static int contains_char(const char *text, char ch) {
-    size_t i = 0U;
-
-    while (text[i] != '\0') {
-        if (text[i] == ch) {
-            return 1;
-        }
-        i += 1U;
-    }
-    return 0;
-}
-
 static int is_object_name(const char *text, const char *long_name, const char *medium_name, const char *short_name) {
     return tool_str_equal(text, long_name) || tool_str_equal(text, medium_name) || tool_str_equal(text, short_name);
 }
@@ -338,7 +325,7 @@ static int route_matches_filter(const PlatformRouteEntry *route, const char *fil
 
     destination[0] = '\0';
     rt_copy_string(destination, sizeof(destination), route->destination);
-    if (!contains_char(route->destination, '/') && route->prefix_length != 0U) {
+    if (!tool_contains_char(route->destination, '/') && route->prefix_length != 0U) {
         if (append_text(destination, sizeof(destination), "/") != 0 ||
             append_uint_text(destination, sizeof(destination), (unsigned long long)route->prefix_length) != 0) {
             return 0;
@@ -386,7 +373,7 @@ static int show_routes(const char *dev_name, int family_filter, const char *rout
             rt_write_cstr(1, "default");
         } else {
             rt_write_cstr(1, routes[i].destination);
-            if (!contains_char(routes[i].destination, '/') && routes[i].prefix_length != 0U) {
+            if (!tool_contains_char(routes[i].destination, '/') && routes[i].prefix_length != 0U) {
                 rt_write_char(1, '/');
                 rt_write_uint(1, (unsigned long long)routes[i].prefix_length);
             }
@@ -440,7 +427,7 @@ static int flush_addresses(const char *dev_name, int family_filter) {
     for (i = 0U; i < address_count; ++i) {
         char cidr[PLATFORM_NETWORK_TEXT_CAPACITY + 16];
 
-        if (rt_strcmp(addresses[i].ifname, dev_name) != 0 || contains_char(addresses[i].address, ':')) {
+        if (rt_strcmp(addresses[i].ifname, dev_name) != 0 || tool_contains_char(addresses[i].address, ':')) {
             continue;
         }
         rt_copy_string(cidr, sizeof(cidr), addresses[i].address);
@@ -546,7 +533,7 @@ static int handle_address_command(int argc, char **argv, int argi, int family_fi
         tool_write_error("ip", "missing required device name", 0);
         return 1;
     }
-    if (contains_char(cidr, ':') || family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
+    if (tool_contains_char(cidr, ':') || family_filter == PLATFORM_NETWORK_FAMILY_IPV6) {
         tool_write_error("ip", "IPv6 address changes are not yet implemented", 0);
         return 1;
     }
@@ -648,9 +635,9 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
                 argi += 2;
             } else if (route_filter == 0 &&
                        (tool_str_equal(argv[argi], "default") ||
-                        contains_char(argv[argi], '/') ||
-                        contains_char(argv[argi], '.') ||
-                        contains_char(argv[argi], ':'))) {
+                        tool_contains_char(argv[argi], '/') ||
+                        tool_contains_char(argv[argi], '.') ||
+                        tool_contains_char(argv[argi], ':'))) {
                 route_filter = argv[argi];
                 argi += 1;
             } else if (dev_name == 0) {
@@ -691,8 +678,8 @@ static int handle_route_command(int argc, char **argv, int argi, int family_filt
     }
 
     if (family_filter == PLATFORM_NETWORK_FAMILY_IPV6 ||
-        contains_char(destination, ':') ||
-        (gateway != 0 && contains_char(gateway, ':'))) {
+        tool_contains_char(destination, ':') ||
+        (gateway != 0 && tool_contains_char(gateway, ':'))) {
         tool_write_error("ip", "IPv6 route changes are not yet implemented", 0);
         return 1;
     }

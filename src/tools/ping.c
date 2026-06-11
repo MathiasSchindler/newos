@@ -2,19 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-
-static int contains_char(const char *text, char ch) {
-    size_t i = 0U;
-
-    while (text[i] != '\0') {
-        if (text[i] == ch) {
-            return 1;
-        }
-        i += 1U;
-    }
-    return 0;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-4|-6] [-nq] [-c COUNT] [-i SECONDS] [-W SECONDS] [-w DEADLINE] [-s BYTES] [-t TTL] HOST");
 }
@@ -153,7 +140,7 @@ int main(int argc, char **argv) {
         options.deadline_seconds = (unsigned int)deadline_seconds;
         options.quiet_output = quiet;
         options.family = family_filter != PLATFORM_NETWORK_FAMILY_ANY ? family_filter :
-            (contains_char(host, ':') ? PLATFORM_NETWORK_FAMILY_IPV6 : PLATFORM_NETWORK_FAMILY_IPV4);
+            (tool_contains_char(host, ':') ? PLATFORM_NETWORK_FAMILY_IPV6 : PLATFORM_NETWORK_FAMILY_IPV4);
         options.numeric_only = numeric_only;
         return platform_ping_host(host, &options);
     }

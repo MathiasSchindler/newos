@@ -83,18 +83,6 @@ static int sort_items_add_input(SortItems *items, char *input) {
     return 0;
 }
 
-static int key_compare(const char *left, size_t left_length, const char *right, size_t right_length) {
-    size_t i;
-    size_t shared = left_length < right_length ? left_length : right_length;
-    for (i = 0U; i < shared; ++i) {
-        if (left[i] < right[i]) return -1;
-        if (left[i] > right[i]) return 1;
-    }
-    if (left_length < right_length) return -1;
-    if (left_length > right_length) return 1;
-    return 0;
-}
-
 static int key_numeric_parts(const char *key, size_t length, int *negative_out, const char **digits_out, size_t *digit_count_out) {
     size_t start = 0U;
     size_t end = length;
@@ -137,14 +125,14 @@ static int key_compare_numeric(const char *left, size_t left_length, const char 
 
     if (!left_numeric || !right_numeric) {
         if (left_numeric != right_numeric) return left_numeric ? -1 : 1;
-        return key_compare(left, left_length, right, right_length);
+        return tool_compare_text_slices(left, left_length, right, right_length);
     }
     if (left_negative != right_negative) return left_negative ? -1 : 1;
     if (left_digit_count != right_digit_count) {
         int result = left_digit_count < right_digit_count ? -1 : 1;
         return left_negative ? -result : result;
     }
-    text_result = key_compare(left_digits, left_digit_count, right_digits, right_digit_count);
+    text_result = tool_compare_text_slices(left_digits, left_digit_count, right_digits, right_digit_count);
     return left_negative ? -text_result : text_result;
 }
 
@@ -256,7 +244,7 @@ static int sort_item_compare(const void *left, const void *right) {
     const SortItem *right_item = (const SortItem *)right;
     int key_result = sort_numeric ?
         key_compare_numeric(left_item->key, left_item->key_length, right_item->key, right_item->key_length) :
-        key_compare(left_item->key, left_item->key_length, right_item->key, right_item->key_length);
+        tool_compare_text_slices(left_item->key, left_item->key_length, right_item->key, right_item->key_length);
     if (sort_reverse) key_result = -key_result;
     if (key_result != 0) return key_result;
     if (left_item->sequence < right_item->sequence) return -1;

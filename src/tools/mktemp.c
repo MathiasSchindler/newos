@@ -6,12 +6,6 @@
 
 #define MKTEMP_PATH_CAPACITY 1024
 
-
-static int path_exists(const char *path) {
-    PlatformDirEntry entry;
-    return platform_get_path_info(path, &entry) == 0;
-}
-
 static int find_x_run(const char *text, size_t *start_out, size_t *length_out) {
     size_t i = 0;
     size_t best_start = 0;
@@ -211,7 +205,7 @@ int main(int argc, char **argv) {
         }
 
         if (dry_run) {
-            if (!path_exists(candidate)) {
+            if (!tool_path_exists(candidate)) {
                 rt_write_line(1, candidate);
                 return 0;
             }

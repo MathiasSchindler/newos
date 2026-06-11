@@ -49,22 +49,10 @@ static int join_items_ensure(JoinItems *items, size_t needed) {
     return 0;
 }
 
-static int key_compare(const char *left, size_t left_length, const char *right, size_t right_length) {
-    size_t i;
-    size_t shared = left_length < right_length ? left_length : right_length;
-    for (i = 0U; i < shared; ++i) {
-        if (left[i] < right[i]) return -1;
-        if (left[i] > right[i]) return 1;
-    }
-    if (left_length < right_length) return -1;
-    if (left_length > right_length) return 1;
-    return 0;
-}
-
 static int join_item_compare(const void *left, const void *right) {
     const JoinItem *left_item = (const JoinItem *)left;
     const JoinItem *right_item = (const JoinItem *)right;
-    int key_result = key_compare(left_item->key, left_item->key_length, right_item->key, right_item->key_length);
+    int key_result = tool_compare_text_slices(left_item->key, left_item->key_length, right_item->key, right_item->key_length);
     if (key_result != 0) return key_result;
     if (left_item->sequence < right_item->sequence) return -1;
     if (left_item->sequence > right_item->sequence) return 1;
@@ -169,7 +157,7 @@ static const JoinItem *find_key(const JoinItems *items, const char *key, size_t 
     size_t right = items->count;
     while (left < right) {
         size_t middle = left + ((right - left) / 2U);
-        if (key_compare(items->items[middle].key, items->items[middle].key_length, key, key_length) < 0) left = middle + 1U;
+        if (tool_compare_text_slices(items->items[middle].key, items->items[middle].key_length, key, key_length) < 0) left = middle + 1U;
         else right = middle;
     }
     if (left < items->count && key_equals(&items->items[left], key, key_length)) return &items->items[left];

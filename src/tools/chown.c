@@ -64,21 +64,6 @@ static int resolve_owner_name(const char *text, unsigned int *uid_out, unsigned 
     return 0;
 }
 
-static int resolve_group_name(const char *text, unsigned int *gid_out) {
-    unsigned long long value = 0;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-
-    if (rt_parse_uint(text, &value) == 0) {
-        *gid_out = (unsigned int)value;
-        return 0;
-    }
-
-    return platform_lookup_group(text, gid_out);
-}
-
 static int parse_owner_spec(const char *text, unsigned int *uid_out, unsigned int *gid_out) {
     char left[PLATFORM_NAME_CAPACITY];
     char right[PLATFORM_NAME_CAPACITY];
@@ -119,7 +104,7 @@ static int parse_owner_spec(const char *text, unsigned int *uid_out, unsigned in
     }
 
     if (right_len > 0) {
-        if (resolve_group_name(right, gid_out) != 0) {
+        if (tool_resolve_group_id(right, gid_out) != 0) {
             return -1;
         }
     } else if (separator != '\0' && left_len > 0 && has_primary_gid) {
@@ -143,7 +128,7 @@ static int load_reference_owner(const ChownOptions *options, unsigned int *uid_o
     if (entry.owner[0] != '\0' && resolve_owner_name(entry.owner, &uid, 0, 0) != 0) {
         return -1;
     }
-    if (entry.group[0] != '\0' && resolve_group_name(entry.group, &gid) != 0) {
+    if (entry.group[0] != '\0' && tool_resolve_group_id(entry.group, &gid) != 0) {
         return -1;
     }
 

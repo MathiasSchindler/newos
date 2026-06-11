@@ -86,10 +86,6 @@ static void pager_init(ManPager *pager) {
     }
 }
 
-static void pager_finish(ManPager *pager) {
-    tool_restore_terminal_mode_if_enabled(0, &pager->raw_mode_enabled, &pager->saved_state);
-}
-
 static int pager_prompt(ManPager *pager) {
     char input[1];
 
@@ -1225,7 +1221,7 @@ static int render_markdown_file(const char *path) {
 
     fd = platform_open_read(path);
     if (fd < 0) {
-        pager_finish(&pager);
+        tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
         return -1;
     }
 
@@ -1245,13 +1241,13 @@ static int render_markdown_file(const char *path) {
                 flush_result = flush_rendered_line(line, &state, &pager);
                 if (flush_result > 0) {
                     platform_close(fd);
-                    pager_finish(&pager);
+                    tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
                     return 0;
                 }
                 if (flush_result != 0) {
                     result = -1;
                     platform_close(fd);
-                    pager_finish(&pager);
+                    tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
                     return result;
                 }
                 line_length = 0U;
@@ -1286,7 +1282,7 @@ static int render_markdown_file(const char *path) {
     }
 
     platform_close(fd);
-    pager_finish(&pager);
+    tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
     return result;
 }
 

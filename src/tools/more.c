@@ -154,20 +154,6 @@ static void pager_init(PagerState *state, int fd, int interactive, int show_numb
     }
 }
 
-static void pager_finish(PagerState *state) {
-    tool_restore_terminal_mode_if_enabled(0, &state->raw_mode_enabled, &state->saved_state);
-}
-
-static void pager_write_text(int fd, int color_mode, int style, const char *text) {
-    if (style != TOOL_STYLE_PLAIN) {
-        tool_style_begin(fd, color_mode, style);
-    }
-    rt_write_cstr(fd, text);
-    if (style != TOOL_STYLE_PLAIN) {
-        tool_style_end(fd, color_mode);
-    }
-}
-
 static int pager_write_highlighted_line(const PagerState *state, const char *line) {
     size_t start = 0U;
     size_t end = 0U;
@@ -311,7 +297,7 @@ static int pager_seek_to_last_page(PagerState *state) {
 
 static void pager_write_help(const PagerState *state) {
     rt_write_char(1, '\n');
-    pager_write_text(1, state->color_mode, TOOL_STYLE_BOLD_CYAN, "Keys:");
+    tool_write_styled(1, state->color_mode, TOOL_STYLE_BOLD_CYAN, "Keys:");
     rt_write_cstr(1, " Enter/j line, Space/f page, g top, G end");
     if (state->search_pattern[0] != '\0') {
         rt_write_cstr(1, ", n next match");
@@ -327,7 +313,7 @@ static PagerAction pager_prompt(PagerState *state) {
         long long current = -1;
         long long end = -1;
 
-        pager_write_text(1, state->color_mode, TOOL_STYLE_BOLD_CYAN, "--More--");
+        tool_write_styled(1, state->color_mode, TOOL_STYLE_BOLD_CYAN, "--More--");
         if (state->seekable) {
             current = pager_tell(state->fd);
             if (current >= 0) {
@@ -388,7 +374,7 @@ static int page_stream(int fd, int interactive, int show_numbers, int color_mode
         if (platform_seek(fd, 0, PLATFORM_SEEK_SET) >= 0) {
             state.line_number = 1ULL;
             if (pager_seek_to_next_match(&state) != 0) {
-                pager_finish(&state);
+                tool_restore_terminal_mode_if_enabled(0, &state.raw_mode_enabled, &state.saved_state);
                 return 1;
             }
         }
@@ -473,7 +459,7 @@ static int page_stream(int fd, int interactive, int show_numbers, int color_mode
     }
 
 done:
-    pager_finish(&state);
+    tool_restore_terminal_mode_if_enabled(0, &state.raw_mode_enabled, &state.saved_state);
     return exit_code;
 }
 
@@ -551,9 +537,9 @@ int main(int argc, char **argv) {
             if (i > arg_index) {
                 rt_write_char(1, '\n');
             }
-            pager_write_text(1, color_mode, TOOL_STYLE_BOLD_CYAN, "==> ");
+            tool_write_styled(1, color_mode, TOOL_STYLE_BOLD_CYAN, "==> ");
             rt_write_cstr(1, argv[i]);
-            pager_write_text(1, color_mode, TOOL_STYLE_BOLD_CYAN, " <==\n");
+            tool_write_styled(1, color_mode, TOOL_STYLE_BOLD_CYAN, " <==\n");
         }
 
         if (page_stream(fd, interactive, show_numbers, color_mode, search_pattern) != 0) {

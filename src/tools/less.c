@@ -33,20 +33,6 @@ static void pager_init(LessPager *pager, int color_mode) {
     }
 }
 
-static void pager_finish(LessPager *pager) {
-    tool_restore_terminal_mode_if_enabled(0, &pager->raw_mode_enabled, &pager->saved_state);
-}
-
-static void pager_write_text(int fd, int color_mode, int style, const char *text) {
-    if (style != TOOL_STYLE_PLAIN) {
-        tool_style_begin(fd, color_mode, style);
-    }
-    rt_write_cstr(fd, text);
-    if (style != TOOL_STYLE_PLAIN) {
-        tool_style_end(fd, color_mode);
-    }
-}
-
 static int pager_write_line_with_number(const char *line, size_t length, unsigned long long line_number, int show_numbers) {
     if (show_numbers) {
         if (rt_write_uint(1, line_number) != 0 || rt_write_cstr(1, "\t") != 0) {
@@ -245,7 +231,7 @@ static int render_page(const char *buffer,
             return -1;
         }
     } else {
-        pager_write_text(1, color_mode, TOOL_STYLE_BOLD_CYAN, "--Less--");
+        tool_write_styled(1, color_mode, TOOL_STYLE_BOLD_CYAN, "--Less--");
         if (rt_write_cstr(1, " (Space:fwd b:back j/k:line /:search n:next q:quit)") != 0) {
             return -1;
         }
@@ -359,11 +345,11 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
             size_t start = line_offsets[i];
             size_t end = line_end_offset(buffer, length, start);
             if (pager_write_line_with_number(buffer + start, end - start, (unsigned long long)(i + 1U), show_numbers) != 0) {
-                pager_finish(&pager);
+                tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
                 return -1;
             }
         }
-        pager_finish(&pager);
+        tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
         return 0;
     }
 
@@ -371,7 +357,7 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
         char ch = '\0';
 
         if (render_page(buffer, length, line_offsets, line_count, top_line, pager.page_lines, show_numbers, pager.color_mode, status) != 0) {
-            pager_finish(&pager);
+            tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
             return -1;
         }
         status[0] = '\0';
@@ -413,7 +399,7 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
             size_t match_line = 0U;
             pattern[0] = '\0';
             if (render_page(buffer, length, line_offsets, line_count, top_line, pager.page_lines, show_numbers, pager.color_mode, "") != 0) {
-                pager_finish(&pager);
+                tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
                 return -1;
             }
             if (read_search_pattern(pattern, sizeof(pattern)) == 0 && pattern[0] != '\0') {
@@ -439,7 +425,7 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
         }
     }
 
-    pager_finish(&pager);
+    tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
     (void)rt_write_char(1, '\n');
     return 0;
 }
@@ -529,9 +515,9 @@ int main(int argc, char **argv) {
             if (i > arg_index) {
                 rt_write_char(1, '\n');
             }
-            pager_write_text(1, color_mode, TOOL_STYLE_BOLD_CYAN, "==> ");
+            tool_write_styled(1, color_mode, TOOL_STYLE_BOLD_CYAN, "==> ");
             rt_write_cstr(1, argv[i]);
-            pager_write_text(1, color_mode, TOOL_STYLE_BOLD_CYAN, " <==\n");
+            tool_write_styled(1, color_mode, TOOL_STYLE_BOLD_CYAN, " <==\n");
         }
 
         if (search_pattern == 0 && initial_jump.kind == LESS_INITIAL_NONE && !(platform_isatty(0) != 0 && platform_isatty(1) != 0)) {

@@ -17,19 +17,6 @@ static void print_usage(void) {
     tool_write_usage("chgrp", "[-R] [-h] [--reference=FILE | GROUP] PATH...");
 }
 
-static int resolve_group_name(const char *text, unsigned int *gid_out) {
-    unsigned long long value = 0ULL;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-    if (rt_parse_uint(text, &value) == 0) {
-        *gid_out = (unsigned int)value;
-        return 0;
-    }
-    return platform_lookup_group(text, gid_out);
-}
-
 static int load_reference_group(const ChgrpOptions *options, unsigned int *gid_out) {
     PlatformDirEntry entry;
 
@@ -166,7 +153,7 @@ int main(int argc, char **argv) {
             return 1;
         }
     } else {
-        if (resolve_group_name(argv[argi], &options.gid) != 0) {
+        if (tool_resolve_group_id(argv[argi], &options.gid) != 0) {
             tool_write_error("chgrp", "invalid group ", argv[argi]);
             return 1;
         }

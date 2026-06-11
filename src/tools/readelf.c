@@ -1259,18 +1259,6 @@ static const char *name_from_table(const char *table, size_t table_size, unsigne
     return table + offset;
 }
 
-static int json_field_string(const char *name, const char *value) {
-    return tool_json_field_string(1, name, value);
-}
-
-static int json_field_uint(const char *name, unsigned long long value) {
-    return tool_json_field_uint(1, name, value);
-}
-
-static int json_field_bool(const char *name, int value) {
-    return tool_json_field_bool(1, name, value);
-}
-
 static void print_header(const ElfHeaderInfo *info) {
     size_t i;
 
@@ -1438,7 +1426,7 @@ static int json_field_version_triplet(const char *name, unsigned int version) {
     append_uint_text(text, sizeof(text), (unsigned long long)((version >> 8U) & 0xffU));
     rt_copy_string(text + rt_strlen(text), sizeof(text) - rt_strlen(text), ".");
     append_uint_text(text, sizeof(text), (unsigned long long)(version & 0xffU));
-    return json_field_string(name, text);
+    return tool_json_field_string(1, name, text);
 }
 
 static int json_field_source_version(const char *name, unsigned long long version) {
@@ -1453,7 +1441,7 @@ static int json_field_source_version(const char *name, unsigned long long versio
     append_uint_text(text, sizeof(text), (version >> 10U) & 0x3ffULL);
     rt_copy_string(text + rt_strlen(text), sizeof(text) - rt_strlen(text), ".");
     append_uint_text(text, sizeof(text), version & 0x3ffULL);
-    return json_field_string(name, text);
+    return tool_json_field_string(1, name, text);
 }
 
 static int json_field_uuid(const char *name, const unsigned char *uuid) {
@@ -1467,7 +1455,7 @@ static int json_field_uuid(const char *name, const unsigned char *uuid) {
         text[out++] = digits[uuid[i] & 0x0fU];
     }
     text[out] = '\0';
-    return json_field_string(name, text);
+    return tool_json_field_string(1, name, text);
 }
 
 static void print_macho_load_commands(int fd, const MachHeaderInfo *header) {
@@ -1839,18 +1827,18 @@ static int json_macho_signature_detail_event(const char *path, const MachCodeSig
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_signature_detail") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_bool("present", signature->present) != 0) return -1;
-    if (json_field_string("identifier", signature->identifier) != 0) return -1;
-    if (json_field_uint("code_directory_version", signature->code_directory_version) != 0) return -1;
-    if (json_field_uint("code_directory_flags", signature->code_directory_flags) != 0) return -1;
-    if (json_field_string("cdhash", signature->cdhash) != 0) return -1;
-    if (json_field_string("cdhash_full", signature->cdhash_full) != 0) return -1;
-    if (json_field_uint("special_slots", signature->n_special_slots) != 0) return -1;
-    if (json_field_uint("code_slots", signature->n_code_slots) != 0) return -1;
-    if (json_field_uint("hash_offset", signature->hash_offset) != 0) return -1;
-    if (json_field_uint("ident_offset", signature->ident_offset) != 0) return -1;
-    if (json_field_bool("cms_parsed", 0) != 0) return -1;
-    if (json_field_string("cms_note", "CMS blob is sized and located; certificate chain and signed time are not parsed") != 0) return -1;
+    if (tool_json_field_bool(1, "present", signature->present) != 0) return -1;
+    if (tool_json_field_string(1, "identifier", signature->identifier) != 0) return -1;
+    if (tool_json_field_uint(1, "code_directory_version", signature->code_directory_version) != 0) return -1;
+    if (tool_json_field_uint(1, "code_directory_flags", signature->code_directory_flags) != 0) return -1;
+    if (tool_json_field_string(1, "cdhash", signature->cdhash) != 0) return -1;
+    if (tool_json_field_string(1, "cdhash_full", signature->cdhash_full) != 0) return -1;
+    if (tool_json_field_uint(1, "special_slots", signature->n_special_slots) != 0) return -1;
+    if (tool_json_field_uint(1, "code_slots", signature->n_code_slots) != 0) return -1;
+    if (tool_json_field_uint(1, "hash_offset", signature->hash_offset) != 0) return -1;
+    if (tool_json_field_uint(1, "ident_offset", signature->ident_offset) != 0) return -1;
+    if (tool_json_field_bool(1, "cms_parsed", 0) != 0) return -1;
+    if (tool_json_field_string(1, "cms_note", "CMS blob is sized and located; certificate chain and signed time are not parsed") != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -1859,14 +1847,14 @@ static int json_macho_map_segment_event(const char *path, unsigned int index, co
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_map_segment") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_uint("index", index) != 0) return -1;
-    if (json_field_string("segment", segment->name) != 0) return -1;
-    if (json_field_uint("file_offset", segment->fileoff) != 0) return -1;
-    if (json_field_uint("file_size", segment->filesize) != 0) return -1;
-    if (json_field_uint("vmaddr", segment->vmaddr) != 0) return -1;
-    if (json_field_uint("vmsize", segment->vmsize) != 0) return -1;
-    if (json_field_uint("initprot", segment->initprot) != 0) return -1;
-    if (json_field_uint("maxprot", segment->maxprot) != 0) return -1;
+    if (tool_json_field_uint(1, "index", index) != 0) return -1;
+    if (tool_json_field_string(1, "segment", segment->name) != 0) return -1;
+    if (tool_json_field_uint(1, "file_offset", segment->fileoff) != 0) return -1;
+    if (tool_json_field_uint(1, "file_size", segment->filesize) != 0) return -1;
+    if (tool_json_field_uint(1, "vmaddr", segment->vmaddr) != 0) return -1;
+    if (tool_json_field_uint(1, "vmsize", segment->vmsize) != 0) return -1;
+    if (tool_json_field_uint(1, "initprot", segment->initprot) != 0) return -1;
+    if (tool_json_field_uint(1, "maxprot", segment->maxprot) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -2089,17 +2077,17 @@ static int json_macho_fixup_event(int fd, const char *path, const MachHeaderInfo
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_fixups") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_bool("present", chained.present) != 0) return -1;
-    if (json_field_uint("dataoff", chained.dataoff) != 0) return -1;
-    if (json_field_uint("datasize", chained.datasize) != 0) return -1;
+    if (tool_json_field_bool(1, "present", chained.present) != 0) return -1;
+    if (tool_json_field_uint(1, "dataoff", chained.dataoff) != 0) return -1;
+    if (tool_json_field_uint(1, "datasize", chained.datasize) != 0) return -1;
     if (chained.present && chained.datasize >= 28U && read_region(fd, (unsigned long long)chained.dataoff, raw, sizeof(raw)) == 0) {
-        if (json_field_uint("version", tool_read_u32_le(raw + 0)) != 0) return -1;
-        if (json_field_uint("starts_offset", tool_read_u32_le(raw + 4)) != 0) return -1;
-        if (json_field_uint("imports_offset", tool_read_u32_le(raw + 8)) != 0) return -1;
-        if (json_field_uint("symbols_offset", tool_read_u32_le(raw + 12)) != 0) return -1;
-        if (json_field_uint("imports_count", tool_read_u32_le(raw + 16)) != 0) return -1;
-        if (json_field_uint("imports_format", tool_read_u32_le(raw + 20)) != 0) return -1;
-        if (json_field_uint("symbols_format", tool_read_u32_le(raw + 24)) != 0) return -1;
+        if (tool_json_field_uint(1, "version", tool_read_u32_le(raw + 0)) != 0) return -1;
+        if (tool_json_field_uint(1, "starts_offset", tool_read_u32_le(raw + 4)) != 0) return -1;
+        if (tool_json_field_uint(1, "imports_offset", tool_read_u32_le(raw + 8)) != 0) return -1;
+        if (tool_json_field_uint(1, "symbols_offset", tool_read_u32_le(raw + 12)) != 0) return -1;
+        if (tool_json_field_uint(1, "imports_count", tool_read_u32_le(raw + 16)) != 0) return -1;
+        if (tool_json_field_uint(1, "imports_format", tool_read_u32_le(raw + 20)) != 0) return -1;
+        if (tool_json_field_uint(1, "symbols_format", tool_read_u32_le(raw + 24)) != 0) return -1;
     }
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
@@ -2340,16 +2328,16 @@ static int json_macho_explain_address_event(const char *path,
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_address_explanation") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_uint("query", address) != 0) return -1;
-    if (json_field_bool("matched", matched_segment != 0) != 0) return -1;
+    if (tool_json_field_uint(1, "query", address) != 0) return -1;
+    if (tool_json_field_bool(1, "matched", matched_segment != 0) != 0) return -1;
     if (matched_segment != 0) {
-        if (json_field_string("interpreted_as", matched_by_file ? "file_offset" : "vm_address") != 0) return -1;
-        if (json_field_string("segment", matched_segment->name) != 0) return -1;
-        if (json_field_uint("vmaddr", vm_address) != 0) return -1;
-        if (json_field_uint("file_offset", file_offset) != 0) return -1;
+        if (tool_json_field_string(1, "interpreted_as", matched_by_file ? "file_offset" : "vm_address") != 0) return -1;
+        if (tool_json_field_string(1, "segment", matched_segment->name) != 0) return -1;
+        if (tool_json_field_uint(1, "vmaddr", vm_address) != 0) return -1;
+        if (tool_json_field_uint(1, "file_offset", file_offset) != 0) return -1;
         if (matched_section != 0) {
-            if (json_field_string("section_segment", matched_section->segment) != 0) return -1;
-            if (json_field_string("section", matched_section->section) != 0) return -1;
+            if (tool_json_field_string(1, "section_segment", matched_section->segment) != 0) return -1;
+            if (tool_json_field_string(1, "section", matched_section->section) != 0) return -1;
         }
     }
     if (rt_write_char(1, '}') != 0) return -1;
@@ -2360,17 +2348,17 @@ static int json_macho_header_event(const char *path, const MachHeaderInfo *info)
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_header") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_uint("magic", info->magic) != 0) return -1;
-    if (json_field_string("type", macho_type_name(info->filetype)) != 0) return -1;
-    if (json_field_string("machine", macho_machine_name(info->cputype)) != 0) return -1;
-    if (json_field_string("arch", macho_short_arch_name(info->cputype, info->cpusubtype)) != 0) return -1;
-    if (json_field_uint("cputype", info->cputype) != 0) return -1;
-    if (json_field_uint("cpusubtype", info->cpusubtype) != 0) return -1;
-    if (json_field_string("cpusubtype_name", macho_cpu_subtype_name(info->cputype, info->cpusubtype)) != 0) return -1;
-    if (json_field_uint("cpu_capabilities", macho_cpu_capabilities(info->cpusubtype)) != 0) return -1;
-    if (json_field_uint("ncmds", info->ncmds) != 0) return -1;
-    if (json_field_uint("sizeofcmds", info->sizeofcmds) != 0) return -1;
-    if (json_field_uint("flags", info->flags) != 0) return -1;
+    if (tool_json_field_uint(1, "magic", info->magic) != 0) return -1;
+    if (tool_json_field_string(1, "type", macho_type_name(info->filetype)) != 0) return -1;
+    if (tool_json_field_string(1, "machine", macho_machine_name(info->cputype)) != 0) return -1;
+    if (tool_json_field_string(1, "arch", macho_short_arch_name(info->cputype, info->cpusubtype)) != 0) return -1;
+    if (tool_json_field_uint(1, "cputype", info->cputype) != 0) return -1;
+    if (tool_json_field_uint(1, "cpusubtype", info->cpusubtype) != 0) return -1;
+    if (tool_json_field_string(1, "cpusubtype_name", macho_cpu_subtype_name(info->cputype, info->cpusubtype)) != 0) return -1;
+    if (tool_json_field_uint(1, "cpu_capabilities", macho_cpu_capabilities(info->cpusubtype)) != 0) return -1;
+    if (tool_json_field_uint(1, "ncmds", info->ncmds) != 0) return -1;
+    if (tool_json_field_uint(1, "sizeofcmds", info->sizeofcmds) != 0) return -1;
+    if (tool_json_field_uint(1, "flags", info->flags) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -2381,15 +2369,15 @@ static int json_macho_fat_arch_events(const char *path, const MachFatInfo *fat) 
         if (tool_json_begin_event(1, "readelf", "stdout", "macho_fat_arch") != 0) return -1;
         if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
         if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-        if (json_field_uint("index", index) != 0) return -1;
-        if (json_field_string("arch", macho_short_arch_name(fat->arches[index].cputype, fat->arches[index].cpusubtype)) != 0) return -1;
-        if (json_field_uint("cputype", fat->arches[index].cputype) != 0) return -1;
-        if (json_field_uint("cpusubtype", fat->arches[index].cpusubtype) != 0) return -1;
-        if (json_field_string("cpusubtype_name", macho_cpu_subtype_name(fat->arches[index].cputype, fat->arches[index].cpusubtype)) != 0) return -1;
-        if (json_field_uint("cpu_capabilities", macho_cpu_capabilities(fat->arches[index].cpusubtype)) != 0) return -1;
-        if (json_field_uint("offset", fat->arches[index].offset) != 0) return -1;
-        if (json_field_uint("size", fat->arches[index].size) != 0) return -1;
-        if (json_field_uint("align", fat->arches[index].align) != 0) return -1;
+        if (tool_json_field_uint(1, "index", index) != 0) return -1;
+        if (tool_json_field_string(1, "arch", macho_short_arch_name(fat->arches[index].cputype, fat->arches[index].cpusubtype)) != 0) return -1;
+        if (tool_json_field_uint(1, "cputype", fat->arches[index].cputype) != 0) return -1;
+        if (tool_json_field_uint(1, "cpusubtype", fat->arches[index].cpusubtype) != 0) return -1;
+        if (tool_json_field_string(1, "cpusubtype_name", macho_cpu_subtype_name(fat->arches[index].cputype, fat->arches[index].cpusubtype)) != 0) return -1;
+        if (tool_json_field_uint(1, "cpu_capabilities", macho_cpu_capabilities(fat->arches[index].cpusubtype)) != 0) return -1;
+        if (tool_json_field_uint(1, "offset", fat->arches[index].offset) != 0) return -1;
+        if (tool_json_field_uint(1, "size", fat->arches[index].size) != 0) return -1;
+        if (tool_json_field_uint(1, "align", fat->arches[index].align) != 0) return -1;
         if (rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
     }
     return 0;
@@ -2399,19 +2387,19 @@ static int json_macho_section_event(const char *path, unsigned int index, const 
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_section") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_uint("index", index) != 0) return -1;
-    if (json_field_string("segment", section->segment) != 0) return -1;
-    if (json_field_string("section", section->section) != 0) return -1;
-    if (json_field_string("type", macho_section_type_name(section->flags & 0xffU)) != 0) return -1;
-    if (json_field_uint("addr", section->addr) != 0) return -1;
-    if (json_field_uint("offset", section->offset) != 0) return -1;
-    if (json_field_uint("size", section->size) != 0) return -1;
-    if (json_field_uint("align", section->align) != 0) return -1;
-    if (json_field_uint("reloff", section->reloff) != 0) return -1;
-    if (json_field_uint("nreloc", section->nreloc) != 0) return -1;
-    if (json_field_uint("flags", section->flags) != 0) return -1;
-    if (json_field_uint("reserved1", section->reserved1) != 0) return -1;
-    if (json_field_uint("reserved2", section->reserved2) != 0) return -1;
+    if (tool_json_field_uint(1, "index", index) != 0) return -1;
+    if (tool_json_field_string(1, "segment", section->segment) != 0) return -1;
+    if (tool_json_field_string(1, "section", section->section) != 0) return -1;
+    if (tool_json_field_string(1, "type", macho_section_type_name(section->flags & 0xffU)) != 0) return -1;
+    if (tool_json_field_uint(1, "addr", section->addr) != 0) return -1;
+    if (tool_json_field_uint(1, "offset", section->offset) != 0) return -1;
+    if (tool_json_field_uint(1, "size", section->size) != 0) return -1;
+    if (tool_json_field_uint(1, "align", section->align) != 0) return -1;
+    if (tool_json_field_uint(1, "reloff", section->reloff) != 0) return -1;
+    if (tool_json_field_uint(1, "nreloc", section->nreloc) != 0) return -1;
+    if (tool_json_field_uint(1, "flags", section->flags) != 0) return -1;
+    if (tool_json_field_uint(1, "reserved1", section->reserved1) != 0) return -1;
+    if (tool_json_field_uint(1, "reserved2", section->reserved2) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -2427,27 +2415,27 @@ static int json_macho_code_signature_event(const char *path, const MachCodeSigna
     if (tool_json_begin_event(1, "readelf", "stdout", "macho_code_signature") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_bool("present", signature->present) != 0) return -1;
-    if (json_field_uint("dataoff", signature->dataoff) != 0) return -1;
-    if (json_field_uint("datasize", signature->datasize) != 0) return -1;
-    if (json_field_bool("has_code_directory", signature->has_code_directory) != 0) return -1;
-    if (json_field_bool("structure_valid", signature->structure_valid) != 0) return -1;
-    if (json_field_bool("hashes_verified", signature->hashes_verified) != 0) return -1;
-    if (json_field_string("identifier", signature->identifier) != 0) return -1;
-    if (json_field_string("cdhash", signature->cdhash) != 0) return -1;
-    if (json_field_string("cdhash_full", signature->cdhash_full) != 0) return -1;
-    if (json_field_uint("superblob_count", signature->superblob_count) != 0) return -1;
-    if (json_field_uint("slot_count", signature->slot_count) != 0) return -1;
-    if (json_field_uint("cms_signature_size", cms_size) != 0) return -1;
-    if (json_field_uint("requirements_size", requirements_size) != 0) return -1;
-    if (json_field_uint("code_limit", signature->code_limit) != 0) return -1;
-    if (json_field_string("hash_type", macho_hash_type_name(signature->hash_type)) != 0) return -1;
-    if (json_field_uint("hash_size", signature->hash_size) != 0) return -1;
-    if (json_field_uint("page_size_log2", signature->page_size_log2) != 0) return -1;
-    if (json_field_uint("code_slots", signature->n_code_slots) != 0) return -1;
-    if (json_field_uint("checked", signature->hash_slots_checked) != 0) return -1;
-    if (json_field_uint("mismatches", signature->hash_mismatches) != 0) return -1;
-    if (json_field_string("message", signature->message) != 0) return -1;
+    if (tool_json_field_bool(1, "present", signature->present) != 0) return -1;
+    if (tool_json_field_uint(1, "dataoff", signature->dataoff) != 0) return -1;
+    if (tool_json_field_uint(1, "datasize", signature->datasize) != 0) return -1;
+    if (tool_json_field_bool(1, "has_code_directory", signature->has_code_directory) != 0) return -1;
+    if (tool_json_field_bool(1, "structure_valid", signature->structure_valid) != 0) return -1;
+    if (tool_json_field_bool(1, "hashes_verified", signature->hashes_verified) != 0) return -1;
+    if (tool_json_field_string(1, "identifier", signature->identifier) != 0) return -1;
+    if (tool_json_field_string(1, "cdhash", signature->cdhash) != 0) return -1;
+    if (tool_json_field_string(1, "cdhash_full", signature->cdhash_full) != 0) return -1;
+    if (tool_json_field_uint(1, "superblob_count", signature->superblob_count) != 0) return -1;
+    if (tool_json_field_uint(1, "slot_count", signature->slot_count) != 0) return -1;
+    if (tool_json_field_uint(1, "cms_signature_size", cms_size) != 0) return -1;
+    if (tool_json_field_uint(1, "requirements_size", requirements_size) != 0) return -1;
+    if (tool_json_field_uint(1, "code_limit", signature->code_limit) != 0) return -1;
+    if (tool_json_field_string(1, "hash_type", macho_hash_type_name(signature->hash_type)) != 0) return -1;
+    if (tool_json_field_uint(1, "hash_size", signature->hash_size) != 0) return -1;
+    if (tool_json_field_uint(1, "page_size_log2", signature->page_size_log2) != 0) return -1;
+    if (tool_json_field_uint(1, "code_slots", signature->n_code_slots) != 0) return -1;
+    if (tool_json_field_uint(1, "checked", signature->hash_slots_checked) != 0) return -1;
+    if (tool_json_field_uint(1, "mismatches", signature->hash_mismatches) != 0) return -1;
+    if (tool_json_field_string(1, "message", signature->message) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -2456,14 +2444,14 @@ static int json_elf_header_event(const char *path, const ElfHeaderInfo *info) {
     if (tool_json_begin_event(1, "readelf", "stdout", "elf_header") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
     if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_string("type", elf_type_name(info->type)) != 0) return -1;
-    if (json_field_string("machine", elf_machine_name(info->machine)) != 0) return -1;
-    if (json_field_uint("entry", info->entry) != 0) return -1;
-    if (json_field_uint("program_header_offset", info->phoff) != 0) return -1;
-    if (json_field_uint("section_header_offset", info->shoff) != 0) return -1;
-    if (json_field_uint("flags", info->flags) != 0) return -1;
-    if (json_field_uint("program_header_count", info->phnum) != 0) return -1;
-    if (json_field_uint("section_header_count", info->shnum) != 0) return -1;
+    if (tool_json_field_string(1, "type", elf_type_name(info->type)) != 0) return -1;
+    if (tool_json_field_string(1, "machine", elf_machine_name(info->machine)) != 0) return -1;
+    if (tool_json_field_uint(1, "entry", info->entry) != 0) return -1;
+    if (tool_json_field_uint(1, "program_header_offset", info->phoff) != 0) return -1;
+    if (tool_json_field_uint(1, "section_header_offset", info->shoff) != 0) return -1;
+    if (tool_json_field_uint(1, "flags", info->flags) != 0) return -1;
+    if (tool_json_field_uint(1, "program_header_count", info->phnum) != 0) return -1;
+    if (tool_json_field_uint(1, "section_header_count", info->shnum) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -2484,67 +2472,67 @@ static int json_macho_load_commands(int fd, const char *path, const MachHeaderIn
         if (tool_json_begin_event(1, "readelf", "stdout", "macho_load_command") != 0) return -1;
         if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
         if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-        if (json_field_uint("index", command_index) != 0) return -1;
-        if (json_field_uint("offset", command_offset) != 0) return -1;
-        if (json_field_uint("command", command) != 0) return -1;
-        if (json_field_string("name", macho_command_name(command)) != 0) return -1;
-        if (json_field_uint("cmdsize", command_size) != 0) return -1;
+        if (tool_json_field_uint(1, "index", command_index) != 0) return -1;
+        if (tool_json_field_uint(1, "offset", command_offset) != 0) return -1;
+        if (tool_json_field_uint(1, "command", command) != 0) return -1;
+        if (tool_json_field_string(1, "name", macho_command_name(command)) != 0) return -1;
+        if (tool_json_field_uint(1, "cmdsize", command_size) != 0) return -1;
         if (command == MACHO_LC_SEGMENT_64 && command_size >= 72U && read_region(fd, command_offset, command_data, 72U) == 0) {
             char segment_name[17];
             tool_copy_printable_bytes(segment_name, sizeof(segment_name), command_data + 8, 16U);
-            if (json_field_string("segment", segment_name) != 0) return -1;
-            if (json_field_uint("vmaddr", tool_read_u64_le(command_data + 24)) != 0) return -1;
-            if (json_field_uint("vmsize", tool_read_u64_le(command_data + 32)) != 0) return -1;
-            if (json_field_uint("fileoff", tool_read_u64_le(command_data + 40)) != 0) return -1;
-            if (json_field_uint("filesize", tool_read_u64_le(command_data + 48)) != 0) return -1;
-            if (json_field_uint("maxprot", tool_read_u32_le(command_data + 56)) != 0) return -1;
-            if (json_field_uint("initprot", tool_read_u32_le(command_data + 60)) != 0) return -1;
-            if (json_field_uint("nsects", tool_read_u32_le(command_data + 64)) != 0) return -1;
-            if (json_field_uint("flags", tool_read_u32_le(command_data + 68)) != 0) return -1;
+            if (tool_json_field_string(1, "segment", segment_name) != 0) return -1;
+            if (tool_json_field_uint(1, "vmaddr", tool_read_u64_le(command_data + 24)) != 0) return -1;
+            if (tool_json_field_uint(1, "vmsize", tool_read_u64_le(command_data + 32)) != 0) return -1;
+            if (tool_json_field_uint(1, "fileoff", tool_read_u64_le(command_data + 40)) != 0) return -1;
+            if (tool_json_field_uint(1, "filesize", tool_read_u64_le(command_data + 48)) != 0) return -1;
+            if (tool_json_field_uint(1, "maxprot", tool_read_u32_le(command_data + 56)) != 0) return -1;
+            if (tool_json_field_uint(1, "initprot", tool_read_u32_le(command_data + 60)) != 0) return -1;
+            if (tool_json_field_uint(1, "nsects", tool_read_u32_le(command_data + 64)) != 0) return -1;
+            if (tool_json_field_uint(1, "flags", tool_read_u32_le(command_data + 68)) != 0) return -1;
         } else if (command == MACHO_LC_SYMTAB && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
-            if (json_field_uint("symoff", tool_read_u32_le(command_data + 8)) != 0) return -1;
-            if (json_field_uint("nsyms", tool_read_u32_le(command_data + 12)) != 0) return -1;
-            if (json_field_uint("stroff", tool_read_u32_le(command_data + 16)) != 0) return -1;
-            if (json_field_uint("strsize", tool_read_u32_le(command_data + 20)) != 0) return -1;
+            if (tool_json_field_uint(1, "symoff", tool_read_u32_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "nsyms", tool_read_u32_le(command_data + 12)) != 0) return -1;
+            if (tool_json_field_uint(1, "stroff", tool_read_u32_le(command_data + 16)) != 0) return -1;
+            if (tool_json_field_uint(1, "strsize", tool_read_u32_le(command_data + 20)) != 0) return -1;
         } else if (command == MACHO_LC_DYSYMTAB && command_size >= 80U && read_region(fd, command_offset, command_data, 80U) == 0) {
-            if (json_field_uint("ilocalsym", tool_read_u32_le(command_data + 8)) != 0) return -1;
-            if (json_field_uint("nlocalsym", tool_read_u32_le(command_data + 12)) != 0) return -1;
-            if (json_field_uint("iextdefsym", tool_read_u32_le(command_data + 16)) != 0) return -1;
-            if (json_field_uint("nextdefsym", tool_read_u32_le(command_data + 20)) != 0) return -1;
-            if (json_field_uint("iundefsym", tool_read_u32_le(command_data + 24)) != 0) return -1;
-            if (json_field_uint("nundefsym", tool_read_u32_le(command_data + 28)) != 0) return -1;
-            if (json_field_uint("indirectsymoff", tool_read_u32_le(command_data + 56)) != 0) return -1;
-            if (json_field_uint("nindirectsyms", tool_read_u32_le(command_data + 60)) != 0) return -1;
+            if (tool_json_field_uint(1, "ilocalsym", tool_read_u32_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "nlocalsym", tool_read_u32_le(command_data + 12)) != 0) return -1;
+            if (tool_json_field_uint(1, "iextdefsym", tool_read_u32_le(command_data + 16)) != 0) return -1;
+            if (tool_json_field_uint(1, "nextdefsym", tool_read_u32_le(command_data + 20)) != 0) return -1;
+            if (tool_json_field_uint(1, "iundefsym", tool_read_u32_le(command_data + 24)) != 0) return -1;
+            if (tool_json_field_uint(1, "nundefsym", tool_read_u32_le(command_data + 28)) != 0) return -1;
+            if (tool_json_field_uint(1, "indirectsymoff", tool_read_u32_le(command_data + 56)) != 0) return -1;
+            if (tool_json_field_uint(1, "nindirectsyms", tool_read_u32_le(command_data + 60)) != 0) return -1;
         } else if (command == MACHO_LC_MAIN && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
-            if (json_field_uint("entryoff", tool_read_u64_le(command_data + 8)) != 0) return -1;
-            if (json_field_uint("stacksize", tool_read_u64_le(command_data + 16)) != 0) return -1;
+            if (tool_json_field_uint(1, "entryoff", tool_read_u64_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "stacksize", tool_read_u64_le(command_data + 16)) != 0) return -1;
         } else if (command == MACHO_LC_CODE_SIGNATURE && command_size >= 16U && read_region(fd, command_offset, command_data, 16U) == 0) {
-            if (json_field_uint("dataoff", tool_read_u32_le(command_data + 8)) != 0) return -1;
-            if (json_field_uint("datasize", tool_read_u32_le(command_data + 12)) != 0) return -1;
+            if (tool_json_field_uint(1, "dataoff", tool_read_u32_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "datasize", tool_read_u32_le(command_data + 12)) != 0) return -1;
         } else if ((command == MACHO_LC_DYLD_CHAINED_FIXUPS || command == MACHO_LC_DYLD_EXPORTS_TRIE || command == MACHO_LC_FUNCTION_STARTS || command == MACHO_LC_DATA_IN_CODE) && command_size >= 16U && read_region(fd, command_offset, command_data, 16U) == 0) {
-            if (json_field_uint("dataoff", tool_read_u32_le(command_data + 8)) != 0) return -1;
-            if (json_field_uint("datasize", tool_read_u32_le(command_data + 12)) != 0) return -1;
+            if (tool_json_field_uint(1, "dataoff", tool_read_u32_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "datasize", tool_read_u32_le(command_data + 12)) != 0) return -1;
         } else if ((command == MACHO_LC_DYLD_INFO || command == MACHO_LC_DYLD_INFO_ONLY) && command_size >= 48U && read_region(fd, command_offset, command_data, 48U) == 0) {
-            if (json_field_uint("rebase_off", tool_read_u32_le(command_data + 8)) != 0) return -1;
-            if (json_field_uint("rebase_size", tool_read_u32_le(command_data + 12)) != 0) return -1;
-            if (json_field_uint("bind_off", tool_read_u32_le(command_data + 16)) != 0) return -1;
-            if (json_field_uint("bind_size", tool_read_u32_le(command_data + 20)) != 0) return -1;
-            if (json_field_uint("export_off", tool_read_u32_le(command_data + 40)) != 0) return -1;
-            if (json_field_uint("export_size", tool_read_u32_le(command_data + 44)) != 0) return -1;
+            if (tool_json_field_uint(1, "rebase_off", tool_read_u32_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "rebase_size", tool_read_u32_le(command_data + 12)) != 0) return -1;
+            if (tool_json_field_uint(1, "bind_off", tool_read_u32_le(command_data + 16)) != 0) return -1;
+            if (tool_json_field_uint(1, "bind_size", tool_read_u32_le(command_data + 20)) != 0) return -1;
+            if (tool_json_field_uint(1, "export_off", tool_read_u32_le(command_data + 40)) != 0) return -1;
+            if (tool_json_field_uint(1, "export_size", tool_read_u32_le(command_data + 44)) != 0) return -1;
         } else if (command == MACHO_LC_UUID && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
             if (json_field_uuid("uuid", command_data + 8) != 0) return -1;
         } else if (command == MACHO_LC_SOURCE_VERSION && command_size >= 16U && read_region(fd, command_offset, command_data, 16U) == 0) {
-            if (json_field_uint("raw_version", tool_read_u64_le(command_data + 8)) != 0) return -1;
+            if (tool_json_field_uint(1, "raw_version", tool_read_u64_le(command_data + 8)) != 0) return -1;
             if (json_field_source_version("version", tool_read_u64_le(command_data + 8)) != 0) return -1;
         } else if (command == MACHO_LC_BUILD_VERSION && command_size >= 24U && read_region(fd, command_offset, command_data, 24U) == 0) {
-            if (json_field_string("platform", macho_platform_name(tool_read_u32_le(command_data + 8))) != 0) return -1;
-            if (json_field_uint("minos_raw", tool_read_u32_le(command_data + 12)) != 0) return -1;
+            if (tool_json_field_string(1, "platform", macho_platform_name(tool_read_u32_le(command_data + 8))) != 0) return -1;
+            if (tool_json_field_uint(1, "minos_raw", tool_read_u32_le(command_data + 12)) != 0) return -1;
             if (json_field_version_triplet("minos", tool_read_u32_le(command_data + 12)) != 0) return -1;
-            if (json_field_uint("sdk_raw", tool_read_u32_le(command_data + 16)) != 0) return -1;
+            if (tool_json_field_uint(1, "sdk_raw", tool_read_u32_le(command_data + 16)) != 0) return -1;
             if (json_field_version_triplet("sdk", tool_read_u32_le(command_data + 16)) != 0) return -1;
-            if (json_field_uint("ntools", tool_read_u32_le(command_data + 20)) != 0) return -1;
+            if (tool_json_field_uint(1, "ntools", tool_read_u32_le(command_data + 20)) != 0) return -1;
             if (tool_read_u32_le(command_data + 20) > 0U && command_size >= 32U && read_region(fd, command_offset, command_data, 32U) == 0) {
-                if (json_field_string("tool", macho_build_tool_name(tool_read_u32_le(command_data + 24))) != 0) return -1;
+                if (tool_json_field_string(1, "tool", macho_build_tool_name(tool_read_u32_le(command_data + 24))) != 0) return -1;
                 if (json_field_version_triplet("tool_version", tool_read_u32_le(command_data + 28)) != 0) return -1;
             }
         } else if ((command == MACHO_LC_LOAD_DYLINKER || command == MACHO_LC_LOAD_DYLIB || command == MACHO_LC_ID_DYLIB) && command_size > 12U && command_size <= sizeof(command_data) && read_region(fd, command_offset, command_data, command_size) == 0) {
@@ -2552,7 +2540,7 @@ static int json_macho_load_commands(int fd, const char *path, const MachHeaderIn
             if (name_offset < command_size) {
                 char path[128];
                 tool_copy_printable_bytes(path, sizeof(path), command_data + name_offset, (size_t)(command_size - name_offset));
-                if (json_field_string(command == MACHO_LC_LOAD_DYLINKER ? "path" : "name", path) != 0) return -1;
+                if (tool_json_field_string(1, command == MACHO_LC_LOAD_DYLINKER ? "path" : "name", path) != 0) return -1;
             }
             if (command == MACHO_LC_LOAD_DYLIB || command == MACHO_LC_ID_DYLIB) {
                 if (json_field_version_triplet("current_version", tool_read_u32_le(command_data + 16)) != 0) return -1;
@@ -2586,12 +2574,12 @@ static int json_macho_symbols(int fd, const char *path, const MachSymtabInfo *sy
         if (tool_json_begin_event(1, "readelf", "stdout", "macho_symbol") != 0) return -1;
         if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
         if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-        if (json_field_uint("index", index) != 0) return -1;
-        if (json_field_string("name", name_from_table(strings, string_size, strx)) != 0) return -1;
-        if (json_field_uint("value", tool_read_u64_le(entry + 8)) != 0) return -1;
-        if (json_field_uint("type", (unsigned int)entry[4]) != 0) return -1;
-        if (json_field_uint("section", (unsigned int)entry[5]) != 0) return -1;
-        if (json_field_uint("desc", (unsigned int)tool_read_u16_le(entry + 6)) != 0) return -1;
+        if (tool_json_field_uint(1, "index", index) != 0) return -1;
+        if (tool_json_field_string(1, "name", name_from_table(strings, string_size, strx)) != 0) return -1;
+        if (tool_json_field_uint(1, "value", tool_read_u64_le(entry + 8)) != 0) return -1;
+        if (tool_json_field_uint(1, "type", (unsigned int)entry[4]) != 0) return -1;
+        if (tool_json_field_uint(1, "section", (unsigned int)entry[5]) != 0) return -1;
+        if (tool_json_field_uint(1, "desc", (unsigned int)tool_read_u16_le(entry + 6)) != 0) return -1;
         if (rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
     }
     return 0;
@@ -2627,16 +2615,16 @@ static int json_macho_relocations(int fd, const char *path, const MachSectionInf
             if (tool_json_begin_event(1, "readelf", "stdout", "macho_relocation") != 0) return -1;
             if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
             if (rt_write_cstr(1, "\"file\":") != 0 || tool_json_write_string(1, path) != 0) return -1;
-            if (json_field_string("segment", sections[section_index].segment) != 0) return -1;
-            if (json_field_string("section", sections[section_index].section) != 0) return -1;
-            if (json_field_uint("offset", address) != 0) return -1;
-            if (json_field_string("type", macho_arm64_relocation_name(type)) != 0) return -1;
-            if (json_field_uint("length", (info >> 25U) & 3U) != 0) return -1;
-            if (json_field_bool("pcrel", ((info >> 24U) & 1U) != 0U) != 0) return -1;
-            if (json_field_bool("external", external != 0U) != 0) return -1;
+            if (tool_json_field_string(1, "segment", sections[section_index].segment) != 0) return -1;
+            if (tool_json_field_string(1, "section", sections[section_index].section) != 0) return -1;
+            if (tool_json_field_uint(1, "offset", address) != 0) return -1;
+            if (tool_json_field_string(1, "type", macho_arm64_relocation_name(type)) != 0) return -1;
+            if (tool_json_field_uint(1, "length", (info >> 25U) & 3U) != 0) return -1;
+            if (tool_json_field_bool(1, "pcrel", ((info >> 24U) & 1U) != 0U) != 0) return -1;
+            if (tool_json_field_bool(1, "external", external != 0U) != 0) return -1;
             if (external != 0U) {
-                if (json_field_string("symbol", macho_symbol_name_at(fd, symtab, symbolnum, strings, string_size)) != 0) return -1;
-            } else if (json_field_uint("section_ordinal", symbolnum) != 0) return -1;
+                if (tool_json_field_string(1, "symbol", macho_symbol_name_at(fd, symtab, symbolnum, strings, string_size)) != 0) return -1;
+            } else if (tool_json_field_uint(1, "section_ordinal", symbolnum) != 0) return -1;
             if (rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
         }
     }
@@ -3303,7 +3291,7 @@ static int compare_field_string(const char *name, const char *left, const char *
         if (tool_json_begin_event(1, "readelf", "stdout", "compare_difference") != 0) return -1;
         if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
         if (rt_write_cstr(1, "\"field\":") != 0 || tool_json_write_string(1, name) != 0) return -1;
-        if (json_field_string("left", left) != 0 || json_field_string("right", right) != 0) return -1;
+        if (tool_json_field_string(1, "left", left) != 0 || tool_json_field_string(1, "right", right) != 0) return -1;
         if (rt_write_char(1, '}') != 0) return -1;
         return tool_json_end_event(1);
     }
@@ -3322,7 +3310,7 @@ static int compare_field_uint(const char *name, unsigned long long left, unsigne
         if (tool_json_begin_event(1, "readelf", "stdout", "compare_difference") != 0) return -1;
         if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
         if (rt_write_cstr(1, "\"field\":") != 0 || tool_json_write_string(1, name) != 0) return -1;
-        if (json_field_uint("left", left) != 0 || json_field_uint("right", right) != 0) return -1;
+        if (tool_json_field_uint(1, "left", left) != 0 || tool_json_field_uint(1, "right", right) != 0) return -1;
         if (rt_write_char(1, '}') != 0) return -1;
         return tool_json_end_event(1);
     }
@@ -3373,10 +3361,10 @@ static int compare_files(const char *left_path, const char *right_path, int deep
         if (tool_json_begin_event(1, "readelf", "stdout", "compare_summary") != 0) return 2;
         if (rt_write_cstr(1, ",\"data\":{") != 0) return 2;
         if (rt_write_cstr(1, "\"left_file\":") != 0 || tool_json_write_string(1, left_path) != 0) return 2;
-        if (json_field_string("right_file", right_path) != 0) return 2;
-        if (json_field_bool("deep", deep) != 0) return 2;
-        if (json_field_uint("differences", (unsigned long long)differences) != 0) return 2;
-        if (json_field_bool("equal", differences == 0) != 0) return 2;
+        if (tool_json_field_string(1, "right_file", right_path) != 0) return 2;
+        if (tool_json_field_bool(1, "deep", deep) != 0) return 2;
+        if (tool_json_field_uint(1, "differences", (unsigned long long)differences) != 0) return 2;
+        if (tool_json_field_bool(1, "equal", differences == 0) != 0) return 2;
         if (rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return 2;
     } else if (differences == 0) {
         rt_write_line(1, "No structural differences found.");

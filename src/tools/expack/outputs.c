@@ -522,10 +522,6 @@ static int expack_macho_prepare_container_candidate(const ExpackInputFormat *for
     return 0;
 }
 
-static int expack_macho_write_container_backend(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
-    return expack_write_macho_container(format, output_path, candidate, original_size);
-}
-
 static int expack_pe_can_write_container(const ExpackInputFormat *format, unsigned int output_kind) {
     return format->kind == EXPACK_FORMAT_PE_COFF && output_kind == EXPACK_OUTPUT_KIND_PE_CONTAINER;
 }
@@ -547,10 +543,6 @@ static int expack_pe_prepare_container_candidate(const ExpackInputFormat *format
     (void)format;
     candidate->packed_size = (unsigned long long)image->size;
     return 0;
-}
-
-static int expack_pe_write_container_backend(const ExpackInputFormat *format, const char *output_path, const ExpackCandidate *candidate, size_t original_size) {
-    return expack_write_pe_container(format, output_path, candidate, original_size);
 }
 
 static void expack_macho_write_container_success(const char *output_path, const ExpackCandidate *candidate) {
@@ -595,7 +587,7 @@ static const ExpackOutputBackend *expack_find_output_backend(const ExpackInputFo
         backend.can_write_packed = expack_backend_cannot_write_packed;
         backend.can_write_container = expack_macho_can_write_container;
         backend.prepare_container_candidate = expack_macho_prepare_container_candidate;
-        backend.write_container = expack_macho_write_container_backend;
+        backend.write_container = expack_write_macho_container;
         backend.write_container_success = expack_macho_write_container_success;
         return &backend;
     }
@@ -607,7 +599,7 @@ static const ExpackOutputBackend *expack_find_output_backend(const ExpackInputFo
         backend.can_write_packed = expack_backend_cannot_write_packed;
         backend.can_write_container = expack_pe_can_write_container;
         backend.prepare_container_candidate = expack_pe_prepare_container_candidate;
-        backend.write_container = expack_pe_write_container_backend;
+        backend.write_container = expack_write_pe_container;
         backend.write_container_success = expack_pe_write_container_success;
         return &backend;
     }
@@ -627,4 +619,3 @@ static int expack_write_container_output(const ExpackOutputBackend *backend, con
     }
     return backend->write_container(format, output_path, candidate, original_size);
 }
-

@@ -41,7 +41,7 @@ int tool_resolve_user_id(const char *text, unsigned int *uid_out) {
 int tool_resolve_group_id(const char *text, unsigned int *gid_out) {
     unsigned long long value = 0ULL;
 
-    if (text == 0 || gid_out == 0) {
+    if (text == 0 || text[0] == '\0' || gid_out == 0) {
         return -1;
     }
     if (rt_parse_uint(text, &value) == 0) {

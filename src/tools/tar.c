@@ -437,19 +437,6 @@ static int create_temp_file_near_archive(const char *archive_path_name,
     return *fd_out < 0 ? -1 : 0;
 }
 
-
-static int build_helper_path(const char *argv0, const char *tool_name, char *buffer, size_t buffer_size) {
-    char dir[TAR_PATH_CAPACITY];
-
-    if (argv0 == 0 || !tool_path_has_separator(argv0)) {
-        rt_copy_string(buffer, buffer_size, tool_name);
-        return 0;
-    }
-
-    tool_path_dirname(argv0, dir, sizeof(dir));
-    return tool_join_path(dir, tool_name, buffer, buffer_size);
-}
-
 static const char *resolve_helper_argv0_base(const char *argv0, char *buffer, size_t buffer_size) {
     char cwd[TAR_PATH_CAPACITY];
 
@@ -471,7 +458,7 @@ static int run_helper_tool(const char *argv0, const char *tool_name, const char 
     int pid = 0;
     int status = 1;
 
-    if (build_helper_path(argv0, tool_name, helper_path, sizeof(helper_path)) != 0) {
+    if (tool_build_sibling_program_path(argv0, tool_name, helper_path, sizeof(helper_path)) != 0) {
         tool_write_error("tar", "cannot locate helper: ", tool_name);
         return -1;
     }

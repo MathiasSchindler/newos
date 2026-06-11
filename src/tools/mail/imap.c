@@ -175,13 +175,13 @@ static int mail_smtp_read_response(MailTransport *transport, int expected, int a
     return code == expected || (alternate_expected != 0 && code == alternate_expected) ? 0 : -1;
 }
 
-static int mail_smtp_send_cstr(MailTransport *transport, const char *text) {
+static int mail_transport_write_cstr(MailTransport *transport, const char *text) {
     return mail_transport_write_all(transport, text, rt_strlen(text));
 }
 
 static int mail_smtp_send_line(MailTransport *transport, const char *line, int verbose) {
     if (verbose) mail_imap_diag_text("smtp.command=", line);
-    return mail_smtp_send_cstr(transport, line) != 0 || mail_smtp_send_cstr(transport, "\r\n") != 0 ? -1 : 0;
+    return mail_transport_write_cstr(transport, line) != 0 || mail_transport_write_cstr(transport, "\r\n") != 0 ? -1 : 0;
 }
 
 static void mail_smtp_set_error(char *error, size_t error_size, const char *message) {
@@ -258,7 +258,7 @@ static int mail_smtp_auth_plain(MailTransport *transport, const MailConfig *conf
     rt_copy_string(command, sizeof(command), "AUTH PLAIN ");
     rt_copy_string(command + rt_strlen(command), sizeof(command) - rt_strlen(command), encoded);
     if (verbose) mail_imap_diag_text("smtp.command=", "AUTH PLAIN [redacted]");
-    result = mail_smtp_send_cstr(transport, command) != 0 || mail_smtp_send_cstr(transport, "\r\n") != 0 ? -1 : mail_smtp_read_response(transport, 235, 503, response, response_size, verbose);
+    result = mail_transport_write_cstr(transport, command) != 0 || mail_transport_write_cstr(transport, "\r\n") != 0 ? -1 : mail_smtp_read_response(transport, 235, 503, response, response_size, verbose);
     memset(payload, 0, sizeof(payload));
     memset(encoded, 0, sizeof(encoded));
     memset(command, 0, sizeof(command));
@@ -271,14 +271,14 @@ static int mail_smtp_write_data_text(MailTransport *transport, const char *text)
 
     while (text[index] != '\0') {
         if (line_start && text[index] == '.') {
-            if (mail_smtp_send_cstr(transport, ".") != 0) return -1;
+            if (mail_transport_write_cstr(transport, ".") != 0) return -1;
         }
         if (text[index] == '\r') {
             index += 1U;
             continue;
         }
         if (text[index] == '\n') {
-            if (mail_smtp_send_cstr(transport, "\r\n") != 0) return -1;
+            if (mail_transport_write_cstr(transport, "\r\n") != 0) return -1;
             line_start = 1;
             index += 1U;
             continue;
@@ -287,7 +287,7 @@ static int mail_smtp_write_data_text(MailTransport *transport, const char *text)
         line_start = 0;
         index += 1U;
     }
-    if (!line_start && mail_smtp_send_cstr(transport, "\r\n") != 0) return -1;
+    if (!line_start && mail_transport_write_cstr(transport, "\r\n") != 0) return -1;
     return 0;
 }
 
@@ -297,11 +297,11 @@ static int mail_smtp_send_message_data(MailTransport *transport, const MailConfi
     if (platform_format_time(platform_get_epoch_time(), 0, "%F %T", date_text, sizeof(date_text)) != 0) {
         rt_copy_string(date_text, sizeof(date_text), "unknown date");
     }
-    if (mail_smtp_send_cstr(transport, "From: ") != 0 || mail_smtp_send_cstr(transport, config->from[0] != '\0' ? config->from : config->username) != 0 || mail_smtp_send_cstr(transport, "\r\n") != 0) return -1;
-    if (mail_smtp_send_cstr(transport, "To: ") != 0 || mail_smtp_send_cstr(transport, to) != 0 || mail_smtp_send_cstr(transport, "\r\n") != 0) return -1;
-    if (mail_smtp_send_cstr(transport, "Subject: ") != 0 || mail_smtp_send_cstr(transport, subject) != 0 || mail_smtp_send_cstr(transport, "\r\n") != 0) return -1;
-    if (mail_smtp_send_cstr(transport, "Date: ") != 0 || mail_smtp_send_cstr(transport, date_text) != 0 || mail_smtp_send_cstr(transport, " +0000\r\n") != 0) return -1;
-    if (mail_smtp_send_cstr(transport, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n") != 0) return -1;
+    if (mail_transport_write_cstr(transport, "From: ") != 0 || mail_transport_write_cstr(transport, config->from[0] != '\0' ? config->from : config->username) != 0 || mail_transport_write_cstr(transport, "\r\n") != 0) return -1;
+    if (mail_transport_write_cstr(transport, "To: ") != 0 || mail_transport_write_cstr(transport, to) != 0 || mail_transport_write_cstr(transport, "\r\n") != 0) return -1;
+    if (mail_transport_write_cstr(transport, "Subject: ") != 0 || mail_transport_write_cstr(transport, subject) != 0 || mail_transport_write_cstr(transport, "\r\n") != 0) return -1;
+    if (mail_transport_write_cstr(transport, "Date: ") != 0 || mail_transport_write_cstr(transport, date_text) != 0 || mail_transport_write_cstr(transport, " +0000\r\n") != 0) return -1;
+    if (mail_transport_write_cstr(transport, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n") != 0) return -1;
     return mail_smtp_write_data_text(transport, body);
 }
 
@@ -441,10 +441,6 @@ static int mail_imap_read_list(MailTransport *transport, const char *tag, MailFo
     }
 }
 
-static int mail_imap_send_command(MailTransport *transport, const char *command) {
-    return mail_transport_write_all(transport, command, rt_strlen(command));
-}
-
 static size_t mail_base64_encoded_size(size_t input_size) {
     return ((input_size + 2U) / 3U) * 4U;
 }
@@ -511,7 +507,7 @@ static int mail_imap_login(MailTransport *transport, const MailConfig *config, c
     if (verbose) {
         mail_imap_diag_text("imap.command=", "LOGIN");
     }
-    if (mail_imap_send_command(transport, command) != 0) {
+    if (mail_transport_write_cstr(transport, command) != 0) {
         return -1;
     }
     memset(pass, 0, sizeof(pass));
@@ -533,7 +529,7 @@ static int mail_imap_login(MailTransport *transport, const MailConfig *config, c
     if (verbose) {
         mail_imap_diag_text("imap.command=", "AUTHENTICATE PLAIN");
     }
-    if (mail_imap_send_command(transport, "a00p AUTHENTICATE PLAIN\r\n") != 0 || mail_transport_read_line(transport, tagged_line, sizeof(tagged_line)) != 0) {
+    if (mail_transport_write_cstr(transport, "a00p AUTHENTICATE PLAIN\r\n") != 0 || mail_transport_read_line(transport, tagged_line, sizeof(tagged_line)) != 0) {
         memset(token, 0, sizeof(token));
         return -1;
     }
@@ -544,7 +540,7 @@ static int mail_imap_login(MailTransport *transport, const MailConfig *config, c
         memset(token, 0, sizeof(token));
         return -1;
     }
-    if (mail_imap_send_command(transport, token) != 0 || mail_imap_send_command(transport, "\r\n") != 0) {
+    if (mail_transport_write_cstr(transport, token) != 0 || mail_transport_write_cstr(transport, "\r\n") != 0) {
         memset(token, 0, sizeof(token));
         return -1;
     }
@@ -575,7 +571,7 @@ static int mail_imap_simple_command(MailTransport *transport, const char *tag, c
     if (verbose) {
         mail_imap_diag_text("imap.command=", verb);
     }
-    if (mail_imap_send_command(transport, command) != 0) {
+    if (mail_transport_write_cstr(transport, command) != 0) {
         return -1;
     }
     return mail_imap_read_until_tag(transport, tag, print_output);
@@ -594,7 +590,7 @@ static int mail_imap_list_mailboxes(MailTransport *transport, MailFolder *folder
     if (verbose) {
         mail_imap_diag_text("imap.command=", "LIST");
     }
-    if (mail_imap_send_command(transport, command) != 0) {
+    if (mail_transport_write_cstr(transport, command) != 0) {
         return -1;
     }
     return mail_imap_read_list(transport, "a003", folders, folder_capacity, folder_count_out, print_output);
@@ -621,7 +617,7 @@ static int mail_imap_fetch_messages(MailTransport *transport, const char *folder
     if (verbose) {
         mail_imap_diag_text("imap.command=", "SELECT");
     }
-    if (mail_imap_send_command(transport, command) != 0 || mail_imap_read_select(transport, "a002", &exists_count, print_raw) != 0) {
+    if (mail_transport_write_cstr(transport, command) != 0 || mail_imap_read_select(transport, "a002", &exists_count, print_raw) != 0) {
         return -1;
     }
     if (exists_count == 0U) {
@@ -641,7 +637,7 @@ static int mail_imap_fetch_messages(MailTransport *transport, const char *folder
         if (verbose) {
             mail_imap_diag_text("imap.command=", "FETCH message");
         }
-        if (mail_imap_send_command(transport, command) != 0 || mail_imap_read_message_fetch(transport, "a004", message, print_raw) != 0) {
+        if (mail_transport_write_cstr(transport, command) != 0 || mail_imap_read_message_fetch(transport, "a004", message, print_raw) != 0) {
             return -1;
         }
         *message_count_out += 1U;
@@ -804,7 +800,7 @@ int mail_smtp_send_text_for_config(const MailConfig *config, const char *passwor
         mail_smtp_set_error(error, error_size, "SMTP message write failed");
         goto done;
     }
-    if (mail_smtp_send_cstr(&transport, ".\r\n") != 0 || mail_smtp_read_response(&transport, 250, 0, response, sizeof(response), verbose) != 0) {
+    if (mail_transport_write_cstr(&transport, ".\r\n") != 0 || mail_smtp_read_response(&transport, 250, 0, response, sizeof(response), verbose) != 0) {
         mail_smtp_set_response_error(error, error_size, "SMTP message rejected", response);
         goto done;
     }

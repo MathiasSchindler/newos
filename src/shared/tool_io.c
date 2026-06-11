@@ -812,6 +812,31 @@ int tool_str_equal(const char *left, const char *right) {
     return rt_strcmp(left, right) == 0;
 }
 
+int tool_contains_char(const char *text, char ch) {
+    size_t i = 0U;
+
+    while (text[i] != '\0') {
+        if (text[i] == ch) {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+int tool_compare_text_slices(const char *left, size_t left_length, const char *right, size_t right_length) {
+    size_t i;
+    size_t shared = left_length < right_length ? left_length : right_length;
+
+    for (i = 0U; i < shared; ++i) {
+        if (left[i] < right[i]) return -1;
+        if (left[i] > right[i]) return 1;
+    }
+    if (left_length < right_length) return -1;
+    if (left_length > right_length) return 1;
+    return 0;
+}
+
 char tool_ascii_tolower(char ch) {
     if (ch >= 'A' && ch <= 'Z') {
         return (char)(ch - 'A' + 'a');

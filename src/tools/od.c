@@ -72,10 +72,6 @@ static size_t append_byte(char *dest, size_t dest_size, size_t pos, unsigned cha
     return tool_buffer_append_padded_base(dest, dest_size, pos, value, 8U, 3U);
 }
 
-static int parse_number(const char *text, unsigned long long *value_out) {
-    return rt_parse_uint(text, value_out);
-}
-
 static int od_stream(int fd, const OdOptions *options) {
     unsigned char buffer[OD_IO_BUFFER_SIZE];
     OdOutput output;
@@ -207,17 +203,17 @@ static int parse_options(int argc, char **argv, OdOptions *options, int *first_f
                 return -1;
             }
         } else if (arg[1] == 'j') {
-            if (parse_number(value, &options->skip) != 0) {
+            if (rt_parse_uint(value, &options->skip) != 0) {
                 return -1;
             }
         } else if (arg[1] == 'N') {
-            if (parse_number(value, &options->limit) != 0) {
+            if (rt_parse_uint(value, &options->limit) != 0) {
                 return -1;
             }
             options->has_limit = 1;
         } else if (arg[1] == 'w') {
             unsigned long long width = 0ULL;
-            if (parse_number(value, &width) != 0 || width == 0ULL || width > OD_MAX_WIDTH) {
+            if (rt_parse_uint(value, &width) != 0 || width == 0ULL || width > OD_MAX_WIDTH) {
                 return -1;
             }
             options->width = (unsigned int)width;

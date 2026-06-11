@@ -215,10 +215,6 @@ static int dump_stream(int fd, const HexdumpOptions *options) {
     return hexdump_words_stream(fd, options);
 }
 
-static int parse_number(const char *text, unsigned long long *value_out) {
-    return rt_parse_uint(text, value_out);
-}
-
 static int parse_options(int argc, char **argv, HexdumpOptions *options, int *first_file) {
     int i = 1;
 
@@ -266,12 +262,12 @@ static int parse_options(int argc, char **argv, HexdumpOptions *options, int *fi
         }
 
         if (arg[1] == 'n') {
-            if (parse_number(value, &options->limit) != 0) {
+            if (rt_parse_uint(value, &options->limit) != 0) {
                 return -1;
             }
             options->has_limit = 1;
         } else if (arg[1] == 's') {
-            if (parse_number(value, &options->skip) != 0) {
+            if (rt_parse_uint(value, &options->skip) != 0) {
                 return -1;
             }
         } else if (arg[1] == 'A') {

@@ -132,6 +132,18 @@ int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t 
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }
 
+int tool_build_sibling_program_path(const char *argv0, const char *program_name, char *buffer, size_t buffer_size) {
+    char dir[1024];
+
+    if (argv0 == 0 || !tool_path_has_separator(argv0)) {
+        rt_copy_string(buffer, buffer_size, program_name);
+        return 0;
+    }
+
+    tool_path_dirname(argv0, dir, sizeof(dir));
+    return tool_join_path(dir, program_name, buffer, buffer_size);
+}
+
 void tool_resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size) {
     PlatformDirEntry entry;
     const char *base_name;

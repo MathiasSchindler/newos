@@ -362,10 +362,6 @@ static int append_file_member(int output_fd, const char *path, int verbose) {
     return 0;
 }
 
-static int archive_contains_requested_name(const char *member_name, int argc, char **argv, int start_index) {
-    return member_selected(member_name, argc, argv, start_index);
-}
-
 static int member_name_is_unsafe(const char *name) {
     size_t i = 0U;
 
@@ -434,7 +430,7 @@ static int list_or_extract_archive(const char *archive_path, int mode, int verbo
         if (info.is_string_table) {
             continue;
         }
-        if (!archive_contains_requested_name(info.name, argc, argv, member_index)) {
+        if (!member_selected(info.name, argc, argv, member_index)) {
             continue;
         }
 
@@ -543,7 +539,7 @@ static int create_or_replace_archive(const char *archive_path,
                 break;
             }
 
-            if (!info.is_string_table && replace_mode && archive_contains_requested_name(info.name, argc, argv, file_index)) {
+            if (!info.is_string_table && replace_mode && member_selected(info.name, argc, argv, file_index)) {
                 copy_member = 0;
             }
 

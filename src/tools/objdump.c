@@ -79,19 +79,6 @@ typedef struct {
 static int objdump_json;
 static unsigned long long objdump_object_base;
 
-static int json_field_string(const char *name, const char *value) {
-    return tool_json_field_string(1, name, value);
-}
-
-static int json_field_uint(const char *name, unsigned long long value) {
-    return tool_json_field_uint(1, name, value);
-}
-
-static int json_field_bool(const char *name, int value) {
-    return tool_json_field_bool(1, name, value);
-}
-
-
 static const char *macho_machine_name(unsigned int cputype) {
     unsigned int family = cputype & 0x00ffffffU;
 
@@ -421,11 +408,11 @@ static int json_file_header_event(const char *path, const char *format, const ch
     if (tool_json_begin_event(1, "objdump", "stdout", "file_header") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
     if (tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_string("format", format) != 0) return -1;
-    if (json_field_string("architecture", architecture) != 0) return -1;
-    if (json_field_string("type", type) != 0) return -1;
-    if (json_field_uint("entry", entry) != 0) return -1;
-    if (json_field_uint("flags", flags) != 0) return -1;
+    if (tool_json_field_string(1, "format", format) != 0) return -1;
+    if (tool_json_field_string(1, "architecture", architecture) != 0) return -1;
+    if (tool_json_field_string(1, "type", type) != 0) return -1;
+    if (tool_json_field_uint(1, "entry", entry) != 0) return -1;
+    if (tool_json_field_uint(1, "flags", flags) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -434,14 +421,14 @@ static int json_section_event(const char *path, const char *format, unsigned int
     if (tool_json_begin_event(1, "objdump", "stdout", "section") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
     if (tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_string("format", format) != 0) return -1;
-    if (json_field_uint("index", index) != 0) return -1;
-    if (json_field_string("name", name) != 0) return -1;
-    if (json_field_uint("addr", addr) != 0) return -1;
-    if (json_field_uint("offset", offset) != 0) return -1;
-    if (json_field_uint("size", size) != 0) return -1;
-    if (json_field_string("type", type) != 0) return -1;
-    if (json_field_uint("flags", flags) != 0) return -1;
+    if (tool_json_field_string(1, "format", format) != 0) return -1;
+    if (tool_json_field_uint(1, "index", index) != 0) return -1;
+    if (tool_json_field_string(1, "name", name) != 0) return -1;
+    if (tool_json_field_uint(1, "addr", addr) != 0) return -1;
+    if (tool_json_field_uint(1, "offset", offset) != 0) return -1;
+    if (tool_json_field_uint(1, "size", size) != 0) return -1;
+    if (tool_json_field_string(1, "type", type) != 0) return -1;
+    if (tool_json_field_uint(1, "flags", flags) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -673,11 +660,11 @@ static int json_symbol_event(const char *path, const char *format, unsigned long
     if (tool_json_begin_event(1, "objdump", "stdout", "symbol") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
     if (tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_string("format", format) != 0) return -1;
-    if (json_field_string("name", name) != 0) return -1;
-    if (json_field_uint("value", value) != 0) return -1;
-    if (json_field_uint("type", type) != 0) return -1;
-    if (json_field_uint("section", section) != 0) return -1;
+    if (tool_json_field_string(1, "format", format) != 0) return -1;
+    if (tool_json_field_string(1, "name", name) != 0) return -1;
+    if (tool_json_field_uint(1, "value", value) != 0) return -1;
+    if (tool_json_field_uint(1, "type", type) != 0) return -1;
+    if (tool_json_field_uint(1, "section", section) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }
@@ -799,17 +786,17 @@ static int json_relocation_event(const char *path, const char *segment, const ch
     if (tool_json_begin_event(1, "objdump", "stdout", "relocation") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{\"file\":") != 0) return -1;
     if (tool_json_write_string(1, path) != 0) return -1;
-    if (json_field_string("format", "mach-o-64") != 0) return -1;
-    if (json_field_string("segment", segment) != 0) return -1;
-    if (json_field_string("section", section) != 0) return -1;
-    if (json_field_uint("offset", offset) != 0) return -1;
-    if (json_field_string("type", type) != 0) return -1;
-    if (json_field_uint("length", length) != 0) return -1;
-    if (json_field_bool("pcrel", pcrel != 0U) != 0) return -1;
-    if (json_field_bool("external", external != 0U) != 0) return -1;
+    if (tool_json_field_string(1, "format", "mach-o-64") != 0) return -1;
+    if (tool_json_field_string(1, "segment", segment) != 0) return -1;
+    if (tool_json_field_string(1, "section", section) != 0) return -1;
+    if (tool_json_field_uint(1, "offset", offset) != 0) return -1;
+    if (tool_json_field_string(1, "type", type) != 0) return -1;
+    if (tool_json_field_uint(1, "length", length) != 0) return -1;
+    if (tool_json_field_bool(1, "pcrel", pcrel != 0U) != 0) return -1;
+    if (tool_json_field_bool(1, "external", external != 0U) != 0) return -1;
     if (external != 0U) {
-        if (json_field_string("symbol", symbol) != 0) return -1;
-    } else if (json_field_uint("section_ordinal", section_ordinal) != 0) return -1;
+        if (tool_json_field_string(1, "symbol", symbol) != 0) return -1;
+    } else if (tool_json_field_uint(1, "section_ordinal", section_ordinal) != 0) return -1;
     if (rt_write_char(1, '}') != 0) return -1;
     return tool_json_end_event(1);
 }

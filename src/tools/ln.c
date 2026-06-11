@@ -19,11 +19,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-s] [-f] [-n] [-T] [-r] [-v] TARGET [LINK_NAME]");
 }
 
-static int path_exists(const char *path) {
-    PlatformDirEntry entry;
-    return platform_get_path_info(path, &entry) == 0;
-}
-
 static int copy_base_name(const char *path, char *buffer, size_t buffer_size) {
     size_t len;
     size_t start;
@@ -279,7 +274,7 @@ static int resolve_link_path(const char *target_path, const char *dest_path, con
 static int prepare_link_path(const char *link_path, const LnOptions *options) {
     int is_directory = 0;
 
-    if (!options->force || !path_exists(link_path)) {
+    if (!options->force || !tool_path_exists(link_path)) {
         return 0;
     }
 
