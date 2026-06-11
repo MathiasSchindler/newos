@@ -480,6 +480,31 @@ size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, 
     return tool_buffer_append_cstr(buffer, buffer_size, length, digits);
 }
 
+size_t tool_buffer_append_padded_base(char *buffer, size_t buffer_size, size_t length, unsigned long long value, unsigned int base, unsigned int width) {
+    char digits[32];
+    unsigned int i = 0U;
+    const char *alphabet = "0123456789abcdef";
+
+    if (base < 2U || base > 16U) {
+        return length;
+    }
+
+    do {
+        digits[i++] = alphabet[value % base];
+        value /= base;
+    } while (value > 0ULL && i < sizeof(digits));
+
+    while (i < width) {
+        length = tool_buffer_append_char(buffer, buffer_size, length, '0');
+        width -= 1U;
+    }
+    while (i > 0U) {
+        i -= 1U;
+        length = tool_buffer_append_char(buffer, buffer_size, length, digits[i]);
+    }
+    return length;
+}
+
 int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io) {
     if (*length_io == 0U) {
         return 0;
@@ -503,6 +528,23 @@ int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size,
     }
     memcpy(buffer + *length_io, data, data_size);
     *length_io += data_size;
+    return 0;
+}
+
+int tool_discard_input_bytes(int fd, unsigned long long count) {
+    unsigned char buffer[8192];
+
+    while (count > 0ULL) {
+        size_t want = count > sizeof(buffer) ? sizeof(buffer) : (size_t)count;
+        long got = platform_read(fd, buffer, want);
+        if (got < 0) {
+            return -1;
+        }
+        if (got == 0) {
+            return 0;
+        }
+        count -= (unsigned long long)got;
+    }
     return 0;
 }
 

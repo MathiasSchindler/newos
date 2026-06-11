@@ -100,6 +100,34 @@ int tool_path_trimmed_equal(const char *left, const char *right) {
     return rt_strcmp(normalized_left, normalized_right) == 0;
 }
 
+void tool_path_build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size) {
+    size_t slash = 0U;
+    size_t i = 0U;
+    size_t prefix_length;
+
+    if (buffer == 0 || buffer_size == 0U) {
+        return;
+    }
+
+    while (target_path != 0 && target_path[i] != '\0') {
+        if (target_path[i] == '/') {
+            slash = i + 1U;
+        }
+        i += 1U;
+    }
+
+    if (slash == 0U) {
+        rt_copy_string(buffer, buffer_size, "./");
+        prefix_length = rt_strlen(buffer);
+    } else {
+        prefix_length = slash < (buffer_size - 1U) ? slash : (buffer_size - 1U);
+        memcpy(buffer, target_path, prefix_length);
+        buffer[prefix_length] = '\0';
+    }
+
+    rt_copy_string(buffer + prefix_length, buffer_size - prefix_length, stem);
+}
+
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size) {
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }

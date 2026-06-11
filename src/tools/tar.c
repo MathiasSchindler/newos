@@ -36,26 +36,12 @@ typedef struct {
     char padding[12];
 } TarHeader;
 
-static int read_exact(int fd, unsigned char *buffer, size_t count) {
-    size_t offset = 0;
-
-    while (offset < count) {
-        long bytes = platform_read(fd, buffer + offset, count - offset);
-        if (bytes <= 0) {
-            return -1;
-        }
-        offset += (size_t)bytes;
-    }
-
-    return 0;
-}
-
 static int skip_exact(int fd, unsigned long long count) {
     unsigned char buffer[8192];
 
     while (count > 0ULL) {
         size_t chunk = (count > (unsigned long long)sizeof(buffer)) ? sizeof(buffer) : (size_t)count;
-        if (read_exact(fd, buffer, chunk) != 0) {
+        if (archive_read_exact(fd, buffer, chunk) != 0) {
             return -1;
         }
         count -= (unsigned long long)chunk;
@@ -736,7 +722,7 @@ static int tar_read_text_payload(int archive_fd, unsigned long long size, char *
         size_t piece = (size > (unsigned long long)sizeof(chunk)) ? sizeof(chunk) : (size_t)size;
         size_t copy_length = 0U;
 
-        if (read_exact(archive_fd, chunk, piece) != 0) {
+        if (archive_read_exact(archive_fd, chunk, piece) != 0) {
             return -1;
         }
         if (used + 1U < buffer_size) {
@@ -866,7 +852,7 @@ static int extract_archive(int archive_fd,
         int strip_result;
         char typeflag;
 
-        if (read_exact(archive_fd, block, sizeof(block)) != 0) {
+        if (archive_read_exact(archive_fd, block, sizeof(block)) != 0) {
             return -1;
         }
 
@@ -1037,7 +1023,7 @@ static int extract_archive(int archive_fd,
 
             while (remaining > 0ULL) {
                 size_t chunk = (remaining > (unsigned long long)sizeof(data)) ? sizeof(data) : (size_t)remaining;
-                if (read_exact(archive_fd, data, chunk) != 0 || rt_write_all(out_fd, data, chunk) != 0) {
+                if (archive_read_exact(archive_fd, data, chunk) != 0 || rt_write_all(out_fd, data, chunk) != 0) {
                     platform_close(out_fd);
                     return -1;
                 }

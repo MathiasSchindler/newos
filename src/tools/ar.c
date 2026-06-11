@@ -39,30 +39,6 @@ static int has_archive_magic(const char *buffer) {
            buffer[7] == '\n';
 }
 
-static void build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size) {
-    size_t slash = 0U;
-    size_t i = 0U;
-    size_t prefix_length;
-
-    while (target_path != 0 && target_path[i] != '\0') {
-        if (target_path[i] == '/') {
-            slash = i + 1U;
-        }
-        i += 1U;
-    }
-
-    if (slash == 0U) {
-        rt_copy_string(buffer, buffer_size, "./");
-        prefix_length = rt_strlen(buffer);
-    } else {
-        prefix_length = slash < (buffer_size - 1U) ? slash : (buffer_size - 1U);
-        memcpy(buffer, target_path, prefix_length);
-        buffer[prefix_length] = '\0';
-    }
-
-    rt_copy_string(buffer + prefix_length, buffer_size - prefix_length, stem);
-}
-
 static unsigned long long parse_decimal_field(const char *field, size_t field_size) {
     unsigned long long value = 0ULL;
     size_t i = 0U;
@@ -524,7 +500,7 @@ static int create_or_replace_archive(const char *archive_path,
     int exit_code = 0;
     int i;
 
-    build_temp_prefix(archive_path, ".newos-ar-", temp_prefix, sizeof(temp_prefix));
+    tool_path_build_temp_prefix(archive_path, ".newos-ar-", temp_prefix, sizeof(temp_prefix));
     temp_fd = platform_create_temp_file(temp_path, sizeof(temp_path), temp_prefix, 0600U);
     if (temp_fd < 0) {
         rt_write_line(2, "ar: could not create temporary archive");

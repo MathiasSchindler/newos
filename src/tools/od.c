@@ -39,95 +39,41 @@ typedef struct {
 
 #define output_append(output, source, length) tool_output_append_buffer(1, (unsigned char *)(output)->data, sizeof((output)->data), &(output)->len, (const unsigned char *)(source), (length))
 
-static size_t append_char(char *dest, size_t pos, char ch) {
-    dest[pos++] = ch;
-    return pos;
-}
-
-static size_t append_cstr(char *dest, size_t pos, const char *text) {
-    while (*text != '\0') {
-        dest[pos++] = *text++;
-    }
-    return pos;
-}
-
-static size_t append_padded_base(char *dest, size_t pos, unsigned long long value, unsigned int base, unsigned int width) {
-    const char *digits = "0123456789abcdef";
-    char buffer[32];
-    unsigned int i = 0U;
-
-    do {
-        buffer[i++] = digits[value % base];
-        value /= base;
-    } while (value > 0ULL && i < sizeof(buffer));
-
-    while (i < width) {
-        dest[pos++] = '0';
-        width -= 1U;
-    }
-    while (i > 0U) {
-        i -= 1U;
-        dest[pos++] = buffer[i];
-    }
-    return pos;
-}
-
-static size_t append_address(char *dest, size_t pos, unsigned long long offset, OdAddressBase base) {
+static size_t append_address(char *dest, size_t dest_size, size_t pos, unsigned long long offset, OdAddressBase base) {
     if (base == OD_ADDRESS_NONE) {
         return pos;
     }
     if (base == OD_ADDRESS_DECIMAL) {
-        return append_padded_base(dest, pos, offset, 10U, 7U);
+        return tool_buffer_append_padded_base(dest, dest_size, pos, offset, 10U, 7U);
     } else if (base == OD_ADDRESS_HEX) {
-        return append_padded_base(dest, pos, offset, 16U, 7U);
+        return tool_buffer_append_padded_base(dest, dest_size, pos, offset, 16U, 7U);
     }
-    return append_padded_base(dest, pos, offset, 8U, 7U);
+    return tool_buffer_append_padded_base(dest, dest_size, pos, offset, 8U, 7U);
 }
 
-static size_t append_byte(char *dest, size_t pos, unsigned char value, OdOutputType type) {
+static size_t append_byte(char *dest, size_t dest_size, size_t pos, unsigned char value, OdOutputType type) {
     if (type == OD_TYPE_HEX_BYTE) {
-        static const char digits[] = "0123456789abcdef";
-
-        dest[pos++] = digits[(value >> 4U) & 0x0fU];
-        dest[pos++] = digits[value & 0x0fU];
-        return pos;
+        return tool_buffer_append_padded_base(dest, dest_size, pos, value, 16U, 2U);
     } else if (type == OD_TYPE_DECIMAL_BYTE || type == OD_TYPE_UNSIGNED_BYTE) {
-        return append_padded_base(dest, pos, value, 10U, 3U);
+        return tool_buffer_append_padded_base(dest, dest_size, pos, value, 10U, 3U);
     } else if (type == OD_TYPE_CHAR) {
         if (value >= 32U && value <= 126U) {
-            pos = append_cstr(dest, pos, "  ");
-            return append_char(dest, pos, (char)value);
+            pos = tool_buffer_append_cstr(dest, dest_size, pos, "  ");
+            return tool_buffer_append_char(dest, dest_size, pos, (char)value);
         } else if (value == '\n') {
-            return append_cstr(dest, pos, "\\n");
+            return tool_buffer_append_cstr(dest, dest_size, pos, "\\n");
         } else if (value == '\t') {
-            return append_cstr(dest, pos, "\\t");
+            return tool_buffer_append_cstr(dest, dest_size, pos, "\\t");
         } else if (value == '\0') {
-            return append_cstr(dest, pos, "\\0");
+            return tool_buffer_append_cstr(dest, dest_size, pos, "\\0");
         }
-        return append_padded_base(dest, pos, value, 8U, 3U);
+        return tool_buffer_append_padded_base(dest, dest_size, pos, value, 8U, 3U);
     }
-    return append_padded_base(dest, pos, value, 8U, 3U);
+    return tool_buffer_append_padded_base(dest, dest_size, pos, value, 8U, 3U);
 }
 
 static int parse_number(const char *text, unsigned long long *value_out) {
     return rt_parse_uint(text, value_out);
-}
-
-static int discard_bytes(int fd, unsigned long long count) {
-    unsigned char buffer[OD_IO_BUFFER_SIZE];
-
-    while (count > 0ULL) {
-        size_t want = count > sizeof(buffer) ? sizeof(buffer) : (size_t)count;
-        long got = platform_read(fd, buffer, want);
-        if (got < 0) {
-            return -1;
-        }
-        if (got == 0) {
-            return 0;
-        }
-        count -= (unsigned long long)got;
-    }
-    return 0;
 }
 
 static int od_stream(int fd, const OdOptions *options) {
@@ -139,7 +85,7 @@ static int od_stream(int fd, const OdOptions *options) {
 
     output.len = 0U;
 
-    if (discard_bytes(fd, options->skip) != 0) {
+    if (tool_discard_input_bytes(fd, options->skip) != 0) {
         return -1;
     }
 
@@ -173,14 +119,14 @@ static int od_stream(int fd, const OdOptions *options) {
                 row_len = options->width;
             }
 
-            row_pos = append_address(row, row_pos, offset, options->address_base);
+            row_pos = append_address(row, sizeof(row), row_pos, offset, options->address_base);
             for (i = 0; i < (long)row_len; ++i) {
                 if (options->address_base != OD_ADDRESS_NONE || i > 0) {
-                    row_pos = append_char(row, row_pos, ' ');
+                    row_pos = tool_buffer_append_char(row, sizeof(row), row_pos, ' ');
                 }
-                row_pos = append_byte(row, row_pos, buffer[cursor + (size_t)i], options->output_type);
+                row_pos = append_byte(row, sizeof(row), row_pos, buffer[cursor + (size_t)i], options->output_type);
             }
-            row_pos = append_char(row, row_pos, '\n');
+            row_pos = tool_buffer_append_char(row, sizeof(row), row_pos, '\n');
             if (output_append(&output, row, row_pos) != 0) {
                 return -1;
             }
@@ -194,8 +140,8 @@ static int od_stream(int fd, const OdOptions *options) {
 
     if (options->address_base != OD_ADDRESS_NONE) {
         char row[16];
-        size_t row_pos = append_address(row, 0U, offset, options->address_base);
-        row_pos = append_char(row, row_pos, '\n');
+        size_t row_pos = append_address(row, sizeof(row), 0U, offset, options->address_base);
+        row_pos = tool_buffer_append_char(row, sizeof(row), row_pos, '\n');
         if (output_append(&output, row, row_pos) != 0) {
             return -1;
         }

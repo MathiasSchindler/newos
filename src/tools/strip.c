@@ -54,29 +54,7 @@ typedef struct {
 } StripPlan;
 
 
-static void build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size) {
-    size_t slash = 0U;
-    size_t i = 0U;
-    size_t prefix_length;
 
-    while (target_path != 0 && target_path[i] != '\0') {
-        if (target_path[i] == '/') {
-            slash = i + 1U;
-        }
-        i += 1U;
-    }
-
-    if (slash == 0U) {
-        rt_copy_string(buffer, buffer_size, "./");
-        prefix_length = rt_strlen(buffer);
-    } else {
-        prefix_length = slash < (buffer_size - 1U) ? slash : (buffer_size - 1U);
-        memcpy(buffer, target_path, prefix_length);
-        buffer[prefix_length] = '\0';
-    }
-
-    rt_copy_string(buffer + prefix_length, buffer_size - prefix_length, stem);
-}
 
 static int copy_prefix(int input_fd, int output_fd, unsigned long long count) {
     unsigned char buffer[STRIP_BUFFER_SIZE];
@@ -555,7 +533,7 @@ static int strip_one_file(const char *input_path, const StripOptions *options, i
     }
 
     if (inplace) {
-        build_temp_prefix(input_path, ".newos-strip-", temp_prefix, sizeof(temp_prefix));
+        tool_path_build_temp_prefix(input_path, ".newos-strip-", temp_prefix, sizeof(temp_prefix));
         output_fd = platform_create_temp_file(temp_path, sizeof(temp_path), temp_prefix, (entry.mode & 0777U) != 0U ? (entry.mode & 0777U) : 0644U);
     } else {
         output_fd = platform_open_write(output_path, (entry.mode & 0777U) != 0U ? (entry.mode & 0777U) : 0644U);

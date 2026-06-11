@@ -6,26 +6,12 @@
 #define GUNZIP_BUFFER_SIZE 65536U
 #define GUNZIP_PATH_CAPACITY 1024
 
-static int read_exact(int fd, unsigned char *buffer, size_t count) {
-    size_t offset = 0;
-
-    while (offset < count) {
-        long bytes = platform_read(fd, buffer + offset, count - offset);
-        if (bytes <= 0) {
-            return -1;
-        }
-        offset += (size_t)bytes;
-    }
-
-    return 0;
-}
-
 static int skip_bytes(int fd, unsigned int count) {
     unsigned char buffer[256];
 
     while (count > 0U) {
         unsigned int chunk = (count > sizeof(buffer)) ? (unsigned int)sizeof(buffer) : count;
-        if (read_exact(fd, buffer, chunk) != 0) {
+        if (archive_read_exact(fd, buffer, chunk) != 0) {
             return -1;
         }
         count -= chunk;
@@ -38,7 +24,7 @@ static int skip_cstring(int fd) {
     unsigned char ch;
 
     do {
-        if (read_exact(fd, &ch, 1) != 0) {
+        if (archive_read_exact(fd, &ch, 1) != 0) {
             return -1;
         }
     } while (ch != 0);
@@ -77,14 +63,14 @@ static int decompress_stream(int input_fd, int output_fd) {
     unsigned int output_size = 0;
     int done = 0;
 
-    if (read_exact(input_fd, header, sizeof(header)) != 0 || header[0] != 0x1f || header[1] != 0x8b || header[2] != 0x08) {
+    if (archive_read_exact(input_fd, header, sizeof(header)) != 0 || header[0] != 0x1f || header[1] != 0x8b || header[2] != 0x08) {
         rt_write_line(2, "gunzip: invalid gzip header");
         return 1;
     }
 
     if ((header[3] & 0x04U) != 0U) {
         unsigned char extra_len[2];
-        if (read_exact(input_fd, extra_len, 2) != 0 || skip_bytes(input_fd, (unsigned int)extra_len[0] | ((unsigned int)extra_len[1] << 8)) != 0) {
+        if (archive_read_exact(input_fd, extra_len, 2) != 0 || skip_bytes(input_fd, (unsigned int)extra_len[0] | ((unsigned int)extra_len[1] << 8)) != 0) {
             return 1;
         }
     }
@@ -104,7 +90,7 @@ static int decompress_stream(int input_fd, int output_fd) {
         unsigned int len;
         unsigned int nlen;
 
-        if (read_exact(input_fd, &block_header, 1) != 0) {
+        if (archive_read_exact(input_fd, &block_header, 1) != 0) {
             return 1;
         }
 
@@ -115,7 +101,7 @@ static int decompress_stream(int input_fd, int output_fd) {
 
         done = (block_header & 0x01U) ? 1 : 0;
 
-        if (read_exact(input_fd, lens, 4) != 0) {
+        if (archive_read_exact(input_fd, lens, 4) != 0) {
             return 1;
         }
 
@@ -128,7 +114,7 @@ static int decompress_stream(int input_fd, int output_fd) {
 
         while (len > 0U) {
             unsigned int chunk_size = (len > sizeof(chunk)) ? (unsigned int)sizeof(chunk) : len;
-            if (read_exact(input_fd, chunk, chunk_size) != 0 || rt_write_all(output_fd, chunk, chunk_size) != 0) {
+            if (archive_read_exact(input_fd, chunk, chunk_size) != 0 || rt_write_all(output_fd, chunk, chunk_size) != 0) {
                 return 1;
             }
             crc = archive_crc32_update(crc, chunk, chunk_size);
@@ -137,7 +123,7 @@ static int decompress_stream(int input_fd, int output_fd) {
         }
     }
 
-    if (read_exact(input_fd, trailer, sizeof(trailer)) != 0) {
+    if (archive_read_exact(input_fd, trailer, sizeof(trailer)) != 0) {
         return 1;
     }
 

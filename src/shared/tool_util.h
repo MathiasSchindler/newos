@@ -212,8 +212,10 @@ int tool_build_epoch_timestamp(int year, unsigned int month, unsigned int day, u
 size_t tool_buffer_append_char(char *buffer, size_t buffer_size, size_t length, char ch);
 size_t tool_buffer_append_cstr(char *buffer, size_t buffer_size, size_t length, const char *text);
 size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, unsigned long long value);
+size_t tool_buffer_append_padded_base(char *buffer, size_t buffer_size, size_t length, unsigned long long value, unsigned int base, unsigned int width);
 int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io);
 int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size);
+int tool_discard_input_bytes(int fd, unsigned long long count);
 void tool_write_hex_value(int fd, unsigned long long value);
 unsigned int tool_pager_page_lines(unsigned int default_lines);
 int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch);
@@ -227,6 +229,7 @@ int tool_path_is_dash(const char *path);
 void tool_path_dirname(const char *path, char *buffer, size_t buffer_size);
 void tool_path_copy_trimmed(char *buffer, size_t buffer_size, const char *path);
 int tool_path_trimmed_equal(const char *left, const char *right);
+void tool_path_build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size);
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size);
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size);
 void tool_resolve_host_program_path(char **argv_exec, char *buffer, size_t buffer_size);
