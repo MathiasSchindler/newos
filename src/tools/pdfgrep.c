@@ -50,13 +50,6 @@ static int append_char(PdfBuffer *buffer, unsigned char ch) {
     return append_bytes(buffer, &ch, 1U);
 }
 
-static int hex_value(unsigned char ch) {
-    if (ch >= (unsigned char)'0' && ch <= (unsigned char)'9') return (int)(ch - (unsigned char)'0');
-    if (ch >= (unsigned char)'A' && ch <= (unsigned char)'F') return (int)(ch - (unsigned char)'A') + 10;
-    if (ch >= (unsigned char)'a' && ch <= (unsigned char)'f') return (int)(ch - (unsigned char)'a') + 10;
-    return -1;
-}
-
 static char lower_ascii(char ch) {
     return ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
 }
@@ -163,7 +156,7 @@ static size_t append_hex_string(const unsigned char *data, size_t size, size_t o
             offset += 1U;
             continue;
         }
-        value = hex_value(data[offset]);
+        value = tool_hex_value(data[offset]);
         if (value < 0) break;
         if (high < 0) high = value;
         else {

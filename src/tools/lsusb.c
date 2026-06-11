@@ -61,23 +61,6 @@ static const char *usb_class_name(unsigned int class_code) {
     return "unknown";
 }
 
-static int parse_hex_digit(char ch, unsigned int *value_out) {
-    if (value_out == 0) return -1;
-    if (ch >= '0' && ch <= '9') {
-        *value_out = (unsigned int)(ch - '0');
-        return 0;
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        *value_out = (unsigned int)(ch - 'a' + 10);
-        return 0;
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        *value_out = (unsigned int)(ch - 'A' + 10);
-        return 0;
-    }
-    return -1;
-}
-
 static int parse_hex_value(const char *text, unsigned int max_digits, unsigned int max_value, unsigned int *value_out) {
     unsigned int value = 0U;
     unsigned int digits = 0U;
@@ -85,9 +68,9 @@ static int parse_hex_value(const char *text, unsigned int max_digits, unsigned i
     if (text == 0 || text[0] == '\0' || value_out == 0) return -1;
     if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) text += 2;
     while (text[digits] != '\0') {
-        unsigned int nibble;
-        if (digits >= max_digits || parse_hex_digit(text[digits], &nibble) != 0) return -1;
-        value = (value << 4U) | nibble;
+        int nibble = tool_hex_value(text[digits]);
+        if (digits >= max_digits || nibble < 0) return -1;
+        value = (value << 4U) | (unsigned int)nibble;
         digits += 1U;
     }
     if (digits == 0U || value > max_value) return -1;

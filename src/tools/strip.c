@@ -97,11 +97,6 @@ static unsigned long long parse_decimal_field(const char *field, size_t field_si
     return value;
 }
 
-static int has_archive_magic(const unsigned char *header, unsigned long long file_size) {
-    return file_size >= 8ULL && header[0] == '!' && header[1] == '<' && header[2] == 'a' && header[3] == 'r' &&
-           header[4] == 'c' && header[5] == 'h' && header[6] == '>' && header[7] == '\n';
-}
-
 static int analyze_elf(int input_fd, const unsigned char *header, unsigned long long file_size, StripPlan *plan) {
     unsigned long long phoff;
     unsigned short phentsize;
@@ -403,7 +398,7 @@ static void analyze_file(int input_fd, const unsigned char *header, unsigned lon
     plan->format_name = "unknown";
     plan->action = "safe copy: unsupported format";
 
-    if (has_archive_magic(header, file_size)) {
+    if (archive_has_ar_magic(header, file_size)) {
         if (analyze_archive(input_fd, file_size, plan) != 0) {
             plan->action = "safe copy: archive analysis failed";
         }

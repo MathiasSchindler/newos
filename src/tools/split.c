@@ -2,8 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#include <limits.h>
-
 #define SPLIT_MODE_LINES 1
 #define SPLIT_MODE_BYTES 2
 #define SPLIT_MODE_LINE_BYTES 3
@@ -11,59 +9,6 @@
 
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-l COUNT | -b SIZE | -C SIZE | -n CHUNKS] [-a SUFFIX_LEN] [-d] [file [prefix]]");
-}
-
-static int parse_size_value(const char *text, unsigned long long *value_out) {
-    char digits[32];
-    size_t len = 0;
-    unsigned long long value;
-    unsigned long long multiplier = 1ULL;
-    char suffix;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-
-    while (text[len] >= '0' && text[len] <= '9') {
-        if (len + 1 >= sizeof(digits)) {
-            return -1;
-        }
-        digits[len] = text[len];
-        len += 1;
-    }
-
-    if (len == 0) {
-        return -1;
-    }
-
-    digits[len] = '\0';
-    if (rt_parse_uint(digits, &value) != 0) {
-        return -1;
-    }
-
-    suffix = text[len];
-    if (suffix != '\0') {
-        if (text[len + 1] != '\0') {
-            return -1;
-        }
-
-        if (suffix == 'k' || suffix == 'K') {
-            multiplier = 1024ULL;
-        } else if (suffix == 'm' || suffix == 'M') {
-            multiplier = 1024ULL * 1024ULL;
-        } else if (suffix == 'g' || suffix == 'G') {
-            multiplier = 1024ULL * 1024ULL * 1024ULL;
-        } else {
-            return -1;
-        }
-    }
-
-    if (value > ULLONG_MAX / multiplier) {
-        return -1;
-    }
-
-    *value_out = value * multiplier;
-    return 0;
 }
 
 static int make_output_name(const char *prefix,
@@ -361,7 +306,7 @@ int main(int argc, char **argv) {
         const char *value_text = 0;
 
         if (rt_strcmp(argv[argi], "-l") == 0 || rt_strcmp(argv[argi], "--lines") == 0) {
-            if (argi + 1 >= argc || parse_size_value(argv[argi + 1], &limit) != 0 || limit == 0ULL) {
+            if (argi + 1 >= argc || tool_parse_size_value(argv[argi + 1], &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
@@ -369,7 +314,7 @@ int main(int argc, char **argv) {
             chunk_count = 0ULL;
             argi += 2;
         } else if ((value_text = option_attached_value(argv[argi], "-l", "--lines")) != 0) {
-            if (parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
+            if (tool_parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
@@ -377,7 +322,7 @@ int main(int argc, char **argv) {
             chunk_count = 0ULL;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-b") == 0 || rt_strcmp(argv[argi], "--bytes") == 0) {
-            if (argi + 1 >= argc || parse_size_value(argv[argi + 1], &limit) != 0 || limit == 0ULL) {
+            if (argi + 1 >= argc || tool_parse_size_value(argv[argi + 1], &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
@@ -385,7 +330,7 @@ int main(int argc, char **argv) {
             chunk_count = 0ULL;
             argi += 2;
         } else if ((value_text = option_attached_value(argv[argi], "-b", "--bytes")) != 0) {
-            if (parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
+            if (tool_parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
@@ -393,7 +338,7 @@ int main(int argc, char **argv) {
             chunk_count = 0ULL;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "-C") == 0 || rt_strcmp(argv[argi], "--line-bytes") == 0) {
-            if (argi + 1 >= argc || parse_size_value(argv[argi + 1], &limit) != 0 || limit == 0ULL) {
+            if (argi + 1 >= argc || tool_parse_size_value(argv[argi + 1], &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }
@@ -401,7 +346,7 @@ int main(int argc, char **argv) {
             chunk_count = 0ULL;
             argi += 2;
         } else if ((value_text = option_attached_value(argv[argi], "-C", "--line-bytes")) != 0) {
-            if (parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
+            if (tool_parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
             }

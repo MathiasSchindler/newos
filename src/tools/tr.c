@@ -130,18 +130,7 @@ static int append_class_chars(unsigned int *buffer, size_t buffer_size, size_t *
     return 0;
 }
 
-static int hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return ch - 'a' + 10;
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return ch - 'A' + 10;
-    }
-    return -1;
-}
+
 
 static size_t decode_escape_codepoint(const char *text, size_t index, unsigned int *out) {
     unsigned char code;
@@ -189,12 +178,12 @@ static size_t decode_escape_codepoint(const char *text, size_t index, unsigned i
         case 'x':
             value = 0;
             pos = index + 2U;
-            if (hex_value(text[pos]) < 0) {
+            if (tool_hex_value(text[pos]) < 0) {
                 *out = 'x';
                 return 2U;
             }
-            while (hex_value(text[pos]) >= 0) {
-                value = (value * 16) + hex_value(text[pos]);
+            while (tool_hex_value(text[pos]) >= 0) {
+                value = (value * 16) + tool_hex_value(text[pos]);
                 pos += 1U;
             }
             *out = (unsigned int)value;

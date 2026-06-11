@@ -80,17 +80,6 @@ static void write_tiff_u64_low(unsigned char *bytes, unsigned int value, int lit
     }
 }
 
-static int bytes_equal(const unsigned char *bytes, const char *text, size_t length) {
-    size_t index;
-
-    for (index = 0U; index < length; ++index) {
-        if (bytes[index] != (unsigned char)text[index]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static int read_all_input(const char *path, unsigned char **data_out, size_t *size_out) {
     int fd;
     int should_close;
@@ -203,19 +192,19 @@ static void write_property_list(unsigned int property_flags) {
 static int bytes_start_with_text(const unsigned char *bytes, size_t size, const char *text) {
     size_t text_size = rt_strlen(text);
 
-    return size >= text_size && bytes_equal(bytes, text, text_size);
+    return size >= text_size && tool_bytes_equal_text(bytes, text, text_size);
 }
 
 static int text_ref_equals(ImgmetaTextRef ref, const char *text) {
     size_t text_size = rt_strlen(text);
 
-    return ref.size == text_size && bytes_equal(ref.text, text, text_size);
+    return ref.size == text_size && tool_bytes_equal_text(ref.text, text, text_size);
 }
 
 static int text_ref_starts_with(ImgmetaTextRef ref, const char *text) {
     size_t text_size = rt_strlen(text);
 
-    return ref.size >= text_size && bytes_equal(ref.text, text, text_size);
+    return ref.size >= text_size && tool_bytes_equal_text(ref.text, text, text_size);
 }
 
 static void write_text_ref(int fd, ImgmetaTextRef ref) {
@@ -934,7 +923,7 @@ static int imgmeta_find_label_with_prefix(const unsigned char *data, size_t size
 
     if (size < prefix_size) return 0;
     for (offset = 0U; offset + prefix_size <= size; ++offset) {
-        if (bytes_equal(data + offset, prefix, prefix_size)) {
+        if (tool_bytes_equal_text(data + offset, prefix, prefix_size)) {
             size_t end = offset;
             while (end < size && data[end] >= 0x20U && data[end] <= 0x7eU) {
                 end += 1U;
@@ -984,8 +973,8 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
         payload_offset = offset + header_size;
         payload_size = (size_t)box_size - header_size;
 
-        if (bytes_equal(type, "jumb", 4U)) {
-            if (payload_size >= 8U && bytes_equal(data + payload_offset + 4U, "jumd", 4U)) {
+        if (tool_bytes_equal_text(type, "jumb", 4U)) {
+            if (payload_size >= 8U && tool_bytes_equal_text(data + payload_offset + 4U, "jumd", 4U)) {
                 unsigned long long jumd_size = (unsigned long long)tool_read_u32_be(data + payload_offset);
                 if (jumd_size >= 8ULL && jumd_size <= (unsigned long long)payload_size) {
                     (void)imgmeta_jumd_label(data + payload_offset + 8U, (size_t)jumd_size - 8U, &label);
@@ -1007,7 +996,7 @@ static void imgmeta_verbose_c2pa_boxes(const unsigned char *data,
                 rt_write_char(1, '\n');
             }
             imgmeta_verbose_c2pa_boxes(data + payload_offset, payload_size, depth + 1U, label, state);
-        } else if (bytes_equal(type, "cbor", 4U) && parent_label.text != 0) {
+        } else if (tool_bytes_equal_text(type, "cbor", 4U) && parent_label.text != 0) {
             if (text_ref_starts_with(parent_label, "c2pa.claim")) {
                 imgmeta_print_c2pa_claim(state->claim_index, parent_label, data + payload_offset, payload_size);
                 state->claim_index += 1U;
@@ -1027,13 +1016,13 @@ static void imgmeta_verbose_c2pa_png(const unsigned char *data, size_t size, Img
     static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
     size_t offset = 8U;
 
-    if (size < 8U || !bytes_equal(data, (const char *)signature, 8U)) return;
+    if (size < 8U || !tool_bytes_equal_text(data, (const char *)signature, 8U)) return;
     while (offset + 12U <= size) {
         unsigned int chunk_size = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         size_t payload_offset = offset + 8U;
         if ((size_t)chunk_size > size - payload_offset || payload_offset + (size_t)chunk_size + 4U > size) return;
-        if (bytes_equal(type, "caBX", 4U)) {
+        if (tool_bytes_equal_text(type, "caBX", 4U)) {
             imgmeta_verbose_c2pa_boxes(data + payload_offset, (size_t)chunk_size, 0U, (ImgmetaTextRef){0, 0U}, state);
         }
         offset = payload_offset + (size_t)chunk_size + 4U;
@@ -1064,7 +1053,7 @@ static void imgmeta_verbose_c2pa_jpeg(const unsigned char *data, size_t size, Im
         payload_size = (size_t)segment_size - 2U;
         if (marker == 0xebU && payload_size >= 8U && bytes_start_with_text(payload, payload_size, "JP")) {
             for (index = 4U; index + 4U <= payload_size; ++index) {
-                if (bytes_equal(payload + index, "jumb", 4U) && index >= 4U) {
+                if (tool_bytes_equal_text(payload + index, "jumb", 4U) && index >= 4U) {
                     imgmeta_verbose_c2pa_boxes(payload + index - 4U, payload_size - (index - 4U), 0U, (ImgmetaTextRef){0, 0U}, state);
                     break;
                 }
@@ -1187,13 +1176,13 @@ static int show_path(const char *path, int verbose, int c2pa_trust_validation) {
 }
 
 static int png_chunk_is_metadata(const unsigned char *type) {
-    return bytes_equal(type, "eXIf", 4U) ||
-           bytes_equal(type, "caBX", 4U) ||
-           bytes_equal(type, "iCCP", 4U) ||
-           bytes_equal(type, "iTXt", 4U) ||
-           bytes_equal(type, "tEXt", 4U) ||
-           bytes_equal(type, "zTXt", 4U) ||
-           bytes_equal(type, "tIME", 4U);
+    return tool_bytes_equal_text(type, "eXIf", 4U) ||
+           tool_bytes_equal_text(type, "caBX", 4U) ||
+           tool_bytes_equal_text(type, "iCCP", 4U) ||
+           tool_bytes_equal_text(type, "iTXt", 4U) ||
+           tool_bytes_equal_text(type, "tEXt", 4U) ||
+           tool_bytes_equal_text(type, "zTXt", 4U) ||
+           tool_bytes_equal_text(type, "tIME", 4U);
 }
 
 static int strip_png(const unsigned char *data, size_t size, unsigned char **out_data, size_t *out_size) {
@@ -1202,7 +1191,7 @@ static int strip_png(const unsigned char *data, size_t size, unsigned char **out
     size_t input_offset = 8U;
     size_t output_size = 0U;
 
-    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature))) {
+    if (size < 8U || !tool_bytes_equal_text(data, (const char *)signature, sizeof(signature))) {
         return -1;
     }
     output = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
@@ -1226,7 +1215,7 @@ static int strip_png(const unsigned char *data, size_t size, unsigned char **out
             output_size += chunk_size;
         }
         input_offset += chunk_size;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
     }
@@ -1256,7 +1245,7 @@ static int png_metadata_chunks_size(const unsigned char *data, size_t size, size
             metadata_size += chunk_size;
         }
         offset += chunk_size;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
     }
@@ -1278,8 +1267,8 @@ static int copy_png_metadata(const unsigned char *metadata_data,
     size_t output_size = 8U;
     int inserted = 0;
 
-    if (metadata_size < 8U || image_size < 8U || !bytes_equal(metadata_data, (const char *)signature, sizeof(signature)) ||
-        !bytes_equal(image_data, (const char *)signature, sizeof(signature))) {
+    if (metadata_size < 8U || image_size < 8U || !tool_bytes_equal_text(metadata_data, (const char *)signature, sizeof(signature)) ||
+        !tool_bytes_equal_text(image_data, (const char *)signature, sizeof(signature))) {
         return -1;
     }
     if (png_metadata_chunks_size(metadata_data, metadata_size, &metadata_total) != 0 || image_size > ((size_t)-1) - metadata_total) {
@@ -1300,7 +1289,7 @@ static int copy_png_metadata(const unsigned char *metadata_data,
             return -1;
         }
         chunk_size = (size_t)length + 12U;
-        if (!inserted && (bytes_equal(type, "IDAT", 4U) || bytes_equal(type, "IEND", 4U))) {
+        if (!inserted && (tool_bytes_equal_text(type, "IDAT", 4U) || tool_bytes_equal_text(type, "IEND", 4U))) {
             source_offset = 8U;
             while (source_offset + 12U <= metadata_size) {
                 unsigned int source_length = tool_read_u32_be(metadata_data + source_offset);
@@ -1317,7 +1306,7 @@ static int copy_png_metadata(const unsigned char *metadata_data,
                     output_size += source_chunk_size;
                 }
                 source_offset += source_chunk_size;
-                if (bytes_equal(source_type, "IEND", 4U)) {
+                if (tool_bytes_equal_text(source_type, "IEND", 4U)) {
                     break;
                 }
             }
@@ -1328,7 +1317,7 @@ static int copy_png_metadata(const unsigned char *metadata_data,
             output_size += chunk_size;
         }
         input_offset += chunk_size;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
     }
@@ -1343,7 +1332,7 @@ static int copy_png_metadata(const unsigned char *metadata_data,
 
 static int png_text_key_matches(const unsigned char *payload, unsigned int length, const char *key, size_t key_length) {
     if ((size_t)length == key_length) {
-        return bytes_equal(payload, key, key_length);
+        return tool_bytes_equal_text(payload, key, key_length);
     }
     if ((size_t)length < key_length + 1U) {
         return 0;
@@ -1351,7 +1340,7 @@ static int png_text_key_matches(const unsigned char *payload, unsigned int lengt
     if (payload[key_length] != 0U) {
         return 0;
     }
-    return bytes_equal(payload, key, key_length);
+    return tool_bytes_equal_text(payload, key, key_length);
 }
 
 static size_t png_text_key_length(const unsigned char *payload, unsigned int length) {
@@ -1441,7 +1430,7 @@ static int edit_png_text(const unsigned char *data,
     size_t text_chunk_size = key_length + 1U + value_length + 12U;
     int wrote_text = 0;
 
-    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
+    if (size < 8U || !tool_bytes_equal_text(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
         return -1;
     }
     if (text_chunk_size > 0xffffffffU || size > ((size_t)-1) - text_chunk_size) {
@@ -1463,12 +1452,12 @@ static int edit_png_text(const unsigned char *data,
             return -1;
         }
         chunk_size = (size_t)length + 12U;
-        if (!wrote_text && (bytes_equal(type, "IDAT", 4U) || bytes_equal(type, "IEND", 4U))) {
+        if (!wrote_text && (tool_bytes_equal_text(type, "IDAT", 4U) || tool_bytes_equal_text(type, "IEND", 4U))) {
             write_png_text_chunk(output, output_size, key, key_length, value, value_length);
             output_size += text_chunk_size;
             wrote_text = 1;
         }
-        if (bytes_equal(type, "tEXt", 4U) && png_text_key_matches(payload, length, key, key_length)) {
+        if (tool_bytes_equal_text(type, "tEXt", 4U) && png_text_key_matches(payload, length, key, key_length)) {
             if (!wrote_text) {
                 write_png_text_chunk(output, output_size, key, key_length, value, value_length);
                 output_size += text_chunk_size;
@@ -1479,7 +1468,7 @@ static int edit_png_text(const unsigned char *data,
             output_size += chunk_size;
         }
         input_offset += chunk_size;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
     }
@@ -1514,7 +1503,7 @@ static int edit_png_itxt(const unsigned char *data,
     size_t text_chunk_size;
     int wrote_text = 0;
 
-    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
+    if (size < 8U || !tool_bytes_equal_text(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
         return -1;
     }
     if (compressed) {
@@ -1563,12 +1552,12 @@ static int edit_png_itxt(const unsigned char *data,
             return -1;
         }
         chunk_size = (size_t)length + 12U;
-        if (!wrote_text && (bytes_equal(type, "IDAT", 4U) || bytes_equal(type, "IEND", 4U))) {
+        if (!wrote_text && (tool_bytes_equal_text(type, "IDAT", 4U) || tool_bytes_equal_text(type, "IEND", 4U))) {
             write_png_itxt_chunk(output, output_size, key, key_length, chunk_value, chunk_value_length, language, language_length, compressed);
             output_size += text_chunk_size;
             wrote_text = 1;
         }
-        if ((bytes_equal(type, "iTXt", 4U) || bytes_equal(type, "tEXt", 4U) || bytes_equal(type, "zTXt", 4U)) &&
+        if ((tool_bytes_equal_text(type, "iTXt", 4U) || tool_bytes_equal_text(type, "tEXt", 4U) || tool_bytes_equal_text(type, "zTXt", 4U)) &&
             png_text_key_matches(payload, length, key, key_length)) {
             if (!wrote_text) {
                 write_png_itxt_chunk(output, output_size, key, key_length, chunk_value, chunk_value_length, language, language_length, compressed);
@@ -1580,7 +1569,7 @@ static int edit_png_itxt(const unsigned char *data,
             output_size += chunk_size;
         }
         input_offset += chunk_size;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
     }
@@ -1611,7 +1600,7 @@ static int remove_png_text(const unsigned char *data,
     size_t output_size = 8U;
     int removed = 0;
 
-    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
+    if (size < 8U || !tool_bytes_equal_text(data, (const char *)signature, sizeof(signature)) || !png_text_key_is_valid(key, key_length)) {
         return -1;
     }
     output = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
@@ -1630,7 +1619,7 @@ static int remove_png_text(const unsigned char *data,
             return -1;
         }
         chunk_size = (size_t)length + 12U;
-        if ((bytes_equal(type, "tEXt", 4U) || bytes_equal(type, "iTXt", 4U) || bytes_equal(type, "zTXt", 4U)) &&
+        if ((tool_bytes_equal_text(type, "tEXt", 4U) || tool_bytes_equal_text(type, "iTXt", 4U) || tool_bytes_equal_text(type, "zTXt", 4U)) &&
             png_text_key_matches(payload, length, key, key_length)) {
             removed = 1;
         } else {
@@ -1638,7 +1627,7 @@ static int remove_png_text(const unsigned char *data,
             output_size += chunk_size;
         }
         input_offset += chunk_size;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
     }
@@ -1655,7 +1644,7 @@ static int list_png_text(const unsigned char *data, size_t size, const char *lab
     static const unsigned char signature[8] = {0x89U, 'P', 'N', 'G', '\r', '\n', 0x1aU, '\n'};
     size_t offset = 8U;
 
-    if (size < 8U || !bytes_equal(data, (const char *)signature, sizeof(signature))) {
+    if (size < 8U || !tool_bytes_equal_text(data, (const char *)signature, sizeof(signature))) {
         tool_write_error("imgmeta", "text listing is implemented for PNG only: ", label);
         return -1;
     }
@@ -1669,7 +1658,7 @@ static int list_png_text(const unsigned char *data, size_t size, const char *lab
             tool_write_error("imgmeta", "truncated PNG chunk while listing text: ", label);
             return -1;
         }
-        if (bytes_equal(type, "tEXt", 4U)) {
+        if (tool_bytes_equal_text(type, "tEXt", 4U)) {
             key_length = png_text_key_length(payload, length);
             rt_write_cstr(1, label);
             rt_write_cstr(1, "\ttEXt\t");
@@ -1679,7 +1668,7 @@ static int list_png_text(const unsigned char *data, size_t size, const char *lab
                 rt_write_all(1, payload + key_length + 1U, (size_t)length - key_length - 1U);
             }
             rt_write_char(1, '\n');
-        } else if (bytes_equal(type, "iTXt", 4U)) {
+        } else if (tool_bytes_equal_text(type, "iTXt", 4U)) {
             size_t cursor;
             int compressed = 1;
 
@@ -1715,7 +1704,7 @@ static int list_png_text(const unsigned char *data, size_t size, const char *lab
                 rt_write_char(1, '-');
             }
             rt_write_char(1, '\n');
-        } else if (bytes_equal(type, "zTXt", 4U)) {
+        } else if (tool_bytes_equal_text(type, "zTXt", 4U)) {
             key_length = png_text_key_length(payload, length);
             rt_write_cstr(1, label);
             rt_write_char(1, '\t');
@@ -1724,7 +1713,7 @@ static int list_png_text(const unsigned char *data, size_t size, const char *lab
             rt_write_all(1, payload, key_length);
             rt_write_cstr(1, "\t-");
             rt_write_char(1, '\n');
-        } else if (bytes_equal(type, "IEND", 4U)) {
+        } else if (tool_bytes_equal_text(type, "IEND", 4U)) {
             break;
         }
         offset += 12U + (size_t)length;
@@ -1736,19 +1725,19 @@ static int jpeg_segment_is_metadata(unsigned char marker, const unsigned char *s
     if (marker == 0xfeU) {
         return 1;
     }
-    if (marker == 0xe1U && segment_size >= 8U && bytes_equal(segment + 2U, "Exif", 4U)) {
+    if (marker == 0xe1U && segment_size >= 8U && tool_bytes_equal_text(segment + 2U, "Exif", 4U)) {
         return 1;
     }
-    if (marker == 0xe1U && segment_size >= 31U && bytes_equal(segment + 2U, "http://ns.adobe.com/xap/1.0/", 29U)) {
+    if (marker == 0xe1U && segment_size >= 31U && tool_bytes_equal_text(segment + 2U, "http://ns.adobe.com/xap/1.0/", 29U)) {
         return 1;
     }
-    if (marker == 0xe2U && segment_size >= 13U && bytes_equal(segment + 2U, "ICC_PROFILE", 11U)) {
+    if (marker == 0xe2U && segment_size >= 13U && tool_bytes_equal_text(segment + 2U, "ICC_PROFILE", 11U)) {
         return 1;
     }
     if (marker == 0xebU && segment_size >= 14U &&
-        bytes_equal(segment + 2U, "JP", 2U) &&
+        tool_bytes_equal_text(segment + 2U, "JP", 2U) &&
         segment[4U] == 0U && segment[5U] == 1U &&
-        bytes_equal(segment + 10U, "jumb", 4U)) {
+        tool_bytes_equal_text(segment + 10U, "jumb", 4U)) {
         return 1;
     }
     return 0;
@@ -1818,9 +1807,9 @@ static int strip_jpeg(const unsigned char *data, size_t size, unsigned char **ou
 }
 
 static int webp_chunk_is_metadata(const unsigned char *type) {
-    return bytes_equal(type, "EXIF", 4U) ||
-           bytes_equal(type, "XMP ", 4U) ||
-           bytes_equal(type, "ICCP", 4U);
+    return tool_bytes_equal_text(type, "EXIF", 4U) ||
+           tool_bytes_equal_text(type, "XMP ", 4U) ||
+           tool_bytes_equal_text(type, "ICCP", 4U);
 }
 
 static int strip_webp(const unsigned char *data, size_t size, unsigned char **out_data, size_t *out_size) {
@@ -1828,7 +1817,7 @@ static int strip_webp(const unsigned char *data, size_t size, unsigned char **ou
     size_t input_offset = 12U;
     size_t output_size = 12U;
 
-    if (size < 20U || !bytes_equal(data, "RIFF", 4U) || !bytes_equal(data + 8U, "WEBP", 4U)) {
+    if (size < 20U || !tool_bytes_equal_text(data, "RIFF", 4U) || !tool_bytes_equal_text(data + 8U, "WEBP", 4U)) {
         return -1;
     }
     output = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
@@ -1847,7 +1836,7 @@ static int strip_webp(const unsigned char *data, size_t size, unsigned char **ou
         }
         if (!webp_chunk_is_metadata(type)) {
             memcpy(output + output_size, data + input_offset, chunk_total);
-            if (bytes_equal(type, "VP8X", 4U) && chunk_length >= 10U) {
+            if (tool_bytes_equal_text(type, "VP8X", 4U) && chunk_length >= 10U) {
                 output[output_size + 8U] &= (unsigned char)~0x2cU;
             }
             output_size += chunk_total;

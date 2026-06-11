@@ -71,13 +71,7 @@ static void print_usage(void) {
     tool_write_usage("c2pa", "add --dev-key -o OUTPUT [--claim-generator TEXT] [--action ACTION]... FILE");
 }
 
-static int bytes_equal(const unsigned char *bytes, const char *text, size_t length) {
-    size_t index;
-    for (index = 0U; index < length; ++index) {
-        if (bytes[index] != (unsigned char)text[index]) return 0;
-    }
-    return 1;
-}
+
 
 static int action_can_start_manifest(const char *action) {
     return rt_strcmp(action, "c2pa.created") == 0 || rt_strcmp(action, "c2pa.opened") == 0;
@@ -429,7 +423,7 @@ static int insert_png_cabx(const unsigned char *data, size_t size, const unsigne
         unsigned int length = tool_read_u32_be(data + offset);
         const unsigned char *type = data + offset + 4U;
         if ((size_t)length > size - offset - 12U) return -1;
-        if (bytes_equal(type, "IEND", 4U)) {
+        if (tool_bytes_equal_text(type, "IEND", 4U)) {
             unsigned int crc;
             if (buf_append(out, data, offset) != 0) return -1;
             if (buf_u32be(out, (unsigned int)payload_size) || buf_append(out, "caBX", 4U) || buf_append(out, payload, payload_size)) return -1;

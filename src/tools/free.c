@@ -27,17 +27,10 @@ static void format_memory_value(unsigned long long bytes, FreeUnitMode mode, cha
     }
 }
 
-static void write_padding(size_t count) {
-    while (count > 0U) {
-        rt_write_char(1, ' ');
-        count -= 1U;
-    }
-}
-
 static void write_table_cell(const char *text, size_t width) {
     size_t length = rt_strlen(text);
     if (length < width) {
-        write_padding(width - length);
+        tool_write_padding(1, width - length);
     } else {
         rt_write_char(1, ' ');
     }
@@ -50,7 +43,7 @@ static void write_table_row(const char *label, const char *const *values, size_t
 
     rt_write_cstr(1, label);
     if (label_length < 6U) {
-        write_padding(6U - label_length);
+        tool_write_padding(1, 6U - label_length);
     }
     for (i = 0; i < count; ++i) {
         write_table_cell(values[i], 12U);

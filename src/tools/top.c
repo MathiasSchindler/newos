@@ -191,18 +191,11 @@ static void sort_processes(PlatformProcessEntry *entries, size_t count, TopSortK
     }
 }
 
-static void write_padding(size_t count) {
-    while (count > 0U) {
-        (void)rt_write_char(1, ' ');
-        count -= 1U;
-    }
-}
-
 static void write_left_cell(const char *text, size_t width) {
     size_t length = rt_strlen(text);
     (void)rt_write_cstr(1, text);
     if (length < width) {
-        write_padding(width - length);
+        tool_write_padding(1, width - length);
     }
     (void)rt_write_char(1, ' ');
 }
@@ -210,7 +203,7 @@ static void write_left_cell(const char *text, size_t width) {
 static void write_right_cell(const char *text, size_t width) {
     size_t length = rt_strlen(text);
     if (length < width) {
-        write_padding(width - length);
+        tool_write_padding(1, width - length);
     }
     (void)rt_write_cstr(1, text);
     (void)rt_write_char(1, ' ');

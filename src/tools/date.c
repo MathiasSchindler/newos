@@ -55,24 +55,6 @@ static void skip_spaces(const char *text, size_t *index_io) {
     }
 }
 
-static int parse_fixed_digits(const char *text, size_t start, size_t digits, unsigned int *value_out) {
-    unsigned long long value = 0ULL;
-    size_t i;
-
-    if (text == 0 || value_out == 0) {
-        return -1;
-    }
-    for (i = 0; i < digits; ++i) {
-        char ch = text[start + i];
-        if (ch < '0' || ch > '9') {
-            return -1;
-        }
-        value = value * 10ULL + (unsigned long long)(ch - '0');
-    }
-    *value_out = (unsigned int)value;
-    return 0;
-}
-
 static int parse_unsigned_at(const char *text, size_t *index_io, unsigned long long *value_out) {
     size_t index = *index_io;
     unsigned long long value = 0ULL;
@@ -148,43 +130,6 @@ static int checked_add_seconds(long long *epoch_io, long long delta) {
     return 0;
 }
 
-static int parse_numeric_timezone_offset(const char *text, size_t *index_io, int *offset_seconds_out) {
-    size_t index = *index_io;
-    int sign = 1;
-    unsigned int hour = 0U;
-    unsigned int minute = 0U;
-
-    if (text[index] != '+' && text[index] != '-') {
-        return -1;
-    }
-    if (text[index] == '-') {
-        sign = -1;
-    }
-    index += 1U;
-    if (parse_fixed_digits(text, index, 2U, &hour) != 0) {
-        return -1;
-    }
-    index += 2U;
-    if (text[index] == ':') {
-        index += 1U;
-        if (parse_fixed_digits(text, index, 2U, &minute) != 0) {
-            return -1;
-        }
-        index += 2U;
-    } else if (text[index] >= '0' && text[index] <= '9') {
-        if (parse_fixed_digits(text, index, 2U, &minute) != 0) {
-            return -1;
-        }
-        index += 2U;
-    }
-    if (hour > 23U || minute > 59U) {
-        return -1;
-    }
-    *offset_seconds_out = sign * (int)(hour * 3600U + minute * 60U);
-    *index_io = index;
-    return 0;
-}
-
 static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset_seconds_out) {
     size_t index = *index_io;
     size_t end;
@@ -198,7 +143,7 @@ static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset
     if (date_word_at(text, index, "utc", &end) || date_word_at(text, index, "gmt", &end)) {
         index = end;
         if (text[index] == '+' || text[index] == '-') {
-            if (parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+            if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
                 return -1;
             }
         } else {
@@ -208,7 +153,7 @@ static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset
         return 0;
     }
     if ((text[index] == '+' || text[index] == '-') && text[index + 1U] >= '0' && text[index + 1U] <= '9') {
-        if (parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+        if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
             return -1;
         }
         *index_io = index;
@@ -227,9 +172,9 @@ static int parse_calendar_value(const char *text, size_t *index_io, long long *e
     unsigned int second = 0U;
     int timezone_offset_seconds = 0;
 
-    if (parse_fixed_digits(text, index, 4U, &year) != 0 || text[index + 4U] != '-' ||
-        parse_fixed_digits(text, index + 5U, 2U, &month) != 0 || text[index + 7U] != '-' ||
-        parse_fixed_digits(text, index + 8U, 2U, &day) != 0) {
+    if (tool_parse_fixed_digits(text, index, 4U, &year) != 0 || text[index + 4U] != '-' ||
+        tool_parse_fixed_digits(text, index + 5U, 2U, &month) != 0 || text[index + 7U] != '-' ||
+        tool_parse_fixed_digits(text, index + 8U, 2U, &day) != 0) {
         return -1;
     }
     index += 10U;
@@ -239,13 +184,13 @@ static int parse_calendar_value(const char *text, size_t *index_io, long long *e
         } else {
             skip_spaces(text, &index);
         }
-        if (parse_fixed_digits(text, index, 2U, &hour) != 0 || text[index + 2U] != ':' || parse_fixed_digits(text, index + 3U, 2U, &minute) != 0) {
+        if (tool_parse_fixed_digits(text, index, 2U, &hour) != 0 || text[index + 2U] != ':' || tool_parse_fixed_digits(text, index + 3U, 2U, &minute) != 0) {
             return -1;
         }
         index += 5U;
         if (text[index] == ':') {
             index += 1U;
-            if (parse_fixed_digits(text, index, 2U, &second) != 0) {
+            if (tool_parse_fixed_digits(text, index, 2U, &second) != 0) {
                 return -1;
             }
             index += 2U;

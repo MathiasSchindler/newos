@@ -36,67 +36,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-acm] [-d DATETIME | -t STAMP | -r FILE] path ...");
 }
 
-static int parse_fixed_digits(const char *text, size_t start, size_t digits, unsigned int *value_out) {
-    unsigned long long value = 0;
-    size_t i;
-
-    if (text == 0 || value_out == 0) {
-        return -1;
-    }
-
-    for (i = 0; i < digits; ++i) {
-        char ch = text[start + i];
-        if (ch < '0' || ch > '9') {
-            return -1;
-        }
-        value = (value * 10ULL) + (unsigned long long)(ch - '0');
-    }
-
-    *value_out = (unsigned int)value;
-    return 0;
-}
-
-static int parse_numeric_timezone_offset(const char *text, size_t *index_io, int *offset_seconds_out) {
-    size_t index = *index_io;
-    int sign = 1;
-    unsigned int hour = 0U;
-    unsigned int minute = 0U;
-
-    if (text[index] != '+' && text[index] != '-') {
-        return -1;
-    }
-    if (text[index] == '-') {
-        sign = -1;
-    }
-    index += 1U;
-
-    if (parse_fixed_digits(text, index, 2U, &hour) != 0) {
-        return -1;
-    }
-    index += 2U;
-
-    if (text[index] == ':') {
-        index += 1U;
-        if (parse_fixed_digits(text, index, 2U, &minute) != 0) {
-            return -1;
-        }
-        index += 2U;
-    } else if (text[index] >= '0' && text[index] <= '9') {
-        if (parse_fixed_digits(text, index, 2U, &minute) != 0) {
-            return -1;
-        }
-        index += 2U;
-    }
-
-    if (hour > 23U || minute > 59U) {
-        return -1;
-    }
-
-    *offset_seconds_out = sign * (int)((hour * 3600U) + (minute * 60U));
-    *index_io = index;
-    return 0;
-}
-
 static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset_seconds_out) {
     size_t index = *index_io;
 
@@ -120,7 +59,7 @@ static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset
         touch_matches_zone_name(text, index, "gmt")) {
         index += 3U;
         if (text[index] == '+' || text[index] == '-') {
-            if (parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+            if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
                 return -1;
             }
         } else {
@@ -131,7 +70,7 @@ static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset
     }
 
     if (text[index] == '+' || text[index] == '-') {
-        if (parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+        if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
             return -1;
         }
         *index_io = index;
@@ -167,11 +106,11 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
 
     len = rt_strlen(text);
     if (len < 10U ||
-        parse_fixed_digits(text, 0U, 4U, &year) != 0 ||
+        tool_parse_fixed_digits(text, 0U, 4U, &year) != 0 ||
         text[4] != '-' ||
-        parse_fixed_digits(text, 5U, 2U, &month) != 0 ||
+        tool_parse_fixed_digits(text, 5U, 2U, &month) != 0 ||
         text[7] != '-' ||
-        parse_fixed_digits(text, 8U, 2U, &day) != 0) {
+        tool_parse_fixed_digits(text, 8U, 2U, &day) != 0) {
         return -1;
     }
 
@@ -190,15 +129,15 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
             }
         } else {
             if (len < offset + 5U ||
-                parse_fixed_digits(text, offset, 2U, &hour) != 0 ||
+                tool_parse_fixed_digits(text, offset, 2U, &hour) != 0 ||
                 text[offset + 2U] != ':' ||
-                parse_fixed_digits(text, offset + 3U, 2U, &minute) != 0) {
+                tool_parse_fixed_digits(text, offset + 3U, 2U, &minute) != 0) {
                 return -1;
             }
             offset += 5U;
             if (text[offset] == ':') {
                 offset += 1U;
-                if (parse_fixed_digits(text, offset, 2U, &second) != 0) {
+                if (tool_parse_fixed_digits(text, offset, 2U, &second) != 0) {
                     return -1;
                 }
                 offset += 2U;
@@ -271,35 +210,35 @@ static int parse_touch_stamp(const char *text, long long *epoch_out) {
     digits[digit_count] = '\0';
 
     if (text[input_index] == '.') {
-        if (parse_fixed_digits(text, input_index + 1U, 2U, &second) != 0 || text[input_index + 3U] != '\0') {
+        if (tool_parse_fixed_digits(text, input_index + 1U, 2U, &second) != 0 || text[input_index + 3U] != '\0') {
             return -1;
         }
     }
 
     if (digit_count == 12U) {
-        if (parse_fixed_digits(digits, 0U, 4U, &year) != 0 ||
-            parse_fixed_digits(digits, 4U, 2U, &month) != 0 ||
-            parse_fixed_digits(digits, 6U, 2U, &day) != 0 ||
-            parse_fixed_digits(digits, 8U, 2U, &hour) != 0 ||
-            parse_fixed_digits(digits, 10U, 2U, &minute) != 0) {
+        if (tool_parse_fixed_digits(digits, 0U, 4U, &year) != 0 ||
+            tool_parse_fixed_digits(digits, 4U, 2U, &month) != 0 ||
+            tool_parse_fixed_digits(digits, 6U, 2U, &day) != 0 ||
+            tool_parse_fixed_digits(digits, 8U, 2U, &hour) != 0 ||
+            tool_parse_fixed_digits(digits, 10U, 2U, &minute) != 0) {
             return -1;
         }
     } else if (digit_count == 10U) {
         unsigned int short_year;
-        if (parse_fixed_digits(digits, 0U, 2U, &short_year) != 0 ||
-            parse_fixed_digits(digits, 2U, 2U, &month) != 0 ||
-            parse_fixed_digits(digits, 4U, 2U, &day) != 0 ||
-            parse_fixed_digits(digits, 6U, 2U, &hour) != 0 ||
-            parse_fixed_digits(digits, 8U, 2U, &minute) != 0) {
+        if (tool_parse_fixed_digits(digits, 0U, 2U, &short_year) != 0 ||
+            tool_parse_fixed_digits(digits, 2U, 2U, &month) != 0 ||
+            tool_parse_fixed_digits(digits, 4U, 2U, &day) != 0 ||
+            tool_parse_fixed_digits(digits, 6U, 2U, &hour) != 0 ||
+            tool_parse_fixed_digits(digits, 8U, 2U, &minute) != 0) {
             return -1;
         }
         year = (short_year >= 69U) ? (1900U + short_year) : (2000U + short_year);
     } else if (digit_count == 8U) {
         year = (unsigned int)current_year();
-        if (parse_fixed_digits(digits, 0U, 2U, &month) != 0 ||
-            parse_fixed_digits(digits, 2U, 2U, &day) != 0 ||
-            parse_fixed_digits(digits, 4U, 2U, &hour) != 0 ||
-            parse_fixed_digits(digits, 6U, 2U, &minute) != 0) {
+        if (tool_parse_fixed_digits(digits, 0U, 2U, &month) != 0 ||
+            tool_parse_fixed_digits(digits, 2U, 2U, &day) != 0 ||
+            tool_parse_fixed_digits(digits, 4U, 2U, &hour) != 0 ||
+            tool_parse_fixed_digits(digits, 6U, 2U, &minute) != 0) {
             return -1;
         }
     } else {

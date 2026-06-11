@@ -19,6 +19,7 @@ int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool
 int tool_hex_value(char ch);
 int tool_base64_value(char ch);
 int tool_bytes_equal(const unsigned char *left, const unsigned char *right, size_t size);
+int tool_bytes_equal_text(const unsigned char *bytes, const char *text, size_t size);
 
 void tool_json_set_enabled(int enabled);
 int tool_json_is_enabled(void);
@@ -163,6 +164,9 @@ int  tool_opt_next(ToolOptState *s);
 int  tool_opt_require_value(ToolOptState *s);
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what);
 int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_name, const char *what);
+int tool_parse_size_value(const char *text, unsigned long long *value_out);
+int tool_parse_fixed_digits(const char *text, size_t start, size_t digits, unsigned int *value_out);
+int tool_parse_numeric_timezone_offset(const char *text, size_t *index_io, int *offset_seconds_out);
 int tool_parse_duration_ms(const char *text, unsigned long long *milliseconds_out);
 int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size, size_t *length_out);
 int tool_parse_signal_name(const char *text, int *signal_out);
@@ -219,6 +223,7 @@ int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io);
 int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size);
 int tool_discard_input_bytes(int fd, unsigned long long count);
 void tool_write_hex_value(int fd, unsigned long long value);
+void tool_write_padding(int fd, size_t count);
 unsigned int tool_pager_page_lines(unsigned int default_lines);
 int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch);
 int tool_buffer_append_text_checked(char *buffer, size_t buffer_size, size_t *length_io, const char *text);

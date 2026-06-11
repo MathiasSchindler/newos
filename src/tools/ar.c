@@ -27,18 +27,6 @@ static void ar_write_usage(void) {
     rt_write_line(2, "Usage: ar [rcstpxvq] archive [file ...]");
 }
 
-
-static int has_archive_magic(const char *buffer) {
-    return buffer[0] == '!' &&
-           buffer[1] == '<' &&
-           buffer[2] == 'a' &&
-           buffer[3] == 'r' &&
-           buffer[4] == 'c' &&
-           buffer[5] == 'h' &&
-           buffer[6] == '>' &&
-           buffer[7] == '\n';
-}
-
 static unsigned long long parse_decimal_field(const char *field, size_t field_size) {
     unsigned long long value = 0ULL;
     size_t i = 0U;
@@ -408,7 +396,7 @@ static int list_or_extract_archive(const char *archive_path, int mode, int verbo
         return 1;
     }
 
-    if (archive_read_exact(fd, (unsigned char *)magic, 8U) != 0 || !has_archive_magic(magic)) {
+    if (archive_read_exact(fd, (unsigned char *)magic, 8U) != 0 || !archive_has_ar_magic((const unsigned char *)magic, sizeof(magic))) {
         rt_write_cstr(2, "ar: invalid archive ");
         rt_write_line(2, archive_path);
         platform_close(fd);
@@ -515,7 +503,7 @@ static int create_or_replace_archive(const char *archive_path,
         char string_table[AR_STRING_TABLE_CAPACITY + 1U];
         size_t string_table_size = 0U;
 
-        if (archive_read_exact(existing_fd, (unsigned char *)magic, 8U) != 0 || !has_archive_magic(magic)) {
+        if (archive_read_exact(existing_fd, (unsigned char *)magic, 8U) != 0 || !archive_has_ar_magic((const unsigned char *)magic, sizeof(magic))) {
             rt_write_cstr(2, "ar: invalid archive ");
             rt_write_line(2, archive_path);
             platform_close(existing_fd);

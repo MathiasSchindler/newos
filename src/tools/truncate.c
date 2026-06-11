@@ -11,54 +11,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-c] [-o] -s SIZE file...");
 }
 
-static int parse_size_value(const char *text, unsigned long long *value_out) {
-    char digits[32];
-    size_t len = 0U;
-    unsigned long long value;
-    unsigned long long multiplier = 1ULL;
-    char suffix;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-
-    while (text[len] >= '0' && text[len] <= '9') {
-        if (len + 1U >= sizeof(digits)) {
-            return -1;
-        }
-        digits[len] = text[len];
-        len += 1U;
-    }
-
-    if (len == 0U) {
-        return -1;
-    }
-
-    digits[len] = '\0';
-    if (rt_parse_uint(digits, &value) != 0) {
-        return -1;
-    }
-
-    suffix = text[len];
-    if (suffix != '\0') {
-        if (text[len + 1U] != '\0') {
-            return -1;
-        }
-        if (suffix == 'k' || suffix == 'K') {
-            multiplier = 1024ULL;
-        } else if (suffix == 'm' || suffix == 'M') {
-            multiplier = 1024ULL * 1024ULL;
-        } else if (suffix == 'g' || suffix == 'G') {
-            multiplier = 1024ULL * 1024ULL * 1024ULL;
-        } else {
-            return -1;
-        }
-    }
-
-    *value_out = value * multiplier;
-    return 0;
-}
-
 static int parse_size_spec(const char *text, SizeSpec *spec, int io_blocks) {
     spec->mode = '=';
 
@@ -71,7 +23,7 @@ static int parse_size_spec(const char *text, SizeSpec *spec, int io_blocks) {
         text += 1;
     }
 
-    if (parse_size_value(text, &spec->value) != 0) {
+    if (tool_parse_size_value(text, &spec->value) != 0) {
         return -1;
     }
 

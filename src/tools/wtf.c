@@ -447,13 +447,6 @@ static int json_match_key(const char *json, size_t pos, const char *key) {
     return json[pos + index] == '"';
 }
 
-static int hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') return (int)(ch - '0');
-    if (ch >= 'a' && ch <= 'f') return 10 + (int)(ch - 'a');
-    if (ch >= 'A' && ch <= 'F') return 10 + (int)(ch - 'A');
-    return -1;
-}
-
 static int append_json_codepoint(char *out, size_t out_size, size_t *out_pos, unsigned int codepoint) {
     char encoded[4];
     size_t encoded_size = 0U;
@@ -509,13 +502,13 @@ static int json_copy_string(const char *json, size_t start, char *out, size_t ou
                 int d;
                 unsigned int codepoint;
                 if (json[pos] == '\0') return json_copy_fail(out);
-                a = hex_value(json[pos++]);
+                a = tool_hex_value(json[pos++]);
                 if (json[pos] == '\0') return json_copy_fail(out);
-                b = hex_value(json[pos++]);
+                b = tool_hex_value(json[pos++]);
                 if (json[pos] == '\0') return json_copy_fail(out);
-                c = hex_value(json[pos++]);
+                c = tool_hex_value(json[pos++]);
                 if (json[pos] == '\0') return json_copy_fail(out);
-                d = hex_value(json[pos++]);
+                d = tool_hex_value(json[pos++]);
                 if (a < 0 || b < 0 || c < 0 || d < 0) return json_copy_fail(out);
                 codepoint = ((unsigned int)a << 12U) | ((unsigned int)b << 8U) | ((unsigned int)c << 4U) | (unsigned int)d;
                 if (append_json_codepoint(out, out_size, &out_pos, codepoint) != 0) return json_copy_fail(out);

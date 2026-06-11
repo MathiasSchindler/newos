@@ -36,6 +36,11 @@ int archive_read_region(int fd, unsigned long long base, unsigned long long offs
     return archive_read_file_region(fd, base + offset, buffer, count);
 }
 
+int archive_has_ar_magic(const unsigned char *buffer, unsigned long long size) {
+    static const unsigned char magic[] = { '!', '<', 'a', 'r', 'c', 'h', '>', '\n' };
+    return size >= sizeof(magic) && tool_bytes_equal(buffer, magic, sizeof(magic));
+}
+
 unsigned short archive_read_u16_le(const unsigned char *bytes) {
     return tool_read_u16_le(bytes);
 }

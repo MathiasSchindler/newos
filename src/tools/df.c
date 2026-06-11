@@ -27,17 +27,12 @@ typedef struct {
 #define DF_ROW_CAPACITY 64
 #define DF_SCAN_CAPACITY 128
 
-static void write_padding(size_t current_width, size_t desired_width) {
-    while (current_width < desired_width) {
-        rt_write_char(1, ' ');
-        current_width += 1U;
-    }
-}
-
 static void write_text_cell(const char *text, size_t width) {
     size_t length = rt_strlen(text);
     rt_write_cstr(1, text);
-    write_padding(length, width);
+    if (length < width) {
+        tool_write_padding(1, width - length);
+    }
     rt_write_char(1, ' ');
 }
 

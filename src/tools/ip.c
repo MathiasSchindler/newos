@@ -109,13 +109,6 @@ static void write_link_header(size_t ordinal, const PlatformNetworkLink *link) {
     rt_write_char(1, '\n');
 }
 
-static void write_padding(size_t width, size_t used) {
-    while (used < width) {
-        rt_write_char(1, ' ');
-        used += 1U;
-    }
-}
-
 static int append_text(char *buffer, size_t buffer_size, const char *text) {
     size_t used = rt_strlen(buffer);
     size_t length = rt_strlen(text);
@@ -156,9 +149,9 @@ static void write_brief_link_line(const PlatformNetworkLink *link) {
     size_t state_length = rt_strlen(state);
 
     rt_write_cstr(1, link->name);
-    write_padding(16U, name_length);
+    if (name_length < 16U) tool_write_padding(1, 16U - name_length);
     rt_write_cstr(1, state);
-    write_padding(10U, state_length);
+    if (state_length < 10U) tool_write_padding(1, 10U - state_length);
     rt_write_cstr(1, "mtu ");
     rt_write_uint(1, (unsigned long long)link->mtu);
     if ((link->flags & PLATFORM_NETWORK_FLAG_LOOPBACK) != 0U) {
@@ -234,9 +227,9 @@ static void write_brief_addresses_for_link(
     int wrote_any = 0;
 
     rt_write_cstr(1, link->name);
-    write_padding(16U, name_length);
+    if (name_length < 16U) tool_write_padding(1, 16U - name_length);
     rt_write_cstr(1, state);
-    write_padding(10U, state_length);
+    if (state_length < 10U) tool_write_padding(1, 10U - state_length);
 
     for (j = 0U; j < address_count; ++j) {
         if (rt_strcmp(addresses[j].ifname, link->name) != 0) {

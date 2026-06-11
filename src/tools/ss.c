@@ -34,13 +34,6 @@ static int write_json_socket(const PlatformSocketEntry *socket) {
     return tool_json_end_event(1);
 }
 
-static void write_padding(size_t width, size_t used) {
-    while (used < width) {
-        rt_write_char(1, ' ');
-        used += 1U;
-    }
-}
-
 int main(int argc, char **argv) {
     PlatformSocketEntry sockets[SS_MAX_SOCKETS];
     size_t count = 0U;
@@ -88,21 +81,21 @@ int main(int argc, char **argv) {
             continue;
         }
         rt_write_cstr(1, sockets[i].protocol);
-        write_padding(6U, rt_strlen(sockets[i].protocol));
+        if (rt_strlen(sockets[i].protocol) < 6U) tool_write_padding(1, 6U - rt_strlen(sockets[i].protocol));
         rt_write_cstr(1, sockets[i].state);
-        write_padding(11U, rt_strlen(sockets[i].state));
+        if (rt_strlen(sockets[i].state) < 11U) tool_write_padding(1, 11U - rt_strlen(sockets[i].state));
         used = rt_strlen(sockets[i].local_address) + 1U;
         rt_write_cstr(1, sockets[i].local_address);
         rt_write_char(1, ':');
         rt_write_uint(1, sockets[i].local_port);
         used += sockets[i].local_port >= 10000U ? 5U : sockets[i].local_port >= 1000U ? 4U : sockets[i].local_port >= 100U ? 3U : sockets[i].local_port >= 10U ? 2U : 1U;
-        write_padding(26U, used);
+        if (used < 26U) tool_write_padding(1, 26U - used);
         used = rt_strlen(sockets[i].remote_address) + 1U;
         rt_write_cstr(1, sockets[i].remote_address);
         rt_write_char(1, ':');
         rt_write_uint(1, sockets[i].remote_port);
         used += sockets[i].remote_port >= 10000U ? 5U : sockets[i].remote_port >= 1000U ? 4U : sockets[i].remote_port >= 100U ? 3U : sockets[i].remote_port >= 10U ? 2U : 1U;
-        write_padding(26U, used);
+        if (used < 26U) tool_write_padding(1, 26U - used);
         rt_write_uint(1, sockets[i].inode);
         rt_write_char(1, '\n');
     }

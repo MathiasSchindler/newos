@@ -147,13 +147,6 @@ static void write_name_text(const char *text, int replace_nonprintable) {
     }
 }
 
-static void write_padding(size_t current_width, size_t desired_width) {
-    while (current_width < desired_width) {
-        rt_write_char(1, ' ');
-        current_width += 1U;
-    }
-}
-
 static unsigned long long ls_entry_blocks(const PlatformDirEntry *entry) {
     if (entry->size == 0ULL) {
         return 0ULL;
@@ -282,7 +275,10 @@ static int entry_color_style(const PlatformDirEntry *entry, const LsOptions *opt
 }
 
 static void print_numeric_prefix(unsigned long long value, size_t width) {
-    write_padding(tool_count_decimal_digits(value), width);
+    size_t digits = tool_count_decimal_digits(value);
+    if (digits < width) {
+        tool_write_padding(1, width - digits);
+    }
     rt_write_uint(1, value);
     rt_write_char(1, ' ');
 }
@@ -341,18 +337,26 @@ static void print_long_entry(const PlatformDirEntry *entry, const char *full_pat
     print_entry_prefix(entry, options, layout);
     rt_write_cstr(1, mode_buffer);
     rt_write_char(1, ' ');
-    write_padding(tool_count_decimal_digits((unsigned long long)entry->nlink), layout->link_width);
+    if (tool_count_decimal_digits((unsigned long long)entry->nlink) < layout->link_width) {
+        tool_write_padding(1, layout->link_width - tool_count_decimal_digits((unsigned long long)entry->nlink));
+    }
     rt_write_uint(1, (unsigned long long)entry->nlink);
     rt_write_char(1, ' ');
     rt_write_cstr(1, owner_buffer);
-    write_padding(rt_strlen(owner_buffer), layout->owner_width);
+    if (rt_strlen(owner_buffer) < layout->owner_width) {
+        tool_write_padding(1, layout->owner_width - rt_strlen(owner_buffer));
+    }
     rt_write_char(1, ' ');
     if (!options->omit_group) {
         rt_write_cstr(1, group_buffer);
-        write_padding(rt_strlen(group_buffer), layout->group_width);
+        if (rt_strlen(group_buffer) < layout->group_width) {
+            tool_write_padding(1, layout->group_width - rt_strlen(group_buffer));
+        }
         rt_write_char(1, ' ');
     }
-    write_padding(rt_strlen(size_buffer), layout->size_width);
+    if (rt_strlen(size_buffer) < layout->size_width) {
+        tool_write_padding(1, layout->size_width - rt_strlen(size_buffer));
+    }
     rt_write_cstr(1, size_buffer);
     rt_write_char(1, ' ');
     rt_write_cstr(1, time_buffer);

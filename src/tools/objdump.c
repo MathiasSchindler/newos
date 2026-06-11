@@ -182,10 +182,6 @@ static const char *section_type_name(unsigned int type) {
     return "OTHER";
 }
 
-static void write_hex_value(unsigned long long value) {
-    tool_write_hex_value(1, value);
-}
-
 static void write_hex_byte(unsigned char value) {
     static const char digits[] = "0123456789abcdef";
     rt_write_char(1, digits[(value >> 4) & 0x0fU]);
@@ -358,7 +354,7 @@ static void print_file_header(const char *path, const ElfHeaderInfo *header) {
     rt_write_cstr(1, ", type: ");
     rt_write_line(1, type_name(header->type));
     rt_write_cstr(1, "start address ");
-    write_hex_value(header->entry);
+    tool_write_hex_value(1, header->entry);
     rt_write_char(1, '\n');
 }
 
@@ -373,7 +369,7 @@ static void print_macho_file_header(const char *path, const MachHeaderInfo *head
     rt_write_cstr(1, "load commands: ");
     rt_write_uint(1, (unsigned long long)header->ncmds);
     rt_write_cstr(1, ", flags: ");
-    write_hex_value((unsigned long long)header->flags);
+    tool_write_hex_value(1, (unsigned long long)header->flags);
     rt_write_char(1, '\n');
 }
 
@@ -393,14 +389,14 @@ static void print_pe_file_header(const char *path, const PeHeaderInfo *header) {
         rt_write_line(1, pe_subsystem_name(header->subsystem));
     }
     rt_write_cstr(1, "start address ");
-    write_hex_value(header->entry);
+    tool_write_hex_value(1, header->entry);
     rt_write_cstr(1, ", image base ");
-    write_hex_value(header->image_base);
+    tool_write_hex_value(1, header->image_base);
     rt_write_char(1, '\n');
     rt_write_cstr(1, "timestamp: ");
     rt_write_uint(1, (unsigned long long)header->timestamp);
     rt_write_cstr(1, ", characteristics: ");
-    write_hex_value((unsigned long long)header->characteristics);
+    tool_write_hex_value(1, (unsigned long long)header->characteristics);
     rt_write_char(1, '\n');
 }
 
@@ -467,11 +463,11 @@ static void print_section_table(const ElfHeaderInfo *header, const ElfSectionInf
         rt_write_cstr(1, " ");
         rt_write_cstr(1, section_type_name(sections[i].type));
         rt_write_cstr(1, " addr=");
-        write_hex_value(sections[i].addr);
+        tool_write_hex_value(1, sections[i].addr);
         rt_write_cstr(1, " off=");
-        write_hex_value(sections[i].offset);
+        tool_write_hex_value(1, sections[i].offset);
         rt_write_cstr(1, " size=");
-        write_hex_value(sections[i].size);
+        tool_write_hex_value(1, sections[i].size);
         rt_write_char(1, '\n');
     }
 }
@@ -488,15 +484,15 @@ static void print_macho_section_table(const MachSectionInfo *sections, unsigned 
         rt_write_cstr(1, ",");
         rt_write_cstr(1, sections[i].section);
         rt_write_cstr(1, " addr=");
-        write_hex_value(sections[i].addr);
+        tool_write_hex_value(1, sections[i].addr);
         rt_write_cstr(1, " off=");
-        write_hex_value((unsigned long long)sections[i].offset);
+        tool_write_hex_value(1, (unsigned long long)sections[i].offset);
         rt_write_cstr(1, " size=");
-        write_hex_value(sections[i].size);
+        tool_write_hex_value(1, sections[i].size);
         rt_write_cstr(1, " type=");
         rt_write_cstr(1, macho_section_type_name(sections[i].flags & 0xffU));
         rt_write_cstr(1, " flags=");
-        write_hex_value((unsigned long long)sections[i].flags);
+        tool_write_hex_value(1, (unsigned long long)sections[i].flags);
         rt_write_char(1, '\n');
     }
 }
@@ -511,15 +507,15 @@ static void print_pe_section_table(const PeHeaderInfo *header, const PeSectionIn
         rt_write_cstr(1, " ");
         rt_write_cstr(1, sections[i].name);
         rt_write_cstr(1, " vaddr=");
-        write_hex_value((unsigned long long)sections[i].virtual_address);
+        tool_write_hex_value(1, (unsigned long long)sections[i].virtual_address);
         rt_write_cstr(1, " vsize=");
-        write_hex_value((unsigned long long)sections[i].virtual_size);
+        tool_write_hex_value(1, (unsigned long long)sections[i].virtual_size);
         rt_write_cstr(1, " off=");
-        write_hex_value((unsigned long long)sections[i].raw_offset);
+        tool_write_hex_value(1, (unsigned long long)sections[i].raw_offset);
         rt_write_cstr(1, " size=");
-        write_hex_value((unsigned long long)sections[i].raw_size);
+        tool_write_hex_value(1, (unsigned long long)sections[i].raw_size);
         rt_write_cstr(1, " flags=");
-        write_hex_value((unsigned long long)sections[i].characteristics);
+        tool_write_hex_value(1, (unsigned long long)sections[i].characteristics);
         rt_write_char(1, '\n');
     }
 }
@@ -544,7 +540,7 @@ static void dump_bytes_range(int fd, const char *name, unsigned long long offset
             break;
         }
 
-        write_hex_value(display_addr);
+        tool_write_hex_value(1, display_addr);
         rt_write_cstr(1, " ");
         for (i = 0U; i < 16U; ++i) {
             if (i < chunk) {
@@ -603,7 +599,7 @@ static void print_symbols(int fd, const ElfHeaderInfo *header, const ElfSectionI
                 }
                 st_name = tool_read_u32_le(entry + 0);
                 st_value = tool_read_u64_le(entry + 8);
-                write_hex_value(st_value);
+                tool_write_hex_value(1, st_value);
                 rt_write_cstr(1, " ");
                 rt_write_line(1, name_from_table(strings, string_size, st_name));
             }
@@ -646,9 +642,9 @@ static void print_macho_symbols(int fd, const MachSymtabInfo *symtab) {
         sect = (unsigned int)entry[5];
         value = tool_read_u64_le(entry + 8);
         name = name_from_table(strings, string_size, strx);
-        write_hex_value(value);
+        tool_write_hex_value(1, value);
         rt_write_cstr(1, " type=");
-        write_hex_value((unsigned long long)type);
+        tool_write_hex_value(1, (unsigned long long)type);
         rt_write_cstr(1, " sect=");
         rt_write_uint(1, (unsigned long long)sect);
         rt_write_char(1, ' ');
@@ -751,7 +747,7 @@ static void print_macho_relocations(int fd, const MachSectionInfo *sections, uns
             length = (info >> 25U) & 3U;
             external = (info >> 27U) & 1U;
             type = (info >> 28U) & 0x0fU;
-            write_hex_value((unsigned long long)address);
+            tool_write_hex_value(1, (unsigned long long)address);
             rt_write_cstr(1, " ");
             rt_write_cstr(1, macho_arm64_relocation_name(type));
             rt_write_cstr(1, " length=");

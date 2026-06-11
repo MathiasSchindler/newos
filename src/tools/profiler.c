@@ -76,23 +76,6 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  0000000000401000 T function_name\n");
 }
 
-
-static int hex_value(char ch, unsigned int *value_out) {
-    if (ch >= '0' && ch <= '9') {
-        *value_out = (unsigned int)(ch - '0');
-        return 0;
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        *value_out = (unsigned int)(ch - 'a') + 10U;
-        return 0;
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        *value_out = (unsigned int)(ch - 'A') + 10U;
-        return 0;
-    }
-    return -1;
-}
-
 static int parse_unsigned_auto(const char *text, unsigned long long *value_out) {
     unsigned long long value = 0ULL;
     size_t i = 0U;
@@ -107,10 +90,11 @@ static int parse_unsigned_auto(const char *text, unsigned long long *value_out) 
         i = 2U;
     }
     for (; text[i] != '\0'; ++i) {
-        unsigned int digit;
+        int digit;
 
         if (is_hex) {
-            if (hex_value(text[i], &digit) != 0) {
+            digit = tool_hex_value(text[i]);
+            if (digit < 0) {
                 return -1;
             }
             value = (value << 4U) | (unsigned long long)digit;
@@ -140,9 +124,9 @@ static int parse_address_token(const char *text, unsigned long long *value_out) 
         return parse_unsigned_auto(text, value_out);
     }
     for (i = 0U; text[i] != '\0'; ++i) {
-        unsigned int digit;
+        int digit = tool_hex_value(text[i]);
 
-        if (hex_value(text[i], &digit) != 0) {
+        if (digit < 0) {
             return -1;
         }
         if ((text[i] >= 'a' && text[i] <= 'f') || (text[i] >= 'A' && text[i] <= 'F')) {
@@ -154,8 +138,8 @@ static int parse_address_token(const char *text, unsigned long long *value_out) 
     }
     *value_out = 0ULL;
     for (i = 0U; text[i] != '\0'; ++i) {
-        unsigned int digit;
-        if (hex_value(text[i], &digit) != 0) {
+        int digit = tool_hex_value(text[i]);
+        if (digit < 0) {
             return -1;
         }
         *value_out = (*value_out << 4U) | (unsigned long long)digit;

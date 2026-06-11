@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 #if defined(NEWOS_TOOL_DEFAULT_COLOR_NEVER) && NEWOS_TOOL_DEFAULT_COLOR_NEVER
 static int tool_global_color_mode = TOOL_COLOR_NEVER;
 #else
@@ -267,6 +269,23 @@ int tool_bytes_equal(const unsigned char *left, const unsigned char *right, size
     }
     for (index = 0U; index < size; ++index) {
         if (left[index] != right[index]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int tool_bytes_equal_text(const unsigned char *bytes, const char *text, size_t size) {
+    size_t index;
+
+    if (size == 0U) {
+        return 1;
+    }
+    if (bytes == 0 || text == 0) {
+        return 0;
+    }
+    for (index = 0U; index < size; ++index) {
+        if (bytes[index] != (unsigned char)text[index]) {
             return 0;
         }
     }
@@ -565,6 +584,13 @@ void tool_write_hex_value(int fd, unsigned long long value) {
     }
 }
 
+void tool_write_padding(int fd, size_t count) {
+    while (count > 0U) {
+        (void)rt_write_char(fd, ' ');
+        count -= 1U;
+    }
+}
+
 unsigned int tool_pager_page_lines(unsigned int default_lines) {
     const char *text = platform_getenv("LINES");
     unsigned long long value = 0;
@@ -647,6 +673,111 @@ int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_
     }
 
     *value_out = negative ? -(long long)magnitude : (long long)magnitude;
+    return 0;
+}
+
+int tool_parse_size_value(const char *text, unsigned long long *value_out) {
+    char digits[32];
+    size_t len = 0U;
+    unsigned long long value;
+    unsigned long long multiplier = 1ULL;
+    char suffix;
+
+    if (text == 0 || text[0] == '\0' || value_out == 0) {
+        return -1;
+    }
+    while (text[len] >= '0' && text[len] <= '9') {
+        if (len + 1U >= sizeof(digits)) {
+            return -1;
+        }
+        digits[len] = text[len];
+        len += 1U;
+    }
+    if (len == 0U) {
+        return -1;
+    }
+    digits[len] = '\0';
+    if (rt_parse_uint(digits, &value) != 0) {
+        return -1;
+    }
+    suffix = text[len];
+    if (suffix != '\0') {
+        if (text[len + 1U] != '\0') {
+            return -1;
+        }
+        if (suffix == 'k' || suffix == 'K') {
+            multiplier = 1024ULL;
+        } else if (suffix == 'm' || suffix == 'M') {
+            multiplier = 1024ULL * 1024ULL;
+        } else if (suffix == 'g' || suffix == 'G') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL;
+        } else {
+            return -1;
+        }
+    }
+    if (value > ULLONG_MAX / multiplier) {
+        return -1;
+    }
+    *value_out = value * multiplier;
+    return 0;
+}
+
+int tool_parse_fixed_digits(const char *text, size_t start, size_t digits, unsigned int *value_out) {
+    unsigned long long value = 0ULL;
+    size_t i;
+
+    if (text == 0 || value_out == 0) {
+        return -1;
+    }
+    for (i = 0U; i < digits; ++i) {
+        char ch = text[start + i];
+        if (ch < '0' || ch > '9') {
+            return -1;
+        }
+        value = value * 10ULL + (unsigned long long)(ch - '0');
+    }
+    *value_out = (unsigned int)value;
+    return 0;
+}
+
+int tool_parse_numeric_timezone_offset(const char *text, size_t *index_io, int *offset_seconds_out) {
+    size_t index;
+    int sign = 1;
+    unsigned int hour = 0U;
+    unsigned int minute = 0U;
+
+    if (text == 0 || index_io == 0 || offset_seconds_out == 0) {
+        return -1;
+    }
+    index = *index_io;
+    if (text[index] != '+' && text[index] != '-') {
+        return -1;
+    }
+    if (text[index] == '-') {
+        sign = -1;
+    }
+    index += 1U;
+    if (tool_parse_fixed_digits(text, index, 2U, &hour) != 0) {
+        return -1;
+    }
+    index += 2U;
+    if (text[index] == ':') {
+        index += 1U;
+        if (tool_parse_fixed_digits(text, index, 2U, &minute) != 0) {
+            return -1;
+        }
+        index += 2U;
+    } else if (text[index] >= '0' && text[index] <= '9') {
+        if (tool_parse_fixed_digits(text, index, 2U, &minute) != 0) {
+            return -1;
+        }
+        index += 2U;
+    }
+    if (hour > 23U || minute > 59U) {
+        return -1;
+    }
+    *offset_seconds_out = sign * (int)(hour * 3600U + minute * 60U);
+    *index_io = index;
     return 0;
 }
 
