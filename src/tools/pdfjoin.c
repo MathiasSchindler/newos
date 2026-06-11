@@ -68,10 +68,6 @@ static int is_metadata_option(const char *option) {
     return rt_strcmp(option, "--title") == 0 || rt_strcmp(option, "--author") == 0 || rt_strcmp(option, "--subject") == 0 || rt_strcmp(option, "--keywords") == 0 || rt_strcmp(option, "--creator") == 0 || rt_strcmp(option, "--producer") == 0;
 }
 
-static int has_metadata_overrides(const PdfJoinMetadataOverrides *overrides) {
-    return overrides->title || overrides->author || overrides->subject || overrides->keywords || overrides->creator || overrides->producer;
-}
-
 static void apply_metadata_overrides(PdfDocumentInfo *metadata, const PdfJoinMetadataOverrides *overrides) {
     if (overrides->title) rt_copy_string(metadata->title, sizeof(metadata->title), overrides->title_value);
     if (overrides->author) rt_copy_string(metadata->author, sizeof(metadata->author), overrides->author_value);
@@ -132,7 +128,7 @@ int main(int argc, char **argv) {
             break;
         }
     }
-    if (no_metadata && has_metadata_overrides(&overrides)) {
+    if (no_metadata && (overrides.title || overrides.author || overrides.subject || overrides.keywords || overrides.creator || overrides.producer)) {
         tool_write_error("pdfjoin", "--no-metadata cannot be combined with metadata overrides", 0);
         print_usage();
         return 2;

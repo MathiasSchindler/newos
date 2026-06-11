@@ -104,9 +104,7 @@ static int prepend_default_created_action(const char **actions, unsigned int *ac
 
 
 static void buf_init(ByteBuffer *buf) {
-    buf->data = 0;
-    buf->size = 0U;
-    buf->capacity = 0U;
+    rt_memset(buf, 0, sizeof(*buf));
 }
 
 static void buf_free(ByteBuffer *buf) {

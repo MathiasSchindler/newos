@@ -92,11 +92,6 @@ static int write_visible_char(unsigned char ch, const CatOptions *options) {
     return rt_write_char(1, (char)ch);
 }
 
-static int cat_needs_transform(const CatOptions *options) {
-    return options->number_all || options->number_nonblank || options->squeeze_blank ||
-           options->show_nonprinting || options->show_tabs || options->show_ends;
-}
-
 static int cat_copy_raw_fd(int fd) {
     char buffer[CAT_BUFFER_SIZE];
 
@@ -171,7 +166,10 @@ static int cat_transform_fd(int fd, const CatOptions *options, CatState *state) 
 }
 
 static int cat_from_fd(int fd, const CatOptions *options, CatState *state) {
-    if (!cat_needs_transform(options)) {
+    int needs_transform = options->number_all || options->number_nonblank || options->squeeze_blank ||
+                          options->show_nonprinting || options->show_tabs || options->show_ends;
+
+    if (!needs_transform) {
         return cat_copy_raw_fd(fd);
     }
     return cat_transform_fd(fd, options, state);

@@ -89,9 +89,7 @@ static void trim_ascii(char *text) {
 }
 
 static void buffer_init(WtfBuffer *buffer) {
-    buffer->data = 0;
-    buffer->size = 0U;
-    buffer->capacity = 0U;
+    rt_memset(buffer, 0, sizeof(*buffer));
 }
 
 static void buffer_free(WtfBuffer *buffer) {

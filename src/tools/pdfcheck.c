@@ -84,9 +84,7 @@ typedef struct {
 } CheckMessageList;
 
 static void message_list_init(CheckMessageList *list) {
-    list->items = 0;
-    list->len = 0U;
-    list->cap = 0U;
+    rt_memset(list, 0, sizeof(*list));
 }
 
 static void message_list_free(CheckMessageList *list) {
