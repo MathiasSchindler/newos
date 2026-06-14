@@ -174,6 +174,12 @@
     X("src/shared/hash_util.c") \
     FOREACH_CRYPTO_SOURCE(X)
 
+/* ── OpenPGP packet/key helpers ─────────────────────────────────────────── */
+
+#define FOREACH_PGP_SOURCE(X) \
+    X("src/shared/pgp.c") \
+    X("src/shared/crypto/sha1.c")
+
 /* ── shell (sh) private implementation ──────────────────────────────────── */
 
 #define FOREACH_SHELL_SOURCE(X) \

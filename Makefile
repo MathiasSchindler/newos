@@ -117,12 +117,13 @@ DEFAULT_ALL_TARGETS := host
 ifeq ($(LOCAL_PLATFORM_ONLY),0)
 DEFAULT_ALL_TARGETS += freestanding
 endif
-TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown chgrp mknod uname hostname init getty login dmesg logger stty touch gzip gunzip bzip2 bunzip2 xz unxz tar cpio base64 md5sum sha1sum sha256sum sha512sum sleep env kill pgrep pkill shutdown wc head tail ps top sort cut tr grep ripgrep rg ping ping6 ip ss host id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar nm size readelf readapk objdump strip strace linker expack printf which readlink stat du df tree netcat portscan dhcp nslookup dig ssh scp sshd traceroute whois lsof lsusb sql jq ncc man test [ true false expr uniq seq mktemp yes less more watch wget wtf mail editor patch make tac nl paste join comm split csplit shuf fold fmt tsort sync truncate timeout time profiler expand unexpand printenv ed bc pstree free uptime who users groups column rev httpd service imginfo imgcheck imgmeta c2pa pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
+TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown chgrp mknod uname hostname init getty login dmesg logger stty touch gzip gunzip bzip2 bunzip2 xz unxz tar cpio base64 md5sum sha1sum sha256sum sha512sum sleep env kill pgrep pkill shutdown wc head tail ps top sort cut tr grep ripgrep rg ping ping6 ip ss host id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar nm size readelf readapk objdump strip strace linker expack printf which readlink stat du df tree netcat portscan dhcp nslookup dig ssh scp sshd traceroute whois lsof lsusb sql jq ncc man test [ true false expr uniq seq mktemp yes less more watch wget wtf mail editor patch make tac nl paste join comm split csplit shuf fold fmt tsort sync truncate timeout time profiler expand unexpand printenv ed bc pstree free uptime who users groups column rev httpd service imginfo imgcheck imgmeta c2pa pgpkey pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
 INCEPTION_TOOLS ?= $(TOOLS)
 WINDOWS_FREESTANDING_TOOLS ?= $(TOOLS)
 WINDOWS_FREESTANDING_BIGNUM_TOOLS := bc expr seq
 WINDOWS_FREESTANDING_HASH_TOOLS := md5sum sha1sum sha256sum sha512sum
 WINDOWS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
+WINDOWS_FREESTANDING_PGP_TOOLS := pgpkey
 WINDOWS_FREESTANDING_PDF_TOOLS := pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck
 WINDOWS_FREESTANDING_REGEX_TOOLS := grep ripgrep sed csplit ed
 WINDOWS_FREESTANDING_ARCHIVE_TOOLS := ar readelf readapk objdump strip expack gzip gunzip bzip2 bunzip2 xz unxz tar
@@ -140,11 +141,12 @@ WINDOWS_FREESTANDING_SSH_TOOLS := ssh
 WINDOWS_FREESTANDING_SSHD_TOOLS := sshd
 WINDOWS_FREESTANDING_USB_TOOLS := lsusb
 WINDOWS_FREESTANDING_ALIAS_TOOLS := ping6 rg
-MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test [ nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od base64 md5sum sha1sum sha256sum sha512sum dd touch truncate sync bc split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout profiler watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf awk gzip gunzip bzip2 bunzip2 xz unxz tar cpio ar nm size readelf readapk objdump strip strace expack imgmeta imginfo imgcheck c2pa pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo wget sql jq man pstree ncc tree netcat portscan nslookup dig host ssh scp sshd traceroute whois lsof lsusb httpd ip ss ping ping6 sh mail editor make dhcp dmesg getty init login mknod mount rg ripgrep service shutdown top umount uptime users who
+MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test [ nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od base64 md5sum sha1sum sha256sum sha512sum dd touch truncate sync bc split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout profiler watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf awk gzip gunzip bzip2 bunzip2 xz unxz tar cpio ar nm size readelf readapk objdump strip strace expack imgmeta imginfo imgcheck c2pa pgpkey pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo wget sql jq man pstree ncc tree netcat portscan nslookup dig host ssh scp sshd traceroute whois lsof lsusb httpd ip ss ping ping6 sh mail editor make dhcp dmesg getty init login mknod mount rg ripgrep service shutdown top umount uptime users who
 MACOS_FREESTANDING_HASH_TOOLS := md5sum sha1sum sha256sum sha512sum
 MACOS_FREESTANDING_TLS_TOOLS := wtf wget portscan
 MACOS_FREESTANDING_AWK_TOOLS := awk
 MACOS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
+MACOS_FREESTANDING_PGP_TOOLS := pgpkey
 MACOS_FREESTANDING_PDF_TOOLS := pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck
 MACOS_FREESTANDING_ARCHIVE_TOOLS := gzip gunzip bzip2 bunzip2 xz unxz tar ar nm size readelf readapk objdump strip expack
 MACOS_FREESTANDING_XML_TOOLS := xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
@@ -160,7 +162,7 @@ MACOS_FREESTANDING_MAKE_TOOLS := make
 MACOS_FREESTANDING_SERVICE_TOOLS := service
 MACOS_FREESTANDING_USB_TOOLS := lsusb
 MACOS_FREESTANDING_ALIAS_TOOLS := rg
-MACOS_FREESTANDING_GENERIC_TOOLS := $(filter-out $(MACOS_FREESTANDING_HASH_TOOLS) $(MACOS_FREESTANDING_TLS_TOOLS) $(MACOS_FREESTANDING_AWK_TOOLS) $(MACOS_FREESTANDING_IMAGE_TOOLS) $(MACOS_FREESTANDING_PDF_TOOLS) $(MACOS_FREESTANDING_ARCHIVE_TOOLS) $(MACOS_FREESTANDING_XML_TOOLS) $(MACOS_FREESTANDING_NCC_TOOLS) $(MACOS_FREESTANDING_SSH_TOOLS) $(MACOS_FREESTANDING_SSHD_TOOLS) $(MACOS_FREESTANDING_HTTPD_TOOLS) $(MACOS_FREESTANDING_PING6_TOOLS) $(MACOS_FREESTANDING_SHELL_TOOLS) $(MACOS_FREESTANDING_MAIL_TOOLS) $(MACOS_FREESTANDING_TUI_TOOLS) $(MACOS_FREESTANDING_MAKE_TOOLS) $(MACOS_FREESTANDING_SERVICE_TOOLS) $(MACOS_FREESTANDING_USB_TOOLS) $(MACOS_FREESTANDING_ALIAS_TOOLS),$(MACOS_FREESTANDING_TOOLS))
+MACOS_FREESTANDING_GENERIC_TOOLS := $(filter-out $(MACOS_FREESTANDING_HASH_TOOLS) $(MACOS_FREESTANDING_TLS_TOOLS) $(MACOS_FREESTANDING_AWK_TOOLS) $(MACOS_FREESTANDING_IMAGE_TOOLS) $(MACOS_FREESTANDING_PGP_TOOLS) $(MACOS_FREESTANDING_PDF_TOOLS) $(MACOS_FREESTANDING_ARCHIVE_TOOLS) $(MACOS_FREESTANDING_XML_TOOLS) $(MACOS_FREESTANDING_NCC_TOOLS) $(MACOS_FREESTANDING_SSH_TOOLS) $(MACOS_FREESTANDING_SSHD_TOOLS) $(MACOS_FREESTANDING_HTTPD_TOOLS) $(MACOS_FREESTANDING_PING6_TOOLS) $(MACOS_FREESTANDING_SHELL_TOOLS) $(MACOS_FREESTANDING_MAIL_TOOLS) $(MACOS_FREESTANDING_TUI_TOOLS) $(MACOS_FREESTANDING_MAKE_TOOLS) $(MACOS_FREESTANDING_SERVICE_TOOLS) $(MACOS_FREESTANDING_USB_TOOLS) $(MACOS_FREESTANDING_ALIAS_TOOLS),$(MACOS_FREESTANDING_TOOLS))
 INCEPTION_BUILD_DIR ?= $(BUILD_ROOT)/inception-freestanding-$(TARGET_ARCH)
 INCEPTION_OBJECT_BUILD_DIR ?= $(INCEPTION_BUILD_DIR)/.obj
 FREESTANDING_OBJECT_BUILD_DIR ?= $(TARGET_BUILD_DIR)/.obj
@@ -179,6 +181,8 @@ IMAGE_SOURCES := $(shell grep -oE '"src/shared/(image/[^"]+|crypto/(sha256|p256)
 IMAGE_TOOLS := imginfo imgcheck imgmeta c2pa
 PDF_SOURCES := $(shell grep -oE '"src/shared/pdf(_writer)?\.c"' src/compiler/source_manifest.h | tr -d '"')
 PDF_TOOLS := pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck
+PGP_SOURCES := $(shell grep -oE '"src/shared/(pgp|crypto/sha1)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+PGP_TOOLS := pgpkey
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 TLS_SOURCES := $(shell grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 USB_SOURCES := $(shell grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"')
@@ -216,6 +220,7 @@ HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/co
 WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_io.c src/shared/tool_file.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/platform/windows/core.c
 WINDOWS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/windows/tls.c
 WINDOWS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c
+WINDOWS_FREESTANDING_PGP_SOURCES := $(PGP_SOURCES)
 WINDOWS_FREESTANDING_PDF_SOURCES := $(PDF_SOURCES) src/shared/compression/zlib.c
 WINDOWS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 WINDOWS_FREESTANDING_REGEX_SOURCES :=
@@ -242,6 +247,7 @@ MACOS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/
 MACOS_FREESTANDING_AWK_SOURCES := src/tools/awk/awk_parse.c src/tools/awk/awk_exec.c
 MACOS_FREESTANDING_ARCHIVE_SOURCES := src/shared/archive_util.c src/shared/object_util.c src/shared/archive_zip.c src/shared/compression/crc32.c src/shared/compression/lzss.c src/shared/compression/zlib.c $(EXPACK_SIGNING_SOURCE)
 MACOS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c
+MACOS_FREESTANDING_PGP_SOURCES := $(PGP_SOURCES)
 MACOS_FREESTANDING_PDF_SOURCES := $(PDF_SOURCES) src/shared/compression/zlib.c
 MACOS_FREESTANDING_XML_SOURCES := src/shared/xml.c src/shared/xml_stream.c src/shared/xml_dtd.c src/shared/tool_xml.c
 MACOS_FREESTANDING_NCC_SOURCES := $(COMPILER_SOURCES) $(LINKER_SIGNING_SOURCE) $(SHARED_SOURCES)
@@ -275,6 +281,7 @@ FREESTANDING_REUSABLE_SOURCES := $(filter %.c,$(SHARED_SOURCES) $(TARGET_PLATFOR
 FREESTANDING_REUSABLE_OBJECTS := $(patsubst %.c,$(FREESTANDING_OBJECT_BUILD_DIR)/%.o,$(FREESTANDING_REUSABLE_SOURCES))
 FREESTANDING_REUSABLE_INPUTS := $(FREESTANDING_REUSABLE_OBJECTS) $(TARGET_PLATFORM_ASM_SOURCES)
 FREESTANDING_IMAGE_OBJECTS := $(patsubst %.c,$(FREESTANDING_OBJECT_BUILD_DIR)/%.o,$(IMAGE_SOURCES))
+FREESTANDING_PGP_OBJECTS := $(patsubst %.c,$(FREESTANDING_OBJECT_BUILD_DIR)/%.o,$(PGP_SOURCES))
 FREESTANDING_PDF_OBJECTS := $(patsubst %.c,$(FREESTANDING_OBJECT_BUILD_DIR)/%.o,$(PDF_SOURCES))
 FREESTANDING_CRYPTO_OBJECTS := $(patsubst %.c,$(FREESTANDING_OBJECT_BUILD_DIR)/%.o,$(CRYPTO_SOURCES))
 FREESTANDING_SSH_CRYPTO_OBJECTS := $(patsubst %.c,$(FREESTANDING_OBJECT_BUILD_DIR)/%.o,$(SSH_CRYPTO_SOURCES))
@@ -285,6 +292,7 @@ INCEPTION_REUSABLE_SOURCES := $(filter-out src/shared/runtime/unicode.c,$(filter
 INCEPTION_REUSABLE_OBJECTS := $(patsubst %.c,$(INCEPTION_OBJECT_BUILD_DIR)/%.o,$(INCEPTION_REUSABLE_SOURCES))
 INCEPTION_UNICODE_OBJECT := $(INCEPTION_OBJECT_BUILD_DIR)/src/shared/runtime/unicode.o
 INCEPTION_IMAGE_OBJECTS := $(patsubst %.c,$(INCEPTION_OBJECT_BUILD_DIR)/%.o,$(IMAGE_SOURCES))
+INCEPTION_PGP_OBJECTS := $(patsubst %.c,$(INCEPTION_OBJECT_BUILD_DIR)/%.o,$(PGP_SOURCES))
 INCEPTION_PDF_OBJECTS := $(patsubst %.c,$(INCEPTION_OBJECT_BUILD_DIR)/%.o,$(PDF_SOURCES))
 INCEPTION_CRYPTO_OBJECTS := $(patsubst %.c,$(INCEPTION_OBJECT_BUILD_DIR)/%.o,$(CRYPTO_SOURCES))
 INCEPTION_SSH_CRYPTO_OBJECTS := $(patsubst %.c,$(INCEPTION_OBJECT_BUILD_DIR)/%.o,$(SSH_CRYPTO_SOURCES))
@@ -301,11 +309,13 @@ TARGET_TUI_INPUT = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(T
 TARGET_UNICODE_OBJECT = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_UNICODE_OBJECT))
 TARGET_SPECIAL_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_SPECIAL_PREREQS),$(FREESTANDING_REUSABLE_INPUTS))
 TARGET_IMAGE_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_IMAGE_PREREQS),$(FREESTANDING_IMAGE_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS))
+TARGET_PGP_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_PGP_OBJECTS) $(INCEPTION_SPECIAL_PREREQS),$(FREESTANDING_PGP_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS))
 TARGET_PDF_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_PDF_OBJECTS) $(INCEPTION_SPECIAL_PREREQS),$(FREESTANDING_PDF_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS))
 TARGET_TLS_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_TLS_PREREQS),$(FREESTANDING_TLS_OBJECTS) $(FREESTANDING_CRYPTO_OBJECTS) $(FREESTANDING_TARGET_TLS_PLATFORM_OBJECT) $(FREESTANDING_REUSABLE_INPUTS))
 INCEPTION_UNICODE_TOOLS := wc fold fmt expand unexpand column
 INCEPTION_SPECIAL_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT))
 INCEPTION_IMAGE_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_IMAGE_OBJECTS) $(INCEPTION_SPECIAL_PREREQS))
+INCEPTION_PGP_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_PGP_OBJECTS) $(INCEPTION_SPECIAL_PREREQS))
 INCEPTION_TLS_PREREQS = $(if $(filter $(INCEPTION_BUILD_DIR),$(TARGET_BUILD_DIR)),$(INCEPTION_TLS_OBJECTS) $(INCEPTION_CRYPTO_OBJECTS) $(INCEPTION_TARGET_TLS_PLATFORM_OBJECT) $(INCEPTION_SPECIAL_PREREQS))
 HOST_OUTPUTS := $(BUILD_DIR)/.ssh_core_check $(addprefix $(BUILD_DIR)/,$(TOOLS))
 HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(BUILD_ROOT)/.ssh_core_check $(addprefix $(BUILD_ROOT)/,$(TOOLS)))
@@ -392,6 +402,7 @@ MULTICALL_SUPPORT_SOURCES = $(sort \
 	$(SHARED_SOURCES) \
 	$(COMPILER_SOURCES) \
 	$(IMAGE_SOURCES) \
+	$(PGP_SOURCES) \
 	$(CRYPTO_SOURCES) \
 	$(TLS_SOURCES) \
 	$(TUI_SOURCES) \
@@ -541,6 +552,9 @@ $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_ARCHIVE_TOOLS)
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_IMAGE_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_PGP_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_PGP_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/pgp.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_PGP_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
+
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_PDF_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_PDF_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/pdf.h src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_PDF_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
@@ -650,6 +664,7 @@ MACOS_NEWLINKER_TLS_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDI
 MACOS_NEWLINKER_AWK_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_AWK_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
 MACOS_NEWLINKER_ARCHIVE_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_ARCHIVE_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
 MACOS_NEWLINKER_IMAGE_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_IMAGE_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
+MACOS_NEWLINKER_PGP_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_PGP_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
 MACOS_NEWLINKER_PDF_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_PDF_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
 MACOS_NEWLINKER_XML_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_XML_SOURCES) $(MACOS_NEWLINKER_PLATFORM_SOURCES))
 MACOS_NEWLINKER_NCC_OBJECTS := $(call macos_newlinker_objects,$(MACOS_FREESTANDING_NCC_SOURCES) src/platform/macos/freestanding.c $(MACOS_NEWLINKER_RUNTIME_SHIM_SOURCE))
@@ -704,6 +719,9 @@ $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_ARCHIVE_TOOL
 
 $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_IMAGE_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_IMAGE_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_NEWLINKER_LINK_FLAGS) $(MACOS_NEWLINKER_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_IMAGE_OBJECTS)
+
+$(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_PGP_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_PGP_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_NEWLINKER_LINK_FLAGS) $(MACOS_NEWLINKER_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_PGP_OBJECTS)
 
 $(addprefix $(MACOS_NEWLINKER_EXPERIMENT_DIR)/,$(MACOS_FREESTANDING_PDF_TOOLS)): $(MACOS_NEWLINKER_EXPERIMENT_DIR)/%: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/%.lto.o $(MACOS_NEWLINKER_PDF_OBJECTS) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_NEWLINKER_LINK_FLAGS) $(MACOS_NEWLINKER_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/tools/$*.lto.o $(MACOS_NEWLINKER_PDF_OBJECTS)
@@ -841,6 +859,16 @@ ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_IMAGE_OBJECTS) $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 else
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_IMAGE_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+endif
+
+$(addprefix $(BUILD_DIR)/,$(PGP_TOOLS)): $(BUILD_DIR)/%: src/tools/%.c $(PGP_SOURCES) src/shared/pgp.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(PGP_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(addprefix $(TARGET_BUILD_DIR)/,$(PGP_TOOLS)): $(TARGET_BUILD_DIR)/%: src/tools/%.c $(PGP_SOURCES) src/shared/pgp.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_PGP_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_PGP_OBJECTS) $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+else
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_PGP_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
 $(addprefix $(BUILD_DIR)/,$(PDF_TOOLS)): $(BUILD_DIR)/%: src/tools/%.c $(PDF_SOURCES) src/shared/pdf.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
