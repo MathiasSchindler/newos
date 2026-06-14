@@ -244,12 +244,36 @@ static int write_expiration_date_with_status(int fd, unsigned long long expires,
     return write_expiration_status(fd, expires, now, color_mode);
 }
 
-static int write_algorithm_list(int fd, const unsigned char *values, size_t count, const char *(*name_fn)(unsigned int)) {
+static int pgpkey_hash_algorithm_style(unsigned int algorithm) {
+    if (algorithm == 1U || algorithm == 2U || algorithm == 3U) return TOOL_STYLE_BOLD_RED;
+    if (algorithm == 11U) return TOOL_STYLE_BOLD_YELLOW;
+    return TOOL_STYLE_PLAIN;
+}
+
+static int pgpkey_symmetric_algorithm_style(unsigned int algorithm) {
+    if (algorithm == 0U) return TOOL_STYLE_BOLD_RED;
+    if (algorithm == 1U || algorithm == 2U || algorithm == 3U) return TOOL_STYLE_BOLD_YELLOW;
+    return TOOL_STYLE_PLAIN;
+}
+
+static int pgpkey_compression_algorithm_style(unsigned int algorithm) {
+    (void)algorithm;
+    return TOOL_STYLE_PLAIN;
+}
+
+static int write_algorithm_list(int fd, const unsigned char *values, size_t count, const char *(*name_fn)(unsigned int), int (*style_fn)(unsigned int), int color_mode) {
     size_t index;
 
     for (index = 0U; index < count; ++index) {
+        const char *name = name_fn(values[index]);
+        int style = style_fn != 0 ? style_fn(values[index]) : TOOL_STYLE_PLAIN;
+
         if (index != 0U && rt_write_cstr(fd, ", ") != 0) return -1;
-        if (rt_write_cstr(fd, name_fn(values[index])) != 0) return -1;
+        if (style != TOOL_STYLE_PLAIN) {
+            tool_write_styled(fd, color_mode, style, name);
+        } else if (rt_write_cstr(fd, name) != 0) {
+            return -1;
+        }
     }
     return 0;
 }
@@ -357,13 +381,13 @@ static int write_signature_summary_text(const PgpCertificateInfo *certificate, u
             if (rt_write_char(1, '\n') != 0) return -1;
         }
         if (primary_signature->preferred_symmetric_count != 0U) {
-            if (rt_write_cstr(1, "preferred-symmetric: ") != 0 || write_algorithm_list(1, primary_signature->preferred_symmetric, primary_signature->preferred_symmetric_count, pgp_symmetric_algorithm_name) != 0 || rt_write_char(1, '\n') != 0) return -1;
+            if (rt_write_cstr(1, "preferred-symmetric: ") != 0 || write_algorithm_list(1, primary_signature->preferred_symmetric, primary_signature->preferred_symmetric_count, pgp_symmetric_algorithm_name, pgpkey_symmetric_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
         if (primary_signature->preferred_hash_count != 0U) {
-            if (rt_write_cstr(1, "preferred-hash: ") != 0 || write_algorithm_list(1, primary_signature->preferred_hash, primary_signature->preferred_hash_count, pgp_hash_algorithm_name) != 0 || rt_write_char(1, '\n') != 0) return -1;
+            if (rt_write_cstr(1, "preferred-hash: ") != 0 || write_algorithm_list(1, primary_signature->preferred_hash, primary_signature->preferred_hash_count, pgp_hash_algorithm_name, pgpkey_hash_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
         if (primary_signature->preferred_compression_count != 0U) {
-            if (rt_write_cstr(1, "preferred-compression: ") != 0 || write_algorithm_list(1, primary_signature->preferred_compression, primary_signature->preferred_compression_count, pgp_compression_algorithm_name) != 0 || rt_write_char(1, '\n') != 0) return -1;
+            if (rt_write_cstr(1, "preferred-compression: ") != 0 || write_algorithm_list(1, primary_signature->preferred_compression, primary_signature->preferred_compression_count, pgp_compression_algorithm_name, pgpkey_compression_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
     }
     return 0;

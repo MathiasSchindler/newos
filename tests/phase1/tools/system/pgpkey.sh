@@ -25,6 +25,8 @@ assert_file_contains "$WORK_DIR/show.out" '^subkey: public subkey, v4, RSA encry
 ESC=$(printf '\033')
 "${TEST_BIN_DIR}/pgpkey" show --color=always "$SAMPLE_KEY" > "$WORK_DIR/show_color.out"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32mvalid" "pgpkey show --color=always did not color a valid expiration status"
+assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;31mSHA-1" "pgpkey show --color=always did not color SHA-1 as weak"
+assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;33mTripleDES" "pgpkey show --color=always did not color TripleDES as legacy"
 "${TEST_BIN_DIR}/pgpkey" --no-color show "$SAMPLE_KEY" > "$WORK_DIR/show_no_color.out"
 if grep "${ESC}\\[" "$WORK_DIR/show_no_color.out" >/dev/null 2>&1; then
     fail "pgpkey --no-color emitted ANSI color escapes"

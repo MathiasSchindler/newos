@@ -100,6 +100,13 @@ Color follows the shared tool convention. In `auto` mode, color is used only
 for suitable terminals and respects `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`,
 and `TERM=dumb`.
 
+Algorithm preference lists also use color when enabled. Broken or unsafe hash
+algorithms such as MD5, SHA-1, and RIPEMD-160 are highlighted red. Legacy
+choices such as SHA-224, IDEA, TripleDES, and CAST5 are highlighted yellow.
+Compression preferences are printed without security coloring because they are
+compatibility and side-channel considerations rather than broken cryptographic
+algorithms.
+
 ## KEYRING
 
 The default keyring path is taken from `PGPKEY_KEYRING` when set. Otherwise,
