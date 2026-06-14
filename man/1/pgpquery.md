@@ -23,12 +23,14 @@ hex, or spaced hex; requests use normalized lowercase hex.
 
 The default server mode queries both `keys.openpgp.org` and
 `keyserver.ubuntu.com` when the selector can be represented on both services.
-No trust, ownership, revocation, or signature-validity claims are made. A public
+Additional servers such as Mailvelope, MIT, and WKD are available explicitly
+with `--server`, but are not included in the default fan-out. No trust,
+ownership, revocation, or signature-validity claims are made. A public
 keyserver response only says that a server returned data for a selector.
 
 ## OPTIONS
 
-- `-s NAME`, `--server NAME` - choose a server. NAME may be `all`, `openpgp`, `keys.openpgp.org`, `ubuntu`, `keyserver.ubuntu.com`, or an `http://` or `https://` base URL.
+- `-s NAME`, `--server NAME` - choose a server. NAME may be `all`, `openpgp`, `keys.openpgp.org`, `ubuntu`, `keyserver.ubuntu.com`, `mailvelope`, `keys.mailvelope.com`, `mit`, `pgp.mit.edu`, `wkd`, or an `http://` or `https://` base URL.
 - `--json` - emit JSON Lines events instead of human-readable text.
 - `--get` - fetch armored certificate data from an HKP server and write it to standard output. With `all` or `openpgp`, this currently selects `keyserver.ubuntu.com` because `keys.openpgp.org` has separate lookup paths.
 - `--print-url` - print the URL or URLs that would be queried, without using the network.
@@ -57,6 +59,27 @@ https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&search=SELECTOR
 
 With `--get`, the HKP `op=get` endpoint is used instead and the returned armored
 certificate is written directly to standard output.
+
+`keys.mailvelope.com` and `pgp.mit.edu` are available as explicit HKP-style
+servers:
+
+```
+https://keys.mailvelope.com/pks/lookup?op=index&options=mr&search=SELECTOR
+https://pgp.mit.edu/pks/lookup?op=index&options=mr&search=SELECTOR
+```
+
+With `--get`, these servers also use HKP `op=get`.
+
+`wkd` performs Web Key Directory lookup for email selectors. It prints or tries
+the advanced method first, followed by the direct method:
+
+```
+https://openpgpkey.DOMAIN/.well-known/openpgpkey/DOMAIN/hu/HASH?l=LOCAL
+https://DOMAIN/.well-known/openpgpkey/hu/HASH?l=LOCAL
+```
+
+`HASH` is the WKD z-base-32 SHA-1 hash of the lowercase email local-part. WKD
+does not accept key IDs or fingerprints.
 
 Custom servers are treated as simple base URLs. The selector is URL-encoded and
 appended to the base URL, with a slash inserted when the base URL does not end
