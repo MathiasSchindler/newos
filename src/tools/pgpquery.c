@@ -1,0 +1,681 @@
+#include "pgp.h"
+#include "platform.h"
+#include "runtime.h"
+#include "tool_util.h"
+
+#define PGPQUERY_USAGE "[--server NAME|URL] [--json] [--get] [--print-url] [--timeout DURATION] SELECTOR..."
+#define PGPQUERY_URL_CAPACITY 2048U
+#define PGPQUERY_HOST_CAPACITY 256U
+#define PGPQUERY_PATH_CAPACITY 1536U
+#define PGPQUERY_BUFFER_CAPACITY 4096U
+#define PGPQUERY_HEADER_CAPACITY 8192U
+#define PGPQUERY_MAX_BODY_SIZE (4U * 1024U * 1024U)
+#define PGPQUERY_DEFAULT_TIMEOUT_MS 30000ULL
+
+#define PGPQUERY_SCHEME_HTTP 1
+#define PGPQUERY_SCHEME_HTTPS 2
+
+#define PGPQUERY_SERVER_ALL 0
+#define PGPQUERY_SERVER_OPENPGP 1
+#define PGPQUERY_SERVER_UBUNTU 2
+#define PGPQUERY_SERVER_CUSTOM 3
+
+typedef struct {
+    int scheme;
+    unsigned int port;
+    char host[PGPQUERY_HOST_CAPACITY];
+    char path[PGPQUERY_PATH_CAPACITY];
+} PgpQueryUrl;
+
+typedef struct {
+    int use_tls;
+    int socket_fd;
+    PlatformTlsClient tls;
+} PgpQueryConnection;
+
+typedef struct {
+    int server;
+    int json;
+    int get;
+    int print_url;
+    unsigned long long timeout_ms;
+    char custom_base[PGPQUERY_URL_CAPACITY];
+} PgpQueryOptions;
+
+typedef struct {
+    const char *server_name;
+    const char *selector;
+    int json;
+    int count;
+} PgpQueryCertificateContext;
+
+static void print_usage(void) {
+    tool_write_usage("pgpquery", PGPQUERY_USAGE);
+}
+
+static unsigned int default_port_for_scheme(int scheme) {
+    return scheme == PGPQUERY_SCHEME_HTTPS ? 443U : 80U;
+}
+
+static int parse_http_url_tail(const char *text, unsigned int default_port, int scheme, PgpQueryUrl *url_out) {
+    size_t index = 0U;
+    size_t host_start = 0U;
+    size_t host_length = 0U;
+    unsigned long long parsed_port = default_port;
+    int saw_port_digit = 0;
+
+    rt_memset(url_out, 0, sizeof(*url_out));
+    url_out->scheme = scheme;
+    url_out->port = default_port;
+
+    if (text[0] == '[') {
+        host_start = 1U;
+        index = 1U;
+        while (text[index] != '\0' && text[index] != ']') index += 1U;
+        if (text[index] != ']') return -1;
+        host_length = index - host_start;
+        index += 1U;
+    } else {
+        while (text[index] != '\0' && text[index] != '/' && text[index] != ':' && text[index] != '?' && text[index] != '#') index += 1U;
+        host_length = index;
+    }
+    if (host_length == 0U || host_length + 1U > sizeof(url_out->host)) return -1;
+    memcpy(url_out->host, text + host_start, host_length);
+    url_out->host[host_length] = '\0';
+
+    if (text[index] == ':') {
+        parsed_port = 0ULL;
+        index += 1U;
+        while (text[index] >= '0' && text[index] <= '9') {
+            saw_port_digit = 1;
+            parsed_port = (parsed_port * 10ULL) + (unsigned long long)(text[index] - '0');
+            index += 1U;
+        }
+        if (!saw_port_digit || parsed_port == 0ULL || parsed_port > 65535ULL) return -1;
+    }
+    url_out->port = (unsigned int)parsed_port;
+    if (text[index] == '\0' || text[index] == '?' || text[index] == '#') {
+        rt_copy_string(url_out->path, sizeof(url_out->path), "/");
+    } else {
+        rt_copy_string(url_out->path, sizeof(url_out->path), text + index);
+    }
+    return 0;
+}
+
+static int parse_url(const char *text, PgpQueryUrl *url_out) {
+    if (tool_starts_with(text, "https://")) return parse_http_url_tail(text + 8, 443U, PGPQUERY_SCHEME_HTTPS, url_out);
+    if (tool_starts_with(text, "http://")) return parse_http_url_tail(text + 7, 80U, PGPQUERY_SCHEME_HTTP, url_out);
+    return -1;
+}
+
+static int query_connect(const PgpQueryUrl *url, PgpQueryConnection *connection) {
+    rt_memset(connection, 0, sizeof(*connection));
+    connection->socket_fd = -1;
+    connection->use_tls = url->scheme == PGPQUERY_SCHEME_HTTPS;
+    if (connection->use_tls) {
+        if (platform_tls_connect(&connection->tls, url->host, url->port) != 0) return -1;
+        connection->socket_fd = connection->tls.socket_fd;
+        return 0;
+    }
+    return platform_connect_tcp(url->host, url->port, &connection->socket_fd);
+}
+
+static long query_read(PgpQueryConnection *connection, void *buffer, size_t count) {
+    return connection->use_tls ? platform_tls_read(&connection->tls, buffer, count) : platform_read(connection->socket_fd, buffer, count);
+}
+
+static int query_write_all(PgpQueryConnection *connection, const void *buffer, size_t count) {
+    const unsigned char *bytes = (const unsigned char *)buffer;
+    size_t written = 0U;
+
+    while (written < count) {
+        long result = connection->use_tls ? platform_tls_write(&connection->tls, bytes + written, count - written) : platform_write(connection->socket_fd, bytes + written, count - written);
+        if (result <= 0) return -1;
+        written += (size_t)result;
+    }
+    return 0;
+}
+
+static void query_close(PgpQueryConnection *connection) {
+    if (connection->use_tls) platform_tls_close(&connection->tls);
+    else if (connection->socket_fd >= 0) (void)platform_close(connection->socket_fd);
+    connection->socket_fd = -1;
+}
+
+static int wait_for_plain_socket(PgpQueryConnection *connection, unsigned long long timeout_ms) {
+    int fds[1];
+    size_t ready_index = 0U;
+
+    if (connection->use_tls || timeout_ms == 0ULL) return 0;
+    fds[0] = connection->socket_fd;
+    return platform_poll_fds(fds, 1U, &ready_index, (int)timeout_ms) > 0 ? 0 : -1;
+}
+
+static int parse_status(const char *headers) {
+    size_t index = 0U;
+    int code = 0;
+    int saw_digit = 0;
+
+    while (headers[index] != '\0' && headers[index] != ' ') index += 1U;
+    while (headers[index] == ' ') index += 1U;
+    while (headers[index] >= '0' && headers[index] <= '9') {
+        saw_digit = 1;
+        code = code * 10 + (int)(headers[index] - '0');
+        index += 1U;
+    }
+    return saw_digit ? code : -1;
+}
+
+static int http_fetch_to_memory(const char *url_text, const PgpQueryOptions *options, unsigned char **body_out, size_t *body_size_out, int *status_out) {
+    PgpQueryUrl url;
+    PgpQueryConnection connection;
+    char request[PGPQUERY_URL_CAPACITY + 512U];
+    size_t request_length = 0U;
+    char header_buffer[PGPQUERY_HEADER_CAPACITY];
+    size_t header_length = 0U;
+    int header_complete = 0;
+    unsigned char *body = 0;
+    size_t body_size = 0U;
+    size_t body_capacity = 0U;
+    char buffer[PGPQUERY_BUFFER_CAPACITY];
+    long bytes_read;
+
+    *body_out = 0;
+    *body_size_out = 0U;
+    *status_out = 0;
+    if (parse_url(url_text, &url) != 0) return -1;
+    if (query_connect(&url, &connection) != 0) return -1;
+
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "GET ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url.path[0] != '\0' ? url.path : "/");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, " HTTP/1.1\r\nHost: ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url.host);
+    if (url.port != default_port_for_scheme(url.scheme)) {
+        char port_text[16];
+        rt_unsigned_to_string(url.port, port_text, sizeof(port_text));
+        request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, port_text);
+    }
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-pgpquery/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    if (rt_strlen(request) != request_length || query_write_all(&connection, request, request_length) != 0) {
+        query_close(&connection);
+        return -1;
+    }
+
+    while (1) {
+        if (wait_for_plain_socket(&connection, options->timeout_ms) != 0) {
+            query_close(&connection);
+            if (body != 0) rt_free(body);
+            return -1;
+        }
+        bytes_read = query_read(&connection, buffer, sizeof(buffer));
+        if (bytes_read < 0 && connection.use_tls && header_complete) bytes_read = 0;
+        if (bytes_read <= 0) break;
+        if (!header_complete) {
+            size_t body_offset = 0U;
+            if (header_length + (size_t)bytes_read >= sizeof(header_buffer)) {
+                query_close(&connection);
+                return -1;
+            }
+            memcpy(header_buffer + header_length, buffer, (size_t)bytes_read);
+            header_length += (size_t)bytes_read;
+            header_buffer[header_length] = '\0';
+            if (tool_find_http_header_end(header_buffer, header_length, &body_offset) != 0) continue;
+            header_complete = 1;
+            {
+                char saved = header_buffer[body_offset];
+                header_buffer[body_offset] = '\0';
+                *status_out = parse_status(header_buffer);
+                header_buffer[body_offset] = saved;
+            }
+            if (header_length > body_offset) {
+                size_t initial = header_length - body_offset;
+                body_capacity = initial + 1U;
+                body = (unsigned char *)rt_malloc(body_capacity);
+                if (body == 0) {
+                    query_close(&connection);
+                    return -1;
+                }
+                memcpy(body, header_buffer + body_offset, initial);
+                body_size = initial;
+            }
+        } else {
+            size_t chunk_size = (size_t)bytes_read;
+            if (body_size + chunk_size > PGPQUERY_MAX_BODY_SIZE) {
+                query_close(&connection);
+                if (body != 0) rt_free(body);
+                return -1;
+            }
+            if (body_size + chunk_size + 1U > body_capacity) {
+                size_t next_capacity = body_capacity == 0U ? 8192U : body_capacity * 2U;
+                unsigned char *resized;
+                while (next_capacity < body_size + chunk_size + 1U) next_capacity *= 2U;
+                resized = (unsigned char *)rt_realloc(body, next_capacity);
+                if (resized == 0) {
+                    query_close(&connection);
+                    if (body != 0) rt_free(body);
+                    return -1;
+                }
+                body = resized;
+                body_capacity = next_capacity;
+            }
+            memcpy(body + body_size, buffer, chunk_size);
+            body_size += chunk_size;
+        }
+    }
+    query_close(&connection);
+    if (!header_complete || bytes_read < 0) {
+        if (body != 0) rt_free(body);
+        return -1;
+    }
+    if (body == 0) {
+        body = (unsigned char *)rt_malloc(1U);
+        if (body == 0) return -1;
+    }
+    body[body_size] = '\0';
+    *body_out = body;
+    *body_size_out = body_size;
+    return 0;
+}
+
+static int append_url_encoded(char *buffer, size_t buffer_size, size_t *used_io, const char *text) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t index;
+    size_t used = *used_io;
+
+    for (index = 0U; text[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)text[index];
+        int safe = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~' || ch == 'x';
+        if (safe) {
+            used = tool_buffer_append_char(buffer, buffer_size, used, (char)ch);
+        } else {
+            used = tool_buffer_append_char(buffer, buffer_size, used, '%');
+            used = tool_buffer_append_char(buffer, buffer_size, used, hex[(ch >> 4U) & 0x0fU]);
+            used = tool_buffer_append_char(buffer, buffer_size, used, hex[ch & 0x0fU]);
+        }
+    }
+    if (rt_strlen(buffer) != used) return -1;
+    *used_io = used;
+    return 0;
+}
+
+static const char *selector_hex_start(const char *selector) {
+    if (selector[0] == '0' && (selector[1] == 'x' || selector[1] == 'X')) return selector + 2;
+    return selector;
+}
+
+static int append_normalized_hex_selector(char *buffer, size_t buffer_size, size_t *used_io, const char *selector) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char parsed[PGP_FINGERPRINT_MAX_SIZE];
+    size_t parsed_size = 0U;
+    size_t index;
+    size_t used = *used_io;
+
+    if (pgp_parse_fingerprint_text(selector_hex_start(selector), parsed, &parsed_size) != 0) return -1;
+    for (index = 0U; index < parsed_size; ++index) {
+        used = tool_buffer_append_char(buffer, buffer_size, used, hex[(parsed[index] >> 4U) & 0x0fU]);
+        used = tool_buffer_append_char(buffer, buffer_size, used, hex[parsed[index] & 0x0fU]);
+    }
+    if (rt_strlen(buffer) != used) return -1;
+    *used_io = used;
+    return 0;
+}
+
+static int selector_is_hex_key(const char *selector, size_t *bytes_out) {
+    unsigned char parsed[PGP_FINGERPRINT_MAX_SIZE];
+    size_t parsed_size = 0U;
+
+    if (pgp_parse_fingerprint_text(selector_hex_start(selector), parsed, &parsed_size) != 0) return 0;
+    *bytes_out = parsed_size;
+    return parsed_size == PGP_KEY_ID_SIZE || parsed_size == 20U || parsed_size == 32U;
+}
+
+static int selector_is_email(const char *selector) {
+    size_t index;
+    int saw_at = 0;
+
+    for (index = 0U; selector[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)selector[index];
+        if (ch == '@') saw_at = 1;
+        if (ch <= ' ' || ch == 0x7fU) return 0;
+    }
+    return saw_at;
+}
+
+static int build_openpgp_url(const char *selector, char *url, size_t url_size) {
+    size_t parsed_size = 0U;
+    size_t used = 0U;
+
+    if (selector_is_hex_key(selector, &parsed_size)) {
+        used = tool_buffer_append_cstr(url, url_size, used, parsed_size == PGP_KEY_ID_SIZE ? "https://keys.openpgp.org/vks/v1/by-keyid/" : "https://keys.openpgp.org/vks/v1/by-fingerprint/");
+        if (append_normalized_hex_selector(url, url_size, &used, selector) != 0) return -1;
+        return 0;
+    }
+    if (selector_is_email(selector)) {
+        used = tool_buffer_append_cstr(url, url_size, used, "https://keys.openpgp.org/vks/v1/by-email/");
+        if (append_url_encoded(url, url_size, &used, selector) != 0) return -1;
+        return 0;
+    }
+    return -1;
+}
+
+static int build_ubuntu_url(const char *selector, int get, char *url, size_t url_size) {
+    size_t parsed_size = 0U;
+    size_t used = 0U;
+
+    used = tool_buffer_append_cstr(url, url_size, used, "https://keyserver.ubuntu.com/pks/lookup?op=");
+    used = tool_buffer_append_cstr(url, url_size, used, get ? "get" : "index&options=mr");
+    used = tool_buffer_append_cstr(url, url_size, used, "&search=");
+    if (selector_is_hex_key(selector, &parsed_size)) {
+        used = tool_buffer_append_cstr(url, url_size, used, "0x");
+        if (append_normalized_hex_selector(url, url_size, &used, selector) != 0) return -1;
+    } else if (!selector_is_email(selector)) {
+        return -1;
+    } else {
+        if (append_url_encoded(url, url_size, &used, selector) != 0) return -1;
+    }
+    return 0;
+}
+
+static int build_custom_url(const PgpQueryOptions *options, const char *selector, char *url, size_t url_size) {
+    size_t used = 0U;
+
+    used = tool_buffer_append_cstr(url, url_size, used, options->custom_base);
+    if (used != 0U && url[used - 1U] != '/' && url[used - 1U] != '=') used = tool_buffer_append_char(url, url_size, used, '/');
+    if (append_url_encoded(url, url_size, &used, selector) != 0) return -1;
+    return 0;
+}
+
+static int write_hex_bytes(int fd, const unsigned char *data, size_t size) {
+    static const char hex[] = "0123456789abcdef";
+    size_t index;
+
+    for (index = 0U; index < size; ++index) {
+        if (rt_write_char(fd, hex[(data[index] >> 4U) & 0x0fU]) != 0) return -1;
+        if (rt_write_char(fd, hex[data[index] & 0x0fU]) != 0) return -1;
+    }
+    return 0;
+}
+
+static int print_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpQueryCertificateContext *ctx = (PgpQueryCertificateContext *)ctx_ptr;
+    size_t uid_index;
+
+    ctx->count += 1;
+    if (ctx->json) {
+        if (tool_json_begin_event(1, "pgpquery", "stdout", "certificate") != 0) return -1;
+        if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
+        if (rt_write_cstr(1, "\"server\":") != 0 || tool_json_write_string(1, ctx->server_name) != 0) return -1;
+        if (rt_write_cstr(1, ",\"selector\":") != 0 || tool_json_write_string(1, ctx->selector) != 0) return -1;
+        if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0 || write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0) return -1;
+        if (rt_write_cstr(1, "\",\"key_id\":\"") != 0 || write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+        if (rt_write_cstr(1, "\",\"user_ids\":[") != 0) return -1;
+        for (uid_index = 0U; uid_index < certificate->user_id_count; ++uid_index) {
+            if (uid_index != 0U && rt_write_char(1, ',') != 0) return -1;
+            if (tool_json_write_string(1, certificate->user_ids[uid_index]) != 0) return -1;
+        }
+        if (rt_write_cstr(1, "]}}") != 0) return -1;
+        return tool_json_end_event(1);
+    }
+    if (rt_write_cstr(1, "server: ") != 0 || rt_write_line(1, ctx->server_name) != 0) return -1;
+    if (rt_write_cstr(1, "selector: ") != 0 || rt_write_line(1, ctx->selector) != 0) return -1;
+    if (rt_write_cstr(1, "fingerprint: ") != 0 || write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "key-id: ") != 0 || write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    for (uid_index = 0U; uid_index < certificate->user_id_count; ++uid_index) {
+        if (rt_write_cstr(1, "uid: ") != 0 || tool_write_visible_line(1, certificate->user_ids[uid_index]) != 0) return -1;
+    }
+    return rt_write_char(1, '\n');
+}
+
+static int print_certificate_body(const char *server_name, const char *selector, const unsigned char *body, size_t body_size, int json) {
+    unsigned char *decoded = 0;
+    size_t decoded_size = 0U;
+    char error[160];
+    PgpQueryCertificateContext ctx;
+
+    if (pgp_decode_input(body, body_size, &decoded, &decoded_size, error, sizeof(error)) != 0) return -1;
+    ctx.server_name = server_name;
+    ctx.selector = selector;
+    ctx.json = json;
+    ctx.count = 0;
+    if (pgp_for_each_certificate(decoded, decoded_size, print_certificate_callback, &ctx, error, sizeof(error)) != 0) {
+        rt_free(decoded);
+        return -1;
+    }
+    rt_free(decoded);
+    return ctx.count == 0 ? -1 : 0;
+}
+
+static size_t field_end(const char *text, size_t start) {
+    while (text[start] != '\0' && text[start] != ':' && text[start] != '\n' && text[start] != '\r') start += 1U;
+    return start;
+}
+
+static int field_equals(const char *text, size_t start, size_t end, const char *value) {
+    size_t index = 0U;
+    while (start + index < end && value[index] != '\0') {
+        if (text[start + index] != value[index]) return 0;
+        index += 1U;
+    }
+    return start + index == end && value[index] == '\0';
+}
+
+static int write_field_json_string(const char *text, size_t start, size_t end) {
+    return tool_json_write_string_n(1, text + start, end - start);
+}
+
+static int parse_ubuntu_index(const char *selector, const char *body, int json, int *found_out) {
+    size_t offset = 0U;
+    int have_pub = 0;
+
+    *found_out = 0;
+    while (body[offset] != '\0') {
+        size_t line_start = offset;
+        size_t line_end;
+        size_t tag_end;
+
+        while (body[offset] != '\0' && body[offset] != '\n') offset += 1U;
+        line_end = offset;
+        if (body[offset] == '\n') offset += 1U;
+        if (line_end > line_start && body[line_end - 1U] == '\r') line_end -= 1U;
+        tag_end = field_end(body, line_start);
+        if (field_equals(body, line_start, tag_end, "pub")) {
+            size_t fpr_start = tag_end + 1U;
+            size_t fpr_end = field_end(body, fpr_start);
+            size_t alg_start = fpr_end + 1U;
+            size_t alg_end = field_end(body, alg_start);
+            size_t bits_start = alg_end + 1U;
+            size_t bits_end = field_end(body, bits_start);
+            size_t created_start = bits_end + 1U;
+            size_t created_end = field_end(body, created_start);
+
+            have_pub = 1;
+            *found_out = 1;
+            if (json) {
+                if (tool_json_begin_event(1, "pgpquery", "stdout", "hkp_index") != 0) return -1;
+                if (rt_write_cstr(1, ",\"data\":{\"server\":\"keyserver.ubuntu.com\",\"selector\":") != 0 || tool_json_write_string(1, selector) != 0) return -1;
+                if (rt_write_cstr(1, ",\"fingerprint\":") != 0 || write_field_json_string(body, fpr_start, fpr_end) != 0) return -1;
+                if (rt_write_cstr(1, ",\"algorithm\":") != 0 || write_field_json_string(body, alg_start, alg_end) != 0) return -1;
+                if (rt_write_cstr(1, ",\"bits\":") != 0 || write_field_json_string(body, bits_start, bits_end) != 0) return -1;
+                if (rt_write_cstr(1, ",\"created\":") != 0 || write_field_json_string(body, created_start, created_end) != 0 || rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
+            } else {
+                if (rt_write_line(1, "server: keyserver.ubuntu.com") != 0) return -1;
+                if (rt_write_cstr(1, "selector: ") != 0 || rt_write_line(1, selector) != 0) return -1;
+                if (rt_write_cstr(1, "fingerprint: ") != 0 || rt_write_all(1, body + fpr_start, fpr_end - fpr_start) != 0 || rt_write_char(1, '\n') != 0) return -1;
+                if (rt_write_cstr(1, "algorithm: ") != 0 || rt_write_all(1, body + alg_start, alg_end - alg_start) != 0 || rt_write_cstr(1, ", bits: ") != 0 || rt_write_all(1, body + bits_start, bits_end - bits_start) != 0 || rt_write_char(1, '\n') != 0) return -1;
+                if (rt_write_cstr(1, "created: ") != 0 || rt_write_all(1, body + created_start, created_end - created_start) != 0 || rt_write_char(1, '\n') != 0) return -1;
+            }
+        } else if (have_pub && field_equals(body, line_start, tag_end, "uid")) {
+            size_t uid_start = tag_end + 1U;
+            size_t uid_end = field_end(body, uid_start);
+            if (json) {
+                if (tool_json_begin_event(1, "pgpquery", "stdout", "hkp_uid") != 0) return -1;
+                if (rt_write_cstr(1, ",\"data\":{\"server\":\"keyserver.ubuntu.com\",\"selector\":") != 0 || tool_json_write_string(1, selector) != 0) return -1;
+                if (rt_write_cstr(1, ",\"uid\":") != 0 || write_field_json_string(body, uid_start, uid_end) != 0 || rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
+            } else {
+                if (rt_write_cstr(1, "uid: ") != 0 || rt_write_all(1, body + uid_start, uid_end - uid_start) != 0 || rt_write_char(1, '\n') != 0) return -1;
+            }
+        }
+    }
+    if (have_pub && !json) return rt_write_char(1, '\n');
+    return 0;
+}
+
+static int fetch_and_print(const char *server_name, const char *url, const char *selector, const PgpQueryOptions *options, int armored_response) {
+    unsigned char *body = 0;
+    size_t body_size = 0U;
+    int status = 0;
+    int result = 1;
+
+    if (http_fetch_to_memory(url, options, &body, &body_size, &status) != 0) {
+        tool_write_error("pgpquery", "request failed: ", url);
+        return 1;
+    }
+    if (status == 404) {
+        if (!options->json && !options->get) {
+            rt_write_cstr(1, "server: ");
+            rt_write_line(1, server_name);
+            rt_write_cstr(1, "selector: ");
+            rt_write_line(1, selector);
+            rt_write_line(1, "status: not found\n");
+        }
+        rt_free(body);
+        return 1;
+    }
+    if (status < 200 || status >= 300) {
+        tool_write_error("pgpquery", "server returned non-success for: ", url);
+        rt_free(body);
+        return 1;
+    }
+    if (options->get) {
+        if (rt_write_all(1, body, body_size) == 0) result = 0;
+    } else if (armored_response) {
+        result = print_certificate_body(server_name, selector, body, body_size, options->json) == 0 ? 0 : 1;
+    } else {
+        int found = 0;
+        result = parse_ubuntu_index(selector, (const char *)body, options->json, &found) == 0 && found ? 0 : 1;
+    }
+    rt_free(body);
+    return result;
+}
+
+static int print_query_url(const char *server_name, const char *selector, const char *url, int json) {
+    if (json) {
+        if (tool_json_begin_event(1, "pgpquery", "stdout", "query_url") != 0) return -1;
+        if (rt_write_cstr(1, ",\"data\":{\"server\":") != 0 || tool_json_write_string(1, server_name) != 0) return -1;
+        if (rt_write_cstr(1, ",\"selector\":") != 0 || tool_json_write_string(1, selector) != 0) return -1;
+        if (rt_write_cstr(1, ",\"url\":") != 0 || tool_json_write_string(1, url) != 0) return -1;
+        if (rt_write_cstr(1, "}") != 0 || tool_json_end_event(1) != 0) return -1;
+        return 0;
+    }
+    if (rt_write_cstr(1, server_name) != 0 || rt_write_cstr(1, ": ") != 0 || rt_write_line(1, url) != 0) return -1;
+    return 0;
+}
+
+static int query_selector(const PgpQueryOptions *options, const char *selector) {
+    char url[PGPQUERY_URL_CAPACITY];
+    int status = 1;
+    int attempted = 0;
+
+    if (options->server == PGPQUERY_SERVER_OPENPGP || options->server == PGPQUERY_SERVER_ALL) {
+        if (!options->get && build_openpgp_url(selector, url, sizeof(url)) == 0) {
+            attempted = 1;
+            if (options->print_url) {
+                if (print_query_url("keys.openpgp.org", selector, url, options->json) == 0) status = 0;
+            } else if (fetch_and_print("keys.openpgp.org", url, selector, options, 1) == 0) status = 0;
+        }
+    }
+    if (options->server == PGPQUERY_SERVER_UBUNTU || options->server == PGPQUERY_SERVER_ALL) {
+        if (build_ubuntu_url(selector, options->get, url, sizeof(url)) == 0) {
+            attempted = 1;
+            if (options->print_url) {
+                if (print_query_url("keyserver.ubuntu.com", selector, url, options->json) == 0) status = 0;
+            } else if (fetch_and_print("keyserver.ubuntu.com", url, selector, options, options->get) == 0) status = 0;
+        }
+    }
+    if (options->server == PGPQUERY_SERVER_CUSTOM) {
+        if (build_custom_url(options, selector, url, sizeof(url)) == 0) {
+            attempted = 1;
+            if (options->print_url) {
+                if (print_query_url(options->custom_base, selector, url, options->json) == 0) status = 0;
+            } else if (fetch_and_print(options->custom_base, url, selector, options, options->get) == 0) status = 0;
+        }
+    }
+    if (!attempted) tool_write_error("pgpquery", "unsupported selector for selected server: ", selector);
+    return status;
+}
+
+static int parse_server_option(PgpQueryOptions *options, const char *value) {
+    if (rt_strcmp(value, "all") == 0) options->server = PGPQUERY_SERVER_ALL;
+    else if (rt_strcmp(value, "openpgp") == 0 || rt_strcmp(value, "keys.openpgp.org") == 0) options->server = PGPQUERY_SERVER_OPENPGP;
+    else if (rt_strcmp(value, "ubuntu") == 0 || rt_strcmp(value, "keyserver.ubuntu.com") == 0) options->server = PGPQUERY_SERVER_UBUNTU;
+    else if (tool_starts_with(value, "http://") || tool_starts_with(value, "https://")) {
+        options->server = PGPQUERY_SERVER_CUSTOM;
+        rt_copy_string(options->custom_base, sizeof(options->custom_base), value);
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    PgpQueryOptions options;
+    ToolOptState opt;
+    int option_result;
+    int status = 0;
+    int index;
+
+    rt_memset(&options, 0, sizeof(options));
+    options.server = PGPQUERY_SERVER_ALL;
+    options.timeout_ms = PGPQUERY_DEFAULT_TIMEOUT_MS;
+    tool_opt_init(&opt, argc, argv, "pgpquery", PGPQUERY_USAGE);
+    while ((option_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
+        if (rt_strcmp(opt.flag, "--server") == 0 || rt_strcmp(opt.flag, "-s") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || parse_server_option(&options, opt.value) != 0) {
+                print_usage();
+                return 1;
+            }
+        } else if (tool_starts_with(opt.flag, "--server=")) {
+            if (parse_server_option(&options, opt.flag + 9) != 0) {
+                print_usage();
+                return 1;
+            }
+        } else if (rt_strcmp(opt.flag, "--json") == 0) {
+            options.json = 1;
+        } else if (rt_strcmp(opt.flag, "--get") == 0) {
+            options.get = 1;
+        } else if (rt_strcmp(opt.flag, "--print-url") == 0) {
+            options.print_url = 1;
+        } else if (rt_strcmp(opt.flag, "--timeout") == 0 || rt_strcmp(opt.flag, "-T") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || tool_parse_duration_ms(opt.value, &options.timeout_ms) != 0) {
+                print_usage();
+                return 1;
+            }
+        } else if (tool_starts_with(opt.flag, "--timeout=")) {
+            if (tool_parse_duration_ms(opt.flag + 10, &options.timeout_ms) != 0) {
+                print_usage();
+                return 1;
+            }
+        } else {
+            tool_write_error("pgpquery", "unknown option: ", opt.flag);
+            print_usage();
+            return 1;
+        }
+    }
+    if (option_result == TOOL_OPT_HELP) {
+        print_usage();
+        return 0;
+    }
+    if (opt.argi >= argc) {
+        print_usage();
+        return 1;
+    }
+    options.json = tool_json_is_enabled();
+    if (options.get && (options.server == PGPQUERY_SERVER_ALL || options.server == PGPQUERY_SERVER_OPENPGP)) {
+        options.server = PGPQUERY_SERVER_UBUNTU;
+    }
+    for (index = opt.argi; index < argc; ++index) {
+        if (query_selector(&options, argv[index]) != 0) status = 1;
+    }
+    return status;
+}

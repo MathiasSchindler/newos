@@ -7,7 +7,7 @@ pgpkey - inspect OpenPGP keys and maintain a simple public keyring
 ## SYNOPSIS
 
 ```
-pgpkey [-k KEYRING] [-v] [--json] COMMAND [ARGS...]
+pgpkey [-k KEYRING] [-v] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]
 
 pgpkey show [-v] [FILE ...]
 pgpkey packets FILE ...
@@ -43,6 +43,8 @@ keyring.
 
 - `-k KEYRING`, `--keyring KEYRING` - use KEYRING instead of the default.
 - `-v`, `--verbose` - for `show`, include per-signature metadata.
+- `--color[=WHEN]` - color status text. WHEN is `auto`, `always`, or `never`. With no value, `auto` is used.
+- `--no-color` - disable color output. This is equivalent to `--color=never`.
 - `--json` - emit JSON Lines events for `show`, `list`, and `import`.
 - `-h`, `--help` - show usage.
 
@@ -50,15 +52,22 @@ keyring.
 
 The default `show` output includes the primary key, fingerprint, key ID, user
 IDs, primary user ID marker, key and subkey usage flags, key and subkey
-expiration dates when present, algorithm preferences, subkeys, and packet
-counts.
+expiration dates when present, expiration status, algorithm preferences,
+subkeys, and packet counts. Expiration status is printed as text, such as
+`(valid)` or `(expired)`, and is colored green or red when color output is
+enabled.
 
 With `-v`, `show` also prints one line for each decoded signature packet. The
 verbose signature lines include the signature type, signature creation date,
 public-key and hash algorithms, target UID or subkey, issuer key ID, issuer
-fingerprint when present, signature expiration, key expiration interval, key
-flags, and primary-UID markers. Signature cryptographic validation is not
-performed yet; these lines describe packet metadata.
+fingerprint when present, signature expiration date and interval, key
+expiration date and interval, key flags, and primary-UID markers. Signature
+cryptographic validation is not performed yet; these lines describe packet
+metadata.
+
+Color follows the shared tool convention. In `auto` mode, color is used only
+for suitable terminals and respects `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`,
+and `TERM=dumb`.
 
 ## KEYRING
 

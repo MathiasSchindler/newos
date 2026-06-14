@@ -14,18 +14,26 @@ assert_file_contains "$WORK_DIR/show.out" '^key-id: 99d37c39fa2c23a8$' "pgpkey s
 assert_file_contains "$WORK_DIR/show.out" 'GFF e.V.' "pgpkey show did not print user IDs"
 assert_file_contains "$WORK_DIR/show.out" '^primary-uid: GFF e.V.' "pgpkey show did not print the primary UID marker"
 assert_file_contains "$WORK_DIR/show.out" '^key-flags: certify, sign$' "pgpkey show did not print primary-key flags"
-assert_file_contains "$WORK_DIR/show.out" '^key-expires: 2027-04-13$' "pgpkey show did not print the key expiration date"
+assert_file_contains "$WORK_DIR/show.out" '^key-expires: 2027-04-13 ' "pgpkey show did not print the key expiration date"
 assert_file_contains "$WORK_DIR/show.out" '^preferred-symmetric: AES-256, AES-192, AES-128, CAST5, TripleDES, IDEA$' "pgpkey show did not print cipher preferences"
 assert_file_contains "$WORK_DIR/show.out" '^preferred-hash: SHA-256, SHA-1, SHA-384, SHA-512, SHA-224$' "pgpkey show did not print hash preferences"
 assert_file_contains "$WORK_DIR/show.out" '^preferred-compression: ZLIB, BZip2, ZIP$' "pgpkey show did not print compression preferences"
 assert_file_contains "$WORK_DIR/show.out" '^subkey-flags: encrypt communications, encrypt storage$' "pgpkey show did not print subkey flags"
-assert_file_contains "$WORK_DIR/show.out" '^subkey-expires: 2027-04-13$' "pgpkey show did not print subkey expiration"
+assert_file_contains "$WORK_DIR/show.out" '^subkey-expires: 2027-04-13 ' "pgpkey show did not print subkey expiration"
 assert_file_contains "$WORK_DIR/show.out" '^subkey: public subkey, v4, RSA encrypt/sign, 4096 bits, created 2016-03-01$' "pgpkey show did not summarize the RSA subkey"
+
+ESC=$(printf '\033')
+"${TEST_BIN_DIR}/pgpkey" show --color=always "$SAMPLE_KEY" > "$WORK_DIR/show_color.out"
+assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32mvalid" "pgpkey show --color=always did not color a valid expiration status"
+"${TEST_BIN_DIR}/pgpkey" --no-color show "$SAMPLE_KEY" > "$WORK_DIR/show_no_color.out"
+if grep "${ESC}\\[" "$WORK_DIR/show_no_color.out" >/dev/null 2>&1; then
+    fail "pgpkey --no-color emitted ANSI color escapes"
+fi
 
 "${TEST_BIN_DIR}/pgpkey" show -v "$SAMPLE_KEY" > "$WORK_DIR/show_verbose.out"
 assert_file_contains "$WORK_DIR/show_verbose.out" '^signatures:$' "pgpkey show -v did not print signature details"
-assert_file_contains "$WORK_DIR/show_verbose.out" '^signature 3: positive user ID certification, v4, RSA encrypt/sign, SHA-256, created 2026-04-13, uid 1, issuer 99d37c39fa2c23a8, issuer-fpr 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8, key-expires-after 350778858 seconds, flags certify, sign, primary-uid yes$' "pgpkey show -v did not decode self-signature metadata"
-assert_file_contains "$WORK_DIR/show_verbose.out" '^signature 46: subkey binding, v4, RSA encrypt/sign, SHA-256, created 2026-04-13, subkey 1, issuer 99d37c39fa2c23a8, issuer-fpr 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8, key-expires-after 350778865 seconds, flags encrypt communications, encrypt storage$' "pgpkey show -v did not decode subkey binding metadata"
+assert_file_contains "$WORK_DIR/show_verbose.out" '^signature 3: positive user ID certification, v4, RSA encrypt/sign, SHA-256, created 2026-04-13, uid 1, issuer 99d37c39fa2c23a8, issuer-fpr 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8, key-expires 2027-04-13 .* after 350778858 seconds, flags certify, sign, primary-uid yes$' "pgpkey show -v did not decode self-signature metadata"
+assert_file_contains "$WORK_DIR/show_verbose.out" '^signature 46: subkey binding, v4, RSA encrypt/sign, SHA-256, created 2026-04-13, subkey 1, issuer 99d37c39fa2c23a8, issuer-fpr 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8, key-expires 2027-04-13 .* after 350778865 seconds, flags encrypt communications, encrypt storage$' "pgpkey show -v did not decode subkey binding metadata"
 
 "${TEST_BIN_DIR}/pgpkey" packets "$SAMPLE_KEY" > "$WORK_DIR/packets.out"
 assert_file_contains "$WORK_DIR/packets.out" '^packet 1: tag 6 (public key), length 525$' "pgpkey packets did not list the public-key packet"
