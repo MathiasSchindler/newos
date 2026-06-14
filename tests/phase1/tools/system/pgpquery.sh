@@ -7,6 +7,7 @@ phase1_setup pgpquery
 "${TEST_BIN_DIR}/pgpquery" --help > "$WORK_DIR/help.out" 2>&1
 assert_file_contains "$WORK_DIR/help.out" '^Usage: pgpquery ' "pgpquery --help did not print usage"
 assert_file_contains "$WORK_DIR/help.out" '.*--print-url' "pgpquery usage did not mention --print-url"
+assert_file_contains "$WORK_DIR/help.out" '.*--import-keyring' "pgpquery usage did not mention --import-keyring"
 
 "${TEST_BIN_DIR}/pgpquery" --print-url --server all 0x99D37C39FA2C23A8 test@example.com > "$WORK_DIR/urls.out"
 assert_file_contains "$WORK_DIR/urls.out" '^keys.openpgp.org: https://keys.openpgp.org/vks/v1/by-keyid/99d37c39fa2c23a8$' "pgpquery did not normalize key IDs for keys.openpgp.org"
@@ -40,6 +41,19 @@ assert_file_contains "$WORK_DIR/get_url.out" '^keyserver.ubuntu.com: https://key
 if grep 'keys.openpgp.org' "$WORK_DIR/get_url.out" >/dev/null 2>&1; then
     fail "pgpquery --get unexpectedly printed a keys.openpgp.org URL"
 fi
+
+if "${TEST_BIN_DIR}/pgpquery" --output "$WORK_DIR/key.asc" 99d37c39fa2c23a8 > "$WORK_DIR/output_without_get.out" 2> "$WORK_DIR/output_without_get.err"; then
+    fail "pgpquery --output succeeded without --get"
+fi
+assert_file_contains "$WORK_DIR/output_without_get.err" 'output requires --get' "pgpquery did not reject --output without --get"
+if "${TEST_BIN_DIR}/pgpquery" --get --output "$WORK_DIR/key.asc" 99d37c39fa2c23a8 ad6975a127ff8adc > "$WORK_DIR/output_many.out" 2> "$WORK_DIR/output_many.err"; then
+    fail "pgpquery --output accepted multiple selectors"
+fi
+assert_file_contains "$WORK_DIR/output_many.err" 'output accepts one selector' "pgpquery did not reject --output with multiple selectors"
+if "${TEST_BIN_DIR}/pgpquery" --import-keyring "$WORK_DIR/pubring.pgp" 99d37c39fa2c23a8 > "$WORK_DIR/import_without_get.out" 2> "$WORK_DIR/import_without_get.err"; then
+    fail "pgpquery --import-keyring succeeded without --get"
+fi
+assert_file_contains "$WORK_DIR/import_without_get.err" 'import-keyring requires --get' "pgpquery did not reject --import-keyring without --get"
 
 "${TEST_BIN_DIR}/pgpquery" --get --print-url --server mailvelope test@example.com > "$WORK_DIR/mailvelope_get_url.out"
 assert_file_contains "$WORK_DIR/mailvelope_get_url.out" '^keys.mailvelope.com: https://keys.mailvelope.com/pks/lookup?op=get&search=test%40example.com$' "pgpquery --get did not select the Mailvelope HKP get endpoint"

@@ -7,11 +7,12 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
+#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
 #define PGPKEY_PATH_CAPACITY 1024U
 #define PGPKEY_ERROR_CAPACITY 160U
 #define PGPKEY_ED25519_KEY_SIZE 32U
 #define PGPKEY_ED25519_SIGNATURE_SIZE 64U
+#define PGPKEY_MAX_ISSUERS 2048U
 
 typedef struct {
     const char *keyring_path;
@@ -45,6 +46,23 @@ typedef struct {
 } PgpKeyBuffer;
 
 typedef struct {
+    unsigned char key_id[PGP_KEY_ID_SIZE];
+    unsigned char fingerprint[PGP_FINGERPRINT_MAX_SIZE];
+    size_t fingerprint_size;
+    int has_fingerprint;
+} PgpKeyIssuerEntry;
+
+typedef struct {
+    PgpKeyIssuerEntry issuers[PGPKEY_MAX_ISSUERS];
+    size_t issuer_count;
+    unsigned char present_key_ids[PGPKEY_MAX_ISSUERS][PGP_KEY_ID_SIZE];
+    size_t present_key_id_count;
+    int external_only;
+    int json;
+    int overflow;
+} PgpKeyIssuerContext;
+
+typedef struct {
     const char *user_id;
     const char *secret_out;
     const char *public_out;
@@ -74,6 +92,18 @@ static void pgpkey_set_error(char *error, size_t error_size, const char *message
     if (error != 0 && error_size > 0U) {
         rt_copy_string(error, error_size, message != 0 ? message : "pgpkey error");
     }
+}
+
+static void pgpkey_write_error_path(const char *message, const char *path) {
+    char formatted[PGPKEY_ERROR_CAPACITY + 3U];
+    size_t length = message != 0 ? rt_strlen(message) : 0U;
+
+    if (length > PGPKEY_ERROR_CAPACITY - 1U) length = PGPKEY_ERROR_CAPACITY - 1U;
+    if (length != 0U) memcpy(formatted, message, length);
+    formatted[length++] = ':';
+    formatted[length++] = ' ';
+    formatted[length] = '\0';
+    tool_write_error("pgpkey", formatted, path != 0 ? path : "stdin");
 }
 
 static void print_usage(void) {
@@ -660,7 +690,7 @@ static int command_packets(int argc, char **argv, int argi) {
         char error[PGPKEY_ERROR_CAPACITY];
 
         if (load_openpgp_file(argv[argi], &data, &data_size, error, sizeof(error)) != 0) {
-            tool_write_error("pgpkey", error, argv[argi]);
+            pgpkey_write_error_path(error, argv[argi]);
             status = 1;
             argi += 1;
             continue;
@@ -685,6 +715,152 @@ static int command_packets(int argc, char **argv, int argi) {
         argi += 1;
     }
     return status;
+}
+
+static int pgpkey_key_id_list_contains(unsigned char ids[PGPKEY_MAX_ISSUERS][PGP_KEY_ID_SIZE], size_t count, const unsigned char key_id[PGP_KEY_ID_SIZE]) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (memcmp(ids[index], key_id, PGP_KEY_ID_SIZE) == 0) return 1;
+    }
+    return 0;
+}
+
+static int pgpkey_add_present_key_id(PgpKeyIssuerContext *ctx, const unsigned char key_id[PGP_KEY_ID_SIZE]) {
+    if (pgpkey_key_id_list_contains(ctx->present_key_ids, ctx->present_key_id_count, key_id)) return 0;
+    if (ctx->present_key_id_count >= PGPKEY_MAX_ISSUERS) {
+        ctx->overflow = 1;
+        return -1;
+    }
+    memcpy(ctx->present_key_ids[ctx->present_key_id_count++], key_id, PGP_KEY_ID_SIZE);
+    return 0;
+}
+
+static int pgpkey_add_issuer(PgpKeyIssuerContext *ctx, const unsigned char key_id[PGP_KEY_ID_SIZE], const unsigned char *fingerprint, size_t fingerprint_size) {
+    size_t index;
+
+    for (index = 0U; index < ctx->issuer_count; ++index) {
+        if (memcmp(ctx->issuers[index].key_id, key_id, PGP_KEY_ID_SIZE) == 0) {
+            if (!ctx->issuers[index].has_fingerprint && fingerprint != 0 && fingerprint_size <= PGP_FINGERPRINT_MAX_SIZE) {
+                memcpy(ctx->issuers[index].fingerprint, fingerprint, fingerprint_size);
+                ctx->issuers[index].fingerprint_size = fingerprint_size;
+                ctx->issuers[index].has_fingerprint = 1;
+            }
+            return 0;
+        }
+    }
+    if (ctx->issuer_count >= PGPKEY_MAX_ISSUERS) {
+        ctx->overflow = 1;
+        return -1;
+    }
+    memcpy(ctx->issuers[ctx->issuer_count].key_id, key_id, PGP_KEY_ID_SIZE);
+    if (fingerprint != 0 && fingerprint_size <= PGP_FINGERPRINT_MAX_SIZE) {
+        memcpy(ctx->issuers[ctx->issuer_count].fingerprint, fingerprint, fingerprint_size);
+        ctx->issuers[ctx->issuer_count].fingerprint_size = fingerprint_size;
+        ctx->issuers[ctx->issuer_count].has_fingerprint = 1;
+    }
+    ctx->issuer_count += 1U;
+    return 0;
+}
+
+static int collect_issuer_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpKeyIssuerContext *ctx = (PgpKeyIssuerContext *)ctx_ptr;
+    size_t index;
+
+    if (certificate->primary.fingerprint_size != 0U) (void)pgpkey_add_present_key_id(ctx, certificate->primary.key_id);
+    for (index = 0U; index < certificate->subkey_count; ++index) {
+        if (certificate->subkeys[index].fingerprint_size != 0U) (void)pgpkey_add_present_key_id(ctx, certificate->subkeys[index].key_id);
+    }
+    for (index = 0U; index < certificate->signature_info_count; ++index) {
+        const PgpSignatureInfo *signature = &certificate->signatures[index];
+        unsigned char key_id[PGP_KEY_ID_SIZE];
+        const unsigned char *fingerprint = 0;
+        size_t fingerprint_size = 0U;
+
+        if (signature->has_issuer_key_id) {
+            memcpy(key_id, signature->issuer_key_id, PGP_KEY_ID_SIZE);
+        } else if (signature->issuer_fingerprint_size >= PGP_KEY_ID_SIZE) {
+            memcpy(key_id, signature->issuer_fingerprint + signature->issuer_fingerprint_size - PGP_KEY_ID_SIZE, PGP_KEY_ID_SIZE);
+        } else {
+            continue;
+        }
+        if (signature->issuer_fingerprint_size != 0U) {
+            fingerprint = signature->issuer_fingerprint;
+            fingerprint_size = signature->issuer_fingerprint_size;
+        }
+        (void)pgpkey_add_issuer(ctx, key_id, fingerprint, fingerprint_size);
+    }
+    return 0;
+}
+
+static int collect_issuers_from_path(const char *path, PgpKeyIssuerContext *ctx) {
+    unsigned char *data = 0;
+    size_t data_size = 0U;
+    char error[PGPKEY_ERROR_CAPACITY];
+
+    if (load_openpgp_file(path, &data, &data_size, error, sizeof(error)) != 0) {
+        tool_write_error("pgpkey", "input failed: ", path != 0 ? path : "stdin");
+        return -1;
+    }
+    if (pgp_for_each_certificate(data, data_size, collect_issuer_callback, ctx, error, sizeof(error)) != 0) {
+        rt_free(data);
+        tool_write_error("pgpkey", error, 0);
+        return -1;
+    }
+    rt_free(data);
+    return ctx->overflow ? -1 : 0;
+}
+
+static int write_issuer_entry(const PgpKeyIssuerContext *ctx, const PgpKeyIssuerEntry *entry) {
+    if (ctx->json) {
+        if (tool_json_begin_event(1, "pgpkey", "stdout", "issuer") != 0) return -1;
+        if (rt_write_cstr(1, ",\"data\":{\"key_id\":\"") != 0 || write_hex_bytes(1, entry->key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '"') != 0) return -1;
+        if (entry->has_fingerprint) {
+            if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0 || write_hex_bytes(1, entry->fingerprint, entry->fingerprint_size) != 0 || rt_write_char(1, '"') != 0) return -1;
+        }
+        if (rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
+        return 0;
+    }
+    if (write_hex_bytes(1, entry->key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+    if (entry->has_fingerprint) {
+        if (rt_write_cstr(1, " ") != 0 || write_hex_bytes(1, entry->fingerprint, entry->fingerprint_size) != 0) return -1;
+    }
+    return rt_write_char(1, '\n');
+}
+
+static int command_issuers(const PgpKeyOptions *options, int argc, char **argv, int argi) {
+    PgpKeyIssuerContext ctx;
+    size_t index;
+    int status = 0;
+
+    rt_memset(&ctx, 0, sizeof(ctx));
+    ctx.json = options->json;
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--external") == 0) {
+            ctx.external_only = 1;
+            argi += 1;
+            continue;
+        }
+        break;
+    }
+    if (argi >= argc) {
+        if (collect_issuers_from_path(options->keyring_path, &ctx) != 0) status = 1;
+    } else {
+        while (argi < argc) {
+            if (collect_issuers_from_path(argv[argi], &ctx) != 0) status = 1;
+            argi += 1;
+        }
+    }
+    if (ctx.overflow) {
+        tool_write_error("pgpkey", "too many issuer IDs", 0);
+        status = 1;
+    }
+    if (status != 0) return status;
+    for (index = 0U; index < ctx.issuer_count; ++index) {
+        if (ctx.external_only && pgpkey_key_id_list_contains(ctx.present_key_ids, ctx.present_key_id_count, ctx.issuers[index].key_id)) continue;
+        if (write_issuer_entry(&ctx, &ctx.issuers[index]) != 0) return 1;
+    }
+    return 0;
 }
 
 static int find_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
@@ -1261,7 +1437,7 @@ static int command_import(const PgpKeyOptions *options, int argc, char **argv, i
 
         rt_memset(&first, 0, sizeof(first));
         if (load_openpgp_file(argv[argi], &data, &data_size, error, sizeof(error)) != 0) {
-            tool_write_error("pgpkey", error, argv[argi]);
+            pgpkey_write_error_path(error, argv[argi]);
             status = 1;
             argi += 1;
             continue;
@@ -1430,6 +1606,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(command, "packets") == 0) {
         return command_packets(argc, argv, opt.argi);
+    }
+    if (rt_strcmp(command, "issuers") == 0) {
+        return command_issuers(&options, argc, argv, opt.argi);
     }
     if (rt_strcmp(command, "generate") == 0 || rt_strcmp(command, "gen") == 0) {
         return command_generate(&options, argc, argv, opt.argi);

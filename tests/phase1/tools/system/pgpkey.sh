@@ -5,6 +5,8 @@ set -eu
 phase1_setup pgpkey
 
 SAMPLE_KEY="$ROOT_DIR/experimental/pgp-keys/86BBADD51B38D4F21FE8C46C99D37C39FA2C23A8.asc"
+SPIEGEL_KEY="$ROOT_DIR/experimental/pgp-keys/SPIEGEL_Verlag_Hamburg_27FF8ADC_Public.asc.txt"
+RWIEGAND_KEY="$ROOT_DIR/experimental/pgp-keys/rwiegand.asc"
 KEYRING="$WORK_DIR/pubring.pgp"
 
 "${TEST_BIN_DIR}/pgpkey" show "$SAMPLE_KEY" > "$WORK_DIR/show.out"
@@ -40,6 +42,18 @@ assert_file_contains "$WORK_DIR/show_verbose.out" '^signature 46: subkey binding
 "${TEST_BIN_DIR}/pgpkey" packets "$SAMPLE_KEY" > "$WORK_DIR/packets.out"
 assert_file_contains "$WORK_DIR/packets.out" '^packet 1: tag 6 (public key), length 525$' "pgpkey packets did not list the public-key packet"
 assert_file_contains "$WORK_DIR/packets.out" 'tag 14 (public subkey)' "pgpkey packets did not list the public subkey"
+
+"${TEST_BIN_DIR}/pgpkey" issuers "$SAMPLE_KEY" > "$WORK_DIR/issuers.out"
+assert_file_contains "$WORK_DIR/issuers.out" '^99d37c39fa2c23a8 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey issuers did not report self-issued signatures with issuer fingerprint"
+"${TEST_BIN_DIR}/pgpkey" issuers --external "$SAMPLE_KEY" "$SPIEGEL_KEY" "$RWIEGAND_KEY" > "$WORK_DIR/external_issuers.out"
+assert_file_contains "$WORK_DIR/external_issuers.out" '^1d9a6fc1222685f3$' "pgpkey issuers --external did not report an external issuer key ID"
+assert_file_contains "$WORK_DIR/external_issuers.out" '^0e2864d1bc71fa99$' "pgpkey issuers --external did not report the missing external issuer key ID"
+if grep '^99d37c39fa2c23a8' "$WORK_DIR/external_issuers.out" >/dev/null 2>&1; then
+    fail "pgpkey issuers --external included a key already present in the input"
+fi
+"${TEST_BIN_DIR}/pgpkey" --json issuers --external "$SPIEGEL_KEY" > "$WORK_DIR/issuers.jsonl"
+assert_file_contains "$WORK_DIR/issuers.jsonl" '"event":"issuer"' "pgpkey --json issuers did not emit issuer events"
+assert_file_contains "$WORK_DIR/issuers.jsonl" '"key_id":"1d9a6fc1222685f3"' "pgpkey --json issuers did not report issuer key IDs"
 
 if "${TEST_BIN_DIR}/pgpkey" generate --userid "Test User <test@example.com>" --out "$WORK_DIR/secret.asc" --public-out "$WORK_DIR/public.asc" > "$WORK_DIR/generate_no_ack.out" 2> "$WORK_DIR/generate_no_ack.err"; then
     fail "pgpkey generate created an unprotected secret key without --no-passphrase"

@@ -7,7 +7,7 @@ pgpquery - query public OpenPGP keyservers
 ## SYNOPSIS
 
 ```
-pgpquery [--server NAME|URL] [--json] [--get] [--print-url] [--timeout DURATION] SELECTOR...
+pgpquery [--server NAME|URL] [--json] [--get] [-o OUT|--import-keyring KEYRING] [--print-url] [--timeout DURATION] SELECTOR...
 ```
 
 ## DESCRIPTION
@@ -32,7 +32,9 @@ keyserver response only says that a server returned data for a selector.
 
 - `-s NAME`, `--server NAME` - choose a server. NAME may be `all`, `openpgp`, `keys.openpgp.org`, `ubuntu`, `keyserver.ubuntu.com`, `mailvelope`, `keys.mailvelope.com`, `mit`, `pgp.mit.edu`, `wkd`, or an `http://` or `https://` base URL.
 - `--json` - emit JSON Lines events instead of human-readable text.
-- `--get` - fetch armored certificate data from an HKP server and write it to standard output. With `all` or `openpgp`, this currently selects `keyserver.ubuntu.com` because `keys.openpgp.org` has separate lookup paths.
+- `--get` - fetch armored certificate data from an HKP server and write clean importable key material to standard output. With `all` or `openpgp`, this currently selects `keyserver.ubuntu.com` because `keys.openpgp.org` has separate lookup paths.
+- `-o OUT`, `--output OUT` - with `--get`, write the fetched certificate to OUT instead of standard output. This option accepts exactly one selector.
+- `--import-keyring KEYRING` - with `--get`, import fetched certificates directly into a `pgpkey` binary keyring, reporting `imported` or `unchanged` fingerprints.
 - `--print-url` - print the URL or URLs that would be queried, without using the network.
 - `-T DURATION`, `--timeout DURATION` - set the plain TCP socket timeout. Durations use the shared tool format, such as `5s` or `1000ms`.
 - `-h`, `--help` - show usage.
@@ -58,7 +60,9 @@ https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&search=SELECTOR
 ```
 
 With `--get`, the HKP `op=get` endpoint is used instead and the returned armored
-certificate is written directly to standard output.
+certificate is written directly to standard output, OUT, or KEYRING. HTTP
+chunked-transfer framing is decoded before output, and fetched certificates are
+checked for importable OpenPGP public-key material.
 
 `keys.mailvelope.com` and `pgp.mit.edu` are available as explicit HKP-style
 servers:
@@ -90,6 +94,26 @@ in `/` or `=`.
 When `--json` is used, `pgpquery` emits shared `newos.tool.v1` JSON Lines
 events. Event names include `query_url`, `certificate`, `hkp_index`, and
 `hkp_uid`, depending on the server and operation.
+
+## FETCH AND IMPORT
+
+For a manual two-step workflow, use `--get -o FILE` and then inspect or import
+FILE with `pgpkey`:
+
+```
+pgpquery --server ubuntu --get -o alice.asc KEYID
+pgpkey show alice.asc
+pgpkey -k pubring.pgp import alice.asc
+```
+
+For a direct fetch/import workflow, use `--import-keyring`:
+
+```
+pgpquery --server ubuntu --get --import-keyring pubring.pgp KEYID...
+```
+
+The keyring format is the same append-only binary keyring maintained by
+`pgpkey import`.
 
 ## PRIVACY
 

@@ -11,6 +11,7 @@ pgpkey [-k KEYRING] [-v] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]
 
 pgpkey show [-v] [FILE ...]
 pgpkey packets FILE ...
+pgpkey issuers [--external] [FILE ...]
 pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]
 pgpkey import FILE ...
 pgpkey list
@@ -37,6 +38,7 @@ keyring.
 
 - `show [-v] [FILE ...]` - print certificate summaries for files, or the default keyring when no file is given.
 - `packets FILE ...` - print packet tags and packet lengths.
+- `issuers [--external] [FILE ...]` - list unique signature issuer key IDs found in certificates, optionally excluding issuer IDs already present as primary keys or subkeys in the same input set.
 - `generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]` - generate an Ed25519 OpenPGP secret key and matching public certificate.
 - `import FILE ...` - decode public key files and append new certificates to the keyring.
 - `list` - show certificates in the keyring.
@@ -116,14 +118,30 @@ The default keyring path is taken from `PGPKEY_KEYRING` when set. Otherwise,
 Fingerprints may be written as continuous hex, colon-separated hex, or spaced
 hex. For lookup, a full v4 fingerprint or the trailing 64-bit key ID is accepted.
 
+## ISSUERS
+
+`pgpkey issuers FILE...` scans decoded signature metadata and prints one unique
+issuer per line. The first column is always the 64-bit issuer key ID. When an
+issuer fingerprint subpacket is present, the full fingerprint is printed as a
+second column.
+
+`--external` suppresses issuer key IDs that are already present as primary keys
+or subkeys in the same input set. This is useful when building an experimental
+keychain from referenced third-party certifiers:
+
+```
+pgpkey issuers --external *.asc
+```
+
 ## JSON Output
 
 When `--json` is used, `pgpkey show` and `pgpkey list` emit `certificate` events
 with fingerprint, key ID, algorithm, user IDs, subkey count, signature count,
-and decoded signature-metadata count. `pgpkey import` emits `import` events for
-newly imported certificates. `pgpkey generate` emits one `generate` event with
-the generated fingerprint, key ID, user ID, output paths, algorithm, curve, and
-protection status.
+and decoded signature-metadata count. `pgpkey issuers` emits `issuer` events
+with key IDs and issuer fingerprints when available. `pgpkey import` emits
+`import` events for newly imported certificates. `pgpkey generate` emits one
+`generate` event with the generated fingerprint, key ID, user ID, output paths,
+algorithm, curve, and protection status.
 
 ## SEE ALSO
 
