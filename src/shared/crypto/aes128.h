@@ -26,5 +26,6 @@ void crypto_aes256_init(CryptoAes256Context *ctx, const unsigned char key[CRYPTO
 void crypto_aes128_encrypt_block(const CryptoAes128Context *ctx, const unsigned char in[CRYPTO_AES128_BLOCK_SIZE], unsigned char out[CRYPTO_AES128_BLOCK_SIZE]);
 void crypto_aes128_decrypt_block(const CryptoAes128Context *ctx, const unsigned char in[CRYPTO_AES128_BLOCK_SIZE], unsigned char out[CRYPTO_AES128_BLOCK_SIZE]);
 void crypto_aes256_encrypt_block(const CryptoAes256Context *ctx, const unsigned char in[CRYPTO_AES256_BLOCK_SIZE], unsigned char out[CRYPTO_AES256_BLOCK_SIZE]);
+void crypto_aes256_decrypt_block(const CryptoAes256Context *ctx, const unsigned char in[CRYPTO_AES256_BLOCK_SIZE], unsigned char out[CRYPTO_AES256_BLOCK_SIZE]);
 
 #endif

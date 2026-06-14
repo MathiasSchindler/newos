@@ -313,6 +313,14 @@ int pgp_write_private_key_armor(int fd, const unsigned char *data, size_t size) 
     return pgp_write_armor_block(fd, "PRIVATE KEY BLOCK", data, size);
 }
 
+int pgp_write_message_armor(int fd, const unsigned char *data, size_t size) {
+    return pgp_write_armor_block(fd, "MESSAGE", data, size);
+}
+
+int pgp_write_signature_armor(int fd, const unsigned char *data, size_t size) {
+    return pgp_write_armor_block(fd, "SIGNATURE", data, size);
+}
+
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size) {
     reader->data = data;
     reader->size = size;
@@ -431,9 +439,34 @@ static int pgp_read_mpi_bits(const unsigned char *body, size_t body_size, size_t
     return 0;
 }
 
-static int pgp_skip_ec_public_key_material(const unsigned char *body, size_t body_size, size_t *offset_io, char *error, size_t error_size) {
+static int pgp_read_mpi_view(const unsigned char *body, size_t body_size, size_t *offset_io, const unsigned char **data_out, size_t *size_out, unsigned int *bits_out) {
+    unsigned int bits;
+    size_t bytes;
+
+    if (*offset_io + 2U > body_size) return -1;
+    bits = pgp_read_u16_be(body + *offset_io);
+    *offset_io += 2U;
+    bytes = ((size_t)bits + 7U) / 8U;
+    if (bytes > body_size - *offset_io) return -1;
+    *data_out = body + *offset_io;
+    *size_out = bytes;
+    *bits_out = bits;
+    *offset_io += bytes;
+    return 0;
+}
+
+static void pgp_store_public_material(PgpPublicKeyInfo *info, const unsigned char *data, size_t size) {
+    size_t copy_size = size < sizeof(info->public_material) ? size : sizeof(info->public_material);
+
+    if (copy_size != 0U) memcpy(info->public_material, data, copy_size);
+    info->public_material_size = copy_size;
+}
+
+static int pgp_skip_ec_public_key_material(PgpPublicKeyInfo *info, const unsigned char *body, size_t body_size, size_t *offset_io, char *error, size_t error_size) {
     unsigned int oid_size;
     unsigned int point_bits;
+    const unsigned char *point;
+    size_t point_size;
 
     if (*offset_io >= body_size) {
         pgp_set_error(error, error_size, "truncated OpenPGP EC curve OID");
@@ -445,14 +478,16 @@ static int pgp_skip_ec_public_key_material(const unsigned char *body, size_t bod
         return -1;
     }
     *offset_io += oid_size;
-    if (pgp_read_mpi_bits(body, body_size, offset_io, &point_bits) != 0) {
+    if (pgp_read_mpi_view(body, body_size, offset_io, &point, &point_size, &point_bits) != 0) {
         pgp_set_error(error, error_size, "truncated OpenPGP EC public point");
         return -1;
     }
+    if (point_size == 33U && point[0] == 0x40U) pgp_store_public_material(info, point + 1U, point_size - 1U);
+    else pgp_store_public_material(info, point, point_size);
     return 0;
 }
 
-static int pgp_skip_public_key_material(unsigned int algorithm, const unsigned char *body, size_t body_size, size_t *offset_io, unsigned int *bits_out, char *error, size_t error_size) {
+static int pgp_skip_public_key_material(PgpPublicKeyInfo *info, unsigned int algorithm, const unsigned char *body, size_t body_size, size_t *offset_io, unsigned int *bits_out, char *error, size_t error_size) {
     unsigned int first_bits = 0U;
     unsigned int ignored_bits = 0U;
 
@@ -487,7 +522,7 @@ static int pgp_skip_public_key_material(unsigned int algorithm, const unsigned c
         return 0;
     }
     if (algorithm == 18U || algorithm == 19U || algorithm == 22U) {
-        if (pgp_skip_ec_public_key_material(body, body_size, offset_io, error, error_size) != 0) return -1;
+        if (pgp_skip_ec_public_key_material(info, body, body_size, offset_io, error, error_size) != 0) return -1;
         if (algorithm == 18U) {
             unsigned int kdf_size;
 
@@ -502,6 +537,16 @@ static int pgp_skip_public_key_material(unsigned int algorithm, const unsigned c
             }
             *offset_io += kdf_size;
         }
+        *bits_out = 256U;
+        return 0;
+    }
+    if (algorithm == 25U) {
+        if (*offset_io + 32U > body_size) {
+            pgp_set_error(error, error_size, "truncated OpenPGP X25519 public key material");
+            return -1;
+        }
+        pgp_store_public_material(info, body + *offset_io, 32U);
+        *offset_io += 32U;
         *bits_out = 256U;
         return 0;
     }
@@ -527,7 +572,7 @@ int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const 
     info->created = pgp_read_u32_be(body + 1U);
     info->algorithm = body[5];
     offset = 6U;
-    if (pgp_skip_public_key_material(info->algorithm, body, body_size, &offset, &info->bits, error, error_size) != 0) return -1;
+    if (pgp_skip_public_key_material(info, info->algorithm, body, body_size, &offset, &info->bits, error, error_size) != 0) return -1;
     public_body_size = tag == 5U || tag == 7U ? offset : body_size;
     if (public_body_size <= 65535U) {
         CryptoSha1Context sha1;

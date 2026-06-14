@@ -178,9 +178,12 @@
 
 #define FOREACH_PGP_SOURCE(X) \
     X("src/shared/pgp.c") \
+    X("src/shared/crypto/aes128.c") \
     X("src/shared/crypto/sha1.c") \
+    X("src/shared/crypto/sha256.c") \
     X("src/shared/crypto/sha512.c") \
     X("src/shared/crypto/crypto_util.c") \
+    X("src/shared/crypto/curve25519.c") \
     X("src/shared/crypto/ed25519.c")
 
 /* ── shell (sh) private implementation ──────────────────────────────────── */

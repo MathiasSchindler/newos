@@ -289,3 +289,24 @@ void crypto_aes128_decrypt_block(const CryptoAes128Context *ctx, const unsigned 
 	memcpy(out, st, 16);
 	memset(st, 0, sizeof(st));
 }
+
+void crypto_aes256_decrypt_block(const CryptoAes256Context *ctx, const unsigned char in[CRYPTO_AES256_BLOCK_SIZE], unsigned char out[CRYPTO_AES256_BLOCK_SIZE]) {
+	unsigned char st[16];
+	memcpy(st, in, 16);
+
+	add_round_key(st, &ctx->rk[CRYPTO_AES256_ROUNDS * 4u]);
+
+	for (unsigned int round = CRYPTO_AES256_ROUNDS - 1; round > 0; round--) {
+		inv_shift_rows(st);
+		inv_sub_bytes(st);
+		add_round_key(st, &ctx->rk[round * 4u]);
+		inv_mix_columns(st);
+	}
+
+	inv_shift_rows(st);
+	inv_sub_bytes(st);
+	add_round_key(st, &ctx->rk[0]);
+
+	memcpy(out, st, 16);
+	memset(st, 0, sizeof(st));
+}

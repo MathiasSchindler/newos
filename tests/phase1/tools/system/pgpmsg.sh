@@ -5,6 +5,9 @@ set -eu
 phase1_setup pgpmsg
 
 SAMPLE_KEY="$ROOT_DIR/experimental/pgp-keys/86BBADD51B38D4F21FE8C46C99D37C39FA2C23A8.asc"
+PGPKEY_BIN="$TEST_BIN_DIR/pgpkey"
+
+printf 'hello pgpmsg\n' > "$WORK_DIR/plain.txt"
 
 "${TEST_BIN_DIR}/pgpmsg" --help > "$WORK_DIR/help.out" 2>&1
 assert_file_contains "$WORK_DIR/help.out" '^Usage: pgpmsg ' "pgpmsg --help did not print usage"
@@ -27,17 +30,25 @@ assert_file_contains "$WORK_DIR/verify.out" '^signature: not checked$' "pgpmsg v
 assert_file_contains "$WORK_DIR/verify.out" '^issuer: 99d37c39fa2c23a8$' "pgpmsg verify did not report the signature issuer key ID"
 assert_file_contains "$WORK_DIR/verify.err" 'cryptographic verification is not implemented yet' "pgpmsg verify did not explain the nonzero status"
 
-if "${TEST_BIN_DIR}/pgpmsg" encrypt -r 99d37c39fa2c23a8 "$WORK_DIR/plain.txt" > "$WORK_DIR/encrypt.out" 2> "$WORK_DIR/encrypt.err"; then
-    fail "pgpmsg encrypt unexpectedly succeeded"
+if [ ! -x "$PGPKEY_BIN" ]; then
+    PGPKEY_BIN="$ROOT_DIR/build/host-macos-aarch64/pgpkey"
 fi
-assert_file_contains "$WORK_DIR/encrypt.err" 'OpenPGP encryption is not implemented yet' "pgpmsg encrypt did not report an explicit unsupported operation"
+"$PGPKEY_BIN" generate --userid "Message Signer <signer@example.com>" --out "$WORK_DIR/secret.asc" --public-out "$WORK_DIR/public.asc" --no-passphrase > "$WORK_DIR/keygen.out"
+SIGNER_FPR=$(sed -n 's/^generated: //p' "$WORK_DIR/keygen.out" | head -1)
+"${TEST_BIN_DIR}/pgpmsg" sign --detach --armor -s "$WORK_DIR/secret.asc" -u "$SIGNER_FPR" -o "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt"
+assert_file_contains "$WORK_DIR/plain.sig.asc" '^-----BEGIN PGP SIGNATURE-----$' "pgpmsg sign did not write an armored detached signature"
+"${TEST_BIN_DIR}/pgpmsg" verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt" > "$WORK_DIR/verify_good.out"
+assert_file_contains "$WORK_DIR/verify_good.out" '^signature: good$' "pgpmsg verify did not report a good detached signature"
+printf 'tampered\n' > "$WORK_DIR/tampered.txt"
+if "${TEST_BIN_DIR}/pgpmsg" verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/tampered.txt" > "$WORK_DIR/verify_bad.out" 2> "$WORK_DIR/verify_bad.err"; then
+    fail "pgpmsg verify accepted a tampered detached signature"
+fi
+assert_file_contains "$WORK_DIR/verify_bad.out" '^signature: bad$' "pgpmsg verify did not report a bad detached signature"
 
-if "${TEST_BIN_DIR}/pgpmsg" decrypt "$WORK_DIR/message.pgp" > "$WORK_DIR/decrypt.out" 2> "$WORK_DIR/decrypt.err"; then
-    fail "pgpmsg decrypt unexpectedly succeeded"
-fi
-assert_file_contains "$WORK_DIR/decrypt.err" 'OpenPGP decryption is not implemented yet' "pgpmsg decrypt did not report an explicit unsupported operation"
-
-if "${TEST_BIN_DIR}/pgpmsg" sign -u 99d37c39fa2c23a8 "$WORK_DIR/plain.txt" > "$WORK_DIR/sign.out" 2> "$WORK_DIR/sign.err"; then
-    fail "pgpmsg sign unexpectedly succeeded"
-fi
-assert_file_contains "$WORK_DIR/sign.err" 'OpenPGP signing is not implemented yet' "pgpmsg sign did not report an explicit unsupported operation"
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" --armor -o "$WORK_DIR/plain.pgp.asc" "$WORK_DIR/plain.txt"
+assert_file_contains "$WORK_DIR/plain.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored message"
+"${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/plain.pgp.asc" > "$WORK_DIR/encrypted.inspect"
+assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 1 (public-key encrypted session key)' "pgpmsg encrypt did not write a public-key encrypted session key packet"
+assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg encrypt did not write an integrity-protected encrypted data packet"
+"${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain.dec" "$WORK_DIR/plain.pgp.asc"
+cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain.dec" || fail "pgpmsg decrypt did not recover the original plaintext"

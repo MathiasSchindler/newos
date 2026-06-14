@@ -28,6 +28,8 @@ typedef struct {
     unsigned char fingerprint[PGP_FINGERPRINT_MAX_SIZE];
     size_t fingerprint_size;
     unsigned char key_id[PGP_KEY_ID_SIZE];
+    unsigned char public_material[64];
+    size_t public_material_size;
     int present;
 } PgpPublicKeyInfo;
 
@@ -97,6 +99,8 @@ typedef int (*PgpCertificateCallback)(const PgpCertificateInfo *certificate, voi
 int pgp_decode_input(const unsigned char *input, size_t input_size, unsigned char **data_out, size_t *size_out, char *error, size_t error_size);
 int pgp_write_public_key_armor(int fd, const unsigned char *data, size_t size);
 int pgp_write_private_key_armor(int fd, const unsigned char *data, size_t size);
+int pgp_write_message_armor(int fd, const unsigned char *data, size_t size);
+int pgp_write_signature_armor(int fd, const unsigned char *data, size_t size);
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size);
 int pgp_packet_reader_next(PgpPacketReader *reader, PgpPacket *packet_out, int *has_packet_out, char *error, size_t error_size);
 int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const unsigned char *body, size_t body_size, char *error, size_t error_size);

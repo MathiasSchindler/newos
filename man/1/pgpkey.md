@@ -53,13 +53,14 @@ keyring.
 
 ## GENERATE
 
-`pgpkey generate` currently implements the first narrow key-generation path: an
-Ed25519 primary key that can certify and sign. It writes two ASCII-armored
-files: an unencrypted private key block and a matching public key block. Both
-outputs must be file paths; standard output is refused for generated key
-material. The public certificate includes a user ID and a self-signature with
-creation time, issuer metadata, key flags, algorithm preferences, feature flags,
-primary-UID marker, and key expiration metadata.
+`pgpkey generate` currently implements a modern key-generation path: an Ed25519
+primary key that can certify and sign, plus an ECDH Curve25519/X25519 encryption
+subkey. It writes two ASCII-armored files: an unencrypted private key block and
+a matching public key block. Both outputs must be file paths; standard output is
+refused for generated key material. The public certificate includes a user ID,
+a self-signature, and a subkey binding signature with creation time, issuer
+metadata, key flags, algorithm preferences, feature flags, primary-UID marker,
+and key expiration metadata.
 
 Required options are:
 
@@ -74,8 +75,8 @@ Optional generation options are:
 - `--algorithm ed25519` - select the only implemented generation algorithm.
 - `--armor` - accepted for clarity; generated output is always ASCII-armored.
 
-Passphrase-protected secret-key packets, S2K encryption, encryption subkeys,
-revocation certificates, and trust assignment are not implemented yet. Without
+Passphrase-protected secret-key packets, S2K encryption, revocation
+certificates, and trust assignment are not implemented yet. Without
 `--no-passphrase`, generation refuses to run so unprotected private keys cannot
 be created accidentally.
 

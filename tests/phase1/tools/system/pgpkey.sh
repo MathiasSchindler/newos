@@ -58,9 +58,12 @@ assert_file_contains "$WORK_DIR/generated_public_show.out" '^uid: Test User <tes
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^primary-uid: Test User <test@example.com>$' "pgpkey show did not mark the generated primary user ID"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^key-flags: certify, sign$' "pgpkey show did not decode generated key flags"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^key-expires: ' "pgpkey show did not decode generated expiration metadata"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey: public subkey, v4, ECDH, 256 bits, created ' "pgpkey generate did not add an X25519 encryption subkey"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey-flags: encrypt communications, encrypt storage$' "pgpkey show did not decode generated encryption subkey flags"
 
 "${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/secret.asc" > "$WORK_DIR/generated_secret_show.out"
 assert_file_contains "$WORK_DIR/generated_secret_show.out" '^primary: secret primary, v4, EdDSA, 256 bits, created ' "pgpkey show did not summarize the generated Ed25519 private key"
+assert_file_contains "$WORK_DIR/generated_secret_show.out" '^subkey: secret subkey, v4, ECDH, 256 bits, created ' "pgpkey show did not summarize the generated X25519 private subkey"
 PUBLIC_FPR=$(sed -n 's/^fingerprint: //p' "$WORK_DIR/generated_public_show.out" | head -1)
 SECRET_FPR=$(sed -n 's/^fingerprint: //p' "$WORK_DIR/generated_secret_show.out" | head -1)
 if [ -z "$PUBLIC_FPR" ] || [ "$PUBLIC_FPR" != "$SECRET_FPR" ]; then
