@@ -285,12 +285,12 @@ static int pgp_write_base64_data(int fd, const unsigned char *data, size_t size,
     return 0;
 }
 
-int pgp_write_public_key_armor(int fd, const unsigned char *data, size_t size) {
+static int pgp_write_armor_block(int fd, const char *kind, const unsigned char *data, size_t size) {
     unsigned int column = 0U;
     unsigned int crc;
     unsigned char crc_bytes[3];
 
-    if (rt_write_cstr(fd, "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n") != 0) return -1;
+    if (rt_write_cstr(fd, "-----BEGIN PGP ") != 0 || rt_write_cstr(fd, kind) != 0 || rt_write_cstr(fd, "-----\n\n") != 0) return -1;
     if (pgp_write_base64_data(fd, data, size, &column) != 0) return -1;
     if (column != 0U && rt_write_char(fd, '\n') != 0) return -1;
     crc = pgp_crc24_update(PGP_ARMOR_CRC24_INIT, data, size);
@@ -301,7 +301,16 @@ int pgp_write_public_key_armor(int fd, const unsigned char *data, size_t size) {
     column = 0U;
     if (pgp_write_base64_data(fd, crc_bytes, sizeof(crc_bytes), &column) != 0) return -1;
     if (column != 0U && rt_write_char(fd, '\n') != 0) return -1;
-    return rt_write_cstr(fd, "-----END PGP PUBLIC KEY BLOCK-----\n");
+    if (rt_write_cstr(fd, "-----END PGP ") != 0 || rt_write_cstr(fd, kind) != 0) return -1;
+    return rt_write_cstr(fd, "-----\n");
+}
+
+int pgp_write_public_key_armor(int fd, const unsigned char *data, size_t size) {
+    return pgp_write_armor_block(fd, "PUBLIC KEY BLOCK", data, size);
+}
+
+int pgp_write_private_key_armor(int fd, const unsigned char *data, size_t size) {
+    return pgp_write_armor_block(fd, "PRIVATE KEY BLOCK", data, size);
 }
 
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size) {
@@ -422,9 +431,86 @@ static int pgp_read_mpi_bits(const unsigned char *body, size_t body_size, size_t
     return 0;
 }
 
+static int pgp_skip_ec_public_key_material(const unsigned char *body, size_t body_size, size_t *offset_io, char *error, size_t error_size) {
+    unsigned int oid_size;
+    unsigned int point_bits;
+
+    if (*offset_io >= body_size) {
+        pgp_set_error(error, error_size, "truncated OpenPGP EC curve OID");
+        return -1;
+    }
+    oid_size = body[(*offset_io)++];
+    if (oid_size > body_size - *offset_io) {
+        pgp_set_error(error, error_size, "truncated OpenPGP EC curve OID");
+        return -1;
+    }
+    *offset_io += oid_size;
+    if (pgp_read_mpi_bits(body, body_size, offset_io, &point_bits) != 0) {
+        pgp_set_error(error, error_size, "truncated OpenPGP EC public point");
+        return -1;
+    }
+    return 0;
+}
+
+static int pgp_skip_public_key_material(unsigned int algorithm, const unsigned char *body, size_t body_size, size_t *offset_io, unsigned int *bits_out, char *error, size_t error_size) {
+    unsigned int first_bits = 0U;
+    unsigned int ignored_bits = 0U;
+
+    if (algorithm == 1U || algorithm == 2U || algorithm == 3U) {
+        if (pgp_read_mpi_bits(body, body_size, offset_io, &first_bits) != 0 ||
+            pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0) {
+            pgp_set_error(error, error_size, "truncated RSA public key material");
+            return -1;
+        }
+        *bits_out = first_bits;
+        return 0;
+    }
+    if (algorithm == 16U) {
+        if (pgp_read_mpi_bits(body, body_size, offset_io, &first_bits) != 0 ||
+            pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0 ||
+            pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0) {
+            pgp_set_error(error, error_size, "truncated Elgamal public key material");
+            return -1;
+        }
+        *bits_out = first_bits;
+        return 0;
+    }
+    if (algorithm == 17U) {
+        if (pgp_read_mpi_bits(body, body_size, offset_io, &first_bits) != 0 ||
+            pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0 ||
+            pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0 ||
+            pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0) {
+            pgp_set_error(error, error_size, "truncated DSA public key material");
+            return -1;
+        }
+        *bits_out = first_bits;
+        return 0;
+    }
+    if (algorithm == 18U || algorithm == 19U || algorithm == 22U) {
+        if (pgp_skip_ec_public_key_material(body, body_size, offset_io, error, error_size) != 0) return -1;
+        if (algorithm == 18U) {
+            unsigned int kdf_size;
+
+            if (*offset_io >= body_size) {
+                pgp_set_error(error, error_size, "truncated OpenPGP ECDH KDF parameters");
+                return -1;
+            }
+            kdf_size = body[(*offset_io)++];
+            if (kdf_size > body_size - *offset_io) {
+                pgp_set_error(error, error_size, "truncated OpenPGP ECDH KDF parameters");
+                return -1;
+            }
+            *offset_io += kdf_size;
+        }
+        *bits_out = 256U;
+        return 0;
+    }
+    return 0;
+}
+
 int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const unsigned char *body, size_t body_size, char *error, size_t error_size) {
     size_t offset;
-    unsigned int first_bits = 0U;
+    size_t public_body_size;
 
     rt_memset(info, 0, sizeof(*info));
     if (body_size < 6U) {
@@ -441,27 +527,18 @@ int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const 
     info->created = pgp_read_u32_be(body + 1U);
     info->algorithm = body[5];
     offset = 6U;
-    if (info->algorithm == 1U || info->algorithm == 2U || info->algorithm == 3U) {
-        if (pgp_read_mpi_bits(body, body_size, &offset, &first_bits) != 0) {
-            pgp_set_error(error, error_size, "truncated RSA public key material");
-            return -1;
-        }
-        info->bits = first_bits;
-    } else if (info->algorithm == 16U || info->algorithm == 17U) {
-        if (pgp_read_mpi_bits(body, body_size, &offset, &first_bits) == 0) {
-            info->bits = first_bits;
-        }
-    }
-    if (body_size <= 65535U) {
+    if (pgp_skip_public_key_material(info->algorithm, body, body_size, &offset, &info->bits, error, error_size) != 0) return -1;
+    public_body_size = tag == 5U || tag == 7U ? offset : body_size;
+    if (public_body_size <= 65535U) {
         CryptoSha1Context sha1;
         unsigned char prefix[3];
 
         prefix[0] = 0x99U;
-        prefix[1] = (unsigned char)((body_size >> 8U) & 0xffU);
-        prefix[2] = (unsigned char)(body_size & 0xffU);
+        prefix[1] = (unsigned char)((public_body_size >> 8U) & 0xffU);
+        prefix[2] = (unsigned char)(public_body_size & 0xffU);
         crypto_sha1_init(&sha1);
         crypto_sha1_update(&sha1, prefix, sizeof(prefix));
-        crypto_sha1_update(&sha1, body, body_size);
+        crypto_sha1_update(&sha1, body, public_body_size);
         crypto_sha1_final(&sha1, info->fingerprint);
         info->fingerprint_size = CRYPTO_SHA1_DIGEST_SIZE;
         memcpy(info->key_id, info->fingerprint + CRYPTO_SHA1_DIGEST_SIZE - PGP_KEY_ID_SIZE, PGP_KEY_ID_SIZE);
