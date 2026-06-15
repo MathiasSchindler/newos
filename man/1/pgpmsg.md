@@ -57,6 +57,15 @@ encryption are present for interoperability with existing certificates and
 messages. They should not be used for new generated keys unless compatibility
 requires it.
 
+Encryption does not compress by default. `--compress=zlib` is available for
+ordinary file encryption, interoperability, and explicit size reduction, but
+compression can leak information through ciphertext length when attacker-chosen
+plaintext is compressed together with hidden secrets and an attacker can observe
+or repeatedly query message sizes. Leave compression disabled for secret-bearing
+templates, tokens, cookies, protocol responses, or other attacker-influenced
+plaintext. This is a length side-channel consideration, not a legacy-crypto
+deprecation like Elgamal or CFB+MDC.
+
 ## COMMANDS
 
 - `inspect [-v] [FILE]` - decode binary or ASCII-armored OpenPGP input and list packet tags and body lengths. For encrypted messages, it also reports visible, non-secret packet metadata such as PKESK version, recipient key ID or fingerprint, public-key algorithm, encrypted MPI sizes, SEIPD version, and v2 SEIPD cipher/AEAD header fields. With `-v`, also report input/armor sizing, verified armor CRC24, decoded size, packet format, header/body offsets, end offsets, header lengths, and packet length encodings. With no FILE or `-`, read standard input.
@@ -79,7 +88,7 @@ requires it.
 - `--stream` - for legacy-v4 encryption, write binary unarmored uncompressed output using OpenPGP partial body lengths. This keeps plaintext input streaming through fixed-size chunks instead of reading the complete input before encryption. It currently cannot be combined with RFC 9580 v6 recipients, `--armor`, or compression.
 - `--detach` - request a detached signature.
 - `--cleartext` - request a cleartext signed message. Cleartext output is always armored and requires `-o OUT`.
-- `--compress=ALG`, `--compress ALG` - compress literal data before encryption. `ALG` may be `none` or `zlib`; ZIP-compressed messages can be decrypted, but ZIP compression is not emitted yet because the shared compression layer currently exports only zlib-wrapped compression. BZip2 compressed packets are diagnosed as unsupported.
+- `--compress=ALG`, `--compress ALG` - compress literal data before encryption. The default is `none`; `zlib` is available when the sender explicitly wants file-size reduction or OpenPGP interoperability. Avoid compression for attacker-influenced plaintext that is mixed with secrets and has observable ciphertext length. ZIP-compressed messages can be decrypted, but ZIP compression is not emitted yet because the shared compression layer currently exports only zlib-wrapped compression. BZip2 compressed packets are diagnosed as unsupported.
 - `--DANGER-anyway` - bypass signing/encryption key-usage checks. This is intended only for inspecting broken or experimental certificates.
 - `-h`, `--help` - show usage.
 
@@ -134,12 +143,14 @@ requires a signing-capable primary key, and encryption requires a non-revoked
 subkey with encryption flags. Pass `--DANGER-anyway` to bypass that policy for
 test material.
 
-Message payloads are wrapped as binary literal data packets, optionally inside a
-ZLIB compressed data packet. Decryption accepts uncompressed, ZLIB, and ZIP
-compressed payloads. BZip2 packets, passphrase-protected secret keys, arbitrary
-third-party secret-key formats, and RFC 9580 OCB AEAD are not implemented yet.
-The current v2 SEIPD implementation uses AES-256-GCM because that AEAD primitive
-exists in-tree; it does not claim OCB support.
+Message payloads are wrapped as binary literal data packets. When the sender
+passes `--compress=zlib`, the literal packet is wrapped inside a ZLIB compressed
+data packet before encryption; otherwise the default output is uncompressed.
+Decryption accepts uncompressed, ZLIB, and ZIP compressed payloads. BZip2 packets,
+passphrase-protected secret keys, arbitrary third-party secret-key formats, and
+RFC 9580 OCB AEAD are not implemented yet. The current v2 SEIPD implementation
+uses AES-256-GCM because that AEAD primitive exists in-tree; it does not claim
+OCB support.
 
 With `--stream`, legacy-v4 encryption emits the SEIPD v1 packet and nested
 literal data packet with OpenPGP partial body lengths. This mode is binary-only

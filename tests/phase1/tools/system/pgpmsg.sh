@@ -100,6 +100,9 @@ assert_file_contains "$WORK_DIR/verify_bad.jsonl" '"status":"bad"' "pgpmsg --jso
 assert_file_contains "$WORK_DIR/plain.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored message"
 "${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/plain.pgp.asc" > "$WORK_DIR/encrypted.inspect"
 assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 1 (public-key encrypted session key)' "pgpmsg encrypt did not write a public-key encrypted session key packet"
+if grep 'tag 8 (compressed data)' "$WORK_DIR/encrypted.inspect" >/dev/null 2>&1; then
+    fail "pgpmsg encrypt compressed by default"
+fi
 assert_file_contains "$WORK_DIR/encrypted.inspect" '^  pkesk-version: 6$' "pgpmsg inspect did not decode the v6 PKESK version"
 assert_file_contains "$WORK_DIR/encrypted.inspect" '^  public-key-algorithm: X25519$' "pgpmsg inspect did not decode the v6 PKESK algorithm"
 assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg encrypt did not write an integrity-protected encrypted data packet"
