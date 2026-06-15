@@ -26,9 +26,12 @@ assert_file_contains "$WORK_DIR/show.out" '^subkey: public subkey, v4, RSA encry
 
 ESC=$(printf '\033')
 "${TEST_BIN_DIR}/pgpkey" show --color=always "$SAMPLE_KEY" > "$WORK_DIR/show_color.out"
-assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32munexpired" "pgpkey show --color=always did not color an unexpired expiration status"
+assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32mnot expired" "pgpkey show --color=always did not color a non-expired expiration status"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;31mSHA-1" "pgpkey show --color=always did not color SHA-1 as weak"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;33mTripleDES" "pgpkey show --color=always did not color TripleDES as legacy"
+"${TEST_BIN_DIR}/pgpkey" show "$SPIEGEL_KEY" > "$WORK_DIR/spiegel_show.out"
+assert_file_contains "$WORK_DIR/spiegel_show.out" '^key-expires: 2025-05-11 (expired)$' "pgpkey show did not mark the expired SPIEGEL primary key"
+assert_file_contains "$WORK_DIR/spiegel_show.out" '^subkey-expires: 2025-05-11 (expired)$' "pgpkey show did not mark the expired SPIEGEL subkey"
 "${TEST_BIN_DIR}/pgpkey" --no-color show "$SAMPLE_KEY" > "$WORK_DIR/show_no_color.out"
 if grep "${ESC}\\[" "$WORK_DIR/show_no_color.out" >/dev/null 2>&1; then
     fail "pgpkey --no-color emitted ANSI color escapes"

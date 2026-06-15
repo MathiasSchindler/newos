@@ -116,7 +116,7 @@ The default `show` output includes the primary key, fingerprint, key ID, user
 IDs, primary user ID marker, key and subkey usage flags, key and subkey
 expiration dates when present, expiration status, algorithm preferences,
 subkeys, and packet counts. Expiration status is printed as text, such as
-`(unexpired)` or `(expired)`, and is colored green or red when color output is
+`(not expired)` or `(expired)`, and is colored green or red when color output is
 enabled.
 
 With `-v`, `show` also prints one line for each decoded signature packet. The

@@ -584,9 +584,10 @@ static unsigned long long current_epoch_or_zero(void) {
     return now > 0 ? (unsigned long long)now : 0ULL;
 }
 
-static int write_expiration_status(int fd, unsigned long long expires, unsigned long long now, int color_mode) {
+static int write_expiration_status(int fd, unsigned long long expires, int color_mode) {
+    unsigned long long now = current_epoch_or_zero();
     int expired = now != 0ULL && expires != 0ULL && expires <= now;
-    const char *text = expired ? "expired" : "unexpired";
+    const char *text = expired ? "expired" : "not expired";
     int style = expired ? TOOL_STYLE_BOLD_RED : TOOL_STYLE_BOLD_GREEN;
 
     if (rt_write_cstr(fd, " (") != 0) return -1;
@@ -594,13 +595,13 @@ static int write_expiration_status(int fd, unsigned long long expires, unsigned 
     return rt_write_char(fd, ')');
 }
 
-static int write_expiration_date_with_status(int fd, unsigned long long expires, unsigned long long now, int color_mode) {
+static int write_expiration_date_with_status(int fd, unsigned long long expires, int color_mode) {
     if (expires == 0ULL) {
         if (rt_write_cstr(fd, "never") != 0) return -1;
-        return write_expiration_status(fd, expires, now, color_mode);
+        return write_expiration_status(fd, expires, color_mode);
     }
     if (write_date(fd, expires) != 0) return -1;
-    return write_expiration_status(fd, expires, now, color_mode);
+    return write_expiration_status(fd, expires, color_mode);
 }
 
 static int pgpkey_hash_algorithm_style(unsigned int algorithm) {
@@ -716,7 +717,7 @@ static int write_key_line(const PgpPublicKeyInfo *key, const char *label) {
     return rt_write_char(1, '\n');
 }
 
-static int write_signature_summary_text(const PgpCertificateInfo *certificate, unsigned long long now, int color_mode) {
+static int write_signature_summary_text(const PgpCertificateInfo *certificate, int color_mode) {
     const PgpSignatureInfo *primary_signature;
     size_t primary_uid_index;
 
@@ -733,8 +734,8 @@ static int write_signature_summary_text(const PgpCertificateInfo *certificate, u
         if (primary_signature->has_key_expiration) {
             if (rt_write_cstr(1, "key-expires: ") != 0) return -1;
             if (primary_signature->key_expiration_seconds == 0ULL) {
-                if (write_expiration_date_with_status(1, 0ULL, now, color_mode) != 0) return -1;
-            } else if (write_expiration_date_with_status(1, certificate->primary.created + primary_signature->key_expiration_seconds, now, color_mode) != 0) {
+                if (write_expiration_date_with_status(1, 0ULL, color_mode) != 0) return -1;
+            } else if (write_expiration_date_with_status(1, certificate->primary.created + primary_signature->key_expiration_seconds, color_mode) != 0) {
                 return -1;
             }
             if (rt_write_char(1, '\n') != 0) return -1;
@@ -752,7 +753,7 @@ static int write_signature_summary_text(const PgpCertificateInfo *certificate, u
     return 0;
 }
 
-static int write_subkey_signature_summary_text(const PgpCertificateInfo *certificate, size_t subkey_index, unsigned long long now, int color_mode) {
+static int write_subkey_signature_summary_text(const PgpCertificateInfo *certificate, size_t subkey_index, int color_mode) {
     const PgpSignatureInfo *subkey_signature = latest_self_signature_for_target(certificate, PGP_SIGNATURE_TARGET_SUBKEY, subkey_index, 0);
 
     if (subkey_signature == 0) return 0;
@@ -762,8 +763,8 @@ static int write_subkey_signature_summary_text(const PgpCertificateInfo *certifi
     if (subkey_signature->has_key_expiration) {
         if (rt_write_cstr(1, "subkey-expires: ") != 0) return -1;
         if (subkey_signature->key_expiration_seconds == 0ULL) {
-            if (write_expiration_date_with_status(1, 0ULL, now, color_mode) != 0) return -1;
-        } else if (write_expiration_date_with_status(1, certificate->subkeys[subkey_index].created + subkey_signature->key_expiration_seconds, now, color_mode) != 0) {
+            if (write_expiration_date_with_status(1, 0ULL, color_mode) != 0) return -1;
+        } else if (write_expiration_date_with_status(1, certificate->subkeys[subkey_index].created + subkey_signature->key_expiration_seconds, color_mode) != 0) {
             return -1;
         }
         if (rt_write_char(1, '\n') != 0) return -1;
@@ -771,7 +772,7 @@ static int write_subkey_signature_summary_text(const PgpCertificateInfo *certifi
     return 0;
 }
 
-static int write_signature_verbose_line(const PgpCertificateInfo *certificate, const PgpSignatureInfo *signature, unsigned long long now, int color_mode) {
+static int write_signature_verbose_line(const PgpCertificateInfo *certificate, const PgpSignatureInfo *signature, int color_mode) {
     if (rt_write_cstr(1, "signature ") != 0 || rt_write_uint(1, signature->packet_index) != 0 || rt_write_cstr(1, ": ") != 0) return -1;
     if (rt_write_cstr(1, pgp_signature_type_name(signature->signature_type)) != 0) return -1;
     if (rt_write_cstr(1, ", v") != 0 || rt_write_uint(1, signature->version) != 0) return -1;
@@ -794,7 +795,7 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
     if (signature->has_signature_expiration) {
         if (rt_write_cstr(1, ", signature-expires ") != 0) return -1;
         if (signature->created != 0ULL && signature->signature_expiration_seconds != 0ULL) {
-            if (write_expiration_date_with_status(1, signature->created + signature->signature_expiration_seconds, now, color_mode) != 0) return -1;
+            if (write_expiration_date_with_status(1, signature->created + signature->signature_expiration_seconds, color_mode) != 0) return -1;
             if (rt_write_cstr(1, " after ") != 0) return -1;
         }
         if (write_duration_from_seconds(1, signature->signature_expiration_seconds) != 0) return -1;
@@ -809,7 +810,7 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
         }
         if (rt_write_cstr(1, ", key-expires ") != 0) return -1;
         if (base != 0ULL && signature->key_expiration_seconds != 0ULL) {
-            if (write_expiration_date_with_status(1, base + signature->key_expiration_seconds, now, color_mode) != 0) return -1;
+            if (write_expiration_date_with_status(1, base + signature->key_expiration_seconds, color_mode) != 0) return -1;
             if (rt_write_cstr(1, " after ") != 0) return -1;
         }
         if (write_duration_from_seconds(1, signature->key_expiration_seconds) != 0) return -1;
@@ -823,13 +824,13 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
     return rt_write_char(1, '\n');
 }
 
-static int write_verbose_signatures_text(const PgpCertificateInfo *certificate, unsigned long long now, int color_mode) {
+static int write_verbose_signatures_text(const PgpCertificateInfo *certificate, int color_mode) {
     size_t index;
 
     if (certificate->signature_info_count == 0U) return 0;
     if (rt_write_line(1, "signatures:") != 0) return -1;
     for (index = 0U; index < certificate->signature_info_count; ++index) {
-        if (write_signature_verbose_line(certificate, &certificate->signatures[index], now, color_mode) != 0) return -1;
+        if (write_signature_verbose_line(certificate, &certificate->signatures[index], color_mode) != 0) return -1;
     }
     return 0;
 }
@@ -837,8 +838,6 @@ static int write_verbose_signatures_text(const PgpCertificateInfo *certificate, 
 static int write_certificate_text(const PgpCertificateInfo *certificate, const char *source, size_t index, int verbose, int color_mode) {
     size_t uid_index;
     size_t subkey_index;
-    unsigned long long now = current_epoch_or_zero();
-
     if (source != 0) {
         if (rt_write_cstr(1, "source: ") != 0 || rt_write_line(1, source) != 0) return -1;
     }
@@ -853,19 +852,19 @@ static int write_certificate_text(const PgpCertificateInfo *certificate, const c
     for (uid_index = 0U; uid_index < certificate->user_id_count; ++uid_index) {
         if (rt_write_cstr(1, "uid: ") != 0 || tool_write_visible_line(1, certificate->user_ids[uid_index]) != 0) return -1;
     }
-    if (write_signature_summary_text(certificate, now, color_mode) != 0) return -1;
+    if (write_signature_summary_text(certificate, color_mode) != 0) return -1;
     for (subkey_index = 0U; subkey_index < certificate->subkey_count; ++subkey_index) {
         if (write_key_line(&certificate->subkeys[subkey_index], "subkey") != 0) return -1;
         if (certificate->subkeys[subkey_index].fingerprint_size != 0U) {
             if (rt_write_cstr(1, "subkey-fingerprint: ") != 0 || write_hex_bytes(1, certificate->subkeys[subkey_index].fingerprint, certificate->subkeys[subkey_index].fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
-        if (write_subkey_signature_summary_text(certificate, subkey_index, now, color_mode) != 0) return -1;
+        if (write_subkey_signature_summary_text(certificate, subkey_index, color_mode) != 0) return -1;
     }
     if (rt_write_cstr(1, "packets: ") != 0 || rt_write_uint(1, certificate->packet_count) != 0) return -1;
     if (rt_write_cstr(1, ", signatures: ") != 0 || rt_write_uint(1, certificate->signature_count) != 0) return -1;
     if (rt_write_cstr(1, ", user-attributes: ") != 0 || rt_write_uint(1, certificate->user_attribute_count) != 0) return -1;
     if (rt_write_char(1, '\n') != 0) return -1;
-    if (verbose && write_verbose_signatures_text(certificate, now, color_mode) != 0) return -1;
+    if (verbose && write_verbose_signatures_text(certificate, color_mode) != 0) return -1;
     return rt_write_cstr(1, "\n\n");
 }
 
