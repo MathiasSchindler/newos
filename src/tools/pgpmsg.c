@@ -14,7 +14,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPMSG_USAGE "[--json] COMMAND [ARGS...]\n       pgpmsg inspect [FILE]\n       pgpmsg verify [-k PUBRING] SIGNATURE [FILE]\n       pgpmsg encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--stream] [--DANGER-anyway] [FILE]\n       pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]\n       pgpmsg sign -u SIGNER [-s SECRING] [-o OUT] [--armor] [--detach|--cleartext] [--DANGER-anyway] [FILE]"
+#define PGPMSG_USAGE "[--json] COMMAND [ARGS...]\n       pgpmsg inspect [-v] [FILE]\n       pgpmsg verify [-k PUBRING] SIGNATURE [FILE]\n       pgpmsg encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--stream] [--DANGER-anyway] [FILE]\n       pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]\n       pgpmsg sign -u SIGNER [-s SECRING] [-o OUT] [--armor] [--detach|--cleartext] [--DANGER-anyway] [FILE]"
 #define PGPMSG_ERROR_CAPACITY 160U
 #define PGPMSG_KEY_ID_SIZE 8U
 #define PGPMSG_ED25519_KEY_SIZE 32U
@@ -50,8 +50,20 @@ typedef struct {
     int cleartext;
     int danger_anyway;
     int stream;
+    int verbose;
     unsigned int compression;
 } PgpMsgOptions;
+
+typedef struct {
+    size_t raw_size;
+    size_t decoded_size;
+    int armored;
+    char armor_kind[40];
+    unsigned long long armor_body_lines;
+    unsigned long long armor_base64_chars;
+    unsigned char armor_crc24[3];
+    int has_armor_crc24;
+} PgpMsgInspectInputInfo;
 
 typedef struct {
     CryptoAes256Context aes;
@@ -755,6 +767,109 @@ static const char *pgpmsg_aead_algorithm_name(unsigned int algorithm) {
     }
 }
 
+static int pgpmsg_base64_value(unsigned char value) {
+    if (value >= 'A' && value <= 'Z') return (int)(value - 'A');
+    if (value >= 'a' && value <= 'z') return (int)(value - 'a') + 26;
+    if (value >= '0' && value <= '9') return (int)(value - '0') + 52;
+    if (value == '+') return 62;
+    if (value == '/') return 63;
+    return -1;
+}
+
+static int pgpmsg_decode_crc24_text(const unsigned char *text, size_t text_size, unsigned char out[3]) {
+    int a;
+    int b;
+    int c;
+    int d;
+    unsigned int value;
+
+    if (text_size < 4U) return -1;
+    a = pgpmsg_base64_value(text[0]);
+    b = pgpmsg_base64_value(text[1]);
+    c = pgpmsg_base64_value(text[2]);
+    d = pgpmsg_base64_value(text[3]);
+    if (a < 0 || b < 0 || c < 0 || d < 0) return -1;
+    value = ((unsigned int)a << 18U) | ((unsigned int)b << 12U) | ((unsigned int)c << 6U) | (unsigned int)d;
+    out[0] = (unsigned char)((value >> 16U) & 0xffU);
+    out[1] = (unsigned char)((value >> 8U) & 0xffU);
+    out[2] = (unsigned char)(value & 0xffU);
+    return 0;
+}
+
+static int pgpmsg_line_starts_with(const unsigned char *line, size_t line_size, const char *prefix) {
+    size_t index = 0U;
+
+    while (prefix[index] != '\0') {
+        if (index >= line_size || line[index] != (unsigned char)prefix[index]) return 0;
+        index += 1U;
+    }
+    return 1;
+}
+
+static int pgpmsg_line_is_blank(const unsigned char *line, size_t line_size) {
+    size_t index;
+
+    for (index = 0U; index < line_size; ++index) {
+        if (line[index] != ' ' && line[index] != '\t' && line[index] != '\r') return 0;
+    }
+    return 1;
+}
+
+static void inspect_analyze_input(const unsigned char *raw, size_t raw_size, size_t decoded_size, PgpMsgInspectInputInfo *info) {
+    size_t offset = 0U;
+    int in_body = 0;
+
+    rt_memset(info, 0, sizeof(*info));
+    info->raw_size = raw_size;
+    info->decoded_size = decoded_size;
+    while (offset < raw_size) {
+        size_t line_start = offset;
+        size_t line_end;
+        size_t line_size;
+
+        while (offset < raw_size && raw[offset] != '\n') offset += 1U;
+        line_end = offset;
+        if (offset < raw_size && raw[offset] == '\n') offset += 1U;
+        if (line_end > line_start && raw[line_end - 1U] == '\r') line_end -= 1U;
+        line_size = line_end - line_start;
+        if (!info->armored) {
+            static const char begin_prefix[] = "-----BEGIN PGP ";
+            static const char end_marker[] = "-----";
+            size_t kind_start = sizeof(begin_prefix) - 1U;
+            size_t kind_end;
+            size_t copy_size;
+
+            if (!pgpmsg_line_starts_with(raw + line_start, line_size, begin_prefix)) break;
+            info->armored = 1;
+            kind_end = line_size;
+            if (kind_end >= 5U && memcmp(raw + line_start + kind_end - 5U, end_marker, 5U) == 0) kind_end -= 5U;
+            copy_size = kind_end > kind_start ? kind_end - kind_start : 0U;
+            if (copy_size >= sizeof(info->armor_kind)) copy_size = sizeof(info->armor_kind) - 1U;
+            memcpy(info->armor_kind, raw + line_start + kind_start, copy_size);
+            info->armor_kind[copy_size] = '\0';
+            continue;
+        }
+        if (pgpmsg_line_starts_with(raw + line_start, line_size, "-----END PGP ")) break;
+        if (!in_body) {
+            if (pgpmsg_line_is_blank(raw + line_start, line_size)) in_body = 1;
+            continue;
+        }
+        if (line_size != 0U && raw[line_start] == '=') {
+            if (pgpmsg_decode_crc24_text(raw + line_start + 1U, line_size - 1U, info->armor_crc24) == 0) info->has_armor_crc24 = 1;
+            continue;
+        }
+        if (!pgpmsg_line_is_blank(raw + line_start, line_size)) {
+            size_t index;
+
+            info->armor_body_lines += 1ULL;
+            for (index = 0U; index < line_size; ++index) {
+                unsigned char ch = raw[line_start + index];
+                if (ch != ' ' && ch != '\t' && ch != '\r') info->armor_base64_chars += 1ULL;
+            }
+        }
+    }
+}
+
 static int write_date(int fd, unsigned long long epoch) {
     long long days = (long long)(epoch / 86400ULL);
     int year;
@@ -769,7 +884,7 @@ static int write_date(int fd, unsigned long long epoch) {
     return rt_write_uint(fd, day);
 }
 
-static int load_decoded_input(const char *path, unsigned char **decoded_out, size_t *decoded_size_out) {
+static int load_decoded_input_with_info(const char *path, unsigned char **decoded_out, size_t *decoded_size_out, PgpMsgInspectInputInfo *info) {
     unsigned char *raw = 0;
     size_t raw_size = 0U;
     char error[PGPMSG_ERROR_CAPACITY];
@@ -783,8 +898,13 @@ static int load_decoded_input(const char *path, unsigned char **decoded_out, siz
         rt_free(raw);
         return -1;
     }
+    if (info != 0) inspect_analyze_input(raw, raw_size, *decoded_size_out, info);
     rt_free(raw);
     return 0;
+}
+
+static int load_decoded_input(const char *path, unsigned char **decoded_out, size_t *decoded_size_out) {
+    return load_decoded_input_with_info(path, decoded_out, decoded_size_out, 0);
 }
 
 static int parse_subpacket_length(const unsigned char *data, size_t size, size_t *offset_io, size_t *length_out) {
@@ -2431,9 +2551,86 @@ static int inspect_write_packet_json_details(const PgpPacket *packet, const unsi
     return 0;
 }
 
-static int inspect_packets(const char *path, int json) {
+static const char *inspect_packet_length_encoding(const unsigned char *data, const PgpPacket *packet) {
+    unsigned int header = data[packet->header_offset];
+
+    if (packet->new_format) {
+        unsigned int first = data[packet->header_offset + 1U];
+
+        if (first < 192U) return "new one-octet definite";
+        if (first < 224U) return "new two-octet definite";
+        if (first == 255U) return "new five-octet definite";
+        return "new partial";
+    }
+    switch (header & 0x03U) {
+        case 0U: return "old one-octet definite";
+        case 1U: return "old two-octet definite";
+        case 2U: return "old four-octet definite";
+        default: return "old indeterminate";
+    }
+}
+
+static int inspect_write_input_text_details(const PgpMsgInspectInputInfo *info) {
+    if (rt_write_cstr(1, "input: ") != 0 || rt_write_line(1, info->armored ? "ASCII armor" : "binary OpenPGP") != 0) return -1;
+    if (rt_write_cstr(1, "  input-size: ") != 0 || rt_write_uint(1, (unsigned long long)info->raw_size) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+    if (info->armored) {
+        if (rt_write_cstr(1, "  armor-type: PGP ") != 0 || rt_write_line(1, info->armor_kind) != 0) return -1;
+        if (rt_write_cstr(1, "  armor-body-lines: ") != 0 || rt_write_uint(1, info->armor_body_lines) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (rt_write_cstr(1, "  armor-base64-chars: ") != 0 || rt_write_uint(1, info->armor_base64_chars) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (info->has_armor_crc24) {
+            if (rt_write_cstr(1, "  armor-crc24: ") != 0 || write_hex_bytes(1, info->armor_crc24, sizeof(info->armor_crc24)) != 0 || rt_write_line(1, " (verified)") != 0) return -1;
+        }
+    }
+    if (rt_write_cstr(1, "  decoded-size: ") != 0 || rt_write_uint(1, (unsigned long long)info->decoded_size) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+    return 0;
+}
+
+static int inspect_write_packet_text_verbose(const unsigned char *decoded, const PgpPacket *packet) {
+    size_t header_size = packet->body_offset - packet->header_offset;
+    size_t packet_end = packet->body_offset + packet->body_size;
+
+    if (rt_write_cstr(1, "  packet-format: ") != 0 || rt_write_line(1, packet->new_format ? "new" : "old") != 0) return -1;
+    if (rt_write_cstr(1, "  header-offset: ") != 0 || rt_write_uint(1, (unsigned long long)packet->header_offset) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "  header-length: ") != 0 || rt_write_uint(1, (unsigned long long)header_size) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+    if (rt_write_cstr(1, "  body-offset: ") != 0 || rt_write_uint(1, (unsigned long long)packet->body_offset) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "  packet-end-offset: ") != 0 || rt_write_uint(1, (unsigned long long)packet_end) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "  length-encoding: ") != 0 || rt_write_line(1, inspect_packet_length_encoding(decoded, packet)) != 0) return -1;
+    return 0;
+}
+
+static int inspect_write_input_json_details(const PgpMsgInspectInputInfo *info) {
+    if (tool_json_begin_event(1, "pgpmsg", "stdout", "input") != 0) return -1;
+    if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
+    if (rt_write_cstr(1, "\"format\":") != 0 || tool_json_write_string(1, info->armored ? "ASCII armor" : "binary OpenPGP") != 0) return -1;
+    if (rt_write_cstr(1, ",\"input_size\":") != 0 || rt_write_uint(1, (unsigned long long)info->raw_size) != 0) return -1;
+    if (rt_write_cstr(1, ",\"decoded_size\":") != 0 || rt_write_uint(1, (unsigned long long)info->decoded_size) != 0) return -1;
+    if (info->armored) {
+        if (rt_write_cstr(1, ",\"armor_type\":") != 0 || tool_json_write_string(1, info->armor_kind) != 0) return -1;
+        if (rt_write_cstr(1, ",\"armor_body_lines\":") != 0 || rt_write_uint(1, info->armor_body_lines) != 0) return -1;
+        if (rt_write_cstr(1, ",\"armor_base64_chars\":") != 0 || rt_write_uint(1, info->armor_base64_chars) != 0) return -1;
+        if (info->has_armor_crc24 && (rt_write_cstr(1, ",\"armor_crc24\":\"") != 0 || write_hex_bytes(1, info->armor_crc24, sizeof(info->armor_crc24)) != 0 || rt_write_char(1, '"') != 0)) return -1;
+    }
+    if (rt_write_cstr(1, "}}") != 0 || tool_json_end_event(1) != 0) return -1;
+    return 0;
+}
+
+static int inspect_write_packet_json_verbose(const unsigned char *decoded, const PgpPacket *packet) {
+    size_t header_size = packet->body_offset - packet->header_offset;
+    size_t packet_end = packet->body_offset + packet->body_size;
+
+    if (rt_write_cstr(1, ",\"packet_format\":") != 0 || tool_json_write_string(1, packet->new_format ? "new" : "old") != 0) return -1;
+    if (rt_write_cstr(1, ",\"header_offset\":") != 0 || rt_write_uint(1, (unsigned long long)packet->header_offset) != 0) return -1;
+    if (rt_write_cstr(1, ",\"header_length\":") != 0 || rt_write_uint(1, (unsigned long long)header_size) != 0) return -1;
+    if (rt_write_cstr(1, ",\"body_offset\":") != 0 || rt_write_uint(1, (unsigned long long)packet->body_offset) != 0) return -1;
+    if (rt_write_cstr(1, ",\"packet_end_offset\":") != 0 || rt_write_uint(1, (unsigned long long)packet_end) != 0) return -1;
+    if (rt_write_cstr(1, ",\"length_encoding\":") != 0 || tool_json_write_string(1, inspect_packet_length_encoding(decoded, packet)) != 0) return -1;
+    return 0;
+}
+
+static int inspect_packets(const char *path, int json, int verbose) {
     unsigned char *decoded = 0;
     size_t decoded_size = 0U;
+    PgpMsgInspectInputInfo input_info;
     PgpPacketReader reader;
     PgpPacket packet;
     int has_packet = 0;
@@ -2441,7 +2638,12 @@ static int inspect_packets(const char *path, int json) {
     char error[PGPMSG_ERROR_CAPACITY];
     int status = 0;
 
-    if (load_decoded_input(path, &decoded, &decoded_size) != 0) return 1;
+    if (load_decoded_input_with_info(path, &decoded, &decoded_size, &input_info) != 0) return 1;
+    if (verbose) {
+        if (json) {
+            if (inspect_write_input_json_details(&input_info) != 0) { rt_free(decoded); return 1; }
+        } else if (inspect_write_input_text_details(&input_info) != 0) { rt_free(decoded); return 1; }
+    }
     pgp_packet_reader_init(&reader, decoded, decoded_size);
     while (pgp_packet_reader_next(&reader, &packet, &has_packet, error, sizeof(error)) == 0 && has_packet) {
         packet_index += 1ULL;
@@ -2452,11 +2654,13 @@ static int inspect_packets(const char *path, int json) {
             if (rt_write_cstr(1, ",\"tag\":") != 0 || rt_write_uint(1, packet.tag) != 0) { status = 1; break; }
             if (rt_write_cstr(1, ",\"name\":") != 0 || tool_json_write_string(1, pgp_packet_tag_name(packet.tag)) != 0) { status = 1; break; }
             if (rt_write_cstr(1, ",\"length\":") != 0 || rt_write_uint(1, (unsigned long long)packet.body_size) != 0) { status = 1; break; }
+            if (verbose && inspect_write_packet_json_verbose(decoded, &packet) != 0) { status = 1; break; }
             if (inspect_write_packet_json_details(&packet, decoded + packet.body_offset) != 0) { status = 1; break; }
             if (rt_write_cstr(1, "}}") != 0 || tool_json_end_event(1) != 0) { status = 1; break; }
         } else {
             if (rt_write_cstr(1, "packet ") != 0 || rt_write_uint(1, packet_index) != 0 || rt_write_cstr(1, ": tag ") != 0 || rt_write_uint(1, packet.tag) != 0) { status = 1; break; }
             if (rt_write_cstr(1, " (") != 0 || rt_write_cstr(1, pgp_packet_tag_name(packet.tag)) != 0 || rt_write_cstr(1, "), length ") != 0 || rt_write_uint(1, (unsigned long long)packet.body_size) != 0 || rt_write_char(1, '\n') != 0) { status = 1; break; }
+            if (verbose && inspect_write_packet_text_verbose(decoded, &packet) != 0) { status = 1; break; }
             if (inspect_write_packet_text_details(&packet, decoded + packet.body_offset) != 0) { status = 1; break; }
         }
     }
@@ -2469,11 +2673,27 @@ static int inspect_packets(const char *path, int json) {
 }
 
 static int command_inspect(int argc, char **argv, int argi, const PgpMsgOptions *options) {
-    if (argi + 1 < argc) {
-        print_usage();
-        return 1;
+    PgpMsgOptions local_options = *options;
+    const char *path = 0;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "-v") == 0 || rt_strcmp(argv[argi], "--verbose") == 0) {
+            local_options.verbose = 1;
+            argi += 1;
+            continue;
+        }
+        if (argv[argi][0] == '-' && argv[argi][1] != '\0' && rt_strcmp(argv[argi], "-") != 0) {
+            tool_write_error("pgpmsg", "unknown inspect option: ", argv[argi]);
+            print_usage();
+            return 1;
+        }
+        if (path != 0) {
+            print_usage();
+            return 1;
+        }
+        path = argv[argi++];
     }
-    return inspect_packets(argi < argc ? argv[argi] : 0, options->json);
+    return inspect_packets(path, local_options.json, local_options.verbose);
 }
 
 static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *options) {
@@ -2965,6 +3185,8 @@ int main(int argc, char **argv) {
             options.danger_anyway = 1;
         } else if (rt_strcmp(opt.flag, "--stream") == 0) {
             options.stream = 1;
+        } else if (rt_strcmp(opt.flag, "-v") == 0 || rt_strcmp(opt.flag, "--verbose") == 0) {
+            options.verbose = 1;
         } else if (rt_strcmp(opt.flag, "--compress") == 0) {
             if (tool_opt_require_value(&opt) != 0 || parse_compression_option(opt.value, &options.compression) != 0) return 1;
         } else if (tool_starts_with(opt.flag, "--compress=")) {

@@ -6,6 +6,7 @@ phase1_setup pgpmsg
 
 SAMPLE_KEY="$ROOT_DIR/experimental/pgp-keys/86BBADD51B38D4F21FE8C46C99D37C39FA2C23A8.asc"
 RAIMOND_KEY="$ROOT_DIR/experimental/pgp-keys/raimond.asc"
+ENCRYPTED_MESSAGE="$ROOT_DIR/experimental/pgp-keys/encryptedmessage.txt"
 PGPKEY_BIN="$TEST_BIN_DIR/pgpkey"
 
 printf 'hello pgpmsg\n' > "$WORK_DIR/plain.txt"
@@ -23,6 +24,23 @@ assert_file_contains "$WORK_DIR/inspect.out" 'tag 14 (public subkey)' "pgpmsg in
 assert_file_contains "$WORK_DIR/inspect.jsonl" '"schema":"newos.tool.v1"' "pgpmsg --json inspect did not use the shared JSON envelope"
 assert_file_contains "$WORK_DIR/inspect.jsonl" '"event":"packet"' "pgpmsg --json inspect did not emit packet events"
 assert_file_contains "$WORK_DIR/inspect.jsonl" '"name":"public key"' "pgpmsg --json inspect did not name public-key packets"
+
+"${TEST_BIN_DIR}/pgpmsg" inspect -v "$ENCRYPTED_MESSAGE" > "$WORK_DIR/inspect_verbose.out"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^input: ASCII armor$' "pgpmsg inspect -v did not describe ASCII armor input"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  input-size: 1137 bytes$' "pgpmsg inspect -v did not report the armored input size"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  armor-type: PGP MESSAGE$' "pgpmsg inspect -v did not report the armor type"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  armor-body-lines: 17$' "pgpmsg inspect -v did not report armor body lines"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  armor-base64-chars: 1060$' "pgpmsg inspect -v did not report armor base64 characters"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  armor-crc24: 1e475c (verified)$' "pgpmsg inspect -v did not report the verified armor CRC24"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  decoded-size: 793 bytes$' "pgpmsg inspect -v did not report decoded size"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  header-offset: 0$' "pgpmsg inspect -v did not report packet header offsets"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  body-offset: 3$' "pgpmsg inspect -v did not report packet body offsets"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  packet-end-offset: 529$' "pgpmsg inspect -v did not report packet end offsets"
+assert_file_contains "$WORK_DIR/inspect_verbose.out" '^  length-encoding: new two-octet definite$' "pgpmsg inspect -v did not report packet length encoding"
+"${TEST_BIN_DIR}/pgpmsg" --json inspect -v "$ENCRYPTED_MESSAGE" > "$WORK_DIR/inspect_verbose.jsonl"
+assert_file_contains "$WORK_DIR/inspect_verbose.jsonl" '"event":"input"' "pgpmsg --json inspect -v did not emit an input event"
+assert_file_contains "$WORK_DIR/inspect_verbose.jsonl" '"armor_crc24":"1e475c"' "pgpmsg --json inspect -v did not report the armor CRC24"
+assert_file_contains "$WORK_DIR/inspect_verbose.jsonl" '"header_offset":0' "pgpmsg --json inspect -v did not report packet offsets"
 
 if "${TEST_BIN_DIR}/pgpmsg" verify "$SAMPLE_KEY" > "$WORK_DIR/verify.out" 2> "$WORK_DIR/verify.err"; then
     fail "pgpmsg verify reported cryptographic success before verification is implemented"

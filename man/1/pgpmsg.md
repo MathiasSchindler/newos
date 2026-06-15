@@ -9,7 +9,7 @@ pgpmsg - inspect OpenPGP messages and expose message crypto commands
 ```
 pgpmsg [--json] COMMAND [ARGS...]
 
-pgpmsg inspect [FILE]
+pgpmsg inspect [-v] [FILE]
 pgpmsg verify [-k PUBRING] SIGNATURE [FILE]
 pgpmsg encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--stream] [--DANGER-anyway] [FILE]
 pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]
@@ -35,7 +35,7 @@ producing non-OpenPGP output or making trust claims.
 
 ## COMMANDS
 
-- `inspect [FILE]` - decode binary or ASCII-armored OpenPGP input and list packet tags and body lengths. For encrypted messages, it also reports visible, non-secret packet metadata such as PKESK version, recipient key ID or fingerprint, public-key algorithm, encrypted MPI sizes, SEIPD version, and v2 SEIPD cipher/AEAD header fields. With no FILE or `-`, read standard input.
+- `inspect [-v] [FILE]` - decode binary or ASCII-armored OpenPGP input and list packet tags and body lengths. For encrypted messages, it also reports visible, non-secret packet metadata such as PKESK version, recipient key ID or fingerprint, public-key algorithm, encrypted MPI sizes, SEIPD version, and v2 SEIPD cipher/AEAD header fields. With `-v`, also report input/armor sizing, verified armor CRC24, decoded size, packet format, header/body offsets, end offsets, header lengths, and packet length encodings. With no FILE or `-`, read standard input.
 - `verify [-k PUBRING] SIGNATURE [FILE]` - decode SIGNATURE and report signature packet metadata. With FILE and a matching Ed25519 public key in PUBRING, verify a detached binary signature cryptographically. Without FILE, print metadata only.
 - `encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--stream] [--DANGER-anyway] [FILE]` - encrypt FILE, or standard input, to one or more matching X25519, ECDH, or Elgamal encryption subkeys in PUBRING. Each RECIPIENT may match the primary certificate fingerprint, an encryption subkey fingerprint, or a user ID substring.
 - `decrypt [-s SECRING] [-o OUT] [FILE]` - decrypt an OpenPGP message produced by this tool using a matching unprotected X25519 secret subkey from SECRING. Both RFC 9580 v6/v2 AEAD messages and legacy-v4/v1 CFB+MDC messages are supported.
@@ -45,6 +45,7 @@ producing non-OpenPGP output or making trust claims.
 ## OPTIONS
 
 - `--json` - emit shared JSON Lines events where supported.
+- `-v`, `--verbose` - for `inspect`, emit the maximum visible message metadata that can be derived without decrypting packet bodies.
 - `-k PUBRING`, `--keyring PUBRING` - public keyring path for verification and encryption.
 - `-s SECRING`, `--secring SECRING` - secret keyring path for signing and decryption.
 - `-r RECIPIENT`, `--recipient RECIPIENT` - recipient selector for encryption. Repeat this option to encrypt the same message to multiple recipients.
