@@ -1349,7 +1349,8 @@ static int recipient_find_callback(const PgpCertificateInfo *certificate, void *
         const PgpPublicKeyInfo *subkey = &certificate->subkeys[index];
         int rank;
 
-        if ((subkey->algorithm == 25U || subkey->algorithm == 18U) && subkey->public_material_size == PGPMSG_X25519_KEY_SIZE) rank = subkey->algorithm == 25U ? 3 : 2;
+        if ((subkey->algorithm == 25U || subkey->algorithm == 18U) && subkey->public_material_size == PGPMSG_X25519_KEY_SIZE) rank = subkey->algorithm == 25U ? 4 : 3;
+        else if ((subkey->algorithm == 1U || subkey->algorithm == 2U) && subkey->public_material_size != 0U) rank = 2;
         else if (subkey->algorithm == 16U && subkey->public_material_size != 0U) rank = 1;
         else continue;
         if (certificate_match || pgp_fingerprint_matches_text(subkey, ctx->selector)) {
@@ -1357,7 +1358,7 @@ static int recipient_find_callback(const PgpCertificateInfo *certificate, void *
             if (rank > best_rank) {
                 ctx->key = *subkey;
                 best_rank = rank;
-                if (rank == 3) {
+                if (rank == 4) {
                     ctx->found = 1;
                     return 0;
                 }
@@ -1653,6 +1654,32 @@ static int pgpmsg_parse_elgamal_public_material(
     return 0;
 }
 
+static int pgpmsg_parse_rsa_public_material(
+    const PgpPublicKeyInfo *recipient,
+    const unsigned char **modulus_out,
+    size_t *modulus_size_out,
+    const unsigned char **exponent_out,
+    size_t *exponent_size_out
+) {
+    const unsigned char *modulus;
+    const unsigned char *exponent;
+    size_t modulus_size;
+    size_t exponent_size;
+    unsigned int ignored_bits;
+    size_t offset = 0U;
+
+    if ((recipient->algorithm != 1U && recipient->algorithm != 2U) || recipient->public_material_size == 0U) return -1;
+    if (read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &modulus, &modulus_size, &ignored_bits) != 0 ||
+        read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &exponent, &exponent_size, &ignored_bits) != 0 ||
+        offset != recipient->public_material_size) return -1;
+    if (modulus_size == 0U || exponent_size == 0U || modulus_size > CRYPTO_RSA_MAX_MODULUS_SIZE) return -1;
+    *modulus_out = modulus;
+    *modulus_size_out = modulus_size;
+    *exponent_out = exponent;
+    *exponent_size_out = exponent_size;
+    return 0;
+}
+
 static int pgpmsg_random_elgamal_exponent(unsigned char *out, size_t out_size, const unsigned char *p, size_t p_size, unsigned int p_bits) {
     unsigned char p_minus_one[PGP_PUBLIC_MATERIAL_CAPACITY];
     unsigned int excess_bits;
@@ -1747,6 +1774,40 @@ cleanup:
     return result;
 }
 
+static int build_rsa_encrypted_session_key(const PgpPublicKeyInfo *recipient, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], PgpMsgBuffer *pkesk_packet) {
+    const unsigned char *modulus;
+    const unsigned char *exponent;
+    size_t modulus_size;
+    size_t exponent_size;
+    unsigned char session_info[1U + PGPMSG_AES256_KEY_SIZE + 2U];
+    unsigned char encrypted[CRYPTO_RSA_MAX_MODULUS_SIZE];
+    size_t encrypted_size = 0U;
+    unsigned int checksum;
+    PgpMsgBuffer body;
+    int result = -1;
+
+    rt_memset(&body, 0, sizeof(body));
+    if (recipient->version != 4U || pgpmsg_parse_rsa_public_material(recipient, &modulus, &modulus_size, &exponent, &exponent_size) != 0) goto cleanup;
+    checksum = pgpmsg_session_key_checksum(session_key, PGPMSG_AES256_KEY_SIZE);
+    session_info[0] = 9U;
+    memcpy(session_info + 1U, session_key, PGPMSG_AES256_KEY_SIZE);
+    session_info[33] = (unsigned char)((checksum >> 8U) & 0xffU);
+    session_info[34] = (unsigned char)(checksum & 0xffU);
+    if (crypto_rsa_pkcs1_v15_encrypt(encrypted, sizeof(encrypted), &encrypted_size, session_info, sizeof(session_info), modulus, modulus_size, exponent, exponent_size) != 0) goto cleanup;
+    if (msg_buffer_append_byte(&body, 3U) != 0 ||
+        msg_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
+        msg_buffer_append_byte(&body, recipient->algorithm) != 0 ||
+        pgpmsg_append_minimal_mpi(&body, encrypted, encrypted_size) != 0 ||
+        msg_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
+    result = 0;
+
+cleanup:
+    msg_buffer_free(&body);
+    crypto_secure_bzero(session_info, sizeof(session_info));
+    crypto_secure_bzero(encrypted, sizeof(encrypted));
+    return result;
+}
+
 static int build_encrypted_session_key(const PgpPublicKeyInfo *recipient, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], PgpMsgBuffer *pkesk_packet) {
     unsigned char ephemeral_seed[PGPMSG_X25519_KEY_SIZE];
     unsigned char ephemeral_public[PGPMSG_X25519_KEY_SIZE];
@@ -1792,6 +1853,10 @@ static int build_encrypted_session_key(const PgpPublicKeyInfo *recipient, const 
     }
     if (recipient->algorithm == 16U) {
         result = build_elgamal_encrypted_session_key(recipient, session_key, pkesk_packet);
+        goto cleanup;
+    }
+    if (recipient->algorithm == 1U || recipient->algorithm == 2U) {
+        result = build_rsa_encrypted_session_key(recipient, session_key, pkesk_packet);
         goto cleanup;
     }
     if (recipient->algorithm != 18U) goto cleanup;

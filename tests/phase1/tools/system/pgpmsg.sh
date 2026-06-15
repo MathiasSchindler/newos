@@ -167,6 +167,15 @@ assert_file_contains "$WORK_DIR/raimond.inspect" '^  seipd-version: 1$' "pgpmsg 
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-zlib.dec" "$WORK_DIR/plain-zlib.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-zlib.dec" || fail "pgpmsg decrypt did not recover a zlib-compressed encrypted message"
 
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$SAMPLE_KEY" -r 'info@freiheitsrechte.org' --armor -o "$WORK_DIR/rsa.pgp.asc" "$WORK_DIR/plain.txt"
+assert_file_contains "$WORK_DIR/rsa.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored RSA-recipient message"
+"${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/rsa.pgp.asc" > "$WORK_DIR/rsa.inspect"
+assert_file_contains "$WORK_DIR/rsa.inspect" '^  pkesk-version: 3$' "pgpmsg inspect did not decode the RSA PKESK version"
+assert_file_contains "$WORK_DIR/rsa.inspect" '^  recipient-key-id: 27467a158c2ecddc$' "pgpmsg inspect did not decode the RSA recipient key ID"
+assert_file_contains "$WORK_DIR/rsa.inspect" '^  public-key-algorithm: RSA encrypt/sign$' "pgpmsg inspect did not decode the RSA PKESK algorithm"
+assert_file_contains "$WORK_DIR/rsa.inspect" '^  encrypted-mpi 1: [0-9][0-9]* bits, [0-9][0-9]* bytes$' "pgpmsg inspect did not summarize the RSA encrypted session key MPI"
+assert_file_contains "$WORK_DIR/rsa.inspect" '^  seipd-version: 1$' "pgpmsg RSA encryption did not use the legacy SEIPD envelope"
+
 SUBKEY_FPR=$("$PGPKEY_BIN" show "$WORK_DIR/legacy-public.asc" | sed -n 's/^subkey-fingerprint: //p' | head -1)
 "$PGPKEY_BIN" edit "$WORK_DIR/legacy-secret.asc" --out "$WORK_DIR/revoked-secret.asc" --public-out "$WORK_DIR/revoked-public.asc" --revoke-subkey "$SUBKEY_FPR" > "$WORK_DIR/revoke-subkey.out"
 if "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/revoked-public.asc" -r "$LEGACY_FPR" -o "$WORK_DIR/revoked-blocked.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/revoked-blocked.out" 2> "$WORK_DIR/revoked-blocked.err"; then

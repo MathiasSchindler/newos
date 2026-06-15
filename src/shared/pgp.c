@@ -742,11 +742,14 @@ static int pgp_skip_public_key_material(PgpPublicKeyInfo *info, unsigned int alg
     unsigned int ignored_bits = 0U;
 
     if (algorithm == 1U || algorithm == 2U || algorithm == 3U) {
+        size_t material_offset = *offset_io;
+
         if (pgp_read_mpi_bits(body, body_size, offset_io, &first_bits) != 0 ||
             pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0) {
             pgp_set_error(error, error_size, "truncated RSA public key material");
             return -1;
         }
+        pgp_store_public_material(info, body + material_offset, *offset_io - material_offset);
         *bits_out = first_bits;
         return 0;
     }
