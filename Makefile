@@ -177,13 +177,13 @@ COMPILER_IMPL_INCLUDES := \
 	src/compiler/backend_internal.h \
 	src/compiler/parser_internal.h \
 	src/compiler/targets/target_info.h
-SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"')
+SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 SHARED_DEPS := $(SHARED_SOURCES) src/compiler/source_manifest.h
 IMAGE_SOURCES := $(shell grep -oE '"src/shared/(image/[^"]+|crypto/(sha256|p256))\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 IMAGE_TOOLS := imginfo imgcheck imgmeta c2pa
 PDF_SOURCES := $(shell grep -oE '"src/shared/pdf(_writer)?\.c"' src/compiler/source_manifest.h | tr -d '"')
 PDF_TOOLS := pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck
-PGP_SOURCES := $(shell grep -oE '"src/shared/(pgp|crypto/(aes128|sha1|sha256|sha512|crypto_util|curve25519|ed25519))\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+PGP_SOURCES := $(shell grep -oE '"src/shared/(pgp|crypto/(aes128|sha1|sha256|sha512|crypto_util|curve25519|ed25519)|compression/zlib)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 PGP_TOOLS := pgpkey pgpmsg
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 TLS_SOURCES := $(shell grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
@@ -879,10 +879,10 @@ else
 endif
 
 $(addprefix $(BUILD_DIR)/,$(PGP_TOOLS)): $(BUILD_DIR)/%: src/tools/%.c $(PGP_SOURCES) src/shared/pgp.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(PGP_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(filter-out $(SHARED_SOURCES),$(PGP_SOURCES)) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(addprefix $(BUILD_DIR)/,$(PGPQUERY_TOOLS)): $(BUILD_DIR)/%: src/tools/%.c $(PGPQUERY_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) src/shared/pgp.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(PGPQUERY_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(filter-out $(SHARED_SOURCES),$(PGPQUERY_SOURCES)) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(addprefix $(TARGET_BUILD_DIR)/,$(PGP_TOOLS)): $(TARGET_BUILD_DIR)/%: src/tools/%.c $(PGP_SOURCES) src/shared/pgp.h $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_PGP_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))

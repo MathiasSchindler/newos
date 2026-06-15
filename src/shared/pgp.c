@@ -82,6 +82,110 @@ static unsigned int pgp_crc24_update(unsigned int crc, const unsigned char *data
     return crc & 0xffffffU;
 }
 
+typedef struct {
+    unsigned char *data;
+    size_t size;
+    size_t capacity;
+} PgpNormalizeBuffer;
+
+static void pgp_normalize_buffer_free(PgpNormalizeBuffer *buffer) {
+    if (buffer->data != 0) rt_free(buffer->data);
+    buffer->data = 0;
+    buffer->size = 0U;
+    buffer->capacity = 0U;
+}
+
+static int pgp_normalize_buffer_reserve(PgpNormalizeBuffer *buffer, size_t extra) {
+    size_t needed;
+    size_t capacity;
+    unsigned char *grown;
+
+    if (extra > ((size_t)-1) - buffer->size) return -1;
+    needed = buffer->size + extra;
+    if (needed <= buffer->capacity) return 0;
+    capacity = buffer->capacity != 0U ? buffer->capacity : 256U;
+    while (capacity < needed) {
+        if (capacity > ((size_t)-1) / 2U) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2U;
+    }
+    grown = (unsigned char *)rt_realloc(buffer->data, capacity);
+    if (grown == 0) return -1;
+    buffer->data = grown;
+    buffer->capacity = capacity;
+    return 0;
+}
+
+static int pgp_normalize_buffer_append(PgpNormalizeBuffer *buffer, const unsigned char *data, size_t size) {
+    if (size == 0U) return 0;
+    if (pgp_normalize_buffer_reserve(buffer, size) != 0) return -1;
+    memcpy(buffer->data + buffer->size, data, size);
+    buffer->size += size;
+    return 0;
+}
+
+static int pgp_normalize_buffer_append_byte(PgpNormalizeBuffer *buffer, unsigned int value) {
+    unsigned char byte = (unsigned char)(value & 0xffU);
+
+    return pgp_normalize_buffer_append(buffer, &byte, 1U);
+}
+
+static int pgp_normalize_buffer_append_u32_be(PgpNormalizeBuffer *buffer, size_t value) {
+    unsigned char bytes[4];
+
+    bytes[0] = (unsigned char)(((unsigned long long)value >> 24U) & 0xffU);
+    bytes[1] = (unsigned char)(((unsigned long long)value >> 16U) & 0xffU);
+    bytes[2] = (unsigned char)(((unsigned long long)value >> 8U) & 0xffU);
+    bytes[3] = (unsigned char)((unsigned long long)value & 0xffU);
+    return pgp_normalize_buffer_append(buffer, bytes, sizeof(bytes));
+}
+
+static int pgp_normalize_buffer_append_packet_length(PgpNormalizeBuffer *buffer, size_t length) {
+    if (length < 192U) return pgp_normalize_buffer_append_byte(buffer, (unsigned int)length);
+    if (length <= 8383U) {
+        size_t encoded = length - 192U;
+
+        return pgp_normalize_buffer_append_byte(buffer, (unsigned int)((encoded >> 8U) + 192U)) != 0 ||
+               pgp_normalize_buffer_append_byte(buffer, (unsigned int)(encoded & 0xffU)) != 0 ? -1 : 0;
+    }
+    if (length > 0xffffffffULL) return -1;
+    return pgp_normalize_buffer_append_byte(buffer, 255U) != 0 || pgp_normalize_buffer_append_u32_be(buffer, length) != 0 ? -1 : 0;
+}
+
+static int pgp_decode_new_packet_length_octet(const unsigned char *data, size_t size, size_t *offset_io, unsigned int first, size_t *length_out, int *partial_out, char *error, size_t error_size) {
+    *partial_out = 0;
+    if (first < 192U) {
+        *length_out = first;
+        return 0;
+    }
+    if (first < 224U) {
+        if (*offset_io >= size) {
+            pgp_set_error(error, error_size, "truncated OpenPGP two-octet length");
+            return -1;
+        }
+        *length_out = ((size_t)(first - 192U) << 8U) + (size_t)data[(*offset_io)++] + 192U;
+        return 0;
+    }
+    if (first == 255U) {
+        if (*offset_io + 4U > size) {
+            pgp_set_error(error, error_size, "truncated OpenPGP five-octet length");
+            return -1;
+        }
+        *length_out = (size_t)pgp_read_u32_be(data + *offset_io);
+        *offset_io += 4U;
+        return 0;
+    }
+    if ((first & 0x1fU) >= sizeof(size_t) * 8U) {
+        pgp_set_error(error, error_size, "OpenPGP partial length is too large");
+        return -1;
+    }
+    *length_out = (size_t)1U << (first & 0x1fU);
+    *partial_out = 1;
+    return 0;
+}
+
 static int pgp_decode_base64_text(const unsigned char *text, size_t text_size, unsigned char *out, size_t *out_size, char *error, size_t error_size) {
     int values[4];
     int value_count = 0;
@@ -234,6 +338,8 @@ static int pgp_decode_armor(const unsigned char *input, size_t input_size, unsig
 int pgp_decode_input(const unsigned char *input, size_t input_size, unsigned char **data_out, size_t *size_out, char *error, size_t error_size) {
     size_t offset = 0U;
     unsigned char *copy;
+    unsigned char *decoded = 0;
+    size_t decoded_size = 0U;
 
     *data_out = 0;
     *size_out = 0U;
@@ -241,7 +347,13 @@ int pgp_decode_input(const unsigned char *input, size_t input_size, unsigned cha
         offset += 1U;
     }
     if (pgp_starts_with_n(input, input_size, offset, "-----BEGIN PGP ")) {
-        return pgp_decode_armor(input, input_size, data_out, size_out, error, error_size);
+        if (pgp_decode_armor(input, input_size, &decoded, &decoded_size, error, error_size) != 0) return -1;
+        if (pgp_normalize_packets(decoded, decoded_size, data_out, size_out, error, error_size) != 0) {
+            rt_free(decoded);
+            return -1;
+        }
+        rt_free(decoded);
+        return 0;
     }
     copy = (unsigned char *)rt_malloc(input_size == 0U ? 1U : input_size);
     if (copy == 0) {
@@ -249,9 +361,101 @@ int pgp_decode_input(const unsigned char *input, size_t input_size, unsigned cha
         return -1;
     }
     if (input_size != 0U) memcpy(copy, input, input_size);
-    *data_out = copy;
-    *size_out = input_size;
+    if (pgp_normalize_packets(copy, input_size, data_out, size_out, error, error_size) != 0) {
+        rt_free(copy);
+        return -1;
+    }
+    rt_free(copy);
     return 0;
+}
+
+static int pgp_copy_old_format_packet(const unsigned char *input, size_t input_size, size_t header_offset, unsigned int header, size_t *offset_io, PgpNormalizeBuffer *out, char *error, size_t error_size) {
+    size_t body_size;
+    unsigned int length_type = header & 0x03U;
+
+    if (length_type == 0U) {
+        if (*offset_io >= input_size) { pgp_set_error(error, error_size, "truncated OpenPGP old-format length"); return -1; }
+        body_size = input[(*offset_io)++];
+    } else if (length_type == 1U) {
+        if (*offset_io + 2U > input_size) { pgp_set_error(error, error_size, "truncated OpenPGP old-format length"); return -1; }
+        body_size = pgp_read_u16_be(input + *offset_io);
+        *offset_io += 2U;
+    } else if (length_type == 2U) {
+        if (*offset_io + 4U > input_size) { pgp_set_error(error, error_size, "truncated OpenPGP old-format length"); return -1; }
+        body_size = (size_t)pgp_read_u32_be(input + *offset_io);
+        *offset_io += 4U;
+    } else {
+        body_size = input_size - *offset_io;
+    }
+    if (body_size > input_size - *offset_io) { pgp_set_error(error, error_size, "truncated OpenPGP packet body"); return -1; }
+    if (pgp_normalize_buffer_append(out, input + header_offset, (*offset_io + body_size) - header_offset) != 0) return -1;
+    *offset_io += body_size;
+    return 0;
+}
+
+int pgp_normalize_packets(const unsigned char *input, size_t input_size, unsigned char **data_out, size_t *size_out, char *error, size_t error_size) {
+    PgpNormalizeBuffer out;
+    size_t offset = 0U;
+
+    rt_memset(&out, 0, sizeof(out));
+    *data_out = 0;
+    *size_out = 0U;
+    while (offset < input_size) {
+        size_t header_offset = offset;
+        unsigned int header = input[offset++];
+
+        if ((header & 0x80U) == 0U) { pgp_set_error(error, error_size, "invalid OpenPGP packet header"); goto fail; }
+        if ((header & 0x40U) == 0U) {
+            if (pgp_copy_old_format_packet(input, input_size, header_offset, header, &offset, &out, error, error_size) != 0) goto fail;
+        } else {
+            size_t first_length_offset = offset;
+            size_t scan_offset = offset;
+            size_t total_body_size = 0U;
+            int saw_partial = 0;
+
+            while (1) {
+                unsigned int first;
+                size_t chunk_size;
+                int partial;
+
+                if (scan_offset >= input_size) { pgp_set_error(error, error_size, "truncated OpenPGP packet length"); goto fail; }
+                first = input[scan_offset++];
+                if (pgp_decode_new_packet_length_octet(input, input_size, &scan_offset, first, &chunk_size, &partial, error, error_size) != 0) goto fail;
+                if (chunk_size > input_size - scan_offset || chunk_size > ((size_t)-1) - total_body_size) { pgp_set_error(error, error_size, "truncated OpenPGP packet body"); goto fail; }
+                total_body_size += chunk_size;
+                scan_offset += chunk_size;
+                if (partial) saw_partial = 1;
+                else break;
+            }
+            if (!saw_partial) {
+                if (pgp_normalize_buffer_append(&out, input + header_offset, scan_offset - header_offset) != 0) goto oom;
+            } else {
+                size_t body_offset = first_length_offset;
+
+                if (pgp_normalize_buffer_append_byte(&out, header) != 0 || pgp_normalize_buffer_append_packet_length(&out, total_body_size) != 0) goto oom;
+                while (body_offset < scan_offset) {
+                    unsigned int first = input[body_offset++];
+                    size_t chunk_size;
+                    int partial;
+
+                    if (pgp_decode_new_packet_length_octet(input, input_size, &body_offset, first, &chunk_size, &partial, error, error_size) != 0) goto fail;
+                    if (pgp_normalize_buffer_append(&out, input + body_offset, chunk_size) != 0) goto oom;
+                    body_offset += chunk_size;
+                    if (!partial) break;
+                }
+            }
+            offset = scan_offset;
+        }
+    }
+    *data_out = out.data;
+    *size_out = out.size;
+    return 0;
+
+oom:
+    pgp_set_error(error, error_size, "out of memory while normalizing OpenPGP packets");
+fail:
+    pgp_normalize_buffer_free(&out);
+    return -1;
 }
 
 static int pgp_write_base64_byte(int fd, char ch, unsigned int *column_io) {
@@ -319,6 +523,51 @@ int pgp_write_message_armor(int fd, const unsigned char *data, size_t size) {
 
 int pgp_write_signature_armor(int fd, const unsigned char *data, size_t size) {
     return pgp_write_armor_block(fd, "SIGNATURE", data, size);
+}
+
+static int pgp_write_byte_fd(int fd, unsigned int value) {
+    unsigned char byte = (unsigned char)(value & 0xffU);
+
+    return rt_write_all(fd, &byte, 1U);
+}
+
+int pgp_write_new_packet_header(int fd, unsigned int tag) {
+    if (tag > 63U) return -1;
+    return pgp_write_byte_fd(fd, 0xc0U | tag);
+}
+
+int pgp_write_packet_length(int fd, size_t length) {
+    unsigned char bytes[5];
+
+    if (length < 192U) return pgp_write_byte_fd(fd, (unsigned int)length);
+    if (length <= 8383U) {
+        size_t encoded = length - 192U;
+
+        bytes[0] = (unsigned char)((encoded >> 8U) + 192U);
+        bytes[1] = (unsigned char)(encoded & 0xffU);
+        return rt_write_all(fd, bytes, 2U);
+    }
+    if (length > 0xffffffffULL) return -1;
+    bytes[0] = 255U;
+    bytes[1] = (unsigned char)(((unsigned long long)length >> 24U) & 0xffU);
+    bytes[2] = (unsigned char)(((unsigned long long)length >> 16U) & 0xffU);
+    bytes[3] = (unsigned char)(((unsigned long long)length >> 8U) & 0xffU);
+    bytes[4] = (unsigned char)((unsigned long long)length & 0xffU);
+    return rt_write_all(fd, bytes, sizeof(bytes));
+}
+
+int pgp_write_partial_body_length(int fd, size_t length) {
+    size_t value = length;
+    unsigned int exponent = 0U;
+
+    if (length < 512U || length > 0x40000000ULL) return -1;
+    while (value > 1U) {
+        if ((value & 1U) != 0U) return -1;
+        value >>= 1U;
+        exponent += 1U;
+    }
+    if (exponent < 9U || exponent > 30U) return -1;
+    return pgp_write_byte_fd(fd, 224U + exponent);
 }
 
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size) {

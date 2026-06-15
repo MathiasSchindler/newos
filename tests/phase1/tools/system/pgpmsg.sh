@@ -39,6 +39,10 @@ SIGNER_FPR=$(sed -n 's/^generated: //p' "$WORK_DIR/keygen.out" | head -1)
 RECIPIENT_FPR=$(sed -n 's/^generated: //p' "$WORK_DIR/recipient-keygen.out" | head -1)
 "${TEST_BIN_DIR}/pgpmsg" sign --detach --armor -s "$WORK_DIR/secret.asc" -u "$SIGNER_FPR" -o "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/plain.sig.asc" '^-----BEGIN PGP SIGNATURE-----$' "pgpmsg sign did not write an armored detached signature"
+"${TEST_BIN_DIR}/pgpmsg" sign --cleartext -s "$WORK_DIR/secret.asc" -u "$SIGNER_FPR" -o "$WORK_DIR/plain.clear.asc" "$WORK_DIR/plain.txt"
+assert_file_contains "$WORK_DIR/plain.clear.asc" '^-----BEGIN PGP SIGNED MESSAGE-----' "pgpmsg sign --cleartext did not write a cleartext signed message"
+assert_file_contains "$WORK_DIR/plain.clear.asc" '^Hash: SHA512' "pgpmsg sign --cleartext did not advertise the SHA512 hash"
+assert_file_contains "$WORK_DIR/plain.clear.asc" '^-----BEGIN PGP SIGNATURE-----$' "pgpmsg sign --cleartext did not include an armored signature block"
 "${TEST_BIN_DIR}/pgpmsg" verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt" > "$WORK_DIR/verify_good.out"
 assert_file_contains "$WORK_DIR/verify_good.out" '^signature: good$' "pgpmsg verify did not report a good detached signature"
 "${TEST_BIN_DIR}/pgpmsg" --json verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt" > "$WORK_DIR/verify_good.jsonl"
@@ -61,6 +65,39 @@ assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 1 (public-key encrypted 
 assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg encrypt did not write an integrity-protected encrypted data packet"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain.dec" "$WORK_DIR/plain.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain.dec" || fail "pgpmsg decrypt did not recover the original plaintext"
+
+awk 'BEGIN { for (i = 0; i < 9000; i++) print "streaming pgp line " i }' > "$WORK_DIR/plain-stream.txt"
+"${TEST_BIN_DIR}/pgpmsg" encrypt --stream -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/plain-stream.pgp" "$WORK_DIR/plain-stream.txt"
+STREAM_PACKET_PREFIX=$(dd if="$WORK_DIR/plain-stream.pgp" bs=1 skip=96 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+if [ "$STREAM_PACKET_PREFIX" != "d2f0" ]; then
+    fail "pgpmsg encrypt --stream did not emit a partial-length SEIPD packet"
+fi
+"${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/plain-stream.pgp" > "$WORK_DIR/plain-stream.inspect"
+assert_file_contains "$WORK_DIR/plain-stream.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg inspect did not normalize a streamed encrypted packet"
+"${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-stream.dec" "$WORK_DIR/plain-stream.pgp"
+cmp "$WORK_DIR/plain-stream.txt" "$WORK_DIR/plain-stream.dec" || fail "pgpmsg decrypt did not recover a streamed encrypted message"
+if "${TEST_BIN_DIR}/pgpmsg" encrypt --stream --armor -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/plain-stream-armored.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/plain-stream-armored.out" 2> "$WORK_DIR/plain-stream-armored.err"; then
+    fail "pgpmsg encrypt --stream accepted --armor"
+fi
+assert_file_contains "$WORK_DIR/plain-stream-armored.err" 'stream does not support --armor yet' "pgpmsg encrypt --stream did not explain rejected armor"
+if "${TEST_BIN_DIR}/pgpmsg" encrypt --stream --compress=zlib -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/plain-stream-compressed.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/plain-stream-compressed.out" 2> "$WORK_DIR/plain-stream-compressed.err"; then
+    fail "pgpmsg encrypt --stream accepted compression"
+fi
+assert_file_contains "$WORK_DIR/plain-stream-compressed.err" 'stream currently supports only --compress=none' "pgpmsg encrypt --stream did not explain rejected compression"
+
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" --compress=zlib --armor -o "$WORK_DIR/plain-zlib.pgp.asc" "$WORK_DIR/plain.txt"
+"${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-zlib.dec" "$WORK_DIR/plain-zlib.pgp.asc"
+cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-zlib.dec" || fail "pgpmsg decrypt did not recover a zlib-compressed encrypted message"
+
+SUBKEY_FPR=$("$PGPKEY_BIN" show "$WORK_DIR/public.asc" | sed -n 's/^subkey-fingerprint: //p' | head -1)
+"$PGPKEY_BIN" edit "$WORK_DIR/secret.asc" --out "$WORK_DIR/revoked-secret.asc" --public-out "$WORK_DIR/revoked-public.asc" --revoke-subkey "$SUBKEY_FPR" > "$WORK_DIR/revoke-subkey.out"
+if "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/revoked-public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/revoked-blocked.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/revoked-blocked.out" 2> "$WORK_DIR/revoked-blocked.err"; then
+    fail "pgpmsg encrypt accepted a revoked encryption subkey"
+fi
+assert_file_contains "$WORK_DIR/revoked-blocked.err" 'no matching X25519 encryption subkey with encryption usage flags' "pgpmsg encrypt did not explain rejected encryption usage flags"
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/revoked-public.asc" -r "$SIGNER_FPR" --DANGER-anyway -o "$WORK_DIR/revoked-override.pgp" "$WORK_DIR/plain.txt"
+"${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/revoked-secret.asc" -o "$WORK_DIR/revoked-override.dec" "$WORK_DIR/revoked-override.pgp"
+cmp "$WORK_DIR/plain.txt" "$WORK_DIR/revoked-override.dec" || fail "pgpmsg --DANGER-anyway override did not produce decryptable output"
 
 "$PGPKEY_BIN" -k "$WORK_DIR/pubring.pgp" import "$WORK_DIR/public.asc" "$WORK_DIR/recipient-public.asc" > "$WORK_DIR/pubring-import.out"
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/pubring.pgp" -r "$SIGNER_FPR" -r "$RECIPIENT_FPR" --armor -o "$WORK_DIR/plain-multi.pgp.asc" "$WORK_DIR/plain.txt"

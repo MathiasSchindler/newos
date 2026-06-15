@@ -184,7 +184,8 @@
     X("src/shared/crypto/sha512.c") \
     X("src/shared/crypto/crypto_util.c") \
     X("src/shared/crypto/curve25519.c") \
-    X("src/shared/crypto/ed25519.c")
+    X("src/shared/crypto/ed25519.c") \
+    X("src/shared/compression/zlib.c")
 
 /* ── shell (sh) private implementation ──────────────────────────────────── */
 

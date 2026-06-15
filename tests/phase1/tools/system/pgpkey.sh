@@ -72,6 +72,7 @@ assert_file_contains "$WORK_DIR/generated_public_show.out" '^uid: Test User <tes
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^primary-uid: Test User <test@example.com>$' "pgpkey show did not mark the generated primary user ID"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^key-flags: certify, sign$' "pgpkey show did not decode generated key flags"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^key-expires: ' "pgpkey show did not decode generated expiration metadata"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^preferred-compression: ZLIB, ZIP, uncompressed$' "pgpkey show did not decode generated compression preferences"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey: public subkey, v4, ECDH, 256 bits, created ' "pgpkey generate did not add an X25519 encryption subkey"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey-flags: encrypt communications, encrypt storage$' "pgpkey show did not decode generated encryption subkey flags"
 
@@ -83,6 +84,23 @@ SECRET_FPR=$(sed -n 's/^fingerprint: //p' "$WORK_DIR/generated_secret_show.out" 
 if [ -z "$PUBLIC_FPR" ] || [ "$PUBLIC_FPR" != "$SECRET_FPR" ]; then
     fail "pgpkey generated public and private fingerprints differ"
 fi
+
+"${TEST_BIN_DIR}/pgpkey" edit "$WORK_DIR/secret.asc" --out "$WORK_DIR/edit-add-secret.asc" --public-out "$WORK_DIR/edit-add-public.asc" --add-uid "Added User <added@example.com>" > "$WORK_DIR/edit-add.out"
+assert_file_contains "$WORK_DIR/edit-add.out" '^edited$' "pgpkey edit --add-uid did not report success"
+"${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/edit-add-public.asc" > "$WORK_DIR/edit-add-show.out"
+assert_file_contains "$WORK_DIR/edit-add-show.out" '^uid: Added User <added@example.com>$' "pgpkey edit --add-uid did not add a user ID"
+"${TEST_BIN_DIR}/pgpkey" edit "$WORK_DIR/edit-add-secret.asc" --out "$WORK_DIR/edit-primary-secret.asc" --public-out "$WORK_DIR/edit-primary-public.asc" --set-primary-uid "Added User <added@example.com>" > "$WORK_DIR/edit-primary.out"
+"${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/edit-primary-public.asc" > "$WORK_DIR/edit-primary-show.out"
+assert_file_contains "$WORK_DIR/edit-primary-show.out" '^primary-uid: Added User <added@example.com>$' "pgpkey edit --set-primary-uid did not update the primary UID"
+"${TEST_BIN_DIR}/pgpkey" edit "$WORK_DIR/edit-primary-secret.asc" --out "$WORK_DIR/edit-subkey-secret.asc" --public-out "$WORK_DIR/edit-subkey-public.asc" --add-subkey > "$WORK_DIR/edit-subkey.out"
+"${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/edit-subkey-public.asc" > "$WORK_DIR/edit-subkey-show.out"
+SUBKEY_COUNT=$(grep -c '^subkey-fingerprint: ' "$WORK_DIR/edit-subkey-show.out")
+if [ "$SUBKEY_COUNT" -lt 2 ]; then
+    fail "pgpkey edit --add-subkey did not add a second subkey"
+fi
+"${TEST_BIN_DIR}/pgpkey" edit "$WORK_DIR/edit-primary-secret.asc" --out "$WORK_DIR/edit-revoke-secret.asc" --public-out "$WORK_DIR/edit-revoke-public.asc" --revoke-uid "Added User <added@example.com>" > "$WORK_DIR/edit-revoke.out"
+"${TEST_BIN_DIR}/pgpkey" show -v "$WORK_DIR/edit-revoke-public.asc" > "$WORK_DIR/edit-revoke-show.out"
+assert_file_contains "$WORK_DIR/edit-revoke-show.out" 'certification revocation' "pgpkey edit --revoke-uid did not add a certification revocation signature"
 if "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" import "$WORK_DIR/secret.asc" > "$WORK_DIR/import_secret.out" 2> "$WORK_DIR/import_secret.err"; then
     fail "pgpkey import accepted a private key block"
 fi
