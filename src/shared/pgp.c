@@ -1,5 +1,6 @@
 #include "pgp.h"
 #include "crypto/sha1.h"
+#include "crypto/sha256.h"
 #include "runtime.h"
 
 #define PGP_ARMOR_CRC24_INIT 0xb704ceU
@@ -789,9 +790,9 @@ static int pgp_skip_public_key_material(PgpPublicKeyInfo *info, unsigned int alg
         *bits_out = 256U;
         return 0;
     }
-    if (algorithm == 25U) {
+    if (algorithm == 25U || algorithm == 27U) {
         if (*offset_io + 32U > body_size) {
-            pgp_set_error(error, error_size, "truncated OpenPGP X25519 public key material");
+            pgp_set_error(error, error_size, algorithm == 25U ? "truncated OpenPGP X25519 public key material" : "truncated OpenPGP Ed25519 public key material");
             return -1;
         }
         pgp_store_public_material(info, body + *offset_io, 32U);
@@ -805,6 +806,7 @@ static int pgp_skip_public_key_material(PgpPublicKeyInfo *info, unsigned int alg
 int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const unsigned char *body, size_t body_size, char *error, size_t error_size) {
     size_t offset;
     size_t public_body_size;
+    unsigned long long public_material_size;
 
     rt_memset(info, 0, sizeof(*info));
     if (body_size < 6U) {
@@ -813,13 +815,51 @@ int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const 
     }
     info->tag = tag;
     info->version = body[0];
-    if (info->version != 4U) {
+    if (info->version != 4U && info->version != 6U) {
         info->algorithm = body_size > 5U ? body[5] : 0U;
         info->present = 1;
         return 0;
     }
     info->created = pgp_read_u32_be(body + 1U);
     info->algorithm = body[5];
+
+    if (info->version == 6U) {
+        if (body_size < 10U) {
+            pgp_set_error(error, error_size, "truncated OpenPGP v6 public key packet");
+            return -1;
+        }
+        public_material_size = pgp_read_u32_be(body + 6U);
+        if (public_material_size > (unsigned long long)(body_size - 10U)) {
+            pgp_set_error(error, error_size, "truncated OpenPGP v6 public key material");
+            return -1;
+        }
+        offset = 10U;
+        public_body_size = 10U + (size_t)public_material_size;
+        if (pgp_skip_public_key_material(info, info->algorithm, body, public_body_size, &offset, &info->bits, error, error_size) != 0) return -1;
+        if (offset != public_body_size) {
+            pgp_set_error(error, error_size, "malformed OpenPGP v6 public key material");
+            return -1;
+        }
+        {
+            CryptoSha256Context sha256;
+            unsigned char prefix[5];
+
+            prefix[0] = 0x9bU;
+            prefix[1] = (unsigned char)(((unsigned long long)public_body_size >> 24U) & 0xffU);
+            prefix[2] = (unsigned char)(((unsigned long long)public_body_size >> 16U) & 0xffU);
+            prefix[3] = (unsigned char)(((unsigned long long)public_body_size >> 8U) & 0xffU);
+            prefix[4] = (unsigned char)((unsigned long long)public_body_size & 0xffU);
+            crypto_sha256_init(&sha256);
+            crypto_sha256_update(&sha256, prefix, sizeof(prefix));
+            crypto_sha256_update(&sha256, body, public_body_size);
+            crypto_sha256_final(&sha256, info->fingerprint);
+            info->fingerprint_size = CRYPTO_SHA256_DIGEST_SIZE;
+            memcpy(info->key_id, info->fingerprint, PGP_KEY_ID_SIZE);
+        }
+        info->present = 1;
+        return 0;
+    }
+
     offset = 6U;
     if (pgp_skip_public_key_material(info, info->algorithm, body, body_size, &offset, &info->bits, error, error_size) != 0) return -1;
     public_body_size = tag == 5U || tag == 7U ? offset : body_size;
@@ -951,10 +991,39 @@ static int pgp_parse_signature_packet(PgpSignatureInfo *info, unsigned int targe
     info->target_tag = target_tag;
     info->target_index = target_index;
     info->packet_index = packet_index;
-    if (info->version != 4U) {
+    if (info->version != 4U && info->version != 6U) {
         info->signature_type = body_size > 2U ? body[2] : 0U;
         info->public_key_algorithm = body_size > 3U ? body[3] : 0U;
         info->hash_algorithm = body_size > 4U ? body[4] : 0U;
+        info->present = 1;
+        return 0;
+    }
+    if (info->version == 6U) {
+        if (body_size < 8U) {
+            pgp_set_error(error, error_size, "truncated OpenPGP v6 signature packet");
+            return -1;
+        }
+        info->signature_type = body[1];
+        info->public_key_algorithm = body[2];
+        info->hash_algorithm = body[3];
+        hashed_size = pgp_read_u32_be(body + 4U);
+        if (hashed_size > body_size - 8U) {
+            pgp_set_error(error, error_size, "truncated OpenPGP v6 signature hashed subpackets");
+            return -1;
+        }
+        pgp_parse_signature_subpackets(info, body + 8U, hashed_size);
+        unhashed_offset = 8U + hashed_size;
+        if (unhashed_offset + 4U > body_size) {
+            pgp_set_error(error, error_size, "truncated OpenPGP v6 signature unhashed subpacket length");
+            return -1;
+        }
+        unhashed_size = pgp_read_u32_be(body + unhashed_offset);
+        unhashed_offset += 4U;
+        if (unhashed_size > body_size - unhashed_offset) {
+            pgp_set_error(error, error_size, "truncated OpenPGP v6 signature unhashed subpackets");
+            return -1;
+        }
+        pgp_parse_signature_subpackets(info, body + unhashed_offset, unhashed_size);
         info->present = 1;
         return 0;
     }
@@ -1093,7 +1162,7 @@ int pgp_fingerprint_matches_text(const PgpPublicKeyInfo *key, const char *text) 
         return memcmp(parsed, key->fingerprint, parsed_size) == 0;
     }
     if (parsed_size == PGP_KEY_ID_SIZE && key->fingerprint_size >= PGP_KEY_ID_SIZE) {
-        return memcmp(parsed, key->fingerprint + key->fingerprint_size - PGP_KEY_ID_SIZE, PGP_KEY_ID_SIZE) == 0;
+        return memcmp(parsed, key->key_id, PGP_KEY_ID_SIZE) == 0;
     }
     return 0;
 }
@@ -1125,7 +1194,7 @@ const char *pgp_public_key_algorithm_name(unsigned int algorithm) {
     if (algorithm == 17U) return "DSA";
     if (algorithm == 18U) return "ECDH";
     if (algorithm == 19U) return "ECDSA";
-    if (algorithm == 22U) return "EdDSA";
+    if (algorithm == 22U) return "EdDSA legacy";
     if (algorithm == 25U) return "X25519";
     if (algorithm == 27U) return "Ed25519";
     return "unknown";

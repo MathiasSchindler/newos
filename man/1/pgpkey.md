@@ -12,7 +12,7 @@ pgpkey [-k KEYRING] [-v] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]
 pgpkey show [-v] [FILE ...]
 pgpkey packets FILE ...
 pgpkey issuers [--external] [FILE ...]
-pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]
+pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]
 pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION
 pgpkey import FILE ...
 pgpkey list
@@ -23,7 +23,7 @@ pgpkey export FINGERPRINT [OUTPUT]
 
 `pgpkey` reads binary OpenPGP certificate data, ASCII-armored public key blocks,
 and ASCII-armored private key blocks. It can inspect keys, list packet tags,
-generate a small modern key pair, import public certificates into an append-only
+generate a small RFC 9580 key pair, import public certificates into an append-only
 keyring, list the keyring, export a matching certificate as an ASCII-armored
 public key block, and perform append-preserving edits on generated unprotected
 secret keys.
@@ -41,7 +41,7 @@ keyring.
 - `show [-v] [FILE ...]` - print certificate summaries for files, or the default keyring when no file is given.
 - `packets FILE ...` - print packet tags and packet lengths.
 - `issuers [--external] [FILE ...]` - list unique signature issuer key IDs found in certificates, optionally excluding issuer IDs already present as primary keys or subkeys in the same input set.
-- `generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]` - generate an Ed25519 OpenPGP secret key and matching public certificate.
+- `generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]` - generate an Ed25519 OpenPGP secret key and matching public certificate. The default profile is RFC 9580 v6; `legacy-v4` is retained for compatibility.
 - `edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION` - append a key edit signature or generated subkey to an unprotected secret key and optionally write the matching public certificate.
 - `import FILE ...` - decode public key files and append new certificates to the keyring.
 - `list` - show certificates in the keyring.
@@ -58,17 +58,20 @@ keyring.
 
 ## GENERATE
 
-`pgpkey generate` currently implements an interoperable v4 key-generation path:
-an Ed25519 primary key that can certify and sign, plus an ECDH
-Curve25519/X25519 encryption subkey. It uses the v4 EdDSA and ECDH algorithm
-IDs commonly accepted by existing OpenPGP implementations; RFC 9580 v6 keys and
-the newer Ed25519/X25519 algorithm IDs are not emitted yet. It writes two
+`pgpkey generate` defaults to an RFC 9580 v6 profile: an Ed25519 primary key
+that can certify and sign, plus an X25519 encryption subkey. It writes two
 ASCII-armored files: an unencrypted private key block and a matching public key
 block. Both outputs must be file paths; standard output is refused for generated
-key material. The public certificate includes a user ID, a self-signature, and a
-subkey binding signature with creation time, issuer metadata, key flags,
-algorithm preferences, feature flags, primary-UID marker, and key expiration
-metadata.
+key material. The public certificate includes a Direct Key self-signature, a user
+ID certification, and a subkey binding signature with creation time, issuer
+fingerprint metadata, key flags, algorithm preferences, AEAD preferences,
+feature flags, primary-UID marker, and key expiration metadata.
+
+The `legacy-v4` profile remains available with `--profile legacy-v4`,
+`--profile v4`, or `--legacy-v4`. It emits the older v4 EdDSA legacy primary key
+and ECDH Curve25519/X25519 subkey shape used by earlier versions of this tool and
+many deployed OpenPGP implementations. New keys should use the RFC 9580 default;
+legacy v4 key material is marked as deprecated by RFC 9580.
 
 Required options are:
 
@@ -81,6 +84,8 @@ Optional generation options are:
 
 - `--expires DURATION` - set the key expiration interval. DURATION is a number of seconds or a number followed by `s`, `d`, `w`, `m`, or `y`; use `never`, `none`, or `0` for no expiration.
 - `--algorithm ed25519` - select the only implemented generation algorithm.
+- `--profile rfc9580|legacy-v4` - select the generated certificate profile. Aliases `v6` and `v4` are accepted.
+- `--legacy-v4` - shorthand for `--profile legacy-v4`.
 - `--armor` - accepted for clarity; generated output is always ASCII-armored.
 
 Passphrase-protected secret-key packets, S2K encryption, full key revocation
@@ -105,10 +110,10 @@ Exactly one edit operation is accepted per invocation:
 - `--add-subkey` - generate and append a new unprotected X25519/ECDH encryption subkey with encryption usage flags.
 - `--revoke-subkey FINGERPRINT` - insert a subkey revocation signature for a matching subkey fingerprint or key ID.
 
-The edit path currently signs with the Ed25519 primary key and supports the
-unprotected v4 key shape generated by this tool. It does not yet edit
-passphrase-protected keys, create full primary-key revocation certificates, or
-rewrite third-party certifications.
+The edit path currently signs with the Ed25519 primary key and supports only the
+unprotected legacy-v4 key shape generated by this tool. It does not yet edit RFC
+9580 v6 certificates, passphrase-protected keys, create full primary-key
+revocation certificates, or rewrite third-party certifications.
 
 ## SHOW OUTPUT
 
@@ -144,7 +149,9 @@ The default keyring path is taken from `PGPKEY_KEYRING` when set. Otherwise,
 `pgpkey` uses `$HOME/.pgpkeyring`. The parent directory must already exist.
 
 Fingerprints may be written as continuous hex, colon-separated hex, or spaced
-hex. For lookup, a full v4 fingerprint or the trailing 64-bit key ID is accepted.
+hex. For lookup, a full fingerprint or the 64-bit key ID is accepted. V4 key IDs
+are the trailing eight fingerprint octets; v6 key IDs are the first eight
+fingerprint octets.
 
 ## ISSUERS
 
@@ -168,8 +175,8 @@ with fingerprint, key ID, algorithm, user IDs, subkey count, signature count,
 and decoded signature-metadata count. `pgpkey issuers` emits `issuer` events
 with key IDs and issuer fingerprints when available. `pgpkey import` emits
 `import` events for newly imported certificates. `pgpkey generate` emits one
-`generate` event with the generated fingerprint, key ID, user ID, output paths,
-algorithm, curve, and protection status.
+`generate` event with the generated profile, version, fingerprint, key ID, user
+ID, output paths, algorithm, curve, and protection status.
 
 ## SEE ALSO
 

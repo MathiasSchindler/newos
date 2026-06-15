@@ -7,7 +7,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION]\n       pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
+#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]\n       pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
 #define PGPKEY_PATH_CAPACITY 1024U
 #define PGPKEY_ERROR_CAPACITY 160U
 #define PGPKEY_ED25519_KEY_SIZE 32U
@@ -76,6 +76,7 @@ typedef struct {
     const char *public_out;
     unsigned long long key_expiration_seconds;
     int no_passphrase;
+    int legacy_v4;
 } PgpKeyGenerateOptions;
 
 typedef struct {
@@ -91,6 +92,8 @@ typedef struct {
     PgpKeyBuffer encryption_secret_body;
     PgpKeyBuffer user_id_packet;
     PgpKeyBuffer signature_packet;
+    PgpKeyBuffer direct_signature_packet;
+    PgpKeyBuffer user_signature_packet;
     PgpKeyBuffer subkey_signature_packet;
     PgpKeyBuffer public_certificate;
     PgpKeyBuffer secret_certificate;
@@ -267,6 +270,13 @@ static unsigned int pgpkey_read_u16_be(const unsigned char *data) {
     return ((unsigned int)data[0] << 8U) | (unsigned int)data[1];
 }
 
+static unsigned long long pgpkey_read_u32_be(const unsigned char *data) {
+    return ((unsigned long long)data[0] << 24U) |
+           ((unsigned long long)data[1] << 16U) |
+           ((unsigned long long)data[2] << 8U) |
+           (unsigned long long)data[3];
+}
+
 static int pgpkey_packet_end(const PgpPacket *packet, size_t *end_out) {
     if (packet->body_offset > ((size_t)-1) - packet->body_size) return -1;
     *end_out = packet->body_offset + packet->body_size;
@@ -283,7 +293,17 @@ static int pgpkey_public_body_size(unsigned int tag, const unsigned char *body, 
         *public_size_out = body_size;
         return 0;
     }
-    if ((tag != 5U && tag != 7U) || body_size < 7U || body[0] != 4U) return -1;
+    if ((tag != 5U && tag != 7U) || body_size < 7U) return -1;
+    if (body[0] == 6U) {
+        unsigned long long material_size;
+
+        if (body_size < 10U) return -1;
+        material_size = pgpkey_read_u32_be(body + 6U);
+        if (material_size > (unsigned long long)(body_size - 10U)) return -1;
+        *public_size_out = 10U + (size_t)material_size;
+        return *public_size_out < body_size ? 0 : -1;
+    }
+    if (body[0] != 4U) return -1;
     oid_size = body[offset++];
     if (oid_size > body_size - offset) return -1;
     offset += oid_size;
@@ -316,7 +336,7 @@ static int pgpkey_parse_ed25519_secret(const unsigned char *body, size_t body_si
     size_t index;
 
     if (pgp_parse_public_key_packet(&secret->info, 5U, body, body_size, 0, 0U) != 0) return -1;
-    if (secret->info.algorithm != 22U || secret->info.public_material_size != PGPKEY_ED25519_KEY_SIZE) return -1;
+    if (secret->info.version != 4U || secret->info.algorithm != 22U || secret->info.public_material_size != PGPKEY_ED25519_KEY_SIZE) return -1;
     if (selector != 0 && selector[0] != '\0' && !pgp_fingerprint_matches_text(&secret->info, selector)) return -1;
     if (pgpkey_public_body_size(5U, body, body_size, &public_size) != 0 || public_size >= body_size || body[public_size] != 0U) return -1;
     offset = public_size + 1U;
@@ -719,35 +739,39 @@ static int write_key_line(const PgpPublicKeyInfo *key, const char *label) {
 
 static int write_signature_summary_text(const PgpCertificateInfo *certificate, int color_mode) {
     const PgpSignatureInfo *primary_signature;
+    const PgpSignatureInfo *direct_signature;
+    const PgpSignatureInfo *metadata_signature;
     size_t primary_uid_index;
 
     primary_signature = latest_primary_user_id_signature(certificate, &primary_uid_index);
+    direct_signature = latest_self_signature_for_target(certificate, PGP_SIGNATURE_TARGET_PRIMARY, 0U, 0);
     if (primary_signature != 0 && primary_uid_index < certificate->user_id_count) {
         if (rt_write_cstr(1, "primary-uid: ") != 0 || tool_write_visible_line(1, certificate->user_ids[primary_uid_index]) != 0) return -1;
     } else if (certificate->user_id_count != 0U) {
         primary_signature = latest_self_signature_for_target(certificate, PGP_SIGNATURE_TARGET_USER_ID, 0U, 0);
     }
-    if (primary_signature != 0) {
-        if (primary_signature->key_flags_size != 0U) {
-            if (rt_write_cstr(1, "key-flags: ") != 0 || write_key_flags(1, primary_signature->key_flags, primary_signature->key_flags_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    metadata_signature = direct_signature != 0 ? direct_signature : primary_signature;
+    if (metadata_signature != 0) {
+        if (metadata_signature->key_flags_size != 0U) {
+            if (rt_write_cstr(1, "key-flags: ") != 0 || write_key_flags(1, metadata_signature->key_flags, metadata_signature->key_flags_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
-        if (primary_signature->has_key_expiration) {
+        if (metadata_signature->has_key_expiration) {
             if (rt_write_cstr(1, "key-expires: ") != 0) return -1;
-            if (primary_signature->key_expiration_seconds == 0ULL) {
+            if (metadata_signature->key_expiration_seconds == 0ULL) {
                 if (write_expiration_date_with_status(1, 0ULL, color_mode) != 0) return -1;
-            } else if (write_expiration_date_with_status(1, certificate->primary.created + primary_signature->key_expiration_seconds, color_mode) != 0) {
+            } else if (write_expiration_date_with_status(1, certificate->primary.created + metadata_signature->key_expiration_seconds, color_mode) != 0) {
                 return -1;
             }
             if (rt_write_char(1, '\n') != 0) return -1;
         }
-        if (primary_signature->preferred_symmetric_count != 0U) {
-            if (rt_write_cstr(1, "preferred-symmetric: ") != 0 || write_algorithm_list(1, primary_signature->preferred_symmetric, primary_signature->preferred_symmetric_count, pgp_symmetric_algorithm_name, pgpkey_symmetric_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (metadata_signature->preferred_symmetric_count != 0U) {
+            if (rt_write_cstr(1, "preferred-symmetric: ") != 0 || write_algorithm_list(1, metadata_signature->preferred_symmetric, metadata_signature->preferred_symmetric_count, pgp_symmetric_algorithm_name, pgpkey_symmetric_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
-        if (primary_signature->preferred_hash_count != 0U) {
-            if (rt_write_cstr(1, "preferred-hash: ") != 0 || write_algorithm_list(1, primary_signature->preferred_hash, primary_signature->preferred_hash_count, pgp_hash_algorithm_name, pgpkey_hash_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (metadata_signature->preferred_hash_count != 0U) {
+            if (rt_write_cstr(1, "preferred-hash: ") != 0 || write_algorithm_list(1, metadata_signature->preferred_hash, metadata_signature->preferred_hash_count, pgp_hash_algorithm_name, pgpkey_hash_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
-        if (primary_signature->preferred_compression_count != 0U) {
-            if (rt_write_cstr(1, "preferred-compression: ") != 0 || write_algorithm_list(1, primary_signature->preferred_compression, primary_signature->preferred_compression_count, pgp_compression_algorithm_name, pgpkey_compression_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (metadata_signature->preferred_compression_count != 0U) {
+            if (rt_write_cstr(1, "preferred-compression: ") != 0 || write_algorithm_list(1, metadata_signature->preferred_compression, metadata_signature->preferred_compression_count, pgp_compression_algorithm_name, pgpkey_compression_algorithm_style, color_mode) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
     }
     return 0;
@@ -1281,6 +1305,8 @@ static void generated_key_free(PgpKeyGeneratedKey *generated) {
     pgpkey_buffer_free(&generated->encryption_secret_body);
     pgpkey_buffer_free(&generated->user_id_packet);
     pgpkey_buffer_free(&generated->signature_packet);
+    pgpkey_buffer_free(&generated->direct_signature_packet);
+    pgpkey_buffer_free(&generated->user_signature_packet);
     pgpkey_buffer_free(&generated->subkey_signature_packet);
     pgpkey_buffer_free(&generated->public_certificate);
     pgpkey_buffer_free(&generated->secret_certificate);
@@ -1620,7 +1646,7 @@ fail:
     return -1;
 }
 
-static int build_generated_key(const PgpKeyGenerateOptions *options, PgpKeyGeneratedKey *generated, char *error, size_t error_size) {
+static int build_generated_key_legacy(const PgpKeyGenerateOptions *options, PgpKeyGeneratedKey *generated, char *error, size_t error_size) {
     unsigned long long created = current_epoch_or_zero();
 
     rt_memset(generated, 0, sizeof(*generated));
@@ -1667,10 +1693,216 @@ static int build_generated_key(const PgpKeyGenerateOptions *options, PgpKeyGener
     return 0;
 }
 
+static int build_generated_public_body_v6(PgpKeyGeneratedKey *generated, unsigned long long created, char *error, size_t error_size) {
+    if (pgpkey_buffer_append_byte(&generated->public_body, 6U) != 0 ||
+        pgpkey_buffer_append_u32_be(&generated->public_body, created) != 0 ||
+        pgpkey_buffer_append_byte(&generated->public_body, 27U) != 0 ||
+        pgpkey_buffer_append_u32_be(&generated->public_body, PGPKEY_ED25519_KEY_SIZE) != 0 ||
+        pgpkey_buffer_append_data(&generated->public_body, generated->primary_public, PGPKEY_ED25519_KEY_SIZE) != 0) {
+        pgpkey_set_error(error, error_size, "out of memory while writing v6 public key packet");
+        return -1;
+    }
+    return pgp_parse_public_key_packet(&generated->primary_info, 6U, generated->public_body.data, generated->public_body.size, error, error_size);
+}
+
+static int build_generated_secret_body_v6(PgpKeyGeneratedKey *generated, char *error, size_t error_size) {
+    if (pgpkey_buffer_append_data(&generated->secret_body, generated->public_body.data, generated->public_body.size) != 0 ||
+        pgpkey_buffer_append_byte(&generated->secret_body, 0U) != 0 ||
+        pgpkey_buffer_append_data(&generated->secret_body, generated->primary_seed, PGPKEY_ED25519_KEY_SIZE) != 0) {
+        pgpkey_set_error(error, error_size, "out of memory while writing v6 secret key packet");
+        return -1;
+    }
+    return 0;
+}
+
+static int build_generated_encryption_public_body_v6(PgpKeyGeneratedKey *generated, unsigned long long created, char *error, size_t error_size) {
+    if (pgpkey_buffer_append_byte(&generated->encryption_public_body, 6U) != 0 ||
+        pgpkey_buffer_append_u32_be(&generated->encryption_public_body, created) != 0 ||
+        pgpkey_buffer_append_byte(&generated->encryption_public_body, 25U) != 0 ||
+        pgpkey_buffer_append_u32_be(&generated->encryption_public_body, PGPKEY_X25519_KEY_SIZE) != 0 ||
+        pgpkey_buffer_append_data(&generated->encryption_public_body, generated->encryption_public, PGPKEY_X25519_KEY_SIZE) != 0) {
+        pgpkey_set_error(error, error_size, "out of memory while writing v6 encryption subkey packet");
+        return -1;
+    }
+    return pgp_parse_public_key_packet(&generated->encryption_info, 14U, generated->encryption_public_body.data, generated->encryption_public_body.size, error, error_size);
+}
+
+static int build_generated_encryption_secret_body_v6(PgpKeyGeneratedKey *generated, char *error, size_t error_size) {
+    if (pgpkey_buffer_append_data(&generated->encryption_secret_body, generated->encryption_public_body.data, generated->encryption_public_body.size) != 0 ||
+        pgpkey_buffer_append_byte(&generated->encryption_secret_body, 0U) != 0 ||
+        pgpkey_buffer_append_data(&generated->encryption_secret_body, generated->encryption_seed, PGPKEY_X25519_KEY_SIZE) != 0) {
+        pgpkey_set_error(error, error_size, "out of memory while writing v6 encryption secret subkey packet");
+        return -1;
+    }
+    return 0;
+}
+
+static void pgpkey_sha512_update_v6_key(CryptoSha512Context *sha512, const PgpKeyBuffer *body) {
+    unsigned char prefix[5];
+
+    prefix[0] = 0x9bU;
+    prefix[1] = (unsigned char)((body->size >> 24U) & 0xffU);
+    prefix[2] = (unsigned char)((body->size >> 16U) & 0xffU);
+    prefix[3] = (unsigned char)((body->size >> 8U) & 0xffU);
+    prefix[4] = (unsigned char)(body->size & 0xffU);
+    crypto_sha512_update(sha512, prefix, sizeof(prefix));
+    crypto_sha512_update(sha512, body->data, body->size);
+}
+
+static int append_generated_signature_v6(PgpKeyGeneratedKey *generated, PgpKeyBuffer *packet_out, unsigned int signature_type, const unsigned char *target_body, size_t target_body_size, unsigned long long created, unsigned long long expiration_seconds, const unsigned char *key_flags, size_t key_flags_size, int include_primary_user_id, int include_preferences, char *error, size_t error_size) {
+    PgpKeyBuffer hashed;
+    PgpKeyBuffer unhashed;
+    PgpKeyBuffer hash_part;
+    PgpKeyBuffer signature_body;
+    CryptoSha512Context sha512;
+    unsigned char digest[CRYPTO_SHA512_DIGEST_SIZE];
+    unsigned char signature[PGPKEY_ED25519_SIGNATURE_SIZE];
+    unsigned char salt[32];
+    unsigned char issuer_fpr[PGP_FINGERPRINT_MAX_SIZE + 1U];
+    unsigned char preferred_symmetric[] = { 9U, 7U };
+    unsigned char preferred_hash[] = { 10U, 8U };
+    unsigned char preferred_compression[] = { 0U };
+    unsigned char features[] = { 0x09U };
+    unsigned char preferred_aead[] = { 9U, 3U, 7U, 3U };
+    unsigned char primary_user_id[] = { 0x01U };
+    unsigned char trailer[6];
+    int result = -1;
+
+    rt_memset(&hashed, 0, sizeof(hashed));
+    rt_memset(&unhashed, 0, sizeof(unhashed));
+    rt_memset(&hash_part, 0, sizeof(hash_part));
+    rt_memset(&signature_body, 0, sizeof(signature_body));
+    if (platform_random_bytes(salt, sizeof(salt)) != 0) {
+        pgpkey_set_error(error, error_size, "cannot read random bytes for v6 signature salt");
+        goto cleanup;
+    }
+    issuer_fpr[0] = 6U;
+    memcpy(issuer_fpr + 1U, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size);
+    if (pgpkey_buffer_append_signature_subpacket_u32(&hashed, 0x82U, created) != 0 ||
+        (key_flags_size != 0U && pgpkey_buffer_append_signature_subpacket(&hashed, 0x9bU, key_flags, key_flags_size) != 0) ||
+        pgpkey_buffer_append_signature_subpacket(&hashed, 33U, issuer_fpr, generated->primary_info.fingerprint_size + 1U) != 0) goto cleanup;
+    if (expiration_seconds != 0ULL && pgpkey_buffer_append_signature_subpacket_u32(&hashed, 0x89U, expiration_seconds) != 0) goto cleanup;
+    if (include_primary_user_id && pgpkey_buffer_append_signature_subpacket(&hashed, 25U, primary_user_id, sizeof(primary_user_id)) != 0) goto cleanup;
+    if (include_preferences) {
+        if (pgpkey_buffer_append_signature_subpacket(&hashed, 11U, preferred_symmetric, sizeof(preferred_symmetric)) != 0 ||
+            pgpkey_buffer_append_signature_subpacket(&hashed, 21U, preferred_hash, sizeof(preferred_hash)) != 0 ||
+            pgpkey_buffer_append_signature_subpacket(&hashed, 22U, preferred_compression, sizeof(preferred_compression)) != 0 ||
+            pgpkey_buffer_append_signature_subpacket(&hashed, 30U, features, sizeof(features)) != 0 ||
+            pgpkey_buffer_append_signature_subpacket(&hashed, 39U, preferred_aead, sizeof(preferred_aead)) != 0) goto cleanup;
+    }
+    if (pgpkey_buffer_append_byte(&hash_part, 6U) != 0 ||
+        pgpkey_buffer_append_byte(&hash_part, signature_type) != 0 ||
+        pgpkey_buffer_append_byte(&hash_part, 27U) != 0 ||
+        pgpkey_buffer_append_byte(&hash_part, 10U) != 0 ||
+        pgpkey_buffer_append_u32_be(&hash_part, hashed.size) != 0 ||
+        pgpkey_buffer_append_data(&hash_part, hashed.data, hashed.size) != 0) goto cleanup;
+
+    crypto_sha512_init(&sha512);
+    crypto_sha512_update(&sha512, salt, sizeof(salt));
+    pgpkey_sha512_update_v6_key(&sha512, &generated->public_body);
+    if (signature_type >= 0x10U && signature_type <= 0x13U) {
+        unsigned char prefix[5];
+
+        prefix[0] = 0xb4U;
+        prefix[1] = (unsigned char)((target_body_size >> 24U) & 0xffU);
+        prefix[2] = (unsigned char)((target_body_size >> 16U) & 0xffU);
+        prefix[3] = (unsigned char)((target_body_size >> 8U) & 0xffU);
+        prefix[4] = (unsigned char)(target_body_size & 0xffU);
+        crypto_sha512_update(&sha512, prefix, sizeof(prefix));
+        crypto_sha512_update(&sha512, target_body, target_body_size);
+    } else if (signature_type == 0x18U || signature_type == 0x28U) {
+        pgpkey_sha512_update_v6_key(&sha512, &generated->encryption_public_body);
+    }
+    crypto_sha512_update(&sha512, hash_part.data, hash_part.size);
+    trailer[0] = 6U;
+    trailer[1] = 0xffU;
+    trailer[2] = (unsigned char)((hash_part.size >> 24U) & 0xffU);
+    trailer[3] = (unsigned char)((hash_part.size >> 16U) & 0xffU);
+    trailer[4] = (unsigned char)((hash_part.size >> 8U) & 0xffU);
+    trailer[5] = (unsigned char)(hash_part.size & 0xffU);
+    crypto_sha512_update(&sha512, trailer, sizeof(trailer));
+    crypto_sha512_final(&sha512, digest);
+    if (crypto_ed25519_sign(signature, digest, sizeof(digest), generated->primary_seed, generated->primary_public) != 0) goto cleanup;
+    if (pgpkey_buffer_append_data(&signature_body, hash_part.data, hash_part.size) != 0 ||
+        pgpkey_buffer_append_u32_be(&signature_body, unhashed.size) != 0 ||
+        pgpkey_buffer_append_data(&signature_body, unhashed.data, unhashed.size) != 0 ||
+        pgpkey_buffer_append_byte(&signature_body, digest[0]) != 0 ||
+        pgpkey_buffer_append_byte(&signature_body, digest[1]) != 0 ||
+        pgpkey_buffer_append_byte(&signature_body, sizeof(salt)) != 0 ||
+        pgpkey_buffer_append_data(&signature_body, salt, sizeof(salt)) != 0 ||
+        pgpkey_buffer_append_data(&signature_body, signature, sizeof(signature)) != 0 ||
+        pgpkey_buffer_append_packet(packet_out, 2U, &signature_body) != 0) goto cleanup;
+    result = 0;
+
+cleanup:
+    if (result != 0) pgpkey_set_error(error, error_size, "out of memory while writing v6 signature packet");
+    pgpkey_buffer_free(&hashed);
+    pgpkey_buffer_free(&unhashed);
+    pgpkey_buffer_free(&hash_part);
+    pgpkey_buffer_free(&signature_body);
+    crypto_secure_bzero(digest, sizeof(digest));
+    crypto_secure_bzero(signature, sizeof(signature));
+    crypto_secure_bzero(salt, sizeof(salt));
+    return result;
+}
+
+static int build_generated_key_v6(const PgpKeyGenerateOptions *options, PgpKeyGeneratedKey *generated, char *error, size_t error_size) {
+    unsigned long long created = current_epoch_or_zero();
+    unsigned char primary_flags[] = { 0x03U };
+    unsigned char subkey_flags[] = { 0x0cU };
+
+    rt_memset(generated, 0, sizeof(*generated));
+    if (created == 0ULL) created = 1ULL;
+    if (platform_random_bytes(generated->primary_seed, sizeof(generated->primary_seed)) != 0 ||
+        platform_random_bytes(generated->encryption_seed, sizeof(generated->encryption_seed)) != 0) {
+        pgpkey_set_error(error, error_size, "cannot read random bytes");
+        return -1;
+    }
+    if (crypto_ed25519_public_key_from_seed(generated->primary_public, generated->primary_seed) != 0 ||
+        crypto_x25519_scalarmult_base(generated->encryption_public, generated->encryption_seed) != 0) {
+        pgpkey_set_error(error, error_size, "public key generation failed");
+        return -1;
+    }
+    if (build_generated_public_body_v6(generated, created, error, error_size) != 0 ||
+        build_generated_secret_body_v6(generated, error, error_size) != 0 ||
+        build_generated_encryption_public_body_v6(generated, created, error, error_size) != 0 ||
+        build_generated_encryption_secret_body_v6(generated, error, error_size) != 0) return -1;
+    if (pgpkey_buffer_append_data(&generated->user_id_packet, (const unsigned char *)options->user_id, rt_strlen(options->user_id)) != 0) {
+        pgpkey_set_error(error, error_size, "out of memory while writing user ID packet");
+        return -1;
+    }
+    if (append_generated_signature_v6(generated, &generated->direct_signature_packet, 0x1fU, 0, 0U, created, options->key_expiration_seconds, primary_flags, sizeof(primary_flags), 0, 1, error, error_size) != 0 ||
+        append_generated_signature_v6(generated, &generated->user_signature_packet, 0x13U, generated->user_id_packet.data, generated->user_id_packet.size, created, options->key_expiration_seconds, primary_flags, sizeof(primary_flags), 1, 0, error, error_size) != 0 ||
+        append_generated_signature_v6(generated, &generated->subkey_signature_packet, 0x18U, 0, 0U, created, options->key_expiration_seconds, subkey_flags, sizeof(subkey_flags), 0, 0, error, error_size) != 0) return -1;
+    if (pgpkey_buffer_append_packet(&generated->public_certificate, 6U, &generated->public_body) != 0 ||
+        pgpkey_buffer_append_data(&generated->public_certificate, generated->direct_signature_packet.data, generated->direct_signature_packet.size) != 0 ||
+        pgpkey_buffer_append_packet(&generated->public_certificate, 13U, &generated->user_id_packet) != 0 ||
+        pgpkey_buffer_append_data(&generated->public_certificate, generated->user_signature_packet.data, generated->user_signature_packet.size) != 0 ||
+        pgpkey_buffer_append_packet(&generated->public_certificate, 14U, &generated->encryption_public_body) != 0 ||
+        pgpkey_buffer_append_data(&generated->public_certificate, generated->subkey_signature_packet.data, generated->subkey_signature_packet.size) != 0 ||
+        pgpkey_buffer_append_packet(&generated->secret_certificate, 5U, &generated->secret_body) != 0 ||
+        pgpkey_buffer_append_data(&generated->secret_certificate, generated->direct_signature_packet.data, generated->direct_signature_packet.size) != 0 ||
+        pgpkey_buffer_append_packet(&generated->secret_certificate, 13U, &generated->user_id_packet) != 0 ||
+        pgpkey_buffer_append_data(&generated->secret_certificate, generated->user_signature_packet.data, generated->user_signature_packet.size) != 0 ||
+        pgpkey_buffer_append_packet(&generated->secret_certificate, 7U, &generated->encryption_secret_body) != 0 ||
+        pgpkey_buffer_append_data(&generated->secret_certificate, generated->subkey_signature_packet.data, generated->subkey_signature_packet.size) != 0) {
+        pgpkey_set_error(error, error_size, "out of memory while writing generated v6 certificates");
+        return -1;
+    }
+    return 0;
+}
+
+static int build_generated_key(const PgpKeyGenerateOptions *options, PgpKeyGeneratedKey *generated, char *error, size_t error_size) {
+    return options->legacy_v4 ? build_generated_key_legacy(options, generated, error, error_size) : build_generated_key_v6(options, generated, error, error_size);
+}
+
 static int write_generate_json(const PgpKeyGenerateOptions *options, const PgpKeyGeneratedKey *generated) {
     if (tool_json_begin_event(1, "pgpkey", "stdout", "generate") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
-    if (rt_write_cstr(1, "\"algorithm\":\"EdDSA\",\"curve\":\"Ed25519\",\"fingerprint\":\"") != 0) return -1;
+    if (rt_write_cstr(1, "\"profile\":") != 0 || tool_json_write_string(1, options->legacy_v4 ? "legacy-v4" : "rfc9580") != 0) return -1;
+    if (rt_write_cstr(1, ",\"version\":") != 0 || rt_write_uint(1, options->legacy_v4 ? 4ULL : 6ULL) != 0) return -1;
+    if (rt_write_cstr(1, ",\"algorithm\":") != 0 || tool_json_write_string(1, options->legacy_v4 ? "EdDSA legacy" : "Ed25519") != 0) return -1;
+    if (rt_write_cstr(1, ",\"curve\":\"Ed25519\",\"fingerprint\":\"") != 0) return -1;
     if (write_hex_bytes(1, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size) != 0) return -1;
     if (rt_write_cstr(1, "\",\"key_id\":\"") != 0) return -1;
     if (write_hex_bytes(1, generated->primary_info.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
@@ -1683,9 +1915,11 @@ static int write_generate_json(const PgpKeyGenerateOptions *options, const PgpKe
 
 static int write_generate_text(const PgpKeyGenerateOptions *options, const PgpKeyGeneratedKey *generated) {
     if (rt_write_cstr(1, "generated: ") != 0 || write_hex_bytes(1, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "profile: ") != 0 || rt_write_line(1, options->legacy_v4 ? "legacy-v4" : "rfc9580") != 0) return -1;
     if (rt_write_cstr(1, "key-id: ") != 0 || write_hex_bytes(1, generated->primary_info.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
     if (rt_write_cstr(1, "secret: ") != 0 || rt_write_line(1, options->secret_out) != 0) return -1;
     if (rt_write_cstr(1, "public: ") != 0 || rt_write_line(1, options->public_out) != 0) return -1;
+    if (options->legacy_v4 && rt_write_line(1, "warning: legacy v4 key material is deprecated by RFC 9580") != 0) return -1;
     return rt_write_line(1, "warning: secret key is not passphrase-protected");
 }
 
@@ -1726,6 +1960,21 @@ static int command_generate(const PgpKeyOptions *options, int argc, char **argv,
                 tool_write_error("pgpkey", "only Ed25519 generation is implemented: ", argv[argi]);
                 return 1;
             }
+            argi += 1;
+        } else if (rt_strcmp(arg, "--profile") == 0) {
+            argi += 1;
+            if (argi >= argc) { tool_write_error("pgpkey", "missing value for ", arg); return 1; }
+            if (rt_strcmp(argv[argi], "rfc9580") == 0 || rt_strcmp(argv[argi], "v6") == 0) {
+                generate_options.legacy_v4 = 0;
+            } else if (rt_strcmp(argv[argi], "legacy-v4") == 0 || rt_strcmp(argv[argi], "v4") == 0) {
+                generate_options.legacy_v4 = 1;
+            } else {
+                tool_write_error("pgpkey", "unknown generate profile: ", argv[argi]);
+                return 1;
+            }
+            argi += 1;
+        } else if (rt_strcmp(arg, "--legacy-v4") == 0) {
+            generate_options.legacy_v4 = 1;
             argi += 1;
         } else if (rt_strcmp(arg, "--no-passphrase") == 0) {
             generate_options.no_passphrase = 1;

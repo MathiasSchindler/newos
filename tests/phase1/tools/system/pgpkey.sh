@@ -70,25 +70,35 @@ assert_file_contains "$WORK_DIR/secret.asc" '^-----BEGIN PGP PRIVATE KEY BLOCK--
 assert_file_contains "$WORK_DIR/public.asc" '^-----BEGIN PGP PUBLIC KEY BLOCK-----$' "pgpkey generate did not write a public key block"
 
 "${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/public.asc" > "$WORK_DIR/generated_public_show.out"
-assert_file_contains "$WORK_DIR/generated_public_show.out" '^primary: public primary, v4, EdDSA, 256 bits, created ' "pgpkey show did not summarize the generated Ed25519 public key"
+assert_file_contains "$WORK_DIR/generate.out" '^profile: rfc9580$' "pgpkey generate did not report the default RFC 9580 profile"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^primary: public primary, v6, Ed25519, 256 bits, created ' "pgpkey show did not summarize the generated RFC 9580 Ed25519 public key"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^uid: Test User <test@example.com>$' "pgpkey show did not print the generated user ID"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^primary-uid: Test User <test@example.com>$' "pgpkey show did not mark the generated primary user ID"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^key-flags: certify, sign$' "pgpkey show did not decode generated key flags"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^key-expires: ' "pgpkey show did not decode generated expiration metadata"
-assert_file_contains "$WORK_DIR/generated_public_show.out" '^preferred-compression: ZLIB, ZIP, uncompressed$' "pgpkey show did not decode generated compression preferences"
-assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey: public subkey, v4, ECDH, 256 bits, created ' "pgpkey generate did not add an X25519 encryption subkey"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^preferred-symmetric: AES-256, AES-128$' "pgpkey show did not decode generated RFC 9580 cipher preferences"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^preferred-hash: SHA-512, SHA-256$' "pgpkey show did not decode generated RFC 9580 hash preferences"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^preferred-compression: uncompressed$' "pgpkey show did not decode generated RFC 9580 compression preferences"
+assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey: public subkey, v6, X25519, 256 bits, created ' "pgpkey generate did not add an RFC 9580 X25519 encryption subkey"
 assert_file_contains "$WORK_DIR/generated_public_show.out" '^subkey-flags: encrypt communications, encrypt storage$' "pgpkey show did not decode generated encryption subkey flags"
 
 "${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/secret.asc" > "$WORK_DIR/generated_secret_show.out"
-assert_file_contains "$WORK_DIR/generated_secret_show.out" '^primary: secret primary, v4, EdDSA, 256 bits, created ' "pgpkey show did not summarize the generated Ed25519 private key"
-assert_file_contains "$WORK_DIR/generated_secret_show.out" '^subkey: secret subkey, v4, ECDH, 256 bits, created ' "pgpkey show did not summarize the generated X25519 private subkey"
+assert_file_contains "$WORK_DIR/generated_secret_show.out" '^primary: secret primary, v6, Ed25519, 256 bits, created ' "pgpkey show did not summarize the generated RFC 9580 Ed25519 private key"
+assert_file_contains "$WORK_DIR/generated_secret_show.out" '^subkey: secret subkey, v6, X25519, 256 bits, created ' "pgpkey show did not summarize the generated RFC 9580 X25519 private subkey"
 PUBLIC_FPR=$(sed -n 's/^fingerprint: //p' "$WORK_DIR/generated_public_show.out" | head -1)
 SECRET_FPR=$(sed -n 's/^fingerprint: //p' "$WORK_DIR/generated_secret_show.out" | head -1)
 if [ -z "$PUBLIC_FPR" ] || [ "$PUBLIC_FPR" != "$SECRET_FPR" ]; then
     fail "pgpkey generated public and private fingerprints differ"
 fi
 
-"${TEST_BIN_DIR}/pgpkey" edit "$WORK_DIR/secret.asc" --out "$WORK_DIR/edit-add-secret.asc" --public-out "$WORK_DIR/edit-add-public.asc" --add-uid "Added User <added@example.com>" > "$WORK_DIR/edit-add.out"
+"${TEST_BIN_DIR}/pgpkey" generate --legacy-v4 --userid "Legacy User <legacy@example.com>" --out "$WORK_DIR/legacy-secret.asc" --public-out "$WORK_DIR/legacy-public.asc" --no-passphrase > "$WORK_DIR/legacy-generate.out"
+assert_file_contains "$WORK_DIR/legacy-generate.out" '^profile: legacy-v4$' "pgpkey generate --legacy-v4 did not report the legacy profile"
+assert_file_contains "$WORK_DIR/legacy-generate.out" '^warning: legacy v4 key material is deprecated by RFC 9580$' "pgpkey generate --legacy-v4 did not warn about legacy output"
+"${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/legacy-public.asc" > "$WORK_DIR/legacy-public-show.out"
+assert_file_contains "$WORK_DIR/legacy-public-show.out" '^primary: public primary, v4, EdDSA legacy, 256 bits, created ' "pgpkey generate --legacy-v4 did not create a v4 EdDSA legacy primary key"
+assert_file_contains "$WORK_DIR/legacy-public-show.out" '^subkey: public subkey, v4, ECDH, 256 bits, created ' "pgpkey generate --legacy-v4 did not create a v4 ECDH subkey"
+
+"${TEST_BIN_DIR}/pgpkey" edit "$WORK_DIR/legacy-secret.asc" --out "$WORK_DIR/edit-add-secret.asc" --public-out "$WORK_DIR/edit-add-public.asc" --add-uid "Added User <added@example.com>" > "$WORK_DIR/edit-add.out"
 assert_file_contains "$WORK_DIR/edit-add.out" '^edited$' "pgpkey edit --add-uid did not report success"
 "${TEST_BIN_DIR}/pgpkey" show "$WORK_DIR/edit-add-public.asc" > "$WORK_DIR/edit-add-show.out"
 assert_file_contains "$WORK_DIR/edit-add-show.out" '^uid: Added User <added@example.com>$' "pgpkey edit --add-uid did not add a user ID"
@@ -111,6 +121,8 @@ assert_file_contains "$WORK_DIR/import_secret.err" 'refusing to import private k
 
 "${TEST_BIN_DIR}/pgpkey" --json generate --userid "Json User <json@example.com>" --out "$WORK_DIR/json-secret.asc" --public-out "$WORK_DIR/json-public.asc" --no-passphrase > "$WORK_DIR/generate.jsonl"
 assert_file_contains "$WORK_DIR/generate.jsonl" '"event":"generate"' "pgpkey --json generate did not emit a generate event"
+assert_file_contains "$WORK_DIR/generate.jsonl" '"profile":"rfc9580"' "pgpkey --json generate did not report the default RFC 9580 profile"
+assert_file_contains "$WORK_DIR/generate.jsonl" '"version":6' "pgpkey --json generate did not report version 6"
 assert_file_contains "$WORK_DIR/generate.jsonl" '"curve":"Ed25519"' "pgpkey --json generate did not report the curve"
 assert_file_contains "$WORK_DIR/generate.jsonl" '"protected":false' "pgpkey --json generate did not report protection status"
 
