@@ -10,7 +10,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPMSG_USAGE "[--json] COMMAND [ARGS...]\n       pgpmsg inspect [FILE]\n       pgpmsg verify [-k PUBRING] SIGNATURE [FILE]\n       pgpmsg encrypt -r RECIPIENT [-k PUBRING] [-o OUT] [--armor] [FILE]\n       pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]\n       pgpmsg sign -u SIGNER [-s SECRING] [-o OUT] [--armor] [--detach|--cleartext] [FILE]"
+#define PGPMSG_USAGE "[--json] COMMAND [ARGS...]\n       pgpmsg inspect [FILE]\n       pgpmsg verify [-k PUBRING] SIGNATURE [FILE]\n       pgpmsg encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [FILE]\n       pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]\n       pgpmsg sign -u SIGNER [-s SECRING] [-o OUT] [--armor] [--detach|--cleartext] [FILE]"
 #define PGPMSG_ERROR_CAPACITY 160U
 #define PGPMSG_KEY_ID_SIZE 8U
 #define PGPMSG_ED25519_KEY_SIZE 32U
@@ -19,13 +19,15 @@
 #define PGPMSG_AES256_KEY_SIZE 32U
 #define PGPMSG_AES_BLOCK_SIZE 16U
 #define PGPMSG_MDC_SIZE 20U
+#define PGPMSG_MAX_RECIPIENTS 16U
 
 typedef struct {
     int json;
     const char *pubring;
     const char *secring;
     const char *output_path;
-    const char *recipient;
+    const char *recipients[PGPMSG_MAX_RECIPIENTS];
+    size_t recipient_count;
     const char *signer;
     int armor;
     int detach;
@@ -93,6 +95,19 @@ typedef struct {
 
 static void print_usage(void) {
     tool_write_usage("pgpmsg", PGPMSG_USAGE);
+}
+
+static int add_recipient_option(PgpMsgOptions *options, const char *recipient) {
+    if (recipient == 0 || recipient[0] == '\0') {
+        tool_write_error("pgpmsg", "empty recipient selector", 0);
+        return -1;
+    }
+    if (options->recipient_count >= PGPMSG_MAX_RECIPIENTS) {
+        tool_write_error("pgpmsg", "too many recipients", 0);
+        return -1;
+    }
+    options->recipients[options->recipient_count++] = recipient;
+    return 0;
 }
 
 static unsigned int read_u16_be(const unsigned char *data) {
@@ -544,10 +559,10 @@ static int write_signature_summary_text(const PgpMsgSignatureSummary *summary) {
     return rt_write_line(1, "trust: not evaluated");
 }
 
-static int write_signature_summary_json(const PgpMsgSignatureSummary *summary) {
+static int write_signature_summary_json(const PgpMsgSignatureSummary *summary, const char *status) {
     if (tool_json_begin_event(1, "pgpmsg", "stdout", "signature") != 0) return -1;
     if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
-    if (rt_write_cstr(1, "\"status\":\"not_checked\"") != 0) return -1;
+    if (rt_write_cstr(1, "\"status\":") != 0 || tool_json_write_string(1, status) != 0) return -1;
     if (rt_write_cstr(1, ",\"type\":") != 0 || tool_json_write_string(1, pgp_signature_type_name(summary->signature_type)) != 0) return -1;
     if (rt_write_cstr(1, ",\"public_key_algorithm\":") != 0 || tool_json_write_string(1, pgp_public_key_algorithm_name(summary->public_key_algorithm)) != 0) return -1;
     if (rt_write_cstr(1, ",\"hash\":") != 0 || tool_json_write_string(1, pgp_hash_algorithm_name(summary->hash_algorithm)) != 0) return -1;
@@ -755,10 +770,6 @@ static int load_recipient_key(const char *path, const char *selector, PgpPublicK
         tool_write_error("pgpmsg", "encryption requires -k PUBRING", 0);
         return -1;
     }
-    if (selector == 0 || selector[0] == '\0') {
-        tool_write_error("pgpmsg", "encryption requires -r RECIPIENT", 0);
-        return -1;
-    }
     if (load_decoded_input(path, &decoded, &decoded_size) != 0) return -1;
     rt_memset(&ctx, 0, sizeof(ctx));
     ctx.selector = selector;
@@ -823,7 +834,7 @@ static int parse_x25519_secret_key_packet(PgpMsgX25519SecretKey *secret, unsigne
     return 0;
 }
 
-static int load_x25519_secret_key(const char *path, const unsigned char key_id[PGPMSG_KEY_ID_SIZE], PgpMsgX25519SecretKey *secret) {
+static int load_x25519_secret_key_maybe_quiet(const char *path, const unsigned char key_id[PGPMSG_KEY_ID_SIZE], PgpMsgX25519SecretKey *secret, int quiet_not_found) {
     unsigned char *decoded = 0;
     size_t decoded_size = 0U;
     PgpPacketReader reader;
@@ -852,7 +863,7 @@ static int load_x25519_secret_key(const char *path, const unsigned char key_id[P
         }
     }
     rt_free(decoded);
-    tool_write_error("pgpmsg", "no matching unprotected X25519 secret subkey in ", path);
+    if (!quiet_not_found) tool_write_error("pgpmsg", "no matching unprotected X25519 secret subkey in ", path);
     return -1;
 }
 
@@ -1176,7 +1187,8 @@ static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *
                     if (verified == 1) good_signature = 1;
                 }
                 if (local_options.json) {
-                    if (write_signature_summary_json(&signature.summary) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
+                    const char *status = checked_signature ? (good_signature ? "good" : "bad") : "not_checked";
+                    if (write_signature_summary_json(&signature.summary, status) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
                 } else {
                     if (checked_signature && good_signature) {
                         if (rt_write_line(1, "signature: good") != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
@@ -1211,12 +1223,12 @@ static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *
 
 static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions *options) {
     PgpMsgOptions local_options = *options;
-    PgpPublicKeyInfo recipient;
+    PgpPublicKeyInfo recipients[PGPMSG_MAX_RECIPIENTS];
+    size_t recipient_index;
     unsigned char *input = 0;
     size_t input_size = 0U;
     unsigned char session_key[PGPMSG_AES256_KEY_SIZE];
     PgpMsgBuffer message;
-    PgpMsgBuffer pkesk_packet;
     PgpMsgBuffer encrypted_packet;
     const char *input_path;
     int result = 1;
@@ -1229,7 +1241,7 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         } else if (rt_strcmp(argv[argi], "-r") == 0 || rt_strcmp(argv[argi], "--recipient") == 0) {
             argi += 1;
             if (argi >= argc) { tool_write_error("pgpmsg", "missing value for --recipient", 0); return 1; }
-            local_options.recipient = argv[argi++];
+            if (add_recipient_option(&local_options, argv[argi++]) != 0) return 1;
         } else if (rt_strcmp(argv[argi], "-o") == 0 || rt_strcmp(argv[argi], "--output") == 0) {
             argi += 1;
             if (argi >= argc) { tool_write_error("pgpmsg", "missing value for --output", 0); return 1; }
@@ -1246,18 +1258,32 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         return 1;
     }
     input_path = argi < argc ? argv[argi] : 0;
-    if (load_recipient_key(local_options.pubring, local_options.recipient, &recipient) != 0) return 1;
+    if (local_options.recipient_count == 0U) {
+        tool_write_error("pgpmsg", "encryption requires -r RECIPIENT", 0);
+        return 1;
+    }
+    for (recipient_index = 0U; recipient_index < local_options.recipient_count; ++recipient_index) {
+        if (load_recipient_key(local_options.pubring, local_options.recipients[recipient_index], &recipients[recipient_index]) != 0) return 1;
+    }
     if (tool_read_all_input(input_path, &input, &input_size) != 0) {
         tool_write_error("pgpmsg", "cannot read input", input_path);
         return 1;
     }
     rt_memset(&message, 0, sizeof(message));
-    rt_memset(&pkesk_packet, 0, sizeof(pkesk_packet));
     rt_memset(&encrypted_packet, 0, sizeof(encrypted_packet));
     if (platform_random_bytes(session_key, sizeof(session_key)) != 0) goto cleanup;
-    if (build_encrypted_session_key(&recipient, session_key, &pkesk_packet) != 0 ||
-        build_encrypted_data_packet(session_key, input, input_size, &encrypted_packet) != 0 ||
-        msg_buffer_append_data(&message, pkesk_packet.data, pkesk_packet.size) != 0 ||
+    for (recipient_index = 0U; recipient_index < local_options.recipient_count; ++recipient_index) {
+        PgpMsgBuffer pkesk_packet;
+
+        rt_memset(&pkesk_packet, 0, sizeof(pkesk_packet));
+        if (build_encrypted_session_key(&recipients[recipient_index], session_key, &pkesk_packet) != 0 ||
+            msg_buffer_append_data(&message, pkesk_packet.data, pkesk_packet.size) != 0) {
+            msg_buffer_free(&pkesk_packet);
+            goto cleanup;
+        }
+        msg_buffer_free(&pkesk_packet);
+    }
+    if (build_encrypted_data_packet(session_key, input, input_size, &encrypted_packet) != 0 ||
         msg_buffer_append_data(&message, encrypted_packet.data, encrypted_packet.size) != 0 ||
         write_message_output_data(local_options.output_path, message.data, message.size, local_options.armor) != 0) goto cleanup;
     result = 0;
@@ -1265,7 +1291,6 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
 cleanup:
     if (input != 0) rt_free(input);
     msg_buffer_free(&message);
-    msg_buffer_free(&pkesk_packet);
     msg_buffer_free(&encrypted_packet);
     crypto_secure_bzero(session_key, sizeof(session_key));
     if (result != 0) tool_write_error("pgpmsg", "encryption failed", 0);
@@ -1277,13 +1302,13 @@ static int command_decrypt(int argc, char **argv, int argi, const PgpMsgOptions 
     unsigned char *decoded = 0;
     size_t decoded_size = 0U;
     PgpPacketReader reader;
-    PgpMsgPkesk pkesk;
     const unsigned char *encrypted_body = 0;
     size_t encrypted_body_size = 0U;
-    PgpMsgX25519SecretKey secret;
     unsigned char session_key[PGPMSG_AES256_KEY_SIZE];
     char error[PGPMSG_ERROR_CAPACITY];
     const char *input_path;
+    int found_pkesk = 0;
+    int found_session_key = 0;
     int result = 1;
 
     while (argi < argc) {
@@ -1305,7 +1330,6 @@ static int command_decrypt(int argc, char **argv, int argi, const PgpMsgOptions 
     }
     input_path = argi < argc ? argv[argi] : 0;
     if (load_decoded_input(input_path, &decoded, &decoded_size) != 0) return 1;
-    rt_memset(&pkesk, 0, sizeof(pkesk));
     pgp_packet_reader_init(&reader, decoded, decoded_size);
     while (1) {
         PgpPacket packet;
@@ -1316,30 +1340,43 @@ static int command_decrypt(int argc, char **argv, int argi, const PgpMsgOptions 
             goto cleanup;
         }
         if (!has_packet) break;
-        if (packet.tag == 1U && !pkesk.found) {
-            (void)parse_pkesk_packet(&pkesk, decoded + packet.body_offset, packet.body_size);
+        if (packet.tag == 1U) {
+            PgpMsgPkesk pkesk;
+
+            rt_memset(&pkesk, 0, sizeof(pkesk));
+            if (parse_pkesk_packet(&pkesk, decoded + packet.body_offset, packet.body_size) == 0 && pkesk.found) {
+                PgpMsgX25519SecretKey secret;
+
+                found_pkesk = 1;
+                rt_memset(&secret, 0, sizeof(secret));
+                if (!found_session_key && load_x25519_secret_key_maybe_quiet(local_options.secring, pkesk.key_id, &secret, 1) == 0) {
+                    if (unwrap_session_key(&pkesk, &secret, session_key) == 0) found_session_key = 1;
+                    crypto_secure_bzero(&secret, sizeof(secret));
+                }
+            }
+            crypto_secure_bzero(&pkesk, sizeof(pkesk));
         } else if (packet.tag == 18U && encrypted_body == 0) {
             encrypted_body = decoded + packet.body_offset;
             encrypted_body_size = packet.body_size;
         }
     }
-    if (!pkesk.found || encrypted_body == 0) {
+    if (!found_pkesk || encrypted_body == 0) {
         tool_write_error("pgpmsg", "message does not contain supported ECDH encrypted data", input_path);
         goto cleanup;
     }
-    if (load_x25519_secret_key(local_options.secring, pkesk.key_id, &secret) != 0) goto cleanup;
-    if (unwrap_session_key(&pkesk, &secret, session_key) != 0 || decrypt_encrypted_data_packet(session_key, encrypted_body, encrypted_body_size, local_options.output_path) != 0) {
-        tool_write_error("pgpmsg", "decryption failed", input_path);
-        crypto_secure_bzero(&secret, sizeof(secret));
+    if (!found_session_key) {
+        tool_write_error("pgpmsg", "no matching encrypted session key for secret keyring", local_options.secring);
         goto cleanup;
     }
-    crypto_secure_bzero(&secret, sizeof(secret));
+    if (decrypt_encrypted_data_packet(session_key, encrypted_body, encrypted_body_size, local_options.output_path) != 0) {
+        tool_write_error("pgpmsg", "decryption failed", input_path);
+        goto cleanup;
+    }
     result = 0;
 
 cleanup:
     if (decoded != 0) rt_free(decoded);
     crypto_secure_bzero(session_key, sizeof(session_key));
-    crypto_secure_bzero(&pkesk, sizeof(pkesk));
     return result;
 }
 
@@ -1474,7 +1511,7 @@ int main(int argc, char **argv) {
             options.output_path = opt.value;
         } else if (rt_strcmp(opt.flag, "-r") == 0 || rt_strcmp(opt.flag, "--recipient") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 1;
-            options.recipient = opt.value;
+            if (add_recipient_option(&options, opt.value) != 0) return 1;
         } else if (rt_strcmp(opt.flag, "-u") == 0 || rt_strcmp(opt.flag, "--user") == 0 || rt_strcmp(opt.flag, "--signer") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 1;
             options.signer = opt.value;

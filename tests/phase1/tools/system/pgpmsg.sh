@@ -35,15 +35,24 @@ if [ ! -x "$PGPKEY_BIN" ]; then
 fi
 "$PGPKEY_BIN" generate --userid "Message Signer <signer@example.com>" --out "$WORK_DIR/secret.asc" --public-out "$WORK_DIR/public.asc" --no-passphrase > "$WORK_DIR/keygen.out"
 SIGNER_FPR=$(sed -n 's/^generated: //p' "$WORK_DIR/keygen.out" | head -1)
+"$PGPKEY_BIN" generate --userid "Message Recipient <recipient@example.com>" --out "$WORK_DIR/recipient-secret.asc" --public-out "$WORK_DIR/recipient-public.asc" --no-passphrase > "$WORK_DIR/recipient-keygen.out"
+RECIPIENT_FPR=$(sed -n 's/^generated: //p' "$WORK_DIR/recipient-keygen.out" | head -1)
 "${TEST_BIN_DIR}/pgpmsg" sign --detach --armor -s "$WORK_DIR/secret.asc" -u "$SIGNER_FPR" -o "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/plain.sig.asc" '^-----BEGIN PGP SIGNATURE-----$' "pgpmsg sign did not write an armored detached signature"
 "${TEST_BIN_DIR}/pgpmsg" verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt" > "$WORK_DIR/verify_good.out"
 assert_file_contains "$WORK_DIR/verify_good.out" '^signature: good$' "pgpmsg verify did not report a good detached signature"
+"${TEST_BIN_DIR}/pgpmsg" --json verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/plain.txt" > "$WORK_DIR/verify_good.jsonl"
+assert_file_contains "$WORK_DIR/verify_good.jsonl" '"event":"signature"' "pgpmsg --json verify did not emit a signature event"
+assert_file_contains "$WORK_DIR/verify_good.jsonl" '"status":"good"' "pgpmsg --json verify did not report a good detached signature"
 printf 'tampered\n' > "$WORK_DIR/tampered.txt"
 if "${TEST_BIN_DIR}/pgpmsg" verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/tampered.txt" > "$WORK_DIR/verify_bad.out" 2> "$WORK_DIR/verify_bad.err"; then
     fail "pgpmsg verify accepted a tampered detached signature"
 fi
 assert_file_contains "$WORK_DIR/verify_bad.out" '^signature: bad$' "pgpmsg verify did not report a bad detached signature"
+if "${TEST_BIN_DIR}/pgpmsg" --json verify -k "$WORK_DIR/public.asc" "$WORK_DIR/plain.sig.asc" "$WORK_DIR/tampered.txt" > "$WORK_DIR/verify_bad.jsonl" 2> "$WORK_DIR/verify_bad_json.err"; then
+    fail "pgpmsg --json verify accepted a tampered detached signature"
+fi
+assert_file_contains "$WORK_DIR/verify_bad.jsonl" '"status":"bad"' "pgpmsg --json verify did not report a bad detached signature"
 
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" --armor -o "$WORK_DIR/plain.pgp.asc" "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/plain.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored message"
@@ -52,3 +61,15 @@ assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 1 (public-key encrypted 
 assert_file_contains "$WORK_DIR/encrypted.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg encrypt did not write an integrity-protected encrypted data packet"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain.dec" "$WORK_DIR/plain.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain.dec" || fail "pgpmsg decrypt did not recover the original plaintext"
+
+"$PGPKEY_BIN" -k "$WORK_DIR/pubring.pgp" import "$WORK_DIR/public.asc" "$WORK_DIR/recipient-public.asc" > "$WORK_DIR/pubring-import.out"
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/pubring.pgp" -r "$SIGNER_FPR" -r "$RECIPIENT_FPR" --armor -o "$WORK_DIR/plain-multi.pgp.asc" "$WORK_DIR/plain.txt"
+"${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/plain-multi.pgp.asc" > "$WORK_DIR/encrypted-multi.inspect"
+PKESK_COUNT=$(grep -c 'tag 1 (public-key encrypted session key)' "$WORK_DIR/encrypted-multi.inspect")
+if [ "$PKESK_COUNT" -ne 2 ]; then
+    fail "pgpmsg encrypt did not write one session-key packet per recipient"
+fi
+"${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-multi-signer.dec" "$WORK_DIR/plain-multi.pgp.asc"
+cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-multi-signer.dec" || fail "pgpmsg decrypt did not recover a multi-recipient message with the first secret key"
+"${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/recipient-secret.asc" -o "$WORK_DIR/plain-multi-recipient.dec" "$WORK_DIR/plain-multi.pgp.asc"
+cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-multi-recipient.dec" || fail "pgpmsg decrypt did not recover a multi-recipient message with the second secret key"

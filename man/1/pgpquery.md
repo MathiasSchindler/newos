@@ -89,7 +89,7 @@ Custom servers are treated as simple base URLs. The selector is URL-encoded and
 appended to the base URL, with a slash inserted when the base URL does not end
 in `/` or `=`.
 
-## JSON OUTPUT
+## JSON Output
 
 When `--json` is used, `pgpquery` emits shared `newos.tool.v1` JSON Lines
 events. Event names include `query_url`, `certificate`, `hkp_index`, and
