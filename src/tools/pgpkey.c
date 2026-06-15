@@ -37,9 +37,15 @@ typedef struct {
 } PgpKeyFindContext;
 
 typedef struct {
-    char fingerprint[PGP_FINGERPRINT_MAX_SIZE * 2U + 1U];
-    int is_secret;
-} PgpKeyFirstCertificateContext;
+    int public_count;
+    int secret_found;
+} PgpKeyImportScanContext;
+
+typedef struct {
+    const PgpKeyOptions *options;
+    const unsigned char *data;
+    int status;
+} PgpKeyImportContext;
 
 typedef struct {
     unsigned char *data;
@@ -132,6 +138,8 @@ typedef struct {
     unsigned char public_key[PGPKEY_ED25519_KEY_SIZE];
     int found;
 } PgpKeyEditSecret;
+
+static int write_all_fd(int fd, const unsigned char *data, size_t size);
 
 static void pgpkey_set_error(char *error, size_t error_size, const char *message) {
     if (error != 0 && error_size > 0U) {
@@ -578,7 +586,7 @@ static unsigned long long current_epoch_or_zero(void) {
 
 static int write_expiration_status(int fd, unsigned long long expires, unsigned long long now, int color_mode) {
     int expired = now != 0ULL && expires != 0ULL && expires <= now;
-    const char *text = expired ? "expired" : "valid";
+    const char *text = expired ? "expired" : "unexpired";
     int style = expired ? TOOL_STYLE_BOLD_RED : TOOL_STYLE_BOLD_GREEN;
 
     if (rt_write_cstr(fd, " (") != 0) return -1;
@@ -1203,19 +1211,52 @@ static int keyring_contains(const char *keyring_path, const char *selector) {
     return ctx.found;
 }
 
-static int first_certificate_fingerprint_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
-    PgpKeyFirstCertificateContext *ctx = (PgpKeyFirstCertificateContext *)ctx_ptr;
+static void pgpkey_fingerprint_to_text(const PgpPublicKeyInfo *key, char out[PGP_FINGERPRINT_MAX_SIZE * 2U + 1U]) {
+    static const char hex[] = "0123456789abcdef";
     size_t offset = 0U;
     size_t index;
-    static const char hex[] = "0123456789abcdef";
 
-    if (certificate->primary.fingerprint_size == 0U) return 0;
-    ctx->is_secret = certificate->primary.tag == 5U;
-    for (index = 0U; index < certificate->primary.fingerprint_size; ++index) {
-        ctx->fingerprint[offset++] = hex[(certificate->primary.fingerprint[index] >> 4U) & 0x0fU];
-        ctx->fingerprint[offset++] = hex[certificate->primary.fingerprint[index] & 0x0fU];
+    for (index = 0U; index < key->fingerprint_size && index < PGP_FINGERPRINT_MAX_SIZE; ++index) {
+        out[offset++] = hex[(key->fingerprint[index] >> 4U) & 0x0fU];
+        out[offset++] = hex[key->fingerprint[index] & 0x0fU];
     }
-    ctx->fingerprint[offset] = '\0';
+    out[offset] = '\0';
+}
+
+static int import_scan_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpKeyImportScanContext *ctx = (PgpKeyImportScanContext *)ctx_ptr;
+
+    if (certificate->primary.tag == 5U) ctx->secret_found = 1;
+    else if (certificate->primary.tag == 6U) ctx->public_count += 1;
+    return 0;
+}
+
+static int import_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpKeyImportContext *ctx = (PgpKeyImportContext *)ctx_ptr;
+    char fingerprint[PGP_FINGERPRINT_MAX_SIZE * 2U + 1U];
+    int fd;
+
+    if (certificate->primary.tag != 6U) return 0;
+    pgpkey_fingerprint_to_text(&certificate->primary, fingerprint);
+    if (fingerprint[0] == '\0') return 0;
+    if (keyring_contains(ctx->options->keyring_path, fingerprint)) {
+        if (rt_write_cstr(1, "unchanged: ") != 0 || rt_write_line(1, fingerprint) != 0) ctx->status = 1;
+        return 0;
+    }
+    fd = platform_open_append(ctx->options->keyring_path, 0600U);
+    if (fd < 0 || certificate->end_offset < certificate->start_offset || write_all_fd(fd, ctx->data + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
+        if (fd >= 0) (void)platform_close(fd);
+        tool_write_error("pgpkey", "cannot write keyring: ", ctx->options->keyring_path);
+        ctx->status = 1;
+        return 0;
+    }
+    if (ctx->options->json) {
+        if (tool_json_begin_event(1, "pgpkey", "stdout", "import") != 0 ||
+            rt_write_cstr(1, ",\"data\":{\"fingerprint\":") != 0 || tool_json_write_string(1, fingerprint) != 0 ||
+            rt_write_cstr(1, ",\"keyring\":") != 0 || tool_json_write_string(1, ctx->options->keyring_path) != 0 || rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) ctx->status = 1;
+    } else if (rt_write_cstr(1, "imported: ") != 0 || rt_write_line(1, fingerprint) != 0) {
+        ctx->status = 1;
+    }
     return 0;
 }
 
@@ -2006,51 +2047,48 @@ static int command_import(const PgpKeyOptions *options, int argc, char **argv, i
         unsigned char *data = 0;
         size_t data_size = 0U;
         char error[PGPKEY_ERROR_CAPACITY];
-        PgpKeyFirstCertificateContext first;
-        int fd;
+        PgpKeyImportScanContext scan;
+        PgpKeyImportContext import;
 
-        rt_memset(&first, 0, sizeof(first));
+        rt_memset(&scan, 0, sizeof(scan));
         if (load_openpgp_file(argv[argi], &data, &data_size, error, sizeof(error)) != 0) {
             pgpkey_write_error_path(error, argv[argi]);
             status = 1;
             argi += 1;
             continue;
         }
-        (void)pgp_for_each_certificate(data, data_size, first_certificate_fingerprint_callback, &first, error, sizeof(error));
-        if (first.fingerprint[0] == '\0') {
-            tool_write_error("pgpkey", "no importable public key in ", argv[argi]);
+        if (pgp_for_each_certificate(data, data_size, import_scan_callback, &scan, error, sizeof(error)) != 0) {
+            pgpkey_write_error_path(error, argv[argi]);
             rt_free(data);
             status = 1;
             argi += 1;
             continue;
         }
-        if (first.is_secret) {
+        if (scan.secret_found) {
             tool_write_error("pgpkey", "refusing to import private key into public keyring: ", argv[argi]);
             rt_free(data);
             status = 1;
             argi += 1;
             continue;
         }
-        if (keyring_contains(options->keyring_path, first.fingerprint)) {
-            if (rt_write_cstr(1, "unchanged: ") != 0 || rt_write_line(1, first.fingerprint) != 0) return 1;
+        if (scan.public_count == 0) {
+            tool_write_error("pgpkey", "no importable public key in ", argv[argi]);
             rt_free(data);
+            status = 1;
             argi += 1;
             continue;
         }
-        fd = platform_open_append(options->keyring_path, 0600U);
-        if (fd < 0 || write_all_fd(fd, data, data_size) != 0 || platform_close(fd) != 0) {
-            if (fd >= 0) (void)platform_close(fd);
-            tool_write_error("pgpkey", "cannot write keyring: ", options->keyring_path);
+        import.options = options;
+        import.data = data;
+        import.status = 0;
+        if (pgp_for_each_certificate(data, data_size, import_certificate_callback, &import, error, sizeof(error)) != 0) {
+            pgpkey_write_error_path(error, argv[argi]);
             rt_free(data);
-            return 1;
+            status = 1;
+            argi += 1;
+            continue;
         }
-        if (options->json) {
-            if (tool_json_begin_event(1, "pgpkey", "stdout", "import") != 0) return 1;
-            if (rt_write_cstr(1, ",\"data\":{\"fingerprint\":") != 0 || tool_json_write_string(1, first.fingerprint) != 0) return 1;
-            if (rt_write_cstr(1, ",\"keyring\":") != 0 || tool_json_write_string(1, options->keyring_path) != 0 || rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return 1;
-        } else if (rt_write_cstr(1, "imported: ") != 0 || rt_write_line(1, first.fingerprint) != 0) {
-            return 1;
-        }
+        if (import.status != 0) status = 1;
         rt_free(data);
         argi += 1;
     }

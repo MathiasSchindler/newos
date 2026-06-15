@@ -56,15 +56,24 @@ typedef struct {
 } PgpQueryCertificateContext;
 
 typedef struct {
-    PgpPublicKeyInfo primary;
-    int found;
-    int is_secret;
-} PgpQueryFirstCertificateContext;
-
-typedef struct {
     const PgpPublicKeyInfo *key;
     int found;
 } PgpQueryFindCertificateContext;
+
+typedef struct {
+    int public_count;
+    int secret_found;
+} PgpQueryImportScanContext;
+
+typedef struct {
+    const PgpQueryOptions *options;
+    const unsigned char *decoded;
+    int imported_or_unchanged;
+    int status;
+} PgpQueryImportContext;
+
+static int write_fingerprint_text(int fd, const PgpPublicKeyInfo *key);
+static int keyring_contains_key(const char *keyring_path, const PgpPublicKeyInfo *key);
 
 static void print_usage(void) {
     tool_write_usage("pgpquery", PGPQUERY_USAGE);
@@ -637,15 +646,34 @@ static int count_certificate_callback(const PgpCertificateInfo *certificate, voi
     return 0;
 }
 
-static int first_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
-    PgpQueryFirstCertificateContext *ctx = (PgpQueryFirstCertificateContext *)ctx_ptr;
+static int import_scan_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpQueryImportScanContext *ctx = (PgpQueryImportScanContext *)ctx_ptr;
 
-    if (!ctx->found) {
-        ctx->primary = certificate->primary;
-        ctx->is_secret = certificate->primary.tag == 5U;
-        ctx->found = 1;
+    if (certificate->primary.tag == 5U) ctx->secret_found = 1;
+    else if (certificate->primary.tag == 6U) ctx->public_count += 1;
+    return 0;
+}
+
+static int import_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpQueryImportContext *ctx = (PgpQueryImportContext *)ctx_ptr;
+    int fd;
+
+    if (certificate->primary.tag != 6U) return 0;
+    if (keyring_contains_key(ctx->options->import_keyring_path, &certificate->primary)) {
+        if (rt_write_cstr(1, "unchanged: ") != 0 || write_fingerprint_text(1, &certificate->primary) != 0 || rt_write_char(1, '\n') != 0) ctx->status = -1;
+        ctx->imported_or_unchanged = 1;
+        return 0;
     }
-    return 1;
+    fd = platform_open_append(ctx->options->import_keyring_path, 0600U);
+    if (fd < 0 || certificate->end_offset < certificate->start_offset || write_all_fd(fd, ctx->decoded + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
+        if (fd >= 0) (void)platform_close(fd);
+        tool_write_error("pgpquery", "cannot write keyring: ", ctx->options->import_keyring_path);
+        ctx->status = -1;
+        return 0;
+    }
+    if (rt_write_cstr(1, "imported: ") != 0 || write_fingerprint_text(1, &certificate->primary) != 0 || rt_write_char(1, '\n') != 0) ctx->status = -1;
+    ctx->imported_or_unchanged = 1;
+    return 0;
 }
 
 static int find_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
@@ -714,41 +742,35 @@ static int import_certificate_body(const PgpQueryOptions *options, const unsigne
     unsigned char *decoded = 0;
     size_t decoded_size = 0U;
     char error[160];
-    PgpQueryFirstCertificateContext first;
-    int fd;
+    PgpQueryImportScanContext scan;
+    PgpQueryImportContext import;
 
     if (pgp_decode_input(body, body_size, &decoded, &decoded_size, error, sizeof(error)) != 0) {
         tool_write_error("pgpquery", "cannot decode fetched key: ", error);
         return -1;
     }
-    rt_memset(&first, 0, sizeof(first));
-    if (pgp_for_each_certificate(decoded, decoded_size, first_certificate_callback, &first, error, sizeof(error)) != 0 && !first.found) {
+    rt_memset(&scan, 0, sizeof(scan));
+    if (pgp_for_each_certificate(decoded, decoded_size, import_scan_callback, &scan, error, sizeof(error)) != 0) {
         rt_free(decoded);
         tool_write_error("pgpquery", "cannot parse fetched key: ", error);
         return -1;
     }
-    if (!first.found || first.is_secret) {
+    if (scan.secret_found || scan.public_count == 0) {
         rt_free(decoded);
         tool_write_error("pgpquery", "fetched data is not an importable public key", 0);
         return -1;
     }
-    if (keyring_contains_key(options->import_keyring_path, &first.primary)) {
-        if (rt_write_cstr(1, "unchanged: ") != 0 || write_fingerprint_text(1, &first.primary) != 0 || rt_write_char(1, '\n') != 0) {
-            rt_free(decoded);
-            return -1;
-        }
+    import.options = options;
+    import.decoded = decoded;
+    import.imported_or_unchanged = 0;
+    import.status = 0;
+    if (pgp_for_each_certificate(decoded, decoded_size, import_certificate_callback, &import, error, sizeof(error)) != 0) {
         rt_free(decoded);
-        return 0;
-    }
-    fd = platform_open_append(options->import_keyring_path, 0600U);
-    if (fd < 0 || write_all_fd(fd, decoded, decoded_size) != 0 || platform_close(fd) != 0) {
-        if (fd >= 0) (void)platform_close(fd);
-        rt_free(decoded);
-        tool_write_error("pgpquery", "cannot write keyring: ", options->import_keyring_path);
+        tool_write_error("pgpquery", "cannot parse fetched key: ", error);
         return -1;
     }
     rt_free(decoded);
-    return rt_write_cstr(1, "imported: ") != 0 || write_fingerprint_text(1, &first.primary) != 0 || rt_write_char(1, '\n') != 0 ? -1 : 0;
+    return import.status != 0 || !import.imported_or_unchanged ? -1 : 0;
 }
 
 static size_t field_end(const char *text, size_t start) {

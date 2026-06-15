@@ -36,7 +36,7 @@ keyserver response only says that a server returned data for a selector.
 - `-o OUT`, `--output OUT` - with `--get`, write the fetched certificate to OUT instead of standard output. This option accepts exactly one selector.
 - `--import-keyring KEYRING` - with `--get`, import fetched certificates directly into a `pgpkey` binary keyring, reporting `imported` or `unchanged` fingerprints.
 - `--print-url` - print the URL or URLs that would be queried, without using the network.
-- `-T DURATION`, `--timeout DURATION` - set the plain TCP socket timeout. Durations use the shared tool format, such as `5s` or `1000ms`.
+- `-T DURATION`, `--timeout DURATION` - set the plain HTTP socket timeout. Durations use the shared tool format, such as `5s` or `1000ms`. HTTPS/TLS queries currently use the platform TLS client's built-in timeout instead of this option.
 - `-h`, `--help` - show usage.
 
 ## SERVERS

@@ -26,7 +26,7 @@ assert_file_contains "$WORK_DIR/show.out" '^subkey: public subkey, v4, RSA encry
 
 ESC=$(printf '\033')
 "${TEST_BIN_DIR}/pgpkey" show --color=always "$SAMPLE_KEY" > "$WORK_DIR/show_color.out"
-assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32mvalid" "pgpkey show --color=always did not color a valid expiration status"
+assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32munexpired" "pgpkey show --color=always did not color an unexpired expiration status"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;31mSHA-1" "pgpkey show --color=always did not color SHA-1 as weak"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;33mTripleDES" "pgpkey show --color=always did not color TripleDES as legacy"
 "${TEST_BIN_DIR}/pgpkey" --no-color show "$SAMPLE_KEY" > "$WORK_DIR/show_no_color.out"
@@ -115,9 +115,19 @@ assert_file_contains "$WORK_DIR/generate.jsonl" '"protected":false' "pgpkey --js
 assert_file_contains "$WORK_DIR/import.out" '^imported: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey import did not report the imported fingerprint"
 "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" import "$SAMPLE_KEY" > "$WORK_DIR/import_again.out"
 assert_file_contains "$WORK_DIR/import_again.out" '^unchanged: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey import did not recognize a duplicate key"
+"${TEST_BIN_DIR}/pgpkey" -k "$WORK_DIR/new-only.pgp" import "$WORK_DIR/public.asc" > "$WORK_DIR/import_new_only.out"
+cat "$WORK_DIR/new-only.pgp" "$KEYRING" > "$WORK_DIR/import-multi.pgp"
+"${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" import "$WORK_DIR/import-multi.pgp" > "$WORK_DIR/import_multi.out"
+assert_file_contains "$WORK_DIR/import_multi.out" "^imported: $PUBLIC_FPR$" "pgpkey import did not import the new certificate from a multi-cert file"
+assert_file_contains "$WORK_DIR/import_multi.out" '^unchanged: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey import did not skip the duplicate certificate in a multi-cert file"
 
 "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" list > "$WORK_DIR/list.out"
 assert_file_contains "$WORK_DIR/list.out" '^fingerprint: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey list did not read the imported keyring"
+SAMPLE_IMPORT_COUNT=$(grep -c '^fingerprint: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "$WORK_DIR/list.out")
+if [ "$SAMPLE_IMPORT_COUNT" -ne 1 ]; then
+    fail "pgpkey import duplicated a certificate from a multi-cert file"
+fi
+assert_file_contains "$WORK_DIR/list.out" "^fingerprint: $PUBLIC_FPR$" "pgpkey list did not include the multi-cert import"
 
 "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" --json list > "$WORK_DIR/list.jsonl"
 assert_file_contains "$WORK_DIR/list.jsonl" '"schema":"newos.tool.v1"' "pgpkey --json list did not use the shared JSON envelope"

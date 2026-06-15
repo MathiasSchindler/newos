@@ -91,7 +91,8 @@ ZLIB compressed data packet, and protected with the OpenPGP SHA-1 modification
 detection code used by SEIPD v1 packets. Decryption accepts uncompressed, ZLIB,
 and ZIP compressed payloads. BZip2 packets, AEAD packets, passphrase-protected
 secret keys, and arbitrary third-party secret-key formats are not implemented
-yet.
+yet. RFC 9580 SEIPD v2 AEAD modes are not emitted or consumed yet, so encrypted
+messages use the older CFB+MDC construction for current v4 interoperability.
 
 With `--stream`, encryption emits the SEIPD packet and nested literal data packet
 with OpenPGP partial body lengths. This mode is binary-only and currently limited

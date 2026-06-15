@@ -58,14 +58,17 @@ keyring.
 
 ## GENERATE
 
-`pgpkey generate` currently implements a modern key-generation path: an Ed25519
-primary key that can certify and sign, plus an ECDH Curve25519/X25519 encryption
-subkey. It writes two ASCII-armored files: an unencrypted private key block and
-a matching public key block. Both outputs must be file paths; standard output is
-refused for generated key material. The public certificate includes a user ID,
-a self-signature, and a subkey binding signature with creation time, issuer
-metadata, key flags, algorithm preferences, feature flags, primary-UID marker,
-and key expiration metadata.
+`pgpkey generate` currently implements an interoperable v4 key-generation path:
+an Ed25519 primary key that can certify and sign, plus an ECDH
+Curve25519/X25519 encryption subkey. It uses the v4 EdDSA and ECDH algorithm
+IDs commonly accepted by existing OpenPGP implementations; RFC 9580 v6 keys and
+the newer Ed25519/X25519 algorithm IDs are not emitted yet. It writes two
+ASCII-armored files: an unencrypted private key block and a matching public key
+block. Both outputs must be file paths; standard output is refused for generated
+key material. The public certificate includes a user ID, a self-signature, and a
+subkey binding signature with creation time, issuer metadata, key flags,
+algorithm preferences, feature flags, primary-UID marker, and key expiration
+metadata.
 
 Required options are:
 
@@ -113,7 +116,7 @@ The default `show` output includes the primary key, fingerprint, key ID, user
 IDs, primary user ID marker, key and subkey usage flags, key and subkey
 expiration dates when present, expiration status, algorithm preferences,
 subkeys, and packet counts. Expiration status is printed as text, such as
-`(valid)` or `(expired)`, and is colored green or red when color output is
+`(unexpired)` or `(expired)`, and is colored green or red when color output is
 enabled.
 
 With `-v`, `show` also prints one line for each decoded signature packet. The

@@ -600,7 +600,7 @@ static int pgpmsg_aes_key_unwrap(const unsigned char kek[PGPMSG_AES256_KEY_SIZE]
             memcpy(r + (i - 1U) * 8U, block + 8U, 8U);
         }
     }
-    if (memcmp(a, "\xa6\xa6\xa6\xa6\xa6\xa6\xa6\xa6", 8U) != 0) return -1;
+    if (!crypto_constant_time_equal(a, (const unsigned char *)"\xa6\xa6\xa6\xa6\xa6\xa6\xa6\xa6", 8U)) return -1;
     memcpy(plain, r, wrapped_size - 8U);
     *plain_size_out = wrapped_size - 8U;
     crypto_secure_bzero(&aes, sizeof(aes));
@@ -1613,11 +1613,10 @@ static int decrypt_encrypted_data_packet(const unsigned char session_key[PGPMSG_
     plain = (unsigned char *)rt_malloc(plain_size);
     if (plain == 0) return -1;
     pgpmsg_aes256_cfb_xcrypt(session_key, body + 1U, plain, plain_size, 1);
-    if (plain[PGPMSG_AES_BLOCK_SIZE] != plain[PGPMSG_AES_BLOCK_SIZE - 2U] || plain[PGPMSG_AES_BLOCK_SIZE + 1U] != plain[PGPMSG_AES_BLOCK_SIZE - 1U]) goto cleanup;
     mdc_offset = plain_size - (2U + PGPMSG_MDC_SIZE);
     if (plain[mdc_offset] != 0xd3U || plain[mdc_offset + 1U] != 0x14U) goto cleanup;
     crypto_sha1_hash(plain, mdc_offset + 2U, digest);
-    if (memcmp(digest, plain + mdc_offset + 2U, PGPMSG_MDC_SIZE) != 0) goto cleanup;
+    if (!crypto_constant_time_equal(digest, plain + mdc_offset + 2U, PGPMSG_MDC_SIZE)) goto cleanup;
     if (write_decrypted_payload(output_path, plain + PGPMSG_AES_BLOCK_SIZE + 2U, mdc_offset - (PGPMSG_AES_BLOCK_SIZE + 2U)) != 0) goto cleanup;
     result = 0;
 
