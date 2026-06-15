@@ -37,6 +37,28 @@ OpenPGP certificate packets. It is not a trust database and does not assign
 validity. Generated secret keys are written as separate private key blocks, not
 imported into the public keyring.
 
+## SECURITY MODEL
+
+`pgpkey generate` currently writes unencrypted private key blocks. Secret-key
+packets use the OpenPGP unprotected form; S2K encryption, passphrase protection,
+and AEAD-protected secret keys are not implemented. The `--no-passphrase` option
+is required so this cannot happen accidentally, but it does not protect the key.
+Anyone who can read the generated secret key file can use the private key
+material. Keep generated secret keys on trusted storage with restrictive file
+permissions, and do not treat them like passphrase-protected OpenPGP keys.
+
+`pgpkey` does not implement a trust database. It can show certificate metadata,
+key flags, expiration metadata, issuer IDs, local labels, and revocation packets,
+but it does not validate certification paths, assign owner trust, decide whether
+a user ID is trustworthy, or make a certificate-validity decision. `pgpmsg verify`
+has the same boundary: a good signature is a cryptographic result for a matching
+key, not a trust statement.
+
+The generated key profile is modern-first: RFC 9580 v6 Ed25519 for signing and
+certification plus X25519 for encryption. The legacy-v4 profile remains available
+for interoperability with existing OpenPGP correspondents and older tools, not as
+the preferred shape for new key material.
+
 With no command, `pgpkey` behaves like `pgpkey show` and reads the default
 keyring.
 
@@ -71,8 +93,9 @@ keyring.
 `pgpkey generate` defaults to an RFC 9580 v6 profile: an Ed25519 primary key
 that can certify and sign, plus an X25519 encryption subkey. It writes two
 ASCII-armored files: an unencrypted private key block and a matching public key
-block. Both outputs must be file paths; standard output is refused for generated
-key material. The public certificate includes a Direct Key self-signature, a user
+block. The private key block is not encrypted or passphrase-protected. Both
+outputs must be file paths; standard output is refused for generated key
+material. The public certificate includes a Direct Key self-signature, a user
 ID certification, and a subkey binding signature with creation time, issuer
 fingerprint metadata, key flags, algorithm preferences, AEAD preferences,
 feature flags, primary-UID marker, and key expiration metadata.
@@ -80,15 +103,16 @@ feature flags, primary-UID marker, and key expiration metadata.
 The `legacy-v4` profile remains available with `--profile legacy-v4`,
 `--profile v4`, or `--legacy-v4`. It emits the older v4 EdDSA legacy primary key
 and ECDH Curve25519/X25519 subkey shape used by earlier versions of this tool and
-many deployed OpenPGP implementations. New keys should use the RFC 9580 default;
-legacy v4 key material is marked as deprecated by RFC 9580.
+many deployed OpenPGP implementations. New keys should use the RFC 9580 default
+unless a correspondent or tool requires legacy-v4 compatibility; legacy v4 key
+material is marked as deprecated by RFC 9580.
 
 Required options are:
 
 - `--userid USERID`, `--user-id USERID`, or `-u USERID` - set the OpenPGP user ID, usually `Name <mail@example.com>`.
 - `--out SECRET.asc` or `--secret-out SECRET.asc` - write the private key block.
 - `--public-out PUBLIC.asc` - write the public certificate.
-- `--no-passphrase` - explicitly acknowledge that the private key is not passphrase-protected.
+- `--no-passphrase` - explicitly acknowledge that the private key is not passphrase-protected or encrypted.
 
 Optional generation options are:
 
@@ -98,10 +122,10 @@ Optional generation options are:
 - `--legacy-v4` - shorthand for `--profile legacy-v4`.
 - `--armor` - accepted for clarity; generated output is always ASCII-armored.
 
-Passphrase-protected secret-key packets, S2K encryption, full key revocation
-certificates, and trust assignment are not implemented yet. Without
-`--no-passphrase`, generation refuses to run so unprotected private keys cannot
-be created accidentally.
+Passphrase-protected secret-key packets, S2K encryption, AEAD-protected secret
+keys, full key revocation certificates, and trust assignment are not implemented
+yet. Without `--no-passphrase`, generation refuses to run so unprotected private
+keys cannot be created accidentally.
 
 ## EDIT
 

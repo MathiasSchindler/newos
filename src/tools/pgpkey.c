@@ -882,6 +882,7 @@ static int pgpkey_keystore_read_sqs_value(char **cursor_io, char *dst, size_t ds
     digits[digit_count] = '\0';
     if (digit_count == 0U || *cursor != ':' || rt_parse_uint(digits, &length) != 0 || length + 1ULL > (unsigned long long)dst_size) return -1;
     cursor += 1U;
+    if (length > (unsigned long long)rt_strlen(cursor)) return -1;
     for (index = 0U; index < (size_t)length; ++index) {
         if (cursor[index] == '\0') return -1;
         dst[index] = cursor[index];

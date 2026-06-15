@@ -9,6 +9,24 @@ RAIMOND_KEY="$ROOT_DIR/experimental/pgp-keys/raimond.asc"
 ENCRYPTED_MESSAGE="$ROOT_DIR/experimental/pgp-keys/encryptedmessage.txt"
 PGPKEY_BIN="$TEST_BIN_DIR/pgpkey"
 
+tamper_last_byte() {
+    src="$1"
+    dst="$2"
+    cp "$src" "$dst"
+    size=$(wc -c < "$dst" | tr -d ' ')
+    if [ "$size" -le 0 ]; then
+        fail "cannot tamper empty file: $src"
+    fi
+    offset=$((size - 1))
+    byte_hex=$(dd if="$dst" bs=1 skip="$offset" count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    if [ "$byte_hex" = 00 ]; then
+        replacement=001
+    else
+        replacement=000
+    fi
+    printf "\\$replacement" | dd of="$dst" bs=1 seek="$offset" count=1 conv=notrunc 2>/dev/null
+}
+
 printf 'hello pgpmsg\n' > "$WORK_DIR/plain.txt"
 
 "${TEST_BIN_DIR}/pgpmsg" --help > "$WORK_DIR/help.out" 2>&1
@@ -90,6 +108,12 @@ assert_file_contains "$WORK_DIR/encrypted.inspect" '^  symmetric-algorithm: AES-
 assert_file_contains "$WORK_DIR/encrypted.inspect" '^  aead-algorithm: GCM$' "pgpmsg inspect did not decode the v2 SEIPD AEAD algorithm"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain.dec" "$WORK_DIR/plain.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain.dec" || fail "pgpmsg decrypt did not recover the original plaintext"
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/plain-v2.pgp" "$WORK_DIR/plain.txt"
+tamper_last_byte "$WORK_DIR/plain-v2.pgp" "$WORK_DIR/plain-v2-tampered.pgp"
+if "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-v2-tampered.dec" "$WORK_DIR/plain-v2-tampered.pgp" > "$WORK_DIR/plain-v2-tampered.out" 2> "$WORK_DIR/plain-v2-tampered.err"; then
+    fail "pgpmsg decrypt accepted a tampered v2 SEIPD message"
+fi
+assert_file_contains "$WORK_DIR/plain-v2-tampered.err" 'decryption failed' "pgpmsg decrypt did not reject a tampered v2 SEIPD message"
 
 if "${TEST_BIN_DIR}/pgpmsg" encrypt --stream -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/plain-stream-v6.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/plain-stream-v6.out" 2> "$WORK_DIR/plain-stream-v6.err"; then
     fail "pgpmsg encrypt --stream accepted an RFC 9580 v6 recipient"
@@ -109,6 +133,11 @@ fi
 assert_file_contains "$WORK_DIR/plain-stream.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg inspect did not normalize a streamed encrypted packet"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/legacy-secret.asc" -o "$WORK_DIR/plain-stream.dec" "$WORK_DIR/plain-stream.pgp"
 cmp "$WORK_DIR/plain-stream.txt" "$WORK_DIR/plain-stream.dec" || fail "pgpmsg decrypt did not recover a streamed encrypted message"
+tamper_last_byte "$WORK_DIR/plain-stream.pgp" "$WORK_DIR/plain-stream-tampered.pgp"
+if "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/legacy-secret.asc" -o "$WORK_DIR/plain-stream-tampered.dec" "$WORK_DIR/plain-stream-tampered.pgp" > "$WORK_DIR/plain-stream-tampered.out" 2> "$WORK_DIR/plain-stream-tampered.err"; then
+    fail "pgpmsg decrypt accepted a tampered v1 SEIPD message"
+fi
+assert_file_contains "$WORK_DIR/plain-stream-tampered.err" 'decryption failed' "pgpmsg decrypt did not reject a tampered v1 SEIPD message"
 if "${TEST_BIN_DIR}/pgpmsg" encrypt --stream --armor -k "$WORK_DIR/legacy-public.asc" -r "$LEGACY_FPR" -o "$WORK_DIR/plain-stream-armored.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/plain-stream-armored.out" 2> "$WORK_DIR/plain-stream-armored.err"; then
     fail "pgpmsg encrypt --stream accepted --armor"
 fi

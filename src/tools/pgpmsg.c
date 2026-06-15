@@ -2708,6 +2708,7 @@ static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *
     int found_signature = 0;
     int checked_signature = 0;
     int good_signature = 0;
+    int bad_signature = 0;
     PgpMsgOptions local_options = *options;
 
     while (argi < argc) {
@@ -2734,6 +2735,9 @@ static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *
         if (packet.tag == 2U) {
             PgpMsgSignaturePacket signature;
             if (parse_signature_packet_full(&signature, decoded + packet.body_offset, packet.body_size) == 0 && signature.summary.present) {
+                int packet_checked = 0;
+                int packet_good = 0;
+
                 found_signature = 1;
                 if (signed_data != 0 && (signature.summary.public_key_algorithm == 22U || signature.summary.public_key_algorithm == 27U) && signature.summary.hash_algorithm == 10U) {
                     PgpPublicKeyInfo key;
@@ -2745,19 +2749,22 @@ static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *
                         return 1;
                     }
                     verified = verify_detached_signature_packet(&signature, decoded + packet.body_offset, signed_data, signed_data_size, &key);
+                    packet_checked = 1;
+                    packet_good = verified == 1;
                     checked_signature = 1;
-                    if (verified == 1) good_signature = 1;
+                    if (packet_good) good_signature = 1;
+                    else bad_signature = 1;
                 }
                 if (local_options.json) {
-                    const char *status = checked_signature ? (good_signature ? "good" : "bad") : "not_checked";
+                    const char *status = packet_checked ? (packet_good ? "good" : "bad") : "not_checked";
                     if (write_signature_summary_json(&signature.summary, status) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
                 } else {
-                    if (checked_signature && good_signature) {
+                    if (packet_checked && packet_good) {
                         if (rt_write_line(1, "signature: good") != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
-                    } else if (checked_signature) {
+                    } else if (packet_checked) {
                         if (rt_write_line(1, "signature: bad") != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
                     } else if (write_signature_summary_text(&signature.summary) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
-                    if (checked_signature) {
+                    if (packet_checked) {
                         if (rt_write_cstr(1, "type: ") != 0 || rt_write_line(1, pgp_signature_type_name(signature.summary.signature_type)) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
                         if (rt_write_cstr(1, "public-key-algorithm: ") != 0 || rt_write_line(1, pgp_public_key_algorithm_name(signature.summary.public_key_algorithm)) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
                         if (rt_write_cstr(1, "hash: ") != 0 || rt_write_line(1, pgp_hash_algorithm_name(signature.summary.hash_algorithm)) != 0) { rt_free(decoded); rt_free(signed_data); return 1; }
@@ -2779,7 +2786,7 @@ static int command_verify(int argc, char **argv, int argi, const PgpMsgOptions *
         tool_write_error("pgpmsg", "no signature packet found", argv[argi]);
         return 1;
     }
-    if (checked_signature) return good_signature ? 0 : 1;
+    if (checked_signature) return good_signature && !bad_signature ? 0 : 1;
     if (!local_options.json) {
         tool_write_error("pgpmsg", "cryptographic verification is not implemented yet", argv[argi]);
     }
