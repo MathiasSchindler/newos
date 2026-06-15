@@ -610,7 +610,7 @@ $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_SERVICE_TOOLS)
 $(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_USB_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_USB_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/usb.h src/platform/macos/mach.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_USB_SOURCES) $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
-$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_GENERIC_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/bignum.h src/shared/runtime.h src/shared/platform.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
+$(addprefix $(MACOS_FREESTANDING_BUILD_DIR)/,$(MACOS_FREESTANDING_GENERIC_TOOLS)): $(MACOS_FREESTANDING_BUILD_DIR)/%: src/tools/%.c $$(wildcard src/tools/$$*/*.c src/tools/$$*/*.h) $(MACOS_FREESTANDING_RUNTIME_SOURCES) src/shared/bignum.h src/shared/runtime.h src/shared/platform.h src/arch/aarch64/macos/syscall.h | $(MACOS_FREESTANDING_BUILD_DIR)
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_FREESTANDING_CFLAGS) $< $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_FREESTANDING_LDFLAGS) -o $@
 
 $(BUILD_DIR)/sh: src/tools/sh.c $(SHARED_SOURCES) $(SHELL_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/tools/sh/shell_shared.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
@@ -710,7 +710,7 @@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o: tests/fixtur
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o: src/platform/macos/newlinker_start.S | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -c $< -o $@
 
-$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o: %.c | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
 
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o | $(MACOS_NEWLINKER_EXPERIMENT_DIR)

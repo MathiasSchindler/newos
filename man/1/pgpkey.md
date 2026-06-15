@@ -12,6 +12,7 @@ pgpkey [-k KEYRING] [-v] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]
 pgpkey show [-v] [FILE ...]
 pgpkey packets FILE ...
 pgpkey issuers [--external] [FILE ...]
+pgpkey catalog-sql [FILE ...]
 pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]
 pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION
 pgpkey import FILE ...
@@ -41,6 +42,7 @@ keyring.
 - `show [-v] [FILE ...]` - print certificate summaries for files, or the default keyring when no file is given.
 - `packets FILE ...` - print packet tags and packet lengths.
 - `issuers [--external] [FILE ...]` - list unique signature issuer key IDs found in certificates, optionally excluding issuer IDs already present as primary keys or subkeys in the same input set.
+- `catalog-sql [FILE ...]` - emit SQL statements that rebuild a local metadata catalog for the given certificates, or for the default keyring when no file is given.
 - `generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]` - generate an Ed25519 OpenPGP secret key and matching public certificate. The default profile is RFC 9580 v6; `legacy-v4` is retained for compatibility.
 - `edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION` - append a key edit signature or generated subkey to an unprotected secret key and optionally write the matching public certificate.
 - `import FILE ...` - decode public key files and append new certificates to the keyring.
@@ -167,6 +169,31 @@ keychain from referenced third-party certifiers:
 ```
 pgpkey issuers --external *.asc
 ```
+
+## SQL CATALOG
+
+`pgpkey catalog-sql FILE...` emits a rebuild script for the project-local `sql`
+tool. The script creates and clears four tables: `certs`, `keys`, `user_ids`,
+and `signatures`, then inserts metadata decoded from the supplied certificates.
+When no FILE is given, the default keyring is used.
+
+The normalized OpenPGP keyring or source certificate files remain the source of
+truth. The SQL catalog is derived data for fast local lookup and inspection. A
+typical experimental rebuild is:
+
+```
+pgpkey catalog-sql experimental/pgp-keys/*.asc experimental/pgp-keys/*.txt | sql experimental/pgp-keys/pgpkeys.sqs
+```
+
+Issuer names can be resolved when the issuer certificate is present in the same
+catalog:
+
+```
+sql experimental/pgp-keys/pgpkeys.sqs "SELECT signatures.issuer_key_id, certs.primary_uid FROM signatures LEFT JOIN certs ON signatures.issuer_key_id = certs.key_id;"
+```
+
+Resolved user IDs are local labels, not trust decisions. Keep fingerprints and
+key IDs visible when displaying resolved issuer information.
 
 ## JSON Output
 

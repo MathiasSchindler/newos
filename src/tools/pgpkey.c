@@ -7,7 +7,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]\n       pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
+#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey catalog-sql [FILE ...]\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]\n       pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
 #define PGPKEY_PATH_CAPACITY 1024U
 #define PGPKEY_ERROR_CAPACITY 160U
 #define PGPKEY_ED25519_KEY_SIZE 32U
@@ -1216,6 +1216,207 @@ static int find_certificate_callback(const PgpCertificateInfo *certificate, void
         return 1;
     }
     return 0;
+}
+
+#define PGPKEY_SQL_TEXT_LIMIT 500U
+
+typedef struct {
+    const char *source;
+    int status;
+} PgpKeyCatalogSqlContext;
+
+static int pgpkey_sql_write_text(int fd, const char *text) {
+    size_t index;
+    size_t written = 0U;
+
+    if (rt_write_char(fd, '\'') != 0) return -1;
+    if (text != 0) {
+        for (index = 0U; text[index] != '\0' && written < PGPKEY_SQL_TEXT_LIMIT; ++index) {
+            unsigned char ch = (unsigned char)text[index];
+
+            if (ch == '\'' || ch == '\\') {
+                if (rt_write_char(fd, '\\') != 0 || rt_write_char(fd, (char)ch) != 0) return -1;
+            } else if (ch < 0x20U || ch == 0x7fU) {
+                if (rt_write_char(fd, ' ') != 0) return -1;
+            } else if (rt_write_char(fd, (char)ch) != 0) {
+                return -1;
+            }
+            written += 1U;
+        }
+    }
+    return rt_write_char(fd, '\'');
+}
+
+static int pgpkey_sql_write_hex_value(int fd, const unsigned char *data, size_t size) {
+    if (rt_write_char(fd, '\'') != 0) return -1;
+    if (write_hex_bytes(fd, data, size) != 0) return -1;
+    return rt_write_char(fd, '\'');
+}
+
+static const char *pgpkey_catalog_signature_target_name(unsigned int target_tag) {
+    if (target_tag == PGP_SIGNATURE_TARGET_PRIMARY) return "primary";
+    if (target_tag == PGP_SIGNATURE_TARGET_USER_ID) return "uid";
+    if (target_tag == PGP_SIGNATURE_TARGET_SUBKEY) return "subkey";
+    if (target_tag == PGP_SIGNATURE_TARGET_USER_ATTRIBUTE) return "userattr";
+    return "unknown";
+}
+
+static const char *pgpkey_catalog_primary_uid(const PgpCertificateInfo *certificate) {
+    const PgpSignatureInfo *signature;
+    size_t primary_index = 0U;
+
+    signature = latest_primary_user_id_signature(certificate, &primary_index);
+    if (signature != 0 && primary_index < certificate->user_id_count) return certificate->user_ids[primary_index];
+    if (certificate->user_id_count != 0U) return certificate->user_ids[0];
+    return "";
+}
+
+static int pgpkey_catalog_write_schema_sql(void) {
+    return rt_write_line(1, "CREATE TABLE IF NOT EXISTS certs(fingerprint TEXT, key_id TEXT, version INTEGER, algorithm TEXT, primary_uid TEXT, created INTEGER, packet_count INTEGER, signature_count INTEGER, source TEXT, cert_offset INTEGER, cert_length INTEGER);") != 0 ||
+           rt_write_line(1, "CREATE TABLE IF NOT EXISTS keys(cert_fingerprint TEXT, fingerprint TEXT, key_id TEXT, role TEXT, version INTEGER, algorithm TEXT, bits INTEGER, created INTEGER);") != 0 ||
+           rt_write_line(1, "CREATE TABLE IF NOT EXISTS user_ids(cert_fingerprint TEXT, uid_index INTEGER, uid TEXT, primary_uid INTEGER);") != 0 ||
+           rt_write_line(1, "CREATE TABLE IF NOT EXISTS signatures(cert_fingerprint TEXT, packet_index INTEGER, signature_type TEXT, target TEXT, target_index INTEGER, issuer_key_id TEXT, issuer_fingerprint TEXT, created INTEGER, signature_expires INTEGER);") != 0 ||
+           rt_write_line(1, "DELETE FROM certs;") != 0 ||
+           rt_write_line(1, "DELETE FROM keys;") != 0 ||
+           rt_write_line(1, "DELETE FROM user_ids;") != 0 ||
+           rt_write_line(1, "DELETE FROM signatures;") != 0 ? -1 : 0;
+}
+
+static int pgpkey_catalog_write_key_sql(const PgpPublicKeyInfo *key, const PgpPublicKeyInfo *primary, const char *role) {
+    if (rt_write_cstr(1, "INSERT INTO keys VALUES(") != 0 ||
+        pgpkey_sql_write_hex_value(1, primary->fingerprint, primary->fingerprint_size) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_hex_value(1, key->fingerprint, key->fingerprint_size) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_hex_value(1, key->key_id, PGP_KEY_ID_SIZE) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_text(1, role) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, key->version) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_text(1, pgp_public_key_algorithm_name(key->algorithm)) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, key->bits) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, key->created) != 0 ||
+        rt_write_line(1, ");") != 0) return -1;
+    return 0;
+}
+
+static int pgpkey_catalog_write_certificate_sql(const PgpCertificateInfo *certificate, const char *source) {
+    size_t index;
+    const char *primary_uid = pgpkey_catalog_primary_uid(certificate);
+
+    if (rt_write_cstr(1, "INSERT INTO certs VALUES(") != 0 ||
+        pgpkey_sql_write_hex_value(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_hex_value(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, certificate->primary.version) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_text(1, pgp_public_key_algorithm_name(certificate->primary.algorithm)) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_text(1, primary_uid) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, certificate->primary.created) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, certificate->packet_count) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, certificate->signature_count) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        pgpkey_sql_write_text(1, source) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, (unsigned long long)certificate->start_offset) != 0 ||
+        rt_write_char(1, ',') != 0 ||
+        rt_write_uint(1, (unsigned long long)(certificate->end_offset - certificate->start_offset)) != 0 ||
+        rt_write_line(1, ");") != 0) return -1;
+    if (pgpkey_catalog_write_key_sql(&certificate->primary, &certificate->primary, "primary") != 0) return -1;
+    for (index = 0U; index < certificate->subkey_count; ++index) {
+        if (pgpkey_catalog_write_key_sql(&certificate->subkeys[index], &certificate->primary, "subkey") != 0) return -1;
+    }
+    for (index = 0U; index < certificate->user_id_count; ++index) {
+        int is_primary = rt_strcmp(certificate->user_ids[index], primary_uid) == 0;
+
+        if (rt_write_cstr(1, "INSERT INTO user_ids VALUES(") != 0 ||
+            pgpkey_sql_write_hex_value(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            rt_write_uint(1, (unsigned long long)(index + 1U)) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            pgpkey_sql_write_text(1, certificate->user_ids[index]) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            rt_write_uint(1, is_primary ? 1ULL : 0ULL) != 0 ||
+            rt_write_line(1, ");") != 0) return -1;
+    }
+    for (index = 0U; index < certificate->signature_info_count; ++index) {
+        const PgpSignatureInfo *signature = &certificate->signatures[index];
+
+        if (rt_write_cstr(1, "INSERT INTO signatures VALUES(") != 0 ||
+            pgpkey_sql_write_hex_value(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            rt_write_uint(1, signature->packet_index) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            pgpkey_sql_write_text(1, pgp_signature_type_name(signature->signature_type)) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            pgpkey_sql_write_text(1, pgpkey_catalog_signature_target_name(signature->target_tag)) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            rt_write_uint(1, (unsigned long long)(signature->target_index + 1U)) != 0 ||
+            rt_write_char(1, ',') != 0) return -1;
+        if (signature->has_issuer_key_id) {
+            if (pgpkey_sql_write_hex_value(1, signature->issuer_key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+        } else if (pgpkey_sql_write_text(1, "") != 0) return -1;
+        if (rt_write_char(1, ',') != 0) return -1;
+        if (signature->issuer_fingerprint_size != 0U) {
+            if (pgpkey_sql_write_hex_value(1, signature->issuer_fingerprint, signature->issuer_fingerprint_size) != 0) return -1;
+        } else if (pgpkey_sql_write_text(1, "") != 0) return -1;
+        if (rt_write_char(1, ',') != 0 ||
+            rt_write_uint(1, signature->created) != 0 ||
+            rt_write_char(1, ',') != 0 ||
+            rt_write_uint(1, signature->has_signature_expiration ? signature->signature_expiration_seconds : 0ULL) != 0 ||
+            rt_write_line(1, ");") != 0) return -1;
+    }
+    return 0;
+}
+
+static int pgpkey_catalog_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpKeyCatalogSqlContext *ctx = (PgpKeyCatalogSqlContext *)ctx_ptr;
+
+    if (pgpkey_catalog_write_certificate_sql(certificate, ctx->source) != 0) ctx->status = 1;
+    return ctx->status != 0 ? -1 : 0;
+}
+
+static int pgpkey_catalog_collect_path(const char *path) {
+    unsigned char *data = 0;
+    size_t data_size = 0U;
+    char error[PGPKEY_ERROR_CAPACITY];
+    PgpKeyCatalogSqlContext ctx;
+    int result = 0;
+
+    if (load_openpgp_file(path, &data, &data_size, error, sizeof(error)) != 0) {
+        pgpkey_write_error_path(error, path);
+        return -1;
+    }
+    ctx.source = path;
+    ctx.status = 0;
+    if (pgp_for_each_certificate(data, data_size, pgpkey_catalog_certificate_callback, &ctx, error, sizeof(error)) != 0 || ctx.status != 0) {
+        pgpkey_write_error_path(error, path);
+        result = -1;
+    }
+    rt_free(data);
+    return result;
+}
+
+static int command_catalog_sql(const PgpKeyOptions *options, int argc, char **argv, int argi) {
+    int status = 0;
+
+    if (pgpkey_catalog_write_schema_sql() != 0) return 1;
+    if (argi >= argc) {
+        return pgpkey_catalog_collect_path(options->keyring_path) == 0 ? 0 : 1;
+    }
+    while (argi < argc) {
+        if (pgpkey_catalog_collect_path(argv[argi]) != 0) status = 1;
+        argi += 1;
+    }
+    return status;
 }
 
 static int keyring_contains(const char *keyring_path, const char *selector) {
@@ -2469,6 +2670,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(command, "issuers") == 0) {
         return command_issuers(&options, argc, argv, opt.argi);
+    }
+    if (rt_strcmp(command, "catalog-sql") == 0 || rt_strcmp(command, "index-sql") == 0) {
+        return command_catalog_sql(&options, argc, argv, opt.argi);
     }
     if (rt_strcmp(command, "generate") == 0 || rt_strcmp(command, "gen") == 0) {
         return command_generate(&options, argc, argv, opt.argi);

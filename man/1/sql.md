@@ -61,7 +61,7 @@ Current notable limits are:
 - up to 1,048,576 rows in a SELECT result
 - SQL statement text and import lines up to 1 MiB each
 - table and column names up to 31 bytes
-- values up to 127 bytes each
+- values up to 511 bytes each
 - up to 4 tables in a single SELECT query
 - up to 8 GROUP BY keys and 8 ORDER BY keys
 - up to 32 condition tree nodes and 32 IN-list values

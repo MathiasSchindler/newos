@@ -8,6 +8,11 @@ SAMPLE_KEY="$ROOT_DIR/experimental/pgp-keys/86BBADD51B38D4F21FE8C46C99D37C39FA2C
 SPIEGEL_KEY="$ROOT_DIR/experimental/pgp-keys/SPIEGEL_Verlag_Hamburg_27FF8ADC_Public.asc.txt"
 RWIEGAND_KEY="$ROOT_DIR/experimental/pgp-keys/rwiegand.asc"
 KEYRING="$WORK_DIR/pubring.pgp"
+SQL_BIN="$TEST_BIN_DIR/sql"
+
+if [ ! -x "$SQL_BIN" ]; then
+    SQL_BIN="$ROOT_DIR/build/host-macos-aarch64/sql"
+fi
 
 "${TEST_BIN_DIR}/pgpkey" show "$SAMPLE_KEY" > "$WORK_DIR/show.out"
 assert_file_contains "$WORK_DIR/show.out" '^primary: public primary, v4, RSA encrypt/sign, 4096 bits, created 2016-03-01$' "pgpkey show did not summarize the RSA primary key"
@@ -57,6 +62,15 @@ fi
 "${TEST_BIN_DIR}/pgpkey" --json issuers --external "$SPIEGEL_KEY" > "$WORK_DIR/issuers.jsonl"
 assert_file_contains "$WORK_DIR/issuers.jsonl" '"event":"issuer"' "pgpkey --json issuers did not emit issuer events"
 assert_file_contains "$WORK_DIR/issuers.jsonl" '"key_id":"1d9a6fc1222685f3"' "pgpkey --json issuers did not report issuer key IDs"
+
+"${TEST_BIN_DIR}/pgpkey" catalog-sql "$SAMPLE_KEY" "$SPIEGEL_KEY" > "$WORK_DIR/catalog.sql"
+assert_file_contains "$WORK_DIR/catalog.sql" '^CREATE TABLE IF NOT EXISTS certs' "pgpkey catalog-sql did not emit the certs schema"
+assert_file_contains "$WORK_DIR/catalog.sql" 'dcb4218362db86f3' "pgpkey catalog-sql did not emit third-party issuer metadata"
+"$SQL_BIN" "$WORK_DIR/pgpkeys.sqs" < "$WORK_DIR/catalog.sql" > "$WORK_DIR/catalog-build.out"
+"$SQL_BIN" "$WORK_DIR/pgpkeys.sqs" "SELECT key_id, primary_uid FROM certs WHERE key_id = 'ad6975a127ff8adc';" > "$WORK_DIR/catalog-certs.out"
+assert_file_contains "$WORK_DIR/catalog-certs.out" 'ad6975a127ff8adc.*SPIEGEL-Verlag Hamburg' "SQL catalog did not store certificate primary UID metadata"
+"$SQL_BIN" "$WORK_DIR/pgpkeys.sqs" "SELECT issuer_key_id, issuer_fingerprint FROM signatures WHERE issuer_key_id = 'dcb4218362db86f3';" > "$WORK_DIR/catalog-issuers.out"
+assert_file_contains "$WORK_DIR/catalog-issuers.out" 'dcb4218362db86f3.*77278938cb824d15e2f6c855dcb4218362db86f3' "SQL catalog did not store signature issuer fingerprint metadata"
 
 if "${TEST_BIN_DIR}/pgpkey" generate --userid "Test User <test@example.com>" --out "$WORK_DIR/secret.asc" --public-out "$WORK_DIR/public.asc" > "$WORK_DIR/generate_no_ack.out" 2> "$WORK_DIR/generate_no_ack.err"; then
     fail "pgpkey generate created an unprotected secret key without --no-passphrase"

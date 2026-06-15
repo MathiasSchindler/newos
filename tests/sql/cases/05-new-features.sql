@@ -14,3 +14,6 @@ EXPORT colors TO 'tests/tmp/05-export.tsv';
 CREATE TABLE copied_colors(id, label);
 IMPORT copied_colors FROM 'tests/tmp/05-export.tsv';
 SELECT id, label FROM copied_colors ORDER BY id;
+CREATE TABLE long_values(id, text);
+INSERT INTO long_values VALUES (1, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789');
+SELECT id, text FROM long_values;
