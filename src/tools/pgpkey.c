@@ -7,7 +7,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPKEY_USAGE "[-k KEYRING] [-v] [--color[=WHEN]|--no-color] COMMAND [ARGS...]\n       pgpkey show [-v] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey catalog-sql [FILE ...]\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]\n       pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
+#define PGPKEY_USAGE "[-k KEYRING] [--store DIR] [-v] [--keystore CATALOG] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]\n       pgpkey show [-v] [--store DIR|--keystore CATALOG] [FILE ...]\n       pgpkey packets FILE ...\n       pgpkey issuers [--external] [FILE ...]\n       pgpkey catalog-sql [FILE ...]\n       pgpkey store init DIR\n       pgpkey store import DIR FILE ...\n       pgpkey store rebuild-index DIR\n       pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]\n       pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION\n       pgpkey import FILE ...\n       pgpkey list\n       pgpkey export FINGERPRINT [OUTPUT]"
 #define PGPKEY_PATH_CAPACITY 1024U
 #define PGPKEY_ERROR_CAPACITY 160U
 #define PGPKEY_ED25519_KEY_SIZE 32U
@@ -15,13 +15,32 @@
 #define PGPKEY_ED25519_SIGNATURE_SIZE 64U
 #define PGPKEY_MAX_ISSUERS 2048U
 #define PGPKEY_MAX_EDIT_TARGETS 32U
+#define PGPKEY_KEYSTORE_TEXT_SIZE 512U
+#define PGPKEY_STORE_KEYRING_NAME "keyring.pgp"
+#define PGPKEY_STORE_INDEX_NAME "pgpkeys.sqs"
 
 typedef struct {
     const char *keyring_path;
+    const char *keystore_path;
+    const char *store_path;
     int json;
     int verbose;
     int color_mode;
 } PgpKeyOptions;
+
+typedef struct {
+    char fingerprint[(PGP_FINGERPRINT_MAX_SIZE * 2U) + 1U];
+    char key_id[(PGP_KEY_ID_SIZE * 2U) + 1U];
+    char primary_uid[PGPKEY_KEYSTORE_TEXT_SIZE];
+} PgpKeyStoreEntry;
+
+typedef struct {
+    PgpKeyStoreEntry *entries;
+    size_t count;
+    size_t capacity;
+} PgpKeyStore;
+
+static int pgpkey_resolve_store_paths(const char *store_path, char *keyring_path, size_t keyring_path_size, char *keystore_path, size_t keystore_path_size);
 
 typedef struct {
     const unsigned char *data;
@@ -796,7 +815,195 @@ static int write_subkey_signature_summary_text(const PgpCertificateInfo *certifi
     return 0;
 }
 
-static int write_signature_verbose_line(const PgpCertificateInfo *certificate, const PgpSignatureInfo *signature, int color_mode) {
+static void pgpkey_hex_bytes_to_text(const unsigned char *data, size_t size, char *out, size_t out_size) {
+    static const char hex[] = "0123456789abcdef";
+    size_t index;
+
+    if (out_size == 0U) return;
+    if ((size * 2U) + 1U > out_size) {
+        out[0] = '\0';
+        return;
+    }
+    for (index = 0U; index < size; ++index) {
+        out[index * 2U] = hex[(data[index] >> 4) & 0x0fU];
+        out[index * 2U + 1U] = hex[data[index] & 0x0fU];
+    }
+    out[size * 2U] = '\0';
+}
+
+static int pgpkey_keystore_line_next(char **cursor_io, char **line_out) {
+    char *cursor = *cursor_io;
+    char *line = cursor;
+
+    if (cursor == 0 || *cursor == '\0') return 0;
+    while (*cursor != '\0' && *cursor != '\n') cursor += 1U;
+    if (*cursor == '\n') {
+        *cursor = '\0';
+        cursor += 1U;
+    }
+    *cursor_io = cursor;
+    *line_out = line;
+    return 1;
+}
+
+static char *pgpkey_keystore_next_delimited_field(char **cursor_io, char delimiter) {
+    char *field = *cursor_io;
+    char *cursor = field;
+
+    while (*cursor != '\0' && *cursor != delimiter) cursor += 1U;
+    if (*cursor == delimiter) {
+        *cursor = '\0';
+        cursor += 1U;
+    }
+    *cursor_io = cursor;
+    return field;
+}
+
+static int pgpkey_keystore_read_sqs_value(char **cursor_io, char *dst, size_t dst_size) {
+    char *cursor = *cursor_io;
+    char digits[16];
+    size_t digit_count = 0U;
+    unsigned long long length;
+    size_t index;
+
+    while (*cursor >= '0' && *cursor <= '9') {
+        if (digit_count + 1U >= sizeof(digits)) return -1;
+        digits[digit_count++] = *cursor++;
+    }
+    digits[digit_count] = '\0';
+    if (digit_count == 0U || *cursor != ':' || rt_parse_uint(digits, &length) != 0 || length + 1ULL > (unsigned long long)dst_size) return -1;
+    cursor += 1U;
+    for (index = 0U; index < (size_t)length; ++index) {
+        if (cursor[index] == '\0') return -1;
+        dst[index] = cursor[index];
+    }
+    dst[(size_t)length] = '\0';
+    *cursor_io = cursor + length;
+    return 0;
+}
+
+static int pgpkey_keystore_add(PgpKeyStore *store, const char *fingerprint, const char *key_id, const char *primary_uid) {
+    PgpKeyStoreEntry *next;
+
+    if (key_id[0] == '\0' || primary_uid[0] == '\0') return 0;
+    if (store->count == store->capacity) {
+        size_t next_capacity = store->capacity == 0U ? 16U : store->capacity * 2U;
+
+        if (next_capacity <= store->capacity) return -1;
+        next = (PgpKeyStoreEntry *)rt_realloc_array(store->entries, next_capacity, sizeof(PgpKeyStoreEntry));
+        if (next == 0) return -1;
+        store->entries = next;
+        store->capacity = next_capacity;
+    }
+    rt_copy_string(store->entries[store->count].fingerprint, sizeof(store->entries[store->count].fingerprint), fingerprint);
+    rt_copy_string(store->entries[store->count].key_id, sizeof(store->entries[store->count].key_id), key_id);
+    rt_copy_string(store->entries[store->count].primary_uid, sizeof(store->entries[store->count].primary_uid), primary_uid);
+    store->count += 1U;
+    return 0;
+}
+
+static int pgpkey_keystore_parse_certs_row(PgpKeyStore *store, char *line) {
+    char *cursor = line + 2U;
+    char fingerprint[PGPKEY_KEYSTORE_TEXT_SIZE];
+    char key_id[PGPKEY_KEYSTORE_TEXT_SIZE];
+    char primary_uid[PGPKEY_KEYSTORE_TEXT_SIZE];
+    char scratch[PGPKEY_KEYSTORE_TEXT_SIZE];
+    unsigned int column;
+
+    fingerprint[0] = '\0';
+    key_id[0] = '\0';
+    primary_uid[0] = '\0';
+    for (column = 0U; column < 11U; ++column) {
+        char *out = scratch;
+
+        if (column == 0U) out = fingerprint;
+        else if (column == 1U) out = key_id;
+        else if (column == 4U) out = primary_uid;
+        if (pgpkey_keystore_read_sqs_value(&cursor, out, PGPKEY_KEYSTORE_TEXT_SIZE) != 0) return -1;
+    }
+    if (*cursor != '\0') return -1;
+    return pgpkey_keystore_add(store, fingerprint, key_id, primary_uid);
+}
+
+static int pgpkey_keystore_load(const char *path, PgpKeyStore *store) {
+    unsigned char *raw = 0;
+    char *text;
+    char *cursor;
+    char *line;
+    size_t raw_size = 0U;
+    int in_certs = 0;
+    int result = -1;
+
+    store->entries = 0;
+    store->count = 0U;
+    store->capacity = 0U;
+    if (tool_read_all_input(path, &raw, &raw_size) != 0) return -1;
+    text = (char *)rt_malloc(raw_size + 1U);
+    if (text == 0) goto out_raw;
+    memcpy(text, raw, raw_size);
+    text[raw_size] = '\0';
+    cursor = text;
+    if (!pgpkey_keystore_line_next(&cursor, &line) || rt_strcmp(line, "SQS1") != 0) goto out_text;
+    while (pgpkey_keystore_line_next(&cursor, &line)) {
+        if (line[0] == '\0') continue;
+        if (line[0] == 'T' && line[1] == ' ') {
+            char *field_cursor = line + 2U;
+            char *name = pgpkey_keystore_next_delimited_field(&field_cursor, ' ');
+
+            in_certs = rt_strcmp(name, "certs") == 0;
+        } else if (line[0] == 'E' && line[1] == '\0') {
+            in_certs = 0;
+        } else if (in_certs && line[0] == 'R' && line[1] == ' ') {
+            if (pgpkey_keystore_parse_certs_row(store, line) != 0) goto out_text;
+        }
+    }
+    result = 0;
+
+out_text:
+    rt_free(text);
+out_raw:
+    rt_free(raw);
+    if (result != 0) {
+        rt_free(store->entries);
+        store->entries = 0;
+        store->count = 0U;
+        store->capacity = 0U;
+    }
+    return result;
+}
+
+static void pgpkey_keystore_free(PgpKeyStore *store) {
+    rt_free(store->entries);
+    store->entries = 0;
+    store->count = 0U;
+    store->capacity = 0U;
+}
+
+static const char *pgpkey_keystore_lookup_text(const PgpKeyStore *store, const char *key_id, const char *fingerprint) {
+    size_t index;
+
+    if (store == 0) return 0;
+    for (index = 0U; index < store->count; ++index) {
+        if (key_id != 0 && key_id[0] != '\0' && rt_strcmp(store->entries[index].key_id, key_id) == 0) return store->entries[index].primary_uid;
+        if (fingerprint != 0 && fingerprint[0] != '\0' && rt_strcmp(store->entries[index].fingerprint, fingerprint) == 0) return store->entries[index].primary_uid;
+    }
+    return 0;
+}
+
+static const char *pgpkey_keystore_lookup_signature(const PgpKeyStore *store, const PgpSignatureInfo *signature) {
+    char key_id[(PGP_KEY_ID_SIZE * 2U) + 1U];
+    char fingerprint[(PGP_FINGERPRINT_MAX_SIZE * 2U) + 1U];
+
+    key_id[0] = '\0';
+    fingerprint[0] = '\0';
+    if (signature->has_issuer_key_id) pgpkey_hex_bytes_to_text(signature->issuer_key_id, PGP_KEY_ID_SIZE, key_id, sizeof(key_id));
+    if (signature->issuer_fingerprint_size != 0U) pgpkey_hex_bytes_to_text(signature->issuer_fingerprint, signature->issuer_fingerprint_size, fingerprint, sizeof(fingerprint));
+    return pgpkey_keystore_lookup_text(store, key_id, fingerprint);
+}
+
+static int write_signature_verbose_line(const PgpCertificateInfo *certificate, const PgpSignatureInfo *signature, int color_mode, const PgpKeyStore *keystore) {
+    const char *issuer_uid = pgpkey_keystore_lookup_signature(keystore, signature);
+
     if (rt_write_cstr(1, "signature ") != 0 || rt_write_uint(1, signature->packet_index) != 0 || rt_write_cstr(1, ": ") != 0) return -1;
     if (rt_write_cstr(1, pgp_signature_type_name(signature->signature_type)) != 0) return -1;
     if (rt_write_cstr(1, ", v") != 0 || rt_write_uint(1, signature->version) != 0) return -1;
@@ -815,6 +1022,9 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
     }
     if (signature->issuer_fingerprint_size != 0U) {
         if (rt_write_cstr(1, ", issuer-fpr ") != 0 || write_hex_bytes(1, signature->issuer_fingerprint, signature->issuer_fingerprint_size) != 0) return -1;
+    }
+    if (issuer_uid != 0) {
+        if (rt_write_cstr(1, ", issuer-uid ") != 0 || tool_write_visible(1, issuer_uid, rt_strlen(issuer_uid)) != 0) return -1;
     }
     if (signature->has_signature_expiration) {
         if (rt_write_cstr(1, ", signature-expires ") != 0) return -1;
@@ -848,18 +1058,18 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
     return rt_write_char(1, '\n');
 }
 
-static int write_verbose_signatures_text(const PgpCertificateInfo *certificate, int color_mode) {
+static int write_verbose_signatures_text(const PgpCertificateInfo *certificate, int color_mode, const PgpKeyStore *keystore) {
     size_t index;
 
     if (certificate->signature_info_count == 0U) return 0;
     if (rt_write_line(1, "signatures:") != 0) return -1;
     for (index = 0U; index < certificate->signature_info_count; ++index) {
-        if (write_signature_verbose_line(certificate, &certificate->signatures[index], color_mode) != 0) return -1;
+        if (write_signature_verbose_line(certificate, &certificate->signatures[index], color_mode, keystore) != 0) return -1;
     }
     return 0;
 }
 
-static int write_certificate_text(const PgpCertificateInfo *certificate, const char *source, size_t index, int verbose, int color_mode) {
+static int write_certificate_text(const PgpCertificateInfo *certificate, const char *source, size_t index, int verbose, int color_mode, const PgpKeyStore *keystore) {
     size_t uid_index;
     size_t subkey_index;
     if (source != 0) {
@@ -888,7 +1098,7 @@ static int write_certificate_text(const PgpCertificateInfo *certificate, const c
     if (rt_write_cstr(1, ", signatures: ") != 0 || rt_write_uint(1, certificate->signature_count) != 0) return -1;
     if (rt_write_cstr(1, ", user-attributes: ") != 0 || rt_write_uint(1, certificate->user_attribute_count) != 0) return -1;
     if (rt_write_char(1, '\n') != 0) return -1;
-    if (verbose && write_verbose_signatures_text(certificate, color_mode) != 0) return -1;
+    if (verbose && write_verbose_signatures_text(certificate, color_mode, keystore) != 0) return -1;
     return rt_write_cstr(1, "\n\n");
 }
 
@@ -924,6 +1134,7 @@ typedef struct {
     int json;
     int verbose;
     int color_mode;
+    const PgpKeyStore *keystore;
 } PgpKeyShowContext;
 
 static int show_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
@@ -931,7 +1142,7 @@ static int show_certificate_callback(const PgpCertificateInfo *certificate, void
 
     ctx->count += 1U;
     if (ctx->json) return write_certificate_json(certificate, ctx->source, ctx->count);
-    return write_certificate_text(certificate, ctx->source, ctx->count, ctx->verbose, ctx->color_mode);
+    return write_certificate_text(certificate, ctx->source, ctx->count, ctx->verbose, ctx->color_mode, ctx->keystore);
 }
 
 static int load_openpgp_file(const char *path, unsigned char **data_out, size_t *size_out, char *error, size_t error_size) {
@@ -950,7 +1161,7 @@ static int load_openpgp_file(const char *path, unsigned char **data_out, size_t 
     return 0;
 }
 
-static int show_one_path(const char *path, int json, int verbose, int color_mode) {
+static int show_one_path(const char *path, int json, int verbose, int color_mode, const PgpKeyStore *keystore) {
     unsigned char *data = 0;
     size_t data_size = 0U;
     char error[PGPKEY_ERROR_CAPACITY];
@@ -965,6 +1176,7 @@ static int show_one_path(const char *path, int json, int verbose, int color_mode
     ctx.json = json;
     ctx.verbose = verbose;
     ctx.color_mode = color_mode;
+    ctx.keystore = keystore;
     if (pgp_for_each_certificate(data, data_size, show_certificate_callback, &ctx, error, sizeof(error)) != 0) {
         rt_free(data);
         tool_write_error("pgpkey", error, 0);
@@ -982,10 +1194,92 @@ static int command_show(const PgpKeyOptions *options, int argc, char **argv, int
     int status = 0;
     int verbose = options->verbose;
     int color_mode = options->color_mode;
+    const char *keystore_path = options->keystore_path;
+    const char *show_keyring_path = options->keyring_path;
+    const char *store_path = options->store_path;
+    char store_keyring_path[PGPKEY_PATH_CAPACITY];
+    char store_keystore_path[PGPKEY_PATH_CAPACITY];
+    PgpKeyStore keystore;
+    const PgpKeyStore *keystore_ptr = 0;
+    int scan;
+    int have_path = 0;
+    int explicit_keystore = keystore_path != 0;
+
+    rt_memset(&keystore, 0, sizeof(keystore));
+
+    for (scan = argi; scan < argc; ++scan) {
+        if (rt_strcmp(argv[scan], "-v") == 0 || rt_strcmp(argv[scan], "--verbose") == 0) {
+            verbose = 1;
+            continue;
+        }
+        if (rt_strcmp(argv[scan], "--keystore") == 0) {
+            if (scan + 1 >= argc) {
+                tool_write_error("pgpkey", "missing value for --keystore", 0);
+                return 1;
+            }
+            keystore_path = argv[++scan];
+            explicit_keystore = 1;
+            continue;
+        }
+        if (rt_strncmp(argv[scan], "--keystore=", 11U) == 0) {
+            keystore_path = argv[scan] + 11U;
+            explicit_keystore = 1;
+            continue;
+        }
+        if (rt_strcmp(argv[scan], "--store") == 0) {
+            if (scan + 1 >= argc) {
+                tool_write_error("pgpkey", "missing value for --store", 0);
+                return 1;
+            }
+            store_path = argv[++scan];
+            continue;
+        }
+        if (rt_strncmp(argv[scan], "--store=", 8U) == 0) {
+            store_path = argv[scan] + 8U;
+            continue;
+        }
+        if (rt_strcmp(argv[scan], "--color") == 0 || rt_strcmp(argv[scan], "--no-color") == 0 || rt_strncmp(argv[scan], "--color=", 8U) == 0) {
+            continue;
+        }
+        have_path = 1;
+    }
+
+    if (store_path != 0) {
+        if (pgpkey_resolve_store_paths(store_path, store_keyring_path, sizeof(store_keyring_path), store_keystore_path, sizeof(store_keystore_path)) != 0) {
+            tool_write_error("pgpkey", "invalid store path: ", store_path);
+            return 1;
+        }
+        if (!have_path) show_keyring_path = store_keyring_path;
+        if (!explicit_keystore) keystore_path = store_keystore_path;
+    }
+
+    if (keystore_path != 0) {
+        if (pgpkey_keystore_load(keystore_path, &keystore) != 0) {
+            tool_write_error("pgpkey", "cannot read keystore: ", keystore_path);
+            return 1;
+        }
+        keystore_ptr = &keystore;
+    }
 
     while (argi < argc) {
         if (rt_strcmp(argv[argi], "-v") == 0 || rt_strcmp(argv[argi], "--verbose") == 0) {
             verbose = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--keystore") == 0) {
+            argi += 2;
+            continue;
+        }
+        if (rt_strncmp(argv[argi], "--keystore=", 11U) == 0) {
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--store") == 0) {
+            argi += 2;
+            continue;
+        }
+        if (rt_strncmp(argv[argi], "--store=", 8U) == 0) {
             argi += 1;
             continue;
         }
@@ -1010,13 +1304,40 @@ static int command_show(const PgpKeyOptions *options, int argc, char **argv, int
         break;
     }
 
-    if (argi >= argc) {
-        return show_one_path(options->keyring_path, options->json, verbose, color_mode);
+    if (!have_path) {
+        status = show_one_path(show_keyring_path, options->json, verbose, color_mode, keystore_ptr);
+        pgpkey_keystore_free(&keystore);
+        return status;
     }
     while (argi < argc) {
-        if (show_one_path(argv[argi], options->json, verbose, color_mode) != 0) status = 1;
+        if (rt_strcmp(argv[argi], "-v") == 0 || rt_strcmp(argv[argi], "--verbose") == 0) {
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--keystore") == 0) {
+            argi += 2;
+            continue;
+        }
+        if (rt_strncmp(argv[argi], "--keystore=", 11U) == 0) {
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--store") == 0) {
+            argi += 2;
+            continue;
+        }
+        if (rt_strncmp(argv[argi], "--store=", 8U) == 0) {
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--color") == 0 || rt_strcmp(argv[argi], "--no-color") == 0 || rt_strncmp(argv[argi], "--color=", 8U) == 0) {
+            argi += 1;
+            continue;
+        }
+        if (show_one_path(argv[argi], options->json, verbose, color_mode, keystore_ptr) != 0) status = 1;
         argi += 1;
     }
+    pgpkey_keystore_free(&keystore);
     return status;
 }
 
@@ -1402,6 +1723,221 @@ static int pgpkey_catalog_collect_path(const char *path) {
         result = -1;
     }
     rt_free(data);
+    return result;
+}
+
+static int pgpkey_resolve_store_paths(const char *store_path, char *keyring_path, size_t keyring_path_size, char *keystore_path, size_t keystore_path_size) {
+    if (store_path == 0 || store_path[0] == '\0') return -1;
+    if (rt_join_path(store_path, PGPKEY_STORE_KEYRING_NAME, keyring_path, keyring_path_size) != 0) return -1;
+    if (rt_join_path(store_path, PGPKEY_STORE_INDEX_NAME, keystore_path, keystore_path_size) != 0) return -1;
+    return 0;
+}
+
+static int pgpkey_sqs_write_text_value(int fd, const char *text) {
+    char cleaned[PGPKEY_KEYSTORE_TEXT_SIZE];
+    size_t index = 0U;
+
+    if (text != 0) {
+        while (text[index] != '\0' && index + 1U < sizeof(cleaned)) {
+            unsigned char ch = (unsigned char)text[index];
+
+            cleaned[index] = (ch < 0x20U || ch == 0x7fU) ? ' ' : (char)ch;
+            index += 1U;
+        }
+    }
+    cleaned[index] = '\0';
+    return rt_write_uint(fd, index) != 0 || rt_write_char(fd, ':') != 0 || rt_write_cstr(fd, cleaned) != 0 ? -1 : 0;
+}
+
+static int pgpkey_sqs_write_hex_value(int fd, const unsigned char *data, size_t size) {
+    if (rt_write_uint(fd, (unsigned long long)(size * 2U)) != 0 || rt_write_char(fd, ':') != 0) return -1;
+    return write_hex_bytes(fd, data, size);
+}
+
+static int pgpkey_sqs_write_uint_value(int fd, unsigned long long value) {
+    char buffer[32];
+
+    rt_unsigned_to_string(value, buffer, sizeof(buffer));
+    return pgpkey_sqs_write_text_value(fd, buffer);
+}
+
+static int pgpkey_sqs_write_integer_column(int fd, unsigned int index) {
+    return rt_write_cstr(fd, "C ") != 0 || rt_write_uint(fd, index) != 0 || rt_write_cstr(fd, " 32 0:\n") != 0 ? -1 : 0;
+}
+
+static int pgpkey_store_write_index_schema(int fd) {
+    return rt_write_cstr(fd, "SQS1\n") != 0 ||
+           rt_write_line(fd, "T certs 11 fingerprint key_id version algorithm primary_uid created packet_count signature_count source cert_offset cert_length") != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 2U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 5U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 6U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 7U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 9U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 10U) != 0 ? -1 : 0;
+}
+
+static int pgpkey_store_write_index_table_after_certs(int fd) {
+    return rt_write_line(fd, "E") != 0 ||
+           rt_write_line(fd, "T keys 8 cert_fingerprint fingerprint key_id role version algorithm bits created") != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 4U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 6U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 7U) != 0 ? -1 : 0;
+}
+
+static int pgpkey_store_write_index_table_after_keys(int fd) {
+    return rt_write_line(fd, "E") != 0 ||
+           rt_write_line(fd, "T user_ids 4 cert_fingerprint uid_index uid primary_uid") != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 1U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 3U) != 0 ? -1 : 0;
+}
+
+static int pgpkey_store_write_index_table_after_user_ids(int fd) {
+    return rt_write_line(fd, "E") != 0 ||
+           rt_write_line(fd, "T signatures 9 cert_fingerprint packet_index signature_type target target_index issuer_key_id issuer_fingerprint created signature_expires") != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 1U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 4U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 7U) != 0 ||
+           pgpkey_sqs_write_integer_column(fd, 8U) != 0 ? -1 : 0;
+}
+
+typedef struct {
+    int fd;
+    const char *source;
+    int table;
+    int status;
+} PgpKeyStoreIndexContext;
+
+static int pgpkey_store_write_key_row(int fd, const PgpPublicKeyInfo *key, const PgpPublicKeyInfo *primary, const char *role) {
+    return rt_write_cstr(fd, "R ") != 0 ||
+           pgpkey_sqs_write_hex_value(fd, primary->fingerprint, primary->fingerprint_size) != 0 ||
+           pgpkey_sqs_write_hex_value(fd, key->fingerprint, key->fingerprint_size) != 0 ||
+           pgpkey_sqs_write_hex_value(fd, key->key_id, PGP_KEY_ID_SIZE) != 0 ||
+           pgpkey_sqs_write_text_value(fd, role) != 0 ||
+           pgpkey_sqs_write_uint_value(fd, key->version) != 0 ||
+           pgpkey_sqs_write_text_value(fd, pgp_public_key_algorithm_name(key->algorithm)) != 0 ||
+           pgpkey_sqs_write_uint_value(fd, key->bits) != 0 ||
+           pgpkey_sqs_write_uint_value(fd, key->created) != 0 ||
+           rt_write_char(fd, '\n') != 0 ? -1 : 0;
+}
+
+static int pgpkey_store_write_index_certificate_row(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+    PgpKeyStoreIndexContext *ctx = (PgpKeyStoreIndexContext *)ctx_ptr;
+    const char *primary_uid = pgpkey_catalog_primary_uid(certificate);
+    size_t index;
+
+    if (ctx->table == 0) {
+        if (rt_write_cstr(ctx->fd, "R ") != 0 ||
+            pgpkey_sqs_write_hex_value(ctx->fd, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 ||
+            pgpkey_sqs_write_hex_value(ctx->fd, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 ||
+            pgpkey_sqs_write_uint_value(ctx->fd, certificate->primary.version) != 0 ||
+            pgpkey_sqs_write_text_value(ctx->fd, pgp_public_key_algorithm_name(certificate->primary.algorithm)) != 0 ||
+            pgpkey_sqs_write_text_value(ctx->fd, primary_uid) != 0 ||
+            pgpkey_sqs_write_uint_value(ctx->fd, certificate->primary.created) != 0 ||
+            pgpkey_sqs_write_uint_value(ctx->fd, certificate->packet_count) != 0 ||
+            pgpkey_sqs_write_uint_value(ctx->fd, certificate->signature_count) != 0 ||
+            pgpkey_sqs_write_text_value(ctx->fd, ctx->source) != 0 ||
+            pgpkey_sqs_write_uint_value(ctx->fd, (unsigned long long)certificate->start_offset) != 0 ||
+            pgpkey_sqs_write_uint_value(ctx->fd, (unsigned long long)(certificate->end_offset - certificate->start_offset)) != 0 ||
+            rt_write_char(ctx->fd, '\n') != 0) ctx->status = 1;
+    } else if (ctx->table == 1) {
+        if (pgpkey_store_write_key_row(ctx->fd, &certificate->primary, &certificate->primary, "primary") != 0) ctx->status = 1;
+        for (index = 0U; ctx->status == 0 && index < certificate->subkey_count; ++index) {
+            if (pgpkey_store_write_key_row(ctx->fd, &certificate->subkeys[index], &certificate->primary, "subkey") != 0) ctx->status = 1;
+        }
+    } else if (ctx->table == 2) {
+        for (index = 0U; ctx->status == 0 && index < certificate->user_id_count; ++index) {
+            if (rt_write_cstr(ctx->fd, "R ") != 0 ||
+                pgpkey_sqs_write_hex_value(ctx->fd, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 ||
+                pgpkey_sqs_write_uint_value(ctx->fd, (unsigned long long)(index + 1U)) != 0 ||
+                pgpkey_sqs_write_text_value(ctx->fd, certificate->user_ids[index]) != 0 ||
+                pgpkey_sqs_write_uint_value(ctx->fd, rt_strcmp(certificate->user_ids[index], primary_uid) == 0 ? 1ULL : 0ULL) != 0 ||
+                rt_write_char(ctx->fd, '\n') != 0) ctx->status = 1;
+        }
+    } else if (ctx->table == 3) {
+        for (index = 0U; ctx->status == 0 && index < certificate->signature_info_count; ++index) {
+            const PgpSignatureInfo *signature = &certificate->signatures[index];
+
+            if (rt_write_cstr(ctx->fd, "R ") != 0 ||
+                pgpkey_sqs_write_hex_value(ctx->fd, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 ||
+                pgpkey_sqs_write_uint_value(ctx->fd, signature->packet_index) != 0 ||
+                pgpkey_sqs_write_text_value(ctx->fd, pgp_signature_type_name(signature->signature_type)) != 0 ||
+                pgpkey_sqs_write_text_value(ctx->fd, pgpkey_catalog_signature_target_name(signature->target_tag)) != 0 ||
+                pgpkey_sqs_write_uint_value(ctx->fd, (unsigned long long)(signature->target_index + 1U)) != 0) ctx->status = 1;
+            if (ctx->status == 0 && signature->has_issuer_key_id) {
+                if (pgpkey_sqs_write_hex_value(ctx->fd, signature->issuer_key_id, PGP_KEY_ID_SIZE) != 0) ctx->status = 1;
+            } else if (ctx->status == 0 && pgpkey_sqs_write_text_value(ctx->fd, "") != 0) ctx->status = 1;
+            if (ctx->status == 0 && signature->issuer_fingerprint_size != 0U) {
+                if (pgpkey_sqs_write_hex_value(ctx->fd, signature->issuer_fingerprint, signature->issuer_fingerprint_size) != 0) ctx->status = 1;
+            } else if (ctx->status == 0 && pgpkey_sqs_write_text_value(ctx->fd, "") != 0) ctx->status = 1;
+            if (ctx->status == 0 && (pgpkey_sqs_write_uint_value(ctx->fd, signature->created) != 0 ||
+                pgpkey_sqs_write_uint_value(ctx->fd, signature->has_signature_expiration ? signature->signature_expiration_seconds : 0ULL) != 0 ||
+                rt_write_char(ctx->fd, '\n') != 0)) ctx->status = 1;
+        }
+    }
+    return ctx->status != 0 ? -1 : 0;
+}
+
+static int pgpkey_store_write_index_table(const unsigned char *data, size_t data_size, const char *source, int fd, int table) {
+    PgpKeyStoreIndexContext ctx;
+    char error[PGPKEY_ERROR_CAPACITY];
+
+    ctx.fd = fd;
+    ctx.source = source;
+    ctx.table = table;
+    ctx.status = 0;
+    if (pgp_for_each_certificate(data, data_size, pgpkey_store_write_index_certificate_row, &ctx, error, sizeof(error)) != 0 || ctx.status != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int pgpkey_store_rebuild_index_file(const char *keyring_path, const char *index_path) {
+    unsigned char *data = 0;
+    size_t data_size = 0U;
+    char error[PGPKEY_ERROR_CAPACITY];
+    int fd;
+    int result = -1;
+
+    if (load_openpgp_file(keyring_path, &data, &data_size, error, sizeof(error)) != 0) {
+        tool_write_error("pgpkey", error, ": keyring failed");
+        return -1;
+    }
+    fd = platform_open_write(index_path, 0644U);
+    if (fd < 0) {
+        rt_free(data);
+        return -1;
+    }
+    if (pgpkey_store_write_index_schema(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table(data, data_size, keyring_path, fd, 0) != 0) goto out;
+    if (pgpkey_store_write_index_table_after_certs(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table(data, data_size, keyring_path, fd, 1) != 0) goto out;
+    if (pgpkey_store_write_index_table_after_keys(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table(data, data_size, keyring_path, fd, 2) != 0) goto out;
+    if (pgpkey_store_write_index_table_after_user_ids(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table(data, data_size, keyring_path, fd, 3) != 0) goto out;
+    if (rt_write_line(fd, "E") != 0) goto out;
+    result = 0;
+
+out:
+    if (platform_close(fd) != 0) result = -1;
+    rt_free(data);
+    return result;
+}
+
+static int pgpkey_store_write_empty_index(const char *index_path) {
+    int fd = platform_open_write(index_path, 0644U);
+    int result = -1;
+
+    if (fd < 0) return -1;
+    if (pgpkey_store_write_index_schema(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table_after_certs(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table_after_keys(fd) != 0) goto out;
+    if (pgpkey_store_write_index_table_after_user_ids(fd) != 0) goto out;
+    if (rt_write_line(fd, "E") != 0) goto out;
+    result = 0;
+
+out:
+    if (platform_close(fd) != 0) result = -1;
     return result;
 }
 
@@ -2544,6 +3080,99 @@ static int command_import(const PgpKeyOptions *options, int argc, char **argv, i
     return status;
 }
 
+static int pgpkey_store_init(const char *store_path) {
+    char keyring_path[PGPKEY_PATH_CAPACITY];
+    char index_path[PGPKEY_PATH_CAPACITY];
+    PlatformDirEntry index_info;
+    int is_dir = 0;
+    int fd;
+
+    if (pgpkey_resolve_store_paths(store_path, keyring_path, sizeof(keyring_path), index_path, sizeof(index_path)) != 0) {
+        tool_write_error("pgpkey", "invalid store path: ", store_path);
+        return 1;
+    }
+    if (platform_make_directory(store_path, 0700U) != 0 && (platform_path_is_directory(store_path, &is_dir) != 0 || !is_dir)) {
+        tool_write_error("pgpkey", "cannot create store directory: ", store_path);
+        return 1;
+    }
+    fd = platform_open_append(keyring_path, 0600U);
+    if (fd < 0 || platform_close(fd) != 0) {
+        tool_write_error("pgpkey", "cannot create store keyring: ", keyring_path);
+        if (fd >= 0) (void)platform_close(fd);
+        return 1;
+    }
+    rt_memset(&index_info, 0, sizeof(index_info));
+    if (platform_get_path_info(index_path, &index_info) != 0 && pgpkey_store_write_empty_index(index_path) != 0) {
+        tool_write_error("pgpkey", "cannot create store index: ", index_path);
+        return 1;
+    }
+    if (rt_write_cstr(1, "store: ") != 0 || rt_write_line(1, store_path) != 0) return 1;
+    return 0;
+}
+
+static int command_store(const PgpKeyOptions *options, int argc, char **argv, int argi) {
+    const char *operation;
+    const char *store_path;
+    char keyring_path[PGPKEY_PATH_CAPACITY];
+    char index_path[PGPKEY_PATH_CAPACITY];
+    PgpKeyOptions store_options;
+    int result;
+
+    if (argi >= argc) {
+        print_usage();
+        return 1;
+    }
+    operation = argv[argi++];
+    if (rt_strcmp(operation, "init") == 0) {
+        if (argi + 1 != argc) {
+            print_usage();
+            return 1;
+        }
+        return pgpkey_store_init(argv[argi]);
+    }
+    if (argi >= argc) {
+        print_usage();
+        return 1;
+    }
+    store_path = argv[argi++];
+    if (pgpkey_resolve_store_paths(store_path, keyring_path, sizeof(keyring_path), index_path, sizeof(index_path)) != 0) {
+        tool_write_error("pgpkey", "invalid store path: ", store_path);
+        return 1;
+    }
+    store_options = *options;
+    store_options.store_path = store_path;
+    store_options.keyring_path = keyring_path;
+    store_options.keystore_path = index_path;
+    if (rt_strcmp(operation, "import") == 0) {
+        if (argi >= argc) {
+            print_usage();
+            return 1;
+        }
+        result = command_import(&store_options, argc, argv, argi);
+        if (result != 0) return result;
+        if (pgpkey_store_rebuild_index_file(keyring_path, index_path) != 0) {
+            tool_write_error("pgpkey", "cannot rebuild store index: ", index_path);
+            return 1;
+        }
+        return 0;
+    }
+    if (rt_strcmp(operation, "rebuild-index") == 0 || rt_strcmp(operation, "index") == 0) {
+        if (argi != argc) {
+            print_usage();
+            return 1;
+        }
+        if (pgpkey_store_rebuild_index_file(keyring_path, index_path) != 0) {
+            tool_write_error("pgpkey", "cannot rebuild store index: ", index_path);
+            return 1;
+        }
+        if (rt_write_cstr(1, "indexed: ") != 0 || rt_write_line(1, index_path) != 0) return 1;
+        return 0;
+    }
+    tool_write_error("pgpkey", "unknown store operation: ", operation);
+    print_usage();
+    return 1;
+}
+
 static int export_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
     PgpKeyExportContext *ctx = (PgpKeyExportContext *)ctx_ptr;
     int fd = 1;
@@ -2616,7 +3245,10 @@ int main(int argc, char **argv) {
     ToolOptState opt;
     int option_result;
     char default_keyring[PGPKEY_PATH_CAPACITY];
+    char store_keyring[PGPKEY_PATH_CAPACITY];
+    char store_keystore[PGPKEY_PATH_CAPACITY];
     const char *command;
+    const char *initial_command;
 
     rt_memset(&options, 0, sizeof(options));
     options.color_mode = TOOL_COLOR_AUTO;
@@ -2625,6 +3257,14 @@ int main(int argc, char **argv) {
         if (rt_strcmp(opt.flag, "-k") == 0 || rt_strcmp(opt.flag, "--keyring") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 1;
             options.keyring_path = opt.value;
+        } else if (rt_strcmp(opt.flag, "--keystore") == 0) {
+            if (tool_opt_require_value(&opt) != 0) return 1;
+            options.keystore_path = opt.value;
+        } else if (rt_strcmp(opt.flag, "--store") == 0) {
+            if (tool_opt_require_value(&opt) != 0) return 1;
+            options.store_path = opt.value;
+        } else if (rt_strncmp(opt.flag, "--store=", 8U) == 0) {
+            options.store_path = opt.flag + 8U;
         } else if (rt_strcmp(opt.flag, "-v") == 0 || rt_strcmp(opt.flag, "--verbose") == 0) {
             options.verbose = 1;
         } else if (rt_strcmp(opt.flag, "--color") == 0) {
@@ -2651,12 +3291,25 @@ int main(int argc, char **argv) {
         return 0;
     }
     options.json = tool_json_is_enabled();
-    if (options.keyring_path == 0) {
-        if (resolve_default_keyring(default_keyring, sizeof(default_keyring)) != 0) {
-            tool_write_error("pgpkey", "set HOME, PGPKEY_KEYRING, or pass --keyring", 0);
+    initial_command = opt.argi < argc ? argv[opt.argi] : 0;
+    if (options.store_path != 0) {
+        if (pgpkey_resolve_store_paths(options.store_path, store_keyring, sizeof(store_keyring), store_keystore, sizeof(store_keystore)) != 0) {
+            tool_write_error("pgpkey", "invalid store path: ", options.store_path);
             return 1;
         }
-        options.keyring_path = default_keyring;
+        if (options.keyring_path == 0) options.keyring_path = store_keyring;
+        if (options.keystore_path == 0) options.keystore_path = store_keystore;
+    }
+    if (options.keyring_path == 0) {
+        if (initial_command != 0 && rt_strcmp(initial_command, "store") == 0) {
+            options.keyring_path = "";
+        } else {
+            if (resolve_default_keyring(default_keyring, sizeof(default_keyring)) != 0) {
+                tool_write_error("pgpkey", "set HOME, PGPKEY_KEYRING, or pass --keyring", 0);
+                return 1;
+            }
+            options.keyring_path = default_keyring;
+        }
     }
     if (opt.argi >= argc) {
         return command_show(&options, argc, argv, opt.argi);
@@ -2674,6 +3327,9 @@ int main(int argc, char **argv) {
     if (rt_strcmp(command, "catalog-sql") == 0 || rt_strcmp(command, "index-sql") == 0) {
         return command_catalog_sql(&options, argc, argv, opt.argi);
     }
+    if (rt_strcmp(command, "store") == 0) {
+        return command_store(&options, argc, argv, opt.argi);
+    }
     if (rt_strcmp(command, "generate") == 0 || rt_strcmp(command, "gen") == 0) {
         return command_generate(&options, argc, argv, opt.argi);
     }
@@ -2681,14 +3337,20 @@ int main(int argc, char **argv) {
         return command_edit(&options, argc, argv, opt.argi);
     }
     if (rt_strcmp(command, "import") == 0) {
-        return command_import(&options, argc, argv, opt.argi);
+        int result = command_import(&options, argc, argv, opt.argi);
+
+        if (result == 0 && options.store_path != 0 && options.keystore_path != 0 && pgpkey_store_rebuild_index_file(options.keyring_path, options.keystore_path) != 0) {
+            tool_write_error("pgpkey", "cannot rebuild store index: ", options.keystore_path);
+            return 1;
+        }
+        return result;
     }
     if (rt_strcmp(command, "list") == 0 || rt_strcmp(command, "ls") == 0) {
         if (opt.argi != argc) {
             print_usage();
             return 1;
         }
-        return show_one_path(options.keyring_path, options.json, options.verbose, options.color_mode);
+        return command_show(&options, argc, argv, opt.argi);
     }
     if (rt_strcmp(command, "export") == 0) {
         return command_export(&options, argc, argv, opt.argi);

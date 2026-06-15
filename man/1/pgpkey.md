@@ -7,12 +7,15 @@ pgpkey - inspect OpenPGP keys and maintain a simple public keyring
 ## SYNOPSIS
 
 ```
-pgpkey [-k KEYRING] [-v] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]
+pgpkey [-k KEYRING] [--store DIR] [-v] [--keystore CATALOG] [--color[=WHEN]|--no-color] [--json] COMMAND [ARGS...]
 
-pgpkey show [-v] [FILE ...]
+pgpkey show [-v] [--store DIR|--keystore CATALOG] [FILE ...]
 pgpkey packets FILE ...
 pgpkey issuers [--external] [FILE ...]
 pgpkey catalog-sql [FILE ...]
+pgpkey store init DIR
+pgpkey store import DIR FILE ...
+pgpkey store rebuild-index DIR
 pgpkey generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]
 pgpkey edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION
 pgpkey import FILE ...
@@ -39,10 +42,13 @@ keyring.
 
 ## COMMANDS
 
-- `show [-v] [FILE ...]` - print certificate summaries for files, or the default keyring when no file is given.
+- `show [-v] [--store DIR|--keystore CATALOG] [FILE ...]` - print certificate summaries for files, or the default keyring when no file is given. With `-v` and a SQL catalog or store, issuer key IDs are annotated with matching local user ID labels.
 - `packets FILE ...` - print packet tags and packet lengths.
 - `issuers [--external] [FILE ...]` - list unique signature issuer key IDs found in certificates, optionally excluding issuer IDs already present as primary keys or subkeys in the same input set.
 - `catalog-sql [FILE ...]` - emit SQL statements that rebuild a local metadata catalog for the given certificates, or for the default keyring when no file is given.
+- `store init DIR` - create a store directory containing `keyring.pgp` and an empty `pgpkeys.sqs` index.
+- `store import DIR FILE ...` - import public certificates into `DIR/keyring.pgp` and rebuild `DIR/pgpkeys.sqs`.
+- `store rebuild-index DIR` - rebuild `DIR/pgpkeys.sqs` from `DIR/keyring.pgp`.
 - `generate --userid USERID --out SECRET.asc --public-out PUBLIC.asc --no-passphrase [--expires DURATION] [--profile rfc9580|legacy-v4]` - generate an Ed25519 OpenPGP secret key and matching public certificate. The default profile is RFC 9580 v6; `legacy-v4` is retained for compatibility.
 - `edit SECRET.asc --out SECRET.asc [--public-out PUBLIC.asc] OPERATION` - append a key edit signature or generated subkey to an unprotected secret key and optionally write the matching public certificate.
 - `import FILE ...` - decode public key files and append new certificates to the keyring.
@@ -52,6 +58,8 @@ keyring.
 ## OPTIONS
 
 - `-k KEYRING`, `--keyring KEYRING` - use KEYRING instead of the default.
+- `--store DIR` - use DIR as a bundled local store. The keyring is `DIR/keyring.pgp` and the SQL catalog is `DIR/pgpkeys.sqs`.
+- `--keystore CATALOG` - use a `pgpkey catalog-sql` database to resolve issuer key IDs in verbose `show` output.
 - `-v`, `--verbose` - for `show`, include per-signature metadata.
 - `--color[=WHEN]` - color status text. WHEN is `auto`, `always`, or `never`. With no value, `auto` is used.
 - `--no-color` - disable color output. This is equivalent to `--color=never`.
@@ -134,6 +142,22 @@ expiration date and interval, key flags, and primary-UID markers. Signature
 cryptographic validation is not performed yet; these lines describe packet
 metadata.
 
+When `--keystore CATALOG` or `--store DIR` is supplied, `show -v` reads the
+catalog's `certs` table and appends `issuer-uid` to signature lines whose
+issuer key ID or issuer fingerprint matches a local catalog entry. This is a
+local label lookup, not a trust or signature-validation result. The option may
+appear before or after input files, for example:
+
+```
+pgpkey show -v experimental/pgp-keys/SPIEGEL_Verlag_Hamburg_27FF8ADC_Public.asc.txt --keystore experimental/pgp-keys/pgpkeys.sqs
+```
+
+With a store directory, the equivalent is:
+
+```
+pgpkey show -v experimental/pgp-keys/SPIEGEL_Verlag_Hamburg_27FF8ADC_Public.asc.txt --store experimental/pgp-keys/keychain
+```
+
 Color follows the shared tool convention. In `auto` mode, color is used only
 for suitable terminals and respects `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`,
 and `TERM=dumb`.
@@ -154,6 +178,34 @@ Fingerprints may be written as continuous hex, colon-separated hex, or spaced
 hex. For lookup, a full fingerprint or the 64-bit key ID is accepted. V4 key IDs
 are the trailing eight fingerprint octets; v6 key IDs are the first eight
 fingerprint octets.
+
+## STORE
+
+`--store DIR` is a convenience wrapper around two separate files:
+
+- `DIR/keyring.pgp` - the authoritative append-only OpenPGP public keyring.
+- `DIR/pgpkeys.sqs` - a disposable SQL metadata index derived from the keyring.
+
+Initialize a store and import certificates with:
+
+```
+pgpkey store init experimental/pgp-keys/keychain
+pgpkey store import experimental/pgp-keys/keychain experimental/pgp-keys/*.asc experimental/pgp-keys/*.txt
+```
+
+The import command rebuilds the index automatically. If the keyring is changed
+by another path, refresh the index explicitly:
+
+```
+pgpkey store rebuild-index experimental/pgp-keys/keychain
+```
+
+Commands that accept a keyring can use the store directly:
+
+```
+pgpkey --store experimental/pgp-keys/keychain list
+pgpkey show -v some-public-key.asc --store experimental/pgp-keys/keychain
+```
 
 ## ISSUERS
 
@@ -178,8 +230,9 @@ and `signatures`, then inserts metadata decoded from the supplied certificates.
 When no FILE is given, the default keyring is used.
 
 The normalized OpenPGP keyring or source certificate files remain the source of
-truth. The SQL catalog is derived data for fast local lookup and inspection. A
-typical experimental rebuild is:
+truth. The SQL catalog is derived data for fast local lookup and inspection,
+and can also be passed to `show -v --keystore` for issuer labels. A typical
+experimental rebuild is:
 
 ```
 pgpkey catalog-sql experimental/pgp-keys/*.asc experimental/pgp-keys/*.txt | sql experimental/pgp-keys/pgpkeys.sqs

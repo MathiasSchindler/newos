@@ -71,6 +71,17 @@ assert_file_contains "$WORK_DIR/catalog.sql" 'dcb4218362db86f3' "pgpkey catalog-
 assert_file_contains "$WORK_DIR/catalog-certs.out" 'ad6975a127ff8adc.*SPIEGEL-Verlag Hamburg' "SQL catalog did not store certificate primary UID metadata"
 "$SQL_BIN" "$WORK_DIR/pgpkeys.sqs" "SELECT issuer_key_id, issuer_fingerprint FROM signatures WHERE issuer_key_id = 'dcb4218362db86f3';" > "$WORK_DIR/catalog-issuers.out"
 assert_file_contains "$WORK_DIR/catalog-issuers.out" 'dcb4218362db86f3.*77278938cb824d15e2f6c855dcb4218362db86f3' "SQL catalog did not store signature issuer fingerprint metadata"
+"${TEST_BIN_DIR}/pgpkey" show -v "$SPIEGEL_KEY" --keystore "$WORK_DIR/pgpkeys.sqs" > "$WORK_DIR/show_keystore.out"
+assert_file_contains "$WORK_DIR/show_keystore.out" 'issuer-uid SPIEGEL-Verlag Hamburg <Investigativ@spiegel.de>' "pgpkey show --keystore did not resolve local issuer UID labels"
+STORE_DIR="$WORK_DIR/store"
+"${TEST_BIN_DIR}/pgpkey" store init "$STORE_DIR" > "$WORK_DIR/store-init.out"
+"${TEST_BIN_DIR}/pgpkey" store import "$STORE_DIR" "$SAMPLE_KEY" "$SPIEGEL_KEY" > "$WORK_DIR/store-import.out"
+"${TEST_BIN_DIR}/pgpkey" --store "$STORE_DIR" list > "$WORK_DIR/store-list.out"
+assert_file_contains "$WORK_DIR/store-list.out" 'SPIEGEL-Verlag Hamburg' "pgpkey --store list did not read the store keyring"
+"${TEST_BIN_DIR}/pgpkey" show -v "$SPIEGEL_KEY" --store "$STORE_DIR" > "$WORK_DIR/show_store.out"
+assert_file_contains "$WORK_DIR/show_store.out" 'issuer-uid SPIEGEL-Verlag Hamburg <Investigativ@spiegel.de>' "pgpkey show --store did not resolve store issuer UID labels"
+"${TEST_BIN_DIR}/pgpkey" store rebuild-index "$STORE_DIR" > "$WORK_DIR/store-reindex.out"
+assert_file_contains "$WORK_DIR/store-reindex.out" 'indexed: .*pgpkeys\.sqs' "pgpkey store rebuild-index did not report the rebuilt index"
 
 if "${TEST_BIN_DIR}/pgpkey" generate --userid "Test User <test@example.com>" --out "$WORK_DIR/secret.asc" --public-out "$WORK_DIR/public.asc" > "$WORK_DIR/generate_no_ack.out" 2> "$WORK_DIR/generate_no_ack.err"; then
     fail "pgpkey generate created an unprotected secret key without --no-passphrase"
