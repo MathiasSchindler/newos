@@ -13,6 +13,7 @@
 #define PGP_SIGNATURE_PREFERENCE_CAPACITY 16U
 #define PGP_SIGNATURE_FEATURE_CAPACITY 8U
 #define PGP_SIGNATURE_KEY_FLAGS_CAPACITY 8U
+#define PGP_PUBLIC_MATERIAL_CAPACITY 1024U
 
 #define PGP_SIGNATURE_TARGET_PRIMARY 6U
 #define PGP_SIGNATURE_TARGET_USER_ID 13U
@@ -28,7 +29,7 @@ typedef struct {
     unsigned char fingerprint[PGP_FINGERPRINT_MAX_SIZE];
     size_t fingerprint_size;
     unsigned char key_id[PGP_KEY_ID_SIZE];
-    unsigned char public_material[64];
+    unsigned char public_material[PGP_PUBLIC_MATERIAL_CAPACITY];
     size_t public_material_size;
     int present;
 } PgpPublicKeyInfo;

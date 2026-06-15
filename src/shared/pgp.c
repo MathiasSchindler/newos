@@ -751,12 +751,15 @@ static int pgp_skip_public_key_material(PgpPublicKeyInfo *info, unsigned int alg
         return 0;
     }
     if (algorithm == 16U) {
+        size_t material_offset = *offset_io;
+
         if (pgp_read_mpi_bits(body, body_size, offset_io, &first_bits) != 0 ||
             pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0 ||
             pgp_read_mpi_bits(body, body_size, offset_io, &ignored_bits) != 0) {
             pgp_set_error(error, error_size, "truncated Elgamal public key material");
             return -1;
         }
+        pgp_store_public_material(info, body + material_offset, *offset_io - material_offset);
         *bits_out = first_bits;
         return 0;
     }
@@ -991,6 +994,18 @@ static int pgp_parse_signature_packet(PgpSignatureInfo *info, unsigned int targe
     info->target_tag = target_tag;
     info->target_index = target_index;
     info->packet_index = packet_index;
+    if (info->version == 3U) {
+        if (body_size >= 17U) {
+            info->signature_type = body[2];
+            info->created = pgp_read_u32_be(body + 3U);
+            memcpy(info->issuer_key_id, body + 7U, PGP_KEY_ID_SIZE);
+            info->has_issuer_key_id = 1;
+            info->public_key_algorithm = body[15];
+            info->hash_algorithm = body[16];
+        }
+        info->present = 1;
+        return 0;
+    }
     if (info->version != 4U && info->version != 6U) {
         info->signature_type = body_size > 2U ? body[2] : 0U;
         info->public_key_algorithm = body_size > 3U ? body[3] : 0U;

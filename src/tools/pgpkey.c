@@ -655,6 +655,11 @@ static int pgpkey_symmetric_algorithm_style(unsigned int algorithm) {
     return TOOL_STYLE_PLAIN;
 }
 
+static int pgpkey_public_key_algorithm_style(unsigned int algorithm) {
+    if (algorithm == 16U) return TOOL_STYLE_BOLD_YELLOW;
+    return TOOL_STYLE_PLAIN;
+}
+
 static int pgpkey_compression_algorithm_style(unsigned int algorithm) {
     (void)algorithm;
     return TOOL_STYLE_PLAIN;
@@ -742,11 +747,15 @@ static const PgpSignatureInfo *latest_primary_user_id_signature(const PgpCertifi
     return best;
 }
 
-static int write_key_line(const PgpPublicKeyInfo *key, const char *label) {
+static int write_key_line(const PgpPublicKeyInfo *key, const char *label, int color_mode) {
+    const char *algorithm_name = pgp_public_key_algorithm_name(key->algorithm);
+    int algorithm_style = pgpkey_public_key_algorithm_style(key->algorithm);
+
     if (rt_write_cstr(1, label) != 0 || rt_write_cstr(1, ": ") != 0) return -1;
     if (rt_write_cstr(1, pgp_key_kind_name(key->tag)) != 0 || rt_write_cstr(1, ", v") != 0) return -1;
     if (rt_write_uint(1, key->version) != 0 || rt_write_cstr(1, ", ") != 0) return -1;
-    if (rt_write_cstr(1, pgp_public_key_algorithm_name(key->algorithm)) != 0) return -1;
+    if (algorithm_style != TOOL_STYLE_PLAIN) tool_write_styled(1, color_mode, algorithm_style, algorithm_name);
+    else if (rt_write_cstr(1, algorithm_name) != 0) return -1;
     if (key->bits != 0U) {
         if (rt_write_cstr(1, ", ") != 0 || rt_write_uint(1, key->bits) != 0 || rt_write_cstr(1, " bits") != 0) return -1;
     }
@@ -1076,7 +1085,7 @@ static int write_certificate_text(const PgpCertificateInfo *certificate, const c
         if (rt_write_cstr(1, "source: ") != 0 || rt_write_line(1, source) != 0) return -1;
     }
     if (rt_write_cstr(1, "certificate: ") != 0 || rt_write_uint(1, (unsigned long long)index) != 0 || rt_write_char(1, '\n') != 0) return -1;
-    if (write_key_line(&certificate->primary, "primary") != 0) return -1;
+    if (write_key_line(&certificate->primary, "primary", color_mode) != 0) return -1;
     if (certificate->primary.fingerprint_size != 0U) {
         if (rt_write_cstr(1, "fingerprint: ") != 0 || write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
         if (rt_write_cstr(1, "key-id: ") != 0 || write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
@@ -1088,7 +1097,7 @@ static int write_certificate_text(const PgpCertificateInfo *certificate, const c
     }
     if (write_signature_summary_text(certificate, color_mode) != 0) return -1;
     for (subkey_index = 0U; subkey_index < certificate->subkey_count; ++subkey_index) {
-        if (write_key_line(&certificate->subkeys[subkey_index], "subkey") != 0) return -1;
+        if (write_key_line(&certificate->subkeys[subkey_index], "subkey", color_mode) != 0) return -1;
         if (certificate->subkeys[subkey_index].fingerprint_size != 0U) {
             if (rt_write_cstr(1, "subkey-fingerprint: ") != 0 || write_hex_bytes(1, certificate->subkeys[subkey_index].fingerprint, certificate->subkeys[subkey_index].fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }

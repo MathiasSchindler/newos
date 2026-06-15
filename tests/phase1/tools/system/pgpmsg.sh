@@ -5,6 +5,7 @@ set -eu
 phase1_setup pgpmsg
 
 SAMPLE_KEY="$ROOT_DIR/experimental/pgp-keys/86BBADD51B38D4F21FE8C46C99D37C39FA2C23A8.asc"
+RAIMOND_KEY="$ROOT_DIR/experimental/pgp-keys/raimond.asc"
 PGPKEY_BIN="$TEST_BIN_DIR/pgpkey"
 
 printf 'hello pgpmsg\n' > "$WORK_DIR/plain.txt"
@@ -94,6 +95,13 @@ if "${TEST_BIN_DIR}/pgpmsg" encrypt --stream --compress=zlib -k "$WORK_DIR/legac
 fi
 assert_file_contains "$WORK_DIR/plain-stream-compressed.err" 'stream currently supports only --compress=none' "pgpmsg encrypt --stream did not explain rejected compression"
 
+"$PGPKEY_BIN" -k "$WORK_DIR/raimond-ring.pgp" import "$RAIMOND_KEY" > "$WORK_DIR/raimond-import.out"
+"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/raimond-ring.pgp" -r 'raimond.spekking@gmail.com' --armor -o "$WORK_DIR/raimond.pgp.asc" "$WORK_DIR/plain.txt"
+assert_file_contains "$WORK_DIR/raimond.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored Elgamal-recipient message"
+"${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/raimond.pgp.asc" > "$WORK_DIR/raimond.inspect"
+assert_file_contains "$WORK_DIR/raimond.inspect" 'tag 1 (public-key encrypted session key)' "pgpmsg Elgamal encryption did not write a public-key encrypted session key packet"
+assert_file_contains "$WORK_DIR/raimond.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg Elgamal encryption did not write an integrity-protected encrypted data packet"
+
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" --compress=zlib --armor -o "$WORK_DIR/plain-zlib.pgp.asc" "$WORK_DIR/plain.txt"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-zlib.dec" "$WORK_DIR/plain-zlib.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-zlib.dec" || fail "pgpmsg decrypt did not recover a zlib-compressed encrypted message"
@@ -103,7 +111,7 @@ SUBKEY_FPR=$("$PGPKEY_BIN" show "$WORK_DIR/legacy-public.asc" | sed -n 's/^subke
 if "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/revoked-public.asc" -r "$LEGACY_FPR" -o "$WORK_DIR/revoked-blocked.pgp" "$WORK_DIR/plain.txt" > "$WORK_DIR/revoked-blocked.out" 2> "$WORK_DIR/revoked-blocked.err"; then
     fail "pgpmsg encrypt accepted a revoked encryption subkey"
 fi
-assert_file_contains "$WORK_DIR/revoked-blocked.err" 'no matching X25519 encryption subkey with encryption usage flags' "pgpmsg encrypt did not explain rejected encryption usage flags"
+assert_file_contains "$WORK_DIR/revoked-blocked.err" 'no matching supported encryption subkey with encryption usage flags' "pgpmsg encrypt did not explain rejected encryption usage flags"
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/revoked-public.asc" -r "$LEGACY_FPR" --DANGER-anyway -o "$WORK_DIR/revoked-override.pgp" "$WORK_DIR/plain.txt"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/revoked-secret.asc" -o "$WORK_DIR/revoked-override.dec" "$WORK_DIR/revoked-override.pgp"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/revoked-override.dec" || fail "pgpmsg --DANGER-anyway override did not produce decryptable output"

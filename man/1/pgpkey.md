@@ -165,6 +165,8 @@ and `TERM=dumb`.
 Algorithm preference lists also use color when enabled. Broken or unsafe hash
 algorithms such as MD5, SHA-1, and RIPEMD-160 are highlighted red. Legacy
 choices such as SHA-224, IDEA, TripleDES, and CAST5 are highlighted yellow.
+Legacy public-key algorithms that are accepted for compatibility but undesirable
+for new keys, such as Elgamal encryption subkeys, are also highlighted yellow.
 Compression preferences are printed without security coloring because they are
 compatibility and side-channel considerations rather than broken cryptographic
 algorithms.

@@ -7,6 +7,7 @@ phase1_setup pgpkey
 SAMPLE_KEY="$ROOT_DIR/experimental/pgp-keys/86BBADD51B38D4F21FE8C46C99D37C39FA2C23A8.asc"
 SPIEGEL_KEY="$ROOT_DIR/experimental/pgp-keys/SPIEGEL_Verlag_Hamburg_27FF8ADC_Public.asc.txt"
 RWIEGAND_KEY="$ROOT_DIR/experimental/pgp-keys/rwiegand.asc"
+RAIMOND_KEY="$ROOT_DIR/experimental/pgp-keys/raimond.asc"
 KEYRING="$WORK_DIR/pubring.pgp"
 SQL_BIN="$TEST_BIN_DIR/sql"
 
@@ -34,6 +35,8 @@ ESC=$(printf '\033')
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;32mnot expired" "pgpkey show --color=always did not color a non-expired expiration status"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;31mSHA-1" "pgpkey show --color=always did not color SHA-1 as weak"
 assert_file_contains "$WORK_DIR/show_color.out" "${ESC}\\[1;33mTripleDES" "pgpkey show --color=always did not color TripleDES as legacy"
+"${TEST_BIN_DIR}/pgpkey" show --color=always "$RAIMOND_KEY" > "$WORK_DIR/raimond_color.out"
+assert_file_contains "$WORK_DIR/raimond_color.out" "${ESC}\\[1;33mElgamal encrypt-only" "pgpkey show --color=always did not color Elgamal as undesirable"
 "${TEST_BIN_DIR}/pgpkey" show "$SPIEGEL_KEY" > "$WORK_DIR/spiegel_show.out"
 assert_file_contains "$WORK_DIR/spiegel_show.out" '^key-expires: 2025-05-11 (expired)$' "pgpkey show did not mark the expired SPIEGEL primary key"
 assert_file_contains "$WORK_DIR/spiegel_show.out" '^subkey-expires: 2025-05-11 (expired)$' "pgpkey show did not mark the expired SPIEGEL subkey"

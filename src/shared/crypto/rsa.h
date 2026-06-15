@@ -73,4 +73,26 @@ int crypto_rsa_pkcs1_v15_encrypt(
     size_t exponent_len
 );
 
+int crypto_modexp_be(
+    unsigned char *out,
+    size_t out_len,
+    const unsigned char *base,
+    size_t base_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *modulus,
+    size_t modulus_len
+);
+
+int crypto_mul_mod_be(
+    unsigned char *out,
+    size_t out_len,
+    const unsigned char *left,
+    size_t left_len,
+    const unsigned char *right,
+    size_t right_len,
+    const unsigned char *modulus,
+    size_t modulus_len
+);
+
 #endif

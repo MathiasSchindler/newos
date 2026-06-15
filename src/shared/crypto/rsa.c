@@ -302,6 +302,82 @@ static void bn_modexp(
     crypto_secure_bzero(&tmp, sizeof(tmp));
 }
 
+static int bn_fits_modular_product(size_t bytes) {
+    size_t words = (bytes + 3U) >> 2U;
+
+    return words != 0U && words * 2U <= RSA_BN_MAX_WORDS;
+}
+
+int crypto_modexp_be(
+    unsigned char *out,
+    size_t out_len,
+    const unsigned char *base,
+    size_t base_len,
+    const unsigned char *exponent,
+    size_t exponent_len,
+    const unsigned char *modulus,
+    size_t modulus_len
+) {
+    CryptoRsaBigNum base_bn;
+    CryptoRsaBigNum exponent_bn;
+    CryptoRsaBigNum modulus_bn;
+    CryptoRsaBigNum result;
+    int status = -1;
+
+    if (out == 0 || base == 0 || exponent == 0 || modulus == 0 || out_len == 0U || modulus_len == 0U) return -1;
+    if (base_len > RSA_BN_MAX_WORDS * 4U || exponent_len > RSA_BN_MAX_WORDS * 4U || modulus_len > RSA_BN_MAX_WORDS * 4U) return -1;
+    if (out_len < modulus_len || !bn_fits_modular_product(modulus_len)) return -1;
+    bn_from_bytes(&base_bn, base, base_len);
+    bn_from_bytes(&exponent_bn, exponent, exponent_len);
+    bn_from_bytes(&modulus_bn, modulus, modulus_len);
+    if (modulus_bn.length == 0U) goto cleanup;
+    bn_modexp(&result, &base_bn, &exponent_bn, &modulus_bn);
+    bn_to_bytes(out, out_len, &result);
+    status = 0;
+
+cleanup:
+    crypto_secure_bzero(&base_bn, sizeof(base_bn));
+    crypto_secure_bzero(&exponent_bn, sizeof(exponent_bn));
+    crypto_secure_bzero(&modulus_bn, sizeof(modulus_bn));
+    crypto_secure_bzero(&result, sizeof(result));
+    return status;
+}
+
+int crypto_mul_mod_be(
+    unsigned char *out,
+    size_t out_len,
+    const unsigned char *left,
+    size_t left_len,
+    const unsigned char *right,
+    size_t right_len,
+    const unsigned char *modulus,
+    size_t modulus_len
+) {
+    CryptoRsaBigNum left_bn;
+    CryptoRsaBigNum right_bn;
+    CryptoRsaBigNum modulus_bn;
+    CryptoRsaBigNum result;
+    int status = -1;
+
+    if (out == 0 || left == 0 || right == 0 || modulus == 0 || out_len == 0U || modulus_len == 0U) return -1;
+    if (left_len > RSA_BN_MAX_WORDS * 4U || right_len > RSA_BN_MAX_WORDS * 4U || modulus_len > RSA_BN_MAX_WORDS * 4U) return -1;
+    if (out_len < modulus_len || !bn_fits_modular_product(modulus_len)) return -1;
+    bn_from_bytes(&left_bn, left, left_len);
+    bn_from_bytes(&right_bn, right, right_len);
+    bn_from_bytes(&modulus_bn, modulus, modulus_len);
+    if (modulus_bn.length == 0U) goto cleanup;
+    bn_mul_mod(&result, &left_bn, &right_bn, &modulus_bn);
+    bn_to_bytes(out, out_len, &result);
+    status = 0;
+
+cleanup:
+    crypto_secure_bzero(&left_bn, sizeof(left_bn));
+    crypto_secure_bzero(&right_bn, sizeof(right_bn));
+    crypto_secure_bzero(&modulus_bn, sizeof(modulus_bn));
+    crypto_secure_bzero(&result, sizeof(result));
+    return status;
+}
+
 static int rsa_blind_exponent(
     CryptoRsaBigNum *out,
     const unsigned char *exponent_bytes,
