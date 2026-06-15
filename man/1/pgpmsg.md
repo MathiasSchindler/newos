@@ -35,7 +35,7 @@ producing non-OpenPGP output or making trust claims.
 
 ## COMMANDS
 
-- `inspect [FILE]` - decode binary or ASCII-armored OpenPGP input and list packet tags and body lengths. With no FILE or `-`, read standard input.
+- `inspect [FILE]` - decode binary or ASCII-armored OpenPGP input and list packet tags and body lengths. For encrypted messages, it also reports visible, non-secret packet metadata such as PKESK version, recipient key ID or fingerprint, public-key algorithm, encrypted MPI sizes, SEIPD version, and v2 SEIPD cipher/AEAD header fields. With no FILE or `-`, read standard input.
 - `verify [-k PUBRING] SIGNATURE [FILE]` - decode SIGNATURE and report signature packet metadata. With FILE and a matching Ed25519 public key in PUBRING, verify a detached binary signature cryptographically. Without FILE, print metadata only.
 - `encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--stream] [--DANGER-anyway] [FILE]` - encrypt FILE, or standard input, to one or more matching X25519, ECDH, or Elgamal encryption subkeys in PUBRING. Each RECIPIENT may match the primary certificate fingerprint, an encryption subkey fingerprint, or a user ID substring.
 - `decrypt [-s SECRING] [-o OUT] [FILE]` - decrypt an OpenPGP message produced by this tool using a matching unprotected X25519 secret subkey from SECRING. Both RFC 9580 v6/v2 AEAD messages and legacy-v4/v1 CFB+MDC messages are supported.
@@ -91,9 +91,11 @@ For legacy-v4 ECDH recipients, `encrypt` keeps the older v3 PKESK plus SEIPD v1
 AES-256 CFB+MDC path. Legacy-v4 Elgamal recipients are also supported by emitting
 v3 PKESK packets containing the two Elgamal ciphertext MPIs over a PKCS#1 v1.5
 encoded session key. Elgamal is legacy and undesirable for new keys, but accepted
-for interoperability with existing certificates. Mixed RFC 9580 v6 and legacy-v4
-recipients are rejected so v6 PKESK packets are not paired with v1 encrypted data,
-and v3 PKESK packets are not paired with v2 encrypted data.
+for interoperability with existing certificates. The finite-field modular
+exponentiations for Elgamal use the shared RSA Montgomery arithmetic path when
+the public modulus is odd. Mixed RFC 9580 v6 and legacy-v4 recipients are
+rejected so v6 PKESK packets are not paired with v1 encrypted data, and v3 PKESK
+packets are not paired with v2 encrypted data.
 
 `decrypt` scans all supported recipient packets and uses the first one matching
 the supplied secret keyring. Decryption currently supports the key shapes emitted

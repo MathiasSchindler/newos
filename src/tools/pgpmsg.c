@@ -733,6 +733,28 @@ static int write_hex_bytes(int fd, const unsigned char *data, size_t size) {
     return 0;
 }
 
+static const char *pgpmsg_symmetric_algorithm_name(unsigned int algorithm) {
+    switch (algorithm) {
+        case 0U: return "plaintext";
+        case 1U: return "IDEA";
+        case 2U: return "TripleDES";
+        case 3U: return "CAST5";
+        case 7U: return "AES-128";
+        case 8U: return "AES-192";
+        case 9U: return "AES-256";
+        default: return "unknown";
+    }
+}
+
+static const char *pgpmsg_aead_algorithm_name(unsigned int algorithm) {
+    switch (algorithm) {
+        case 1U: return "EAX";
+        case 2U: return "OCB";
+        case 3U: return "GCM";
+        default: return "unknown";
+    }
+}
+
 static int write_date(int fd, unsigned long long epoch) {
     long long days = (long long)(epoch / 86400ULL);
     int year;
@@ -2258,6 +2280,157 @@ cleanup:
     return result;
 }
 
+static int inspect_write_pkesk_text(const unsigned char *body, size_t body_size) {
+    size_t offset = 0U;
+    unsigned int version;
+    unsigned int algorithm;
+    unsigned int mpi_index = 0U;
+
+    if (body_size < 1U) return 0;
+    version = body[offset++];
+    if (rt_write_cstr(1, "  pkesk-version: ") != 0 || rt_write_uint(1, version) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (version == 6U) {
+        unsigned int fingerprint_field_size;
+        unsigned int key_version;
+        unsigned int wrapped_size;
+
+        if (offset >= body_size) return 0;
+        fingerprint_field_size = body[offset++];
+        if (fingerprint_field_size == 0U || fingerprint_field_size > body_size - offset) return 0;
+        key_version = body[offset++];
+        if (fingerprint_field_size - 1U > body_size - offset) return 0;
+        if (rt_write_cstr(1, "  recipient-key-version: ") != 0 || rt_write_uint(1, key_version) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (rt_write_cstr(1, "  recipient-fingerprint: ") != 0 || write_hex_bytes(1, body + offset, (size_t)fingerprint_field_size - 1U) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        offset += (size_t)fingerprint_field_size - 1U;
+        if (offset >= body_size) return 0;
+        algorithm = body[offset++];
+        if (rt_write_cstr(1, "  public-key-algorithm: ") != 0 || rt_write_line(1, pgp_public_key_algorithm_name(algorithm)) != 0) return -1;
+        if (algorithm == 25U && PGPMSG_X25519_KEY_SIZE <= body_size - offset) {
+            if (rt_write_cstr(1, "  ephemeral-public-key: ") != 0 || rt_write_uint(1, PGPMSG_X25519_KEY_SIZE) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+            offset += PGPMSG_X25519_KEY_SIZE;
+        }
+        if (offset < body_size) {
+            wrapped_size = body[offset++];
+            if (rt_write_cstr(1, "  wrapped-session-key: ") != 0 || rt_write_uint(1, wrapped_size) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+        }
+        return 0;
+    }
+    if (version != 3U || body_size - offset < PGPMSG_KEY_ID_SIZE + 1U) return 0;
+    if (rt_write_cstr(1, "  recipient-key-id: ") != 0 || write_hex_bytes(1, body + offset, PGPMSG_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    offset += PGPMSG_KEY_ID_SIZE;
+    algorithm = body[offset++];
+    if (rt_write_cstr(1, "  public-key-algorithm: ") != 0 || rt_write_line(1, pgp_public_key_algorithm_name(algorithm)) != 0) return -1;
+    while (offset < body_size) {
+        const unsigned char *mpi = 0;
+        size_t mpi_size = 0U;
+        unsigned int mpi_bits = 0U;
+
+        if (read_mpi_view(body, body_size, &offset, &mpi, &mpi_size, &mpi_bits) != 0) break;
+        mpi_index += 1U;
+        if (rt_write_cstr(1, "  encrypted-mpi ") != 0 || rt_write_uint(1, mpi_index) != 0 || rt_write_cstr(1, ": ") != 0 || rt_write_uint(1, mpi_bits) != 0 || rt_write_cstr(1, " bits, ") != 0 || rt_write_uint(1, (unsigned long long)mpi_size) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+        (void)mpi;
+    }
+    return 0;
+}
+
+static int inspect_write_seipd_text(const unsigned char *body, size_t body_size) {
+    unsigned int version;
+
+    if (body_size < 1U) return 0;
+    version = body[0];
+    if (rt_write_cstr(1, "  seipd-version: ") != 0 || rt_write_uint(1, version) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (version == 2U && body_size >= 4U + PGPMSG_V2_SEIPD_SALT_SIZE) {
+        if (rt_write_cstr(1, "  symmetric-algorithm: ") != 0 || rt_write_line(1, pgpmsg_symmetric_algorithm_name(body[1])) != 0) return -1;
+        if (rt_write_cstr(1, "  aead-algorithm: ") != 0 || rt_write_line(1, pgpmsg_aead_algorithm_name(body[2])) != 0) return -1;
+        if (rt_write_cstr(1, "  chunk-size-octet: ") != 0 || rt_write_uint(1, body[3]) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (rt_write_cstr(1, "  salt: ") != 0 || rt_write_uint(1, PGPMSG_V2_SEIPD_SALT_SIZE) != 0 || rt_write_line(1, " bytes") != 0) return -1;
+    }
+    return 0;
+}
+
+static int inspect_write_packet_text_details(const PgpPacket *packet, const unsigned char *body) {
+    if (packet->tag == 1U) return inspect_write_pkesk_text(body, packet->body_size);
+    if (packet->tag == 18U) return inspect_write_seipd_text(body, packet->body_size);
+    return 0;
+}
+
+static int inspect_write_pkesk_json(const unsigned char *body, size_t body_size) {
+    size_t offset = 0U;
+    unsigned int version;
+    unsigned int algorithm;
+    unsigned int mpi_index = 0U;
+
+    if (body_size < 1U) return 0;
+    version = body[offset++];
+    if (rt_write_cstr(1, ",\"pkesk_version\":") != 0 || rt_write_uint(1, version) != 0) return -1;
+    if (version == 6U) {
+        unsigned int fingerprint_field_size;
+        unsigned int key_version;
+        unsigned int wrapped_size;
+
+        if (offset >= body_size) return 0;
+        fingerprint_field_size = body[offset++];
+        if (fingerprint_field_size == 0U || fingerprint_field_size > body_size - offset) return 0;
+        key_version = body[offset++];
+        if (fingerprint_field_size - 1U > body_size - offset) return 0;
+        if (rt_write_cstr(1, ",\"recipient_key_version\":") != 0 || rt_write_uint(1, key_version) != 0) return -1;
+        if (rt_write_cstr(1, ",\"recipient_fingerprint\":\"") != 0 || write_hex_bytes(1, body + offset, (size_t)fingerprint_field_size - 1U) != 0 || rt_write_char(1, '"') != 0) return -1;
+        offset += (size_t)fingerprint_field_size - 1U;
+        if (offset >= body_size) return 0;
+        algorithm = body[offset++];
+        if (rt_write_cstr(1, ",\"public_key_algorithm\":") != 0 || tool_json_write_string(1, pgp_public_key_algorithm_name(algorithm)) != 0) return -1;
+        if (algorithm == 25U && PGPMSG_X25519_KEY_SIZE <= body_size - offset) {
+            if (rt_write_cstr(1, ",\"ephemeral_public_key_size\":") != 0 || rt_write_uint(1, PGPMSG_X25519_KEY_SIZE) != 0) return -1;
+            offset += PGPMSG_X25519_KEY_SIZE;
+        }
+        if (offset < body_size) {
+            wrapped_size = body[offset++];
+            if (rt_write_cstr(1, ",\"wrapped_session_key_size\":") != 0 || rt_write_uint(1, wrapped_size) != 0) return -1;
+        }
+        return 0;
+    }
+    if (version != 3U || body_size - offset < PGPMSG_KEY_ID_SIZE + 1U) return 0;
+    if (rt_write_cstr(1, ",\"recipient_key_id\":\"") != 0 || write_hex_bytes(1, body + offset, PGPMSG_KEY_ID_SIZE) != 0 || rt_write_char(1, '"') != 0) return -1;
+    offset += PGPMSG_KEY_ID_SIZE;
+    algorithm = body[offset++];
+    if (rt_write_cstr(1, ",\"public_key_algorithm\":") != 0 || tool_json_write_string(1, pgp_public_key_algorithm_name(algorithm)) != 0) return -1;
+    if (rt_write_cstr(1, ",\"encrypted_mpi_bits\":[") != 0) return -1;
+    while (offset < body_size) {
+        const unsigned char *mpi = 0;
+        size_t mpi_size = 0U;
+        unsigned int mpi_bits = 0U;
+
+        if (read_mpi_view(body, body_size, &offset, &mpi, &mpi_size, &mpi_bits) != 0) break;
+        if (mpi_index != 0U && rt_write_char(1, ',') != 0) return -1;
+        if (rt_write_uint(1, mpi_bits) != 0) return -1;
+        mpi_index += 1U;
+        (void)mpi;
+        (void)mpi_size;
+    }
+    return rt_write_char(1, ']');
+}
+
+static int inspect_write_seipd_json(const unsigned char *body, size_t body_size) {
+    unsigned int version;
+
+    if (body_size < 1U) return 0;
+    version = body[0];
+    if (rt_write_cstr(1, ",\"seipd_version\":") != 0 || rt_write_uint(1, version) != 0) return -1;
+    if (version == 2U && body_size >= 4U + PGPMSG_V2_SEIPD_SALT_SIZE) {
+        if (rt_write_cstr(1, ",\"symmetric_algorithm\":") != 0 || tool_json_write_string(1, pgpmsg_symmetric_algorithm_name(body[1])) != 0) return -1;
+        if (rt_write_cstr(1, ",\"aead_algorithm\":") != 0 || tool_json_write_string(1, pgpmsg_aead_algorithm_name(body[2])) != 0) return -1;
+        if (rt_write_cstr(1, ",\"chunk_size_octet\":") != 0 || rt_write_uint(1, body[3]) != 0) return -1;
+        if (rt_write_cstr(1, ",\"salt_size\":") != 0 || rt_write_uint(1, PGPMSG_V2_SEIPD_SALT_SIZE) != 0) return -1;
+    }
+    return 0;
+}
+
+static int inspect_write_packet_json_details(const PgpPacket *packet, const unsigned char *body) {
+    if (packet->tag == 1U) return inspect_write_pkesk_json(body, packet->body_size);
+    if (packet->tag == 18U) return inspect_write_seipd_json(body, packet->body_size);
+    return 0;
+}
+
 static int inspect_packets(const char *path, int json) {
     unsigned char *decoded = 0;
     size_t decoded_size = 0U;
@@ -2279,10 +2452,12 @@ static int inspect_packets(const char *path, int json) {
             if (rt_write_cstr(1, ",\"tag\":") != 0 || rt_write_uint(1, packet.tag) != 0) { status = 1; break; }
             if (rt_write_cstr(1, ",\"name\":") != 0 || tool_json_write_string(1, pgp_packet_tag_name(packet.tag)) != 0) { status = 1; break; }
             if (rt_write_cstr(1, ",\"length\":") != 0 || rt_write_uint(1, (unsigned long long)packet.body_size) != 0) { status = 1; break; }
+            if (inspect_write_packet_json_details(&packet, decoded + packet.body_offset) != 0) { status = 1; break; }
             if (rt_write_cstr(1, "}}") != 0 || tool_json_end_event(1) != 0) { status = 1; break; }
         } else {
             if (rt_write_cstr(1, "packet ") != 0 || rt_write_uint(1, packet_index) != 0 || rt_write_cstr(1, ": tag ") != 0 || rt_write_uint(1, packet.tag) != 0) { status = 1; break; }
             if (rt_write_cstr(1, " (") != 0 || rt_write_cstr(1, pgp_packet_tag_name(packet.tag)) != 0 || rt_write_cstr(1, "), length ") != 0 || rt_write_uint(1, (unsigned long long)packet.body_size) != 0 || rt_write_char(1, '\n') != 0) { status = 1; break; }
+            if (inspect_write_packet_text_details(&packet, decoded + packet.body_offset) != 0) { status = 1; break; }
         }
     }
     if (!has_packet && packet_index == 0ULL) {

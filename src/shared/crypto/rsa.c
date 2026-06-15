@@ -5,6 +5,8 @@
 #include "runtime.h"
 
 #define RSA_BN_MAX_WORDS 320U
+#define RSA_MONT_WINDOW_BITS 4U
+#define RSA_MONT_WINDOW_SIZE 16U
 
 typedef struct {
     unsigned int words[RSA_BN_MAX_WORDS];
@@ -271,6 +273,176 @@ static int bn_test_bit(const CryptoRsaBigNum *value, size_t bit_index) {
     return (int)((value->words[word_index] >> shift) & 1U);
 }
 
+static unsigned int bn_window_value(const CryptoRsaBigNum *value, size_t low_bit, size_t width) {
+    unsigned int out = 0U;
+    size_t index;
+
+    for (index = 0U; index < width; ++index) {
+        out <<= 1U;
+        if (bn_test_bit(value, low_bit + width - 1U - index)) out |= 1U;
+    }
+    return out;
+}
+
+static unsigned int bn_montgomery_n0_inverse(unsigned int n0) {
+    unsigned int inverse = 1U;
+    unsigned int index;
+
+    for (index = 0U; index < 5U; ++index) {
+        inverse *= 2U - n0 * inverse;
+    }
+    return 0U - inverse;
+}
+
+static int bn_can_use_montgomery(const CryptoRsaBigNum *modulus) {
+    return modulus->length != 0U &&
+           (modulus->words[0] & 1U) != 0U &&
+           modulus->length * 2U + 1U <= RSA_BN_MAX_WORDS;
+}
+
+static void bn_montgomery_reduce(CryptoRsaBigNum *out, unsigned int *tmp, size_t words, const CryptoRsaBigNum *modulus, unsigned int n0_inverse) {
+    size_t index;
+    size_t word;
+
+    for (index = 0U; index < words; ++index) {
+        unsigned int factor = tmp[index] * n0_inverse;
+        unsigned long long carry = 0ULL;
+
+        for (word = 0U; word < words; ++word) {
+            unsigned long long value = (unsigned long long)factor * (unsigned long long)modulus->words[word] +
+                                       (unsigned long long)tmp[index + word] +
+                                       carry;
+            tmp[index + word] = (unsigned int)value;
+            carry = value >> 32U;
+        }
+        word = index + words;
+        while (carry != 0ULL) {
+            unsigned long long value = (unsigned long long)tmp[word] + carry;
+            tmp[word] = (unsigned int)value;
+            carry = value >> 32U;
+            word += 1U;
+        }
+    }
+
+    bn_zero(out);
+    for (index = 0U; index <= words; ++index) {
+        out->words[index] = tmp[words + index];
+    }
+    out->length = words + 1U;
+    bn_normalize(out);
+    if (bn_compare(out, modulus) >= 0) {
+        bn_sub(out, out, modulus);
+    }
+}
+
+static void bn_montgomery_mul(CryptoRsaBigNum *out, const CryptoRsaBigNum *left, const CryptoRsaBigNum *right, const CryptoRsaBigNum *modulus, unsigned int n0_inverse) {
+    unsigned int tmp[RSA_BN_MAX_WORDS + 1U];
+    size_t words = modulus->length;
+    size_t index;
+    size_t word;
+
+    for (index = 0U; index <= RSA_BN_MAX_WORDS; ++index) tmp[index] = 0U;
+    for (index = 0U; index < words; ++index) {
+        unsigned long long carry = 0ULL;
+        unsigned long long left_word = index < left->length ? left->words[index] : 0U;
+
+        for (word = 0U; word < words; ++word) {
+            unsigned long long right_word = word < right->length ? right->words[word] : 0U;
+            unsigned long long value = (unsigned long long)tmp[index + word] + left_word * right_word + carry;
+
+            tmp[index + word] = (unsigned int)value;
+            carry = value >> 32U;
+        }
+        word = index + words;
+        while (carry != 0ULL) {
+            unsigned long long value = (unsigned long long)tmp[word] + carry;
+            tmp[word] = (unsigned int)value;
+            carry = value >> 32U;
+            word += 1U;
+        }
+    }
+    bn_montgomery_reduce(out, tmp, words, modulus, n0_inverse);
+    crypto_secure_bzero(tmp, sizeof(tmp));
+}
+
+static int bn_montgomery_r2(CryptoRsaBigNum *r2, const CryptoRsaBigNum *modulus) {
+    CryptoRsaBigNum one;
+
+    if (!bn_can_use_montgomery(modulus)) return -1;
+    bn_from_u32(&one, 1U);
+    bn_shift_left_bits(r2, &one, modulus->length * 64U);
+    bn_mod(r2, modulus);
+    crypto_secure_bzero(&one, sizeof(one));
+    return 0;
+}
+
+static int bn_modexp_montgomery(
+    CryptoRsaBigNum *out,
+    const CryptoRsaBigNum *base,
+    const CryptoRsaBigNum *exponent,
+    const CryptoRsaBigNum *modulus
+) {
+    CryptoRsaBigNum one;
+    CryptoRsaBigNum r2;
+    CryptoRsaBigNum base_mod;
+    CryptoRsaBigNum table[RSA_MONT_WINDOW_SIZE];
+    CryptoRsaBigNum result_mont;
+    CryptoRsaBigNum tmp;
+    unsigned int n0_inverse;
+    size_t bit;
+    size_t bits = bn_bit_length(exponent);
+    size_t leading_bits;
+    size_t remaining_bits;
+    unsigned int window;
+    int status = -1;
+
+    if (!bn_can_use_montgomery(modulus)) return -1;
+    if (bn_montgomery_r2(&r2, modulus) != 0) goto cleanup;
+    n0_inverse = bn_montgomery_n0_inverse(modulus->words[0]);
+    bn_from_u32(&one, 1U);
+    bn_copy(&base_mod, base);
+    bn_mod(&base_mod, modulus);
+    bn_montgomery_mul(&table[0], &one, &r2, modulus, n0_inverse);
+    bn_montgomery_mul(&table[1], &base_mod, &r2, modulus, n0_inverse);
+    for (bit = 2U; bit < RSA_MONT_WINDOW_SIZE; ++bit) {
+        bn_montgomery_mul(&table[bit], &table[bit - 1U], &table[1], modulus, n0_inverse);
+    }
+
+    if (bits == 0U) {
+        bn_copy(&result_mont, &table[0]);
+    } else {
+        leading_bits = bits % RSA_MONT_WINDOW_BITS;
+        if (leading_bits == 0U) leading_bits = RSA_MONT_WINDOW_BITS;
+        remaining_bits = bits - leading_bits;
+        window = bn_window_value(exponent, remaining_bits, leading_bits);
+        bn_copy(&result_mont, &table[window]);
+        while (remaining_bits != 0U) {
+            remaining_bits -= RSA_MONT_WINDOW_BITS;
+            for (bit = 0U; bit < RSA_MONT_WINDOW_BITS; ++bit) {
+                bn_montgomery_mul(&tmp, &result_mont, &result_mont, modulus, n0_inverse);
+                bn_copy(&result_mont, &tmp);
+            }
+            window = bn_window_value(exponent, remaining_bits, RSA_MONT_WINDOW_BITS);
+            if (window != 0U) {
+                bn_montgomery_mul(&tmp, &result_mont, &table[window], modulus, n0_inverse);
+                bn_copy(&result_mont, &tmp);
+            }
+        }
+    }
+
+    bn_montgomery_mul(out, &result_mont, &one, modulus, n0_inverse);
+    status = 0;
+
+cleanup:
+    crypto_secure_bzero(&one, sizeof(one));
+    crypto_secure_bzero(&r2, sizeof(r2));
+    crypto_secure_bzero(&base_mod, sizeof(base_mod));
+    crypto_secure_bzero(table, sizeof(table));
+    crypto_secure_bzero(&result_mont, sizeof(result_mont));
+    crypto_secure_bzero(&tmp, sizeof(tmp));
+    return status;
+}
+
 static void bn_modexp(
     CryptoRsaBigNum *out,
     const CryptoRsaBigNum *base,
@@ -282,6 +454,8 @@ static void bn_modexp(
     CryptoRsaBigNum tmp;
     size_t bit;
     size_t bits = bn_bit_length(exponent);
+
+    if (bn_modexp_montgomery(out, base, exponent, modulus) == 0) return;
 
     bn_from_u32(&result, 1U);
     bn_copy(&base_acc, base);

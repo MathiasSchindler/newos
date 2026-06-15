@@ -36,7 +36,9 @@ hosted and freestanding builds.
 - `archive_util.*` — archive-format helpers and compatibility wrappers used by
   tar and compression tools
 - `hash_util.*` and `crypto/` — MD5, SHA-2, public-key, ECDSA, X25519/Ed25519,
-  ChaCha20-Poly1305, AES-GCM, X.509, and protocol-specific crypto helpers
+  ChaCha20-Poly1305, AES-GCM, X.509, and protocol-specific crypto helpers;
+  RSA-compatible modular exponentiation uses Montgomery arithmetic for odd
+  moduli and falls back to the generic reducer otherwise
 - `tls/` — compact TLS 1.2/1.3 client-side machinery used through the platform TLS interface
 - `image/` — metadata probing and structural validation for common image containers and C2PA-related tooling
 - `xml.*`, `xml_stream.*`, and `xml_dtd.*` — reusable XML parsing, streaming, safety, and DTD support for the XML tool family
