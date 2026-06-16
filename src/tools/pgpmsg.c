@@ -14,7 +14,7 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PGPMSG_USAGE "[--json] COMMAND [ARGS...]\n       pgpmsg inspect [-v] [FILE]\n       pgpmsg verify [-k PUBRING] SIGNATURE [FILE]\n       pgpmsg encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--stream] [--DANGER-anyway] [FILE]\n       pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]\n       pgpmsg sign -u SIGNER [-s SECRING] [-o OUT] [--armor] [--detach|--cleartext] [--DANGER-anyway] [FILE]"
+#define PGPMSG_USAGE "[--json] COMMAND [ARGS...]\n       pgpmsg inspect [-v] [FILE]\n       pgpmsg verify [-k PUBRING] SIGNATURE [FILE]\n       pgpmsg encrypt -r RECIPIENT [-r RECIPIENT ...] [-k PUBRING] [-o OUT] [--armor] [--compress=ALG] [--sign -s SECRING [-u SIGNER]] [--stream] [--DANGER-anyway] [FILE]\n       pgpmsg decrypt [-s SECRING] [-o OUT] [FILE]\n       pgpmsg sign -u SIGNER [-s SECRING] [-o OUT] [--armor] [--detach|--cleartext] [--DANGER-anyway] [FILE]"
 #define PGPMSG_ERROR_CAPACITY 160U
 #define PGPMSG_KEY_ID_SIZE 8U
 #define PGPMSG_ED25519_KEY_SIZE 32U
@@ -50,6 +50,7 @@ typedef struct {
     int cleartext;
     int danger_anyway;
     int stream;
+    int sign;
     int verbose;
     unsigned int compression;
 } PgpMsgOptions;
@@ -134,6 +135,7 @@ typedef struct {
 
 typedef struct {
     const char *selector;
+    PgpPublicKeyInfo key;
     int danger_anyway;
     int found;
     int allowed;
@@ -1143,7 +1145,8 @@ static int signer_usage_callback(const PgpCertificateInfo *certificate, void *ct
 
     if (ctx->found) return 0;
     if ((certificate->primary.algorithm != 22U && certificate->primary.algorithm != 27U) || certificate->primary.public_material_size != PGPMSG_ED25519_KEY_SIZE) return 0;
-    if (ctx->selector != 0 && ctx->selector[0] != '\0' && !pgp_fingerprint_matches_text(&certificate->primary, ctx->selector)) return 0;
+    if (!selector_matches_user_id(certificate, ctx->selector)) return 0;
+    ctx->key = certificate->primary;
     ctx->found = 1;
     ctx->allowed = ctx->danger_anyway || pgpmsg_certificate_primary_allows_sign(certificate);
     return 0;
@@ -1239,7 +1242,71 @@ static int verify_detached_signature_packet(const PgpMsgSignaturePacket *signatu
     return ok ? 1 : 0;
 }
 
-static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int tag, const unsigned char *body, size_t body_size, const char *selector) {
+static int build_signature_packet_for_data(const PgpMsgSecretKey *secret, const unsigned char *data, size_t data_size, unsigned int signature_type, PgpMsgBuffer *signature_packet) {
+    PgpMsgBuffer hashed;
+    PgpMsgBuffer unhashed;
+    PgpMsgBuffer hash_part;
+    PgpMsgBuffer signature_body;
+    unsigned char digest[CRYPTO_SHA512_DIGEST_SIZE];
+    unsigned char signature[PGPMSG_ED25519_SIGNATURE_SIZE];
+    unsigned char issuer_fingerprint[PGP_FINGERPRINT_MAX_SIZE + 1U];
+    unsigned char signature_salt[32];
+    unsigned long long created;
+    unsigned int signature_version;
+    unsigned int public_key_algorithm;
+    int result = -1;
+
+    rt_memset(&hashed, 0, sizeof(hashed));
+    rt_memset(&unhashed, 0, sizeof(unhashed));
+    rt_memset(&hash_part, 0, sizeof(hash_part));
+    rt_memset(&signature_body, 0, sizeof(signature_body));
+    rt_memset(signature_salt, 0, sizeof(signature_salt));
+    if (secret == 0 || (signature_type != 0x00U && signature_type != 0x01U)) goto cleanup;
+    created = platform_get_epoch_time() > 0 ? (unsigned long long)platform_get_epoch_time() : 1ULL;
+    signature_version = secret->info.version == 6U ? 6U : 4U;
+    public_key_algorithm = signature_version == 6U ? 27U : 22U;
+    issuer_fingerprint[0] = (unsigned char)signature_version;
+    memcpy(issuer_fingerprint + 1U, secret->info.fingerprint, secret->info.fingerprint_size);
+    if (signature_version == 6U && platform_random_bytes(signature_salt, sizeof(signature_salt)) != 0) goto cleanup;
+    if (msg_buffer_append_signature_subpacket_u32(&hashed, signature_version == 6U ? 0x82U : 2U, created) != 0 ||
+        (signature_version == 4U && msg_buffer_append_signature_subpacket(&unhashed, 16U, secret->info.key_id, PGP_KEY_ID_SIZE) != 0) ||
+        msg_buffer_append_signature_subpacket(signature_version == 6U ? &hashed : &unhashed, 33U, issuer_fingerprint, secret->info.fingerprint_size + 1U) != 0 ||
+        msg_buffer_append_byte(&hash_part, signature_version) != 0 ||
+        msg_buffer_append_byte(&hash_part, signature_type) != 0 ||
+        msg_buffer_append_byte(&hash_part, public_key_algorithm) != 0 ||
+        msg_buffer_append_byte(&hash_part, 10U) != 0 ||
+        (signature_version == 6U ? msg_buffer_append_u32_be(&hash_part, hashed.size) : msg_buffer_append_u16_be(&hash_part, (unsigned int)hashed.size)) != 0 ||
+        msg_buffer_append_data(&hash_part, hashed.data, hashed.size) != 0) goto cleanup;
+    hash_detached_signature_data_ex(signature_version, signature_version == 6U ? signature_salt : 0, signature_version == 6U ? sizeof(signature_salt) : 0U, data, data_size, hash_part.data, hash_part.size, digest);
+    if (crypto_ed25519_sign(signature, digest, sizeof(digest), secret->seed, secret->info.public_material) != 0) goto cleanup;
+    if (msg_buffer_append_data(&signature_body, hash_part.data, hash_part.size) != 0 ||
+        (signature_version == 6U ? msg_buffer_append_u32_be(&signature_body, unhashed.size) : msg_buffer_append_u16_be(&signature_body, (unsigned int)unhashed.size)) != 0 ||
+        msg_buffer_append_data(&signature_body, unhashed.data, unhashed.size) != 0 ||
+        msg_buffer_append_byte(&signature_body, digest[0]) != 0 ||
+        msg_buffer_append_byte(&signature_body, digest[1]) != 0) goto cleanup;
+    if (signature_version == 6U) {
+        if (msg_buffer_append_byte(&signature_body, sizeof(signature_salt)) != 0 ||
+            msg_buffer_append_data(&signature_body, signature_salt, sizeof(signature_salt)) != 0 ||
+            msg_buffer_append_data(&signature_body, signature, sizeof(signature)) != 0) goto cleanup;
+    } else if (msg_buffer_append_opaque_mpi(&signature_body, signature, 32U, 256U) != 0 ||
+               msg_buffer_append_opaque_mpi(&signature_body, signature + 32U, 32U, 256U) != 0) {
+        goto cleanup;
+    }
+    if (msg_buffer_append_packet(signature_packet, 2U, &signature_body) != 0) goto cleanup;
+    result = 0;
+
+cleanup:
+    msg_buffer_free(&hashed);
+    msg_buffer_free(&unhashed);
+    msg_buffer_free(&hash_part);
+    msg_buffer_free(&signature_body);
+    crypto_secure_bzero(digest, sizeof(digest));
+    crypto_secure_bzero(signature, sizeof(signature));
+    crypto_secure_bzero(signature_salt, sizeof(signature_salt));
+    return result;
+}
+
+static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int tag, const unsigned char *body, size_t body_size, const PgpPublicKeyInfo *selected_key) {
     size_t offset = 6U;
     unsigned int oid_size;
     unsigned int point_bits;
@@ -1255,7 +1322,7 @@ static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int
     if (secret->info.version == 6U) {
         offset = 10U + secret->info.public_material_size;
         if (secret->info.algorithm != 27U || secret->info.public_material_size != PGPMSG_ED25519_KEY_SIZE) return -1;
-        if (selector != 0 && selector[0] != '\0' && !pgp_fingerprint_matches_text(&secret->info, selector)) return -1;
+        if (selected_key != 0 && (secret->info.fingerprint_size != selected_key->fingerprint_size || memcmp(secret->info.fingerprint, selected_key->fingerprint, selected_key->fingerprint_size) != 0)) return -1;
         if (offset >= body_size || body[offset++] != 0U) return -1;
         if (body_size - offset != PGPMSG_ED25519_KEY_SIZE) return -1;
         memcpy(secret->seed, body + offset, PGPMSG_ED25519_KEY_SIZE);
@@ -1263,7 +1330,7 @@ static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int
         return 0;
     }
     if (secret->info.algorithm != 22U || secret->info.public_material_size != PGPMSG_ED25519_KEY_SIZE) return -1;
-    if (selector != 0 && selector[0] != '\0' && !pgp_fingerprint_matches_text(&secret->info, selector)) return -1;
+    if (selected_key != 0 && (secret->info.fingerprint_size != selected_key->fingerprint_size || memcmp(secret->info.fingerprint, selected_key->fingerprint, selected_key->fingerprint_size) != 0)) return -1;
     if (body_size < 6U || offset >= body_size) return -1;
     oid_size = body[offset++];
     if (oid_size > body_size - offset) return -1;
@@ -1328,7 +1395,7 @@ static int load_secret_key(const char *path, const char *selector, int danger_an
             return -1;
         }
         if (!has_packet) break;
-        if ((packet.tag == 5U || packet.tag == 7U) && parse_ed25519_secret_key_packet(secret, packet.tag, decoded + packet.body_offset, packet.body_size, selector) == 0 && secret->found) {
+        if ((packet.tag == 5U || packet.tag == 7U) && parse_ed25519_secret_key_packet(secret, packet.tag, decoded + packet.body_offset, packet.body_size, usage.found ? &usage.key : 0) == 0 && secret->found) {
             rt_free(decoded);
             return 0;
         }
@@ -1908,6 +1975,65 @@ static int build_literal_packet(const unsigned char *input, size_t input_size, P
     return result;
 }
 
+static int build_one_pass_signature_packet(const PgpMsgSecretKey *secret, PgpMsgBuffer *one_pass_packet) {
+    PgpMsgBuffer body;
+    unsigned int signature_version;
+    unsigned int public_key_algorithm;
+    int result = -1;
+
+    rt_memset(&body, 0, sizeof(body));
+    if (secret == 0) goto cleanup;
+    signature_version = secret->info.version == 6U ? 6U : 4U;
+    public_key_algorithm = signature_version == 6U ? 27U : 22U;
+    if (msg_buffer_append_byte(&body, 3U) != 0 ||
+        msg_buffer_append_byte(&body, 0x00U) != 0 ||
+        msg_buffer_append_byte(&body, 10U) != 0 ||
+        msg_buffer_append_byte(&body, public_key_algorithm) != 0 ||
+        msg_buffer_append_data(&body, secret->info.key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
+        msg_buffer_append_byte(&body, 1U) != 0 ||
+        msg_buffer_append_packet(one_pass_packet, 4U, &body) != 0) goto cleanup;
+    result = 0;
+
+cleanup:
+    msg_buffer_free(&body);
+    return result;
+}
+
+static int build_compressed_packet(unsigned int compression, const PgpMsgBuffer *literal_packet, PgpMsgBuffer *payload_packet);
+
+static int build_message_payload(const unsigned char *input, size_t input_size, unsigned int compression, const PgpMsgSecretKey *signing_secret, PgpMsgBuffer *payload_packet) {
+    PgpMsgBuffer literal_packet;
+    PgpMsgBuffer one_pass_packet;
+    PgpMsgBuffer signature_packet;
+    PgpMsgBuffer signed_packet;
+    const PgpMsgBuffer *inner_packet;
+    int result = -1;
+
+    rt_memset(&literal_packet, 0, sizeof(literal_packet));
+    rt_memset(&one_pass_packet, 0, sizeof(one_pass_packet));
+    rt_memset(&signature_packet, 0, sizeof(signature_packet));
+    rt_memset(&signed_packet, 0, sizeof(signed_packet));
+    if (build_literal_packet(input, input_size, &literal_packet) != 0) goto cleanup;
+    inner_packet = &literal_packet;
+    if (signing_secret != 0) {
+        if (build_one_pass_signature_packet(signing_secret, &one_pass_packet) != 0 ||
+            build_signature_packet_for_data(signing_secret, input, input_size, 0x00U, &signature_packet) != 0 ||
+            msg_buffer_append_data(&signed_packet, one_pass_packet.data, one_pass_packet.size) != 0 ||
+            msg_buffer_append_data(&signed_packet, literal_packet.data, literal_packet.size) != 0 ||
+            msg_buffer_append_data(&signed_packet, signature_packet.data, signature_packet.size) != 0) goto cleanup;
+        inner_packet = &signed_packet;
+    }
+    if (build_compressed_packet(compression, inner_packet, payload_packet) != 0) goto cleanup;
+    result = 0;
+
+cleanup:
+    msg_buffer_free(&literal_packet);
+    msg_buffer_free(&one_pass_packet);
+    msg_buffer_free(&signature_packet);
+    msg_buffer_free(&signed_packet);
+    return result;
+}
+
 static int build_compressed_packet(unsigned int compression, const PgpMsgBuffer *literal_packet, PgpMsgBuffer *payload_packet) {
     PgpMsgBuffer body;
     unsigned char *compressed = 0;
@@ -1944,24 +2070,22 @@ cleanup:
     return result;
 }
 
-static int build_encrypted_data_packet(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *input, size_t input_size, unsigned int compression, PgpMsgBuffer *encrypted_packet) {
+static int build_encrypted_data_packet(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *input, size_t input_size, unsigned int compression, const PgpMsgSecretKey *signing_secret, PgpMsgBuffer *encrypted_packet) {
     unsigned char prefix[PGPMSG_AES_BLOCK_SIZE + 2U];
     unsigned char digest[CRYPTO_SHA1_DIGEST_SIZE];
-    PgpMsgBuffer literal_packet;
     PgpMsgBuffer payload_packet;
     PgpMsgBuffer plain;
     PgpMsgBuffer body;
     unsigned char mdc_header[] = { 0xd3U, 0x14U };
     int result = -1;
 
-    rt_memset(&literal_packet, 0, sizeof(literal_packet));
     rt_memset(&payload_packet, 0, sizeof(payload_packet));
     rt_memset(&plain, 0, sizeof(plain));
     rt_memset(&body, 0, sizeof(body));
     if (platform_random_bytes(prefix, PGPMSG_AES_BLOCK_SIZE) != 0) goto cleanup;
     prefix[PGPMSG_AES_BLOCK_SIZE] = prefix[PGPMSG_AES_BLOCK_SIZE - 2U];
     prefix[PGPMSG_AES_BLOCK_SIZE + 1U] = prefix[PGPMSG_AES_BLOCK_SIZE - 1U];
-    if (build_literal_packet(input, input_size, &literal_packet) != 0 || build_compressed_packet(compression, &literal_packet, &payload_packet) != 0) goto cleanup;
+    if (build_message_payload(input, input_size, compression, signing_secret, &payload_packet) != 0) goto cleanup;
     if (msg_buffer_append_data(&plain, prefix, sizeof(prefix)) != 0 ||
         msg_buffer_append_data(&plain, payload_packet.data, payload_packet.size) != 0 ||
         msg_buffer_append_data(&plain, mdc_header, sizeof(mdc_header)) != 0) goto cleanup;
@@ -1975,7 +2099,6 @@ static int build_encrypted_data_packet(const unsigned char session_key[PGPMSG_AE
     result = 0;
 
 cleanup:
-    msg_buffer_free(&literal_packet);
     msg_buffer_free(&payload_packet);
     msg_buffer_free(&plain);
     msg_buffer_free(&body);
@@ -2029,8 +2152,7 @@ static void pgpmsg_store_u64_be(unsigned char out[8], unsigned long long value) 
     out[7] = (unsigned char)(value & 0xffU);
 }
 
-static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *input, size_t input_size, unsigned int compression, PgpMsgBuffer *encrypted_packet) {
-    PgpMsgBuffer literal_packet;
+static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *input, size_t input_size, unsigned int compression, const PgpMsgSecretKey *signing_secret, PgpMsgBuffer *encrypted_packet) {
     PgpMsgBuffer payload_packet;
     PgpMsgBuffer body;
     unsigned char salt[PGPMSG_V2_SEIPD_SALT_SIZE];
@@ -2044,11 +2166,10 @@ static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG
     unsigned long long chunk_index = 0ULL;
     int result = -1;
 
-    rt_memset(&literal_packet, 0, sizeof(literal_packet));
     rt_memset(&payload_packet, 0, sizeof(payload_packet));
     rt_memset(&body, 0, sizeof(body));
     if (platform_random_bytes(salt, sizeof(salt)) != 0) goto cleanup;
-    if (build_literal_packet(input, input_size, &literal_packet) != 0 || build_compressed_packet(compression, &literal_packet, &payload_packet) != 0) goto cleanup;
+    if (build_message_payload(input, input_size, compression, signing_secret, &payload_packet) != 0) goto cleanup;
     if (pgpmsg_derive_v2_seipd_key(session_key, salt, PGPMSG_V2_SEIPD_CHUNK_OCTET, message_key, iv_prefix) != 0) goto cleanup;
     if (msg_buffer_append_byte(&body, 2U) != 0 ||
         msg_buffer_append_byte(&body, 9U) != 0 ||
@@ -2077,7 +2198,6 @@ static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG
     result = 0;
 
 cleanup:
-    msg_buffer_free(&literal_packet);
     msg_buffer_free(&payload_packet);
     msg_buffer_free(&body);
     crypto_secure_bzero(salt, sizeof(salt));
@@ -2261,34 +2381,76 @@ cleanup:
     return result;
 }
 
+static int literal_packet_data_view(const unsigned char *payload, size_t payload_size, const PgpPacket *packet, const unsigned char **data_out, size_t *data_size_out) {
+    const unsigned char *body;
+    size_t body_size;
+    size_t filename_size;
+    size_t data_offset;
+
+    if (packet == 0 || packet->tag != PGPMSG_PGP_LITERAL_BINARY || packet->body_offset > payload_size || packet->body_size > payload_size - packet->body_offset) return -1;
+    body = payload + packet->body_offset;
+    body_size = packet->body_size;
+    if (body_size < 6U) return -1;
+    filename_size = body[1];
+    data_offset = 2U + filename_size + 4U;
+    if (data_offset > body_size) return -1;
+    *data_out = body + data_offset;
+    *data_size_out = body_size - data_offset;
+    return 0;
+}
+
+static int write_literal_packet_data(const char *output_path, const unsigned char *payload, size_t payload_size, const PgpPacket *packet) {
+    const unsigned char *data;
+    size_t data_size;
+    int fd;
+    int result;
+
+    if (literal_packet_data_view(payload, payload_size, packet, &data, &data_size) != 0) return -1;
+    fd = output_path != 0 ? platform_open_write(output_path, 0644U) : 1;
+    if (fd < 0) return -1;
+    result = rt_write_all(fd, data, data_size) == 0 ? 0 : -1;
+    if (fd > 2 && platform_close(fd) != 0) result = -1;
+    return result;
+}
+
 static int write_decrypted_literal(const char *output_path, const unsigned char *plain, size_t plain_size) {
     PgpPacketReader reader;
     PgpPacket packet;
     int has_packet;
     char error[PGPMSG_ERROR_CAPACITY];
-    const unsigned char *body;
-    size_t body_size;
-    size_t filename_size;
-    size_t data_offset;
-    int fd;
-    int result;
 
     pgp_packet_reader_init(&reader, plain, plain_size);
     if (pgp_packet_reader_next(&reader, &packet, &has_packet, error, sizeof(error)) != 0 || !has_packet || packet.tag != 11U) {
         tool_write_error("pgpmsg", "decrypted message does not contain a literal data packet", 0);
         return -1;
     }
-    body = plain + packet.body_offset;
-    body_size = packet.body_size;
-    if (body_size < 6U) return -1;
-    filename_size = body[1];
-    data_offset = 2U + filename_size + 4U;
-    if (data_offset > body_size) return -1;
-    fd = output_path != 0 ? platform_open_write(output_path, 0644U) : 1;
-    if (fd < 0) return -1;
-    result = rt_write_all(fd, body + data_offset, body_size - data_offset) == 0 ? 0 : -1;
-    if (fd > 2 && platform_close(fd) != 0) result = -1;
-    return result;
+    return write_literal_packet_data(output_path, plain, plain_size, &packet);
+}
+
+static int verify_embedded_signature_packet(const char *pubring, const unsigned char *payload, size_t payload_size, const PgpPacket *literal_packet, const PgpPacket *signature_packet) {
+    PgpMsgSignaturePacket signature;
+    PgpPublicKeyInfo key;
+    const unsigned char *literal_data;
+    size_t literal_data_size;
+    int verified;
+
+    if (pubring == 0) {
+        rt_write_line(2, "pgpmsg: embedded signature not verified; use -k PUBRING");
+        return 0;
+    }
+    if (literal_packet_data_view(payload, payload_size, literal_packet, &literal_data, &literal_data_size) != 0 ||
+        signature_packet == 0 || signature_packet->tag != 2U || signature_packet->body_offset > payload_size || signature_packet->body_size > payload_size - signature_packet->body_offset ||
+        parse_signature_packet_full(&signature, payload + signature_packet->body_offset, signature_packet->body_size) != 0 || !signature.summary.present) {
+        return -1;
+    }
+    if (load_public_key_for_signature(pubring, &signature.summary, &key) != 0) return -1;
+    verified = verify_detached_signature_packet(&signature, payload + signature_packet->body_offset, literal_data, literal_data_size, &key);
+    if (verified == 1) {
+        rt_write_line(2, "pgpmsg: embedded signature: good");
+        return 0;
+    }
+    if (verified == 0) rt_write_line(2, "pgpmsg: embedded signature: bad");
+    return -1;
 }
 
 static int inflate_compressed_payload(unsigned int compression, const unsigned char *input, size_t input_size, unsigned char **output_out, size_t *output_size_out) {
@@ -2324,7 +2486,7 @@ static int inflate_compressed_payload(unsigned int compression, const unsigned c
     return -1;
 }
 
-static int write_decrypted_payload(const char *output_path, const unsigned char *plain, size_t plain_size) {
+static int write_decrypted_payload(const char *output_path, const char *pubring, const unsigned char *plain, size_t plain_size) {
     unsigned char *normalized = 0;
     size_t normalized_size = 0U;
     const unsigned char *payload = plain;
@@ -2350,6 +2512,30 @@ static int write_decrypted_payload(const char *output_path, const unsigned char 
         if (normalized != 0) rt_free(normalized);
         return result;
     }
+    if (packet.tag == 4U) {
+        PgpPacket literal;
+        PgpPacket signature;
+        if (pgp_packet_reader_next(&reader, &literal, &has_packet, error, sizeof(error)) != 0 || !has_packet || literal.tag != PGPMSG_PGP_LITERAL_BINARY) {
+            if (normalized != 0) rt_free(normalized);
+            tool_write_error("pgpmsg", "signed decrypted message does not contain a literal data packet", 0);
+            return -1;
+        }
+        if (pgp_packet_reader_next(&reader, &signature, &has_packet, error, sizeof(error)) != 0 || !has_packet || signature.tag != 2U) {
+            if (normalized != 0) rt_free(normalized);
+            tool_write_error("pgpmsg", "signed decrypted message does not contain a signature packet", 0);
+            return -1;
+        }
+        if (verify_embedded_signature_packet(pubring, payload, payload_size, &literal, &signature) != 0) {
+            if (normalized != 0) rt_free(normalized);
+            tool_write_error("pgpmsg", "embedded signature verification failed", 0);
+            return -1;
+        }
+        {
+            int result = write_literal_packet_data(output_path, payload, payload_size, &literal);
+            if (normalized != 0) rt_free(normalized);
+            return result;
+        }
+    }
     if (packet.tag == PGPMSG_PGP_COMPRESSED) {
         const unsigned char *body = payload + packet.body_offset;
         unsigned char *inflated = 0;
@@ -2358,7 +2544,7 @@ static int write_decrypted_payload(const char *output_path, const unsigned char 
 
         if (packet.body_size < 1U) { if (normalized != 0) rt_free(normalized); return -1; }
         if (inflate_compressed_payload(body[0], body + 1U, packet.body_size - 1U, &inflated, &inflated_size) != 0) { if (normalized != 0) rt_free(normalized); return -1; }
-        result = write_decrypted_payload(output_path, inflated, inflated_size);
+        result = write_decrypted_payload(output_path, pubring, inflated, inflated_size);
         rt_free(inflated);
         if (normalized != 0) rt_free(normalized);
         return result;
@@ -2368,7 +2554,7 @@ static int write_decrypted_payload(const char *output_path, const unsigned char 
     return -1;
 }
 
-static int decrypt_encrypted_data_packet(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *body, size_t body_size, const char *output_path) {
+static int decrypt_encrypted_data_packet(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *body, size_t body_size, const char *output_path, const char *pubring) {
     unsigned char *plain;
     unsigned char digest[CRYPTO_SHA1_DIGEST_SIZE];
     size_t plain_size;
@@ -2385,7 +2571,7 @@ static int decrypt_encrypted_data_packet(const unsigned char session_key[PGPMSG_
     if (plain[mdc_offset] != 0xd3U || plain[mdc_offset + 1U] != 0x14U) goto cleanup;
     crypto_sha1_hash(plain, mdc_offset + 2U, digest);
     if (!crypto_constant_time_equal(digest, plain + mdc_offset + 2U, PGPMSG_MDC_SIZE)) goto cleanup;
-    if (write_decrypted_payload(output_path, plain + PGPMSG_AES_BLOCK_SIZE + 2U, mdc_offset - (PGPMSG_AES_BLOCK_SIZE + 2U)) != 0) goto cleanup;
+    if (write_decrypted_payload(output_path, pubring, plain + PGPMSG_AES_BLOCK_SIZE + 2U, mdc_offset - (PGPMSG_AES_BLOCK_SIZE + 2U)) != 0) goto cleanup;
     result = 0;
 
 cleanup:
@@ -2395,7 +2581,7 @@ cleanup:
     return result;
 }
 
-static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *body, size_t body_size, const char *output_path) {
+static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *body, size_t body_size, const char *output_path, const char *pubring) {
     unsigned char message_key[PGPMSG_AES256_KEY_SIZE];
     unsigned char iv_prefix[4];
     unsigned char aad[5];
@@ -2451,7 +2637,7 @@ static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPM
     pgpmsg_store_u64_be(final_aad + sizeof(aad), (unsigned long long)plain_size);
     pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
     if (crypto_aes256_gcm_decrypt(message_key, nonce, final_aad, sizeof(final_aad), body + offset, 0U, body + offset, empty_out) != 0) goto cleanup;
-    if (write_decrypted_payload(output_path, plain, plain_size) != 0) goto cleanup;
+    if (write_decrypted_payload(output_path, pubring, plain, plain_size) != 0) goto cleanup;
     result = 0;
 
 cleanup:
@@ -2865,9 +3051,11 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
     unsigned char *input = 0;
     size_t input_size = 0U;
     unsigned char session_key[PGPMSG_AES256_KEY_SIZE];
+    PgpMsgSecretKey signing_secret;
     PgpMsgBuffer message;
     PgpMsgBuffer encrypted_packet;
     const char *input_path;
+    int have_signing_secret = 0;
     int result = 1;
 
     while (argi < argc) {
@@ -2889,6 +3077,17 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         } else if (rt_strcmp(argv[argi], "--stream") == 0) {
             local_options.stream = 1;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "--sign") == 0) {
+            local_options.sign = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-s") == 0 || rt_strcmp(argv[argi], "--secring") == 0) {
+            argi += 1;
+            if (argi >= argc) { tool_write_error("pgpmsg", "missing value for --secring", 0); return 1; }
+            local_options.secring = argv[argi++];
+        } else if (rt_strcmp(argv[argi], "-u") == 0 || rt_strcmp(argv[argi], "--user") == 0 || rt_strcmp(argv[argi], "--signer") == 0) {
+            argi += 1;
+            if (argi >= argc) { tool_write_error("pgpmsg", "missing value for --signer", 0); return 1; }
+            local_options.signer = argv[argi++];
         } else if (rt_strcmp(argv[argi], "--DANGER-anyway") == 0) {
             local_options.danger_anyway = 1;
             argi += 1;
@@ -2920,6 +3119,10 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         tool_write_error("pgpmsg", "--stream currently supports only --compress=none", 0);
         return 1;
     }
+    if (local_options.stream && local_options.sign) {
+        tool_write_error("pgpmsg", "--stream does not support --sign yet", 0);
+        return 1;
+    }
     for (recipient_index = 0U; recipient_index < local_options.recipient_count; ++recipient_index) {
         if (load_recipient_key(local_options.pubring, local_options.recipients[recipient_index], local_options.danger_anyway, &recipients[recipient_index]) != 0) return 1;
     }
@@ -2948,6 +3151,11 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         tool_write_error("pgpmsg", "cannot read input", input_path);
         return 1;
     }
+    rt_memset(&signing_secret, 0, sizeof(signing_secret));
+    if (local_options.sign) {
+        if (load_secret_key(local_options.secring, local_options.signer, local_options.danger_anyway, &signing_secret) != 0) goto cleanup;
+        have_signing_secret = 1;
+    }
     rt_memset(&message, 0, sizeof(message));
     rt_memset(&encrypted_packet, 0, sizeof(encrypted_packet));
     if (platform_random_bytes(session_key, sizeof(session_key)) != 0) goto cleanup;
@@ -2962,7 +3170,7 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         }
         msg_buffer_free(&pkesk_packet);
     }
-    if ((recipients[0].version == 6U ? build_encrypted_data_packet_v2(session_key, input, input_size, local_options.compression, &encrypted_packet) : build_encrypted_data_packet(session_key, input, input_size, local_options.compression, &encrypted_packet)) != 0 ||
+    if ((recipients[0].version == 6U ? build_encrypted_data_packet_v2(session_key, input, input_size, local_options.compression, have_signing_secret ? &signing_secret : 0, &encrypted_packet) : build_encrypted_data_packet(session_key, input, input_size, local_options.compression, have_signing_secret ? &signing_secret : 0, &encrypted_packet)) != 0 ||
         msg_buffer_append_data(&message, encrypted_packet.data, encrypted_packet.size) != 0 ||
         write_message_output_data(local_options.output_path, message.data, message.size, local_options.armor) != 0) goto cleanup;
     result = 0;
@@ -2971,6 +3179,7 @@ cleanup:
     if (input != 0) rt_free(input);
     msg_buffer_free(&message);
     msg_buffer_free(&encrypted_packet);
+    if (have_signing_secret) crypto_secure_bzero(&signing_secret, sizeof(signing_secret));
     crypto_secure_bzero(session_key, sizeof(session_key));
     if (result != 0) tool_write_error("pgpmsg", "encryption failed", 0);
     return result;
@@ -2991,7 +3200,11 @@ static int command_decrypt(int argc, char **argv, int argi, const PgpMsgOptions 
     int result = 1;
 
     while (argi < argc) {
-        if (rt_strcmp(argv[argi], "-s") == 0 || rt_strcmp(argv[argi], "--secring") == 0) {
+        if (rt_strcmp(argv[argi], "-k") == 0 || rt_strcmp(argv[argi], "--keyring") == 0) {
+            argi += 1;
+            if (argi >= argc) { tool_write_error("pgpmsg", "missing value for --keyring", 0); return 1; }
+            local_options.pubring = argv[argi++];
+        } else if (rt_strcmp(argv[argi], "-s") == 0 || rt_strcmp(argv[argi], "--secring") == 0) {
             argi += 1;
             if (argi >= argc) { tool_write_error("pgpmsg", "missing value for --secring", 0); return 1; }
             local_options.secring = argv[argi++];
@@ -3047,7 +3260,7 @@ static int command_decrypt(int argc, char **argv, int argi, const PgpMsgOptions 
         tool_write_error("pgpmsg", "no matching encrypted session key for secret keyring", local_options.secring);
         goto cleanup;
     }
-    if ((encrypted_body_size != 0U && encrypted_body[0] == 2U ? decrypt_encrypted_data_packet_v2(session_key, encrypted_body, encrypted_body_size, local_options.output_path) : decrypt_encrypted_data_packet(session_key, encrypted_body, encrypted_body_size, local_options.output_path)) != 0) {
+    if ((encrypted_body_size != 0U && encrypted_body[0] == 2U ? decrypt_encrypted_data_packet_v2(session_key, encrypted_body, encrypted_body_size, local_options.output_path, local_options.pubring) : decrypt_encrypted_data_packet(session_key, encrypted_body, encrypted_body_size, local_options.output_path, local_options.pubring)) != 0) {
         tool_write_error("pgpmsg", "decryption failed", input_path);
         goto cleanup;
     }
@@ -3257,6 +3470,8 @@ int main(int argc, char **argv) {
             options.danger_anyway = 1;
         } else if (rt_strcmp(opt.flag, "--stream") == 0) {
             options.stream = 1;
+        } else if (rt_strcmp(opt.flag, "--sign") == 0) {
+            options.sign = 1;
         } else if (rt_strcmp(opt.flag, "-v") == 0 || rt_strcmp(opt.flag, "--verbose") == 0) {
             options.verbose = 1;
         } else if (rt_strcmp(opt.flag, "--compress") == 0) {
