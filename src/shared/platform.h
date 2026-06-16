@@ -347,6 +347,9 @@ typedef struct {
 
 typedef struct {
     int entering;
+    int pid;
+    unsigned long long timestamp_ns;
+    unsigned long long duration_ns;
     unsigned int decoded_arg;
     unsigned int decoded_kind;
     unsigned int decoded_length;
@@ -376,6 +379,7 @@ int platform_open_read(const char *path);
 int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out);
 int platform_open_write(const char *path, unsigned int mode);
 int platform_open_write_mode(const char *path, unsigned int mode, int truncate_existing);
+int platform_open_write_untraced(const char *path, unsigned int mode, int truncate_existing);
 int platform_open_create_exclusive(const char *path, unsigned int mode);
 int platform_open_append(const char *path, unsigned int mode);
 int platform_open_append_existing(const char *path);

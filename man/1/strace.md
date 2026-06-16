@@ -2,12 +2,12 @@
 
 ## NAME
 
-strace - trace Linux system calls
+strace - trace system calls
 
 ## SYNOPSIS
 
 ```
-strace [-n] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]
+strace [-n] [-p] [-T] [-c] [-o FILE] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]
 ```
 
 ## DESCRIPTION
@@ -15,19 +15,25 @@ strace [-n] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]
 `strace` runs COMMAND under the platform syscall tracing backend and prints one
 line for each completed system call. The Linux backend uses `ptrace`. The macOS
 project-linked backend traces newos freestanding tools by passing an internal
-trace pipe to the child and collecting events emitted by the in-tree Darwin
-syscall wrappers.
+trace pipe to the child and collecting completed events emitted by selected
+platform/runtime wrappers.
 
-The initial output focuses on syscall number/name, the first three arguments,
-and the return value. Raw integer or pointer values are printed by default. When
-the backend supplies a decoded payload, `strace` prints short strings or byte
-snippets inline, such as `open("README.md", 0x0, 0x0)` or
-`write(0x1, "hello\n", 0x6)`. The tool does not yet decode pointed-to
-structures such as `struct pollfd`.
+The output focuses on syscall number/name, the first three arguments, and the
+return value. Raw integer or pointer values are printed by default. When the
+backend supplies a decoded payload, `strace` prints short strings inline, such
+as `open("README.md", O_RDONLY, 0x0)`. Open flags and common negative errno
+values are decoded in text output.
 
 ## OPTIONS
 
 - `-n`, `--numbers` - include syscall numbers after names.
+- `-p`, `--pid` - prefix each text line with the traced process id when the
+  backend reports one.
+- `-T`, `--time` - append elapsed syscall time in milliseconds when available.
+- `-c`, `--summary` - suppress per-call text and print a syscall summary with
+  call counts, error counts, positive-result byte totals, and total time.
+- `-o FILE`, `--output FILE`, `--output=FILE` - write trace output to FILE
+  instead of standard error. The traced command's stdout is unchanged.
 - `-e SYSCALL[,SYSCALL...]`, `--trace SYSCALL[,SYSCALL...]` - show only the
   named or numbered syscalls. The `trace=` prefix is accepted, so
   `-e trace=openat,read,write` is equivalent to `-e openat,read,write`.
@@ -80,10 +86,12 @@ With `--json`, `strace` emits one `syscall` event per completed syscall:
 {"schema":"newos.tool.v1","tool":"strace","stream":"stderr","event":"syscall","seq":1,"data":{"number":1,"name":"write","args":[1,4198400,4,0,0,0],"result":4}}
 ```
 
-Backends that can safely decode one pointed-to argument add a `decoded` object:
+Backends that can safely decode one pointed-to argument add a `decoded` object.
+Backends that report process and timing metadata add `pid`, `duration_ns`, and
+`errno` fields inside `data`:
 
 ```json
-{"schema":"newos.tool.v1","tool":"strace","stream":"stderr","event":"syscall","seq":1,"data":{"number":4,"name":"write","args":[1,4198400,6,0,0,0],"result":6,"decoded":{"arg":1,"kind":"bytes","value":"hello\n","truncated":false}}}
+{"schema":"newos.tool.v1","tool":"strace","stream":"stderr","event":"syscall","seq":1,"data":{"number":4,"name":"write","args":[1,4198400,6,0,0,0],"result":6,"pid":123,"duration_ns":1000}}
 ```
 
 Diagnostics and usage messages follow the shared `json-output` envelope.
@@ -91,17 +99,27 @@ Diagnostics and usage messages follow the shared `json-output` envelope.
 ## LIMITATIONS
 
 Linux x86-64 reports syscall details through `ptrace`. macOS arm64 reports
-syscalls made through the newos project-linked Darwin syscall wrappers; it does
-not trace arbitrary system binaries or direct `svc` instructions outside those
-wrappers. macOS decoding is intentionally bounded to one short payload per event,
-currently path-like string arguments and successful `read`/`write` byte buffers.
-Signal delivery and structured multi-process attribution are not implemented yet.
+syscalls made through selected newos project-linked platform/runtime wrappers;
+it does not trace arbitrary system binaries or direct `svc` instructions outside
+those wrappers. The macOS backend emits completed records only, so it is designed
+for attribution and debugging of project tools rather than exact kernel-entry
+emulation.
+
+macOS decoding is intentionally bounded. Path-like string arguments and open
+flags are decoded where the wrapper has stable arguments. `read` and `write`
+buffer pointers are reported as pointers on the platform-wrapper path instead of
+copying potentially unstable in-flight buffers. The macOS backend also avoids
+timing syscalls around `read` and `write` records so traced tools can safely
+reuse stack I/O buffers after the syscall returns; those calls therefore show a
+zero duration placeholder with `-T`. Directory-entry payload decoding is
+represented in the trace record format for runtime-originated events, but the
+portable text surface should not depend on it yet.
 
 ## FUTURE IMPROVEMENTS
 
 Useful next steps would be broader argument decoding for socket addresses,
-fd-set and `pollfd` decoding for `poll`/`ppoll`, elapsed time per syscall,
-summary counts, and following cloned child processes.
+fd-set and `pollfd` decoding for `poll`/`ppoll`, stable child-memory decoding on
+Linux, and following cloned child processes.
 
 ## SEE ALSO
 

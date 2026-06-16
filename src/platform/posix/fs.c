@@ -205,6 +205,10 @@ int platform_open_write_mode(const char *path, unsigned int mode, int truncate_e
     return open(path, flags, (mode_t)mode);
 }
 
+int platform_open_write_untraced(const char *path, unsigned int mode, int truncate_existing) {
+    return platform_open_write_mode(path, mode, truncate_existing);
+}
+
 int platform_open_write(const char *path, unsigned int mode) {
     return platform_open_write_mode(path, mode, 1);
 }

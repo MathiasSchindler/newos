@@ -84,6 +84,11 @@ struct macos_newlinker_pollfd {
 	short revents;
 };
 
+struct macos_newlinker_timeval {
+	long tv_sec;
+	int tv_usec;
+};
+
 struct dirent {
 	unsigned long long d_ino;
 	unsigned long long d_seekoff;
@@ -179,6 +184,7 @@ static int macos_newlinker_errno;
 MACOS_NEWLINKER_EXPORT __attribute__((nocommon)) char **environ = 0;
 
 int darwin_trace_fd = -2;
+static int darwin_trace_pid;
 
 static int macos_newlinker_return_int(long result) {
 	if (result < 0) {
@@ -360,6 +366,26 @@ static long macos_newlinker_trace_write_raw(int fd, const void *buffer, size_t c
 	return x0;
 }
 
+static long macos_newlinker_trace_getpid_raw(void) {
+	register long x16 __asm__("x16") = DARWIN_SYS_GETPID;
+	register long x0 __asm__("x0");
+
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "=r"(x0), "+r"(x16) : : "memory", "cc");
+	return x0;
+}
+
+static unsigned long long macos_newlinker_trace_time_raw(void) {
+	struct macos_newlinker_timeval now;
+	register long x16 __asm__("x16") = DARWIN_SYS_GETTIMEOFDAY;
+	register long x0 __asm__("x0") = (long)&now;
+	register long x1 __asm__("x1") = 0;
+
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x16) : : "memory", "cc");
+	if (x0 < 0) return 0ULL;
+	return ((unsigned long long)now.tv_sec * 1000000000ULL) + ((unsigned long long)now.tv_usec * 1000ULL);
+}
+
+
 static int macos_newlinker_trace_parse_fd(const char *value) {
 	unsigned int result = 0;
 	size_t index = 0;
@@ -395,84 +421,100 @@ static void macos_newlinker_trace_copy_string(MacosStraceRecord *record, unsigne
 	record->decoded_truncated = text[index] != '\0';
 }
 
-static void macos_newlinker_trace_copy_bytes(MacosStraceRecord *record, unsigned int arg_index, const void *data, long length) {
-	const char *bytes = (const char *)data;
-	size_t copy_length;
-	size_t index;
-
-	if (record == 0 || bytes == 0 || length <= 0) return;
-	copy_length = (size_t)length;
-	if (copy_length > MACOS_STRACE_DECODE_TEXT_CAPACITY) copy_length = MACOS_STRACE_DECODE_TEXT_CAPACITY;
-	for (index = 0; index < copy_length; ++index) {
-		record->decoded[index] = bytes[index];
+static void macos_newlinker_trace_append_byte(MacosStraceRecord *record, char ch) {
+	if (record->decoded_length + 1U >= MACOS_STRACE_DECODE_TEXT_CAPACITY) {
+		record->decoded_truncated = 1U;
+		return;
 	}
+	record->decoded[record->decoded_length++] = ch;
+}
+
+static void macos_newlinker_trace_append_text(MacosStraceRecord *record, const char *text, size_t length) {
+	size_t index;
+	for (index = 0U; index < length; ++index) {
+		if (record->decoded_truncated) return;
+		macos_newlinker_trace_append_byte(record, text[index]);
+	}
+}
+
+static void macos_newlinker_trace_copy_dir_entries(MacosStraceRecord *record, unsigned int arg_index, const void *data, long length) {
+	const char *buffer = (const char *)data;
+	size_t offset = 0U;
+	size_t total;
+	unsigned int count = 0U;
+
+	if (record == 0 || buffer == 0 || length <= 0) return;
+	total = (size_t)length;
 	record->decoded_arg = arg_index;
-	record->decoded_kind = MACOS_STRACE_DECODE_KIND_BYTES;
-	record->decoded_length = (unsigned int)copy_length;
-	record->decoded_truncated = (size_t)length > copy_length;
+	record->decoded_kind = MACOS_STRACE_DECODE_KIND_LIST;
+	while (offset + 21U <= total) {
+		const struct dirent *entry = (const struct dirent *)(buffer + offset);
+		unsigned short reclen = entry->d_reclen;
+		unsigned short namlen = entry->d_namlen;
+		if (reclen == 0U || offset + (size_t)reclen > total) break;
+		if (count != 0U) macos_newlinker_trace_append_byte(record, ',');
+		if (namlen > reclen) namlen = 0U;
+		macos_newlinker_trace_append_text(record, entry->d_name, namlen);
+		count += 1U;
+		offset += (size_t)reclen;
+		if (record->decoded_truncated) break;
+	}
 }
 
 static void macos_newlinker_trace_decode(MacosStraceRecord *record) {
 	if (record == 0) return;
-	if (record->entering != 0U) {
-		switch (record->number) {
-			case DARWIN_SYS_OPEN:
-			case DARWIN_SYS_ACCESS:
-			case DARWIN_SYS_CHDIR:
-			case DARWIN_SYS_CHMOD:
-			case DARWIN_SYS_CHOWN:
-			case DARWIN_SYS_LCHOWN:
-			case DARWIN_SYS_MKDIR:
-			case DARWIN_SYS_MKFIFO:
-			case DARWIN_SYS_MKNOD:
-			case DARWIN_SYS_RMDIR:
-			case DARWIN_SYS_STAT64:
-			case DARWIN_SYS_LSTAT64:
-			case DARWIN_SYS_STATFS64:
-			case DARWIN_SYS_UNLINK:
-			case DARWIN_SYS_UNMOUNT:
-			case DARWIN_SYS_UTIMES:
-			case DARWIN_SYS_READLINK:
-			case DARWIN_SYS_EXECVE:
-				macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
-				break;
-			case DARWIN_SYS_LINK:
-			case DARWIN_SYS_RENAME:
-			case DARWIN_SYS_SYMLINK:
-				macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
-				break;
-			case DARWIN_SYS_SYSCTLBYNAME:
-				macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
-				break;
-			default:
-				break;
-		}
-	} else if (record->result > 0 && (record->number == DARWIN_SYS_READ || record->number == DARWIN_SYS_WRITE)) {
-		macos_newlinker_trace_copy_bytes(record, 1U, (const void *)record->args[1], record->result);
+ switch (record->number) {
+	case DARWIN_SYS_OPEN:
+	case DARWIN_SYS_ACCESS:
+	case DARWIN_SYS_CHDIR:
+	case DARWIN_SYS_CHMOD:
+	case DARWIN_SYS_CHOWN:
+	case DARWIN_SYS_LCHOWN:
+	case DARWIN_SYS_MKDIR:
+	case DARWIN_SYS_MKFIFO:
+	case DARWIN_SYS_MKNOD:
+	case DARWIN_SYS_RMDIR:
+	case DARWIN_SYS_STAT64:
+	case DARWIN_SYS_LSTAT64:
+	case DARWIN_SYS_STATFS64:
+	case DARWIN_SYS_UNLINK:
+	case DARWIN_SYS_UNMOUNT:
+	case DARWIN_SYS_UTIMES:
+	case DARWIN_SYS_READLINK:
+	case DARWIN_SYS_EXECVE:
+	 macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
+	 break;
+	case DARWIN_SYS_LINK:
+	case DARWIN_SYS_RENAME:
+	case DARWIN_SYS_SYMLINK:
+	 macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
+	 break;
+	case DARWIN_SYS_SYSCTLBYNAME:
+	 macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
+	 break;
+	default:
+	 break;
+ }
+	if (record->entering == 0U && record->result > 0 && record->number == MACOS_NEWLINKER_SYS_GETDIRENTRIES64) {
+		macos_newlinker_trace_copy_dir_entries(record, 1U, (const void *)record->args[1], record->result);
 	}
 }
 
-void darwin_trace_syscall(int entering, long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result) {
-	MacosStraceRecord record;
+void darwin_trace_record(MacosStraceRecord *record) {
 	const char *cursor;
 	size_t remaining;
 	int fd = macos_newlinker_trace_fd();
 
-	if (fd < 0) return;
-	macos_newlinker_zero(&record, sizeof(record));
-	record.magic = MACOS_STRACE_RECORD_MAGIC;
-	record.entering = entering != 0 ? 1U : 0U;
-	record.number = number;
-	record.args[0] = arg0;
-	record.args[1] = arg1;
-	record.args[2] = arg2;
-	record.args[3] = arg3;
-	record.args[4] = arg4;
-	record.args[5] = arg5;
-	record.result = result;
-	macos_newlinker_trace_decode(&record);
-	cursor = (const char *)&record;
-	remaining = sizeof(record);
+	if (fd < 0 || record == 0) return;
+	record->magic = MACOS_STRACE_RECORD_MAGIC;
+	if (darwin_trace_pid == 0) darwin_trace_pid = (int)macos_newlinker_trace_getpid_raw();
+	record->pid = darwin_trace_pid;
+	if (record->duration_ns != 0ULL || record->timestamp_ns != 0ULL) {
+		record->timestamp_ns = macos_newlinker_trace_time_raw();
+	}
+	macos_newlinker_trace_decode(record);
+	cursor = (const char *)record;
+	remaining = sizeof(*record);
 	while (remaining > 0U) {
 		long written = macos_newlinker_trace_write_raw(fd, cursor, remaining);
 		if (written <= 0) {

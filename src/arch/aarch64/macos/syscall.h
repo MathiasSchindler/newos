@@ -62,71 +62,57 @@
 #define DARWIN_SYS_GETENTROPY 500
 
 #if defined(NEWOS_MACOS_NEWLINKER)
-void darwin_trace_syscall(int entering, long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result);
-#define DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, arg2, arg3, arg4, arg5) darwin_trace_syscall(1, (number), (arg0), (arg1), (arg2), (arg3), (arg4), (arg5), 0)
-#define DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, arg2, arg3, arg4, arg5, result) darwin_trace_syscall(0, (number), (arg0), (arg1), (arg2), (arg3), (arg4), (arg5), (result))
-#else
-#define DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, arg2, arg3, arg4, arg5) ((void)0)
-#define DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, arg2, arg3, arg4, arg5, result) ((void)0)
+struct MacosStraceRecord;
+void darwin_trace_record(struct MacosStraceRecord *record);
 #endif
 
-static inline long darwin_syscall0(long number) {
+static inline long darwin_raw_syscall0(long number) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0");
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, 0, 0, 0, 0, 0, 0);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "=r"(x0), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, 0, 0, 0, 0, 0, 0, x0);
     return x0;
 }
 
-static inline long darwin_syscall1(long number, long arg0) {
+static inline long darwin_raw_syscall1(long number, long arg0) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, arg0, 0, 0, 0, 0, 0);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, arg0, 0, 0, 0, 0, 0, x0);
     return x0;
 }
 
-static inline long darwin_syscall2(long number, long arg0, long arg1) {
+static inline long darwin_raw_syscall2(long number, long arg0, long arg1) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, 0, 0, 0, 0);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, 0, 0, 0, 0, x0);
     return x0;
 }
 
-static inline long darwin_syscall3(long number, long arg0, long arg1, long arg2) {
+static inline long darwin_raw_syscall3(long number, long arg0, long arg1, long arg2) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
     register long x2 __asm__("x2") = arg2;
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, arg2, 0, 0, 0);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, arg2, 0, 0, 0, x0);
     return x0;
 }
 
-static inline long darwin_syscall4(long number, long arg0, long arg1, long arg2, long arg3) {
+static inline long darwin_raw_syscall4(long number, long arg0, long arg1, long arg2, long arg3) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
     register long x2 __asm__("x2") = arg2;
     register long x3 __asm__("x3") = arg3;
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, arg2, arg3, 0, 0);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, arg2, arg3, 0, 0, x0);
     return x0;
 }
 
-static inline long darwin_syscall5(long number, long arg0, long arg1, long arg2, long arg3, long arg4) {
+static inline long darwin_raw_syscall5(long number, long arg0, long arg1, long arg2, long arg3, long arg4) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
@@ -134,13 +120,11 @@ static inline long darwin_syscall5(long number, long arg0, long arg1, long arg2,
     register long x3 __asm__("x3") = arg3;
     register long x4 __asm__("x4") = arg4;
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, arg2, arg3, arg4, 0);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, arg2, arg3, arg4, 0, x0);
     return x0;
 }
 
-static inline long darwin_syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
+static inline long darwin_raw_syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
     register long x16 __asm__("x16") = number;
     register long x0 __asm__("x0") = arg0;
     register long x1 __asm__("x1") = arg1;
@@ -149,10 +133,16 @@ static inline long darwin_syscall6(long number, long arg0, long arg1, long arg2,
     register long x4 __asm__("x4") = arg4;
     register long x5 __asm__("x5") = arg5;
 
-    DARWIN_TRACE_SYSCALL_ENTER(number, arg0, arg1, arg2, arg3, arg4, arg5);
     __asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x16) : : "memory", "cc");
-    DARWIN_TRACE_SYSCALL_EXIT(number, arg0, arg1, arg2, arg3, arg4, arg5, x0);
     return x0;
 }
+
+#define darwin_syscall0 darwin_raw_syscall0
+#define darwin_syscall1 darwin_raw_syscall1
+#define darwin_syscall2 darwin_raw_syscall2
+#define darwin_syscall3 darwin_raw_syscall3
+#define darwin_syscall4 darwin_raw_syscall4
+#define darwin_syscall5 darwin_raw_syscall5
+#define darwin_syscall6 darwin_raw_syscall6
 
 #endif

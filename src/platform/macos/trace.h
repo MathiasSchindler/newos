@@ -7,10 +7,14 @@
 #define MACOS_STRACE_DECODE_KIND_NONE 0U
 #define MACOS_STRACE_DECODE_KIND_STRING 1U
 #define MACOS_STRACE_DECODE_KIND_BYTES 2U
+#define MACOS_STRACE_DECODE_KIND_LIST 3U
 
-typedef struct {
+typedef struct MacosStraceRecord {
     unsigned int magic;
     unsigned int entering;
+    int pid;
+    unsigned long long timestamp_ns;
+    unsigned long long duration_ns;
     unsigned int decoded_arg;
     unsigned int decoded_kind;
     unsigned int decoded_length;

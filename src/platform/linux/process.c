@@ -879,6 +879,8 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
         if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_GETREGS, pid, 0, (long)&regs) < 0) return -1;
         rt_memset(&event, 0, sizeof(event));
         event.entering = !in_syscall;
+        event.pid = (int)pid;
+        event.timestamp_ns = platform_get_monotonic_time_ns();
         event.number = (long)regs.orig_rax;
         event.args[0] = (long)regs.rdi;
         event.args[1] = (long)regs.rsi;
