@@ -60,6 +60,25 @@ int main(void) {
     if (roundtrip(compression_zlib_store, compression_zlib_store_bound) != 0) return 1;
     if (roundtrip(compression_zlib_fixed_rle, compression_zlib_fixed_rle_bound) != 0) return 2;
     if (roundtrip(compression_zlib_fixed_lz77, compression_zlib_fixed_lz77_bound) != 0) return 3;
+    {
+        static const unsigned char input[] =
+            "dynamic dynamic dynamic dynamic dynamic\n"
+            "huffman huffman huffman huffman huffman\n"
+            "lazy matching should still roundtrip correctly\n"
+            "dynamic dynamic dynamic dynamic dynamic\n";
+        unsigned char compressed[2048];
+        unsigned char inflated[sizeof(input)];
+        size_t compressed_size = 0;
+        size_t inflated_size = 0;
+        size_t bound = compression_zlib_deflate_bound(sizeof(input) - 1U);
+
+        if (bound == 0 || bound > sizeof(compressed)) return 4;
+        if (compression_zlib_deflate_level(input, sizeof(input) - 1U, compressed, sizeof(compressed), &compressed_size, 9) != 0) return 5;
+        if (compressed_size == 0 || compressed_size > bound) return 6;
+        if (compression_zlib_inflate(compressed, compressed_size, inflated, sizeof(inflated), &inflated_size) != 0) return 7;
+        if (inflated_size != sizeof(input) - 1U) return 8;
+        if (!bytes_equal(input, inflated, inflated_size)) return 9;
+    }
     return 0;
 }
 EOF

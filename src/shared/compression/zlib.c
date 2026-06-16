@@ -8,7 +8,23 @@
 #define ZLIB_MAX_LITERAL_SYMBOLS 288U
 #define ZLIB_MAX_DISTANCE_SYMBOLS 32U
 #define ZLIB_MAX_CODE_LENGTH_SYMBOLS 19U
-#define ZLIB_LZ77_HASH_SLOTS 4U
+#define ZLIB_LZ77_HASH_SLOTS 16U
+#define ZLIB_MAX_TOKENS 1048576U
+
+typedef struct {
+    unsigned short value;
+    unsigned short distance;
+} ZlibToken;
+
+typedef struct {
+    unsigned int length;
+    unsigned int distance;
+} ZlibMatch;
+
+typedef struct {
+    unsigned int weight;
+    int parent;
+} ZlibTreeNode;
 
 static unsigned int compression_adler32(const unsigned char *data, size_t length) {
     unsigned int s1 = 1U;
@@ -196,6 +212,149 @@ static int zlib_write_fixed_match(ZlibBitWriter *writer, unsigned int length, un
     if (zlib_write_bits(writer, zlib_reverse_bits(dist_index, 5U), 5U) != 0) return -1;
     if (dist_extra[dist_index] != 0U && zlib_write_bits(writer, distance - dist_base[dist_index], dist_extra[dist_index]) != 0) return -1;
     return 0;
+}
+
+static int zlib_length_symbol(unsigned int length, unsigned int *symbol_out, unsigned int *extra_bits_out, unsigned int *extra_value_out) {
+    static const unsigned short length_base[29] = {
+        3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 13U, 15U, 17U, 19U, 23U, 27U, 31U,
+        35U, 43U, 51U, 59U, 67U, 83U, 99U, 115U, 131U, 163U, 195U, 227U, 258U
+    };
+    static const unsigned char length_extra[29] = {
+        0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 1U, 1U, 1U, 1U, 2U, 2U, 2U, 2U,
+        3U, 3U, 3U, 3U, 4U, 4U, 4U, 4U, 5U, 5U, 5U, 5U, 0U
+    };
+    unsigned int index;
+
+    if (length < 3U || length > 258U) return -1;
+    for (index = 0U; index < 29U; ++index) {
+        unsigned int max_length = length_base[index] + ((1U << length_extra[index]) - 1U);
+        if (length <= max_length) {
+            *symbol_out = 257U + index;
+            *extra_bits_out = length_extra[index];
+            *extra_value_out = length - length_base[index];
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int zlib_distance_symbol(unsigned int distance, unsigned int *symbol_out, unsigned int *extra_bits_out, unsigned int *extra_value_out) {
+    static const unsigned short dist_base[30] = {
+        1U, 2U, 3U, 4U, 5U, 7U, 9U, 13U, 17U, 25U, 33U, 49U, 65U, 97U, 129U, 193U,
+        257U, 385U, 513U, 769U, 1025U, 1537U, 2049U, 3073U, 4097U, 6145U, 8193U, 12289U, 16385U, 24577U
+    };
+    static const unsigned char dist_extra[30] = {
+        0U, 0U, 0U, 0U, 1U, 1U, 2U, 2U, 3U, 3U, 4U, 4U, 5U, 5U, 6U, 6U,
+        7U, 7U, 8U, 8U, 9U, 9U, 10U, 10U, 11U, 11U, 12U, 12U, 13U, 13U
+    };
+    unsigned int index;
+
+    if (distance == 0U || distance > 32768U) return -1;
+    for (index = 0U; index < 30U; ++index) {
+        unsigned int max_distance = dist_base[index] + ((1U << dist_extra[index]) - 1U);
+        if (distance <= max_distance) {
+            *symbol_out = index;
+            *extra_bits_out = dist_extra[index];
+            *extra_value_out = distance - dist_base[index];
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int zlib_build_code_lengths(const unsigned int *freq, unsigned int count, unsigned int max_bits, unsigned char *lengths) {
+    ZlibTreeNode nodes[ZLIB_MAX_LITERAL_SYMBOLS * 2U];
+    unsigned int leaf_indices[ZLIB_MAX_LITERAL_SYMBOLS];
+    unsigned int node_count = 0U;
+    unsigned int leaf_count = 0U;
+    unsigned int i;
+
+    if (count > ZLIB_MAX_LITERAL_SYMBOLS || max_bits == 0U || max_bits > ZLIB_MAX_BITS) return -1;
+    rt_memset(lengths, 0, count);
+    for (i = 0U; i < count; ++i) {
+        if (freq[i] != 0U) {
+            nodes[node_count].weight = freq[i];
+            nodes[node_count].parent = -1;
+            leaf_indices[i] = node_count++;
+            leaf_count += 1U;
+        }
+    }
+    if (leaf_count == 0U) return -1;
+    if (leaf_count == 1U) {
+        for (i = 0U; i < count; ++i) {
+            if (freq[i] != 0U) {
+                lengths[i] = 1U;
+                return 0;
+            }
+        }
+    }
+    while (1) {
+        int first = -1;
+        int second = -1;
+        unsigned int active = 0U;
+
+        for (i = 0U; i < node_count; ++i) {
+            if (nodes[i].parent >= 0) continue;
+            active += 1U;
+            if (first < 0 || nodes[i].weight < nodes[(unsigned int)first].weight) {
+                second = first;
+                first = (int)i;
+            } else if (second < 0 || nodes[i].weight < nodes[(unsigned int)second].weight) {
+                second = (int)i;
+            }
+        }
+        if (active <= 1U) break;
+        if (first < 0 || second < 0 || node_count >= (sizeof(nodes) / sizeof(nodes[0]))) return -1;
+        nodes[(unsigned int)first].parent = (int)node_count;
+        nodes[(unsigned int)second].parent = (int)node_count;
+        nodes[node_count].weight = nodes[(unsigned int)first].weight + nodes[(unsigned int)second].weight;
+        nodes[node_count].parent = -1;
+        node_count += 1U;
+    }
+    for (i = 0U; i < count; ++i) {
+        if (freq[i] != 0U) {
+            unsigned int depth = 0U;
+            unsigned int node;
+            (void)leaf_count;
+            node = leaf_indices[i];
+            while (nodes[node].parent >= 0) {
+                depth += 1U;
+                node = (unsigned int)nodes[node].parent;
+            }
+            if (depth == 0U || depth > max_bits) return -1;
+            lengths[i] = (unsigned char)depth;
+        }
+    }
+    return 0;
+}
+
+static void zlib_build_codes(const unsigned char *lengths, unsigned int count, unsigned short *codes) {
+    unsigned int length_counts[ZLIB_MAX_BITS + 1U];
+    unsigned int next_code[ZLIB_MAX_BITS + 1U];
+    unsigned int code = 0U;
+    unsigned int bits;
+    unsigned int symbol;
+
+    rt_memset(length_counts, 0, sizeof(length_counts));
+    rt_memset(next_code, 0, sizeof(next_code));
+    for (symbol = 0U; symbol < count; ++symbol) {
+        if (lengths[symbol] <= ZLIB_MAX_BITS) length_counts[lengths[symbol]] += 1U;
+        codes[symbol] = 0U;
+    }
+    length_counts[0] = 0U;
+    for (bits = 1U; bits <= ZLIB_MAX_BITS; ++bits) {
+        code = (code + length_counts[bits - 1U]) << 1U;
+        next_code[bits] = code;
+    }
+    for (symbol = 0U; symbol < count; ++symbol) {
+        unsigned int length = lengths[symbol];
+        if (length != 0U) codes[symbol] = (unsigned short)next_code[length]++;
+    }
+}
+
+static int zlib_write_code(ZlibBitWriter *writer, const unsigned short *codes, const unsigned char *lengths, unsigned int symbol) {
+    if (lengths[symbol] == 0U) return -1;
+    return zlib_write_bits(writer, zlib_reverse_bits(codes[symbol], lengths[symbol]), lengths[symbol]);
 }
 
 static void zlib_huffman_free(ZlibHuffman *huffman) {
@@ -705,6 +864,222 @@ static void zlib_lz77_insert(const unsigned char *input, size_t input_size, unsi
     bucket = head + (size_t)zlib_lz77_hash(input + offset) * ZLIB_LZ77_HASH_SLOTS;
     for (slot = ZLIB_LZ77_HASH_SLOTS - 1U; slot > 0U; --slot) bucket[slot] = bucket[slot - 1U];
     bucket[0] = (unsigned int)offset;
+}
+
+static ZlibMatch zlib_lz77_find_match(const unsigned char *input, size_t input_size, unsigned int *head, size_t input_offset, unsigned int max_slots) {
+    ZlibMatch match;
+
+    match.length = 0U;
+    match.distance = 0U;
+    if (input_offset + 2U < input_size) {
+        unsigned int hash = zlib_lz77_hash(input + input_offset);
+        unsigned int *bucket = head + (size_t)hash * ZLIB_LZ77_HASH_SLOTS;
+        unsigned int slot;
+
+        if (max_slots > ZLIB_LZ77_HASH_SLOTS) max_slots = ZLIB_LZ77_HASH_SLOTS;
+        for (slot = 0U; slot < max_slots; ++slot) {
+            unsigned int candidate = bucket[slot];
+            unsigned int length = 0U;
+            unsigned int max_length = input_size - input_offset > 258U ? 258U : (unsigned int)(input_size - input_offset);
+
+            if (candidate == 0xffffffffU || (size_t)candidate >= input_offset || input_offset - (size_t)candidate > 32768U) continue;
+            while (length < max_length && input[(size_t)candidate + (size_t)length] == input[input_offset + (size_t)length]) length += 1U;
+            if (length > match.length && length >= 3U) {
+                match.length = length;
+                match.distance = (unsigned int)(input_offset - (size_t)candidate);
+                if (match.length == max_length) break;
+            }
+        }
+    }
+    return match;
+}
+
+static int zlib_tokenize_lz77(const unsigned char *input, size_t input_size, ZlibToken *tokens, size_t token_capacity, size_t *token_count_out, int level) {
+    unsigned int *head;
+    size_t input_offset = 0U;
+    unsigned int index;
+    unsigned int max_slots = level <= 2 ? 2U : (level <= 5 ? 4U : (level <= 7 ? 8U : 16U));
+    int lazy = level >= 5;
+
+    if (input == 0 || tokens == 0 || token_count_out == 0) return -1;
+    head = (unsigned int *)rt_malloc(sizeof(unsigned int) * 65536U * ZLIB_LZ77_HASH_SLOTS);
+    if (head == 0) return -1;
+    for (index = 0U; index < 65536U * ZLIB_LZ77_HASH_SLOTS; ++index) head[index] = 0xffffffffU;
+    *token_count_out = 0U;
+    while (input_offset < input_size) {
+        ZlibMatch match = zlib_lz77_find_match(input, input_size, head, input_offset, max_slots);
+
+        zlib_lz77_insert(input, input_size, head, input_offset);
+        if (lazy && match.length >= 3U && input_offset + 1U < input_size) {
+            ZlibMatch next_match = zlib_lz77_find_match(input, input_size, head, input_offset + 1U, max_slots);
+            if (next_match.length > match.length) match.length = 0U;
+        }
+        if (*token_count_out >= token_capacity) { rt_free(head); return -1; }
+        if (match.length >= 3U) {
+            unsigned int step;
+            tokens[*token_count_out].value = (unsigned short)match.length;
+            tokens[*token_count_out].distance = (unsigned short)match.distance;
+            *token_count_out += 1U;
+            for (step = 1U; step < match.length; ++step) zlib_lz77_insert(input, input_size, head, input_offset + (size_t)step);
+            input_offset += (size_t)match.length;
+        } else {
+            tokens[*token_count_out].value = input[input_offset];
+            tokens[*token_count_out].distance = 0U;
+            *token_count_out += 1U;
+            input_offset += 1U;
+        }
+    }
+    rt_free(head);
+    return 0;
+}
+
+static int zlib_emit_fixed_tokens(ZlibBitWriter *writer, const ZlibToken *tokens, size_t token_count, int final_block) {
+    size_t i;
+
+    if (zlib_write_bits(writer, final_block ? 1U : 0U, 1U) != 0 || zlib_write_bits(writer, 1U, 2U) != 0) return -1;
+    for (i = 0U; i < token_count; ++i) {
+        if (tokens[i].distance == 0U) {
+            if (zlib_write_fixed_symbol(writer, tokens[i].value) != 0) return -1;
+        } else {
+            if (zlib_write_fixed_match(writer, tokens[i].value, tokens[i].distance) != 0) return -1;
+        }
+    }
+    return zlib_write_fixed_symbol(writer, 256U) != 0 || zlib_flush_bits(writer) != 0 ? -1 : 0;
+}
+
+static int zlib_emit_dynamic_tokens(ZlibBitWriter *writer, const ZlibToken *tokens, size_t token_count, int final_block) {
+    unsigned int lit_freq[286];
+    unsigned int dist_freq[30];
+    unsigned char lit_lengths[286];
+    unsigned char dist_lengths[30];
+    unsigned char code_lengths[ZLIB_MAX_CODE_LENGTH_SYMBOLS];
+    unsigned short lit_codes[286];
+    unsigned short dist_codes[30];
+    unsigned short code_codes[ZLIB_MAX_CODE_LENGTH_SYMBOLS];
+    static const unsigned char code_order[ZLIB_MAX_CODE_LENGTH_SYMBOLS] = { 16U, 17U, 18U, 0U, 8U, 7U, 9U, 6U, 10U, 5U, 11U, 4U, 12U, 3U, 13U, 2U, 14U, 1U, 15U };
+    unsigned int i;
+    unsigned int hclen = 19U;
+
+    rt_memset(lit_freq, 0, sizeof(lit_freq));
+    rt_memset(dist_freq, 0, sizeof(dist_freq));
+    for (i = 0U; i < token_count; ++i) {
+        if (tokens[i].distance == 0U) {
+            lit_freq[tokens[i].value] += 1U;
+        } else {
+            unsigned int symbol;
+            unsigned int extra_bits;
+            unsigned int extra_value;
+            if (zlib_length_symbol(tokens[i].value, &symbol, &extra_bits, &extra_value) != 0) return -1;
+            lit_freq[symbol] += 1U;
+            if (zlib_distance_symbol(tokens[i].distance, &symbol, &extra_bits, &extra_value) != 0) return -1;
+            dist_freq[symbol] += 1U;
+        }
+    }
+    lit_freq[256] += 1U;
+    if (dist_freq[0] == 0U) dist_freq[0] = 1U;
+    if (zlib_build_code_lengths(lit_freq, 286U, 15U, lit_lengths) != 0) return -1;
+    if (zlib_build_code_lengths(dist_freq, 30U, 15U, dist_lengths) != 0) return -1;
+    zlib_build_codes(lit_lengths, 286U, lit_codes);
+    zlib_build_codes(dist_lengths, 30U, dist_codes);
+    rt_memset(code_lengths, 0, sizeof(code_lengths));
+    for (i = 0U; i <= 15U; ++i) code_lengths[i] = 4U;
+    zlib_build_codes(code_lengths, ZLIB_MAX_CODE_LENGTH_SYMBOLS, code_codes);
+
+    if (zlib_write_bits(writer, final_block ? 1U : 0U, 1U) != 0 || zlib_write_bits(writer, 2U, 2U) != 0) return -1;
+    if (zlib_write_bits(writer, 286U - 257U, 5U) != 0 || zlib_write_bits(writer, 30U - 1U, 5U) != 0 || zlib_write_bits(writer, hclen - 4U, 4U) != 0) return -1;
+    for (i = 0U; i < hclen; ++i) {
+        unsigned int symbol = code_order[i];
+        unsigned int length = code_lengths[symbol];
+        if (zlib_write_bits(writer, length, 3U) != 0) return -1;
+    }
+    for (i = 0U; i < 286U; ++i) {
+        if (zlib_write_code(writer, code_codes, code_lengths, lit_lengths[i]) != 0) return -1;
+    }
+    for (i = 0U; i < 30U; ++i) {
+        if (zlib_write_code(writer, code_codes, code_lengths, dist_lengths[i]) != 0) return -1;
+    }
+    for (i = 0U; i < token_count; ++i) {
+        if (tokens[i].distance == 0U) {
+            if (zlib_write_code(writer, lit_codes, lit_lengths, tokens[i].value) != 0) return -1;
+        } else {
+            unsigned int symbol;
+            unsigned int extra_bits;
+            unsigned int extra_value;
+            if (zlib_length_symbol(tokens[i].value, &symbol, &extra_bits, &extra_value) != 0 || zlib_write_code(writer, lit_codes, lit_lengths, symbol) != 0) return -1;
+            if (extra_bits != 0U && zlib_write_bits(writer, extra_value, extra_bits) != 0) return -1;
+            if (zlib_distance_symbol(tokens[i].distance, &symbol, &extra_bits, &extra_value) != 0 || zlib_write_code(writer, dist_codes, dist_lengths, symbol) != 0) return -1;
+            if (extra_bits != 0U && zlib_write_bits(writer, extra_value, extra_bits) != 0) return -1;
+        }
+    }
+    return zlib_write_code(writer, lit_codes, lit_lengths, 256U) != 0 || zlib_flush_bits(writer) != 0 ? -1 : 0;
+}
+
+static int zlib_emit_level_block(ZlibBitWriter *writer, const unsigned char *input, size_t input_size, int level, int final_block) {
+    ZlibToken *tokens = 0;
+    size_t token_capacity;
+    size_t token_count = 0U;
+    int use_dynamic;
+    int result = -1;
+
+    token_capacity = input_size + 1U;
+    if (token_capacity > ZLIB_MAX_TOKENS) return -1;
+    if (token_capacity > ((size_t)-1) / sizeof(*tokens)) return -1;
+    tokens = (ZlibToken *)rt_malloc((token_capacity == 0U ? 1U : token_capacity) * sizeof(*tokens));
+    if (tokens == 0) return -1;
+    if (zlib_tokenize_lz77(input, input_size, tokens, token_capacity, &token_count, level) != 0) goto cleanup;
+    use_dynamic = level >= 6 && input_size >= 2048U;
+    if (use_dynamic) {
+        result = zlib_emit_dynamic_tokens(writer, tokens, token_count, final_block);
+    } else {
+        result = zlib_emit_fixed_tokens(writer, tokens, token_count, final_block);
+    }
+
+cleanup:
+    rt_free(tokens);
+    return result;
+}
+
+size_t compression_zlib_deflate_bound(size_t input_size) {
+    return compression_zlib_fixed_lz77_bound(input_size);
+}
+
+int compression_zlib_deflate_level(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out, int level) {
+    ZlibBitWriter writer;
+    unsigned int adler;
+    size_t offset = 0U;
+    size_t split_size = input_size;
+    int result = -1;
+
+    if (level < 1) level = 1;
+    if (level > 9) level = 9;
+    if (input == 0 || output == 0 || output_size_out == 0 || output_capacity < 6U || compression_zlib_deflate_bound(input_size) == 0U || output_capacity < compression_zlib_deflate_bound(input_size)) return -1;
+    if (split_size == 0U) split_size = input_size;
+    output[0] = 0x78U;
+    output[1] = 0x01U;
+    zlib_bit_writer_init(&writer, output + 2U, output_capacity - 6U);
+    while (offset < input_size || input_size == 0U) {
+        size_t chunk_size = input_size - offset;
+        int final_block;
+        if (chunk_size > split_size) chunk_size = split_size;
+        final_block = offset + chunk_size >= input_size;
+        if (zlib_emit_level_block(&writer, input + offset, chunk_size, level, final_block) != 0) {
+            if (offset == 0U && input_size > ZLIB_MAX_TOKENS) return compression_zlib_fixed_lz77(input, input_size, output, output_capacity, output_size_out);
+            goto cleanup;
+        }
+        offset += chunk_size;
+        if (final_block) break;
+    }
+    *output_size_out = 2U + writer.byte_offset;
+    if (*output_size_out + 4U > output_capacity) goto cleanup;
+    adler = compression_adler32(input, input_size);
+    output[(*output_size_out)++] = (unsigned char)((adler >> 24U) & 0xffU);
+    output[(*output_size_out)++] = (unsigned char)((adler >> 16U) & 0xffU);
+    output[(*output_size_out)++] = (unsigned char)((adler >> 8U) & 0xffU);
+    output[(*output_size_out)++] = (unsigned char)(adler & 0xffU);
+    result = 0;
+
+cleanup:
+    return result;
 }
 
 int compression_zlib_fixed_lz77(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {

@@ -28,9 +28,9 @@ Extraction refuses absolute paths, backslash paths, drive-letter paths, and
 
 ## LIMITATIONS
 
-This first implementation supports stored and deflated entries through the
-project ZIP reader. Encrypted ZIPs, split archives, symlink restoration, comments,
-and external attributes are not interpreted yet.
+This implementation supports stored and deflated entries through the project ZIP
+reader. Encrypted ZIPs, split archives, symlink restoration, comments, and
+external attributes are not interpreted yet.
 
 ## SEE ALSO
 

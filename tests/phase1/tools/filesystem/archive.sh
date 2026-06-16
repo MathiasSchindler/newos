@@ -153,6 +153,18 @@ assert_file_contains "$WORK_DIR/zip_list.out" 'zip_src/root.txt$' "unzip -l did 
 assert_file_contains "$WORK_DIR/zip_list.out" 'zip_src/dir/nested.txt$' "unzip -l did not list the nested ZIP file"
 assert_command_succeeds "${TEST_BIN_DIR}/unzip" -t "$WORK_DIR/sample.zip" > "$WORK_DIR/zip_test.out"
 assert_file_contains "$WORK_DIR/zip_test.out" 'No errors detected' "unzip -t did not validate the archive"
+awk 'BEGIN { for (i = 0; i < 500; i++) print "zip deflate line zip deflate line zip deflate line " i }' > "$WORK_DIR/zip_src/large.txt"
+(
+    cd "$WORK_DIR"
+    assert_command_succeeds "${TEST_BIN_DIR}/zip" compressed.zip zip_src/large.txt
+    assert_command_succeeds "${TEST_BIN_DIR}/zip" -9 compressed-9.zip zip_src/large.txt
+    assert_command_succeeds "${TEST_BIN_DIR}/unzip" -l compressed.zip > zip_compressed_list.out
+)
+assert_file_contains "$WORK_DIR/zip_compressed_list.out" 'deflated[[:space:]]*zip_src/large.txt$' "zip did not deflate a compressible entry by default"
+assert_command_succeeds "${TEST_BIN_DIR}/unzip" -p "$WORK_DIR/compressed.zip" 'zip_src/large.txt' > "$WORK_DIR/zip_large_pipe.out"
+assert_files_equal "$WORK_DIR/zip_src/large.txt" "$WORK_DIR/zip_large_pipe.out" "unzip did not recover the deflated ZIP entry"
+assert_command_succeeds "${TEST_BIN_DIR}/unzip" -p "$WORK_DIR/compressed-9.zip" 'zip_src/large.txt' > "$WORK_DIR/zip_large_9_pipe.out"
+assert_files_equal "$WORK_DIR/zip_src/large.txt" "$WORK_DIR/zip_large_9_pipe.out" "unzip did not recover the level-9 ZIP entry"
 mkdir -p "$WORK_DIR/zip_extract"
 (
     cd "$WORK_DIR/zip_extract"

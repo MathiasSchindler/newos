@@ -1,4 +1,5 @@
 #include "archive_util.h"
+#include "compression/zlib.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -10,14 +11,19 @@
 #define ZIP_CENTRAL_SIG 0x02014b50U
 #define ZIP_EOCD_SIG 0x06054b50U
 #define ZIP_METHOD_STORE 0U
+#define ZIP_METHOD_DEFLATE 8U
 #define ZIP_MODE_TYPE_MASK 0170000U
+#define ZIP_MAX_INPUT_SIZE 268435456ULL
+#define ZIP_DEFLATE_MIN_SIZE 1024ULL
 
 typedef struct {
     char name[ZIP_PATH_CAPACITY];
     unsigned int crc32;
     unsigned long long size;
+    unsigned long long compressed_size;
     unsigned long long offset;
     unsigned int mode;
+    unsigned short method;
     int is_dir;
     unsigned short mod_time;
     unsigned short mod_date;
@@ -29,6 +35,8 @@ typedef struct {
     size_t capacity;
     int out_fd;
     int recursive;
+    int store_only;
+    int level;
     int verbose;
     int status;
 } ZipContext;
@@ -105,11 +113,11 @@ static int write_local_header(int fd, const ZipWrittenEntry *entry) {
     return write_u32_le(fd, ZIP_LOCAL_SIG) != 0 ||
            write_u16_le(fd, 20U) != 0 ||
            write_u16_le(fd, 0U) != 0 ||
-           write_u16_le(fd, ZIP_METHOD_STORE) != 0 ||
+           write_u16_le(fd, entry->method) != 0 ||
            write_u16_le(fd, entry->mod_time) != 0 ||
            write_u16_le(fd, entry->mod_date) != 0 ||
            write_u32_le(fd, entry->crc32) != 0 ||
-           write_u32_le(fd, (unsigned int)entry->size) != 0 ||
+           write_u32_le(fd, (unsigned int)entry->compressed_size) != 0 ||
            write_u32_le(fd, (unsigned int)entry->size) != 0 ||
            write_u16_le(fd, (unsigned int)name_length) != 0 ||
            write_u16_le(fd, 0U) != 0 ||
@@ -135,7 +143,7 @@ static int add_entry_record(ZipContext *context, const ZipWrittenEntry *entry) {
     return 0;
 }
 
-static int copy_file_to_archive(ZipContext *context, const char *path, ZipWrittenEntry *entry) {
+static int stream_stored_file(ZipContext *context, const char *path, ZipWrittenEntry *entry) {
     unsigned char buffer[ZIP_IO_BUFFER_SIZE];
     unsigned int crc = 0xffffffffU;
     unsigned long long size = 0ULL;
@@ -159,7 +167,49 @@ static int copy_file_to_archive(ZipContext *context, const char *path, ZipWritte
     platform_close(input_fd);
     entry->crc32 = archive_crc32_finish(crc);
     entry->size = size;
+    entry->compressed_size = size;
+    entry->method = ZIP_METHOD_STORE;
     return 0;
+}
+
+static int write_file_payload(ZipContext *context, const char *path, ZipWrittenEntry *entry) {
+    unsigned char *input = 0;
+    unsigned char *zlib_data = 0;
+    size_t input_size = 0U;
+    size_t zlib_size = 0U;
+    size_t bound;
+    int result = -1;
+
+    if (context->store_only || entry->size < ZIP_DEFLATE_MIN_SIZE) {
+        return stream_stored_file(context, path, entry);
+    }
+
+    if (tool_read_all_input(path, &input, &input_size) != 0) return -1;
+    entry->crc32 = archive_crc32_finish(archive_crc32_update(0xffffffffU, input, input_size));
+    entry->size = (unsigned long long)input_size;
+    entry->compressed_size = entry->size;
+    entry->method = ZIP_METHOD_STORE;
+
+    if (!context->store_only && input_size != 0U) {
+        bound = compression_zlib_deflate_bound(input_size);
+        if (bound != 0U) {
+            zlib_data = (unsigned char *)rt_malloc(bound);
+            if (zlib_data != 0 && compression_zlib_deflate_level(input, input_size, zlib_data, bound, &zlib_size, context->level) == 0 && zlib_size > 6U && zlib_size - 6U < input_size) {
+                entry->method = ZIP_METHOD_DEFLATE;
+                entry->compressed_size = (unsigned long long)(zlib_size - 6U);
+                if (rt_write_all(context->out_fd, zlib_data + 2U, zlib_size - 6U) != 0) goto done;
+                result = 0;
+                goto done;
+            }
+        }
+    }
+
+    if (input_size == 0U || rt_write_all(context->out_fd, input, input_size) == 0) result = 0;
+
+done:
+    rt_free(zlib_data);
+    rt_free(input);
+    return result;
 }
 
 static int write_stored_entry(ZipContext *context, const char *path, const PlatformDirEntry *info, const char *name) {
@@ -172,6 +222,7 @@ static int write_stored_entry(ZipContext *context, const char *path, const Platf
     rt_copy_string(entry.name, sizeof(entry.name), name);
     entry.mode = info->mode;
     entry.is_dir = info->is_dir;
+    entry.method = ZIP_METHOD_STORE;
     entry.mod_time = dos_time_from_entry(info);
     entry.mod_date = dos_date_from_entry(info);
     start_offset = platform_seek(context->out_fd, 0, PLATFORM_SEEK_CUR);
@@ -181,17 +232,19 @@ static int write_stored_entry(ZipContext *context, const char *path, const Platf
     if (info->is_dir) {
         entry.crc32 = 0U;
         entry.size = 0ULL;
+        entry.compressed_size = 0ULL;
         if (write_local_header(context->out_fd, &entry) != 0) return -1;
     } else {
-        if (entry.offset > 0xffffffffULL || info->size > 0xffffffffULL) return -1;
+        if (entry.offset > 0xffffffffULL || info->size > 0xffffffffULL || info->size > ZIP_MAX_INPUT_SIZE) return -1;
         entry.size = info->size;
+        entry.compressed_size = info->size;
         entry.crc32 = 0U;
         if (write_local_header(context->out_fd, &entry) != 0) return -1;
         data_offset = platform_seek(context->out_fd, 0, PLATFORM_SEEK_CUR);
         if (data_offset < 0) return -1;
-        if (copy_file_to_archive(context, path, &entry) != 0) return -1;
+        if (write_file_payload(context, path, &entry) != 0) return -1;
         if (platform_seek(context->out_fd, start_offset, PLATFORM_SEEK_SET) < 0 || write_local_header(context->out_fd, &entry) != 0) return -1;
-        if (platform_seek(context->out_fd, data_offset + (long long)entry.size, PLATFORM_SEEK_SET) < 0) return -1;
+        if (platform_seek(context->out_fd, data_offset + (long long)entry.compressed_size, PLATFORM_SEEK_SET) < 0) return -1;
         (void)zeros;
     }
     if (context->verbose) {
@@ -245,16 +298,16 @@ static int write_central_header(int fd, const ZipWrittenEntry *entry) {
     size_t name_length = rt_strlen(entry->name);
     unsigned int external_attrs = (entry->mode & 0xffffU) << 16U;
     if (entry->is_dir) external_attrs |= 0x10U;
-    if (name_length > 0xffffU || entry->size > 0xffffffffULL || entry->offset > 0xffffffffULL) return -1;
+    if (name_length > 0xffffU || entry->compressed_size > 0xffffffffULL || entry->size > 0xffffffffULL || entry->offset > 0xffffffffULL) return -1;
     return write_u32_le(fd, ZIP_CENTRAL_SIG) != 0 ||
            write_u16_le(fd, 0x031eU) != 0 ||
            write_u16_le(fd, 20U) != 0 ||
            write_u16_le(fd, 0U) != 0 ||
-           write_u16_le(fd, ZIP_METHOD_STORE) != 0 ||
+           write_u16_le(fd, entry->method) != 0 ||
            write_u16_le(fd, entry->mod_time) != 0 ||
            write_u16_le(fd, entry->mod_date) != 0 ||
            write_u32_le(fd, entry->crc32) != 0 ||
-           write_u32_le(fd, (unsigned int)entry->size) != 0 ||
+           write_u32_le(fd, (unsigned int)entry->compressed_size) != 0 ||
            write_u32_le(fd, (unsigned int)entry->size) != 0 ||
            write_u16_le(fd, (unsigned int)name_length) != 0 ||
            write_u16_le(fd, 0U) != 0 ||
@@ -298,6 +351,7 @@ int main(int argc, char **argv) {
     int i;
 
     rt_memset(&context, 0, sizeof(context));
+    context.level = 6;
     while (argi < argc) {
         const char *arg = argv[argi];
         if (rt_strcmp(arg, "--help") == 0 || rt_strcmp(arg, "-h") == 0) {
@@ -309,7 +363,10 @@ int main(int argc, char **argv) {
         } else if (rt_strcmp(arg, "-v") == 0) {
             context.verbose = 1;
         } else if (rt_strcmp(arg, "-0") == 0) {
-            ;
+            context.store_only = 1;
+        } else if (arg[0] == '-' && arg[1] >= '1' && arg[1] <= '9' && arg[2] == '\0') {
+            context.store_only = 0;
+            context.level = arg[1] - '0';
         } else if (arg[0] == '-' && arg[1] != '\0') {
             tool_write_error("zip", "unsupported option ", arg);
             return 1;
