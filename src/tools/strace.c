@@ -13,6 +13,74 @@ static long filter_numbers[STRACE_MAX_FILTERS];
 static size_t filter_count;
 
 static const char *syscall_name(long number) {
+#if defined(__APPLE__)
+    switch (number) {
+        case 1: return "exit";
+        case 2: return "fork";
+        case 3: return "read";
+        case 4: return "write";
+        case 5: return "open";
+        case 6: return "close";
+        case 7: return "wait4";
+        case 9: return "link";
+        case 10: return "unlink";
+        case 12: return "chdir";
+        case 14: return "mknod";
+        case 15: return "chmod";
+        case 16: return "chown";
+        case 20: return "getpid";
+        case 24: return "getuid";
+        case 26: return "ptrace";
+        case 29: return "recvfrom";
+        case 30: return "accept";
+        case 33: return "access";
+        case 36: return "sync";
+        case 37: return "kill";
+        case 42: return "pipe";
+        case 47: return "getgid";
+        case 54: return "ioctl";
+        case 57: return "symlink";
+        case 58: return "readlink";
+        case 59: return "execve";
+        case 73: return "munmap";
+        case 79: return "getgroups";
+        case 90: return "dup2";
+        case 92: return "fcntl";
+        case 93: return "select";
+        case 95: return "fsync";
+        case 97: return "socket";
+        case 98: return "connect";
+        case 104: return "bind";
+        case 105: return "setsockopt";
+        case 106: return "listen";
+        case 116: return "gettimeofday";
+        case 118: return "getsockopt";
+        case 128: return "rename";
+        case 132: return "mkfifo";
+        case 133: return "sendto";
+        case 134: return "shutdown";
+        case 136: return "mkdir";
+        case 137: return "rmdir";
+        case 138: return "utimes";
+        case 157: return "statfs";
+        case 159: return "unmount";
+        case 197: return "mmap";
+        case 199: return "lseek";
+        case 201: return "ftruncate";
+        case 202: return "sysctl";
+        case 230: return "poll";
+        case 274: return "sysctlbyname";
+        case 336: return "proc_info";
+        case 338: return "stat64";
+        case 339: return "fstat64";
+        case 340: return "lstat64";
+        case 344: return "getdirentries64";
+        case 345: return "statfs64";
+        case 364: return "lchown";
+        case 500: return "getentropy";
+        default: return "syscall";
+    }
+#else
     switch (number) {
         case 0: return "read";
         case 1: return "write";
@@ -149,6 +217,7 @@ static const char *syscall_name(long number) {
         case 436: return "close_range";
         default: return "syscall";
     }
+#endif
 }
 
 static long syscall_number_by_name(const char *name) {

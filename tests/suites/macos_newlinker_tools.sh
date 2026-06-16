@@ -103,7 +103,9 @@ assert_file_contains "$WORK_DIR/readelf_true_map.out" 'Segment __TEXT' "readelf 
 assert_file_contains "$WORK_DIR/readelf_true_signature_details.out" 'Mach-O Signature Details' "readelf --signature-details did not print detailed signature information"
 assert_file_contains "$WORK_DIR/readelf_true_signature_details.out" 'CodeDirectory hash offset' "readelf --signature-details did not report CodeDirectory offsets"
 
-"$BUILD_DIR/readelf" --explain-address 0x1000002e8 "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_explain.out"
+true_text_addr=$(sed -n 's/.*__TEXT,__text.* addr=\(0x[0-9a-fA-F][0-9a-fA-F]*\).*/\1/p' "$WORK_DIR/readelf_true.out" | sed -n '1p')
+[ -n "$true_text_addr" ] || fail "readelf did not report a __TEXT,__text address for true"
+"$BUILD_DIR/readelf" --explain-address "$true_text_addr" "$BUILD_DIR/true" > "$WORK_DIR/readelf_true_explain.out"
 assert_file_contains "$WORK_DIR/readelf_true_explain.out" 'Mach-O Address Explanation' "readelf --explain-address did not explain a Mach-O address"
 assert_file_contains "$WORK_DIR/readelf_true_explain.out" 'section: __TEXT,__text' "readelf --explain-address did not locate the __text section"
 

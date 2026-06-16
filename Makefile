@@ -710,7 +710,7 @@ $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.lto.o: tests/fixtur
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/src/platform/macos/newlinker_start.o: src/platform/macos/newlinker_start.S | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_CFLAGS) -c $< -o $@
 
-$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
+$(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) src/platform/macos/trace.h | $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_NEWLINKER_EXPERIMENT_LTO_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
 
 $(MACOS_NEWLINKER_EXPERIMENT_DIR)/tiny: $(BUILD_DIR)/linker $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_start.o $(MACOS_NEWLINKER_EXPERIMENT_DIR)/.obj/newlinker_tiny_helper.o | $(MACOS_NEWLINKER_EXPERIMENT_DIR)

@@ -1,6 +1,7 @@
 #include <stddef.h>
 
 #include "../../arch/aarch64/macos/syscall.h"
+#include "trace.h"
 
 #define MACOS_NEWLINKER_TIOCGETA  1078490131UL
 #define MACOS_NEWLINKER_TIOCSETA  2152231956UL
@@ -177,6 +178,8 @@ static int macos_newlinker_errno;
 
 MACOS_NEWLINKER_EXPORT __attribute__((nocommon)) char **environ = 0;
 
+int darwin_trace_fd = -2;
+
 static int macos_newlinker_return_int(long result) {
 	if (result < 0) {
 		macos_newlinker_errno = (int)(-result);
@@ -345,6 +348,67 @@ static char *macos_newlinker_env_value(const char *name) {
 		index += 1U;
 	}
 	return 0;
+}
+
+static long macos_newlinker_trace_write_raw(int fd, const void *buffer, size_t count) {
+	register long x16 __asm__("x16") = DARWIN_SYS_WRITE;
+	register long x0 __asm__("x0") = fd;
+	register long x1 __asm__("x1") = (long)buffer;
+	register long x2 __asm__("x2") = (long)count;
+
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x16) : : "memory", "cc");
+	return x0;
+}
+
+static int macos_newlinker_trace_parse_fd(const char *value) {
+	unsigned int result = 0;
+	size_t index = 0;
+
+	if (value == 0 || value[0] == '\0') return -1;
+	while (value[index] != '\0') {
+		if (value[index] < '0' || value[index] > '9') return -1;
+		result = (result * 10U) + (unsigned int)(value[index] - '0');
+		if (result > 1024U * 1024U) return -1;
+		index += 1U;
+	}
+	return (int)result;
+}
+
+static int macos_newlinker_trace_fd(void) {
+	if (darwin_trace_fd == -2) {
+		darwin_trace_fd = macos_newlinker_trace_parse_fd(macos_newlinker_env_value(MACOS_STRACE_ENV));
+	}
+	return darwin_trace_fd;
+}
+
+void darwin_trace_syscall(int entering, long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result) {
+	MacosStraceRecord record;
+	const char *cursor;
+	size_t remaining;
+	int fd = macos_newlinker_trace_fd();
+
+	if (fd < 0) return;
+	record.magic = MACOS_STRACE_RECORD_MAGIC;
+	record.entering = entering != 0 ? 1U : 0U;
+	record.number = number;
+	record.args[0] = arg0;
+	record.args[1] = arg1;
+	record.args[2] = arg2;
+	record.args[3] = arg3;
+	record.args[4] = arg4;
+	record.args[5] = arg5;
+	record.result = result;
+	cursor = (const char *)&record;
+	remaining = sizeof(record);
+	while (remaining > 0U) {
+		long written = macos_newlinker_trace_write_raw(fd, cursor, remaining);
+		if (written <= 0) {
+			darwin_trace_fd = -1;
+			return;
+		}
+		cursor += (size_t)written;
+		remaining -= (size_t)written;
+	}
 }
 
 static int macos_newlinker_prepare_environment(void) {

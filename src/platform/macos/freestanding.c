@@ -28,6 +28,7 @@
 #include "platform.h"
 #include "runtime.h"
 #include "../../arch/aarch64/macos/syscall.h"
+#include "trace.h"
 
 #define DARWIN_PROT_READ 1
 #define DARWIN_PROT_WRITE 2
@@ -1409,12 +1410,105 @@ static int decode_wait_status(int status) {
     return 1;
 }
 
+static int macos_format_fd(int fd, char *buffer, size_t buffer_size) {
+    char temp[32];
+    size_t count = 0U;
+    size_t written = 0U;
+    unsigned int value;
+
+    if (fd < 0 || buffer_size == 0U) return -1;
+    value = (unsigned int)fd;
+    if (value == 0U) {
+        if (buffer_size < 2U) return -1;
+        buffer[0] = '0';
+        buffer[1] = '\0';
+        return 0;
+    }
+    while (value != 0U && count < sizeof(temp)) {
+        temp[count++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+    if (count + 1U > buffer_size) return -1;
+    while (count > 0U) buffer[written++] = temp[--count];
+    buffer[written] = '\0';
+    return 0;
+}
+
+static int macos_read_trace_record(int fd, MacosStraceRecord *record_out, int *eof_out) {
+    char *cursor = (char *)record_out;
+    size_t remaining = sizeof(*record_out);
+
+    *eof_out = 0;
+    while (remaining > 0U) {
+        long amount = platform_read(fd, cursor, remaining);
+        if (amount == 0) {
+            if (remaining == sizeof(*record_out)) {
+                *eof_out = 1;
+                return 0;
+            }
+            return -1;
+        }
+        if (amount < 0) return -1;
+        cursor += (size_t)amount;
+        remaining -= (size_t)amount;
+    }
+    return record_out->magic == MACOS_STRACE_RECORD_MAGIC ? 0 : -1;
+}
+
 int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out) {
-    (void)argv;
-    (void)callback;
-    (void)user_data;
-    if (exit_status_out != 0) *exit_status_out = 1;
-    return -1;
+    int pipe_fds[2];
+    int pid;
+    int status = 0;
+    int trace_result = 0;
+
+    if (argv == 0 || argv[0] == 0 || callback == 0) return -1;
+    if (platform_create_pipe(pipe_fds) != 0) return -1;
+    pid = fork();
+    if (pid < 0) {
+        (void)platform_close(pipe_fds[0]);
+        (void)platform_close(pipe_fds[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        char fd_text[32];
+
+        (void)platform_close(pipe_fds[0]);
+        if (macos_format_fd(pipe_fds[1], fd_text, sizeof(fd_text)) != 0 || platform_setenv(MACOS_STRACE_ENV, fd_text, 1) != 0) {
+            _exit(126);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    (void)platform_close(pipe_fds[1]);
+    for (;;) {
+        MacosStraceRecord record;
+        PlatformSyscallEvent event;
+        int eof = 0;
+
+        if (macos_read_trace_record(pipe_fds[0], &record, &eof) != 0) {
+            trace_result = -1;
+            break;
+        }
+        if (eof) break;
+        rt_memset(&event, 0, sizeof(event));
+        event.entering = record.entering != 0U;
+        event.number = record.number;
+        event.args[0] = record.args[0];
+        event.args[1] = record.args[1];
+        event.args[2] = record.args[2];
+        event.args[3] = record.args[3];
+        event.args[4] = record.args[4];
+        event.args[5] = record.args[5];
+        event.result = record.result;
+        if (callback(&event, user_data) != 0) {
+            trace_result = -1;
+            break;
+        }
+    }
+    (void)platform_close(pipe_fds[0]);
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (exit_status_out != 0) *exit_status_out = decode_wait_status(status);
+    return trace_result;
 }
 
 static unsigned long long macos_timeval_to_ns(const struct timeval *value) {

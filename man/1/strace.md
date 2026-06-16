@@ -13,8 +13,10 @@ strace [-n] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]
 ## DESCRIPTION
 
 `strace` runs COMMAND under the platform syscall tracing backend and prints one
-line for each completed system call. The Linux backend uses `ptrace`; other
-platforms currently report that tracing is unsupported.
+line for each completed system call. The Linux backend uses `ptrace`. The macOS
+project-linked backend traces newos freestanding tools by passing an internal
+trace pipe to the child and collecting events emitted by the in-tree Darwin
+syscall wrappers.
 
 The initial output focuses on syscall number/name, the first three raw arguments,
 and the return value. Arguments are printed as raw integer or pointer values; the
@@ -39,8 +41,9 @@ strace -e trace=socket,connect,ppoll,write command
 strace -e 257,0,1 command
 ```
 
-Unknown filter names are rejected. Numeric filters use the Linux x86-64 syscall
-number.
+Unknown filter names are rejected. Numeric filters use the active platform's
+syscall number: Linux x86-64 on the Linux backend and Darwin arm64 on the macOS
+project-linked backend.
 
 ## UNKNOWN SYSCALLS
 
@@ -78,9 +81,11 @@ Diagnostics and usage messages follow the shared `json-output` envelope.
 
 ## LIMITATIONS
 
-Only Linux x86-64 currently reports syscall details. Arguments are raw integer
-values, not decoded strings or structures. Signal delivery and multi-process
-following are not implemented yet.
+Linux x86-64 reports syscall details through `ptrace`. macOS arm64 reports
+syscalls made through the newos project-linked Darwin syscall wrappers; it does
+not trace arbitrary system binaries or direct `svc` instructions outside those
+wrappers. Arguments are raw integer values, not decoded strings or structures.
+Signal delivery and structured multi-process attribution are not implemented yet.
 
 ## FUTURE IMPROVEMENTS
 
