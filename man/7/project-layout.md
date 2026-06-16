@@ -62,7 +62,9 @@ implementation files they live in a same-named subdirectory owned by that tool.
 ## LIMITATIONS
 
 - The Linux freestanding path currently targets AArch64 and x86-64
-- macOS is a first-class hosted development platform and has a project-linked no-libSystem arm64 build; it is not a fully separate Darwin userland target in the Linux sense
+- macOS is the main developer workstation platform, and `make freestanding` is
+  the preferred local no-libSystem project-linked arm64 build; it is not a fully
+  separate Darwin userland target in the Linux sense
 - Windows contributor work currently assumes MSYS2 for hosted POSIX builds; native Windows freestanding PE support is present but still growing
 - Manual pages are kept in-tree and may lag very recent behavior changes until they are refreshed alongside the code
 

@@ -19,6 +19,7 @@ The current manuals under `man/7` are part of the design documentation. Importan
 - `man/7/runtime.md` for shared libc-independent runtime support
 - `man/7/build.md` for build modes and target selection
 - `man/7/testing.md` for validation workflow
+- `man/7/strace.md` for syscall tracing, stocktake, and syscall-level profiling
 - `man/7/userland.md` for the current command surface and missing system pieces
 - `man/7/unicode.md` for terminal text, UTF-8, width, and display behavior
 - `man/7/shell.md` and `man/7/compiler.md` for the shell and compiler subsystems

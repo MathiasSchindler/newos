@@ -133,4 +133,4 @@ Linux, and following cloned child processes.
 
 ## SEE ALSO
 
-ps, lsof, ss, profiler
+ps, lsof, ss, profiler, strace-workflows(7)

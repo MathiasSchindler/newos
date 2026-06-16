@@ -64,7 +64,8 @@ and basic local network/build contracts.
   defaults to a non-I/O capture filter (`open`, `close`, `stat`, and path
   operations) so exact output tests are not perturbed by tracing every `read`
   and `write`; set `NEWOS_STRACE_STOCKTAKE_FILTER=all` for a focused
-  full-capture pass.
+  full-capture pass. See `man/7/strace.md` for recommended interpretation and
+  optimization workflows.
 - Benchmarks are informational; smoke tests are the main regression gate.
 - `make test` validates both the hosted path and a representative freestanding
   path on Linux. Running `make freestanding` alone is still useful when you

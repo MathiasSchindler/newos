@@ -88,7 +88,7 @@ with the in-tree `linker --target=mach-o-arm64` backend.
 - writes binaries to `build/newlinker-macos-aarch64/`
 - uses the project `_start` shim, project runtime, and Darwin syscall-backed
   platform layer
-- builds the full declared 194-tool macOS surface by default
+- builds the declared macOS project-linked tool surface by default
 - emits project-linked Mach-O executables that are intended to have no dylib
   imports and no C standard library dependency
 - writes `LC_DYLD_INFO_ONLY` rebase metadata: empty when no absolute pointer
@@ -138,12 +138,10 @@ is the usual Apple toolchain ABI library for launchable executables.
 
 - built explicitly with `make freestanding-macos`
 - writes binaries to `build/freestanding-macos-aarch64/`
-- currently builds the full 194-tool set, including the core/text/filesystem/process set,
-  checksums and `bc`, pagers, `wtf`, archive/compression tools, image metadata
-  tools, object inspection tools, `awk`, `sql`, `man`, `pstree`, `wget`, `ncc`,
-  `netcat`, DNS lookup/query tools, `ssh`, `sshd`, `httpd`, `ping`, `ping6`,
-  DHCP probing, `dmesg`, `mknod`, mount/admin command front-ends, read-only
-  `ip`, `sh`, `editor`, `mail`, `service`, `make`, and the XML tool family
+- follows the declared macOS comparison tool surface, including the core,
+  text, filesystem, process, archive/compression, image/PDF/object inspection,
+  XML, networking, shell, compiler, service, and build-support tools that are
+  wired for the Apple-ld/`libSystem` comparison path
 - uses `src/platform/macos/` plus `src/arch/aarch64/macos/` for Darwin-specific
   behavior
 - compiles with freestanding-oriented flags and `-nodefaultlibs -lSystem`, so

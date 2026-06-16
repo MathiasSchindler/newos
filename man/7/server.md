@@ -47,7 +47,8 @@ The repository already contains the following relevant building blocks:
 - shared crypto code in `src/shared/crypto/`
 - shared TLS client code in `src/shared/tls/`, surfaced through `src/platform/*/tls.c`
 - shared server-oriented config and escaped log helpers under `src/shared/`
-- hosted macOS compatibility through the POSIX backend, as described in `platform(7)` and `project-layout(7)`
+- macOS project-linked and hosted compatibility through the platform layer, as
+	described in `platform(7)` and `project-layout(7)`
 
 In practical terms, this means the project already has enough runtime and platform surface to support client networking, polling, subprocess management, and a substantial portion of the cryptographic groundwork.
 

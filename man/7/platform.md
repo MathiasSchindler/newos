@@ -27,8 +27,8 @@ the normal freestanding builds and the secondary hosted POSIX build.
 In practice:
 
 - `make freestanding` is the normal macOS and Linux path
-- the hosted build is for fast local iteration, testing, and early platform
-  bring-up when native code is not ready yet
+- the hosted build is for secondary POSIX verification, testing, and early
+  platform bring-up when native code is not ready yet
 - the Linux freestanding build is the raw Linux ABI and minimal startup path
 - the macOS freestanding build is the project-linked native Darwin path; the
   intended outputs have no dylib imports and no C standard library dependency,
@@ -89,8 +89,8 @@ model Apple recommends for general macOS software.
 
 - `freestanding.c` — Darwin-backed read, write, close, open, seek,
   environment, metadata, symlink, sleep, checksum/file helper, basic filesystem
-  mutation, process id, and page allocation primitives for the current small
-  tool subset
+  mutation, process id, and page allocation primitives for the declared macOS
+  project-linked tool surface
 - `src/arch/aarch64/macos/syscall.h` — inline Darwin syscall helpers for the
   platform adapter
 
