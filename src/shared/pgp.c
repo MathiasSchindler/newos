@@ -459,17 +459,22 @@ fail:
     return -1;
 }
 
-static int pgp_write_base64_byte(int fd, char ch, unsigned int *column_io) {
-    if (rt_write_char(fd, ch) != 0) return -1;
-    *column_io += 1U;
-    if (*column_io >= 64U) {
-        if (rt_write_char(fd, '\n') != 0) return -1;
-        *column_io = 0U;
-    }
+static int pgp_write_base64_flush_line(int fd, char line[65], unsigned int *column_io) {
+    if (*column_io == 0U) return 0;
+    line[*column_io] = '\n';
+    if (rt_write_all(fd, line, (size_t)*column_io + 1U) != 0) return -1;
+    *column_io = 0U;
     return 0;
 }
 
-static int pgp_write_base64_data(int fd, const unsigned char *data, size_t size, unsigned int *column_io) {
+static int pgp_write_base64_byte(int fd, char line[65], char ch, unsigned int *column_io) {
+    line[*column_io] = ch;
+    *column_io += 1U;
+    if (*column_io >= 64U) return pgp_write_base64_flush_line(fd, line, column_io);
+    return 0;
+}
+
+static int pgp_write_base64_data(int fd, const unsigned char *data, size_t size, char line[65], unsigned int *column_io) {
     size_t index = 0U;
 
     while (index < size) {
@@ -482,30 +487,31 @@ static int pgp_write_base64_data(int fd, const unsigned char *data, size_t size,
         int have_b1 = remaining >= 2U;
         int have_b2 = remaining >= 3U;
 
-        if (pgp_write_base64_byte(fd, pgp_base64_alphabet[(b0 >> 2U) & 0x3fU], column_io) != 0) return -1;
-        if (pgp_write_base64_byte(fd, pgp_base64_alphabet[((b0 << 4U) | (b1 >> 4U)) & 0x3fU], column_io) != 0) return -1;
-        if (pgp_write_base64_byte(fd, have_b1 ? pgp_base64_alphabet[((b1 << 2U) | (b2 >> 6U)) & 0x3fU] : '=', column_io) != 0) return -1;
-        if (pgp_write_base64_byte(fd, have_b2 ? pgp_base64_alphabet[b2 & 0x3fU] : '=', column_io) != 0) return -1;
+        if (pgp_write_base64_byte(fd, line, pgp_base64_alphabet[(b0 >> 2U) & 0x3fU], column_io) != 0) return -1;
+        if (pgp_write_base64_byte(fd, line, pgp_base64_alphabet[((b0 << 4U) | (b1 >> 4U)) & 0x3fU], column_io) != 0) return -1;
+        if (pgp_write_base64_byte(fd, line, have_b1 ? pgp_base64_alphabet[((b1 << 2U) | (b2 >> 6U)) & 0x3fU] : '=', column_io) != 0) return -1;
+        if (pgp_write_base64_byte(fd, line, have_b2 ? pgp_base64_alphabet[b2 & 0x3fU] : '=', column_io) != 0) return -1;
     }
     return 0;
 }
 
 static int pgp_write_armor_block(int fd, const char *kind, const unsigned char *data, size_t size) {
+    char line[65];
     unsigned int column = 0U;
     unsigned int crc;
     unsigned char crc_bytes[3];
 
     if (rt_write_cstr(fd, "-----BEGIN PGP ") != 0 || rt_write_cstr(fd, kind) != 0 || rt_write_cstr(fd, "-----\n\n") != 0) return -1;
-    if (pgp_write_base64_data(fd, data, size, &column) != 0) return -1;
-    if (column != 0U && rt_write_char(fd, '\n') != 0) return -1;
+    if (pgp_write_base64_data(fd, data, size, line, &column) != 0) return -1;
+    if (pgp_write_base64_flush_line(fd, line, &column) != 0) return -1;
     crc = pgp_crc24_update(PGP_ARMOR_CRC24_INIT, data, size);
     crc_bytes[0] = (unsigned char)((crc >> 16U) & 0xffU);
     crc_bytes[1] = (unsigned char)((crc >> 8U) & 0xffU);
     crc_bytes[2] = (unsigned char)(crc & 0xffU);
     if (rt_write_char(fd, '=') != 0) return -1;
     column = 0U;
-    if (pgp_write_base64_data(fd, crc_bytes, sizeof(crc_bytes), &column) != 0) return -1;
-    if (column != 0U && rt_write_char(fd, '\n') != 0) return -1;
+    if (pgp_write_base64_data(fd, crc_bytes, sizeof(crc_bytes), line, &column) != 0) return -1;
+    if (pgp_write_base64_flush_line(fd, line, &column) != 0) return -1;
     if (rt_write_cstr(fd, "-----END PGP ") != 0 || rt_write_cstr(fd, kind) != 0) return -1;
     return rt_write_cstr(fd, "-----\n");
 }

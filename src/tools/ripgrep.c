@@ -374,16 +374,25 @@ static int load_ignore_file(RgOptions *options, const char *path, const char *ba
     return 0;
 }
 
-static int load_directory_ignore_files(RgOptions *options, const char *dir_path) {
+static int directory_entries_have_file(const PlatformDirEntry *entries, size_t count, const char *name) {
+    size_t i;
+
+    for (i = 0U; i < count; ++i) {
+        if (!entries[i].is_dir && rt_strcmp(entries[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
+static int load_directory_ignore_files(RgOptions *options, const char *dir_path, const PlatformDirEntry *entries, size_t count) {
     char path[RG_PATH_CAPACITY];
 
-    if (tool_join_path(dir_path, ".gitignore", path, sizeof(path)) == 0) {
+    if (directory_entries_have_file(entries, count, ".gitignore") && tool_join_path(dir_path, ".gitignore", path, sizeof(path)) == 0) {
         if (load_ignore_file(options, path, dir_path, 0) != 0) return -1;
     }
-    if (tool_join_path(dir_path, ".ignore", path, sizeof(path)) == 0) {
+    if (directory_entries_have_file(entries, count, ".ignore") && tool_join_path(dir_path, ".ignore", path, sizeof(path)) == 0) {
         if (load_ignore_file(options, path, dir_path, 0) != 0) return -1;
     }
-    if (tool_join_path(dir_path, ".rgignore", path, sizeof(path)) == 0) {
+    if (directory_entries_have_file(entries, count, ".rgignore") && tool_join_path(dir_path, ".rgignore", path, sizeof(path)) == 0) {
         if (load_ignore_file(options, path, dir_path, 0) != 0) return -1;
     }
     return 0;
@@ -975,14 +984,16 @@ static int rg_search_directory(const char *path,
         if (matched_out != 0) *matched_out = 0;
         return 0;
     }
-    if (load_directory_ignore_files(options, path) != 0) {
-        *error_out = 1;
-        return -1;
-    }
     if (platform_collect_entries(path, 1, entries, RG_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
         if (!options->no_messages) tool_write_error("ripgrep", "cannot read directory ", path);
         *error_out = 1;
         options->ignore_pattern_count = ignore_mark;
+        return -1;
+    }
+    if (load_directory_ignore_files(options, path, entries, count) != 0) {
+        *error_out = 1;
+        options->ignore_pattern_count = ignore_mark;
+        platform_free_entries(entries, count);
         return -1;
     }
     if (options->sort_path) rt_sort(entries, count, sizeof(entries[0]), compare_dir_entries_by_name);

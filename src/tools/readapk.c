@@ -7,6 +7,8 @@
 #define READAPK_MAX_ENTRY_SIZE 268435456ULL
 #define READAPK_MAX_PRINTED_ITEMS 64U
 #define READAPK_PATH_CAPACITY 4096U
+#define READAPK_MODE_TYPE_MASK 0170000U
+#define READAPK_MODE_SYMLINK 0120000U
 
 typedef struct {
     int show_summary;
@@ -554,7 +556,6 @@ static int readapk_join_extract_path(const char *dir, const char *name, char *bu
 
 static int readapk_ensure_parent_dirs(const char *path) {
     char prefix[READAPK_PATH_CAPACITY];
-    char link_target[READAPK_PATH_CAPACITY];
     size_t index = 0U;
 
     if (path == 0 || path[0] == '\0' || rt_strlen(path) >= sizeof(prefix)) return -1;
@@ -570,8 +571,8 @@ static int readapk_ensure_parent_dirs(const char *path) {
         memcpy(prefix, path, component_end);
         prefix[component_end] = '\0';
         if (prefix[0] == '\0') continue;
-        if (platform_read_symlink(prefix, link_target, sizeof(link_target)) == 0) return -1;
         if (platform_get_path_info(prefix, &entry) == 0) {
+            if ((entry.mode & READAPK_MODE_TYPE_MASK) == READAPK_MODE_SYMLINK) return -1;
             if (!entry.is_dir) return -1;
         } else if (platform_make_directory(prefix, 0755U) != 0) {
             if (platform_get_path_info(prefix, &entry) != 0 || !entry.is_dir) return -1;
@@ -581,12 +582,12 @@ static int readapk_ensure_parent_dirs(const char *path) {
 }
 
 static int readapk_open_extract_file(const char *path, unsigned int mode) {
-    char link_target[READAPK_PATH_CAPACITY];
     PlatformDirEntry entry;
 
     if (readapk_ensure_parent_dirs(path) != 0) return -1;
-    if (platform_read_symlink(path, link_target, sizeof(link_target)) == 0) return -1;
-    if (platform_get_path_info(path, &entry) == 0 && entry.is_dir) return -1;
+    if (platform_get_path_info(path, &entry) == 0) {
+        if (entry.is_dir || (entry.mode & READAPK_MODE_TYPE_MASK) == READAPK_MODE_SYMLINK) return -1;
+    }
     return platform_open_write(path, mode);
 }
 

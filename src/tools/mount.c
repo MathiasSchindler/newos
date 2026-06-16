@@ -108,18 +108,22 @@ static int ensure_directory_path(const char *path) {
             continue;
         }
         buffer[i] = '\0';
-        if (platform_make_directory(buffer, 0755U) != 0 &&
-            (platform_path_is_directory(buffer, &is_directory) != 0 || !is_directory)) {
-            return -1;
+        if (platform_path_is_directory(buffer, &is_directory) != 0 || !is_directory) {
+            if (platform_make_directory(buffer, 0755U) != 0 &&
+                (platform_path_is_directory(buffer, &is_directory) != 0 || !is_directory)) {
+                return -1;
+            }
         }
         buffer[i] = '/';
     }
 
     {
         int is_directory = 0;
-        if (platform_make_directory(buffer, 0755U) != 0 &&
-            (platform_path_is_directory(buffer, &is_directory) != 0 || !is_directory)) {
-            return -1;
+        if (platform_path_is_directory(buffer, &is_directory) != 0 || !is_directory) {
+            if (platform_make_directory(buffer, 0755U) != 0 &&
+                (platform_path_is_directory(buffer, &is_directory) != 0 || !is_directory)) {
+                return -1;
+            }
         }
     }
     return 0;
