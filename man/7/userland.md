@@ -33,8 +33,8 @@ The project already has working coverage across several major tool families:
   `pgrep`, `pkill`, `mount`, `umount`, and `shutdown`
 - network and transfer: `ping`, `ping6`, `ip`, `dhcp`, `nslookup`, `dig`,
   `netcat`, `ssh`, `sshd`, `wget`, `wtf`, `mail`, `httpd`, and `service`
-- archive, patching, and build: `tar`, `gzip`, `gunzip`, `bzip2`, `bunzip2`,
-  `xz`, `unxz`, `ar`, `patch`, `make`, and `ncc`
+- archive, patching, and build: `tar`, `zip`, `unzip`, `gzip`, `gunzip`,
+  `bzip2`, `bunzip2`, `xz`, `unxz`, `ar`, `patch`, `make`, and `ncc`
 - binary and file inspection: `file`, `strings`, `readelf`, `objdump`, `strip`,
   `dd`, `od`, and `hexdump`
 - media metadata: `imginfo`, `imgcheck`, `imgmeta`, and `c2pa` for lightweight

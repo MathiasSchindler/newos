@@ -141,6 +141,46 @@ mkdir -p "$WORK_DIR/ar_extract"
 assert_file_contains "$WORK_DIR/ar_extract/a.txt" '^one$' "ar x did not restore the first file"
 assert_file_contains "$WORK_DIR/ar_extract/b.txt" '^two$' "ar x did not restore the second file"
 
+mkdir -p "$WORK_DIR/zip_src/dir"
+printf 'zip-root\n' > "$WORK_DIR/zip_src/root.txt"
+printf 'zip-nested\n' > "$WORK_DIR/zip_src/dir/nested.txt"
+(
+    cd "$WORK_DIR"
+    assert_command_succeeds "${TEST_BIN_DIR}/zip" -r sample.zip zip_src
+    assert_command_succeeds "${TEST_BIN_DIR}/unzip" -l sample.zip > zip_list.out
+)
+assert_file_contains "$WORK_DIR/zip_list.out" 'zip_src/root.txt$' "unzip -l did not list the root ZIP file"
+assert_file_contains "$WORK_DIR/zip_list.out" 'zip_src/dir/nested.txt$' "unzip -l did not list the nested ZIP file"
+assert_command_succeeds "${TEST_BIN_DIR}/unzip" -t "$WORK_DIR/sample.zip" > "$WORK_DIR/zip_test.out"
+assert_file_contains "$WORK_DIR/zip_test.out" 'No errors detected' "unzip -t did not validate the archive"
+mkdir -p "$WORK_DIR/zip_extract"
+(
+    cd "$WORK_DIR/zip_extract"
+    assert_command_succeeds "${TEST_BIN_DIR}/unzip" "$WORK_DIR/sample.zip" > unzip_extract.out
+)
+assert_file_contains "$WORK_DIR/zip_extract/zip_src/root.txt" '^zip-root$' "unzip did not restore the root ZIP file"
+assert_file_contains "$WORK_DIR/zip_extract/zip_src/dir/nested.txt" '^zip-nested$' "unzip did not restore the nested ZIP file"
+assert_command_succeeds "${TEST_BIN_DIR}/unzip" -p "$WORK_DIR/sample.zip" 'zip_src/dir/nested.txt' > "$WORK_DIR/zip_pipe.out"
+assert_file_contains "$WORK_DIR/zip_pipe.out" '^zip-nested$' "unzip -p did not write the selected entry payload"
+
+mkdir -p "$WORK_DIR/zip_dest"
+assert_command_succeeds "${TEST_BIN_DIR}/unzip" -d "$WORK_DIR/zip_dest" "$WORK_DIR/sample.zip" 'zip_src/root.txt' > "$WORK_DIR/zip_dest.out"
+assert_file_contains "$WORK_DIR/zip_dest/zip_src/root.txt" '^zip-root$' "unzip -d did not extract into the destination directory"
+
+{
+    printf 'PK\003\004\024\000\000\000\000\000\000\000\000\000\000\000\000\000\004\000\000\000\004\000\000\000\015\000\000\000../escape.txt'
+    printf 'evil'
+    printf 'PK\001\002\036\003\024\000\000\000\000\000\000\000\000\000\000\000\000\000\004\000\000\000\004\000\000\000\015\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000../escape.txt'
+    printf 'PK\005\006\000\000\000\000\001\000\001\000;\000\000\000/\000\000\000\000\000'
+} > "$WORK_DIR/unsafe.zip"
+unzip_unsafe_status=0
+(
+    cd "$WORK_DIR/zip_extract"
+    "${TEST_BIN_DIR}/unzip" "$WORK_DIR/unsafe.zip"
+) >/dev/null 2>&1 || unzip_unsafe_status=$?
+[ "$unzip_unsafe_status" -ne 0 ] || fail "unzip accepted an unsafe parent-directory entry"
+[ ! -e "$WORK_DIR/escape.txt" ] || fail "unzip wrote outside the extraction directory"
+
 mkdir -p "$WORK_DIR/ar_escape/extract" "$WORK_DIR/ar_escape/outside"
 {
     printf '!<arch>\n'
