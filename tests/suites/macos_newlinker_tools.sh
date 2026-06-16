@@ -115,6 +115,15 @@ if "$BUILD_DIR/readelf" --compare --deep "$BUILD_DIR/true" "$BUILD_DIR/false" > 
 fi
 assert_file_contains "$WORK_DIR/readelf_compare_deep_different.out" 'load_commands_sha256' "readelf --compare --deep did not report load-command differences"
 
+"$BUILD_DIR/strace" -e open,read,write "$BUILD_DIR/cat" "$WORK_DIR/input.txt" > "$WORK_DIR/strace_cat.stdout" 2> "$WORK_DIR/strace_cat.stderr"
+assert_files_equal "$WORK_DIR/input.txt" "$WORK_DIR/strace_cat.stdout" "strace should preserve traced command stdout"
+assert_file_contains "$WORK_DIR/strace_cat.stderr" 'open("' "macOS strace did not decode open path arguments"
+assert_file_contains "$WORK_DIR/strace_cat.stderr" 'read(0x' "macOS strace did not trace read calls"
+assert_file_contains "$WORK_DIR/strace_cat.stderr" '"one\\ntwo\\n"' "macOS strace did not decode read/write buffer bytes"
+"$BUILD_DIR/strace" --json -e write "$BUILD_DIR/echo" hello > "$WORK_DIR/strace_echo_json.stdout" 2> "$WORK_DIR/strace_echo_json.stderr"
+assert_file_contains "$WORK_DIR/strace_echo_json.stderr" '"decoded"' "macOS strace --json did not include decoded payloads"
+assert_file_contains "$WORK_DIR/strace_echo_json.stderr" '"value":"hello\\n"' "macOS strace --json did not decode write bytes"
+
 "$BUILD_DIR/size" -m "$BUILD_DIR/true" > "$WORK_DIR/size_true_segments.out"
 assert_file_contains "$WORK_DIR/size_true_segments.out" 'Segment __TEXT' "size -m did not print Mach-O segment sizes"
 assert_file_contains "$WORK_DIR/size_true_segments.out" 'Section __text' "size -m did not print Mach-O section sizes"

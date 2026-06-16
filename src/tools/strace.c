@@ -8,6 +8,7 @@
 static int show_numbers;
 static int json_output;
 static PlatformSyscallEvent pending_event;
+static PlatformSyscallEvent pending_exit_event;
 static int have_pending;
 static long filter_numbers[STRACE_MAX_FILTERS];
 static size_t filter_count;
@@ -305,6 +306,72 @@ static void write_hex_long(int fd, unsigned long value) {
     while (count > 0U) rt_write_char(fd, temp[--count]);
 }
 
+static int write_escaped_text(int fd, const char *text, size_t length, int truncated) {
+    size_t index;
+
+    if (rt_write_char(fd, '"') != 0) return -1;
+    for (index = 0U; index < length; ++index) {
+        unsigned char ch = (unsigned char)text[index];
+
+        if (ch == '"' || ch == '\\') {
+            if (rt_write_char(fd, '\\') != 0 || rt_write_char(fd, (char)ch) != 0) return -1;
+        } else if (ch == '\n') {
+            if (rt_write_cstr(fd, "\\n") != 0) return -1;
+        } else if (ch == '\r') {
+            if (rt_write_cstr(fd, "\\r") != 0) return -1;
+        } else if (ch == '\t') {
+            if (rt_write_cstr(fd, "\\t") != 0) return -1;
+        } else if (ch >= 0x20U && ch < 0x7fU) {
+            if (rt_write_char(fd, (char)ch) != 0) return -1;
+        } else {
+            static const char hex[] = "0123456789abcdef";
+            if (rt_write_cstr(fd, "\\x") != 0 ||
+                rt_write_char(fd, hex[(ch >> 4U) & 0x0fU]) != 0 ||
+                rt_write_char(fd, hex[ch & 0x0fU]) != 0) return -1;
+        }
+    }
+    if (rt_write_char(fd, '"') != 0) return -1;
+    if (truncated) {
+        if (rt_write_cstr(fd, "...") != 0) return -1;
+    }
+    return 0;
+}
+
+static int write_decoded_arg(int fd, const PlatformSyscallEvent *event, int arg_index) {
+    const PlatformSyscallEvent *decoded_source = event;
+
+    if (pending_exit_event.decoded_kind != 0U && pending_exit_event.decoded_arg == (unsigned int)arg_index) {
+        decoded_source = &pending_exit_event;
+    }
+    if (decoded_source->decoded_kind != 0U && decoded_source->decoded_arg == (unsigned int)arg_index) {
+        size_t length = decoded_source->decoded_length;
+        if (length > sizeof(decoded_source->decoded)) length = sizeof(decoded_source->decoded);
+        return write_escaped_text(fd, decoded_source->decoded, length, decoded_source->decoded_truncated != 0U);
+    }
+    write_hex_long(fd, (unsigned long)event->args[arg_index]);
+    return 0;
+}
+
+static int json_write_decoded(const PlatformSyscallEvent *event) {
+    const PlatformSyscallEvent *decoded_source = event;
+    size_t length;
+
+    if (pending_exit_event.decoded_kind != 0U) decoded_source = &pending_exit_event;
+    if (decoded_source->decoded_kind == 0U) return 0;
+    length = decoded_source->decoded_length;
+    if (length > sizeof(decoded_source->decoded)) length = sizeof(decoded_source->decoded);
+    if (rt_write_cstr(2, ",\"decoded\":{") != 0) return -1;
+    if (rt_write_cstr(2, "\"arg\":") != 0) return -1;
+    if (rt_write_uint(2, decoded_source->decoded_arg) != 0) return -1;
+    if (rt_write_cstr(2, ",\"kind\":") != 0) return -1;
+    if (tool_json_write_string(2, decoded_source->decoded_kind == 1U ? "string" : "bytes") != 0) return -1;
+    if (rt_write_cstr(2, ",\"value\":") != 0) return -1;
+    if (tool_json_write_string_n(2, decoded_source->decoded, length) != 0) return -1;
+    if (rt_write_cstr(2, ",\"truncated\":") != 0) return -1;
+    if (rt_write_cstr(2, decoded_source->decoded_truncated ? "true" : "false") != 0) return -1;
+    return rt_write_char(2, '}');
+}
+
 static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
     PlatformSyscallEvent completed;
 
@@ -314,6 +381,7 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
         have_pending = 1;
         return 0;
     }
+    pending_exit_event = *event;
     completed = have_pending ? pending_event : *event;
     completed.result = event->result;
     have_pending = 0;
@@ -334,6 +402,7 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
         }
         if (rt_write_cstr(2, "],\"result\":") != 0) return -1;
         if (rt_write_int(2, completed.result) != 0) return -1;
+        if (json_write_decoded(&completed) != 0) return -1;
         if (rt_write_char(2, '}') != 0) return -1;
         return tool_json_end_event(2);
     }
@@ -343,9 +412,9 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
         rt_write_int(2, completed.number);
     }
     rt_write_char(2, '(');
-    write_hex_long(2, (unsigned long)completed.args[0]); rt_write_cstr(2, ", ");
-    write_hex_long(2, (unsigned long)completed.args[1]); rt_write_cstr(2, ", ");
-    write_hex_long(2, (unsigned long)completed.args[2]);
+    if (write_decoded_arg(2, &completed, 0) != 0 || rt_write_cstr(2, ", ") != 0) return -1;
+    if (write_decoded_arg(2, &completed, 1) != 0 || rt_write_cstr(2, ", ") != 0) return -1;
+    if (write_decoded_arg(2, &completed, 2) != 0) return -1;
     rt_write_cstr(2, ") = ");
     rt_write_int(2, completed.result);
     rt_write_char(2, '\n');

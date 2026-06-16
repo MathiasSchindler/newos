@@ -1484,6 +1484,7 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
         MacosStraceRecord record;
         PlatformSyscallEvent event;
         int eof = 0;
+        size_t decoded_index;
 
         if (macos_read_trace_record(pipe_fds[0], &record, &eof) != 0) {
             trace_result = -1;
@@ -1492,6 +1493,10 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
         if (eof) break;
         rt_memset(&event, 0, sizeof(event));
         event.entering = record.entering != 0U;
+        event.decoded_arg = record.decoded_arg;
+        event.decoded_kind = record.decoded_kind;
+        event.decoded_length = record.decoded_length;
+        event.decoded_truncated = record.decoded_truncated;
         event.number = record.number;
         event.args[0] = record.args[0];
         event.args[1] = record.args[1];
@@ -1500,6 +1505,9 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
         event.args[4] = record.args[4];
         event.args[5] = record.args[5];
         event.result = record.result;
+        for (decoded_index = 0U; decoded_index < sizeof(event.decoded); ++decoded_index) {
+            event.decoded[decoded_index] = record.decoded[decoded_index];
+        }
         if (callback(&event, user_data) != 0) {
             trace_result = -1;
             break;

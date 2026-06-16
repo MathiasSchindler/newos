@@ -347,9 +347,14 @@ typedef struct {
 
 typedef struct {
     int entering;
+    unsigned int decoded_arg;
+    unsigned int decoded_kind;
+    unsigned int decoded_length;
+    unsigned int decoded_truncated;
     long number;
     long args[6];
     long result;
+    char decoded[96];
 } PlatformSyscallEvent;
 
 typedef int (*PlatformSyscallTraceCallback)(const PlatformSyscallEvent *event, void *user_data);

@@ -381,6 +381,77 @@ static int macos_newlinker_trace_fd(void) {
 	return darwin_trace_fd;
 }
 
+static void macos_newlinker_trace_copy_string(MacosStraceRecord *record, unsigned int arg_index, const char *text) {
+	size_t index = 0;
+
+	if (record == 0 || text == 0) return;
+	while (index < MACOS_STRACE_DECODE_TEXT_CAPACITY && text[index] != '\0') {
+		record->decoded[index] = text[index];
+		index += 1U;
+	}
+	record->decoded_arg = arg_index;
+	record->decoded_kind = MACOS_STRACE_DECODE_KIND_STRING;
+	record->decoded_length = (unsigned int)index;
+	record->decoded_truncated = text[index] != '\0';
+}
+
+static void macos_newlinker_trace_copy_bytes(MacosStraceRecord *record, unsigned int arg_index, const void *data, long length) {
+	const char *bytes = (const char *)data;
+	size_t copy_length;
+	size_t index;
+
+	if (record == 0 || bytes == 0 || length <= 0) return;
+	copy_length = (size_t)length;
+	if (copy_length > MACOS_STRACE_DECODE_TEXT_CAPACITY) copy_length = MACOS_STRACE_DECODE_TEXT_CAPACITY;
+	for (index = 0; index < copy_length; ++index) {
+		record->decoded[index] = bytes[index];
+	}
+	record->decoded_arg = arg_index;
+	record->decoded_kind = MACOS_STRACE_DECODE_KIND_BYTES;
+	record->decoded_length = (unsigned int)copy_length;
+	record->decoded_truncated = (size_t)length > copy_length;
+}
+
+static void macos_newlinker_trace_decode(MacosStraceRecord *record) {
+	if (record == 0) return;
+	if (record->entering != 0U) {
+		switch (record->number) {
+			case DARWIN_SYS_OPEN:
+			case DARWIN_SYS_ACCESS:
+			case DARWIN_SYS_CHDIR:
+			case DARWIN_SYS_CHMOD:
+			case DARWIN_SYS_CHOWN:
+			case DARWIN_SYS_LCHOWN:
+			case DARWIN_SYS_MKDIR:
+			case DARWIN_SYS_MKFIFO:
+			case DARWIN_SYS_MKNOD:
+			case DARWIN_SYS_RMDIR:
+			case DARWIN_SYS_STAT64:
+			case DARWIN_SYS_LSTAT64:
+			case DARWIN_SYS_STATFS64:
+			case DARWIN_SYS_UNLINK:
+			case DARWIN_SYS_UNMOUNT:
+			case DARWIN_SYS_UTIMES:
+			case DARWIN_SYS_READLINK:
+			case DARWIN_SYS_EXECVE:
+				macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
+				break;
+			case DARWIN_SYS_LINK:
+			case DARWIN_SYS_RENAME:
+			case DARWIN_SYS_SYMLINK:
+				macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
+				break;
+			case DARWIN_SYS_SYSCTLBYNAME:
+				macos_newlinker_trace_copy_string(record, 0U, (const char *)record->args[0]);
+				break;
+			default:
+				break;
+		}
+	} else if (record->result > 0 && (record->number == DARWIN_SYS_READ || record->number == DARWIN_SYS_WRITE)) {
+		macos_newlinker_trace_copy_bytes(record, 1U, (const void *)record->args[1], record->result);
+	}
+}
+
 void darwin_trace_syscall(int entering, long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result) {
 	MacosStraceRecord record;
 	const char *cursor;
@@ -388,6 +459,7 @@ void darwin_trace_syscall(int entering, long number, long arg0, long arg1, long 
 	int fd = macos_newlinker_trace_fd();
 
 	if (fd < 0) return;
+	macos_newlinker_zero(&record, sizeof(record));
 	record.magic = MACOS_STRACE_RECORD_MAGIC;
 	record.entering = entering != 0 ? 1U : 0U;
 	record.number = number;
@@ -398,6 +470,7 @@ void darwin_trace_syscall(int entering, long number, long arg0, long arg1, long 
 	record.args[4] = arg4;
 	record.args[5] = arg5;
 	record.result = result;
+	macos_newlinker_trace_decode(&record);
 	cursor = (const char *)&record;
 	remaining = sizeof(record);
 	while (remaining > 0U) {
