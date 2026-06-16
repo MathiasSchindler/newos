@@ -8,8 +8,15 @@
 #define ZLIB_MAX_LITERAL_SYMBOLS 288U
 #define ZLIB_MAX_DISTANCE_SYMBOLS 32U
 #define ZLIB_MAX_CODE_LENGTH_SYMBOLS 19U
-#define ZLIB_LZ77_HASH_SLOTS 16U
+#define ZLIB_LZ77_HASH_SIZE 65536U
+#define ZLIB_LZ77_WINDOW_SIZE 32768U
+#define ZLIB_LZ77_EMPTY 0xffffffffU
 #define ZLIB_MAX_TOKENS 1048576U
+
+typedef struct {
+    unsigned int head[ZLIB_LZ77_HASH_SIZE];
+    unsigned int previous[ZLIB_LZ77_WINDOW_SIZE];
+} ZlibLz77Table;
 
 typedef struct {
     unsigned short value;
@@ -856,71 +863,78 @@ static unsigned int zlib_lz77_hash(const unsigned char *input) {
     return (value >> 16U) & 65535U;
 }
 
-static void zlib_lz77_insert(const unsigned char *input, size_t input_size, unsigned int *head, size_t offset) {
-    unsigned int *bucket;
-    unsigned int slot;
+static void zlib_lz77_table_init(ZlibLz77Table *table) {
+    unsigned int index;
 
-    if (offset + 2U >= input_size) return;
-    bucket = head + (size_t)zlib_lz77_hash(input + offset) * ZLIB_LZ77_HASH_SLOTS;
-    for (slot = ZLIB_LZ77_HASH_SLOTS - 1U; slot > 0U; --slot) bucket[slot] = bucket[slot - 1U];
-    bucket[0] = (unsigned int)offset;
+    for (index = 0U; index < ZLIB_LZ77_HASH_SIZE; ++index) table->head[index] = ZLIB_LZ77_EMPTY;
+    for (index = 0U; index < ZLIB_LZ77_WINDOW_SIZE; ++index) table->previous[index] = ZLIB_LZ77_EMPTY;
 }
 
-static ZlibMatch zlib_lz77_find_match(const unsigned char *input, size_t input_size, unsigned int *head, size_t input_offset, unsigned int max_slots) {
+static void zlib_lz77_insert(const unsigned char *input, size_t input_size, ZlibLz77Table *table, size_t offset) {
+    unsigned int hash;
+
+    if (offset + 2U >= input_size) return;
+    hash = zlib_lz77_hash(input + offset);
+    table->previous[offset & (ZLIB_LZ77_WINDOW_SIZE - 1U)] = table->head[hash];
+    table->head[hash] = (unsigned int)offset;
+}
+
+static ZlibMatch zlib_lz77_find_match(const unsigned char *input, size_t input_size, const ZlibLz77Table *table, size_t input_offset, unsigned int max_slots) {
     ZlibMatch match;
 
     match.length = 0U;
     match.distance = 0U;
     if (input_offset + 2U < input_size) {
         unsigned int hash = zlib_lz77_hash(input + input_offset);
-        unsigned int *bucket = head + (size_t)hash * ZLIB_LZ77_HASH_SLOTS;
-        unsigned int slot;
+        unsigned int candidate = table->head[hash];
+        unsigned int probes;
 
-        if (max_slots > ZLIB_LZ77_HASH_SLOTS) max_slots = ZLIB_LZ77_HASH_SLOTS;
-        for (slot = 0U; slot < max_slots; ++slot) {
-            unsigned int candidate = bucket[slot];
+        for (probes = 0U; probes < max_slots && candidate != ZLIB_LZ77_EMPTY; ++probes) {
             unsigned int length = 0U;
             unsigned int max_length = input_size - input_offset > 258U ? 258U : (unsigned int)(input_size - input_offset);
+            unsigned int next_candidate;
 
-            if (candidate == 0xffffffffU || (size_t)candidate >= input_offset || input_offset - (size_t)candidate > 32768U) continue;
+            if ((size_t)candidate >= input_offset) break;
+            if (input_offset - (size_t)candidate > ZLIB_LZ77_WINDOW_SIZE) break;
+            next_candidate = table->previous[candidate & (ZLIB_LZ77_WINDOW_SIZE - 1U)];
             while (length < max_length && input[(size_t)candidate + (size_t)length] == input[input_offset + (size_t)length]) length += 1U;
             if (length > match.length && length >= 3U) {
                 match.length = length;
                 match.distance = (unsigned int)(input_offset - (size_t)candidate);
                 if (match.length == max_length) break;
             }
+            candidate = next_candidate;
         }
     }
     return match;
 }
 
 static int zlib_tokenize_lz77(const unsigned char *input, size_t input_size, ZlibToken *tokens, size_t token_capacity, size_t *token_count_out, int level) {
-    unsigned int *head;
+    ZlibLz77Table *table;
     size_t input_offset = 0U;
-    unsigned int index;
     unsigned int max_slots = level <= 2 ? 2U : (level <= 5 ? 4U : (level <= 7 ? 8U : 16U));
     int lazy = level >= 5;
 
     if (input == 0 || tokens == 0 || token_count_out == 0) return -1;
-    head = (unsigned int *)rt_malloc(sizeof(unsigned int) * 65536U * ZLIB_LZ77_HASH_SLOTS);
-    if (head == 0) return -1;
-    for (index = 0U; index < 65536U * ZLIB_LZ77_HASH_SLOTS; ++index) head[index] = 0xffffffffU;
+    table = (ZlibLz77Table *)rt_malloc(sizeof(*table));
+    if (table == 0) return -1;
+    zlib_lz77_table_init(table);
     *token_count_out = 0U;
     while (input_offset < input_size) {
-        ZlibMatch match = zlib_lz77_find_match(input, input_size, head, input_offset, max_slots);
+        ZlibMatch match = zlib_lz77_find_match(input, input_size, table, input_offset, max_slots);
 
-        zlib_lz77_insert(input, input_size, head, input_offset);
+        zlib_lz77_insert(input, input_size, table, input_offset);
         if (lazy && match.length >= 3U && input_offset + 1U < input_size) {
-            ZlibMatch next_match = zlib_lz77_find_match(input, input_size, head, input_offset + 1U, max_slots);
+            ZlibMatch next_match = zlib_lz77_find_match(input, input_size, table, input_offset + 1U, max_slots);
             if (next_match.length > match.length) match.length = 0U;
         }
-        if (*token_count_out >= token_capacity) { rt_free(head); return -1; }
+        if (*token_count_out >= token_capacity) { rt_free(table); return -1; }
         if (match.length >= 3U) {
             unsigned int step;
             tokens[*token_count_out].value = (unsigned short)match.length;
             tokens[*token_count_out].distance = (unsigned short)match.distance;
             *token_count_out += 1U;
-            for (step = 1U; step < match.length; ++step) zlib_lz77_insert(input, input_size, head, input_offset + (size_t)step);
+            for (step = 1U; step < match.length; ++step) zlib_lz77_insert(input, input_size, table, input_offset + (size_t)step);
             input_offset += (size_t)match.length;
         } else {
             tokens[*token_count_out].value = input[input_offset];
@@ -929,7 +943,7 @@ static int zlib_tokenize_lz77(const unsigned char *input, size_t input_size, Zli
             input_offset += 1U;
         }
     }
-    rt_free(head);
+    rt_free(table);
     return 0;
 }
 
@@ -1084,51 +1098,31 @@ cleanup:
 
 int compression_zlib_fixed_lz77(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {
     ZlibBitWriter writer;
-    unsigned int *head;
+    ZlibLz77Table *table;
     size_t input_offset = 0U;
     unsigned int adler;
-    unsigned int index;
     int result = -1;
 
     if (input == 0 || output == 0 || output_size_out == 0 || compression_zlib_fixed_lz77_bound(input_size) == 0U || output_capacity < compression_zlib_fixed_lz77_bound(input_size)) return -1;
     if (output_capacity < 6U) return -1;
-    head = (unsigned int *)rt_malloc(sizeof(unsigned int) * 65536U * ZLIB_LZ77_HASH_SLOTS);
-    if (head == 0) return -1;
-    for (index = 0U; index < 65536U * ZLIB_LZ77_HASH_SLOTS; ++index) head[index] = 0xffffffffU;
+    table = (ZlibLz77Table *)rt_malloc(sizeof(*table));
+    if (table == 0) return -1;
+    zlib_lz77_table_init(table);
     output[0] = 0x78U;
     output[1] = 0x01U;
     zlib_bit_writer_init(&writer, output + 2U, output_capacity - 6U);
     if (zlib_write_bits(&writer, 1U, 1U) != 0 || zlib_write_bits(&writer, 1U, 2U) != 0) goto cleanup;
     while (input_offset < input_size) {
-        unsigned int best_length = 0U;
-        unsigned int best_distance = 0U;
+        ZlibMatch match;
 
-        if (input_offset + 2U < input_size) {
-            unsigned int hash = zlib_lz77_hash(input + input_offset);
-            unsigned int *bucket = head + (size_t)hash * ZLIB_LZ77_HASH_SLOTS;
-            unsigned int slot;
-
-            for (slot = 0U; slot < ZLIB_LZ77_HASH_SLOTS; ++slot) {
-                unsigned int candidate = bucket[slot];
-                unsigned int length = 0U;
-                unsigned int max_length = input_size - input_offset > 258U ? 258U : (unsigned int)(input_size - input_offset);
-
-                if (candidate == 0xffffffffU || (size_t)candidate >= input_offset || input_offset - (size_t)candidate > 32768U) continue;
-                while (length < max_length && input[(size_t)candidate + (size_t)length] == input[input_offset + (size_t)length]) length += 1U;
-                if (length > best_length && length >= 3U) {
-                    best_length = length;
-                    best_distance = (unsigned int)(input_offset - (size_t)candidate);
-                    if (best_length == max_length) break;
-                }
-            }
-            zlib_lz77_insert(input, input_size, head, input_offset);
-        }
-        if (best_length >= 3U) {
+        match = zlib_lz77_find_match(input, input_size, table, input_offset, 16U);
+        zlib_lz77_insert(input, input_size, table, input_offset);
+        if (match.length >= 3U) {
             unsigned int step;
 
-            if (zlib_write_fixed_match(&writer, best_length, best_distance) != 0) goto cleanup;
-            for (step = 1U; step < best_length; ++step) zlib_lz77_insert(input, input_size, head, input_offset + (size_t)step);
-            input_offset += (size_t)best_length;
+            if (zlib_write_fixed_match(&writer, match.length, match.distance) != 0) goto cleanup;
+            for (step = 1U; step < match.length; ++step) zlib_lz77_insert(input, input_size, table, input_offset + (size_t)step);
+            input_offset += (size_t)match.length;
         } else {
             if (zlib_write_fixed_symbol(&writer, input[input_offset]) != 0) goto cleanup;
             input_offset += 1U;
@@ -1145,6 +1139,6 @@ int compression_zlib_fixed_lz77(const unsigned char *input, size_t input_size, u
     result = 0;
 
 cleanup:
-    rt_free(head);
+    rt_free(table);
     return result;
 }

@@ -5,6 +5,7 @@
 #define PROFILER_MAX_FUNCTIONS 8192U
 #define PROFILER_MAX_SYMBOLS 8192U
 #define PROFILER_MAX_STACK 4096U
+#define PROFILER_MAX_SLIDE_CANDIDATES 128U
 #define PROFILER_LINE_CAPACITY 1024U
 #define PROFILER_NAME_CAPACITY 256U
 
@@ -40,6 +41,11 @@ typedef struct {
     unsigned long long open_frames;
 } ProfileStats;
 
+typedef struct {
+    unsigned long long delta;
+    unsigned int count;
+} ProfileSlideCandidate;
+
 typedef enum {
     PROFILE_SORT_SELF,
     PROFILE_SORT_TOTAL,
@@ -51,6 +57,7 @@ static ProfileFunction profiler_functions[PROFILER_MAX_FUNCTIONS];
 static ProfileSymbol profiler_symbols[PROFILER_MAX_SYMBOLS];
 static ProfileStackEntry profiler_stack[PROFILER_MAX_STACK];
 static ProfileRow profiler_rows[PROFILER_MAX_FUNCTIONS];
+static ProfileSlideCandidate profiler_slide_candidates[PROFILER_MAX_SLIDE_CANDIDATES];
 static size_t profiler_function_count;
 static size_t profiler_symbol_count;
 static ProfileSortKey profiler_sort_key = PROFILE_SORT_SELF;
@@ -67,6 +74,8 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "\nProject build shortcut:\n");
     rt_write_cstr(1, "  make freestanding PROFILE=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/freestanding-linux-x86_64/tool ...\n");
+    rt_write_cstr(1, "  MACOS_NEWLINKER_MAP_DIR=build/profile-maps make freestanding PROFILE=1\n");
+    rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/newlinker-macos-aarch64/tool ...\n");
     rt_write_cstr(1, "\nTrace lines accepted by profiler:\n");
     rt_write_cstr(1, "  enter TIME_NS ADDRESS\n");
     rt_write_cstr(1, "  exit  TIME_NS ADDRESS\n");
@@ -74,6 +83,7 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "\nSymbol files may use either format:\n");
     rt_write_cstr(1, "  0x401000 function_name\n");
     rt_write_cstr(1, "  0000000000401000 T function_name\n");
+    rt_write_cstr(1, "  symbol 0x0000000100001000 64 __TEXT,__text _function_name path.o\n");
 }
 
 static int parse_unsigned_auto(const char *text, unsigned long long *value_out) {
@@ -216,6 +226,13 @@ static int symbol_type_is_function(const char *type) {
            rt_strcmp(type, "W") == 0 || rt_strcmp(type, "w") == 0;
 }
 
+static const char *display_symbol_name(const char *name) {
+    if (name != 0 && name[0] == '_' && name[1] != '\0') {
+        return name + 1;
+    }
+    return name;
+}
+
 static void add_symbol(unsigned long long address, const char *name, int function_symbol) {
     size_t i;
 
@@ -238,6 +255,31 @@ static void add_symbol(unsigned long long address, const char *name, int functio
     profiler_symbols[profiler_symbol_count].function_symbol = function_symbol;
     rt_copy_string(profiler_symbols[profiler_symbol_count].name, sizeof(profiler_symbols[profiler_symbol_count].name), name);
     profiler_symbol_count += 1U;
+}
+
+static int parse_linker_map_symbol_line(const char *line) {
+    const char *cursor = line;
+    char keyword[32];
+    char address_token[64];
+    char size_token[64];
+    char section[64];
+    char name[PROFILER_NAME_CAPACITY];
+    unsigned long long address;
+
+    if (!next_token(&cursor, keyword, sizeof(keyword)) || rt_strcmp(keyword, "symbol") != 0) {
+        return 0;
+    }
+    if (!next_token(&cursor, address_token, sizeof(address_token)) ||
+        !next_token(&cursor, size_token, sizeof(size_token)) ||
+        !next_token(&cursor, section, sizeof(section)) ||
+        !next_token(&cursor, name, sizeof(name))) {
+        return 0;
+    }
+    if (rt_strcmp(section, "__TEXT,__text") != 0 || parse_address_token(address_token, &address) != 0) {
+        return 0;
+    }
+    add_symbol(address, display_symbol_name(name), 1);
+    return 1;
 }
 
 static const char *symbol_for_address(unsigned long long address) {
@@ -325,6 +367,9 @@ static int read_symbols(const char *path) {
         char third[PROFILER_NAME_CAPACITY];
         unsigned long long address;
 
+        if (parse_linker_map_symbol_line(line)) {
+            continue;
+        }
         if (!next_token(&cursor, first, sizeof(first))) {
             continue;
         }
@@ -344,6 +389,112 @@ static int read_symbols(const char *path) {
     }
     tool_close_input(fd, should_close);
     return 0;
+}
+
+static int compare_rows_by_address(const void *left_ptr, const void *right_ptr) {
+    const ProfileRow *left = (const ProfileRow *)left_ptr;
+    const ProfileRow *right = (const ProfileRow *)right_ptr;
+    const ProfileFunction *lf = &profiler_functions[left->function_index];
+    const ProfileFunction *rf = &profiler_functions[right->function_index];
+
+    if (lf->address < rf->address) return -1;
+    if (lf->address > rf->address) return 1;
+    return 0;
+}
+
+static int function_address_exists_sorted(unsigned long long address) {
+    size_t low = 0U;
+    size_t high = profiler_function_count;
+
+    while (low < high) {
+        size_t mid = low + ((high - low) / 2U);
+        unsigned long long mid_address = profiler_functions[profiler_rows[mid].function_index].address;
+
+        if (mid_address == address) return 1;
+        if (mid_address < address) {
+            low = mid + 1U;
+        } else {
+            high = mid;
+        }
+    }
+    return 0;
+}
+
+static void remember_slide_candidate(unsigned long long delta) {
+    size_t i;
+
+    for (i = 0U; i < PROFILER_MAX_SLIDE_CANDIDATES; ++i) {
+        if (profiler_slide_candidates[i].count != 0U && profiler_slide_candidates[i].delta == delta) {
+            profiler_slide_candidates[i].count += 1U;
+            return;
+        }
+    }
+    for (i = 0U; i < PROFILER_MAX_SLIDE_CANDIDATES; ++i) {
+        if (profiler_slide_candidates[i].count == 0U) {
+            profiler_slide_candidates[i].delta = delta;
+            profiler_slide_candidates[i].count = 1U;
+            return;
+        }
+    }
+    for (i = 0U; i < PROFILER_MAX_SLIDE_CANDIDATES; ++i) {
+        profiler_slide_candidates[i].count -= 1U;
+    }
+}
+
+static unsigned int count_symbol_matches_for_slide(unsigned long long delta) {
+    size_t i;
+    unsigned int matches = 0U;
+
+    for (i = 0U; i < profiler_symbol_count; ++i) {
+        if (function_address_exists_sorted(profiler_symbols[i].address + delta)) {
+            matches += 1U;
+        }
+    }
+    return matches;
+}
+
+static void infer_symbol_slide(void) {
+    size_t i;
+    size_t j;
+    unsigned int exact_matches;
+    unsigned int best_matches;
+    unsigned long long best_delta = 0ULL;
+
+    if (profiler_symbol_count == 0U || profiler_function_count == 0U) return;
+    for (i = 0U; i < profiler_function_count; ++i) {
+        profiler_rows[i].function_index = i;
+    }
+    rt_sort(profiler_rows, profiler_function_count, sizeof(profiler_rows[0]), compare_rows_by_address);
+    exact_matches = count_symbol_matches_for_slide(0ULL);
+    rt_memset(profiler_slide_candidates, 0, sizeof(profiler_slide_candidates));
+    for (i = 0U; i < profiler_function_count; ++i) {
+        unsigned long long function_address = profiler_functions[i].address;
+
+        for (j = 0U; j < profiler_symbol_count; ++j) {
+            unsigned long long symbol_address = profiler_symbols[j].address;
+            unsigned long long delta;
+
+            if (function_address < symbol_address) continue;
+            delta = function_address - symbol_address;
+            if ((delta & 0xfffULL) != 0ULL) continue;
+            remember_slide_candidate(delta);
+        }
+    }
+    best_matches = exact_matches;
+    for (i = 0U; i < PROFILER_MAX_SLIDE_CANDIDATES; ++i) {
+        unsigned int matches;
+
+        if (profiler_slide_candidates[i].count == 0U) continue;
+        matches = count_symbol_matches_for_slide(profiler_slide_candidates[i].delta);
+        if (matches > best_matches) {
+            best_matches = matches;
+            best_delta = profiler_slide_candidates[i].delta;
+        }
+    }
+    if (best_delta == 0ULL || best_matches < 2U || best_matches <= exact_matches) return;
+    for (i = 0U; i < profiler_symbol_count; ++i) {
+        profiler_symbols[i].address += best_delta;
+    }
 }
 
 static int process_enter(unsigned long long timestamp_ns, unsigned long long address, size_t *stack_depth_io, ProfileStats *stats) {
@@ -655,6 +806,7 @@ int main(int argc, char **argv) {
     if (read_trace(trace_path, &stats) != 0) {
         return 1;
     }
+    infer_symbol_slide();
     write_report(limit, csv, &stats);
     return 0;
 }

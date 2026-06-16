@@ -26,7 +26,8 @@ gcc   -finstrument-functions -fno-omit-frame-pointer -g -O2 ...
 clang -finstrument-functions -fno-omit-frame-pointer -g -O2 ...
 ```
 
-The project build can add these hooks for GCC/Clang based Linux builds:
+The project build can add these hooks for Linux freestanding builds and for the
+macOS/aarch64 project-linked `make freestanding` path:
 
 ```
 make freestanding PROFILE=1
@@ -34,11 +35,21 @@ NEWOS_PROFILE=cat.nprof build/freestanding-linux-x86_64/cat README.md >/dev/null
 profiler cat.nprof
 ```
 
+For compact macOS project-linked Mach-O binaries, also ask the linker for maps
+so addresses can be named after ASLR slides the executable at run time:
+
+```
+mkdir -p build/profile-maps
+make freestanding PROFILE=1 MACOS_NEWLINKER_MAP_DIR=build/profile-maps
+NEWOS_PROFILE=zip.nprof build/newlinker-macos-aarch64/zip out.zip input.txt
+build/newlinker-macos-aarch64/profiler -m build/profile-maps/zip.map zip.nprof
+```
+
 When `PROFILE=1` is enabled, the build adds
 `-finstrument-functions -fno-omit-frame-pointer -fno-inline` and links the small
-Linux platform hook implementation. The runtime is inactive unless
-`NEWOS_PROFILE` names an output file. Set `NEWOS_PROFILE=0`, `off`, `false`, or
-`no` to force profiling off for a profiled binary.
+platform hook implementation. The runtime is inactive unless `NEWOS_PROFILE`
+names an output file. Set `NEWOS_PROFILE=0`, `off`, `false`, or `no` to force
+profiling off for a profiled binary.
 
 Runtime hooks emit trace lines in this format:
 
@@ -59,7 +70,12 @@ hex address such as those emitted by `nm`.
   ```
   0x401000 function_name
   0000000000401000 T function_name
+  symbol 0x0000000100001000 64 __TEXT,__text _function_name path.o
   ```
+
+  The third form is the Mach-O project linker map format. When trace addresses
+  are ASLR-slid relative to a newlinker map, `profiler` infers the slide from
+  matching function addresses and applies it automatically.
 
 - `-n COUNT`, `--limit COUNT` - print only the top COUNT functions. The default
   is 30. Use 0 to print all functions.
@@ -124,9 +140,9 @@ profiler -m program.syms program.nprof
 ```
 
 Newlinker freestanding binaries are intentionally compact and normally do not
-carry a final symbol table, so `nm` may not be able to name their addresses. In
-that case, run `profiler` without `-m` for an address-only report, or use symbols
-from an equivalent non-stripped GCC/Clang-linked profiling build.
+carry a final symbol table, so `nm` may not be able to name their addresses. On
+macOS project-linked builds, prefer `MACOS_NEWLINKER_MAP_DIR=DIR` and pass the
+matching `DIR/TOOL.map` file to `profiler -m`.
 
 ## CURRENT CAPABILITIES
 
@@ -137,13 +153,16 @@ from an equivalent non-stripped GCC/Clang-linked profiling build.
 - resolves exact or nearest-lower function addresses through simple symbol files
   or `nm -n` output; non-function `nm` symbols are ignored
 - writes text or CSV reports
-- includes a buffered Linux trace runtime for `PROFILE=1` builds
+- includes buffered Linux and macOS/aarch64 trace runtimes for `PROFILE=1`
+  builds; the macOS runtime uses the arm64 virtual counter for timestamps so the
+  instrumentation hot path does not issue timing syscalls
 
 ## LIMITATIONS
 
 - this is an instrumentation trace reporter, not a sampling profiler
-- `PROFILE=1` currently targets GCC/Clang based Linux builds; `ncc` is not yet a
-  suitable C compiler for this workflow
+- `PROFILE=1` currently targets GCC/Clang based Linux and macOS/aarch64
+  project-linked builds; `ncc` is not yet a suitable C compiler for this
+  workflow
 - the runtime writes buffered text traces; this is much cheaper than flushing
   every event, but still high overhead compared with no profiling
 - timings are best used comparatively inside one run, not as exact wall-clock
@@ -155,11 +174,12 @@ from an equivalent non-stripped GCC/Clang-linked profiling build.
 - profiling builds use `-fno-inline` by default so function-level costs stay
   visible; normal optimized/LTO builds may inline or remove functions that you
   expected to see
-- PIE/ASLR can shift addresses. Use symbols from the exact profiled binary, and
-  prefer non-PIE/stable-address profiling builds when comparing raw addresses
+- PIE/ASLR can shift addresses. `profiler` can infer the slide for newlinker map
+  files, but use symbols or maps from the exact profiled binary when comparing
+  raw addresses
 - compact newlinker outputs usually do not include enough symbol information for
-  `nm`; address-only reports still work, and richer newlinker symbol maps remain
-  future work
+  `nm`; address-only reports still work, and linker maps are the preferred
+  symbol source
 - recursive functions are supported through stack nesting, but address-only
   symbolization cannot distinguish inlined call sites
 - async signal profiling, statistical sampling, call graph arc percentages, and

@@ -91,6 +91,9 @@ model Apple recommends for general macOS software.
   environment, metadata, symlink, sleep, checksum/file helper, basic filesystem
   mutation, process id, and page allocation primitives for the declared macOS
   project-linked tool surface
+- `profiler_runtime.c` — GCC/Clang `-finstrument-functions` hooks for macOS
+  project-linked profiling builds; trace output uses raw Darwin file syscalls,
+  while timestamps use the arm64 virtual counter to keep the hook hot path small
 - `src/arch/aarch64/macos/syscall.h` — inline Darwin syscall helpers for the
   platform adapter
 
