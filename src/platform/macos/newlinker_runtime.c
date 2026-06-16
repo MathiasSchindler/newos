@@ -362,7 +362,7 @@ static long macos_newlinker_trace_write_raw(int fd, const void *buffer, size_t c
 	register long x1 __asm__("x1") = (long)buffer;
 	register long x2 __asm__("x2") = (long)count;
 
-	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x16) : : "memory", "cc");
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x16) : : "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x17", "memory", "cc");
 	return x0;
 }
 
@@ -370,7 +370,7 @@ static long macos_newlinker_trace_getpid_raw(void) {
 	register long x16 __asm__("x16") = DARWIN_SYS_GETPID;
 	register long x0 __asm__("x0");
 
-	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "=r"(x0), "+r"(x16) : : "memory", "cc");
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "=r"(x0), "+r"(x16) : : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x17", "memory", "cc");
 	return x0;
 }
 
@@ -380,7 +380,7 @@ static unsigned long long macos_newlinker_trace_time_raw(void) {
 	register long x0 __asm__("x0") = (long)&now;
 	register long x1 __asm__("x1") = 0;
 
-	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x16) : : "memory", "cc");
+	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x16) : : "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x17", "memory", "cc");
 	if (x0 < 0) return 0ULL;
 	return ((unsigned long long)now.tv_sec * 1000000000ULL) + ((unsigned long long)now.tv_usec * 1000ULL);
 }
@@ -500,7 +500,7 @@ static void macos_newlinker_trace_decode(MacosStraceRecord *record) {
 	}
 }
 
-void darwin_trace_record(MacosStraceRecord *record) {
+__attribute__((noinline)) void darwin_trace_record(MacosStraceRecord *record) {
 	const char *cursor;
 	size_t remaining;
 	int fd = macos_newlinker_trace_fd();

@@ -333,7 +333,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall run-userland test test-crypto-usb test-phase1 test-smoke test-freestanding test-userland test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
+.PHONY: all host freestanding freestanding-macos macos-newlinker-tiny macos-newlinker-tools test-macos-newlinker-tools selfhost inception experimental-multicall run-userland test test-crypto-usb test-phase1 test-smoke test-freestanding test-userland test-inception test-linker-cli test-newlinker-expack test-newlinker-optimizations test-experimental-multicall stocktake-strace-phase1 newlinker-size-report newlinker-lto-size-report macos-freestanding-size-report macos-freestanding-size-compare benchmark clean
 
 test: test-crypto-usb test-freestanding test-userland test-phase1 test-smoke
 
@@ -348,6 +348,9 @@ endif
 
 test-phase1: freestanding
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
+
+stocktake-strace-phase1: freestanding
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./scripts/stocktake-strace-phase1.sh $(PHASE1_FILTER)
 
 test-smoke: freestanding
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" SKIP_PHASE1=1 sh ./tests/run_smoke_tests.sh

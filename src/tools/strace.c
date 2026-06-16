@@ -2,6 +2,10 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#if defined(__APPLE__)
+#include "../platform/macos/trace.h"
+#endif
+
 #define STRACE_MAX_FILTERS 64
 #define STRACE_FILTER_TOKEN_CAPACITY 32
 #define STRACE_MAX_SUMMARY 128
@@ -18,6 +22,9 @@ static PlatformSyscallEvent pending_exit_event;
 static int have_pending;
 static long filter_numbers[STRACE_MAX_FILTERS];
 static size_t filter_count;
+static const char *records_path;
+
+static int is_byte_count_syscall_number(long number);
 
 typedef struct {
     long number;
@@ -313,7 +320,7 @@ static void update_summary(const PlatformSyscallEvent *event, unsigned long long
     }
     summaries[i].calls += 1UL;
     if (event->result < 0) summaries[i].errors += 1UL;
-    if (event->result > 0) summaries[i].result_total += (unsigned long long)event->result;
+    if (event->result > 0 && is_byte_count_syscall_number(event->number)) summaries[i].result_total += (unsigned long long)event->result;
     summaries[i].duration_total_ns += duration_ns;
 }
 
@@ -443,6 +450,14 @@ static int is_write_syscall_number(long number) {
     return number == 4;
 #else
     return number == 1;
+#endif
+}
+
+static int is_byte_count_syscall_number(long number) {
+#if defined(__APPLE__)
+    return number == 3 || number == 4;
+#else
+    return number == 0 || number == 1 || number == 17 || number == 18;
 #endif
 }
 
@@ -627,8 +642,69 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
 }
 
 static void print_usage(void) {
-    tool_write_usage("strace", "[-n] [-p] [-T] [-c] [-o FILE] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]");
+    tool_write_usage("strace", "[-n] [-p] [-T] [-c] [-o FILE] [-e SYSCALL[,SYSCALL...]] [--json] [--records FILE] COMMAND [ARG ...]");
 }
+
+#if defined(__APPLE__)
+static int replay_macos_trace_records(const char *path) {
+    int fd;
+
+    if (path == 0) return -1;
+    fd = platform_open_read(path);
+    if (fd < 0) return -1;
+    for (;;) {
+        MacosStraceRecord record;
+        PlatformSyscallEvent event;
+        char *cursor = (char *)&record;
+        size_t remaining = sizeof(record);
+        int got_any = 0;
+        size_t decoded_index;
+
+        while (remaining > 0U) {
+            long amount = platform_read(fd, cursor, remaining);
+            if (amount == 0) {
+                (void)platform_close(fd);
+                return got_any ? -1 : 0;
+            }
+            if (amount < 0) {
+                (void)platform_close(fd);
+                return -1;
+            }
+            got_any = 1;
+            cursor += (size_t)amount;
+            remaining -= (size_t)amount;
+        }
+        if (record.magic != MACOS_STRACE_RECORD_MAGIC) {
+            (void)platform_close(fd);
+            return -1;
+        }
+        rt_memset(&event, 0, sizeof(event));
+        event.entering = record.entering != 0U;
+        event.pid = record.pid;
+        event.timestamp_ns = record.timestamp_ns;
+        event.duration_ns = record.duration_ns;
+        event.decoded_arg = record.decoded_arg;
+        event.decoded_kind = record.decoded_kind;
+        event.decoded_length = record.decoded_length;
+        event.decoded_truncated = record.decoded_truncated;
+        event.number = record.number;
+        event.args[0] = record.args[0];
+        event.args[1] = record.args[1];
+        event.args[2] = record.args[2];
+        event.args[3] = record.args[3];
+        event.args[4] = record.args[4];
+        event.args[5] = record.args[5];
+        event.result = record.result;
+        for (decoded_index = 0U; decoded_index < sizeof(event.decoded); ++decoded_index) {
+            event.decoded[decoded_index] = record.decoded[decoded_index];
+        }
+        if (trace_callback(&event, 0) != 0) {
+            (void)platform_close(fd);
+            return -1;
+        }
+    }
+}
+#endif
 
 int main(int argc, char **argv) {
     int argi = 1;
@@ -660,6 +736,15 @@ int main(int argc, char **argv) {
                 tool_write_error("strace", "failed to open output", argv[argi] + 9);
                 return 1;
             }
+        } else if (rt_strcmp(argv[argi], "--records") == 0) {
+            if (argi + 1 >= argc) {
+                tool_write_error("strace", "missing records path", 0);
+                return 1;
+            }
+            records_path = argv[argi + 1];
+            argi += 1;
+        } else if (rt_strncmp(argv[argi], "--records=", 10U) == 0) {
+            records_path = argv[argi] + 10;
         } else if (rt_strcmp(argv[argi], "-e") == 0 || rt_strcmp(argv[argi], "--trace") == 0) {
             if (argi + 1 >= argc || parse_filter_spec(argv[argi + 1]) != 0) {
                 tool_write_error("strace", "invalid syscall filter", argi + 1 < argc ? argv[argi + 1] : 0);
@@ -686,6 +771,24 @@ int main(int argc, char **argv) {
             break;
         }
         argi++;
+    }
+    if (records_path != 0) {
+        trace_output_fd = -1;
+#if defined(__APPLE__)
+        if (replay_macos_trace_records(records_path) != 0) {
+            tool_write_error("strace", "failed to read trace records", records_path);
+            return 1;
+        }
+#else
+        tool_write_error("strace", "trace record replay is not supported on this platform", 0);
+        return 1;
+#endif
+        if (write_summary() != 0) {
+            tool_write_error("strace", "failed to write summary", 0);
+            return 1;
+        }
+        if (output_fd != 2) (void)platform_close(output_fd);
+        return 0;
     }
     if (argi >= argc) {
         print_usage();

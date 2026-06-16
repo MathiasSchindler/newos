@@ -52,6 +52,11 @@
 #define MACOS_ICMPV6_ECHO_REQUEST 128
 #define MACOS_ICMPV6_ECHO_REPLY 129
 #define MACOS_ICMPV6_TIME_EXCEEDED 3
+#if defined(NEWOS_MACOS_NEWLINKER)
+#define MACOS_TRACE_NOINLINE __attribute__((noinline))
+#else
+#define MACOS_TRACE_NOINLINE
+#endif
 
 typedef struct {
     long tv_sec;
@@ -77,6 +82,9 @@ typedef struct {
 static unsigned long long temp_path_counter;
 #if defined(NEWOS_MACOS_NEWLINKER)
 static MacosStraceRecord macos_trace_record;
+static unsigned int macos_trace_filter_mask;
+static int macos_trace_filter_ready;
+static int macos_trace_no_metadata = -1;
 #endif
 
 extern char **environ;
@@ -179,9 +187,10 @@ static void fill_entry_from_stat(const char *display_name, const struct stat *st
     rt_unsigned_to_string((unsigned long long)stat_info->st_gid, entry->group, sizeof(entry->group));
 }
 
-static unsigned long long macos_trace_now_ns(void);
-static int macos_trace_enabled(void);
-static void macos_trace_complete(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result, unsigned long long start_ns);
+static MACOS_TRACE_NOINLINE unsigned long long macos_trace_now_ns(void);
+static MACOS_TRACE_NOINLINE int macos_trace_enabled(void);
+static unsigned long long macos_trace_start_ns(long number);
+static MACOS_TRACE_NOINLINE void macos_trace_complete(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result, unsigned long long start_ns);
 
 static int fill_entry_mode(const char *display_name, const char *path, PlatformDirEntry *entry, int follow_symlinks) {
     struct stat stat_info;
@@ -194,7 +203,7 @@ static int fill_entry_mode(const char *display_name, const char *path, PlatformD
     }
 
     number = follow_symlinks ? DARWIN_SYS_STAT64 : DARWIN_SYS_LSTAT64;
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(number);
     result = darwin_syscall2(number, (long)path, (long)&stat_info);
     macos_trace_complete(number, (long)path, (long)&stat_info, 0, 0, 0, 0, result, start_ns);
     if (result < 0) {
@@ -246,7 +255,7 @@ static int signal_name_matches(const char *text, const char *name) {
     return text[offset] == '\0' && name[offset] == '\0';
 }
 
-static unsigned long long macos_trace_now_ns(void) {
+static MACOS_TRACE_NOINLINE unsigned long long macos_trace_now_ns(void) {
     struct timeval now;
 
 #if defined(NEWOS_MACOS_NEWLINKER)
@@ -270,7 +279,7 @@ static int macos_trace_parse_fd(const char *value) {
     return (int)result;
 }
 
-static int macos_trace_output_fd(void) {
+static MACOS_TRACE_NOINLINE int macos_trace_output_fd(void) {
 #if defined(NEWOS_MACOS_NEWLINKER)
     size_t env_index;
 
@@ -291,21 +300,127 @@ static int macos_trace_output_fd(void) {
 #endif
 }
 
-static int macos_trace_enabled(void) {
+static MACOS_TRACE_NOINLINE int macos_trace_enabled(void) {
     return macos_trace_output_fd() >= 0;
 }
 
-static void macos_trace_complete(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result, unsigned long long start_ns) {
+#if defined(NEWOS_MACOS_NEWLINKER)
+#define MACOS_TRACE_FILTER_OPEN 0x0001U
+#define MACOS_TRACE_FILTER_READ 0x0002U
+#define MACOS_TRACE_FILTER_WRITE 0x0004U
+#define MACOS_TRACE_FILTER_CLOSE 0x0008U
+#define MACOS_TRACE_FILTER_STAT 0x0010U
+#define MACOS_TRACE_FILTER_PATH 0x0020U
+
+static int macos_trace_filter_token_matches(const char *token, size_t length, const char *name) {
+    size_t index;
+
+    for (index = 0U; index < length && name[index] != '\0'; ++index) {
+        if (token[index] != name[index]) return 0;
+    }
+    return index == length && name[index] == '\0';
+}
+
+static void macos_trace_add_filter_token(const char *token, size_t length) {
+    if (length == 0U) return;
+    if (macos_trace_filter_token_matches(token, length, "all")) {
+        macos_trace_filter_mask = 0xffffffffU;
+    } else if (macos_trace_filter_token_matches(token, length, "default")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_OPEN | MACOS_TRACE_FILTER_CLOSE | MACOS_TRACE_FILTER_STAT | MACOS_TRACE_FILTER_PATH;
+    } else if (macos_trace_filter_token_matches(token, length, "open")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_OPEN;
+    } else if (macos_trace_filter_token_matches(token, length, "read")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_READ;
+    } else if (macos_trace_filter_token_matches(token, length, "write")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_WRITE;
+    } else if (macos_trace_filter_token_matches(token, length, "close")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_CLOSE;
+    } else if (macos_trace_filter_token_matches(token, length, "stat")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_STAT;
+    } else if (macos_trace_filter_token_matches(token, length, "path")) {
+        macos_trace_filter_mask |= MACOS_TRACE_FILTER_PATH;
+    }
+}
+
+static unsigned int macos_trace_filter_for_syscall(long number) {
+    switch (number) {
+        case DARWIN_SYS_OPEN: return MACOS_TRACE_FILTER_OPEN;
+        case DARWIN_SYS_READ: return MACOS_TRACE_FILTER_READ;
+        case DARWIN_SYS_WRITE: return MACOS_TRACE_FILTER_WRITE;
+        case DARWIN_SYS_CLOSE: return MACOS_TRACE_FILTER_CLOSE;
+        case DARWIN_SYS_STAT64:
+        case DARWIN_SYS_LSTAT64:
+        case DARWIN_SYS_STATFS64:
+            return MACOS_TRACE_FILTER_STAT;
+        case DARWIN_SYS_ACCESS:
+        case DARWIN_SYS_CHDIR:
+        case DARWIN_SYS_LINK:
+        case DARWIN_SYS_MKDIR:
+        case DARWIN_SYS_READLINK:
+        case DARWIN_SYS_RENAME:
+        case DARWIN_SYS_RMDIR:
+        case DARWIN_SYS_UNLINK:
+            return MACOS_TRACE_FILTER_PATH;
+        default:
+            return 0xffffffffU;
+    }
+}
+
+static MACOS_TRACE_NOINLINE int macos_trace_filter_allows(long number) {
+    const char *filter;
+    size_t index = 0U;
+    size_t start = 0U;
+
+    if (!macos_trace_filter_ready) {
+        macos_trace_filter_ready = 1;
+        filter = platform_getenv(MACOS_STRACE_FILTER_ENV);
+        if (filter == 0 || filter[0] == '\0') {
+            macos_trace_filter_mask = 0xffffffffU;
+        } else {
+            while (1) {
+                if (filter[index] == ',' || filter[index] == ' ' || filter[index] == '\0') {
+                    macos_trace_add_filter_token(filter + start, index - start);
+                    if (filter[index] == '\0') break;
+                    start = index + 1U;
+                }
+                index += 1U;
+            }
+        }
+    }
+    return (macos_trace_filter_mask & macos_trace_filter_for_syscall(number)) != 0U;
+}
+
+static int macos_trace_wants(long number) {
+    return macos_trace_enabled() && macos_trace_filter_allows(number);
+}
+
+static int macos_trace_metadata_enabled(void) {
+    const char *value;
+
+    if (macos_trace_no_metadata < 0) {
+        value = platform_getenv(MACOS_STRACE_NO_METADATA_ENV);
+        macos_trace_no_metadata = value != 0 && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+    }
+    return !macos_trace_no_metadata;
+}
+
+static unsigned long long macos_trace_start_ns(long number) {
+    return macos_trace_wants(number) && macos_trace_metadata_enabled() ? macos_trace_now_ns() : 0ULL;
+}
+#endif
+
+static MACOS_TRACE_NOINLINE void macos_trace_complete(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long result, unsigned long long start_ns) {
 #if defined(NEWOS_MACOS_NEWLINKER)
     MacosStraceRecord *record = &macos_trace_record;
     unsigned long long end_ns;
 
     if (!macos_trace_enabled()) return;
-    end_ns = start_ns != 0ULL ? macos_trace_now_ns() : 0ULL;
+    if (!macos_trace_filter_allows(number)) return;
+    end_ns = start_ns != 0ULL && macos_trace_metadata_enabled() ? macos_trace_now_ns() : 0ULL;
 
     rt_memset(record, 0, sizeof(*record));
     record->magic = MACOS_STRACE_RECORD_MAGIC;
-    record->pid = platform_get_process_id();
+    record->pid = macos_trace_metadata_enabled() ? platform_get_process_id() : 0;
     record->timestamp_ns = end_ns;
     record->number = number;
     record->args[0] = arg0;
@@ -380,14 +495,14 @@ static int join_path_local(const char *base, const char *name, char *buffer, siz
 }
 
 long platform_write(int fd, const void *buffer, size_t count) {
-    int trace_enabled = macos_trace_enabled();
+    int trace_enabled = macos_trace_wants(DARWIN_SYS_WRITE);
     long result = darwin_syscall3(DARWIN_SYS_WRITE, (long)fd, (long)buffer, (long)count);
     if (trace_enabled) macos_trace_complete(DARWIN_SYS_WRITE, (long)fd, (long)buffer, (long)count, 0, 0, 0, result, 0ULL);
     return result;
 }
 
 long platform_read(int fd, void *buffer, size_t count) {
-    int trace_enabled = macos_trace_enabled();
+    int trace_enabled = macos_trace_wants(DARWIN_SYS_READ);
     long result = darwin_syscall3(DARWIN_SYS_READ, (long)fd, (long)buffer, (long)count);
     if (trace_enabled) macos_trace_complete(DARWIN_SYS_READ, (long)fd, (long)buffer, (long)count, 0, 0, 0, result, 0ULL);
     return result;
@@ -428,7 +543,7 @@ int platform_close(int fd) {
     if (fd >= 0 && fd <= 2) {
         return 0;
     }
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_CLOSE);
     result = darwin_syscall1(DARWIN_SYS_CLOSE, (long)fd);
     macos_trace_complete(DARWIN_SYS_CLOSE, (long)fd, 0, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;
@@ -442,7 +557,7 @@ int platform_open_read(const char *path) {
         return 0;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
     fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, 0, 0);
     macos_trace_complete(DARWIN_SYS_OPEN, (long)path, 0, 0, 0, 0, 0, fd, start_ns);
     return fd < 0 ? -1 : (int)fd;
@@ -457,7 +572,7 @@ int platform_open_read_secure(const char *path, PlatformDirEntry *entry_out) {
         return -1;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
     fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, DARWIN_O_NOFOLLOW, 0);
     macos_trace_complete(DARWIN_SYS_OPEN, (long)path, DARWIN_O_NOFOLLOW, 0, 0, 0, 0, fd, start_ns);
     if (fd < 0) {
@@ -485,7 +600,7 @@ int platform_open_write_mode(const char *path, unsigned int mode, int truncate_e
         flags |= DARWIN_O_TRUNC;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
     fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, flags, (long)mode);
     macos_trace_complete(DARWIN_SYS_OPEN, (long)path, flags, (long)mode, 0, 0, 0, fd, start_ns);
     return fd < 0 ? -1 : (int)fd;
@@ -520,7 +635,7 @@ int platform_open_create_exclusive(const char *path, unsigned int mode) {
         return -1;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
     fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, flags, (long)mode);
     macos_trace_complete(DARWIN_SYS_OPEN, (long)path, flags, (long)mode, 0, 0, 0, fd, start_ns);
     return fd < 0 ? -1 : (int)fd;
@@ -580,7 +695,7 @@ int platform_create_temp_file(char *path_buffer, size_t buffer_size, const char 
         rt_copy_string(path_buffer, buffer_size, base);
         rt_copy_string(path_buffer + base_len, buffer_size - base_len, suffix);
 
-        start_ns = macos_trace_now_ns();
+        start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
         fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path_buffer, flags, (long)mode);
         macos_trace_complete(DARWIN_SYS_OPEN, (long)path_buffer, flags, (long)mode, 0, 0, 0, fd, start_ns);
         if (fd >= 0) {
@@ -600,7 +715,7 @@ int platform_open_append(const char *path, unsigned int mode) {
         return 1;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
     fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, flags, (long)mode);
     macos_trace_complete(DARWIN_SYS_OPEN, (long)path, flags, (long)mode, 0, 0, 0, fd, start_ns);
     return fd < 0 ? -1 : (int)fd;
@@ -615,7 +730,7 @@ int platform_open_append_existing(const char *path) {
         return 1;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_OPEN);
     fd = darwin_syscall3(DARWIN_SYS_OPEN, (long)path, flags, 0);
     macos_trace_complete(DARWIN_SYS_OPEN, (long)path, flags, 0, 0, 0, 0, fd, start_ns);
     return fd < 0 ? -1 : (int)fd;
@@ -684,28 +799,28 @@ int platform_isatty(int fd) {
 }
 
 int platform_make_directory(const char *path, unsigned int mode) {
-    unsigned long long start_ns = macos_trace_now_ns();
+    unsigned long long start_ns = macos_trace_start_ns(DARWIN_SYS_MKDIR);
     long result = darwin_syscall2(DARWIN_SYS_MKDIR, (long)path, (long)mode);
     macos_trace_complete(DARWIN_SYS_MKDIR, (long)path, (long)mode, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;
 }
 
 int platform_remove_directory(const char *path) {
-    unsigned long long start_ns = macos_trace_now_ns();
+    unsigned long long start_ns = macos_trace_start_ns(DARWIN_SYS_RMDIR);
     long result = darwin_syscall1(DARWIN_SYS_RMDIR, (long)path);
     macos_trace_complete(DARWIN_SYS_RMDIR, (long)path, 0, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;
 }
 
 int platform_remove_file(const char *path) {
-    unsigned long long start_ns = macos_trace_now_ns();
+    unsigned long long start_ns = macos_trace_start_ns(DARWIN_SYS_UNLINK);
     long result = darwin_syscall1(DARWIN_SYS_UNLINK, (long)path);
     macos_trace_complete(DARWIN_SYS_UNLINK, (long)path, 0, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;
 }
 
 int platform_rename_path(const char *old_path, const char *new_path) {
-    unsigned long long start_ns = macos_trace_now_ns();
+    unsigned long long start_ns = macos_trace_start_ns(DARWIN_SYS_RENAME);
     long result = darwin_syscall2(DARWIN_SYS_RENAME, (long)old_path, (long)new_path);
     macos_trace_complete(DARWIN_SYS_RENAME, (long)old_path, (long)new_path, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;
@@ -817,7 +932,7 @@ int platform_read_symlink(const char *path, char *buffer, size_t buffer_size) {
         return -1;
     }
 
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_READLINK);
     result = readlink(path, buffer, buffer_size - 1U);
     macos_trace_complete(DARWIN_SYS_READLINK, (long)path, (long)buffer, (long)(buffer_size - 1U), 0, 0, 0, result, start_ns);
     if (result < 0) {
@@ -840,7 +955,7 @@ int platform_list_process_open_files(int pid, PlatformOpenFileEntry *entries_out
 
 int platform_path_access(const char *path, int mode) {
     long darwin_mode = (long)access_mode_to_darwin(mode);
-    unsigned long long start_ns = macos_trace_now_ns();
+    unsigned long long start_ns = macos_trace_start_ns(DARWIN_SYS_ACCESS);
     long result = darwin_syscall2(DARWIN_SYS_ACCESS, (long)path, darwin_mode);
     macos_trace_complete(DARWIN_SYS_ACCESS, (long)path, darwin_mode, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;
@@ -853,7 +968,7 @@ int platform_change_directory(const char *path) {
     if (path == 0 || path[0] == '\0') {
         return -1;
     }
-    start_ns = macos_trace_now_ns();
+    start_ns = macos_trace_start_ns(DARWIN_SYS_CHDIR);
     result = darwin_syscall1(DARWIN_SYS_CHDIR, (long)path);
     macos_trace_complete(DARWIN_SYS_CHDIR, (long)path, 0, 0, 0, 0, 0, result, start_ns);
     return result < 0 ? -1 : 0;

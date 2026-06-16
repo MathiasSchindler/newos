@@ -8,6 +8,7 @@ strace - trace system calls
 
 ```
 strace [-n] [-p] [-T] [-c] [-o FILE] [-e SYSCALL[,SYSCALL...]] [--json] COMMAND [ARG ...]
+strace [-n] [-p] [-T] [-c] [-o FILE] [-e SYSCALL[,SYSCALL...]] [--json] --records FILE
 ```
 
 ## DESCRIPTION
@@ -31,13 +32,17 @@ values are decoded in text output.
   backend reports one.
 - `-T`, `--time` - append elapsed syscall time in milliseconds when available.
 - `-c`, `--summary` - suppress per-call text and print a syscall summary with
-  call counts, error counts, positive-result byte totals, and total time.
+  call counts, error counts, byte totals for byte-returning syscalls, and total
+  time.
 - `-o FILE`, `--output FILE`, `--output=FILE` - write trace output to FILE
   instead of standard error. The traced command's stdout is unchanged.
 - `-e SYSCALL[,SYSCALL...]`, `--trace SYSCALL[,SYSCALL...]` - show only the
   named or numbered syscalls. The `trace=` prefix is accepted, so
   `-e trace=openat,read,write` is equivalent to `-e openat,read,write`.
 - `--json` - emit JSON Lines `syscall` events on standard error.
+- `--records FILE` - on macOS project-linked builds, replay raw trace records
+  captured through `NEWOS_STRACE_FD` instead of launching a command. This is
+  intended for stocktake and test-suite aggregation tooling.
 - `-h`, `--help` - show usage.
 
 ## FILTERS
@@ -114,6 +119,11 @@ reuse stack I/O buffers after the syscall returns; those calls therefore show a
 zero duration placeholder with `-T`. Directory-entry payload decoding is
 represented in the trace record format for runtime-originated events, but the
 portable text surface should not depend on it yet.
+
+Raw record capture can be filtered with `NEWOS_STRACE_FILTER`. The value `all`
+captures all instrumented wrappers. The value `default` captures `open`,
+`close`, `stat`, and path-operation records while skipping `read` and `write`,
+which is the safer mode for running exact-output test suites.
 
 ## FUTURE IMPROVEMENTS
 

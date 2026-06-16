@@ -32,6 +32,9 @@ changes.
 
 - `tests/phase1/run_phase1_tests.sh` — runs the canonical per-tool correctness
   suite
+- `scripts/stocktake-strace-phase1.sh` — runs existing Phase 1 groups with
+  macOS project-linked trace record capture enabled, then replays the records
+  through `strace -c` for stocktake reports
 - `extended_tools.sh` — multi-tool workflow and integration scenarios
 - `freestanding.sh` — validates representative freestanding tools from
   `build/freestanding-linux-$(TARGET_ARCH)/`
@@ -52,6 +55,16 @@ and basic local network/build contracts.
   multiple tools.
 - Phase 1 runs several per-tool scripts in parallel by default; set
   `PHASE1_JOBS=1` when debugging a single failure in strict serial order.
+- Use `make stocktake-strace-phase1` to reuse Phase 1 scenarios as a syscall
+  census on macOS project-linked tools. Pass `PHASE1_FILTER=tools/text/grep` for
+  a focused group. Reports are written under
+  `tests/tmp/strace-phase1-stocktake/`. `groups.tsv` includes both traced
+  `status` and untraced `baseline_status` for failed groups, so baseline Phase 1
+  failures stay visible without making the stocktake target fail. The runner
+  defaults to a non-I/O capture filter (`open`, `close`, `stat`, and path
+  operations) so exact output tests are not perturbed by tracing every `read`
+  and `write`; set `NEWOS_STRACE_STOCKTAKE_FILTER=all` for a focused
+  full-capture pass.
 - Benchmarks are informational; smoke tests are the main regression gate.
 - `make test` validates both the hosted path and a representative freestanding
   path on Linux. Running `make freestanding` alone is still useful when you
