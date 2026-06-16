@@ -2,6 +2,9 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#define TOOL_PATH_MODE_TYPE_MASK 0170000U
+#define TOOL_PATH_MODE_SYMLINK 0120000U
+
 const char *tool_base_name(const char *path) {
     const char *last = path;
     size_t i = 0;
@@ -354,37 +357,45 @@ int tool_canonicalize_path_policy(
         }
 
         if (resolve_symlinks && !logical_policy) {
-            char target[2048];
+            PlatformDirEntry entry;
 
-            if (platform_read_symlink(candidate, target, sizeof(target)) == 0) {
-                char replacement[2048];
-                char remainder[2048];
+            if (platform_get_path_info(candidate, &entry) == 0) {
+                if ((entry.mode & TOOL_PATH_MODE_TYPE_MASK) == TOOL_PATH_MODE_SYMLINK) {
+                    char target[2048];
+                    if (platform_read_symlink(candidate, target, sizeof(target)) == 0) {
+                        char replacement[2048];
+                        char remainder[2048];
 
-                if (symlink_count >= 64U) {
-                    return -1;
-                }
-                symlink_count += 1U;
+                        if (symlink_count >= 64U) {
+                            return -1;
+                        }
+                        symlink_count += 1U;
 
-                if (target[0] == '/') {
-                    rt_copy_string(replacement, sizeof(replacement), target);
-                } else {
-                    if (tool_join_path(resolved, target, replacement, sizeof(replacement)) != 0) {
+                        if (target[0] == '/') {
+                            rt_copy_string(replacement, sizeof(replacement), target);
+                        } else {
+                            if (tool_join_path(resolved, target, replacement, sizeof(replacement)) != 0) {
+                                return -1;
+                            }
+                        }
+
+                        rt_copy_string(remainder, sizeof(remainder), pending + index);
+                        if (tool_concat_path_suffix(replacement, remainder, pending, sizeof(pending)) != 0) {
+                            return -1;
+                        }
+
+                        rt_copy_string(resolved, sizeof(resolved), "/");
+                        index = 0U;
+                        continue;
+                    }
+                    if (!allow_missing) {
                         return -1;
                     }
                 }
-
-                rt_copy_string(remainder, sizeof(remainder), pending + index);
-                if (tool_concat_path_suffix(replacement, remainder, pending, sizeof(pending)) != 0) {
-                    return -1;
-                }
-
-                rt_copy_string(resolved, sizeof(resolved), "/");
-                index = 0U;
-                continue;
+            } else if (!allow_missing) {
+                return -1;
             }
-        }
-
-        if (!allow_missing) {
+        } else if (!allow_missing) {
             PlatformDirEntry entry;
             if (platform_get_path_info(candidate, &entry) != 0) {
                 return -1;
