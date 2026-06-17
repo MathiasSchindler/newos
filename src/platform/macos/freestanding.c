@@ -84,7 +84,8 @@ static unsigned long long temp_path_counter;
 static MacosStraceRecord macos_trace_record;
 static unsigned int macos_trace_filter_mask;
 static int macos_trace_filter_ready;
-static int macos_trace_no_metadata = -1;
+static int macos_trace_no_metadata;
+static int macos_trace_no_metadata_ready;
 #endif
 
 extern char **environ;
@@ -94,6 +95,7 @@ int unsetenv(const char *name);
 int getentropy(void *buffer, size_t size);
 #if defined(NEWOS_MACOS_NEWLINKER)
 extern int darwin_trace_fd;
+extern int darwin_trace_fd_ready;
 #endif
 
 #if defined(__APPLE__)
@@ -283,7 +285,8 @@ static MACOS_TRACE_NOINLINE int macos_trace_output_fd(void) {
 #if defined(NEWOS_MACOS_NEWLINKER)
     size_t env_index;
 
-    if (darwin_trace_fd == -2) {
+    if (!darwin_trace_fd_ready) {
+        darwin_trace_fd_ready = 1;
         darwin_trace_fd = -1;
         if (environ != 0) {
             for (env_index = 0U; environ[env_index] != 0; ++env_index) {
@@ -397,7 +400,8 @@ static int macos_trace_wants(long number) {
 static int macos_trace_metadata_enabled(void) {
     const char *value;
 
-    if (macos_trace_no_metadata < 0) {
+    if (!macos_trace_no_metadata_ready) {
+        macos_trace_no_metadata_ready = 1;
         value = platform_getenv(MACOS_STRACE_NO_METADATA_ENV);
         macos_trace_no_metadata = value != 0 && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
     }
@@ -781,9 +785,9 @@ int platform_unsetenv(const char *name) {
 }
 
 int platform_clearenv(void) {
-    static char *empty_environment[] = { 0 };
+    static char *empty_environment;
 
-    environ = empty_environment;
+    environ = &empty_environment;
     return 0;
 }
 

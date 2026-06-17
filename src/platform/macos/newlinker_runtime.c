@@ -183,7 +183,8 @@ static int macos_newlinker_errno;
 
 MACOS_NEWLINKER_EXPORT __attribute__((nocommon)) char **environ = 0;
 
-int darwin_trace_fd = -2;
+int darwin_trace_fd;
+int darwin_trace_fd_ready;
 static int darwin_trace_pid;
 
 static int macos_newlinker_return_int(long result) {
@@ -401,7 +402,8 @@ static int macos_newlinker_trace_parse_fd(const char *value) {
 }
 
 static int macos_newlinker_trace_fd(void) {
-	if (darwin_trace_fd == -2) {
+	if (!darwin_trace_fd_ready) {
+		darwin_trace_fd_ready = 1;
 		darwin_trace_fd = macos_newlinker_trace_parse_fd(macos_newlinker_env_value(MACOS_STRACE_ENV));
 	}
 	return darwin_trace_fd;
