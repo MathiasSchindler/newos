@@ -26,6 +26,11 @@ Extraction refuses absolute paths, backslash paths, drive-letter paths, and
 - `-d DIR` - extract into DIR instead of the current directory.
 - `-h`, `--help` - show usage.
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## LIMITATIONS
 
 This implementation supports stored and deflated entries through the project ZIP

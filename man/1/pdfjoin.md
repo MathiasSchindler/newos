@@ -35,6 +35,11 @@ write the joined PDF without a document-info dictionary.
 
 `--no-metadata` cannot be combined with metadata override options.
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## Limitations
 
 This writer is intentionally conservative. It supports normal indirect-object

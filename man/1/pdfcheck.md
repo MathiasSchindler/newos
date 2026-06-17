@@ -29,6 +29,12 @@ notices, and errors. Strings are JSON-escaped.
 - `--json` - write machine-readable JSON instead of human output
 - `-h`, `--help` - show usage
 
+## JSON Output
+
+When `--json` is used, output is a JSON array. Each element is an object with
+the input path, an overall `ok` boolean, structural counters, and any notices or
+errors found during validation.
+
 ## LIMITATIONS
 
 `pdfcheck` does not repair PDFs, validate cross-reference byte offsets, execute

@@ -27,6 +27,11 @@ stored otherwise.
 - `-v` - print entries as they are added.
 - `-h`, `--help` - show usage.
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## LIMITATIONS
 
 Updating existing archives, deleting archive members, comments, split archives,

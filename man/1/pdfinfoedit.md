@@ -28,6 +28,11 @@ provided; PDF dates usually use forms such as `D:20260609120000Z` or
 - `-o`, `--output` - write the updated PDF to this path
 - `-h`, `--help` - show usage
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## Limitations
 
 The tool edits classic document-info metadata, not XMP metadata packets. It is

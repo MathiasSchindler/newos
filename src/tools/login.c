@@ -175,6 +175,8 @@ int main(int argc, char **argv) {
     int child_argc = 0;
     int pid = -1;
     int status = 1;
+    const char *spawn_user = 0;
+    const char *spawn_group = 0;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "--") == 0) {
@@ -250,6 +252,12 @@ int main(int argc, char **argv) {
     child_argv[child_argc] = 0;
 
     rt_unsigned_to_string((unsigned long long)account.identity.gid, gid_text, sizeof(gid_text));
+    if (account.identity.uid != current.uid) {
+        spawn_user = account.identity.username;
+    }
+    if (account.identity.gid != current.gid) {
+        spawn_group = gid_text;
+    }
     if (platform_spawn_process_ex(child_argv,
                                   -1,
                                   -1,
@@ -257,8 +265,8 @@ int main(int argc, char **argv) {
                                   0,
                                   0,
                                   account.home,
-                                  account.identity.username,
-                                  gid_text,
+                                  spawn_user,
+                                  spawn_group,
                                   &pid) != 0) {
         tool_write_error(program_name, "failed to execute ", child_argv[0]);
         return 1;

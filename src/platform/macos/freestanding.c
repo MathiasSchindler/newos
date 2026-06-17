@@ -119,6 +119,16 @@ static int env_name_matches(const char *entry, const char *name) {
     return entry[index] == '=';
 }
 
+static int macos_user_pointer_looks_valid(const void *pointer) {
+    unsigned long value = (unsigned long)pointer;
+
+    /*
+     * Freestanding macOS tools only expect environ pointers in normal user
+     * address ranges; reject obviously bogus high addresses before dereference.
+     */
+    return value >= 0x100000000ULL && value < 0x1000000000ULL;
+}
+
 static int is_valid_env_name(const char *name) {
     size_t index = 0;
 
@@ -283,19 +293,12 @@ static int macos_trace_parse_fd(const char *value) {
 
 static MACOS_TRACE_NOINLINE int macos_trace_output_fd(void) {
 #if defined(NEWOS_MACOS_NEWLINKER)
-    size_t env_index;
+    const char *trace_fd_text;
 
     if (!darwin_trace_fd_ready) {
         darwin_trace_fd_ready = 1;
-        darwin_trace_fd = -1;
-        if (environ != 0) {
-            for (env_index = 0U; environ[env_index] != 0; ++env_index) {
-                if (env_name_matches(environ[env_index], MACOS_STRACE_ENV)) {
-                    darwin_trace_fd = macos_trace_parse_fd(environ[env_index] + rt_strlen(MACOS_STRACE_ENV) + 1U);
-                    break;
-                }
-            }
-        }
+        trace_fd_text = platform_getenv(MACOS_STRACE_ENV);
+        darwin_trace_fd = macos_trace_parse_fd(trace_fd_text);
     }
     return darwin_trace_fd;
 #else
@@ -747,26 +750,44 @@ long long platform_seek(int fd, long long offset, int whence) {
 
 const char *platform_getenv(const char *name) {
     size_t index = 0;
+    size_t safety = 0;
 
-    if (environ == 0) {
+    if (name == 0 || name[0] == '\0') {
         return 0;
     }
 
-    while (environ[index] != 0) {
-        if (env_name_matches(environ[index], name)) {
-            return environ[index] + rt_strlen(name) + 1U;
+    if (environ == 0 || !macos_user_pointer_looks_valid(environ)) {
+        return 0;
+    }
+
+    while (safety < 16384U) {
+        const char *entry = environ[index];
+        if (entry == 0) {
+            return 0;
+        }
+        if (!macos_user_pointer_looks_valid(entry)) {
+            index += 1U;
+            safety += 1U;
+            continue;
+        }
+        /* Guard against malformed environment arrays from early runtime startup. */
+        if (env_name_matches(entry, name)) {
+            return entry + rt_strlen(name) + 1U;
         }
         index += 1U;
+        safety += 1U;
     }
 
     return 0;
 }
 
 const char *platform_getenv_entry(size_t index) {
-    if (environ == 0) {
+    if (environ == 0 || !macos_user_pointer_looks_valid(environ)) {
         return 0;
     }
-
+    if (!macos_user_pointer_looks_valid(environ[index])) {
+        return 0;
+    }
     return environ[index];
 }
 
@@ -1434,9 +1455,11 @@ int platform_get_uptime_info(PlatformUptimeInfo *info_out) {
 int platform_list_sessions(PlatformSessionEntry *entries_out, size_t entry_capacity, size_t *count_out) {
     (void)entries_out;
     (void)entry_capacity;
-    (void)count_out;
 
-    return -1;
+    if (count_out != 0) {
+        *count_out = 0;
+    }
+    return 0;
 }
 
 int platform_set_path_times(
@@ -1587,8 +1610,9 @@ int platform_get_process_id(void) {
 }
 
 int platform_drop_privileges(const char *username, const char *groupname) {
-    (void)username;
-    (void)groupname;
+    if ((username == 0 || username[0] == '\0') && (groupname == 0 || groupname[0] == '\0')) {
+        return 0;
+    }
     return -1;
 }
 
@@ -1884,7 +1908,17 @@ int platform_wait_process_timeout(
             return -1;
         }
         if (finished) {
-            *exit_status_out = (timed_out && !preserve_status) ? 124 : status;
+            if (timed_out) {
+                if (!preserve_status) {
+                    *exit_status_out = 124;
+                } else if (status == 0 && signal_number > 0 && signal_number < 128) {
+                    *exit_status_out = 128 + signal_number;
+                } else {
+                    *exit_status_out = status;
+                }
+            } else {
+                *exit_status_out = status;
+            }
             return 0;
         }
 

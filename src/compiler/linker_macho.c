@@ -189,8 +189,11 @@ static MachoSectionClass macho_classify_section(const char *segment_name, const 
     if (macho_name_equals(segment_name, "__TEXT") && macho_name_equals(section_name, "__text")) {
         return MACHO_SECTION_CLASS_TEXT;
     }
-    if ((macho_name_equals(segment_name, "__TEXT") || macho_name_equals(segment_name, "__DATA")) && macho_name_equals(section_name, "__const")) {
+    if (macho_name_equals(segment_name, "__TEXT") && macho_name_equals(section_name, "__const")) {
         return MACHO_SECTION_CLASS_CONST;
+    }
+    if (macho_name_equals(segment_name, "__DATA") && macho_name_equals(section_name, "__const")) {
+        return MACHO_SECTION_CLASS_DATA;
     }
     if (macho_name_equals(segment_name, "__TEXT") &&
         (macho_name_equals(section_name, "__literal4") || macho_name_equals(section_name, "__literal8") || macho_name_equals(section_name, "__literal16"))) {

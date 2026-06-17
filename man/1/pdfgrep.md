@@ -31,6 +31,11 @@ and `2` for read or parse errors.
   context on each side of the first match in a stream, using `...` when clipped
 - `-h`, `--help` - show usage
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## LIMITATIONS
 
 This is a diagnostic text searcher, not a full PDF text extractor. It does not

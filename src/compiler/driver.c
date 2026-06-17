@@ -1067,7 +1067,7 @@ static int parse_lto_input_to_ir(
     if (compiler_parse_translation_unit(&parser) != 0) {
         rt_write_cstr(2, options->program_name);
         rt_write_cstr(2, ": ");
-        rt_write_cstr(2, source.path);
+        rt_write_cstr(2, input_path);
         rt_write_char(2, ':');
         rt_write_uint(2, compiler_parser_error_line(&parser));
         rt_write_char(2, ':');
@@ -1817,7 +1817,7 @@ static int dump_tokens(const CompilerOptions *options) {
             }
             rt_write_cstr(2, options->program_name);
             rt_write_cstr(2, ": ");
-            rt_write_cstr(2, source.path);
+            rt_write_cstr(2, options->input_path);
             rt_write_char(2, ':');
             rt_write_uint(2, lexer.line);
             rt_write_char(2, ':');
@@ -1902,7 +1902,7 @@ static int parse_translation_unit(const CompilerOptions *options) {
         }
         rt_write_cstr(2, options->program_name);
         rt_write_cstr(2, ": ");
-        rt_write_cstr(2, source.path);
+        rt_write_cstr(2, options->input_path);
         rt_write_char(2, ':');
         rt_write_uint(2, compiler_parser_error_line(&parser));
         rt_write_char(2, ':');

@@ -38,6 +38,11 @@ unknown decoded size until explicitly extracted.
 - `--list-streams` - list visible stream objects and cheap stream metadata
 - `-h`, `--help` - show usage
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## LIMITATIONS
 
 Only unfiltered and single `FlateDecode`/`Fl` streams are decoded. Other

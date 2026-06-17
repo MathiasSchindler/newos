@@ -33,6 +33,11 @@ when the needed page and support objects are discoverable.
 - `-o`, `--output` - output prefix for `--every`, or exact output path for selection modes
 - `-h`, `--help` - show usage
 
+## JSON Output
+
+This command does not provide a JSON output mode.
+JSON mode limitation: no JSON output mode is available.
+
 ## Limitations
 
 The writer supports normal indirect-object PDFs, xref-stream PDFs, and simple
