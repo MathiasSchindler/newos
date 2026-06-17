@@ -60,6 +60,12 @@ static int git_ensure_parent_directory(const char *path) {
     return git_make_directory_chain(parent);
 }
 
+static void git_zero_oid_hex(char hex[GIT_OBJECT_HEX_SIZE + 1U]);
+static int git_reflog_append_hex(const GitRepo *repo, const char *log_name, const char old_hex[GIT_OBJECT_HEX_SIZE + 1U], const unsigned char new_oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message);
+static int git_write_ref_oid_reflog(const GitRepo *repo, const char *ref_name, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message, int update_head_log);
+static int git_write_detached_head_oid_reflog(const GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message);
+static int git_commit_is_ancestor_of(GitRepo *repo, const unsigned char ancestor[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char descendant[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack);
+
 static int git_source_arg_to_path(const char *arg, char *buffer, size_t buffer_size) {
     char cwd[GIT_PATH_CAPACITY];
     const char *path = arg;
@@ -834,6 +840,252 @@ static int git_cmd_fetch(GitRepo *repo, int argc, char **argv, int argi) {
     return 0;
 }
 
+static int git_update_head_to_oid(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message) {
+    if (repo->head_ref[0] != '\0') {
+        return git_write_ref_oid_reflog(repo, repo->head_ref, oid, message, 1);
+    }
+    return git_write_detached_head_oid_reflog(repo, oid, message);
+}
+
+static int git_fast_forward_to_oid(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack, const char *display_name, const char *message) {
+    unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+    if (repo->head_oid[0] != '\0' && git_parse_oid_hex(repo->head_oid, head_oid) == 0) {
+        if (git_oid_equal(head_oid, oid)) {
+            rt_write_line(1, "Already up to date.");
+            return 0;
+        }
+        if (!git_commit_is_ancestor_of(repo, head_oid, oid, pack)) {
+            tool_write_error("git", "non-fast-forward merge is not implemented: ", display_name);
+            return 1;
+        }
+    }
+    if (git_checkout_commit_to_worktree(repo, oid, pack) != 0 || git_update_head_to_oid(repo, oid, message) != 0) {
+        tool_write_error("git", "fast-forward failed: ", display_name);
+        return 1;
+    }
+    git_format_oid_hex(oid, oid_hex);
+    rt_write_cstr(1, "Fast-forward to ");
+    rt_write_line(1, oid_hex);
+    return 0;
+}
+
+static int git_cmd_merge(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    const char *revision = 0;
+    int have_pack;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--ff-only") == 0) {
+            argi += 1;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported merge option: ", argv[argi]);
+            return 1;
+        } else if (revision == 0) {
+            revision = argv[argi++];
+        } else {
+            tool_write_error("git", "merge needs one revision", 0);
+            return 1;
+        }
+    }
+    if (revision == 0 || git_resolve_revision(repo, revision, oid, 0, 0) != 0) {
+        tool_write_error("git", "cannot resolve merge revision: ", revision != 0 ? revision : "");
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    {
+        int result = git_fast_forward_to_oid(repo, oid, have_pack ? &pack : 0, revision, "merge");
+        if (have_pack) git_pack_destroy(&pack);
+        return result;
+    }
+}
+
+static int git_cmd_pull(GitRepo *repo, int argc, char **argv, int argi) {
+    char remote_url[GIT_PATH_CAPACITY];
+    const char *wanted_ref = 0;
+    char selected_ref[GIT_REF_CAPACITY];
+    unsigned char selected_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    GitPack pack;
+    int have_pack = 0;
+    int result;
+
+    rt_memset(&pack, 0, sizeof(pack));
+    if (argi < argc && git_url_is_http(argv[argi])) {
+        if (git_copy(remote_url, sizeof(remote_url), argv[argi]) != 0) return 1;
+        argi += 1;
+    } else if (git_read_origin_url(repo, remote_url, sizeof(remote_url)) != 0) {
+        tool_write_error("git", "pull needs an HTTP(S) URL or remote origin", 0);
+        return 1;
+    }
+    if (argi < argc) {
+        wanted_ref = argv[argi++];
+    }
+    if (argi < argc) {
+        tool_write_error("git", "too many pull arguments", 0);
+        return 1;
+    }
+    if (git_fetch_remote_to_repo(repo, remote_url, wanted_ref, selected_ref, sizeof(selected_ref), selected_oid, &pack) != 0) {
+        tool_write_error("git", "pull fetch failed: ", remote_url);
+        return 1;
+    }
+    have_pack = 1;
+    result = git_fast_forward_to_oid(repo, selected_oid, &pack, selected_ref, "pull");
+    if (have_pack) git_pack_destroy(&pack);
+    return result;
+}
+
+static int git_local_repo_from_arg(const char *arg, GitRepo *repo) {
+    char path[GIT_PATH_CAPACITY];
+    char objects[GIT_PATH_CAPACITY];
+    char refs[GIT_PATH_CAPACITY];
+    int is_directory = 0;
+
+    if (git_source_arg_to_path(arg, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    if (git_discover_from(path, repo) == 0 && git_load_head(repo) == 0) {
+        return 0;
+    }
+    rt_memset(repo, 0, sizeof(*repo));
+    if (git_copy(repo->work_tree, sizeof(repo->work_tree), path) != 0 || git_copy(repo->git_dir, sizeof(repo->git_dir), path) != 0 || git_join(objects, sizeof(objects), path, "objects") != 0 || git_join(refs, sizeof(refs), path, "refs") != 0) {
+        return -1;
+    }
+    if (platform_path_is_directory(objects, &is_directory) != 0 || !is_directory || platform_path_is_directory(refs, &is_directory) != 0 || !is_directory || git_load_head(repo) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int git_push_ref_name(const char *text, char *buffer, size_t buffer_size) {
+    if (rt_strncmp(text, "refs/", 5U) == 0) {
+        return tool_path_is_unsafe_relative(text) ? -1 : git_copy(buffer, buffer_size, text);
+    }
+    if (tool_path_is_unsafe_relative(text) || git_copy(buffer, buffer_size, "refs/heads/") != 0 || rt_strlen(buffer) + rt_strlen(text) >= buffer_size) {
+        return -1;
+    }
+    rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), text);
+    return 0;
+}
+
+static int git_push_resolve_remote_arg(GitRepo *repo, const char *arg, char *remote_url, size_t remote_url_size) {
+    char key[160];
+
+    if (arg == 0) {
+        return git_read_origin_url(repo, remote_url, remote_url_size);
+    }
+    if (git_url_is_http(arg) || rt_strncmp(arg, "ssh://", 6U) == 0 || rt_strncmp(arg, "git://", 6U) == 0 || rt_strncmp(arg, "file://", 7U) == 0 || git_is_absolute_path(arg) || tool_path_has_separator(arg)) {
+        return git_copy(remote_url, remote_url_size, arg);
+    }
+    if (rt_strlen(arg) + 12U >= sizeof(key)) {
+        return -1;
+    }
+    rt_copy_string(key, sizeof(key), "remote.");
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), arg);
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), ".url");
+    return git_config_get_value(repo, key, remote_url, remote_url_size);
+}
+
+static int git_copy_objects_to_repo(const GitRepo *source, const GitRepo *dest) {
+    char source_objects[GIT_PATH_CAPACITY];
+    char dest_objects[GIT_PATH_CAPACITY];
+
+    return git_join(source_objects, sizeof(source_objects), source->git_dir, "objects") != 0 || git_join(dest_objects, sizeof(dest_objects), dest->git_dir, "objects") != 0 || tool_copy_path(source_objects, dest_objects, 1, 1, 1) != 0 ? -1 : 0;
+}
+
+static int git_cmd_push(GitRepo *repo, int argc, char **argv, int argi) {
+    const char *remote_arg = 0;
+    const char *refspec = 0;
+    const char *src_name = "HEAD";
+    const char *dst_name = 0;
+    char remote_url[GIT_PATH_CAPACITY];
+    char src_buf[GIT_REF_CAPACITY];
+    char dst_ref[GIT_REF_CAPACITY];
+    unsigned char new_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char old_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char old_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    GitRepo remote_repo;
+    GitPack remote_pack;
+    int have_old = 0;
+    int have_remote_pack = 0;
+    int force = 0;
+    int result = 1;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--force") == 0 || rt_strcmp(argv[argi], "-f") == 0) {
+            force = 1;
+            argi += 1;
+        } else if (remote_arg == 0) {
+            remote_arg = argv[argi++];
+        } else if (refspec == 0) {
+            refspec = argv[argi++];
+        } else {
+            tool_write_error("git", "too many push arguments", 0);
+            return 1;
+        }
+    }
+    if (refspec != 0) {
+        const char *colon = refspec;
+        while (*colon != '\0' && *colon != ':') colon += 1;
+        if (*colon == ':') {
+            if ((size_t)(colon - refspec) >= sizeof(src_buf)) return 1;
+            memcpy(src_buf, refspec, (size_t)(colon - refspec));
+            src_buf[colon - refspec] = '\0';
+            src_name = src_buf[0] != '\0' ? src_buf : "HEAD";
+            dst_name = colon[1] != '\0' ? colon + 1 : src_name;
+        } else {
+            src_name = refspec;
+            dst_name = refspec;
+        }
+    } else if (repo->head_ref[0] != '\0') {
+        dst_name = repo->head_ref;
+    } else {
+        tool_write_error("git", "push needs a refspec for detached HEAD", 0);
+        return 1;
+    }
+    if (git_push_resolve_remote_arg(repo, remote_arg, remote_url, sizeof(remote_url)) != 0) {
+        tool_write_error("git", "push needs a local remote or configured origin", 0);
+        return 1;
+    }
+    if (git_url_is_http(remote_url) || rt_strncmp(remote_url, "ssh://", 6U) == 0 || rt_strncmp(remote_url, "git://", 6U) == 0) {
+        tool_write_error("git", "network push transport is not implemented: ", remote_url);
+        return 1;
+    }
+    if (git_resolve_revision(repo, src_name, new_oid, 0, 0) != 0 || git_push_ref_name(dst_name, dst_ref, sizeof(dst_ref)) != 0) {
+        tool_write_error("git", "cannot resolve push refspec", 0);
+        return 1;
+    }
+    if (git_local_repo_from_arg(remote_url, &remote_repo) != 0) {
+        tool_write_error("git", "remote is not a supported local repository: ", remote_url);
+        return 1;
+    }
+    if (git_resolve_ref(&remote_repo, dst_ref, old_hex, sizeof(old_hex)) == 0 && git_parse_oid_hex(old_hex, old_oid) == 0) {
+        have_old = 1;
+    }
+    if (git_copy_objects_to_repo(repo, &remote_repo) != 0) {
+        tool_write_error("git", "cannot copy objects to remote", 0);
+        return 1;
+    }
+    have_remote_pack = git_load_pack_cache(&remote_repo, &remote_pack) == 0;
+    if (have_old && !force && !git_commit_is_ancestor_of(&remote_repo, old_oid, new_oid, have_remote_pack ? &remote_pack : 0)) {
+        tool_write_error("git", "push rejected: non-fast-forward", 0);
+        goto done;
+    }
+    if (git_write_ref_oid_reflog(&remote_repo, dst_ref, new_oid, "push", 0) != 0) {
+        tool_write_error("git", "cannot update remote ref: ", dst_ref);
+        goto done;
+    }
+    rt_write_cstr(1, "Pushed ");
+    rt_write_cstr(1, src_name);
+    rt_write_cstr(1, " to ");
+    rt_write_line(1, dst_ref);
+    result = 0;
+done:
+    if (have_remote_pack) git_pack_destroy(&remote_pack);
+    return result;
+}
+
 static int git_create_branch_at(GitRepo *repo, const char *name, const char *start, unsigned char oid_out[CRYPTO_SHA1_DIGEST_SIZE], char *ref_out, size_t ref_out_size) {
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
     char ref_name[GIT_REF_CAPACITY];
@@ -842,7 +1094,7 @@ static int git_create_branch_at(GitRepo *repo, const char *name, const char *sta
         return -1;
     }
     rt_copy_string(ref_name + rt_strlen(ref_name), sizeof(ref_name) - rt_strlen(ref_name), name);
-    if (git_write_ref_oid(repo, ref_name, oid) != 0) {
+    if (git_write_ref_oid_reflog(repo, ref_name, oid, "branch", 0) != 0) {
         return -1;
     }
     if (oid_out != 0) {
@@ -857,6 +1109,7 @@ static int git_create_branch_at(GitRepo *repo, const char *name, const char *sta
 static int git_checkout_resolved(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *head_ref, const char *display_name) {
     GitPack pack;
     char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    char old_hex[GIT_OBJECT_HEX_SIZE + 1U];
     int have_pack;
 
     have_pack = git_load_pack_cache(repo, &pack) == 0;
@@ -870,8 +1123,16 @@ static int git_checkout_resolved(GitRepo *repo, const unsigned char oid[CRYPTO_S
     if (have_pack) {
         git_pack_destroy(&pack);
     }
+    if (repo->head_oid[0] != '\0') {
+        if (git_copy(old_hex, sizeof(old_hex), repo->head_oid) != 0) {
+            git_zero_oid_hex(old_hex);
+        }
+    } else {
+        git_zero_oid_hex(old_hex);
+    }
     if (head_ref != 0 && head_ref[0] != '\0') {
         (void)git_write_head_ref(repo, head_ref);
+        (void)git_reflog_append_hex(repo, "HEAD", old_hex, oid, "checkout");
     } else {
         char path[GIT_PATH_CAPACITY];
         git_format_oid_hex(oid, oid_hex);
@@ -879,6 +1140,7 @@ static int git_checkout_resolved(GitRepo *repo, const unsigned char oid[CRYPTO_S
             oid_hex[GIT_OBJECT_HEX_SIZE] = '\n';
             (void)git_write_all_file(path, oid_hex, GIT_OBJECT_HEX_SIZE + 1U, 0644U);
             oid_hex[GIT_OBJECT_HEX_SIZE] = '\0';
+            (void)git_reflog_append_hex(repo, "HEAD", old_hex, oid, "checkout");
         }
     }
     git_format_oid_hex(oid, oid_hex);
@@ -2355,13 +2617,17 @@ static int git_cmd_add(GitRepo *repo, int argc, char **argv, int argi) {
     GitIgnoreList ignores;
     GitAddContext context;
     int intent_to_add = 0;
+    int patch_mode = 0;
     int pathspec_start;
     int pathspec_count;
     int result = 1;
+    char *default_pathspec[1];
 
     while (argi < argc) {
         if (rt_strcmp(argv[argi], "-N") == 0 || rt_strcmp(argv[argi], "--intent-to-add") == 0) {
             intent_to_add = 1;
+        } else if (rt_strcmp(argv[argi], "-p") == 0 || rt_strcmp(argv[argi], "--patch") == 0) {
+            patch_mode = 1;
         } else if (rt_strcmp(argv[argi], "--") == 0) {
             argi += 1;
             break;
@@ -2373,12 +2639,19 @@ static int git_cmd_add(GitRepo *repo, int argc, char **argv, int argi) {
         }
         argi += 1;
     }
-    if (argi >= argc) {
+    default_pathspec[0] = ".";
+    if (argi >= argc && !patch_mode) {
         tool_write_error("git", "add needs a path", 0);
         return 1;
     }
     pathspec_start = argi;
     pathspec_count = argc - argi;
+    if (patch_mode && pathspec_count == 0) {
+        pathspec_start = 0;
+        pathspec_count = 1;
+        argv = default_pathspec;
+        argc = 1;
+    }
     if (git_load_index(repo, &index) != 0) {
         tool_write_error("git", "cannot read index", 0);
         return 1;
@@ -2403,6 +2676,9 @@ static int git_cmd_add(GitRepo *repo, int argc, char **argv, int argi) {
         int i;
 
         for (i = pathspec_start; i < argc; ++i) {
+            if (patch_mode && !tool_prompt_yes_no("stage ", argv[i])) {
+                continue;
+            }
             if (git_add_stage_one_path(&context, argv[i]) != 0) {
                 tool_write_error("git", "cannot add path: ", argv[i]);
                 goto done;
@@ -2465,6 +2741,37 @@ static int git_commit_append_identity_line(GitBuffer *commit, const char *prefix
     return 0;
 }
 
+static int git_write_commit_from_tree(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message, unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    GitBuffer commit;
+    unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char tree_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    char parent_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    int have_parent = 0;
+    int result = -1;
+
+    rt_memset(&commit, 0, sizeof(commit));
+    git_format_oid_hex(tree_oid, tree_hex);
+    if (repo->head_oid[0] != '\0' && git_parse_oid_hex(repo->head_oid, parent_oid) == 0) {
+        have_parent = 1;
+        git_format_oid_hex(parent_oid, parent_hex);
+    }
+    if (git_buffer_append_cstr(&commit, "tree ") != 0 || git_buffer_append_cstr(&commit, tree_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
+        goto done;
+    }
+    if (have_parent && (git_buffer_append_cstr(&commit, "parent ") != 0 || git_buffer_append_cstr(&commit, parent_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0)) {
+        goto done;
+    }
+    if (git_commit_append_identity_line(&commit, "author", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", platform_get_epoch_time()) != 0 ||
+        git_commit_append_identity_line(&commit, "committer", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", platform_get_epoch_time()) != 0 ||
+        git_buffer_append_char(&commit, '\n') != 0 || git_buffer_append_cstr(&commit, message) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
+        goto done;
+    }
+    result = git_write_loose_object(repo, GIT_OBJECT_COMMIT, commit.data, commit.size, commit_oid);
+done:
+    git_buffer_destroy(&commit);
+    return result;
+}
+
 static int git_write_detached_head_oid(const GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
     char path[GIT_PATH_CAPACITY];
     char text[GIT_OBJECT_HEX_SIZE + 2U];
@@ -2476,6 +2783,229 @@ static int git_write_detached_head_oid(const GitRepo *repo, const unsigned char 
     text[GIT_OBJECT_HEX_SIZE] = '\n';
     text[GIT_OBJECT_HEX_SIZE + 1U] = '\0';
     return git_write_all_file(path, text, GIT_OBJECT_HEX_SIZE + 1U, 0644U);
+}
+
+static void git_zero_oid_hex(char hex[GIT_OBJECT_HEX_SIZE + 1U]) {
+    size_t i;
+
+    for (i = 0U; i < GIT_OBJECT_HEX_SIZE; ++i) {
+        hex[i] = '0';
+    }
+    hex[GIT_OBJECT_HEX_SIZE] = '\0';
+}
+
+static void git_reflog_old_ref_hex(const GitRepo *repo, const char *ref_name, char old_hex[GIT_OBJECT_HEX_SIZE + 1U]) {
+    if (ref_name != 0 && ref_name[0] != '\0' && git_resolve_ref(repo, ref_name, old_hex, GIT_OBJECT_HEX_SIZE + 1U) == 0) {
+        old_hex[GIT_OBJECT_HEX_SIZE] = '\0';
+        return;
+    }
+    git_zero_oid_hex(old_hex);
+}
+
+static int git_reflog_append_hex(const GitRepo *repo, const char *log_name, const char old_hex[GIT_OBJECT_HEX_SIZE + 1U], const unsigned char new_oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message) {
+    char path[GIT_PATH_CAPACITY];
+    char parent[GIT_PATH_CAPACITY];
+    char new_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    GitBuffer line;
+    const char *name;
+    const char *email;
+    int fd;
+    int result = -1;
+
+    rt_memset(&line, 0, sizeof(line));
+    git_format_oid_hex(new_oid, new_hex);
+    name = git_identity_value("GIT_COMMITTER_NAME", "USER", "newos");
+    email = git_identity_value("GIT_COMMITTER_EMAIL", 0, "newos@example.invalid");
+    if (git_join(path, sizeof(path), repo->git_dir, "logs") != 0 || git_join(path, sizeof(path), path, log_name) != 0 || git_copy(parent, sizeof(parent), path) != 0 || git_path_parent(parent) != 0 || git_make_directory_chain(parent) != 0) {
+        return -1;
+    }
+    if (git_buffer_append_cstr(&line, old_hex) != 0 || git_buffer_append_char(&line, ' ') != 0 || git_buffer_append_cstr(&line, new_hex) != 0 || git_buffer_append_char(&line, ' ') != 0 ||
+        git_buffer_append_cstr(&line, name) != 0 || git_buffer_append_cstr(&line, " <") != 0 || git_buffer_append_cstr(&line, email) != 0 || git_buffer_append_cstr(&line, "> ") != 0 ||
+        git_buffer_append_unsigned(&line, (unsigned long long)platform_get_epoch_time()) != 0 || git_buffer_append_cstr(&line, " +0000\t") != 0 || git_buffer_append_cstr(&line, message != 0 ? message : "update") != 0 || git_buffer_append_char(&line, '\n') != 0) {
+        goto done;
+    }
+    fd = platform_open_append(path, 0644U);
+    if (fd < 0) {
+        goto done;
+    }
+    result = rt_write_all(fd, line.data, line.size);
+    if (platform_close(fd) != 0) {
+        result = -1;
+    }
+done:
+    git_buffer_destroy(&line);
+    return result;
+}
+
+static int git_write_ref_oid_reflog(const GitRepo *repo, const char *ref_name, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message, int update_head_log) {
+    char old_hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+    git_reflog_old_ref_hex(repo, ref_name, old_hex);
+    if (git_write_ref_oid(repo, ref_name, oid) != 0) {
+        return -1;
+    }
+    (void)git_reflog_append_hex(repo, ref_name, old_hex, oid, message);
+    if (update_head_log) {
+        (void)git_reflog_append_hex(repo, "HEAD", old_hex, oid, message);
+    }
+    return 0;
+}
+
+static int git_write_detached_head_oid_reflog(const GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message) {
+    char old_hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+    if (repo->head_oid[0] != '\0') {
+        if (git_copy(old_hex, sizeof(old_hex), repo->head_oid) != 0) {
+            git_zero_oid_hex(old_hex);
+        }
+    } else {
+        git_zero_oid_hex(old_hex);
+    }
+    if (git_write_detached_head_oid(repo, oid) != 0) {
+        return -1;
+    }
+    (void)git_reflog_append_hex(repo, "HEAD", old_hex, oid, message);
+    return 0;
+}
+
+static int git_cmd_reflog(GitRepo *repo, int argc, char **argv, int argi) {
+    const char *name = "HEAD";
+    char path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t end;
+    unsigned int ordinal = 0U;
+
+    if (argi < argc) {
+        name = argv[argi++];
+    }
+    if (argi < argc) {
+        tool_write_error("git", "reflog needs at most one ref", 0);
+        return 1;
+    }
+    if (git_join(path, sizeof(path), repo->git_dir, "logs") != 0 || git_join(path, sizeof(path), path, name) != 0 || git_read_file(path, &data, &size) != 0) {
+        return 1;
+    }
+    end = size;
+    while (end > 0U) {
+        size_t start = end;
+        size_t message = end;
+        char ordinal_text[32];
+
+        while (start > 0U && data[start - 1U] == '\n') {
+            start -= 1U;
+            end -= 1U;
+        }
+        while (start > 0U && data[start - 1U] != '\n') {
+            start -= 1U;
+        }
+        if (end <= start) {
+            break;
+        }
+        message = start;
+        while (message < end && data[message] != '\t') {
+            message += 1U;
+        }
+        if (end - start >= GIT_OBJECT_HEX_SIZE * 2U + 1U) {
+            rt_write_all(1, data + start + GIT_OBJECT_HEX_SIZE + 1U, 7U);
+            rt_write_cstr(1, " ");
+            rt_write_cstr(1, name);
+            rt_write_cstr(1, "@{");
+            rt_unsigned_to_string(ordinal, ordinal_text, sizeof(ordinal_text));
+            rt_write_cstr(1, ordinal_text);
+            rt_write_cstr(1, "}: ");
+            if (message < end) {
+                rt_write_all(1, data + message + 1U, end - message - 1U);
+            }
+            rt_write_char(1, '\n');
+            ordinal += 1U;
+        }
+        end = start;
+    }
+    rt_free(data);
+    return 0;
+}
+
+static int git_hook_path(const GitRepo *repo, const char *name, char *path, size_t path_size) {
+    char hooks[GIT_PATH_CAPACITY];
+
+    return git_join(hooks, sizeof(hooks), repo->git_dir, "hooks") != 0 || git_join(path, path_size, hooks, name) != 0 ? -1 : 0;
+}
+
+static int git_run_hook(GitRepo *repo, const char *name, const char *arg) {
+    char path[GIT_PATH_CAPACITY];
+    PlatformDirEntry entry;
+    char *hook_argv[3];
+    int pid;
+    int status;
+
+    if (git_hook_path(repo, name, path, sizeof(path)) != 0 || platform_get_path_info(path, &entry) != 0) {
+        return 0;
+    }
+    if (entry.is_dir || (entry.mode & 0111U) == 0U) {
+        return 0;
+    }
+    hook_argv[0] = path;
+    hook_argv[1] = (char *)arg;
+    hook_argv[2] = 0;
+    if (arg == 0) {
+        hook_argv[1] = 0;
+    }
+    if (platform_spawn_process(hook_argv, -1, -1, 0, 0, 0, &pid) != 0 || platform_wait_process(pid, &status) != 0 || status != 0) {
+        tool_write_error("git", "hook failed: ", name);
+        return -1;
+    }
+    return 0;
+}
+
+static int git_commit_message_path(const GitRepo *repo, char *path, size_t path_size) {
+    return git_join(path, path_size, repo->git_dir, "COMMIT_EDITMSG");
+}
+
+static char *git_read_commit_message_path(const char *path) {
+    unsigned char *data = 0;
+    size_t size = 0U;
+    char *message;
+
+    if (git_read_file(path, &data, &size) != 0) {
+        return 0;
+    }
+    message = git_strdup_n((const char *)data, size);
+    rt_free(data);
+    if (message == 0) {
+        return 0;
+    }
+    tool_trim_whitespace(message);
+    if (message[0] == '\0') {
+        rt_free(message);
+        return 0;
+    }
+    return message;
+}
+
+static char *git_commit_message_from_editor(GitRepo *repo, char *message_path, size_t message_path_size) {
+    const char *editor = platform_getenv("GIT_EDITOR");
+    char *editor_argv[3];
+    int pid;
+    int status;
+
+    if (editor == 0 || editor[0] == '\0') editor = platform_getenv("VISUAL");
+    if (editor == 0 || editor[0] == '\0') editor = platform_getenv("EDITOR");
+    if (editor == 0 || editor[0] == '\0') {
+        tool_write_error("git", "commit needs -m MESSAGE or GIT_EDITOR", 0);
+        return 0;
+    }
+    if (git_commit_message_path(repo, message_path, message_path_size) != 0 || git_write_all_file(message_path, "", 0U, 0644U) != 0) {
+        return 0;
+    }
+    editor_argv[0] = (char *)editor;
+    editor_argv[1] = message_path;
+    editor_argv[2] = 0;
+    if (platform_spawn_process(editor_argv, -1, -1, 0, 0, 0, &pid) != 0 || platform_wait_process(pid, &status) != 0 || status != 0) {
+        tool_write_error("git", "editor failed: ", editor);
+        return 0;
+    }
+    return git_read_commit_message_path(message_path);
 }
 
 static int git_cmd_commit(GitRepo *repo, int argc, char **argv, int argi) {
@@ -2490,10 +3020,15 @@ static int git_cmd_commit(GitRepo *repo, int argc, char **argv, int argi) {
     char parent_hex[GIT_OBJECT_HEX_SIZE + 1U];
     char commit_hex[GIT_OBJECT_HEX_SIZE + 1U];
     const char *message = 0;
+    char *owned_message = 0;
+    char message_path[GIT_PATH_CAPACITY];
     int have_parent = 0;
     int have_pack = 0;
     int allow_empty = 0;
+    int no_verify = 0;
     int result = 1;
+
+    message_path[0] = '\0';
 
     while (argi < argc) {
         if ((rt_strcmp(argv[argi], "-m") == 0 || rt_strcmp(argv[argi], "--message") == 0) && argi + 1 < argc) {
@@ -2505,17 +3040,40 @@ static int git_cmd_commit(GitRepo *repo, int argc, char **argv, int argi) {
         } else if (rt_strcmp(argv[argi], "--allow-empty") == 0) {
             allow_empty = 1;
             argi += 1;
+        } else if (rt_strcmp(argv[argi], "--no-verify") == 0) {
+            no_verify = 1;
+            argi += 1;
         } else {
             tool_write_error("git", "unsupported commit option: ", argv[argi]);
             return 1;
         }
     }
+    if (message == 0) {
+        owned_message = git_commit_message_from_editor(repo, message_path, sizeof(message_path));
+        message = owned_message;
+    } else if (git_commit_message_path(repo, message_path, sizeof(message_path)) == 0) {
+        (void)git_write_all_file(message_path, message, rt_strlen(message), 0644U);
+    }
     if (message == 0 || message[0] == '\0') {
-        tool_write_error("git", "commit needs -m MESSAGE", 0);
+        tool_write_error("git", "empty commit message", 0);
+        rt_free(owned_message);
         return 1;
+    }
+    if (!no_verify && (git_run_hook(repo, "pre-commit", 0) != 0 || (message_path[0] != '\0' && git_run_hook(repo, "commit-msg", message_path) != 0))) {
+        rt_free(owned_message);
+        return 1;
+    }
+    if (!no_verify && message_path[0] != '\0') {
+        char *hook_message = git_read_commit_message_path(message_path);
+        if (hook_message != 0) {
+            rt_free(owned_message);
+            owned_message = hook_message;
+            message = owned_message;
+        }
     }
     if (git_load_index(repo, &index) != 0) {
         tool_write_error("git", "cannot read index", 0);
+        rt_free(owned_message);
         return 1;
     }
     have_pack = git_load_pack_cache(repo, &pack) == 0;
@@ -2553,10 +3111,10 @@ static int git_cmd_commit(GitRepo *repo, int argc, char **argv, int argi) {
         goto commit_done;
     }
     if (repo->head_ref[0] != '\0') {
-        if (git_write_ref_oid(repo, repo->head_ref, commit_oid) != 0) {
+        if (git_write_ref_oid_reflog(repo, repo->head_ref, commit_oid, "commit", 1) != 0) {
             goto commit_done;
         }
-    } else if (git_write_detached_head_oid(repo, commit_oid) != 0) {
+    } else if (git_write_detached_head_oid_reflog(repo, commit_oid, "commit") != 0) {
         goto commit_done;
     }
     git_format_oid_hex(commit_oid, commit_hex);
@@ -2573,6 +3131,80 @@ done:
         git_pack_destroy(&pack);
     }
     git_index_destroy(&index);
+    rt_free(owned_message);
+    return result;
+}
+
+static int git_cmd_cherry_pick(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    GitCommitInfo info;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int have_pack;
+    int result;
+
+    rt_memset(&info, 0, sizeof(info));
+    if (argi + 1 != argc) {
+        tool_write_error("git", "cherry-pick needs one revision", 0);
+        return 1;
+    }
+    if (repo->head_oid[0] == '\0' || git_parse_oid_hex(repo->head_oid, head_oid) != 0 || git_resolve_revision(repo, argv[argi], oid, 0, 0) != 0) {
+        tool_write_error("git", "cannot resolve cherry-pick revision: ", argv[argi]);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0 || info.parent_count != 1U || !git_oid_equal(info.parents[0], head_oid)) {
+        tool_write_error("git", "cherry-pick currently supports direct child commits only", 0);
+        git_commit_info_destroy(&info);
+        if (have_pack) git_pack_destroy(&pack);
+        return 1;
+    }
+    result = git_fast_forward_to_oid(repo, oid, have_pack ? &pack : 0, argv[argi], "cherry-pick");
+    git_commit_info_destroy(&info);
+    if (have_pack) git_pack_destroy(&pack);
+    return result;
+}
+
+static int git_cmd_revert(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    GitCommitInfo info;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char parent_tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char revert_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char revert_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    int have_pack;
+    int result = 1;
+
+    rt_memset(&info, 0, sizeof(info));
+    if (argi + 1 != argc) {
+        tool_write_error("git", "revert needs one revision", 0);
+        return 1;
+    }
+    if (repo->head_oid[0] == '\0' || git_parse_oid_hex(repo->head_oid, head_oid) != 0 || git_resolve_revision(repo, argv[argi], oid, 0, 0) != 0 || !git_oid_equal(head_oid, oid)) {
+        tool_write_error("git", "revert currently supports HEAD only", 0);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0 || info.parent_count != 1U) {
+        tool_write_error("git", "cannot revert root or merge commit", 0);
+        goto done;
+    }
+    if (git_commit_tree_oid(repo, info.parents[0], have_pack ? &pack : 0, parent_tree_oid) != 0 || git_checkout_commit_to_worktree(repo, info.parents[0], have_pack ? &pack : 0) != 0) {
+        tool_write_error("git", "cannot restore parent tree for revert", 0);
+        goto done;
+    }
+    if (git_write_commit_from_tree(repo, parent_tree_oid, "Revert HEAD", revert_oid) != 0 || git_update_head_to_oid(repo, revert_oid, "revert") != 0) {
+        tool_write_error("git", "revert failed", 0);
+        goto done;
+    }
+    git_format_oid_hex(revert_oid, revert_hex);
+    rt_write_cstr(1, "Reverted ");
+    rt_write_line(1, revert_hex);
+    result = 0;
+done:
+    git_commit_info_destroy(&info);
+    if (have_pack) git_pack_destroy(&pack);
     return result;
 }
 
@@ -2663,9 +3295,11 @@ static int git_write_commit_format(const char *format, const unsigned char oid[C
             git_format_oid_hex(info->tree_oid, tree_hex);
             if (rt_write_cstr(1, tree_hex) != 0) return -1;
         } else if (format[i] == 'P') {
-            if (info->has_parent) {
+            size_t parent_index;
+            for (parent_index = 0U; parent_index < info->parent_count; ++parent_index) {
                 char parent_hex[GIT_OBJECT_HEX_SIZE + 1U];
-                git_format_oid_hex(info->parent_oid, parent_hex);
+                if (parent_index > 0U && rt_write_char(1, ' ') != 0) return -1;
+                git_format_oid_hex(info->parents[parent_index], parent_hex);
                 if (rt_write_cstr(1, parent_hex) != 0) return -1;
             }
         } else if (format[i] == 'a' && format[i + 1U] == 'n') {
@@ -2700,16 +3334,123 @@ static int git_write_commit_format(const char *format, const unsigned char oid[C
     return rt_write_char(1, '\n');
 }
 
+typedef struct {
+    unsigned char (*oids)[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t count;
+    size_t capacity;
+} GitOidList;
+
+static void git_oid_list_destroy(GitOidList *list) {
+    if (list == 0) {
+        return;
+    }
+    rt_free(list->oids);
+    rt_memset(list, 0, sizeof(*list));
+}
+
+static int git_oid_list_contains(const GitOidList *list, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    size_t i;
+
+    for (i = 0U; i < list->count; ++i) {
+        if (git_oid_equal(list->oids[i], oid)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int git_oid_list_push(GitOidList *list, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    unsigned char (*new_oids)[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t new_capacity;
+
+    if (list->count == list->capacity) {
+        new_capacity = list->capacity == 0U ? 64U : list->capacity * 2U;
+        new_oids = (unsigned char (*)[CRYPTO_SHA1_DIGEST_SIZE])rt_realloc_array(list->oids, new_capacity, sizeof(list->oids[0]));
+        if (new_oids == 0) {
+            return -1;
+        }
+        list->oids = new_oids;
+        list->capacity = new_capacity;
+    }
+    memcpy(list->oids[list->count], oid, CRYPTO_SHA1_DIGEST_SIZE);
+    list->count += 1U;
+    return 0;
+}
+
+static int git_oid_list_push_unique(GitOidList *list, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    return git_oid_list_contains(list, oid) ? 0 : git_oid_list_push(list, oid);
+}
+
+static int git_collect_reachable_commits(GitRepo *repo, const unsigned char start[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack, GitOidList *reachable) {
+    GitOidList stack;
+    int result = -1;
+
+    rt_memset(reachable, 0, sizeof(*reachable));
+    rt_memset(&stack, 0, sizeof(stack));
+    if (git_oid_list_push(&stack, start) != 0) {
+        goto done;
+    }
+    while (stack.count > 0U) {
+        unsigned char current[CRYPTO_SHA1_DIGEST_SIZE];
+        GitCommitInfo info;
+        size_t parent_index;
+
+        memcpy(current, stack.oids[stack.count - 1U], CRYPTO_SHA1_DIGEST_SIZE);
+        stack.count -= 1U;
+        if (git_oid_list_contains(reachable, current)) {
+            continue;
+        }
+        if (git_read_commit_info(repo, current, pack, &info) != 0) {
+            goto done;
+        }
+        if (git_oid_list_push(reachable, current) != 0) {
+            git_commit_info_destroy(&info);
+            goto done;
+        }
+        for (parent_index = 0U; parent_index < info.parent_count; ++parent_index) {
+            if (git_oid_list_push_unique(&stack, info.parents[parent_index]) != 0) {
+                git_commit_info_destroy(&info);
+                goto done;
+            }
+        }
+        git_commit_info_destroy(&info);
+    }
+    result = 0;
+done:
+    git_oid_list_destroy(&stack);
+    if (result != 0) {
+        git_oid_list_destroy(reachable);
+    }
+    return result;
+}
+
+static int git_commit_is_ancestor_of(GitRepo *repo, const unsigned char ancestor[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char descendant[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack) {
+    GitOidList reachable;
+    int result;
+
+    if (git_oid_equal(ancestor, descendant)) {
+        return 1;
+    }
+    if (git_collect_reachable_commits(repo, descendant, pack, &reachable) != 0) {
+        return 0;
+    }
+    result = git_oid_list_contains(&reachable, ancestor);
+    git_oid_list_destroy(&reachable);
+    return result;
+}
+
 static int git_cmd_log(GitRepo *repo, int argc, char **argv, int argi) {
     GitPack pack;
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
-    char hex[GIT_OBJECT_HEX_SIZE + 1U];
     int have_pack;
     int oneline = 0;
     const char *format = 0;
     int max_count = 32;
     int count = 0;
     const char *start = "HEAD";
+    GitOidList stack;
+    GitOidList seen;
+    int result = 0;
 
     while (argi < argc) {
         if (rt_strcmp(argv[argi], "--oneline") == 0) {
@@ -2756,16 +3497,36 @@ static int git_cmd_log(GitRepo *repo, int argc, char **argv, int argi) {
         return 1;
     }
     have_pack = git_load_pack_cache(repo, &pack) == 0;
-    while (count < max_count) {
+    rt_memset(&stack, 0, sizeof(stack));
+    rt_memset(&seen, 0, sizeof(seen));
+    if (git_oid_list_push(&stack, oid) != 0) {
+        if (have_pack) git_pack_destroy(&pack);
+        return 1;
+    }
+    while (count < max_count && stack.count > 0U) {
         GitCommitInfo info;
+        char hex[GIT_OBJECT_HEX_SIZE + 1U];
+        size_t parent_index;
 
+        memcpy(oid, stack.oids[stack.count - 1U], CRYPTO_SHA1_DIGEST_SIZE);
+        stack.count -= 1U;
+        if (git_oid_list_contains(&seen, oid)) {
+            continue;
+        }
         if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0) {
+            result = 1;
+            break;
+        }
+        if (git_oid_list_push(&seen, oid) != 0) {
+            git_commit_info_destroy(&info);
+            result = 1;
             break;
         }
         git_format_oid_hex(oid, hex);
         if (format != 0) {
             if (git_write_commit_format(format, oid, &info) != 0) {
                 git_commit_info_destroy(&info);
+                result = 1;
                 break;
             }
         } else if (oneline) {
@@ -2787,53 +3548,34 @@ static int git_cmd_log(GitRepo *repo, int argc, char **argv, int argi) {
             git_write_commit_subject_line(&info);
             rt_write_char(1, '\n');
         }
-        if (!info.has_parent) {
-            git_commit_info_destroy(&info);
-            break;
-        }
-        memcpy(oid, info.parent_oid, CRYPTO_SHA1_DIGEST_SIZE);
-        git_commit_info_destroy(&info);
         count += 1;
+        for (parent_index = info.parent_count; parent_index > 0U; --parent_index) {
+            if (git_oid_list_push_unique(&stack, info.parents[parent_index - 1U]) != 0) {
+                git_commit_info_destroy(&info);
+                result = 1;
+                goto log_done;
+            }
+        }
+        git_commit_info_destroy(&info);
     }
+log_done:
+    git_oid_list_destroy(&stack);
+    git_oid_list_destroy(&seen);
     if (have_pack) {
         git_pack_destroy(&pack);
     }
-    return 0;
-}
-
-static int git_commit_is_ancestor_of(GitRepo *repo, const unsigned char ancestor[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char descendant[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack) {
-    unsigned char current[CRYPTO_SHA1_DIGEST_SIZE];
-    int depth = 0;
-
-    memcpy(current, descendant, CRYPTO_SHA1_DIGEST_SIZE);
-    while (depth < 100000) {
-        GitCommitInfo info;
-
-        if (git_oid_equal(current, ancestor)) {
-            return 1;
-        }
-        if (git_read_commit_info(repo, current, pack, &info) != 0) {
-            return 0;
-        }
-        if (!info.has_parent) {
-            git_commit_info_destroy(&info);
-            return 0;
-        }
-        memcpy(current, info.parent_oid, CRYPTO_SHA1_DIGEST_SIZE);
-        git_commit_info_destroy(&info);
-        depth += 1;
-    }
-    return 0;
+    return result;
 }
 
 static int git_cmd_merge_base(GitRepo *repo, int argc, char **argv, int argi) {
     GitPack pack;
     unsigned char left[CRYPTO_SHA1_DIGEST_SIZE];
     unsigned char right[CRYPTO_SHA1_DIGEST_SIZE];
-    unsigned char current[CRYPTO_SHA1_DIGEST_SIZE];
     int is_ancestor = 0;
     int have_pack;
-    int depth = 0;
+    GitOidList left_reachable;
+    GitOidList right_reachable;
+    size_t i;
 
     if (argi < argc && rt_strcmp(argv[argi], "--is-ancestor") == 0) {
         is_ancestor = 1;
@@ -2849,30 +3591,23 @@ static int git_cmd_merge_base(GitRepo *repo, int argc, char **argv, int argi) {
         if (have_pack) git_pack_destroy(&pack);
         return ok ? 0 : 1;
     }
-    memcpy(current, left, CRYPTO_SHA1_DIGEST_SIZE);
-    while (depth < 100000) {
-        GitCommitInfo info;
-
-        if (git_commit_is_ancestor_of(repo, current, right, have_pack ? &pack : 0)) {
+    if (git_collect_reachable_commits(repo, left, have_pack ? &pack : 0, &left_reachable) != 0 || git_collect_reachable_commits(repo, right, have_pack ? &pack : 0, &right_reachable) != 0) {
+        if (have_pack) git_pack_destroy(&pack);
+        return 1;
+    }
+    for (i = 0U; i < right_reachable.count; ++i) {
+        if (git_oid_list_contains(&left_reachable, right_reachable.oids[i])) {
             char hex[GIT_OBJECT_HEX_SIZE + 1U];
-            git_format_oid_hex(current, hex);
+            git_format_oid_hex(right_reachable.oids[i], hex);
             rt_write_line(1, hex);
+            git_oid_list_destroy(&left_reachable);
+            git_oid_list_destroy(&right_reachable);
             if (have_pack) git_pack_destroy(&pack);
             return 0;
         }
-        if (git_read_commit_info(repo, current, have_pack ? &pack : 0, &info) != 0) {
-            if (have_pack) git_pack_destroy(&pack);
-            return 1;
-        }
-        if (!info.has_parent) {
-            git_commit_info_destroy(&info);
-            if (have_pack) git_pack_destroy(&pack);
-            return 1;
-        }
-        memcpy(current, info.parent_oid, CRYPTO_SHA1_DIGEST_SIZE);
-        git_commit_info_destroy(&info);
-        depth += 1;
     }
+    git_oid_list_destroy(&left_reachable);
+    git_oid_list_destroy(&right_reachable);
     if (have_pack) git_pack_destroy(&pack);
     return 1;
 }
@@ -2882,11 +3617,14 @@ static int git_cmd_rev_list(GitRepo *repo, int argc, char **argv, int argi) {
     char left_name[GIT_REF_CAPACITY];
     char right_name[GIT_REF_CAPACITY];
     unsigned char left[CRYPTO_SHA1_DIGEST_SIZE];
-    unsigned char current[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char right[CRYPTO_SHA1_DIGEST_SIZE];
     int count_only = 0;
     int have_pack;
     unsigned long long count = 0ULL;
     char digits[32];
+    GitOidList left_reachable;
+    GitOidList right_reachable;
+    size_t i;
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "--count") == 0) {
@@ -2897,26 +3635,22 @@ static int git_cmd_rev_list(GitRepo *repo, int argc, char **argv, int argi) {
         }
         argi += 1;
     }
-    if (!count_only || argi + 1 != argc || git_split_revision_range(argv[argi], left_name, sizeof(left_name), right_name, sizeof(right_name)) != 0 || git_resolve_revision(repo, left_name, left, 0, 0) != 0 || git_resolve_revision(repo, right_name, current, 0, 0) != 0) {
+    if (!count_only || argi + 1 != argc || git_split_revision_range(argv[argi], left_name, sizeof(left_name), right_name, sizeof(right_name)) != 0 || git_resolve_revision(repo, left_name, left, 0, 0) != 0 || git_resolve_revision(repo, right_name, right, 0, 0) != 0) {
         tool_write_error("git", "rev-list supports --count A..B", 0);
         return 1;
     }
     have_pack = git_load_pack_cache(repo, &pack) == 0;
-    while (!git_oid_equal(current, left)) {
-        GitCommitInfo info;
-
-        if (git_read_commit_info(repo, current, have_pack ? &pack : 0, &info) != 0) {
-            if (have_pack) git_pack_destroy(&pack);
-            return 1;
-        }
-        count += 1ULL;
-        if (!info.has_parent) {
-            git_commit_info_destroy(&info);
-            break;
-        }
-        memcpy(current, info.parent_oid, CRYPTO_SHA1_DIGEST_SIZE);
-        git_commit_info_destroy(&info);
+    if (git_collect_reachable_commits(repo, left, have_pack ? &pack : 0, &left_reachable) != 0 || git_collect_reachable_commits(repo, right, have_pack ? &pack : 0, &right_reachable) != 0) {
+        if (have_pack) git_pack_destroy(&pack);
+        return 1;
     }
+    for (i = 0U; i < right_reachable.count; ++i) {
+        if (!git_oid_list_contains(&left_reachable, right_reachable.oids[i])) {
+            count += 1ULL;
+        }
+    }
+    git_oid_list_destroy(&left_reachable);
+    git_oid_list_destroy(&right_reachable);
     if (have_pack) git_pack_destroy(&pack);
     rt_unsigned_to_string(count, digits, sizeof(digits));
     rt_write_line(1, digits);
@@ -3105,7 +3839,7 @@ static int git_cmd_update_ref(GitRepo *repo, int argc, char **argv, int argi) {
             tool_write_error("git", "cannot resolve update-ref object: ", argv[argi + 1]);
             return 1;
         }
-        if (git_write_ref_oid(repo, argv[argi], oid) != 0) {
+        if (git_write_ref_oid_reflog(repo, argv[argi], oid, "update-ref", rt_strcmp(repo->head_ref, argv[argi]) == 0) != 0) {
             tool_write_error("git", "cannot write ref: ", argv[argi]);
             return 1;
         }
@@ -3192,6 +3926,166 @@ done:
     return result;
 }
 
+static int git_cmd_blame(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    GitCommitInfo info;
+    GitIndex tree_index;
+    GitIndexEntry *entry;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char *blob = 0;
+    size_t blob_size = 0U;
+    GitDiffLine *lines = 0;
+    size_t line_count = 0U;
+    unsigned char (*line_oids)[CRYPTO_SHA1_DIGEST_SIZE] = 0;
+    char **line_authors = 0;
+    unsigned long long line_number = 1ULL;
+    int type = 0;
+    int have_pack;
+    const char *revision = "HEAD";
+    const char *path = 0;
+    int result = 1;
+    char short_hex[8];
+    size_t line_index;
+
+    rt_memset(&info, 0, sizeof(info));
+    rt_memset(&tree_index, 0, sizeof(tree_index));
+
+    if (argi < argc && rt_strcmp(argv[argi], "--") != 0 && argi + 1 < argc) {
+        revision = argv[argi++];
+    }
+    if (argi < argc && rt_strcmp(argv[argi], "--") == 0) {
+        argi += 1;
+    }
+    if (argi + 1 != argc) {
+        tool_write_error("git", "blame needs a path", 0);
+        return 1;
+    }
+    path = argv[argi];
+    if (git_resolve_revision(repo, revision, oid, 0, 0) != 0) {
+        tool_write_error("git", "cannot resolve blame revision: ", revision);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0 || git_load_commit_tree_index(repo, oid, have_pack ? &pack : 0, &tree_index) != 0) {
+        goto done;
+    }
+    entry = git_index_find(&tree_index, path);
+    if (entry == 0 || git_read_object(repo, entry->oid, have_pack ? &pack : 0, &type, &blob, &blob_size) != 0 || type != GIT_OBJECT_BLOB) {
+        tool_write_error("git", "cannot blame path: ", path);
+        goto done;
+    }
+    if (git_split_diff_lines(blob, blob_size, &lines, &line_count) != 0) {
+        goto done;
+    }
+    if (line_count > 0U) {
+        line_oids = (unsigned char (*)[CRYPTO_SHA1_DIGEST_SIZE])rt_malloc_array(line_count, sizeof(line_oids[0]));
+        line_authors = (char **)rt_malloc_array(line_count, sizeof(line_authors[0]));
+        if (line_oids == 0 || line_authors == 0) {
+            goto done;
+        }
+        rt_memset(line_authors, 0, line_count * sizeof(line_authors[0]));
+    }
+    for (line_index = 0U; line_index < line_count; ++line_index) {
+        memcpy(line_oids[line_index], oid, CRYPTO_SHA1_DIGEST_SIZE);
+        line_authors[line_index] = git_strdup_n(info.author != 0 ? info.author : "unknown", rt_strlen(info.author != 0 ? info.author : "unknown"));
+        if (line_authors[line_index] == 0) {
+            goto done;
+        }
+    }
+    {
+        unsigned char current_oid[CRYPTO_SHA1_DIGEST_SIZE];
+        GitCommitInfo current_info;
+
+        memcpy(current_oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+        rt_memset(&current_info, 0, sizeof(current_info));
+        while (git_read_commit_info(repo, current_oid, have_pack ? &pack : 0, &current_info) == 0 && current_info.parent_count == 1U) {
+            GitCommitInfo parent_info;
+            GitIndex parent_index;
+            GitIndexEntry *parent_entry;
+            unsigned char *parent_blob = 0;
+            size_t parent_blob_size = 0U;
+            GitDiffLine *parent_lines = 0;
+            size_t parent_line_count = 0U;
+            int parent_type = 0;
+
+            rt_memset(&parent_info, 0, sizeof(parent_info));
+            rt_memset(&parent_index, 0, sizeof(parent_index));
+            if (git_read_commit_info(repo, current_info.parents[0], have_pack ? &pack : 0, &parent_info) != 0 || git_load_commit_tree_index(repo, current_info.parents[0], have_pack ? &pack : 0, &parent_index) != 0) {
+                git_commit_info_destroy(&parent_info);
+                git_index_destroy(&parent_index);
+                git_commit_info_destroy(&current_info);
+                break;
+            }
+            parent_entry = git_index_find(&parent_index, path);
+            if (parent_entry == 0 || git_read_object(repo, parent_entry->oid, have_pack ? &pack : 0, &parent_type, &parent_blob, &parent_blob_size) != 0 || parent_type != GIT_OBJECT_BLOB || git_split_diff_lines(parent_blob, parent_blob_size, &parent_lines, &parent_line_count) != 0) {
+                rt_free(parent_blob);
+                rt_free(parent_lines);
+                git_commit_info_destroy(&parent_info);
+                git_index_destroy(&parent_index);
+                git_commit_info_destroy(&current_info);
+                break;
+            }
+            for (line_index = 0U; line_index < line_count && line_index < parent_line_count; ++line_index) {
+                if (git_oid_equal(line_oids[line_index], current_oid) && git_diff_lines_equal(&lines[line_index], &parent_lines[line_index])) {
+                    char *author_copy = git_strdup_n(parent_info.author != 0 ? parent_info.author : "unknown", rt_strlen(parent_info.author != 0 ? parent_info.author : "unknown"));
+                    if (author_copy == 0) {
+                        rt_free(parent_blob);
+                        rt_free(parent_lines);
+                        git_commit_info_destroy(&parent_info);
+                        git_index_destroy(&parent_index);
+                        git_commit_info_destroy(&current_info);
+                        goto done;
+                    }
+                    memcpy(line_oids[line_index], current_info.parents[0], CRYPTO_SHA1_DIGEST_SIZE);
+                    rt_free(line_authors[line_index]);
+                    line_authors[line_index] = author_copy;
+                }
+            }
+            memcpy(current_oid, current_info.parents[0], CRYPTO_SHA1_DIGEST_SIZE);
+            rt_free(parent_blob);
+            rt_free(parent_lines);
+            git_commit_info_destroy(&parent_info);
+            git_index_destroy(&parent_index);
+            git_commit_info_destroy(&current_info);
+            rt_memset(&current_info, 0, sizeof(current_info));
+        }
+        git_commit_info_destroy(&current_info);
+    }
+    for (line_index = 0U; line_index < line_count; ++line_index) {
+        char number[32];
+        char hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+        git_format_oid_hex(line_oids[line_index], hex);
+        memcpy(short_hex, hex, 7U);
+        short_hex[7] = '\0';
+        rt_write_cstr(1, short_hex);
+        rt_write_cstr(1, " (");
+        rt_write_cstr(1, line_authors[line_index] != 0 ? line_authors[line_index] : "unknown");
+        rt_write_cstr(1, " ");
+        rt_unsigned_to_string(line_number, number, sizeof(number));
+        rt_write_cstr(1, number);
+        rt_write_cstr(1, ") ");
+        rt_write_all(1, lines[line_index].data, lines[line_index].length);
+        rt_write_char(1, '\n');
+        line_number += 1ULL;
+    }
+    result = 0;
+done:
+    if (line_authors != 0) {
+        for (line_index = 0U; line_index < line_count; ++line_index) {
+            rt_free(line_authors[line_index]);
+        }
+    }
+    rt_free(line_authors);
+    rt_free(line_oids);
+    rt_free(lines);
+    rt_free(blob);
+    git_index_destroy(&tree_index);
+    git_commit_info_destroy(&info);
+    if (have_pack) git_pack_destroy(&pack);
+    return result;
+}
+
 static int git_checkout_index_paths_to_worktree(const GitRepo *repo, const GitIndex *index, char **pathspecs, int pathspec_count, const GitPack *pack_cache) {
     size_t i;
 
@@ -3247,11 +4141,11 @@ static int git_cmd_reset(GitRepo *repo, int argc, char **argv, int argi) {
         return 1;
     }
     if (repo->head_ref[0] != '\0') {
-        if (git_write_ref_oid(repo, repo->head_ref, oid) != 0) {
+        if (git_write_ref_oid_reflog(repo, repo->head_ref, oid, "reset", 1) != 0) {
             if (have_pack) git_pack_destroy(&pack);
             return 1;
         }
-    } else if (git_write_detached_head_oid(repo, oid) != 0) {
+    } else if (git_write_detached_head_oid_reflog(repo, oid, "reset") != 0) {
         if (have_pack) git_pack_destroy(&pack);
         return 1;
     }

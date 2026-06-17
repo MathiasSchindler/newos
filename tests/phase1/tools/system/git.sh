@@ -370,6 +370,46 @@ rev_count=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-list --count "$first_
 assert_text_equals "$rev_count" '1' "git rev-list --count A..B did not count first-parent commits"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --format='%H %s %an %ae' -n 1 > "$WORK_DIR/log-format.out"
 assert_file_contains "$WORK_DIR/log-format.out" "^$second_commit second A a@example\.invalid$" "git log --format did not expand the supported placeholders"
+second_tree=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -p "$second_commit" | sed -n 's/^tree //p' | head -n 1)
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch side "$first_commit"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" switch side > "$WORK_DIR/switch-side.out"
+printf 'side\n' > "$commit_repo/c.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" add c.txt
+cd "$commit_repo" && GIT_AUTHOR_NAME=S GIT_AUTHOR_EMAIL=s@example.invalid GIT_COMMITTER_NAME=S GIT_COMMITTER_EMAIL=s@example.invalid "${TEST_BIN_DIR}/git" commit -m side > "$WORK_DIR/commit-side.out"
+side_commit=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+merge_commit=$(python3 - "$commit_repo" "$second_tree" "$side_commit" "$second_commit" <<'PY'
+import hashlib
+import os
+import sys
+import zlib
+
+repo, tree, first_parent, second_parent = sys.argv[1:]
+payload = (f"tree {tree}\nparent {first_parent}\nparent {second_parent}\n"
+           "author M <m@example.invalid> 0 +0000\n"
+           "committer M <m@example.invalid> 0 +0000\n\nmerge\n").encode()
+full = b"commit " + str(len(payload)).encode() + b"\0" + payload
+oid = hashlib.sha1(full).hexdigest()
+directory = os.path.join(repo, ".git", "objects", oid[:2])
+os.makedirs(directory, exist_ok=True)
+with open(os.path.join(directory, oid[2:]), "wb") as handle:
+    handle.write(zlib.compress(full))
+print(oid)
+PY
+)
+printf '%s\n' "$merge_commit" > "$commit_repo/.git/refs/heads/synthetic-merge"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" switch main > "$WORK_DIR/switch-main-after-dag.out"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" merge-base --is-ancestor "$second_commit" "$merge_commit"
+dag_base=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" merge-base "$second_commit" "$merge_commit" | tr -d '\r\n')
+assert_text_equals "$dag_base" "$second_commit" "git merge-base did not traverse a merge commit second parent"
+dag_count=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-list --count "$side_commit..$merge_commit" | tr -d '\r\n')
+assert_text_equals "$dag_count" '2' "git rev-list --count A..B did not count non-first-parent reachable commits"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --format='%P' -n 1 "$merge_commit" > "$WORK_DIR/log-parents.out"
+assert_file_contains "$WORK_DIR/log-parents.out" "^$side_commit $second_commit$" "git log --format=%P did not print all commit parents"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" reflog > "$WORK_DIR/reflog.out"
+assert_file_contains "$WORK_DIR/reflog.out" 'HEAD@.0.: checkout' "git reflog did not show the latest HEAD checkout"
+assert_file_contains "$WORK_DIR/reflog.out" 'commit' "git reflog did not record commits"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" blame -- a.txt > "$WORK_DIR/blame.out"
+assert_file_contains "$WORK_DIR/blame.out" 'A <a@example.invalid>' "git blame did not print commit author information"
 symbolic_head=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" symbolic-ref HEAD | tr -d '\r\n')
 assert_text_equals "$symbolic_head" 'refs/heads/main' "git symbolic-ref HEAD did not print the full HEAD ref"
 symbolic_short=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" symbolic-ref --short HEAD | tr -d '\r\n')
@@ -543,6 +583,119 @@ assert_file_contains "$WORK_DIR/nested-ignore.out" '^sub/keep\.log$' "git ls-fil
 if grep -q '^sub/drop\.log$' "$WORK_DIR/nested-ignore.out"; then
     fail "git ls-files reported a file ignored by nested .gitignore"
 fi
+
+hook_repo="$WORK_DIR/hook-repo"
+"${TEST_BIN_DIR}/git" init "$hook_repo" > "$WORK_DIR/hook-init.out"
+printf 'hooked\n' > "$hook_repo/h.txt"
+cd "$hook_repo" && "${TEST_BIN_DIR}/git" add h.txt
+mkdir -p "$hook_repo/.git/hooks"
+cat > "$hook_repo/.git/hooks/pre-commit" <<'SH'
+#!/bin/sh
+printf pre > .git/pre-commit-ran
+SH
+chmod 755 "$hook_repo/.git/hooks/pre-commit"
+cat > "$hook_repo/.git/hooks/commit-msg" <<'SH'
+#!/bin/sh
+grep -q editor-message "$1"
+SH
+chmod 755 "$hook_repo/.git/hooks/commit-msg"
+cat > "$WORK_DIR/editor.sh" <<'SH'
+#!/bin/sh
+printf 'editor-message\n' > "$1"
+SH
+chmod 755 "$WORK_DIR/editor.sh"
+cd "$hook_repo" && GIT_EDITOR="$WORK_DIR/editor.sh" GIT_AUTHOR_NAME=H GIT_AUTHOR_EMAIL=h@example.invalid GIT_COMMITTER_NAME=H GIT_COMMITTER_EMAIL=h@example.invalid "${TEST_BIN_DIR}/git" commit > "$WORK_DIR/hook-commit.out"
+assert_file_contains "$hook_repo/.git/pre-commit-ran" '^pre$' "git commit did not run pre-commit hook"
+cd "$hook_repo" && "${TEST_BIN_DIR}/git" log --format='%s' -n 1 > "$WORK_DIR/hook-log.out"
+assert_file_contains "$WORK_DIR/hook-log.out" '^editor-message$' "git commit did not read the editor-written message"
+
+ff_repo="$WORK_DIR/ff-repo"
+"${TEST_BIN_DIR}/git" init "$ff_repo" > "$WORK_DIR/ff-init.out"
+printf 'base\n' > "$ff_repo/f.txt"
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" add f.txt
+cd "$ff_repo" && GIT_AUTHOR_NAME=F GIT_AUTHOR_EMAIL=f@example.invalid GIT_COMMITTER_NAME=F GIT_COMMITTER_EMAIL=f@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/ff-base.out"
+base_ff=$(cd "$ff_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" branch next "$base_ff"
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" switch next > "$WORK_DIR/ff-switch-next.out"
+printf 'next\n' > "$ff_repo/f.txt"
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" add f.txt
+cd "$ff_repo" && GIT_AUTHOR_NAME=F GIT_AUTHOR_EMAIL=f@example.invalid GIT_COMMITTER_NAME=F GIT_COMMITTER_EMAIL=f@example.invalid "${TEST_BIN_DIR}/git" commit -m next > "$WORK_DIR/ff-next.out"
+next_ff=$(cd "$ff_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" switch main > "$WORK_DIR/ff-switch-main.out"
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" merge next > "$WORK_DIR/ff-merge.out"
+merged_ff=$(cd "$ff_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+assert_text_equals "$merged_ff" "$next_ff" "git merge did not fast-forward to the target commit"
+assert_file_contains "$ff_repo/f.txt" '^next$' "git merge did not update the worktree during fast-forward"
+
+push_remote="$WORK_DIR/push-remote"
+"${TEST_BIN_DIR}/git" init "$push_remote" > "$WORK_DIR/push-remote-init.out"
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" push "$push_remote/.git" main > "$WORK_DIR/push-local.out"
+push_ref=$(tr -d '\r\n' < "$push_remote/.git/refs/heads/main")
+assert_text_equals "$push_ref" "$next_ff" "git push did not update a local remote ref"
+
+cp_repo="$WORK_DIR/cp-repo"
+"${TEST_BIN_DIR}/git" init "$cp_repo" > "$WORK_DIR/cp-init.out"
+printf 'one\n' > "$cp_repo/x.txt"
+cd "$cp_repo" && "${TEST_BIN_DIR}/git" add x.txt
+cd "$cp_repo" && GIT_AUTHOR_NAME=C GIT_AUTHOR_EMAIL=c@example.invalid GIT_COMMITTER_NAME=C GIT_COMMITTER_EMAIL=c@example.invalid "${TEST_BIN_DIR}/git" commit -m one > "$WORK_DIR/cp-one.out"
+cp_first=$(cd "$cp_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+printf 'two\n' > "$cp_repo/x.txt"
+cd "$cp_repo" && "${TEST_BIN_DIR}/git" add x.txt
+cd "$cp_repo" && GIT_AUTHOR_NAME=C GIT_AUTHOR_EMAIL=c@example.invalid GIT_COMMITTER_NAME=C GIT_COMMITTER_EMAIL=c@example.invalid "${TEST_BIN_DIR}/git" commit -m two > "$WORK_DIR/cp-two.out"
+cp_second=$(cd "$cp_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+cd "$cp_repo" && "${TEST_BIN_DIR}/git" reset --hard "$cp_first" > "$WORK_DIR/cp-reset.out"
+cd "$cp_repo" && "${TEST_BIN_DIR}/git" cherry-pick "$cp_second" > "$WORK_DIR/cp-cherry.out"
+cp_pick=$(cd "$cp_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+assert_text_equals "$cp_pick" "$cp_second" "git cherry-pick did not fast-forward a direct child commit"
+cd "$cp_repo" && "${TEST_BIN_DIR}/git" revert HEAD > "$WORK_DIR/cp-revert.out"
+assert_file_contains "$cp_repo/x.txt" '^one$' "git revert HEAD did not restore the parent tree"
+revert_subject=$(cd "$cp_repo" && "${TEST_BIN_DIR}/git" log --format='%s' -n 1 | tr -d '\r\n')
+assert_text_equals "$revert_subject" 'Revert HEAD' "git revert HEAD did not create a revert commit"
+
+diff_quality_repo="$WORK_DIR/diff-quality-repo"
+"${TEST_BIN_DIR}/git" init "$diff_quality_repo" > "$WORK_DIR/diff-quality-init.out"
+for n in 1 2 3 4 5 6 7 8 9 10; do printf 'line%s\n' "$n"; done > "$diff_quality_repo/lines.txt"
+printf 'same\n' > "$diff_quality_repo/old-name.txt"
+cd "$diff_quality_repo" && "${TEST_BIN_DIR}/git" add lines.txt old-name.txt
+cd "$diff_quality_repo" && GIT_AUTHOR_NAME=D GIT_AUTHOR_EMAIL=d@example.invalid GIT_COMMITTER_NAME=D GIT_COMMITTER_EMAIL=d@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/diff-quality-base.out"
+python3 - "$diff_quality_repo/lines.txt" <<'PY'
+import sys
+path = sys.argv[1]
+lines = [f"line{i}\n" for i in range(1, 11)]
+lines[5] = "changed6\n"
+with open(path, "w", encoding="utf-8") as handle:
+    handle.writelines(lines)
+PY
+cd "$diff_quality_repo" && "${TEST_BIN_DIR}/git" diff -- lines.txt > "$WORK_DIR/diff-compact.out"
+assert_file_contains "$WORK_DIR/diff-compact.out" '^ line3$' "git diff compact hunk did not include leading context"
+assert_file_contains "$WORK_DIR/diff-compact.out" '^-line6$' "git diff compact hunk did not include removed line"
+assert_file_contains "$WORK_DIR/diff-compact.out" '^+changed6$' "git diff compact hunk did not include inserted line"
+if grep -q '^ line1$' "$WORK_DIR/diff-compact.out"; then
+    fail "git diff compact hunk included distant unchanged prefix lines"
+fi
+mv "$diff_quality_repo/old-name.txt" "$diff_quality_repo/new-name.txt"
+cd "$diff_quality_repo" && "${TEST_BIN_DIR}/git" add old-name.txt new-name.txt
+cd "$diff_quality_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -z > "$WORK_DIR/diff-rename-z.out"
+tr '\000' '\n' < "$WORK_DIR/diff-rename-z.out" > "$WORK_DIR/diff-rename-z.lines"
+assert_file_contains "$WORK_DIR/diff-rename-z.lines" '^R100$' "git diff --name-status -z did not report an exact rename status"
+assert_file_contains "$WORK_DIR/diff-rename-z.lines" '^old-name.txt$' "git diff --name-status -z did not include the old rename path"
+assert_file_contains "$WORK_DIR/diff-rename-z.lines" '^new-name.txt$' "git diff --name-status -z did not include the new rename path"
+cd "$diff_quality_repo" && "${TEST_BIN_DIR}/git" diff --cached > "$WORK_DIR/diff-rename-patch.out"
+assert_file_contains "$WORK_DIR/diff-rename-patch.out" '^similarity index 100%$' "git diff patch did not include exact rename metadata"
+assert_file_contains "$WORK_DIR/diff-rename-patch.out" '^rename from old-name.txt$' "git diff patch did not include rename-from metadata"
+assert_file_contains "$WORK_DIR/diff-rename-patch.out" '^rename to new-name.txt$' "git diff patch did not include rename-to metadata"
+
+blame_history_repo="$WORK_DIR/blame-history-repo"
+"${TEST_BIN_DIR}/git" init "$blame_history_repo" > "$WORK_DIR/blame-history-init.out"
+printf 'keep\nold\n' > "$blame_history_repo/file.txt"
+cd "$blame_history_repo" && "${TEST_BIN_DIR}/git" add file.txt
+cd "$blame_history_repo" && GIT_AUTHOR_NAME=Old GIT_AUTHOR_EMAIL=old@example.invalid GIT_COMMITTER_NAME=Old GIT_COMMITTER_EMAIL=old@example.invalid "${TEST_BIN_DIR}/git" commit -m old > "$WORK_DIR/blame-history-old.out"
+printf 'keep\nnew\n' > "$blame_history_repo/file.txt"
+cd "$blame_history_repo" && "${TEST_BIN_DIR}/git" add file.txt
+cd "$blame_history_repo" && GIT_AUTHOR_NAME=New GIT_AUTHOR_EMAIL=new@example.invalid GIT_COMMITTER_NAME=New GIT_COMMITTER_EMAIL=new@example.invalid "${TEST_BIN_DIR}/git" commit -m new > "$WORK_DIR/blame-history-new.out"
+cd "$blame_history_repo" && "${TEST_BIN_DIR}/git" blame -- file.txt > "$WORK_DIR/blame-history.out"
+assert_file_contains "$WORK_DIR/blame-history.out" 'Old <old@example.invalid> .* 1).*keep$' "git blame did not attribute an unchanged line to the older commit"
+assert_file_contains "$WORK_DIR/blame-history.out" 'New <new@example.invalid> .* 2).*new$' "git blame did not attribute a changed line to the newer commit"
 
 apply_repo="$WORK_DIR/apply-repo"
 "${TEST_BIN_DIR}/git" init "$apply_repo" > "$WORK_DIR/apply-init.out"

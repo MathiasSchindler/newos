@@ -703,6 +703,28 @@ static int git_commit_tree_oid(const GitRepo *repo, const unsigned char commit_o
     return result;
 }
 
+static int git_commit_info_add_parent(GitCommitInfo *info, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    unsigned char (*new_parents)[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t new_capacity;
+
+    if (info->parent_count == info->parent_capacity) {
+        new_capacity = info->parent_capacity == 0U ? 2U : info->parent_capacity * 2U;
+        new_parents = (unsigned char (*)[CRYPTO_SHA1_DIGEST_SIZE])rt_realloc_array(info->parents, new_capacity, sizeof(info->parents[0]));
+        if (new_parents == 0) {
+            return -1;
+        }
+        info->parents = new_parents;
+        info->parent_capacity = new_capacity;
+    }
+    memcpy(info->parents[info->parent_count], oid, CRYPTO_SHA1_DIGEST_SIZE);
+    if (!info->has_parent) {
+        memcpy(info->parent_oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+        info->has_parent = 1;
+    }
+    info->parent_count += 1U;
+    return 0;
+}
+
 static int git_parse_commit_info(const unsigned char *data, size_t size, GitCommitInfo *info) {
     size_t pos = 0U;
     size_t message_start = size;
@@ -728,12 +750,13 @@ static int git_parse_commit_info(const unsigned char *data, size_t size, GitComm
                 git_commit_info_destroy(info);
                 return -1;
             }
-        } else if (end >= start + 7U && memcmp(data + start, "parent ", 7U) == 0 && !info->has_parent) {
-            if (git_parse_oid_hex_n((const char *)data + start + 7U, GIT_OBJECT_HEX_SIZE, info->parent_oid) != 0) {
+        } else if (end >= start + 7U && memcmp(data + start, "parent ", 7U) == 0) {
+            unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+            if (git_parse_oid_hex_n((const char *)data + start + 7U, GIT_OBJECT_HEX_SIZE, parent_oid) != 0 || git_commit_info_add_parent(info, parent_oid) != 0) {
                 git_commit_info_destroy(info);
                 return -1;
             }
-            info->has_parent = 1;
         } else if (end >= start + 7U && memcmp(data + start, "author ", 7U) == 0) {
             info->author = git_strdup_n((const char *)data + start + 7U, end - start - 7U);
             if (info->author == 0) {

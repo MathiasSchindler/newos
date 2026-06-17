@@ -349,6 +349,20 @@ static int git_http_process_chunked_body(GitBuffer *response, GitHttpBodyCallbac
     return 0;
 }
 
+static int git_http_header_value_safe(const char *text) {
+    size_t i;
+
+    if (text == 0 || text[0] == '\0') {
+        return 0;
+    }
+    for (i = 0U; text[i] != '\0'; ++i) {
+        if (text[i] == '\r' || text[i] == '\n') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int git_http_request_stream(const GitUrl *url, const char *method, const char *accept, const char *content_type, const unsigned char *body, size_t body_size, GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data) {
     GitHttpConnection connection;
     GitBuffer header;
@@ -365,6 +379,8 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
     int has_content_length = 0;
     size_t content_length = 0U;
     size_t body_seen = 0U;
+    const char *authorization = platform_getenv("GIT_HTTP_AUTHORIZATION");
+    const char *bearer_token = platform_getenv("GIT_HTTPS_TOKEN");
     int result = -1;
 
     rt_memset(&header, 0, sizeof(header));
@@ -388,6 +404,15 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-git/0.1\r\nAccept: ");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, accept != 0 ? accept : "*/*");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nConnection: close\r\n");
+    if (git_http_header_value_safe(authorization)) {
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "Authorization: ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, authorization);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+    } else if (git_http_header_value_safe(bearer_token)) {
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "Authorization: Bearer ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, bearer_token);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+    }
     if (content_type != 0) {
         rt_unsigned_to_string(body_size, length_text, sizeof(length_text));
         request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "Content-Type: ");

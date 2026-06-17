@@ -898,49 +898,17 @@ done:
     return result;
 }
 
-static size_t git_diff_line_count_for_hunk(const unsigned char *data, size_t size) {
-    size_t count = 0U;
-    size_t pos = 0U;
-
-    while (pos < size) {
-        count += 1U;
-        while (pos < size && data[pos] != '\n') {
-            pos += 1U;
-        }
-        if (pos < size) {
-            pos += 1U;
-        }
-    }
-    return count;
-}
-
-static int git_write_diff_data_lines(const unsigned char *data, size_t size, char prefix, int color_mode) {
-    size_t pos = 0U;
+static int git_write_diff_line(const GitDiffLine *line, char prefix, int color_mode) {
     int style = prefix == '+' ? TOOL_STYLE_GREEN : prefix == '-' ? TOOL_STYLE_RED : TOOL_STYLE_PLAIN;
+    int use_color = style != TOOL_STYLE_PLAIN && tool_should_use_color_fd(1, color_mode);
 
-    while (pos < size) {
-        size_t start = pos;
-        size_t end;
-        int use_color = style != TOOL_STYLE_PLAIN && tool_should_use_color_fd(1, color_mode);
-
-        while (pos < size && data[pos] != '\n') {
-            pos += 1U;
-        }
-        end = pos;
-        if (use_color) tool_style_begin(1, color_mode, style);
-        if (rt_write_char(1, prefix) != 0 || rt_write_all(1, data + start, end - start) != 0) {
-            if (use_color) tool_style_end(1, color_mode);
-            return -1;
-        }
+    if (use_color) tool_style_begin(1, color_mode, style);
+    if (rt_write_char(1, prefix) != 0 || rt_write_all(1, line->data, line->length) != 0) {
         if (use_color) tool_style_end(1, color_mode);
-        if (rt_write_char(1, '\n') != 0) {
-            return -1;
-        }
-        if (pos < size) {
-            pos += 1U;
-        }
+        return -1;
     }
-    return 0;
+    if (use_color) tool_style_end(1, color_mode);
+    return rt_write_char(1, '\n');
 }
 
 static int git_write_diff_path_line(const char *prefix, const char *path, int exists) {
@@ -958,25 +926,90 @@ static int git_write_diff_path_line(const char *prefix, const char *path, int ex
 
 static int git_write_size(size_t value);
 
-static int git_write_diff_patch(const char *path, const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists, int color_mode) {
-    size_t old_lines;
-    size_t new_lines;
+static size_t git_min_size(size_t left, size_t right) {
+    return left < right ? left : right;
+}
 
+static int git_write_diff_hunk_range(size_t start_zero_based, size_t count) {
+    if (count == 0U) {
+        return rt_write_cstr(1, "0,0");
+    }
+    if (git_write_size(start_zero_based + 1U) != 0) {
+        return -1;
+    }
+    if (count != 1U) {
+        if (rt_write_char(1, ',') != 0 || git_write_size(count) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int git_write_diff_compact_hunk(const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int color_mode) {
+    GitDiffLine *old_lines = 0;
+    GitDiffLine *new_lines = 0;
+    size_t old_count = 0U;
+    size_t new_count = 0U;
+    size_t prefix = 0U;
+    size_t suffix = 0U;
+    size_t context = 3U;
+    size_t old_change_end;
+    size_t new_change_end;
+    size_t old_hunk_start;
+    size_t new_hunk_start;
+    size_t old_hunk_end;
+    size_t new_hunk_end;
+    size_t i;
+    int result = -1;
+
+    if (git_split_diff_lines(old_data, old_size, &old_lines, &old_count) != 0 || git_split_diff_lines(new_data, new_size, &new_lines, &new_count) != 0) {
+        goto done;
+    }
+    while (prefix < old_count && prefix < new_count && git_diff_lines_equal(&old_lines[prefix], &new_lines[prefix])) {
+        prefix += 1U;
+    }
+    while (suffix < old_count - prefix && suffix < new_count - prefix && git_diff_lines_equal(&old_lines[old_count - suffix - 1U], &new_lines[new_count - suffix - 1U])) {
+        suffix += 1U;
+    }
+    old_change_end = old_count - suffix;
+    new_change_end = new_count - suffix;
+    old_hunk_start = prefix > context ? prefix - context : 0U;
+    new_hunk_start = prefix > context ? prefix - context : 0U;
+    old_hunk_end = git_min_size(old_count, old_change_end + context);
+    new_hunk_end = git_min_size(new_count, new_change_end + context);
+    if (rt_write_cstr(1, "@@ -") != 0 || git_write_diff_hunk_range(old_hunk_start, old_hunk_end - old_hunk_start) != 0 || rt_write_cstr(1, " +") != 0 || git_write_diff_hunk_range(new_hunk_start, new_hunk_end - new_hunk_start) != 0 || rt_write_line(1, " @@") != 0) {
+        goto done;
+    }
+    for (i = old_hunk_start; i < prefix; ++i) {
+        if (git_write_diff_line(&old_lines[i], ' ', color_mode) != 0) goto done;
+    }
+    for (i = prefix; i < old_change_end; ++i) {
+        if (git_write_diff_line(&old_lines[i], '-', color_mode) != 0) goto done;
+    }
+    for (i = prefix; i < new_change_end; ++i) {
+        if (git_write_diff_line(&new_lines[i], '+', color_mode) != 0) goto done;
+    }
+    for (i = old_change_end; i < old_hunk_end && i < old_count; ++i) {
+        if (git_write_diff_line(&old_lines[i], ' ', color_mode) != 0) goto done;
+    }
+    result = 0;
+done:
+    rt_free(old_lines);
+    rt_free(new_lines);
+    return result;
+}
+
+static int git_write_diff_patch(const char *path, const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists, int color_mode) {
     if (old_size == new_size && (old_size == 0U || memcmp(old_data, new_data, old_size) == 0)) {
         return 0;
     }
-    old_lines = git_diff_line_count_for_hunk(old_data, old_size);
-    new_lines = git_diff_line_count_for_hunk(new_data, new_size);
     if (rt_write_cstr(1, "diff --git a/") != 0 || rt_write_cstr(1, path) != 0 || rt_write_cstr(1, " b/") != 0 || rt_write_line(1, path) != 0) {
         return -1;
     }
     if (git_write_diff_path_line("--- ", path, old_exists) != 0 || git_write_diff_path_line("+++ ", path, new_exists) != 0) {
         return -1;
     }
-    if (rt_write_cstr(1, "@@ -1,") != 0 || git_write_size(old_lines) != 0 || rt_write_cstr(1, " +1,") != 0 || git_write_size(new_lines) != 0 || rt_write_line(1, " @@") != 0) {
-        return -1;
-    }
-    if (git_write_diff_data_lines(old_data, old_size, '-', color_mode) != 0 || git_write_diff_data_lines(new_data, new_size, '+', color_mode) != 0) {
+    if (git_write_diff_compact_hunk(old_data, old_size, new_data, new_size, color_mode) != 0) {
         return -1;
     }
     return 0;
@@ -1071,15 +1104,118 @@ static int git_render_diff_path_mode(GitDiffOutputMode output_mode, char status,
     return 0;
 }
 
+static int git_write_diff_rename_name_status(const char *old_path, const char *new_path, int nul_terminate) {
+    if (nul_terminate) {
+        return rt_write_cstr(1, "R100") != 0 || rt_write_char(1, '\0') != 0 || rt_write_cstr(1, old_path) != 0 || rt_write_char(1, '\0') != 0 || rt_write_cstr(1, new_path) != 0 || rt_write_char(1, '\0') != 0 ? -1 : 0;
+    }
+    return rt_write_cstr(1, "R100\t") != 0 || rt_write_cstr(1, old_path) != 0 || rt_write_char(1, '\t') != 0 || rt_write_line(1, new_path) != 0 ? -1 : 0;
+}
+
+static int git_render_diff_rename(GitDiffOutputMode output_mode, const char *old_path, const char *new_path, int nul_terminate) {
+    if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY) {
+        return rt_write_cstr(1, new_path) != 0 || git_write_record_terminator(nul_terminate) != 0 ? -1 : 0;
+    }
+    if (output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
+        return git_write_diff_rename_name_status(old_path, new_path, nul_terminate);
+    }
+    if (output_mode == GIT_DIFF_OUTPUT_PATCH) {
+        return rt_write_cstr(1, "diff --git a/") != 0 || rt_write_cstr(1, old_path) != 0 || rt_write_cstr(1, " b/") != 0 || rt_write_line(1, new_path) != 0 ||
+            rt_write_line(1, "similarity index 100%") != 0 || rt_write_cstr(1, "rename from ") != 0 || rt_write_line(1, old_path) != 0 ||
+            rt_write_cstr(1, "rename to ") != 0 || rt_write_line(1, new_path) != 0 ? -1 : 0;
+    }
+    return 0;
+}
+
+static int git_index_contains_path(const GitIndex *index, const char *path) {
+    return git_index_find(index, path) != 0;
+}
+
+static int git_precompute_exact_renames(const GitIndex *old_index, const GitIndex *new_index, unsigned char *old_renamed, unsigned char *new_renamed) {
+    size_t old_pos;
+
+    for (old_pos = 0U; old_pos < old_index->count; ++old_pos) {
+        const GitIndexEntry *old_entry = &old_index->entries[old_pos];
+        size_t new_pos;
+
+        if (git_index_contains_path(new_index, old_entry->path)) {
+            continue;
+        }
+        for (new_pos = 0U; new_pos < new_index->count; ++new_pos) {
+            const GitIndexEntry *new_entry = &new_index->entries[new_pos];
+
+            if (new_renamed[new_pos] || git_index_contains_path(old_index, new_entry->path)) {
+                continue;
+            }
+            if (!new_entry->intent_to_add && old_entry->mode == new_entry->mode && git_oid_equal(old_entry->oid, new_entry->oid)) {
+                old_renamed[old_pos] = 1U;
+                new_renamed[new_pos] = 1U;
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
 static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, const GitIndex *new_index, const GitPack *pack_cache, GitDiffOutputMode output_mode, int color_mode, int nul_terminate, char **pathspecs, int pathspec_count, GitDiffStatList *stats, int *change_count) {
     size_t old_pos = 0U;
     size_t new_pos = 0U;
+    unsigned char *old_renamed = 0;
+    unsigned char *new_renamed = 0;
+    size_t rename_pos;
+
+    if (old_index->count > 0U) {
+        old_renamed = (unsigned char *)rt_malloc_array(old_index->count, sizeof(old_renamed[0]));
+        if (old_renamed == 0) return -1;
+        rt_memset(old_renamed, 0, old_index->count * sizeof(old_renamed[0]));
+    }
+    if (new_index->count > 0U) {
+        new_renamed = (unsigned char *)rt_malloc_array(new_index->count, sizeof(new_renamed[0]));
+        if (new_renamed == 0) {
+            rt_free(old_renamed);
+            return -1;
+        }
+        rt_memset(new_renamed, 0, new_index->count * sizeof(new_renamed[0]));
+    }
+    if (old_renamed != 0 && new_renamed != 0 && git_precompute_exact_renames(old_index, new_index, old_renamed, new_renamed) != 0) {
+        rt_free(old_renamed);
+        rt_free(new_renamed);
+        return -1;
+    }
+
+    for (rename_pos = 0U; rename_pos < old_index->count; ++rename_pos) {
+        size_t paired;
+
+        if (old_renamed == 0 || !old_renamed[rename_pos]) {
+            continue;
+        }
+        for (paired = 0U; paired < new_index->count; ++paired) {
+            if (new_renamed != 0 && new_renamed[paired] && old_index->entries[rename_pos].mode == new_index->entries[paired].mode && git_oid_equal(old_index->entries[rename_pos].oid, new_index->entries[paired].oid)) {
+                if (!git_pathspec_matches(old_index->entries[rename_pos].path, pathspecs, pathspec_count) && !git_pathspec_matches(new_index->entries[paired].path, pathspecs, pathspec_count)) {
+                    break;
+                }
+                *change_count += 1;
+                if (output_mode == GIT_DIFF_OUTPUT_QUIET) {
+                    rt_free(old_renamed);
+                    rt_free(new_renamed);
+                    return 0;
+                }
+                if (git_render_diff_rename(output_mode, old_index->entries[rename_pos].path, new_index->entries[paired].path, nul_terminate) != 0) {
+                    rt_free(old_renamed);
+                    rt_free(new_renamed);
+                    return -1;
+                }
+                break;
+            }
+        }
+    }
 
     while (old_pos < old_index->count || new_pos < new_index->count) {
         const GitIndexEntry *old_entry = 0;
         const GitIndexEntry *new_entry = 0;
         const char *path;
         int cmp;
+        size_t selected_old_pos = (size_t)-1;
+        size_t selected_new_pos = (size_t)-1;
 
         if (old_pos >= old_index->count) {
             cmp = 1;
@@ -1089,36 +1225,53 @@ static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, c
             cmp = rt_strcmp(old_index->entries[old_pos].path, new_index->entries[new_pos].path);
         }
         if (cmp == 0) {
+            selected_old_pos = old_pos;
+            selected_new_pos = new_pos;
             old_entry = &old_index->entries[old_pos++];
             new_entry = &new_index->entries[new_pos++];
             path = new_entry->path;
         } else if (cmp < 0) {
+            selected_old_pos = old_pos;
             old_entry = &old_index->entries[old_pos++];
             path = old_entry->path;
         } else {
+            selected_new_pos = new_pos;
             new_entry = &new_index->entries[new_pos++];
             path = new_entry->path;
+        }
+        if ((selected_old_pos != (size_t)-1 && old_renamed != 0 && old_renamed[selected_old_pos]) || (selected_new_pos != (size_t)-1 && new_renamed != 0 && new_renamed[selected_new_pos])) {
+            continue;
         }
         if (!git_pathspec_matches(path, pathspecs, pathspec_count) || (old_entry != 0 && new_entry != 0 && git_index_entries_equal_for_status(old_entry, new_entry))) {
             continue;
         }
         *change_count += 1;
         if (output_mode == GIT_DIFF_OUTPUT_QUIET) {
+            rt_free(old_renamed);
+            rt_free(new_renamed);
             return 0;
         }
         if (output_mode == GIT_DIFF_OUTPUT_STAT) {
             if (git_collect_cached_diff_stat_entry(repo, old_entry, new_entry, pack_cache, stats) != 0) {
+                rt_free(old_renamed);
+                rt_free(new_renamed);
                 return -1;
             }
         } else if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY || output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
             char status = old_entry == 0 ? 'A' : new_entry == 0 ? 'D' : 'M';
             if (git_render_diff_path_mode(output_mode, status, path, nul_terminate) != 0) {
+                rt_free(old_renamed);
+                rt_free(new_renamed);
                 return -1;
             }
         } else if (output_mode == GIT_DIFF_OUTPUT_PATCH && git_render_cached_diff_patch_entry(repo, old_entry, new_entry, pack_cache, color_mode) != 0) {
+            rt_free(old_renamed);
+            rt_free(new_renamed);
             return -1;
         }
     }
+    rt_free(old_renamed);
+    rt_free(new_renamed);
     return 0;
 }
 

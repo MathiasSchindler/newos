@@ -222,6 +222,9 @@ typedef struct {
 typedef struct {
     unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
     unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char (*parents)[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t parent_count;
+    size_t parent_capacity;
     int has_parent;
     char *author;
     char *committer;
@@ -293,6 +296,7 @@ static void git_commit_info_destroy(GitCommitInfo *info) {
     if (info == 0) {
         return;
     }
+    rt_free(info->parents);
     rt_free(info->author);
     rt_free(info->committer);
     rt_free(info->message);
@@ -503,15 +507,22 @@ static void git_usage(void) {
     rt_write_line(2, "       git for-each-ref [--format FORMAT] [PREFIX]");
     rt_write_line(2, "       git symbolic-ref [--short] HEAD [REF]");
     rt_write_line(2, "       git update-ref REF NEW | -d REF");
+    rt_write_line(2, "       git reflog [REF]");
     rt_write_line(2, "       git merge-base [--is-ancestor] A B");
     rt_write_line(2, "       git rev-list --count A..B");
+    rt_write_line(2, "       git merge [--ff-only] REV");
+    rt_write_line(2, "       git pull [URL] [REF]");
+    rt_write_line(2, "       git push [REMOTE|URL] [SRC[:DST]]");
     rt_write_line(2, "       git tag [NAME [REV]]");
     rt_write_line(2, "       git apply [--check] [PATCH]");
     rt_write_line(2, "       git ls-files [-z] [--cached|--others|--modified|--deleted] [--stage] [--exclude-standard] [--] [path ...]");
-    rt_write_line(2, "       git add [-N|--intent-to-add] [--] path ...");
-    rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty]");
+    rt_write_line(2, "       git add [-N|--intent-to-add] [-p|--patch] [--] path ...");
+    rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty] [--no-verify]");
     rt_write_line(2, "       git log [--oneline] [-N|-n N|--max-count=N] [REV]");
     rt_write_line(2, "       git show [--stat] [REV]");
+    rt_write_line(2, "       git blame [REV] [--] path");
+    rt_write_line(2, "       git cherry-pick REV");
+    rt_write_line(2, "       git revert REV");
     rt_write_line(2, "       git reset [--soft|--mixed|--hard] [REV]");
     rt_write_line(2, "       git restore [--staged] [--worktree] [--source REV] [--] path ...");
     rt_write_line(2, "       git rm [--cached] [-r] [--] path ...");
@@ -585,6 +596,15 @@ int main(int argc, char **argv) {
     if (rt_strcmp(cmd, "rev-list") == 0) {
         return git_cmd_rev_list(&repo, argc, argv, argi + 1);
     }
+    if (rt_strcmp(cmd, "merge") == 0) {
+        return git_cmd_merge(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "pull") == 0) {
+        return git_cmd_pull(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "push") == 0) {
+        return git_cmd_push(&repo, argc, argv, argi + 1);
+    }
     if (rt_strcmp(cmd, "for-each-ref") == 0) {
         return git_cmd_for_each_ref(&repo, argc, argv, argi + 1);
     }
@@ -594,8 +614,14 @@ int main(int argc, char **argv) {
     if (rt_strcmp(cmd, "update-ref") == 0) {
         return git_cmd_update_ref(&repo, argc, argv, argi + 1);
     }
+    if (rt_strcmp(cmd, "reflog") == 0) {
+        return git_cmd_reflog(&repo, argc, argv, argi + 1);
+    }
     if (rt_strcmp(cmd, "show") == 0) {
         return git_cmd_show(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "blame") == 0) {
+        return git_cmd_blame(&repo, argc, argv, argi + 1);
     }
     if (rt_strcmp(cmd, "rev-parse") == 0) {
         return git_cmd_rev_parse(&repo, argc, argv, argi + 1);
@@ -608,6 +634,12 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "commit") == 0) {
         return git_cmd_commit(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "cherry-pick") == 0) {
+        return git_cmd_cherry_pick(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "revert") == 0) {
+        return git_cmd_revert(&repo, argc, argv, argi + 1);
     }
     if (rt_strcmp(cmd, "reset") == 0) {
         return git_cmd_reset(&repo, argc, argv, argi + 1);

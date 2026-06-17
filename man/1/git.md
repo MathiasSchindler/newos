@@ -23,15 +23,22 @@ git show-ref [--heads|--tags|--verify REF]
 git for-each-ref [--format FORMAT] [PREFIX]
 git symbolic-ref [--short] HEAD [REF]
 git update-ref REF NEW | -d REF
+git reflog [REF]
 git merge-base [--is-ancestor] A B
 git rev-list --count A..B
+git merge [--ff-only] REV
+git pull [URL] [REF]
+git push [REMOTE|URL] [SRC[:DST]]
 git tag [NAME [REV]]
 git apply [--check] [PATCH]
 git ls-files [-z] [--cached|--others|--modified|--deleted] [--stage] [--exclude-standard] [--] [path ...]
-git add [-N|--intent-to-add] [--] path ...
-git commit [-m|--message MESSAGE] [--allow-empty]
+git add [-N|--intent-to-add] [-p|--patch] [--] path ...
+git commit [-m|--message MESSAGE] [--allow-empty] [--no-verify]
 git log [--oneline] [-N|-n N|--max-count=N] [REV]
 git show [--stat] [REV]
+git blame [REV] [--] path
+git cherry-pick REV
+git revert REV
 git reset [--soft|--mixed|--hard] [REV]
 git restore [--staged] [--worktree] [--source REV] [--] path ...
 git rm [--cached] [-r] [--] path ...
@@ -76,9 +83,18 @@ be combined with `--no-pager`.
     `%(refname:short)`, `%(objectname)`, and `%(objectname:short)`
 - read or update `HEAD` as a symbolic ref with `symbolic-ref`, and write or
     delete loose refs with `update-ref`
-- compute first-parent merge bases, test first-parent ancestry with
-    `merge-base --is-ancestor`, and count first-parent ranges with
+- show recent ref movements with `reflog`; commits, branch creation, checkout,
+    reset, merge, pull, push, and update-ref writes append recovery entries
+- compute merge bases across all commit parents, test DAG ancestry with
+    `merge-base --is-ancestor`, and count unique DAG ranges with
     `rev-list --count A..B`
+- fast-forward a branch with `merge --ff-only REV` or `merge REV`; non-fast-
+    forward content merges are rejected instead of guessed
+- `pull` from the existing HTTP(S) upload-pack fetch path and then fast-forward
+    the current branch to the fetched commit
+- push to local repositories or `file://` repository paths by copying objects
+    and advancing the selected remote ref, rejecting non-fast-forward pushes
+    unless `--force` is supplied
 - list and create lightweight tags with `tag`
 - list tracked index paths with `ls-files`, untracked paths with
     `ls-files --others --exclude-standard`, or machine-readable modified,
@@ -90,14 +106,20 @@ be combined with `--no-pager`.
 - mark untracked files as intent-to-add with `add -N`, so they are no longer
     reported as untracked and appear in `diff --stat` as additions
 - stage regular files, symlinks, directory contents, and tracked deletions with
-    `add`
-- create first-pass commit objects from the index with `commit -m`, writing tree
-    objects and updating the current branch or detached `HEAD`
+    `add`; `add -p` prompts before staging each requested path as a first
+    interactive mode
+- create first-pass commit objects from the index with `commit -m`, or open
+    `GIT_EDITOR`, `VISUAL`, or `EDITOR` for `COMMIT_EDITMSG` when no message is
+    supplied; executable `pre-commit` and `commit-msg` hooks are honored unless
+    `--no-verify` is used
 - print commit history with `log`, including compact `--oneline` output and
     bounded history with `-N`, `-n N`, or `--max-count=N`; `--format` supports
     `%H`, `%h`, `%s`, `%T`, `%P`, `%an`, `%ae`, `%n`, and `%%`
 - show a commit header and its parent diff with `show`, or a summary with
     `show --stat`
+- show historical same-position line annotations with `blame [REV] -- path`
+- `cherry-pick REV` fast-forwards direct-child commits, and `revert HEAD`
+    creates a new commit whose tree matches the reverted commit's first parent
 - move `HEAD` with `reset --soft`, update the index with `reset --mixed`, or
     update both index and worktree with `reset --hard`
 - restore worktree paths from the index or a named commit, and restore staged
@@ -107,9 +129,11 @@ be combined with `--no-pager`.
 - remove untracked files with `clean -f`, preview removals with `clean -n`, and
     include ignored files only when `-x` is supplied
 - show working-tree-versus-index or `--cached` index-versus-HEAD diffs as
-    whole-file unified patches, `--stat` summaries, `--name-only`, or
-    `--name-status`, including `-z` record separators for name modes and
-    optionally colored `+` and `-` change bars
+    compact single-hunk unified patches with context, `--stat` summaries,
+    `--name-only`, or `--name-status`, including `-z` record separators for
+    name modes and optionally colored `+` and `-` change bars
+- report exact same-object renames in index and commit diffs as `R100`, and in
+    patch mode with `similarity index`, `rename from`, and `rename to` metadata
 - return native-style difference status with `diff --exit-code` or a
     short-circuiting `diff --quiet` dirty-worktree path
 - show commit-to-commit diffs with `git diff A B` or `git diff A..B`
@@ -128,6 +152,8 @@ be combined with `--no-pager`.
     streamed to stderr
 - fetch from `origin` or an explicit HTTP(S) URL with Git upload-pack and update
     `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack
+- send an HTTPS `Authorization` header from `GIT_HTTP_AUTHORIZATION`, or a
+    `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch and pull requests
 - checkout a local branch, remote-tracking branch, full object ID, or `HEAD`
     from loose objects or stored pack files
 - materialize regular files and symlink blobs during object-based checkout
@@ -136,18 +162,25 @@ be combined with `--no-pager`.
 
 ## LIMITATIONS
 
-- no push, merge, protocol v2 negotiation, SSH transport, git://
-    transport, shallow clone, partial clone, authentication, pack bitmap
-    writing, pack reuse during network negotiation, or reflogs
-- no submodules, worktrees, sparse checkout, rename detection, or interactive
-    commit message editing yet
-- history traversal follows the first parent only; merge display and graph
-    formatting are not implemented; `merge-base` and `rev-list --count` use the
-    same first-parent traversal
+- no smart-HTTP receive-pack push, protocol v2 negotiation, SSH transport,
+    git:// transport, credential helper execution, shallow clone, partial clone,
+    pack bitmap writing, or pack reuse during network negotiation
+- local push copies the object store and updates loose refs; it does not write a
+    negotiated minimal pack, update a checked-out remote worktree, or implement
+    native Git's full receive-pack policy surface
+- merge and pull are fast-forward only; recursive/ort-style content merges,
+    conflict markers, merge commits, and merge state files are not implemented
+- no submodules, worktrees, sparse checkout, or fuzzy/similarity rename
+    detection yet
+- history traversal walks all commit parents, but log ordering is a simple
+    depth-first traversal rather than native Git's date/topological ordering;
+    merge graph display is not implemented
 - commit support is intentionally small: it commits the current index, supports
-    `-m`/`--message`, uses simple environment-based identity defaults, and does
-    not run hooks, sign commits, update reflogs, or clean up intent-to-add-only
-    directory shells from tree construction yet
+    `-m`/`--message` or an editor, uses simple environment-based identity
+    defaults, runs basic executable hooks, and does not sign commits or clean up
+    intent-to-add-only directory shells from tree construction yet
+- `add -p` is currently an interactive per-path staging prompt, not true hunk
+    splitting or partial index application
 - `reset` does not implement pathspec reset; `restore` supports ordinary exact
     path restoration but not interactive patch mode; `rm` does not perform
     native Git's full safety checks against staged or unstaged local changes
@@ -156,14 +189,20 @@ be combined with `--no-pager`.
 - recursive `.gitignore` support covers ordinary nested pattern scopes and
     negation ordering but is not a complete byte-for-byte implementation of all
     Git ignore edge cases
-- patch diff output uses simple whole-file hunks rather than Git's full hunk
-    minimization algorithm
+- patch diff output emits a compact single hunk with context, but does not yet
+    implement Git's full multi-hunk minimization algorithm; rename detection is
+    exact-object-only and currently applies to index and commit diffs
 - `apply` supports ordinary unified patches for regular files but not binary
     patches, rename/copy metadata, mode changes, three-way fallback, or index
     application
 - config and remote support is intentionally local and minimal; it does not
     implement includes, conditional config, global/system config, credential
     helpers, or the full native Git config syntax
+- `blame` walks first-parent history for unchanged lines at the same line
+    number; it does not yet implement full movement/copy detection, merge-aware
+    attribution, or native Git's line-range options
+- `cherry-pick` supports only direct-child commits, and `revert` supports only
+    `HEAD` with a single parent
 - tags are lightweight refs only; annotated tags, signatures, and tag deletion
     are not implemented
 - untracked files are intentionally not included in `diff --stat`; use
@@ -203,9 +242,14 @@ git show-ref --heads
 git for-each-ref --format='%(objectname:short) %(refname:short)' refs/heads
 git symbolic-ref --short HEAD
 git update-ref refs/heads/scratch HEAD
+git reflog
 git merge-base HEAD origin/main
 git merge-base --is-ancestor HEAD origin/main
 git rev-list --count HEAD..origin/main
+git merge --ff-only origin/main
+git pull https://example.invalid/repo.git main
+GIT_HTTPS_TOKEN=token git fetch https://example.invalid/private.git main
+git push ../backup/.git main
 git tag v0.1 HEAD
 git apply --check fix.patch
 git apply fix.patch
@@ -213,10 +257,15 @@ git ls-files
 git ls-files -z --modified --deleted --stage
 git ls-files --others --exclude-standard -- src/tools/git
 git add src/tools/git.c
+git add -p -- src/tools/git.c
 git add -N -- src/tools/git
 git commit -m "update git tool"
+GIT_EDITOR=editor git commit
 git log --oneline -n 5
 git show --stat HEAD
+git blame -- src/tools/git.c
+git cherry-pick topic
+git revert HEAD
 git restore --worktree src/tools/git.c
 git restore --staged src/tools/git.c
 git reset --hard HEAD
