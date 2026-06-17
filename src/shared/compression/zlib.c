@@ -665,19 +665,20 @@ static int zlib_inflate_dynamic(ZlibBitReader *reader, unsigned char *output, si
     return result;
 }
 
-int compression_zlib_inflate(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {
+int compression_zlib_inflate_consumed(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out, size_t *input_consumed_out) {
     ZlibBitReader reader;
     size_t output_offset = 0U;
+    size_t compressed_end;
     int final_block = 0;
     unsigned int expected_adler;
 
-    if (input == 0 || output == 0 || output_size_out == 0 || input_size < 6U) {
+    if (input == 0 || output == 0 || output_size_out == 0 || input_consumed_out == 0 || input_size < 6U) {
         return -1;
     }
     if ((input[0] & 0x0fU) != 8U || (((unsigned int)input[0] << 8U) + (unsigned int)input[1]) % 31U != 0U || (input[1] & 0x20U) != 0U) {
         return -1;
     }
-    zlib_bit_reader_init(&reader, input + 2U, input_size - 6U);
+    zlib_bit_reader_init(&reader, input + 2U, input_size - 2U);
     while (!final_block) {
         unsigned int value;
         unsigned int block_type;
@@ -695,15 +696,29 @@ int compression_zlib_inflate(const unsigned char *input, size_t input_size, unsi
             return -1;
         }
     }
-    expected_adler = ((unsigned int)input[input_size - 4U] << 24U) |
-                     ((unsigned int)input[input_size - 3U] << 16U) |
-                     ((unsigned int)input[input_size - 2U] << 8U) |
-                     (unsigned int)input[input_size - 1U];
+    compressed_end = 2U + (((reader.byte_offset * 8U) - reader.bit_count + 7U) / 8U);
+    if (compressed_end + 4U > input_size) {
+        return -1;
+    }
+    expected_adler = ((unsigned int)input[compressed_end] << 24U) |
+                     ((unsigned int)input[compressed_end + 1U] << 16U) |
+                     ((unsigned int)input[compressed_end + 2U] << 8U) |
+                     (unsigned int)input[compressed_end + 3U];
     if (compression_adler32(output, output_offset) != expected_adler) {
         return -1;
     }
     *output_size_out = output_offset;
+    *input_consumed_out = compressed_end + 4U;
     return 0;
+}
+
+int compression_zlib_inflate(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {
+    size_t input_consumed = 0U;
+
+    if (compression_zlib_inflate_consumed(input, input_size, output, output_capacity, output_size_out, &input_consumed) != 0) {
+        return -1;
+    }
+    return input_consumed == input_size ? 0 : -1;
 }
 
 int compression_deflate_inflate_raw(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out) {

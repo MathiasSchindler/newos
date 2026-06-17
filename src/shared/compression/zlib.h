@@ -12,6 +12,7 @@ int compression_zlib_fixed_lz77(const unsigned char *input, size_t input_size, u
 size_t compression_zlib_deflate_bound(size_t input_size);
 int compression_zlib_deflate_level(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out, int level);
 int compression_zlib_inflate(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out);
+int compression_zlib_inflate_consumed(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out, size_t *input_consumed_out);
 int compression_deflate_inflate_raw(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out);
 
 #endif
