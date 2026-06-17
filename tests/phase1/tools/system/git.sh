@@ -4,6 +4,36 @@ set -eu
 . "$(dirname "$0")/common.inc"
 phase1_setup git
 
+init_repo="$WORK_DIR/init-repo"
+"${TEST_BIN_DIR}/git" init "$init_repo" > "$WORK_DIR/init.out"
+assert_file_contains "$WORK_DIR/init.out" 'Initialized empty Git repository' "git init did not report initialization"
+if [ ! -d "$init_repo/.git/refs/tags" ]; then
+    fail "git init did not create refs/tags"
+fi
+inside=$("${TEST_BIN_DIR}/git" -C "$init_repo" rev-parse --is-inside-work-tree | tr -d '\r\n')
+assert_text_equals "$inside" 'true' "git -C rev-parse --is-inside-work-tree failed"
+init_branch=$("${TEST_BIN_DIR}/git" -C "$init_repo" branch --show-current | tr -d '\r\n')
+assert_text_equals "$init_branch" 'main' "git init did not write a main HEAD"
+"${TEST_BIN_DIR}/git" -C "$init_repo" config user.name Alice
+"${TEST_BIN_DIR}/git" -C "$init_repo" config user.email alice@example.invalid
+config_name=$("${TEST_BIN_DIR}/git" -C "$init_repo" config user.name | tr -d '\r\n')
+assert_text_equals "$config_name" 'Alice' "git config did not read back user.name"
+config_email=$("${TEST_BIN_DIR}/git" -C "$init_repo" config user.email | tr -d '\r\n')
+assert_text_equals "$config_email" 'alice@example.invalid' "git config did not read back user.email"
+if "${TEST_BIN_DIR}/git" -C "$init_repo" config color.ui > "$WORK_DIR/config-missing.out" 2>/dev/null; then
+    fail "git config returned success for an unsupported or missing key"
+fi
+"${TEST_BIN_DIR}/git" -C "$init_repo" remote add origin https://example.invalid/repo.git
+"${TEST_BIN_DIR}/git" -C "$init_repo" remote > "$WORK_DIR/remote-list.out"
+assert_file_contains "$WORK_DIR/remote-list.out" '^origin$' "git remote did not list the added remote"
+"${TEST_BIN_DIR}/git" -C "$init_repo" remote -v > "$WORK_DIR/remote-v.out"
+assert_file_contains "$WORK_DIR/remote-v.out" '^origin[[:space:]]*https://example\.invalid/repo\.git (fetch)$' "git remote -v did not list the added fetch URL"
+remote_fetch=$("${TEST_BIN_DIR}/git" -C "$init_repo" config remote.origin.fetch | tr -d '\r\n')
+assert_text_equals "$remote_fetch" '+refs/heads/*:refs/remotes/origin/*' "git remote add did not write the fetch refspec"
+"${TEST_BIN_DIR}/git" -C "$init_repo" remote set-url origin https://example.invalid/other.git
+remote_url=$("${TEST_BIN_DIR}/git" -C "$init_repo" config remote.origin.url | tr -d '\r\n')
+assert_text_equals "$remote_url" 'https://example.invalid/other.git' "git remote set-url did not update remote.origin.url"
+
 repo="$WORK_DIR/repo"
 mkdir -p "$repo/.git/refs/heads"
 printf 'ref: refs/heads/main\n' > "$repo/.git/HEAD"
@@ -151,6 +181,12 @@ assert_file_contains "$WORK_DIR/diff-stat.out" '^ 2 files changed, 1 insertion(+
 if grep -q 'tracked\.txt' "$WORK_DIR/diff-stat.out"; then
     fail "git diff --stat reported an unchanged path"
 fi
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --name-status -- deleted.txt modified.txt tracked.txt > "$WORK_DIR/diff-name-status-deleted.out"
+assert_file_contains "$WORK_DIR/diff-name-status-deleted.out" '^D[[:space:]]*deleted.txt$' "git diff --name-status did not report a deleted worktree path"
+assert_file_contains "$WORK_DIR/diff-name-status-deleted.out" '^M[[:space:]]*modified.txt$' "git diff --name-status did not report a modified worktree path"
+if grep -q 'tracked\.txt' "$WORK_DIR/diff-name-status-deleted.out"; then
+    fail "git diff --name-status reported an unchanged path"
+fi
 
 cd "$repo" && "${TEST_BIN_DIR}/git" --no-pager diff --stat -- modified.txt > "$WORK_DIR/diff-stat-no-pager.out"
 assert_file_contains "$WORK_DIR/diff-stat-no-pager.out" '^ modified\.txt | 2 +-$' "git --no-pager diff --stat did not accept the host command shape"
@@ -227,16 +263,33 @@ cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff -- tracked.txt > "$WORK_DIR/diff-
 assert_file_contains "$WORK_DIR/diff-patch-worktree.out" '^diff --git a/tracked.txt b/tracked.txt$' "git diff did not emit a patch header"
 assert_file_contains "$WORK_DIR/diff-patch-worktree.out" '^-base$' "git diff patch missed the old line"
 assert_file_contains "$WORK_DIR/diff-patch-worktree.out" '^+worktree$' "git diff patch missed the new line"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --name-only -- tracked.txt > "$WORK_DIR/diff-name-only.out"
+assert_file_contains "$WORK_DIR/diff-name-only.out" '^tracked.txt$' "git diff --name-only did not report the modified path"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --name-status -- tracked.txt > "$WORK_DIR/diff-name-status.out"
+assert_file_contains "$WORK_DIR/diff-name-status.out" '^M[[:space:]]*tracked.txt$' "git diff --name-status did not report an unstaged modification"
+if cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --quiet -- tracked.txt; then
+    fail "git diff --quiet returned success for a dirty worktree"
+fi
+if cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --exit-code -- tracked.txt > "$WORK_DIR/diff-exit-code.out"; then
+    fail "git diff --exit-code returned success for a dirty worktree"
+fi
 
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" add tracked.txt
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-staged.out"
 assert_file_contains "$WORK_DIR/stage-status-staged.out" '^M  tracked.txt$' "git add did not stage a tracked modification"
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff -- tracked.txt > "$WORK_DIR/diff-patch-clean-worktree.out"
 assert_text_equals "$(cat "$WORK_DIR/diff-patch-clean-worktree.out")" '' "git diff reported a clean worktree after add"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --quiet -- tracked.txt
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --exit-code -- tracked.txt > "$WORK_DIR/diff-exit-code-clean.out"
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached --stat -- tracked.txt > "$WORK_DIR/diff-cached-stat.out"
 assert_file_contains "$WORK_DIR/diff-cached-stat.out" '^ tracked.txt | 2 +-$' "git diff --cached --stat did not report a staged modification"
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached -- tracked.txt > "$WORK_DIR/diff-cached-patch.out"
 assert_file_contains "$WORK_DIR/diff-cached-patch.out" '^+worktree$' "git diff --cached patch missed staged content"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -- tracked.txt > "$WORK_DIR/diff-cached-name-status.out"
+assert_file_contains "$WORK_DIR/diff-cached-name-status.out" '^M[[:space:]]*tracked.txt$' "git diff --cached --name-status did not report a staged modification"
+if cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached --quiet -- tracked.txt; then
+    fail "git diff --cached --quiet returned success for a staged modification"
+fi
 
 printf 'again\n' > "$stage_repo/tracked.txt"
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-mm.out"
@@ -278,6 +331,9 @@ assert_file_contains "$WORK_DIR/diff-commits-stat.out" '^ a\.txt | 2 +-$' "git d
 assert_file_contains "$WORK_DIR/diff-commits-stat.out" '^ b\.txt | 1 +$' "git diff <commit> <commit> did not report an added file"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" diff "$first_commit..$second_commit" -- b.txt > "$WORK_DIR/diff-commits-range.out"
 assert_file_contains "$WORK_DIR/diff-commits-range.out" '^+new$' "git diff commit range did not render the added file patch"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" diff --name-only "$first_commit" "$second_commit" > "$WORK_DIR/diff-commits-name-only.out"
+assert_file_contains "$WORK_DIR/diff-commits-name-only.out" '^a.txt$' "git diff --name-only missed a modified commit path"
+assert_file_contains "$WORK_DIR/diff-commits-name-only.out" '^b.txt$' "git diff --name-only missed an added commit path"
 
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch > "$WORK_DIR/branch-list.out"
 assert_file_contains "$WORK_DIR/branch-list.out" '^\* main$' "git branch did not mark the current branch"
@@ -288,6 +344,61 @@ topic_commit=$(tr -d '\r\n' < "$commit_repo/.git/refs/heads/topic")
 assert_text_equals "$topic_commit" "$first_commit" "git branch did not create the branch at the requested start point"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch -d topic > "$WORK_DIR/branch-delete.out"
 assert_file_contains "$WORK_DIR/branch-delete.out" '^Deleted branch topic$' "git branch -d did not report deletion"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" checkout -b topic2 "$first_commit" > "$WORK_DIR/checkout-b.out"
+topic2_branch=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch --show-current | tr -d '\r\n')
+assert_text_equals "$topic2_branch" 'topic2' "git checkout -b did not switch to the created branch"
+topic2_head=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse --verify --short=12 HEAD | tr -d '\r\n')
+assert_text_equals "$topic2_head" "$(printf '%s' "$first_commit" | cut -c1-12)" "git rev-parse --verify --short did not abbreviate HEAD"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" switch main > "$WORK_DIR/switch-main.out"
+main_branch=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch --show-current | tr -d '\r\n')
+assert_text_equals "$main_branch" 'main' "git switch did not switch back to main"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" switch -c topic3 "$first_commit" > "$WORK_DIR/switch-create.out"
+topic3_branch=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch --show-current | tr -d '\r\n')
+assert_text_equals "$topic3_branch" 'topic3' "git switch -c did not switch to the created branch"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" switch main > "$WORK_DIR/switch-main-again.out"
+
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --verify refs/heads/main > "$WORK_DIR/show-ref-main.out"
+assert_file_contains "$WORK_DIR/show-ref-main.out" "^$second_commit refs/heads/main$" "git show-ref --verify did not print refs/heads/main"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --heads > "$WORK_DIR/show-ref-heads.out"
+assert_file_contains "$WORK_DIR/show-ref-heads.out" "^$second_commit refs/heads/main$" "git show-ref --heads did not include refs/heads/main"
+if cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --verify refs/heads/missing > "$WORK_DIR/show-ref-missing.out"; then
+    fail "git show-ref --verify returned success for a missing ref"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag v-first "$first_commit"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag > "$WORK_DIR/tag-list.out"
+assert_file_contains "$WORK_DIR/tag-list.out" '^v-first$' "git tag did not list a lightweight tag"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --tags > "$WORK_DIR/show-ref-tags.out"
+assert_file_contains "$WORK_DIR/show-ref-tags.out" "^$first_commit refs/tags/v-first$" "git show-ref --tags did not include the lightweight tag"
+rm -f "$commit_repo/.git/refs/tags/v-first"
+printf '%s refs/tags/v-packed\n' "$first_commit" > "$commit_repo/.git/packed-refs"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag > "$WORK_DIR/tag-packed-list.out"
+assert_file_contains "$WORK_DIR/tag-packed-list.out" '^v-packed$' "git tag did not list a packed lightweight tag"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --tags > "$WORK_DIR/show-ref-packed-tags.out"
+assert_file_contains "$WORK_DIR/show-ref-packed-tags.out" "^$first_commit refs/tags/v-packed$" "git show-ref --tags did not include a packed tag"
+cat_type=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -t HEAD | tr -d '\r\n')
+assert_text_equals "$cat_type" 'commit' "git cat-file -t HEAD did not report commit"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -p HEAD > "$WORK_DIR/cat-file-head.out"
+assert_file_contains "$WORK_DIR/cat-file-head.out" '^tree [0-9a-f][0-9a-f]' "git cat-file -p HEAD did not print commit content"
+blob_oid=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" hash-object b.txt | tr -d '\r\n')
+blob_type=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -t "$blob_oid" | tr -d '\r\n')
+assert_text_equals "$blob_type" 'blob' "git cat-file -t BLOB did not report blob"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -p "$blob_oid" > "$WORK_DIR/cat-file-blob.out"
+assert_file_contains "$WORK_DIR/cat-file-blob.out" '^new$' "git cat-file -p BLOB did not print blob data"
+tree_oid=$(sed -n 's/^tree //p' "$WORK_DIR/cat-file-head.out" | head -n 1)
+tree_type=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -t "$tree_oid" | tr -d '\r\n')
+assert_text_equals "$tree_type" 'tree' "git cat-file -t TREE did not report tree"
+tree_size=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -s "$tree_oid" | tr -d '\r\n')
+if [ -z "$tree_size" ] || [ "$tree_size" = 0 ]; then
+    fail "git cat-file -s TREE did not print a positive size"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -p "$tree_oid" > "$WORK_DIR/cat-file-tree.out"
+assert_file_contains "$WORK_DIR/cat-file-tree.out" '100644 blob [0-9a-f][0-9a-f].*[[:space:]]a.txt$' "git cat-file -p TREE did not list tree entries"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" ls-tree HEAD > "$WORK_DIR/ls-tree.out"
+assert_file_contains "$WORK_DIR/ls-tree.out" '100644 blob [0-9a-f][0-9a-f].*[[:space:]]a.txt$' "git ls-tree did not list a.txt"
+assert_file_contains "$WORK_DIR/ls-tree.out" '100644 blob [0-9a-f][0-9a-f].*[[:space:]]b.txt$' "git ls-tree did not list b.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" ls-tree -r --name-only HEAD > "$WORK_DIR/ls-tree-recursive-name-only.out"
+assert_file_contains "$WORK_DIR/ls-tree-recursive-name-only.out" '^a.txt$' "git ls-tree -r --name-only did not list a.txt"
+assert_file_contains "$WORK_DIR/ls-tree-recursive-name-only.out" '^b.txt$' "git ls-tree -r --name-only did not list b.txt"
 
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --oneline -n 1 > "$WORK_DIR/log-one.out"
 assert_file_contains "$WORK_DIR/log-one.out" "^$(printf '%s' "$second_commit" | cut -c1-7) second$" "git log --oneline -n 1 did not show the latest commit"
@@ -383,6 +494,52 @@ assert_file_contains "$WORK_DIR/nested-ignore.out" '^sub/keep\.log$' "git ls-fil
 if grep -q '^sub/drop\.log$' "$WORK_DIR/nested-ignore.out"; then
     fail "git ls-files reported a file ignored by nested .gitignore"
 fi
+
+apply_repo="$WORK_DIR/apply-repo"
+"${TEST_BIN_DIR}/git" init "$apply_repo" > "$WORK_DIR/apply-init.out"
+printf 'old\nkeep\n' > "$apply_repo/a.txt"
+cat > "$WORK_DIR/change.patch" <<'PATCH'
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+-old
++new
+ keep
+diff --git a/new.txt b/new.txt
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,1 @@
++created
+PATCH
+"${TEST_BIN_DIR}/git" -C "$apply_repo" apply "$WORK_DIR/change.patch"
+assert_file_contains "$apply_repo/a.txt" '^new$' "git apply did not update an existing file"
+assert_file_contains "$apply_repo/a.txt" '^keep$' "git apply did not preserve context lines"
+assert_file_contains "$apply_repo/new.txt" '^created$' "git apply did not create a new file"
+cat > "$WORK_DIR/delete.patch" <<'PATCH'
+diff --git a/new.txt b/new.txt
+--- a/new.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-created
+PATCH
+"${TEST_BIN_DIR}/git" -C "$apply_repo" apply "$WORK_DIR/delete.patch"
+if [ -e "$apply_repo/new.txt" ]; then
+    fail "git apply did not delete a removed file"
+fi
+cat > "$WORK_DIR/bad-context.patch" <<'PATCH'
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+-missing
++wrong
+ keep
+PATCH
+if "${TEST_BIN_DIR}/git" -C "$apply_repo" apply "$WORK_DIR/bad-context.patch" > "$WORK_DIR/apply-bad.out" 2>/dev/null; then
+    fail "git apply accepted a patch whose context did not match"
+fi
+assert_file_contains "$apply_repo/a.txt" '^new$' "git apply changed a file after a failed context match"
 
 clean="$WORK_DIR/clean-source"
 clone="$WORK_DIR/cloned-copy"

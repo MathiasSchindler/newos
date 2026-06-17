@@ -2,15 +2,26 @@
 
 ## NAME
 
-git - inspect a local Git repository
+git - inspect and update Git repositories
 
 ## SYNOPSIS
 
 ```
+git [-C PATH] COMMAND [ARGS ...]
+git init [PATH]
+git config KEY [VALUE]
+git remote [-v|add NAME URL|set-url NAME URL]
 git status [-s|--short|--porcelain] [--color[=WHEN]|--no-color]
-git diff [--stat] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]
+git diff [--stat|--name-only|--name-status|--quiet] [--exit-code] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]
 git branch [--show-current|NAME [START]|-d NAME]
-git rev-parse --show-toplevel|--git-dir|--abbrev-ref HEAD|HEAD
+git checkout [-b NAME [START]|REF]
+git switch [-c NAME [START]|REF]
+git rev-parse [--verify] [--short[=N]] [--is-inside-work-tree] REV ...
+git cat-file -t|-s|-p OBJECT
+git ls-tree [-r] [--name-only] [REV]
+git show-ref [--heads|--tags|--verify REF]
+git tag [NAME [REV]]
+git apply [PATCH]
 git ls-files [--cached|--others] [--exclude-standard] [--] [path ...]
 git add [-N|--intent-to-add] [--] path ...
 git commit [-m|--message MESSAGE] [--allow-empty]
@@ -23,26 +34,40 @@ git clean [-n|--dry-run|-f|--force] [-x] [--] [path ...]
 git hash-object FILE ...
 git clone SOURCE [DEST]
 git fetch [URL] [REF]
-git checkout REF
 ```
 
 ## DESCRIPTION
 
 `git` is a small, freestanding-first Git client. It focuses on repository state
 that editors, build scripts, and coding agents need for safe workspace
-awareness, with first-pass clone, fetch, and checkout support for simple local
-and HTTPS workflows.
+awareness, with first-pass clone, fetch, and checkout support for local,
+`file://`, and HTTP(S) workflows.
 
 The tool discovers `.git` by walking up from the current directory, supports
 normal `.git` directories and gitfiles, reads `HEAD`, loose refs, packed refs,
 and parses common Git index files.
 
+The global `-C PATH` option changes directory before running the command and may
+be combined with `--no-pager`.
+
 ## CURRENT CAPABILITIES
 
+- initialize a repository with `init`, including `HEAD`, `refs`, `objects`, and
+    minimal config files
+- read or write minimal `user.*` and `remote.<name>.*` settings with `config`
+- list remotes with `remote` or `remote -v`, add remotes, and update remote URLs
 - print the current branch, list local branches, create local branches, and
     delete loose local branches with `branch`
-- print the repository root or Git directory with `rev-parse`
-- resolve `HEAD` when it is available from a loose or packed ref
+- create and check out a branch with `checkout -b`, switch branches with
+    `switch`, and create/switch in one step with `switch -c`
+- print the repository root, Git directory, inside-work-tree status, verified
+    revisions, or abbreviated object IDs with `rev-parse`
+- resolve `HEAD`, branch names, remote-tracking branch names, full refs, and
+    full SHA-1 object IDs when they are available from loose or packed refs
+- inspect objects with `cat-file -t`, `cat-file -s`, or `cat-file -p`
+- list tree entries with `ls-tree`, including recursive and name-only modes
+- list refs with `show-ref`, including head/tag filters and exact `--verify`
+- list and create lightweight tags with `tag`
 - list tracked index paths with `ls-files` or untracked paths with
     `ls-files --others --exclude-standard`
 - report a concise local status for modified, deleted, and untracked files,
@@ -67,9 +92,12 @@ and parses common Git index files.
 - remove untracked files with `clean -f`, preview removals with `clean -n`, and
     include ignored files only when `-x` is supplied
 - show working-tree-versus-index or `--cached` index-versus-HEAD diffs as
-    whole-file unified patches or `--stat` summaries, including optionally
-    colored `+` and `-` change bars
+    whole-file unified patches, `--stat` summaries, `--name-only`, or
+    `--name-status`, including optionally colored `+` and `-` change bars
+- return native-style difference status with `diff --exit-code` or `diff --quiet`
 - show commit-to-commit diffs with `git diff A B` or `git diff A..B`
+- apply ordinary unified patches to the worktree with `apply`, including simple
+    file creation and deletion
 - detect executable-bit changes for regular tracked files
 - honor root and nested `.gitignore` files plus `.git/info/exclude` patterns in
     status, `add`, and `ls-files --others --exclude-standard`
@@ -111,6 +139,14 @@ and parses common Git index files.
     Git ignore edge cases
 - patch diff output uses simple whole-file hunks rather than Git's full hunk
     minimization algorithm
+- `apply` supports ordinary unified patches for regular files but not binary
+    patches, rename/copy metadata, mode changes, three-way fallback, or index
+    application
+- config and remote support is intentionally local and minimal; it does not
+    implement includes, conditional config, global/system config, credential
+    helpers, or the full native Git config syntax
+- tags are lightweight refs only; annotated tags, signatures, and tag deletion
+    are not implemented
 - untracked files are intentionally not included in `diff --stat`; use
     `ls-files --others --exclude-standard` to list them or `add -N` to include
     them as intent-to-add paths
@@ -127,12 +163,24 @@ and parses common Git index files.
 
 ```
 git branch --show-current
+git -C ../project status --short
+git init scratch
+git config user.email dev@example.invalid
+git remote add origin https://example.invalid/repo.git
+git remote -v
 git rev-parse --show-toplevel
+git rev-parse --verify --short HEAD
 git status --short
 git diff -- src/tools/git.c
+git diff --name-status --exit-code
 git diff HEAD origin/main -- src/tools/git.c
 git --no-pager diff --stat -- Makefile man/1/git.md src/tools/git.c
 git diff --cached --stat
+git cat-file -p HEAD
+git ls-tree -r --name-only HEAD
+git show-ref --heads
+git tag v0.1 HEAD
+git apply fix.patch
 git ls-files
 git ls-files --others --exclude-standard -- src/tools/git
 git add src/tools/git.c
@@ -151,6 +199,8 @@ git clone ../project-copy project-copy
 git clone https://github.com/MathiasSchindler/pbf-parser.git pbf-parser
 git fetch
 git checkout main
+git checkout -b topic HEAD
+git switch main
 ```
 
 ## JSON Output

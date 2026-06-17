@@ -169,9 +169,71 @@ static int git_init_empty_repo_at(const char *work_tree, GitRepo *repo) {
     if (git_join(path, sizeof(path), repo->git_dir, "refs/heads") != 0 || git_make_directory_chain(path) != 0) {
         return -1;
     }
+    if (git_join(path, sizeof(path), repo->git_dir, "refs/tags") != 0 || git_make_directory_chain(path) != 0) {
+        return -1;
+    }
     if (git_join(path, sizeof(path), repo->git_dir, "refs/remotes/origin") != 0 || git_make_directory_chain(path) != 0) {
         return -1;
     }
+    if (git_join(path, sizeof(path), repo->git_dir, "info") != 0 || git_make_directory_chain(path) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int git_write_default_config(const GitRepo *repo) {
+    char path[GIT_PATH_CAPACITY];
+    const char text[] = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
+
+    if (git_join(path, sizeof(path), repo->git_dir, "config") != 0) {
+        return -1;
+    }
+    return git_write_all_file(path, text, sizeof(text) - 1U, 0644U);
+}
+
+static int git_cmd_init(int argc, char **argv, int argi) {
+    GitRepo repo;
+    char cwd[GIT_PATH_CAPACITY];
+    char target[GIT_PATH_CAPACITY];
+    char head_path[GIT_PATH_CAPACITY];
+    char exclude_path[GIT_PATH_CAPACITY];
+    PlatformDirEntry existing;
+
+    if (argi + 1 < argc) {
+        tool_write_error("git", "too many init arguments", 0);
+        return 1;
+    }
+    if (platform_get_current_directory(cwd, sizeof(cwd)) != 0) {
+        return 1;
+    }
+    if (argi < argc) {
+        if (git_is_absolute_path(argv[argi])) {
+            if (git_copy(target, sizeof(target), argv[argi]) != 0) {
+                return 1;
+            }
+        } else if (git_join(target, sizeof(target), cwd, argv[argi]) != 0) {
+            return 1;
+        }
+        if (git_make_directory_chain(target) != 0) {
+            tool_write_error("git", "cannot create init path: ", argv[argi]);
+            return 1;
+        }
+    } else if (git_copy(target, sizeof(target), cwd) != 0) {
+        return 1;
+    }
+    if (git_init_empty_repo_at(target, &repo) != 0 ||
+        git_join(head_path, sizeof(head_path), repo.git_dir, "HEAD") != 0 ||
+        git_write_all_file(head_path, "ref: refs/heads/main\n", sizeof("ref: refs/heads/main\n") - 1U, 0644U) != 0 ||
+        git_write_default_config(&repo) != 0) {
+        tool_write_error("git", "init failed", 0);
+        return 1;
+    }
+    if (git_join(exclude_path, sizeof(exclude_path), repo.git_dir, "info/exclude") == 0 && platform_get_path_info(exclude_path, &existing) != 0) {
+        (void)git_write_all_file(exclude_path, "", 0U, 0644U);
+    }
+    rt_write_cstr(1, "Initialized empty Git repository in ");
+    rt_write_cstr(1, repo.git_dir);
+    rt_write_line(1, "/");
     return 0;
 }
 
@@ -362,6 +424,381 @@ static int git_resolve_revision(GitRepo *repo, const char *name, unsigned char o
     return -1;
 }
 
+static void git_trim_slice(const unsigned char *data, size_t *start_io, size_t *end_io) {
+    while (*start_io < *end_io && (data[*start_io] == ' ' || data[*start_io] == '\t')) {
+        *start_io += 1U;
+    }
+    while (*end_io > *start_io && (data[*end_io - 1U] == ' ' || data[*end_io - 1U] == '\t' || data[*end_io - 1U] == '\r')) {
+        *end_io -= 1U;
+    }
+}
+
+static int git_slice_equals_cstr(const unsigned char *data, size_t start, size_t end, const char *text) {
+    size_t length = rt_strlen(text);
+
+    return end >= start && end - start == length && memcmp(data + start, text, length) == 0;
+}
+
+static int git_config_key_to_section_var(const char *key, char *section, size_t section_size, char *var, size_t var_size) {
+    if (rt_strncmp(key, "user.", 5U) == 0 && key[5] != '\0') {
+        if (git_copy(section, section_size, "[user]") != 0 || git_copy(var, var_size, key + 5U) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+    if (rt_strncmp(key, "remote.", 7U) == 0) {
+        const char *name = key + 7U;
+        const char *dot = name;
+        size_t name_length;
+
+        while (*dot != '\0' && *dot != '.') {
+            dot += 1;
+        }
+        name_length = (size_t)(dot - name);
+        if (name_length == 0U || *dot != '.' || dot[1] == '\0' || name_length + 12U >= section_size || tool_path_is_unsafe_relative(name)) {
+            return -1;
+        }
+        if (git_copy(section, section_size, "[remote \"") != 0) {
+            return -1;
+        }
+        memcpy(section + 9U, name, name_length);
+        section[9U + name_length] = '"';
+        section[10U + name_length] = ']';
+        section[11U + name_length] = '\0';
+        if (git_copy(var, var_size, dot + 1U) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int git_config_line_has_var(const unsigned char *data, size_t start, size_t end, const char *var, size_t *value_start_out, size_t *value_end_out) {
+    size_t eq = start;
+    size_t name_start = start;
+    size_t name_end;
+    size_t value_start;
+    size_t value_end;
+
+    while (eq < end && data[eq] != '=') {
+        eq += 1U;
+    }
+    if (eq >= end) {
+        return 0;
+    }
+    name_end = eq;
+    git_trim_slice(data, &name_start, &name_end);
+    if (!git_slice_equals_cstr(data, name_start, name_end, var)) {
+        return 0;
+    }
+    value_start = eq + 1U;
+    value_end = end;
+    git_trim_slice(data, &value_start, &value_end);
+    *value_start_out = value_start;
+    *value_end_out = value_end;
+    return 1;
+}
+
+static int git_config_get_value(const GitRepo *repo, const char *key, char *buffer, size_t buffer_size) {
+    char path[GIT_PATH_CAPACITY];
+    char section[128];
+    char var[64];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 0U;
+    int in_section = 0;
+
+    if (git_config_key_to_section_var(key, section, sizeof(section), var, sizeof(var)) != 0 ||
+        git_join(path, sizeof(path), repo->git_dir, "config") != 0 ||
+        git_read_file(path, &data, &size) != 0) {
+        return -1;
+    }
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        size_t trim_start;
+        size_t trim_end;
+
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) pos += 1U;
+        trim_start = start;
+        trim_end = end;
+        git_trim_slice(data, &trim_start, &trim_end);
+        if (trim_start < trim_end && data[trim_start] == '[') {
+            in_section = git_slice_equals_cstr(data, trim_start, trim_end, section);
+        } else if (in_section) {
+            size_t value_start = 0U;
+            size_t value_end = 0U;
+            if (git_config_line_has_var(data, trim_start, trim_end, var, &value_start, &value_end)) {
+                if (value_end < value_start || value_end - value_start >= buffer_size) {
+                    rt_free(data);
+                    return -1;
+                }
+                memcpy(buffer, data + value_start, value_end - value_start);
+                buffer[value_end - value_start] = '\0';
+                rt_free(data);
+                return 0;
+            }
+        }
+    }
+    rt_free(data);
+    return -1;
+}
+
+static int git_config_append_assignment(GitBuffer *out, const char *var, const char *value) {
+    return git_buffer_append_char(out, '\t') != 0 ||
+           git_buffer_append_cstr(out, var) != 0 ||
+           git_buffer_append_cstr(out, " = ") != 0 ||
+           git_buffer_append_cstr(out, value) != 0 ||
+           git_buffer_append_char(out, '\n') != 0 ? -1 : 0;
+}
+
+static int git_config_set_value(const GitRepo *repo, const char *key, const char *value) {
+    char path[GIT_PATH_CAPACITY];
+    char section[128];
+    char var[64];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 0U;
+    GitBuffer out;
+    int in_section = 0;
+    int saw_section = 0;
+    int updated = 0;
+    int result = -1;
+
+    if (git_config_key_to_section_var(key, section, sizeof(section), var, sizeof(var)) != 0 || git_join(path, sizeof(path), repo->git_dir, "config") != 0) {
+        return -1;
+    }
+    (void)git_read_file(path, &data, &size);
+    rt_memset(&out, 0, sizeof(out));
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        size_t trim_start;
+        size_t trim_end;
+        int has_newline = 0;
+
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) {
+            has_newline = 1;
+            pos += 1U;
+        }
+        trim_start = start;
+        trim_end = end;
+        git_trim_slice(data, &trim_start, &trim_end);
+        if (trim_start < trim_end && data[trim_start] == '[') {
+            if (in_section && !updated && git_config_append_assignment(&out, var, value) != 0) {
+                goto done;
+            }
+            in_section = git_slice_equals_cstr(data, trim_start, trim_end, section);
+            if (in_section) {
+                saw_section = 1;
+            }
+        } else if (in_section) {
+            size_t value_start = 0U;
+            size_t value_end = 0U;
+            if (git_config_line_has_var(data, trim_start, trim_end, var, &value_start, &value_end)) {
+                if (!updated && git_config_append_assignment(&out, var, value) != 0) {
+                    goto done;
+                }
+                updated = 1;
+                continue;
+            }
+        }
+        if (git_buffer_append(&out, data + start, end - start) != 0 || git_buffer_append_char(&out, '\n') != 0) {
+            goto done;
+        }
+        (void)has_newline;
+    }
+    if (in_section && !updated) {
+        if (git_config_append_assignment(&out, var, value) != 0) {
+            goto done;
+        }
+        updated = 1;
+    }
+    if (!saw_section) {
+        if (out.size > 0U && out.data[out.size - 1U] != '\n' && git_buffer_append_char(&out, '\n') != 0) {
+            goto done;
+        }
+        if (git_buffer_append_cstr(&out, section) != 0 || git_buffer_append_char(&out, '\n') != 0 || git_config_append_assignment(&out, var, value) != 0) {
+            goto done;
+        }
+    }
+    if (git_write_all_file(path, out.data, out.size, 0644U) != 0) {
+        goto done;
+    }
+    result = 0;
+done:
+    git_buffer_destroy(&out);
+    rt_free(data);
+    return result;
+}
+
+static int git_cmd_config(GitRepo *repo, int argc, char **argv, int argi) {
+    char value[GIT_PATH_CAPACITY];
+
+    if (argi >= argc) {
+        tool_write_error("git", "config needs a key", 0);
+        return 1;
+    }
+    if (argi + 2 < argc) {
+        tool_write_error("git", "too many config arguments", 0);
+        return 1;
+    }
+    if (argi + 1 < argc) {
+        if (git_config_set_value(repo, argv[argi], argv[argi + 1]) != 0) {
+            tool_write_error("git", "unsupported config key: ", argv[argi]);
+            return 1;
+        }
+        return 0;
+    }
+    if (git_config_get_value(repo, argv[argi], value, sizeof(value)) != 0) {
+        return 1;
+    }
+    rt_write_line(1, value);
+    return 0;
+}
+
+static int git_remote_header_name(const unsigned char *data, size_t start, size_t end, char *name, size_t name_size) {
+    size_t length;
+
+    if (end < start + 11U || memcmp(data + start, "[remote \"", 9U) != 0 || data[end - 2U] != '"' || data[end - 1U] != ']') {
+        return -1;
+    }
+    length = end - start - 11U;
+    if (length == 0U || length >= name_size) {
+        return -1;
+    }
+    memcpy(name, data + start + 9U, length);
+    name[length] = '\0';
+    return 0;
+}
+
+static int git_remote_list(GitRepo *repo, int verbose) {
+    char path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 0U;
+    char remote_name[128];
+    int in_remote = 0;
+
+    remote_name[0] = '\0';
+    if (git_join(path, sizeof(path), repo->git_dir, "config") != 0 || git_read_file(path, &data, &size) != 0) {
+        return 0;
+    }
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        size_t trim_start;
+        size_t trim_end;
+
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) pos += 1U;
+        trim_start = start;
+        trim_end = end;
+        git_trim_slice(data, &trim_start, &trim_end);
+        if (trim_start < trim_end && data[trim_start] == '[') {
+            in_remote = git_remote_header_name(data, trim_start, trim_end, remote_name, sizeof(remote_name)) == 0;
+            if (in_remote && !verbose) {
+                rt_write_line(1, remote_name);
+            }
+        } else if (verbose && in_remote) {
+            size_t value_start = 0U;
+            size_t value_end = 0U;
+            if (git_config_line_has_var(data, trim_start, trim_end, "url", &value_start, &value_end)) {
+                rt_write_cstr(1, remote_name);
+                rt_write_char(1, '\t');
+                rt_write_all(1, data + value_start, value_end - value_start);
+                rt_write_line(1, " (fetch)");
+                rt_write_cstr(1, remote_name);
+                rt_write_char(1, '\t');
+                rt_write_all(1, data + value_start, value_end - value_start);
+                rt_write_line(1, " (push)");
+            }
+        }
+    }
+    rt_free(data);
+    return 0;
+}
+
+static int git_remote_validate_name(const char *name) {
+    size_t i;
+
+    if (name == 0 || name[0] == '\0' || tool_path_is_unsafe_relative(name)) {
+        return 0;
+    }
+    for (i = 0U; name[i] != '\0'; ++i) {
+        if (name[i] == '/') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int git_remote_set_url(GitRepo *repo, const char *name, const char *url, int add_fetch) {
+    char key[160];
+    char fetchspec[GIT_REF_CAPACITY];
+    char refs_dir[GIT_PATH_CAPACITY];
+
+    if (!git_remote_validate_name(name) || rt_strlen(name) + 12U >= sizeof(key)) {
+        return -1;
+    }
+    rt_copy_string(key, sizeof(key), "remote.");
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), name);
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), ".url");
+    if (git_config_set_value(repo, key, url) != 0) {
+        return -1;
+    }
+    key[rt_strlen(key) - 3U] = 'f';
+    key[rt_strlen(key) - 2U] = 'e';
+    key[rt_strlen(key) - 1U] = 't';
+    rt_copy_string(key + rt_strlen(key), sizeof(key) - rt_strlen(key), "ch");
+    if (add_fetch) {
+        if (git_copy(fetchspec, sizeof(fetchspec), "+refs/heads/*:refs/remotes/") != 0 || rt_strlen(fetchspec) + rt_strlen(name) + 2U >= sizeof(fetchspec)) {
+            return -1;
+        }
+        rt_copy_string(fetchspec + rt_strlen(fetchspec), sizeof(fetchspec) - rt_strlen(fetchspec), name);
+        rt_copy_string(fetchspec + rt_strlen(fetchspec), sizeof(fetchspec) - rt_strlen(fetchspec), "/*");
+        if (git_config_set_value(repo, key, fetchspec) != 0) {
+            return -1;
+        }
+    }
+    if (git_join(refs_dir, sizeof(refs_dir), repo->git_dir, "refs/remotes") == 0 && git_join(refs_dir, sizeof(refs_dir), refs_dir, name) == 0) {
+        (void)git_make_directory_chain(refs_dir);
+    }
+    return 0;
+}
+
+static int git_cmd_remote(GitRepo *repo, int argc, char **argv, int argi) {
+    if (argi >= argc) {
+        return git_remote_list(repo, 0);
+    }
+    if (rt_strcmp(argv[argi], "-v") == 0) {
+        if (argi + 1 < argc) {
+            tool_write_error("git", "too many remote arguments", 0);
+            return 1;
+        }
+        return git_remote_list(repo, 1);
+    }
+    if (rt_strcmp(argv[argi], "add") == 0 || rt_strcmp(argv[argi], "set-url") == 0) {
+        int add_fetch = rt_strcmp(argv[argi], "add") == 0;
+        if (argi + 3 != argc) {
+            tool_write_error("git", add_fetch ? "remote add needs NAME URL" : "remote set-url needs NAME URL", 0);
+            return 1;
+        }
+        if (git_remote_set_url(repo, argv[argi + 1], argv[argi + 2], add_fetch) != 0) {
+            tool_write_error("git", "cannot update remote: ", argv[argi + 1]);
+            return 1;
+        }
+        return 0;
+    }
+    tool_write_error("git", "unsupported remote command: ", argv[argi]);
+    return 1;
+}
+
 static int git_cmd_fetch(GitRepo *repo, int argc, char **argv, int argi) {
     char remote_url[GIT_PATH_CAPACITY];
     const char *wanted_ref = 0;
@@ -397,37 +834,43 @@ static int git_cmd_fetch(GitRepo *repo, int argc, char **argv, int argi) {
     return 0;
 }
 
-static int git_cmd_checkout(GitRepo *repo, int argc, char **argv, int argi) {
-    GitPack pack;
+static int git_create_branch_at(GitRepo *repo, const char *name, const char *start, unsigned char oid_out[CRYPTO_SHA1_DIGEST_SIZE], char *ref_out, size_t ref_out_size) {
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
-    char head_ref[GIT_REF_CAPACITY];
+    char ref_name[GIT_REF_CAPACITY];
+
+    if (tool_path_is_unsafe_relative(name) || git_resolve_revision(repo, start, oid, 0, 0) != 0 || git_copy(ref_name, sizeof(ref_name), "refs/heads/") != 0 || rt_strlen(ref_name) + rt_strlen(name) >= sizeof(ref_name)) {
+        return -1;
+    }
+    rt_copy_string(ref_name + rt_strlen(ref_name), sizeof(ref_name) - rt_strlen(ref_name), name);
+    if (git_write_ref_oid(repo, ref_name, oid) != 0) {
+        return -1;
+    }
+    if (oid_out != 0) {
+        memcpy(oid_out, oid, CRYPTO_SHA1_DIGEST_SIZE);
+    }
+    if (ref_out != 0 && git_copy(ref_out, ref_out_size, ref_name) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int git_checkout_resolved(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *head_ref, const char *display_name) {
+    GitPack pack;
     char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
     int have_pack;
 
-    if (argi >= argc) {
-        tool_write_error("git", "checkout needs a ref", 0);
-        return 1;
-    }
-    if (argi + 1 < argc) {
-        tool_write_error("git", "too many checkout arguments", 0);
-        return 1;
-    }
-    if (git_resolve_revision(repo, argv[argi], oid, head_ref, sizeof(head_ref)) != 0) {
-        tool_write_error("git", "cannot resolve checkout ref: ", argv[argi]);
-        return 1;
-    }
     have_pack = git_load_pack_cache(repo, &pack) == 0;
     if (git_checkout_commit_to_worktree(repo, oid, have_pack ? &pack : 0) != 0) {
         if (have_pack) {
             git_pack_destroy(&pack);
         }
-        tool_write_error("git", "checkout failed: ", argv[argi]);
+        tool_write_error("git", "checkout failed: ", display_name);
         return 1;
     }
     if (have_pack) {
         git_pack_destroy(&pack);
     }
-    if (head_ref[0] != '\0') {
+    if (head_ref != 0 && head_ref[0] != '\0') {
         (void)git_write_head_ref(repo, head_ref);
     } else {
         char path[GIT_PATH_CAPACITY];
@@ -442,6 +885,76 @@ static int git_cmd_checkout(GitRepo *repo, int argc, char **argv, int argi) {
     rt_write_cstr(1, "Checked out ");
     rt_write_line(1, oid_hex);
     return 0;
+}
+
+static int git_cmd_checkout(GitRepo *repo, int argc, char **argv, int argi) {
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char head_ref[GIT_REF_CAPACITY];
+
+    if (argi >= argc) {
+        tool_write_error("git", "checkout needs a ref", 0);
+        return 1;
+    }
+    if (rt_strcmp(argv[argi], "-b") == 0) {
+        const char *start = "HEAD";
+
+        if (argi + 1 >= argc) {
+            tool_write_error("git", "checkout -b needs a branch name", 0);
+            return 1;
+        }
+        if (argi + 2 < argc) {
+            start = argv[argi + 2];
+        }
+        if (argi + 3 < argc || git_create_branch_at(repo, argv[argi + 1], start, oid, head_ref, sizeof(head_ref)) != 0) {
+            tool_write_error("git", "cannot create branch: ", argv[argi + 1]);
+            return 1;
+        }
+        return git_checkout_resolved(repo, oid, head_ref, argv[argi + 1]);
+    }
+    if (argi + 1 < argc) {
+        tool_write_error("git", "too many checkout arguments", 0);
+        return 1;
+    }
+    if (git_resolve_revision(repo, argv[argi], oid, head_ref, sizeof(head_ref)) != 0) {
+        tool_write_error("git", "cannot resolve checkout ref: ", argv[argi]);
+        return 1;
+    }
+    return git_checkout_resolved(repo, oid, head_ref, argv[argi]);
+}
+
+static int git_cmd_switch(GitRepo *repo, int argc, char **argv, int argi) {
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char head_ref[GIT_REF_CAPACITY];
+
+    if (argi >= argc) {
+        tool_write_error("git", "switch needs a branch", 0);
+        return 1;
+    }
+    if (rt_strcmp(argv[argi], "-c") == 0 || rt_strcmp(argv[argi], "--create") == 0) {
+        const char *start = "HEAD";
+
+        if (argi + 1 >= argc) {
+            tool_write_error("git", "switch -c needs a branch name", 0);
+            return 1;
+        }
+        if (argi + 2 < argc) {
+            start = argv[argi + 2];
+        }
+        if (argi + 3 < argc || git_create_branch_at(repo, argv[argi + 1], start, oid, head_ref, sizeof(head_ref)) != 0) {
+            tool_write_error("git", "cannot create branch: ", argv[argi + 1]);
+            return 1;
+        }
+        return git_checkout_resolved(repo, oid, head_ref, argv[argi + 1]);
+    }
+    if (argi + 1 < argc) {
+        tool_write_error("git", "too many switch arguments", 0);
+        return 1;
+    }
+    if (git_resolve_revision(repo, argv[argi], oid, head_ref, sizeof(head_ref)) != 0 || head_ref[0] == '\0') {
+        tool_write_error("git", "cannot switch to branch: ", argv[argi]);
+        return 1;
+    }
+    return git_checkout_resolved(repo, oid, head_ref, argv[argi]);
 }
 
 static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
@@ -545,8 +1058,9 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
     int have_head_index = 0;
     int have_old_tree_index = 0;
     int have_new_tree_index = 0;
-    int stat_mode = 0;
+    GitDiffOutputMode output_mode = GIT_DIFF_OUTPUT_PATCH;
     int cached_mode = 0;
+    int exit_code_mode = 0;
     int saw_separator = 0;
     int compare_commits = 0;
     int color_mode = TOOL_COLOR_AUTO;
@@ -556,13 +1070,27 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
     unsigned char new_commit_oid[CRYPTO_SHA1_DIGEST_SIZE];
     size_t i;
     int result = 1;
+    int change_count = 0;
 
     rt_memset(&stats, 0, sizeof(stats));
     rt_memset(&old_tree_index, 0, sizeof(old_tree_index));
     rt_memset(&new_tree_index, 0, sizeof(new_tree_index));
     while (argi < argc) {
         if (rt_strcmp(argv[argi], "--stat") == 0) {
-            stat_mode = 1;
+            output_mode = GIT_DIFF_OUTPUT_STAT;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--name-only") == 0) {
+            output_mode = GIT_DIFF_OUTPUT_NAME_ONLY;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--name-status") == 0) {
+            output_mode = GIT_DIFF_OUTPUT_NAME_STATUS;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--quiet") == 0) {
+            output_mode = GIT_DIFF_OUTPUT_QUIET;
+            exit_code_mode = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--exit-code") == 0) {
+            exit_code_mode = 1;
             argi += 1;
         } else if (rt_strcmp(argv[argi], "--cached") == 0 || rt_strcmp(argv[argi], "--staged") == 0) {
             cached_mode = 1;
@@ -637,7 +1165,7 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
         }
         have_old_tree_index = 1;
         have_new_tree_index = 1;
-        if (git_diff_index_pair(repo, &old_tree_index, &new_tree_index, have_pack ? &pack : 0, stat_mode, color_mode, argv + pathspec_start, pathspec_count, &stats) != 0) {
+        if (git_diff_index_pair(repo, &old_tree_index, &new_tree_index, have_pack ? &pack : 0, output_mode, color_mode, argv + pathspec_start, pathspec_count, &stats, &change_count) != 0) {
             tool_write_error("git", "cannot diff commits", 0);
             goto done;
         }
@@ -647,30 +1175,41 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
             tool_write_error("git", "cannot read HEAD tree", 0);
             goto done;
         }
-        if (git_diff_index_pair(repo, &head_index, &index, have_pack ? &pack : 0, stat_mode, color_mode, argv + pathspec_start, pathspec_count, &stats) != 0) {
+        if (git_diff_index_pair(repo, &head_index, &index, have_pack ? &pack : 0, output_mode, color_mode, argv + pathspec_start, pathspec_count, &stats, &change_count) != 0) {
             tool_write_error("git", "cannot diff staged changes", 0);
             goto done;
         }
     } else {
         for (i = 0U; i < index.count; ++i) {
+            int modified;
+
             if (!git_pathspec_matches(index.entries[i].path, argv + pathspec_start, pathspec_count)) {
                 continue;
             }
-            if (stat_mode) {
+            modified = git_entry_is_modified(repo, &index.entries[i]);
+            if (modified == 0) {
+                continue;
+            }
+            change_count += 1;
+            if (output_mode == GIT_DIFF_OUTPUT_STAT) {
                 if (git_collect_diff_stat_entry(repo, &index.entries[i], have_pack ? &pack : 0, &stats) != 0) {
                     tool_write_error("git", "cannot diff path: ", index.entries[i].path);
                     goto done;
                 }
-            } else if (git_render_worktree_diff_patch_entry(repo, &index.entries[i], have_pack ? &pack : 0, color_mode) != 0) {
+            } else if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY || output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
+                if (git_render_diff_path_mode(output_mode, modified < 0 ? 'D' : 'M', index.entries[i].path) != 0) {
+                    goto done;
+                }
+            } else if (output_mode == GIT_DIFF_OUTPUT_PATCH && git_render_worktree_diff_patch_entry(repo, &index.entries[i], have_pack ? &pack : 0, color_mode) != 0) {
                 tool_write_error("git", "cannot diff path: ", index.entries[i].path);
                 goto done;
             }
         }
     }
-    if (stat_mode && git_render_diff_stat(&stats, color_mode) != 0) {
+    if (output_mode == GIT_DIFF_OUTPUT_STAT && git_render_diff_stat(&stats, color_mode) != 0) {
         goto done;
     }
-    result = 0;
+    result = exit_code_mode && change_count > 0 ? 1 : 0;
 done:
     if (have_new_tree_index) {
         git_index_destroy(&new_tree_index);
@@ -770,6 +1309,8 @@ static int git_cmd_branch(GitRepo *repo, int argc, char **argv, int argi) {
 
 static int git_cmd_rev_parse(GitRepo *repo, int argc, char **argv, int argi) {
     int exit_code = 0;
+    int verify = 0;
+    int short_length = 0;
 
     if (argi >= argc) {
         tool_write_error("git", "rev-parse needs an argument", 0);
@@ -780,24 +1321,677 @@ static int git_cmd_rev_parse(GitRepo *repo, int argc, char **argv, int argi) {
             rt_write_line(1, repo->work_tree);
         } else if (rt_strcmp(argv[argi], "--git-dir") == 0) {
             rt_write_line(1, repo->git_dir);
+        } else if (rt_strcmp(argv[argi], "--is-inside-work-tree") == 0) {
+            rt_write_line(1, "true");
+        } else if (rt_strcmp(argv[argi], "--verify") == 0) {
+            verify = 1;
+        } else if (rt_strcmp(argv[argi], "--short") == 0) {
+            short_length = 7;
+        } else if (rt_strncmp(argv[argi], "--short=", 8U) == 0) {
+            long long value = 0;
+            if (tool_parse_int_arg(argv[argi] + 8U, &value, "git", "short length") != 0 || value < 1 || value > GIT_OBJECT_HEX_SIZE) {
+                return 1;
+            }
+            short_length = (int)value;
         } else if (rt_strcmp(argv[argi], "--abbrev-ref") == 0 && argi + 1 < argc && rt_strcmp(argv[argi + 1], "HEAD") == 0) {
             const char *branch = git_branch_name(repo);
 
             rt_write_line(1, branch != 0 ? branch : "HEAD");
             argi += 1;
-        } else if (rt_strcmp(argv[argi], "HEAD") == 0) {
-            if (repo->head_oid[0] == '\0') {
-                exit_code = 1;
-            } else {
-                rt_write_line(1, repo->head_oid);
-            }
         } else {
-            tool_write_error("git", "unsupported rev-parse argument: ", argv[argi]);
-            exit_code = 1;
+            unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+            char hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+            if (git_resolve_revision(repo, argv[argi], oid, 0, 0) != 0) {
+                exit_code = 1;
+                if (!verify) {
+                    tool_write_error("git", "unsupported rev-parse argument: ", argv[argi]);
+                }
+            } else {
+                git_format_oid_hex(oid, hex);
+                if (short_length > 0) {
+                    hex[short_length] = '\0';
+                }
+                rt_write_line(1, hex);
+            }
         }
         argi += 1;
     }
     return exit_code;
+}
+
+static int git_resolve_objectish(GitRepo *repo, const char *name, unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    if (git_resolve_revision(repo, name, oid, 0, 0) == 0) {
+        return 0;
+    }
+    if (rt_strlen(name) == GIT_OBJECT_HEX_SIZE && git_parse_oid_hex(name, oid) == 0) {
+        return 0;
+    }
+    return -1;
+}
+
+static int git_resolve_treeish(GitRepo *repo, const char *name, const GitPack *pack_cache, unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int type = 0;
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int result = -1;
+
+    if (git_resolve_objectish(repo, name, oid) != 0 || git_read_object(repo, oid, pack_cache, &type, &data, &size) != 0) {
+        rt_free(data);
+        return -1;
+    }
+    if (type == GIT_OBJECT_TREE) {
+        memcpy(tree_oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+        result = 0;
+    } else if (type == GIT_OBJECT_COMMIT && size >= 46U && memcmp(data, "tree ", 5U) == 0 && git_parse_oid_hex_n((const char *)data + 5U, GIT_OBJECT_HEX_SIZE, tree_oid) == 0) {
+        result = 0;
+    }
+    rt_free(data);
+    return result;
+}
+
+static const char *git_ls_tree_mode_text(unsigned int mode) {
+    if (mode == GIT_MODE_TREE || mode == 040000U) return "040000";
+    if (mode == GIT_MODE_SYMLINK || mode == 0120000U) return "120000";
+    if (mode == GIT_MODE_GITLINK || mode == 0160000U) return "160000";
+    return (mode & GIT_MODE_EXEC_BITS) != 0U ? "100755" : "100644";
+}
+
+static const char *git_tree_entry_type_name(unsigned int mode) {
+    if (mode == GIT_MODE_TREE || mode == 040000U) return "tree";
+    if (mode == GIT_MODE_GITLINK || mode == 0160000U) return "commit";
+    return "blob";
+}
+
+static int git_print_tree_entries(const GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const char *prefix, int recursive, int name_only, int print_trees) {
+    int type = 0;
+    unsigned char *tree = 0;
+    size_t tree_size = 0U;
+    size_t pos = 0U;
+
+    if (git_read_object(repo, tree_oid, pack_cache, &type, &tree, &tree_size) != 0 || type != GIT_OBJECT_TREE) {
+        rt_free(tree);
+        return -1;
+    }
+    while (pos < tree_size) {
+        unsigned int mode = 0U;
+        size_t name_start;
+        size_t name_length;
+        char path[GIT_PATH_CAPACITY];
+        char hex[GIT_OBJECT_HEX_SIZE + 1U];
+        unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+        int is_tree;
+
+        while (pos < tree_size && tree[pos] >= '0' && tree[pos] <= '7') {
+            mode = mode * 8U + (unsigned int)(tree[pos] - '0');
+            pos += 1U;
+        }
+        if (pos >= tree_size || tree[pos] != ' ') {
+            rt_free(tree);
+            return -1;
+        }
+        pos += 1U;
+        name_start = pos;
+        while (pos < tree_size && tree[pos] != '\0') pos += 1U;
+        if (pos >= tree_size || pos + 1U + CRYPTO_SHA1_DIGEST_SIZE > tree_size) {
+            rt_free(tree);
+            return -1;
+        }
+        name_length = pos - name_start;
+        pos += 1U;
+        memcpy(oid, tree + pos, CRYPTO_SHA1_DIGEST_SIZE);
+        pos += CRYPTO_SHA1_DIGEST_SIZE;
+        if (prefix[0] != '\0') {
+            if (rt_strlen(prefix) + 1U + name_length >= sizeof(path)) {
+                rt_free(tree);
+                return -1;
+            }
+            rt_copy_string(path, sizeof(path), prefix);
+            path[rt_strlen(path) + 1U] = '\0';
+            path[rt_strlen(path)] = '/';
+            memcpy(path + rt_strlen(prefix) + 1U, tree + name_start, name_length);
+            path[rt_strlen(prefix) + 1U + name_length] = '\0';
+        } else {
+            if (name_length >= sizeof(path)) {
+                rt_free(tree);
+                return -1;
+            }
+            memcpy(path, tree + name_start, name_length);
+            path[name_length] = '\0';
+        }
+        is_tree = mode == GIT_MODE_TREE || mode == 040000U;
+        if (!recursive || !is_tree || print_trees) {
+            if (name_only) {
+                if (rt_write_line(1, path) != 0) {
+                    rt_free(tree);
+                    return -1;
+                }
+            } else {
+                git_format_oid_hex(oid, hex);
+                if (rt_write_cstr(1, git_ls_tree_mode_text(mode)) != 0 || rt_write_char(1, ' ') != 0 || rt_write_cstr(1, git_tree_entry_type_name(mode)) != 0 || rt_write_char(1, ' ') != 0 || rt_write_cstr(1, hex) != 0 || rt_write_char(1, '\t') != 0 || rt_write_line(1, path) != 0) {
+                    rt_free(tree);
+                    return -1;
+                }
+            }
+        }
+        if (recursive && is_tree && git_print_tree_entries(repo, oid, pack_cache, path, recursive, name_only, print_trees) != 0) {
+            rt_free(tree);
+            return -1;
+        }
+    }
+    rt_free(tree);
+    return 0;
+}
+
+static int git_cmd_cat_file(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int type = 0;
+    int have_pack;
+    int result = 1;
+
+    if (argi + 2 != argc || (rt_strcmp(argv[argi], "-t") != 0 && rt_strcmp(argv[argi], "-s") != 0 && rt_strcmp(argv[argi], "-p") != 0)) {
+        tool_write_error("git", "cat-file needs -t, -s, or -p and an object", 0);
+        return 1;
+    }
+    if (git_resolve_objectish(repo, argv[argi + 1], oid) != 0) {
+        tool_write_error("git", "cannot resolve object: ", argv[argi + 1]);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (git_read_object(repo, oid, have_pack ? &pack : 0, &type, &data, &size) != 0) {
+        tool_write_error("git", "cannot read object: ", argv[argi + 1]);
+        goto done;
+    }
+    if (rt_strcmp(argv[argi], "-t") == 0) {
+        rt_write_line(1, git_object_type_name(type));
+    } else if (rt_strcmp(argv[argi], "-s") == 0) {
+        git_write_size(size);
+        rt_write_char(1, '\n');
+    } else if (type == GIT_OBJECT_TREE) {
+        if (git_print_tree_entries(repo, oid, have_pack ? &pack : 0, "", 0, 0, 1) != 0) {
+            goto done;
+        }
+    } else if (rt_write_all(1, data, size) != 0) {
+        goto done;
+    }
+    result = 0;
+done:
+    rt_free(data);
+    if (have_pack) git_pack_destroy(&pack);
+    return result;
+}
+
+static int git_cmd_ls_tree(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    const char *revision = "HEAD";
+    int recursive = 0;
+    int name_only = 0;
+    int have_pack;
+    int result;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "-r") == 0) {
+            recursive = 1;
+        } else if (rt_strcmp(argv[argi], "--name-only") == 0) {
+            name_only = 1;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported ls-tree option: ", argv[argi]);
+            return 1;
+        } else {
+            revision = argv[argi];
+        }
+        argi += 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (git_resolve_treeish(repo, revision, have_pack ? &pack : 0, tree_oid) != 0) {
+        if (have_pack) git_pack_destroy(&pack);
+        tool_write_error("git", "cannot resolve tree: ", revision);
+        return 1;
+    }
+    result = git_print_tree_entries(repo, tree_oid, have_pack ? &pack : 0, "", recursive, name_only, 0) == 0 ? 0 : 1;
+    if (have_pack) git_pack_destroy(&pack);
+    return result;
+}
+
+static int git_ref_filter_matches(const char *ref_name, int heads_only, int tags_only, const char *verify_ref) {
+    if (verify_ref != 0) {
+        return rt_strcmp(ref_name, verify_ref) == 0;
+    }
+    if (heads_only && rt_strncmp(ref_name, "refs/heads/", 11U) != 0) {
+        return 0;
+    }
+    if (tags_only && rt_strncmp(ref_name, "refs/tags/", 10U) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int git_show_ref_line(const char *oid_hex, const char *ref_name) {
+    return rt_write_cstr(1, oid_hex) != 0 || rt_write_char(1, ' ') != 0 || rt_write_line(1, ref_name) != 0 ? -1 : 0;
+}
+
+static int git_show_ref_loose_dir(const GitRepo *repo, const char *relative, int heads_only, int tags_only, const char *verify_ref, int *count) {
+    char dir[GIT_PATH_CAPACITY];
+    PlatformDirEntry entries[256];
+    size_t entry_count = 0U;
+    int is_directory = 0;
+    size_t i;
+
+    if (git_join(dir, sizeof(dir), repo->git_dir, relative) != 0 || platform_collect_entries(dir, 0, entries, sizeof(entries) / sizeof(entries[0]), &entry_count, &is_directory) != 0 || !is_directory) {
+        return 0;
+    }
+    for (i = 0U; i < entry_count; ++i) {
+        char child[GIT_REF_CAPACITY];
+        char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+        if (git_copy(child, sizeof(child), relative) != 0 || rt_strlen(child) + 1U + rt_strlen(entries[i].name) >= sizeof(child)) {
+            return -1;
+        }
+        rt_copy_string(child + rt_strlen(child), sizeof(child) - rt_strlen(child), "/");
+        rt_copy_string(child + rt_strlen(child), sizeof(child) - rt_strlen(child), entries[i].name);
+        if (entries[i].is_dir) {
+            if (git_show_ref_loose_dir(repo, child, heads_only, tags_only, verify_ref, count) != 0) {
+                return -1;
+            }
+        } else if (git_ref_filter_matches(child, heads_only, tags_only, verify_ref) && git_read_ref_file(repo, child, oid_hex, sizeof(oid_hex)) == 0) {
+            if (git_show_ref_line(oid_hex, child) != 0) {
+                return -1;
+            }
+            *count += 1;
+        }
+    }
+    return 0;
+}
+
+static int git_show_ref_packed(const GitRepo *repo, int heads_only, int tags_only, const char *verify_ref, int *count) {
+    char path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 0U;
+
+    if (git_join(path, sizeof(path), repo->git_dir, "packed-refs") != 0 || git_read_file(path, &data, &size) != 0) {
+        return 0;
+    }
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        size_t line_len;
+
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) pos += 1U;
+        while (end > start && data[end - 1U] == '\r') end -= 1U;
+        line_len = end - start;
+        if (line_len > GIT_OBJECT_HEX_SIZE + 1U && data[start] != '#' && data[start] != '^' && data[start + GIT_OBJECT_HEX_SIZE] == ' ') {
+            char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
+            char ref_name[GIT_REF_CAPACITY];
+            size_t ref_len = line_len - GIT_OBJECT_HEX_SIZE - 1U;
+
+            if (ref_len < sizeof(ref_name)) {
+                memcpy(oid_hex, data + start, GIT_OBJECT_HEX_SIZE);
+                oid_hex[GIT_OBJECT_HEX_SIZE] = '\0';
+                memcpy(ref_name, data + start + GIT_OBJECT_HEX_SIZE + 1U, ref_len);
+                ref_name[ref_len] = '\0';
+                if (git_ref_filter_matches(ref_name, heads_only, tags_only, verify_ref)) {
+                    if (git_show_ref_line(oid_hex, ref_name) != 0) {
+                        rt_free(data);
+                        return -1;
+                    }
+                    *count += 1;
+                }
+            }
+        }
+    }
+    rt_free(data);
+    return 0;
+}
+
+static int git_cmd_show_ref(GitRepo *repo, int argc, char **argv, int argi) {
+    int heads_only = 0;
+    int tags_only = 0;
+    const char *verify_ref = 0;
+    int count = 0;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--heads") == 0) {
+            heads_only = 1;
+        } else if (rt_strcmp(argv[argi], "--tags") == 0) {
+            tags_only = 1;
+        } else if (rt_strcmp(argv[argi], "--verify") == 0 && argi + 1 < argc) {
+            verify_ref = argv[++argi];
+        } else {
+            tool_write_error("git", "unsupported show-ref argument: ", argv[argi]);
+            return 1;
+        }
+        argi += 1;
+    }
+    if (git_show_ref_loose_dir(repo, "refs", heads_only, tags_only, verify_ref, &count) != 0 || git_show_ref_packed(repo, heads_only, tags_only, verify_ref, &count) != 0) {
+        return 1;
+    }
+    return count > 0 ? 0 : 1;
+}
+
+static int git_tag_list_loose(const GitRepo *repo, const char *relative, int *count) {
+    char dir[GIT_PATH_CAPACITY];
+    PlatformDirEntry entries[256];
+    size_t entry_count = 0U;
+    int is_directory = 0;
+    size_t i;
+
+    if (git_join(dir, sizeof(dir), repo->git_dir, relative) != 0 || platform_collect_entries(dir, 0, entries, sizeof(entries) / sizeof(entries[0]), &entry_count, &is_directory) != 0 || !is_directory) {
+        return 0;
+    }
+    for (i = 0U; i < entry_count; ++i) {
+        char child[GIT_REF_CAPACITY];
+
+        if (git_copy(child, sizeof(child), relative) != 0 || rt_strlen(child) + 1U + rt_strlen(entries[i].name) >= sizeof(child)) {
+            return -1;
+        }
+        rt_copy_string(child + rt_strlen(child), sizeof(child) - rt_strlen(child), "/");
+        rt_copy_string(child + rt_strlen(child), sizeof(child) - rt_strlen(child), entries[i].name);
+        if (entries[i].is_dir) {
+            if (git_tag_list_loose(repo, child, count) != 0) return -1;
+        } else {
+            rt_write_line(1, child + 10U);
+            *count += 1;
+        }
+    }
+    return 0;
+}
+
+static int git_tag_list_packed(const GitRepo *repo, int *count) {
+    char path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 0U;
+
+    if (git_join(path, sizeof(path), repo->git_dir, "packed-refs") != 0 || git_read_file(path, &data, &size) != 0) {
+        return 0;
+    }
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) pos += 1U;
+        if (end > start + GIT_OBJECT_HEX_SIZE + 11U && data[start] != '#' && data[start] != '^' && data[start + GIT_OBJECT_HEX_SIZE] == ' ' && memcmp(data + start + GIT_OBJECT_HEX_SIZE + 1U, "refs/tags/", 10U) == 0) {
+            rt_write_all(1, data + start + GIT_OBJECT_HEX_SIZE + 11U, end - start - GIT_OBJECT_HEX_SIZE - 11U);
+            rt_write_char(1, '\n');
+            *count += 1;
+        }
+    }
+    rt_free(data);
+    return 0;
+}
+
+static int git_cmd_tag(GitRepo *repo, int argc, char **argv, int argi) {
+    if (argi >= argc) {
+        int count = 0;
+        if (git_tag_list_loose(repo, "refs/tags", &count) != 0 || git_tag_list_packed(repo, &count) != 0) {
+            return 1;
+        }
+        (void)count;
+        return 0;
+    }
+    if (argi + 2 < argc) {
+        tool_write_error("git", "too many tag arguments", 0);
+        return 1;
+    }
+    {
+        const char *start = argi + 1 < argc ? argv[argi + 1] : "HEAD";
+        unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+        char ref_name[GIT_REF_CAPACITY];
+
+        if (tool_path_is_unsafe_relative(argv[argi]) || git_resolve_revision(repo, start, oid, 0, 0) != 0 || git_copy(ref_name, sizeof(ref_name), "refs/tags/") != 0 || rt_strlen(ref_name) + rt_strlen(argv[argi]) >= sizeof(ref_name)) {
+            tool_write_error("git", "cannot create tag: ", argv[argi]);
+            return 1;
+        }
+        rt_copy_string(ref_name + rt_strlen(ref_name), sizeof(ref_name) - rt_strlen(ref_name), argv[argi]);
+        if (git_write_ref_oid(repo, ref_name, oid) != 0) {
+            tool_write_error("git", "cannot write tag: ", argv[argi]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static size_t git_patch_line_end(const unsigned char *data, size_t size, size_t start) {
+    size_t end = start;
+
+    while (end < size && data[end] != '\n') {
+        end += 1U;
+    }
+    if (end < size) {
+        end += 1U;
+    }
+    return end;
+}
+
+static size_t git_file_line_end(const unsigned char *data, size_t size, size_t start) {
+    size_t end = start;
+
+    while (end < size && data[end] != '\n') {
+        end += 1U;
+    }
+    if (end < size) {
+        end += 1U;
+    }
+    return end;
+}
+
+static int git_parse_hunk_start(const unsigned char *line, size_t line_size, size_t *old_start_out) {
+    size_t pos = 4U;
+    size_t value = 0U;
+
+    if (line_size < 5U || memcmp(line, "@@ -", 4U) != 0) {
+        return -1;
+    }
+    while (pos < line_size && line[pos] >= '0' && line[pos] <= '9') {
+        value = value * 10U + (size_t)(line[pos] - '0');
+        pos += 1U;
+    }
+    if (value == 0U) {
+        value = 1U;
+    }
+    *old_start_out = value;
+    return 0;
+}
+
+static int git_copy_old_lines_until(GitBuffer *out, const unsigned char *old_data, size_t old_size, size_t *old_pos_io, size_t *old_line_io, size_t target_line) {
+    while (*old_line_io < target_line && *old_pos_io < old_size) {
+        size_t end = git_file_line_end(old_data, old_size, *old_pos_io);
+        if (git_buffer_append(out, old_data + *old_pos_io, end - *old_pos_io) != 0) {
+            return -1;
+        }
+        *old_pos_io = end;
+        *old_line_io += 1U;
+    }
+    return 0;
+}
+
+static int git_apply_one_file(const GitRepo *repo, const char *path, const unsigned char *patch, size_t patch_size, size_t *pos_io, int delete_file) {
+    char full_path[GIT_PATH_CAPACITY];
+    unsigned char *old_data = 0;
+    size_t old_size = 0U;
+    size_t old_pos = 0U;
+    size_t old_line = 1U;
+    GitBuffer out;
+    int result = -1;
+
+    if (path[0] == '\0' || tool_path_is_unsafe_relative(path) || git_join(full_path, sizeof(full_path), repo->work_tree, path) != 0) {
+        return -1;
+    }
+    (void)git_read_file(full_path, &old_data, &old_size);
+    rt_memset(&out, 0, sizeof(out));
+    while (*pos_io < patch_size) {
+        size_t line_start = *pos_io;
+        size_t line_end = git_patch_line_end(patch, patch_size, line_start);
+        size_t line_size = line_end - line_start;
+        size_t hunk_old_start;
+
+        if (line_size >= 10U && memcmp(patch + line_start, "diff --git", 10U) == 0) {
+            break;
+        }
+        if (line_size < 3U || memcmp(patch + line_start, "@@ ", 3U) != 0) {
+            *pos_io = line_end;
+            continue;
+        }
+        if (git_parse_hunk_start(patch + line_start, line_size, &hunk_old_start) != 0 || git_copy_old_lines_until(&out, old_data, old_size, &old_pos, &old_line, hunk_old_start) != 0) {
+            goto done;
+        }
+        *pos_io = line_end;
+        while (*pos_io < patch_size) {
+            size_t hline_start = *pos_io;
+            size_t hline_end = git_patch_line_end(patch, patch_size, hline_start);
+            size_t hline_size = hline_end - hline_start;
+            unsigned char prefix;
+
+            if ((hline_size >= 3U && memcmp(patch + hline_start, "@@ ", 3U) == 0) || (hline_size >= 10U && memcmp(patch + hline_start, "diff --git", 10U) == 0)) {
+                break;
+            }
+            if (hline_size == 0U) {
+                *pos_io = hline_end;
+                continue;
+            }
+            prefix = patch[hline_start];
+            if (prefix == ' ' || prefix == '-') {
+                size_t old_end = git_file_line_end(old_data, old_size, old_pos);
+                size_t old_line_size = old_end - old_pos;
+                size_t patch_line_size = hline_size - 1U;
+
+                if (old_pos >= old_size || old_line_size != patch_line_size || memcmp(old_data + old_pos, patch + hline_start + 1U, patch_line_size) != 0) {
+                    goto done;
+                }
+                old_pos = old_end;
+                old_line += 1U;
+            }
+            if (prefix == ' ' || prefix == '+') {
+                if (git_buffer_append(&out, patch + hline_start + 1U, hline_size - 1U) != 0) {
+                    goto done;
+                }
+            } else if (prefix != '-' && prefix != '\\') {
+                goto done;
+            }
+            *pos_io = hline_end;
+        }
+    }
+    if (!delete_file && old_pos < old_size && git_buffer_append(&out, old_data + old_pos, old_size - old_pos) != 0) {
+        goto done;
+    }
+    if (delete_file) {
+        (void)platform_remove_file(full_path);
+        (void)git_remove_empty_checkout_parents(repo, path);
+    } else if (git_ensure_parent_directory(full_path) != 0 || git_write_all_file(full_path, out.data, out.size, 0644U) != 0) {
+        goto done;
+    }
+    result = 0;
+done:
+    git_buffer_destroy(&out);
+    rt_free(old_data);
+    return result;
+}
+
+static int git_patch_path_from_line(const unsigned char *line, size_t line_size, char *path, size_t path_size, int *is_null) {
+    size_t start = 0U;
+    size_t end = line_size;
+
+    *is_null = 0;
+    while (end > start && (line[end - 1U] == '\n' || line[end - 1U] == '\r')) end -= 1U;
+    if (end >= 9U && memcmp(line, "--- ", 4U) == 0) {
+        start = 4U;
+    } else if (end >= 9U && memcmp(line, "+++ ", 4U) == 0) {
+        start = 4U;
+    } else {
+        return -1;
+    }
+    while (start < end && line[start] == ' ') start += 1U;
+    if (end - start == 9U && memcmp(line + start, "/dev/null", 9U) == 0) {
+        path[0] = '\0';
+        *is_null = 1;
+        return 0;
+    }
+    if (end > start + 2U && (line[start] == 'a' || line[start] == 'b') && line[start + 1U] == '/') {
+        start += 2U;
+    }
+    if (end <= start || end - start >= path_size) {
+        return -1;
+    }
+    memcpy(path, line + start, end - start);
+    path[end - start] = '\0';
+    return 0;
+}
+
+static int git_cmd_apply(GitRepo *repo, int argc, char **argv, int argi) {
+    unsigned char *patch = 0;
+    size_t patch_size = 0U;
+    size_t pos = 0U;
+    const char *patch_path = 0;
+    int result = 1;
+
+    if (argi < argc) {
+        patch_path = argv[argi++];
+    }
+    if (argi < argc) {
+        tool_write_error("git", "too many apply arguments", 0);
+        return 1;
+    }
+    if (git_read_file(patch_path, &patch, &patch_size) != 0) {
+        tool_write_error("git", "cannot read patch", patch_path);
+        return 1;
+    }
+    while (pos < patch_size) {
+        size_t line_start = pos;
+        size_t line_end = git_patch_line_end(patch, patch_size, line_start);
+        char old_path[GIT_PATH_CAPACITY];
+        char new_path[GIT_PATH_CAPACITY];
+        int old_null = 0;
+        int new_null = 0;
+
+        if (line_end - line_start < 10U || memcmp(patch + line_start, "diff --git", 10U) != 0) {
+            pos = line_end;
+            continue;
+        }
+        pos = line_end;
+        old_path[0] = '\0';
+        new_path[0] = '\0';
+        while (pos < patch_size) {
+            size_t meta_start = pos;
+            size_t meta_end = git_patch_line_end(patch, patch_size, meta_start);
+            size_t meta_size = meta_end - meta_start;
+
+            if (meta_size >= 4U && memcmp(patch + meta_start, "--- ", 4U) == 0) {
+                if (git_patch_path_from_line(patch + meta_start, meta_size, old_path, sizeof(old_path), &old_null) != 0) goto done;
+                pos = meta_end;
+                continue;
+            }
+            if (meta_size >= 4U && memcmp(patch + meta_start, "+++ ", 4U) == 0) {
+                if (git_patch_path_from_line(patch + meta_start, meta_size, new_path, sizeof(new_path), &new_null) != 0) goto done;
+                pos = meta_end;
+                break;
+            }
+            if (meta_size >= 10U && memcmp(patch + meta_start, "diff --git", 10U) == 0) {
+                break;
+            }
+            pos = meta_end;
+        }
+        if (new_null && old_path[0] != '\0') {
+            if (git_apply_one_file(repo, old_path, patch, patch_size, &pos, 1) != 0) goto done;
+        } else if (new_path[0] != '\0') {
+            if (git_apply_one_file(repo, new_path, patch, patch_size, &pos, 0) != 0) goto done;
+        }
+    }
+    result = 0;
+done:
+    rt_free(patch);
+    if (result != 0) {
+        tool_write_error("git", "apply failed", 0);
+    }
+    return result;
 }
 
 static int git_ls_files_write_path(const char *path, void *user_data) {
@@ -1453,7 +2647,8 @@ static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
             git_commit_info_destroy(&info);
             goto done;
         }
-        if (git_diff_index_pair(repo, &old_index, &new_index, have_pack ? &pack : 0, stat_mode, TOOL_COLOR_AUTO, 0, 0, &stats) == 0) {
+        int change_count = 0;
+        if (git_diff_index_pair(repo, &old_index, &new_index, have_pack ? &pack : 0, stat_mode ? GIT_DIFF_OUTPUT_STAT : GIT_DIFF_OUTPUT_PATCH, TOOL_COLOR_AUTO, 0, 0, &stats, &change_count) == 0) {
             if (stat_mode) {
                 (void)git_render_diff_stat(&stats, TOOL_COLOR_AUTO);
             }

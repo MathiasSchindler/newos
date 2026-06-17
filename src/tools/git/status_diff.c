@@ -1037,7 +1037,24 @@ done:
     return result;
 }
 
-static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, const GitIndex *new_index, const GitPack *pack_cache, int stat_mode, int color_mode, char **pathspecs, int pathspec_count, GitDiffStatList *stats) {
+static int git_write_diff_name_status(char status, const char *path) {
+    if (rt_write_char(1, status) != 0 || rt_write_char(1, '\t') != 0 || rt_write_line(1, path) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int git_render_diff_path_mode(GitDiffOutputMode output_mode, char status, const char *path) {
+    if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY) {
+        return rt_write_line(1, path);
+    }
+    if (output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
+        return git_write_diff_name_status(status, path);
+    }
+    return 0;
+}
+
+static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, const GitIndex *new_index, const GitPack *pack_cache, GitDiffOutputMode output_mode, int color_mode, char **pathspecs, int pathspec_count, GitDiffStatList *stats, int *change_count) {
     size_t old_pos = 0U;
     size_t new_pos = 0U;
 
@@ -1068,11 +1085,17 @@ static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, c
         if (!git_pathspec_matches(path, pathspecs, pathspec_count) || (old_entry != 0 && new_entry != 0 && git_index_entries_equal_for_status(old_entry, new_entry))) {
             continue;
         }
-        if (stat_mode) {
+        *change_count += 1;
+        if (output_mode == GIT_DIFF_OUTPUT_STAT) {
             if (git_collect_cached_diff_stat_entry(repo, old_entry, new_entry, pack_cache, stats) != 0) {
                 return -1;
             }
-        } else if (git_render_cached_diff_patch_entry(repo, old_entry, new_entry, pack_cache, color_mode) != 0) {
+        } else if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY || output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
+            char status = old_entry == 0 ? 'A' : new_entry == 0 ? 'D' : 'M';
+            if (git_render_diff_path_mode(output_mode, status, path) != 0) {
+                return -1;
+            }
+        } else if (output_mode == GIT_DIFF_OUTPUT_PATCH && git_render_cached_diff_patch_entry(repo, old_entry, new_entry, pack_cache, color_mode) != 0) {
             return -1;
         }
     }

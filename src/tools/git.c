@@ -150,6 +150,14 @@ typedef struct {
     size_t deletions;
 } GitDiffStat;
 
+typedef enum {
+    GIT_DIFF_OUTPUT_PATCH = 0,
+    GIT_DIFF_OUTPUT_STAT,
+    GIT_DIFF_OUTPUT_NAME_ONLY,
+    GIT_DIFF_OUTPUT_NAME_STATUS,
+    GIT_DIFF_OUTPUT_QUIET
+} GitDiffOutputMode;
+
 typedef struct {
     GitDiffStat *entries;
     size_t count;
@@ -478,10 +486,21 @@ static int git_read_text_file(const char *path, char *buffer, size_t buffer_size
 #include "git/commands.c"
 
 static void git_usage(void) {
-    rt_write_line(2, "Usage: git [--no-pager] <status|diff|add|commit|checkout|branch|clone|fetch|log|show|reset|restore|rm|clean> [args ...]");
+    rt_write_line(2, "Usage: git [--no-pager] [-C PATH] <command> [args ...]");
+    rt_write_line(2, "       git init [PATH]");
+    rt_write_line(2, "       git config KEY [VALUE]");
+    rt_write_line(2, "       git remote [-v|add NAME URL|set-url NAME URL]");
     rt_write_line(2, "       git status [-s|--short|--porcelain] [--color[=WHEN]|--no-color]");
-    rt_write_line(2, "       git diff [--stat] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]");
+    rt_write_line(2, "       git diff [--stat|--name-only|--name-status|--quiet] [--exit-code] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]");
     rt_write_line(2, "       git branch [--show-current|NAME [START]|-d NAME]");
+    rt_write_line(2, "       git checkout [-b NAME [START]|REF]");
+    rt_write_line(2, "       git switch [-c NAME [START]|REF]");
+    rt_write_line(2, "       git rev-parse [--verify] [--short[=N]] [--is-inside-work-tree] REV ...");
+    rt_write_line(2, "       git cat-file -t|-s|-p OBJECT");
+    rt_write_line(2, "       git ls-tree [-r] [REV]");
+    rt_write_line(2, "       git show-ref [--heads|--tags|--verify REF]");
+    rt_write_line(2, "       git tag [NAME [REV]]");
+    rt_write_line(2, "       git apply [PATCH]");
     rt_write_line(2, "       git ls-files [--cached|--others] [--exclude-standard] [--] [path ...]");
     rt_write_line(2, "       git add [-N|--intent-to-add] [--] path ...");
     rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty]");
@@ -498,8 +517,28 @@ int main(int argc, char **argv) {
     const char *cmd;
     int argi = 1;
 
-    while (argi < argc && rt_strcmp(argv[argi], "--no-pager") == 0) {
-        argi += 1;
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--no-pager") == 0) {
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "-C") == 0) {
+            if (argi + 1 >= argc) {
+                tool_write_error("git", "-C needs a path", 0);
+                return 1;
+            }
+            if (platform_change_directory(argv[argi + 1]) != 0) {
+                tool_write_error("git", "cannot change directory: ", argv[argi + 1]);
+                return 1;
+            }
+            argi += 2;
+        } else if (rt_strncmp(argv[argi], "-C", 2U) == 0 && argv[argi][2] != '\0') {
+            if (platform_change_directory(argv[argi] + 2U) != 0) {
+                tool_write_error("git", "cannot change directory: ", argv[argi] + 2U);
+                return 1;
+            }
+            argi += 1;
+        } else {
+            break;
+        }
     }
     if (argi >= argc || rt_strcmp(argv[argi], "--help") == 0 || rt_strcmp(argv[argi], "-h") == 0) {
         git_usage();
@@ -512,6 +551,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "clone") == 0) {
         return git_cmd_clone(argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "init") == 0) {
+        return git_cmd_init(argc, argv, argi + 1);
     }
 
     if (git_discover(&repo) != 0 || git_load_head(&repo) != 0) {
@@ -563,6 +605,30 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "checkout") == 0) {
         return git_cmd_checkout(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "switch") == 0) {
+        return git_cmd_switch(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "config") == 0) {
+        return git_cmd_config(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "remote") == 0) {
+        return git_cmd_remote(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "cat-file") == 0) {
+        return git_cmd_cat_file(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "ls-tree") == 0) {
+        return git_cmd_ls_tree(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "show-ref") == 0) {
+        return git_cmd_show_ref(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "apply") == 0) {
+        return git_cmd_apply(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "tag") == 0) {
+        return git_cmd_tag(&repo, argc, argv, argi + 1);
     }
 
     tool_write_error("git", "unsupported command: ", cmd);
