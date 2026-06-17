@@ -210,6 +210,15 @@ typedef struct {
     const GitRepo *repo;
 } GitCheckoutIndex;
 
+typedef struct {
+    unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int has_parent;
+    char *author;
+    char *committer;
+    char *message;
+} GitCommitInfo;
+
 static void git_index_destroy(GitIndex *index) {
     size_t i;
 
@@ -269,6 +278,16 @@ static void git_pack_destroy(GitPack *pack) {
     }
     rt_free(pack->objects);
     rt_memset(pack, 0, sizeof(*pack));
+}
+
+static void git_commit_info_destroy(GitCommitInfo *info) {
+    if (info == 0) {
+        return;
+    }
+    rt_free(info->author);
+    rt_free(info->committer);
+    rt_free(info->message);
+    rt_memset(info, 0, sizeof(*info));
 }
 
 static char *git_strdup_n(const char *text, size_t length) {
@@ -459,12 +478,19 @@ static int git_read_text_file(const char *path, char *buffer, size_t buffer_size
 #include "git/commands.c"
 
 static void git_usage(void) {
-    rt_write_line(2, "Usage: git [--no-pager] <status|diff|branch|rev-parse|ls-files|add|commit|hash-object|clone|fetch|checkout> [args ...]");
+    rt_write_line(2, "Usage: git [--no-pager] <status|diff|add|commit|checkout|branch|clone|fetch|log|show|reset|restore|rm|clean> [args ...]");
     rt_write_line(2, "       git status [-s|--short|--porcelain] [--color[=WHEN]|--no-color]");
     rt_write_line(2, "       git diff [--stat] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]");
+    rt_write_line(2, "       git branch [--show-current|NAME [START]|-d NAME]");
     rt_write_line(2, "       git ls-files [--cached|--others] [--exclude-standard] [--] [path ...]");
     rt_write_line(2, "       git add [-N|--intent-to-add] [--] path ...");
     rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty]");
+    rt_write_line(2, "       git log [--oneline] [-N|-n N|--max-count=N] [REV]");
+    rt_write_line(2, "       git show [--stat] [REV]");
+    rt_write_line(2, "       git reset [--soft|--mixed|--hard] [REV]");
+    rt_write_line(2, "       git restore [--staged] [--worktree] [--source REV] [--] path ...");
+    rt_write_line(2, "       git rm [--cached] [-r] [--] path ...");
+    rt_write_line(2, "       git clean [-n|--dry-run|-f|--force] [-x] [--] [path ...]");
 }
 
 int main(int argc, char **argv) {
@@ -502,6 +528,12 @@ int main(int argc, char **argv) {
     if (rt_strcmp(cmd, "branch") == 0) {
         return git_cmd_branch(&repo, argc, argv, argi + 1);
     }
+    if (rt_strcmp(cmd, "log") == 0) {
+        return git_cmd_log(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "show") == 0) {
+        return git_cmd_show(&repo, argc, argv, argi + 1);
+    }
     if (rt_strcmp(cmd, "rev-parse") == 0) {
         return git_cmd_rev_parse(&repo, argc, argv, argi + 1);
     }
@@ -513,6 +545,18 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "commit") == 0) {
         return git_cmd_commit(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "reset") == 0) {
+        return git_cmd_reset(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "restore") == 0) {
+        return git_cmd_restore(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "rm") == 0) {
+        return git_cmd_rm(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "clean") == 0) {
+        return git_cmd_clean(&repo, argc, argv, argi + 1);
     }
     if (rt_strcmp(cmd, "fetch") == 0) {
         return git_cmd_fetch(&repo, argc, argv, argi + 1);

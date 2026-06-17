@@ -701,8 +701,71 @@ static int git_cmd_branch(GitRepo *repo, int argc, char **argv, int argi) {
         }
         return 0;
     }
-    tool_write_error("git", "unsupported branch mode", 0);
-    return 1;
+    if (argi < argc && (rt_strcmp(argv[argi], "-d") == 0 || rt_strcmp(argv[argi], "-D") == 0 || rt_strcmp(argv[argi], "--delete") == 0)) {
+        char ref_path[GIT_PATH_CAPACITY];
+        char ref_name[GIT_REF_CAPACITY];
+
+        argi += 1;
+        if (argi >= argc) {
+            tool_write_error("git", "branch delete needs a name", 0);
+            return 1;
+        }
+        if (tool_path_is_unsafe_relative(argv[argi]) || git_copy(ref_name, sizeof(ref_name), "refs/heads/") != 0 || rt_strlen(ref_name) + rt_strlen(argv[argi]) >= sizeof(ref_name)) {
+            tool_write_error("git", "bad branch name: ", argv[argi]);
+            return 1;
+        }
+        rt_copy_string(ref_name + rt_strlen(ref_name), sizeof(ref_name) - rt_strlen(ref_name), argv[argi]);
+        if (git_join(ref_path, sizeof(ref_path), repo->git_dir, ref_name) != 0 || platform_remove_file(ref_path) != 0) {
+            tool_write_error("git", "cannot delete branch: ", argv[argi]);
+            return 1;
+        }
+        rt_write_cstr(1, "Deleted branch ");
+        rt_write_line(1, argv[argi]);
+        return 0;
+    }
+    if (argi < argc) {
+        unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+        const char *start = "HEAD";
+        char ref_name[GIT_REF_CAPACITY];
+
+        if (argi + 1 < argc) {
+            start = argv[argi + 1];
+        }
+        if (argi + 2 < argc) {
+            tool_write_error("git", "too many branch arguments", 0);
+            return 1;
+        }
+        if (tool_path_is_unsafe_relative(argv[argi]) || git_resolve_revision(repo, start, oid, 0, 0) != 0 || git_copy(ref_name, sizeof(ref_name), "refs/heads/") != 0 || rt_strlen(ref_name) + rt_strlen(argv[argi]) >= sizeof(ref_name)) {
+            tool_write_error("git", "cannot create branch: ", argv[argi]);
+            return 1;
+        }
+        rt_copy_string(ref_name + rt_strlen(ref_name), sizeof(ref_name) - rt_strlen(ref_name), argv[argi]);
+        if (git_write_ref_oid(repo, ref_name, oid) != 0) {
+            tool_write_error("git", "cannot write branch: ", argv[argi]);
+            return 1;
+        }
+        return 0;
+    }
+    {
+        char heads_dir[GIT_PATH_CAPACITY];
+        PlatformDirEntry entries[256];
+        size_t count = 0U;
+        int is_directory = 0;
+        size_t i;
+
+        branch = git_branch_name(repo);
+        if (git_join(heads_dir, sizeof(heads_dir), repo->git_dir, "refs/heads") != 0 || platform_collect_entries(heads_dir, 0, entries, sizeof(entries) / sizeof(entries[0]), &count, &is_directory) != 0 || !is_directory) {
+            return 0;
+        }
+        for (i = 0U; i < count; ++i) {
+            if (entries[i].is_dir) {
+                continue;
+            }
+            rt_write_cstr(1, branch != 0 && rt_strcmp(branch, entries[i].name) == 0 ? "* " : "  ");
+            rt_write_line(1, entries[i].name);
+        }
+    }
+    return 0;
 }
 
 static int git_cmd_rev_parse(GitRepo *repo, int argc, char **argv, int argi) {
@@ -748,7 +811,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
     int show_cached = 0;
     int show_others = 0;
     int saw_selector = 0;
-    int exclude_standard = 0;
+    int exclude_standard = 1;
     int pathspec_start;
     int pathspec_count;
     int result = 1;
@@ -1218,6 +1281,500 @@ done:
     if (have_pack) {
         git_pack_destroy(&pack);
     }
+    git_index_destroy(&index);
+    return result;
+}
+
+static const char *git_commit_subject(const GitCommitInfo *info) {
+    char *message = info->message;
+
+    if (message == 0) {
+        return "";
+    }
+    while (*message == '\n' || *message == '\r') {
+        message += 1;
+    }
+    return message;
+}
+
+static int git_write_commit_subject_line(const GitCommitInfo *info) {
+    const char *subject = git_commit_subject(info);
+    size_t i = 0U;
+
+    while (subject[i] != '\0' && subject[i] != '\n' && subject[i] != '\r') {
+        if (rt_write_char(1, subject[i]) != 0) {
+            return -1;
+        }
+        i += 1U;
+    }
+    return rt_write_char(1, '\n');
+}
+
+static int git_cmd_log(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char hex[GIT_OBJECT_HEX_SIZE + 1U];
+    int have_pack;
+    int oneline = 0;
+    int max_count = 32;
+    int count = 0;
+    const char *start = "HEAD";
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--oneline") == 0) {
+            oneline = 1;
+        } else if ((rt_strcmp(argv[argi], "-n") == 0 || rt_strcmp(argv[argi], "--max-count") == 0) && argi + 1 < argc) {
+            long long value = 0;
+            if (tool_parse_int_arg(argv[argi + 1], &value, "git", "log count") != 0 || value < 0) {
+                return 1;
+            }
+            max_count = (int)value;
+            argi += 1;
+        } else if (rt_strncmp(argv[argi], "-", 1U) == 0 && argv[argi][1] >= '0' && argv[argi][1] <= '9') {
+            long long value = 0;
+            if (tool_parse_int_arg(argv[argi] + 1U, &value, "git", "log count") != 0 || value < 0) {
+                return 1;
+            }
+            max_count = (int)value;
+        } else if (rt_strncmp(argv[argi], "--max-count=", 12U) == 0) {
+            long long value = 0;
+            if (tool_parse_int_arg(argv[argi] + 12U, &value, "git", "log count") != 0 || value < 0) {
+                return 1;
+            }
+            max_count = (int)value;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported log option: ", argv[argi]);
+            return 1;
+        } else {
+            start = argv[argi];
+        }
+        argi += 1;
+    }
+    if (git_resolve_revision(repo, start, oid, 0, 0) != 0) {
+        tool_write_error("git", "cannot resolve log revision: ", start);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    while (count < max_count) {
+        GitCommitInfo info;
+
+        if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0) {
+            break;
+        }
+        git_format_oid_hex(oid, hex);
+        if (oneline) {
+            char short_hex[8];
+            memcpy(short_hex, hex, 7U);
+            short_hex[7] = '\0';
+            rt_write_cstr(1, short_hex);
+            rt_write_char(1, ' ');
+            git_write_commit_subject_line(&info);
+        } else {
+            rt_write_cstr(1, "commit ");
+            rt_write_line(1, hex);
+            if (info.author != 0) {
+                rt_write_cstr(1, "Author: ");
+                rt_write_line(1, info.author);
+            }
+            rt_write_char(1, '\n');
+            rt_write_cstr(1, "    ");
+            git_write_commit_subject_line(&info);
+            rt_write_char(1, '\n');
+        }
+        if (!info.has_parent) {
+            git_commit_info_destroy(&info);
+            break;
+        }
+        memcpy(oid, info.parent_oid, CRYPTO_SHA1_DIGEST_SIZE);
+        git_commit_info_destroy(&info);
+        count += 1;
+    }
+    if (have_pack) {
+        git_pack_destroy(&pack);
+    }
+    return 0;
+}
+
+static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    GitCommitInfo info;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char hex[GIT_OBJECT_HEX_SIZE + 1U];
+    int have_pack;
+    int stat_mode = 0;
+    const char *revision = "HEAD";
+    int result = 1;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--stat") == 0) {
+            stat_mode = 1;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported show option: ", argv[argi]);
+            return 1;
+        } else {
+            revision = argv[argi];
+        }
+        argi += 1;
+    }
+    if (git_resolve_revision(repo, revision, oid, 0, 0) != 0) {
+        tool_write_error("git", "cannot resolve show revision: ", revision);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0) {
+        tool_write_error("git", "cannot read commit: ", revision);
+        goto done;
+    }
+    git_format_oid_hex(oid, hex);
+    rt_write_cstr(1, "commit ");
+    rt_write_line(1, hex);
+    if (info.author != 0) {
+        rt_write_cstr(1, "Author: ");
+        rt_write_line(1, info.author);
+    }
+    rt_write_char(1, '\n');
+    rt_write_cstr(1, "    ");
+    git_write_commit_subject_line(&info);
+    rt_write_char(1, '\n');
+    if (info.has_parent) {
+        GitIndex old_index;
+        GitIndex new_index;
+        GitDiffStatList stats;
+
+        rt_memset(&stats, 0, sizeof(stats));
+        if (git_load_commit_tree_index(repo, info.parent_oid, have_pack ? &pack : 0, &old_index) != 0) {
+            git_diff_stat_list_destroy(&stats);
+            git_commit_info_destroy(&info);
+            goto done;
+        }
+        if (git_load_commit_tree_index(repo, oid, have_pack ? &pack : 0, &new_index) != 0) {
+            git_diff_stat_list_destroy(&stats);
+            git_index_destroy(&old_index);
+            git_commit_info_destroy(&info);
+            goto done;
+        }
+        if (git_diff_index_pair(repo, &old_index, &new_index, have_pack ? &pack : 0, stat_mode, TOOL_COLOR_AUTO, 0, 0, &stats) == 0) {
+            if (stat_mode) {
+                (void)git_render_diff_stat(&stats, TOOL_COLOR_AUTO);
+            }
+            result = 0;
+        }
+        git_diff_stat_list_destroy(&stats);
+        git_index_destroy(&old_index);
+        git_index_destroy(&new_index);
+    } else {
+        result = 0;
+    }
+    git_commit_info_destroy(&info);
+done:
+    if (have_pack) {
+        git_pack_destroy(&pack);
+    }
+    return result;
+}
+
+static int git_checkout_index_paths_to_worktree(const GitRepo *repo, const GitIndex *index, char **pathspecs, int pathspec_count, const GitPack *pack_cache) {
+    size_t i;
+
+    for (i = 0U; i < index->count; ++i) {
+        if (git_pathspec_matches(index->entries[i].path, pathspecs, pathspec_count) && git_write_index_entry_to_worktree(repo, &index->entries[i], pack_cache) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int git_cmd_reset(GitRepo *repo, int argc, char **argv, int argi) {
+    GitPack pack;
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    const char *revision = "HEAD";
+    int hard = 0;
+    int mixed = 1;
+    int have_pack;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--hard") == 0) {
+            hard = 1;
+            mixed = 0;
+        } else if (rt_strcmp(argv[argi], "--mixed") == 0) {
+            mixed = 1;
+            hard = 0;
+        } else if (rt_strcmp(argv[argi], "--soft") == 0) {
+            mixed = 0;
+            hard = 0;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported reset option: ", argv[argi]);
+            return 1;
+        } else {
+            revision = argv[argi];
+        }
+        argi += 1;
+    }
+    if (git_resolve_revision(repo, revision, oid, 0, 0) != 0) {
+        tool_write_error("git", "cannot resolve reset revision: ", revision);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (hard) {
+        if (git_checkout_commit_to_worktree(repo, oid, have_pack ? &pack : 0) != 0) {
+            if (have_pack) git_pack_destroy(&pack);
+            tool_write_error("git", "hard reset failed", 0);
+            return 1;
+        }
+    } else if (mixed && git_write_index_from_commit(repo, oid, have_pack ? &pack : 0) != 0) {
+        if (have_pack) git_pack_destroy(&pack);
+        tool_write_error("git", "mixed reset failed", 0);
+        return 1;
+    }
+    if (repo->head_ref[0] != '\0') {
+        if (git_write_ref_oid(repo, repo->head_ref, oid) != 0) {
+            if (have_pack) git_pack_destroy(&pack);
+            return 1;
+        }
+    } else if (git_write_detached_head_oid(repo, oid) != 0) {
+        if (have_pack) git_pack_destroy(&pack);
+        return 1;
+    }
+    git_format_oid_hex(oid, oid_hex);
+    rt_write_cstr(1, "HEAD is now at ");
+    rt_write_line(1, oid_hex);
+    if (have_pack) git_pack_destroy(&pack);
+    return 0;
+}
+
+static int git_cmd_restore(GitRepo *repo, int argc, char **argv, int argi) {
+    GitIndex index;
+    GitIndex source_index;
+    GitPack pack;
+    unsigned char source_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char **pathspecs;
+    int pathspec_count;
+    int staged = 0;
+    int worktree = 1;
+    const char *source = 0;
+    int have_pack;
+    int have_source_index = 0;
+    int result = 1;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--staged") == 0) {
+            staged = 1;
+            worktree = 0;
+        } else if (rt_strcmp(argv[argi], "--worktree") == 0) {
+            worktree = 1;
+        } else if (rt_strcmp(argv[argi], "--source") == 0 && argi + 1 < argc) {
+            source = argv[++argi];
+        } else if (rt_strncmp(argv[argi], "--source=", 9U) == 0) {
+            source = argv[argi] + 9U;
+        } else if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported restore option: ", argv[argi]);
+            return 1;
+        } else {
+            break;
+        }
+        argi += 1;
+    }
+    if (argi >= argc) {
+        tool_write_error("git", "restore needs a path", 0);
+        return 1;
+    }
+    pathspecs = argv + argi;
+    pathspec_count = argc - argi;
+    if (git_load_index(repo, &index) != 0) {
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (source != 0) {
+        if (git_resolve_revision(repo, source, source_oid, 0, 0) != 0 || git_load_commit_tree_index(repo, source_oid, have_pack ? &pack : 0, &source_index) != 0) {
+            tool_write_error("git", "cannot read restore source: ", source);
+            goto done;
+        }
+        have_source_index = 1;
+    }
+    if (staged) {
+        GitIndex *source_ptr = have_source_index ? &source_index : 0;
+        int i;
+
+        if (source_ptr == 0 && git_load_head_tree_index(repo, have_pack ? &pack : 0, &source_index) == 0) {
+            source_ptr = &source_index;
+            have_source_index = 1;
+        }
+        if (source_ptr == 0) {
+            tool_write_error("git", "cannot restore staged paths without HEAD", 0);
+            goto done;
+        }
+        for (i = 0; i < pathspec_count; ++i) {
+            size_t position = 0U;
+            GitIndexEntry *source_entry = git_index_find(source_ptr, pathspecs[i]);
+            if (source_entry == 0) {
+                if (git_index_find_position(&index, pathspecs[i], &position) == 0) {
+                    git_index_remove_at(&index, position);
+                }
+            } else {
+                GitIndexEntry copy = *source_entry;
+                copy.path = git_strdup_n(source_entry->path, rt_strlen(source_entry->path));
+                if (copy.path == 0 || git_index_replace_or_insert(&index, &copy) != 0) {
+                    rt_free(copy.path);
+                    goto done;
+                }
+            }
+        }
+        if (git_write_index_file(repo, &index) != 0) {
+            goto done;
+        }
+    }
+    if (worktree) {
+        GitIndex *source_ptr = have_source_index ? &source_index : &index;
+        if (git_checkout_index_paths_to_worktree(repo, source_ptr, pathspecs, pathspec_count, have_pack ? &pack : 0) != 0) {
+            tool_write_error("git", "cannot restore worktree paths", 0);
+            goto done;
+        }
+    }
+    result = 0;
+done:
+    if (have_source_index) git_index_destroy(&source_index);
+    if (have_pack) git_pack_destroy(&pack);
+    git_index_destroy(&index);
+    return result;
+}
+
+static int git_cmd_rm(GitRepo *repo, int argc, char **argv, int argi) {
+    GitIndex index;
+    int cached = 0;
+    int recursive = 0;
+    int pathspec_start;
+    int pathspec_count;
+    size_t i = 0U;
+    int removed = 0;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--cached") == 0) {
+            cached = 1;
+        } else if (rt_strcmp(argv[argi], "-r") == 0) {
+            recursive = 1;
+        } else if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported rm option: ", argv[argi]);
+            return 1;
+        } else {
+            break;
+        }
+        argi += 1;
+    }
+    if (argi >= argc) {
+        tool_write_error("git", "rm needs a path", 0);
+        return 1;
+    }
+    pathspec_start = argi;
+    pathspec_count = argc - argi;
+    if (git_load_index(repo, &index) != 0) {
+        return 1;
+    }
+    (void)recursive;
+    while (i < index.count) {
+        if (git_pathspec_matches(index.entries[i].path, argv + pathspec_start, pathspec_count)) {
+            char full_path[GIT_PATH_CAPACITY];
+            if (!cached && git_join(full_path, sizeof(full_path), repo->work_tree, index.entries[i].path) == 0) {
+                (void)tool_remove_path(full_path, 1);
+            }
+            git_index_remove_at(&index, i);
+            removed = 1;
+            continue;
+        }
+        i += 1U;
+    }
+    if (removed && git_write_index_file(repo, &index) != 0) {
+        git_index_destroy(&index);
+        return 1;
+    }
+    git_index_destroy(&index);
+    return 0;
+}
+
+typedef struct {
+    const GitRepo *repo;
+    int dry_run;
+} GitCleanContext;
+
+static int git_clean_remove_path(const char *path, void *user_data) {
+    GitCleanContext *context = (GitCleanContext *)user_data;
+    char full_path[GIT_PATH_CAPACITY];
+
+    if (context->dry_run) {
+        rt_write_cstr(1, "Would remove ");
+        return rt_write_line(1, path);
+    }
+    rt_write_cstr(1, "Removing ");
+    if (rt_write_line(1, path) != 0 || git_join(full_path, sizeof(full_path), context->repo->work_tree, path) != 0) {
+        return -1;
+    }
+    (void)tool_remove_path(full_path, 1);
+    (void)git_remove_empty_checkout_parents(context->repo, path);
+    return 0;
+}
+
+static int git_cmd_clean(GitRepo *repo, int argc, char **argv, int argi) {
+    GitIndex index;
+    GitIgnoreList ignores;
+    GitCleanContext context;
+    int force = 0;
+    int dry_run = 0;
+    int exclude_standard = 1;
+    int pathspec_start;
+    int pathspec_count;
+    int result = 1;
+
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "-f") == 0 || rt_strcmp(argv[argi], "--force") == 0) {
+            force = 1;
+        } else if (rt_strcmp(argv[argi], "-n") == 0 || rt_strcmp(argv[argi], "--dry-run") == 0) {
+            dry_run = 1;
+        } else if (rt_strcmp(argv[argi], "-x") == 0) {
+            exclude_standard = 0;
+        } else if (rt_strcmp(argv[argi], "--exclude-standard") == 0) {
+            exclude_standard = 1;
+        } else if (rt_strcmp(argv[argi], "-X") == 0) {
+            tool_write_error("git", "clean -X is not implemented", 0);
+            return 1;
+        } else if (rt_strcmp(argv[argi], "--") == 0) {
+            argi += 1;
+            break;
+        } else if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
+            tool_write_error("git", "unsupported clean option: ", argv[argi]);
+            return 1;
+        } else {
+            break;
+        }
+        argi += 1;
+    }
+    if (!force && !dry_run) {
+        tool_write_error("git", "clean requires -f or -n", 0);
+        return 1;
+    }
+    pathspec_start = argi;
+    pathspec_count = argc - argi;
+    if (git_load_index(repo, &index) != 0) {
+        return 1;
+    }
+    rt_memset(&ignores, 0, sizeof(ignores));
+    if (exclude_standard && git_ignore_load(repo, &ignores) != 0) {
+        git_index_destroy(&index);
+        return 1;
+    }
+    context.repo = repo;
+    context.dry_run = dry_run;
+    if (git_for_each_untracked_path(repo, &index, exclude_standard ? &ignores : 0, argv + pathspec_start, pathspec_count, git_clean_remove_path, &context) != 0) {
+        goto done;
+    }
+    result = 0;
+done:
+    if (exclude_standard) git_ignore_destroy(&ignores);
     git_index_destroy(&index);
     return result;
 }

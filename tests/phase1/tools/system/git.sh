@@ -279,6 +279,93 @@ assert_file_contains "$WORK_DIR/diff-commits-stat.out" '^ b\.txt | 1 +$' "git di
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" diff "$first_commit..$second_commit" -- b.txt > "$WORK_DIR/diff-commits-range.out"
 assert_file_contains "$WORK_DIR/diff-commits-range.out" '^+new$' "git diff commit range did not render the added file patch"
 
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch > "$WORK_DIR/branch-list.out"
+assert_file_contains "$WORK_DIR/branch-list.out" '^\* main$' "git branch did not mark the current branch"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch topic "$first_commit"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch > "$WORK_DIR/branch-created.out"
+assert_file_contains "$WORK_DIR/branch-created.out" '^  topic$' "git branch did not list a created branch"
+topic_commit=$(tr -d '\r\n' < "$commit_repo/.git/refs/heads/topic")
+assert_text_equals "$topic_commit" "$first_commit" "git branch did not create the branch at the requested start point"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch -d topic > "$WORK_DIR/branch-delete.out"
+assert_file_contains "$WORK_DIR/branch-delete.out" '^Deleted branch topic$' "git branch -d did not report deletion"
+
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --oneline -n 1 > "$WORK_DIR/log-one.out"
+assert_file_contains "$WORK_DIR/log-one.out" "^$(printf '%s' "$second_commit" | cut -c1-7) second$" "git log --oneline -n 1 did not show the latest commit"
+if grep -q 'first' "$WORK_DIR/log-one.out"; then
+    fail "git log --oneline -n 1 reported too many commits"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --oneline --max-count=2 > "$WORK_DIR/log-two.out"
+assert_file_contains "$WORK_DIR/log-two.out" ' second$' "git log --max-count=2 missed the second commit"
+assert_file_contains "$WORK_DIR/log-two.out" ' first$' "git log --max-count=2 missed the first commit"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" show --stat HEAD > "$WORK_DIR/show-stat.out"
+assert_file_contains "$WORK_DIR/show-stat.out" '^commit ' "git show --stat did not print a commit header"
+assert_file_contains "$WORK_DIR/show-stat.out" '^ a\.txt | 2 +-$' "git show --stat did not report a modified file"
+assert_file_contains "$WORK_DIR/show-stat.out" '^ b\.txt | 1 +$' "git show --stat did not report an added file"
+
+printf 'dirty\n' > "$commit_repo/a.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" restore --worktree a.txt
+assert_file_contains "$commit_repo/a.txt" '^two$' "git restore --worktree did not restore a file from the index"
+printf 'staged\n' > "$commit_repo/a.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" add a.txt
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" restore --staged a.txt
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/restore-staged-status.out"
+assert_file_contains "$WORK_DIR/restore-staged-status.out" '^ M a.txt$' "git restore --staged did not unstage a file while keeping the worktree change"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" restore --worktree a.txt
+assert_file_contains "$commit_repo/a.txt" '^two$' "git restore --worktree did not restore a file after unstaging"
+
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" rm --cached b.txt
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/rm-cached-status.out"
+assert_file_contains "$WORK_DIR/rm-cached-status.out" '^D  b.txt$' "git rm --cached did not stage a deletion"
+assert_file_contains "$WORK_DIR/rm-cached-status.out" '^?? b.txt$' "git rm --cached did not leave the worktree file untracked"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" restore --staged b.txt
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" rm b.txt
+if [ -e "$commit_repo/b.txt" ]; then
+    fail "git rm did not remove the worktree file"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/rm-status.out"
+assert_file_contains "$WORK_DIR/rm-status.out" '^D  b.txt$' "git rm did not stage a deletion"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" restore --staged --worktree b.txt
+assert_file_contains "$commit_repo/b.txt" '^new$' "git restore --staged --worktree did not restore a removed file"
+
+printf 'three\n' > "$commit_repo/a.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" add a.txt
+cd "$commit_repo" && GIT_AUTHOR_NAME=A GIT_AUTHOR_EMAIL=a@example.invalid GIT_COMMITTER_NAME=A GIT_COMMITTER_EMAIL=a@example.invalid "${TEST_BIN_DIR}/git" commit -m third > "$WORK_DIR/commit-third.out"
+third_commit=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+if [ "$third_commit" = "$second_commit" ]; then
+    fail "git commit did not create a third commit"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" reset --mixed "$second_commit" > "$WORK_DIR/reset-mixed.out"
+reset_head=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+assert_text_equals "$reset_head" "$second_commit" "git reset --mixed did not move HEAD"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/reset-mixed-status.out"
+assert_file_contains "$WORK_DIR/reset-mixed-status.out" '^ M a.txt$' "git reset --mixed did not leave the worktree change unstaged"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" reset --hard "$first_commit" > "$WORK_DIR/reset-hard-first.out"
+if [ -e "$commit_repo/b.txt" ]; then
+    fail "git reset --hard did not remove a file absent from the target commit"
+fi
+assert_file_contains "$commit_repo/a.txt" '^one$' "git reset --hard did not restore target commit content"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" reset --hard "$second_commit" > "$WORK_DIR/reset-hard-second.out"
+assert_file_contains "$commit_repo/a.txt" '^two$' "git reset --hard did not restore the later commit content"
+assert_file_contains "$commit_repo/b.txt" '^new$' "git reset --hard did not restore a file from the later commit"
+
+mkdir -p "$commit_repo/.git/info"
+printf '*.tmp\n' > "$commit_repo/.git/info/exclude"
+printf 'loose\n' > "$commit_repo/loose.txt"
+printf 'ignored\n' > "$commit_repo/skip.tmp"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" clean -n > "$WORK_DIR/clean-dry-run.out"
+assert_file_contains "$WORK_DIR/clean-dry-run.out" '^Would remove loose.txt$' "git clean -n did not report an untracked file"
+if grep -q 'skip.tmp' "$WORK_DIR/clean-dry-run.out"; then
+    fail "git clean -n reported an ignored file by default"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" clean -f -- loose.txt > "$WORK_DIR/clean-force.out"
+if [ -e "$commit_repo/loose.txt" ]; then
+    fail "git clean -f did not remove an untracked file"
+fi
+if [ ! -e "$commit_repo/skip.tmp" ]; then
+    fail "git clean -f removed an ignored file without -x"
+fi
+rm -f "$commit_repo/skip.tmp"
+
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" checkout "$first_commit" > "$WORK_DIR/checkout-cleanup.out"
 if [ -e "$commit_repo/b.txt" ]; then
     fail "git checkout did not remove a path absent from the target tree"

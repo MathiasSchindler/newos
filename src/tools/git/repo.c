@@ -483,6 +483,7 @@ static int git_ensure_parent_directory(const char *path);
 static int git_path_parent(char *path);
 static int git_compare_entries_by_path(const void *left, const void *right);
 static int git_index_is_sorted(const GitIndex *index);
+static int git_write_index_file(const GitRepo *repo, GitIndex *index);
 static int git_parse_pack(const unsigned char *data, size_t size, GitPack *pack);
 static int git_resolve_pack_deltas(GitPack *pack);
 

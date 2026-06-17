@@ -703,6 +703,78 @@ static int git_commit_tree_oid(const GitRepo *repo, const unsigned char commit_o
     return result;
 }
 
+static int git_parse_commit_info(const unsigned char *data, size_t size, GitCommitInfo *info) {
+    size_t pos = 0U;
+    size_t message_start = size;
+
+    rt_memset(info, 0, sizeof(*info));
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+
+        while (pos < size && data[pos] != '\n') {
+            pos += 1U;
+        }
+        end = pos;
+        if (pos < size) {
+            pos += 1U;
+        }
+        if (end == start) {
+            message_start = pos;
+            break;
+        }
+        if (end >= start + 5U && memcmp(data + start, "tree ", 5U) == 0) {
+            if (git_parse_oid_hex_n((const char *)data + start + 5U, GIT_OBJECT_HEX_SIZE, info->tree_oid) != 0) {
+                git_commit_info_destroy(info);
+                return -1;
+            }
+        } else if (end >= start + 7U && memcmp(data + start, "parent ", 7U) == 0 && !info->has_parent) {
+            if (git_parse_oid_hex_n((const char *)data + start + 7U, GIT_OBJECT_HEX_SIZE, info->parent_oid) != 0) {
+                git_commit_info_destroy(info);
+                return -1;
+            }
+            info->has_parent = 1;
+        } else if (end >= start + 7U && memcmp(data + start, "author ", 7U) == 0) {
+            info->author = git_strdup_n((const char *)data + start + 7U, end - start - 7U);
+            if (info->author == 0) {
+                git_commit_info_destroy(info);
+                return -1;
+            }
+        } else if (end >= start + 10U && memcmp(data + start, "committer ", 10U) == 0) {
+            info->committer = git_strdup_n((const char *)data + start + 10U, end - start - 10U);
+            if (info->committer == 0) {
+                git_commit_info_destroy(info);
+                return -1;
+            }
+        }
+    }
+    if (message_start <= size) {
+        info->message = git_strdup_n((const char *)data + message_start, size - message_start);
+    } else {
+        info->message = git_strdup_n("", 0U);
+    }
+    if (info->message == 0) {
+        git_commit_info_destroy(info);
+        return -1;
+    }
+    return 0;
+}
+
+static int git_read_commit_info(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitCommitInfo *info) {
+    int type = 0;
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int result;
+
+    if (git_read_object(repo, commit_oid, pack_cache, &type, &data, &size) != 0 || type != GIT_OBJECT_COMMIT) {
+        rt_free(data);
+        return -1;
+    }
+    result = git_parse_commit_info(data, size, info);
+    rt_free(data);
+    return result;
+}
+
 static int git_tree_index_append_blob_entry(GitIndex *index, const char *relative, unsigned int mode, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], size_t size) {
     GitIndexEntry entry;
 
@@ -823,6 +895,18 @@ static int git_load_commit_tree_index(const GitRepo *repo, const unsigned char c
         rt_sort(index->entries, index->count, sizeof(index->entries[0]), git_compare_entries_by_path);
     }
     return 0;
+}
+
+static int git_write_index_from_commit(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache) {
+    GitIndex index;
+    int result;
+
+    if (git_load_commit_tree_index(repo, commit_oid, pack_cache, &index) != 0) {
+        return -1;
+    }
+    result = git_write_index_file(repo, &index);
+    git_index_destroy(&index);
+    return result;
 }
 
 static int git_load_head_tree_index(const GitRepo *repo, const GitPack *pack_cache, GitIndex *index) {
@@ -996,6 +1080,54 @@ static int git_index_append_checkout_entry(GitCheckoutIndex *checkout, const cha
         return -1;
     }
     return 0;
+}
+
+static int git_write_index_entry_to_worktree(const GitRepo *repo, const GitIndexEntry *entry, const GitPack *pack_cache) {
+    char full_path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int type = 0;
+    int result = -1;
+
+    if (entry == 0 || tool_path_is_unsafe_relative(entry->path) || git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0) {
+        return -1;
+    }
+    if (entry->intent_to_add) {
+        data = (unsigned char *)rt_malloc(1U);
+        if (data == 0) {
+            return -1;
+        }
+        size = 0U;
+    } else if (git_read_object(repo, entry->oid, pack_cache, &type, &data, &size) != 0 || type != GIT_OBJECT_BLOB) {
+        rt_free(data);
+        return -1;
+    }
+    if (entry->mode == GIT_MODE_SYMLINK) {
+        char target[GIT_PATH_CAPACITY];
+
+        if (size >= sizeof(target)) {
+            goto done;
+        }
+        memcpy(target, data, size);
+        target[size] = '\0';
+        (void)tool_remove_path(full_path, 1);
+        if (git_ensure_parent_directory(full_path) == 0 && platform_create_symbolic_link(target, full_path) == 0) {
+            result = 0;
+        }
+    } else if (git_index_mode_is_regular(entry->mode)) {
+        char target[GIT_PATH_CAPACITY];
+
+        if (platform_read_symlink(full_path, target, sizeof(target)) == 0) {
+            (void)platform_remove_file(full_path);
+        }
+        if (git_ensure_parent_directory(full_path) == 0 && git_write_all_file(full_path, data, size, git_worktree_mode_from_regular_index(entry->mode)) == 0) {
+            (void)platform_change_mode(full_path, git_worktree_mode_from_regular_index(entry->mode));
+            result = 0;
+        }
+    }
+done:
+    rt_free(data);
+    return result;
 }
 
 static int git_checkout_tree_recursive(const GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const char *prefix, GitCheckoutIndex *checkout) {

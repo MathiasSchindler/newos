@@ -9,11 +9,17 @@ git - inspect a local Git repository
 ```
 git status [-s|--short|--porcelain] [--color[=WHEN]|--no-color]
 git diff [--stat] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]
-git branch --show-current
+git branch [--show-current|NAME [START]|-d NAME]
 git rev-parse --show-toplevel|--git-dir|--abbrev-ref HEAD|HEAD
 git ls-files [--cached|--others] [--exclude-standard] [--] [path ...]
 git add [-N|--intent-to-add] [--] path ...
 git commit [-m|--message MESSAGE] [--allow-empty]
+git log [--oneline] [-N|-n N|--max-count=N] [REV]
+git show [--stat] [REV]
+git reset [--soft|--mixed|--hard] [REV]
+git restore [--staged] [--worktree] [--source REV] [--] path ...
+git rm [--cached] [-r] [--] path ...
+git clean [-n|--dry-run|-f|--force] [-x] [--] [path ...]
 git hash-object FILE ...
 git clone SOURCE [DEST]
 git fetch [URL] [REF]
@@ -33,7 +39,8 @@ and parses common Git index files.
 
 ## CURRENT CAPABILITIES
 
-- print the current branch with `branch --show-current`
+- print the current branch, list local branches, create local branches, and
+    delete loose local branches with `branch`
 - print the repository root or Git directory with `rev-parse`
 - resolve `HEAD` when it is available from a loose or packed ref
 - list tracked index paths with `ls-files` or untracked paths with
@@ -47,6 +54,18 @@ and parses common Git index files.
     `add`
 - create first-pass commit objects from the index with `commit -m`, writing tree
     objects and updating the current branch or detached `HEAD`
+- print commit history with `log`, including compact `--oneline` output and
+    bounded history with `-N`, `-n N`, or `--max-count=N`
+- show a commit header and its parent diff with `show`, or a summary with
+    `show --stat`
+- move `HEAD` with `reset --soft`, update the index with `reset --mixed`, or
+    update both index and worktree with `reset --hard`
+- restore worktree paths from the index or a named commit, and restore staged
+    paths from `HEAD` or `--source REV`, with `restore`
+- remove tracked paths from the index and optionally the worktree with `rm` or
+    `rm --cached`
+- remove untracked files with `clean -f`, preview removals with `clean -n`, and
+    include ignored files only when `-x` is supplied
 - show working-tree-versus-index or `--cached` index-versus-HEAD diffs as
     whole-file unified patches or `--stat` summaries, including optionally
     colored `+` and `-` change bars
@@ -76,10 +95,17 @@ and parses common Git index files.
     writing, pack reuse during network negotiation, or reflogs
 - no submodules, worktrees, sparse checkout, rename detection, or interactive
     commit message editing yet
+- history traversal follows the first parent only; merge display and graph
+    formatting are not implemented
 - commit support is intentionally small: it commits the current index, supports
     `-m`/`--message`, uses simple environment-based identity defaults, and does
     not run hooks, sign commits, update reflogs, or clean up intent-to-add-only
     directory shells from tree construction yet
+- `reset` does not implement pathspec reset; `restore` supports ordinary exact
+    path restoration but not interactive patch mode; `rm` does not perform
+    native Git's full safety checks against staged or unstaged local changes
+- `clean` operates on untracked files discovered by the current walker; it does
+    not implement native Git's full directory-only and ignored-only modes
 - recursive `.gitignore` support covers ordinary nested pattern scopes and
     negation ordering but is not a complete byte-for-byte implementation of all
     Git ignore edge cases
@@ -112,6 +138,14 @@ git ls-files --others --exclude-standard -- src/tools/git
 git add src/tools/git.c
 git add -N -- src/tools/git
 git commit -m "update git tool"
+git log --oneline -n 5
+git show --stat HEAD
+git restore --worktree src/tools/git.c
+git restore --staged src/tools/git.c
+git reset --hard HEAD
+git rm --cached generated.txt
+git clean -n
+git clean -f -- tests/tmp-output.txt
 git hash-object src/tools/git.c
 git clone ../project-copy project-copy
 git clone https://github.com/MathiasSchindler/pbf-parser.git pbf-parser
