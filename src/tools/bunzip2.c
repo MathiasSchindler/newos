@@ -6,6 +6,54 @@
 #define BUNZIP2_PATH_CAPACITY 1024
 #define BUNZIP2_IO_BUFFER 65536U
 
+typedef struct {
+    int fd;
+    unsigned char buffer[BUNZIP2_IO_BUFFER];
+    size_t offset;
+    size_t available;
+} Bunzip2Input;
+
+static int bunzip2_input_fill(Bunzip2Input *input) {
+    long amount;
+
+    amount = platform_read(input->fd, input->buffer, sizeof(input->buffer));
+    if (amount < 0) return -1;
+    input->offset = 0;
+    input->available = (size_t)amount;
+    return 0;
+}
+
+static int bunzip2_input_read_exact(Bunzip2Input *input, unsigned char *out, size_t count) {
+    size_t copied = 0;
+
+    while (copied < count) {
+        size_t remaining;
+        size_t chunk;
+
+        if (input->offset == input->available) {
+            if (bunzip2_input_fill(input) != 0 || input->available == 0) {
+                return -1;
+            }
+        }
+
+        remaining = input->available - input->offset;
+        chunk = count - copied;
+        if (chunk > remaining) chunk = remaining;
+
+        memcpy(out + copied, input->buffer + input->offset, chunk);
+        input->offset += chunk;
+        copied += chunk;
+    }
+
+    return 0;
+}
+
+static int bunzip2_input_ensure(Bunzip2Input *input) {
+    if (input->offset < input->available) return 0;
+    if (bunzip2_input_fill(input) != 0) return -1;
+    return input->available == 0 ? -1 : 0;
+}
+
 static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(input_path);
 
@@ -30,12 +78,16 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
 int main(int argc, char **argv) {
     unsigned char header[12];
     unsigned char buffer[BUNZIP2_IO_BUFFER];
+    unsigned char run_buffer[BUNZIP2_IO_BUFFER];
+    Bunzip2Input input;
     ToolOutputBuffer output;
     char output_path[BUNZIP2_PATH_CAPACITY];
     unsigned int expected_size;
     unsigned int expected_crc;
     unsigned int actual_crc = 0xffffffffU;
     unsigned int output_size = 0;
+    int run_fill_ready = 0;
+    unsigned char run_fill_value = 0;
     int input_fd;
     int output_fd;
 
@@ -62,7 +114,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (archive_read_exact(input_fd, header, sizeof(header)) != 0 ||
+    input.fd = input_fd;
+    input.offset = 0;
+    input.available = 0;
+
+    if (bunzip2_input_read_exact(&input, header, sizeof(header)) != 0 ||
         header[0] != 'B' || header[1] != 'Z' || header[2] != 'h' || header[3] != '0') {
         platform_close(input_fd);
         platform_close(output_fd);
@@ -78,7 +134,7 @@ int main(int argc, char **argv) {
         unsigned char flag;
         unsigned int count;
 
-        if (archive_read_exact(input_fd, &flag, 1) != 0) {
+        if (bunzip2_input_read_exact(&input, &flag, 1) != 0) {
             platform_close(input_fd);
             platform_close(output_fd);
             rt_write_line(2, "bunzip2: unexpected end of input");
@@ -97,38 +153,56 @@ int main(int argc, char **argv) {
             unsigned char value;
             unsigned int remaining = count;
 
-            if (archive_read_exact(input_fd, &value, 1) != 0) {
+            if (bunzip2_input_read_exact(&input, &value, 1) != 0) {
                 platform_close(input_fd);
                 platform_close(output_fd);
                 return 1;
             }
 
+            if (!run_fill_ready || run_fill_value != value) {
+                rt_memset(run_buffer, value, sizeof(run_buffer));
+                run_fill_value = value;
+                run_fill_ready = 1;
+            }
+
             while (remaining > 0U) {
                 unsigned int chunk = (remaining > sizeof(buffer)) ? (unsigned int)sizeof(buffer) : remaining;
-                unsigned int i;
 
-                for (i = 0; i < chunk; ++i) {
-                    buffer[i] = value;
-                }
-
-                if (tool_output_buffer_write(&output, (const char *)buffer, chunk) != 0) {
+                if (tool_output_buffer_write(&output, (const char *)run_buffer, chunk) != 0) {
                     platform_close(input_fd);
                     platform_close(output_fd);
                     return 1;
                 }
 
-                actual_crc = archive_crc32_update(actual_crc, buffer, chunk);
+                actual_crc = archive_crc32_update(actual_crc, run_buffer, chunk);
                 output_size += chunk;
                 remaining -= chunk;
             }
         } else {
-            if (archive_read_exact(input_fd, buffer, count) != 0 || tool_output_buffer_write(&output, (const char *)buffer, count) != 0) {
+            if (bunzip2_input_ensure(&input) != 0) {
                 platform_close(input_fd);
                 platform_close(output_fd);
                 return 1;
             }
 
-            actual_crc = archive_crc32_update(actual_crc, buffer, count);
+            if (count <= input.available - input.offset) {
+                const unsigned char *literal = input.buffer + input.offset;
+                if (tool_output_buffer_write(&output, (const char *)literal, count) != 0) {
+                    platform_close(input_fd);
+                    platform_close(output_fd);
+                    return 1;
+                }
+                actual_crc = archive_crc32_update(actual_crc, literal, count);
+                input.offset += count;
+            } else {
+                if (bunzip2_input_read_exact(&input, buffer, count) != 0 || tool_output_buffer_write(&output, (const char *)buffer, count) != 0) {
+                    platform_close(input_fd);
+                    platform_close(output_fd);
+                    return 1;
+                }
+                actual_crc = archive_crc32_update(actual_crc, buffer, count);
+            }
+
             output_size += count;
         }
     }

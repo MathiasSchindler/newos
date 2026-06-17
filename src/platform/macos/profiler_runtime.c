@@ -19,6 +19,7 @@ static int newos_profile_fd = -2;
 static int newos_profile_initialized;
 static int newos_profile_disabled;
 static unsigned int newos_profile_depth;
+static unsigned int newos_profile_in_hook;
 static size_t newos_profile_buffer_length;
 static char newos_profile_buffer[NEWOS_PROFILE_BUFFER_SIZE];
 
@@ -225,15 +226,23 @@ static void newos_profile_event(const char *kind, void *function_address) {
 void __cyg_profile_func_enter(void *this_fn, void *call_site) NEWOS_PROFILER_NOINSTR;
 void __cyg_profile_func_exit(void *this_fn, void *call_site) NEWOS_PROFILER_NOINSTR;
 
+void __cyg_profile_func_enter(void *this_fn, void *call_site) NEWOS_PROFILER_NOINSTR;
 void __cyg_profile_func_enter(void *this_fn, void *call_site) {
     (void)call_site;
+    if (newos_profile_in_hook) return;
+    newos_profile_in_hook = 1U;
     newos_profile_depth += 1U;
     newos_profile_event("enter", this_fn);
+    newos_profile_in_hook = 0U;
 }
 
+void __cyg_profile_func_exit(void *this_fn, void *call_site) NEWOS_PROFILER_NOINSTR;
 void __cyg_profile_func_exit(void *this_fn, void *call_site) {
     (void)call_site;
+    if (newos_profile_in_hook) return;
+    newos_profile_in_hook = 1U;
     newos_profile_event("exit", this_fn);
     if (newos_profile_depth > 0U) newos_profile_depth -= 1U;
     if (newos_profile_depth == 0U) newos_profile_flush();
+    newos_profile_in_hook = 0U;
 }

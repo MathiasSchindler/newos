@@ -20,13 +20,15 @@ static int build_output_path(const char *input_path, char *buffer, size_t buffer
 }
 
 static int flush_literal_packet(ToolOutputBuffer *output, unsigned char *literal, size_t *literal_len) {
+    unsigned char packet[1 + BZIP_PACKET_LIMIT];
 
     if (*literal_len == 0) {
         return 0;
     }
 
-    if (tool_output_buffer_write_char(output, (char)(*literal_len - 1U)) != 0 ||
-        tool_output_buffer_write(output, (const char *)literal, *literal_len) != 0) {
+    packet[0] = (unsigned char)(*literal_len - 1U);
+    memcpy(packet + 1, literal, *literal_len);
+    if (tool_output_buffer_write(output, (const char *)packet, *literal_len + 1U) != 0) {
         return -1;
     }
 
@@ -46,17 +48,6 @@ static int write_run_packet(ToolOutputBuffer *output, unsigned char value, size_
         }
 
         run_len -= chunk;
-    }
-
-    return 0;
-}
-
-static int append_literal_byte(ToolOutputBuffer *output, unsigned char *literal, size_t *literal_len, unsigned char value) {
-    literal[*literal_len] = value;
-    *literal_len += 1;
-
-    if (*literal_len == BZIP_PACKET_LIMIT) {
-        return flush_literal_packet(output, literal, literal_len);
     }
 
     return 0;
@@ -110,7 +101,9 @@ static int compress_stream(int input_fd, ToolOutputBuffer *output, unsigned int 
             } else {
                 size_t j;
                 for (j = 0; j < run_len; ++j) {
-                    if (append_literal_byte(output, literal, &literal_len, run_value) != 0) {
+                    literal[literal_len] = run_value;
+                    literal_len += 1;
+                    if (literal_len == BZIP_PACKET_LIMIT && flush_literal_packet(output, literal, &literal_len) != 0) {
                         return -1;
                     }
                 }
@@ -130,7 +123,9 @@ static int compress_stream(int input_fd, ToolOutputBuffer *output, unsigned int 
         } else {
             size_t j;
             for (j = 0; j < run_len; ++j) {
-                if (append_literal_byte(output, literal, &literal_len, run_value) != 0) {
+                literal[literal_len] = run_value;
+                literal_len += 1;
+                if (literal_len == BZIP_PACKET_LIMIT && flush_literal_packet(output, literal, &literal_len) != 0) {
                     return -1;
                 }
             }
