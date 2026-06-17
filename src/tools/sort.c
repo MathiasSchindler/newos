@@ -695,7 +695,12 @@ static void parse_numeric_key(const char *text, size_t length, SortNumericKey *k
     size_t fraction_start = 0U;
     size_t fraction_end = 0U;
 
-    rt_memset(key, 0, sizeof(*key));
+    key->valid = 0;
+    key->negative = 0;
+    key->int_digits = text;
+    key->int_len = 0U;
+    key->frac_digits = text;
+    key->frac_len = 0U;
 
     while (index < length && tool_ascii_is_blank(text[index])) {
         index += 1U;
@@ -1413,7 +1418,16 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
             break;
         }
 
-        if (!options->unique || !have_previous || compare_lines(&previous_line, &inputs[best_index].current, options) != 0) {
+        if (!options->unique) {
+            if (sort_output_write_line(&output, &inputs[best_index].current) != 0) {
+                rt_write_line(2, "sort: write error");
+                line_builder_free(&previous_builder);
+                for (i = 0; i < input_count; ++i) {
+                    sort_input_close(&inputs[i]);
+                }
+                return 1;
+            }
+        } else if (!have_previous || compare_lines(&previous_line, &inputs[best_index].current, options) != 0) {
             if (sort_output_write_line(&output, &inputs[best_index].current) != 0) {
                 rt_write_line(2, "sort: write error");
                 line_builder_free(&previous_builder);
