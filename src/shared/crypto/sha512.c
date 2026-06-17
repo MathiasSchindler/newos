@@ -29,7 +29,7 @@ static const unsigned long long g_sha512_k[80] = {
 };
 
 static void crypto_sha512_transform(CryptoSha512Context *ctx, const unsigned char block[128]) {
-    unsigned long long w[80];
+    unsigned long long w[16];
     unsigned long long a;
     unsigned long long b;
     unsigned long long c;
@@ -52,12 +52,6 @@ static void crypto_sha512_transform(CryptoSha512Context *ctx, const unsigned cha
                (unsigned long long)block[offset + 7U];
     }
 
-    for (i = 16U; i < 80U; ++i) {
-        unsigned long long s0 = crypto_rotr64(w[i - 15U], 1U) ^ crypto_rotr64(w[i - 15U], 8U) ^ (w[i - 15U] >> 7);
-        unsigned long long s1 = crypto_rotr64(w[i - 2U], 19U) ^ crypto_rotr64(w[i - 2U], 61U) ^ (w[i - 2U] >> 6);
-        w[i] = w[i - 16U] + s0 + w[i - 7U] + s1;
-    }
-
     a = ctx->state[0];
     b = ctx->state[1];
     c = ctx->state[2];
@@ -68,9 +62,21 @@ static void crypto_sha512_transform(CryptoSha512Context *ctx, const unsigned cha
     h = ctx->state[7];
 
     for (i = 0; i < 80U; ++i) {
+        unsigned int idx = i & 15U;
+
+        if (i >= 16U) {
+            unsigned long long s0 = crypto_rotr64(w[(idx + 1U) & 15U], 1U) ^
+                                    crypto_rotr64(w[(idx + 1U) & 15U], 8U) ^
+                                    (w[(idx + 1U) & 15U] >> 7);
+            unsigned long long s1 = crypto_rotr64(w[(idx + 14U) & 15U], 19U) ^
+                                    crypto_rotr64(w[(idx + 14U) & 15U], 61U) ^
+                                    (w[(idx + 14U) & 15U] >> 6);
+            w[idx] += s0 + w[(idx + 9U) & 15U] + s1;
+        }
+
         unsigned long long s1 = crypto_rotr64(e, 14U) ^ crypto_rotr64(e, 18U) ^ crypto_rotr64(e, 41U);
         unsigned long long ch = (e & f) ^ ((~e) & g);
-        unsigned long long temp1 = h + s1 + ch + g_sha512_k[i] + w[i];
+        unsigned long long temp1 = h + s1 + ch + g_sha512_k[i] + w[idx];
         unsigned long long s0 = crypto_rotr64(a, 28U) ^ crypto_rotr64(a, 34U) ^ crypto_rotr64(a, 39U);
         unsigned long long maj = (a & b) ^ (a & c) ^ (b & c);
         unsigned long long temp2 = s0 + maj;

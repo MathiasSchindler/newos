@@ -59,54 +59,6 @@ static const unsigned int g_sha256_k[64] = {
 };
 #endif
 
-#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
-__attribute__((noinline,optnone))
-#endif
-static unsigned int crypto_sha256_k(unsigned int index) {
-#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
-    return crypto_load_be32(crypto_sha256_k_bytes_ptr() + ((size_t)index * 4U));
-#if 0
-    switch (index) {
-        case 0U: return 0x428a2f98U; case 1U: return 0x71374491U;
-        case 2U: return 0xb5c0fbcfU; case 3U: return 0xe9b5dba5U;
-        case 4U: return 0x3956c25bU; case 5U: return 0x59f111f1U;
-        case 6U: return 0x923f82a4U; case 7U: return 0xab1c5ed5U;
-        case 8U: return 0xd807aa98U; case 9U: return 0x12835b01U;
-        case 10U: return 0x243185beU; case 11U: return 0x550c7dc3U;
-        case 12U: return 0x72be5d74U; case 13U: return 0x80deb1feU;
-        case 14U: return 0x9bdc06a7U; case 15U: return 0xc19bf174U;
-        case 16U: return 0xe49b69c1U; case 17U: return 0xefbe4786U;
-        case 18U: return 0x0fc19dc6U; case 19U: return 0x240ca1ccU;
-        case 20U: return 0x2de92c6fU; case 21U: return 0x4a7484aaU;
-        case 22U: return 0x5cb0a9dcU; case 23U: return 0x76f988daU;
-        case 24U: return 0x983e5152U; case 25U: return 0xa831c66dU;
-        case 26U: return 0xb00327c8U; case 27U: return 0xbf597fc7U;
-        case 28U: return 0xc6e00bf3U; case 29U: return 0xd5a79147U;
-        case 30U: return 0x06ca6351U; case 31U: return 0x14292967U;
-        case 32U: return 0x27b70a85U; case 33U: return 0x2e1b2138U;
-        case 34U: return 0x4d2c6dfcU; case 35U: return 0x53380d13U;
-        case 36U: return 0x650a7354U; case 37U: return 0x766a0abbU;
-        case 38U: return 0x81c2c92eU; case 39U: return 0x92722c85U;
-        case 40U: return 0xa2bfe8a1U; case 41U: return 0xa81a664bU;
-        case 42U: return 0xc24b8b70U; case 43U: return 0xc76c51a3U;
-        case 44U: return 0xd192e819U; case 45U: return 0xd6990624U;
-        case 46U: return 0xf40e3585U; case 47U: return 0x106aa070U;
-        case 48U: return 0x19a4c116U; case 49U: return 0x1e376c08U;
-        case 50U: return 0x2748774cU; case 51U: return 0x34b0bcb5U;
-        case 52U: return 0x391c0cb3U; case 53U: return 0x4ed8aa4aU;
-        case 54U: return 0x5b9cca4fU; case 55U: return 0x682e6ff3U;
-        case 56U: return 0x748f82eeU; case 57U: return 0x78a5636fU;
-        case 58U: return 0x84c87814U; case 59U: return 0x8cc70208U;
-        case 60U: return 0x90befffaU; case 61U: return 0xa4506cebU;
-        case 62U: return 0xbef9a3f7U; case 63U: return 0xc67178f2U;
-        default: return 0U;
-    }
-#endif
-#else
-    return g_sha256_k[index];
-#endif
-}
-
 static void crypto_sha256_transform(CryptoSha256Context *ctx, const unsigned char block[64]) {
     unsigned int w[64];
     unsigned int a;
@@ -118,6 +70,9 @@ static void crypto_sha256_transform(CryptoSha256Context *ctx, const unsigned cha
     unsigned int g;
     unsigned int h;
     unsigned int i;
+#if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
+    const unsigned char *k_bytes = crypto_sha256_k_bytes_ptr();
+#endif
 
     for (i = 0; i < 16U; ++i) {
         size_t offset = (size_t)i * 4U;
@@ -142,10 +97,16 @@ static void crypto_sha256_transform(CryptoSha256Context *ctx, const unsigned cha
     g = ctx->state[6];
     h = ctx->state[7];
 
-    for (i = 0; i < 64U; ++i) {
+        for (i = 0; i < 64U; ++i) {
         unsigned int s1 = CRYPTO_ROTR32(e, 6U) ^ CRYPTO_ROTR32(e, 11U) ^ CRYPTO_ROTR32(e, 25U);
         unsigned int ch = (e & f) ^ ((~e) & g);
-        unsigned int temp1 = h + s1 + ch + crypto_sha256_k(i) + w[i];
+        unsigned int k;
+    #if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
+        k = crypto_load_be32(k_bytes + ((size_t)i * 4U));
+    #else
+        k = g_sha256_k[i];
+    #endif
+        unsigned int temp1 = h + s1 + ch + k + w[i];
         unsigned int s0 = CRYPTO_ROTR32(a, 2U) ^ CRYPTO_ROTR32(a, 13U) ^ CRYPTO_ROTR32(a, 22U);
         unsigned int maj = (a & b) ^ (a & c) ^ (b & c);
         unsigned int temp2 = s0 + maj;
