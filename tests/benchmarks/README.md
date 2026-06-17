@@ -13,6 +13,8 @@ The benchmarks currently cover:
 - gzip
 - bzip2
 - xz when the host provides it
+- Git developer hot paths: porcelain status, `ls-files -z`, diff name output,
+  and the `diff --quiet` dirty-worktree fast path
 
 ## Usage
 
@@ -28,4 +30,6 @@ or directly with:
 
 - benchmark scratch data is created under tests/tmp/benchmarks
 - results are comparative and best used for trend tracking
+- for Git hot-path investigation, pair elapsed benchmarks with `strace -c` for
+	syscall shape and `PROFILE=1`/`NEWOS_PROFILE` plus `profiler` for CPU hot paths
 - some newos tools intentionally implement a smaller feature set than the system tools, so the numbers are useful as engineering guidance rather than exact product-style rankings

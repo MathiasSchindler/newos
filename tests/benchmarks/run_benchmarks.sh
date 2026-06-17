@@ -28,6 +28,22 @@ create_data() {
         cat "$DATA_DIR/sort_input.txt" >> "$DATA_DIR/compress_input.txt"
         repeat=$((repeat + 1))
     done
+
+    git_repo="$DATA_DIR/git-hotpath-repo"
+    rm -rf "$git_repo"
+    "$ROOT_DIR"/build/git init "$git_repo" >/dev/null
+    i=0
+    while [ "$i" -lt 160 ]; do
+        printf 'base %03d\n' "$i" > "$git_repo/file-$i.txt"
+        i=$((i + 1))
+    done
+    (cd "$git_repo" && "$ROOT_DIR"/build/git add file-*.txt && GIT_AUTHOR_NAME=Bench GIT_AUTHOR_EMAIL=bench@example.invalid GIT_COMMITTER_NAME=Bench GIT_COMMITTER_EMAIL=bench@example.invalid "$ROOT_DIR"/build/git commit -m base >/dev/null)
+    i=0
+    while [ "$i" -lt 40 ]; do
+        printf 'changed %03d\n' "$i" > "$git_repo/file-$i.txt"
+        i=$((i + 1))
+    done
+    rm -f "$git_repo/file-41.txt" "$git_repo/file-42.txt"
 }
 
 measure_seconds() {
@@ -133,10 +149,52 @@ benchmark_compression() {
     print_result xz "$ours" "$system"
 }
 
+benchmark_git_hotpaths() {
+    git_repo="$DATA_DIR/git-hotpath-repo"
+    if command -v git >/dev/null 2>&1; then
+        system_git=git
+    else
+        system_git=""
+    fi
+
+    ours=$(measure_seconds 'cd "'$git_repo'" && "'$ROOT_DIR'/build/git" status --porcelain=v1 -z > "'$WORK_DIR'/git-status.out"')
+    if [ -n "$system_git" ]; then
+        system=$(measure_seconds 'cd "'$git_repo'" && git status --porcelain=v1 -z > "'$WORK_DIR'/git-status.sys.out"')
+    else
+        system="n/a"
+    fi
+    print_result git-status-z "$ours" "$system"
+
+    ours=$(measure_seconds 'cd "'$git_repo'" && "'$ROOT_DIR'/build/git" ls-files -z --modified --deleted --stage > "'$WORK_DIR'/git-ls-files.out"')
+    if [ -n "$system_git" ]; then
+        system=$(measure_seconds 'cd "'$git_repo'" && git ls-files -z --modified --deleted --stage > "'$WORK_DIR'/git-ls-files.sys.out"')
+    else
+        system="n/a"
+    fi
+    print_result git-lsfiles-z "$ours" "$system"
+
+    ours=$(measure_seconds 'cd "'$git_repo'" && "'$ROOT_DIR'/build/git" diff --name-only -z > "'$WORK_DIR'/git-diff-name.out"')
+    if [ -n "$system_git" ]; then
+        system=$(measure_seconds 'cd "'$git_repo'" && git diff --name-only -z > "'$WORK_DIR'/git-diff-name.sys.out"')
+    else
+        system="n/a"
+    fi
+    print_result git-diff-z "$ours" "$system"
+
+    ours=$(measure_seconds 'cd "'$git_repo'" && "'$ROOT_DIR'/build/git" diff --quiet >/dev/null 2>&1 || test $? = 1')
+    if [ -n "$system_git" ]; then
+        system=$(measure_seconds 'cd "'$git_repo'" && git diff --quiet >/dev/null 2>&1 || test $? = 1')
+    else
+        system="n/a"
+    fi
+    print_result git-quiet "$ours" "$system"
+}
+
 create_data
 print_header
 benchmark_sort
 benchmark_hashes
 benchmark_compression
+benchmark_git_hotpaths
 
 echo "ALL_BENCHMARKS_OK"

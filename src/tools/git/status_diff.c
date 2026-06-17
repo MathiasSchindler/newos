@@ -302,9 +302,19 @@ static int git_write_status_text(int fd, int color_mode, int style, const char *
     return rt_write_cstr(fd, text);
 }
 
-static int git_write_status_line(const char *code, const char *path, int short_output, int color_mode) {
+static int git_write_record_terminator(int nul_terminate) {
+    return rt_write_char(1, nul_terminate ? '\0' : '\n');
+}
+
+static int git_write_status_line(const char *code, const char *path, int short_output, int color_mode, int nul_terminate) {
     int style = git_status_style_for_code(code);
 
+    if (nul_terminate) {
+        if (rt_write_cstr(1, code) != 0 || rt_write_char(1, ' ') != 0 || rt_write_cstr(1, path) != 0 || git_write_record_terminator(1) != 0) {
+            return -1;
+        }
+        return 0;
+    }
     if (!short_output) {
         if (rt_strcmp(code, " M") == 0) {
             if (git_write_status_text(1, color_mode, style, "modified: ") != 0) return -1;
@@ -366,7 +376,7 @@ static int git_status_code_for_worktree_vs_index(const GitRepo *repo, const GitI
     return modified > 0 ? 'M' : ' ';
 }
 
-static int git_status_tracked_with_head(const GitRepo *repo, const GitIndex *head_index, const GitIndex *index, int short_output, int color_mode, int *saw_change) {
+static int git_status_tracked_with_head(const GitRepo *repo, const GitIndex *head_index, const GitIndex *index, int short_output, int color_mode, int nul_terminate, int *saw_change) {
     size_t head_pos = 0U;
     size_t index_pos = 0U;
 
@@ -399,7 +409,7 @@ static int git_status_tracked_with_head(const GitRepo *repo, const GitIndex *hea
         code[1] = (char)git_status_code_for_worktree_vs_index(repo, index_entry);
         code[2] = '\0';
         if (code[0] != ' ' || code[1] != ' ') {
-            if (git_write_status_line(code, path, short_output, color_mode) != 0) {
+            if (git_write_status_line(code, path, short_output, color_mode, nul_terminate) != 0) {
                 return -1;
             }
             *saw_change = 1;
@@ -455,24 +465,24 @@ static int git_entry_is_modified(const GitRepo *repo, const GitIndexEntry *entry
     return memcmp(oid, entry->oid, CRYPTO_SHA1_DIGEST_SIZE) == 0 ? 0 : 1;
 }
 
-static int git_status_tracked(const GitRepo *repo, const GitIndex *index, int short_output, int color_mode, int *saw_change) {
+static int git_status_tracked(const GitRepo *repo, const GitIndex *index, int short_output, int color_mode, int nul_terminate, int *saw_change) {
     size_t i;
 
     for (i = 0U; i < index->count; ++i) {
         int modified = git_entry_is_modified(repo, &index->entries[i]);
 
         if (modified < 0) {
-            if (git_write_status_line(" D", index->entries[i].path, short_output, color_mode) != 0) {
+            if (git_write_status_line(" D", index->entries[i].path, short_output, color_mode, nul_terminate) != 0) {
                 return -1;
             }
             *saw_change = 1;
         } else if (index->entries[i].intent_to_add) {
-            if (git_write_status_line(" A", index->entries[i].path, short_output, color_mode) != 0) {
+            if (git_write_status_line(" A", index->entries[i].path, short_output, color_mode, nul_terminate) != 0) {
                 return -1;
             }
             *saw_change = 1;
         } else if (modified > 0) {
-            if (git_write_status_line(" M", index->entries[i].path, short_output, color_mode) != 0) {
+            if (git_write_status_line(" M", index->entries[i].path, short_output, color_mode, nul_terminate) != 0) {
                 return -1;
             }
             *saw_change = 1;
@@ -606,18 +616,19 @@ done:
 static int git_status_untracked_emit(const char *path, void *user_data) {
     GitStatusWalk *walk = (GitStatusWalk *)user_data;
 
-    if (git_write_status_line("??", path, walk->porcelain, walk->color_mode) != 0) {
+    if (git_write_status_line("??", path, walk->porcelain, walk->color_mode, walk->nul_terminate) != 0) {
         return -1;
     }
     walk->saw_change = 1;
     return 0;
 }
 
-static int git_status_untracked(const GitRepo *repo, const GitIndex *index, const GitIgnoreList *ignores, int short_output, int color_mode, int *saw_change) {
+static int git_status_untracked(const GitRepo *repo, const GitIndex *index, const GitIgnoreList *ignores, int short_output, int color_mode, int nul_terminate, int *saw_change) {
     GitStatusWalk walk;
     int result;
 
     walk.porcelain = short_output;
+    walk.nul_terminate = nul_terminate;
     walk.color_mode = color_mode;
     walk.saw_change = 0;
     result = git_for_each_untracked_path(repo, index, ignores, 0, 0, git_status_untracked_emit, &walk);
@@ -1037,24 +1048,30 @@ done:
     return result;
 }
 
-static int git_write_diff_name_status(char status, const char *path) {
-    if (rt_write_char(1, status) != 0 || rt_write_char(1, '\t') != 0 || rt_write_line(1, path) != 0) {
+static int git_write_diff_name_status(char status, const char *path, int nul_terminate) {
+    if (nul_terminate) {
+        if (rt_write_char(1, status) != 0 || rt_write_char(1, '\0') != 0 || rt_write_cstr(1, path) != 0 || rt_write_char(1, '\0') != 0) {
+            return -1;
+        }
+        return 0;
+    }
+    if (rt_write_char(1, status) != 0 || rt_write_char(1, '\t') != 0 || rt_write_cstr(1, path) != 0 || git_write_record_terminator(nul_terminate) != 0) {
         return -1;
     }
     return 0;
 }
 
-static int git_render_diff_path_mode(GitDiffOutputMode output_mode, char status, const char *path) {
+static int git_render_diff_path_mode(GitDiffOutputMode output_mode, char status, const char *path, int nul_terminate) {
     if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY) {
-        return rt_write_line(1, path);
+        return rt_write_cstr(1, path) != 0 || git_write_record_terminator(nul_terminate) != 0 ? -1 : 0;
     }
     if (output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
-        return git_write_diff_name_status(status, path);
+        return git_write_diff_name_status(status, path, nul_terminate);
     }
     return 0;
 }
 
-static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, const GitIndex *new_index, const GitPack *pack_cache, GitDiffOutputMode output_mode, int color_mode, char **pathspecs, int pathspec_count, GitDiffStatList *stats, int *change_count) {
+static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, const GitIndex *new_index, const GitPack *pack_cache, GitDiffOutputMode output_mode, int color_mode, int nul_terminate, char **pathspecs, int pathspec_count, GitDiffStatList *stats, int *change_count) {
     size_t old_pos = 0U;
     size_t new_pos = 0U;
 
@@ -1086,13 +1103,16 @@ static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, c
             continue;
         }
         *change_count += 1;
+        if (output_mode == GIT_DIFF_OUTPUT_QUIET) {
+            return 0;
+        }
         if (output_mode == GIT_DIFF_OUTPUT_STAT) {
             if (git_collect_cached_diff_stat_entry(repo, old_entry, new_entry, pack_cache, stats) != 0) {
                 return -1;
             }
         } else if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY || output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
             char status = old_entry == 0 ? 'A' : new_entry == 0 ? 'D' : 'M';
-            if (git_render_diff_path_mode(output_mode, status, path) != 0) {
+            if (git_render_diff_path_mode(output_mode, status, path, nul_terminate) != 0) {
                 return -1;
             }
         } else if (output_mode == GIT_DIFF_OUTPUT_PATCH && git_render_cached_diff_patch_entry(repo, old_entry, new_entry, pack_cache, color_mode) != 0) {

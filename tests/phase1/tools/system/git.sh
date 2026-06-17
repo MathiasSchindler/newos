@@ -141,6 +141,15 @@ assert_file_contains "$WORK_DIR/ls-files.out" '^deleted.txt$' "git ls-files miss
 assert_file_contains "$WORK_DIR/ls-files.out" '^modified.txt$' "git ls-files missed modified.txt"
 assert_file_contains "$WORK_DIR/ls-files.out" '^tracked.txt$' "git ls-files missed tracked.txt"
 
+cd "$repo" && "${TEST_BIN_DIR}/git" ls-files -z --modified --deleted --stage > "$WORK_DIR/ls-files-machine.out"
+tr '\000' '\n' < "$WORK_DIR/ls-files-machine.out" > "$WORK_DIR/ls-files-machine.lines"
+assert_file_contains "$WORK_DIR/ls-files-machine.lines" '^100644 [0-9a-f][0-9a-f].* 0[[:space:]]deleted.txt$' "git ls-files --deleted --stage missed deleted.txt"
+assert_file_contains "$WORK_DIR/ls-files-machine.lines" '^100644 [0-9a-f][0-9a-f].* 0[[:space:]]modified.txt$' "git ls-files --modified --stage missed modified.txt"
+assert_file_contains "$WORK_DIR/ls-files-machine.lines" '^100755 [0-9a-f][0-9a-f].* 0[[:space:]]script.sh$' "git ls-files --modified --stage missed an executable-bit change"
+if grep -q '^100644 .* 0[[:space:]]tracked\.txt$' "$WORK_DIR/ls-files-machine.lines"; then
+    fail "git ls-files --modified --deleted reported an unchanged tracked path"
+fi
+
 cd "$repo" && "${TEST_BIN_DIR}/git" ls-files --cached -- modified.txt tracked.txt > "$WORK_DIR/ls-files-cached-pathspec.out"
 assert_file_contains "$WORK_DIR/ls-files-cached-pathspec.out" '^modified.txt$' "git ls-files --cached pathspec missed modified.txt"
 assert_file_contains "$WORK_DIR/ls-files-cached-pathspec.out" '^tracked.txt$' "git ls-files --cached pathspec missed tracked.txt"
@@ -174,6 +183,12 @@ if grep -q 'skip.tmp\|excluded.log\|ignored-dir' "$WORK_DIR/status.out"; then
     fail "git status reported ignored files"
 fi
 
+cd "$repo" && "${TEST_BIN_DIR}/git" status --porcelain=v1 -z > "$WORK_DIR/status-porcelain-z.out"
+tr '\000' '\n' < "$WORK_DIR/status-porcelain-z.out" > "$WORK_DIR/status-porcelain-z.lines"
+assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^ D deleted.txt$' "git status --porcelain=v1 -z missed a deleted tracked file"
+assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^ M modified.txt$' "git status --porcelain=v1 -z missed a modified tracked file"
+assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^?? untracked.txt$' "git status --porcelain=v1 -z missed an untracked file"
+
 cd "$repo" && "${TEST_BIN_DIR}/git" diff --stat -- deleted.txt modified.txt tracked.txt > "$WORK_DIR/diff-stat.out"
 assert_file_contains "$WORK_DIR/diff-stat.out" '^ deleted\.txt  | 1 -$' "git diff --stat did not report a deleted line"
 assert_file_contains "$WORK_DIR/diff-stat.out" '^ modified\.txt | 2 +-$' "git diff --stat did not report modified insertions and deletions"
@@ -187,6 +202,16 @@ assert_file_contains "$WORK_DIR/diff-name-status-deleted.out" '^M[[:space:]]*mod
 if grep -q 'tracked\.txt' "$WORK_DIR/diff-name-status-deleted.out"; then
     fail "git diff --name-status reported an unchanged path"
 fi
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --name-only -z -- deleted.txt modified.txt tracked.txt > "$WORK_DIR/diff-name-only-z.out"
+tr '\000' '\n' < "$WORK_DIR/diff-name-only-z.out" > "$WORK_DIR/diff-name-only-z.lines"
+assert_file_contains "$WORK_DIR/diff-name-only-z.lines" '^deleted.txt$' "git diff --name-only -z missed a deleted path"
+assert_file_contains "$WORK_DIR/diff-name-only-z.lines" '^modified.txt$' "git diff --name-only -z missed a modified path"
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --name-status -z -- deleted.txt modified.txt tracked.txt > "$WORK_DIR/diff-name-status-z.out"
+tr '\000' '\n' < "$WORK_DIR/diff-name-status-z.out" > "$WORK_DIR/diff-name-status-z.lines"
+assert_file_contains "$WORK_DIR/diff-name-status-z.lines" '^D$' "git diff --name-status -z missed a deleted status field"
+assert_file_contains "$WORK_DIR/diff-name-status-z.lines" '^deleted.txt$' "git diff --name-status -z missed a deleted path"
+assert_file_contains "$WORK_DIR/diff-name-status-z.lines" '^M$' "git diff --name-status -z missed a modified status field"
+assert_file_contains "$WORK_DIR/diff-name-status-z.lines" '^modified.txt$' "git diff --name-status -z missed a modified path"
 
 cd "$repo" && "${TEST_BIN_DIR}/git" --no-pager diff --stat -- modified.txt > "$WORK_DIR/diff-stat-no-pager.out"
 assert_file_contains "$WORK_DIR/diff-stat-no-pager.out" '^ modified\.txt | 2 +-$' "git --no-pager diff --stat did not accept the host command shape"
@@ -334,6 +359,30 @@ assert_file_contains "$WORK_DIR/diff-commits-range.out" '^+new$' "git diff commi
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" diff --name-only "$first_commit" "$second_commit" > "$WORK_DIR/diff-commits-name-only.out"
 assert_file_contains "$WORK_DIR/diff-commits-name-only.out" '^a.txt$' "git diff --name-only missed a modified commit path"
 assert_file_contains "$WORK_DIR/diff-commits-name-only.out" '^b.txt$' "git diff --name-only missed an added commit path"
+
+merge_base=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" merge-base "$first_commit" "$second_commit" | tr -d '\r\n')
+assert_text_equals "$merge_base" "$first_commit" "git merge-base did not find the first-parent common ancestor"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" merge-base --is-ancestor "$first_commit" "$second_commit"
+if cd "$commit_repo" && "${TEST_BIN_DIR}/git" merge-base --is-ancestor "$second_commit" "$first_commit"; then
+    fail "git merge-base --is-ancestor accepted a descendant as an ancestor"
+fi
+rev_count=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-list --count "$first_commit..$second_commit" | tr -d '\r\n')
+assert_text_equals "$rev_count" '1' "git rev-list --count A..B did not count first-parent commits"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --format='%H %s %an %ae' -n 1 > "$WORK_DIR/log-format.out"
+assert_file_contains "$WORK_DIR/log-format.out" "^$second_commit second A a@example\.invalid$" "git log --format did not expand the supported placeholders"
+symbolic_head=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" symbolic-ref HEAD | tr -d '\r\n')
+assert_text_equals "$symbolic_head" 'refs/heads/main' "git symbolic-ref HEAD did not print the full HEAD ref"
+symbolic_short=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" symbolic-ref --short HEAD | tr -d '\r\n')
+assert_text_equals "$symbolic_short" 'main' "git symbolic-ref --short HEAD did not abbreviate refs/heads"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" update-ref refs/heads/alias "$first_commit"
+alias_ref=$(tr -d '\r\n' < "$commit_repo/.git/refs/heads/alias")
+assert_text_equals "$alias_ref" "$first_commit" "git update-ref did not write the requested ref"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" for-each-ref --format='%(refname:short) %(objectname:short)' refs/heads > "$WORK_DIR/for-each-ref.out"
+assert_file_contains "$WORK_DIR/for-each-ref.out" "^alias $(printf '%s' "$first_commit" | cut -c1-7)$" "git for-each-ref did not format a loose head ref"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" update-ref -d refs/heads/alias
+if [ -e "$commit_repo/.git/refs/heads/alias" ]; then
+    fail "git update-ref -d did not delete a loose ref"
+fi
 
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" branch > "$WORK_DIR/branch-list.out"
 assert_file_contains "$WORK_DIR/branch-list.out" '^\* main$' "git branch did not mark the current branch"
@@ -512,6 +561,11 @@ diff --git a/new.txt b/new.txt
 @@ -0,0 +1,1 @@
 +created
 PATCH
+"${TEST_BIN_DIR}/git" -C "$apply_repo" apply --check "$WORK_DIR/change.patch"
+assert_file_contains "$apply_repo/a.txt" '^old$' "git apply --check mutated an existing file"
+if [ -e "$apply_repo/new.txt" ]; then
+    fail "git apply --check created a new file"
+fi
 "${TEST_BIN_DIR}/git" -C "$apply_repo" apply "$WORK_DIR/change.patch"
 assert_file_contains "$apply_repo/a.txt" '^new$' "git apply did not update an existing file"
 assert_file_contains "$apply_repo/a.txt" '^keep$' "git apply did not preserve context lines"
@@ -538,6 +592,9 @@ diff --git a/a.txt b/a.txt
 PATCH
 if "${TEST_BIN_DIR}/git" -C "$apply_repo" apply "$WORK_DIR/bad-context.patch" > "$WORK_DIR/apply-bad.out" 2>/dev/null; then
     fail "git apply accepted a patch whose context did not match"
+fi
+if "${TEST_BIN_DIR}/git" -C "$apply_repo" apply --check "$WORK_DIR/bad-context.patch" > "$WORK_DIR/apply-check-bad.out" 2>/dev/null; then
+    fail "git apply --check accepted a patch whose context did not match"
 fi
 assert_file_contains "$apply_repo/a.txt" '^new$' "git apply changed a file after a failed context match"
 
