@@ -23,6 +23,10 @@ static int git_is_absolute_path(const char *path) {
     return path != 0 && path[0] == '/';
 }
 
+static int git_relative_path(const GitRepo *repo, const char *path, char *buffer, size_t buffer_size);
+static int git_path_parent(char *path);
+static const char *git_path_basename(const char *path);
+
 static int git_resolve_gitfile(const char *work_tree, const char *gitfile_path, char *git_dir, size_t git_dir_size) {
     char text[GIT_PATH_CAPACITY];
     const char *target;
@@ -113,7 +117,7 @@ static int git_ignore_push(GitIgnoreList *ignores, GitIgnorePattern *pattern) {
     return 0;
 }
 
-static int git_ignore_add_line(GitIgnoreList *ignores, const char *line, size_t line_length) {
+static int git_ignore_add_line(GitIgnoreList *ignores, const char *base, const char *line, size_t line_length) {
     GitIgnorePattern pattern;
     char *copy = git_strdup_n(line, line_length);
     size_t length;
@@ -149,14 +153,20 @@ static int git_ignore_add_line(GitIgnoreList *ignores, const char *line, size_t 
     pattern.has_slash = copy[0] == '/' || git_path_has_slash(copy);
     pattern.has_wildcard = git_path_has_wildcard(copy);
     pattern.pattern = copy;
+    pattern.base = git_strdup_n(base, rt_strlen(base));
+    if (pattern.base == 0) {
+        rt_free(copy);
+        return -1;
+    }
     if (git_ignore_push(ignores, &pattern) != 0) {
+        rt_free(pattern.base);
         rt_free(copy);
         return -1;
     }
     return 0;
 }
 
-static int git_ignore_load_file(GitIgnoreList *ignores, const char *path) {
+static int git_ignore_load_file_base(GitIgnoreList *ignores, const char *path, const char *base) {
     unsigned char *data = 0;
     size_t size = 0U;
     size_t pos = 0U;
@@ -178,7 +188,7 @@ static int git_ignore_load_file(GitIgnoreList *ignores, const char *path) {
         if (end > start && data[end - 1U] == '\r') {
             end -= 1U;
         }
-        if (git_ignore_add_line(ignores, (const char *)data + start, end - start) != 0) {
+        if (git_ignore_add_line(ignores, base, (const char *)data + start, end - start) != 0) {
             rt_free(data);
             return -1;
         }
@@ -187,14 +197,63 @@ static int git_ignore_load_file(GitIgnoreList *ignores, const char *path) {
     return 0;
 }
 
+static int git_ignore_load_file(GitIgnoreList *ignores, const char *path) {
+    return git_ignore_load_file_base(ignores, path, "");
+}
+
+typedef struct {
+    const GitRepo *repo;
+    GitIgnoreList *ignores;
+} GitIgnoreLoadWalk;
+
+static int git_ignore_load_walk_callback(const char *path, const PlatformDirEntry *entry, int depth, ToolWalkControl *control, void *user_data) {
+    GitIgnoreLoadWalk *walk = (GitIgnoreLoadWalk *)user_data;
+    char relative[GIT_PATH_CAPACITY];
+    char base[GIT_PATH_CAPACITY];
+
+    (void)depth;
+    if (git_relative_path(walk->repo, path, relative, sizeof(relative)) != 0 || relative[0] == '\0') {
+        return 0;
+    }
+    if (rt_strcmp(relative, ".git") == 0 || rt_strncmp(relative, ".git/", 5U) == 0) {
+        control->prune = 1;
+        return 0;
+    }
+    if (entry->is_dir || rt_strcmp(relative, ".gitignore") == 0 || rt_strcmp(git_path_basename(relative), ".gitignore") != 0) {
+        return 0;
+    }
+    if (git_copy(base, sizeof(base), relative) != 0 || git_path_parent(base) != 0) {
+        return -1;
+    }
+    if (base[0] != '\0' && base[rt_strlen(base) - 1U] != '/') {
+        size_t length = rt_strlen(base);
+        if (length + 1U >= sizeof(base)) {
+            return -1;
+        }
+        base[length] = '/';
+        base[length + 1U] = '\0';
+    }
+    return git_ignore_load_file_base(walk->ignores, path, base);
+}
+
 static int git_ignore_load(const GitRepo *repo, GitIgnoreList *ignores) {
     char path[GIT_PATH_CAPACITY];
+    GitIgnoreLoadWalk walk;
+    ToolWalkOptions options;
 
     rt_memset(ignores, 0, sizeof(*ignores));
     if (git_join(path, sizeof(path), repo->work_tree, ".gitignore") == 0 && git_ignore_load_file(ignores, path) != 0) {
         return -1;
     }
     if (git_join(path, sizeof(path), repo->git_dir, "info/exclude") == 0 && git_ignore_load_file(ignores, path) != 0) {
+        git_ignore_destroy(ignores);
+        return -1;
+    }
+    walk.repo = repo;
+    walk.ignores = ignores;
+    options.min_depth = 1;
+    options.max_depth = -1;
+    if (tool_walk_path(repo->work_tree, &options, git_ignore_load_walk_callback, &walk) != 0) {
         git_ignore_destroy(ignores);
         return -1;
     }
@@ -237,18 +296,30 @@ static const char *git_path_basename(const char *path) {
 
 static int git_ignore_pattern_matches(const GitIgnorePattern *pattern, const char *relative, int is_directory) {
     const char *match_pattern = pattern->pattern;
+    const char *local = relative;
+    size_t base_length = pattern->base == 0 ? 0U : rt_strlen(pattern->base);
+
+    if (base_length > 0U) {
+        if (rt_strncmp(relative, pattern->base, base_length) != 0) {
+            return 0;
+        }
+        local = relative + base_length;
+        if (local[0] == '\0') {
+            return 0;
+        }
+    }
 
     if (pattern->directory_only && !is_directory) {
         return 0;
     }
     if (match_pattern[0] == '/') {
         match_pattern += 1;
-        return pattern->has_wildcard ? tool_wildcard_match(match_pattern, relative) : rt_strcmp(match_pattern, relative) == 0;
+        return pattern->has_wildcard ? tool_wildcard_match(match_pattern, local) : rt_strcmp(match_pattern, local) == 0;
     }
     if (pattern->has_slash) {
-        return pattern->has_wildcard ? tool_wildcard_match(match_pattern, relative) : rt_strcmp(match_pattern, relative) == 0;
+        return pattern->has_wildcard ? tool_wildcard_match(match_pattern, local) : rt_strcmp(match_pattern, local) == 0;
     }
-    return pattern->has_wildcard ? tool_wildcard_match(match_pattern, git_path_basename(relative)) : rt_strcmp(match_pattern, git_path_basename(relative)) == 0;
+    return pattern->has_wildcard ? tool_wildcard_match(match_pattern, git_path_basename(local)) : rt_strcmp(match_pattern, git_path_basename(local)) == 0;
 }
 
 static int git_ignore_matches(const GitIgnoreList *ignores, const char *relative, int is_directory) {
@@ -411,6 +482,7 @@ static int git_make_directory_chain(const char *path);
 static int git_ensure_parent_directory(const char *path);
 static int git_path_parent(char *path);
 static int git_compare_entries_by_path(const void *left, const void *right);
+static int git_index_is_sorted(const GitIndex *index);
 static int git_parse_pack(const unsigned char *data, size_t size, GitPack *pack);
 static int git_resolve_pack_deltas(GitPack *pack);
 

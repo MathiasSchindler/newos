@@ -180,6 +180,123 @@ assert_file_contains "$WORK_DIR/diff-stat-intent.out" '^ 2 files changed, 2 inse
 hash_again=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object tracked.txt | tr -d '\r\n')
 assert_text_equals "$hash_again" "$tracked_oid" "git hash-object was not stable"
 
+stage_repo="$WORK_DIR/stage-repo"
+mkdir -p "$stage_repo/.git/refs/heads" "$stage_repo/.git/objects"
+stage_info=$(python3 - "$stage_repo" <<'PY'
+import hashlib
+import os
+import sys
+import zlib
+
+repo = sys.argv[1]
+
+def write_object(kind, payload):
+    full = kind.encode() + b" " + str(len(payload)).encode() + b"\0" + payload
+    oid = hashlib.sha1(full).hexdigest()
+    directory = os.path.join(repo, ".git", "objects", oid[:2])
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, oid[2:]), "wb") as handle:
+        handle.write(zlib.compress(full))
+    return oid
+
+blob = write_object("blob", b"base\n")
+tree = write_object("tree", b"100644 tracked.txt\0" + bytes.fromhex(blob))
+commit = write_object("commit", ("tree " + tree + "\n\nbase\n").encode())
+print(blob + " " + commit)
+PY
+)
+stage_blob=${stage_info%% *}
+stage_commit=${stage_info#* }
+printf 'ref: refs/heads/main\n' > "$stage_repo/.git/HEAD"
+printf '%s\n' "$stage_commit" > "$stage_repo/.git/refs/heads/main"
+printf 'base\n' > "$stage_repo/tracked.txt"
+{
+    printf 'DIRC'
+    python3 - <<'PY'
+import struct
+import sys
+sys.stdout.buffer.write(struct.pack('!LL', 2, 1))
+PY
+    make_index_entry 100644 5 "$stage_blob" tracked.txt
+} > "$stage_repo/.git/index"
+
+printf 'worktree\n' > "$stage_repo/tracked.txt"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-worktree.out"
+assert_file_contains "$WORK_DIR/stage-status-worktree.out" '^ M tracked.txt$' "git status did not distinguish an unstaged modification"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff -- tracked.txt > "$WORK_DIR/diff-patch-worktree.out"
+assert_file_contains "$WORK_DIR/diff-patch-worktree.out" '^diff --git a/tracked.txt b/tracked.txt$' "git diff did not emit a patch header"
+assert_file_contains "$WORK_DIR/diff-patch-worktree.out" '^-base$' "git diff patch missed the old line"
+assert_file_contains "$WORK_DIR/diff-patch-worktree.out" '^+worktree$' "git diff patch missed the new line"
+
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" add tracked.txt
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-staged.out"
+assert_file_contains "$WORK_DIR/stage-status-staged.out" '^M  tracked.txt$' "git add did not stage a tracked modification"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff -- tracked.txt > "$WORK_DIR/diff-patch-clean-worktree.out"
+assert_text_equals "$(cat "$WORK_DIR/diff-patch-clean-worktree.out")" '' "git diff reported a clean worktree after add"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached --stat -- tracked.txt > "$WORK_DIR/diff-cached-stat.out"
+assert_file_contains "$WORK_DIR/diff-cached-stat.out" '^ tracked.txt | 2 +-$' "git diff --cached --stat did not report a staged modification"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached -- tracked.txt > "$WORK_DIR/diff-cached-patch.out"
+assert_file_contains "$WORK_DIR/diff-cached-patch.out" '^+worktree$' "git diff --cached patch missed staged content"
+
+printf 'again\n' > "$stage_repo/tracked.txt"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-mm.out"
+assert_file_contains "$WORK_DIR/stage-status-mm.out" '^MM tracked.txt$' "git status did not report a staged and unstaged modification"
+printf 'fresh\n' > "$stage_repo/new.txt"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" add new.txt
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-added.out"
+assert_file_contains "$WORK_DIR/stage-status-added.out" '^A  new.txt$' "git add did not stage a new file"
+
+rm -f "$stage_repo/tracked.txt"
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" add tracked.txt
+cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-deleted.out"
+assert_file_contains "$WORK_DIR/stage-status-deleted.out" '^D  tracked.txt$' "git add did not stage a tracked deletion"
+
+commit_repo="$WORK_DIR/commit-repo"
+mkdir -p "$commit_repo/.git/refs/heads" "$commit_repo/.git/objects"
+printf 'ref: refs/heads/main\n' > "$commit_repo/.git/HEAD"
+printf 'one\n' > "$commit_repo/a.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" add a.txt
+cd "$commit_repo" && GIT_AUTHOR_NAME=A GIT_AUTHOR_EMAIL=a@example.invalid GIT_COMMITTER_NAME=A GIT_COMMITTER_EMAIL=a@example.invalid "${TEST_BIN_DIR}/git" commit -m first > "$WORK_DIR/commit-first.out"
+assert_file_contains "$WORK_DIR/commit-first.out" '^Committed [0-9a-f][0-9a-f]' "git commit did not report a written commit"
+first_commit=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+if [ ${#first_commit} -ne 40 ]; then
+    fail "git commit did not update HEAD to a full object id"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/commit-status-clean.out"
+assert_text_equals "$(cat "$WORK_DIR/commit-status-clean.out")" '' "git commit destination should be clean"
+
+printf 'two\n' > "$commit_repo/a.txt"
+printf 'new\n' > "$commit_repo/b.txt"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" add a.txt b.txt
+cd "$commit_repo" && GIT_AUTHOR_NAME=A GIT_AUTHOR_EMAIL=a@example.invalid GIT_COMMITTER_NAME=A GIT_COMMITTER_EMAIL=a@example.invalid "${TEST_BIN_DIR}/git" commit -m second > "$WORK_DIR/commit-second.out"
+second_commit=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+if [ "$first_commit" = "$second_commit" ]; then
+    fail "git commit did not advance HEAD for a second commit"
+fi
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" diff --stat "$first_commit" "$second_commit" > "$WORK_DIR/diff-commits-stat.out"
+assert_file_contains "$WORK_DIR/diff-commits-stat.out" '^ a\.txt | 2 +-$' "git diff <commit> <commit> did not report a modified file"
+assert_file_contains "$WORK_DIR/diff-commits-stat.out" '^ b\.txt | 1 +$' "git diff <commit> <commit> did not report an added file"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" diff "$first_commit..$second_commit" -- b.txt > "$WORK_DIR/diff-commits-range.out"
+assert_file_contains "$WORK_DIR/diff-commits-range.out" '^+new$' "git diff commit range did not render the added file patch"
+
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" checkout "$first_commit" > "$WORK_DIR/checkout-cleanup.out"
+if [ -e "$commit_repo/b.txt" ]; then
+    fail "git checkout did not remove a path absent from the target tree"
+fi
+assert_file_contains "$commit_repo/a.txt" '^one$' "git checkout did not restore the target tree content"
+
+mkdir -p "$commit_repo/sub" "$commit_repo/other"
+printf '*.log\n!keep.log\n' > "$commit_repo/sub/.gitignore"
+printf 'ignored\n' > "$commit_repo/sub/drop.log"
+printf 'kept\n' > "$commit_repo/sub/keep.log"
+printf 'visible\n' > "$commit_repo/other/drop.log"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" ls-files --others --exclude-standard > "$WORK_DIR/nested-ignore.out"
+assert_file_contains "$WORK_DIR/nested-ignore.out" '^other/drop\.log$' "git ls-files missed an untracked file outside a nested ignore scope"
+assert_file_contains "$WORK_DIR/nested-ignore.out" '^sub/keep\.log$' "git ls-files missed a nested ignore negation"
+if grep -q '^sub/drop\.log$' "$WORK_DIR/nested-ignore.out"; then
+    fail "git ls-files reported a file ignored by nested .gitignore"
+fi
+
 clean="$WORK_DIR/clean-source"
 clone="$WORK_DIR/cloned-copy"
 mkdir -p "$clean/.git/refs/heads" "$clean/dir"

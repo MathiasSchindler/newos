@@ -8,11 +8,12 @@ git - inspect a local Git repository
 
 ```
 git status [-s|--short|--porcelain] [--color[=WHEN]|--no-color]
-git diff --stat [--color[=WHEN]|--no-color] [--] [path ...]
+git diff [--stat] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]
 git branch --show-current
 git rev-parse --show-toplevel|--git-dir|--abbrev-ref HEAD|HEAD
 git ls-files [--cached|--others] [--exclude-standard] [--] [path ...]
-git add -N|--intent-to-add [--] path ...
+git add [-N|--intent-to-add] [--] path ...
+git commit [-m|--message MESSAGE] [--allow-empty]
 git hash-object FILE ...
 git clone SOURCE [DEST]
 git fetch [URL] [REF]
@@ -38,13 +39,21 @@ and parses common Git index files.
 - list tracked index paths with `ls-files` or untracked paths with
     `ls-files --others --exclude-standard`
 - report a concise local status for modified, deleted, and untracked files,
+    including staged-vs-unstaged short status columns when `HEAD` can be read,
     with optional color for human-readable status output
 - mark untracked files as intent-to-add with `add -N`, so they are no longer
     reported as untracked and appear in `diff --stat` as additions
-- show a working-tree-versus-index `diff --stat` summary for tracked paths,
-    including optionally colored `+` and `-` change bars
+- stage regular files, symlinks, directory contents, and tracked deletions with
+    `add`
+- create first-pass commit objects from the index with `commit -m`, writing tree
+    objects and updating the current branch or detached `HEAD`
+- show working-tree-versus-index or `--cached` index-versus-HEAD diffs as
+    whole-file unified patches or `--stat` summaries, including optionally
+    colored `+` and `-` change bars
+- show commit-to-commit diffs with `git diff A B` or `git diff A..B`
 - detect executable-bit changes for regular tracked files
-- honor simple root `.gitignore` and `.git/info/exclude` patterns in status
+- honor root and nested `.gitignore` files plus `.git/info/exclude` patterns in
+    status, `add`, and `ls-files --others --exclude-standard`
 - compute Git blob object IDs with `hash-object`
 - clone a clean local worktree or `file://` worktree by copying `.git` metadata
     and tracked files, preserving regular-file executable bits
@@ -57,25 +66,35 @@ and parses common Git index files.
 - checkout a local branch, remote-tracking branch, full object ID, or `HEAD`
     from loose objects or stored pack files
 - materialize regular files and symlink blobs during object-based checkout
+- remove tracked worktree paths that are absent from the target tree during
+    checkout
 
 ## LIMITATIONS
 
-- no push, commit, content-staging add, merge, protocol v2 negotiation, SSH transport, git://
+- no push, merge, protocol v2 negotiation, SSH transport, git://
     transport, shallow clone, partial clone, authentication, pack bitmap
     writing, pack reuse during network negotiation, or reflogs
-- no submodules, worktrees, sparse checkout, full recursive `.gitignore`
-    semantics, rename detection, or staged-vs-unstaged distinction yet
-- diff support is currently limited to `diff --stat` against the index; full
-    patch output and commit-to-commit diffs are not implemented yet
+- no submodules, worktrees, sparse checkout, rename detection, or interactive
+    commit message editing yet
+- commit support is intentionally small: it commits the current index, supports
+    `-m`/`--message`, uses simple environment-based identity defaults, and does
+    not run hooks, sign commits, update reflogs, or clean up intent-to-add-only
+    directory shells from tree construction yet
+- recursive `.gitignore` support covers ordinary nested pattern scopes and
+    negation ordering but is not a complete byte-for-byte implementation of all
+    Git ignore edge cases
+- patch diff output uses simple whole-file hunks rather than Git's full hunk
+    minimization algorithm
 - untracked files are intentionally not included in `diff --stat`; use
     `ls-files --others --exclude-standard` to list them or `add -N` to include
     them as intent-to-add paths
 - index support is focused on ordinary v2/v3 entries; v4 support is partial
-- status compares regular working-tree files against the index, not against HEAD
+- status falls back to working-tree-versus-index output when `HEAD` points to
+    objects the tool cannot read
 - local worktree clone refuses modified or missing tracked source files; network
     clone checks out from fetched objects
-- checkout writes files from the target tree but does not remove paths that are
-    absent from that tree yet
+- checkout removes tracked paths absent from the target tree but does not yet
+    implement native Git's full conflict-safety checks
 - SHA-1 repositories only
 
 ## EXAMPLES
@@ -84,10 +103,15 @@ and parses common Git index files.
 git branch --show-current
 git rev-parse --show-toplevel
 git status --short
+git diff -- src/tools/git.c
+git diff HEAD origin/main -- src/tools/git.c
 git --no-pager diff --stat -- Makefile man/1/git.md src/tools/git.c
+git diff --cached --stat
 git ls-files
 git ls-files --others --exclude-standard -- src/tools/git
+git add src/tools/git.c
 git add -N -- src/tools/git
+git commit -m "update git tool"
 git hash-object src/tools/git.c
 git clone ../project-copy project-copy
 git clone https://github.com/MathiasSchindler/pbf-parser.git pbf-parser

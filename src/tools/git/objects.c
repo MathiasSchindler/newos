@@ -271,6 +271,45 @@ static int git_read_object(const GitRepo *repo, const unsigned char oid[CRYPTO_S
     return git_read_packed_object(repo, oid, type_out, data_out, size_out);
 }
 
+static int git_write_loose_object(const GitRepo *repo, int type, const unsigned char *data, size_t size, unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    GitBuffer full;
+    unsigned char *compressed = 0;
+    size_t compressed_capacity;
+    size_t compressed_size = 0U;
+    char object_dir[GIT_PATH_CAPACITY];
+    char object_path[GIT_PATH_CAPACITY];
+    PlatformDirEntry existing;
+    int result = -1;
+
+    if (git_hash_object_data(type, data, size, oid, &full) != 0) {
+        return -1;
+    }
+    if (git_object_path(repo, oid, object_path, sizeof(object_path), 0) != 0 || git_object_path(repo, oid, object_dir, sizeof(object_dir), 1) != 0) {
+        git_buffer_destroy(&full);
+        return -1;
+    }
+    if (platform_get_path_info(object_path, &existing) == 0 && !existing.is_dir) {
+        git_buffer_destroy(&full);
+        return 0;
+    }
+    compressed_capacity = compression_zlib_deflate_bound(full.size);
+    compressed = (unsigned char *)rt_malloc(compressed_capacity == 0U ? 1U : compressed_capacity);
+    if (compressed == 0) {
+        goto done;
+    }
+    if (compression_zlib_deflate_level(full.data, full.size, compressed, compressed_capacity, &compressed_size, 6) != 0) {
+        goto done;
+    }
+    if (git_make_directory_chain(object_dir) != 0 || git_write_all_file(object_path, compressed, compressed_size, 0444U) != 0) {
+        goto done;
+    }
+    result = 0;
+done:
+    rt_free(compressed);
+    git_buffer_destroy(&full);
+    return result;
+}
+
 static int git_compare_pack_index_entries(const void *left, const void *right) {
     const GitPackIndexEntry *left_entry = (const GitPackIndexEntry *)left;
     const GitPackIndexEntry *right_entry = (const GitPackIndexEntry *)right;
@@ -664,6 +703,283 @@ static int git_commit_tree_oid(const GitRepo *repo, const unsigned char commit_o
     return result;
 }
 
+static int git_tree_index_append_blob_entry(GitIndex *index, const char *relative, unsigned int mode, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], size_t size) {
+    GitIndexEntry entry;
+
+    rt_memset(&entry, 0, sizeof(entry));
+    entry.path = git_strdup_n(relative, rt_strlen(relative));
+    if (entry.path == 0) {
+        return -1;
+    }
+    entry.mode = mode;
+    entry.size = size;
+    memcpy(entry.oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+    if (git_index_push(index, &entry) != 0) {
+        rt_free(entry.path);
+        return -1;
+    }
+    return 0;
+}
+
+static int git_read_tree_index_recursive(const GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const char *prefix, GitIndex *index) {
+    int type = 0;
+    unsigned char *tree = 0;
+    size_t tree_size = 0U;
+    size_t pos = 0U;
+
+    if (git_read_object(repo, tree_oid, pack_cache, &type, &tree, &tree_size) != 0 || type != GIT_OBJECT_TREE) {
+        rt_free(tree);
+        return -1;
+    }
+    while (pos < tree_size) {
+        unsigned int mode = 0U;
+        size_t name_start;
+        size_t name_length;
+        char relative[GIT_PATH_CAPACITY];
+        unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+        while (pos < tree_size && tree[pos] >= '0' && tree[pos] <= '7') {
+            mode = mode * 8U + (unsigned int)(tree[pos] - '0');
+            pos += 1U;
+        }
+        if (pos >= tree_size || tree[pos] != ' ') {
+            rt_free(tree);
+            return -1;
+        }
+        pos += 1U;
+        name_start = pos;
+        while (pos < tree_size && tree[pos] != '\0') {
+            pos += 1U;
+        }
+        if (pos >= tree_size || pos + 1U + CRYPTO_SHA1_DIGEST_SIZE > tree_size) {
+            rt_free(tree);
+            return -1;
+        }
+        name_length = pos - name_start;
+        pos += 1U;
+        memcpy(oid, tree + pos, CRYPTO_SHA1_DIGEST_SIZE);
+        pos += CRYPTO_SHA1_DIGEST_SIZE;
+        if (prefix[0] != '\0') {
+            if (rt_strlen(prefix) + 1U + name_length >= sizeof(relative)) {
+                rt_free(tree);
+                return -1;
+            }
+            rt_copy_string(relative, sizeof(relative), prefix);
+            relative[rt_strlen(relative) + 1U] = '\0';
+            relative[rt_strlen(relative)] = '/';
+            memcpy(relative + rt_strlen(prefix) + 1U, tree + name_start, name_length);
+            relative[rt_strlen(prefix) + 1U + name_length] = '\0';
+        } else {
+            if (name_length >= sizeof(relative)) {
+                rt_free(tree);
+                return -1;
+            }
+            memcpy(relative, tree + name_start, name_length);
+            relative[name_length] = '\0';
+        }
+        if (tool_path_is_unsafe_relative(relative)) {
+            rt_free(tree);
+            return -1;
+        }
+        if (mode == GIT_MODE_TREE || mode == 040000U) {
+            if (git_read_tree_index_recursive(repo, oid, pack_cache, relative, index) != 0) {
+                rt_free(tree);
+                return -1;
+            }
+        } else if ((mode & GIT_MODE_TYPE_MASK) == GIT_MODE_REGULAR_TYPE || mode == 0100644U || mode == 0100755U || mode == GIT_MODE_SYMLINK || mode == 0120000U) {
+            int blob_type = 0;
+            unsigned char *blob = 0;
+            size_t blob_size = 0U;
+            unsigned int index_mode = mode == GIT_MODE_SYMLINK || mode == 0120000U ? GIT_MODE_SYMLINK : ((mode & GIT_MODE_EXEC_BITS) != 0U ? GIT_MODE_REGULAR_EXECUTABLE : GIT_MODE_REGULAR_FILE);
+
+            if (git_read_object(repo, oid, pack_cache, &blob_type, &blob, &blob_size) != 0 || blob_type != GIT_OBJECT_BLOB) {
+                rt_free(blob);
+                rt_free(tree);
+                return -1;
+            }
+            rt_free(blob);
+            if (git_tree_index_append_blob_entry(index, relative, index_mode, oid, blob_size) != 0) {
+                rt_free(tree);
+                return -1;
+            }
+        }
+    }
+    rt_free(tree);
+    return 0;
+}
+
+static int git_load_commit_tree_index(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitIndex *index) {
+    unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+    rt_memset(index, 0, sizeof(*index));
+    if (git_commit_tree_oid(repo, commit_oid, pack_cache, tree_oid) != 0) {
+        return -1;
+    }
+    if (git_read_tree_index_recursive(repo, tree_oid, pack_cache, "", index) != 0) {
+        git_index_destroy(index);
+        return -1;
+    }
+    if (index->count > 1U && !git_index_is_sorted(index)) {
+        rt_sort(index->entries, index->count, sizeof(index->entries[0]), git_compare_entries_by_path);
+    }
+    return 0;
+}
+
+static int git_load_head_tree_index(const GitRepo *repo, const GitPack *pack_cache, GitIndex *index) {
+    unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+    if (repo->head_oid[0] == '\0' || git_parse_oid_hex(repo->head_oid, commit_oid) != 0) {
+        rt_memset(index, 0, sizeof(*index));
+        return -1;
+    }
+    return git_load_commit_tree_index(repo, commit_oid, pack_cache, index);
+}
+
+static const char *git_tree_mode_text(unsigned int mode) {
+    if (mode == GIT_MODE_TREE || mode == 040000U) {
+        return "40000";
+    }
+    if (mode == GIT_MODE_SYMLINK || mode == 0120000U) {
+        return "120000";
+    }
+    if ((mode & GIT_MODE_EXEC_BITS) != 0U) {
+        return "100755";
+    }
+    return "100644";
+}
+
+static int git_tree_buffer_append_entry(GitBuffer *tree, unsigned int mode, const char *name, size_t name_length, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    if (git_buffer_append_cstr(tree, git_tree_mode_text(mode)) != 0 ||
+        git_buffer_append_char(tree, ' ') != 0 ||
+        git_buffer_append(tree, name, name_length) != 0 ||
+        git_buffer_append_char(tree, '\0') != 0 ||
+        git_buffer_append(tree, oid, CRYPTO_SHA1_DIGEST_SIZE) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static size_t git_tree_path_segment_length(const char *text) {
+    size_t length = 0U;
+
+    while (text[length] != '\0' && text[length] != '/') {
+        length += 1U;
+    }
+    return length;
+}
+
+static int git_tree_range_has_committable_entry(const GitIndex *index, size_t start, size_t end) {
+    size_t position;
+
+    for (position = start; position < end; ++position) {
+        if (!index->entries[position].intent_to_add) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int git_write_tree_recursive(const GitRepo *repo, const GitIndex *index, size_t start, size_t end, size_t prefix_length, unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    GitBuffer tree;
+    size_t position = start;
+    int result = -1;
+
+    rt_memset(&tree, 0, sizeof(tree));
+    while (position < end) {
+        const char *local = index->entries[position].path + prefix_length;
+        size_t segment_length = git_tree_path_segment_length(local);
+
+        if (segment_length == 0U) {
+            goto done;
+        }
+        if (local[segment_length] == '/') {
+            size_t group_end = position + 1U;
+            unsigned char child_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+            while (group_end < end) {
+                const char *next_local = index->entries[group_end].path + prefix_length;
+                if (rt_strncmp(local, next_local, segment_length) != 0 || next_local[segment_length] != '/') {
+                    break;
+                }
+                group_end += 1U;
+            }
+            if (git_tree_range_has_committable_entry(index, position, group_end)) {
+                if (git_write_tree_recursive(repo, index, position, group_end, prefix_length + segment_length + 1U, child_oid) != 0 ||
+                    git_tree_buffer_append_entry(&tree, GIT_MODE_TREE, local, segment_length, child_oid) != 0) {
+                    goto done;
+                }
+            }
+            position = group_end;
+        } else {
+            if (!index->entries[position].intent_to_add &&
+                git_tree_buffer_append_entry(&tree, index->entries[position].mode, local, segment_length, index->entries[position].oid) != 0) {
+                goto done;
+            }
+            position += 1U;
+        }
+    }
+    result = git_write_loose_object(repo, GIT_OBJECT_TREE, tree.data, tree.size, oid);
+done:
+    git_buffer_destroy(&tree);
+    return result;
+}
+
+static int git_write_tree_from_index(const GitRepo *repo, GitIndex *index, unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    if (index->count > 1U) {
+        rt_sort(index->entries, index->count, sizeof(index->entries[0]), git_compare_entries_by_path);
+    }
+    return git_write_tree_recursive(repo, index, 0U, index->count, 0U, oid);
+}
+
+static int git_remove_empty_checkout_parents(const GitRepo *repo, const char *relative) {
+    char path[GIT_PATH_CAPACITY];
+    size_t root_length = rt_strlen(repo->work_tree);
+
+    if (git_join(path, sizeof(path), repo->work_tree, relative) != 0 || git_path_parent(path) != 0) {
+        return -1;
+    }
+    while (rt_strlen(path) > root_length && rt_strncmp(path, repo->work_tree, root_length) == 0) {
+        if (platform_remove_directory(path) != 0) {
+            break;
+        }
+        if (git_path_parent(path) != 0) {
+            break;
+        }
+    }
+    return 0;
+}
+
+static int git_remove_checkout_absent_paths(const GitRepo *repo, const GitIndex *old_index, const GitIndex *target_index) {
+    size_t old_pos = 0U;
+    size_t target_pos = 0U;
+
+    while (old_pos < old_index->count) {
+        int cmp;
+
+        if (target_pos >= target_index->count) {
+            cmp = -1;
+        } else {
+            cmp = rt_strcmp(old_index->entries[old_pos].path, target_index->entries[target_pos].path);
+        }
+        if (cmp == 0) {
+            old_pos += 1U;
+            target_pos += 1U;
+        } else if (cmp > 0) {
+            target_pos += 1U;
+        } else {
+            char full_path[GIT_PATH_CAPACITY];
+
+            if (git_join(full_path, sizeof(full_path), repo->work_tree, old_index->entries[old_pos].path) != 0) {
+                return -1;
+            }
+            (void)tool_remove_path(full_path, 1);
+            (void)git_remove_empty_checkout_parents(repo, old_index->entries[old_pos].path);
+            old_pos += 1U;
+        }
+    }
+    return 0;
+}
+
 static int git_index_append_checkout_entry(GitCheckoutIndex *checkout, const char *relative, unsigned int mode, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], size_t size) {
     GitIndexEntry entry;
 
@@ -753,11 +1069,15 @@ static int git_checkout_tree_recursive(const GitRepo *repo, const unsigned char 
             unsigned char *blob = 0;
             size_t blob_size = 0U;
             unsigned int index_mode = (mode & GIT_MODE_EXEC_BITS) != 0U ? GIT_MODE_REGULAR_EXECUTABLE : GIT_MODE_REGULAR_FILE;
+            char link_target[GIT_PATH_CAPACITY];
 
             if (git_read_object(repo, oid, pack_cache, &blob_type, &blob, &blob_size) != 0 || blob_type != GIT_OBJECT_BLOB) {
                 rt_free(blob);
                 rt_free(tree);
                 return -1;
+            }
+            if (platform_read_symlink(full_path, link_target, sizeof(link_target)) == 0) {
+                (void)platform_remove_file(full_path);
             }
             if (git_ensure_parent_directory(full_path) != 0 || git_write_all_file(full_path, blob, blob_size, git_worktree_mode_from_regular_index(index_mode)) != 0) {
                 rt_free(blob);
@@ -893,18 +1213,36 @@ static int git_write_index_file(const GitRepo *repo, GitIndex *index) {
 
 static int git_checkout_commit_to_worktree(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache) {
     unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    GitIndex old_index;
+    GitIndex target_index;
     GitCheckoutIndex checkout;
     int result;
+    int have_old_index = 0;
 
+    rt_memset(&old_index, 0, sizeof(old_index));
+    rt_memset(&target_index, 0, sizeof(target_index));
     rt_memset(&checkout, 0, sizeof(checkout));
     checkout.repo = repo;
     if (git_commit_tree_oid(repo, commit_oid, pack_cache, tree_oid) != 0) {
+        return -1;
+    }
+    if (git_load_commit_tree_index(repo, commit_oid, pack_cache, &target_index) != 0) {
+        return -1;
+    }
+    have_old_index = git_load_head_tree_index(repo, pack_cache, &old_index) == 0;
+    if (have_old_index && git_remove_checkout_absent_paths(repo, &old_index, &target_index) != 0) {
+        git_index_destroy(&old_index);
+        git_index_destroy(&target_index);
         return -1;
     }
     result = git_checkout_tree_recursive(repo, tree_oid, pack_cache, "", &checkout);
     if (result == 0) {
         result = git_write_index_file(repo, &checkout.entries);
     }
+    if (have_old_index) {
+        git_index_destroy(&old_index);
+    }
+    git_index_destroy(&target_index);
     git_index_destroy(&checkout.entries);
     return result;
 }

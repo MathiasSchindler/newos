@@ -57,6 +57,7 @@ typedef struct {
 
 typedef struct {
     char *pattern;
+    char *base;
     int directory_only;
     int negated;
     int has_slash;
@@ -230,6 +231,7 @@ static void git_ignore_destroy(GitIgnoreList *ignores) {
     }
     for (i = 0U; i < ignores->count; ++i) {
         rt_free(ignores->patterns[i].pattern);
+        rt_free(ignores->patterns[i].base);
     }
     rt_free(ignores->patterns);
     rt_memset(ignores, 0, sizeof(*ignores));
@@ -457,11 +459,12 @@ static int git_read_text_file(const char *path, char *buffer, size_t buffer_size
 #include "git/commands.c"
 
 static void git_usage(void) {
-    rt_write_line(2, "Usage: git [--no-pager] <status|diff|branch|rev-parse|ls-files|add|hash-object|clone|fetch|checkout> [args ...]");
+    rt_write_line(2, "Usage: git [--no-pager] <status|diff|branch|rev-parse|ls-files|add|commit|hash-object|clone|fetch|checkout> [args ...]");
     rt_write_line(2, "       git status [-s|--short|--porcelain] [--color[=WHEN]|--no-color]");
-    rt_write_line(2, "       git diff --stat [--color[=WHEN]|--no-color] [--] [path ...]");
+    rt_write_line(2, "       git diff [--stat] [--cached|--staged] [--color[=WHEN]|--no-color] [<rev> <rev>|<rev>..<rev>] [--] [path ...]");
     rt_write_line(2, "       git ls-files [--cached|--others] [--exclude-standard] [--] [path ...]");
-    rt_write_line(2, "       git add -N|--intent-to-add [--] path ...");
+    rt_write_line(2, "       git add [-N|--intent-to-add] [--] path ...");
+    rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty]");
 }
 
 int main(int argc, char **argv) {
@@ -507,6 +510,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "add") == 0) {
         return git_cmd_add(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "commit") == 0) {
+        return git_cmd_commit(&repo, argc, argv, argi + 1);
     }
     if (rt_strcmp(cmd, "fetch") == 0) {
         return git_cmd_fetch(&repo, argc, argv, argi + 1);
