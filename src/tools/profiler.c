@@ -8,6 +8,8 @@
 #define PROFILER_MAX_SLIDE_CANDIDATES 128U
 #define PROFILER_LINE_CAPACITY 1024U
 #define PROFILER_NAME_CAPACITY 256U
+#define PROFILER_FUNCTION_HASH_SIZE 32768U
+#define PROFILER_TRACE_READ_BUFFER_SIZE 65536U
 
 typedef struct {
     unsigned long long address;
@@ -58,6 +60,8 @@ static ProfileSymbol profiler_symbols[PROFILER_MAX_SYMBOLS];
 static ProfileStackEntry profiler_stack[PROFILER_MAX_STACK];
 static ProfileRow profiler_rows[PROFILER_MAX_FUNCTIONS];
 static ProfileSlideCandidate profiler_slide_candidates[PROFILER_MAX_SLIDE_CANDIDATES];
+static int profiler_function_hash[PROFILER_FUNCTION_HASH_SIZE];
+static int profiler_function_hash_initialized;
 static size_t profiler_function_count;
 static size_t profiler_symbol_count;
 static ProfileSortKey profiler_sort_key = PROFILE_SORT_SELF;
@@ -191,15 +195,53 @@ static int event_kind_from_token(const char *token, int *is_enter_out) {
     return -1;
 }
 
-static int find_function(unsigned long long address) {
+static void profiler_function_hash_init(void) {
     size_t i;
 
-    for (i = 0U; i < profiler_function_count; ++i) {
-        if (profiler_functions[i].address == address) {
-            return (int)i;
+    if (profiler_function_hash_initialized) {
+        return;
+    }
+    for (i = 0U; i < PROFILER_FUNCTION_HASH_SIZE; ++i) {
+        profiler_function_hash[i] = -1;
+    }
+    profiler_function_hash_initialized = 1;
+}
+
+static size_t profiler_function_hash_slot(unsigned long long address) {
+    unsigned long long mixed = address;
+
+    mixed ^= mixed >> 33U;
+    mixed *= 0xff51afd7ed558ccdULL;
+    mixed ^= mixed >> 33U;
+    return (size_t)(mixed & (PROFILER_FUNCTION_HASH_SIZE - 1U));
+}
+
+static int find_function(unsigned long long address) {
+    size_t slot;
+
+    profiler_function_hash_init();
+    slot = profiler_function_hash_slot(address);
+
+    while (profiler_function_hash[slot] >= 0) {
+        int index = profiler_function_hash[slot];
+
+        if (profiler_functions[(size_t)index].address == address) {
+            return index;
         }
+        slot = (slot + 1U) & (PROFILER_FUNCTION_HASH_SIZE - 1U);
     }
     return -1;
+}
+
+static void add_function_hash_entry(unsigned long long address, size_t function_index) {
+    size_t slot;
+
+    profiler_function_hash_init();
+    slot = profiler_function_hash_slot(address);
+    while (profiler_function_hash[slot] >= 0) {
+        slot = (slot + 1U) & (PROFILER_FUNCTION_HASH_SIZE - 1U);
+    }
+    profiler_function_hash[slot] = (int)function_index;
 }
 
 static int find_or_add_function(unsigned long long address, size_t *index_out) {
@@ -217,6 +259,7 @@ static int find_or_add_function(unsigned long long address, size_t *index_out) {
     profiler_functions[profiler_function_count].total_ns = 0ULL;
     profiler_functions[profiler_function_count].self_ns = 0ULL;
     profiler_functions[profiler_function_count].max_ns = 0ULL;
+    add_function_hash_entry(address, profiler_function_count);
     *index_out = profiler_function_count++;
     return 0;
 }
@@ -548,6 +591,199 @@ static int process_exit(unsigned long long timestamp_ns, unsigned long long addr
     return 0;
 }
 
+static int parse_decimal_at(const char **cursor_io, unsigned long long *value_out) {
+    const char *cursor = *cursor_io;
+    unsigned long long value = 0ULL;
+    int saw_digit = 0;
+
+    while (*cursor >= '0' && *cursor <= '9') {
+        value = value * 10ULL + (unsigned long long)(*cursor - '0');
+        saw_digit = 1;
+        cursor += 1;
+    }
+    if (!saw_digit) {
+        return -1;
+    }
+    *cursor_io = cursor;
+    *value_out = value;
+    return 0;
+}
+
+static int parse_hex_address_at(const char **cursor_io, unsigned long long *value_out) {
+    const char *cursor = *cursor_io;
+    unsigned long long value = 0ULL;
+    int saw_digit = 0;
+
+    if (cursor[0] == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
+        cursor += 2;
+    }
+    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
+        int digit = tool_hex_value(*cursor);
+
+        if (digit < 0) {
+            return -1;
+        }
+        value = (value << 4U) | (unsigned long long)digit;
+        saw_digit = 1;
+        cursor += 1;
+    }
+    if (!saw_digit) {
+        return -1;
+    }
+    *cursor_io = cursor;
+    *value_out = value;
+    return 0;
+}
+
+static int parse_decimal_span(const char **cursor_io, const char *end, unsigned long long *value_out) {
+    const char *cursor = *cursor_io;
+    unsigned long long value = 0ULL;
+    int saw_digit = 0;
+
+    while (cursor < end && *cursor >= '0' && *cursor <= '9') {
+        value = value * 10ULL + (unsigned long long)(*cursor - '0');
+        saw_digit = 1;
+        cursor += 1;
+    }
+    if (!saw_digit) {
+        return -1;
+    }
+    *cursor_io = cursor;
+    *value_out = value;
+    return 0;
+}
+
+static int parse_hex_address_span(const char **cursor_io, const char *end, unsigned long long *value_out) {
+    const char *cursor = *cursor_io;
+    unsigned long long value = 0ULL;
+    int saw_digit = 0;
+
+    if ((size_t)(end - cursor) >= 2U && cursor[0] == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
+        cursor += 2;
+    }
+    while (cursor < end && !tool_ascii_is_token_space(*cursor)) {
+        int digit = tool_hex_value(*cursor);
+
+        if (digit < 0) {
+            return -1;
+        }
+        value = (value << 4U) | (unsigned long long)digit;
+        saw_digit = 1;
+        cursor += 1;
+    }
+    if (!saw_digit) {
+        return -1;
+    }
+    *cursor_io = cursor;
+    *value_out = value;
+    return 0;
+}
+
+static int process_standard_trace_span(const char *line,
+                                       size_t length,
+                                       size_t *stack_depth_io,
+                                       ProfileStats *stats,
+                                       int *handled_out) {
+    const char *cursor;
+    const char *end = line + length;
+    int is_enter;
+    unsigned long long timestamp_ns;
+    unsigned long long address;
+
+    *handled_out = 0;
+    if (length >= 6U && line[0] == 'e' && line[1] == 'n' && line[2] == 't' && line[3] == 'e' && line[4] == 'r' && tool_ascii_is_token_space(line[5])) {
+        is_enter = 1;
+        cursor = line + 6;
+    } else if (length >= 5U && line[0] == 'e' && line[1] == 'x' && line[2] == 'i' && line[3] == 't' && tool_ascii_is_token_space(line[4])) {
+        is_enter = 0;
+        cursor = line + 5;
+    } else {
+        return 0;
+    }
+
+    while (cursor < end && tool_ascii_is_token_space(*cursor)) {
+        cursor += 1;
+    }
+    if (parse_decimal_span(&cursor, end, &timestamp_ns) != 0 || cursor >= end || !tool_ascii_is_token_space(*cursor)) {
+        return 0;
+    }
+    while (cursor < end && tool_ascii_is_token_space(*cursor)) {
+        cursor += 1;
+    }
+    if (parse_hex_address_span(&cursor, end, &address) != 0) {
+        return 0;
+    }
+
+    *handled_out = 1;
+    stats->events += 1ULL;
+    if (is_enter) {
+        return process_enter(timestamp_ns, address, stack_depth_io, stats);
+    }
+    return process_exit(timestamp_ns, address, stack_depth_io, stats);
+}
+
+static int process_standard_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats, int *handled_out) {
+    const char *cursor;
+    int is_enter;
+    unsigned long long timestamp_ns;
+    unsigned long long address;
+
+    *handled_out = 0;
+    if (line[0] == 'e' && line[1] == 'n' && line[2] == 't' && line[3] == 'e' && line[4] == 'r' && tool_ascii_is_token_space(line[5])) {
+        is_enter = 1;
+        cursor = line + 6;
+    } else if (line[0] == 'e' && line[1] == 'x' && line[2] == 'i' && line[3] == 't' && tool_ascii_is_token_space(line[4])) {
+        is_enter = 0;
+        cursor = line + 5;
+    } else {
+        return 0;
+    }
+
+    while (tool_ascii_is_token_space(*cursor)) {
+        cursor += 1;
+    }
+    if (parse_decimal_at(&cursor, &timestamp_ns) != 0 || !tool_ascii_is_token_space(*cursor)) {
+        return 0;
+    }
+    while (tool_ascii_is_token_space(*cursor)) {
+        cursor += 1;
+    }
+    if (parse_hex_address_at(&cursor, &address) != 0) {
+        return 0;
+    }
+
+    *handled_out = 1;
+    stats->events += 1ULL;
+    if (is_enter) {
+        return process_enter(timestamp_ns, address, stack_depth_io, stats);
+    }
+    return process_exit(timestamp_ns, address, stack_depth_io, stats);
+}
+
+static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats);
+
+static int process_trace_record(const char *record, size_t length, size_t *stack_depth_io, ProfileStats *stats) {
+    int handled;
+
+    if (process_standard_trace_span(record, length, stack_depth_io, stats, &handled) != 0) {
+        return -1;
+    }
+    if (handled) {
+        return 0;
+    }
+    if (length + 1U < PROFILER_LINE_CAPACITY) {
+        char line[PROFILER_LINE_CAPACITY];
+
+        if (length > 0U) {
+            memcpy(line, record, length);
+        }
+        line[length] = '\0';
+        return process_trace_line(line, stack_depth_io, stats);
+    }
+    stats->malformed_lines += 1ULL;
+    return 0;
+}
+
 static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats) {
     const char *cursor = line;
     char kind[32];
@@ -556,6 +792,14 @@ static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileS
     int is_enter;
     unsigned long long timestamp_ns;
     unsigned long long address;
+    int handled;
+
+    if (process_standard_trace_line(line, stack_depth_io, stats, &handled) != 0) {
+        return -1;
+    }
+    if (handled) {
+        return 0;
+    }
 
     if (!next_token(&cursor, kind, sizeof(kind))) {
         return 0;
@@ -578,18 +822,78 @@ static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileS
 static int read_trace(const char *path, ProfileStats *stats) {
     int fd;
     int should_close;
-    ToolRecordReader reader;
-    char line[PROFILER_LINE_CAPACITY];
-    int has_record;
+    char buffer[PROFILER_TRACE_READ_BUFFER_SIZE];
+    char partial[PROFILER_LINE_CAPACITY];
+    size_t partial_len = 0U;
     size_t stack_depth = 0U;
 
     if (tool_open_input(path, &fd, &should_close) != 0) {
         tool_write_error("profiler", "failed to open trace: ", path);
         return -1;
     }
-    tool_record_reader_init(&reader, fd, '\n');
-    while (tool_record_reader_next(&reader, line, sizeof(line), &has_record) == 0 && has_record) {
-        if (process_trace_line(line, &stack_depth, stats) != 0) {
+    while (1) {
+        long bytes_read = platform_read(fd, buffer, sizeof(buffer));
+        size_t start = 0U;
+        size_t index;
+
+        if (bytes_read < 0) {
+            tool_close_input(fd, should_close);
+            return -1;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        for (index = 0U; index < (size_t)bytes_read; ++index) {
+            if (buffer[index] == '\n') {
+                size_t span_len = index - start;
+
+                if (span_len > 0U && buffer[index - 1U] == '\r') {
+                    span_len -= 1U;
+                }
+                if (partial_len == 0U) {
+                    if (process_trace_record(buffer + start, span_len, &stack_depth, stats) != 0) {
+                        tool_close_input(fd, should_close);
+                        return -1;
+                    }
+                } else {
+                    if (partial_len + span_len >= sizeof(partial)) {
+                        stats->malformed_lines += 1ULL;
+                        partial_len = 0U;
+                    } else {
+                        if (span_len > 0U) {
+                            memcpy(partial + partial_len, buffer + start, span_len);
+                        }
+                        partial_len += span_len;
+                        if (partial_len > 0U && partial[partial_len - 1U] == '\r') {
+                            partial_len -= 1U;
+                        }
+                        if (process_trace_record(partial, partial_len, &stack_depth, stats) != 0) {
+                            tool_close_input(fd, should_close);
+                            return -1;
+                        }
+                        partial_len = 0U;
+                    }
+                }
+                start = index + 1U;
+            }
+        }
+        if (start < (size_t)bytes_read) {
+            size_t remaining = (size_t)bytes_read - start;
+
+            if (partial_len + remaining >= sizeof(partial)) {
+                stats->malformed_lines += 1ULL;
+                partial_len = 0U;
+            } else {
+                memcpy(partial + partial_len, buffer + start, remaining);
+                partial_len += remaining;
+            }
+        }
+    }
+    if (partial_len > 0U) {
+        if (partial[partial_len - 1U] == '\r') {
+            partial_len -= 1U;
+        }
+        if (process_trace_record(partial, partial_len, &stack_depth, stats) != 0) {
             tool_close_input(fd, should_close);
             return -1;
         }

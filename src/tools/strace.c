@@ -9,6 +9,7 @@
 #define STRACE_MAX_FILTERS 64
 #define STRACE_FILTER_TOKEN_CAPACITY 32
 #define STRACE_MAX_SUMMARY 128
+#define STRACE_DIRECT_SYSCALL_LIMIT 1024
 
 static int show_numbers;
 static int json_output;
@@ -21,6 +22,7 @@ static PlatformSyscallEvent pending_event;
 static PlatformSyscallEvent pending_exit_event;
 static int have_pending;
 static long filter_numbers[STRACE_MAX_FILTERS];
+static unsigned char filter_direct[STRACE_DIRECT_SYSCALL_LIMIT];
 static size_t filter_count;
 static const char *records_path;
 
@@ -35,6 +37,8 @@ typedef struct {
 } StraceSummary;
 
 static StraceSummary summaries[STRACE_MAX_SUMMARY];
+static int summary_direct[STRACE_DIRECT_SYSCALL_LIMIT];
+static int summary_direct_initialized;
 static size_t summary_count;
 
 static const char *syscall_name(long number) {
@@ -306,17 +310,40 @@ static void update_summary(const PlatformSyscallEvent *event, unsigned long long
     size_t i;
 
     if (!summary_output) return;
-    for (i = 0U; i < summary_count; ++i) {
-        if (summaries[i].number == event->number) break;
+    if (!summary_direct_initialized) {
+        for (i = 0U; i < STRACE_DIRECT_SYSCALL_LIMIT; ++i) {
+            summary_direct[i] = -1;
+        }
+        summary_direct_initialized = 1;
     }
-    if (i == summary_count) {
-        if (summary_count >= STRACE_MAX_SUMMARY) return;
-        summaries[i].number = event->number;
-        summaries[i].calls = 0UL;
-        summaries[i].errors = 0UL;
-        summaries[i].result_total = 0ULL;
-        summaries[i].duration_total_ns = 0ULL;
-        summary_count += 1U;
+    if (event->number >= 0 && event->number < STRACE_DIRECT_SYSCALL_LIMIT) {
+        int existing = summary_direct[event->number];
+
+        if (existing >= 0) {
+            i = (size_t)existing;
+        } else {
+            if (summary_count >= STRACE_MAX_SUMMARY) return;
+            i = summary_count++;
+            summary_direct[event->number] = (int)i;
+            summaries[i].number = event->number;
+            summaries[i].calls = 0UL;
+            summaries[i].errors = 0UL;
+            summaries[i].result_total = 0ULL;
+            summaries[i].duration_total_ns = 0ULL;
+        }
+    } else {
+        for (i = 0U; i < summary_count; ++i) {
+            if (summaries[i].number == event->number) break;
+        }
+        if (i == summary_count) {
+            if (summary_count >= STRACE_MAX_SUMMARY) return;
+            summaries[i].number = event->number;
+            summaries[i].calls = 0UL;
+            summaries[i].errors = 0UL;
+            summaries[i].result_total = 0ULL;
+            summaries[i].duration_total_ns = 0ULL;
+            summary_count += 1U;
+        }
     }
     summaries[i].calls += 1UL;
     if (event->result < 0) summaries[i].errors += 1UL;
@@ -329,6 +356,9 @@ static int filter_includes(long number) {
 
     if (filter_count == 0U) {
         return 1;
+    }
+    if (number >= 0 && number < STRACE_DIRECT_SYSCALL_LIMIT) {
+        return filter_direct[number] != 0U;
     }
     for (i = 0; i < filter_count; ++i) {
         if (filter_numbers[i] == number) {
@@ -343,6 +373,9 @@ static int add_filter_number(long number) {
         return -1;
     }
     filter_numbers[filter_count++] = number;
+    if (number < STRACE_DIRECT_SYSCALL_LIMIT) {
+        filter_direct[number] = 1U;
+    }
     return 0;
 }
 
