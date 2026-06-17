@@ -444,16 +444,6 @@ static int is_sort_printable(unsigned char ch) {
 }
 
 
-static int sort_char_is_ignored(unsigned char ch, const SortOptions *options) {
-    if (options->ignore_nonprinting && !is_sort_printable(ch)) {
-        return 1;
-    }
-    if (options->dictionary_order && !is_sort_alnum((char)ch) && !tool_ascii_is_blank((char)ch)) {
-        return 1;
-    }
-    return 0;
-}
-
 static void sort_trim_leading_blanks(const char **text, size_t *length) {
     while (*length > 0U && tool_ascii_is_blank((*text)[0])) {
         *text += 1;
@@ -468,24 +458,85 @@ static int compare_text_spans(const char *left,
                               const SortOptions *options) {
     size_t left_index = 0U;
     size_t right_index = 0U;
+    int ignore_case = options->ignore_case;
+    int dictionary_order = options->dictionary_order;
+    int ignore_nonprinting = options->ignore_nonprinting;
+
+    if (!dictionary_order && !ignore_nonprinting) {
+        if (!ignore_case) {
+            size_t limit = left_len < right_len ? left_len : right_len;
+            size_t i;
+
+            for (i = 0U; i < limit; ++i) {
+                unsigned char lhs = (unsigned char)left[i];
+                unsigned char rhs = (unsigned char)right[i];
+
+                if (lhs != rhs) {
+                    return lhs < rhs ? -1 : 1;
+                }
+            }
+
+            if (left_len == right_len) {
+                return 0;
+            }
+            return left_len < right_len ? -1 : 1;
+        }
+
+        while (left_index < left_len && right_index < right_len) {
+            unsigned char lhs = (unsigned char)tool_ascii_tolower(left[left_index]);
+            unsigned char rhs = (unsigned char)tool_ascii_tolower(right[right_index]);
+
+            if (lhs != rhs) {
+                return lhs < rhs ? -1 : 1;
+            }
+
+            left_index += 1U;
+            right_index += 1U;
+        }
+
+        if (left_index >= left_len && right_index >= right_len) {
+            return 0;
+        }
+        return left_index >= left_len ? -1 : 1;
+    }
 
     while (1) {
         unsigned char lhs;
         unsigned char rhs;
 
-        while (left_index < left_len && sort_char_is_ignored((unsigned char)left[left_index], options)) {
-            left_index += 1U;
+        while (left_index < left_len) {
+            unsigned char ch = (unsigned char)left[left_index];
+
+            if (ignore_nonprinting && !is_sort_printable(ch)) {
+                left_index += 1U;
+                continue;
+            }
+            if (dictionary_order && !is_sort_alnum((char)ch) && !tool_ascii_is_blank((char)ch)) {
+                left_index += 1U;
+                continue;
+            }
+            break;
         }
-        while (right_index < right_len && sort_char_is_ignored((unsigned char)right[right_index], options)) {
-            right_index += 1U;
+        while (right_index < right_len) {
+            unsigned char ch = (unsigned char)right[right_index];
+
+            if (ignore_nonprinting && !is_sort_printable(ch)) {
+                right_index += 1U;
+                continue;
+            }
+            if (dictionary_order && !is_sort_alnum((char)ch) && !tool_ascii_is_blank((char)ch)) {
+                right_index += 1U;
+                continue;
+            }
+            break;
         }
 
         if (left_index >= left_len || right_index >= right_len) {
             break;
         }
 
-        lhs = (unsigned char)(options->ignore_case ? tool_ascii_tolower(left[left_index]) : left[left_index]);
-        rhs = (unsigned char)(options->ignore_case ? tool_ascii_tolower(right[right_index]) : right[right_index]);
+        lhs = (unsigned char)(ignore_case ? tool_ascii_tolower(left[left_index]) : left[left_index]);
+        rhs = (unsigned char)(ignore_case ? tool_ascii_tolower(right[right_index]) : right[right_index]);
 
         if (lhs != rhs) {
             return lhs < rhs ? -1 : 1;
@@ -494,11 +545,31 @@ static int compare_text_spans(const char *left,
         right_index += 1U;
     }
 
-    while (left_index < left_len && sort_char_is_ignored((unsigned char)left[left_index], options)) {
-        left_index += 1U;
+    while (left_index < left_len) {
+        unsigned char ch = (unsigned char)left[left_index];
+
+        if (ignore_nonprinting && !is_sort_printable(ch)) {
+            left_index += 1U;
+            continue;
+        }
+        if (dictionary_order && !is_sort_alnum((char)ch) && !tool_ascii_is_blank((char)ch)) {
+            left_index += 1U;
+            continue;
+        }
+        break;
     }
-    while (right_index < right_len && sort_char_is_ignored((unsigned char)right[right_index], options)) {
-        right_index += 1U;
+    while (right_index < right_len) {
+        unsigned char ch = (unsigned char)right[right_index];
+
+        if (ignore_nonprinting && !is_sort_printable(ch)) {
+            right_index += 1U;
+            continue;
+        }
+        if (dictionary_order && !is_sort_alnum((char)ch) && !tool_ascii_is_blank((char)ch)) {
+            right_index += 1U;
+            continue;
+        }
+        break;
     }
 
     if (left_index >= left_len && right_index >= right_len) {
