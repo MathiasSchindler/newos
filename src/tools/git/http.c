@@ -1,0 +1,486 @@
+static unsigned int git_default_port_for_scheme(int scheme) {
+    return scheme == GIT_SCHEME_HTTPS ? 443U : 80U;
+}
+
+static int git_parse_http_url(const char *text, unsigned int default_port, int scheme, GitUrl *url_out) {
+    size_t index = 0U;
+    size_t host_start;
+    size_t host_length;
+    unsigned long long parsed_port = default_port;
+    int saw_port_digit = 0;
+
+    rt_memset(url_out, 0, sizeof(*url_out));
+    url_out->scheme = scheme;
+    url_out->port = default_port;
+
+    if (text[0] == '[') {
+        host_start = 1U;
+        while (text[index] != '\0' && text[index] != ']') {
+            index += 1U;
+        }
+        if (text[index] != ']') {
+            return -1;
+        }
+        host_length = index - host_start;
+        index += 1U;
+    } else {
+        host_start = 0U;
+        while (text[index] != '\0' && text[index] != '/' && text[index] != ':' && text[index] != '?' && text[index] != '#') {
+            index += 1U;
+        }
+        host_length = index;
+    }
+    if (host_length == 0U || host_length >= sizeof(url_out->host)) {
+        return -1;
+    }
+    memcpy(url_out->host, text + host_start, host_length);
+    url_out->host[host_length] = '\0';
+
+    if (text[index] == ':') {
+        parsed_port = 0ULL;
+        index += 1U;
+        while (text[index] >= '0' && text[index] <= '9') {
+            saw_port_digit = 1;
+            parsed_port = parsed_port * 10ULL + (unsigned long long)(text[index] - '0');
+            index += 1U;
+        }
+        if (!saw_port_digit || parsed_port == 0ULL || parsed_port > 65535ULL) {
+            return -1;
+        }
+    }
+    url_out->port = (unsigned int)parsed_port;
+    if (text[index] == '\0') {
+        rt_copy_string(url_out->path, sizeof(url_out->path), "/");
+        return 0;
+    }
+    if (text[index] == '?' || text[index] == '#') {
+        rt_copy_string(url_out->path, sizeof(url_out->path), "/");
+        return 0;
+    }
+    if (rt_strlen(text + index) >= sizeof(url_out->path)) {
+        return -1;
+    }
+    rt_copy_string(url_out->path, sizeof(url_out->path), text + index);
+    return 0;
+}
+
+static int git_parse_url(const char *text, GitUrl *url_out) {
+    if (tool_starts_with(text, "http://")) {
+        return git_parse_http_url(text + 7, 80U, GIT_SCHEME_HTTP, url_out);
+    }
+    if (tool_starts_with(text, "https://")) {
+        return git_parse_http_url(text + 8, 443U, GIT_SCHEME_HTTPS, url_out);
+    }
+    return -1;
+}
+
+static int git_url_is_http(const char *text) {
+    return tool_starts_with(text, "http://") || tool_starts_with(text, "https://");
+}
+
+static int git_http_connect(const GitUrl *url, GitHttpConnection *connection) {
+    rt_memset(connection, 0, sizeof(*connection));
+    connection->socket_fd = -1;
+    connection->use_tls = url->scheme == GIT_SCHEME_HTTPS;
+    if (connection->use_tls) {
+        if (platform_tls_connect(&connection->tls, url->host, url->port) != 0) {
+            return -1;
+        }
+        connection->socket_fd = connection->tls.socket_fd;
+        return 0;
+    }
+    return platform_connect_tcp(url->host, url->port, &connection->socket_fd);
+}
+
+static long git_http_read(GitHttpConnection *connection, void *buffer, size_t count) {
+    return connection->use_tls ? platform_tls_read(&connection->tls, buffer, count) : platform_read(connection->socket_fd, buffer, count);
+}
+
+static int git_http_write_all(GitHttpConnection *connection, const void *data, size_t size) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    size_t written = 0U;
+
+    while (written < size) {
+        long result = connection->use_tls ? platform_tls_write(&connection->tls, bytes + written, size - written) : platform_write(connection->socket_fd, bytes + written, size - written);
+        if (result <= 0) {
+            return -1;
+        }
+        written += (size_t)result;
+    }
+    return 0;
+}
+
+static void git_http_close(GitHttpConnection *connection) {
+    if (connection->use_tls) {
+        platform_tls_close(&connection->tls);
+    } else if (connection->socket_fd >= 0) {
+        (void)platform_close(connection->socket_fd);
+    }
+    connection->socket_fd = -1;
+}
+
+static int git_http_status_code(const unsigned char *headers, size_t header_size) {
+    size_t index = 0U;
+    int code = 0;
+    int saw_digit = 0;
+
+    while (index < header_size && headers[index] != ' ') {
+        index += 1U;
+    }
+    while (index < header_size && headers[index] == ' ') {
+        index += 1U;
+    }
+    while (index < header_size && headers[index] >= '0' && headers[index] <= '9') {
+        saw_digit = 1;
+        code = code * 10 + (int)(headers[index] - '0');
+        index += 1U;
+    }
+    return saw_digit ? code : -1;
+}
+
+static int git_header_name_equals(const unsigned char *line, size_t name_length, const char *name) {
+    size_t i = 0U;
+
+    while (i < name_length && name[i] != '\0') {
+        if (tool_ascii_tolower((char)line[i]) != tool_ascii_tolower(name[i])) {
+            return 0;
+        }
+        i += 1U;
+    }
+    return i == name_length && name[i] == '\0';
+}
+
+static int git_header_value_contains(const unsigned char *value, size_t value_length, const char *needle) {
+    size_t needle_length = rt_strlen(needle);
+    size_t i;
+
+    if (needle_length == 0U || value_length < needle_length) {
+        return 0;
+    }
+    for (i = 0U; i + needle_length <= value_length; ++i) {
+        size_t j;
+        int match = 1;
+        for (j = 0U; j < needle_length; ++j) {
+            if (tool_ascii_tolower((char)value[i + j]) != tool_ascii_tolower(needle[j])) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int git_parse_headers(const unsigned char *headers, size_t header_size, int *chunked_out, size_t *content_length_out, int *has_content_length_out) {
+    size_t line_start = 0U;
+    int line_index = 0;
+
+    *chunked_out = 0;
+    *content_length_out = 0U;
+    *has_content_length_out = 0;
+    while (line_start < header_size) {
+        size_t line_end = line_start;
+        size_t length;
+
+        while (line_end < header_size && headers[line_end] != '\n') {
+            line_end += 1U;
+        }
+        length = line_end - line_start;
+        if (length > 0U && headers[line_start + length - 1U] == '\r') {
+            length -= 1U;
+        }
+        if (line_index > 0 && length > 0U) {
+            size_t colon = 0U;
+            while (colon < length && headers[line_start + colon] != ':') {
+                colon += 1U;
+            }
+            if (colon < length) {
+                size_t name_end = colon;
+                const unsigned char *value = headers + line_start + colon + 1U;
+                size_t value_length = length - colon - 1U;
+
+                while (name_end > 0U && (headers[line_start + name_end - 1U] == ' ' || headers[line_start + name_end - 1U] == '\t')) {
+                    name_end -= 1U;
+                }
+                while (value_length > 0U && (*value == ' ' || *value == '\t')) {
+                    value += 1U;
+                    value_length -= 1U;
+                }
+                if (git_header_name_equals(headers + line_start, name_end, "Transfer-Encoding")) {
+                    if (git_header_value_contains(value, value_length, "chunked")) {
+                        *chunked_out = 1;
+                    }
+                } else if (git_header_name_equals(headers + line_start, name_end, "Content-Length")) {
+                    size_t i;
+                    size_t parsed = 0U;
+                    int saw_digit = 0;
+                    for (i = 0U; i < value_length; ++i) {
+                        if (value[i] >= '0' && value[i] <= '9') {
+                            parsed = parsed * 10U + (size_t)(value[i] - '0');
+                            saw_digit = 1;
+                        } else if (value[i] != ' ' && value[i] != '\t') {
+                            return -1;
+                        }
+                    }
+                    if (saw_digit) {
+                        *content_length_out = parsed;
+                        *has_content_length_out = 1;
+                    }
+                }
+            }
+        }
+        if (line_end >= header_size) {
+            break;
+        }
+        line_start = line_end + 1U;
+        line_index += 1;
+    }
+    return 0;
+}
+
+static int git_parse_chunk_size(const unsigned char *data, size_t size, size_t *line_end_out, size_t *chunk_size_out) {
+    size_t index = 0U;
+    size_t value = 0U;
+    int saw_digit = 0;
+
+    while (index < size && data[index] != '\n') {
+        unsigned char ch = data[index];
+        int digit = git_hex_value((char)ch);
+
+        if (ch == '\r' || ch == ';') {
+            while (index < size && data[index] != '\n') {
+                index += 1U;
+            }
+            break;
+        }
+        if (digit < 0) {
+            return -1;
+        }
+        value = value * 16U + (size_t)digit;
+        saw_digit = 1;
+        index += 1U;
+    }
+    if (index >= size || data[index] != '\n' || !saw_digit) {
+        return -1;
+    }
+    *line_end_out = index + 1U;
+    *chunk_size_out = value;
+    return 0;
+}
+
+static int git_http_emit_body(GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data, const unsigned char *data, size_t size) {
+    if (size == 0U) {
+        return 0;
+    }
+    if (response != 0 && git_buffer_append(response, data, size) != 0) {
+        return -1;
+    }
+    if (callback != 0 && callback(data, size, callback_user_data) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int git_http_process_plain_body(GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data, const unsigned char *data, size_t size, int has_content_length, size_t content_length, size_t *body_seen) {
+    size_t emit_size = size;
+
+    if (has_content_length) {
+        if (*body_seen >= content_length) {
+            return 0;
+        }
+        if (emit_size > content_length - *body_seen) {
+            emit_size = content_length - *body_seen;
+        }
+    }
+    if (git_http_emit_body(response, callback, callback_user_data, data, emit_size) != 0) {
+        return -1;
+    }
+    *body_seen += emit_size;
+    return 0;
+}
+
+static int git_http_process_chunked_body(GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data, GitBuffer *pending, const unsigned char *data, size_t size, int *done) {
+    size_t consumed = 0U;
+
+    if (*done) {
+        return 0;
+    }
+    if (git_buffer_append(pending, data, size) != 0) {
+        return -1;
+    }
+    while (consumed < pending->size) {
+        size_t line_end = consumed;
+        size_t chunk_header_size;
+        size_t chunk_size;
+
+        while (line_end < pending->size && pending->data[line_end] != '\n') {
+            line_end += 1U;
+        }
+        if (line_end >= pending->size) {
+            break;
+        }
+        if (git_parse_chunk_size(pending->data + consumed, pending->size - consumed, &chunk_header_size, &chunk_size) != 0) {
+            return -1;
+        }
+        if (chunk_size == 0U) {
+            consumed = pending->size;
+            *done = 1;
+            break;
+        }
+        if (pending->size - consumed - chunk_header_size < chunk_size + 2U) {
+            break;
+        }
+        consumed += chunk_header_size;
+        if (git_http_emit_body(response, callback, callback_user_data, pending->data + consumed, chunk_size) != 0) {
+            return -1;
+        }
+        consumed += chunk_size;
+        if (pending->data[consumed] == '\r') {
+            consumed += 1U;
+        }
+        if (consumed >= pending->size || pending->data[consumed] != '\n') {
+            return -1;
+        }
+        consumed += 1U;
+    }
+    git_buffer_discard_prefix(pending, consumed);
+    return 0;
+}
+
+static int git_http_request_stream(const GitUrl *url, const char *method, const char *accept, const char *content_type, const unsigned char *body, size_t body_size, GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data) {
+    GitHttpConnection connection;
+    GitBuffer header;
+    GitBuffer chunk_pending;
+    char request[4096];
+    char length_text[32];
+    size_t request_length = 0U;
+    char read_buffer[8192];
+    long bytes_read;
+    int saw_headers = 0;
+    int status_code = 0;
+    int chunked = 0;
+    int chunk_done = 0;
+    int has_content_length = 0;
+    size_t content_length = 0U;
+    size_t body_seen = 0U;
+    int result = -1;
+
+    rt_memset(&header, 0, sizeof(header));
+    rt_memset(&chunk_pending, 0, sizeof(chunk_pending));
+    if (response != 0) {
+        rt_memset(response, 0, sizeof(*response));
+    }
+    if (git_http_connect(url, &connection) != 0) {
+        return -1;
+    }
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, method);
+    request_length = tool_buffer_append_char(request, sizeof(request), request_length, ' ');
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, " HTTP/1.1\r\nHost: ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->host);
+    if (url->port != git_default_port_for_scheme(url->scheme)) {
+        rt_unsigned_to_string(url->port, length_text, sizeof(length_text));
+        request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, length_text);
+    }
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-git/0.1\r\nAccept: ");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, accept != 0 ? accept : "*/*");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nConnection: close\r\n");
+    if (content_type != 0) {
+        rt_unsigned_to_string(body_size, length_text, sizeof(length_text));
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "Content-Type: ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, content_type);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nContent-Length: ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, length_text);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+    }
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+    if (request_length >= sizeof(request) || git_http_write_all(&connection, request, request_length) != 0 || (body_size > 0U && git_http_write_all(&connection, body, body_size) != 0)) {
+        goto done;
+    }
+    while ((bytes_read = git_http_read(&connection, read_buffer, sizeof(read_buffer))) > 0) {
+        if (!saw_headers) {
+            size_t header_offset = 0U;
+            if (git_buffer_append(&header, read_buffer, (size_t)bytes_read) != 0) {
+                goto done;
+            }
+            if (tool_find_http_header_end((const char *)header.data, header.size, &header_offset) != 0) {
+                continue;
+            }
+            status_code = git_http_status_code(header.data, header_offset);
+            if (status_code < 200 || status_code >= 300 || git_parse_headers(header.data, header_offset, &chunked, &content_length, &has_content_length) != 0) {
+                goto done;
+            }
+            saw_headers = 1;
+            if (chunked) {
+                if (git_http_process_chunked_body(response, callback, callback_user_data, &chunk_pending, header.data + header_offset, header.size - header_offset, &chunk_done) != 0) {
+                    goto done;
+                }
+            } else if (git_http_process_plain_body(response, callback, callback_user_data, header.data + header_offset, header.size - header_offset, has_content_length, content_length, &body_seen) != 0) {
+                goto done;
+            }
+            header.size = 0U;
+        } else if (chunked) {
+            if (git_http_process_chunked_body(response, callback, callback_user_data, &chunk_pending, (const unsigned char *)read_buffer, (size_t)bytes_read, &chunk_done) != 0) {
+                goto done;
+            }
+        } else if (git_http_process_plain_body(response, callback, callback_user_data, (const unsigned char *)read_buffer, (size_t)bytes_read, has_content_length, content_length, &body_seen) != 0) {
+            goto done;
+        }
+    }
+    if (bytes_read < 0 || !saw_headers || (chunked && !chunk_done) || (has_content_length && body_seen < content_length)) {
+        goto done;
+    }
+    result = 0;
+done:
+    git_http_close(&connection);
+    git_buffer_destroy(&header);
+    git_buffer_destroy(&chunk_pending);
+    if (result != 0 && response != 0) {
+        git_buffer_destroy(response);
+    }
+    return result;
+}
+
+static int git_http_request(const GitUrl *url, const char *method, const char *accept, const char *content_type, const unsigned char *body, size_t body_size, GitBuffer *response) {
+    return git_http_request_stream(url, method, accept, content_type, body, body_size, response, 0, 0);
+}
+
+static int git_append_pkt_line(GitBuffer *buffer, const char *payload) {
+    static const char digits[] = "0123456789abcdef";
+    size_t payload_length = rt_strlen(payload);
+    size_t packet_length = payload_length + 4U;
+    char header[4];
+
+    if (packet_length > 0xffffU) {
+        return -1;
+    }
+    header[0] = digits[(packet_length >> 12) & 15U];
+    header[1] = digits[(packet_length >> 8) & 15U];
+    header[2] = digits[(packet_length >> 4) & 15U];
+    header[3] = digits[packet_length & 15U];
+    return git_buffer_append(buffer, header, 4U) != 0 || git_buffer_append(buffer, payload, payload_length) != 0 ? -1 : 0;
+}
+
+static int git_pkt_length(const unsigned char *data, size_t size, size_t *length_out) {
+    int a;
+    int b;
+    int c;
+    int d;
+
+    if (size < 4U) {
+        return -1;
+    }
+    a = git_hex_value((char)data[0]);
+    b = git_hex_value((char)data[1]);
+    c = git_hex_value((char)data[2]);
+    d = git_hex_value((char)data[3]);
+    if (a < 0 || b < 0 || c < 0 || d < 0) {
+        return -1;
+    }
+    *length_out = (size_t)((a << 12) | (b << 8) | (c << 4) | d);
+    return 0;
+}
+

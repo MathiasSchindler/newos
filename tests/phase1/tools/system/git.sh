@@ -17,6 +17,8 @@ printf 'gone\n' > "$repo/deleted.txt"
 printf '#!/bin/sh\n' > "$repo/script.sh"
 chmod 755 "$repo/script.sh"
 printf 'loose\n' > "$repo/untracked.txt"
+mkdir -p "$repo/untracked-dir"
+printf 'nested\n' > "$repo/untracked-dir/nested.txt"
 printf 'ignored\n' > "$repo/skip.tmp"
 printf 'ignored\n' > "$repo/excluded.log"
 mkdir -p "$repo/ignored-dir"
@@ -26,6 +28,33 @@ tracked_oid=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object tracked.txt | tr -
 modified_oid=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object modified.txt | tr -d '\r\n')
 deleted_oid=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object deleted.txt | tr -d '\r\n')
 script_oid=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object script.sh | tr -d '\r\n')
+
+write_loose_blob() {
+    repo_dir=$1
+    path=$2
+    python3 - "$repo_dir" "$path" <<'PY'
+import hashlib
+import os
+import sys
+import zlib
+
+repo = sys.argv[1]
+path = sys.argv[2]
+with open(os.path.join(repo, path), "rb") as handle:
+    payload = handle.read()
+full = b"blob " + str(len(payload)).encode() + b"\0" + payload
+oid = hashlib.sha1(full).hexdigest()
+directory = os.path.join(repo, ".git", "objects", oid[:2])
+os.makedirs(directory, exist_ok=True)
+with open(os.path.join(directory, oid[2:]), "wb") as handle:
+    handle.write(zlib.compress(full))
+PY
+}
+
+write_loose_blob "$repo" tracked.txt
+write_loose_blob "$repo" modified.txt
+write_loose_blob "$repo" deleted.txt
+write_loose_blob "$repo" script.sh
 printf 'original\n' > "$repo/modified.txt"
 rm -f "$repo/deleted.txt"
 chmod 644 "$repo/script.sh"
@@ -82,17 +111,71 @@ assert_file_contains "$WORK_DIR/ls-files.out" '^deleted.txt$' "git ls-files miss
 assert_file_contains "$WORK_DIR/ls-files.out" '^modified.txt$' "git ls-files missed modified.txt"
 assert_file_contains "$WORK_DIR/ls-files.out" '^tracked.txt$' "git ls-files missed tracked.txt"
 
+cd "$repo" && "${TEST_BIN_DIR}/git" ls-files --cached -- modified.txt tracked.txt > "$WORK_DIR/ls-files-cached-pathspec.out"
+assert_file_contains "$WORK_DIR/ls-files-cached-pathspec.out" '^modified.txt$' "git ls-files --cached pathspec missed modified.txt"
+assert_file_contains "$WORK_DIR/ls-files-cached-pathspec.out" '^tracked.txt$' "git ls-files --cached pathspec missed tracked.txt"
+if grep -q '^deleted\.txt$' "$WORK_DIR/ls-files-cached-pathspec.out"; then
+    fail "git ls-files --cached pathspec reported an unrequested tracked path"
+fi
+
+cd "$repo" && "${TEST_BIN_DIR}/git" ls-files --others --exclude-standard > "$WORK_DIR/ls-files-others.out"
+assert_file_contains "$WORK_DIR/ls-files-others.out" '^untracked.txt$' "git ls-files --others missed an untracked file"
+assert_file_contains "$WORK_DIR/ls-files-others.out" '^untracked-dir/nested.txt$' "git ls-files --others missed an untracked nested file"
+if grep -q 'skip.tmp\|excluded.log\|ignored-dir' "$WORK_DIR/ls-files-others.out"; then
+    fail "git ls-files --others --exclude-standard reported ignored files"
+fi
+
+cd "$repo" && "${TEST_BIN_DIR}/git" ls-files --others --exclude-standard -- untracked-dir > "$WORK_DIR/ls-files-others-pathspec.out"
+assert_file_contains "$WORK_DIR/ls-files-others-pathspec.out" '^untracked-dir/nested.txt$' "git ls-files --others pathspec missed a nested untracked file"
+if grep -q '^untracked\.txt$' "$WORK_DIR/ls-files-others-pathspec.out"; then
+    fail "git ls-files --others pathspec reported an unrequested untracked path"
+fi
+
 cd "$repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/status.out"
 assert_file_contains "$WORK_DIR/status.out" '^ D deleted.txt$' "git status did not report a deleted tracked file"
 assert_file_contains "$WORK_DIR/status.out" '^ M modified.txt$' "git status did not report a modified tracked file"
 assert_file_contains "$WORK_DIR/status.out" '^ M script.sh$' "git status did not report an executable-bit change"
 assert_file_contains "$WORK_DIR/status.out" '^?? untracked.txt$' "git status did not report an untracked file"
+assert_file_contains "$WORK_DIR/status.out" '^?? untracked-dir/nested.txt$' "git status did not report a nested untracked file"
 if grep -q '^.. tracked\.txt$' "$WORK_DIR/status.out"; then
     fail "git status reported an unchanged tracked file"
 fi
 if grep -q 'skip.tmp\|excluded.log\|ignored-dir' "$WORK_DIR/status.out"; then
     fail "git status reported ignored files"
 fi
+
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --stat -- deleted.txt modified.txt tracked.txt > "$WORK_DIR/diff-stat.out"
+assert_file_contains "$WORK_DIR/diff-stat.out" '^ deleted\.txt  | 1 -$' "git diff --stat did not report a deleted line"
+assert_file_contains "$WORK_DIR/diff-stat.out" '^ modified\.txt | 2 +-$' "git diff --stat did not report modified insertions and deletions"
+assert_file_contains "$WORK_DIR/diff-stat.out" '^ 2 files changed, 1 insertion(+), 2 deletions(-)$' "git diff --stat did not report totals"
+if grep -q 'tracked\.txt' "$WORK_DIR/diff-stat.out"; then
+    fail "git diff --stat reported an unchanged path"
+fi
+
+cd "$repo" && "${TEST_BIN_DIR}/git" --no-pager diff --stat -- modified.txt > "$WORK_DIR/diff-stat-no-pager.out"
+assert_file_contains "$WORK_DIR/diff-stat-no-pager.out" '^ modified\.txt | 2 +-$' "git --no-pager diff --stat did not accept the host command shape"
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --stat --color=always -- modified.txt > "$WORK_DIR/diff-stat-color.out"
+assert_file_contains "$WORK_DIR/diff-stat-color.out" "$(printf '\033\\[32m+\033\\[0m\033\\[31m-\033\\[0m')" "git diff --stat did not color plus and minus bars"
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --stat --no-color -- modified.txt > "$WORK_DIR/diff-stat-no-color.out"
+if grep -q "$(printf '\033')" "$WORK_DIR/diff-stat-no-color.out"; then
+    fail "git diff --stat --no-color emitted ANSI escapes"
+fi
+
+cd "$repo" && "${TEST_BIN_DIR}/git" add -N -- untracked.txt untracked-dir
+cd "$repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/status-intent.out"
+assert_file_contains "$WORK_DIR/status-intent.out" '^ A untracked.txt$' "git add -N did not mark an untracked file as intent-to-add"
+assert_file_contains "$WORK_DIR/status-intent.out" '^ A untracked-dir/nested.txt$' "git add -N did not mark a nested untracked file as intent-to-add"
+if grep -q '^?? untracked' "$WORK_DIR/status-intent.out"; then
+    fail "git add -N left intent-to-add paths as untracked"
+fi
+cd "$repo" && "${TEST_BIN_DIR}/git" ls-files --others --exclude-standard > "$WORK_DIR/ls-files-others-after-add.out"
+if grep -q '^untracked' "$WORK_DIR/ls-files-others-after-add.out"; then
+    fail "git ls-files --others reported intent-to-add paths"
+fi
+cd "$repo" && "${TEST_BIN_DIR}/git" diff --stat -- untracked.txt untracked-dir > "$WORK_DIR/diff-stat-intent.out"
+assert_file_contains "$WORK_DIR/diff-stat-intent.out" '^ untracked-dir/nested\.txt | 1 +$' "git diff --stat did not report an intent-to-add nested file"
+assert_file_contains "$WORK_DIR/diff-stat-intent.out" '^ untracked\.txt            | 1 +$' "git diff --stat did not report an intent-to-add file"
+assert_file_contains "$WORK_DIR/diff-stat-intent.out" '^ 2 files changed, 2 insertions(+)$' "git diff --stat did not report intent-to-add totals"
 
 hash_again=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object tracked.txt | tr -d '\r\n')
 assert_text_equals "$hash_again" "$tracked_oid" "git hash-object was not stable"
