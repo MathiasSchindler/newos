@@ -4,9 +4,6 @@
 void bn_zero(Bignum *bn) {
     bn->length = 0;
     bn->is_negative = 0;
-    for (unsigned int i = 0; i < BN_MAX_DIGITS; i++) {
-        bn->digits[i] = 0;
-    }
 }
 
 void bn_from_uint(Bignum *bn, unsigned long long value) {
@@ -391,13 +388,15 @@ int bn_subtract(const Bignum *a, const Bignum *b, Bignum *result) {
 }
 
 int bn_multiply_digit(const Bignum *bn, unsigned int digit, Bignum *result) {
-    bn_zero(result);
-    
     if (digit == 0) {
+        result->length = 0;
+        result->is_negative = 0;
         return 0;
     }
     
     unsigned long long carry = 0;
+    unsigned int final_length = 0;
+    
     for (unsigned int i = 0; i < bn->length || carry > 0; i++) {
         if (i >= BN_MAX_DIGITS) {
             return -1;
@@ -409,12 +408,12 @@ int bn_multiply_digit(const Bignum *bn, unsigned int digit, Bignum *result) {
         }
         
         result->digits[i] = (unsigned int)(product % BN_DIGIT_BASE);
-        result->length = i + 1;
+        final_length = i + 1;
         carry = product / BN_DIGIT_BASE;
     }
     
+    result->length = final_length;
     result->is_negative = bn->is_negative;
-    bn_normalize(result);
     return 0;
 }
 
@@ -439,35 +438,69 @@ int bn_shift_left_digits(const Bignum *bn, unsigned int positions, Bignum *resul
 }
 
 int bn_multiply(const Bignum *a, const Bignum *b, Bignum *result) {
-    Bignum temp;
-    bn_zero(&temp);
+    Bignum out;
+    Bignum left = *a;
+    Bignum right = *b;
+    unsigned int result_length;
     
-    if (bn_is_zero(a) || bn_is_zero(b)) {
+    if (bn_is_zero(&left) || bn_is_zero(&right)) {
         bn_zero(result);
         return 0;
     }
-    
-    for (unsigned int i = 0; i < b->length; i++) {
-        Bignum partial;
-        if (bn_multiply_digit(a, b->digits[i], &partial) != 0) {
-            return -1;
-        }
-        
-        Bignum shifted;
-        if (bn_shift_left_digits(&partial, i, &shifted) != 0) {
-            return -1;
-        }
-        
-        Bignum new_temp;
-        if (bn_add_unsigned(&temp, &shifted, &new_temp) != 0) {
-            return -1;
-        }
-        temp = new_temp;
+
+    if (left.length + right.length > BN_MAX_DIGITS) {
+        return -1;
     }
-    
-    *result = temp;
-    result->is_negative = (a->is_negative != b->is_negative);
-    bn_normalize(result);
+
+    bn_zero(&out);
+    result_length = left.length + right.length;
+    for (unsigned int i = 0; i < result_length; ++i) {
+        out.digits[i] = 0U;
+    }
+    out.length = result_length;
+
+    for (unsigned int i = 0; i < left.length; ++i) {
+        unsigned long long carry = 0ULL;
+
+        for (unsigned int j = 0; j < right.length; ++j) {
+            unsigned int index = i + j;
+            unsigned long long product = (unsigned long long)left.digits[i] * (unsigned long long)right.digits[j] + (unsigned long long)out.digits[index] + carry;
+
+            out.digits[index] = (unsigned int)(product % BN_DIGIT_BASE);
+            carry = product / BN_DIGIT_BASE;
+        }
+        if (carry != 0ULL) {
+            unsigned int index = i + right.length;
+            unsigned long long sum;
+
+            if (index >= BN_MAX_DIGITS) {
+                return -1;
+            }
+            sum = (unsigned long long)out.digits[index] + carry;
+            out.digits[index] = (unsigned int)(sum % BN_DIGIT_BASE);
+            carry = sum / BN_DIGIT_BASE;
+            while (carry != 0ULL) {
+                index += 1U;
+                if (index >= BN_MAX_DIGITS) {
+                    return -1;
+                }
+                sum = (unsigned long long)out.digits[index] + carry;
+                out.digits[index] = (unsigned int)(sum % BN_DIGIT_BASE);
+                carry = sum / BN_DIGIT_BASE;
+                if (index + 1U > out.length) out.length = index + 1U;
+            }
+        }
+    }
+
+    out.is_negative = (left.is_negative != right.is_negative);
+    bn_normalize(&out);
+    if (out.length > BN_MAX_DIGITS) {
+        return -1;
+    }
+    for (unsigned int i = out.length; i < result_length && i < BN_MAX_DIGITS; ++i) {
+        out.digits[i] = 0U;
+    }
+    *result = out;
     return 0;
 }
 
@@ -557,30 +590,33 @@ int bn_divide(const Bignum *dividend, const Bignum *divisor,
         bn_normalize(remainder);
         
         unsigned int count = 0;
-        unsigned int low = 0;
-        unsigned int high = BN_DIGIT_BASE - 1U;
+        
+        if (bn_compare_abs(remainder, &div) >= 0) {
+            unsigned int low = 0;
+            unsigned int high = BN_DIGIT_BASE - 1U;
 
-        while (low <= high) {
-            unsigned int mid = low + ((high - low) / 2U);
-            Bignum product;
-            int cmp;
+            while (low <= high) {
+                unsigned int mid = low + ((high - low) / 2U);
+                Bignum product;
+                int cmp;
 
-            if (bn_multiply_digit(&div, mid, &product) != 0) {
-                return -1;
-            }
-
-            cmp = bn_compare_abs(&product, remainder);
-            if (cmp <= 0) {
-                count = mid;
-                if (mid == BN_DIGIT_BASE - 1U) {
-                    break;
+                if (bn_multiply_digit(&div, mid, &product) != 0) {
+                    return -1;
                 }
-                low = mid + 1U;
-            } else {
-                if (mid == 0U) {
-                    break;
+
+                cmp = bn_compare_abs(&product, remainder);
+                if (cmp <= 0) {
+                    count = mid;
+                    if (mid == BN_DIGIT_BASE - 1U) {
+                        break;
+                    }
+                    low = mid + 1U;
+                } else {
+                    if (mid == 0U) {
+                        break;
+                    }
+                    high = mid - 1U;
                 }
-                high = mid - 1U;
             }
         }
 
