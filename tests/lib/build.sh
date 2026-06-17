@@ -20,7 +20,7 @@ newos_test_default_build_dir() {
 
     case "$os_name:$arch_name" in
         Darwin:aarch64)
-            printf '%s\n' "$ROOT_DIR/build/newlinker-macos-aarch64"
+            printf '%s\n' "$ROOT_DIR/build/macos-aarch64"
             ;;
         Linux:*)
             printf '%s\n' "$ROOT_DIR/build/freestanding-linux-$arch_name"

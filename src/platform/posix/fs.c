@@ -105,6 +105,15 @@ static void fill_entry_from_stat(const char *display_name, const struct stat *st
     entry->atime = (long long)st->st_atime;
     entry->mtime = (long long)st->st_mtime;
     entry->ctime = (long long)st->st_ctime;
+#if defined(__APPLE__)
+    entry->atime_nanos = (unsigned int)st->st_atimespec.tv_nsec;
+    entry->mtime_nanos = (unsigned int)st->st_mtimespec.tv_nsec;
+    entry->ctime_nanos = (unsigned int)st->st_ctimespec.tv_nsec;
+#elif defined(__linux__)
+    entry->atime_nanos = (unsigned int)st->st_atim.tv_nsec;
+    entry->mtime_nanos = (unsigned int)st->st_mtim.tv_nsec;
+    entry->ctime_nanos = (unsigned int)st->st_ctim.tv_nsec;
+#endif
     entry->is_dir = S_ISDIR(st->st_mode) ? 1 : 0;
     entry->is_hidden = (display_name != NULL && display_name[0] == '.') ? 1 : 0;
     copy_identity_names(st->st_uid, st->st_gid, entry);

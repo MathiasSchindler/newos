@@ -4,7 +4,7 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$ROOT_DIR/tests/lib/assert.sh"
 
-BUILD_DIR=${NEWOS_MACOS_NEWLINKER_BUILD_DIR:-$ROOT_DIR/build/newlinker-macos-aarch64}
+BUILD_DIR=${NEWOS_MACOS_NEWLINKER_BUILD_DIR:-$ROOT_DIR/build/macos-aarch64}
 WORK_DIR="$ROOT_DIR/tests/tmp/macos_newlinker_tools"
 
 rm -rf "$WORK_DIR"

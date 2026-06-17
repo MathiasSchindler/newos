@@ -54,6 +54,8 @@ typedef struct {
     char *pattern;
     int directory_only;
     int negated;
+    int has_slash;
+    int has_wildcard;
 } GitIgnorePattern;
 
 typedef struct {
@@ -61,6 +63,9 @@ typedef struct {
     size_t count;
     size_t capacity;
 } GitIgnoreList;
+
+static int git_path_has_slash(const char *path);
+static int git_path_has_wildcard(const char *path);
 
 typedef struct {
     const GitRepo *repo;
@@ -915,6 +920,8 @@ static int git_ignore_add_line(GitIgnoreList *ignores, const char *line, size_t 
         rt_free(copy);
         return 0;
     }
+    pattern.has_slash = copy[0] == '/' || git_path_has_slash(copy);
+    pattern.has_wildcard = git_path_has_wildcard(copy);
     pattern.pattern = copy;
     if (git_ignore_push(ignores, &pattern) != 0) {
         rt_free(copy);
@@ -979,6 +986,17 @@ static int git_path_has_slash(const char *path) {
     return 0;
 }
 
+static int git_path_has_wildcard(const char *path) {
+    size_t i;
+
+    for (i = 0U; path[i] != '\0'; ++i) {
+        if (path[i] == '*' || path[i] == '?' || path[i] == '[') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static const char *git_path_basename(const char *path) {
     const char *base = path;
     size_t i;
@@ -999,12 +1017,12 @@ static int git_ignore_pattern_matches(const GitIgnorePattern *pattern, const cha
     }
     if (match_pattern[0] == '/') {
         match_pattern += 1;
-        return rt_strcmp(match_pattern, relative) == 0 || tool_wildcard_match(match_pattern, relative);
+        return pattern->has_wildcard ? tool_wildcard_match(match_pattern, relative) : rt_strcmp(match_pattern, relative) == 0;
     }
-    if (git_path_has_slash(match_pattern)) {
-        return rt_strcmp(match_pattern, relative) == 0 || tool_wildcard_match(match_pattern, relative);
+    if (pattern->has_slash) {
+        return pattern->has_wildcard ? tool_wildcard_match(match_pattern, relative) : rt_strcmp(match_pattern, relative) == 0;
     }
-    return rt_strcmp(match_pattern, git_path_basename(relative)) == 0 || tool_wildcard_match(match_pattern, git_path_basename(relative));
+    return pattern->has_wildcard ? tool_wildcard_match(match_pattern, git_path_basename(relative)) : rt_strcmp(match_pattern, git_path_basename(relative)) == 0;
 }
 
 static int git_ignore_matches(const GitIgnoreList *ignores, const char *relative, int is_directory) {
@@ -2417,6 +2435,17 @@ static int git_compare_entries_by_path(const void *left, const void *right) {
     return rt_strcmp(left_entry->path, right_entry->path);
 }
 
+static int git_index_is_sorted(const GitIndex *index) {
+    size_t i;
+
+    for (i = 1U; i < index->count; ++i) {
+        if (rt_strcmp(index->entries[i - 1U].path, index->entries[i].path) > 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static GitIndexEntry *git_index_find(const GitIndex *index, const char *path) {
     size_t lo = 0U;
     size_t hi = index->count;
@@ -2432,20 +2461,6 @@ static GitIndexEntry *git_index_find(const GitIndex *index, const char *path) {
             hi = mid;
         } else {
             lo = mid + 1U;
-        }
-    }
-    return 0;
-}
-
-static int git_path_is_under_entry(const GitIndex *index, const char *path) {
-    size_t i;
-    size_t path_len = rt_strlen(path);
-
-    for (i = 0U; i < index->count; ++i) {
-        const char *entry_path = index->entries[i].path;
-
-        if (rt_strncmp(entry_path, path, path_len) == 0 && entry_path[path_len] == '/') {
-            return 1;
         }
     }
     return 0;
@@ -2581,6 +2596,11 @@ static int git_entry_is_modified(const GitRepo *repo, const GitIndexEntry *entry
     if (info.size != entry->size) {
         return 1;
     }
+    if (entry->mtime_seconds != 0ULL &&
+        info.mtime == (long long)entry->mtime_seconds &&
+        info.mtime_nanos == entry->mtime_nanos) {
+        return 0;
+    }
     if (git_blob_hash_path(full_path, info.size, oid) != 0) {
         return 1;
     }
@@ -2635,9 +2655,6 @@ static int git_status_walk_callback(const char *path, const PlatformDirEntry *en
         return 0;
     }
     if (entry->is_dir) {
-        if (!git_path_is_under_entry(walk->index, relative)) {
-            return 0;
-        }
         return 0;
     }
     if (git_write_status_line("??", relative, walk->porcelain) != 0) {
@@ -3115,7 +3132,7 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "cannot read index", 0);
         return 1;
     }
-    if (index.count > 1U) {
+    if (index.count > 1U && !git_index_is_sorted(&index)) {
         rt_sort(index.entries, index.count, sizeof(index.entries[0]), git_compare_entries_by_path);
     }
     if (git_ignore_load(repo, &ignores) != 0) {
@@ -3201,7 +3218,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "cannot read index", 0);
         return 1;
     }
-    if (index.count > 1U) {
+    if (index.count > 1U && !git_index_is_sorted(&index)) {
         rt_sort(index.entries, index.count, sizeof(index.entries[0]), git_compare_entries_by_path);
     }
     for (i = 0U; i < index.count; ++i) {

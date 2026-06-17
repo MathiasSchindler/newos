@@ -425,7 +425,7 @@ $(MACOS_BUILD_DIR)/.obj/newlinker_tiny_helper.lto.o: tests/fixtures/macho/newlin
 $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o: src/platform/macos/newlinker_start.S | $(MACOS_BUILD_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_CFLAGS) -c $< -o $@
 
-$(MACOS_BUILD_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) src/platform/macos/trace.h | $(MACOS_BUILD_DIR)/.obj
+$(MACOS_BUILD_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) src/shared/platform.h src/shared/runtime.h src/shared/tool_util.h src/platform/macos/trace.h | $(MACOS_BUILD_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
 
 $(MACOS_BUILD_DIR)/.obj/src/platform/macos/profiler_runtime.lto.o: src/platform/macos/profiler_runtime.c | $(MACOS_BUILD_DIR)/.obj

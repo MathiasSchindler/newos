@@ -193,6 +193,9 @@ static void fill_entry_from_stat(const char *display_name, const struct stat *st
     entry->atime = (long long)stat_info->st_atime;
     entry->mtime = (long long)stat_info->st_mtime;
     entry->ctime = (long long)stat_info->st_ctime;
+    entry->atime_nanos = (unsigned int)stat_info->st_atimespec.tv_nsec;
+    entry->mtime_nanos = (unsigned int)stat_info->st_mtimespec.tv_nsec;
+    entry->ctime_nanos = (unsigned int)stat_info->st_ctimespec.tv_nsec;
     entry->is_dir = ((unsigned int)stat_info->st_mode & DARWIN_S_IFMT) == DARWIN_S_IFDIR;
     entry->is_hidden = display_name != 0 && display_name[0] == '.';
     rt_unsigned_to_string((unsigned long long)stat_info->st_uid, entry->owner, sizeof(entry->owner));

@@ -50,6 +50,9 @@ static void fill_entry_from_stat(const char *display_name, const struct linux_st
     entry->atime = (long long)st->st_atime;
     entry->mtime = (long long)st->st_mtime;
     entry->ctime = (long long)st->st_ctime;
+    entry->atime_nanos = (unsigned int)st->st_atime_nsec;
+    entry->mtime_nanos = (unsigned int)st->st_mtime_nsec;
+    entry->ctime_nanos = (unsigned int)st->st_ctime_nsec;
     entry->is_dir = ((st->st_mode & LINUX_S_IFMT) == LINUX_S_IFDIR) ? 1 : 0;
     entry->is_hidden = (display_name != 0 && display_name[0] == '.') ? 1 : 0;
     unsigned_to_string((unsigned long long)st->st_uid, entry->owner, sizeof(entry->owner));

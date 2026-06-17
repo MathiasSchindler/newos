@@ -91,6 +91,9 @@ typedef struct {
     long long atime;
     long long mtime;
     long long ctime;
+    unsigned int atime_nanos;
+    unsigned int mtime_nanos;
+    unsigned int ctime_nanos;
     char owner[PLATFORM_OWNER_CAPACITY];
     char group[PLATFORM_GROUP_CAPACITY];
     int is_dir;
