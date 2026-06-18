@@ -79,11 +79,7 @@ typedef struct {
     char paths[SORT_MAX_RUNS][SORT_TEMP_PATH_CAPACITY];
 } SortRunSet;
 
-typedef struct {
-    int fd;
-    char buffer[SORT_OUTPUT_BUFFER_SIZE];
-    size_t used;
-} SortOutput;
+typedef ToolOutputBuffer SortOutput;
 
 typedef struct {
     int valid;
@@ -1121,53 +1117,9 @@ static void sort_lines(SortCollection *collection, const SortOptions *options) {
     merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
 }
 
-static void sort_output_init(SortOutput *output, int fd) {
-    output->fd = fd;
-    output->used = 0U;
-}
-
-static int sort_output_flush(SortOutput *output) {
-    if (output->used == 0U) {
-        return 0;
-    }
-    if (rt_write_all(output->fd, output->buffer, output->used) != 0) {
-        output->used = 0U;
-        return -1;
-    }
-    output->used = 0U;
-    return 0;
-}
-
-static int sort_output_write(SortOutput *output, const char *text, size_t length) {
-    if (length == 0U) {
-        return 0;
-    }
-    if (length > sizeof(output->buffer)) {
-        if (sort_output_flush(output) != 0) {
-            return -1;
-        }
-        return rt_write_all(output->fd, text, length);
-    }
-    if (output->used + length > sizeof(output->buffer) && sort_output_flush(output) != 0) {
-        return -1;
-    }
-
-    memcpy(output->buffer + output->used, text, length);
-    output->used += length;
-    return 0;
-}
-
-static int sort_output_write_char(SortOutput *output, char ch) {
-    if (output->used == sizeof(output->buffer) && sort_output_flush(output) != 0) {
-        return -1;
-    }
-    output->buffer[output->used++] = ch;
-    return 0;
-}
-
 static int sort_output_write_line(SortOutput *output, const SortLine *line) {
-    if (sort_output_write(output, line->text, line->length) != 0 ||
-        sort_output_write_char(output, '\n') != 0) {
+    if (tool_output_buffer_write(output, line->text, line->length) != 0 ||
+        tool_output_buffer_write_char(output, '\n') != 0) {
         return -1;
     }
     return 0;
@@ -1178,7 +1130,7 @@ static int write_sorted_output(int fd, const SortCollection *collection, const S
     SortLine *previous = 0;
     SortOutput output;
 
-    sort_output_init(&output, fd);
+    tool_output_buffer_init(&output, fd);
 
     for (i = 0U; i < collection->count; ++i) {
         SortLine *line = collection->order[i];
@@ -1194,7 +1146,7 @@ static int write_sorted_output(int fd, const SortCollection *collection, const S
         previous = line;
     }
 
-    return sort_output_flush(&output);
+    return tool_output_buffer_flush(&output);
 }
 
 static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs) {
@@ -1362,7 +1314,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
 
     rt_memset(&previous_line, 0, sizeof(previous_line));
     line_builder_init(&previous_builder);
-    sort_output_init(&output, output_fd);
+    tool_output_buffer_init(&output, output_fd);
 
     if ((size_t)input_count > SORT_MAX_INPUTS) {
         line_builder_free(&previous_builder);
@@ -1474,7 +1426,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
         }
     }
 
-    if (sort_output_flush(&output) != 0) {
+    if (tool_output_buffer_flush(&output) != 0) {
         rt_write_line(2, "sort: write error");
         line_builder_free(&previous_builder);
         for (i = 0; i < input_count; ++i) {

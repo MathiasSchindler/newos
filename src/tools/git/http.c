@@ -333,10 +333,10 @@ static int git_http_base64_append(GitBuffer *out, const unsigned char *data, siz
         int have_b2 = i < size;
         unsigned int b2 = have_b2 ? data[i++] : 0U;
 
-        if (git_buffer_append_char(out, alphabet[(b0 >> 2U) & 0x3fU]) != 0 ||
-            git_buffer_append_char(out, alphabet[((b0 << 4U) | (b1 >> 4U)) & 0x3fU]) != 0 ||
-            git_buffer_append_char(out, have_b1 ? alphabet[((b1 << 2U) | (b2 >> 6U)) & 0x3fU] : '=') != 0 ||
-            git_buffer_append_char(out, have_b2 ? alphabet[b2 & 0x3fU] : '=') != 0) {
+        if (tool_byte_buffer_append_char(out, alphabet[(b0 >> 2U) & 0x3fU]) != 0 ||
+            tool_byte_buffer_append_char(out, alphabet[((b0 << 4U) | (b1 >> 4U)) & 0x3fU]) != 0 ||
+            tool_byte_buffer_append_char(out, have_b1 ? alphabet[((b1 << 2U) | (b2 >> 6U)) & 0x3fU] : '=') != 0 ||
+            tool_byte_buffer_append_char(out, have_b2 ? alphabet[b2 & 0x3fU] : '=') != 0) {
             return -1;
         }
     }
@@ -398,13 +398,13 @@ static int git_http_credential_helper_auth(const GitUrl *url, char *buffer, size
     rt_memset(&raw, 0, sizeof(raw));
     rt_memset(&encoded, 0, sizeof(encoded));
     rt_unsigned_to_string(url->port, port_text, sizeof(port_text));
-    if (git_buffer_append_cstr(&query, "protocol=") != 0 ||
-        git_buffer_append_cstr(&query, url->scheme == GIT_SCHEME_HTTPS ? "https" : "http") != 0 ||
-        git_buffer_append_cstr(&query, "\nhost=") != 0 ||
-        git_buffer_append_cstr(&query, url->host) != 0 ||
-        git_buffer_append_cstr(&query, "\npath=") != 0 ||
-        git_buffer_append_cstr(&query, url->path) != 0 ||
-        git_buffer_append_cstr(&query, "\nwwwauth[]=Basic\n\n") != 0) {
+    if (tool_byte_buffer_append_cstr(&query, "protocol=") != 0 ||
+        tool_byte_buffer_append_cstr(&query, url->scheme == GIT_SCHEME_HTTPS ? "https" : "http") != 0 ||
+        tool_byte_buffer_append_cstr(&query, "\nhost=") != 0 ||
+        tool_byte_buffer_append_cstr(&query, url->host) != 0 ||
+        tool_byte_buffer_append_cstr(&query, "\npath=") != 0 ||
+        tool_byte_buffer_append_cstr(&query, url->path) != 0 ||
+        tool_byte_buffer_append_cstr(&query, "\nwwwauth[]=Basic\n\n") != 0) {
         goto done;
     }
     if (platform_create_pipe(stdin_pipe) != 0 || platform_create_pipe(stdout_pipe) != 0) {
@@ -435,10 +435,10 @@ wait_done:
     if (status != 0 || git_credential_output_value(output.data, output.size, "username", username, sizeof(username)) != 0 || git_credential_output_value(output.data, output.size, "password", password, sizeof(password)) != 0) {
         goto done;
     }
-    if (git_buffer_append_cstr(&raw, username) != 0 || git_buffer_append_char(&raw, ':') != 0 || git_buffer_append_cstr(&raw, password) != 0) {
+    if (tool_byte_buffer_append_cstr(&raw, username) != 0 || tool_byte_buffer_append_char(&raw, ':') != 0 || tool_byte_buffer_append_cstr(&raw, password) != 0) {
         goto done;
     }
-    if (git_buffer_append_cstr(&encoded, "Basic ") != 0 || git_http_base64_append(&encoded, raw.data, raw.size) != 0 || encoded.size >= buffer_size) {
+    if (tool_byte_buffer_append_cstr(&encoded, "Basic ") != 0 || git_http_base64_append(&encoded, raw.data, raw.size) != 0 || encoded.size >= buffer_size) {
         goto done;
     }
     memcpy(buffer, encoded.data, encoded.size);

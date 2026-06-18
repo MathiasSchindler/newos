@@ -46,10 +46,10 @@ static int git_hash_object_data(int type, const unsigned char *data, size_t size
     crypto_sha1_update(&sha1, data, size);
     crypto_sha1_final(&sha1, oid);
     if (full_out != 0) {
-        if (git_buffer_append_cstr(full_out, git_object_type_name(type)) != 0 ||
-            git_buffer_append_char(full_out, ' ') != 0 ||
-            git_buffer_append_cstr(full_out, size_digits) != 0 ||
-            git_buffer_append_char(full_out, '\0') != 0 ||
+        if (tool_byte_buffer_append_cstr(full_out, git_object_type_name(type)) != 0 ||
+            tool_byte_buffer_append_char(full_out, ' ') != 0 ||
+            tool_byte_buffer_append_cstr(full_out, size_digits) != 0 ||
+            tool_byte_buffer_append_char(full_out, '\0') != 0 ||
             git_buffer_append(full_out, data, size) != 0) {
             git_buffer_destroy(full_out);
             return -1;
@@ -956,10 +956,10 @@ static const char *git_tree_mode_text(unsigned int mode) {
 }
 
 static int git_tree_buffer_append_entry(GitBuffer *tree, unsigned int mode, const char *name, size_t name_length, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
-    if (git_buffer_append_cstr(tree, git_tree_mode_text(mode)) != 0 ||
-        git_buffer_append_char(tree, ' ') != 0 ||
+    if (tool_byte_buffer_append_cstr(tree, git_tree_mode_text(mode)) != 0 ||
+        tool_byte_buffer_append_char(tree, ' ') != 0 ||
         git_buffer_append(tree, name, name_length) != 0 ||
-        git_buffer_append_char(tree, '\0') != 0 ||
+        tool_byte_buffer_append_char(tree, '\0') != 0 ||
         git_buffer_append(tree, oid, CRYPTO_SHA1_DIGEST_SIZE) != 0) {
         return -1;
     }
@@ -1304,12 +1304,12 @@ static int git_index_write_entry(GitBuffer *buffer, const GitIndexEntry *entry) 
     }
     header[60] = (unsigned char)(flags >> 8);
     header[61] = (unsigned char)flags;
-    if (git_buffer_append(buffer, header, header_length) != 0 || git_buffer_append(buffer, entry->path, path_length) != 0 || git_buffer_append_char(buffer, '\0') != 0) {
+    if (git_buffer_append(buffer, header, header_length) != 0 || git_buffer_append(buffer, entry->path, path_length) != 0 || tool_byte_buffer_append_char(buffer, '\0') != 0) {
         return -1;
     }
     entry_length = header_length + path_length + 1U;
     while ((entry_length & 7U) != 0U) {
-        if (git_buffer_append_char(buffer, '\0') != 0) {
+        if (tool_byte_buffer_append_char(buffer, '\0') != 0) {
             return -1;
         }
         entry_length += 1U;

@@ -356,7 +356,7 @@ static int git_fetch_pack(const GitRepo *repo, const GitUrl *base_url, const uns
     want_length = tool_buffer_append_cstr(want_line, sizeof(want_line), want_length, "want ");
     want_length = tool_buffer_append_cstr(want_line, sizeof(want_line), want_length, oid_hex);
     want_length = tool_buffer_append_cstr(want_line, sizeof(want_line), want_length, " multi_ack_detailed side-band-64k ofs-delta agent=newos-git\n");
-    if (want_length >= sizeof(want_line) || git_append_pkt_line(&request, want_line) != 0 || git_buffer_append_cstr(&request, "0000") != 0 || git_append_pkt_line(&request, "done\n") != 0) {
+    if (want_length >= sizeof(want_line) || git_append_pkt_line(&request, want_line) != 0 || tool_byte_buffer_append_cstr(&request, "0000") != 0 || git_append_pkt_line(&request, "done\n") != 0) {
         goto done;
     }
     if (git_url_service_path(base_url, "/git-upload-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(base_url, path, &upload_url) != 0) {
@@ -412,7 +412,7 @@ static int git_write_head_ref(const GitRepo *repo, const char *ref_name) {
     int result;
 
     rt_memset(&text, 0, sizeof(text));
-    if (git_join(path, sizeof(path), repo->git_dir, "HEAD") != 0 || git_buffer_append_cstr(&text, "ref: ") != 0 || git_buffer_append_cstr(&text, ref_name) != 0 || git_buffer_append_char(&text, '\n') != 0) {
+    if (git_join(path, sizeof(path), repo->git_dir, "HEAD") != 0 || tool_byte_buffer_append_cstr(&text, "ref: ") != 0 || tool_byte_buffer_append_cstr(&text, ref_name) != 0 || tool_byte_buffer_append_char(&text, '\n') != 0) {
         git_buffer_destroy(&text);
         return -1;
     }
@@ -429,7 +429,7 @@ static int git_write_fetch_head(const GitRepo *repo, const char *remote_url, con
 
     rt_memset(&text, 0, sizeof(text));
     git_format_oid_hex(oid, oid_hex);
-    if (git_join(path, sizeof(path), repo->git_dir, "FETCH_HEAD") != 0 || git_buffer_append_cstr(&text, oid_hex) != 0 || git_buffer_append_cstr(&text, "\t\t") != 0 || git_buffer_append_cstr(&text, ref_name) != 0 || git_buffer_append_cstr(&text, "\t") != 0 || git_buffer_append_cstr(&text, remote_url) != 0 || git_buffer_append_char(&text, '\n') != 0) {
+    if (git_join(path, sizeof(path), repo->git_dir, "FETCH_HEAD") != 0 || tool_byte_buffer_append_cstr(&text, oid_hex) != 0 || tool_byte_buffer_append_cstr(&text, "\t\t") != 0 || tool_byte_buffer_append_cstr(&text, ref_name) != 0 || tool_byte_buffer_append_cstr(&text, "\t") != 0 || tool_byte_buffer_append_cstr(&text, remote_url) != 0 || tool_byte_buffer_append_char(&text, '\n') != 0) {
         git_buffer_destroy(&text);
         return -1;
     }
@@ -506,10 +506,10 @@ static int git_write_clone_config(const GitRepo *repo, const char *remote_url, c
 
     rt_memset(&text, 0, sizeof(text));
     if (git_join(path, sizeof(path), repo->git_dir, "config") != 0 ||
-        git_buffer_append_cstr(&text, "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n") != 0 ||
-        git_buffer_append_cstr(&text, "[remote \"origin\"]\n\turl = ") != 0 || git_buffer_append_cstr(&text, remote_url) != 0 ||
-        git_buffer_append_cstr(&text, "\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"") != 0 || git_buffer_append_cstr(&text, branch_name) != 0 ||
-        git_buffer_append_cstr(&text, "\"]\n\tremote = origin\n\tmerge = refs/heads/") != 0 || git_buffer_append_cstr(&text, branch_name) != 0 || git_buffer_append_char(&text, '\n') != 0) {
+        tool_byte_buffer_append_cstr(&text, "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n") != 0 ||
+        tool_byte_buffer_append_cstr(&text, "[remote \"origin\"]\n\turl = ") != 0 || tool_byte_buffer_append_cstr(&text, remote_url) != 0 ||
+        tool_byte_buffer_append_cstr(&text, "\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"") != 0 || tool_byte_buffer_append_cstr(&text, branch_name) != 0 ||
+        tool_byte_buffer_append_cstr(&text, "\"]\n\tremote = origin\n\tmerge = refs/heads/") != 0 || tool_byte_buffer_append_cstr(&text, branch_name) != 0 || tool_byte_buffer_append_char(&text, '\n') != 0) {
         git_buffer_destroy(&text);
         return -1;
     }

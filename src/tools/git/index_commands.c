@@ -320,7 +320,7 @@ static int git_add_patch_append_lines(GitBuffer *buffer, GitDiffLine *lines, siz
     size_t i;
 
     for (i = start; i < end; ++i) {
-        if (git_buffer_append(buffer, lines[i].data, lines[i].length) != 0 || git_buffer_append_char(buffer, '\n') != 0) {
+        if (git_buffer_append(buffer, lines[i].data, lines[i].length) != 0 || tool_byte_buffer_append_char(buffer, '\n') != 0) {
             return -1;
         }
     }

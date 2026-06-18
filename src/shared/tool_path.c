@@ -164,6 +164,31 @@ int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t 
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }
 
+int tool_ensure_parent_dirs(const char *path, char *scratch, size_t scratch_size) {
+    size_t index = 0U;
+
+    if (path == 0 || path[0] == '\0' || scratch == 0 || rt_strlen(path) >= scratch_size) return -1;
+    while (path[index] != '\0') {
+        PlatformDirEntry entry;
+        size_t component_end;
+
+        while (path[index] == '/') index += 1U;
+        if (path[index] == '\0') break;
+        while (path[index] != '\0' && path[index] != '/') index += 1U;
+        if (path[index] == '\0') break;
+        component_end = index;
+        memcpy(scratch, path, component_end);
+        scratch[component_end] = '\0';
+        if (scratch[0] == '\0') continue;
+        if (platform_get_path_info(scratch, &entry) == 0) {
+            if ((entry.mode & TOOL_PATH_MODE_TYPE_MASK) == TOOL_PATH_MODE_SYMLINK || !entry.is_dir) return -1;
+        } else if (platform_make_directory(scratch, 0755U) != 0) {
+            if (platform_get_path_info(scratch, &entry) != 0 || !entry.is_dir) return -1;
+        }
+    }
+    return 0;
+}
+
 int tool_build_sibling_program_path(const char *argv0, const char *program_name, char *buffer, size_t buffer_size) {
     char dir[1024];
 

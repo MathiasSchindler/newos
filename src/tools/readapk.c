@@ -554,37 +554,11 @@ static int readapk_join_extract_path(const char *dir, const char *name, char *bu
     return 0;
 }
 
-static int readapk_ensure_parent_dirs(const char *path) {
-    char prefix[READAPK_PATH_CAPACITY];
-    size_t index = 0U;
-
-    if (path == 0 || path[0] == '\0' || rt_strlen(path) >= sizeof(prefix)) return -1;
-    while (path[index] != '\0') {
-        PlatformDirEntry entry;
-        size_t component_end;
-
-        while (path[index] == '/') index += 1U;
-        if (path[index] == '\0') break;
-        while (path[index] != '\0' && path[index] != '/') index += 1U;
-        if (path[index] == '\0') break;
-        component_end = index;
-        memcpy(prefix, path, component_end);
-        prefix[component_end] = '\0';
-        if (prefix[0] == '\0') continue;
-        if (platform_get_path_info(prefix, &entry) == 0) {
-            if ((entry.mode & READAPK_MODE_TYPE_MASK) == READAPK_MODE_SYMLINK) return -1;
-            if (!entry.is_dir) return -1;
-        } else if (platform_make_directory(prefix, 0755U) != 0) {
-            if (platform_get_path_info(prefix, &entry) != 0 || !entry.is_dir) return -1;
-        }
-    }
-    return 0;
-}
-
 static int readapk_open_extract_file(const char *path, unsigned int mode) {
     PlatformDirEntry entry;
+    char parent_scratch[READAPK_PATH_CAPACITY];
 
-    if (readapk_ensure_parent_dirs(path) != 0) return -1;
+    if (tool_ensure_parent_dirs(path, parent_scratch, sizeof(parent_scratch)) != 0) return -1;
     if (platform_get_path_info(path, &entry) == 0) {
         if (entry.is_dir || (entry.mode & READAPK_MODE_TYPE_MASK) == READAPK_MODE_SYMLINK) return -1;
     }

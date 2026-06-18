@@ -562,11 +562,11 @@ static int git_config_get_value(const GitRepo *repo, const char *key, char *buff
 }
 
 static int git_config_append_assignment(GitBuffer *out, const char *var, const char *value) {
-    return git_buffer_append_char(out, '\t') != 0 ||
-           git_buffer_append_cstr(out, var) != 0 ||
-           git_buffer_append_cstr(out, " = ") != 0 ||
-           git_buffer_append_cstr(out, value) != 0 ||
-           git_buffer_append_char(out, '\n') != 0 ? -1 : 0;
+    return tool_byte_buffer_append_char(out, '\t') != 0 ||
+           tool_byte_buffer_append_cstr(out, var) != 0 ||
+           tool_byte_buffer_append_cstr(out, " = ") != 0 ||
+           tool_byte_buffer_append_cstr(out, value) != 0 ||
+           tool_byte_buffer_append_char(out, '\n') != 0 ? -1 : 0;
 }
 
 static int git_config_set_value(const GitRepo *repo, const char *key, const char *value) {
@@ -622,7 +622,7 @@ static int git_config_set_value(const GitRepo *repo, const char *key, const char
                 continue;
             }
         }
-        if (git_buffer_append(&out, data + start, end - start) != 0 || git_buffer_append_char(&out, '\n') != 0) {
+        if (git_buffer_append(&out, data + start, end - start) != 0 || tool_byte_buffer_append_char(&out, '\n') != 0) {
             goto done;
         }
         (void)has_newline;
@@ -634,10 +634,10 @@ static int git_config_set_value(const GitRepo *repo, const char *key, const char
         updated = 1;
     }
     if (!saw_section) {
-        if (out.size > 0U && out.data[out.size - 1U] != '\n' && git_buffer_append_char(&out, '\n') != 0) {
+        if (out.size > 0U && out.data[out.size - 1U] != '\n' && tool_byte_buffer_append_char(&out, '\n') != 0) {
             goto done;
         }
-        if (git_buffer_append_cstr(&out, section) != 0 || git_buffer_append_char(&out, '\n') != 0 || git_config_append_assignment(&out, var, value) != 0) {
+        if (tool_byte_buffer_append_cstr(&out, section) != 0 || tool_byte_buffer_append_char(&out, '\n') != 0 || git_config_append_assignment(&out, var, value) != 0) {
             goto done;
         }
     }

@@ -72,36 +72,11 @@ static int join_output_path(const char *directory, const char *name, char *buffe
     return tool_join_path(directory, name, buffer, buffer_size);
 }
 
-static int ensure_parent_dirs(const char *path) {
-    char prefix[UNZIP_PATH_CAPACITY];
-    size_t index = 0U;
-
-    if (path == 0 || path[0] == '\0' || rt_strlen(path) >= sizeof(prefix)) return -1;
-    while (path[index] != '\0') {
-        PlatformDirEntry entry;
-        size_t component_end;
-
-        while (path[index] == '/') index += 1U;
-        if (path[index] == '\0') break;
-        while (path[index] != '\0' && path[index] != '/') index += 1U;
-        if (path[index] == '\0') break;
-        component_end = index;
-        memcpy(prefix, path, component_end);
-        prefix[component_end] = '\0';
-        if (prefix[0] == '\0') continue;
-        if (platform_get_path_info(prefix, &entry) == 0) {
-            if ((entry.mode & UNZIP_MODE_TYPE_MASK) == UNZIP_MODE_SYMLINK || !entry.is_dir) return -1;
-        } else if (platform_make_directory(prefix, 0755U) != 0) {
-            if (platform_get_path_info(prefix, &entry) != 0 || !entry.is_dir) return -1;
-        }
-    }
-    return 0;
-}
-
 static int ensure_directory(const char *path) {
     PlatformDirEntry entry;
+    char parent_scratch[UNZIP_PATH_CAPACITY];
 
-    if (ensure_parent_dirs(path) != 0) return -1;
+    if (tool_ensure_parent_dirs(path, parent_scratch, sizeof(parent_scratch)) != 0) return -1;
     if (platform_get_path_info(path, &entry) == 0) {
         return entry.is_dir && (entry.mode & UNZIP_MODE_TYPE_MASK) != UNZIP_MODE_SYMLINK ? 0 : -1;
     }
@@ -112,8 +87,9 @@ static int write_entry_file(const char *path, const unsigned char *data, size_t 
     PlatformDirEntry entry;
     int fd;
     size_t written = 0U;
+    char parent_scratch[UNZIP_PATH_CAPACITY];
 
-    if (ensure_parent_dirs(path) != 0) return -1;
+    if (tool_ensure_parent_dirs(path, parent_scratch, sizeof(parent_scratch)) != 0) return -1;
     if (platform_get_path_info(path, &entry) == 0 && (entry.is_dir || (entry.mode & UNZIP_MODE_TYPE_MASK) == UNZIP_MODE_SYMLINK)) return -1;
     fd = platform_open_write(path, 0644U);
     if (fd < 0) return -1;

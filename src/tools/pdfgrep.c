@@ -19,37 +19,6 @@ static void print_usage(void) {
     tool_write_usage("pdfgrep", "[-i] [-l] [-q] [-n] [-C NUM] PATTERN [PDF ...]");
 }
 
-static int append_bytes(PdfBuffer *buffer, const unsigned char *data, size_t size) {
-    size_t needed;
-    size_t capacity;
-    unsigned char *next;
-    size_t index;
-
-    if (size == 0U) return 0;
-    if (buffer->size > (size_t)-1 - size - 1U) return -1;
-    needed = buffer->size + size + 1U;
-    if (needed > buffer->capacity) {
-        capacity = buffer->capacity == 0U ? 128U : buffer->capacity;
-        while (capacity < needed) {
-            size_t grown = capacity * 2U;
-            if (grown <= capacity) return -1;
-            capacity = grown;
-        }
-        next = (unsigned char *)rt_realloc(buffer->data, capacity);
-        if (next == 0) return -1;
-        buffer->data = next;
-        buffer->capacity = capacity;
-    }
-    for (index = 0U; index < size; ++index) buffer->data[buffer->size + index] = data[index];
-    buffer->size += size;
-    buffer->data[buffer->size] = 0U;
-    return 0;
-}
-
-static int append_char(PdfBuffer *buffer, unsigned char ch) {
-    return append_bytes(buffer, &ch, 1U);
-}
-
 static char lower_ascii(char ch) {
     return ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
 }
@@ -135,11 +104,11 @@ static size_t append_literal(const unsigned char *data, size_t size, size_t offs
             } else if (ch == (unsigned char)'\n') {
                 continue;
             }
-            (void)append_char(pending, ch);
+            (void)tool_byte_buffer_append_byte(pending, ch);
         } else {
             if (ch == (unsigned char)'(') depth += 1;
             if (ch == (unsigned char)')') depth -= 1;
-            if (depth > 0) (void)append_char(pending, ch);
+            if (depth > 0) (void)tool_byte_buffer_append_byte(pending, ch);
         }
     }
     return offset;
@@ -161,14 +130,14 @@ static size_t append_hex_string(const unsigned char *data, size_t size, size_t o
         if (high < 0) high = value;
         else {
             unsigned char ch = (unsigned char)((high << 4) | value);
-            (void)append_char(pending, ch);
+            (void)tool_byte_buffer_append_byte(pending, ch);
             high = -1;
         }
         offset += 1U;
     }
     if (high >= 0) {
         unsigned char ch = (unsigned char)(high << 4);
-        (void)append_char(pending, ch);
+        (void)tool_byte_buffer_append_byte(pending, ch);
     }
     if (offset < size && data[offset] == (unsigned char)'>') offset += 1U;
     return offset;

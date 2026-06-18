@@ -124,11 +124,7 @@ typedef struct {
     int saw_change;
 } GitStatusWalk;
 
-typedef struct {
-    unsigned char *data;
-    size_t size;
-    size_t capacity;
-} GitBuffer;
+typedef ToolByteBuffer GitBuffer;
 
 typedef int (*GitHttpBodyCallback)(const unsigned char *data, size_t size, void *user_data);
 
@@ -255,11 +251,7 @@ static void git_ignore_destroy(GitIgnoreList *ignores) {
 }
 
 static void git_buffer_destroy(GitBuffer *buffer) {
-    if (buffer == 0) {
-        return;
-    }
-    rt_free(buffer->data);
-    rt_memset(buffer, 0, sizeof(*buffer));
+    tool_byte_buffer_free(buffer);
 }
 
 static void git_remote_refs_destroy(GitRemoteRefs *refs) {
@@ -318,47 +310,8 @@ static int git_copy(char *buffer, size_t buffer_size, const char *text) {
     return 0;
 }
 
-static int git_buffer_reserve(GitBuffer *buffer, size_t needed) {
-    unsigned char *new_data;
-    size_t new_capacity;
-
-    if (needed <= buffer->capacity) {
-        return 0;
-    }
-    new_capacity = buffer->capacity == 0U ? 4096U : buffer->capacity;
-    while (new_capacity < needed) {
-        if (new_capacity > ((size_t)-1) / 2U) {
-            return -1;
-        }
-        new_capacity *= 2U;
-    }
-    new_data = (unsigned char *)rt_realloc(buffer->data, new_capacity);
-    if (new_data == 0) {
-        return -1;
-    }
-    buffer->data = new_data;
-    buffer->capacity = new_capacity;
-    return 0;
-}
-
 static int git_buffer_append(GitBuffer *buffer, const void *data, size_t size) {
-    if (size == 0U) {
-        return 0;
-    }
-    if (data == 0 || buffer->size > ((size_t)-1) - size || git_buffer_reserve(buffer, buffer->size + size) != 0) {
-        return -1;
-    }
-    memcpy(buffer->data + buffer->size, data, size);
-    buffer->size += size;
-    return 0;
-}
-
-static int git_buffer_append_cstr(GitBuffer *buffer, const char *text) {
-    return git_buffer_append(buffer, text, rt_strlen(text));
-}
-
-static int git_buffer_append_char(GitBuffer *buffer, char ch) {
-    return git_buffer_append(buffer, &ch, 1U);
+    return tool_byte_buffer_append(buffer, data, size);
 }
 
 static void git_buffer_discard_prefix(GitBuffer *buffer, size_t count) {

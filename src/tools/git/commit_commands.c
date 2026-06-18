@@ -2,7 +2,7 @@ static int git_buffer_append_unsigned(GitBuffer *buffer, unsigned long long valu
     char digits[32];
 
     rt_unsigned_to_string(value, digits, sizeof(digits));
-    return git_buffer_append_cstr(buffer, digits);
+    return tool_byte_buffer_append_cstr(buffer, digits);
 }
 
 static const char *git_identity_value(const char *primary, const char *fallback, const char *default_value) {
@@ -25,14 +25,14 @@ static int git_commit_append_identity_line(GitBuffer *commit, const char *prefix
     const char *email = git_identity_value(email_env, 0, "newos@example.invalid");
     unsigned long long timestamp = epoch_seconds < 0 ? 0ULL : (unsigned long long)epoch_seconds;
 
-    if (git_buffer_append_cstr(commit, prefix) != 0 ||
-        git_buffer_append_char(commit, ' ') != 0 ||
-        git_buffer_append_cstr(commit, name) != 0 ||
-        git_buffer_append_cstr(commit, " <") != 0 ||
-        git_buffer_append_cstr(commit, email) != 0 ||
-        git_buffer_append_cstr(commit, "> ") != 0 ||
+    if (tool_byte_buffer_append_cstr(commit, prefix) != 0 ||
+        tool_byte_buffer_append_char(commit, ' ') != 0 ||
+        tool_byte_buffer_append_cstr(commit, name) != 0 ||
+        tool_byte_buffer_append_cstr(commit, " <") != 0 ||
+        tool_byte_buffer_append_cstr(commit, email) != 0 ||
+        tool_byte_buffer_append_cstr(commit, "> ") != 0 ||
         git_buffer_append_unsigned(commit, timestamp) != 0 ||
-        git_buffer_append_cstr(commit, " +0000\n") != 0) {
+        tool_byte_buffer_append_cstr(commit, " +0000\n") != 0) {
         return -1;
     }
     return 0;
@@ -46,18 +46,18 @@ static int git_write_commit_from_tree_with_parent(GitRepo *repo, const unsigned 
 
     rt_memset(&commit, 0, sizeof(commit));
     git_format_oid_hex(tree_oid, tree_hex);
-    if (git_buffer_append_cstr(&commit, "tree ") != 0 || git_buffer_append_cstr(&commit, tree_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
+    if (tool_byte_buffer_append_cstr(&commit, "tree ") != 0 || tool_byte_buffer_append_cstr(&commit, tree_hex) != 0 || tool_byte_buffer_append_char(&commit, '\n') != 0) {
         goto done;
     }
     if (parent_oid_or_null != 0) {
         git_format_oid_hex(parent_oid_or_null, parent_hex);
     }
-    if (parent_oid_or_null != 0 && (git_buffer_append_cstr(&commit, "parent ") != 0 || git_buffer_append_cstr(&commit, parent_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0)) {
+    if (parent_oid_or_null != 0 && (tool_byte_buffer_append_cstr(&commit, "parent ") != 0 || tool_byte_buffer_append_cstr(&commit, parent_hex) != 0 || tool_byte_buffer_append_char(&commit, '\n') != 0)) {
         goto done;
     }
     if (git_commit_append_identity_line(&commit, "author", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", platform_get_epoch_time()) != 0 ||
         git_commit_append_identity_line(&commit, "committer", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", platform_get_epoch_time()) != 0 ||
-        git_buffer_append_char(&commit, '\n') != 0 || git_buffer_append_cstr(&commit, message) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
+        tool_byte_buffer_append_char(&commit, '\n') != 0 || tool_byte_buffer_append_cstr(&commit, message) != 0 || tool_byte_buffer_append_char(&commit, '\n') != 0) {
         goto done;
     }
     result = git_write_loose_object(repo, GIT_OBJECT_COMMIT, commit.data, commit.size, commit_oid);
@@ -122,9 +122,9 @@ static int git_reflog_append_hex(const GitRepo *repo, const char *log_name, cons
     if (git_join(path, sizeof(path), repo->git_dir, "logs") != 0 || git_join(path, sizeof(path), path, log_name) != 0 || git_copy(parent, sizeof(parent), path) != 0 || git_path_parent(parent) != 0 || git_make_directory_chain(parent) != 0) {
         return -1;
     }
-    if (git_buffer_append_cstr(&line, old_hex) != 0 || git_buffer_append_char(&line, ' ') != 0 || git_buffer_append_cstr(&line, new_hex) != 0 || git_buffer_append_char(&line, ' ') != 0 ||
-        git_buffer_append_cstr(&line, name) != 0 || git_buffer_append_cstr(&line, " <") != 0 || git_buffer_append_cstr(&line, email) != 0 || git_buffer_append_cstr(&line, "> ") != 0 ||
-        git_buffer_append_unsigned(&line, (unsigned long long)platform_get_epoch_time()) != 0 || git_buffer_append_cstr(&line, " +0000\t") != 0 || git_buffer_append_cstr(&line, message != 0 ? message : "update") != 0 || git_buffer_append_char(&line, '\n') != 0) {
+    if (tool_byte_buffer_append_cstr(&line, old_hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 || tool_byte_buffer_append_cstr(&line, new_hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 ||
+        tool_byte_buffer_append_cstr(&line, name) != 0 || tool_byte_buffer_append_cstr(&line, " <") != 0 || tool_byte_buffer_append_cstr(&line, email) != 0 || tool_byte_buffer_append_cstr(&line, "> ") != 0 ||
+        git_buffer_append_unsigned(&line, (unsigned long long)platform_get_epoch_time()) != 0 || tool_byte_buffer_append_cstr(&line, " +0000\t") != 0 || tool_byte_buffer_append_cstr(&line, message != 0 ? message : "update") != 0 || tool_byte_buffer_append_char(&line, '\n') != 0) {
         goto done;
     }
     fd = platform_open_append(path, 0644U);
@@ -727,20 +727,20 @@ static int git_cmd_commit(GitRepo *repo, int argc, char **argv, int argi) {
 
     rt_memset(&commit, 0, sizeof(commit));
     git_format_oid_hex(tree_oid, tree_hex);
-    if (git_buffer_append_cstr(&commit, "tree ") != 0 || git_buffer_append_cstr(&commit, tree_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
+    if (tool_byte_buffer_append_cstr(&commit, "tree ") != 0 || tool_byte_buffer_append_cstr(&commit, tree_hex) != 0 || tool_byte_buffer_append_char(&commit, '\n') != 0) {
         goto commit_done;
     }
     if (have_parent) {
         git_format_oid_hex(parent_oid, parent_hex);
-        if (git_buffer_append_cstr(&commit, "parent ") != 0 || git_buffer_append_cstr(&commit, parent_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
+        if (tool_byte_buffer_append_cstr(&commit, "parent ") != 0 || tool_byte_buffer_append_cstr(&commit, parent_hex) != 0 || tool_byte_buffer_append_char(&commit, '\n') != 0) {
             goto commit_done;
         }
     }
     if (git_commit_append_identity_line(&commit, "author", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", platform_get_epoch_time()) != 0 ||
         git_commit_append_identity_line(&commit, "committer", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", platform_get_epoch_time()) != 0 ||
-        git_buffer_append_char(&commit, '\n') != 0 ||
-        git_buffer_append_cstr(&commit, message) != 0 ||
-        git_buffer_append_char(&commit, '\n') != 0) {
+        tool_byte_buffer_append_char(&commit, '\n') != 0 ||
+        tool_byte_buffer_append_cstr(&commit, message) != 0 ||
+        tool_byte_buffer_append_char(&commit, '\n') != 0) {
         goto commit_done;
     }
     if (git_write_loose_object(repo, GIT_OBJECT_COMMIT, commit.data, commit.size, commit_oid) != 0) {

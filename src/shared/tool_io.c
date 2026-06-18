@@ -184,6 +184,14 @@ int tool_byte_buffer_append_byte(ToolByteBuffer *buffer, unsigned int value) {
     return tool_byte_buffer_append(buffer, &byte, 1U);
 }
 
+int tool_byte_buffer_append_char(ToolByteBuffer *buffer, char ch) {
+    return tool_byte_buffer_append(buffer, &ch, 1U);
+}
+
+int tool_byte_buffer_append_cstr(ToolByteBuffer *buffer, const char *text) {
+    return tool_byte_buffer_append(buffer, text, rt_strlen(text));
+}
+
 int tool_byte_buffer_append_u16_be(ToolByteBuffer *buffer, unsigned int value) {
     unsigned char bytes[2];
 
