@@ -23,6 +23,103 @@ int pgp_write_date(int fd, unsigned long long epoch) {
     return rt_write_uint(fd, day);
 }
 
+void pgp_buffer_free(PgpBuffer *buffer) {
+    if (buffer == 0) return;
+    if (buffer->data != 0) rt_free(buffer->data);
+    buffer->data = 0;
+    buffer->size = 0U;
+    buffer->capacity = 0U;
+}
+
+int pgp_buffer_reserve(PgpBuffer *buffer, size_t extra) {
+    size_t needed;
+    size_t capacity;
+    unsigned char *grown;
+
+    if (buffer == 0 || extra > ((size_t)-1) - buffer->size) return -1;
+    needed = buffer->size + extra;
+    if (needed <= buffer->capacity) return 0;
+    capacity = buffer->capacity != 0U ? buffer->capacity : 128U;
+    while (capacity < needed) {
+        if (capacity > ((size_t)-1) / 2U) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2U;
+    }
+    grown = (unsigned char *)rt_realloc(buffer->data, capacity);
+    if (grown == 0) return -1;
+    buffer->data = grown;
+    buffer->capacity = capacity;
+    return 0;
+}
+
+int pgp_buffer_append_byte(PgpBuffer *buffer, unsigned int value) {
+    if (pgp_buffer_reserve(buffer, 1U) != 0) return -1;
+    buffer->data[buffer->size++] = (unsigned char)(value & 0xffU);
+    return 0;
+}
+
+int pgp_buffer_append_data(PgpBuffer *buffer, const unsigned char *data, size_t size) {
+    if (size == 0U) return 0;
+    if (pgp_buffer_reserve(buffer, size) != 0) return -1;
+    memcpy(buffer->data + buffer->size, data, size);
+    buffer->size += size;
+    return 0;
+}
+
+int pgp_buffer_append_u16_be(PgpBuffer *buffer, unsigned int value) {
+    return pgp_buffer_append_byte(buffer, (value >> 8U) & 0xffU) != 0 || pgp_buffer_append_byte(buffer, value & 0xffU) != 0 ? -1 : 0;
+}
+
+int pgp_buffer_append_u32_be(PgpBuffer *buffer, unsigned long long value) {
+    return pgp_buffer_append_byte(buffer, (unsigned int)((value >> 24U) & 0xffU)) != 0 ||
+           pgp_buffer_append_byte(buffer, (unsigned int)((value >> 16U) & 0xffU)) != 0 ||
+           pgp_buffer_append_byte(buffer, (unsigned int)((value >> 8U) & 0xffU)) != 0 ||
+           pgp_buffer_append_byte(buffer, (unsigned int)(value & 0xffU)) != 0 ? -1 : 0;
+}
+
+int pgp_buffer_append_packet_length(PgpBuffer *buffer, size_t length) {
+    if (length < 192U) return pgp_buffer_append_byte(buffer, (unsigned int)length);
+    if (length <= 8383U) {
+        size_t encoded = length - 192U;
+
+        return pgp_buffer_append_byte(buffer, (unsigned int)((encoded >> 8U) + 192U)) != 0 ||
+               pgp_buffer_append_byte(buffer, (unsigned int)(encoded & 0xffU)) != 0 ? -1 : 0;
+    }
+    if (length > 0xffffffffULL) return -1;
+    return pgp_buffer_append_byte(buffer, 255U) != 0 || pgp_buffer_append_u32_be(buffer, (unsigned long long)length) != 0 ? -1 : 0;
+}
+
+int pgp_buffer_append_packet(PgpBuffer *buffer, unsigned int tag, const PgpBuffer *body) {
+    if (tag > 63U || body == 0) return -1;
+    return pgp_buffer_append_byte(buffer, 0xc0U | tag) != 0 ||
+           pgp_buffer_append_packet_length(buffer, body->size) != 0 ||
+           pgp_buffer_append_data(buffer, body->data, body->size) != 0 ? -1 : 0;
+}
+
+int pgp_buffer_append_signature_subpacket(PgpBuffer *buffer, unsigned int type, const unsigned char *body, size_t body_size) {
+    if (body_size > ((size_t)-1) - 1U) return -1;
+    if (pgp_buffer_append_packet_length(buffer, body_size + 1U) != 0) return -1;
+    if (pgp_buffer_append_byte(buffer, type) != 0) return -1;
+    return pgp_buffer_append_data(buffer, body, body_size);
+}
+
+int pgp_buffer_append_signature_subpacket_u32(PgpBuffer *buffer, unsigned int type, unsigned long long value) {
+    unsigned char body[4];
+
+    body[0] = (unsigned char)((value >> 24U) & 0xffU);
+    body[1] = (unsigned char)((value >> 16U) & 0xffU);
+    body[2] = (unsigned char)((value >> 8U) & 0xffU);
+    body[3] = (unsigned char)(value & 0xffU);
+    return pgp_buffer_append_signature_subpacket(buffer, type, body, sizeof(body));
+}
+
+int pgp_buffer_append_opaque_mpi(PgpBuffer *buffer, const unsigned char *data, size_t size, unsigned int bit_count) {
+    if (bit_count > 65535U) return -1;
+    return pgp_buffer_append_u16_be(buffer, bit_count) != 0 || pgp_buffer_append_data(buffer, data, size) != 0 ? -1 : 0;
+}
+
 static void pgp_set_error(char *error, size_t error_size, const char *message) {
     if (error != 0 && error_size > 0U) {
         rt_copy_string(error, error_size, message != 0 ? message : "OpenPGP error");

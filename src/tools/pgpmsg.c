@@ -98,11 +98,7 @@ typedef struct {
     int present;
 } PgpMsgSignatureSummary;
 
-typedef struct {
-    unsigned char *data;
-    size_t size;
-    size_t capacity;
-} PgpMsgBuffer;
+typedef PgpBuffer PgpMsgBuffer;
 
 typedef struct {
     PgpPublicKeyInfo info;
@@ -180,97 +176,6 @@ static int add_recipient_option(PgpMsgOptions *options, const char *recipient) {
 
 static unsigned int read_u16_be(const unsigned char *data) {
     return ((unsigned int)data[0] << 8U) | (unsigned int)data[1];
-}
-
-static void msg_buffer_free(PgpMsgBuffer *buffer) {
-    if (buffer->data != 0) rt_free(buffer->data);
-    buffer->data = 0;
-    buffer->size = 0U;
-    buffer->capacity = 0U;
-}
-
-static int msg_buffer_reserve(PgpMsgBuffer *buffer, size_t extra) {
-    size_t needed;
-    size_t capacity;
-    unsigned char *grown;
-
-    if (extra > ((size_t)-1) - buffer->size) return -1;
-    needed = buffer->size + extra;
-    if (needed <= buffer->capacity) return 0;
-    capacity = buffer->capacity != 0U ? buffer->capacity : 128U;
-    while (capacity < needed) {
-        if (capacity > ((size_t)-1) / 2U) {
-            capacity = needed;
-            break;
-        }
-        capacity *= 2U;
-    }
-    grown = (unsigned char *)rt_realloc(buffer->data, capacity);
-    if (grown == 0) return -1;
-    buffer->data = grown;
-    buffer->capacity = capacity;
-    return 0;
-}
-
-static int msg_buffer_append_byte(PgpMsgBuffer *buffer, unsigned int value) {
-    if (msg_buffer_reserve(buffer, 1U) != 0) return -1;
-    buffer->data[buffer->size++] = (unsigned char)(value & 0xffU);
-    return 0;
-}
-
-static int msg_buffer_append_data(PgpMsgBuffer *buffer, const unsigned char *data, size_t size) {
-    if (size == 0U) return 0;
-    if (msg_buffer_reserve(buffer, size) != 0) return -1;
-    memcpy(buffer->data + buffer->size, data, size);
-    buffer->size += size;
-    return 0;
-}
-
-static int msg_buffer_append_u16_be(PgpMsgBuffer *buffer, unsigned int value) {
-    return msg_buffer_append_byte(buffer, (value >> 8U) & 0xffU) != 0 || msg_buffer_append_byte(buffer, value & 0xffU) != 0 ? -1 : 0;
-}
-
-static int msg_buffer_append_u32_be(PgpMsgBuffer *buffer, unsigned long long value) {
-    return msg_buffer_append_byte(buffer, (unsigned int)((value >> 24U) & 0xffU)) != 0 ||
-           msg_buffer_append_byte(buffer, (unsigned int)((value >> 16U) & 0xffU)) != 0 ||
-           msg_buffer_append_byte(buffer, (unsigned int)((value >> 8U) & 0xffU)) != 0 ||
-           msg_buffer_append_byte(buffer, (unsigned int)(value & 0xffU)) != 0 ? -1 : 0;
-}
-
-static int msg_buffer_append_packet_length(PgpMsgBuffer *buffer, size_t length) {
-    if (length < 192U) return msg_buffer_append_byte(buffer, (unsigned int)length);
-    if (length <= 8383U) {
-        size_t encoded = length - 192U;
-        return msg_buffer_append_byte(buffer, (unsigned int)((encoded >> 8U) + 192U)) != 0 || msg_buffer_append_byte(buffer, (unsigned int)(encoded & 0xffU)) != 0 ? -1 : 0;
-    }
-    if (length > 0xffffffffULL) return -1;
-    return msg_buffer_append_byte(buffer, 255U) != 0 || msg_buffer_append_u32_be(buffer, (unsigned long long)length) != 0 ? -1 : 0;
-}
-
-static int msg_buffer_append_packet(PgpMsgBuffer *buffer, unsigned int tag, const PgpMsgBuffer *body) {
-    return msg_buffer_append_byte(buffer, 0xc0U | (tag & 0x3fU)) != 0 ||
-           msg_buffer_append_packet_length(buffer, body->size) != 0 ||
-           msg_buffer_append_data(buffer, body->data, body->size) != 0 ? -1 : 0;
-}
-
-static int msg_buffer_append_signature_subpacket(PgpMsgBuffer *buffer, unsigned int type, const unsigned char *body, size_t body_size) {
-    if (msg_buffer_append_packet_length(buffer, body_size + 1U) != 0) return -1;
-    if (msg_buffer_append_byte(buffer, type) != 0) return -1;
-    return msg_buffer_append_data(buffer, body, body_size);
-}
-
-static int msg_buffer_append_signature_subpacket_u32(PgpMsgBuffer *buffer, unsigned int type, unsigned long long value) {
-    unsigned char body[4];
-
-    body[0] = (unsigned char)((value >> 24U) & 0xffU);
-    body[1] = (unsigned char)((value >> 16U) & 0xffU);
-    body[2] = (unsigned char)((value >> 8U) & 0xffU);
-    body[3] = (unsigned char)(value & 0xffU);
-    return msg_buffer_append_signature_subpacket(buffer, type, body, sizeof(body));
-}
-
-static int msg_buffer_append_opaque_mpi(PgpMsgBuffer *buffer, const unsigned char *data, size_t size, unsigned int bits) {
-    return msg_buffer_append_u16_be(buffer, bits) != 0 || msg_buffer_append_data(buffer, data, size) != 0 ? -1 : 0;
 }
 
 static int write_output_data(const char *path, const unsigned char *data, size_t size, int armor_signature) {
@@ -603,7 +508,7 @@ static int pgpmsg_aes128_key_wrap(const unsigned char kek[CRYPTO_AES128_KEY_SIZE
             memcpy(r + i * 8U, block + 8U, 8U);
         }
     }
-    if (msg_buffer_append_data(wrapped, a, 8U) != 0 || msg_buffer_append_data(wrapped, r, plain_size) != 0) goto cleanup;
+    if (pgp_buffer_append_data(wrapped, a, 8U) != 0 || pgp_buffer_append_data(wrapped, r, plain_size) != 0) goto cleanup;
     result = 0;
 
 cleanup:
@@ -683,7 +588,7 @@ static int pgpmsg_aes_key_wrap(const unsigned char kek[PGPMSG_AES256_KEY_SIZE], 
             memcpy(r + i * 8U, block + 8U, 8U);
         }
     }
-    if (msg_buffer_append_data(wrapped, a, 8U) != 0 || msg_buffer_append_data(wrapped, r, plain_size) != 0) return -1;
+    if (pgp_buffer_append_data(wrapped, a, 8U) != 0 || pgp_buffer_append_data(wrapped, r, plain_size) != 0) return -1;
     crypto_secure_bzero(&aes, sizeof(aes));
     crypto_secure_bzero(a, sizeof(a));
     crypto_secure_bzero(r, sizeof(r));
@@ -1177,12 +1082,12 @@ static int canonicalize_cleartext_for_signature(const unsigned char *input, size
         line_end = offset;
         if (offset < input_size && input[offset] == '\r') offset += 1U;
         if (offset < input_size && input[offset] == '\n') offset += 1U;
-        if (msg_buffer_append_data(canonical, input + line_start, line_end - line_start) != 0 ||
-            msg_buffer_append_byte(canonical, '\r') != 0 ||
-            msg_buffer_append_byte(canonical, '\n') != 0) return -1;
+        if (pgp_buffer_append_data(canonical, input + line_start, line_end - line_start) != 0 ||
+            pgp_buffer_append_byte(canonical, '\r') != 0 ||
+            pgp_buffer_append_byte(canonical, '\n') != 0) return -1;
     }
     if (input_size == 0U) {
-        if (msg_buffer_append_byte(canonical, '\r') != 0 || msg_buffer_append_byte(canonical, '\n') != 0) return -1;
+        if (pgp_buffer_append_byte(canonical, '\r') != 0 || pgp_buffer_append_byte(canonical, '\n') != 0) return -1;
     }
     return 0;
 }
@@ -1236,38 +1141,38 @@ static int build_signature_packet_for_data(const PgpMsgSecretKey *secret, const 
     issuer_fingerprint[0] = (unsigned char)signature_version;
     memcpy(issuer_fingerprint + 1U, secret->info.fingerprint, secret->info.fingerprint_size);
     if (signature_version == 6U && platform_random_bytes(signature_salt, sizeof(signature_salt)) != 0) goto cleanup;
-    if (msg_buffer_append_signature_subpacket_u32(&hashed, signature_version == 6U ? 0x82U : 2U, created) != 0 ||
-        (signature_version == 4U && msg_buffer_append_signature_subpacket(&unhashed, 16U, secret->info.key_id, PGP_KEY_ID_SIZE) != 0) ||
-        msg_buffer_append_signature_subpacket(signature_version == 6U ? &hashed : &unhashed, 33U, issuer_fingerprint, secret->info.fingerprint_size + 1U) != 0 ||
-        msg_buffer_append_byte(&hash_part, signature_version) != 0 ||
-        msg_buffer_append_byte(&hash_part, signature_type) != 0 ||
-        msg_buffer_append_byte(&hash_part, public_key_algorithm) != 0 ||
-        msg_buffer_append_byte(&hash_part, 10U) != 0 ||
-        (signature_version == 6U ? msg_buffer_append_u32_be(&hash_part, hashed.size) : msg_buffer_append_u16_be(&hash_part, (unsigned int)hashed.size)) != 0 ||
-        msg_buffer_append_data(&hash_part, hashed.data, hashed.size) != 0) goto cleanup;
+    if (pgp_buffer_append_signature_subpacket_u32(&hashed, signature_version == 6U ? 0x82U : 2U, created) != 0 ||
+        (signature_version == 4U && pgp_buffer_append_signature_subpacket(&unhashed, 16U, secret->info.key_id, PGP_KEY_ID_SIZE) != 0) ||
+        pgp_buffer_append_signature_subpacket(signature_version == 6U ? &hashed : &unhashed, 33U, issuer_fingerprint, secret->info.fingerprint_size + 1U) != 0 ||
+        pgp_buffer_append_byte(&hash_part, signature_version) != 0 ||
+        pgp_buffer_append_byte(&hash_part, signature_type) != 0 ||
+        pgp_buffer_append_byte(&hash_part, public_key_algorithm) != 0 ||
+        pgp_buffer_append_byte(&hash_part, 10U) != 0 ||
+        (signature_version == 6U ? pgp_buffer_append_u32_be(&hash_part, hashed.size) : pgp_buffer_append_u16_be(&hash_part, (unsigned int)hashed.size)) != 0 ||
+        pgp_buffer_append_data(&hash_part, hashed.data, hashed.size) != 0) goto cleanup;
     hash_detached_signature_data_ex(signature_version, signature_version == 6U ? signature_salt : 0, signature_version == 6U ? sizeof(signature_salt) : 0U, data, data_size, hash_part.data, hash_part.size, digest);
     if (crypto_ed25519_sign(signature, digest, sizeof(digest), secret->seed, secret->info.public_material) != 0) goto cleanup;
-    if (msg_buffer_append_data(&signature_body, hash_part.data, hash_part.size) != 0 ||
-        (signature_version == 6U ? msg_buffer_append_u32_be(&signature_body, unhashed.size) : msg_buffer_append_u16_be(&signature_body, (unsigned int)unhashed.size)) != 0 ||
-        msg_buffer_append_data(&signature_body, unhashed.data, unhashed.size) != 0 ||
-        msg_buffer_append_byte(&signature_body, digest[0]) != 0 ||
-        msg_buffer_append_byte(&signature_body, digest[1]) != 0) goto cleanup;
+    if (pgp_buffer_append_data(&signature_body, hash_part.data, hash_part.size) != 0 ||
+        (signature_version == 6U ? pgp_buffer_append_u32_be(&signature_body, unhashed.size) : pgp_buffer_append_u16_be(&signature_body, (unsigned int)unhashed.size)) != 0 ||
+        pgp_buffer_append_data(&signature_body, unhashed.data, unhashed.size) != 0 ||
+        pgp_buffer_append_byte(&signature_body, digest[0]) != 0 ||
+        pgp_buffer_append_byte(&signature_body, digest[1]) != 0) goto cleanup;
     if (signature_version == 6U) {
-        if (msg_buffer_append_byte(&signature_body, sizeof(signature_salt)) != 0 ||
-            msg_buffer_append_data(&signature_body, signature_salt, sizeof(signature_salt)) != 0 ||
-            msg_buffer_append_data(&signature_body, signature, sizeof(signature)) != 0) goto cleanup;
-    } else if (msg_buffer_append_opaque_mpi(&signature_body, signature, 32U, 256U) != 0 ||
-               msg_buffer_append_opaque_mpi(&signature_body, signature + 32U, 32U, 256U) != 0) {
+        if (pgp_buffer_append_byte(&signature_body, sizeof(signature_salt)) != 0 ||
+            pgp_buffer_append_data(&signature_body, signature_salt, sizeof(signature_salt)) != 0 ||
+            pgp_buffer_append_data(&signature_body, signature, sizeof(signature)) != 0) goto cleanup;
+    } else if (pgp_buffer_append_opaque_mpi(&signature_body, signature, 32U, 256U) != 0 ||
+               pgp_buffer_append_opaque_mpi(&signature_body, signature + 32U, 32U, 256U) != 0) {
         goto cleanup;
     }
-    if (msg_buffer_append_packet(signature_packet, 2U, &signature_body) != 0) goto cleanup;
+    if (pgp_buffer_append_packet(signature_packet, 2U, &signature_body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&hashed);
-    msg_buffer_free(&unhashed);
-    msg_buffer_free(&hash_part);
-    msg_buffer_free(&signature_body);
+    pgp_buffer_free(&hashed);
+    pgp_buffer_free(&unhashed);
+    pgp_buffer_free(&hash_part);
+    pgp_buffer_free(&signature_body);
     crypto_secure_bzero(digest, sizeof(digest));
     crypto_secure_bzero(signature, sizeof(signature));
     crypto_secure_bzero(signature_salt, sizeof(signature_salt));
@@ -1650,7 +1555,7 @@ static int pgpmsg_append_minimal_mpi(PgpMsgBuffer *buffer, const unsigned char *
     size_t offset = pgpmsg_be_skip_zeroes(data, size);
     unsigned int bits = pgpmsg_mpi_bit_length(data, size);
 
-    return msg_buffer_append_opaque_mpi(buffer, data + offset, size - offset, bits);
+    return pgp_buffer_append_opaque_mpi(buffer, data + offset, size - offset, bits);
 }
 
 static int pgpmsg_parse_elgamal_public_material(
@@ -1791,16 +1696,16 @@ static int build_elgamal_encrypted_session_key(const PgpPublicKeyInfo *recipient
     if (crypto_modexp_be(c1, p_size, g, g_size, exponent, p_size, p, p_size) != 0) goto cleanup;
     if (crypto_modexp_be(y_to_k, p_size, y, y_size, exponent, p_size, p, p_size) != 0) goto cleanup;
     if (crypto_mul_mod_be(c2, p_size, y_to_k, p_size, message, p_size, p, p_size) != 0) goto cleanup;
-    if (msg_buffer_append_byte(&body, 3U) != 0 ||
-        msg_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
-        msg_buffer_append_byte(&body, 16U) != 0 ||
+    if (pgp_buffer_append_byte(&body, 3U) != 0 ||
+        pgp_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
+        pgp_buffer_append_byte(&body, 16U) != 0 ||
         pgpmsg_append_minimal_mpi(&body, c1, p_size) != 0 ||
         pgpmsg_append_minimal_mpi(&body, c2, p_size) != 0 ||
-        msg_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
+        pgp_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&body);
+    pgp_buffer_free(&body);
     crypto_secure_bzero(exponent, sizeof(exponent));
     crypto_secure_bzero(message, sizeof(message));
     crypto_secure_bzero(c1, sizeof(c1));
@@ -1829,15 +1734,15 @@ static int build_rsa_encrypted_session_key(const PgpPublicKeyInfo *recipient, co
     session_info[33] = (unsigned char)((checksum >> 8U) & 0xffU);
     session_info[34] = (unsigned char)(checksum & 0xffU);
     if (crypto_rsa_pkcs1_v15_encrypt(encrypted, sizeof(encrypted), &encrypted_size, session_info, sizeof(session_info), modulus, modulus_size, exponent, exponent_size) != 0) goto cleanup;
-    if (msg_buffer_append_byte(&body, 3U) != 0 ||
-        msg_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
-        msg_buffer_append_byte(&body, recipient->algorithm) != 0 ||
+    if (pgp_buffer_append_byte(&body, 3U) != 0 ||
+        pgp_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
+        pgp_buffer_append_byte(&body, recipient->algorithm) != 0 ||
         pgpmsg_append_minimal_mpi(&body, encrypted, encrypted_size) != 0 ||
-        msg_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
+        pgp_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&body);
+    pgp_buffer_free(&body);
     crypto_secure_bzero(session_info, sizeof(session_info));
     crypto_secure_bzero(encrypted, sizeof(encrypted));
     return result;
@@ -1870,15 +1775,15 @@ static int build_encrypted_session_key(const PgpPublicKeyInfo *recipient, const 
             crypto_secure_bzero(kek128, sizeof(kek128));
             goto cleanup;
         }
-        if (msg_buffer_append_byte(&body, 6U) != 0 ||
-            msg_buffer_append_byte(&body, 1U + recipient->fingerprint_size) != 0 ||
-            msg_buffer_append_byte(&body, 6U) != 0 ||
-            msg_buffer_append_data(&body, recipient->fingerprint, recipient->fingerprint_size) != 0 ||
-            msg_buffer_append_byte(&body, 25U) != 0 ||
-            msg_buffer_append_data(&body, ephemeral_public, PGPMSG_X25519_KEY_SIZE) != 0 ||
-            msg_buffer_append_byte(&body, (unsigned int)wrapped.size) != 0 ||
-            msg_buffer_append_data(&body, wrapped.data, wrapped.size) != 0 ||
-            msg_buffer_append_packet(pkesk_packet, 1U, &body) != 0) {
+        if (pgp_buffer_append_byte(&body, 6U) != 0 ||
+            pgp_buffer_append_byte(&body, 1U + recipient->fingerprint_size) != 0 ||
+            pgp_buffer_append_byte(&body, 6U) != 0 ||
+            pgp_buffer_append_data(&body, recipient->fingerprint, recipient->fingerprint_size) != 0 ||
+            pgp_buffer_append_byte(&body, 25U) != 0 ||
+            pgp_buffer_append_data(&body, ephemeral_public, PGPMSG_X25519_KEY_SIZE) != 0 ||
+            pgp_buffer_append_byte(&body, (unsigned int)wrapped.size) != 0 ||
+            pgp_buffer_append_data(&body, wrapped.data, wrapped.size) != 0 ||
+            pgp_buffer_append_packet(pkesk_packet, 1U, &body) != 0) {
             crypto_secure_bzero(kek128, sizeof(kek128));
             goto cleanup;
         }
@@ -1909,18 +1814,18 @@ static int build_encrypted_session_key(const PgpPublicKeyInfo *recipient, const 
     if (pgpmsg_aes_key_wrap(kek, session_plain, 35U + pad_size, &wrapped) != 0) goto cleanup;
     point[0] = 0x40U;
     memcpy(point + 1U, ephemeral_public, PGPMSG_X25519_KEY_SIZE);
-    if (msg_buffer_append_byte(&body, 3U) != 0 ||
-        msg_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
-        msg_buffer_append_byte(&body, 18U) != 0 ||
-        msg_buffer_append_opaque_mpi(&body, point, sizeof(point), 263U) != 0 ||
-        msg_buffer_append_byte(&body, (unsigned int)wrapped.size) != 0 ||
-        msg_buffer_append_data(&body, wrapped.data, wrapped.size) != 0 ||
-        msg_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
+    if (pgp_buffer_append_byte(&body, 3U) != 0 ||
+        pgp_buffer_append_data(&body, recipient->key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
+        pgp_buffer_append_byte(&body, 18U) != 0 ||
+        pgp_buffer_append_opaque_mpi(&body, point, sizeof(point), 263U) != 0 ||
+        pgp_buffer_append_byte(&body, (unsigned int)wrapped.size) != 0 ||
+        pgp_buffer_append_data(&body, wrapped.data, wrapped.size) != 0 ||
+        pgp_buffer_append_packet(pkesk_packet, 1U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&wrapped);
-    msg_buffer_free(&body);
+    pgp_buffer_free(&wrapped);
+    pgp_buffer_free(&body);
     crypto_secure_bzero(ephemeral_seed, sizeof(ephemeral_seed));
     crypto_secure_bzero(ephemeral_public, sizeof(ephemeral_public));
     crypto_secure_bzero(shared, sizeof(shared));
@@ -1934,12 +1839,12 @@ static int build_literal_packet(const unsigned char *input, size_t input_size, P
     int result;
 
     rt_memset(&body, 0, sizeof(body));
-    result = msg_buffer_append_byte(&body, 'b') != 0 ||
-             msg_buffer_append_byte(&body, 0U) != 0 ||
-             msg_buffer_append_u32_be(&body, 0U) != 0 ||
-             msg_buffer_append_data(&body, input, input_size) != 0 ||
-             msg_buffer_append_packet(literal_packet, 11U, &body) != 0 ? -1 : 0;
-    msg_buffer_free(&body);
+    result = pgp_buffer_append_byte(&body, 'b') != 0 ||
+             pgp_buffer_append_byte(&body, 0U) != 0 ||
+             pgp_buffer_append_u32_be(&body, 0U) != 0 ||
+             pgp_buffer_append_data(&body, input, input_size) != 0 ||
+             pgp_buffer_append_packet(literal_packet, 11U, &body) != 0 ? -1 : 0;
+    pgp_buffer_free(&body);
     return result;
 }
 
@@ -1953,17 +1858,17 @@ static int build_one_pass_signature_packet(const PgpMsgSecretKey *secret, PgpMsg
     if (secret == 0) goto cleanup;
     signature_version = secret->info.version == 6U ? 6U : 4U;
     public_key_algorithm = signature_version == 6U ? 27U : 22U;
-    if (msg_buffer_append_byte(&body, 3U) != 0 ||
-        msg_buffer_append_byte(&body, 0x00U) != 0 ||
-        msg_buffer_append_byte(&body, 10U) != 0 ||
-        msg_buffer_append_byte(&body, public_key_algorithm) != 0 ||
-        msg_buffer_append_data(&body, secret->info.key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
-        msg_buffer_append_byte(&body, 1U) != 0 ||
-        msg_buffer_append_packet(one_pass_packet, 4U, &body) != 0) goto cleanup;
+    if (pgp_buffer_append_byte(&body, 3U) != 0 ||
+        pgp_buffer_append_byte(&body, 0x00U) != 0 ||
+        pgp_buffer_append_byte(&body, 10U) != 0 ||
+        pgp_buffer_append_byte(&body, public_key_algorithm) != 0 ||
+        pgp_buffer_append_data(&body, secret->info.key_id, PGPMSG_KEY_ID_SIZE) != 0 ||
+        pgp_buffer_append_byte(&body, 1U) != 0 ||
+        pgp_buffer_append_packet(one_pass_packet, 4U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&body);
+    pgp_buffer_free(&body);
     return result;
 }
 
@@ -1986,19 +1891,19 @@ static int build_message_payload(const unsigned char *input, size_t input_size, 
     if (signing_secret != 0) {
         if (build_one_pass_signature_packet(signing_secret, &one_pass_packet) != 0 ||
             build_signature_packet_for_data(signing_secret, input, input_size, 0x00U, &signature_packet) != 0 ||
-            msg_buffer_append_data(&signed_packet, one_pass_packet.data, one_pass_packet.size) != 0 ||
-            msg_buffer_append_data(&signed_packet, literal_packet.data, literal_packet.size) != 0 ||
-            msg_buffer_append_data(&signed_packet, signature_packet.data, signature_packet.size) != 0) goto cleanup;
+            pgp_buffer_append_data(&signed_packet, one_pass_packet.data, one_pass_packet.size) != 0 ||
+            pgp_buffer_append_data(&signed_packet, literal_packet.data, literal_packet.size) != 0 ||
+            pgp_buffer_append_data(&signed_packet, signature_packet.data, signature_packet.size) != 0) goto cleanup;
         inner_packet = &signed_packet;
     }
     if (build_compressed_packet(compression, inner_packet, payload_packet) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&literal_packet);
-    msg_buffer_free(&one_pass_packet);
-    msg_buffer_free(&signature_packet);
-    msg_buffer_free(&signed_packet);
+    pgp_buffer_free(&literal_packet);
+    pgp_buffer_free(&one_pass_packet);
+    pgp_buffer_free(&signature_packet);
+    pgp_buffer_free(&signed_packet);
     return result;
 }
 
@@ -2009,7 +1914,7 @@ static int build_compressed_packet(unsigned int compression, const PgpMsgBuffer 
     size_t compressed_size = 0U;
     int result = -1;
 
-    if (compression == PGPMSG_COMPRESSION_NONE) return msg_buffer_append_data(payload_packet, literal_packet->data, literal_packet->size);
+    if (compression == PGPMSG_COMPRESSION_NONE) return pgp_buffer_append_data(payload_packet, literal_packet->data, literal_packet->size);
     if (compression == PGPMSG_COMPRESSION_ZIP) {
         tool_write_error("pgpmsg", "ZIP compression for encryption is not implemented yet; use --compress=zlib", 0);
         return -1;
@@ -2024,13 +1929,13 @@ static int build_compressed_packet(unsigned int compression, const PgpMsgBuffer 
     if (compressed == 0) return -1;
     if (compression_zlib_fixed_lz77(literal_packet->data, literal_packet->size, compressed, compressed_capacity, &compressed_size) != 0) goto cleanup;
     rt_memset(&body, 0, sizeof(body));
-    if (msg_buffer_append_byte(&body, PGPMSG_COMPRESSION_ZLIB) != 0 ||
-        msg_buffer_append_data(&body, compressed, compressed_size) != 0 ||
-        msg_buffer_append_packet(payload_packet, PGPMSG_PGP_COMPRESSED, &body) != 0) {
-        msg_buffer_free(&body);
+    if (pgp_buffer_append_byte(&body, PGPMSG_COMPRESSION_ZLIB) != 0 ||
+        pgp_buffer_append_data(&body, compressed, compressed_size) != 0 ||
+        pgp_buffer_append_packet(payload_packet, PGPMSG_PGP_COMPRESSED, &body) != 0) {
+        pgp_buffer_free(&body);
         goto cleanup;
     }
-    msg_buffer_free(&body);
+    pgp_buffer_free(&body);
     result = 0;
 
 cleanup:
@@ -2054,22 +1959,22 @@ static int build_encrypted_data_packet(const unsigned char session_key[PGPMSG_AE
     prefix[PGPMSG_AES_BLOCK_SIZE] = prefix[PGPMSG_AES_BLOCK_SIZE - 2U];
     prefix[PGPMSG_AES_BLOCK_SIZE + 1U] = prefix[PGPMSG_AES_BLOCK_SIZE - 1U];
     if (build_message_payload(input, input_size, compression, signing_secret, &payload_packet) != 0) goto cleanup;
-    if (msg_buffer_append_data(&plain, prefix, sizeof(prefix)) != 0 ||
-        msg_buffer_append_data(&plain, payload_packet.data, payload_packet.size) != 0 ||
-        msg_buffer_append_data(&plain, mdc_header, sizeof(mdc_header)) != 0) goto cleanup;
+    if (pgp_buffer_append_data(&plain, prefix, sizeof(prefix)) != 0 ||
+        pgp_buffer_append_data(&plain, payload_packet.data, payload_packet.size) != 0 ||
+        pgp_buffer_append_data(&plain, mdc_header, sizeof(mdc_header)) != 0) goto cleanup;
     crypto_sha1_hash(plain.data, plain.size, digest);
-    if (msg_buffer_append_data(&plain, digest, sizeof(digest)) != 0) goto cleanup;
-    if (msg_buffer_append_byte(&body, 1U) != 0) goto cleanup;
-    if (msg_buffer_reserve(&body, plain.size) != 0) goto cleanup;
+    if (pgp_buffer_append_data(&plain, digest, sizeof(digest)) != 0) goto cleanup;
+    if (pgp_buffer_append_byte(&body, 1U) != 0) goto cleanup;
+    if (pgp_buffer_reserve(&body, plain.size) != 0) goto cleanup;
     pgpmsg_aes256_cfb_xcrypt(session_key, plain.data, body.data + body.size, plain.size, 0);
     body.size += plain.size;
-    if (msg_buffer_append_packet(encrypted_packet, 18U, &body) != 0) goto cleanup;
+    if (pgp_buffer_append_packet(encrypted_packet, 18U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&payload_packet);
-    msg_buffer_free(&plain);
-    msg_buffer_free(&body);
+    pgp_buffer_free(&payload_packet);
+    pgp_buffer_free(&plain);
+    pgp_buffer_free(&body);
     crypto_secure_bzero(prefix, sizeof(prefix));
     crypto_secure_bzero(digest, sizeof(digest));
     return result;
@@ -2139,22 +2044,22 @@ static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG
     if (platform_random_bytes(salt, sizeof(salt)) != 0) goto cleanup;
     if (build_message_payload(input, input_size, compression, signing_secret, &payload_packet) != 0) goto cleanup;
     if (pgpmsg_derive_v2_seipd_key(session_key, salt, PGPMSG_V2_SEIPD_CHUNK_OCTET, message_key, iv_prefix) != 0) goto cleanup;
-    if (msg_buffer_append_byte(&body, 2U) != 0 ||
-        msg_buffer_append_byte(&body, 9U) != 0 ||
-        msg_buffer_append_byte(&body, 3U) != 0 ||
-        msg_buffer_append_byte(&body, PGPMSG_V2_SEIPD_CHUNK_OCTET) != 0 ||
-        msg_buffer_append_data(&body, salt, sizeof(salt)) != 0) goto cleanup;
+    if (pgp_buffer_append_byte(&body, 2U) != 0 ||
+        pgp_buffer_append_byte(&body, 9U) != 0 ||
+        pgp_buffer_append_byte(&body, 3U) != 0 ||
+        pgp_buffer_append_byte(&body, PGPMSG_V2_SEIPD_CHUNK_OCTET) != 0 ||
+        pgp_buffer_append_data(&body, salt, sizeof(salt)) != 0) goto cleanup;
     while (offset < payload_packet.size) {
         size_t chunk_size = payload_packet.size - offset;
         size_t ciphertext_offset;
 
         if (chunk_size > PGPMSG_V2_SEIPD_CHUNK_SIZE) chunk_size = PGPMSG_V2_SEIPD_CHUNK_SIZE;
         ciphertext_offset = body.size;
-        if (msg_buffer_reserve(&body, chunk_size + sizeof(tag)) != 0) goto cleanup;
+        if (pgp_buffer_reserve(&body, chunk_size + sizeof(tag)) != 0) goto cleanup;
         pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
         if (crypto_aes256_gcm_encrypt(message_key, nonce, aad, sizeof(aad), payload_packet.data + offset, chunk_size, body.data + ciphertext_offset, tag) != 0) goto cleanup;
         body.size += chunk_size;
-        if (msg_buffer_append_data(&body, tag, sizeof(tag)) != 0) goto cleanup;
+        if (pgp_buffer_append_data(&body, tag, sizeof(tag)) != 0) goto cleanup;
         offset += chunk_size;
         chunk_index += 1ULL;
     }
@@ -2162,12 +2067,12 @@ static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG
     pgpmsg_store_u64_be(final_aad + sizeof(aad), (unsigned long long)payload_packet.size);
     pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
     if (crypto_aes256_gcm_encrypt(message_key, nonce, final_aad, sizeof(final_aad), (const unsigned char *)"", 0U, tag, tag) != 0) goto cleanup;
-    if (msg_buffer_append_data(&body, tag, sizeof(tag)) != 0 || msg_buffer_append_packet(encrypted_packet, 18U, &body) != 0) goto cleanup;
+    if (pgp_buffer_append_data(&body, tag, sizeof(tag)) != 0 || pgp_buffer_append_packet(encrypted_packet, 18U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
-    msg_buffer_free(&payload_packet);
-    msg_buffer_free(&body);
+    pgp_buffer_free(&payload_packet);
+    pgp_buffer_free(&body);
     crypto_secure_bzero(salt, sizeof(salt));
     crypto_secure_bzero(message_key, sizeof(message_key));
     crypto_secure_bzero(iv_prefix, sizeof(iv_prefix));
@@ -2181,8 +2086,8 @@ static int pgpmsg_stream_feed_packet_length(PgpMsgSeipdStream *stream, size_t le
     int result;
 
     rt_memset(&encoded, 0, sizeof(encoded));
-    result = msg_buffer_append_packet_length(&encoded, length) == 0 ? pgpmsg_seipd_stream_write(stream, encoded.data, encoded.size, 1) : -1;
-    msg_buffer_free(&encoded);
+    result = pgp_buffer_append_packet_length(&encoded, length) == 0 ? pgpmsg_seipd_stream_write(stream, encoded.data, encoded.size, 1) : -1;
+    pgp_buffer_free(&encoded);
     return result;
 }
 
@@ -2290,10 +2195,10 @@ static int command_encrypt_stream(const PgpMsgOptions *local_options, const PgpP
 
         rt_memset(&pkesk_packet, 0, sizeof(pkesk_packet));
         if (build_encrypted_session_key(&recipients[recipient_index], session_key, &pkesk_packet) != 0 || rt_write_all(output_fd, pkesk_packet.data, pkesk_packet.size) != 0) {
-            msg_buffer_free(&pkesk_packet);
+            pgp_buffer_free(&pkesk_packet);
             goto cleanup;
         }
-        msg_buffer_free(&pkesk_packet);
+        pgp_buffer_free(&pkesk_packet);
     }
     if (write_stream_encrypted_data_packet(output_fd, input_fd, session_key) != 0) goto cleanup;
     result = 0;
@@ -3132,21 +3037,21 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
 
         rt_memset(&pkesk_packet, 0, sizeof(pkesk_packet));
         if (build_encrypted_session_key(&recipients[recipient_index], session_key, &pkesk_packet) != 0 ||
-            msg_buffer_append_data(&message, pkesk_packet.data, pkesk_packet.size) != 0) {
-            msg_buffer_free(&pkesk_packet);
+            pgp_buffer_append_data(&message, pkesk_packet.data, pkesk_packet.size) != 0) {
+            pgp_buffer_free(&pkesk_packet);
             goto cleanup;
         }
-        msg_buffer_free(&pkesk_packet);
+        pgp_buffer_free(&pkesk_packet);
     }
     if ((recipients[0].version == 6U ? build_encrypted_data_packet_v2(session_key, input, input_size, local_options.compression, have_signing_secret ? &signing_secret : 0, &encrypted_packet) : build_encrypted_data_packet(session_key, input, input_size, local_options.compression, have_signing_secret ? &signing_secret : 0, &encrypted_packet)) != 0 ||
-        msg_buffer_append_data(&message, encrypted_packet.data, encrypted_packet.size) != 0 ||
+        pgp_buffer_append_data(&message, encrypted_packet.data, encrypted_packet.size) != 0 ||
         write_message_output_data(local_options.output_path, message.data, message.size, local_options.armor) != 0) goto cleanup;
     result = 0;
 
 cleanup:
     if (input != 0) rt_free(input);
-    msg_buffer_free(&message);
-    msg_buffer_free(&encrypted_packet);
+    pgp_buffer_free(&message);
+    pgp_buffer_free(&encrypted_packet);
     if (have_signing_secret) crypto_secure_bzero(&signing_secret, sizeof(signing_secret));
     crypto_secure_bzero(session_key, sizeof(session_key));
     if (result != 0) tool_write_error("pgpmsg", "encryption failed", 0);
@@ -3340,15 +3245,15 @@ static int command_sign(int argc, char **argv, int argi, const PgpMsgOptions *op
         result = 1;
         goto cleanup;
     }
-    if (msg_buffer_append_signature_subpacket_u32(&hashed, signature_version == 6U ? 0x82U : 2U, created) != 0 ||
-        (signature_version == 4U && msg_buffer_append_signature_subpacket(&unhashed, 16U, secret.info.key_id, PGP_KEY_ID_SIZE) != 0) ||
-        msg_buffer_append_signature_subpacket(signature_version == 6U ? &hashed : &unhashed, 33U, issuer_fingerprint, secret.info.fingerprint_size + 1U) != 0 ||
-        msg_buffer_append_byte(&hash_part, signature_version) != 0 ||
-        msg_buffer_append_byte(&hash_part, local_options.cleartext ? 0x01U : 0x00U) != 0 ||
-        msg_buffer_append_byte(&hash_part, public_key_algorithm) != 0 ||
-        msg_buffer_append_byte(&hash_part, 10U) != 0 ||
-        (signature_version == 6U ? msg_buffer_append_u32_be(&hash_part, hashed.size) : msg_buffer_append_u16_be(&hash_part, (unsigned int)hashed.size)) != 0 ||
-        msg_buffer_append_data(&hash_part, hashed.data, hashed.size) != 0) {
+    if (pgp_buffer_append_signature_subpacket_u32(&hashed, signature_version == 6U ? 0x82U : 2U, created) != 0 ||
+        (signature_version == 4U && pgp_buffer_append_signature_subpacket(&unhashed, 16U, secret.info.key_id, PGP_KEY_ID_SIZE) != 0) ||
+        pgp_buffer_append_signature_subpacket(signature_version == 6U ? &hashed : &unhashed, 33U, issuer_fingerprint, secret.info.fingerprint_size + 1U) != 0 ||
+        pgp_buffer_append_byte(&hash_part, signature_version) != 0 ||
+        pgp_buffer_append_byte(&hash_part, local_options.cleartext ? 0x01U : 0x00U) != 0 ||
+        pgp_buffer_append_byte(&hash_part, public_key_algorithm) != 0 ||
+        pgp_buffer_append_byte(&hash_part, 10U) != 0 ||
+        (signature_version == 6U ? pgp_buffer_append_u32_be(&hash_part, hashed.size) : pgp_buffer_append_u16_be(&hash_part, (unsigned int)hashed.size)) != 0 ||
+        pgp_buffer_append_data(&hash_part, hashed.data, hashed.size) != 0) {
         result = 1;
         goto cleanup;
     }
@@ -3358,27 +3263,27 @@ static int command_sign(int argc, char **argv, int argi, const PgpMsgOptions *op
         result = 1;
         goto cleanup;
     }
-    if (msg_buffer_append_data(&signature_body, hash_part.data, hash_part.size) != 0 ||
-        (signature_version == 6U ? msg_buffer_append_u32_be(&signature_body, unhashed.size) : msg_buffer_append_u16_be(&signature_body, (unsigned int)unhashed.size)) != 0 ||
-        msg_buffer_append_data(&signature_body, unhashed.data, unhashed.size) != 0 ||
-        msg_buffer_append_byte(&signature_body, digest[0]) != 0 ||
-        msg_buffer_append_byte(&signature_body, digest[1]) != 0) {
+    if (pgp_buffer_append_data(&signature_body, hash_part.data, hash_part.size) != 0 ||
+        (signature_version == 6U ? pgp_buffer_append_u32_be(&signature_body, unhashed.size) : pgp_buffer_append_u16_be(&signature_body, (unsigned int)unhashed.size)) != 0 ||
+        pgp_buffer_append_data(&signature_body, unhashed.data, unhashed.size) != 0 ||
+        pgp_buffer_append_byte(&signature_body, digest[0]) != 0 ||
+        pgp_buffer_append_byte(&signature_body, digest[1]) != 0) {
         result = 1;
         goto cleanup;
     }
     if (signature_version == 6U) {
-        if (msg_buffer_append_byte(&signature_body, sizeof(signature_salt)) != 0 ||
-            msg_buffer_append_data(&signature_body, signature_salt, sizeof(signature_salt)) != 0 ||
-            msg_buffer_append_data(&signature_body, signature, sizeof(signature)) != 0) {
+        if (pgp_buffer_append_byte(&signature_body, sizeof(signature_salt)) != 0 ||
+            pgp_buffer_append_data(&signature_body, signature_salt, sizeof(signature_salt)) != 0 ||
+            pgp_buffer_append_data(&signature_body, signature, sizeof(signature)) != 0) {
             result = 1;
             goto cleanup;
         }
-    } else if (msg_buffer_append_opaque_mpi(&signature_body, signature, 32U, 256U) != 0 ||
-               msg_buffer_append_opaque_mpi(&signature_body, signature + 32U, 32U, 256U) != 0) {
+    } else if (pgp_buffer_append_opaque_mpi(&signature_body, signature, 32U, 256U) != 0 ||
+               pgp_buffer_append_opaque_mpi(&signature_body, signature + 32U, 32U, 256U) != 0) {
         result = 1;
         goto cleanup;
     }
-    if (msg_buffer_append_packet(&signature_packet, 2U, &signature_body) != 0) {
+    if (pgp_buffer_append_packet(&signature_packet, 2U, &signature_body) != 0) {
         result = 1;
         goto cleanup;
     }
@@ -3390,12 +3295,12 @@ static int command_sign(int argc, char **argv, int argi, const PgpMsgOptions *op
 
 cleanup:
     if (input != 0) rt_free(input);
-    msg_buffer_free(&hashed);
-    msg_buffer_free(&unhashed);
-    msg_buffer_free(&hash_part);
-    msg_buffer_free(&signature_body);
-    msg_buffer_free(&signature_packet);
-    msg_buffer_free(&canonical_text);
+    pgp_buffer_free(&hashed);
+    pgp_buffer_free(&unhashed);
+    pgp_buffer_free(&hash_part);
+    pgp_buffer_free(&signature_body);
+    pgp_buffer_free(&signature_packet);
+    pgp_buffer_free(&canonical_text);
     crypto_secure_bzero(digest, sizeof(digest));
     crypto_secure_bzero(signature, sizeof(signature));
     crypto_secure_bzero(signature_salt, sizeof(signature_salt));

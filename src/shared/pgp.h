@@ -95,6 +95,12 @@ typedef struct {
     size_t body_size;
 } PgpPacket;
 
+typedef struct {
+    unsigned char *data;
+    size_t size;
+    size_t capacity;
+} PgpBuffer;
+
 typedef int (*PgpCertificateCallback)(const PgpCertificateInfo *certificate, void *ctx);
 
 int pgp_decode_input(const unsigned char *input, size_t input_size, unsigned char **data_out, size_t *size_out, char *error, size_t error_size);
@@ -107,6 +113,17 @@ int pgp_write_new_packet_header(int fd, unsigned int tag);
 int pgp_write_packet_length(int fd, size_t length);
 int pgp_write_partial_body_length(int fd, size_t length);
 int pgp_write_date(int fd, unsigned long long epoch);
+void pgp_buffer_free(PgpBuffer *buffer);
+int pgp_buffer_reserve(PgpBuffer *buffer, size_t extra);
+int pgp_buffer_append_byte(PgpBuffer *buffer, unsigned int value);
+int pgp_buffer_append_data(PgpBuffer *buffer, const unsigned char *data, size_t size);
+int pgp_buffer_append_u16_be(PgpBuffer *buffer, unsigned int value);
+int pgp_buffer_append_u32_be(PgpBuffer *buffer, unsigned long long value);
+int pgp_buffer_append_packet_length(PgpBuffer *buffer, size_t length);
+int pgp_buffer_append_packet(PgpBuffer *buffer, unsigned int tag, const PgpBuffer *body);
+int pgp_buffer_append_signature_subpacket(PgpBuffer *buffer, unsigned int type, const unsigned char *body, size_t body_size);
+int pgp_buffer_append_signature_subpacket_u32(PgpBuffer *buffer, unsigned int type, unsigned long long value);
+int pgp_buffer_append_opaque_mpi(PgpBuffer *buffer, const unsigned char *data, size_t size, unsigned int bit_count);
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size);
 int pgp_packet_reader_next(PgpPacketReader *reader, PgpPacket *packet_out, int *has_packet_out, char *error, size_t error_size);
 int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const unsigned char *body, size_t body_size, char *error, size_t error_size);
