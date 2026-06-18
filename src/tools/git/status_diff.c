@@ -997,11 +997,63 @@ done:
     return result;
 }
 
-static int git_write_diff_patch(const char *path, const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists, int color_mode) {
+static int git_write_diff_index_header(const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists, unsigned int old_mode, unsigned int new_mode) {
+    unsigned char old_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char new_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char old_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    char new_hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+    if (!old_exists) {
+        if (rt_write_cstr(1, "new file mode ") != 0 || rt_write_line(1, git_tree_mode_text(new_mode)) != 0) {
+            return -1;
+        }
+    } else if (!new_exists) {
+        if (rt_write_cstr(1, "deleted file mode ") != 0 || rt_write_line(1, git_tree_mode_text(old_mode)) != 0) {
+            return -1;
+        }
+    } else if (old_mode != new_mode) {
+        if (rt_write_cstr(1, "old mode ") != 0 || rt_write_line(1, git_tree_mode_text(old_mode)) != 0 ||
+            rt_write_cstr(1, "new mode ") != 0 || rt_write_line(1, git_tree_mode_text(new_mode)) != 0) {
+            return -1;
+        }
+    }
+    if (old_exists) {
+        if (git_blob_hash_data(old_data, old_size, old_oid) != 0) {
+            return -1;
+        }
+        git_format_oid_hex(old_oid, old_hex);
+    } else {
+        rt_copy_string(old_hex, sizeof(old_hex), "0000000");
+    }
+    if (new_exists) {
+        if (git_blob_hash_data(new_data, new_size, new_oid) != 0) {
+            return -1;
+        }
+        git_format_oid_hex(new_oid, new_hex);
+    } else {
+        rt_copy_string(new_hex, sizeof(new_hex), "0000000");
+    }
+    old_hex[7] = '\0';
+    new_hex[7] = '\0';
+    if (rt_write_cstr(1, "index ") != 0 || rt_write_cstr(1, old_hex) != 0 || rt_write_cstr(1, "..") != 0 || rt_write_cstr(1, new_hex) != 0) {
+        return -1;
+    }
+    if (old_exists && new_exists && old_mode == new_mode) {
+        if (rt_write_char(1, ' ') != 0 || rt_write_cstr(1, git_tree_mode_text(old_mode)) != 0) {
+            return -1;
+        }
+    }
+    return rt_write_char(1, '\n');
+}
+
+static int git_write_diff_patch(const char *path, const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists, unsigned int old_mode, unsigned int new_mode, int color_mode) {
     if (old_size == new_size && (old_size == 0U || memcmp(old_data, new_data, old_size) == 0)) {
         return 0;
     }
     if (rt_write_cstr(1, "diff --git a/") != 0 || rt_write_cstr(1, path) != 0 || rt_write_cstr(1, " b/") != 0 || rt_write_line(1, path) != 0) {
+        return -1;
+    }
+    if (git_write_diff_index_header(old_data, old_size, new_data, new_size, old_exists, new_exists, old_mode, new_mode) != 0) {
         return -1;
     }
     if (git_write_diff_path_line("--- ", path, old_exists) != 0 || git_write_diff_path_line("+++ ", path, new_exists) != 0) {
@@ -1018,11 +1070,21 @@ static int git_render_worktree_diff_patch_entry(const GitRepo *repo, const GitIn
     unsigned char *new_data = 0;
     size_t old_size = 0U;
     size_t new_size = 0U;
+    unsigned int new_mode = entry->mode;
     int modified = git_entry_is_modified(repo, entry);
     int result = -1;
 
     if (modified == 0) {
         return 0;
+    }
+    if (modified >= 0 && entry->mode != GIT_MODE_SYMLINK) {
+        char full_path[GIT_PATH_CAPACITY];
+        PlatformDirEntry info;
+
+        if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) == 0 &&
+            platform_get_path_info(full_path, &info) == 0 && !info.is_dir) {
+            new_mode = (info.mode & GIT_MODE_TYPE_MASK) == GIT_MODE_SYMLINK ? GIT_MODE_SYMLINK : git_regular_index_mode_from_worktree(info.mode);
+        }
     }
     if (git_read_index_blob(repo, entry, pack_cache, &old_data, &old_size) != 0) {
         goto done;
@@ -1030,7 +1092,7 @@ static int git_render_worktree_diff_patch_entry(const GitRepo *repo, const GitIn
     if (modified > 0 && git_read_worktree_blob(repo, entry, &new_data, &new_size) != 0) {
         goto done;
     }
-    result = git_write_diff_patch(entry->path, old_data, old_size, modified < 0 ? (const unsigned char *)"" : new_data, modified < 0 ? 0U : new_size, !entry->intent_to_add, modified >= 0, color_mode);
+    result = git_write_diff_patch(entry->path, old_data, old_size, modified < 0 ? (const unsigned char *)"" : new_data, modified < 0 ? 0U : new_size, !entry->intent_to_add, modified >= 0, entry->mode, new_mode, color_mode);
 done:
     rt_free(old_data);
     rt_free(new_data);
@@ -1072,7 +1134,7 @@ static int git_render_cached_diff_patch_entry(const GitRepo *repo, const GitInde
     if (index_entry != 0 && !index_entry->intent_to_add && git_read_index_blob(repo, index_entry, pack_cache, &new_data, &new_size) != 0) {
         goto done;
     }
-    result = git_write_diff_patch(path, old_data, old_size, new_data, new_size, head_entry != 0, index_entry != 0 && !index_entry->intent_to_add, color_mode);
+    result = git_write_diff_patch(path, old_data, old_size, new_data, new_size, head_entry != 0, index_entry != 0 && !index_entry->intent_to_add, head_entry != 0 ? head_entry->mode : 0U, index_entry != 0 ? index_entry->mode : 0U, color_mode);
 done:
     rt_free(old_data);
     rt_free(new_data);

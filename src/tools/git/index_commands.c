@@ -348,8 +348,8 @@ static int git_add_patch_prompt_hunk(const char *path, GitDiffLine *old_lines, G
     return tool_prompt_yes_no("stage this hunk in ", path);
 }
 
-static int git_add_patch_prompt_file(const char *path, const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists) {
-    if (git_write_diff_patch(path, old_data, old_size, new_data, new_size, old_exists, new_exists, TOOL_COLOR_AUTO) != 0) {
+static int git_add_patch_prompt_file(const char *path, const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, int old_exists, int new_exists, unsigned int old_mode, unsigned int new_mode) {
+    if (git_write_diff_patch(path, old_data, old_size, new_data, new_size, old_exists, new_exists, old_mode, new_mode, TOOL_COLOR_AUTO) != 0) {
         return 0;
     }
     return tool_prompt_yes_no("stage this change in ", path);
@@ -363,7 +363,7 @@ static int git_add_patch_prompt_delete_path(GitAddContext *context, GitIndexEntr
     if (git_read_index_blob(context->repo, entry, pack_cache, &old_data, &old_size) != 0) {
         return -1;
     }
-    accept = git_add_patch_prompt_file(entry->path, old_data, old_size, (const unsigned char *)"", 0U, 1, 0);
+    accept = git_add_patch_prompt_file(entry->path, old_data, old_size, (const unsigned char *)"", 0U, 1, 0, entry->mode, 0U);
     rt_free(old_data);
     return accept;
 }
@@ -387,7 +387,7 @@ static int git_add_patch_stage_untracked_path(const char *path, void *user_data)
     if (git_read_worktree_blob(context->repo, &preview, &new_data, &new_size) != 0) {
         return -1;
     }
-    accept = git_add_patch_prompt_file(path, (const unsigned char *)"", 0U, new_data, new_size, 0, 1);
+    accept = git_add_patch_prompt_file(path, (const unsigned char *)"", 0U, new_data, new_size, 0, 1, 0U, preview.mode);
     rt_free(new_data);
     if (!accept) {
         return 0;

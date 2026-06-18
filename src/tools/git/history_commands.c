@@ -458,8 +458,7 @@ static int git_cmd_log(GitRepo *repo, int argc, char **argv, int argi) {
             rt_write_cstr(1, "commit ");
             rt_write_line(1, hex);
             if (info->author != 0) {
-                rt_write_cstr(1, "Author: ");
-                rt_write_line(1, info->author);
+                git_write_author_and_date(info->author);
             }
             rt_write_char(1, '\n');
             rt_write_cstr(1, "    ");

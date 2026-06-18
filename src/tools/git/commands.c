@@ -2178,6 +2178,150 @@ static void git_author_name_email(const char *author, const char **name_out, siz
     }
 }
 
+static int git_identity_is_space(char ch) {
+    return ch == ' ' || ch == '\t';
+}
+
+static int git_write_two_digits(char *out, unsigned int value) {
+    out[0] = (char)('0' + (value / 10U) % 10U);
+    out[1] = (char)('0' + value % 10U);
+    return 2;
+}
+
+/* Print the native "Author:" line plus a formatted "Date:" line from a commit
+ * identity line of the form "NAME <EMAIL> TIMESTAMP TZ". */
+static int git_write_author_and_date(const char *author) {
+    static const char *const weekdays[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *const months[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const char *name;
+    const char *email;
+    size_t name_len;
+    size_t email_len;
+    size_t len;
+    size_t tz_start;
+    size_t ts_end;
+    size_t ts_start;
+    long long timestamp = 0;
+    int tz_sign = 1;
+    int tz_hours = 0;
+    int tz_minutes = 0;
+    long long adjusted;
+    long long days;
+    long long secs;
+    int year;
+    unsigned int month;
+    unsigned int day;
+    unsigned int hour;
+    unsigned int minute;
+    unsigned int second;
+    int weekday;
+    char line[96];
+    size_t pos = 0U;
+    char year_digits[16];
+    size_t year_len = 0U;
+    unsigned long long year_value;
+
+    if (author == 0) {
+        return 0;
+    }
+    git_author_name_email(author, &name, &name_len, &email, &email_len);
+    if (rt_write_cstr(1, "Author: ") != 0 || rt_write_all(1, name, name_len) != 0 ||
+        rt_write_cstr(1, " <") != 0 || rt_write_all(1, email, email_len) != 0 ||
+        rt_write_cstr(1, ">\n") != 0) {
+        return -1;
+    }
+    len = rt_strlen(author);
+    while (len > 0U && git_identity_is_space(author[len - 1U])) {
+        len -= 1U;
+    }
+    tz_start = len;
+    while (tz_start > 0U && !git_identity_is_space(author[tz_start - 1U])) {
+        tz_start -= 1U;
+    }
+    ts_end = tz_start;
+    while (ts_end > 0U && git_identity_is_space(author[ts_end - 1U])) {
+        ts_end -= 1U;
+    }
+    ts_start = ts_end;
+    while (ts_start > 0U && author[ts_start - 1U] >= '0' && author[ts_start - 1U] <= '9') {
+        ts_start -= 1U;
+    }
+    if (ts_start == ts_end) {
+        /* No parseable timestamp; fall back to the raw identity line. */
+        return rt_write_cstr(1, "Date:   ") == 0 && rt_write_line(1, author + (ts_end >= len ? len : ts_end)) == 0 ? 0 : -1;
+    }
+    while (ts_start < ts_end) {
+        timestamp = timestamp * 10 + (long long)(author[ts_start] - '0');
+        ts_start += 1U;
+    }
+    {
+        size_t k = tz_start;
+        if (k < len && (author[k] == '+' || author[k] == '-')) {
+            if (author[k] == '-') {
+                tz_sign = -1;
+            }
+            k += 1U;
+        }
+        if (len >= k + 4U) {
+            tz_hours = (author[k] - '0') * 10 + (author[k + 1U] - '0');
+            tz_minutes = (author[k + 2U] - '0') * 10 + (author[k + 3U] - '0');
+        }
+    }
+    adjusted = timestamp + (long long)tz_sign * ((long long)tz_hours * 3600LL + (long long)tz_minutes * 60LL);
+    days = adjusted / 86400LL;
+    secs = adjusted - days * 86400LL;
+    if (secs < 0LL) {
+        secs += 86400LL;
+        days -= 1LL;
+    }
+    weekday = (int)(((days % 7LL) + 4LL + 7LL) % 7LL);
+    tool_civil_from_days(days, &year, &month, &day);
+    hour = (unsigned int)(secs / 3600LL);
+    minute = (unsigned int)((secs / 60LL) % 60LL);
+    second = (unsigned int)(secs % 60LL);
+    if (month < 1U) {
+        month = 1U;
+    }
+    if (month > 12U) {
+        month = 12U;
+    }
+    rt_copy_string(line, sizeof(line), "Date:   ");
+    pos = rt_strlen(line);
+    memcpy(line + pos, weekdays[weekday], 3U);
+    pos += 3U;
+    line[pos++] = ' ';
+    memcpy(line + pos, months[month - 1U], 3U);
+    pos += 3U;
+    line[pos++] = ' ';
+    if (day < 10U) {
+        line[pos++] = (char)('0' + day);
+    } else {
+        pos += (size_t)git_write_two_digits(line + pos, day);
+    }
+    line[pos++] = ' ';
+    pos += (size_t)git_write_two_digits(line + pos, hour);
+    line[pos++] = ':';
+    pos += (size_t)git_write_two_digits(line + pos, minute);
+    line[pos++] = ':';
+    pos += (size_t)git_write_two_digits(line + pos, second);
+    line[pos++] = ' ';
+    year_value = year < 0 ? (unsigned long long)(-(long long)year) : (unsigned long long)year;
+    rt_unsigned_to_string(year_value, year_digits, sizeof(year_digits));
+    year_len = rt_strlen(year_digits);
+    if (year < 0) {
+        line[pos++] = '-';
+    }
+    memcpy(line + pos, year_digits, year_len);
+    pos += year_len;
+    line[pos++] = ' ';
+    if (tz_start < len) {
+        memcpy(line + pos, author + tz_start, len - tz_start);
+        pos += len - tz_start;
+    }
+    line[pos++] = '\n';
+    return rt_write_all(1, line, pos);
+}
+
 static int git_write_commit_format(const char *format, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitCommitInfo *info) {
     char hex[GIT_OBJECT_HEX_SIZE + 1U];
     size_t i = 0U;
@@ -2409,8 +2553,7 @@ static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
     rt_write_cstr(1, "commit ");
     rt_write_line(1, hex);
     if (info.author != 0) {
-        rt_write_cstr(1, "Author: ");
-        rt_write_line(1, info.author);
+        git_write_author_and_date(info.author);
     }
     rt_write_char(1, '\n');
     rt_write_cstr(1, "    ");
