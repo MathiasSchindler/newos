@@ -771,6 +771,122 @@ assert_file_contains "$cp_repo/x.txt" '^one$' "git revert HEAD did not restore t
 revert_subject=$(cd "$cp_repo" && "${TEST_BIN_DIR}/git" log --format='%s' -n 1 | tr -d '\r\n')
 assert_text_equals "$revert_subject" 'Revert HEAD' "git revert HEAD did not create a revert commit"
 
+mv_repo="$WORK_DIR/mv-repo"
+"${TEST_BIN_DIR}/git" init "$mv_repo" > "$WORK_DIR/mv-init.out"
+printf 'moved\n' > "$mv_repo/old.txt"
+cd "$mv_repo" && "${TEST_BIN_DIR}/git" add old.txt
+cd "$mv_repo" && GIT_AUTHOR_NAME=M GIT_AUTHOR_EMAIL=m@example.invalid GIT_COMMITTER_NAME=M GIT_COMMITTER_EMAIL=m@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/mv-base.out"
+cd "$mv_repo" && "${TEST_BIN_DIR}/git" mv old.txt new.txt
+if [ -e "$mv_repo/old.txt" ]; then
+    fail "git mv did not remove the source worktree path"
+fi
+assert_file_contains "$mv_repo/new.txt" '^moved$' "git mv did not create the destination worktree path"
+cd "$mv_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -z > "$WORK_DIR/mv-diff-z.out"
+tr '\000' '\n' < "$WORK_DIR/mv-diff-z.out" > "$WORK_DIR/mv-diff-z.lines"
+assert_file_contains "$WORK_DIR/mv-diff-z.lines" '^R100$' "git mv did not stage an exact rename"
+assert_file_contains "$WORK_DIR/mv-diff-z.lines" '^old.txt$' "git mv staged rename missed the source path"
+assert_file_contains "$WORK_DIR/mv-diff-z.lines" '^new.txt$' "git mv staged rename missed the destination path"
+
+stash_repo="$WORK_DIR/stash-repo"
+"${TEST_BIN_DIR}/git" init "$stash_repo" > "$WORK_DIR/stash-init.out"
+printf 'base\n' > "$stash_repo/s.txt"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" add s.txt
+cd "$stash_repo" && GIT_AUTHOR_NAME=S GIT_AUTHOR_EMAIL=s@example.invalid GIT_COMMITTER_NAME=S GIT_COMMITTER_EMAIL=s@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/stash-base.out"
+printf 'dirty\n' > "$stash_repo/s.txt"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash > "$WORK_DIR/stash-save.out"
+assert_file_contains "$WORK_DIR/stash-save.out" '^Saved working directory and index state [0-9a-f][0-9a-f]' "git stash did not save a tracked change"
+assert_file_contains "$stash_repo/s.txt" '^base$' "git stash did not restore HEAD content"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stash-clean.out"
+assert_text_equals "$(cat "$WORK_DIR/stash-clean.out")" '' "git stash left the worktree dirty"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash list > "$WORK_DIR/stash-list.out"
+assert_file_contains "$WORK_DIR/stash-list.out" '^stash@.0.: WIP on main$' "git stash list did not show the saved stash"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash pop > "$WORK_DIR/stash-pop.out"
+assert_file_contains "$stash_repo/s.txt" '^dirty$' "git stash pop did not restore stashed content"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash list > "$WORK_DIR/stash-list-empty.out"
+assert_text_equals "$(cat "$WORK_DIR/stash-list-empty.out")" '' "git stash pop did not drop the stash"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" restore --staged --worktree s.txt
+printf 'again\n' > "$stash_repo/s.txt"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash > "$WORK_DIR/stash-save-again.out"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash apply > "$WORK_DIR/stash-apply.out"
+assert_file_contains "$stash_repo/s.txt" '^again$' "git stash apply did not restore stashed content"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash drop > "$WORK_DIR/stash-drop.out"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash list > "$WORK_DIR/stash-drop-list.out"
+assert_text_equals "$(cat "$WORK_DIR/stash-drop-list.out")" '' "git stash drop did not remove the stash"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" restore --staged --worktree s.txt
+printf 'first-stack\n' > "$stash_repo/s.txt"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash > "$WORK_DIR/stash-stack-first.out"
+printf 'second-stack\n' > "$stash_repo/s.txt"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash > "$WORK_DIR/stash-stack-second.out"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash list > "$WORK_DIR/stash-stack-list.out"
+assert_file_contains "$WORK_DIR/stash-stack-list.out" '^stash@.0.: WIP on main$' "git stash list did not show the newest stack entry"
+assert_file_contains "$WORK_DIR/stash-stack-list.out" '^stash@.1.: WIP on main$' "git stash list did not show the older stack entry"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash apply 'stash@{1}' > "$WORK_DIR/stash-stack-apply-old.out"
+assert_file_contains "$stash_repo/s.txt" '^first-stack$' "git stash apply stash@{1} did not restore the older entry"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" restore --staged --worktree s.txt
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash drop 'stash@{1}' > "$WORK_DIR/stash-stack-drop-old.out"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash list > "$WORK_DIR/stash-stack-list-after-drop.out"
+if grep -q '^stash@.1.:' "$WORK_DIR/stash-stack-list-after-drop.out"; then
+    fail "git stash drop stash@{1} left an older stack entry"
+fi
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash pop > "$WORK_DIR/stash-stack-pop-top.out"
+assert_file_contains "$stash_repo/s.txt" '^second-stack$' "git stash pop did not restore the remaining top entry"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" restore --staged --worktree s.txt
+rm -f "$stash_repo/s.txt"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash > "$WORK_DIR/stash-delete-save.out"
+assert_file_contains "$stash_repo/s.txt" '^base$' "git stash did not restore HEAD after saving a tracked deletion"
+cd "$stash_repo" && "${TEST_BIN_DIR}/git" stash pop > "$WORK_DIR/stash-delete-pop.out"
+if [ -e "$stash_repo/s.txt" ]; then
+    fail "git stash pop did not replay a tracked deletion"
+fi
+
+rebase_repo="$WORK_DIR/rebase-repo"
+"${TEST_BIN_DIR}/git" init "$rebase_repo" > "$WORK_DIR/rebase-init.out"
+printf 'base\n' > "$rebase_repo/base.txt"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" add base.txt
+cd "$rebase_repo" && GIT_AUTHOR_NAME=R GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=R GIT_COMMITTER_EMAIL=r@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/rebase-base.out"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" branch topic
+printf 'upstream\n' > "$rebase_repo/upstream.txt"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" add upstream.txt
+cd "$rebase_repo" && GIT_AUTHOR_NAME=R GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=R GIT_COMMITTER_EMAIL=r@example.invalid "${TEST_BIN_DIR}/git" commit -m upstream > "$WORK_DIR/rebase-upstream.out"
+rebase_main=$(cd "$rebase_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" switch topic > "$WORK_DIR/rebase-switch-topic.out"
+printf 'topic\n' > "$rebase_repo/topic.txt"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" add topic.txt
+cd "$rebase_repo" && GIT_AUTHOR_NAME=R GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=R GIT_COMMITTER_EMAIL=r@example.invalid "${TEST_BIN_DIR}/git" commit -m topic > "$WORK_DIR/rebase-topic.out"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" rebase main > "$WORK_DIR/rebase-main.out"
+assert_file_contains "$WORK_DIR/rebase-main.out" '^Successfully rebased and updated [0-9a-f][0-9a-f]' "git rebase did not report success"
+assert_file_contains "$rebase_repo/upstream.txt" '^upstream$' "git rebase did not preserve the upstream tree"
+assert_file_contains "$rebase_repo/topic.txt" '^topic$' "git rebase did not replay the topic change"
+rebase_parent=$(cd "$rebase_repo" && "${TEST_BIN_DIR}/git" cat-file -p HEAD | sed -n 's/^parent //p' | head -n 1)
+assert_text_equals "$rebase_parent" "$rebase_main" "git rebase did not make the upstream commit the new parent"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/rebase-status.out"
+assert_text_equals "$(cat "$WORK_DIR/rebase-status.out")" '' "git rebase result should be clean"
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" log --oneline "$rebase_main..HEAD" > "$WORK_DIR/log-range-topic.out"
+assert_file_contains "$WORK_DIR/log-range-topic.out" ' topic$' "git log A..B did not include the rebased topic commit"
+if grep -q 'upstream$' "$WORK_DIR/log-range-topic.out"; then
+    fail "git log A..B included commits reachable from the range start"
+fi
+cd "$rebase_repo" && "${TEST_BIN_DIR}/git" show HEAD:topic.txt > "$WORK_DIR/show-rev-path.out"
+assert_file_contains "$WORK_DIR/show-rev-path.out" '^topic$' "git show REV:PATH did not print historical file content"
+
+rebase_conflict_repo="$WORK_DIR/rebase-conflict-repo"
+"${TEST_BIN_DIR}/git" init "$rebase_conflict_repo" > "$WORK_DIR/rebase-conflict-init.out"
+printf 'base\n' > "$rebase_conflict_repo/file.txt"
+cd "$rebase_conflict_repo" && "${TEST_BIN_DIR}/git" add file.txt
+cd "$rebase_conflict_repo" && GIT_AUTHOR_NAME=R GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=R GIT_COMMITTER_EMAIL=r@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/rebase-conflict-base.out"
+cd "$rebase_conflict_repo" && "${TEST_BIN_DIR}/git" branch topic
+printf 'main\n' > "$rebase_conflict_repo/file.txt"
+cd "$rebase_conflict_repo" && "${TEST_BIN_DIR}/git" add file.txt
+cd "$rebase_conflict_repo" && GIT_AUTHOR_NAME=R GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=R GIT_COMMITTER_EMAIL=r@example.invalid "${TEST_BIN_DIR}/git" commit -m main > "$WORK_DIR/rebase-conflict-main.out"
+cd "$rebase_conflict_repo" && "${TEST_BIN_DIR}/git" switch topic > "$WORK_DIR/rebase-conflict-switch.out"
+printf 'topic\n' > "$rebase_conflict_repo/file.txt"
+cd "$rebase_conflict_repo" && "${TEST_BIN_DIR}/git" add file.txt
+cd "$rebase_conflict_repo" && GIT_AUTHOR_NAME=R GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=R GIT_COMMITTER_EMAIL=r@example.invalid "${TEST_BIN_DIR}/git" commit -m topic > "$WORK_DIR/rebase-conflict-topic.out"
+if cd "$rebase_conflict_repo" && "${TEST_BIN_DIR}/git" rebase main > "$WORK_DIR/rebase-conflict.out" 2> "$WORK_DIR/rebase-conflict.err"; then
+    fail "git rebase silently accepted conflicting edits to the same path"
+fi
+assert_file_contains "$WORK_DIR/rebase-conflict.err" 'rebase conflict on changed path' "git rebase conflict did not report a clear diagnostic"
+
 diff_quality_repo="$WORK_DIR/diff-quality-repo"
 "${TEST_BIN_DIR}/git" init "$diff_quality_repo" > "$WORK_DIR/diff-quality-init.out"
 for n in 1 2 3 4 5 6 7 8 9 10; do printf 'line%s\n' "$n"; done > "$diff_quality_repo/lines.txt"

@@ -35,14 +35,17 @@ git apply [--check] [PATCH]
 git ls-files [-z] [--cached|--others|--modified|--deleted] [--stage] [--exclude-standard] [--] [path ...]
 git add [-N|--intent-to-add] [-p|--patch] [--] path ...
 git commit [-m|--message MESSAGE] [--allow-empty] [--no-verify]
-git log [--oneline] [--date-order|--topo-order] [-N|-n N|--max-count=N] [REV]
-git show [--stat] [REV]
+git log [--oneline] [--date-order|--topo-order] [-N|-n N|--max-count=N] [REV|A..B]
+git show [--stat] [REV|REV:PATH]
 git blame [REV] [--] path
 git cherry-pick REV
 git revert REV
+git rebase REV
 git reset [--soft|--mixed|--hard] [REV]
 git restore [--staged] [--worktree] [--source REV] [--] path ...
 git rm [--cached] [-r] [--] path ...
+git mv [--] SOURCE DEST
+git stash [list|pop|apply|drop] [stash@{N}]
 git clean [-n|--dry-run|-f|--force] [-x] [--] [path ...]
 git hash-object FILE ...
 git clone SOURCE [DEST]
@@ -120,18 +123,24 @@ be combined with `--no-pager`.
     bounded history with `-N`, `-n N`, or `--max-count=N`; reachable commits
     are emitted in date/topological order, `--date-order` and `--topo-order`
     are accepted, and `--format` supports `%H`, `%h`, `%s`, `%T`, `%P`, `%an`,
-    `%ae`, `%n`, and `%%`
+    `%ae`, `%n`, and `%%`; `A..B` ranges omit commits reachable from `A`
 - show a commit header and its parent diff with `show`, or a summary with
-    `show --stat`
+    `show --stat`; `show REV:PATH` prints a blob from a historical tree
 - show historical same-position line annotations with `blame [REV] -- path`
 - `cherry-pick REV` fast-forwards direct-child commits, and `revert HEAD`
     creates a new commit whose tree matches the reverted commit's first parent
+- `rebase REV` handles linear first-parent branches by replaying path-level tree
+    deltas onto the target revision; fast-forward rebases are handled directly
 - move `HEAD` with `reset --soft`, update the index with `reset --mixed`, or
     update both index and worktree with `reset --hard`
 - restore worktree paths from the index or a named commit, and restore staged
     paths from `HEAD` or `--source REV`, with `restore`
 - remove tracked paths from the index and optionally the worktree with `rm` or
     `rm --cached`
+- move a tracked worktree path and stage the rename with `mv`
+- save tracked worktree/index changes with `stash`, inspect the stash reflog
+    stack with `stash list`, restore selected entries with `stash apply
+    stash@{N}` or `stash pop stash@{N}`, and discard entries with `stash drop`
 - remove untracked files with `clean -f`, preview removals with `clean -n`, and
     include ignored files only when `-x` is supplied
 - show working-tree-versus-index or `--cached` index-versus-HEAD diffs as
@@ -159,7 +168,10 @@ be combined with `--no-pager`.
 - fetch from `origin` or an explicit HTTP(S) URL with Git upload-pack and update
     `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack
 - send an HTTPS `Authorization` header from `GIT_HTTP_AUTHORIZATION`, or a
-    `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch and pull requests
+    `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch and pull requests;
+    when those are absent, `GIT_CREDENTIAL_HELPER=/path/to/helper` can execute a
+    bounded `credential get` helper and use returned `username`/`password` as a
+    Basic authorization header
 - checkout a local branch, remote-tracking branch, full object ID, or `HEAD`
     from loose objects or stored pack files
 - materialize regular files and symlink blobs during object-based checkout
@@ -175,7 +187,10 @@ be combined with `--no-pager`.
     negotiated minimal pack, update a checked-out remote worktree, or implement
     native Git's full receive-pack policy surface
 - merge and pull are fast-forward only; recursive/ort-style content merges,
-    conflict markers, merge commits, and merge state files are not implemented
+    conflict markers, merge commits, and merge state files are not implemented;
+    `rebase` similarly rejects merge-shaped histories and path-level conflicts,
+    and does not implement conflict markers, `--abort`, `--continue`, autosquash,
+    or interactive editing
 - no submodules, worktrees, sparse checkout, or fuzzy/similarity rename
     detection yet
 - history traversal walks all commit parents and log output is date/topological,
@@ -192,6 +207,11 @@ be combined with `--no-pager`.
 - `reset` does not implement pathspec reset; `restore` supports ordinary exact
     path restoration but not interactive patch mode; `rm` does not perform
     native Git's full safety checks against staged or unstaged local changes
+- `mv` is a small tracked-path move helper; it does not implement native Git's
+    full overwrite and submodule safety checks
+- `stash` uses the `refs/stash` reflog as a stack and supports `stash@{N}`
+    selection, but tracks only staged and tracked worktree changes and does not
+    save untracked or ignored files
 - `clean` operates on untracked files discovered by the current walker; it does
     not implement native Git's full directory-only and ignored-only modes
 - recursive `.gitignore` support covers ordinary nested pattern scopes and
@@ -204,8 +224,8 @@ be combined with `--no-pager`.
     patches, rename/copy metadata, mode changes, three-way fallback, or index
     application
 - config and remote support is intentionally local and minimal; it does not
-    implement includes, conditional config, global/system config, credential
-    helpers, or the full native Git config syntax
+    implement includes, conditional config, global/system config, configured
+    credential helper lookup, or the full native Git config syntax
 - `blame` walks first-parent history for unchanged lines at the same line
     number; it does not yet implement full movement/copy detection, merge-aware
     attribution, or native Git's line-range options
@@ -270,7 +290,9 @@ git add -N -- src/tools/git
 git commit -m "update git tool"
 GIT_EDITOR=editor git commit
 git log --oneline -n 5
+git log origin/main..HEAD --oneline
 git show --stat HEAD
+git show HEAD:src/tools/git.c
 git blame -- src/tools/git.c
 git cherry-pick topic
 git revert HEAD
@@ -280,6 +302,9 @@ git reset --hard HEAD
 git rm --cached generated.txt
 git clean -n
 git clean -f -- tests/tmp-output.txt
+git stash list
+git stash apply 'stash@{1}'
+git stash drop
 git hash-object src/tools/git.c
 git clone ../project-copy project-copy
 git clone https://github.com/MathiasSchindler/pbf-parser.git pbf-parser

@@ -519,14 +519,17 @@ static void git_usage(void) {
     rt_write_line(2, "       git ls-files [-z] [--cached|--others|--modified|--deleted] [--stage] [--exclude-standard] [--] [path ...]");
     rt_write_line(2, "       git add [-N|--intent-to-add] [-p|--patch] [--] path ...");
     rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty] [--no-verify]");
-    rt_write_line(2, "       git log [--oneline] [--date-order|--topo-order] [-N|-n N|--max-count=N] [REV]");
-    rt_write_line(2, "       git show [--stat] [REV]");
+    rt_write_line(2, "       git log [--oneline] [--date-order|--topo-order] [-N|-n N|--max-count=N] [REV|A..B]");
+    rt_write_line(2, "       git show [--stat] [REV|REV:PATH]");
     rt_write_line(2, "       git blame [REV] [--] path");
     rt_write_line(2, "       git cherry-pick REV");
     rt_write_line(2, "       git revert REV");
     rt_write_line(2, "       git reset [--soft|--mixed|--hard] [REV]");
     rt_write_line(2, "       git restore [--staged] [--worktree] [--source REV] [--] path ...");
     rt_write_line(2, "       git rm [--cached] [-r] [--] path ...");
+    rt_write_line(2, "       git mv [--] SOURCE DEST");
+    rt_write_line(2, "       git stash [list|pop|apply|drop] [stash@{N}]");
+    rt_write_line(2, "       git rebase REV");
     rt_write_line(2, "       git clean [-n|--dry-run|-f|--force] [-x] [--] [path ...]");
 }
 
@@ -650,6 +653,15 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "rm") == 0) {
         return git_cmd_rm(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "mv") == 0) {
+        return git_cmd_mv(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "stash") == 0) {
+        return git_cmd_stash(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "rebase") == 0) {
+        return git_cmd_rebase(&repo, argc, argv, argi + 1);
     }
     if (rt_strcmp(cmd, "clean") == 0) {
         return git_cmd_clean(&repo, argc, argv, argi + 1);

@@ -869,15 +869,13 @@ static int git_diff_stat_list_push_data(GitDiffStatList *stats, const char *path
     return git_diff_stat_list_push(stats, path, insertions, deletions);
 }
 
-static int git_collect_diff_stat_entry(const GitRepo *repo, const GitIndexEntry *entry, const GitPack *pack_cache, GitDiffStatList *stats) {
+static int git_collect_diff_stat_entry(const GitRepo *repo, const GitIndexEntry *entry, int modified, const GitPack *pack_cache, GitDiffStatList *stats) {
     unsigned char *old_data = 0;
     unsigned char *new_data = 0;
     size_t old_size = 0U;
     size_t new_size = 0U;
-    int modified;
     int result = -1;
 
-    modified = git_entry_is_modified(repo, entry);
     if (modified == 0) {
         return 0;
     }

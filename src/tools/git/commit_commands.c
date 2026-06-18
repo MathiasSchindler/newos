@@ -38,24 +38,21 @@ static int git_commit_append_identity_line(GitBuffer *commit, const char *prefix
     return 0;
 }
 
-static int git_write_commit_from_tree(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message, unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+static int git_write_commit_from_tree_with_parent(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char *parent_oid_or_null, const char *message, unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
     GitBuffer commit;
-    unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
     char tree_hex[GIT_OBJECT_HEX_SIZE + 1U];
     char parent_hex[GIT_OBJECT_HEX_SIZE + 1U];
-    int have_parent = 0;
     int result = -1;
 
     rt_memset(&commit, 0, sizeof(commit));
     git_format_oid_hex(tree_oid, tree_hex);
-    if (repo->head_oid[0] != '\0' && git_parse_oid_hex(repo->head_oid, parent_oid) == 0) {
-        have_parent = 1;
-        git_format_oid_hex(parent_oid, parent_hex);
-    }
     if (git_buffer_append_cstr(&commit, "tree ") != 0 || git_buffer_append_cstr(&commit, tree_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0) {
         goto done;
     }
-    if (have_parent && (git_buffer_append_cstr(&commit, "parent ") != 0 || git_buffer_append_cstr(&commit, parent_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0)) {
+    if (parent_oid_or_null != 0) {
+        git_format_oid_hex(parent_oid_or_null, parent_hex);
+    }
+    if (parent_oid_or_null != 0 && (git_buffer_append_cstr(&commit, "parent ") != 0 || git_buffer_append_cstr(&commit, parent_hex) != 0 || git_buffer_append_char(&commit, '\n') != 0)) {
         goto done;
     }
     if (git_commit_append_identity_line(&commit, "author", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", platform_get_epoch_time()) != 0 ||
@@ -67,6 +64,15 @@ static int git_write_commit_from_tree(GitRepo *repo, const unsigned char tree_oi
 done:
     git_buffer_destroy(&commit);
     return result;
+}
+
+static int git_write_commit_from_tree(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const char *message, unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+    if (repo->head_oid[0] != '\0' && git_parse_oid_hex(repo->head_oid, parent_oid) == 0) {
+        return git_write_commit_from_tree_with_parent(repo, tree_oid, parent_oid, message, commit_oid);
+    }
+    return git_write_commit_from_tree_with_parent(repo, tree_oid, 0, message, commit_oid);
 }
 
 static int git_write_detached_head_oid(const GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
@@ -221,6 +227,339 @@ static int git_cmd_reflog(GitRepo *repo, int argc, char **argv, int argi) {
     }
     rt_free(data);
     return 0;
+}
+
+static int git_delete_loose_ref(const GitRepo *repo, const char *ref_name) {
+    char path[GIT_PATH_CAPACITY];
+
+    if (tool_path_is_unsafe_relative(ref_name) || git_join(path, sizeof(path), repo->git_dir, ref_name) != 0) {
+        return -1;
+    }
+    return platform_remove_file(path);
+}
+
+typedef struct {
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t line_start;
+    size_t line_end;
+    size_t message_start;
+    size_t message_end;
+} GitStashLogEntry;
+
+typedef struct {
+    unsigned char *data;
+    size_t size;
+    GitStashLogEntry *entries;
+    size_t count;
+} GitStashLog;
+
+static void git_stash_log_destroy(GitStashLog *log) {
+    if (log == 0) {
+        return;
+    }
+    rt_free(log->data);
+    rt_free(log->entries);
+    rt_memset(log, 0, sizeof(*log));
+}
+
+static int git_stash_log_path(const GitRepo *repo, char *path, size_t path_size) {
+    return git_join(path, path_size, repo->git_dir, "logs/refs/stash");
+}
+
+static int git_stash_log_push_entry(GitStashLog *log, const GitStashLogEntry *entry) {
+    GitStashLogEntry *new_entries;
+    size_t new_capacity = log->count == 0U ? 8U : log->count * 2U;
+
+    if ((log->count & (log->count - 1U)) == 0U) {
+        new_entries = (GitStashLogEntry *)rt_realloc_array(log->entries, new_capacity, sizeof(log->entries[0]));
+        if (new_entries == 0) {
+            return -1;
+        }
+        log->entries = new_entries;
+    }
+    log->entries[log->count++] = *entry;
+    return 0;
+}
+
+static int git_read_stash_log(const GitRepo *repo, GitStashLog *log) {
+    char path[GIT_PATH_CAPACITY];
+    size_t pos = 0U;
+
+    rt_memset(log, 0, sizeof(*log));
+    if (git_stash_log_path(repo, path, sizeof(path)) != 0 || git_read_file(path, &log->data, &log->size) != 0) {
+        return -1;
+    }
+    while (pos < log->size) {
+        GitStashLogEntry entry;
+        size_t line_start = pos;
+        size_t line_end;
+        size_t message;
+
+        while (pos < log->size && log->data[pos] != '\n') {
+            pos += 1U;
+        }
+        line_end = pos;
+        if (pos < log->size) {
+            pos += 1U;
+        }
+        if (line_end <= line_start + GIT_OBJECT_HEX_SIZE * 2U + 1U) {
+            continue;
+        }
+        rt_memset(&entry, 0, sizeof(entry));
+        if (git_parse_oid_hex_n((const char *)log->data + line_start + GIT_OBJECT_HEX_SIZE + 1U, GIT_OBJECT_HEX_SIZE, entry.oid) != 0) {
+            continue;
+        }
+        message = line_start;
+        while (message < line_end && log->data[message] != '\t') {
+            message += 1U;
+        }
+        entry.line_start = line_start;
+        entry.line_end = pos;
+        entry.message_start = message < line_end ? message + 1U : line_end;
+        entry.message_end = line_end;
+        if (git_stash_log_push_entry(log, &entry) != 0) {
+            git_stash_log_destroy(log);
+            return -1;
+        }
+    }
+    return log->count > 0U ? 0 : -1;
+}
+
+static int git_parse_stash_selector(const char *text, size_t *ordinal_out) {
+    size_t i = 0U;
+    size_t value = 0U;
+    int saw_digit = 0;
+
+    if (text == 0 || rt_strcmp(text, "stash") == 0) {
+        *ordinal_out = 0U;
+        return 0;
+    }
+    if (rt_strncmp(text, "stash@{", 7U) != 0) {
+        return -1;
+    }
+    i = 7U;
+    while (text[i] >= '0' && text[i] <= '9') {
+        saw_digit = 1;
+        value = value * 10U + (size_t)(text[i] - '0');
+        i += 1U;
+    }
+    if (!saw_digit || text[i] != '}' || text[i + 1U] != '\0') {
+        return -1;
+    }
+    *ordinal_out = value;
+    return 0;
+}
+
+static GitStashLogEntry *git_stash_log_entry_by_ordinal(GitStashLog *log, size_t ordinal) {
+    if (ordinal >= log->count) {
+        return 0;
+    }
+    return &log->entries[log->count - 1U - ordinal];
+}
+
+static int git_stash_rewrite_without(const GitRepo *repo, GitStashLog *log, size_t ordinal) {
+    GitBuffer out;
+    char log_path[GIT_PATH_CAPACITY];
+    size_t remove_index;
+    size_t i;
+    int result = -1;
+
+    if (ordinal >= log->count || git_stash_log_path(repo, log_path, sizeof(log_path)) != 0) {
+        return -1;
+    }
+    remove_index = log->count - 1U - ordinal;
+    if (log->count == 1U) {
+        (void)git_delete_loose_ref(repo, "refs/stash");
+        (void)platform_remove_file(log_path);
+        return 0;
+    }
+    rt_memset(&out, 0, sizeof(out));
+    for (i = 0U; i < log->count; ++i) {
+        if (i == remove_index) {
+            continue;
+        }
+        if (git_buffer_append(&out, log->data + log->entries[i].line_start, log->entries[i].line_end - log->entries[i].line_start) != 0) {
+            goto done;
+        }
+    }
+    if (git_write_all_file(log_path, out.data, out.size, 0644U) != 0) {
+        goto done;
+    }
+    if (remove_index == log->count - 1U) {
+        if (git_write_ref_oid(repo, "refs/stash", log->entries[log->count - 2U].oid) != 0) {
+            goto done;
+        }
+    }
+    result = 0;
+done:
+    git_buffer_destroy(&out);
+    return result;
+}
+
+static int git_stash_save(GitRepo *repo) {
+    GitIndex index;
+    GitPack pack;
+    GitAddContext context;
+    unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char head_tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char stash_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char stash_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    char message[GIT_REF_CAPACITY + 32U];
+    int have_pack;
+    size_t i = 0U;
+    int result = 1;
+
+    if (repo->head_oid[0] == '\0' || git_parse_oid_hex(repo->head_oid, head_oid) != 0) {
+        tool_write_error("git", "stash needs HEAD", 0);
+        return 1;
+    }
+    if (git_load_index(repo, &index) != 0) {
+        tool_write_error("git", "cannot read index", 0);
+        return 1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    context.repo = repo;
+    context.index = &index;
+    context.ignores = 0;
+    context.added = 0U;
+    while (i < index.count) {
+        int modified = git_entry_is_modified(repo, &index.entries[i]);
+
+        if (modified < 0) {
+            git_index_remove_at(&index, i);
+            context.added += 1U;
+            continue;
+        }
+        if (modified > 0) {
+            char path[GIT_PATH_CAPACITY];
+            if (git_copy(path, sizeof(path), index.entries[i].path) != 0 || git_add_stage_blob_path(&context, path) != 0) {
+                tool_write_error("git", "cannot stage stash path: ", index.entries[i].path);
+                goto done;
+            }
+        }
+        i += 1U;
+    }
+    if (git_write_tree_from_index(repo, &index, tree_oid) != 0 || git_commit_tree_oid(repo, head_oid, have_pack ? &pack : 0, head_tree_oid) != 0) {
+        tool_write_error("git", "cannot write stash tree", 0);
+        goto done;
+    }
+    if (git_oid_equal(tree_oid, head_tree_oid)) {
+        rt_write_line(1, "No local changes to save");
+        result = 0;
+        goto done;
+    }
+    if (git_copy(message, sizeof(message), "WIP on ") != 0 || git_copy(message + rt_strlen(message), sizeof(message) - rt_strlen(message), git_branch_name(repo) != 0 ? git_branch_name(repo) : "detached HEAD") != 0) {
+        goto done;
+    }
+    if (git_write_commit_from_tree_with_parent(repo, tree_oid, head_oid, message, stash_oid) != 0 || git_write_ref_oid_reflog(repo, "refs/stash", stash_oid, message, 0) != 0) {
+        tool_write_error("git", "cannot write stash", 0);
+        goto done;
+    }
+    if (git_checkout_commit_to_worktree(repo, head_oid, have_pack ? &pack : 0) != 0) {
+        tool_write_error("git", "cannot restore HEAD after stash", 0);
+        goto done;
+    }
+    git_format_oid_hex(stash_oid, stash_hex);
+    rt_write_cstr(1, "Saved working directory and index state ");
+    rt_write_line(1, stash_hex);
+    result = 0;
+done:
+    if (have_pack) git_pack_destroy(&pack);
+    git_index_destroy(&index);
+    return result;
+}
+
+static int git_cmd_stash(GitRepo *repo, int argc, char **argv, int argi) {
+    const char *subcommand = "push";
+    const char *selector = 0;
+    unsigned char stash_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t ordinal = 0U;
+    GitStashLog log;
+    GitStashLogEntry *entry;
+    GitPack pack;
+    int have_pack;
+    int result = 1;
+
+    if (argi < argc) {
+        subcommand = argv[argi++];
+    }
+    if (argi < argc) {
+        selector = argv[argi++];
+    }
+    if (argi < argc) {
+        tool_write_error("git", "too many stash arguments", 0);
+        return 1;
+    }
+    if (rt_strcmp(subcommand, "push") == 0 || rt_strcmp(subcommand, "save") == 0) {
+        if (selector != 0) {
+            tool_write_error("git", "stash save does not accept a selector", 0);
+            return 1;
+        }
+        return git_stash_save(repo);
+    }
+    if (git_parse_stash_selector(selector, &ordinal) != 0) {
+        tool_write_error("git", "invalid stash selector: ", selector);
+        return 1;
+    }
+    if (git_read_stash_log(repo, &log) != 0 || (entry = git_stash_log_entry_by_ordinal(&log, ordinal)) == 0) {
+        if (rt_strcmp(subcommand, "list") == 0) {
+            git_stash_log_destroy(&log);
+            return 0;
+        }
+        git_stash_log_destroy(&log);
+        tool_write_error("git", "no stash entries found", 0);
+        return 1;
+    }
+    memcpy(stash_oid, entry->oid, CRYPTO_SHA1_DIGEST_SIZE);
+    have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (rt_strcmp(subcommand, "list") == 0) {
+        size_t i;
+
+        (void)have_pack;
+        for (i = 0U; i < log.count; ++i) {
+            GitStashLogEntry *listed = git_stash_log_entry_by_ordinal(&log, i);
+            char number[32];
+
+            rt_write_cstr(1, "stash@{");
+            rt_unsigned_to_string((unsigned long long)i, number, sizeof(number));
+            rt_write_cstr(1, number);
+            rt_write_cstr(1, "}: ");
+            if (listed->message_start < listed->message_end) {
+                rt_write_all(1, log.data + listed->message_start, listed->message_end - listed->message_start);
+            }
+            rt_write_char(1, '\n');
+        }
+        result = 0;
+    } else if (rt_strcmp(subcommand, "apply") == 0 || rt_strcmp(subcommand, "pop") == 0) {
+        if (git_checkout_commit_to_worktree(repo, stash_oid, have_pack ? &pack : 0) != 0) {
+            tool_write_error("git", "cannot apply stash", 0);
+            goto done;
+        }
+        rt_write_cstr(1, "Applied stash@{");
+        git_write_size(ordinal);
+        rt_write_line(1, "}");
+        if (rt_strcmp(subcommand, "pop") == 0 && git_stash_rewrite_without(repo, &log, ordinal) != 0) {
+            tool_write_error("git", "cannot drop stash", 0);
+            goto done;
+        }
+        result = 0;
+    } else if (rt_strcmp(subcommand, "drop") == 0) {
+        if (git_stash_rewrite_without(repo, &log, ordinal) != 0) {
+            tool_write_error("git", "cannot drop stash", 0);
+            goto done;
+        }
+        rt_write_cstr(1, "Dropped stash@{");
+        git_write_size(ordinal);
+        rt_write_line(1, "}");
+        result = 0;
+    } else {
+        tool_write_error("git", "unsupported stash command: ", subcommand);
+    }
+done:
+    if (have_pack) git_pack_destroy(&pack);
+    git_stash_log_destroy(&log);
+    return result;
 }
 
 static int git_hook_path(const GitRepo *repo, const char *name, char *path, size_t path_size) {

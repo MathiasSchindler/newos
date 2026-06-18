@@ -1349,6 +1349,7 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
     int result = 1;
     int change_count = 0;
 
+    rt_memset(&pack, 0, sizeof(pack));
     rt_memset(&stats, 0, sizeof(stats));
     rt_memset(&old_tree_index, 0, sizeof(old_tree_index));
     rt_memset(&new_tree_index, 0, sizeof(new_tree_index));
@@ -1436,8 +1437,8 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
     if (index.count > 1U && !git_index_is_sorted(&index)) {
         rt_sort(index.entries, index.count, sizeof(index.entries[0]), git_compare_entries_by_path);
     }
-    have_pack = git_load_pack_cache(repo, &pack) == 0;
     if (compare_commits) {
+        have_pack = git_load_pack_cache(repo, &pack) == 0;
         if (git_load_commit_tree_index(repo, old_commit_oid, have_pack ? &pack : 0, &old_tree_index) != 0 ||
             git_load_commit_tree_index(repo, new_commit_oid, have_pack ? &pack : 0, &new_tree_index) != 0) {
             tool_write_error("git", "cannot read commit tree", 0);
@@ -1450,6 +1451,7 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
             goto done;
         }
     } else if (cached_mode) {
+        have_pack = git_load_pack_cache(repo, &pack) == 0;
         have_head_index = git_load_head_tree_index(repo, have_pack ? &pack : 0, &head_index) == 0;
         if (!have_head_index) {
             tool_write_error("git", "cannot read HEAD tree", 0);
@@ -1475,7 +1477,10 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
                 break;
             }
             if (output_mode == GIT_DIFF_OUTPUT_STAT) {
-                if (git_collect_diff_stat_entry(repo, &index.entries[i], have_pack ? &pack : 0, &stats) != 0) {
+                if (!have_pack) {
+                    have_pack = git_load_pack_cache(repo, &pack) == 0;
+                }
+                if (git_collect_diff_stat_entry(repo, &index.entries[i], modified, have_pack ? &pack : 0, &stats) != 0) {
                     tool_write_error("git", "cannot diff path: ", index.entries[i].path);
                     goto done;
                 }
@@ -1483,9 +1488,14 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
                 if (git_render_diff_path_mode(output_mode, modified < 0 ? 'D' : 'M', index.entries[i].path, nul_terminate) != 0) {
                     goto done;
                 }
-            } else if (output_mode == GIT_DIFF_OUTPUT_PATCH && git_render_worktree_diff_patch_entry(repo, &index.entries[i], have_pack ? &pack : 0, color_mode) != 0) {
-                tool_write_error("git", "cannot diff path: ", index.entries[i].path);
-                goto done;
+            } else if (output_mode == GIT_DIFF_OUTPUT_PATCH) {
+                if (!have_pack) {
+                    have_pack = git_load_pack_cache(repo, &pack) == 0;
+                }
+                if (git_render_worktree_diff_patch_entry(repo, &index.entries[i], have_pack ? &pack : 0, color_mode) != 0) {
+                    tool_write_error("git", "cannot diff path: ", index.entries[i].path);
+                    goto done;
+                }
             }
         }
     }
@@ -2326,11 +2336,16 @@ static int git_cmd_update_ref(GitRepo *repo, int argc, char **argv, int argi) {
 static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
     GitPack pack;
     GitCommitInfo info;
+    GitIndex tree_index;
+    GitIndexEntry *path_entry;
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char *blob = 0;
+    size_t blob_size = 0U;
     char hex[GIT_OBJECT_HEX_SIZE + 1U];
     int have_pack;
     int stat_mode = 0;
     const char *revision = "HEAD";
+    const char *pathspec = 0;
     int result = 1;
 
     while (argi < argc) {
@@ -2344,11 +2359,48 @@ static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
         }
         argi += 1;
     }
+    {
+        const char *colon = revision;
+        while (*colon != '\0' && *colon != ':') {
+            colon += 1;
+        }
+        if (*colon == ':' && colon != revision && colon[1] != '\0') {
+            size_t revision_length = (size_t)(colon - revision);
+            if (revision_length >= sizeof(hex)) {
+                tool_write_error("git", "show revision is too long", 0);
+                return 1;
+            }
+            memcpy(hex, revision, revision_length);
+            hex[revision_length] = '\0';
+            revision = hex;
+            pathspec = colon + 1;
+            if (stat_mode) {
+                tool_write_error("git", "show --stat does not support REV:PATH", 0);
+                return 1;
+            }
+        }
+    }
     if (git_resolve_revision(repo, revision, oid, 0, 0) != 0) {
         tool_write_error("git", "cannot resolve show revision: ", revision);
         return 1;
     }
     have_pack = git_load_pack_cache(repo, &pack) == 0;
+    if (pathspec != 0) {
+        int type = 0;
+
+        rt_memset(&tree_index, 0, sizeof(tree_index));
+        if (git_load_commit_tree_index(repo, oid, have_pack ? &pack : 0, &tree_index) != 0 || (path_entry = git_index_find(&tree_index, pathspec)) == 0 || git_read_object(repo, path_entry->oid, have_pack ? &pack : 0, &type, &blob, &blob_size) != 0 || type != GIT_OBJECT_BLOB) {
+            tool_write_error("git", "cannot show path: ", pathspec);
+            git_index_destroy(&tree_index);
+            goto done;
+        }
+        if (rt_write_all(1, blob, blob_size) == 0) {
+            result = 0;
+        }
+        rt_free(blob);
+        git_index_destroy(&tree_index);
+        goto done;
+    }
     if (git_read_commit_info(repo, oid, have_pack ? &pack : 0, &info) != 0) {
         tool_write_error("git", "cannot read commit: ", revision);
         goto done;
@@ -2784,6 +2836,96 @@ static int git_cmd_rm(GitRepo *repo, int argc, char **argv, int argi) {
     }
     git_index_destroy(&index);
     return 0;
+}
+
+static int git_path_arg_to_relative(const GitRepo *repo, const char *arg, char *relative, size_t relative_size, char *full_path, size_t full_path_size) {
+    if (git_is_absolute_path(arg)) {
+        if (git_copy(full_path, full_path_size, arg) != 0 || git_relative_path(repo, full_path, relative, relative_size) != 0) {
+            return -1;
+        }
+        return relative[0] == '\0' || tool_path_is_unsafe_relative(relative) ? -1 : 0;
+    }
+    if (git_join(full_path, full_path_size, repo->work_tree, arg) != 0 || git_copy(relative, relative_size, arg) != 0) {
+        return -1;
+    }
+    while (relative[0] == '.' && relative[1] == '/') {
+        memmove(relative, relative + 2, rt_strlen(relative + 2) + 1U);
+    }
+    return relative[0] == '\0' || tool_path_is_unsafe_relative(relative) ? -1 : 0;
+}
+
+static int git_cmd_mv(GitRepo *repo, int argc, char **argv, int argi) {
+    GitIndex index;
+    GitAddContext context;
+    char source_relative[GIT_PATH_CAPACITY];
+    char dest_relative[GIT_PATH_CAPACITY];
+    char source_full[GIT_PATH_CAPACITY];
+    char dest_full[GIT_PATH_CAPACITY];
+    int dest_is_dir = 0;
+    char *source_specs[1];
+    size_t i = 0U;
+    int removed = 0;
+    int result = 1;
+
+    if (argi < argc && rt_strcmp(argv[argi], "--") == 0) {
+        argi += 1;
+    }
+    if (argi + 2 != argc) {
+        tool_write_error("git", "mv needs SOURCE and DEST", 0);
+        return 1;
+    }
+    if (git_path_arg_to_relative(repo, argv[argi], source_relative, sizeof(source_relative), source_full, sizeof(source_full)) != 0 ||
+        git_path_arg_to_relative(repo, argv[argi + 1], dest_relative, sizeof(dest_relative), dest_full, sizeof(dest_full)) != 0) {
+        tool_write_error("git", "mv path is outside the worktree", 0);
+        return 1;
+    }
+    if (platform_path_is_directory(dest_full, &dest_is_dir) == 0 && dest_is_dir) {
+        const char *base = tool_base_name(source_relative);
+        if (git_join(dest_full, sizeof(dest_full), dest_full, base) != 0 || git_relative_path(repo, dest_full, dest_relative, sizeof(dest_relative)) != 0 || tool_path_is_unsafe_relative(dest_relative)) {
+            tool_write_error("git", "mv destination path is invalid", 0);
+            return 1;
+        }
+    }
+    if (git_load_index(repo, &index) != 0) {
+        tool_write_error("git", "cannot read index", 0);
+        return 1;
+    }
+    source_specs[0] = source_relative;
+    for (i = 0U; i < index.count; ++i) {
+        if (git_pathspec_matches(index.entries[i].path, source_specs, 1)) {
+            removed = 1;
+            break;
+        }
+    }
+    if (!removed) {
+        tool_write_error("git", "source is not tracked: ", source_relative);
+        goto done;
+    }
+    if (git_ensure_parent_directory(dest_full) != 0 ||
+        (platform_rename_path(source_full, dest_full) != 0 && (tool_copy_path(source_full, dest_full, 1, 1, 1) != 0 || tool_remove_path(source_full, 1) != 0))) {
+        tool_write_error("git", "cannot move path: ", source_relative);
+        goto done;
+    }
+    i = 0U;
+    while (i < index.count) {
+        if (git_pathspec_matches(index.entries[i].path, source_specs, 1)) {
+            git_index_remove_at(&index, i);
+            continue;
+        }
+        i += 1U;
+    }
+    context.repo = repo;
+    context.index = &index;
+    context.ignores = 0;
+    context.added = 0U;
+    if (git_add_stage_one_path(&context, dest_relative) != 0 || git_write_index_file(repo, &index) != 0) {
+        tool_write_error("git", "cannot update index for moved path: ", dest_relative);
+        goto done;
+    }
+    result = 0;
+done:
+    git_index_destroy(&index);
+    return result;
 }
 
 typedef struct {
