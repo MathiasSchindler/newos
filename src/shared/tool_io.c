@@ -216,6 +216,13 @@ int tool_write_visible_line(int fd, const char *text) {
     return rt_write_char(fd, '\n');
 }
 
+int tool_write_record_text(int fd, const char *text, int zero_terminated) {
+    if (zero_terminated) {
+        return rt_write_all(fd, text, rt_strlen(text)) == 0 && rt_write_char(fd, '\0') == 0 ? 0 : -1;
+    }
+    return rt_write_line(fd, text);
+}
+
 int tool_write_file_all(const char *path, const unsigned char *data, size_t size) {
     int fd = platform_open_write(path, 0644U);
     size_t written = 0U;

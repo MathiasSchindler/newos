@@ -1,13 +1,7 @@
 #include "runtime.h"
+#include "tool_util.h"
 
 #define DIRNAME_BUFFER_CAPACITY 1024
-
-static int write_result(const char *text, int zero_terminated) {
-    if (zero_terminated) {
-        return rt_write_all(1, text, rt_strlen(text)) == 0 && rt_write_char(1, '\0') == 0 ? 0 : -1;
-    }
-    return rt_write_line(1, text);
-}
 
 static void compute_dirname(const char *path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(path);
@@ -67,7 +61,7 @@ int main(int argc, char **argv) {
 
     for (i = argi; i < argc; ++i) {
         compute_dirname(argv[i], result, sizeof(result));
-        if (write_result(result, zero_terminated) != 0) {
+        if (tool_write_record_text(1, result, zero_terminated) != 0) {
             return 1;
         }
     }

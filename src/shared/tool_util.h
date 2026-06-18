@@ -13,6 +13,7 @@ void tool_write_usage(const char *program_name, const char *usage_suffix);
 void tool_write_error(const char *tool_name, const char *message, const char *detail);
 int tool_write_visible(int fd, const char *text, size_t length);
 int tool_write_visible_line(int fd, const char *text);
+int tool_write_record_text(int fd, const char *text, int zero_terminated);
 int tool_write_file_all(const char *path, const unsigned char *data, size_t size);
 void tool_restore_terminal_mode_if_enabled(int fd, int *enabled_io, const PlatformTerminalState *state);
 int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool_name);

@@ -7,13 +7,6 @@ static void print_usage(void) {
     rt_write_line(2, "Usage: basename [-a] [-s suffix] [-z] name ...");
 }
 
-static int write_result(const char *text, int zero_terminated) {
-    if (zero_terminated) {
-        return rt_write_all(1, text, rt_strlen(text)) == 0 && rt_write_char(1, '\0') == 0 ? 0 : -1;
-    }
-    return rt_write_line(1, text);
-}
-
 static void extract_basename(const char *path, char *buffer, size_t buffer_size) {
     size_t len = rt_strlen(path);
     size_t start;
@@ -130,7 +123,7 @@ int main(int argc, char **argv) {
     if (!multi_arg && suffix == 0 && argc - argi == 2) {
         extract_basename(argv[argi], result, sizeof(result));
         maybe_strip_suffix(result, argv[argi + 1]);
-        return write_result(result, zero_terminated) == 0 ? 0 : 1;
+        return tool_write_record_text(1, result, zero_terminated) == 0 ? 0 : 1;
     }
 
     if (!multi_arg && argc - argi != 1) {
@@ -141,7 +134,7 @@ int main(int argc, char **argv) {
     for (i = argi; i < argc; ++i) {
         extract_basename(argv[i], result, sizeof(result));
         maybe_strip_suffix(result, suffix);
-        if (write_result(result, zero_terminated) != 0) {
+        if (tool_write_record_text(1, result, zero_terminated) != 0) {
             return 1;
         }
     }
