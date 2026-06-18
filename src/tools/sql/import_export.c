@@ -101,7 +101,7 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
         for (column_index = 0U; column_index < table->column_count; ++column_index) {
             int ok;
             char *field = sql_next_import_field(&field_cursor, csv, &ok);
-            if (!ok || !sql_equal_ignore_case(field, table->columns[column_index])) {
+            if (!ok || !tool_str_equal_ignore_case_ascii(field, table->columns[column_index])) {
                 (void)platform_close(fd);
                 return -1;
             }

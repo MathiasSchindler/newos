@@ -73,12 +73,8 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
     return 0;
 }
 
-static long long fixed_abs(long long value) {
-    return value < 0LL ? -value : value;
-}
-
 static void write_fixed(long long value) {
-    long long absolute = fixed_abs(value);
+    long long absolute = pdf_abs_fixed(value);
     unsigned long long whole = (unsigned long long)(absolute / 1000LL);
     unsigned long long fraction = (unsigned long long)(absolute % 1000LL);
 
@@ -93,11 +89,11 @@ static void write_fixed(long long value) {
 }
 
 static long long page_width(const PdfPageInfo *page) {
-    return fixed_abs(page->media_box[2] - page->media_box[0]);
+    return pdf_abs_fixed(page->media_box[2] - page->media_box[0]);
 }
 
 static long long page_height(const PdfPageInfo *page) {
-    return fixed_abs(page->media_box[3] - page->media_box[1]);
+    return pdf_abs_fixed(page->media_box[3] - page->media_box[1]);
 }
 
 static void write_bool_word(unsigned long long value) {

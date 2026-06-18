@@ -134,5 +134,6 @@ const char *image_format_mime(ImageFormat format);
 const char *image_channel_description(const ImageInfo *info);
 const char *image_property_name(unsigned int property);
 const char *image_orientation_description(unsigned int orientation);
+size_t image_tiff_type_size(unsigned int type);
 
 #endif

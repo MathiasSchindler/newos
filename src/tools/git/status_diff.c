@@ -1335,16 +1335,6 @@ static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, c
     return 0;
 }
 
-static size_t git_decimal_width(size_t value) {
-    size_t width = 1U;
-
-    while (value >= 10U) {
-        value /= 10U;
-        width += 1U;
-    }
-    return width;
-}
-
 static int git_write_spaces(size_t count) {
     while (count > 0U) {
         if (rt_write_char(1, ' ') != 0) {
@@ -1458,7 +1448,7 @@ static int git_render_diff_stat(const GitDiffStatList *stats, int color_mode) {
     for (i = 0U; i < stats->count; ++i) {
         size_t path_length = rt_strlen(stats->entries[i].path);
         size_t changes = stats->entries[i].insertions + stats->entries[i].deletions;
-        size_t width = git_decimal_width(changes);
+        size_t width = tool_count_decimal_digits((unsigned long long)changes);
 
         if (path_length > path_width) path_width = path_length;
         if (width > changes_width) changes_width = width;
@@ -1476,7 +1466,7 @@ static int git_render_diff_stat(const GitDiffStatList *stats, int color_mode) {
         size_t minuses;
 
         git_diff_scaled_bar(stats->entries[i].insertions, stats->entries[i].deletions, max_changes, graph_width, &pluses, &minuses);
-        if (rt_write_char(1, ' ') != 0 || rt_write_cstr(1, stats->entries[i].path) != 0 || git_write_spaces(path_width - rt_strlen(stats->entries[i].path)) != 0 || rt_write_cstr(1, " | ") != 0 || git_write_spaces(changes_width - git_decimal_width(changes)) != 0 || git_write_size(changes) != 0 || rt_write_char(1, ' ') != 0 || git_write_diff_stat_bar(pluses, minuses, color_mode) != 0 || rt_write_char(1, '\n') != 0) {
+        if (rt_write_char(1, ' ') != 0 || rt_write_cstr(1, stats->entries[i].path) != 0 || git_write_spaces(path_width - rt_strlen(stats->entries[i].path)) != 0 || rt_write_cstr(1, " | ") != 0 || git_write_spaces(changes_width - tool_count_decimal_digits((unsigned long long)changes)) != 0 || git_write_size(changes) != 0 || rt_write_char(1, ' ') != 0 || git_write_diff_stat_bar(pluses, minuses, color_mode) != 0 || rt_write_char(1, '\n') != 0) {
             return -1;
         }
     }

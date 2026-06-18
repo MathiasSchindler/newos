@@ -171,7 +171,7 @@ static int sshd_transport_kex(SshdTransport *t, const SshdConfig *config) {
         return -1;
     }
 
-    if (ssh_write_all(t->fd, SSH_SERVER_BANNER_WIRE, sizeof(SSH_SERVER_BANNER_WIRE) - 1U) != 0 ||
+    if (rt_write_all(t->fd, SSH_SERVER_BANNER_WIRE, sizeof(SSH_SERVER_BANNER_WIRE) - 1U) != 0 ||
         ssh_read_banner(t->fd, client_banner, sizeof(client_banner)) != 0) {
         return -1;
     }

@@ -7,34 +7,34 @@ static int sql_execute_statement(SqlDatabase *db, const char *statement) {
     if (sql_next_token(&parser) != 0 || parser.token_type != SQL_TOKEN_WORD) {
         return -1;
     }
-    if (sql_equal_ignore_case(parser.token, "create")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "create")) {
         return sql_execute_create(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "insert")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "insert")) {
         return sql_execute_insert(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "select")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "select")) {
         return sql_execute_select(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "update")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "update")) {
         return sql_execute_update(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "delete")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "delete")) {
         return sql_execute_delete(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "drop")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "drop")) {
         return sql_execute_drop(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "schema")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "schema")) {
         return sql_execute_schema(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "alter")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "alter")) {
         return sql_execute_alter(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "import")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "import")) {
         return sql_execute_import(db, &parser);
     }
-    if (sql_equal_ignore_case(parser.token, "export")) {
+    if (tool_str_equal_ignore_case_ascii(parser.token, "export")) {
         return sql_execute_export(db, &parser);
     }
     return -1;
@@ -80,7 +80,7 @@ static int sql_execute_script(SqlDatabase *db, const char *script, int *changed_
             }
             memcpy(statement.data, script + start, length);
             statement.data[length] = '\0';
-            sql_trim_whitespace(statement.data);
+            tool_trim_whitespace(statement.data);
             if (statement.data[0] != '\0') {
                 changed = sql_execute_statement(db, statement.data);
                 if (changed < 0) {
@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
         sql_write_error("empty statement", 0);
         goto out;
     }
-    sql_trim_whitespace(input.data);
+    tool_trim_whitespace(input.data);
     if (input.data[0] == '\0') {
         sql_write_error("empty statement", 0);
         goto out;

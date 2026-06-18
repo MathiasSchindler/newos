@@ -417,7 +417,7 @@ int ssh_start_interactive_shell(
             continue;
         }
         if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 0) == 0) {
-            if (data.length != 0U && ssh_write_all(1, data.data, data.length) != 0) {
+            if (data.length != 0U && rt_write_all(1, data.data, data.length) != 0) {
                 return -1;
             }
             if (ssh_send_channel_window_adjust(sock, keys->key_c_to_s, *client_seq_io, channel.remote_id, (unsigned int)data.length) != 0) {
@@ -555,7 +555,7 @@ int ssh_start_interactive_shell(
                 continue;
             }
             if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 0) == 0) {
-                if (data.length != 0U && ssh_write_all(1, data.data, data.length) != 0) {
+                if (data.length != 0U && rt_write_all(1, data.data, data.length) != 0) {
                     if (terminal_raw) {
                         (void)platform_terminal_restore_mode(0, &saved);
                     }
@@ -571,7 +571,7 @@ int ssh_start_interactive_shell(
                 continue;
             }
             if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 1) == 0) {
-                if (data.length != 0U && ssh_write_all(2, data.data, data.length) != 0) {
+                if (data.length != 0U && rt_write_all(2, data.data, data.length) != 0) {
                     if (terminal_raw) {
                         (void)platform_terminal_restore_mode(0, &saved);
                     }

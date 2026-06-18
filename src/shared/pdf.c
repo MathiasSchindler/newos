@@ -716,7 +716,7 @@ static void pdf_scan_content_stream(const unsigned char *data, size_t start, siz
     }
 }
 
-static size_t pdf_stream_body_start(const unsigned char *data, size_t size, size_t stream_offset) {
+size_t pdf_stream_body_start(const unsigned char *data, size_t size, size_t stream_offset) {
     size_t offset = stream_offset + 6U;
 
     if (offset < size && data[offset] == (unsigned char)'\r') {
@@ -750,7 +750,7 @@ static size_t pdf_find_endstream_from_length(const unsigned char *data, size_t s
     return pdf_find_keyword(data, size, expected, near_end, "endstream");
 }
 
-static void pdf_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io) {
+void pdf_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io) {
     while (*end_io > start && (data[*end_io - 1U] == (unsigned char)'\n' || data[*end_io - 1U] == (unsigned char)'\r')) *end_io -= 1U;
 }
 
@@ -1521,7 +1521,7 @@ int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
     return 0;
 }
 
-static long long pdf_abs_fixed(long long value) {
+long long pdf_abs_fixed(long long value) {
     return value < 0LL ? -value : value;
 }
 

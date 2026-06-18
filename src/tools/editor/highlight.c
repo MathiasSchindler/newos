@@ -1,6 +1,7 @@
 #include "highlight.h"
 
 #include "runtime.h"
+#include "tool_util.h"
 
 static int editor_highlight_path_has_suffix(const char *path, const char *suffix) {
     size_t path_length;
@@ -21,14 +22,6 @@ int editor_highlight_enabled(const char *path) {
     return editor_highlight_path_has_suffix(path, ".c") ||
            editor_highlight_path_has_suffix(path, ".h") ||
            editor_highlight_path_has_suffix(path, ".S");
-}
-
-static int editor_highlight_is_ident_start(char ch) {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
-}
-
-static int editor_highlight_is_ident_char(char ch) {
-    return editor_highlight_is_ident_start(ch) || (ch >= '0' && ch <= '9');
 }
 
 static int editor_highlight_is_keyword(const char *text, size_t length) {
@@ -81,7 +74,7 @@ int editor_highlight_style_at(const char *path, const char *line, size_t line_le
         }
         if (ch >= '0' && ch <= '9') {
             size_t end = index + 1U;
-            while (end < line_length && ((line[end] >= '0' && line[end] <= '9') || line[end] == '.' || editor_highlight_is_ident_char(line[end]))) {
+            while (end < line_length && ((line[end] >= '0' && line[end] <= '9') || line[end] == '.' || tool_ascii_is_identifier_char(line[end]))) {
                 end += 1U;
             }
             if (offset >= index && offset < end) {
@@ -90,9 +83,9 @@ int editor_highlight_style_at(const char *path, const char *line, size_t line_le
             index = end;
             continue;
         }
-        if (editor_highlight_is_ident_start(ch)) {
+        if (tool_ascii_is_identifier_start(ch)) {
             size_t end = index + 1U;
-            while (end < line_length && editor_highlight_is_ident_char(line[end])) {
+            while (end < line_length && tool_ascii_is_identifier_char(line[end])) {
                 end += 1U;
             }
             if (offset >= index && offset < end && editor_highlight_is_keyword(line + index, end - index)) {

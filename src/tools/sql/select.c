@@ -38,7 +38,7 @@ static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, SqlSe
     if (sql_next_token(parser) != 0) {
         return -1;
     }
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "distinct")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "distinct")) {
         query->distinct = 1;
         if (sql_next_token(parser) != 0) {
             return -1;
@@ -105,12 +105,12 @@ static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, SqlSe
                 return -1;
             }
         }
-        if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "as")) {
+        if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "as")) {
             if (sql_read_identifier(parser, scratch->raw_labels[query->item_count - 1U], SQL_VALUE_SIZE) != 0 || sql_next_token(parser) != 0) {
                 return -1;
             }
         }
-        if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "from")) {
+        if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "from")) {
             return 0;
         }
         if (parser->token_type != SQL_TOKEN_SYMBOL || parser->token[0] != ',') {
@@ -123,20 +123,20 @@ static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, SqlSe
 }
 
 static int sql_select_tail_keyword(const char *word) {
-    return sql_equal_ignore_case(word, "join") ||
-           sql_equal_ignore_case(word, "left") ||
-           sql_equal_ignore_case(word, "right") ||
-           sql_equal_ignore_case(word, "full") ||
-           sql_equal_ignore_case(word, "natural") ||
-           sql_equal_ignore_case(word, "outer") ||
-           sql_equal_ignore_case(word, "on") ||
-           sql_equal_ignore_case(word, "using") ||
-           sql_equal_ignore_case(word, "where") ||
-           sql_equal_ignore_case(word, "group") ||
-           sql_equal_ignore_case(word, "having") ||
-           sql_equal_ignore_case(word, "order") ||
-           sql_equal_ignore_case(word, "limit") ||
-           sql_equal_ignore_case(word, "offset");
+    return tool_str_equal_ignore_case_ascii(word, "join") ||
+           tool_str_equal_ignore_case_ascii(word, "left") ||
+           tool_str_equal_ignore_case_ascii(word, "right") ||
+           tool_str_equal_ignore_case_ascii(word, "full") ||
+           tool_str_equal_ignore_case_ascii(word, "natural") ||
+           tool_str_equal_ignore_case_ascii(word, "outer") ||
+           tool_str_equal_ignore_case_ascii(word, "on") ||
+           tool_str_equal_ignore_case_ascii(word, "using") ||
+           tool_str_equal_ignore_case_ascii(word, "where") ||
+           tool_str_equal_ignore_case_ascii(word, "group") ||
+           tool_str_equal_ignore_case_ascii(word, "having") ||
+           tool_str_equal_ignore_case_ascii(word, "order") ||
+           tool_str_equal_ignore_case_ascii(word, "limit") ||
+           tool_str_equal_ignore_case_ascii(word, "offset");
 }
 
 static int sql_add_query_source(SqlDatabase *db, SqlSelectQuery *query, const char *name, const char *alias) {
@@ -152,7 +152,7 @@ static int sql_add_query_source(SqlDatabase *db, SqlSelectQuery *query, const ch
     }
     if (alias != 0 && alias[0] != '\0') {
         for (i = 0U; i < query->source_count; ++i) {
-            if (sql_equal_ignore_case(query->sources[i].name, alias) || sql_equal_ignore_case(query->sources[i].alias, alias)) {
+            if (tool_str_equal_ignore_case_ascii(query->sources[i].name, alias) || tool_str_equal_ignore_case_ascii(query->sources[i].alias, alias)) {
                 return -1;
             }
         }
@@ -316,7 +316,7 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
             rt_memset(condition, 0, sizeof(*condition));
             for (left_index = 0U; left_index < left_table->column_count; ++left_index) {
                 for (right_index = 0U; right_index < right_table->column_count; ++right_index) {
-                    if (sql_equal_ignore_case(left_table->columns[left_index], right_table->columns[right_index])) {
+                    if (tool_str_equal_ignore_case_ascii(left_table->columns[left_index], right_table->columns[right_index])) {
                         if (left_column >= 0) {
                             return -1;
                         }

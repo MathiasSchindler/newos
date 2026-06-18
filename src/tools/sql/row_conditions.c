@@ -32,13 +32,13 @@ static int sql_parse_row_condition_leaf(SqlParser *parser, const SqlTable *table
     condition.left.aggregate_index = -1;
     condition.left.column.table_index = 0;
     condition.left.column.column_index = column;
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "not")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "not")) {
         negated = !negated;
         if (sql_next_token(parser) != 0) {
             return -1;
         }
     }
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "between")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "between")) {
         SqlCondition upper;
 
         condition.operator_kind = negated ? SQL_CONDITION_LT : SQL_CONDITION_GE;
@@ -65,9 +65,9 @@ static int sql_parse_row_condition_leaf(SqlParser *parser, const SqlTable *table
             return *node_out < 0 ? -1 : 0;
         }
     }
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "like")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "like")) {
         condition.operator_kind = SQL_CONDITION_LIKE;
-    } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "in")) {
+    } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "in")) {
         if (!sql_expect_symbol(parser, '(')) {
             return -1;
         }
@@ -88,7 +88,7 @@ static int sql_parse_row_condition_leaf(SqlParser *parser, const SqlTable *table
         condition.present = 1;
         *node_out = sql_add_condition_leaf(list, &condition);
         return *node_out < 0 ? -1 : 0;
-    } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "is")) {
+    } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "is")) {
         if (sql_try_word(parser, "not")) {
             negated = !negated;
         }
@@ -188,7 +188,7 @@ static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditio
     if (parser->token_type == SQL_TOKEN_END) {
         return 0;
     }
-    if (parser->token_type != SQL_TOKEN_WORD || !sql_equal_ignore_case(parser->token, "where")) {
+    if (parser->token_type != SQL_TOKEN_WORD || !tool_str_equal_ignore_case_ascii(parser->token, "where")) {
         parser->pos = saved;
         return -1;
     }

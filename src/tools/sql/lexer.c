@@ -97,7 +97,7 @@ static int sql_next_token(SqlParser *parser) {
 }
 
 static int sql_expect_word(SqlParser *parser, const char *word) {
-    return sql_next_token(parser) == 0 && parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, word);
+    return sql_next_token(parser) == 0 && parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, word);
 }
 
 static int sql_expect_symbol(SqlParser *parser, char symbol) {
@@ -128,7 +128,7 @@ static int sql_at_end(SqlParser *parser) {
 static int sql_try_word(SqlParser *parser, const char *word) {
     size_t saved = parser->pos;
 
-    if (sql_next_token(parser) == 0 && parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, word)) {
+    if (sql_next_token(parser) == 0 && parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, word)) {
         return 1;
     }
     parser->pos = saved;

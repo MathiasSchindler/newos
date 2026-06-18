@@ -572,25 +572,6 @@ static void sql_invalidate_table_runtime_caches(const SqlTable *table) {
     }
 }
 
-static char sql_fold(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
-static int sql_equal_ignore_case(const char *left, const char *right) {
-    size_t i = 0U;
-
-    while (left[i] != '\0' && right[i] != '\0') {
-        if (sql_fold(left[i]) != sql_fold(right[i])) {
-            return 0;
-        }
-        i += 1U;
-    }
-    return left[i] == '\0' && right[i] == '\0';
-}
-
 static int sql_copy_checked(char *dst, size_t dst_size, const char *src) {
     if (dst == 0 || dst_size == 0U || src == 0 || rt_strlen(src) + 1U > dst_size) {
         return -1;
@@ -613,33 +594,11 @@ static void sql_write_row_count(unsigned int count) {
     rt_write_line(1, " rows");
 }
 
-static void sql_trim_whitespace(char *text) {
-    size_t start = 0U;
-    size_t end;
-    size_t out = 0U;
-
-    if (text == 0) {
-        return;
-    }
-    end = rt_strlen(text);
-    while (text[start] != '\0' && rt_is_space(text[start])) {
-        start += 1U;
-    }
-    while (end > start && rt_is_space(text[end - 1U])) {
-        end -= 1U;
-    }
-    while (start + out < end) {
-        text[out] = text[start + out];
-        out += 1U;
-    }
-    text[out] = '\0';
-}
-
 static SqlTable *sql_find_table(SqlDatabase *db, const char *name) {
     unsigned int i;
 
     for (i = 0U; i < db->table_count; ++i) {
-        if (sql_equal_ignore_case(db->tables[i].name, name)) {
+        if (tool_str_equal_ignore_case_ascii(db->tables[i].name, name)) {
             return &db->tables[i];
         }
     }
@@ -650,7 +609,7 @@ static int sql_find_column(const SqlTable *table, const char *name) {
     unsigned int i;
 
     for (i = 0U; i < table->column_count; ++i) {
-        if (sql_equal_ignore_case(table->columns[i], name)) {
+        if (tool_str_equal_ignore_case_ascii(table->columns[i], name)) {
             return (int)i;
         }
     }
@@ -661,7 +620,7 @@ static int sql_column_seen(char (*columns)[SQL_NAME_SIZE], unsigned int column_c
     unsigned int i;
 
     for (i = 0U; i < column_count; ++i) {
-        if (sql_equal_ignore_case(columns[i], name)) {
+        if (tool_str_equal_ignore_case_ascii(columns[i], name)) {
             return 1;
         }
     }
@@ -722,8 +681,8 @@ static int sql_resolve_column(const SqlSelectQuery *query, const char *text, Sql
     for (i = 0U; i < query->source_count; ++i) {
         int column;
         if (table_name[0] != '\0' &&
-            !sql_equal_ignore_case(query->sources[i].name, table_name) &&
-            !sql_equal_ignore_case(query->sources[i].alias, table_name)) {
+            !tool_str_equal_ignore_case_ascii(query->sources[i].name, table_name) &&
+            !tool_str_equal_ignore_case_ascii(query->sources[i].alias, table_name)) {
             continue;
         }
         column = sql_find_column(query->sources[i].table, column_name);
@@ -773,31 +732,31 @@ static int sql_result_rows_same_group(const SqlResultRow *left, const SqlResultR
 }
 
 static int sql_aggregate_kind_from_name(const char *name) {
-    if (sql_equal_ignore_case(name, "count")) {
+    if (tool_str_equal_ignore_case_ascii(name, "count")) {
         return SQL_SELECT_COUNT_COLUMN;
     }
-    if (sql_equal_ignore_case(name, "sum")) {
+    if (tool_str_equal_ignore_case_ascii(name, "sum")) {
         return SQL_SELECT_SUM;
     }
-    if (sql_equal_ignore_case(name, "min")) {
+    if (tool_str_equal_ignore_case_ascii(name, "min")) {
         return SQL_SELECT_MIN;
     }
-    if (sql_equal_ignore_case(name, "max")) {
+    if (tool_str_equal_ignore_case_ascii(name, "max")) {
         return SQL_SELECT_MAX;
     }
-    if (sql_equal_ignore_case(name, "avg")) {
+    if (tool_str_equal_ignore_case_ascii(name, "avg")) {
         return SQL_SELECT_AVG;
     }
-    if (sql_equal_ignore_case(name, "total")) {
+    if (tool_str_equal_ignore_case_ascii(name, "total")) {
         return SQL_SELECT_TOTAL;
     }
-    if (sql_equal_ignore_case(name, "first")) {
+    if (tool_str_equal_ignore_case_ascii(name, "first")) {
         return SQL_SELECT_FIRST;
     }
-    if (sql_equal_ignore_case(name, "last")) {
+    if (tool_str_equal_ignore_case_ascii(name, "last")) {
         return SQL_SELECT_LAST;
     }
-    if (sql_equal_ignore_case(name, "group_concat")) {
+    if (tool_str_equal_ignore_case_ascii(name, "group_concat")) {
         return SQL_SELECT_GROUP_CONCAT;
     }
     return -1;
@@ -961,7 +920,7 @@ static int sql_compute_aggregate_value(const SqlSelectQuery *query, const SqlRes
 }
 
 static int sql_label_matches_item(const SqlSelectItem *item, const char *label) {
-    return sql_equal_ignore_case(item->label, label);
+    return tool_str_equal_ignore_case_ascii(item->label, label);
 }
 
 static int sql_find_select_label(const SqlSelectQuery *query, const char *label) {

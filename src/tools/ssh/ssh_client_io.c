@@ -2,20 +2,6 @@
 
 #include "ssh_transport.h"
 
-int ssh_write_all(int fd, const void *buffer, size_t count) {
-    const unsigned char *data = (const unsigned char *)buffer;
-    size_t offset = 0U;
-
-    while (offset < count) {
-        long written = platform_write(fd, data + offset, count - offset);
-        if (written <= 0) {
-            return -1;
-        }
-        offset += (size_t)written;
-    }
-    return 0;
-}
-
 int ssh_read_exact(int fd, void *buffer, size_t count) {
     unsigned char *data = (unsigned char *)buffer;
     size_t offset = 0U;
@@ -118,7 +104,7 @@ int ssh_send_packet(int fd, const unsigned char *payload, size_t payload_len) {
     if (crypto_random_bytes(packet + 5U + payload_len, padding_len) != 0) {
         return -1;
     }
-    return ssh_write_all(fd, packet, total_len);
+    return rt_write_all(fd, packet, total_len);
 }
 
 int ssh_read_packet(
@@ -186,8 +172,8 @@ int ssh_send_encrypted_packet(int fd, const unsigned char key[64], unsigned int 
     }
 
     crypto_ssh_chachapoly_encrypt_packet(key, seqnr, packet, total_len, tag);
-    if (ssh_write_all(fd, packet, total_len) != 0 ||
-        ssh_write_all(fd, tag, sizeof(tag)) != 0) {
+    if (rt_write_all(fd, packet, total_len) != 0 ||
+        rt_write_all(fd, tag, sizeof(tag)) != 0) {
         return -1;
     }
     return 0;

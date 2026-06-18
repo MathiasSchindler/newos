@@ -2178,10 +2178,6 @@ static void git_author_name_email(const char *author, const char **name_out, siz
     }
 }
 
-static int git_identity_is_space(char ch) {
-    return ch == ' ' || ch == '\t';
-}
-
 static int git_write_two_digits(char *out, unsigned int value) {
     out[0] = (char)('0' + (value / 10U) % 10U);
     out[1] = (char)('0' + value % 10U);
@@ -2231,15 +2227,15 @@ static int git_write_author_and_date(const char *author) {
         return -1;
     }
     len = rt_strlen(author);
-    while (len > 0U && git_identity_is_space(author[len - 1U])) {
+    while (len > 0U && tool_ascii_is_blank(author[len - 1U])) {
         len -= 1U;
     }
     tz_start = len;
-    while (tz_start > 0U && !git_identity_is_space(author[tz_start - 1U])) {
+    while (tz_start > 0U && !tool_ascii_is_blank(author[tz_start - 1U])) {
         tz_start -= 1U;
     }
     ts_end = tz_start;
-    while (ts_end > 0U && git_identity_is_space(author[ts_end - 1U])) {
+    while (ts_end > 0U && tool_ascii_is_blank(author[ts_end - 1U])) {
         ts_end -= 1U;
     }
     ts_start = ts_end;

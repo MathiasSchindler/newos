@@ -146,21 +146,21 @@ static int sql_execute_create(SqlDatabase *db, SqlParser *parser) {
                     goto out;
                 }
                 scratch.column_types[column_count] = (unsigned char)sql_column_type_from_name(parser->token);
-            } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "not")) {
+            } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "not")) {
                 if (!sql_expect_word(parser, "null")) {
                     goto out;
                 }
                 scratch.not_null[column_count] = 1U;
-            } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "primary")) {
+            } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "primary")) {
                 if (!sql_expect_word(parser, "key")) {
                     goto out;
                 }
                 scratch.primary_key[column_count] = 1U;
                 scratch.unique[column_count] = 1U;
                 scratch.not_null[column_count] = 1U;
-            } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "unique")) {
+            } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "unique")) {
                 scratch.unique[column_count] = 1U;
-            } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "default")) {
+            } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "default")) {
                 int is_null = 0;
                 if (scratch.has_default[column_count] || sql_read_value_or_null(parser, scratch.defaults[column_count], sizeof(scratch.defaults[column_count]), &is_null) != 0) {
                     goto out;

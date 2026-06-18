@@ -70,7 +70,7 @@ static int sql_read_value_or_null(SqlParser *parser, char *buffer, size_t buffer
     if (sql_next_token(parser) != 0 || (parser->token_type != SQL_TOKEN_WORD && parser->token_type != SQL_TOKEN_STRING)) {
         return -1;
     }
-    *is_null_out = parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "null");
+    *is_null_out = parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "null");
     if (*is_null_out) {
         buffer[0] = '\0';
         return 0;
@@ -196,13 +196,13 @@ static int sql_compare_values(const char *left, const char *right) {
 }
 
 static int sql_column_type_from_name(const char *name) {
-    if (sql_equal_ignore_case(name, "text")) {
+    if (tool_str_equal_ignore_case_ascii(name, "text")) {
         return SQL_TYPE_TEXT;
     }
-    if (sql_equal_ignore_case(name, "integer") || sql_equal_ignore_case(name, "int")) {
+    if (tool_str_equal_ignore_case_ascii(name, "integer") || tool_str_equal_ignore_case_ascii(name, "int")) {
         return SQL_TYPE_INTEGER;
     }
-    if (sql_equal_ignore_case(name, "real")) {
+    if (tool_str_equal_ignore_case_ascii(name, "real")) {
         return SQL_TYPE_REAL;
     }
     return -1;

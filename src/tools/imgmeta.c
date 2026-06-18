@@ -1859,29 +1859,6 @@ static int tiff_tag_is_metadata(unsigned int tag) {
            tag == 34853U;
 }
 
-static size_t tiff_type_size(unsigned int type) {
-    switch (type) {
-        case 1U:
-        case 2U:
-        case 6U:
-        case 7U:
-            return 1U;
-        case 3U:
-        case 8U:
-            return 2U;
-        case 4U:
-        case 9U:
-        case 11U:
-            return 4U;
-        case 5U:
-        case 10U:
-        case 12U:
-            return 8U;
-        default:
-            return 0U;
-    }
-}
-
 static int strip_tiff(const unsigned char *data, size_t size, unsigned char **out_data, size_t *out_size) {
     unsigned char *output;
     int little_endian;
@@ -1926,7 +1903,7 @@ static int strip_tiff(const unsigned char *data, size_t size, unsigned char **ou
 
             if (tiff_tag_is_metadata(tag)) {
                 unsigned int type = read_tiff_u16(entry + 2U, little_endian);
-                size_t unit_size = tiff_type_size(type);
+                size_t unit_size = image_tiff_type_size(type);
 
                 if (unit_size != 0U && tiff_u64_high_is_zero(entry + 4U, little_endian)) {
                     unsigned int count = read_tiff_u64_low(entry + 4U, little_endian);
@@ -1986,7 +1963,7 @@ static int strip_tiff(const unsigned char *data, size_t size, unsigned char **ou
         if (tiff_tag_is_metadata(tag)) {
             unsigned int type = read_tiff_u16(entry + 2U, little_endian);
             unsigned int count = read_tiff_u32(entry + 4U, little_endian);
-            size_t unit_size = tiff_type_size(type);
+            size_t unit_size = image_tiff_type_size(type);
 
             if (unit_size != 0U && count != 0U && (size_t)count <= ((size_t)-1) / unit_size) {
                 size_t value_size = unit_size * (size_t)count;

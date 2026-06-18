@@ -85,7 +85,7 @@ static int ssh_parse_userauth_banner(const unsigned char *payload, size_t payloa
 
     rt_write_cstr(1, "ssh banner: ");
     if (message.length != 0U) {
-        (void)ssh_write_all(1, message.data, message.length);
+        (void)rt_write_all(1, message.data, message.length);
     }
     rt_write_char(1, '\n');
     (void)language;

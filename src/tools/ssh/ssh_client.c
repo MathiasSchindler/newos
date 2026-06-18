@@ -48,20 +48,6 @@ typedef struct {
     int loaded;
 } SshIdentity;
 
-static int ssh_write_all(int fd, const void *buffer, size_t count) {
-    const unsigned char *data = (const unsigned char *)buffer;
-    size_t offset = 0U;
-
-    while (offset < count) {
-        long written = platform_write(fd, data + offset, count - offset);
-        if (written <= 0) {
-            return -1;
-        }
-        offset += (size_t)written;
-    }
-    return 0;
-}
-
 static int ssh_read_exact(int fd, void *buffer, size_t count) {
     unsigned char *data = (unsigned char *)buffer;
     size_t offset = 0U;
@@ -550,7 +536,7 @@ static int ssh_send_packet(int fd, const unsigned char *payload, size_t payload_
     if (crypto_random_bytes(packet + 5U + payload_len, padding_len) != 0) {
         return -1;
     }
-    return ssh_write_all(fd, packet, total_len);
+    return rt_write_all(fd, packet, total_len);
 }
 
 static int ssh_read_packet(
@@ -618,8 +604,8 @@ static int ssh_send_encrypted_packet(int fd, const unsigned char key[64], unsign
     }
 
     crypto_ssh_chachapoly_encrypt_packet(key, seqnr, packet, total_len, tag);
-    if (ssh_write_all(fd, packet, total_len) != 0 ||
-        ssh_write_all(fd, tag, sizeof(tag)) != 0) {
+    if (rt_write_all(fd, packet, total_len) != 0 ||
+        rt_write_all(fd, tag, sizeof(tag)) != 0) {
         return -1;
     }
     return 0;
@@ -752,7 +738,7 @@ static int ssh_parse_userauth_banner(const unsigned char *payload, size_t payloa
 
     rt_write_cstr(1, "ssh banner: ");
     if (message.length != 0U) {
-        (void)ssh_write_all(1, message.data, message.length);
+        (void)rt_write_all(1, message.data, message.length);
     }
     rt_write_char(1, '\n');
     (void)language;
@@ -1538,7 +1524,7 @@ static int ssh_start_interactive_shell(
             continue;
         }
         if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 0) == 0) {
-            if (data.length != 0U && ssh_write_all(1, data.data, data.length) != 0) {
+            if (data.length != 0U && rt_write_all(1, data.data, data.length) != 0) {
                 return -1;
             }
             if (ssh_send_channel_window_adjust(sock, keys->key_c_to_s, *client_seq_io, channel.remote_id, (unsigned int)data.length) != 0) {
@@ -1676,7 +1662,7 @@ static int ssh_start_interactive_shell(
                 continue;
             }
             if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 0) == 0) {
-                if (data.length != 0U && ssh_write_all(1, data.data, data.length) != 0) {
+                if (data.length != 0U && rt_write_all(1, data.data, data.length) != 0) {
                     if (terminal_raw) {
                         (void)platform_terminal_restore_mode(0, &saved);
                     }
@@ -1692,7 +1678,7 @@ static int ssh_start_interactive_shell(
                 continue;
             }
             if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 1) == 0) {
-                if (data.length != 0U && ssh_write_all(2, data.data, data.length) != 0) {
+                if (data.length != 0U && rt_write_all(2, data.data, data.length) != 0) {
                     if (terminal_raw) {
                         (void)platform_terminal_restore_mode(0, &saved);
                     }
@@ -1776,7 +1762,7 @@ int ssh_client_connect_and_run(const SshClientConfig *config) {
     rt_write_uint(1, config->port);
     rt_write_char(1, '\n');
 
-    if (ssh_write_all(sock, SSH_CLIENT_BANNER_WIRE, sizeof(SSH_CLIENT_BANNER_WIRE) - 1U) != 0 ||
+    if (rt_write_all(sock, SSH_CLIENT_BANNER_WIRE, sizeof(SSH_CLIENT_BANNER_WIRE) - 1U) != 0 ||
         ssh_read_banner(sock, server_banner, sizeof(server_banner)) != 0) {
         tool_write_error("ssh", "banner exchange failed with ", config->host);
         platform_close(sock);

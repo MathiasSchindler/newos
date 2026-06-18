@@ -43,7 +43,6 @@ typedef struct {
     int close_sent;
 } SshChannelState;
 
-int ssh_write_all(int fd, const void *buffer, size_t count);
 int ssh_read_exact(int fd, void *buffer, size_t count);
 int ssh_copy_view_text(const SshStringView *view, char *buffer, size_t buffer_size);
 int ssh_view_equals_text(const SshStringView *view, const char *text);

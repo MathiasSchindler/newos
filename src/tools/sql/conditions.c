@@ -48,7 +48,7 @@ static int sql_parse_condition_value(SqlParser *parser, SqlSelectQuery *query, S
     }
     parser->pos = saved;
     value_out->is_column = 0;
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "null")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "null")) {
         value_out->is_null = 1;
         value_out->value[0] = '\0';
         return 0;
@@ -153,13 +153,13 @@ static int sql_parse_select_condition_leaf(SqlParser *parser, SqlSelectQuery *qu
     if (sql_parse_condition_value(parser, query, &condition.left) != 0 || sql_next_token(parser) != 0) {
         return -1;
     }
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "not")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "not")) {
         negated = !negated;
         if (sql_next_token(parser) != 0) {
             return -1;
         }
     }
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "between")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "between")) {
         SqlCondition upper;
 
         condition.operator_kind = negated ? SQL_CONDITION_LT : SQL_CONDITION_GE;
@@ -186,9 +186,9 @@ static int sql_parse_select_condition_leaf(SqlParser *parser, SqlSelectQuery *qu
             return *node_out < 0 ? -1 : 0;
         }
     }
-    if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "like")) {
+    if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "like")) {
         condition.operator_kind = SQL_CONDITION_LIKE;
-    } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "in")) {
+    } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "in")) {
         if (!sql_expect_symbol(parser, '(')) {
             return -1;
         }
@@ -209,7 +209,7 @@ static int sql_parse_select_condition_leaf(SqlParser *parser, SqlSelectQuery *qu
         condition.present = 1;
         *node_out = sql_add_condition_leaf(list, &condition);
         return *node_out < 0 ? -1 : 0;
-    } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "is")) {
+    } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "is")) {
         if (sql_try_word(parser, "not")) {
             negated = !negated;
         }

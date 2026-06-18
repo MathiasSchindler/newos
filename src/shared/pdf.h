@@ -166,6 +166,9 @@ int pdf_text_at(const unsigned char *data, size_t size, size_t offset, const cha
 int pdf_text_at_len(const unsigned char *data, size_t size, size_t offset, const char *text, size_t length);
 int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text);
 int pdf_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out);
+size_t pdf_stream_body_start(const unsigned char *data, size_t size, size_t stream_offset);
+void pdf_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io);
+long long pdf_abs_fixed(long long value);
 const char *pdf_page_format_name(long long width, long long height);
 int pdf_format_date(const char *pdf_date, char *buffer, size_t buffer_size);
 void pdf_buffer_init(PdfBuffer *buffer);

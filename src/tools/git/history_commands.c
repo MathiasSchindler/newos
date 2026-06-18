@@ -207,10 +207,6 @@ typedef struct {
     int emitted;
 } GitLogEntry;
 
-static int git_ascii_is_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
-}
-
 static unsigned long long git_commit_identity_timestamp(const char *line) {
     size_t end;
     size_t timestamp_end;
@@ -221,13 +217,13 @@ static unsigned long long git_commit_identity_timestamp(const char *line) {
         return 0ULL;
     }
     end = rt_strlen(line);
-    while (end > 0U && git_ascii_is_space(line[end - 1U])) {
+    while (end > 0U && tool_ascii_is_space(line[end - 1U])) {
         end -= 1U;
     }
-    while (end > 0U && !git_ascii_is_space(line[end - 1U])) {
+    while (end > 0U && !tool_ascii_is_space(line[end - 1U])) {
         end -= 1U;
     }
-    while (end > 0U && git_ascii_is_space(line[end - 1U])) {
+    while (end > 0U && tool_ascii_is_space(line[end - 1U])) {
         end -= 1U;
     }
     timestamp_end = end;

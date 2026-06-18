@@ -629,7 +629,7 @@ int image_validate_bmp(const unsigned char *data, size_t size, ImageValidation *
     return 0;
 }
 
-static size_t tiff_type_size(unsigned int type) {
+size_t image_tiff_type_size(unsigned int type) {
     switch (type) {
         case 1U:
         case 2U:
@@ -687,7 +687,7 @@ static int tiff_validate_classic_ifd(const unsigned char *data, size_t size, int
         unsigned int tag = tiff_validate_read_u16(entry, little_endian);
         unsigned int type = tiff_validate_read_u16(entry + 2U, little_endian);
         unsigned int count = tiff_validate_read_u32(entry + 4U, little_endian);
-        size_t unit_size = tiff_type_size(type);
+        size_t unit_size = image_tiff_type_size(type);
         size_t value_size;
 
         if (unit_size == 0U || count == 0U || (size_t)count > ((size_t)-1) / unit_size) {
@@ -752,7 +752,7 @@ static int tiff_validate_big_ifd(const unsigned char *data, size_t size, int lit
         unsigned int tag = tiff_validate_read_u16(entry, little_endian);
         unsigned int type = tiff_validate_read_u16(entry + 2U, little_endian);
         unsigned int count;
-        size_t unit_size = tiff_type_size(type);
+        size_t unit_size = image_tiff_type_size(type);
         size_t value_size;
 
         if (!tiff_u64_high_is_zero_for_validation(entry + 4U, little_endian)) {

@@ -94,7 +94,7 @@ static int sql_execute_update(SqlDatabase *db, SqlParser *parser) {
         if (parser->token_type == SQL_TOKEN_END) {
             break;
         }
-        if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "where")) {
+        if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "where")) {
             if (sql_parse_row_condition_list(parser, table, &where) != 0 || !sql_at_end(parser)) {
                 return -1;
             }
@@ -177,7 +177,7 @@ static int sql_execute_drop(SqlDatabase *db, SqlParser *parser) {
         return -1;
     }
     for (i = 0U; i < db->table_count; ++i) {
-        if (sql_equal_ignore_case(db->tables[i].name, table_name)) {
+        if (tool_str_equal_ignore_case_ascii(db->tables[i].name, table_name)) {
             unsigned int move;
             sql_free_table_storage(&db->tables[i]);
             for (move = i + 1U; move < db->table_count; ++move) {
@@ -358,21 +358,21 @@ static int sql_execute_alter(SqlDatabase *db, SqlParser *parser) {
                 return -1;
             }
             column_type = sql_column_type_from_name(parser->token);
-        } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "not")) {
+        } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "not")) {
             if (!sql_expect_word(parser, "null")) {
                 return -1;
             }
             not_null = 1;
-        } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "primary")) {
+        } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "primary")) {
             if (!sql_expect_word(parser, "key")) {
                 return -1;
             }
             primary_key = 1;
             unique = 1;
             not_null = 1;
-        } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "unique")) {
+        } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "unique")) {
             unique = 1;
-        } else if (parser->token_type == SQL_TOKEN_WORD && sql_equal_ignore_case(parser->token, "default")) {
+        } else if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "default")) {
             int is_null = 0;
             if (has_default || sql_read_value_or_null(parser, default_value, sizeof(default_value), &is_null) != 0) {
                 return -1;

@@ -294,18 +294,6 @@ static int report_ref(const char *label, const PdfInfo *info, unsigned long long
     return 0;
 }
 
-static size_t stream_body_start(const unsigned char *data, size_t size, size_t stream_offset) {
-    size_t offset = stream_offset + 6U;
-
-    if (offset < size && data[offset] == (unsigned char)'\r') {
-        offset += 1U;
-        if (offset < size && data[offset] == (unsigned char)'\n') offset += 1U;
-    } else if (offset < size && data[offset] == (unsigned char)'\n') {
-        offset += 1U;
-    }
-    return offset;
-}
-
 static int offset_is_stream_data(const PdfDocument *document, size_t offset, size_t *end_out) {
     size_t index;
 
@@ -314,7 +302,7 @@ static int offset_is_stream_data(const PdfDocument *document, size_t offset, siz
         size_t content_start;
 
         if (object->stream_offset >= document->size || object->endstream_offset > document->size) continue;
-        content_start = stream_body_start(document->data, document->size, object->stream_offset);
+        content_start = pdf_stream_body_start(document->data, document->size, object->stream_offset);
         if (content_start <= object->endstream_offset && offset >= content_start && offset < object->endstream_offset) {
             if (end_out != 0) *end_out = object->endstream_offset;
             return 1;

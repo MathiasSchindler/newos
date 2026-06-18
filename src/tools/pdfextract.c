@@ -92,20 +92,6 @@ static int px_find_top_u64_direct_value(const unsigned char *data, size_t size, 
     return 1;
 }
 
-static size_t px_stream_body_start(const unsigned char *data, size_t size, size_t stream_offset) {
-    size_t offset = stream_offset + 6U;
-
-    if (offset < size && data[offset] == (unsigned char)'\r') {
-        offset += 1U;
-        if (offset < size && data[offset] == (unsigned char)'\n') offset += 1U;
-    } else if (offset < size && data[offset] == (unsigned char)'\n') offset += 1U;
-    return offset;
-}
-
-static void px_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io) {
-    while (*end_io > start && (data[*end_io - 1U] == (unsigned char)'\n' || data[*end_io - 1U] == (unsigned char)'\r')) *end_io -= 1U;
-}
-
 static void px_copy_name(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
     size_t used = 0U;
 
@@ -296,13 +282,13 @@ static int stream_raw_size(const PdfDocument *document, const PdfObjectSpan *obj
     if (object->stream_offset >= document->size || object->endstream_offset > document->size || object->body_start > object->stream_offset) return -1;
     dict = document->data + object->body_start;
     dict_size = object->stream_offset - object->body_start;
-    content_start = px_stream_body_start(document->data, document->size, object->stream_offset);
+    content_start = pdf_stream_body_start(document->data, document->size, object->stream_offset);
     if (content_start > object->endstream_offset) return -1;
     content_end = object->endstream_offset;
     if (px_find_top_u64_direct_value(dict, dict_size, "/Length", &stream_length) && stream_length <= (unsigned long long)(document->size - content_start)) {
         content_end = content_start + (size_t)stream_length;
     } else {
-        px_trim_stream_end(document->data, content_start, &content_end);
+        pdf_trim_stream_end(document->data, content_start, &content_end);
     }
     if (content_end < content_start || content_end > document->size) return -1;
     *size_out = content_end - content_start;
