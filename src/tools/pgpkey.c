@@ -181,10 +181,6 @@ static void print_usage(void) {
     tool_write_usage("pgpkey", PGPKEY_USAGE);
 }
 
-static unsigned int pgpkey_read_u16_be(const unsigned char *data) {
-    return ((unsigned int)data[0] << 8U) | (unsigned int)data[1];
-}
-
 static int pgpkey_packet_end(const PgpPacket *packet, size_t *end_out) {
     if (packet->body_offset > ((size_t)-1) - packet->body_size) return -1;
     *end_out = packet->body_offset + packet->body_size;
@@ -216,7 +212,7 @@ static int pgpkey_public_body_size(unsigned int tag, const unsigned char *body, 
     if (oid_size > body_size - offset) return -1;
     offset += oid_size;
     if (offset + 2U > body_size) return -1;
-    point_bits = pgpkey_read_u16_be(body + offset);
+    point_bits = pgp_read_u16_be(body + offset);
     offset += 2U;
     point_bytes = ((size_t)point_bits + 7U) / 8U;
     if (point_bytes > body_size - offset) return -1;
@@ -249,7 +245,7 @@ static int pgpkey_parse_ed25519_secret(const unsigned char *body, size_t body_si
     if (pgpkey_public_body_size(5U, body, body_size, &public_size) != 0 || public_size >= body_size || body[public_size] != 0U) return -1;
     offset = public_size + 1U;
     if (offset + 2U > body_size) return -1;
-    secret_bits = pgpkey_read_u16_be(body + offset);
+    secret_bits = pgp_read_u16_be(body + offset);
     offset += 2U;
     secret_bytes = ((size_t)secret_bits + 7U) / 8U;
     if (secret_bytes != PGPKEY_ED25519_KEY_SIZE || secret_bytes > body_size - offset) return -1;
@@ -257,7 +253,7 @@ static int pgpkey_parse_ed25519_secret(const unsigned char *body, size_t body_si
     memcpy(secret->seed, body + offset, PGPKEY_ED25519_KEY_SIZE);
     offset += secret_bytes;
     if (offset + 2U != body_size) return -1;
-    stored_checksum = pgpkey_read_u16_be(body + offset);
+    stored_checksum = pgp_read_u16_be(body + offset);
     if (checksum != stored_checksum) return -1;
     memcpy(secret->public_key, secret->info.public_material, PGPKEY_ED25519_KEY_SIZE);
     secret->found = 1;

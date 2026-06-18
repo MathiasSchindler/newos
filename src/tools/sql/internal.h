@@ -3,6 +3,7 @@
 
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #ifndef SQL_MAX_TABLES
 #define SQL_MAX_TABLES 1024U
@@ -296,8 +297,6 @@ typedef struct {
     int eof;
 } SqlLineReader;
 
-static char tool_ascii_tolower(char ch);
-static int tool_str_equal_ignore_case_ascii(const char *left, const char *right);
 static int sql_copy_checked(char *dst, size_t dst_size, const char *src);
 static int sql_valid_identifier(const char *text);
 static int sql_identifier_char(char ch);
@@ -470,7 +469,6 @@ static int sql_parse_assignment(SqlParser *parser, const SqlTable *table, SqlAss
 static int sql_apply_assignment(SqlDatabase *db, SqlRow *row, const SqlAssignment *assignment);
 static int sql_column_seen(char (*columns)[SQL_NAME_SIZE], unsigned int column_count, const char *name);
 static int sql_split_ref(const char *text, char *table_name, size_t table_size, char *column_name, size_t column_size);
-static void tool_trim_whitespace(char *text);
 static void sql_write_error(const char *message, const char *detail);
 static void sql_write_row_count(unsigned int count);
 static void sql_usage(const char *program_name);

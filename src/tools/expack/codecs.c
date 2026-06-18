@@ -682,12 +682,8 @@ done:
     return result;
 }
 
-static unsigned int expack_lz4_read_u32(const unsigned char *data) {
-    return (unsigned int)data[0] | ((unsigned int)data[1] << 8U) | ((unsigned int)data[2] << 16U) | ((unsigned int)data[3] << 24U);
-}
-
 static unsigned int expack_lz4_hash4(const unsigned char *data) {
-    return (expack_lz4_read_u32(data) * 2654435761U) >> (32U - EXPACK_LZ4_HASH_BITS);
+    return (tool_read_u32_le(data) * 2654435761U) >> (32U - EXPACK_LZ4_HASH_BITS);
 }
 
 static int expack_lz4_write_length(unsigned char *payload, size_t capacity, size_t *offset, size_t length) {
@@ -836,7 +832,7 @@ static int expack_compress_lz4_block(const unsigned char *data, size_t size, uns
 }
 
 static unsigned int expack_xlz_hash4(const unsigned char *data) {
-    return (expack_lz4_read_u32(data) * 2246822519U) >> (32U - EXPACK_XLZ_HASH_BITS);
+    return (tool_read_u32_le(data) * 2246822519U) >> (32U - EXPACK_XLZ_HASH_BITS);
 }
 
 static size_t expack_xlz_extension_size(size_t length) {

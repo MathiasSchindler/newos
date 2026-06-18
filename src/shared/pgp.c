@@ -163,7 +163,7 @@ static int pgp_line_contains_colon(const unsigned char *line, size_t length) {
     return 0;
 }
 
-static unsigned int pgp_read_u16_be(const unsigned char *data) {
+unsigned int pgp_read_u16_be(const unsigned char *data) {
     return ((unsigned int)data[0] << 8U) | (unsigned int)data[1];
 }
 
@@ -807,7 +807,7 @@ static int pgp_read_mpi_bits(const unsigned char *body, size_t body_size, size_t
     return 0;
 }
 
-static int pgp_read_mpi_view(const unsigned char *body, size_t body_size, size_t *offset_io, const unsigned char **data_out, size_t *size_out, unsigned int *bits_out) {
+int pgp_read_mpi_view(const unsigned char *body, size_t body_size, size_t *offset_io, const unsigned char **data_out, size_t *size_out, unsigned int *bits_out) {
     unsigned int bits;
     size_t bytes;
 

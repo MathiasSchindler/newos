@@ -174,10 +174,6 @@ static int add_recipient_option(PgpMsgOptions *options, const char *recipient) {
     return 0;
 }
 
-static unsigned int read_u16_be(const unsigned char *data) {
-    return ((unsigned int)data[0] << 8U) | (unsigned int)data[1];
-}
-
 static int write_output_data(const char *path, const unsigned char *data, size_t size, int armor_signature) {
     int fd = path != 0 ? platform_open_write(path, 0644U) : 1;
     int result;
@@ -837,28 +833,12 @@ static int read_mpi_bytes(const unsigned char *data, size_t size, size_t *offset
     size_t bytes;
 
     if (*offset_io + 2U > size) return -1;
-    bits = read_u16_be(data + *offset_io);
+    bits = pgp_read_u16_be(data + *offset_io);
     *offset_io += 2U;
     bytes = ((size_t)bits + 7U) / 8U;
     if (bytes > size - *offset_io || bytes > out_size) return -1;
     if (bytes < out_size) rt_memset(out, 0, out_size - bytes);
     memcpy(out + (out_size - bytes), data + *offset_io, bytes);
-    *offset_io += bytes;
-    return 0;
-}
-
-static int read_mpi_view(const unsigned char *data, size_t size, size_t *offset_io, const unsigned char **data_out, size_t *size_out, unsigned int *bits_out) {
-    unsigned int bits;
-    size_t bytes;
-
-    if (*offset_io + 2U > size) return -1;
-    bits = read_u16_be(data + *offset_io);
-    *offset_io += 2U;
-    bytes = ((size_t)bits + 7U) / 8U;
-    if (bytes > size - *offset_io) return -1;
-    *data_out = data + *offset_io;
-    *size_out = bytes;
-    *bits_out = bits;
     *offset_io += bytes;
     return 0;
 }
@@ -922,12 +902,12 @@ static int parse_signature_packet_full(PgpMsgSignaturePacket *signature, const u
     summary->signature_type = body[1];
     summary->public_key_algorithm = body[2];
     summary->hash_algorithm = body[3];
-    hashed_size = read_u16_be(body + 4U);
+    hashed_size = pgp_read_u16_be(body + 4U);
     if (6U + hashed_size + 2U > body_size) return -1;
     signature->hash_part_size = 6U + hashed_size;
     parse_signature_subpackets(summary, body + 6U, hashed_size);
     unhashed_offset = 6U + hashed_size;
-    unhashed_size = read_u16_be(body + unhashed_offset);
+    unhashed_size = pgp_read_u16_be(body + unhashed_offset);
     unhashed_offset += 2U;
     if (unhashed_offset + unhashed_size > body_size) return -1;
     parse_signature_subpackets(summary, body + unhashed_offset, unhashed_size);
@@ -1209,7 +1189,7 @@ static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int
     if (oid_size > body_size - offset) return -1;
     offset += oid_size;
     if (offset + 2U > body_size) return -1;
-    point_bits = read_u16_be(body + offset);
+    point_bits = pgp_read_u16_be(body + offset);
     offset += 2U;
     point_bytes = ((size_t)point_bits + 7U) / 8U;
     if (point_bytes > body_size - offset) return -1;
@@ -1217,7 +1197,7 @@ static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int
     if (offset >= body_size || body[offset++] != 0U) return -1;
     checksum_start = offset;
     if (offset + 2U > body_size) return -1;
-    secret_bits = read_u16_be(body + offset);
+    secret_bits = pgp_read_u16_be(body + offset);
     offset += 2U;
     secret_bytes = ((size_t)secret_bits + 7U) / 8U;
     if (secret_bytes != PGPMSG_ED25519_KEY_SIZE || secret_bytes > body_size - offset) return -1;
@@ -1225,7 +1205,7 @@ static int parse_ed25519_secret_key_packet(PgpMsgSecretKey *secret, unsigned int
     offset += secret_bytes;
     if (offset + 2U != body_size) return -1;
     for (index = checksum_start; index < offset; ++index) checksum = (checksum + body[index]) & 0xffffU;
-    stored_checksum = read_u16_be(body + offset);
+    stored_checksum = pgp_read_u16_be(body + offset);
     if (checksum != stored_checksum) return -1;
     secret->found = 1;
     return 0;
@@ -1368,7 +1348,7 @@ static int parse_x25519_secret_key_packet(PgpMsgX25519SecretKey *secret, unsigne
     if (oid_size > body_size - offset) return -1;
     offset += oid_size;
     if (offset + 2U > body_size) return -1;
-    point_bits = read_u16_be(body + offset);
+    point_bits = pgp_read_u16_be(body + offset);
     offset += 2U;
     point_bytes = ((size_t)point_bits + 7U) / 8U;
     if (point_bytes > body_size - offset) return -1;
@@ -1380,7 +1360,7 @@ static int parse_x25519_secret_key_packet(PgpMsgX25519SecretKey *secret, unsigne
     if (offset >= body_size || body[offset++] != 0U) return -1;
     checksum_start = offset;
     if (offset + 2U > body_size) return -1;
-    secret_bits = read_u16_be(body + offset);
+    secret_bits = pgp_read_u16_be(body + offset);
     offset += 2U;
     secret_bytes = ((size_t)secret_bits + 7U) / 8U;
     if (secret_bytes != PGPMSG_X25519_KEY_SIZE || secret_bytes > body_size - offset) return -1;
@@ -1388,7 +1368,7 @@ static int parse_x25519_secret_key_packet(PgpMsgX25519SecretKey *secret, unsigne
     offset += secret_bytes;
     if (offset + 2U != body_size) return -1;
     for (index = checksum_start; index < offset; ++index) checksum = (checksum + body[index]) & 0xffffU;
-    stored_checksum = read_u16_be(body + offset);
+    stored_checksum = pgp_read_u16_be(body + offset);
     if (checksum != stored_checksum) return -1;
     secret->found = 1;
     return 0;
@@ -1466,7 +1446,7 @@ static int parse_pkesk_packet(PgpMsgPkesk *pkesk, const unsigned char *body, siz
     offset += PGPMSG_KEY_ID_SIZE;
     pkesk->public_key_algorithm = body[offset++];
     if (pkesk->public_key_algorithm != 18U) return -1;
-    if (read_mpi_view(body, body_size, &offset, &ephemeral, &ephemeral_size, &ephemeral_bits) != 0) return -1;
+    if (pgp_read_mpi_view(body, body_size, &offset, &ephemeral, &ephemeral_size, &ephemeral_bits) != 0) return -1;
     if (ephemeral_bits != 263U || ephemeral_size != PGPMSG_X25519_KEY_SIZE + 1U || ephemeral[0] != 0x40U) return -1;
     memcpy(pkesk->ephemeral_public, ephemeral + 1U, PGPMSG_X25519_KEY_SIZE);
     if (offset >= body_size) return -1;
@@ -1579,9 +1559,9 @@ static int pgpmsg_parse_elgamal_public_material(
     size_t offset = 0U;
 
     if (recipient->algorithm != 16U || recipient->public_material_size == 0U) return -1;
-    if (read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &p, &p_size, &p_bits) != 0 ||
-        read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &g, &g_size, &ignored_bits) != 0 ||
-        read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &y, &y_size, &ignored_bits) != 0 ||
+    if (pgp_read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &p, &p_size, &p_bits) != 0 ||
+        pgp_read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &g, &g_size, &ignored_bits) != 0 ||
+        pgp_read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &y, &y_size, &ignored_bits) != 0 ||
         offset != recipient->public_material_size) return -1;
     if (p_size == 0U || g_size == 0U || y_size == 0U || p_size > PGP_PUBLIC_MATERIAL_CAPACITY || g_size > PGP_PUBLIC_MATERIAL_CAPACITY || y_size > PGP_PUBLIC_MATERIAL_CAPACITY) return -1;
     *p_out = p;
@@ -1609,8 +1589,8 @@ static int pgpmsg_parse_rsa_public_material(
     size_t offset = 0U;
 
     if ((recipient->algorithm != 1U && recipient->algorithm != 2U) || recipient->public_material_size == 0U) return -1;
-    if (read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &modulus, &modulus_size, &ignored_bits) != 0 ||
-        read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &exponent, &exponent_size, &ignored_bits) != 0 ||
+    if (pgp_read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &modulus, &modulus_size, &ignored_bits) != 0 ||
+        pgp_read_mpi_view(recipient->public_material, recipient->public_material_size, &offset, &exponent, &exponent_size, &ignored_bits) != 0 ||
         offset != recipient->public_material_size) return -1;
     if (modulus_size == 0U || exponent_size == 0U || modulus_size > CRYPTO_RSA_MAX_MODULUS_SIZE) return -1;
     *modulus_out = modulus;
@@ -2569,7 +2549,7 @@ static int inspect_write_pkesk_text(const unsigned char *body, size_t body_size)
         size_t mpi_size = 0U;
         unsigned int mpi_bits = 0U;
 
-        if (read_mpi_view(body, body_size, &offset, &mpi, &mpi_size, &mpi_bits) != 0) break;
+        if (pgp_read_mpi_view(body, body_size, &offset, &mpi, &mpi_size, &mpi_bits) != 0) break;
         mpi_index += 1U;
         if (rt_write_cstr(1, "  encrypted-mpi ") != 0 || rt_write_uint(1, mpi_index) != 0 || rt_write_cstr(1, ": ") != 0 || rt_write_uint(1, mpi_bits) != 0 || rt_write_cstr(1, " bits, ") != 0 || rt_write_uint(1, (unsigned long long)mpi_size) != 0 || rt_write_line(1, " bytes") != 0) return -1;
         (void)mpi;
@@ -2644,7 +2624,7 @@ static int inspect_write_pkesk_json(const unsigned char *body, size_t body_size)
         size_t mpi_size = 0U;
         unsigned int mpi_bits = 0U;
 
-        if (read_mpi_view(body, body_size, &offset, &mpi, &mpi_size, &mpi_bits) != 0) break;
+        if (pgp_read_mpi_view(body, body_size, &offset, &mpi, &mpi_size, &mpi_bits) != 0) break;
         if (mpi_index != 0U && rt_write_char(1, ',') != 0) return -1;
         if (rt_write_uint(1, mpi_bits) != 0) return -1;
         mpi_index += 1U;

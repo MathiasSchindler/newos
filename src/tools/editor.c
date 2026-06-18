@@ -1,6 +1,7 @@
 #include "editor/highlight.h"
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 #include "tui.h"
 
 #include <stddef.h>
@@ -1039,10 +1040,6 @@ static void editor_move_right(EditorState *editor) {
     }
 }
 
-static int editor_is_word_byte(unsigned char ch) {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
-}
-
 static void editor_move_left_count(EditorState *editor, unsigned int count) {
     while (count > 0U) {
         editor_move_left(editor);
@@ -1078,7 +1075,7 @@ static void editor_move_word_left(EditorState *editor) {
             continue;
         }
         previous = editor_prev_char(line, editor->cursor_byte);
-        if (previous < line->length && editor_is_word_byte((unsigned char)line->data[previous])) {
+        if (previous < line->length && tool_ascii_is_word_byte((unsigned char)line->data[previous])) {
             break;
         }
         editor->cursor_byte = previous;
@@ -1091,7 +1088,7 @@ static void editor_move_word_left(EditorState *editor) {
             return;
         }
         previous = editor_prev_char(line, editor->cursor_byte);
-        if (previous >= line->length || !editor_is_word_byte((unsigned char)line->data[previous])) {
+        if (previous >= line->length || !tool_ascii_is_word_byte((unsigned char)line->data[previous])) {
             return;
         }
         editor->cursor_byte = previous;
@@ -1102,10 +1099,10 @@ static void editor_move_word_right(EditorState *editor) {
     for (;;) {
         EditorLine *line = &editor->lines[editor->cursor_line];
 
-        while (editor->cursor_byte < line->length && editor_is_word_byte((unsigned char)line->data[editor->cursor_byte])) {
+        while (editor->cursor_byte < line->length && tool_ascii_is_word_byte((unsigned char)line->data[editor->cursor_byte])) {
             editor->cursor_byte = editor_next_char(line, editor->cursor_byte);
         }
-        while (editor->cursor_byte < line->length && !editor_is_word_byte((unsigned char)line->data[editor->cursor_byte])) {
+        while (editor->cursor_byte < line->length && !tool_ascii_is_word_byte((unsigned char)line->data[editor->cursor_byte])) {
             editor->cursor_byte = editor_next_char(line, editor->cursor_byte);
         }
         if (editor->cursor_byte < line->length || editor->cursor_line + 1U >= editor->line_count) {

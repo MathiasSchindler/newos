@@ -704,7 +704,7 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
     }
     memset(image_data, 0, (size_t)needed_size64);
     memcpy(image_data, input_data, EXPACK_ELF_HEADER_SIZE);
-    expack_store_u16_le(image_data + 56U, (unsigned short)compact_phnum);
+    tool_store_u16_le(image_data + 56U, (unsigned short)compact_phnum);
     for (index = 0U; index < phnum; ++index) {
         size_t phdr_offset = phoff + (size_t)index * (size_t)phentsize;
         const unsigned char *input_phdr = input_data + phdr_offset;

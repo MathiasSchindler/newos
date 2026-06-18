@@ -11,14 +11,14 @@ static void expack_write_elf_header(unsigned char *header, unsigned long long fi
     header[4] = 2U;
     header[5] = 1U;
     header[6] = 1U;
-    expack_store_u16_le(header + 16, 2U);
-    expack_store_u16_le(header + 18, 62U);
+    tool_store_u16_le(header + 16, 2U);
+    tool_store_u16_le(header + 18, 62U);
     archive_store_u32_le(header + 20, 1U);
     archive_store_u64_le(header + 24, entry);
     archive_store_u64_le(header + 32, EXPACK_ELF_HEADER_SIZE);
-    expack_store_u16_le(header + 52, EXPACK_ELF_HEADER_SIZE);
-    expack_store_u16_le(header + 54, EXPACK_ELF_PHDR_SIZE);
-    expack_store_u16_le(header + 56, 1U);
+    tool_store_u16_le(header + 52, EXPACK_ELF_HEADER_SIZE);
+    tool_store_u16_le(header + 54, EXPACK_ELF_PHDR_SIZE);
+    tool_store_u16_le(header + 56, 1U);
 
     archive_store_u32_le(header + EXPACK_ELF_HEADER_SIZE + 0, 1U);
     archive_store_u32_le(header + EXPACK_ELF_HEADER_SIZE + 4, 5U);

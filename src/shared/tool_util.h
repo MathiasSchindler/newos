@@ -205,6 +205,7 @@ int tool_str_equal(const char *left, const char *right);
 int tool_contains_char(const char *text, char ch);
 int tool_compare_text_slices(const char *left, size_t left_length, const char *right, size_t right_length);
 char tool_ascii_tolower(char ch);
+char tool_hex_digit(unsigned int value);
 int tool_ascii_is_digit(char ch);
 int tool_ascii_is_blank(char ch);
 int tool_ascii_is_space(char ch);

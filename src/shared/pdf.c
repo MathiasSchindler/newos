@@ -298,7 +298,7 @@ static size_t pdf_hex_to_text(const unsigned char *data, size_t size, size_t off
     return pdf_bytes_to_text(bytes, byte_count, buffer, buffer_size);
 }
 
-static void pdf_copy_name(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
+void pdf_copy_name(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size) {
     size_t used = 0U;
 
     if (buffer_size == 0U) return;
@@ -328,7 +328,7 @@ static int pdf_find_key(const unsigned char *data, size_t size, const char *key,
     return pdf_find_key_from(data, size, 0U, key, offset_out);
 }
 
-static int pdf_find_top_key(const unsigned char *data, size_t size, const char *key, size_t *offset_out) {
+int pdf_find_top_key(const unsigned char *data, size_t size, const char *key, size_t *offset_out) {
     size_t key_length = rt_strlen(key);
     size_t offset = 0U;
     unsigned int depth = 0U;
@@ -766,7 +766,7 @@ static int pdf_name_is_flate(const char *name) {
     return rt_strcmp(name, "FlateDecode") == 0 || rt_strcmp(name, "Fl") == 0;
 }
 
-static int pdf_stream_filter_kind(const unsigned char *dict, size_t dict_size) {
+int pdf_stream_filter_kind(const unsigned char *dict, size_t dict_size) {
     size_t key_offset;
     size_t offset;
     char name[PDF_NAME_CAPACITY];

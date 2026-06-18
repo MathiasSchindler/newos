@@ -344,17 +344,6 @@ static void expack_deflate_build_lengths(const unsigned int *freq, unsigned int 
     }
 }
 
-static unsigned int expack_deflate_reverse_bits(unsigned int code, unsigned int length) {
-    unsigned int result = 0U;
-    unsigned int index;
-
-    for (index = 0U; index < length; ++index) {
-        result = (result << 1) | (code & 1U);
-        code >>= 1;
-    }
-    return result;
-}
-
 static void expack_deflate_make_codes(const unsigned char *lengths, unsigned int symbol_count, unsigned short *codes) {
     unsigned int count[16];
     unsigned int next_code[16];
@@ -377,7 +366,7 @@ static void expack_deflate_make_codes(const unsigned char *lengths, unsigned int
         unsigned int length = lengths[symbol];
 
         if (length != 0U) {
-            codes[symbol] = (unsigned short)expack_deflate_reverse_bits(next_code[length], length);
+            codes[symbol] = (unsigned short)compression_zlib_reverse_bits(next_code[length], length);
             next_code[length] += 1U;
         } else {
             codes[symbol] = 0U;

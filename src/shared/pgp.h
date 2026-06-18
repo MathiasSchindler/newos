@@ -124,6 +124,8 @@ int pgp_buffer_append_packet(PgpBuffer *buffer, unsigned int tag, const PgpBuffe
 int pgp_buffer_append_signature_subpacket(PgpBuffer *buffer, unsigned int type, const unsigned char *body, size_t body_size);
 int pgp_buffer_append_signature_subpacket_u32(PgpBuffer *buffer, unsigned int type, unsigned long long value);
 int pgp_buffer_append_opaque_mpi(PgpBuffer *buffer, const unsigned char *data, size_t size, unsigned int bit_count);
+unsigned int pgp_read_u16_be(const unsigned char *data);
+int pgp_read_mpi_view(const unsigned char *body, size_t body_size, size_t *offset_io, const unsigned char **data_out, size_t *size_out, unsigned int *bits_out);
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size);
 int pgp_packet_reader_next(PgpPacketReader *reader, PgpPacket *packet_out, int *has_packet_out, char *error, size_t error_size);
 int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const unsigned char *body, size_t body_size, char *error, size_t error_size);

@@ -1042,6 +1042,11 @@ char tool_ascii_tolower(char ch) {
     return ch;
 }
 
+char tool_hex_digit(unsigned int value) {
+    value &= 0x0fU;
+    return (char)(value < 10U ? '0' + value : 'a' + (value - 10U));
+}
+
 int tool_ascii_is_digit(char ch) {
     return ch >= '0' && ch <= '9';
 }

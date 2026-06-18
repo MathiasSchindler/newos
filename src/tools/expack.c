@@ -1,5 +1,6 @@
 #include "archive_util.h"
 #include "compression/lzss.h"
+#include "compression/zlib.h"
 #include "crypto/sha256.h"
 #include "platform.h"
 #include "runtime.h"
@@ -16,11 +17,6 @@
 
 static unsigned short expack_read_u16_le(const unsigned char *bytes) {
     return (unsigned short)bytes[0] | (unsigned short)((unsigned short)bytes[1] << 8);
-}
-
-static void expack_store_u16_le(unsigned char *bytes, unsigned short value) {
-    bytes[0] = (unsigned char)(value & 0xffU);
-    bytes[1] = (unsigned char)((value >> 8) & 0xffU);
 }
 
 static unsigned long long expack_align_up_u64(unsigned long long value, unsigned long long alignment) {

@@ -119,7 +119,7 @@ static void zlib_align_byte(ZlibBitReader *reader) {
     reader->bit_count -= drop;
 }
 
-static unsigned int zlib_reverse_bits(unsigned int value, unsigned int count) {
+unsigned int compression_zlib_reverse_bits(unsigned int value, unsigned int count) {
     unsigned int reversed = 0U;
     unsigned int i;
 
@@ -180,7 +180,7 @@ static int zlib_write_fixed_symbol(ZlibBitWriter *writer, unsigned int symbol) {
     } else {
         return -1;
     }
-    return zlib_write_bits(writer, zlib_reverse_bits(code, length), length);
+    return zlib_write_bits(writer, compression_zlib_reverse_bits(code, length), length);
 }
 
 static int zlib_write_fixed_match(ZlibBitWriter *writer, unsigned int length, unsigned int distance) {
@@ -216,7 +216,7 @@ static int zlib_write_fixed_match(ZlibBitWriter *writer, unsigned int length, un
     if (dist_index >= 30U) return -1;
     if (zlib_write_fixed_symbol(writer, 257U + length_index) != 0) return -1;
     if (length_extra[length_index] != 0U && zlib_write_bits(writer, length - length_base[length_index], length_extra[length_index]) != 0) return -1;
-    if (zlib_write_bits(writer, zlib_reverse_bits(dist_index, 5U), 5U) != 0) return -1;
+    if (zlib_write_bits(writer, compression_zlib_reverse_bits(dist_index, 5U), 5U) != 0) return -1;
     if (dist_extra[dist_index] != 0U && zlib_write_bits(writer, distance - dist_base[dist_index], dist_extra[dist_index]) != 0) return -1;
     return 0;
 }
@@ -361,7 +361,7 @@ static void zlib_build_codes(const unsigned char *lengths, unsigned int count, u
 
 static int zlib_write_code(ZlibBitWriter *writer, const unsigned short *codes, const unsigned char *lengths, unsigned int symbol) {
     if (lengths[symbol] == 0U) return -1;
-    return zlib_write_bits(writer, zlib_reverse_bits(codes[symbol], lengths[symbol]), lengths[symbol]);
+    return zlib_write_bits(writer, compression_zlib_reverse_bits(codes[symbol], lengths[symbol]), lengths[symbol]);
 }
 
 static void zlib_huffman_free(ZlibHuffman *huffman) {
@@ -424,7 +424,7 @@ static int zlib_huffman_build(
         unsigned int step;
 
         if (length == 0U) continue;
-        reversed = zlib_reverse_bits(next_code[length], length);
+        reversed = compression_zlib_reverse_bits(next_code[length], length);
         next_code[length] += 1U;
         step = 1U << length;
         for (fill = reversed; fill < huffman->table_size; fill += step) {

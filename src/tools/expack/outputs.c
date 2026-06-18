@@ -157,13 +157,6 @@ static void expack_write_macho_segment64(unsigned char *segment, const char *seg
     archive_store_u32_le(segment + 68U, flags);
 }
 
-static void expack_store_u32_be(unsigned char *out, unsigned int value) {
-    out[0] = (unsigned char)((value >> 24U) & 0xffU);
-    out[1] = (unsigned char)((value >> 16U) & 0xffU);
-    out[2] = (unsigned char)((value >> 8U) & 0xffU);
-    out[3] = (unsigned char)(value & 0xffU);
-}
-
 typedef struct {
     CryptoSha256Context context;
     unsigned char *hashes;
@@ -273,21 +266,21 @@ static unsigned char *expack_make_macho_code_signature(const unsigned char *head
     }
 
     memset(signature, 0, signature_size);
-    expack_store_u32_be(signature + 0U, 0xfade0cc0U);
-    expack_store_u32_be(signature + 4U, signature_size);
-    expack_store_u32_be(signature + 8U, 1U);
-    expack_store_u32_be(signature + 12U, 0U);
-    expack_store_u32_be(signature + 16U, superblob_header_size);
+    tool_store_u32_be(signature + 0U, 0xfade0cc0U);
+    tool_store_u32_be(signature + 4U, signature_size);
+    tool_store_u32_be(signature + 8U, 1U);
+    tool_store_u32_be(signature + 12U, 0U);
+    tool_store_u32_be(signature + 16U, superblob_header_size);
 
-    expack_store_u32_be(signature + superblob_header_size + 0U, 0xfade0c02U);
-    expack_store_u32_be(signature + superblob_header_size + 4U, code_directory_size);
-    expack_store_u32_be(signature + superblob_header_size + 8U, 0x20400U);
-    expack_store_u32_be(signature + superblob_header_size + 12U, 0x2U);
-    expack_store_u32_be(signature + superblob_header_size + 16U, hash_offset);
-    expack_store_u32_be(signature + superblob_header_size + 20U, code_directory_fixed_size);
-    expack_store_u32_be(signature + superblob_header_size + 24U, 0U);
-    expack_store_u32_be(signature + superblob_header_size + 28U, code_slots);
-    expack_store_u32_be(signature + superblob_header_size + 32U, (unsigned int)code_limit);
+    tool_store_u32_be(signature + superblob_header_size + 0U, 0xfade0c02U);
+    tool_store_u32_be(signature + superblob_header_size + 4U, code_directory_size);
+    tool_store_u32_be(signature + superblob_header_size + 8U, 0x20400U);
+    tool_store_u32_be(signature + superblob_header_size + 12U, 0x2U);
+    tool_store_u32_be(signature + superblob_header_size + 16U, hash_offset);
+    tool_store_u32_be(signature + superblob_header_size + 20U, code_directory_fixed_size);
+    tool_store_u32_be(signature + superblob_header_size + 24U, 0U);
+    tool_store_u32_be(signature + superblob_header_size + 28U, code_slots);
+    tool_store_u32_be(signature + superblob_header_size + 32U, (unsigned int)code_limit);
     signature[superblob_header_size + 36U] = CRYPTO_SHA256_DIGEST_SIZE;
     signature[superblob_header_size + 37U] = 2U;
     signature[superblob_header_size + 39U] = 14U;

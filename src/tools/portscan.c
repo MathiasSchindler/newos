@@ -253,10 +253,6 @@ static void write_csv_field(const char *text) {
     rt_write_char(1, '"');
 }
 
-static char hex_digit(unsigned int value) {
-    return (char)(value < 10U ? '0' + value : 'a' + (value - 10U));
-}
-
 static int append_escaped_byte(char *buffer, size_t buffer_size, size_t *length_io, unsigned char byte) {
     char escape;
     int use_named = 0;
@@ -293,8 +289,8 @@ static int append_escaped_byte(char *buffer, size_t buffer_size, size_t *length_
     }
     buffer[*length_io] = '\\';
     buffer[*length_io + 1U] = 'x';
-    buffer[*length_io + 2U] = hex_digit((unsigned int)(byte >> 4U) & 0x0FU);
-    buffer[*length_io + 3U] = hex_digit((unsigned int)byte & 0x0FU);
+    buffer[*length_io + 2U] = tool_hex_digit((unsigned int)(byte >> 4U));
+    buffer[*length_io + 3U] = tool_hex_digit((unsigned int)byte);
     *length_io += 4U;
     buffer[*length_io] = '\0';
     return 0;
