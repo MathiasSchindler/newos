@@ -40,12 +40,8 @@ static int is_in_set(char ch, const char *set) {
     return 0;
 }
 
-static size_t utf8_display_width_n(const char *text, size_t length) {
-    return (size_t)rt_text_display_width_n(text, length, 0ULL);
-}
-
 static size_t utf8_display_width(const char *text) {
-    return utf8_display_width_n(text, rt_strlen(text));
+    return tool_text_display_width_n(text, rt_strlen(text));
 }
 
 static size_t utf8_prefix_bytes_for_width(const char *text, size_t max_width) {
@@ -243,7 +239,7 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
 
                 if (options->max_width != 0ULL && used < (size_t)options->max_width && used + cell_width > (size_t)options->max_width) {
                     write_bytes = utf8_prefix_bytes_for_width(rows[j].cells[i], (size_t)options->max_width - used);
-                    written_width = utf8_display_width_n(rows[j].cells[i], write_bytes);
+                    written_width = tool_text_display_width_n(rows[j].cells[i], write_bytes);
                 }
 
                 if (write_bytes > 0U && rows[j].count > i && rt_write_all(1, rows[j].cells[i], write_bytes) != 0) {
@@ -316,7 +312,7 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
 
             if (options->max_width != 0ULL && used < (size_t)options->max_width && used + cell_width > (size_t)options->max_width) {
                 write_bytes = utf8_prefix_bytes_for_width(rows[i].cells[j], (size_t)options->max_width - used);
-                written_width = utf8_display_width_n(rows[i].cells[j], write_bytes);
+                written_width = tool_text_display_width_n(rows[i].cells[j], write_bytes);
             }
 
             if (write_bytes > 0U && rt_write_all(1, rows[i].cells[j], write_bytes) != 0) {

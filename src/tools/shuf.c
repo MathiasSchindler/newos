@@ -132,7 +132,7 @@ static int parse_range_arg(const char *text, long long *low_out, long long *high
     return 0;
 }
 
-static int add_item(size_t *count, const char *text) {
+static int shuf_add_item(size_t *count, const char *text) {
     size_t len = rt_strlen(text);
 
     if (*count >= SHUF_MAX_ITEMS) {
@@ -174,7 +174,7 @@ static int collect_items_from_fd(int fd,
 
             if (ch == delimiter) {
                 current[current_len] = '\0';
-                if (add_item(count_out, current) != 0) {
+                if (shuf_add_item(count_out, current) != 0) {
                     return -1;
                 }
                 current_len = 0U;
@@ -186,7 +186,7 @@ static int collect_items_from_fd(int fd,
 
     if (current_len > 0U) {
         current[current_len] = '\0';
-        if (add_item(count_out, current) != 0) {
+        if (shuf_add_item(count_out, current) != 0) {
             return -1;
         }
     }
@@ -285,7 +285,7 @@ int main(int argc, char **argv) {
                     rt_unsigned_to_string((unsigned long long)value, text, sizeof(text));
                 }
 
-                if (add_item(&item_count, text) != 0) {
+                if (shuf_add_item(&item_count, text) != 0) {
                     tool_write_error("shuf", "too many items", 0);
                     return 1;
                 }
@@ -303,7 +303,7 @@ int main(int argc, char **argv) {
 
     if (mode == 1) {
         while (argi < argc) {
-            if (add_item(&item_count, argv[argi]) != 0) {
+            if (shuf_add_item(&item_count, argv[argi]) != 0) {
                 tool_write_error("shuf", "too many items", 0);
                 return 1;
             }

@@ -327,16 +327,6 @@ static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *se
     return 0;
 }
 
-static int load_name_table(int fd,
-                           const ElfHeaderInfo *header,
-                           const ElfSectionInfo *sections,
-                           char *buffer,
-                           size_t buffer_capacity,
-                           size_t *size_out) {
-    const ElfSectionInfo *section = header->shstrndx < header->shnum ? &sections[header->shstrndx] : 0;
-    return object_elf_load_name_table(fd, objdump_object_base, 0ULL, header->shstrndx, header->shnum, section != 0 ? section->offset : 0ULL, section != 0 ? section->size : 0ULL, buffer, buffer_capacity, size_out);
-}
-
 static const char *name_from_table(const char *table, size_t table_size, unsigned int offset) {
     if (table == 0 || offset >= table_size) {
         return "";
@@ -896,7 +886,16 @@ int main(int argc, char **argv) {
         objdump_object_base = 0ULL;
 
         if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
-            load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
+            object_elf_load_name_table(fd,
+                                       objdump_object_base,
+                                       0ULL,
+                                       header.shstrndx,
+                                       header.shnum,
+                                       header.shstrndx < header.shnum ? sections[header.shstrndx].offset : 0ULL,
+                                       header.shstrndx < header.shnum ? sections[header.shstrndx].size : 0ULL,
+                                       names,
+                                       sizeof(names),
+                                       &names_size) != 0) {
             unsigned long long macho_slice_offset;
             if (object_macho_select_fat_slice(fd, OBJECT_MACHO_CPU_TYPE_ARM64, 32U, &macho_slice_offset, 0) == 0) {
                 objdump_object_base = macho_slice_offset;

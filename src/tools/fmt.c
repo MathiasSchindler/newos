@@ -69,10 +69,6 @@ static int is_blank_text(const char *text) {
     return 1;
 }
 
-static size_t utf8_display_width_n(const char *text, size_t length) {
-    return (size_t)rt_text_display_width_n(text, length, 0ULL);
-}
-
 static void detect_prefix(const char *line, char *prefix, size_t prefix_size, const char **content_out) {
     size_t pos = 0U;
     size_t prefix_len = 0U;
@@ -170,8 +166,8 @@ static void fmt_start_paragraph(FmtState *state, const char *prefix) {
     rt_copy_string(state->body_prefix, sizeof(state->body_prefix), prefix);
     state->first_prefix_len = rt_strlen(state->first_prefix);
     state->body_prefix_len = rt_strlen(state->body_prefix);
-    state->first_prefix_width = utf8_display_width_n(state->first_prefix, state->first_prefix_len);
-    state->body_prefix_width = utf8_display_width_n(state->body_prefix, state->body_prefix_len);
+    state->first_prefix_width = tool_text_display_width_n(state->first_prefix, state->first_prefix_len);
+    state->body_prefix_width = tool_text_display_width_n(state->body_prefix, state->body_prefix_len);
     state->paragraph_active = 1;
 }
 
@@ -188,7 +184,7 @@ static int fmt_append_word(FmtState *state, const char *word, size_t word_len) {
     if (copy_len >= FMT_MAX_WORD) {
         copy_len = FMT_MAX_WORD - 1U;
     }
-    word_width = utf8_display_width_n(word, copy_len);
+    word_width = tool_text_display_width_n(word, copy_len);
 
     if (state->current_line_len == 0U) {
         if (prefix_len > 0U) {
@@ -310,7 +306,7 @@ static int process_input_line(FmtState *state, const char *raw_line) {
         if (rt_strcmp(prefix, state->first_prefix) != 0) {
             rt_copy_string(state->body_prefix, sizeof(state->body_prefix), prefix);
             state->body_prefix_len = rt_strlen(state->body_prefix);
-            state->body_prefix_width = utf8_display_width_n(state->body_prefix, state->body_prefix_len);
+            state->body_prefix_width = tool_text_display_width_n(state->body_prefix, state->body_prefix_len);
         }
     } else {
         const char *expected_prefix = state->options->crown_margin ? state->body_prefix : state->first_prefix;

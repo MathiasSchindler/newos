@@ -1230,16 +1230,6 @@ static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *se
     return 0;
 }
 
-static int load_name_table(int fd,
-                           const ElfHeaderInfo *header,
-                           const ElfSectionInfo *sections,
-                           char *buffer,
-                           size_t buffer_capacity,
-                           size_t *size_out) {
-    const ElfSectionInfo *section = header->shstrndx < header->shnum ? &sections[header->shstrndx] : 0;
-    return object_elf_load_name_table(fd, readelf_object_base, readelf_object_size, header->shstrndx, header->shnum, section != 0 ? section->offset : 0ULL, section != 0 ? section->size : 0ULL, buffer, buffer_capacity, size_out);
-}
-
 static const char *name_from_table(const char *table, size_t table_size, unsigned int offset) {
     if (table == 0 || offset >= table_size) {
         return "";
@@ -3231,7 +3221,17 @@ static int load_compare_summary(const char *path, BinaryCompareSummary *summary)
         return -1;
     }
     if (parse_elf_header(fd, &elf_header) == 0 && load_program_headers(fd, &elf_header, programs) == 0 &&
-        load_sections(fd, &elf_header, elf_sections) == 0 && load_name_table(fd, &elf_header, elf_sections, names, sizeof(names), &names_size) == 0) {
+        load_sections(fd, &elf_header, elf_sections) == 0 &&
+        object_elf_load_name_table(fd,
+                                   readelf_object_base,
+                                   readelf_object_size,
+                                   elf_header.shstrndx,
+                                   elf_header.shnum,
+                                   elf_header.shstrndx < elf_header.shnum ? elf_sections[elf_header.shstrndx].offset : 0ULL,
+                                   elf_header.shstrndx < elf_header.shnum ? elf_sections[elf_header.shstrndx].size : 0ULL,
+                                   names,
+                                   sizeof(names),
+                                   &names_size) == 0) {
         rt_copy_string(summary->format, sizeof(summary->format), "elf");
         if (hash_fd_sha256_hex(fd, summary->sha256, sizeof(summary->sha256)) != 0) summary->sha256[0] = '\0';
         summary->entry = elf_header.entry;
@@ -3480,7 +3480,16 @@ int main(int argc, char **argv) {
         set_object_window(0ULL, 0ULL);
 
         if (parse_elf_header(fd, &header) != 0 || load_program_headers(fd, &header, programs) != 0 || load_sections(fd, &header, sections) != 0 ||
-            load_name_table(fd, &header, sections, names, sizeof(names), &names_size) != 0) {
+            object_elf_load_name_table(fd,
+                                       readelf_object_base,
+                                       readelf_object_size,
+                                       header.shstrndx,
+                                       header.shnum,
+                                       header.shstrndx < header.shnum ? sections[header.shstrndx].offset : 0ULL,
+                                       header.shstrndx < header.shnum ? sections[header.shstrndx].size : 0ULL,
+                                       names,
+                                       sizeof(names),
+                                       &names_size) != 0) {
             if (object_macho_parse_header(fd, readelf_object_base, readelf_object_size, &macho) == 0) {
                 int macho_sections_ok = object_macho_load_sections(fd, readelf_object_base, readelf_object_size, &macho, macho_sections, READELF_MAX_SECTIONS, READELF_MAX_MACHO_COMMANDS, &macho_section_count) == 0;
                 int macho_segments_ok = load_macho_segments(fd, &macho, macho_segments, &macho_segment_count) == 0;

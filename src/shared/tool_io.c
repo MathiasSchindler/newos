@@ -1262,6 +1262,7 @@ int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t e
             if (tool_ascii_is_word_byte((unsigned char)text[prev])) {
                 return 0;
             }
+
         } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
             return 0;
         }
@@ -1281,6 +1282,10 @@ int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t e
     }
 
     return 1;
+}
+
+size_t tool_text_display_width_n(const char *text, size_t length) {
+    return (size_t)rt_text_display_width_n(text, length, 0ULL);
 }
 
 int tool_unicode_space_at(const char *text, size_t length, size_t index, size_t *advance_out) {

@@ -239,6 +239,7 @@ int tool_ascii_is_identifier_char(char ch);
 int tool_utf8_is_continuation_byte(unsigned char byte);
 size_t tool_previous_utf8_codepoint_start(const char *text, size_t index);
 int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t end);
+size_t tool_text_display_width_n(const char *text, size_t length);
 int tool_str_equal_ignore_case_ascii(const char *left, const char *right);
 int tool_contains_case_insensitive(const char *text, const char *needle);
 int tool_text_is_decimal(const char *text);

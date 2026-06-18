@@ -61,14 +61,6 @@ static int parse_unsigned_value(const char *text, unsigned long long *value_out)
     return 0;
 }
 
-static size_t text_length(const char *text) {
-    size_t length = 0;
-    while (text[length] != '\0') {
-        length += 1U;
-    }
-    return length;
-}
-
 static double absolute_double(double value) {
     return value < 0.0 ? -value : value;
 }
@@ -215,7 +207,7 @@ static int write_padded_chunk(const char *text, size_t length, int width, int le
 }
 
 static int write_padded_numeric_text(const char *text, int width, int left_align, char pad) {
-    size_t length = text_length(text);
+    size_t length = rt_strlen(text);
     size_t body_offset = 0U;
     int total_length = (int)length;
 
@@ -375,7 +367,7 @@ static int write_formatted_number(
         digits[0] = '\0';
     }
 
-    digit_length = text_length(digits);
+    digit_length = rt_strlen(digits);
     if (precision >= 0 && (size_t)precision > digit_length) {
         zero_padding = precision - (int)digit_length;
     }
@@ -483,7 +475,7 @@ static int format_fixed_double(double value, int precision, char *buffer, size_t
 }
 
 static void trim_fractional_zeros(char *buffer) {
-    size_t length = text_length(buffer);
+    size_t length = rt_strlen(buffer);
 
     while (length > 0U && buffer[length - 1U] == '0') {
         buffer[length - 1U] = '\0';
@@ -599,7 +591,7 @@ static int format_general_double(double value, int precision, int uppercase, cha
                 rt_copy_string(suffix, sizeof(suffix), marker);
                 *marker = '\0';
                 trim_fractional_zeros(buffer);
-                length = text_length(buffer);
+                length = rt_strlen(buffer);
                 if (tool_buffer_append_text_checked(buffer, buffer_size, &length, suffix) != 0) {
                     return -1;
                 }
@@ -735,7 +727,7 @@ int main(int argc, char **argv) {
                 }
 
                 if (spec == 's') {
-                    size_t length = text_length(arg);
+                    size_t length = rt_strlen(arg);
                     if (precision >= 0 && (size_t)precision < length) {
                         length = (size_t)precision;
                     }
@@ -755,7 +747,7 @@ int main(int argc, char **argv) {
                     if (format_escaped_argument(arg, decoded, sizeof(decoded), &stop_output) != 0) {
                         return 1;
                     }
-                    length = text_length(decoded);
+                    length = rt_strlen(decoded);
                     if (precision >= 0 && (size_t)precision < length) {
                         length = (size_t)precision;
                     }
@@ -772,7 +764,7 @@ int main(int argc, char **argv) {
                     if (shell_quote_argument(arg, quoted, sizeof(quoted)) != 0) {
                         return 1;
                     }
-                    length = text_length(quoted);
+                    length = rt_strlen(quoted);
                     if (precision >= 0 && (size_t)precision < length) {
                         length = (size_t)precision;
                     }
