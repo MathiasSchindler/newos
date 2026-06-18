@@ -328,6 +328,20 @@ int tool_write_file_all(const char *path, const unsigned char *data, size_t size
     return platform_close(fd) == 0 ? 0 : -1;
 }
 
+int tool_write_file_all_report(const char *path, const unsigned char *data, size_t size, const char *tool_name) {
+    if (tool_write_file_all(path, data, size) == 0) return 0;
+    tool_write_error(tool_name, "cannot write: ", path);
+    return -1;
+}
+
+int tool_validate_absolute_program_path(const char *tool_name, const char *path) {
+    if (path == 0 || path[0] != '/') {
+        tool_write_error(tool_name, "refusing non-absolute program path: ", path != 0 ? path : "(null)");
+        return -1;
+    }
+    return 0;
+}
+
 void tool_restore_terminal_mode_if_enabled(int fd, int *enabled_io, const PlatformTerminalState *state) {
     if (enabled_io != 0 && *enabled_io && state != 0) {
         (void)platform_terminal_restore_mode(fd, state);
@@ -1033,6 +1047,18 @@ void tool_write_signal_list(int fd) {
     platform_write_signal_list(fd);
 }
 
+unsigned long long tool_parse_decimal_field(const char *field, size_t field_size) {
+    unsigned long long value = 0ULL;
+    size_t i = 0U;
+
+    while (i < field_size && (field[i] == ' ' || field[i] == '\0')) i += 1U;
+    while (i < field_size && field[i] >= '0' && field[i] <= '9') {
+        value = (value * 10ULL) + (unsigned long long)(field[i] - '0');
+        i += 1U;
+    }
+    return value;
+}
+
 unsigned short tool_read_u16_le(const unsigned char *bytes) {
     return (unsigned short)((unsigned short)bytes[0] | ((unsigned short)bytes[1] << 8U));
 }
@@ -1293,10 +1319,7 @@ int tool_contains_case_insensitive(const char *text, const char *needle) {
     size_t needle_len = rt_strlen(needle);
     size_t pos = 0U;
 
-    if (needle_len == 0U) {
-        return 1;
-    }
-
+    if (needle_len == 0U) return 1;
     while (pos < text_len) {
         size_t ti = pos;
         size_t ni = 0U;
@@ -1306,8 +1329,7 @@ int tool_contains_case_insensitive(const char *text, const char *needle) {
             unsigned int lhs = 0U;
             unsigned int rhs = 0U;
 
-            if (ti >= text_len || rt_utf8_decode(text, text_len, &ti, &lhs) != 0 ||
-                rt_utf8_decode(needle, needle_len, &ni, &rhs) != 0) {
+            if (ti >= text_len || rt_utf8_decode(text, text_len, &ti, &lhs) != 0 || rt_utf8_decode(needle, needle_len, &ni, &rhs) != 0) {
                 matched = 0;
                 break;
             }
@@ -1316,20 +1338,160 @@ int tool_contains_case_insensitive(const char *text, const char *needle) {
                 break;
             }
         }
-
-        if (matched) {
-            return 1;
-        }
-
+        if (matched) return 1;
         {
             unsigned int ignored = 0U;
-            if (rt_utf8_decode(text, text_len, &pos, &ignored) != 0) {
-                pos += 1U;
-            }
+            if (rt_utf8_decode(text, text_len, &pos, &ignored) != 0) pos += 1U;
         }
     }
-
     return 0;
+}
+
+int tool_parse_pid_filter_list(const char *spec, int *pids_out, size_t max_count, size_t *count_out, const char *tool_name, int require_nonempty) {
+    size_t count = 0U;
+    size_t i = 0U;
+
+    while (spec[i] != '\0') {
+        char token[32];
+        size_t token_len = 0U;
+        long long pid_value = 0;
+
+        while (spec[i] == ',' || rt_is_space(spec[i])) i += 1U;
+        while (spec[i] != '\0' && spec[i] != ',' && token_len + 1U < sizeof(token)) token[token_len++] = spec[i++];
+        token[token_len] = '\0';
+        tool_trim_whitespace(token);
+        if (token[0] == '\0' || count >= max_count || tool_parse_int_arg(token, &pid_value, tool_name, "pid") != 0 || pid_value <= 0) return -1;
+        pids_out[count++] = (int)pid_value;
+        while (spec[i] != '\0' && spec[i] != ',') i += 1U;
+    }
+    if (require_nonempty && count == 0U) return -1;
+    *count_out = count;
+    return 0;
+}
+
+static unsigned int tool_permission_mask_for_who(unsigned int who, char permission, unsigned int current_mode, unsigned int flags) {
+    unsigned int mask = 0U;
+    int allow_exec = (flags & TOOL_SYMBOLIC_MODE_X_ALWAYS) != 0U || (flags & TOOL_SYMBOLIC_MODE_DIRECTORY) != 0U || (current_mode & 0111U) != 0U;
+
+    if (permission == 'r') {
+        if ((who & 1U) != 0U) mask |= 0400U;
+        if ((who & 2U) != 0U) mask |= 0040U;
+        if ((who & 4U) != 0U) mask |= 0004U;
+    } else if (permission == 'w') {
+        if ((who & 1U) != 0U) mask |= 0200U;
+        if ((who & 2U) != 0U) mask |= 0020U;
+        if ((who & 4U) != 0U) mask |= 0002U;
+    } else if (permission == 'x' || (permission == 'X' && allow_exec)) {
+        if ((who & 1U) != 0U) mask |= 0100U;
+        if ((who & 2U) != 0U) mask |= 0010U;
+        if ((who & 4U) != 0U) mask |= 0001U;
+    } else if (permission == 's') {
+        if ((who & 1U) != 0U) mask |= 04000U;
+        if ((who & 2U) != 0U) mask |= 02000U;
+    } else if (permission == 't') {
+        mask |= 01000U;
+    }
+    return mask;
+}
+
+static unsigned int tool_permission_copy_mask_for_who(unsigned int who, char source_class, unsigned int current_mode) {
+    unsigned int source_bits = 0U;
+    unsigned int mask = 0U;
+
+    if (source_class == 'u') source_bits = (current_mode >> 6U) & 07U;
+    else if (source_class == 'g') source_bits = (current_mode >> 3U) & 07U;
+    else if (source_class == 'o') source_bits = current_mode & 07U;
+    if ((source_bits & 4U) != 0U) mask |= tool_permission_mask_for_who(who, 'r', current_mode, 0U);
+    if ((source_bits & 2U) != 0U) mask |= tool_permission_mask_for_who(who, 'w', current_mode, 0U);
+    if ((source_bits & 1U) != 0U) mask |= tool_permission_mask_for_who(who, 'x', current_mode, 0U);
+    return mask;
+}
+
+int tool_apply_symbolic_mode(const char *text, unsigned int current_mode, unsigned int flags, unsigned int *mode_out) {
+    unsigned int result = current_mode & 07777U;
+    size_t i = 0U;
+
+    if (text == 0 || text[0] == '\0') return -1;
+    while (text[i] != '\0') {
+        unsigned int who = 0U;
+        unsigned int set_mask = 0U;
+        unsigned int clear_mask = 0U;
+        char op;
+        int saw_who = 0;
+        int saw_permission = 0;
+
+        while (text[i] == 'u' || text[i] == 'g' || text[i] == 'o' || text[i] == 'a') {
+            saw_who = 1;
+            if (text[i] == 'u') who |= 1U;
+            else if (text[i] == 'g') who |= 2U;
+            else if (text[i] == 'o') who |= 4U;
+            else who |= 7U;
+            i += 1U;
+        }
+        if (!saw_who) who = 7U;
+        op = text[i];
+        if (op != '+' && op != '-' && op != '=') return -1;
+        i += 1U;
+        while (text[i] != '\0' && text[i] != ',') {
+            unsigned int mask;
+
+            if ((flags & TOOL_SYMBOLIC_MODE_ALLOW_COPY) != 0U && (text[i] == 'u' || text[i] == 'g' || text[i] == 'o')) mask = tool_permission_copy_mask_for_who(who, text[i], result);
+            else {
+                mask = tool_permission_mask_for_who(who, text[i], result, flags);
+                if (mask == 0U && text[i] != 'X') return -1;
+            }
+            set_mask |= mask;
+            saw_permission = 1;
+            i += 1U;
+        }
+        if (!saw_permission && op != '=' && (flags & TOOL_SYMBOLIC_MODE_REQUIRE_PERMISSION) != 0U) return -1;
+        if ((who & 1U) != 0U) clear_mask |= 0700U | 04000U;
+        if ((who & 2U) != 0U) clear_mask |= 0070U | 02000U;
+        if ((who & 4U) != 0U) clear_mask |= 0007U;
+        if (who == 7U) clear_mask |= 01000U;
+        if (op == '+') result |= set_mask;
+        else if (op == '-') result &= ~set_mask;
+        else result = (result & ~clear_mask) | set_mask;
+        if (text[i] == ',') i += 1U;
+    }
+    *mode_out = result & 07777U;
+    return 0;
+}
+
+int tool_literal_prefix_matches(const char *pattern, const char *text, int ignore_case, size_t *consumed_out) {
+    size_t pattern_len = rt_strlen(pattern);
+    size_t text_len = rt_strlen(text);
+    size_t pi = 0U;
+    size_t ti = 0U;
+
+    while (pi < pattern_len) {
+        unsigned int lhs = 0U;
+        unsigned int rhs = 0U;
+        unsigned char pattern_ch;
+        unsigned char text_ch;
+
+        if (ti >= text_len) return 0;
+        pattern_ch = (unsigned char)pattern[pi];
+        text_ch = (unsigned char)text[ti];
+        if (pattern_ch < 0x80U && text_ch < 0x80U) {
+            if (ignore_case) {
+                pattern_ch = (unsigned char)tool_ascii_tolower((char)pattern_ch);
+                text_ch = (unsigned char)tool_ascii_tolower((char)text_ch);
+            }
+            if (pattern_ch != text_ch) return 0;
+            pi += 1U;
+            ti += 1U;
+            continue;
+        }
+        if (rt_utf8_decode(pattern, pattern_len, &pi, &lhs) != 0 || rt_utf8_decode(text, text_len, &ti, &rhs) != 0) return 0;
+        if (ignore_case) {
+            lhs = rt_unicode_simple_fold(lhs);
+            rhs = rt_unicode_simple_fold(rhs);
+        }
+        if (lhs != rhs) return 0;
+    }
+    *consumed_out = ti;
+    return 1;
 }
 
 int tool_find_http_header_end(const char *buffer, size_t length, size_t *offset_out) {

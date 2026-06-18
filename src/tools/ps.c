@@ -204,38 +204,6 @@ static int parse_field_list(const char *spec, PsColumn *columns_out, size_t *cou
     return 0;
 }
 
-static int parse_pid_filters(const char *spec, int *pids_out, size_t *count_out) {
-    size_t count = 0;
-    size_t i = 0;
-
-    while (spec[i] != '\0') {
-        char token[32];
-        size_t token_len = 0;
-        long long pid_value = 0;
-
-        while (spec[i] == ',' || rt_is_space(spec[i])) {
-            i += 1;
-        }
-        while (spec[i] != '\0' && spec[i] != ',' && token_len + 1 < sizeof(token)) {
-            token[token_len++] = spec[i++];
-        }
-        token[token_len] = '\0';
-        tool_trim_whitespace(token);
-
-        if (token[0] == '\0' || count >= PS_MAX_FILTER_PIDS || tool_parse_int_arg(token, &pid_value, "ps", "pid") != 0 || pid_value <= 0) {
-            return -1;
-        }
-        pids_out[count++] = (int)pid_value;
-
-        while (spec[i] != '\0' && spec[i] != ',') {
-            i += 1;
-        }
-    }
-
-    *count_out = count;
-    return count == 0 ? -1 : 0;
-}
-
 static int parse_user_filters(const char *spec,
                               char names_out[PS_MAX_FILTER_ITEMS][PLATFORM_NAME_CAPACITY],
                               unsigned int uids_out[PS_MAX_FILTER_ITEMS],
@@ -605,7 +573,7 @@ int main(int argc, char **argv) {
                 }
                 value = argv[++i];
             }
-            if (parse_pid_filters(value, filter_pids, &pid_filter_count) != 0) {
+            if (tool_parse_pid_filter_list(value, filter_pids, PS_MAX_FILTER_PIDS, &pid_filter_count, "ps", 1) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }

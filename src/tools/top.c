@@ -20,44 +20,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-b] [-n ROWS] [-p PID[,PID...]] [-o FIELD] [-r]");
 }
 
-static int parse_pid_filters(const char *spec, int *pids_out, size_t *count_out) {
-    size_t count = 0;
-    size_t i = 0;
-
-    while (spec[i] != '\0') {
-        char token[32];
-        size_t token_len = 0;
-        long long pid_value = 0;
-
-        while (spec[i] == ',' || rt_is_space(spec[i])) {
-            i += 1U;
-        }
-        while (spec[i] != '\0' && spec[i] != ',' && token_len + 1U < sizeof(token)) {
-            token[token_len++] = spec[i++];
-        }
-        token[token_len] = '\0';
-        tool_trim_whitespace(token);
-
-        if (token[0] == '\0' || count >= TOP_MAX_FILTER_PIDS ||
-            tool_parse_int_arg(token, &pid_value, "top", "pid") != 0 || pid_value <= 0) {
-            return -1;
-        }
-
-        pids_out[count++] = (int)pid_value;
-
-        while (spec[i] != '\0' && spec[i] != ',') {
-            i += 1U;
-        }
-    }
-
-    if (count == 0U) {
-        return -1;
-    }
-
-    *count_out = count;
-    return 0;
-}
-
 static int parse_sort_key(const char *name, TopSortKey *key_out) {
     if (rt_strcmp(name, "rss") == 0 || rt_strcmp(name, "rss_kb") == 0 || rt_strcmp(name, "mem") == 0) {
         *key_out = TOP_SORT_RSS;
@@ -388,12 +350,12 @@ int main(int argc, char **argv) {
                 return 1;
             }
         } else if (rt_strcmp(options.flag, "-p") == 0 || rt_strcmp(options.flag, "--pid") == 0) {
-            if (tool_opt_require_value(&options) != 0 || parse_pid_filters(options.value, pid_filters, &pid_filter_count) != 0) {
+            if (tool_opt_require_value(&options) != 0 || tool_parse_pid_filter_list(options.value, pid_filters, TOP_MAX_FILTER_PIDS, &pid_filter_count, "top", 1) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }
         } else if (tool_starts_with(options.flag, "--pid=")) {
-            if (parse_pid_filters(options.flag + 6, pid_filters, &pid_filter_count) != 0) {
+            if (tool_parse_pid_filter_list(options.flag + 6, pid_filters, TOP_MAX_FILTER_PIDS, &pid_filter_count, "top", 1) != 0) {
                 print_usage(argv[0]);
                 return 1;
             }

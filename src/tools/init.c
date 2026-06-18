@@ -13,15 +13,6 @@ typedef struct {
     const char *value;
 } InitEnvSetting;
 
-
-static int validate_program_path(const char *path) {
-    if (path == 0 || path[0] != '/') {
-        tool_write_error("init", "refusing non-absolute program path: ", path != 0 ? path : "(null)");
-        return -1;
-    }
-    return 0;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, INIT_USAGE);
 }
@@ -244,7 +235,7 @@ int main(int argc, char **argv) {
         }
 
         resolved_program[0] = '\0';
-        if (validate_program_path(spawn_argv[0]) != 0) {
+        if (tool_validate_absolute_program_path("init", spawn_argv[0]) != 0) {
             return 1;
         }
         tool_resolve_host_program_path(spawn_argv, resolved_program, sizeof(resolved_program));

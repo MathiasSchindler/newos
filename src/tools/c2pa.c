@@ -196,19 +196,8 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
     return 0;
 }
 
-static int write_file(const char *path, const unsigned char *data, size_t size) {
-    int fd = platform_open_write(path, 0644U);
-    if (fd < 0) {
-        tool_write_error("c2pa", "cannot write: ", path);
-        return -1;
-    }
-    if (rt_write_all(fd, data, size) != 0) {
-        platform_close(fd);
-        tool_write_error("c2pa", "write failed: ", path);
-        return -1;
-    }
-    platform_close(fd);
-    return 0;
+static int c2pa_write_file(const char *path, const unsigned char *data, size_t size) {
+    return tool_write_file_all_report(path, data, size, "c2pa");
 }
 
 static int has_existing_c2pa(const unsigned char *data, size_t size) {
@@ -467,7 +456,7 @@ static int run_add(int argc, char **argv, int arg_index) {
     if (make_store(input, input_size, generator, actions, action_count, &store) != 0) goto done;
     if (info.format == IMAGE_FORMAT_PNG) result = insert_png_cabx(input, input_size, store.data, store.size, &output);
     else result = insert_jpeg_app11(input, input_size, store.data, store.size, &output);
-    if (result == 0) result = write_file(output_path, output.data, output.size);
+    if (result == 0) result = c2pa_write_file(output_path, output.data, output.size);
 done:
     rt_free(input);
     tool_byte_buffer_free(&store);

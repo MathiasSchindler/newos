@@ -16,6 +16,8 @@ int tool_write_visible(int fd, const char *text, size_t length);
 int tool_write_visible_line(int fd, const char *text);
 int tool_write_record_text(int fd, const char *text, int zero_terminated);
 int tool_write_file_all(const char *path, const unsigned char *data, size_t size);
+int tool_write_file_all_report(const char *path, const unsigned char *data, size_t size, const char *tool_name);
+int tool_validate_absolute_program_path(const char *tool_name, const char *path);
 void tool_restore_terminal_mode_if_enabled(int fd, int *enabled_io, const PlatformTerminalState *state);
 int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool_name);
 int tool_hex_value(char ch);
@@ -207,6 +209,7 @@ int tool_parse_escaped_string(const char *text, char *buffer, size_t buffer_size
 int tool_parse_signal_name(const char *text, int *signal_out);
 const char *tool_signal_name(int signal_number);
 void tool_write_signal_list(int fd);
+unsigned long long tool_parse_decimal_field(const char *field, size_t field_size);
 unsigned short tool_read_u16_le(const unsigned char *bytes);
 unsigned short tool_read_u16_be(const unsigned char *bytes);
 unsigned int tool_read_u24_le(const unsigned char *bytes);
@@ -243,6 +246,7 @@ size_t tool_count_decimal_digits(unsigned long long value);
 int tool_starts_with(const char *text, const char *prefix);
 int tool_token_equals(const char *text, size_t text_length, const char *token);
 int tool_parse_http_status(const char *headers);
+int tool_parse_pid_filter_list(const char *spec, int *pids_out, size_t max_count, size_t *count_out, const char *tool_name, int require_nonempty);
 int tool_parse_tabstop_list(const char *text, unsigned long long *stops, size_t max_stops, size_t *count_out);
 unsigned long long tool_next_tabstop(const unsigned long long *stops, size_t stop_count, unsigned long long column);
 int tool_find_http_header_end(const char *buffer, size_t length, size_t *offset_out);
@@ -269,6 +273,14 @@ int tool_buffer_append_text_checked(char *buffer, size_t buffer_size, size_t *le
 int tool_buffer_append_uint_checked(char *buffer, size_t buffer_size, size_t *length_io, unsigned long long value);
 void tool_trim_whitespace(char *text);
 int tool_prompt_yes_no(const char *message, const char *path);
+
+#define TOOL_SYMBOLIC_MODE_DIRECTORY          (1U << 0)
+#define TOOL_SYMBOLIC_MODE_ALLOW_COPY         (1U << 1)
+#define TOOL_SYMBOLIC_MODE_X_ALWAYS           (1U << 2)
+#define TOOL_SYMBOLIC_MODE_REQUIRE_PERMISSION (1U << 3)
+
+int tool_apply_symbolic_mode(const char *text, unsigned int current_mode, unsigned int flags, unsigned int *mode_out);
+int tool_literal_prefix_matches(const char *pattern, const char *text, int ignore_case, size_t *consumed_out);
 const char *tool_base_name(const char *path);
 int tool_path_has_separator(const char *path);
 int tool_path_is_dash(const char *path);

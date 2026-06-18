@@ -84,20 +84,8 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
     return tool_read_all_input_report(path, data_out, size_out, "imgmeta");
 }
 
-static int write_file(const char *path, const unsigned char *data, size_t size) {
-    int fd = platform_open_write(path, 0644U);
-
-    if (fd < 0) {
-        tool_write_error("imgmeta", "cannot write: ", path);
-        return -1;
-    }
-    if (rt_write_all(fd, data, size) != 0) {
-        platform_close(fd);
-        tool_write_error("imgmeta", "write failed: ", path);
-        return -1;
-    }
-    platform_close(fd);
-    return 0;
+static int imgmeta_write_file(const char *path, const unsigned char *data, size_t size) {
+    return tool_write_file_all_report(path, data, size, "imgmeta");
 }
 
 static void write_property_list(unsigned int property_flags) {
@@ -1972,7 +1960,7 @@ static int strip_path(const char *input_path, const char *output_path) {
         tool_write_error("imgmeta", "could not strip metadata: ", input_path);
         return -1;
     }
-    result = write_file(output_path, stripped, stripped_size);
+    result = imgmeta_write_file(output_path, stripped, stripped_size);
     rt_free(stripped);
     return result;
 }
@@ -1991,7 +1979,7 @@ static int copy_path(const char *input_path, const char *output_path) {
         rt_free(data);
         return -1;
     }
-    result = write_file(output_path, data, size);
+    result = imgmeta_write_file(output_path, data, size);
     rt_free(data);
     return result;
 }
@@ -2033,7 +2021,7 @@ static int copy_metadata_path(const char *metadata_path, const char *input_path,
         tool_write_error("imgmeta", "could not copy PNG metadata", 0);
         return -1;
     }
-    result = write_file(output_path, copied, copied_size);
+    result = imgmeta_write_file(output_path, copied, copied_size);
     rt_free(copied);
     return result;
 }
@@ -2074,7 +2062,7 @@ static int edit_text_path(const char *input_path, const char *output_path, const
         tool_write_error("imgmeta", "could not edit PNG text metadata: ", input_path);
         return -1;
     }
-    result = write_file(output_path, edited, edited_size);
+    result = imgmeta_write_file(output_path, edited, edited_size);
     rt_free(edited);
     return result;
 }
@@ -2116,7 +2104,7 @@ static int edit_itxt_path(const char *input_path, const char *output_path, const
         tool_write_error("imgmeta", "could not edit PNG iTXt metadata: ", input_path);
         return -1;
     }
-    result = write_file(output_path, edited, edited_size);
+    result = imgmeta_write_file(output_path, edited, edited_size);
     rt_free(edited);
     return result;
 }
@@ -2148,7 +2136,7 @@ static int remove_text_path(const char *input_path, const char *output_path, con
         tool_write_error("imgmeta", "could not remove PNG text metadata: ", input_path);
         return -1;
     }
-    result = write_file(output_path, edited, edited_size);
+    result = imgmeta_write_file(output_path, edited, edited_size);
     rt_free(edited);
     return result;
 }

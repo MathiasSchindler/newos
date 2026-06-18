@@ -27,21 +27,7 @@ static void ar_write_usage(void) {
     rt_write_line(2, "Usage: ar [rcstpxvq] archive [file ...]");
 }
 
-static unsigned long long parse_decimal_field(const char *field, size_t field_size) {
-    unsigned long long value = 0ULL;
-    size_t i = 0U;
-
-    while (i < field_size && (field[i] == ' ' || field[i] == '\0')) {
-        i += 1U;
-    }
-    while (i < field_size && field[i] >= '0' && field[i] <= '9') {
-        value = (value * 10ULL) + (unsigned long long)(field[i] - '0');
-        i += 1U;
-    }
-    return value;
-}
-
-static void write_decimal_field(char *field, size_t field_size, unsigned long long value) {
+static void ar_write_decimal_field(char *field, size_t field_size, unsigned long long value) {
     char digits[32];
     size_t digit_count = 0U;
     size_t i;
@@ -210,14 +196,14 @@ static int read_member_info(int fd,
         raw_name[i] = (char)header[i];
     }
     raw_name[16] = '\0';
-    payload_size = parse_decimal_field((const char *)header + 48, 10U);
+    payload_size = tool_parse_decimal_field((const char *)header + 48, 10U);
 
     info->payload_offset = platform_seek(fd, 0, PLATFORM_SEEK_CUR);
     info->payload_size = payload_size;
     info->data_offset = info->payload_offset;
     info->data_size = payload_size;
     info->next_offset = info->payload_offset + (long long)payload_size + ((payload_size & 1ULL) != 0ULL ? 1LL : 0LL);
-    info->mtime = (long long)parse_decimal_field((const char *)header + 16, 12U);
+    info->mtime = (long long)tool_parse_decimal_field((const char *)header + 16, 12U);
     info->mode = (unsigned int)archive_parse_octal((const char *)header + 40, 8U);
     info->valid = 1;
 
@@ -244,7 +230,7 @@ static int read_member_info(int fd,
         }
         copy_name_from_string_table(info->name, sizeof(info->name), string_table, *string_table_size, offset);
     } else if (info->name[0] == '#' && info->name[1] == '1' && info->name[2] == '/') {
-        unsigned long long name_length = parse_decimal_field(info->name + 3, rt_strlen(info->name + 3));
+        unsigned long long name_length = tool_parse_decimal_field(info->name + 3, rt_strlen(info->name + 3));
         size_t to_read = (size_t)(name_length < (unsigned long long)(sizeof(info->name) - 1U) ? name_length : (unsigned long long)(sizeof(info->name) - 1U));
         if (to_read > 0U) {
             if (archive_read_exact(fd, (unsigned char *)info->name, to_read) != 0) {
@@ -312,15 +298,15 @@ static int append_file_member(int output_fd, const char *path, int verbose) {
     } else {
         const char prefix[] = "#1/";
         memcpy(header, prefix, 3U);
-        write_decimal_field((char *)header + 3, 13U, (unsigned long long)name_length);
+        ar_write_decimal_field((char *)header + 3, 13U, (unsigned long long)name_length);
         file_size += (unsigned long long)name_length;
     }
 
-    write_decimal_field((char *)header + 16, 12U, entry.mtime < 0 ? 0ULL : (unsigned long long)entry.mtime);
-    write_decimal_field((char *)header + 28, 6U, 0ULL);
-    write_decimal_field((char *)header + 34, 6U, 0ULL);
+    ar_write_decimal_field((char *)header + 16, 12U, entry.mtime < 0 ? 0ULL : (unsigned long long)entry.mtime);
+    ar_write_decimal_field((char *)header + 28, 6U, 0ULL);
+    ar_write_decimal_field((char *)header + 34, 6U, 0ULL);
     write_octal_field((char *)header + 40, 8U, entry.mode & 0777U);
-    write_decimal_field((char *)header + 48, 10U, file_size);
+    ar_write_decimal_field((char *)header + 48, 10U, file_size);
     header[58] = '`';
     header[59] = '\n';
 

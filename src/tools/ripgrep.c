@@ -398,52 +398,6 @@ static int load_directory_ignore_files(RgOptions *options, const char *dir_path,
     return 0;
 }
 
-static int starts_with_literal(const char *pattern, const char *text, int ignore_case, size_t *consumed_out) {
-    size_t pattern_len = rt_strlen(pattern);
-    size_t text_len = rt_strlen(text);
-    size_t pi = 0U;
-    size_t ti = 0U;
-
-    while (pi < pattern_len) {
-        unsigned int lhs = 0;
-        unsigned int rhs = 0;
-        unsigned char pattern_ch;
-        unsigned char text_ch;
-
-        if (ti >= text_len) {
-            return 0;
-        }
-        pattern_ch = (unsigned char)pattern[pi];
-        text_ch = (unsigned char)text[ti];
-        if (pattern_ch < 0x80U && text_ch < 0x80U) {
-            if (ignore_case) {
-                if (pattern_ch >= 'A' && pattern_ch <= 'Z') pattern_ch = (unsigned char)(pattern_ch + ('a' - 'A'));
-                if (text_ch >= 'A' && text_ch <= 'Z') text_ch = (unsigned char)(text_ch + ('a' - 'A'));
-            }
-            if (pattern_ch != text_ch) {
-                return 0;
-            }
-            pi += 1U;
-            ti += 1U;
-            continue;
-        }
-        if (rt_utf8_decode(pattern, pattern_len, &pi, &lhs) != 0 ||
-            rt_utf8_decode(text, text_len, &ti, &rhs) != 0) {
-            return 0;
-        }
-        if (ignore_case) {
-            lhs = rt_unicode_simple_fold(lhs);
-            rhs = rt_unicode_simple_fold(rhs);
-        }
-        if (lhs != rhs) {
-            return 0;
-        }
-    }
-
-    *consumed_out = ti;
-    return 1;
-}
-
 static int find_fixed_match(const char *pattern,
                             const char *text,
                             int ignore_case,
@@ -462,7 +416,7 @@ static int find_fixed_match(const char *pattern,
     while (1) {
         size_t consumed = 0U;
 
-        if (starts_with_literal(pattern, text + pos, ignore_case, &consumed)) {
+        if (tool_literal_prefix_matches(pattern, text + pos, ignore_case, &consumed)) {
             *start_out = pos;
             *end_out = pos + consumed;
             return 1;

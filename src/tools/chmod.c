@@ -48,154 +48,17 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-R] [-h] [-H|-L|-P] MODE path ...");
 }
 
-static unsigned int permission_mask_for_who(unsigned int who, char permission, unsigned int current_mode, int is_directory) {
-    unsigned int mask = 0U;
-    int allow_exec = is_directory || (current_mode & 0111U) != 0U;
-
-    if (permission == 'r') {
-        if ((who & 1U) != 0U) mask |= 0400U;
-        if ((who & 2U) != 0U) mask |= 0040U;
-        if ((who & 4U) != 0U) mask |= 0004U;
-    } else if (permission == 'w') {
-        if ((who & 1U) != 0U) mask |= 0200U;
-        if ((who & 2U) != 0U) mask |= 0020U;
-        if ((who & 4U) != 0U) mask |= 0002U;
-    } else if (permission == 'x' || (permission == 'X' && allow_exec)) {
-        if ((who & 1U) != 0U) mask |= 0100U;
-        if ((who & 2U) != 0U) mask |= 0010U;
-        if ((who & 4U) != 0U) mask |= 0001U;
-    } else if (permission == 's') {
-        if ((who & 1U) != 0U) mask |= 04000U;
-        if ((who & 2U) != 0U) mask |= 02000U;
-    } else if (permission == 't') {
-        mask |= 01000U;
-    }
-
-    return mask;
-}
-
-static unsigned int permission_copy_mask_for_who(unsigned int who, char source_class, unsigned int current_mode) {
-    unsigned int source_bits = 0U;
-    unsigned int mask = 0U;
-
-    if (source_class == 'u') {
-        source_bits = (current_mode >> 6U) & 07U;
-    } else if (source_class == 'g') {
-        source_bits = (current_mode >> 3U) & 07U;
-    } else if (source_class == 'o') {
-        source_bits = current_mode & 07U;
-    }
-
-    if ((source_bits & 4U) != 0U) {
-        mask |= permission_mask_for_who(who, 'r', current_mode, 0);
-    }
-    if ((source_bits & 2U) != 0U) {
-        mask |= permission_mask_for_who(who, 'w', current_mode, 0);
-    }
-    if ((source_bits & 1U) != 0U) {
-        mask |= permission_mask_for_who(who, 'x', current_mode, 0);
-    }
-
-    return mask;
-}
-
-static int apply_symbolic_mode(const char *text, unsigned int current_mode, int is_directory, unsigned int *mode_out) {
-    unsigned int result = current_mode & 07777U;
-    size_t i = 0U;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-
-    while (text[i] != '\0') {
-        unsigned int who = 0U;
-        unsigned int set_mask = 0U;
-        unsigned int clear_mask = 0U;
-        char op;
-        int saw_who = 0;
-        int saw_permission = 0;
-
-        while (text[i] == 'u' || text[i] == 'g' || text[i] == 'o' || text[i] == 'a') {
-            saw_who = 1;
-            if (text[i] == 'u') {
-                who |= 1U;
-            } else if (text[i] == 'g') {
-                who |= 2U;
-            } else if (text[i] == 'o') {
-                who |= 4U;
-            } else {
-                who |= 7U;
-            }
-            i += 1U;
-        }
-
-        if (!saw_who) {
-            who = 7U;
-        }
-
-        op = text[i];
-        if (op != '+' && op != '-' && op != '=') {
-            return -1;
-        }
-        i += 1U;
-
-        while (text[i] != '\0' && text[i] != ',') {
-            unsigned int mask;
-
-            if (text[i] == 'u' || text[i] == 'g' || text[i] == 'o') {
-                mask = permission_copy_mask_for_who(who, text[i], result);
-            } else {
-                mask = permission_mask_for_who(who, text[i], result, is_directory);
-                if (mask == 0U && text[i] != 'X') {
-                    return -1;
-                }
-            }
-
-            set_mask |= mask;
-            saw_permission = 1;
-            i += 1U;
-        }
-
-        if (!saw_permission && op != '=') {
-            return -1;
-        }
-
-        if ((who & 1U) != 0U) {
-            clear_mask |= 0700U | 04000U;
-        }
-        if ((who & 2U) != 0U) {
-            clear_mask |= 0070U | 02000U;
-        }
-        if ((who & 4U) != 0U) {
-            clear_mask |= 0007U;
-        }
-        if (who == 7U) {
-            clear_mask |= 01000U;
-        }
-
-        if (op == '+') {
-            result |= set_mask;
-        } else if (op == '-') {
-            result &= ~set_mask;
-        } else {
-            result = (result & ~clear_mask) | set_mask;
-        }
-
-        if (text[i] == ',') {
-            i += 1U;
-        }
-    }
-
-    *mode_out = result & 07777U;
-    return 0;
-}
-
 static int compute_target_mode(const ChmodOptions *options, const PlatformDirEntry *entry, unsigned int *mode_out) {
     if (options->mode_is_numeric) {
         *mode_out = options->numeric_mode;
         return 0;
     }
-    return apply_symbolic_mode(options->mode_spec, entry->mode, entry->is_dir, mode_out);
+    return tool_apply_symbolic_mode(options->mode_spec,
+                                    entry->mode,
+                                    TOOL_SYMBOLIC_MODE_ALLOW_COPY |
+                                        TOOL_SYMBOLIC_MODE_REQUIRE_PERMISSION |
+                                        (entry->is_dir ? TOOL_SYMBOLIC_MODE_DIRECTORY : 0U),
+                                    mode_out);
 }
 
 static int path_is_symlink(const char *path) {

@@ -85,18 +85,6 @@ static int checked_range(unsigned long long offset, unsigned long long size, uns
     return offset <= file_size && size <= file_size - offset;
 }
 
-static unsigned long long parse_decimal_field(const char *field, size_t field_size) {
-    unsigned long long value = 0ULL;
-    size_t i = 0U;
-
-    while (i < field_size && (field[i] == ' ' || field[i] == '\0')) i += 1U;
-    while (i < field_size && field[i] >= '0' && field[i] <= '9') {
-        value = (value * 10ULL) + (unsigned long long)(field[i] - '0');
-        i += 1U;
-    }
-    return value;
-}
-
 static int analyze_elf(int input_fd, const unsigned char *header, unsigned long long file_size, StripPlan *plan) {
     unsigned long long phoff;
     unsigned short phentsize;
@@ -359,7 +347,7 @@ static int analyze_archive(int input_fd, unsigned long long file_size, StripPlan
             plan->action = "safe copy: malformed archive member header";
             return 0;
         }
-        payload_size = parse_decimal_field((const char *)header + 48, 10U);
+        payload_size = tool_parse_decimal_field((const char *)header + 48, 10U);
         if (!checked_range(offset + STRIP_AR_HEADER_SIZE, payload_size, file_size)) {
             plan->action = "safe copy: invalid archive member size";
             return 0;
