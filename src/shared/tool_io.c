@@ -584,6 +584,66 @@ void tool_write_hex_value(int fd, unsigned long long value) {
     }
 }
 
+int tool_write_hex_bytes(int fd, const unsigned char *bytes, size_t size) {
+    static const char hex[] = "0123456789abcdef";
+    size_t index;
+
+    for (index = 0U; index < size; ++index) {
+        if (rt_write_char(fd, hex[(bytes[index] >> 4U) & 0x0fU]) != 0) return -1;
+        if (rt_write_char(fd, hex[bytes[index] & 0x0fU]) != 0) return -1;
+    }
+    return 0;
+}
+
+int tool_http_connection_connect(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls) {
+    rt_memset(connection, 0, sizeof(*connection));
+    connection->socket_fd = -1;
+    connection->use_tls = use_tls;
+    if (connection->use_tls) {
+        if (platform_tls_connect(&connection->tls, host, port) != 0) {
+            return -1;
+        }
+        connection->socket_fd = connection->tls.socket_fd;
+        return 0;
+    }
+    return platform_connect_tcp(host, port, &connection->socket_fd);
+}
+
+unsigned int tool_http_default_port(int use_tls) {
+    return use_tls ? 443U : 80U;
+}
+
+int tool_http_connection_fd(const ToolHttpConnection *connection) {
+    return connection->use_tls ? connection->tls.socket_fd : connection->socket_fd;
+}
+
+long tool_http_connection_read(ToolHttpConnection *connection, void *buffer, size_t count) {
+    return connection->use_tls ? platform_tls_read(&connection->tls, buffer, count) : platform_read(connection->socket_fd, buffer, count);
+}
+
+int tool_http_connection_write_all(ToolHttpConnection *connection, const void *buffer, size_t count) {
+    const unsigned char *bytes = (const unsigned char *)buffer;
+    size_t written = 0U;
+
+    while (written < count) {
+        long result = connection->use_tls ? platform_tls_write(&connection->tls, bytes + written, count - written) : platform_write(connection->socket_fd, bytes + written, count - written);
+        if (result <= 0) {
+            return -1;
+        }
+        written += (size_t)result;
+    }
+    return 0;
+}
+
+void tool_http_connection_close(ToolHttpConnection *connection) {
+    if (connection->use_tls) {
+        platform_tls_close(&connection->tls);
+    } else if (connection->socket_fd >= 0) {
+        (void)platform_close(connection->socket_fd);
+    }
+    connection->socket_fd = -1;
+}
+
 void tool_write_padding(int fd, size_t count) {
     while (count > 0U) {
         (void)rt_write_char(fd, ' ');

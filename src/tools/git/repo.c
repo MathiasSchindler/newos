@@ -441,14 +441,6 @@ static const char *git_branch_name(const GitRepo *repo) {
     return repo->head_ref + 11U;
 }
 
-static unsigned short git_read_u16_be_raw(const unsigned char *bytes) {
-    return (unsigned short)(((unsigned int)bytes[0] << 8) | (unsigned int)bytes[1]);
-}
-
-static unsigned int git_read_u32_be_raw(const unsigned char *bytes) {
-    return ((unsigned int)bytes[0] << 24) | ((unsigned int)bytes[1] << 16) | ((unsigned int)bytes[2] << 8) | (unsigned int)bytes[3];
-}
-
 static int git_index_push(GitIndex *index, GitIndexEntry *entry) {
     GitIndexEntry *new_entries;
     size_t new_capacity;

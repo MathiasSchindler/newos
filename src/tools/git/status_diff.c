@@ -14,12 +14,12 @@ static int git_load_index(const GitRepo *repo, GitIndex *index) {
     if (git_read_file(path, &data, &size) != 0) {
         return 0;
     }
-    if (size < 12U || git_read_u32_be_raw(data) != GIT_INDEX_SIGNATURE) {
+    if (size < 12U || tool_read_u32_be(data) != GIT_INDEX_SIGNATURE) {
         rt_free(data);
         return -1;
     }
-    version = git_read_u32_be_raw(data + 4U);
-    count = git_read_u32_be_raw(data + 8U);
+    version = tool_read_u32_be(data + 4U);
+    count = tool_read_u32_be(data + 8U);
     if (version < 2U || version > 4U) {
         rt_free(data);
         return -1;
@@ -41,12 +41,12 @@ static int git_load_index(const GitRepo *repo, GitIndex *index) {
             return -1;
         }
         rt_memset(&entry, 0, sizeof(entry));
-        entry.mtime_seconds = git_read_u32_be_raw(data + pos + 8U);
-        entry.mtime_nanos = git_read_u32_be_raw(data + pos + 12U);
-        entry.mode = git_read_u32_be_raw(data + pos + 24U);
-        entry.size = git_read_u32_be_raw(data + pos + 36U);
+        entry.mtime_seconds = tool_read_u32_be(data + pos + 8U);
+        entry.mtime_nanos = tool_read_u32_be(data + pos + 12U);
+        entry.mode = tool_read_u32_be(data + pos + 24U);
+        entry.size = tool_read_u32_be(data + pos + 36U);
         memcpy(entry.oid, data + pos + 40U, CRYPTO_SHA1_DIGEST_SIZE);
-        flags = git_read_u16_be_raw(data + pos + 60U);
+        flags = tool_read_u16_be(data + pos + 60U);
         path_start = pos + 62U;
         if ((flags & GIT_INDEX_FLAG_EXTENDED) != 0U) {
             if (version < 3U || path_start + 2U > size) {
@@ -54,7 +54,7 @@ static int git_load_index(const GitRepo *repo, GitIndex *index) {
                 rt_free(data);
                 return -1;
             }
-            extended_flags = git_read_u16_be_raw(data + path_start);
+            extended_flags = tool_read_u16_be(data + path_start);
             entry.intent_to_add = (extended_flags & GIT_INDEX_EXTENDED_INTENT_TO_ADD) != 0U;
             path_start += 2U;
         }

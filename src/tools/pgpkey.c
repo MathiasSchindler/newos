@@ -289,13 +289,6 @@ static unsigned int pgpkey_read_u16_be(const unsigned char *data) {
     return ((unsigned int)data[0] << 8U) | (unsigned int)data[1];
 }
 
-static unsigned long long pgpkey_read_u32_be(const unsigned char *data) {
-    return ((unsigned long long)data[0] << 24U) |
-           ((unsigned long long)data[1] << 16U) |
-           ((unsigned long long)data[2] << 8U) |
-           (unsigned long long)data[3];
-}
-
 static int pgpkey_packet_end(const PgpPacket *packet, size_t *end_out) {
     if (packet->body_offset > ((size_t)-1) - packet->body_size) return -1;
     *end_out = packet->body_offset + packet->body_size;
@@ -317,7 +310,7 @@ static int pgpkey_public_body_size(unsigned int tag, const unsigned char *body, 
         unsigned long long material_size;
 
         if (body_size < 10U) return -1;
-        material_size = pgpkey_read_u32_be(body + 6U);
+        material_size = tool_read_u32_be(body + 6U);
         if (material_size > (unsigned long long)(body_size - 10U)) return -1;
         *public_size_out = 10U + (size_t)material_size;
         return *public_size_out < body_size ? 0 : -1;
@@ -581,31 +574,6 @@ static int write_generated_file(const char *path, int private_key, const unsigne
     return result;
 }
 
-static int write_hex_bytes(int fd, const unsigned char *data, size_t size) {
-    static const char hex[] = "0123456789abcdef";
-    size_t index;
-
-    for (index = 0U; index < size; ++index) {
-        if (rt_write_char(fd, hex[(data[index] >> 4U) & 0x0fU]) != 0) return -1;
-        if (rt_write_char(fd, hex[data[index] & 0x0fU]) != 0) return -1;
-    }
-    return 0;
-}
-
-static int write_date(int fd, unsigned long long epoch) {
-    long long days = (long long)(epoch / 86400ULL);
-    int year;
-    unsigned int month;
-    unsigned int day;
-
-    tool_civil_from_days(days, &year, &month, &day);
-    if (rt_write_uint(fd, (unsigned long long)year) != 0 || rt_write_char(fd, '-') != 0) return -1;
-    if (month < 10U && rt_write_char(fd, '0') != 0) return -1;
-    if (rt_write_uint(fd, month) != 0 || rt_write_char(fd, '-') != 0) return -1;
-    if (day < 10U && rt_write_char(fd, '0') != 0) return -1;
-    return rt_write_uint(fd, day);
-}
-
 static int write_duration_from_seconds(int fd, unsigned long long seconds) {
     unsigned long long days = seconds / 86400ULL;
 
@@ -639,7 +607,7 @@ static int write_expiration_date_with_status(int fd, unsigned long long expires,
         if (rt_write_cstr(fd, "never") != 0) return -1;
         return write_expiration_status(fd, expires, color_mode);
     }
-    if (write_date(fd, expires) != 0) return -1;
+    if (pgp_write_date(fd, expires) != 0) return -1;
     return write_expiration_status(fd, expires, color_mode);
 }
 
@@ -760,7 +728,7 @@ static int write_key_line(const PgpPublicKeyInfo *key, const char *label, int co
         if (rt_write_cstr(1, ", ") != 0 || rt_write_uint(1, key->bits) != 0 || rt_write_cstr(1, " bits") != 0) return -1;
     }
     if (key->created != 0ULL) {
-        if (rt_write_cstr(1, ", created ") != 0 || write_date(1, key->created) != 0) return -1;
+        if (rt_write_cstr(1, ", created ") != 0 || pgp_write_date(1, key->created) != 0) return -1;
     }
     return rt_write_char(1, '\n');
 }
@@ -1020,7 +988,7 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
     if (rt_write_cstr(1, ", ") != 0 || rt_write_cstr(1, pgp_public_key_algorithm_name(signature->public_key_algorithm)) != 0) return -1;
     if (rt_write_cstr(1, ", ") != 0 || rt_write_cstr(1, pgp_hash_algorithm_name(signature->hash_algorithm)) != 0) return -1;
     if (signature->created != 0ULL) {
-        if (rt_write_cstr(1, ", created ") != 0 || write_date(1, signature->created) != 0) return -1;
+        if (rt_write_cstr(1, ", created ") != 0 || pgp_write_date(1, signature->created) != 0) return -1;
     }
     if (signature->target_tag == PGP_SIGNATURE_TARGET_USER_ID && signature->target_index < certificate->user_id_count) {
         if (rt_write_cstr(1, ", uid ") != 0 || rt_write_uint(1, (unsigned long long)(signature->target_index + 1U)) != 0) return -1;
@@ -1028,10 +996,10 @@ static int write_signature_verbose_line(const PgpCertificateInfo *certificate, c
         if (rt_write_cstr(1, ", subkey ") != 0 || rt_write_uint(1, (unsigned long long)(signature->target_index + 1U)) != 0) return -1;
     }
     if (signature->has_issuer_key_id) {
-        if (rt_write_cstr(1, ", issuer ") != 0 || write_hex_bytes(1, signature->issuer_key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+        if (rt_write_cstr(1, ", issuer ") != 0 || tool_write_hex_bytes(1, signature->issuer_key_id, PGP_KEY_ID_SIZE) != 0) return -1;
     }
     if (signature->issuer_fingerprint_size != 0U) {
-        if (rt_write_cstr(1, ", issuer-fpr ") != 0 || write_hex_bytes(1, signature->issuer_fingerprint, signature->issuer_fingerprint_size) != 0) return -1;
+        if (rt_write_cstr(1, ", issuer-fpr ") != 0 || tool_write_hex_bytes(1, signature->issuer_fingerprint, signature->issuer_fingerprint_size) != 0) return -1;
     }
     if (issuer_uid != 0) {
         if (rt_write_cstr(1, ", issuer-uid ") != 0 || tool_write_visible(1, issuer_uid, rt_strlen(issuer_uid)) != 0) return -1;
@@ -1088,8 +1056,8 @@ static int write_certificate_text(const PgpCertificateInfo *certificate, const c
     if (rt_write_cstr(1, "certificate: ") != 0 || rt_write_uint(1, (unsigned long long)index) != 0 || rt_write_char(1, '\n') != 0) return -1;
     if (write_key_line(&certificate->primary, "primary", color_mode) != 0) return -1;
     if (certificate->primary.fingerprint_size != 0U) {
-        if (rt_write_cstr(1, "fingerprint: ") != 0 || write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
-        if (rt_write_cstr(1, "key-id: ") != 0 || write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (rt_write_cstr(1, "fingerprint: ") != 0 || tool_write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+        if (rt_write_cstr(1, "key-id: ") != 0 || tool_write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
     } else if (rt_write_line(1, "fingerprint: unsupported") != 0) {
         return -1;
     }
@@ -1100,7 +1068,7 @@ static int write_certificate_text(const PgpCertificateInfo *certificate, const c
     for (subkey_index = 0U; subkey_index < certificate->subkey_count; ++subkey_index) {
         if (write_key_line(&certificate->subkeys[subkey_index], "subkey", color_mode) != 0) return -1;
         if (certificate->subkeys[subkey_index].fingerprint_size != 0U) {
-            if (rt_write_cstr(1, "subkey-fingerprint: ") != 0 || write_hex_bytes(1, certificate->subkeys[subkey_index].fingerprint, certificate->subkeys[subkey_index].fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+            if (rt_write_cstr(1, "subkey-fingerprint: ") != 0 || tool_write_hex_bytes(1, certificate->subkeys[subkey_index].fingerprint, certificate->subkeys[subkey_index].fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
         }
         if (write_subkey_signature_summary_text(certificate, subkey_index, color_mode) != 0) return -1;
     }
@@ -1123,9 +1091,9 @@ static int write_certificate_json(const PgpCertificateInfo *certificate, const c
     }
     if (rt_write_cstr(1, ",\"algorithm\":") != 0 || tool_json_write_string(1, pgp_public_key_algorithm_name(certificate->primary.algorithm)) != 0) return -1;
     if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0) return -1;
-    if (write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0) return -1;
+    if (tool_write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0) return -1;
     if (rt_write_cstr(1, "\",\"key_id\":\"") != 0) return -1;
-    if (write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+    if (tool_write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
     if (rt_write_cstr(1, "\",\"user_ids\":[") != 0) return -1;
     for (uid_index = 0U; uid_index < certificate->user_id_count; ++uid_index) {
         if (uid_index != 0U && rt_write_char(1, ',') != 0) return -1;
@@ -1490,16 +1458,16 @@ static int collect_issuers_from_path(const char *path, PgpKeyIssuerContext *ctx)
 static int write_issuer_entry(const PgpKeyIssuerContext *ctx, const PgpKeyIssuerEntry *entry) {
     if (ctx->json) {
         if (tool_json_begin_event(1, "pgpkey", "stdout", "issuer") != 0) return -1;
-        if (rt_write_cstr(1, ",\"data\":{\"key_id\":\"") != 0 || write_hex_bytes(1, entry->key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '"') != 0) return -1;
+        if (rt_write_cstr(1, ",\"data\":{\"key_id\":\"") != 0 || tool_write_hex_bytes(1, entry->key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '"') != 0) return -1;
         if (entry->has_fingerprint) {
-            if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0 || write_hex_bytes(1, entry->fingerprint, entry->fingerprint_size) != 0 || rt_write_char(1, '"') != 0) return -1;
+            if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0 || tool_write_hex_bytes(1, entry->fingerprint, entry->fingerprint_size) != 0 || rt_write_char(1, '"') != 0) return -1;
         }
         if (rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) return -1;
         return 0;
     }
-    if (write_hex_bytes(1, entry->key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+    if (tool_write_hex_bytes(1, entry->key_id, PGP_KEY_ID_SIZE) != 0) return -1;
     if (entry->has_fingerprint) {
-        if (rt_write_cstr(1, " ") != 0 || write_hex_bytes(1, entry->fingerprint, entry->fingerprint_size) != 0) return -1;
+        if (rt_write_cstr(1, " ") != 0 || tool_write_hex_bytes(1, entry->fingerprint, entry->fingerprint_size) != 0) return -1;
     }
     return rt_write_char(1, '\n');
 }
@@ -1580,7 +1548,7 @@ static int pgpkey_sql_write_text(int fd, const char *text) {
 
 static int pgpkey_sql_write_hex_value(int fd, const unsigned char *data, size_t size) {
     if (rt_write_char(fd, '\'') != 0) return -1;
-    if (write_hex_bytes(fd, data, size) != 0) return -1;
+    if (tool_write_hex_bytes(fd, data, size) != 0) return -1;
     return rt_write_char(fd, '\'');
 }
 
@@ -1761,7 +1729,7 @@ static int pgpkey_sqs_write_text_value(int fd, const char *text) {
 
 static int pgpkey_sqs_write_hex_value(int fd, const unsigned char *data, size_t size) {
     if (rt_write_uint(fd, (unsigned long long)(size * 2U)) != 0 || rt_write_char(fd, ':') != 0) return -1;
-    return write_hex_bytes(fd, data, size);
+    return tool_write_hex_bytes(fd, data, size);
 }
 
 static int pgpkey_sqs_write_uint_value(int fd, unsigned long long value) {
@@ -2650,9 +2618,9 @@ static int write_generate_json(const PgpKeyGenerateOptions *options, const PgpKe
     if (rt_write_cstr(1, ",\"version\":") != 0 || rt_write_uint(1, options->legacy_v4 ? 4ULL : 6ULL) != 0) return -1;
     if (rt_write_cstr(1, ",\"algorithm\":") != 0 || tool_json_write_string(1, options->legacy_v4 ? "EdDSA legacy" : "Ed25519") != 0) return -1;
     if (rt_write_cstr(1, ",\"curve\":\"Ed25519\",\"fingerprint\":\"") != 0) return -1;
-    if (write_hex_bytes(1, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size) != 0) return -1;
+    if (tool_write_hex_bytes(1, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size) != 0) return -1;
     if (rt_write_cstr(1, "\",\"key_id\":\"") != 0) return -1;
-    if (write_hex_bytes(1, generated->primary_info.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+    if (tool_write_hex_bytes(1, generated->primary_info.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
     if (rt_write_cstr(1, "\",\"user_id\":") != 0 || tool_json_write_string(1, options->user_id) != 0) return -1;
     if (rt_write_cstr(1, ",\"secret_out\":") != 0 || tool_json_write_string(1, options->secret_out) != 0) return -1;
     if (rt_write_cstr(1, ",\"public_out\":") != 0 || tool_json_write_string(1, options->public_out) != 0) return -1;
@@ -2661,9 +2629,9 @@ static int write_generate_json(const PgpKeyGenerateOptions *options, const PgpKe
 }
 
 static int write_generate_text(const PgpKeyGenerateOptions *options, const PgpKeyGeneratedKey *generated) {
-    if (rt_write_cstr(1, "generated: ") != 0 || write_hex_bytes(1, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "generated: ") != 0 || tool_write_hex_bytes(1, generated->primary_info.fingerprint, generated->primary_info.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
     if (rt_write_cstr(1, "profile: ") != 0 || rt_write_line(1, options->legacy_v4 ? "legacy-v4" : "rfc9580") != 0) return -1;
-    if (rt_write_cstr(1, "key-id: ") != 0 || write_hex_bytes(1, generated->primary_info.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "key-id: ") != 0 || tool_write_hex_bytes(1, generated->primary_info.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
     if (rt_write_cstr(1, "secret: ") != 0 || rt_write_line(1, options->secret_out) != 0) return -1;
     if (rt_write_cstr(1, "public: ") != 0 || rt_write_line(1, options->public_out) != 0) return -1;
     if (options->legacy_v4 && rt_write_line(1, "warning: legacy v4 key material is deprecated by RFC 9580") != 0) return -1;

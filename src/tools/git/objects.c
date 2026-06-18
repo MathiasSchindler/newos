@@ -320,7 +320,7 @@ static int git_compare_pack_index_entries(const void *left, const void *right) {
 static int git_buffer_append_u32_be(GitBuffer *buffer, unsigned int value) {
     unsigned char word[4];
 
-    git_write_u32_be(word, value);
+    tool_store_u32_be(word, value);
     return git_buffer_append(buffer, word, sizeof(word));
 }
 
@@ -559,8 +559,8 @@ static int git_parse_pack(const unsigned char *data, size_t size, GitPack *pack)
     if (size < 12U || memcmp(data, "PACK", 4U) != 0) {
         return -1;
     }
-    version = git_read_u32_be_raw(data + 4U);
-    count = git_read_u32_be_raw(data + 8U);
+    version = tool_read_u32_be(data + 4U);
+    count = tool_read_u32_be(data + 8U);
     if (version != 2U && version != 3U) {
         return -1;
     }
@@ -1291,8 +1291,8 @@ static int git_index_write_entry(GitBuffer *buffer, const GitIndexEntry *entry) 
     unsigned short extended_flags = 0U;
 
     rt_memset(header, 0, sizeof(header));
-    git_write_u32_be(header + 24U, entry->mode);
-    git_write_u32_be(header + 36U, (unsigned int)entry->size);
+    tool_store_u32_be(header + 24U, entry->mode);
+    tool_store_u32_be(header + 36U, (unsigned int)entry->size);
     memcpy(header + 40U, entry->oid, CRYPTO_SHA1_DIGEST_SIZE);
     flags = path_length < 0x0fffU ? (unsigned short)path_length : 0x0fffU;
     if (entry->intent_to_add) {
@@ -1339,12 +1339,12 @@ static int git_write_index_file(const GitRepo *repo, GitIndex *index) {
     if (git_buffer_append(&buffer, "DIRC", 4U) != 0) {
         return -1;
     }
-    git_write_u32_be(word, version);
+    tool_store_u32_be(word, version);
     if (git_buffer_append(&buffer, word, 4U) != 0) {
         git_buffer_destroy(&buffer);
         return -1;
     }
-    git_write_u32_be(word, (unsigned int)index->count);
+    tool_store_u32_be(word, (unsigned int)index->count);
     if (git_buffer_append(&buffer, word, 4U) != 0) {
         git_buffer_destroy(&buffer);
         return -1;

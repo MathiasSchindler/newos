@@ -131,6 +131,35 @@ void tool_path_build_temp_prefix(const char *target_path, const char *stem, char
     rt_copy_string(buffer + prefix_length, buffer_size - prefix_length, stem);
 }
 
+int tool_path_append_suffix(const char *path, const char *suffix, char *buffer, size_t buffer_size) {
+    size_t path_length = rt_strlen(path);
+    size_t suffix_length = rt_strlen(suffix);
+
+    if (path_length + suffix_length + 1U > buffer_size) {
+        return -1;
+    }
+    memcpy(buffer, path, path_length);
+    memcpy(buffer + path_length, suffix, suffix_length + 1U);
+    return 0;
+}
+
+int tool_path_replace_suffix_or_append(const char *path, const char *suffix, const char *fallback_suffix, char *buffer, size_t buffer_size) {
+    size_t path_length = rt_strlen(path);
+    size_t suffix_length = rt_strlen(suffix);
+
+    if (path_length > suffix_length && rt_strcmp(path + path_length - suffix_length, suffix) == 0) {
+        size_t output_length = path_length - suffix_length;
+
+        if (output_length + 1U > buffer_size) {
+            return -1;
+        }
+        memcpy(buffer, path, output_length);
+        buffer[output_length] = '\0';
+        return 0;
+    }
+    return tool_path_append_suffix(path, fallback_suffix, buffer, buffer_size);
+}
+
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size) {
     return rt_join_path(dir_path, name, buffer, buffer_size);
 }

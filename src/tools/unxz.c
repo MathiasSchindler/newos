@@ -1,30 +1,10 @@
 #include "archive_util.h"
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define UNXZ_PATH_CAPACITY 1024
 #define UNXZ_BUFFER_SIZE 65536U
-
-static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
-    size_t len = rt_strlen(input_path);
-
-    if (len > 3 && input_path[len - 3] == '.' && input_path[len - 2] == 'x' && input_path[len - 1] == 'z') {
-        if (len - 2 > buffer_size) {
-            return -1;
-        }
-        memcpy(buffer, input_path, len - 3);
-        buffer[len - 3] = '\0';
-        return 0;
-    }
-
-    if (len + 5 > buffer_size) {
-        return -1;
-    }
-
-    memcpy(buffer, input_path, len);
-    memcpy(buffer + len, ".out", 5);
-    return 0;
-}
 
 static int read_vli_from_memory(const unsigned char *buffer, size_t buffer_size, size_t *offset, unsigned long long *value_out) {
     unsigned long long value = 0;
@@ -72,7 +52,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (build_output_path(argv[1], output_path, sizeof(output_path)) != 0) {
+    if (tool_path_replace_suffix_or_append(argv[1], ".xz", ".out", output_path, sizeof(output_path)) != 0) {
         rt_write_line(2, "unxz: output path too long");
         return 1;
     }

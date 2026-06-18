@@ -81,6 +81,16 @@ int tool_opt_require_value(ToolOptState *s) {
     return 0;
 }
 
+int tool_should_print_file_header(int verbose, int quiet, int path_count) {
+    if (verbose) {
+        return 1;
+    }
+    if (quiet) {
+        return 0;
+    }
+    return path_count > 1;
+}
+
 int tool_starts_with(const char *text, const char *prefix) {
     size_t index = 0U;
 

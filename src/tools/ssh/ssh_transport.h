@@ -10,6 +10,7 @@
 #include "platform.h"
 #include "runtime.h"
 #include "ssh_core.h"
+#include "tool_util.h"
 
 #include <stddef.h>
 
@@ -44,8 +45,6 @@ typedef struct {
 
 int ssh_write_all(int fd, const void *buffer, size_t count);
 int ssh_read_exact(int fd, void *buffer, size_t count);
-void ssh_store_be32(unsigned char out[4], unsigned int value);
-unsigned int ssh_read_be32(const unsigned char in[4]);
 int ssh_copy_view_text(const SshStringView *view, char *buffer, size_t buffer_size);
 int ssh_view_equals_text(const SshStringView *view, const char *text);
 int ssh_find_text_span(const char *text, size_t text_len, const char *needle, size_t *pos_out);

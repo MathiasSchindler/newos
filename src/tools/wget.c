@@ -25,73 +25,28 @@ typedef struct {
     int output_to_stdout;
 } WgetOptions;
 
-typedef struct {
-    int use_tls;
-    int socket_fd;
-    PlatformTlsClient tls;
-} WgetConnection;
+typedef ToolHttpConnection WgetConnection;
 
 static int open_output_for_url(const WgetOptions *options, const WgetUrl *url, char *path_out, size_t path_out_size, int *fd_out);
 
-static unsigned int default_port_for_scheme(int scheme) {
-    return scheme == WGET_SCHEME_HTTPS ? 443U : 80U;
-}
-
 static int wget_connect(const WgetUrl *url, WgetConnection *connection) {
-    rt_memset(connection, 0, sizeof(*connection));
-    connection->socket_fd = -1;
-    connection->use_tls = url->scheme == WGET_SCHEME_HTTPS;
-
-    if (connection->use_tls) {
-        if (platform_tls_connect(&connection->tls, url->host, url->port) != 0) {
-            return -1;
-        }
-        connection->socket_fd = connection->tls.socket_fd;
-        return 0;
-    }
-
-    return platform_connect_tcp(url->host, url->port, &connection->socket_fd);
+    return tool_http_connection_connect(connection, url->host, url->port, url->scheme == WGET_SCHEME_HTTPS);
 }
 
 static int wget_connection_fd(const WgetConnection *connection) {
-    return connection->use_tls ? connection->tls.socket_fd : connection->socket_fd;
+    return tool_http_connection_fd(connection);
 }
 
 static long wget_connection_read(WgetConnection *connection, void *buffer, size_t count) {
-    if (connection->use_tls) {
-        return platform_tls_read(&connection->tls, buffer, count);
-    }
-    return platform_read(connection->socket_fd, buffer, count);
+    return tool_http_connection_read(connection, buffer, count);
 }
 
 static int wget_connection_write_all(WgetConnection *connection, const void *buffer, size_t count) {
-    const unsigned char *bytes = (const unsigned char *)buffer;
-    size_t written = 0U;
-
-    while (written < count) {
-        long result;
-
-        if (connection->use_tls) {
-            result = platform_tls_write(&connection->tls, bytes + written, count - written);
-        } else {
-            result = platform_write(connection->socket_fd, bytes + written, count - written);
-        }
-        if (result <= 0) {
-            return -1;
-        }
-        written += (size_t)result;
-    }
-
-    return 0;
+    return tool_http_connection_write_all(connection, buffer, count);
 }
 
 static void wget_connection_close(WgetConnection *connection) {
-    if (connection->use_tls) {
-        platform_tls_close(&connection->tls);
-    } else if (connection->socket_fd >= 0) {
-        (void)platform_close(connection->socket_fd);
-    }
-    connection->socket_fd = -1;
+    tool_http_connection_close(connection);
 }
 
 
@@ -604,7 +559,7 @@ static int fetch_http_body(
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->scheme == WGET_SCHEME_HTTPS ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->host);
-    if (url->port != default_port_for_scheme(url->scheme)) {
+    if (url->port != tool_http_default_port(url->scheme == WGET_SCHEME_HTTPS)) {
         char port_text[16];
         rt_unsigned_to_string(url->port, port_text, sizeof(port_text));
         request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');

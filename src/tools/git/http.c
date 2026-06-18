@@ -1,7 +1,3 @@
-static unsigned int git_default_port_for_scheme(int scheme) {
-    return scheme == GIT_SCHEME_HTTPS ? 443U : 80U;
-}
-
 static int git_parse_http_url(const char *text, unsigned int default_port, int scheme, GitUrl *url_out) {
     size_t index = 0U;
     size_t host_start;
@@ -79,44 +75,19 @@ static int git_url_is_http(const char *text) {
 }
 
 static int git_http_connect(const GitUrl *url, GitHttpConnection *connection) {
-    rt_memset(connection, 0, sizeof(*connection));
-    connection->socket_fd = -1;
-    connection->use_tls = url->scheme == GIT_SCHEME_HTTPS;
-    if (connection->use_tls) {
-        if (platform_tls_connect(&connection->tls, url->host, url->port) != 0) {
-            return -1;
-        }
-        connection->socket_fd = connection->tls.socket_fd;
-        return 0;
-    }
-    return platform_connect_tcp(url->host, url->port, &connection->socket_fd);
+    return tool_http_connection_connect(connection, url->host, url->port, url->scheme == GIT_SCHEME_HTTPS);
 }
 
 static long git_http_read(GitHttpConnection *connection, void *buffer, size_t count) {
-    return connection->use_tls ? platform_tls_read(&connection->tls, buffer, count) : platform_read(connection->socket_fd, buffer, count);
+    return tool_http_connection_read(connection, buffer, count);
 }
 
 static int git_http_write_all(GitHttpConnection *connection, const void *data, size_t size) {
-    const unsigned char *bytes = (const unsigned char *)data;
-    size_t written = 0U;
-
-    while (written < size) {
-        long result = connection->use_tls ? platform_tls_write(&connection->tls, bytes + written, size - written) : platform_write(connection->socket_fd, bytes + written, size - written);
-        if (result <= 0) {
-            return -1;
-        }
-        written += (size_t)result;
-    }
-    return 0;
+    return tool_http_connection_write_all(connection, data, size);
 }
 
 static void git_http_close(GitHttpConnection *connection) {
-    if (connection->use_tls) {
-        platform_tls_close(&connection->tls);
-    } else if (connection->socket_fd >= 0) {
-        (void)platform_close(connection->socket_fd);
-    }
-    connection->socket_fd = -1;
+    tool_http_connection_close(connection);
 }
 
 static int git_http_status_code(const unsigned char *headers, size_t header_size) {
@@ -531,7 +502,7 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, " HTTP/1.1\r\nHost: ");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->host);
-    if (url->port != git_default_port_for_scheme(url->scheme)) {
+    if (url->port != tool_http_default_port(url->scheme == GIT_SCHEME_HTTPS)) {
         rt_unsigned_to_string(url->port, length_text, sizeof(length_text));
         request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
         request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, length_text);

@@ -94,6 +94,19 @@ typedef enum {
     TOOL_COLOR_ALWAYS = 2
 } ToolColorMode;
 
+typedef struct {
+    int use_tls;
+    int socket_fd;
+    PlatformTlsClient tls;
+} ToolHttpConnection;
+
+int tool_http_connection_connect(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls);
+unsigned int tool_http_default_port(int use_tls);
+int tool_http_connection_fd(const ToolHttpConnection *connection);
+long tool_http_connection_read(ToolHttpConnection *connection, void *buffer, size_t count);
+int tool_http_connection_write_all(ToolHttpConnection *connection, const void *buffer, size_t count);
+void tool_http_connection_close(ToolHttpConnection *connection);
+
 typedef enum {
     TOOL_STYLE_PLAIN = 0,
     TOOL_STYLE_BOLD,
@@ -162,6 +175,7 @@ void tool_opt_init(ToolOptState *s, int argc, char **argv,
                    const char *prog, const char *usage_suffix);
 int  tool_opt_next(ToolOptState *s);
 int  tool_opt_require_value(ToolOptState *s);
+int tool_should_print_file_header(int verbose, int quiet, int path_count);
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what);
 int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_name, const char *what);
 int tool_parse_size_value(const char *text, unsigned long long *value_out);
@@ -223,6 +237,7 @@ int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io);
 int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size);
 int tool_discard_input_bytes(int fd, unsigned long long count);
 void tool_write_hex_value(int fd, unsigned long long value);
+int tool_write_hex_bytes(int fd, const unsigned char *bytes, size_t size);
 void tool_write_padding(int fd, size_t count);
 unsigned int tool_pager_page_lines(unsigned int default_lines);
 int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch);
@@ -237,6 +252,8 @@ void tool_path_dirname(const char *path, char *buffer, size_t buffer_size);
 void tool_path_copy_trimmed(char *buffer, size_t buffer_size, const char *path);
 int tool_path_trimmed_equal(const char *left, const char *right);
 void tool_path_build_temp_prefix(const char *target_path, const char *stem, char *buffer, size_t buffer_size);
+int tool_path_append_suffix(const char *path, const char *suffix, char *buffer, size_t buffer_size);
+int tool_path_replace_suffix_or_append(const char *path, const char *suffix, const char *fallback_suffix, char *buffer, size_t buffer_size);
 void tool_format_size(unsigned long long value, int human_readable, char *buffer, size_t buffer_size);
 int tool_join_path(const char *dir_path, const char *name, char *buffer, size_t buffer_size);
 int tool_build_sibling_program_path(const char *argv0, const char *program_name, char *buffer, size_t buffer_size);

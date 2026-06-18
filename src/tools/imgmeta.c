@@ -211,16 +211,6 @@ static void write_text_ref(int fd, ImgmetaTextRef ref) {
     (void)rt_write_all(fd, ref.text, ref.size);
 }
 
-static void write_hex_bytes(int fd, const unsigned char *bytes, size_t size) {
-    static const char digits[] = "0123456789abcdef";
-    size_t index;
-
-    for (index = 0U; index < size; ++index) {
-        rt_write_char(fd, digits[(bytes[index] >> 4U) & 0x0fU]);
-        rt_write_char(fd, digits[bytes[index] & 0x0fU]);
-    }
-}
-
 static void write_c2pa_assertion_label(ImgmetaTextRef url) {
     size_t index = url.size;
 
@@ -362,7 +352,7 @@ static void write_hash_ref_line(const char *prefix, ImgmetaTextRef url, ImgmetaB
     }
     if (hash.bytes != 0) {
         rt_write_cstr(1, " sha256=");
-        write_hex_bytes(1, hash.bytes, hash.size);
+        tool_write_hex_bytes(1, hash.bytes, hash.size);
     }
     rt_write_char(1, '\n');
 }
@@ -455,7 +445,7 @@ static void imgmeta_print_claim_assertion(ImgmetaCborReader *reader) {
         write_c2pa_assertion_label(url);
         if (hash.bytes != 0) {
             rt_write_cstr(1, " sha256=");
-            write_hex_bytes(1, hash.bytes, hash.size);
+            tool_write_hex_bytes(1, hash.bytes, hash.size);
         }
         rt_write_char(1, '\n');
     }
@@ -740,7 +730,7 @@ static void imgmeta_print_hash_assertion(unsigned int assertion_index, ImgmetaTe
     }
     if (hash.bytes != 0) {
         rt_write_cstr(1, "    hash: ");
-        write_hex_bytes(1, hash.bytes, hash.size);
+        tool_write_hex_bytes(1, hash.bytes, hash.size);
         rt_write_char(1, '\n');
     }
     rt_write_cstr(1, "    exclusions: ");

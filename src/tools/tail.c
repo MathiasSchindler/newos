@@ -441,16 +441,6 @@ static int print_stream_result(const char *storage, size_t used, const TailOptio
     return print_tail_lines(storage, used, options->count);
 }
 
-static int should_print_header(const TailOptions *options, int path_count) {
-    if (options->verbose) {
-        return 1;
-    }
-    if (options->quiet) {
-        return 0;
-    }
-    return path_count > 1;
-}
-
 static void print_header_line(const char *path, int separate) {
     if (separate) {
         rt_write_char(1, '\n');
@@ -564,7 +554,7 @@ int main(int argc, char **argv) {
     }
 
     path_count = argc - arg_index;
-    show_header = should_print_header(&options, path_count);
+    show_header = tool_should_print_file_header(options.verbose, options.quiet, path_count);
 
     if (path_count <= 0) {
         if (options.style == TAIL_COUNT_FROM_START) {

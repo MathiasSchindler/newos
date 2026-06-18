@@ -79,10 +79,6 @@ static void print_usage(void) {
     tool_write_usage("pgpquery", PGPQUERY_USAGE);
 }
 
-static unsigned int default_port_for_scheme(int scheme) {
-    return scheme == PGPQUERY_SCHEME_HTTPS ? 443U : 80U;
-}
-
 static int parse_http_url_tail(const char *text, unsigned int default_port, int scheme, PgpQueryUrl *url_out) {
     size_t index = 0U;
     size_t host_start = 0U;
@@ -316,7 +312,7 @@ static int http_fetch_to_memory(const char *url_text, const PgpQueryOptions *opt
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url.path[0] != '\0' ? url.path : "/");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, " HTTP/1.1\r\nHost: ");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url.host);
-    if (url.port != default_port_for_scheme(url.scheme)) {
+    if (url.port != tool_http_default_port(url.scheme == PGPQUERY_SCHEME_HTTPS)) {
         char port_text[16];
         rt_unsigned_to_string(url.port, port_text, sizeof(port_text));
         request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
@@ -597,17 +593,6 @@ static int build_custom_url(const PgpQueryOptions *options, const char *selector
     return 0;
 }
 
-static int write_hex_bytes(int fd, const unsigned char *data, size_t size) {
-    static const char hex[] = "0123456789abcdef";
-    size_t index;
-
-    for (index = 0U; index < size; ++index) {
-        if (rt_write_char(fd, hex[(data[index] >> 4U) & 0x0fU]) != 0) return -1;
-        if (rt_write_char(fd, hex[data[index] & 0x0fU]) != 0) return -1;
-    }
-    return 0;
-}
-
 static int print_certificate_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
     PgpQueryCertificateContext *ctx = (PgpQueryCertificateContext *)ctx_ptr;
     size_t uid_index;
@@ -618,8 +603,8 @@ static int print_certificate_callback(const PgpCertificateInfo *certificate, voi
         if (rt_write_cstr(1, ",\"data\":{") != 0) return -1;
         if (rt_write_cstr(1, "\"server\":") != 0 || tool_json_write_string(1, ctx->server_name) != 0) return -1;
         if (rt_write_cstr(1, ",\"selector\":") != 0 || tool_json_write_string(1, ctx->selector) != 0) return -1;
-        if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0 || write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0) return -1;
-        if (rt_write_cstr(1, "\",\"key_id\":\"") != 0 || write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
+        if (rt_write_cstr(1, ",\"fingerprint\":\"") != 0 || tool_write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0) return -1;
+        if (rt_write_cstr(1, "\",\"key_id\":\"") != 0 || tool_write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0) return -1;
         if (rt_write_cstr(1, "\",\"user_ids\":[") != 0) return -1;
         for (uid_index = 0U; uid_index < certificate->user_id_count; ++uid_index) {
             if (uid_index != 0U && rt_write_char(1, ',') != 0) return -1;
@@ -630,8 +615,8 @@ static int print_certificate_callback(const PgpCertificateInfo *certificate, voi
     }
     if (rt_write_cstr(1, "server: ") != 0 || rt_write_line(1, ctx->server_name) != 0) return -1;
     if (rt_write_cstr(1, "selector: ") != 0 || rt_write_line(1, ctx->selector) != 0) return -1;
-    if (rt_write_cstr(1, "fingerprint: ") != 0 || write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
-    if (rt_write_cstr(1, "key-id: ") != 0 || write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "fingerprint: ") != 0 || tool_write_hex_bytes(1, certificate->primary.fingerprint, certificate->primary.fingerprint_size) != 0 || rt_write_char(1, '\n') != 0) return -1;
+    if (rt_write_cstr(1, "key-id: ") != 0 || tool_write_hex_bytes(1, certificate->primary.key_id, PGP_KEY_ID_SIZE) != 0 || rt_write_char(1, '\n') != 0) return -1;
     for (uid_index = 0U; uid_index < certificate->user_id_count; ++uid_index) {
         if (rt_write_cstr(1, "uid: ") != 0 || tool_write_visible_line(1, certificate->user_ids[uid_index]) != 0) return -1;
     }
@@ -721,7 +706,7 @@ static int public_certificate_body_is_valid(const unsigned char *body, size_t bo
 }
 
 static int write_fingerprint_text(int fd, const PgpPublicKeyInfo *key) {
-    return write_hex_bytes(fd, key->fingerprint, key->fingerprint_size);
+    return tool_write_hex_bytes(fd, key->fingerprint, key->fingerprint_size);
 }
 
 static int keyring_contains_key(const char *keyring_path, const PgpPublicKeyInfo *key) {

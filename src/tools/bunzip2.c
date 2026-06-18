@@ -54,27 +54,6 @@ static int bunzip2_input_ensure(Bunzip2Input *input) {
     return input->available == 0 ? -1 : 0;
 }
 
-static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
-    size_t len = rt_strlen(input_path);
-
-    if (len > 4 && input_path[len - 4] == '.' && input_path[len - 3] == 'b' && input_path[len - 2] == 'z' && input_path[len - 1] == '2') {
-        if (len - 3 > buffer_size) {
-            return -1;
-        }
-        memcpy(buffer, input_path, len - 4);
-        buffer[len - 4] = '\0';
-        return 0;
-    }
-
-    if (len + 5 > buffer_size) {
-        return -1;
-    }
-
-    memcpy(buffer, input_path, len);
-    memcpy(buffer + len, ".out", 5);
-    return 0;
-}
-
 int main(int argc, char **argv) {
     unsigned char header[12];
     unsigned char buffer[BUNZIP2_IO_BUFFER];
@@ -96,7 +75,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (build_output_path(argv[1], output_path, sizeof(output_path)) != 0) {
+    if (tool_path_replace_suffix_or_append(argv[1], ".bz2", ".out", output_path, sizeof(output_path)) != 0) {
         rt_write_line(2, "bunzip2: output path too long");
         return 1;
     }

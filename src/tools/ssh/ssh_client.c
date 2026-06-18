@@ -90,20 +90,6 @@ static int ssh_discard_exact(int fd, size_t count) {
     return 0;
 }
 
-static void ssh_store_be32(unsigned char out[4], unsigned int value) {
-    out[0] = (unsigned char)(value >> 24);
-    out[1] = (unsigned char)(value >> 16);
-    out[2] = (unsigned char)(value >> 8);
-    out[3] = (unsigned char)value;
-}
-
-static unsigned int ssh_read_be32(const unsigned char in[4]) {
-    return ((unsigned int)in[0] << 24) |
-           ((unsigned int)in[1] << 16) |
-           ((unsigned int)in[2] << 8) |
-           (unsigned int)in[3];
-}
-
 static int ssh_copy_view_text(const SshStringView *view, char *buffer, size_t buffer_size) {
     size_t i;
 
@@ -556,7 +542,7 @@ static int ssh_send_packet(int fd, const unsigned char *payload, size_t payload_
         return -1;
     }
 
-    ssh_store_be32(packet, packet_len);
+    tool_store_u32_be(packet, packet_len);
     packet[4] = (unsigned char)padding_len;
     if (payload_len != 0U) {
         memcpy(packet + 5U, payload, payload_len);
@@ -585,7 +571,7 @@ static int ssh_read_packet(
         return -1;
     }
 
-    packet_len = ssh_read_be32(header);
+    packet_len = tool_read_u32_be(header);
     padding_len = header[4];
     if (packet_len > 35000U || padding_len < 4U || packet_len < (unsigned int)padding_len + 1U) {
         return -1;
@@ -622,7 +608,7 @@ static int ssh_send_encrypted_packet(int fd, const unsigned char key[64], unsign
         return -1;
     }
 
-    ssh_store_be32(packet, packet_len);
+    tool_store_u32_be(packet, packet_len);
     packet[4] = (unsigned char)padding_len;
     if (payload_len != 0U) {
         memcpy(packet + 5U, payload, payload_len);
@@ -662,7 +648,7 @@ static int ssh_read_encrypted_packet(
     }
 
     crypto_ssh_chachapoly_decrypt_length(key, seqnr, packet, plain_len);
-    packet_len = ssh_read_be32(plain_len);
+    packet_len = tool_read_u32_be(plain_len);
     if (packet_len > 35000U || packet_len < 5U || packet_len + 4U > sizeof(packet)) {
         return -1;
     }

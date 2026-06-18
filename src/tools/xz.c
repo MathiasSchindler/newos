@@ -1,22 +1,11 @@
 #include "archive_util.h"
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define XZ_PATH_CAPACITY 1024
 #define XZ_CHUNK_SIZE 65536U
 #define XZ_CHUNK_HEADER_SIZE 3U
-
-static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
-    size_t len = rt_strlen(input_path);
-
-    if (len + 4 > buffer_size) {
-        return -1;
-    }
-
-    memcpy(buffer, input_path, len);
-    memcpy(buffer + len, ".xz", 4);
-    return 0;
-}
 
 static size_t append_vli(unsigned char *buffer, size_t offset, unsigned long long value) {
     do {
@@ -53,7 +42,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (build_output_path(argv[1], output_path, sizeof(output_path)) != 0) {
+    if (tool_path_append_suffix(argv[1], ".xz", output_path, sizeof(output_path)) != 0) {
         rt_write_line(2, "xz: output path too long");
         return 1;
     }

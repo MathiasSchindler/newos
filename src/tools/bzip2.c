@@ -7,18 +7,6 @@
 #define BZIP_IO_BUFFER 65536U
 #define BZIP_PACKET_LIMIT 128
 
-static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
-    size_t len = rt_strlen(input_path);
-
-    if (len + 5 > buffer_size) {
-        return -1;
-    }
-
-    memcpy(buffer, input_path, len);
-    memcpy(buffer + len, ".bz2", 5);
-    return 0;
-}
-
 static int flush_literal_packet(ToolOutputBuffer *output, unsigned char *literal, size_t *literal_len) {
     unsigned char packet[1 + BZIP_PACKET_LIMIT];
 
@@ -151,7 +139,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (build_output_path(argv[1], output_path, sizeof(output_path)) != 0) {
+    if (tool_path_append_suffix(argv[1], ".bz2", output_path, sizeof(output_path)) != 0) {
         rt_write_line(2, "bzip2: output path too long");
         return 1;
     }

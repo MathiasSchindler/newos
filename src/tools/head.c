@@ -413,16 +413,6 @@ static int print_stream(int fd, const HeadOptions *options) {
     return print_head_excluding_lines(fd, options->count);
 }
 
-static int should_print_header(const HeadOptions *options, int path_count) {
-    if (options->verbose) {
-        return 1;
-    }
-    if (options->quiet) {
-        return 0;
-    }
-    return path_count > 1;
-}
-
 int main(int argc, char **argv) {
     HeadOptions options;
     int arg_index = 1;
@@ -437,7 +427,7 @@ int main(int argc, char **argv) {
     }
 
     path_count = argc - arg_index;
-    show_header = should_print_header(&options, path_count);
+    show_header = tool_should_print_file_header(options.verbose, options.quiet, path_count);
 
     if (path_count <= 0) {
         return print_stream(0, &options) == 0 ? 0 : 1;

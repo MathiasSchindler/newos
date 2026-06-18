@@ -106,6 +106,7 @@ int pgp_write_signature_armor(int fd, const unsigned char *data, size_t size);
 int pgp_write_new_packet_header(int fd, unsigned int tag);
 int pgp_write_packet_length(int fd, size_t length);
 int pgp_write_partial_body_length(int fd, size_t length);
+int pgp_write_date(int fd, unsigned long long epoch);
 void pgp_packet_reader_init(PgpPacketReader *reader, const unsigned char *data, size_t size);
 int pgp_packet_reader_next(PgpPacketReader *reader, PgpPacket *packet_out, int *has_packet_out, char *error, size_t error_size);
 int pgp_parse_public_key_packet(PgpPublicKeyInfo *info, unsigned int tag, const unsigned char *body, size_t body_size, char *error, size_t error_size);

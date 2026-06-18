@@ -32,29 +32,6 @@ static int skip_cstring(int fd) {
     return 0;
 }
 
-
-static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
-    size_t len = rt_strlen(input_path);
-
-    if (len > 3 && input_path[len - 3] == '.' && input_path[len - 2] == 'g' && input_path[len - 1] == 'z') {
-        if (len - 2 > buffer_size) {
-            return -1;
-        }
-        memcpy(buffer, input_path, len - 3);
-        buffer[len - 3] = '\0';
-        return 0;
-    }
-
-    if (len + 5 >= buffer_size) {
-        return -1;
-    }
-
-    memcpy(buffer, input_path, len);
-    memcpy(buffer + len, ".out", 5);
-    return 0;
-}
-
-
 static int decompress_stream(int input_fd, int output_fd) {
     unsigned char header[10];
     unsigned char trailer[8];
@@ -153,7 +130,7 @@ static int process_path(const char *input_path, int to_stdout, int force_overwri
     if (to_stdout || input_path == 0 || tool_path_is_dash(input_path)) {
         output_fd = 1;
     } else {
-        if (build_output_path(input_path, output_path, sizeof(output_path)) != 0) {
+        if (tool_path_replace_suffix_or_append(input_path, ".gz", ".out", output_path, sizeof(output_path)) != 0) {
             tool_close_input(input_fd, close_input);
             rt_write_line(2, "gunzip: output path too long");
             return 1;

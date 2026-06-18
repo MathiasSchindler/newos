@@ -7,21 +7,6 @@
 #define GZIP_BLOCK_PAYLOAD_OFFSET 5U
 #define GZIP_PATH_CAPACITY 1024
 
-static int build_output_path(const char *input_path, char *buffer, size_t buffer_size) {
-    size_t len = rt_strlen(input_path);
-
-    if (len + 4 >= buffer_size) {
-        return -1;
-    }
-
-    memcpy(buffer, input_path, len);
-    buffer[len] = '.';
-    buffer[len + 1] = 'g';
-    buffer[len + 2] = 'z';
-    buffer[len + 3] = '\0';
-    return 0;
-}
-
 static int write_stored_block(int fd, unsigned char *block, unsigned int len, int is_last) {
     unsigned int nlen = 0xffffU - len;
 
@@ -121,7 +106,7 @@ static int process_path(const char *input_path, int to_stdout, int force_overwri
     if (to_stdout || input_path == 0 || tool_path_is_dash(input_path)) {
         output_fd = 1;
     } else {
-        if (build_output_path(input_path, output_path, sizeof(output_path)) != 0) {
+        if (tool_path_append_suffix(input_path, ".gz", output_path, sizeof(output_path)) != 0) {
             tool_close_input(input_fd, close_input);
             rt_write_line(2, "gzip: output path too long");
             return 1;

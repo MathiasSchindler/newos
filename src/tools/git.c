@@ -172,11 +172,7 @@ typedef struct {
     char path[1024];
 } GitUrl;
 
-typedef struct {
-    int use_tls;
-    int socket_fd;
-    PlatformTlsClient tls;
-} GitHttpConnection;
+typedef ToolHttpConnection GitHttpConnection;
 
 typedef struct {
     char *name;
@@ -414,13 +410,6 @@ static int git_parse_oid_hex(const char *text, unsigned char oid[CRYPTO_SHA1_DIG
 
 static int git_oid_equal(const unsigned char left[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char right[CRYPTO_SHA1_DIGEST_SIZE]) {
     return memcmp(left, right, CRYPTO_SHA1_DIGEST_SIZE) == 0;
-}
-
-static void git_write_u32_be(unsigned char *out, unsigned int value) {
-    out[0] = (unsigned char)(value >> 24);
-    out[1] = (unsigned char)(value >> 16);
-    out[2] = (unsigned char)(value >> 8);
-    out[3] = (unsigned char)value;
 }
 
 static int git_write_all_file(const char *path, const void *data, size_t size, unsigned int mode) {

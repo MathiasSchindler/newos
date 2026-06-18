@@ -2,11 +2,26 @@
 #include "crypto/sha1.h"
 #include "crypto/sha256.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define PGP_ARMOR_CRC24_INIT 0xb704ceU
 #define PGP_ARMOR_CRC24_POLY 0x1864cfbU
 
 static const char pgp_base64_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+int pgp_write_date(int fd, unsigned long long epoch) {
+    long long days = (long long)(epoch / 86400ULL);
+    int year;
+    unsigned int month;
+    unsigned int day;
+
+    tool_civil_from_days(days, &year, &month, &day);
+    if (rt_write_uint(fd, (unsigned long long)year) != 0 || rt_write_char(fd, '-') != 0) return -1;
+    if (month < 10U && rt_write_char(fd, '0') != 0) return -1;
+    if (rt_write_uint(fd, month) != 0 || rt_write_char(fd, '-') != 0) return -1;
+    if (day < 10U && rt_write_char(fd, '0') != 0) return -1;
+    return rt_write_uint(fd, day);
+}
 
 static void pgp_set_error(char *error, size_t error_size, const char *message) {
     if (error != 0 && error_size > 0U) {
