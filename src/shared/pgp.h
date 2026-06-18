@@ -1,6 +1,8 @@
 #ifndef NEWOS_PGP_H
 #define NEWOS_PGP_H
 
+#include "tool_util.h"
+
 #include <stddef.h>
 
 #define PGP_FINGERPRINT_MAX_SIZE 32U
@@ -95,11 +97,7 @@ typedef struct {
     size_t body_size;
 } PgpPacket;
 
-typedef struct {
-    unsigned char *data;
-    size_t size;
-    size_t capacity;
-} PgpBuffer;
+typedef ToolByteBuffer PgpBuffer;
 
 typedef int (*PgpCertificateCallback)(const PgpCertificateInfo *certificate, void *ctx);
 

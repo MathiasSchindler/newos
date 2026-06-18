@@ -922,33 +922,8 @@ static int pdf_decode_stream(const unsigned char *file_data, size_t file_size, c
     return pdf_inflate_stream(file_data + content_start, content_end - content_start, dict, dict_size, stream);
 }
 
-static int pdf_buffer_reserve_local(PdfBuffer *buffer, size_t needed) {
-    size_t next_capacity;
-    unsigned char *next;
-
-    if (needed <= buffer->capacity) return 0;
-    next_capacity = buffer->capacity == 0U ? 4096U : buffer->capacity;
-    while (next_capacity < needed) {
-        size_t grown = next_capacity * 2U;
-        if (grown <= next_capacity) return -1;
-        next_capacity = grown;
-    }
-    next = (unsigned char *)rt_realloc(buffer->data, next_capacity);
-    if (next == 0) return -1;
-    buffer->data = next;
-    buffer->capacity = next_capacity;
-    return 0;
-}
-
 static int pdf_buffer_append_local(PdfBuffer *buffer, const unsigned char *data, size_t size) {
-    size_t index;
-
-    if (size == 0U) return 0;
-    if (buffer->size > (size_t)-1 - size) return -1;
-    if (pdf_buffer_reserve_local(buffer, buffer->size + size) != 0) return -1;
-    for (index = 0U; index < size; ++index) buffer->data[buffer->size + index] = data[index];
-    buffer->size += size;
-    return 0;
+    return tool_byte_buffer_append(buffer, data, size);
 }
 
 int pdf_object_stream_data(const PdfDocument *document, const PdfObjectSpan *object, int decode, PdfBuffer *output) {

@@ -14,11 +14,7 @@ typedef struct {
     char path[1536];
 } WtfUrl;
 
-typedef struct {
-    char *data;
-    size_t size;
-    size_t capacity;
-} WtfBuffer;
+typedef ToolByteBuffer WtfBuffer;
 
 typedef struct {
     const char *base_url;
@@ -87,44 +83,6 @@ static void trim_ascii(char *text) {
     }
     text[out] = '\0';
 }
-
-static void buffer_init(WtfBuffer *buffer) {
-    rt_memset(buffer, 0, sizeof(*buffer));
-}
-
-static void buffer_free(WtfBuffer *buffer) {
-    rt_free(buffer->data);
-    buffer_init(buffer);
-}
-
-static int buffer_reserve(WtfBuffer *buffer, size_t extra) {
-    size_t needed = buffer->size + extra;
-    if (needed < buffer->size) return -1;
-    if (needed + 1U > buffer->capacity) {
-        size_t next = buffer->capacity == 0U ? WTF_BUFFER_CHUNK : buffer->capacity;
-        char *resized;
-        while (next < needed + 1U) {
-            size_t doubled = next * 2U;
-            if (doubled <= next) return -1;
-            next = doubled;
-        }
-        resized = (char *)rt_realloc(buffer->data, next);
-        if (resized == 0) return -1;
-        buffer->data = resized;
-        buffer->capacity = next;
-    }
-    return 0;
-}
-
-static int buffer_append(WtfBuffer *buffer, const char *data, size_t size) {
-    if (buffer_reserve(buffer, size) != 0) return -1;
-    if (size > 0U) memcpy(buffer->data + buffer->size, data, size);
-    buffer->size += size;
-    buffer->data[buffer->size] = '\0';
-    return 0;
-}
-
-
 
 static int parse_http_url(const char *text, WtfUrl *url) {
     size_t index = 0U;
@@ -372,7 +330,7 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
     redirect[0] = '\0';
     rt_memset(&tls, 0, sizeof(tls));
     tls.socket_fd = -1;
-    buffer_init(&response);
+    tool_byte_buffer_init(&response);
     if (use_tls) {
         if (platform_tls_connect(&tls, url->host, url->port) != 0) {
             write_tls_error("tls connect", request_url);
@@ -407,12 +365,12 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
             goto done;
         }
         if (bytes_read == 0) break;
-        if (buffer_append(&response, chunk, (size_t)bytes_read) != 0 || response.size > 4U * 1024U * 1024U) goto done;
+        if (tool_byte_buffer_append_text(&response, chunk, (size_t)bytes_read) != 0 || response.size > 4U * 1024U * 1024U) goto done;
         if (!parsed_headers) {
-            if (tool_find_http_header_end(response.data, response.size, &body_offset) == 0) {
+            if (tool_find_http_header_end((const char *)response.data, response.size, &body_offset) == 0) {
                 if (body_offset > WTF_HEADER_LIMIT) goto done;
                 response.data[body_offset - 1U] = '\0';
-                parse_headers(response.data, &status, redirect, redirect_size, &content_length, &has_content_length);
+                parse_headers((const char *)response.data, &status, redirect, redirect_size, &content_length, &has_content_length);
                 response.data[body_offset - 1U] = '\n';
                 parsed_headers = 1;
                 if (status >= 300 && status < 400 && redirect[0] != '\0') {
@@ -429,11 +387,11 @@ static int fetch_http(const WtfUrl *url, const char *request_url, unsigned long 
     if (!parsed_headers || body_offset > response.size) goto done;
     body_size = response.size - body_offset;
     if (has_content_length && body_size > content_length) body_size = content_length;
-    result = buffer_append(body, response.data + body_offset, body_size);
+    result = tool_byte_buffer_append_text(body, (const char *)response.data + body_offset, body_size);
 done:
     if (use_tls && tls_connected) platform_tls_close(&tls);
     else if (fd >= 0) (void)platform_close(fd);
-    buffer_free(&response);
+    tool_byte_buffer_free(&response);
     return result;
 }
 
@@ -926,30 +884,30 @@ int main(int argc, char **argv) {
         tool_write_error("wtf", "no output fields selected", 0);
         return 1;
     }
-    buffer_init(&body);
+    tool_byte_buffer_init(&body);
     result = fetch_http(&url, request_url, options.timeout_ms, &body, redirect, sizeof(redirect));
     if (result == 1 && tool_starts_with(redirect, "https://")) {
         tool_write_error("wtf", "redirects are not yet followed for ", redirect);
-        buffer_free(&body);
+        tool_byte_buffer_free(&body);
         return 1;
     }
     if (result != 0) {
         tool_write_error("wtf", "request failed for ", request_url);
-        buffer_free(&body);
+        tool_byte_buffer_free(&body);
         return 1;
     }
-    if (parse_summary(body.data, &summary) != 0) {
+    if (parse_summary((const char *)body.data, &summary) != 0) {
         tool_write_error("wtf", "could not parse summary for ", term);
-        buffer_free(&body);
+        tool_byte_buffer_free(&body);
         return 1;
     }
     if (summary.missing) {
         tool_write_error("wtf", "no Wikipedia summary for ", term);
-        buffer_free(&body);
+        tool_byte_buffer_free(&body);
         return 1;
     }
     if (tool_json_is_enabled()) print_json_summary(term, request_url, &summary, &options);
     else print_summary(&summary, &options);
-    buffer_free(&body);
+    tool_byte_buffer_free(&body);
     return 0;
 }

@@ -135,6 +135,84 @@ void tool_write_styled(int fd, int mode, int style, const char *text) {
     }
 }
 
+void tool_byte_buffer_init(ToolByteBuffer *buffer) {
+    if (buffer != 0) rt_memset(buffer, 0, sizeof(*buffer));
+}
+
+void tool_byte_buffer_free(ToolByteBuffer *buffer) {
+    if (buffer == 0) return;
+    rt_free(buffer->data);
+    tool_byte_buffer_init(buffer);
+}
+
+int tool_byte_buffer_reserve(ToolByteBuffer *buffer, size_t needed) {
+    size_t next_capacity;
+    unsigned char *next;
+
+    if (buffer == 0) return -1;
+    if (needed <= buffer->capacity) return 0;
+    next_capacity = buffer->capacity != 0U ? buffer->capacity : 128U;
+    while (next_capacity < needed) {
+        if (next_capacity > ((size_t)-1) / 2U) {
+            next_capacity = needed;
+            break;
+        }
+        next_capacity *= 2U;
+    }
+    next = (unsigned char *)rt_realloc(buffer->data, next_capacity);
+    if (next == 0) return -1;
+    buffer->data = next;
+    buffer->capacity = next_capacity;
+    return 0;
+}
+
+int tool_byte_buffer_reserve_extra(ToolByteBuffer *buffer, size_t extra) {
+    if (buffer == 0 || extra > ((size_t)-1) - buffer->size) return -1;
+    return tool_byte_buffer_reserve(buffer, buffer->size + extra);
+}
+
+int tool_byte_buffer_append(ToolByteBuffer *buffer, const void *data, size_t size) {
+    if (size == 0U) return 0;
+    if (data == 0 || tool_byte_buffer_reserve_extra(buffer, size) != 0) return -1;
+    memcpy(buffer->data + buffer->size, data, size);
+    buffer->size += size;
+    return 0;
+}
+
+int tool_byte_buffer_append_byte(ToolByteBuffer *buffer, unsigned int value) {
+    unsigned char byte = (unsigned char)(value & 0xffU);
+    return tool_byte_buffer_append(buffer, &byte, 1U);
+}
+
+int tool_byte_buffer_append_u16_be(ToolByteBuffer *buffer, unsigned int value) {
+    unsigned char bytes[2];
+
+    bytes[0] = (unsigned char)((value >> 8U) & 0xffU);
+    bytes[1] = (unsigned char)(value & 0xffU);
+    return tool_byte_buffer_append(buffer, bytes, sizeof(bytes));
+}
+
+int tool_byte_buffer_append_u32_be(ToolByteBuffer *buffer, unsigned long long value) {
+    unsigned char bytes[4];
+
+    bytes[0] = (unsigned char)((value >> 24U) & 0xffU);
+    bytes[1] = (unsigned char)((value >> 16U) & 0xffU);
+    bytes[2] = (unsigned char)((value >> 8U) & 0xffU);
+    bytes[3] = (unsigned char)(value & 0xffU);
+    return tool_byte_buffer_append(buffer, bytes, sizeof(bytes));
+}
+
+int tool_byte_buffer_terminate(ToolByteBuffer *buffer) {
+    if (tool_byte_buffer_reserve_extra(buffer, 1U) != 0) return -1;
+    buffer->data[buffer->size] = 0U;
+    return 0;
+}
+
+int tool_byte_buffer_append_text(ToolByteBuffer *buffer, const char *text, size_t length) {
+    if (tool_byte_buffer_append(buffer, text, length) != 0) return -1;
+    return tool_byte_buffer_terminate(buffer);
+}
+
 void tool_write_usage(const char *program_name, const char *usage_suffix) {
     if (tool_json_is_enabled()) {
         (void)tool_json_write_usage(program_name, usage_suffix);

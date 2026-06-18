@@ -39,6 +39,23 @@ int tool_json_write_usage(const char *tool_name, const char *usage_suffix);
 #define TOOL_OUTPUT_BUFFER_SIZE 16384U
 
 typedef struct {
+    unsigned char *data;
+    size_t size;
+    size_t capacity;
+} ToolByteBuffer;
+
+void tool_byte_buffer_init(ToolByteBuffer *buffer);
+void tool_byte_buffer_free(ToolByteBuffer *buffer);
+int tool_byte_buffer_reserve(ToolByteBuffer *buffer, size_t needed);
+int tool_byte_buffer_reserve_extra(ToolByteBuffer *buffer, size_t extra);
+int tool_byte_buffer_append(ToolByteBuffer *buffer, const void *data, size_t size);
+int tool_byte_buffer_append_byte(ToolByteBuffer *buffer, unsigned int value);
+int tool_byte_buffer_append_u16_be(ToolByteBuffer *buffer, unsigned int value);
+int tool_byte_buffer_append_u32_be(ToolByteBuffer *buffer, unsigned long long value);
+int tool_byte_buffer_terminate(ToolByteBuffer *buffer);
+int tool_byte_buffer_append_text(ToolByteBuffer *buffer, const char *text, size_t length);
+
+typedef struct {
     int fd;
     size_t length;
     char buffer[TOOL_OUTPUT_BUFFER_SIZE];

@@ -1,6 +1,8 @@
 #ifndef NEWOS_PDF_H
 #define NEWOS_PDF_H
 
+#include "tool_util.h"
+
 #include <stddef.h>
 
 #define PDF_NAME_CAPACITY 64U
@@ -54,11 +56,7 @@ typedef struct {
     char modification_date[PDF_TEXT_CAPACITY];
 } PdfDocumentInfo;
 
-typedef struct {
-    unsigned char *data;
-    size_t size;
-    size_t capacity;
-} PdfBuffer;
+typedef ToolByteBuffer PdfBuffer;
 
 typedef struct {
     unsigned int number;

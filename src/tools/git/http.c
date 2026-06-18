@@ -78,18 +78,6 @@ static int git_http_connect(const GitUrl *url, GitHttpConnection *connection) {
     return tool_http_connection_connect(connection, url->host, url->port, url->scheme == GIT_SCHEME_HTTPS);
 }
 
-static long git_http_read(GitHttpConnection *connection, void *buffer, size_t count) {
-    return tool_http_connection_read(connection, buffer, count);
-}
-
-static int git_http_write_all(GitHttpConnection *connection, const void *data, size_t size) {
-    return tool_http_connection_write_all(connection, data, size);
-}
-
-static void git_http_close(GitHttpConnection *connection) {
-    tool_http_connection_close(connection);
-}
-
 static int git_http_status_code(const unsigned char *headers, size_t header_size) {
     size_t index = 0U;
     int code = 0;
@@ -536,10 +524,10 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
         request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
     }
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
-    if (request_length >= sizeof(request) || git_http_write_all(&connection, request, request_length) != 0 || (body_size > 0U && git_http_write_all(&connection, body, body_size) != 0)) {
+    if (request_length >= sizeof(request) || tool_http_connection_write_all(&connection, request, request_length) != 0 || (body_size > 0U && tool_http_connection_write_all(&connection, body, body_size) != 0)) {
         goto done;
     }
-    while ((bytes_read = git_http_read(&connection, read_buffer, sizeof(read_buffer))) > 0) {
+    while ((bytes_read = tool_http_connection_read(&connection, read_buffer, sizeof(read_buffer))) > 0) {
         if (!saw_headers) {
             size_t header_offset = 0U;
             if (git_buffer_append(&header, read_buffer, (size_t)bytes_read) != 0) {
@@ -574,7 +562,7 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
     }
     result = 0;
 done:
-    git_http_close(&connection);
+    tool_http_connection_close(&connection);
     git_buffer_destroy(&header);
     git_buffer_destroy(&chunk_pending);
     if (result != 0 && response != 0) {

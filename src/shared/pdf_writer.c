@@ -168,33 +168,8 @@ static int pdfw_find_top_name_value(const unsigned char *data, size_t size, cons
     return buffer_size != 0U && buffer[0] != '\0';
 }
 
-static int pdfw_buffer_reserve(PdfBuffer *buffer, size_t needed) {
-    size_t next_capacity;
-    unsigned char *next;
-
-    if (needed <= buffer->capacity) return 0;
-    next_capacity = buffer->capacity == 0U ? 4096U : buffer->capacity;
-    while (next_capacity < needed) {
-        size_t grown = next_capacity * 2U;
-        if (grown <= next_capacity) return -1;
-        next_capacity = grown;
-    }
-    next = (unsigned char *)rt_realloc(buffer->data, next_capacity);
-    if (next == 0) return -1;
-    buffer->data = next;
-    buffer->capacity = next_capacity;
-    return 0;
-}
-
 static int pdfw_append_bytes(PdfBuffer *buffer, const unsigned char *data, size_t size) {
-    size_t index;
-
-    if (size == 0U) return 0;
-    if (buffer->size > (size_t)-1 - size) return -1;
-    if (pdfw_buffer_reserve(buffer, buffer->size + size) != 0) return -1;
-    for (index = 0U; index < size; ++index) buffer->data[buffer->size + index] = data[index];
-    buffer->size += size;
-    return 0;
+    return tool_byte_buffer_append(buffer, data, size);
 }
 
 static int pdfw_append_cstr(PdfBuffer *buffer, const char *text) {
@@ -234,13 +209,11 @@ static int pdfw_append_xref_offset(PdfBuffer *buffer, size_t value) {
 }
 
 void pdf_buffer_init(PdfBuffer *buffer) {
-    if (buffer != 0) rt_memset(buffer, 0, sizeof(*buffer));
+    tool_byte_buffer_init(buffer);
 }
 
 void pdf_buffer_free(PdfBuffer *buffer) {
-    if (buffer == 0) return;
-    rt_free(buffer->data);
-    pdf_buffer_init(buffer);
+    tool_byte_buffer_free(buffer);
 }
 
 void pdf_document_init(PdfDocument *document) {

@@ -34,11 +34,7 @@ static const unsigned char JUMBF_TYPE_CBOR[16] = {
     0x80U, 0x00U, 0x00U, 0xaaU, 0x00U, 0x38U, 0x9bU, 0x71U
 };
 
-typedef struct {
-    unsigned char *data;
-    size_t size;
-    size_t capacity;
-} ByteBuffer;
+typedef ToolByteBuffer ByteBuffer;
 
 static const unsigned char DEV_PRIVATE_KEY[32] = {
     0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
@@ -97,76 +93,20 @@ static int prepend_default_created_action(const char **actions, unsigned int *ac
 }
 
 
-static void buf_init(ByteBuffer *buf) {
-    rt_memset(buf, 0, sizeof(*buf));
-}
-
-static void buf_free(ByteBuffer *buf) {
-    rt_free(buf->data);
-    buf_init(buf);
-}
-
-static int buf_reserve(ByteBuffer *buf, size_t extra) {
-    size_t needed = buf->size + extra;
-    if (needed < buf->size) return -1;
-    if (needed > buf->capacity) {
-        size_t next = buf->capacity == 0U ? 256U : buf->capacity;
-        unsigned char *resized;
-        while (next < needed) {
-            size_t doubled = next * 2U;
-            if (doubled <= next) return -1;
-            next = doubled;
-        }
-        resized = (unsigned char *)rt_realloc(buf->data, next);
-        if (resized == 0) return -1;
-        buf->data = resized;
-        buf->capacity = next;
-    }
-    return 0;
-}
-
-static int buf_append(ByteBuffer *buf, const void *data, size_t size) {
-    if (buf_reserve(buf, size) != 0) return -1;
-    if (size > 0U) memcpy(buf->data + buf->size, data, size);
-    buf->size += size;
-    return 0;
-}
-
-static int buf_u8(ByteBuffer *buf, unsigned int value) {
-    unsigned char byte = (unsigned char)value;
-    return buf_append(buf, &byte, 1U);
-}
-
-static int buf_u16be(ByteBuffer *buf, unsigned int value) {
-    unsigned char bytes[2];
-    bytes[0] = (unsigned char)(value >> 8U);
-    bytes[1] = (unsigned char)value;
-    return buf_append(buf, bytes, 2U);
-}
-
-static int buf_u32be(ByteBuffer *buf, unsigned int value) {
-    unsigned char bytes[4];
-    bytes[0] = (unsigned char)(value >> 24U);
-    bytes[1] = (unsigned char)(value >> 16U);
-    bytes[2] = (unsigned char)(value >> 8U);
-    bytes[3] = (unsigned char)value;
-    return buf_append(buf, bytes, 4U);
-}
-
 static int cbor_type(ByteBuffer *buf, unsigned int major, size_t value) {
-    if (value < 24U) return buf_u8(buf, (major << 5U) | (unsigned int)value);
-    if (value <= 0xffU) return buf_u8(buf, (major << 5U) | 24U) || buf_u8(buf, (unsigned int)value);
-    if (value <= 0xffffU) return buf_u8(buf, (major << 5U) | 25U) || buf_u16be(buf, (unsigned int)value);
-    return buf_u8(buf, (major << 5U) | 26U) || buf_u32be(buf, (unsigned int)value);
+    if (value < 24U) return tool_byte_buffer_append_byte(buf, (major << 5U) | (unsigned int)value);
+    if (value <= 0xffU) return tool_byte_buffer_append_byte(buf, (major << 5U) | 24U) || tool_byte_buffer_append_byte(buf, (unsigned int)value);
+    if (value <= 0xffffU) return tool_byte_buffer_append_byte(buf, (major << 5U) | 25U) || tool_byte_buffer_append_u16_be(buf, (unsigned int)value);
+    return tool_byte_buffer_append_byte(buf, (major << 5U) | 26U) || tool_byte_buffer_append_u32_be(buf, (unsigned int)value);
 }
 
 static int cbor_text(ByteBuffer *buf, const char *text) {
     size_t len = rt_strlen(text);
-    return cbor_type(buf, 3U, len) || buf_append(buf, text, len);
+    return cbor_type(buf, 3U, len) || tool_byte_buffer_append(buf, text, len);
 }
 
 static int cbor_bstr(ByteBuffer *buf, const unsigned char *data, size_t size) {
-    return cbor_type(buf, 2U, size) || buf_append(buf, data, size);
+    return cbor_type(buf, 2U, size) || tool_byte_buffer_append(buf, data, size);
 }
 
 static int cbor_int(ByteBuffer *buf, long long value) {
@@ -176,7 +116,7 @@ static int cbor_int(ByteBuffer *buf, long long value) {
 
 static int make_box(ByteBuffer *out, const char type[4], const unsigned char *payload, size_t payload_size) {
     if (payload_size > 0xfffffff0U) return -1;
-    return buf_u32be(out, (unsigned int)payload_size + 8U) || buf_append(out, type, 4U) || buf_append(out, payload, payload_size);
+    return tool_byte_buffer_append_u32_be(out, (unsigned int)payload_size + 8U) || tool_byte_buffer_append(out, type, 4U) || tool_byte_buffer_append(out, payload, payload_size);
 }
 
 static int make_jumb(ByteBuffer *out, const char *label, const unsigned char type_uuid[16], const unsigned char *children, size_t children_size) {
@@ -185,19 +125,19 @@ static int make_jumb(ByteBuffer *out, const char *label, const unsigned char typ
     ByteBuffer jumd;
     int result;
 
-    buf_init(&payload);
-    buf_init(&jumd_payload);
-    buf_init(&jumd);
-    result = buf_append(&jumd_payload, type_uuid, 16U) ||
-             buf_u8(&jumd_payload, 0x03U) ||
-             buf_append(&jumd_payload, label, rt_strlen(label) + 1U) ||
+    tool_byte_buffer_init(&payload);
+    tool_byte_buffer_init(&jumd_payload);
+    tool_byte_buffer_init(&jumd);
+    result = tool_byte_buffer_append(&jumd_payload, type_uuid, 16U) ||
+             tool_byte_buffer_append_byte(&jumd_payload, 0x03U) ||
+             tool_byte_buffer_append(&jumd_payload, label, rt_strlen(label) + 1U) ||
              make_box(&jumd, "jumd", jumd_payload.data, jumd_payload.size) ||
-             buf_append(&payload, jumd.data, jumd.size) ||
-             buf_append(&payload, children, children_size) ||
+             tool_byte_buffer_append(&payload, jumd.data, jumd.size) ||
+             tool_byte_buffer_append(&payload, children, children_size) ||
              make_box(out, "jumb", payload.data, payload.size);
-    buf_free(&payload);
-    buf_free(&jumd_payload);
-    buf_free(&jumd);
+    tool_byte_buffer_free(&payload);
+    tool_byte_buffer_free(&jumd_payload);
+    tool_byte_buffer_free(&jumd);
     return result;
 }
 
@@ -205,9 +145,9 @@ static int make_cbor_jumb(ByteBuffer *out, const char *label, const unsigned cha
     ByteBuffer child;
     int result;
 
-    buf_init(&child);
+    tool_byte_buffer_init(&child);
     result = make_box(&child, "cbor", cbor, cbor_size) || make_jumb(out, label, type_uuid, child.data, child.size);
-    buf_free(&child);
+    tool_byte_buffer_free(&child);
     return result;
 }
 
@@ -336,8 +276,8 @@ static int make_cose_signature(ByteBuffer *out, const unsigned char *claim, size
     unsigned char signature[CRYPTO_P256_ECDSA_SIGNATURE_SIZE];
     int result;
 
-    buf_init(&protected_header);
-    buf_init(&sig_structure);
+    tool_byte_buffer_init(&protected_header);
+    tool_byte_buffer_init(&sig_structure);
     result = make_protected_header(&protected_header) ||
              make_sig_structure(&sig_structure, protected_header.data, protected_header.size, claim, claim_size);
     if (result == 0) {
@@ -345,14 +285,14 @@ static int make_cose_signature(ByteBuffer *out, const unsigned char *claim, size
         if (!crypto_p256_ecdsa_sha256_sign(DEV_PRIVATE_KEY, digest, signature)) result = -1;
     }
     if (result == 0) {
-        result = buf_u8(out, 0xd2U) || cbor_type(out, 4U, 4U) ||
+        result = tool_byte_buffer_append_byte(out, 0xd2U) || cbor_type(out, 4U, 4U) ||
                  cbor_bstr(out, protected_header.data, protected_header.size) ||
                  cbor_type(out, 5U, 0U) ||
-                 buf_u8(out, 0xf6U) ||
+                 tool_byte_buffer_append_byte(out, 0xf6U) ||
                  cbor_bstr(out, signature, sizeof(signature));
     }
-    buf_free(&protected_header);
-    buf_free(&sig_structure);
+    tool_byte_buffer_free(&protected_header);
+    tool_byte_buffer_free(&sig_structure);
     return result;
 }
 
@@ -370,14 +310,14 @@ static int make_manifest(const unsigned char *input, size_t input_size, const ch
     ByteBuffer manifest_children;
     int result;
 
-    buf_init(&hash_assertion);
-    buf_init(&actions_assertion);
-    buf_init(&hash_assertion_box);
-    buf_init(&actions_assertion_box);
-    buf_init(&claim);
-    buf_init(&signature);
-    buf_init(&assertions_children);
-    buf_init(&manifest_children);
+    tool_byte_buffer_init(&hash_assertion);
+    tool_byte_buffer_init(&actions_assertion);
+    tool_byte_buffer_init(&hash_assertion_box);
+    tool_byte_buffer_init(&actions_assertion_box);
+    tool_byte_buffer_init(&claim);
+    tool_byte_buffer_init(&signature);
+    tool_byte_buffer_init(&assertions_children);
+    tool_byte_buffer_init(&manifest_children);
     crypto_sha256_hash(input, input_size, content_digest);
     result = make_hash_assertion(&hash_assertion, content_digest) || make_actions_assertion(&actions_assertion, actions, action_count);
     result = result ||
@@ -389,29 +329,29 @@ static int make_manifest(const unsigned char *input, size_t input_size, const ch
     }
     result = result || make_claim(&claim, generator, hash_assertion_digest, actions_assertion_digest) ||
              make_cose_signature(&signature, claim.data, claim.size) ||
-             buf_append(&assertions_children, hash_assertion_box.data, hash_assertion_box.size) ||
-             buf_append(&assertions_children, actions_assertion_box.data, actions_assertion_box.size) ||
+             tool_byte_buffer_append(&assertions_children, hash_assertion_box.data, hash_assertion_box.size) ||
+             tool_byte_buffer_append(&assertions_children, actions_assertion_box.data, actions_assertion_box.size) ||
              make_cbor_jumb(&manifest_children, "c2pa.claim.v2", JUMBF_TYPE_C2PA_CLAIM, claim.data, claim.size) ||
              make_jumb(&manifest_children, "c2pa.assertions", JUMBF_TYPE_C2PA_ASSERTION_STORE, assertions_children.data, assertions_children.size) ||
              make_cbor_jumb(&manifest_children, "c2pa.signature", JUMBF_TYPE_C2PA_SIGNATURE, signature.data, signature.size) ||
              make_jumb(out, "urn:c2pa:newos-dev", JUMBF_TYPE_C2PA_MANIFEST, manifest_children.data, manifest_children.size);
-    buf_free(&hash_assertion);
-    buf_free(&actions_assertion);
-    buf_free(&hash_assertion_box);
-    buf_free(&actions_assertion_box);
-    buf_free(&claim);
-    buf_free(&signature);
-    buf_free(&assertions_children);
-    buf_free(&manifest_children);
+    tool_byte_buffer_free(&hash_assertion);
+    tool_byte_buffer_free(&actions_assertion);
+    tool_byte_buffer_free(&hash_assertion_box);
+    tool_byte_buffer_free(&actions_assertion_box);
+    tool_byte_buffer_free(&claim);
+    tool_byte_buffer_free(&signature);
+    tool_byte_buffer_free(&assertions_children);
+    tool_byte_buffer_free(&manifest_children);
     return result;
 }
 
 static int make_store(const unsigned char *input, size_t input_size, const char *generator, const char *const *actions, unsigned int action_count, ByteBuffer *out) {
     ByteBuffer manifest;
     int result;
-    buf_init(&manifest);
+    tool_byte_buffer_init(&manifest);
     result = make_manifest(input, input_size, generator, actions, action_count, &manifest) || make_jumb(out, "c2pa", JUMBF_TYPE_C2PA_STORE, manifest.data, manifest.size);
-    buf_free(&manifest);
+    tool_byte_buffer_free(&manifest);
     return result;
 }
 
@@ -425,10 +365,10 @@ static int insert_png_cabx(const unsigned char *data, size_t size, const unsigne
         if ((size_t)length > size - offset - 12U) return -1;
         if (tool_bytes_equal_text(type, "IEND", 4U)) {
             unsigned int crc;
-            if (buf_append(out, data, offset) != 0) return -1;
-            if (buf_u32be(out, (unsigned int)payload_size) || buf_append(out, "caBX", 4U) || buf_append(out, payload, payload_size)) return -1;
+            if (tool_byte_buffer_append(out, data, offset) != 0) return -1;
+            if (tool_byte_buffer_append_u32_be(out, (unsigned int)payload_size) || tool_byte_buffer_append(out, "caBX", 4U) || tool_byte_buffer_append(out, payload, payload_size)) return -1;
             crc = compression_crc32(out->data + out->size - payload_size - 4U, payload_size + 4U);
-            if (buf_u32be(out, crc) || buf_append(out, data + offset, size - offset)) return -1;
+            if (tool_byte_buffer_append_u32_be(out, crc) || tool_byte_buffer_append(out, data + offset, size - offset)) return -1;
             return 0;
         }
         offset += 12U + (size_t)length;
@@ -465,12 +405,12 @@ static int insert_jpeg_app11(const unsigned char *data, size_t size, const unsig
     unsigned int segment_payload_size;
     if (jumbf_size + 4U > C2PA_APP11_MAX_PAYLOAD || jpeg_insert_offset(data, size, &insert_at) != 0) return -1;
     segment_payload_size = (unsigned int)jumbf_size + 4U;
-    return buf_append(out, data, insert_at) ||
-           buf_u8(out, 0xffU) || buf_u8(out, 0xebU) ||
-           buf_u16be(out, segment_payload_size + 2U) ||
-           buf_append(out, "JP", 2U) || buf_u8(out, 0U) || buf_u8(out, 1U) ||
-           buf_append(out, jumbf, jumbf_size) ||
-           buf_append(out, data + insert_at, size - insert_at);
+    return tool_byte_buffer_append(out, data, insert_at) ||
+           tool_byte_buffer_append_byte(out, 0xffU) || tool_byte_buffer_append_byte(out, 0xebU) ||
+           tool_byte_buffer_append_u16_be(out, segment_payload_size + 2U) ||
+           tool_byte_buffer_append(out, "JP", 2U) || tool_byte_buffer_append_byte(out, 0U) || tool_byte_buffer_append_byte(out, 1U) ||
+           tool_byte_buffer_append(out, jumbf, jumbf_size) ||
+           tool_byte_buffer_append(out, data + insert_at, size - insert_at);
 }
 
 static int run_add(int argc, char **argv, int arg_index) {
@@ -487,8 +427,8 @@ static int run_add(int argc, char **argv, int arg_index) {
     ByteBuffer output;
     int result = -1;
 
-    buf_init(&store);
-    buf_init(&output);
+    tool_byte_buffer_init(&store);
+    tool_byte_buffer_init(&output);
     while (arg_index < argc) {
         const char *arg = argv[arg_index];
         if (rt_strcmp(arg, "--dev-key") == 0) { dev_key = 1; arg_index += 1; continue; }
@@ -530,8 +470,8 @@ static int run_add(int argc, char **argv, int arg_index) {
     if (result == 0) result = write_file(output_path, output.data, output.size);
 done:
     rt_free(input);
-    buf_free(&store);
-    buf_free(&output);
+    tool_byte_buffer_free(&store);
+    tool_byte_buffer_free(&output);
     return result == 0 ? 0 : 1;
 }
 

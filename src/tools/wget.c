@@ -33,23 +33,6 @@ static int wget_connect(const WgetUrl *url, WgetConnection *connection) {
     return tool_http_connection_connect(connection, url->host, url->port, url->scheme == WGET_SCHEME_HTTPS);
 }
 
-static int wget_connection_fd(const WgetConnection *connection) {
-    return tool_http_connection_fd(connection);
-}
-
-static long wget_connection_read(WgetConnection *connection, void *buffer, size_t count) {
-    return tool_http_connection_read(connection, buffer, count);
-}
-
-static int wget_connection_write_all(WgetConnection *connection, const void *buffer, size_t count) {
-    return tool_http_connection_write_all(connection, buffer, count);
-}
-
-static void wget_connection_close(WgetConnection *connection) {
-    tool_http_connection_close(connection);
-}
-
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
 }
@@ -567,18 +550,18 @@ static int fetch_http_body(
     }
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
 
-    if (wget_connection_write_all(&connection, request, request_length) != 0) {
-        wget_connection_close(&connection);
+    if (tool_http_connection_write_all(&connection, request, request_length) != 0) {
+        tool_http_connection_close(&connection);
         return -1;
     }
 
     for (;;) {
-        if (!connection.use_tls && maybe_wait_for_socket(wget_connection_fd(&connection), options->timeout_ms) != 0) {
+        if (!connection.use_tls && maybe_wait_for_socket(tool_http_connection_fd(&connection), options->timeout_ms) != 0) {
             bytes_read = -1;
             break;
         }
 
-        bytes_read = wget_connection_read(&connection, buffer, sizeof(buffer));
+        bytes_read = tool_http_connection_read(&connection, buffer, sizeof(buffer));
         if (bytes_read < 0 && connection.use_tls && header_complete) {
             bytes_read = 0;
             break;
@@ -591,7 +574,7 @@ static int fetch_http_body(
             size_t body_offset = 0;
 
             if (header_length + (size_t)bytes_read >= sizeof(header_buffer)) {
-                wget_connection_close(&connection);
+                tool_http_connection_close(&connection);
                 return -1;
             }
 
@@ -609,12 +592,12 @@ static int fetch_http_body(
                 header_buffer[body_offset] = '\0';
 
                 if (options->show_headers && rt_write_all(2, header_buffer, body_offset) != 0) {
-                    wget_connection_close(&connection);
+                    tool_http_connection_close(&connection);
                     return -1;
                 }
 
                 if (parse_http_headers(header_buffer, &status_code, redirect_url, redirect_size, &content_length, &has_content_length) != 0) {
-                    wget_connection_close(&connection);
+                    tool_http_connection_close(&connection);
                     return -1;
                 }
 
@@ -622,17 +605,17 @@ static int fetch_http_body(
             }
 
             if (status_code >= 300 && status_code < 400 && redirect_url[0] != '\0') {
-                wget_connection_close(&connection);
+                tool_http_connection_close(&connection);
                 return 1;
             }
 
             if (status_code < 200 || status_code >= 300) {
-                wget_connection_close(&connection);
+                tool_http_connection_close(&connection);
                 return -1;
             }
 
             if (open_output_for_url(options, url, output_path, sizeof(output_path), &output_fd) != 0) {
-                wget_connection_close(&connection);
+                tool_http_connection_close(&connection);
                 return -1;
             }
             should_close_output = output_fd > 1;
@@ -645,7 +628,7 @@ static int fetch_http_body(
                 if (should_close_output) {
                     (void)platform_close(output_fd);
                 }
-                wget_connection_close(&connection);
+                tool_http_connection_close(&connection);
                 return -1;
             }
             if (has_content_length && body_written >= content_length) {
@@ -655,14 +638,14 @@ static int fetch_http_body(
             if (should_close_output) {
                 (void)platform_close(output_fd);
             }
-            wget_connection_close(&connection);
+            tool_http_connection_close(&connection);
             return -1;
         } else if (has_content_length && body_written >= content_length) {
             break;
         }
     }
 
-    wget_connection_close(&connection);
+    tool_http_connection_close(&connection);
     if (should_close_output) {
         (void)platform_close(output_fd);
     }
