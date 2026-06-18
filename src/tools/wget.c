@@ -29,10 +29,6 @@ typedef ToolHttpConnection WgetConnection;
 
 static int open_output_for_url(const WgetOptions *options, const WgetUrl *url, char *path_out, size_t path_out_size, int *fd_out);
 
-static int wget_connect(const WgetUrl *url, WgetConnection *connection) {
-    return tool_http_connection_connect(connection, url->host, url->port, url->scheme == WGET_SCHEME_HTTPS);
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
 }
@@ -534,7 +530,7 @@ static int fetch_http_body(
     char buffer[WGET_BUFFER_CAPACITY];
     long bytes_read = 0;
 
-    if (wget_connect(url, &connection) != 0) {
+    if (tool_http_connection_connect(&connection, url->host, url->port, url->scheme == WGET_SCHEME_HTTPS) != 0) {
         return -1;
     }
 

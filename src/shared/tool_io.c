@@ -643,6 +643,32 @@ int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size,
     return 0;
 }
 
+int tool_write_all_fd(int fd, const unsigned char *data, size_t size) {
+    size_t written = 0U;
+
+    while (written < size) {
+        long chunk = platform_write(fd, data + written, size - written);
+        if (chunk <= 0) return -1;
+        written += (size_t)chunk;
+    }
+    return 0;
+}
+
+int tool_parse_http_status(const char *headers) {
+    size_t index = 0U;
+    int code = 0;
+    int saw_digit = 0;
+
+    while (headers[index] != '\0' && headers[index] != ' ') index += 1U;
+    while (headers[index] == ' ') index += 1U;
+    while (headers[index] >= '0' && headers[index] <= '9') {
+        saw_digit = 1;
+        code = code * 10 + (int)(headers[index] - '0');
+        index += 1U;
+    }
+    return saw_digit ? code : -1;
+}
+
 int tool_discard_input_bytes(int fd, unsigned long long count) {
     unsigned char buffer[8192];
 

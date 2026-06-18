@@ -196,6 +196,143 @@ int hash_verify_manifest(const char *tool_name, int fd, size_t digest_size, Hash
     return exit_code;
 }
 
+int hash_sum_main(int argc, char **argv, const char *tool_name, size_t digest_size, HashStreamFunction hash_stream, int allow_binary_mode) {
+    const char *usage = allow_binary_mode ? "[-bct] [-q] [-s] [-z] [FILE ...]" : "[-c] [-q] [-s] [-z] [FILE ...]";
+    int binary_mode = 0;
+    int check_mode = 0;
+    int quiet = 0;
+    int status_only = 0;
+    int zero_terminated = 0;
+    int exit_code = 0;
+    int argi = 1;
+    int i;
+
+    if (digest_size > HASH_SHA512_SIZE) return 1;
+    while (argi < argc) {
+        const char *arg = argv[argi];
+        size_t j;
+
+        if (rt_strcmp(arg, "--") == 0) {
+            argi += 1;
+            break;
+        }
+        if (arg[0] != '-' || arg[1] == '\0') {
+            break;
+        }
+        if (rt_strcmp(arg, "--check") == 0) {
+            check_mode = 1;
+            argi += 1;
+            continue;
+        }
+        if (allow_binary_mode && rt_strcmp(arg, "--binary") == 0) {
+            binary_mode = 1;
+            argi += 1;
+            continue;
+        }
+        if (allow_binary_mode && rt_strcmp(arg, "--text") == 0) {
+            binary_mode = 0;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--quiet") == 0) {
+            quiet = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--status") == 0) {
+            status_only = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(arg, "--zero") == 0) {
+            zero_terminated = 1;
+            argi += 1;
+            continue;
+        }
+
+        for (j = 1; arg[j] != '\0'; ++j) {
+            if (allow_binary_mode && arg[j] == 'b') {
+                binary_mode = 1;
+            } else if (arg[j] == 'c') {
+                check_mode = 1;
+            } else if (arg[j] == 'q') {
+                quiet = 1;
+            } else if (arg[j] == 's') {
+                status_only = 1;
+            } else if (allow_binary_mode && arg[j] == 't') {
+                binary_mode = 0;
+            } else if (arg[j] == 'z') {
+                zero_terminated = 1;
+            } else {
+                tool_write_usage(argv[0], usage);
+                return 1;
+            }
+        }
+        argi += 1;
+    }
+
+    if (status_only) {
+        quiet = 1;
+    }
+
+    if (check_mode) {
+        if (argi >= argc) {
+            return hash_verify_manifest(tool_name, 0, digest_size, hash_stream, zero_terminated, quiet, status_only);
+        }
+
+        for (i = argi; i < argc; ++i) {
+            int fd;
+            int should_close;
+
+            if (tool_open_input(argv[i], &fd, &should_close) != 0) {
+                rt_write_cstr(2, tool_name);
+                rt_write_cstr(2, ": cannot open ");
+                rt_write_line(2, argv[i]);
+                exit_code = 1;
+                continue;
+            }
+            if (hash_verify_manifest(tool_name, fd, digest_size, hash_stream, zero_terminated, quiet, status_only) != 0) {
+                exit_code = 1;
+            }
+            tool_close_input(fd, should_close);
+        }
+        return exit_code;
+    }
+
+    if (argi >= argc) {
+        unsigned char digest[HASH_SHA512_SIZE];
+        if (hash_stream(0, digest) != 0 || hash_print_digest_line(digest, digest_size, "-", binary_mode, zero_terminated) != 0) {
+            return 1;
+        }
+        return 0;
+    }
+
+    for (i = argi; i < argc; ++i) {
+        int fd;
+        int should_close;
+        unsigned char digest[HASH_SHA512_SIZE];
+
+        if (tool_open_input(argv[i], &fd, &should_close) != 0) {
+            rt_write_cstr(2, tool_name);
+            rt_write_cstr(2, ": cannot open ");
+            rt_write_line(2, argv[i]);
+            exit_code = 1;
+            continue;
+        }
+
+        if (hash_stream(fd, digest) != 0 || hash_print_digest_line(digest, digest_size, argv[i], binary_mode, zero_terminated) != 0) {
+            rt_write_cstr(2, tool_name);
+            rt_write_cstr(2, ": failed on ");
+            rt_write_line(2, argv[i]);
+            exit_code = 1;
+        }
+
+        tool_close_input(fd, should_close);
+    }
+
+    return exit_code;
+}
+
 int hash_md5_stream(int fd, unsigned char out[HASH_MD5_SIZE]) {
     CryptoMd5Context ctx;
     unsigned char buffer[HASH_STREAM_BUFFER_SIZE];

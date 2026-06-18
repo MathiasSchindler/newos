@@ -192,20 +192,6 @@ static int compose_default_base_url(const char language[3], char *buffer, size_t
 }
 
 
-static int parse_status(const char *headers) {
-    size_t index = 0U;
-    int code = 0;
-    int saw_digit = 0;
-    while (headers[index] != '\0' && headers[index] != ' ') index += 1U;
-    while (headers[index] == ' ') index += 1U;
-    while (headers[index] >= '0' && headers[index] <= '9') {
-        saw_digit = 1;
-        code = code * 10 + (int)(headers[index] - '0');
-        index += 1U;
-    }
-    return saw_digit ? code : -1;
-}
-
 static int parse_header_size(const char *text, size_t *value_out) {
     size_t value = 0U;
     int saw_digit = 0;
@@ -234,7 +220,7 @@ static void parse_headers(const char *headers, int *status_out, char *location, 
     size_t line_start = 0U;
     int line_index = 0;
     location[0] = '\0';
-    *status_out = parse_status(headers);
+    *status_out = tool_parse_http_status(headers);
     *content_length_out = 0U;
     *has_content_length_out = 0;
     while (headers[line_start] != '\0') {

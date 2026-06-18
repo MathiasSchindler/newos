@@ -173,21 +173,6 @@ static int wait_for_plain_socket(PgpQueryConnection *connection, unsigned long l
     return platform_poll_fds(fds, 1U, &ready_index, (int)timeout_ms) > 0 ? 0 : -1;
 }
 
-static int parse_status(const char *headers) {
-    size_t index = 0U;
-    int code = 0;
-    int saw_digit = 0;
-
-    while (headers[index] != '\0' && headers[index] != ' ') index += 1U;
-    while (headers[index] == ' ') index += 1U;
-    while (headers[index] >= '0' && headers[index] <= '9') {
-        saw_digit = 1;
-        code = code * 10 + (int)(headers[index] - '0');
-        index += 1U;
-    }
-    return saw_digit ? code : -1;
-}
-
 static int ascii_equal_insensitive_n(const char *left, const char *right, size_t size) {
     size_t index;
 
@@ -276,17 +261,6 @@ static int write_body_output(const PgpQueryOptions *options, const unsigned char
     return result;
 }
 
-static int write_all_fd(int fd, const unsigned char *data, size_t size) {
-    size_t written = 0U;
-
-    while (written < size) {
-        long chunk = platform_write(fd, data + written, size - written);
-        if (chunk <= 0) return -1;
-        written += (size_t)chunk;
-    }
-    return 0;
-}
-
 static int http_fetch_to_memory(const char *url_text, const PgpQueryOptions *options, unsigned char **body_out, size_t *body_size_out, int *status_out) {
     PgpQueryUrl url;
     PgpQueryConnection connection;
@@ -347,7 +321,7 @@ static int http_fetch_to_memory(const char *url_text, const PgpQueryOptions *opt
             {
                 char saved = header_buffer[body_offset];
                 header_buffer[body_offset] = '\0';
-                *status_out = parse_status(header_buffer);
+                *status_out = tool_parse_http_status(header_buffer);
                 chunked_response = http_headers_have_chunked_transfer(header_buffer);
                 header_buffer[body_offset] = saved;
             }
@@ -631,7 +605,7 @@ static int count_certificate_callback(const PgpCertificateInfo *certificate, voi
     return 0;
 }
 
-static int import_scan_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+static int pgpquery_import_scan_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
     PgpQueryImportScanContext *ctx = (PgpQueryImportScanContext *)ctx_ptr;
 
     if (certificate->primary.tag == 5U) ctx->secret_found = 1;
@@ -650,7 +624,7 @@ static int import_certificate_callback(const PgpCertificateInfo *certificate, vo
         return 0;
     }
     fd = platform_open_append(ctx->options->import_keyring_path, 0600U);
-    if (fd < 0 || certificate->end_offset < certificate->start_offset || write_all_fd(fd, ctx->decoded + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
+    if (fd < 0 || certificate->end_offset < certificate->start_offset || tool_write_all_fd(fd, ctx->decoded + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
         if (fd >= 0) (void)platform_close(fd);
         tool_write_error("pgpquery", "cannot write keyring: ", ctx->options->import_keyring_path);
         ctx->status = -1;
@@ -735,7 +709,7 @@ static int import_certificate_body(const PgpQueryOptions *options, const unsigne
         return -1;
     }
     rt_memset(&scan, 0, sizeof(scan));
-    if (pgp_for_each_certificate(decoded, decoded_size, import_scan_callback, &scan, error, sizeof(error)) != 0) {
+    if (pgp_for_each_certificate(decoded, decoded_size, pgpquery_import_scan_callback, &scan, error, sizeof(error)) != 0) {
         rt_free(decoded);
         tool_write_error("pgpquery", "cannot parse fetched key: ", error);
         return -1;

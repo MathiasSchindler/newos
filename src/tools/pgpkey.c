@@ -157,8 +157,6 @@ typedef struct {
     int found;
 } PgpKeyEditSecret;
 
-static int write_all_fd(int fd, const unsigned char *data, size_t size);
-
 static void pgpkey_set_error(char *error, size_t error_size, const char *message) {
     if (error != 0 && error_size > 0U) {
         rt_copy_string(error, error_size, message != 0 ? message : "pgpkey error");
@@ -1853,7 +1851,7 @@ static void pgpkey_fingerprint_to_text(const PgpPublicKeyInfo *key, char out[PGP
     out[offset] = '\0';
 }
 
-static int import_scan_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
+static int pgpkey_import_scan_callback(const PgpCertificateInfo *certificate, void *ctx_ptr) {
     PgpKeyImportScanContext *ctx = (PgpKeyImportScanContext *)ctx_ptr;
 
     if (certificate->primary.tag == 5U) ctx->secret_found = 1;
@@ -1874,7 +1872,7 @@ static int import_certificate_callback(const PgpCertificateInfo *certificate, vo
         return 0;
     }
     fd = platform_open_append(ctx->options->keyring_path, 0600U);
-    if (fd < 0 || certificate->end_offset < certificate->start_offset || write_all_fd(fd, ctx->data + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
+    if (fd < 0 || certificate->end_offset < certificate->start_offset || tool_write_all_fd(fd, ctx->data + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
         if (fd >= 0) (void)platform_close(fd);
         tool_write_error("pgpkey", "cannot write keyring: ", ctx->options->keyring_path);
         ctx->status = 1;
@@ -1886,17 +1884,6 @@ static int import_certificate_callback(const PgpCertificateInfo *certificate, vo
             rt_write_cstr(1, ",\"keyring\":") != 0 || tool_json_write_string(1, ctx->options->keyring_path) != 0 || rt_write_char(1, '}') != 0 || tool_json_end_event(1) != 0) ctx->status = 1;
     } else if (rt_write_cstr(1, "imported: ") != 0 || rt_write_line(1, fingerprint) != 0) {
         ctx->status = 1;
-    }
-    return 0;
-}
-
-static int write_all_fd(int fd, const unsigned char *data, size_t size) {
-    size_t written = 0U;
-
-    while (written < size) {
-        long chunk = platform_write(fd, data + written, size - written);
-        if (chunk <= 0) return -1;
-        written += (size_t)chunk;
     }
     return 0;
 }
@@ -2912,7 +2899,7 @@ static int command_import(const PgpKeyOptions *options, int argc, char **argv, i
             argi += 1;
             continue;
         }
-        if (pgp_for_each_certificate(data, data_size, import_scan_callback, &scan, error, sizeof(error)) != 0) {
+        if (pgp_for_each_certificate(data, data_size, pgpkey_import_scan_callback, &scan, error, sizeof(error)) != 0) {
             pgpkey_write_error_path(error, argv[argi]);
             rt_free(data);
             status = 1;

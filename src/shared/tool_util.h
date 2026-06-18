@@ -242,6 +242,7 @@ int tool_text_is_decimal(const char *text);
 size_t tool_count_decimal_digits(unsigned long long value);
 int tool_starts_with(const char *text, const char *prefix);
 int tool_token_equals(const char *text, size_t text_length, const char *token);
+int tool_parse_http_status(const char *headers);
 int tool_parse_tabstop_list(const char *text, unsigned long long *stops, size_t max_stops, size_t *count_out);
 unsigned long long tool_next_tabstop(const unsigned long long *stops, size_t stop_count, unsigned long long column);
 int tool_find_http_header_end(const char *buffer, size_t length, size_t *offset_out);
@@ -257,6 +258,7 @@ size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, 
 size_t tool_buffer_append_padded_base(char *buffer, size_t buffer_size, size_t length, unsigned long long value, unsigned int base, unsigned int width);
 int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io);
 int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size);
+int tool_write_all_fd(int fd, const unsigned char *data, size_t size);
 int tool_discard_input_bytes(int fd, unsigned long long count);
 void tool_write_hex_value(int fd, unsigned long long value);
 int tool_write_hex_bytes(int fd, const unsigned char *bytes, size_t size);

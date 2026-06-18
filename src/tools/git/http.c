@@ -74,10 +74,6 @@ static int git_url_is_http(const char *text) {
     return tool_starts_with(text, "http://") || tool_starts_with(text, "https://");
 }
 
-static int git_http_connect(const GitUrl *url, GitHttpConnection *connection) {
-    return tool_http_connection_connect(connection, url->host, url->port, url->scheme == GIT_SCHEME_HTTPS);
-}
-
 static int git_http_status_code(const unsigned char *headers, size_t header_size) {
     size_t index = 0U;
     int code = 0;
@@ -482,7 +478,7 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
     if (response != 0) {
         rt_memset(response, 0, sizeof(*response));
     }
-    if (git_http_connect(url, &connection) != 0) {
+    if (tool_http_connection_connect(&connection, url->host, url->port, url->scheme == GIT_SCHEME_HTTPS) != 0) {
         return -1;
     }
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, method);
