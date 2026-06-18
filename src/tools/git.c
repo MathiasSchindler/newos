@@ -513,12 +513,13 @@ static void git_usage(void) {
     rt_write_line(2, "       git merge [--ff-only] REV");
     rt_write_line(2, "       git pull [URL] [REF]");
     rt_write_line(2, "       git push [REMOTE|URL] [SRC[:DST]]");
-    rt_write_line(2, "       git tag [NAME [REV]]");
+    rt_write_line(2, "       git tag [-d NAME ...|NAME [REV]]");
+    rt_write_line(2, "       git describe [REV]");
     rt_write_line(2, "       git apply [--check] [PATCH]");
     rt_write_line(2, "       git ls-files [-z] [--cached|--others|--modified|--deleted] [--stage] [--exclude-standard] [--] [path ...]");
     rt_write_line(2, "       git add [-N|--intent-to-add] [-p|--patch] [--] path ...");
     rt_write_line(2, "       git commit [-m|--message MESSAGE] [--allow-empty] [--no-verify]");
-    rt_write_line(2, "       git log [--oneline] [-N|-n N|--max-count=N] [REV]");
+    rt_write_line(2, "       git log [--oneline] [--date-order|--topo-order] [-N|-n N|--max-count=N] [REV]");
     rt_write_line(2, "       git show [--stat] [REV]");
     rt_write_line(2, "       git blame [REV] [--] path");
     rt_write_line(2, "       git cherry-pick REV");
@@ -682,6 +683,9 @@ int main(int argc, char **argv) {
     }
     if (rt_strcmp(cmd, "tag") == 0) {
         return git_cmd_tag(&repo, argc, argv, argi + 1);
+    }
+    if (rt_strcmp(cmd, "describe") == 0) {
+        return git_cmd_describe(&repo, argc, argv, argi + 1);
     }
 
     tool_write_error("git", "unsupported command: ", cmd);

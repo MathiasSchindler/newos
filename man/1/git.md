@@ -29,12 +29,13 @@ git rev-list --count A..B
 git merge [--ff-only] REV
 git pull [URL] [REF]
 git push [REMOTE|URL] [SRC[:DST]]
-git tag [NAME [REV]]
+git tag [-d NAME ...|NAME [REV]]
+git describe [REV]
 git apply [--check] [PATCH]
 git ls-files [-z] [--cached|--others|--modified|--deleted] [--stage] [--exclude-standard] [--] [path ...]
 git add [-N|--intent-to-add] [-p|--patch] [--] path ...
 git commit [-m|--message MESSAGE] [--allow-empty] [--no-verify]
-git log [--oneline] [-N|-n N|--max-count=N] [REV]
+git log [--oneline] [--date-order|--topo-order] [-N|-n N|--max-count=N] [REV]
 git show [--stat] [REV]
 git blame [REV] [--] path
 git cherry-pick REV
@@ -95,7 +96,9 @@ be combined with `--no-pager`.
 - push to local repositories or `file://` repository paths by copying objects
     and advancing the selected remote ref, rejecting non-fast-forward pushes
     unless `--force` is supplied
-- list and create lightweight tags with `tag`
+- list, create, and delete lightweight loose or packed tags with `tag`; short
+    tag names resolve as revisions, and `describe [REV]` reports exact or
+    nearest reachable lightweight tags
 - list tracked index paths with `ls-files`, untracked paths with
     `ls-files --others --exclude-standard`, or machine-readable modified,
     deleted, and staged records with `-z` and `--stage`
@@ -106,15 +109,18 @@ be combined with `--no-pager`.
 - mark untracked files as intent-to-add with `add -N`, so they are no longer
     reported as untracked and appear in `diff --stat` as additions
 - stage regular files, symlinks, directory contents, and tracked deletions with
-    `add`; `add -p` prompts before staging each requested path as a first
-    interactive mode
+    `add`; `add -p` prompts per changed hunk for modified regular tracked files
+    and writes accepted hunks into the index, while untracked additions and
+    tracked deletions are offered as whole-file changes
 - create first-pass commit objects from the index with `commit -m`, or open
     `GIT_EDITOR`, `VISUAL`, or `EDITOR` for `COMMIT_EDITMSG` when no message is
     supplied; executable `pre-commit` and `commit-msg` hooks are honored unless
     `--no-verify` is used
 - print commit history with `log`, including compact `--oneline` output and
-    bounded history with `-N`, `-n N`, or `--max-count=N`; `--format` supports
-    `%H`, `%h`, `%s`, `%T`, `%P`, `%an`, `%ae`, `%n`, and `%%`
+    bounded history with `-N`, `-n N`, or `--max-count=N`; reachable commits
+    are emitted in date/topological order, `--date-order` and `--topo-order`
+    are accepted, and `--format` supports `%H`, `%h`, `%s`, `%T`, `%P`, `%an`,
+    `%ae`, `%n`, and `%%`
 - show a commit header and its parent diff with `show`, or a summary with
     `show --stat`
 - show historical same-position line annotations with `blame [REV] -- path`
@@ -172,15 +178,17 @@ be combined with `--no-pager`.
     conflict markers, merge commits, and merge state files are not implemented
 - no submodules, worktrees, sparse checkout, or fuzzy/similarity rename
     detection yet
-- history traversal walks all commit parents, but log ordering is a simple
-    depth-first traversal rather than native Git's date/topological ordering;
-    merge graph display is not implemented
+- history traversal walks all commit parents and log output is date/topological,
+    but merge graph display and native Git's full revision selection syntax are
+    not implemented
 - commit support is intentionally small: it commits the current index, supports
     `-m`/`--message` or an editor, uses simple environment-based identity
     defaults, runs basic executable hooks, and does not sign commits or clean up
     intent-to-add-only directory shells from tree construction yet
-- `add -p` is currently an interactive per-path staging prompt, not true hunk
-    splitting or partial index application
+- `add -p` supports hunk-level staging for modified regular tracked files, but
+    not interactive edit/split commands, binary files, symlink-specific partial
+    staging, or exact no-final-newline preservation yet; untracked additions and
+    tracked deletions are staged or skipped as whole-file changes
 - `reset` does not implement pathspec reset; `restore` supports ordinary exact
     path restoration but not interactive patch mode; `rm` does not perform
     native Git's full safety checks against staged or unstaged local changes
@@ -203,8 +211,8 @@ be combined with `--no-pager`.
     attribution, or native Git's line-range options
 - `cherry-pick` supports only direct-child commits, and `revert` supports only
     `HEAD` with a single parent
-- tags are lightweight refs only; annotated tags, signatures, and tag deletion
-    are not implemented
+- tags are lightweight refs only; annotated tags, tag signatures, peeled tag
+    resolution, and signed-tag verification are not implemented
 - untracked files are intentionally not included in `diff --stat`; use
     `ls-files --others --exclude-standard` to list them or `add -N` to include
     them as intent-to-add paths

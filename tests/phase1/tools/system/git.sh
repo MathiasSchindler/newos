@@ -316,6 +316,62 @@ if cd "$stage_repo" && "${TEST_BIN_DIR}/git" diff --cached --quiet -- tracked.tx
     fail "git diff --cached --quiet returned success for a staged modification"
 fi
 
+addp_repo="$WORK_DIR/addp-repo"
+"${TEST_BIN_DIR}/git" init "$addp_repo" > "$WORK_DIR/addp-init.out"
+cat > "$addp_repo/file.txt" <<'EOF'
+old1
+same2
+same3
+same4
+same5
+old6
+EOF
+cd "$addp_repo" && "${TEST_BIN_DIR}/git" add file.txt
+cd "$addp_repo" && GIT_AUTHOR_NAME=Patch GIT_AUTHOR_EMAIL=patch@example.invalid GIT_COMMITTER_NAME=Patch GIT_COMMITTER_EMAIL=patch@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/addp-base.out"
+cat > "$addp_repo/file.txt" <<'EOF'
+new1
+same2
+same3
+same4
+same5
+new6
+EOF
+(cd "$addp_repo" && printf 'n\nn\n' | "${TEST_BIN_DIR}/git" add -p -- file.txt) > "$WORK_DIR/addp-reject.out" 2> "$WORK_DIR/addp-reject.err"
+cd "$addp_repo" && "${TEST_BIN_DIR}/git" diff --cached -- file.txt > "$WORK_DIR/addp-reject-cached.out"
+assert_text_equals "$(cat "$WORK_DIR/addp-reject-cached.out")" '' "git add -p staged a rejected hunk"
+(cd "$addp_repo" && printf 'y\nn\n' | "${TEST_BIN_DIR}/git" add -p -- file.txt) > "$WORK_DIR/addp-accept-one.out" 2> "$WORK_DIR/addp-accept-one.err"
+cd "$addp_repo" && "${TEST_BIN_DIR}/git" diff --cached -- file.txt > "$WORK_DIR/addp-accept-one-cached.out"
+assert_file_contains "$WORK_DIR/addp-accept-one-cached.out" '^+new1$' "git add -p did not stage the accepted hunk"
+if grep -q '^+new6$' "$WORK_DIR/addp-accept-one-cached.out"; then
+    fail "git add -p staged a rejected later hunk"
+fi
+cd "$addp_repo" && "${TEST_BIN_DIR}/git" diff -- file.txt > "$WORK_DIR/addp-accept-one-worktree.out"
+assert_file_contains "$WORK_DIR/addp-accept-one-worktree.out" '^+new6$' "git add -p did not leave the rejected hunk in the worktree diff"
+if grep -q '^+new1$' "$WORK_DIR/addp-accept-one-worktree.out"; then
+    fail "git add -p left an accepted hunk unstaged"
+fi
+
+addp_wide_repo="$WORK_DIR/addp-wide-repo"
+"${TEST_BIN_DIR}/git" init "$addp_wide_repo" > "$WORK_DIR/addp-wide-init.out"
+printf 'keep\n' > "$addp_wide_repo/keep.txt"
+printf 'remove\n' > "$addp_wide_repo/delete.txt"
+cd "$addp_wide_repo" && "${TEST_BIN_DIR}/git" add keep.txt delete.txt
+cd "$addp_wide_repo" && GIT_AUTHOR_NAME=Patch GIT_AUTHOR_EMAIL=patch@example.invalid GIT_COMMITTER_NAME=Patch GIT_COMMITTER_EMAIL=patch@example.invalid "${TEST_BIN_DIR}/git" commit -m base > "$WORK_DIR/addp-wide-base.out"
+printf 'fresh\n' > "$addp_wide_repo/new.txt"
+(cd "$addp_wide_repo" && printf 'n\n' | "${TEST_BIN_DIR}/git" add -p -- new.txt) > "$WORK_DIR/addp-new-reject.out" 2> "$WORK_DIR/addp-new-reject.err"
+cd "$addp_wide_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -- new.txt > "$WORK_DIR/addp-new-reject-cached.out"
+assert_text_equals "$(cat "$WORK_DIR/addp-new-reject-cached.out")" '' "git add -p staged a rejected untracked addition"
+(cd "$addp_wide_repo" && printf 'y\n' | "${TEST_BIN_DIR}/git" add -p -- new.txt) > "$WORK_DIR/addp-new-accept.out" 2> "$WORK_DIR/addp-new-accept.err"
+cd "$addp_wide_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -- new.txt > "$WORK_DIR/addp-new-accept-cached.out"
+assert_file_contains "$WORK_DIR/addp-new-accept-cached.out" '^A[[:space:]]*new.txt$' "git add -p did not stage an accepted untracked addition"
+rm -f "$addp_wide_repo/delete.txt"
+(cd "$addp_wide_repo" && printf 'n\n' | "${TEST_BIN_DIR}/git" add -p -- delete.txt) > "$WORK_DIR/addp-delete-reject.out" 2> "$WORK_DIR/addp-delete-reject.err"
+cd "$addp_wide_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -- delete.txt > "$WORK_DIR/addp-delete-reject-cached.out"
+assert_text_equals "$(cat "$WORK_DIR/addp-delete-reject-cached.out")" '' "git add -p staged a rejected tracked deletion"
+(cd "$addp_wide_repo" && printf 'y\n' | "${TEST_BIN_DIR}/git" add -p -- delete.txt) > "$WORK_DIR/addp-delete-accept.out" 2> "$WORK_DIR/addp-delete-accept.err"
+cd "$addp_wide_repo" && "${TEST_BIN_DIR}/git" diff --cached --name-status -- delete.txt > "$WORK_DIR/addp-delete-accept-cached.out"
+assert_file_contains "$WORK_DIR/addp-delete-accept-cached.out" '^D[[:space:]]*delete.txt$' "git add -p did not stage an accepted tracked deletion"
+
 printf 'again\n' > "$stage_repo/tracked.txt"
 cd "$stage_repo" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/stage-status-mm.out"
 assert_file_contains "$WORK_DIR/stage-status-mm.out" '^MM tracked.txt$' "git status did not report a staged and unstaged modification"
@@ -405,6 +461,54 @@ dag_count=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-list --count "$side_c
 assert_text_equals "$dag_count" '2' "git rev-list --count A..B did not count non-first-parent reachable commits"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --format='%P' -n 1 "$merge_commit" > "$WORK_DIR/log-parents.out"
 assert_file_contains "$WORK_DIR/log-parents.out" "^$side_commit $second_commit$" "git log --format=%P did not print all commit parents"
+log_order_info=$(python3 - "$commit_repo" <<'PY'
+import hashlib
+import os
+import sys
+import zlib
+
+repo = sys.argv[1]
+
+def write_object(kind, payload):
+    full = kind.encode() + b" " + str(len(payload)).encode() + b"\0" + payload
+    oid = hashlib.sha1(full).hexdigest()
+    directory = os.path.join(repo, ".git", "objects", oid[:2])
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, oid[2:]), "wb") as handle:
+        handle.write(zlib.compress(full))
+    return oid
+
+blob = write_object("blob", b"order\n")
+tree = write_object("tree", b"100644 order.txt\0" + bytes.fromhex(blob))
+
+def commit(subject, timestamp, parents):
+    payload = f"tree {tree}\n".encode()
+    for parent in parents:
+        payload += f"parent {parent}\n".encode()
+    payload += f"author O <o@example.invalid> {timestamp} +0000\n".encode()
+    payload += f"committer O <o@example.invalid> {timestamp} +0000\n\n{subject}\n".encode()
+    return write_object("commit", payload)
+
+root = commit("root", 100, [])
+newer = commit("newer", 300, [root])
+side = commit("side", 200, [root])
+merge = commit("merge", 400, [side, newer])
+print(root)
+print(newer)
+print(side)
+print(merge)
+PY
+)
+log_order_merge=$(printf '%s\n' "$log_order_info" | sed -n '4p')
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --format='%s' -n 4 "$log_order_merge" > "$WORK_DIR/log-order.out"
+assert_text_equals "$(cat "$WORK_DIR/log-order.out")" "merge
+newer
+side
+root" "git log did not use date/topological ordering across merge parents"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --date-order --format='%s' -n 1 "$log_order_merge" > "$WORK_DIR/log-date-order.out"
+assert_file_contains "$WORK_DIR/log-date-order.out" '^merge$' "git log --date-order did not accept the ordering option"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" log --topo-order --format='%s' -n 1 "$log_order_merge" > "$WORK_DIR/log-topo-order.out"
+assert_file_contains "$WORK_DIR/log-topo-order.out" '^merge$' "git log --topo-order did not accept the ordering option"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" reflog > "$WORK_DIR/reflog.out"
 assert_file_contains "$WORK_DIR/reflog.out" 'HEAD@.0.: checkout' "git reflog did not show the latest HEAD checkout"
 assert_file_contains "$WORK_DIR/reflog.out" 'commit' "git reflog did not record commits"
@@ -458,12 +562,27 @@ cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag > "$WORK_DIR/tag-list.out"
 assert_file_contains "$WORK_DIR/tag-list.out" '^v-first$' "git tag did not list a lightweight tag"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --tags > "$WORK_DIR/show-ref-tags.out"
 assert_file_contains "$WORK_DIR/show-ref-tags.out" "^$first_commit refs/tags/v-first$" "git show-ref --tags did not include the lightweight tag"
+tag_resolved=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" rev-parse v-first | tr -d '\r\n')
+assert_text_equals "$tag_resolved" "$first_commit" "git rev-parse did not resolve a short tag name"
+describe_exact=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" describe "$first_commit" | tr -d '\r\n')
+assert_text_equals "$describe_exact" 'v-first' "git describe did not print an exact lightweight tag"
+describe_second=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" describe "$second_commit" | tr -d '\r\n')
+assert_text_equals "$describe_second" "v-first-1-g$(printf '%s' "$second_commit" | cut -c1-7)" "git describe did not describe a commit after the nearest tag"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag v-delete "$first_commit"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag -d v-delete > "$WORK_DIR/tag-delete-loose.out"
+if cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --verify refs/tags/v-delete > "$WORK_DIR/tag-delete-loose-show.out"; then
+    fail "git tag -d did not delete a loose tag"
+fi
 rm -f "$commit_repo/.git/refs/tags/v-first"
 printf '%s refs/tags/v-packed\n' "$first_commit" > "$commit_repo/.git/packed-refs"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag > "$WORK_DIR/tag-packed-list.out"
 assert_file_contains "$WORK_DIR/tag-packed-list.out" '^v-packed$' "git tag did not list a packed lightweight tag"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --tags > "$WORK_DIR/show-ref-packed-tags.out"
 assert_file_contains "$WORK_DIR/show-ref-packed-tags.out" "^$first_commit refs/tags/v-packed$" "git show-ref --tags did not include a packed tag"
+cd "$commit_repo" && "${TEST_BIN_DIR}/git" tag -d v-packed > "$WORK_DIR/tag-delete-packed.out"
+if cd "$commit_repo" && "${TEST_BIN_DIR}/git" show-ref --verify refs/tags/v-packed > "$WORK_DIR/tag-delete-packed-show.out"; then
+    fail "git tag -d did not delete a packed tag"
+fi
 cat_type=$(cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -t HEAD | tr -d '\r\n')
 assert_text_equals "$cat_type" 'commit' "git cat-file -t HEAD did not report commit"
 cd "$commit_repo" && "${TEST_BIN_DIR}/git" cat-file -p HEAD > "$WORK_DIR/cat-file-head.out"
