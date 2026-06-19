@@ -115,6 +115,8 @@ typedef struct {
     PdfObjectInfo *objects;
     size_t objects_len;
     size_t objects_cap;
+    int *object_index;
+    size_t object_index_cap;
     PdfPageInfo *pages;
     size_t pages_len;
     size_t pages_cap;

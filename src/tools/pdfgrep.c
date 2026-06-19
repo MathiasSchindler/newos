@@ -71,6 +71,13 @@ static int starts_with(const char *text, const char *prefix) {
     return rt_strncmp(text, prefix, length) == 0;
 }
 
+static int append_pending_byte(PdfBuffer *pending, unsigned int value) {
+    if (pending->size + 1U < pending->size) return -1;
+    if (pending->size + 1U > pending->capacity && tool_byte_buffer_reserve(pending, pending->size + 1U) != 0) return -1;
+    pending->data[pending->size++] = (unsigned char)(value & 0xffU);
+    return 0;
+}
+
 static size_t append_literal(const unsigned char *data, size_t size, size_t offset, PdfBuffer *pending) {
     int depth = 1;
 
@@ -104,11 +111,11 @@ static size_t append_literal(const unsigned char *data, size_t size, size_t offs
             } else if (ch == (unsigned char)'\n') {
                 continue;
             }
-            (void)tool_byte_buffer_append_byte(pending, ch);
+            (void)append_pending_byte(pending, ch);
         } else {
             if (ch == (unsigned char)'(') depth += 1;
             if (ch == (unsigned char)')') depth -= 1;
-            if (depth > 0) (void)tool_byte_buffer_append_byte(pending, ch);
+            if (depth > 0) (void)append_pending_byte(pending, ch);
         }
     }
     return offset;
@@ -130,23 +137,29 @@ static size_t append_hex_string(const unsigned char *data, size_t size, size_t o
         if (high < 0) high = value;
         else {
             unsigned char ch = (unsigned char)((high << 4) | value);
-            (void)tool_byte_buffer_append_byte(pending, ch);
+            (void)append_pending_byte(pending, ch);
             high = -1;
         }
         offset += 1U;
     }
     if (high >= 0) {
         unsigned char ch = (unsigned char)(high << 4);
-        (void)tool_byte_buffer_append_byte(pending, ch);
+        (void)append_pending_byte(pending, ch);
     }
     if (offset < size && data[offset] == (unsigned char)'>') offset += 1U;
     return offset;
 }
 
-static int token_equals(const unsigned char *data, size_t start, size_t end, const char *token) {
-    size_t length = rt_strlen(token);
+static int token_is_text_show(const unsigned char *data, size_t start, size_t end) {
+    size_t length = end - start;
 
-    return end >= start && end - start == length && rt_strncmp((const char *)(data + start), token, length) == 0;
+    return (length == 2U && data[start] == (unsigned char)'T' && (data[start + 1U] == (unsigned char)'j' || data[start + 1U] == (unsigned char)'J'));
+}
+
+static int token_is_text_scope(const unsigned char *data, size_t start, size_t end) {
+    size_t length = end - start;
+
+    return (length == 2U && (data[start] == (unsigned char)'B' || data[start] == (unsigned char)'E') && data[start + 1U] == (unsigned char)'T');
 }
 
 static int emit_pending(PdfGrepContext *context, const PdfObjectSpan *object, PdfBuffer *pending) {
@@ -216,9 +229,9 @@ static int scan_text_stream(PdfGrepContext *context, const PdfObjectSpan *object
             size_t start = offset;
 
             while (offset < size && !pdf_is_delim(data[offset])) offset += 1U;
-            if (token_equals(data, start, offset, "Tj") || token_equals(data, start, offset, "TJ")) {
+            if (token_is_text_show(data, start, offset)) {
                 stop = emit_pending(context, object, &pending);
-            } else if (token_equals(data, start, offset, "BT") || token_equals(data, start, offset, "ET")) {
+            } else if (token_is_text_scope(data, start, offset)) {
                 pending.size = 0U;
                 if (pending.data != 0) pending.data[0] = 0U;
             }

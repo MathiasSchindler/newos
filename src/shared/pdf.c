@@ -316,7 +316,7 @@ static int pdf_find_key_from(const unsigned char *data, size_t size, size_t star
     size_t offset;
 
     for (offset = start; offset + key_length <= size; ++offset) {
-        if (data[offset] == (unsigned char)'/' && pdf_text_at(data, size, offset, key) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
+        if (data[offset] == (unsigned char)'/' && pdf_text_at_len(data, size, offset, key, key_length) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
             *offset_out = offset;
             return 1;
         }
@@ -354,7 +354,7 @@ int pdf_find_top_key(const unsigned char *data, size_t size, const char *key, si
         } else if (data[offset] == (unsigned char)']') {
             if (depth != 0U) depth -= 1U;
             offset += 1U;
-        } else if (depth == 1U && data[offset] == (unsigned char)'/' && offset + key_length <= size && pdf_text_at(data, size, offset, key) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
+        } else if (depth == 1U && data[offset] == (unsigned char)'/' && offset + key_length <= size && pdf_text_at_len(data, size, offset, key, key_length) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
             *offset_out = offset;
             return 1;
         } else {
@@ -534,6 +534,58 @@ static int pdf_grow_objects(PdfInfo *info) {
     info->objects = next;
     info->objects_cap = next_capacity;
     return 0;
+}
+
+static size_t pdf_object_index_slot(unsigned int number, unsigned int generation, size_t capacity) {
+    unsigned long long mixed = ((unsigned long long)number << 32U) ^ (unsigned long long)generation;
+
+    mixed ^= mixed >> 33U;
+    mixed *= 0xff51afd7ed558ccdULL;
+    mixed ^= mixed >> 33U;
+    return (size_t)(mixed & (unsigned long long)(capacity - 1U));
+}
+
+static void pdf_object_index_insert_slot(PdfInfo *info, size_t object_index) {
+    const PdfObjectInfo *object = &info->objects[object_index];
+    size_t slot = pdf_object_index_slot(object->number, object->generation, info->object_index_cap);
+
+    while (info->object_index[slot] != 0) {
+        size_t existing_index = (size_t)(info->object_index[slot] - 1);
+        const PdfObjectInfo *existing = &info->objects[existing_index];
+
+        if (existing->number == object->number && existing->generation == object->generation) return;
+        slot = (slot + 1U) & (info->object_index_cap - 1U);
+    }
+    info->object_index[slot] = (int)object_index + 1;
+}
+
+static int pdf_rebuild_object_index(PdfInfo *info, size_t next_capacity) {
+    int *old_index = info->object_index;
+    size_t old_capacity = info->object_index_cap;
+    int *next;
+    size_t index;
+
+    next = (int *)rt_malloc_array(next_capacity, sizeof(next[0]));
+    if (next == 0) return -1;
+    rt_memset(next, 0, next_capacity * sizeof(next[0]));
+    info->object_index = next;
+    info->object_index_cap = next_capacity;
+    for (index = 0U; index < info->objects_len; ++index) pdf_object_index_insert_slot(info, index);
+    rt_free(old_index);
+    (void)old_capacity;
+    return 0;
+}
+
+static int pdf_ensure_object_index_capacity(PdfInfo *info) {
+    size_t next_capacity;
+
+    if (info->object_index_cap != 0U && (info->objects_len + 1U) * 2U <= info->object_index_cap) return 0;
+    next_capacity = info->object_index_cap == 0U ? 64U : info->object_index_cap * 2U;
+    while ((info->objects_len + 1U) * 2U > next_capacity) {
+        if (next_capacity > ((size_t)-1) / 2U) return -1;
+        next_capacity *= 2U;
+    }
+    return pdf_rebuild_object_index(info, next_capacity);
 }
 
 static int pdf_grow_pages(PdfInfo *info) {
@@ -962,9 +1014,12 @@ int pdf_object_stream_data(const PdfDocument *document, const PdfObjectSpan *obj
 
 static int pdf_add_object(PdfInfo *info, unsigned long long number, unsigned long long generation, size_t offset, int has_file_span, size_t body_start, size_t body_end, size_t stream_offset, size_t endstream_offset, int has_stream, const char *type, const char *subtype) {
     PdfObjectInfo *object;
+    size_t object_index;
 
     if (pdf_grow_objects(info) != 0) return -1;
-    object = &info->objects[info->objects_len++];
+    if (pdf_ensure_object_index_capacity(info) != 0) return -1;
+    object_index = info->objects_len++;
+    object = &info->objects[object_index];
     rt_memset(object, 0, sizeof(*object));
     object->number = (unsigned int)number;
     object->generation = (unsigned int)generation;
@@ -977,6 +1032,7 @@ static int pdf_add_object(PdfInfo *info, unsigned long long number, unsigned lon
     object->has_stream = has_stream;
     rt_copy_string(object->type, sizeof(object->type), type != 0 ? type : "");
     rt_copy_string(object->subtype, sizeof(object->subtype), subtype != 0 ? subtype : "");
+    pdf_object_index_insert_slot(info, object_index);
     return 0;
 }
 
@@ -984,6 +1040,21 @@ static int pdf_find_object_index(const PdfInfo *info, unsigned long long number,
     size_t index;
 
     if (number > 4294967295ULL || generation > 4294967295ULL) return 0;
+    if (info->object_index_cap != 0U) {
+        size_t slot = pdf_object_index_slot((unsigned int)number, (unsigned int)generation, info->object_index_cap);
+
+        while (info->object_index[slot] != 0) {
+            size_t existing_index = (size_t)(info->object_index[slot] - 1);
+            const PdfObjectInfo *object = &info->objects[existing_index];
+
+            if (object->number == (unsigned int)number && object->generation == (unsigned int)generation) {
+                if (index_out != 0) *index_out = existing_index;
+                return 1;
+            }
+            slot = (slot + 1U) & (info->object_index_cap - 1U);
+        }
+        return 0;
+    }
     for (index = 0U; index < info->objects_len; ++index) {
         if (info->objects[index].number == (unsigned int)number && info->objects[index].generation == (unsigned int)generation) {
             if (index_out != 0) *index_out = index;
@@ -1417,6 +1488,7 @@ void pdf_info_init(PdfInfo *info) {
 void pdf_info_free(PdfInfo *info) {
     if (info == 0) return;
     rt_free(info->objects);
+    rt_free(info->object_index);
     rt_free(info->pages);
     rt_free(info->fonts);
     rt_free(info->filters);

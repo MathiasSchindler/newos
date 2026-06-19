@@ -9,7 +9,7 @@ static void print_usage(void) {
 static int key_at(const unsigned char *data, size_t size, size_t offset, const char *key) {
     size_t length = rt_strlen(key);
 
-    if (!pdf_text_at(data, size, offset, key)) return 0;
+    if (!pdf_text_at_len(data, size, offset, key, length)) return 0;
     return offset + length >= size || pdf_is_delim(data[offset + length]);
 }
 
