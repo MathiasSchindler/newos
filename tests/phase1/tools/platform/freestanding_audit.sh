@@ -63,9 +63,13 @@ EOF
 [ -z "$unexpected_headers" ] || fail "unexpected hosted-only headers escaped the platform layer: $unexpected_headers"
 
 if [ "$(uname -s)" = 'Linux' ] && [ "$(uname -m)" = 'x86_64' ]; then
-    note "phase1 platform: native freestanding build"
-    assert_command_succeeds make -C "$ROOT_DIR" --no-print-directory freestanding
+    note "phase1 platform: native freestanding binaries"
     FREESTANDING_ECHO="${TEST_BIN_DIR}/echo"
+    if [ ! -x "$FREESTANDING_ECHO" ]; then
+        fallback_build_dir="$WORK_DIR/freestanding-linux-x86_64"
+        assert_command_succeeds make -C "$ROOT_DIR" --no-print-directory TARGET_BUILD_DIR="$fallback_build_dir" freestanding
+        FREESTANDING_ECHO="$fallback_build_dir/echo"
+    fi
     [ -x "$FREESTANDING_ECHO" ] || fail "linux/x86-64 freestanding echo binary was not built"
     "$FREESTANDING_ECHO" freestanding > "$WORK_DIR/freestanding_echo.out"
     assert_file_contains "$WORK_DIR/freestanding_echo.out" '^freestanding$' "linux/x86-64 freestanding echo did not run correctly"

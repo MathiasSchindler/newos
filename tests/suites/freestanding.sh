@@ -136,7 +136,7 @@ else
     fetch_status=1
     attempt=0
     while [ "$attempt" -lt 5 ]; do
-        if "$BIN_DIR/wget" -q -O "$WORK_DIR/http_fetch.txt" "http://127.0.0.1:$HTTP_PORT/index.txt"; then
+        if "$BIN_DIR/wget" -q -O "$WORK_DIR/http_fetch.txt" "http://127.0.0.1:$HTTP_PORT/index.txt" 2> "$WORK_DIR/wget.err"; then
             fetch_status=0
             break
         fi

@@ -76,8 +76,9 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "\nClang secondary instrumentation flags:\n");
     rt_write_cstr(1, "  clang -finstrument-functions -fno-omit-frame-pointer -fno-inline -g -O2 ...\n");
     rt_write_cstr(1, "\nProject build shortcut:\n");
-    rt_write_cstr(1, "  make freestanding PROFILE=1\n");
+    rt_write_cstr(1, "  make freestanding PROFILE=1 LINKER_REPORTS=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/freestanding-linux-x86_64/tool ...\n");
+    rt_write_cstr(1, "  build/freestanding-linux-x86_64/profiler -m build/freestanding-linux-x86_64/.maps/tool.map tool.nprof\n");
     rt_write_cstr(1, "  MACOS_NEWLINKER_MAP_DIR=build/profile-maps make freestanding PROFILE=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/newlinker-macos-aarch64/tool ...\n");
     rt_write_cstr(1, "\nTrace lines accepted by profiler:\n");
@@ -325,6 +326,48 @@ static int parse_linker_map_symbol_line(const char *line) {
     return 1;
 }
 
+static const char *linux_newlinker_text_symbol_name(const char *section) {
+    const char *name;
+
+    if (!tool_starts_with(section, ".text.")) {
+        return 0;
+    }
+    name = section + 6;
+    if (tool_starts_with(name, "startup.")) {
+        name += 8;
+    } else if (tool_starts_with(name, "unlikely.")) {
+        name += 9;
+    } else if (tool_starts_with(name, "hot.")) {
+        name += 4;
+    }
+    return name[0] == '\0' ? 0 : name;
+}
+
+static int parse_linux_newlinker_map_line(const char *line) {
+    const char *cursor = line;
+    char address_token[64];
+    char size_token[64];
+    char section[PROFILER_NAME_CAPACITY];
+    unsigned long long address;
+    unsigned long long size;
+    const char *name;
+
+    if (!next_token(&cursor, address_token, sizeof(address_token)) ||
+        parse_address_token(address_token, &address) != 0 ||
+        !next_token(&cursor, size_token, sizeof(size_token)) ||
+        parse_unsigned_auto(size_token, &size) != 0 ||
+        !next_token(&cursor, section, sizeof(section)) ||
+        section[0] != '.') {
+        return 0;
+    }
+    (void)size;
+    name = linux_newlinker_text_symbol_name(section);
+    if (name != 0) {
+        add_symbol(address, name, 1);
+    }
+    return 1;
+}
+
 static const char *symbol_for_address(unsigned long long address) {
     size_t i;
     size_t best_index = PROFILER_MAX_SYMBOLS;
@@ -410,7 +453,7 @@ static int read_symbols(const char *path) {
         char third[PROFILER_NAME_CAPACITY];
         unsigned long long address;
 
-        if (parse_linker_map_symbol_line(line)) {
+        if (parse_linker_map_symbol_line(line) || parse_linux_newlinker_map_line(line)) {
             continue;
         }
         if (!next_token(&cursor, first, sizeof(first))) {

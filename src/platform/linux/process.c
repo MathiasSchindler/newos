@@ -822,25 +822,453 @@ typedef struct {
 } LinuxUserRegs;
 
 #define LINUX_PTRACE_TRACEME 0
+#define LINUX_PTRACE_PEEKDATA 2
 #define LINUX_PTRACE_PEEKUSER 3
 #define LINUX_PTRACE_SYSCALL 24
 #define LINUX_PTRACE_GETREGS 12
 #define LINUX_PTRACE_SETOPTIONS 0x4200
+#define LINUX_PTRACE_GETEVENTMSG 0x4201
 #define LINUX_PTRACE_O_TRACESYSGOOD 1
+#define LINUX_PTRACE_O_TRACEFORK 2
+#define LINUX_PTRACE_O_TRACEVFORK 4
+#define LINUX_PTRACE_O_TRACECLONE 8
+#define LINUX_TRACE_DECODE_KIND_STRING 1U
+#define LINUX_TRACE_DECODE_KIND_SOCKADDR 2U
+#define LINUX_TRACE_DECODE_KIND_LIST 3U
+#define LINUX_AF_INET 2U
+#define LINUX_AF_INET6 10U
+#define LINUX_POLLIN 0x0001U
+#define LINUX_POLLPRI 0x0002U
+#define LINUX_POLLOUT 0x0004U
+#define LINUX_POLLERR 0x0008U
+#define LINUX_POLLHUP 0x0010U
+#define LINUX_POLLNVAL 0x0020U
+#define LINUX_TRACE_MAX_PROCESSES 128U
+
+typedef struct {
+    unsigned short family;
+    unsigned short port;
+    unsigned char address[4];
+    unsigned char zero[8];
+} LinuxTraceSockaddrIn;
+
+typedef struct {
+    unsigned short family;
+    unsigned short port;
+    unsigned int flowinfo;
+    unsigned char address[16];
+    unsigned int scope_id;
+} LinuxTraceSockaddrIn6;
+
+typedef struct {
+    int fd;
+    short events;
+    short revents;
+} LinuxTracePollfd;
+
+typedef struct {
+    int pid;
+    int in_syscall;
+    int active;
+} LinuxTraceProcessState;
 
 static int linux_wait_for_trace(int pid, int *status_out) {
     return linux_syscall4(LINUX_SYS_WAIT4, pid, (long)status_out, 0, 0) < 0 ? -1 : 0;
 }
 
+static int linux_wait_for_any_trace(int *pid_out, int *status_out) {
+    long pid = linux_syscall4(LINUX_SYS_WAIT4, -1, (long)status_out, 0, 0);
+    if (pid < 0) return -1;
+    *pid_out = (int)pid;
+    return 0;
+}
+
+static int linux_trace_add_process(LinuxTraceProcessState *states, int pid) {
+    size_t i;
+
+    for (i = 0U; i < LINUX_TRACE_MAX_PROCESSES; ++i) {
+        if (states[i].active && states[i].pid == pid) return (int)i;
+    }
+    for (i = 0U; i < LINUX_TRACE_MAX_PROCESSES; ++i) {
+        if (!states[i].active) {
+            states[i].pid = pid;
+            states[i].in_syscall = 0;
+            states[i].active = 1;
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int linux_trace_find_process(LinuxTraceProcessState *states, int pid) {
+    size_t i;
+
+    for (i = 0U; i < LINUX_TRACE_MAX_PROCESSES; ++i) {
+        if (states[i].active && states[i].pid == pid) return (int)i;
+    }
+    return -1;
+}
+
+static int linux_trace_remove_process(LinuxTraceProcessState *states, int pid) {
+    int index = linux_trace_find_process(states, pid);
+    if (index < 0) return 0;
+    states[index].active = 0;
+    return 1;
+}
+
+static int linux_trace_active_processes(const LinuxTraceProcessState *states) {
+    size_t i;
+    int count = 0;
+
+    for (i = 0U; i < LINUX_TRACE_MAX_PROCESSES; ++i) {
+        if (states[i].active) count += 1;
+    }
+    return count;
+}
+
+static int linux_trace_set_options(int pid) {
+    long options = LINUX_PTRACE_O_TRACESYSGOOD |
+                   LINUX_PTRACE_O_TRACEFORK |
+                   LINUX_PTRACE_O_TRACEVFORK |
+                   LINUX_PTRACE_O_TRACECLONE;
+    return linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SETOPTIONS, pid, 0, options) < 0 ? -1 : 0;
+}
+
+static int linux_trace_copy_child_bytes(int pid, unsigned long address, void *buffer, size_t size) {
+    size_t offset = 0U;
+
+    if (address == 0UL || buffer == 0) return -1;
+    while (offset < size) {
+        long word = 0;
+        long rc = linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_PEEKDATA, pid, (long)(address + offset), (long)&word);
+        size_t chunk = sizeof(unsigned long);
+        if (rc < 0) return -1;
+        if (chunk > size - offset) chunk = size - offset;
+        memcpy((char *)buffer + offset, &word, chunk);
+        offset += chunk;
+    }
+    return 0;
+}
+
+static void linux_trace_append_char(PlatformSyscallEvent *event, char ch) {
+    size_t length = event->decoded_length;
+    if (length + 1U >= sizeof(event->decoded)) {
+        event->decoded_truncated = 1U;
+        return;
+    }
+    event->decoded[length++] = ch;
+    event->decoded[length] = '\0';
+    event->decoded_length = (unsigned int)length;
+}
+
+static void linux_trace_append_cstr(PlatformSyscallEvent *event, const char *text) {
+    while (text != 0 && *text != '\0') {
+        linux_trace_append_char(event, *text++);
+    }
+}
+
+static void linux_trace_append_uint(PlatformSyscallEvent *event, unsigned long long value) {
+    char digits[32];
+    size_t count = 0U;
+    if (value == 0ULL) {
+        linux_trace_append_char(event, '0');
+        return;
+    }
+    while (value != 0ULL && count < sizeof(digits)) {
+        digits[count++] = (char)('0' + (value % 10ULL));
+        value /= 10ULL;
+    }
+    while (count > 0U) linux_trace_append_char(event, digits[--count]);
+}
+
+static void linux_trace_append_hex(PlatformSyscallEvent *event, unsigned long long value) {
+    static const char hex[] = "0123456789abcdef";
+    char digits[32];
+    size_t count = 0U;
+    linux_trace_append_cstr(event, "0x");
+    if (value == 0ULL) {
+        linux_trace_append_char(event, '0');
+        return;
+    }
+    while (value != 0ULL && count < sizeof(digits)) {
+        digits[count++] = hex[value & 0xfULL];
+        value >>= 4U;
+    }
+    while (count > 0U) linux_trace_append_char(event, digits[--count]);
+}
+
+static unsigned short linux_trace_ntohs(unsigned short value) {
+    return (unsigned short)(((value & 0x00ffU) << 8) | ((value & 0xff00U) >> 8));
+}
+
+static void linux_trace_append_ipv4(PlatformSyscallEvent *event, const unsigned char bytes[4]) {
+    size_t i;
+    for (i = 0U; i < 4U; ++i) {
+        if (i != 0U) linux_trace_append_char(event, '.');
+        linux_trace_append_uint(event, bytes[i]);
+    }
+}
+
+static void linux_trace_append_ipv6_group(PlatformSyscallEvent *event, unsigned int value) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned int shift = 12U;
+    int started = 0;
+
+    while (shift <= 12U) {
+        unsigned int nibble = (value >> shift) & 0x0fU;
+        if (nibble != 0U || started || shift == 0U) {
+            linux_trace_append_char(event, hex[nibble]);
+            started = 1;
+        }
+        if (shift == 0U) break;
+        shift -= 4U;
+    }
+}
+
+static void linux_trace_append_ipv6(PlatformSyscallEvent *event, const unsigned char bytes[16]) {
+    unsigned short groups[8];
+    int best_start = -1;
+    int best_length = 0;
+    int i;
+
+    for (i = 0; i < 8; ++i) groups[i] = (unsigned short)(((unsigned int)bytes[i * 2] << 8) | (unsigned int)bytes[i * 2 + 1]);
+    for (i = 0; i < 8;) {
+        int start = i;
+        int length = 0;
+        while (i < 8 && groups[i] == 0U) { length += 1; i += 1; }
+        if (length >= 2 && length > best_length) { best_start = start; best_length = length; }
+        if (length == 0) i += 1;
+    }
+    for (i = 0; i < 8; ++i) {
+        if (i == best_start) {
+            linux_trace_append_cstr(event, "::");
+            i += best_length - 1;
+            continue;
+        }
+        if (i > 0 && event->decoded_length > 0U && event->decoded[event->decoded_length - 1U] != ':') linux_trace_append_char(event, ':');
+        linux_trace_append_ipv6_group(event, groups[i]);
+    }
+}
+
+static void linux_trace_decode_sockaddr(int pid, PlatformSyscallEvent *event, unsigned int arg_index) {
+    unsigned long address;
+    unsigned short family = 0U;
+
+    if (event == 0 || arg_index >= 6U) return;
+    address = (unsigned long)event->args[arg_index];
+    if (address == 0UL || linux_trace_copy_child_bytes(pid, address, &family, sizeof(family)) != 0) return;
+    if (family == LINUX_AF_INET) {
+        LinuxTraceSockaddrIn in;
+        if (linux_trace_copy_child_bytes(pid, address, &in, sizeof(in)) != 0) return;
+        event->decoded_arg = arg_index;
+        event->decoded_kind = LINUX_TRACE_DECODE_KIND_SOCKADDR;
+        event->decoded_length = 0U;
+        event->decoded_truncated = 0U;
+        event->decoded[0] = '\0';
+        linux_trace_append_ipv4(event, in.address);
+        linux_trace_append_char(event, ':');
+        linux_trace_append_uint(event, linux_trace_ntohs(in.port));
+    } else if (family == LINUX_AF_INET6) {
+        LinuxTraceSockaddrIn6 in6;
+        if (linux_trace_copy_child_bytes(pid, address, &in6, sizeof(in6)) != 0) return;
+        event->decoded_arg = arg_index;
+        event->decoded_kind = LINUX_TRACE_DECODE_KIND_SOCKADDR;
+        event->decoded_length = 0U;
+        event->decoded_truncated = 0U;
+        event->decoded[0] = '\0';
+        linux_trace_append_char(event, '[');
+        linux_trace_append_ipv6(event, in6.address);
+        linux_trace_append_cstr(event, "]:");
+        linux_trace_append_uint(event, linux_trace_ntohs(in6.port));
+        if (in6.scope_id != 0U) {
+            linux_trace_append_cstr(event, "%scope=");
+            linux_trace_append_uint(event, in6.scope_id);
+        }
+    } else {
+        event->decoded_arg = arg_index;
+        event->decoded_kind = LINUX_TRACE_DECODE_KIND_SOCKADDR;
+        event->decoded_length = 0U;
+        event->decoded_truncated = 0U;
+        event->decoded[0] = '\0';
+        linux_trace_append_cstr(event, "sa_family=");
+        linux_trace_append_uint(event, family);
+    }
+}
+
+static int linux_trace_append_poll_events(PlatformSyscallEvent *event, short value) {
+    unsigned int remaining = (unsigned int)(unsigned short)value;
+    int wrote = 0;
+#define LINUX_TRACE_POLL_FLAG(bit, name) do { \
+    if ((remaining & (bit)) != 0U) { \
+        if (wrote) linux_trace_append_char(event, '|'); \
+        linux_trace_append_cstr(event, (name)); \
+        wrote = 1; \
+        remaining &= ~(bit); \
+    } \
+} while (0)
+    LINUX_TRACE_POLL_FLAG(LINUX_POLLIN, "POLLIN");
+    LINUX_TRACE_POLL_FLAG(LINUX_POLLPRI, "POLLPRI");
+    LINUX_TRACE_POLL_FLAG(LINUX_POLLOUT, "POLLOUT");
+    LINUX_TRACE_POLL_FLAG(LINUX_POLLERR, "POLLERR");
+    LINUX_TRACE_POLL_FLAG(LINUX_POLLHUP, "POLLHUP");
+    LINUX_TRACE_POLL_FLAG(LINUX_POLLNVAL, "POLLNVAL");
+#undef LINUX_TRACE_POLL_FLAG
+    if (!wrote || remaining != 0U) {
+        if (wrote) linux_trace_append_char(event, '|');
+        linux_trace_append_hex(event, remaining);
+    }
+    return 0;
+}
+
+static void linux_trace_decode_pollfds(int pid, PlatformSyscallEvent *event, unsigned int arg_index, unsigned long count) {
+    unsigned long address;
+    unsigned long index;
+    unsigned long limit;
+
+    if (event == 0 || arg_index >= 6U) return;
+    address = (unsigned long)event->args[arg_index];
+    if (address == 0UL) return;
+    limit = count > 4UL ? 4UL : count;
+    event->decoded_arg = arg_index;
+    event->decoded_kind = LINUX_TRACE_DECODE_KIND_LIST;
+    event->decoded_length = 0U;
+    event->decoded_truncated = count > limit ? 1U : 0U;
+    event->decoded[0] = '\0';
+    linux_trace_append_char(event, '[');
+    for (index = 0UL; index < limit; ++index) {
+        LinuxTracePollfd pollfd;
+        if (linux_trace_copy_child_bytes(pid, address + index * sizeof(pollfd), &pollfd, sizeof(pollfd)) != 0) {
+            event->decoded_truncated = 1U;
+            break;
+        }
+        if (index != 0UL) linux_trace_append_char(event, ',');
+        linux_trace_append_cstr(event, "{fd=");
+        linux_trace_append_uint(event, (unsigned int)pollfd.fd);
+        linux_trace_append_cstr(event, ",events=");
+        linux_trace_append_poll_events(event, pollfd.events);
+        linux_trace_append_char(event, '}');
+    }
+    linux_trace_append_char(event, ']');
+}
+
+static void linux_trace_copy_child_string(int pid, PlatformSyscallEvent *event, unsigned int arg_index) {
+    unsigned long address;
+    size_t out = 0U;
+    size_t offset = 0U;
+
+    if (event == 0 || arg_index >= 6U) return;
+    address = (unsigned long)event->args[arg_index];
+    if (address == 0UL) return;
+    while (out < sizeof(event->decoded)) {
+        long word = 0;
+        long rc = linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_PEEKDATA, pid, (long)(address + offset), (long)&word);
+        unsigned long value = (unsigned long)word;
+        size_t byte_index;
+
+        if (rc < 0) {
+            if (out == 0U) return;
+            break;
+        }
+        for (byte_index = 0U; byte_index < sizeof(unsigned long) && out < sizeof(event->decoded); ++byte_index) {
+            char ch = (char)((value >> (byte_index * 8U)) & 0xffU);
+
+            if (ch == '\0') {
+                event->decoded_arg = arg_index;
+                event->decoded_kind = LINUX_TRACE_DECODE_KIND_STRING;
+                event->decoded_length = (unsigned int)out;
+                event->decoded_truncated = 0U;
+                return;
+            }
+            event->decoded[out++] = ch;
+        }
+        offset += sizeof(unsigned long);
+    }
+    event->decoded_arg = arg_index;
+    event->decoded_kind = LINUX_TRACE_DECODE_KIND_STRING;
+    event->decoded_length = (unsigned int)out;
+    event->decoded_truncated = 1U;
+}
+
+static void linux_trace_decode_entry(int pid, PlatformSyscallEvent *event) {
+    if (event == 0) return;
+    if (!event->entering) {
+        switch (event->number) {
+            case LINUX_SYS_ACCEPT:
+            case LINUX_SYS_ACCEPT4:
+            case 51:
+            case 52:
+                if (event->result >= 0) linux_trace_decode_sockaddr(pid, event, 1U);
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+    switch (event->number) {
+        case 2:
+        case 4:
+        case 6:
+        case 21:
+        case 59:
+        case 76:
+        case 80:
+        case 83:
+        case 84:
+        case 85:
+        case 86:
+        case 87:
+        case 88:
+        case 89:
+        case 90:
+        case 137:
+        case LINUX_SYS_SYMLINKAT:
+            linux_trace_copy_child_string(pid, event, 0U);
+            break;
+        case LINUX_SYS_OPENAT:
+        case LINUX_SYS_NEWFSTATAT:
+        case LINUX_SYS_UNLINKAT:
+        case LINUX_SYS_READLINKAT:
+            linux_trace_copy_child_string(pid, event, 1U);
+            break;
+        case LINUX_SYS_MKDIRAT:
+        case LINUX_SYS_MKNODAT:
+        case LINUX_SYS_FCHOWNAT:
+        case LINUX_SYS_RENAMEAT:
+        case LINUX_SYS_LINKAT:
+        case LINUX_SYS_FCHMODAT:
+        case LINUX_SYS_UTIMENSAT:
+            linux_trace_copy_child_string(pid, event, 1U);
+            break;
+        case LINUX_SYS_CONNECT:
+        case LINUX_SYS_BIND:
+            linux_trace_decode_sockaddr(pid, event, 1U);
+            break;
+        case LINUX_SYS_SENDTO:
+            linux_trace_decode_sockaddr(pid, event, 4U);
+            break;
+        case LINUX_SYS_POLL:
+        case LINUX_SYS_PPOLL:
+            linux_trace_decode_pollfds(pid, event, 0U, (unsigned long)event->args[1]);
+            break;
+        default:
+            break;
+    }
+}
+
 int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out) {
     long pid;
+    int root_pid;
     int status = 0;
-    int in_syscall = 0;
+    int current_pid;
+    int root_exit_status = 1;
+    LinuxTraceProcessState states[LINUX_TRACE_MAX_PROCESSES];
     PlatformSyscallEvent event;
 
     if (argv == 0 || argv[0] == 0 || callback == 0) return -1;
+    rt_memset(states, 0, sizeof(states));
     pid = linux_syscall5(LINUX_SYS_CLONE, LINUX_SIGCHLD, 0, 0, 0, 0);
     if (pid < 0) return -1;
+    root_pid = (int)pid;
     if (pid == 0) {
         (void)linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_TRACEME, 0, 0, 0);
         (void)linux_syscall2(LINUX_SYS_KILL, linux_syscall0(LINUX_SYS_GETPID), LINUX_SIGSTOP);
@@ -860,26 +1288,64 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
         linux_child_exit(127);
     }
     if (linux_wait_for_trace((int)pid, &status) != 0) return -1;
-    (void)linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SETOPTIONS, pid, 0, LINUX_PTRACE_O_TRACESYSGOOD);
+    if (linux_trace_add_process(states, (int)pid) < 0) return -1;
+    (void)linux_trace_set_options((int)pid);
+    if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SYSCALL, (int)pid, 0, 0) < 0) return -1;
     for (;;) {
         LinuxUserRegs regs;
         int sig;
+        int state_index;
 
-        if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SYSCALL, pid, 0, 0) < 0) return -1;
-        if (linux_wait_for_trace((int)pid, &status) != 0) return -1;
-        if ((status & 0x7f) == 0) {
-            if (exit_status_out != 0) *exit_status_out = (status >> 8) & 0xff;
+        if (linux_wait_for_any_trace(&current_pid, &status) != 0) {
+            if (exit_status_out != 0) *exit_status_out = root_exit_status;
             return 0;
         }
-        if ((status & 0xff) != 0x7f) continue;
-        sig = (status >> 8) & 0xff;
-        if (sig != (LINUX_SIGTRAP | 0x80)) {
+        if ((status & 0x7f) == 0) {
+            if (current_pid == root_pid) root_exit_status = (status >> 8) & 0xff;
+            (void)linux_trace_remove_process(states, current_pid);
+            if (linux_trace_active_processes(states) == 0) {
+                if (exit_status_out != 0) *exit_status_out = root_exit_status;
+                return 0;
+            }
             continue;
         }
-        if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_GETREGS, pid, 0, (long)&regs) < 0) return -1;
+        if ((status & 0xff) != 0x7f) {
+            if (current_pid == root_pid) root_exit_status = linux_decode_wait_status(status);
+            (void)linux_trace_remove_process(states, current_pid);
+            if (linux_trace_active_processes(states) == 0) {
+                if (exit_status_out != 0) *exit_status_out = root_exit_status;
+                return 0;
+            }
+            continue;
+        }
+        sig = (status >> 8) & 0xff;
+        state_index = linux_trace_find_process(states, current_pid);
+        if (state_index < 0) {
+            state_index = linux_trace_add_process(states, current_pid);
+            if (state_index < 0) return -1;
+            (void)linux_trace_set_options(current_pid);
+        }
+        if (sig == LINUX_SIGTRAP && ((unsigned int)status >> 16U) != 0U) {
+            unsigned long new_pid = 0UL;
+            unsigned int event_code = (unsigned int)status >> 16U;
+            if (event_code == 1U || event_code == 2U || event_code == 3U) {
+                if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_GETEVENTMSG, current_pid, 0, (long)&new_pid) >= 0 && new_pid != 0UL) {
+                    (void)linux_trace_add_process(states, (int)new_pid);
+                    (void)linux_trace_set_options((int)new_pid);
+                }
+            }
+            if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SYSCALL, current_pid, 0, 0) < 0) return -1;
+            continue;
+        }
+        if (sig != (LINUX_SIGTRAP | 0x80)) {
+            (void)linux_trace_set_options(current_pid);
+            if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SYSCALL, current_pid, 0, 0) < 0) return -1;
+            continue;
+        }
+        if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_GETREGS, current_pid, 0, (long)&regs) < 0) return -1;
         rt_memset(&event, 0, sizeof(event));
-        event.entering = !in_syscall;
-        event.pid = (int)pid;
+        event.entering = !states[state_index].in_syscall;
+        event.pid = current_pid;
         event.timestamp_ns = platform_get_monotonic_time_ns();
         event.number = (long)regs.orig_rax;
         event.args[0] = (long)regs.rdi;
@@ -889,8 +1355,10 @@ int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback cal
         event.args[4] = (long)regs.r8;
         event.args[5] = (long)regs.r9;
         event.result = (long)regs.rax;
+        linux_trace_decode_entry(current_pid, &event);
         if (callback(&event, user_data) != 0) return -1;
-        in_syscall = !in_syscall;
+        states[state_index].in_syscall = !states[state_index].in_syscall;
+        if (linux_syscall4(LINUX_SYS_PTRACE, LINUX_PTRACE_SYSCALL, current_pid, 0, 0) < 0) return -1;
     }
 }
 #else
@@ -1103,6 +1571,26 @@ static void linux_lookup_username(unsigned int uid, char *buffer, size_t buffer_
     }
 }
 
+static int linux_parse_status_uint_token(const char *text, unsigned long long *value_out) {
+    char token[32];
+    size_t used = 0U;
+
+    if (text == 0 || value_out == 0) {
+        return -1;
+    }
+    while (*text == ' ' || *text == '\t') {
+        text += 1;
+    }
+    while (*text >= '0' && *text <= '9') {
+        if (used + 1U >= sizeof(token)) {
+            return -1;
+        }
+        token[used++] = *text++;
+    }
+    token[used] = '\0';
+    return used == 0U ? -1 : rt_parse_uint(token, value_out);
+}
+
 static void linux_load_process_status(const char *status_path, PlatformProcessEntry *entry) {
     char buf[2048];
     long status_fd;
@@ -1148,21 +1636,18 @@ static void linux_load_process_status(const char *status_path, PlatformProcessEn
         } else if (rt_strncmp(line, "PPid:", 5) == 0) {
             unsigned long long ppid = 0;
             p = line + 5;
-            while (*p == ' ' || *p == '\t') p++;
-            rt_parse_uint(p, &ppid);
+            (void)linux_parse_status_uint_token(p, &ppid);
             entry->ppid = (int)ppid;
         } else if (rt_strncmp(line, "Uid:", 4) == 0) {
             unsigned long long uid = 0;
             p = line + 4;
-            while (*p == ' ' || *p == '\t') p++;
-            rt_parse_uint(p, &uid);
+            (void)linux_parse_status_uint_token(p, &uid);
             entry->uid = (unsigned int)uid;
             linux_lookup_username(entry->uid, entry->user, sizeof(entry->user));
         } else if (rt_strncmp(line, "VmRSS:", 6) == 0) {
             unsigned long long rss = 0;
             p = line + 6;
-            while (*p == ' ' || *p == '\t') p++;
-            rt_parse_uint(p, &rss);
+            (void)linux_parse_status_uint_token(p, &rss);
             entry->rss_kb = rss;
         }
 

@@ -63,7 +63,7 @@ esac
 
 assert_command_succeeds "${TEST_BIN_DIR}/pkill" -0 -P $$ -x sleep
 kill "$sleep_pid"
-wait "$sleep_pid" || true
+wait "$sleep_pid" 2>/dev/null || true
 trap - EXIT HUP INT TERM
 
 pgrep_none_status=0

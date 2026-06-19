@@ -933,6 +933,9 @@ static int linux_parse_ipv6_text(const char *text, LinuxIn6Addr *address_out) {
 
 static void linux_ipv6_to_text(const LinuxIn6Addr *address, char *buffer, size_t buffer_size) {
     static const char digits[] = "0123456789abcdef";
+    unsigned short groups[8];
+    int best_start = -1;
+    int best_length = 0;
     size_t used = 0U;
     int i;
 
@@ -945,11 +948,45 @@ static void linux_ipv6_to_text(const LinuxIn6Addr *address, char *buffer, size_t
     }
 
     for (i = 0; i < 8; ++i) {
-        unsigned int value = ((unsigned int)address->bytes[i * 2] << 8) | (unsigned int)address->bytes[i * 2 + 1];
+        groups[i] = (unsigned short)(((unsigned int)address->bytes[i * 2] << 8) | (unsigned int)address->bytes[i * 2 + 1]);
+    }
+
+    for (i = 0; i < 8;) {
+        int run_start = i;
+        int run_length = 0;
+
+        while (i < 8 && groups[i] == 0U) {
+            run_length += 1;
+            i += 1;
+        }
+        if (run_length > best_length && run_length >= 2) {
+            best_start = run_start;
+            best_length = run_length;
+        }
+        if (run_length == 0) {
+            i += 1;
+        }
+    }
+
+    for (i = 0; i < 8; ++i) {
+        unsigned int value = groups[i];
         unsigned int shift = 12U;
         int started = 0;
 
-        if (i > 0 && used + 1U < buffer_size) {
+        if (i == best_start) {
+            if (used + 1U < buffer_size) {
+                buffer[used++] = ':';
+                buffer[used] = '\0';
+            }
+            if (used + 1U < buffer_size) {
+                buffer[used++] = ':';
+                buffer[used] = '\0';
+            }
+            i += best_length - 1;
+            continue;
+        }
+
+        if (i > 0 && !(used > 0U && buffer[used - 1U] == ':') && used + 1U < buffer_size) {
             buffer[used++] = ':';
             buffer[used] = '\0';
         }
@@ -2914,6 +2951,7 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     unsigned int interval_seconds;
     unsigned short identifier;
     int sock;
+    int allow_identifier_rewrite = 0;
     unsigned int sequence;
     unsigned long long overall_start_ms;
     int deadline_exceeded = 0;
@@ -3097,6 +3135,10 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
     }
 
     sock = linux_open_inet_socket(LINUX_SOCK_RAW, LINUX_IPPROTO_ICMP);
+    if (sock < 0) {
+        sock = linux_open_inet_socket(LINUX_SOCK_DGRAM, LINUX_IPPROTO_ICMP);
+        allow_identifier_rewrite = 1;
+    }
     if (sock < 0 || linux_connect_ipv4(sock, &address, 0U) != 0) {
         if (sock >= 0) {
             platform_close(sock);
@@ -3181,7 +3223,7 @@ int platform_ping_host(const char *host, const PlatformPingOptions *options) {
 
             reply_icmp = (LinuxIcmpPacket *)(reply + ip_header_length);
             if (reply_icmp->type == LINUX_ICMP_REPLY &&
-                linux_net_to_host16(reply_icmp->identifier) == identifier &&
+                (allow_identifier_rewrite || linux_net_to_host16(reply_icmp->identifier) == identifier) &&
                 linux_net_to_host16(reply_icmp->sequence) == (unsigned short)sequence) {
                 unsigned long long elapsed = linux_monotonic_milliseconds() - start_ms;
                 unsigned int ttl = (ip_header_length >= 9U) ? reply[8] : 0U;

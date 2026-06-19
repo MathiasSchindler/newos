@@ -35,6 +35,7 @@ FREESTANDING_OPT_CFLAGS ?= $(shell printf 'int x;\n' | "$(TARGET_CC)" $(TARGET_C
 FREESTANDING_SIZE_CFLAGS ?= $(shell printf 'int x;\n' | "$(TARGET_CC)" $(TARGET_CC_TARGET_FLAG) -fcf-protection=none -falign-functions=1 -falign-jumps=1 -falign-loops=1 -falign-labels=1 -fomit-frame-pointer -fno-ident -x c - -c -o /tmp/newos-size-flags-check.o >/dev/null 2>&1 && echo -fcf-protection=none -falign-functions=1 -falign-jumps=1 -falign-loops=1 -falign-labels=1 -fomit-frame-pointer -fno-ident; rm -f /tmp/newos-size-flags-check.o)
 FREESTANDING_LTO_FLAGS ?= -flto
 PROFILE ?= 0
+LINKER_REPORTS ?= 0
 PROFILE_CFLAGS ?= $(if $(filter 1 yes true,$(PROFILE)),-finstrument-functions -fno-omit-frame-pointer -fno-inline)
 PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/platform/linux/profiler_runtime.c)
 MACOS_PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/platform/macos/profiler_runtime.c)
@@ -75,7 +76,7 @@ BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
 TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
 
 MACOS_BUILD_DIR ?= $(BUILD_ROOT)/macos-$(MACOS_FREESTANDING_ARCH)
-TEST_FREESTANDING_BUILD_DIR ?= $(if $(LOCAL_MACOS_FREESTANDING),$(MACOS_BUILD_DIR),$(TARGET_BUILD_DIR))
+TEST_FREESTANDING_BUILD_DIR ?= $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR),$(TARGET_BUILD_DIR))
 MAOS_SMOKE_TOOLS ?= true false echo printf rev seq cat basename dirname cut tr wc
 MAOS_SMOKE_TARGETS := $(addprefix $(MACOS_BUILD_DIR)/,$(MACOS_SMOKE_TOOLS))
 
@@ -242,15 +243,9 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 
 .PHONY: all host freestanding test benchmark clean
 
-test: freestanding
-ifeq ($(LOCAL_PLATFORM_ONLY),0)
-	NEWOS_FREESTANDING_BUILD_DIR="$(abspath $(TARGET_BUILD_DIR))" sh ./tests/phase1/run_phase1_tests.sh
-	NEWOS_FREESTANDING_BUILD_DIR="$(abspath $(TARGET_BUILD_DIR))" sh ./tests/suites/freestanding.sh
-else
-	@echo "Running tests..."
-	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh || true
-	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh || true
-endif
+test: $(DEFAULT_ALL_TARGETS)
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
+	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh
 
 benchmark: host
 	sh ./tests/benchmarks/run_benchmarks.sh
@@ -271,7 +266,7 @@ ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 freestanding: $(MACOS_ALL_TOOL_TARGETS)
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
 freestanding: $(BUILD_DIR)/linker
-	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_PROFILE="$(PROFILE)" bash scripts/build-freestanding-newlinker.sh
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_PROFILE="$(PROFILE)" LINKER_REPORTS="$(LINKER_REPORTS)" bash scripts/build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif
@@ -281,7 +276,7 @@ ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 freestanding: $(MACOS_ALL_TOOL_TARGETS)
 else ifeq ($(FREESTANDING_USE_NEWLINKER),1)
 freestanding: $(BUILD_DIR)/linker
-	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_PROFILE="$(PROFILE)" bash scripts/build-freestanding-newlinker.sh
+	WORK="$(abspath $(TARGET_BUILD_DIR))" LINKER="$(abspath $(BUILD_DIR)/linker)" NEWLINKER_CC="$(TARGET_CC)" NEWLINKER_LINK_JOBS="$(PARALLEL_JOBS)" NEWLINKER_PROFILE="$(PROFILE)" LINKER_REPORTS="$(LINKER_REPORTS)" bash scripts/build-freestanding-newlinker.sh
 else
 freestanding: $(TARGET_BUILD_DIR)/.ssh_core_check $(addprefix $(TARGET_BUILD_DIR)/,$(TOOLS))
 endif

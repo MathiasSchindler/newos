@@ -15,6 +15,15 @@ if [ ! -x "$SQL_BIN" ]; then
     SQL_BIN="$ROOT_DIR/build/host-macos-aarch64/sql"
 fi
 
+external_pgp_fixtures_available=1
+for required_pgp_fixture in "$SAMPLE_KEY" "$SPIEGEL_KEY" "$RWIEGAND_KEY" "$RAIMOND_KEY"; do
+    if [ ! -r "$required_pgp_fixture" ]; then
+        note "missing optional PGP fixture: $required_pgp_fixture"
+        external_pgp_fixtures_available=0
+    fi
+done
+
+if [ "$external_pgp_fixtures_available" -eq 1 ]; then
 "${TEST_BIN_DIR}/pgpkey" show "$SAMPLE_KEY" > "$WORK_DIR/show.out"
 assert_file_contains "$WORK_DIR/show.out" '^primary: public primary, v4, RSA encrypt/sign, 4096 bits, created 2016-03-01$' "pgpkey show did not summarize the RSA primary key"
 assert_file_contains "$WORK_DIR/show.out" '^fingerprint: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey show did not print the expected fingerprint"
@@ -85,6 +94,9 @@ assert_file_contains "$WORK_DIR/store-list.out" 'SPIEGEL-Verlag Hamburg' "pgpkey
 assert_file_contains "$WORK_DIR/show_store.out" 'issuer-uid SPIEGEL-Verlag Hamburg <Investigativ@spiegel.de>' "pgpkey show --store did not resolve store issuer UID labels"
 "${TEST_BIN_DIR}/pgpkey" store rebuild-index "$STORE_DIR" > "$WORK_DIR/store-reindex.out"
 assert_file_contains "$WORK_DIR/store-reindex.out" 'indexed: .*pgpkeys\.sqs' "pgpkey store rebuild-index did not report the rebuilt index"
+else
+    note "skipping external PGP certificate corpus checks"
+fi
 
 if "${TEST_BIN_DIR}/pgpkey" generate --userid "Test User <test@example.com>" --out "$WORK_DIR/secret.asc" --public-out "$WORK_DIR/public.asc" > "$WORK_DIR/generate_no_ack.out" 2> "$WORK_DIR/generate_no_ack.err"; then
     fail "pgpkey generate created an unprotected secret key without --no-passphrase"
@@ -154,6 +166,7 @@ assert_file_contains "$WORK_DIR/generate.jsonl" '"version":6' "pgpkey --json gen
 assert_file_contains "$WORK_DIR/generate.jsonl" '"curve":"Ed25519"' "pgpkey --json generate did not report the curve"
 assert_file_contains "$WORK_DIR/generate.jsonl" '"protected":false' "pgpkey --json generate did not report protection status"
 
+if [ "$external_pgp_fixtures_available" -eq 1 ]; then
 "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" import "$SAMPLE_KEY" > "$WORK_DIR/import.out"
 assert_file_contains "$WORK_DIR/import.out" '^imported: 86bbadd51b38d4f21fe8c46c99d37c39fa2c23a8$' "pgpkey import did not report the imported fingerprint"
 "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" import "$SAMPLE_KEY" > "$WORK_DIR/import_again.out"
@@ -187,3 +200,6 @@ if "${TEST_BIN_DIR}/pgpkey" -k "$KEYRING" export deadbeef > "$WORK_DIR/missing.o
     fail "pgpkey export accepted a missing key selector"
 fi
 assert_file_contains "$WORK_DIR/missing.err" 'key not found' "pgpkey export did not report a missing key"
+else
+    note "skipping external PGP keyring import/export checks"
+fi

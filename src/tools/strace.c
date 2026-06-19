@@ -10,6 +10,7 @@
 #define STRACE_FILTER_TOKEN_CAPACITY 32
 #define STRACE_MAX_SUMMARY 128
 #define STRACE_DIRECT_SYSCALL_LIMIT 1024
+#define STRACE_MAX_PENDING_EVENTS 128
 
 static int show_numbers;
 static int json_output;
@@ -21,6 +22,8 @@ static int trace_output_fd = -1;
 static PlatformSyscallEvent pending_event;
 static PlatformSyscallEvent pending_exit_event;
 static int have_pending;
+static PlatformSyscallEvent pending_events[STRACE_MAX_PENDING_EVENTS];
+static unsigned char pending_event_used[STRACE_MAX_PENDING_EVENTS];
 static long filter_numbers[STRACE_MAX_FILTERS];
 static unsigned char filter_direct[STRACE_DIRECT_SYSCALL_LIMIT];
 static size_t filter_count;
@@ -534,7 +537,12 @@ static int write_decoded_arg(int fd, const PlatformSyscallEvent *event, int arg_
     if (decoded_source->decoded_kind != 0U && decoded_source->decoded_arg == (unsigned int)arg_index) {
         size_t length = decoded_source->decoded_length;
         if (length > sizeof(decoded_source->decoded)) length = sizeof(decoded_source->decoded);
-        return write_escaped_text(fd, decoded_source->decoded, length, decoded_source->decoded_truncated != 0U);
+        if (decoded_source->decoded_kind == 1U) {
+            return write_escaped_text(fd, decoded_source->decoded, length, decoded_source->decoded_truncated != 0U);
+        }
+        if (rt_write_cstr(fd, decoded_source->decoded) != 0) return -1;
+        if (decoded_source->decoded_truncated && rt_write_cstr(fd, "...") != 0) return -1;
+        return 0;
     }
 #if defined(__APPLE__)
     if (event->number == 5 && arg_index == 1) return write_open_flags(fd, event->args[arg_index]);
@@ -557,12 +565,30 @@ static int json_write_decoded(const PlatformSyscallEvent *event) {
     if (rt_write_cstr(output_fd, "\"arg\":") != 0) return -1;
     if (rt_write_uint(output_fd, decoded_source->decoded_arg) != 0) return -1;
     if (rt_write_cstr(output_fd, ",\"kind\":") != 0) return -1;
-    if (tool_json_write_string(output_fd, decoded_source->decoded_kind == 1U ? "string" : decoded_source->decoded_kind == 3U ? "list" : "bytes") != 0) return -1;
+    if (tool_json_write_string(output_fd,
+                               decoded_source->decoded_kind == 1U ? "string" :
+                               decoded_source->decoded_kind == 2U ? "sockaddr" :
+                               decoded_source->decoded_kind == 3U ? "list" : "bytes") != 0) return -1;
     if (rt_write_cstr(output_fd, ",\"value\":") != 0) return -1;
     if (tool_json_write_string_n(output_fd, decoded_source->decoded, length) != 0) return -1;
     if (rt_write_cstr(output_fd, ",\"truncated\":") != 0) return -1;
     if (rt_write_cstr(output_fd, decoded_source->decoded_truncated ? "true" : "false") != 0) return -1;
     return rt_write_char(output_fd, '}');
+}
+
+static size_t pending_slot_for_pid(int pid, int create) {
+    size_t i;
+    size_t free_slot = STRACE_MAX_PENDING_EVENTS;
+
+    for (i = 0U; i < STRACE_MAX_PENDING_EVENTS; ++i) {
+        if (pending_event_used[i] && pending_events[i].pid == pid) return i;
+        if (!pending_event_used[i] && free_slot == STRACE_MAX_PENDING_EVENTS) free_slot = i;
+    }
+    if (create && free_slot != STRACE_MAX_PENDING_EVENTS) {
+        pending_event_used[free_slot] = 1U;
+        return free_slot;
+    }
+    return STRACE_MAX_PENDING_EVENTS;
 }
 
 static int json_write_metadata(const PlatformSyscallEvent *event, unsigned long long duration_ns) {
@@ -602,24 +628,40 @@ static int write_summary(void) {
 
 static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
     PlatformSyscallEvent completed;
+    unsigned long long entry_timestamp_ns;
     unsigned long long duration_ns = 0ULL;
 
     (void)user_data;
     if (event->entering) {
-        pending_event = *event;
-        have_pending = 1;
+        size_t slot = pending_slot_for_pid(event->pid, 1);
+        if (slot != STRACE_MAX_PENDING_EVENTS) {
+            pending_events[slot] = *event;
+        } else {
+            pending_event = *event;
+            have_pending = 1;
+        }
         return 0;
     }
     pending_exit_event = *event;
-    completed = have_pending ? pending_event : *event;
+    {
+        size_t slot = pending_slot_for_pid(event->pid, 0);
+        if (slot != STRACE_MAX_PENDING_EVENTS) {
+            completed = pending_events[slot];
+            pending_event_used[slot] = 0U;
+            have_pending = 0;
+        } else {
+            completed = have_pending ? pending_event : *event;
+            have_pending = 0;
+        }
+    }
+    entry_timestamp_ns = completed.timestamp_ns;
     completed.result = event->result;
     completed.timestamp_ns = event->timestamp_ns;
-    if (have_pending && event->timestamp_ns >= pending_event.timestamp_ns) {
-        duration_ns = event->timestamp_ns - pending_event.timestamp_ns;
+    if (event->timestamp_ns >= entry_timestamp_ns) {
+        duration_ns = event->timestamp_ns - entry_timestamp_ns;
     } else if (event->duration_ns != 0ULL) {
         duration_ns = event->duration_ns;
     }
-    have_pending = 0;
     if (trace_output_fd >= 0 && is_write_syscall_number(completed.number) && completed.args[0] == trace_output_fd) {
         return 0;
     }

@@ -101,6 +101,9 @@ static int sections_have_suffix_bytes(const LinkObject *folded_object,
     if (!section_is_readonly_data(folded) || !section_is_readonly_data(master) || folded->size == 0ULL || folded->size >= master->size) {
         return 0;
     }
+    if (section_has_relocations(folded_object, folded->index) || section_has_relocations(master_object, master->index)) {
+        return 0;
+    }
     if (folded->type == SHT_NOBITS || master->type == SHT_NOBITS) {
         return 0;
     }

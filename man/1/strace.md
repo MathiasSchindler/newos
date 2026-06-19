@@ -14,10 +14,12 @@ strace [-n] [-p] [-T] [-c] [-o FILE] [-e SYSCALL[,SYSCALL...]] [--json] --record
 ## DESCRIPTION
 
 `strace` runs COMMAND under the platform syscall tracing backend and prints one
-line for each completed system call. The Linux backend uses `ptrace`. The macOS
-project-linked backend traces newos freestanding tools by passing an internal
-trace pipe to the child and collecting completed events emitted by selected
-platform/runtime wrappers.
+line for each completed system call. The Linux x86-64 backend uses `ptrace` and
+can decode bounded path-like string arguments for common file and process
+syscalls, follows forked/cloned children, and decodes selected socket addresses
+and `pollfd` arrays. The macOS project-linked backend traces newos freestanding tools by
+passing an internal trace pipe to the child and collecting completed events
+emitted by selected platform/runtime wrappers.
 
 The output focuses on syscall number/name, the first three arguments, and the
 return value. Raw integer or pointer values are printed by default. When the
@@ -69,19 +71,29 @@ syscall#999(...)
 ```
 
 JSON output always includes both `"number"` and `"name"`, so consumers can still
-distinguish unknown calls and add their own name table.
+distinguish unknown calls and add their own name table. On Linux, decoded string
+payloads are captured at syscall-entry stops before `execve` replaces the child
+address space.
 
 ## POLL AND PPOLL
 
-`poll`, `ppoll`, `select`, and `pselect6` are now named. Their first argument is
-a pointer to an array or fd-set, so output such as:
+`poll`, `ppoll`, `select`, and `pselect6` are named. On Linux x86-64, `poll`
+and `ppoll` decode a bounded prefix of the pointed-to `pollfd` array:
 
 ```
-ppoll(0x7ffd..., 0x1, 0x7ffd...) = 1
+poll([{fd=3,events=POLLIN}], 0x1, 0x0) = 1
 ```
 
-means "waited on one descriptor and one became ready". Decoding the pointed-to
-`pollfd` entries is future work.
+Long arrays are truncated. `select` and `pselect6` fd-set decoding is still out
+of scope.
+
+## SOCKET ADDRESSES
+
+On Linux x86-64, `connect`, `bind`, and `sendto` decode IPv4 and IPv6 socket
+addresses where the pointed-to address is readable at syscall entry. Returned
+address decoding for calls such as `accept`, `getsockname`, and `getpeername`
+is still future work because it requires preserving entry-side pointer state for
+exit-side decoding.
 
 ## JSON Output
 
@@ -103,12 +115,18 @@ Diagnostics and usage messages follow the shared `json-output` envelope.
 
 ## LIMITATIONS
 
-Linux x86-64 reports syscall details through `ptrace`. macOS arm64 reports
-syscalls made through selected newos project-linked platform/runtime wrappers;
-it does not trace arbitrary system binaries or direct `svc` instructions outside
-those wrappers. The macOS backend emits completed records only, so it is designed
-for attribution and debugging of project tools rather than exact kernel-entry
-emulation.
+Linux x86-64 reports syscall details through `ptrace`. It decodes selected
+NUL-terminated string arguments with bounded child-memory reads, currently for
+path-like arguments such as `execve`, `open`, `openat`, `stat`-family calls,
+`readlinkat`, and common path-mutating calls. It also follows `fork`, `vfork`,
+and `clone` trace events and decodes bounded socket-address and `pollfd` data.
+It does not yet decode arbitrary buffers, fd sets, or argument vectors.
+
+macOS arm64 reports syscalls made through selected newos project-linked
+platform/runtime wrappers; it does not trace arbitrary system binaries or direct
+`svc` instructions outside those wrappers. The macOS backend emits completed
+records only, so it is designed for attribution and debugging of project tools
+rather than exact kernel-entry emulation.
 
 macOS decoding is intentionally bounded. Path-like string arguments and open
 flags are decoded where the wrapper has stable arguments. `read` and `write`
@@ -127,9 +145,9 @@ which is the safer mode for running exact-output test suites.
 
 ## FUTURE IMPROVEMENTS
 
-Useful next steps would be broader argument decoding for socket addresses,
-fd-set and `pollfd` decoding for `poll`/`ppoll`, stable child-memory decoding on
-Linux, and following cloned child processes.
+Useful next steps would be fd-set decoding for `select`/`pselect6`, argv/envp
+decoding for process syscalls, signal-delivery fidelity, and broader protocol
+specific socket option decoding.
 
 ## SEE ALSO
 

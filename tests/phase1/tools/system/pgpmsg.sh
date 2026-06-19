@@ -9,6 +9,14 @@ RAIMOND_KEY="$ROOT_DIR/experimental/pgp-keys/raimond.asc"
 ENCRYPTED_MESSAGE="$ROOT_DIR/experimental/pgp-keys/encryptedmessage.txt"
 PGPKEY_BIN="$TEST_BIN_DIR/pgpkey"
 
+external_pgp_fixtures_available=1
+for required_pgp_fixture in "$SAMPLE_KEY" "$RAIMOND_KEY" "$ENCRYPTED_MESSAGE"; do
+    if [ ! -r "$required_pgp_fixture" ]; then
+        note "missing optional PGP fixture: $required_pgp_fixture"
+        external_pgp_fixtures_available=0
+    fi
+done
+
 tamper_last_byte() {
     src="$1"
     dst="$2"
@@ -33,6 +41,7 @@ printf 'hello pgpmsg\n' > "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/help.out" '^Usage: pgpmsg ' "pgpmsg --help did not print usage"
 assert_file_contains "$WORK_DIR/help.out" 'encrypt -r RECIPIENT' "pgpmsg usage did not include the encrypt command shape"
 
+if [ "$external_pgp_fixtures_available" -eq 1 ]; then
 "${TEST_BIN_DIR}/pgpmsg" inspect "$SAMPLE_KEY" > "$WORK_DIR/inspect.out"
 assert_file_contains "$WORK_DIR/inspect.out" '^packet 1: tag 6 (public key), length 525$' "pgpmsg inspect did not list the public-key packet"
 assert_file_contains "$WORK_DIR/inspect.out" 'tag 2 (signature)' "pgpmsg inspect did not list signature packets"
@@ -66,6 +75,9 @@ fi
 assert_file_contains "$WORK_DIR/verify.out" '^signature: not checked$' "pgpmsg verify did not report signature metadata status"
 assert_file_contains "$WORK_DIR/verify.out" '^issuer: 99d37c39fa2c23a8$' "pgpmsg verify did not report the signature issuer key ID"
 assert_file_contains "$WORK_DIR/verify.err" 'cryptographic verification is not implemented yet' "pgpmsg verify did not explain the nonzero status"
+else
+    note "skipping external PGP message corpus checks"
+fi
 
 if [ ! -x "$PGPKEY_BIN" ]; then
     PGPKEY_BIN="$ROOT_DIR/build/host-macos-aarch64/pgpkey"
@@ -158,6 +170,7 @@ if "${TEST_BIN_DIR}/pgpmsg" encrypt --stream --compress=zlib -k "$WORK_DIR/legac
 fi
 assert_file_contains "$WORK_DIR/plain-stream-compressed.err" 'stream currently supports only --compress=none' "pgpmsg encrypt --stream did not explain rejected compression"
 
+if [ "$external_pgp_fixtures_available" -eq 1 ]; then
 "$PGPKEY_BIN" -k "$WORK_DIR/raimond-ring.pgp" import "$RAIMOND_KEY" > "$WORK_DIR/raimond-import.out"
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/raimond-ring.pgp" -r 'raimond.spekking@gmail.com' --armor -o "$WORK_DIR/raimond.pgp.asc" "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/raimond.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored Elgamal-recipient message"
@@ -170,11 +183,15 @@ assert_file_contains "$WORK_DIR/raimond.inspect" '^  encrypted-mpi 1: [0-9][0-9]
 assert_file_contains "$WORK_DIR/raimond.inspect" '^  encrypted-mpi 2: [0-9][0-9]* bits, [0-9][0-9]* bytes$' "pgpmsg inspect did not summarize the second Elgamal MPI"
 assert_file_contains "$WORK_DIR/raimond.inspect" 'tag 18 (symmetrically encrypted integrity protected data)' "pgpmsg Elgamal encryption did not write an integrity-protected encrypted data packet"
 assert_file_contains "$WORK_DIR/raimond.inspect" '^  seipd-version: 1$' "pgpmsg inspect did not decode the legacy SEIPD version"
+else
+    note "skipping external PGP Elgamal recipient checks"
+fi
 
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" --compress=zlib --armor -o "$WORK_DIR/plain-zlib.pgp.asc" "$WORK_DIR/plain.txt"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-zlib.dec" "$WORK_DIR/plain-zlib.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-zlib.dec" || fail "pgpmsg decrypt did not recover a zlib-compressed encrypted message"
 
+if [ "$external_pgp_fixtures_available" -eq 1 ]; then
 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$SAMPLE_KEY" -r 'info@freiheitsrechte.org' --armor -o "$WORK_DIR/rsa.pgp.asc" "$WORK_DIR/plain.txt"
 assert_file_contains "$WORK_DIR/rsa.pgp.asc" '^-----BEGIN PGP MESSAGE-----$' "pgpmsg encrypt did not write an armored RSA-recipient message"
 "${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/rsa.pgp.asc" > "$WORK_DIR/rsa.inspect"
@@ -183,6 +200,9 @@ assert_file_contains "$WORK_DIR/rsa.inspect" '^  recipient-key-id: 27467a158c2ec
 assert_file_contains "$WORK_DIR/rsa.inspect" '^  public-key-algorithm: RSA encrypt/sign$' "pgpmsg inspect did not decode the RSA PKESK algorithm"
 assert_file_contains "$WORK_DIR/rsa.inspect" '^  encrypted-mpi 1: [0-9][0-9]* bits, [0-9][0-9]* bytes$' "pgpmsg inspect did not summarize the RSA encrypted session key MPI"
 assert_file_contains "$WORK_DIR/rsa.inspect" '^  seipd-version: 1$' "pgpmsg RSA encryption did not use the legacy SEIPD envelope"
+else
+    note "skipping external PGP RSA recipient checks"
+fi
 
 SUBKEY_FPR=$("$PGPKEY_BIN" show "$WORK_DIR/legacy-public.asc" | sed -n 's/^subkey-fingerprint: //p' | head -1)
 "$PGPKEY_BIN" edit "$WORK_DIR/legacy-secret.asc" --out "$WORK_DIR/revoked-secret.asc" --public-out "$WORK_DIR/revoked-public.asc" --revoke-subkey "$SUBKEY_FPR" > "$WORK_DIR/revoke-subkey.out"
