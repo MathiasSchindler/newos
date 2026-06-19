@@ -708,6 +708,271 @@ static void sql_configure_select_collection_limit(SqlSelectQuery *query) {
     query->collection_limit = (unsigned int)needed;
 }
 
+static unsigned int sql_hash_text(const char *text) {
+    unsigned int hash = 2166136261U;
+
+    while (*text != '\0') {
+        hash ^= (unsigned char)*text;
+        hash *= 16777619U;
+        text += 1;
+    }
+    return hash == 0U ? 1U : hash;
+}
+
+static unsigned int sql_group_hash_capacity(unsigned int count) {
+    unsigned int capacity = 16U;
+    unsigned long long needed = (unsigned long long)count * 2ULL;
+
+    while ((unsigned long long)capacity < needed && capacity < 0x80000000U) {
+        capacity <<= 1U;
+    }
+    return capacity;
+}
+
+static void sql_group_hash_clear(unsigned int *slots, unsigned int slot_count) {
+    unsigned int i;
+
+    for (i = 0U; i < slot_count; ++i) {
+        slots[i] = SQL_ROW_INDEX_NONE;
+    }
+}
+
+static unsigned int sql_group_lookup_find(const SqlSelectQuery *query,
+                                          const SqlResultRow *groups,
+                                          unsigned int *slots,
+                                          unsigned int slot_count,
+                                          const char *key,
+                                          unsigned int *slot_out) {
+    unsigned int mask = slot_count - 1U;
+    unsigned int slot = sql_hash_text(key) & mask;
+    unsigned int probe;
+    unsigned int table_index = (unsigned int)query->group_by[0].table_index;
+    unsigned int column_index = (unsigned int)query->group_by[0].column_index;
+
+    for (probe = 0U; probe < slot_count; ++probe) {
+        unsigned int group_index = slots[slot];
+
+        if (group_index == SQL_ROW_INDEX_NONE) {
+            *slot_out = slot;
+            return SQL_ROW_INDEX_NONE;
+        }
+        if (rt_strcmp(sql_row_value(groups[group_index].rows[table_index], column_index), key) == 0) {
+            *slot_out = slot;
+            return group_index;
+        }
+        slot = (slot + 1U) & mask;
+    }
+    *slot_out = 0U;
+    return SQL_ROW_INDEX_NONE;
+}
+
+static int sql_group_select_rows_single_key(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups) {
+    unsigned int *slots;
+    unsigned int slot_count;
+    unsigned int row_index;
+    unsigned int table_index = (unsigned int)query->group_by[0].table_index;
+    unsigned int column_index = (unsigned int)query->group_by[0].column_index;
+
+    slot_count = sql_group_hash_capacity(row_count == 0U ? 1U : row_count);
+    slots = (unsigned int *)rt_malloc_array(slot_count, sizeof(slots[0]));
+    if (slots == 0) {
+        return -1;
+    }
+    sql_group_hash_clear(slots, slot_count);
+    for (row_index = 0U; row_index < row_count; ++row_index) {
+        const char *key = sql_row_value(rows[row_index].rows[table_index], column_index);
+        unsigned int slot;
+        unsigned int group_index = sql_group_lookup_find(query, groups->rows, slots, slot_count, key, &slot);
+
+        if (group_index != SQL_ROW_INDEX_NONE) {
+            groups->rows[group_index].count += 1U;
+            continue;
+        }
+        if (groups->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
+            rt_free(slots);
+            return -1;
+        }
+        sql_set_result_buffer_row(query, groups, groups->count, &rows[row_index]);
+        groups->rows[groups->count].count = 1U;
+        slots[slot] = groups->count;
+        groups->count += 1U;
+    }
+    rt_free(slots);
+    return 0;
+}
+
+typedef struct {
+    long long sum;
+    unsigned int count;
+    const char *best;
+} SqlAggregateState;
+
+static int sql_query_group_aggregates_can_use_lookup(const SqlSelectQuery *query) {
+    unsigned int aggregate_index;
+
+    if (query->group_count != 1U) {
+        return 0;
+    }
+    for (aggregate_index = 0U; aggregate_index < query->aggregate_count; ++aggregate_index) {
+        if (query->aggregates[aggregate_index].kind == SQL_SELECT_GROUP_CONCAT) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int sql_build_group_lookup(const SqlSelectQuery *query, SqlResultRow *groups, unsigned int group_count, unsigned int **slots_out, unsigned int *slot_count_out) {
+    unsigned int *slots;
+    unsigned int slot_count;
+    unsigned int group_index;
+    unsigned int table_index = (unsigned int)query->group_by[0].table_index;
+    unsigned int column_index = (unsigned int)query->group_by[0].column_index;
+
+    slot_count = sql_group_hash_capacity(group_count == 0U ? 1U : group_count);
+    slots = (unsigned int *)rt_malloc_array(slot_count, sizeof(slots[0]));
+    if (slots == 0) {
+        return -1;
+    }
+    sql_group_hash_clear(slots, slot_count);
+    for (group_index = 0U; group_index < group_count; ++group_index) {
+        const char *key = sql_row_value(groups[group_index].rows[table_index], column_index);
+        unsigned int slot;
+
+        if (sql_group_lookup_find(query, groups, slots, slot_count, key, &slot) != SQL_ROW_INDEX_NONE) {
+            rt_free(slots);
+            return -1;
+        }
+        slots[slot] = group_index;
+    }
+    *slots_out = slots;
+    *slot_count_out = slot_count;
+    return 0;
+}
+
+static int sql_store_aggregate_state_value(SqlDatabase *db,
+                                           const SqlAggregate *aggregate,
+                                           const SqlResultRow *group,
+                                           const SqlAggregateState *state,
+                                           unsigned int *offset_out) {
+    char value[SQL_VALUE_SIZE];
+
+    if (aggregate->kind == SQL_SELECT_COUNT_ALL) {
+        sql_store_uint_text(group->count, value, sizeof(value));
+    } else if (aggregate->kind == SQL_SELECT_COUNT_COLUMN) {
+        sql_store_uint_text(state->count, value, sizeof(value));
+    } else if (aggregate->kind == SQL_SELECT_SUM || aggregate->kind == SQL_SELECT_TOTAL) {
+        if (sql_store_decimal_scaled(state->sum, value, sizeof(value)) != 0) {
+            return -1;
+        }
+    } else if (aggregate->kind == SQL_SELECT_AVG) {
+        if (sql_store_decimal_scaled(state->count == 0U ? 0LL : state->sum / (long long)state->count, value, sizeof(value)) != 0) {
+            return -1;
+        }
+    } else if (sql_copy_checked(value, sizeof(value), state->best != 0 ? state->best : "NULL") != 0) {
+        return -1;
+    }
+    return sql_store_value(db, value, offset_out);
+}
+
+static int sql_compute_group_aggregates_single_key(SqlDatabase *db,
+                                                   const SqlSelectQuery *query,
+                                                   const SqlResultRow *all_rows,
+                                                   unsigned int all_row_count,
+                                                   SqlResultRow *groups,
+                                                   unsigned int group_count) {
+    SqlAggregateState *states;
+    unsigned int *slots;
+    unsigned int slot_count;
+    unsigned int row_index;
+    unsigned int group_index;
+    unsigned int aggregate_index;
+    size_t state_count;
+    size_t state_bytes;
+    unsigned int key_table = (unsigned int)query->group_by[0].table_index;
+    unsigned int key_column = (unsigned int)query->group_by[0].column_index;
+
+    if (!sql_query_group_aggregates_can_use_lookup(query)) {
+        return 0;
+    }
+    if (query->aggregate_count == 0U || group_count == 0U) {
+        return 1;
+    }
+    if (sql_multiply_size((size_t)group_count, (size_t)query->aggregate_count, &state_count) != 0) {
+        return -1;
+    }
+    if (sql_multiply_size(state_count, sizeof(states[0]), &state_bytes) != 0) {
+        return -1;
+    }
+    states = (SqlAggregateState *)rt_malloc_array(state_count, sizeof(states[0]));
+    if (states == 0) {
+        return -1;
+    }
+    rt_memset(states, 0, state_bytes);
+    if (sql_build_group_lookup(query, groups, group_count, &slots, &slot_count) != 0) {
+        rt_free(states);
+        return -1;
+    }
+    for (row_index = 0U; row_index < all_row_count; ++row_index) {
+        const char *key = sql_row_value(all_rows[row_index].rows[key_table], key_column);
+        unsigned int slot;
+
+        group_index = sql_group_lookup_find(query, groups, slots, slot_count, key, &slot);
+        if (group_index == SQL_ROW_INDEX_NONE) {
+            continue;
+        }
+        for (aggregate_index = 0U; aggregate_index < query->aggregate_count; ++aggregate_index) {
+            const SqlAggregate *aggregate = &query->aggregates[aggregate_index];
+            SqlAggregateState *state = &states[(size_t)group_index * query->aggregate_count + aggregate_index];
+            const char *value;
+
+            if (aggregate->kind == SQL_SELECT_COUNT_ALL) {
+                continue;
+            }
+            value = sql_row_value(all_rows[row_index].rows[aggregate->column.table_index], (unsigned int)aggregate->column.column_index);
+            if (sql_row_value_is_null(all_rows[row_index].rows[aggregate->column.table_index], (unsigned int)aggregate->column.column_index)) {
+                continue;
+            }
+            if (aggregate->kind == SQL_SELECT_COUNT_COLUMN) {
+                if (value[0] != '\0') {
+                    state->count += 1U;
+                }
+            } else if (aggregate->kind == SQL_SELECT_SUM || aggregate->kind == SQL_SELECT_AVG || aggregate->kind == SQL_SELECT_TOTAL) {
+                long long number;
+                if (sql_result_row_numeric_value(&all_rows[row_index], (unsigned int)aggregate->column.table_index, (unsigned int)aggregate->column.column_index, &number) != 0 &&
+                    sql_parse_decimal_scaled(value, &number, 0) != 0) {
+                    rt_free(slots);
+                    rt_free(states);
+                    return -1;
+                }
+                state->sum += number;
+                state->count += 1U;
+            } else if (aggregate->kind == SQL_SELECT_FIRST) {
+                if (state->best == 0) {
+                    state->best = value;
+                }
+            } else if (aggregate->kind == SQL_SELECT_LAST) {
+                state->best = value;
+            } else if (state->best == 0 ||
+                       (aggregate->kind == SQL_SELECT_MIN && sql_compare_values(value, state->best) < 0) ||
+                       (aggregate->kind == SQL_SELECT_MAX && sql_compare_values(value, state->best) > 0)) {
+                state->best = value;
+            }
+        }
+    }
+    rt_free(slots);
+    for (group_index = 0U; group_index < group_count; ++group_index) {
+        for (aggregate_index = 0U; aggregate_index < query->aggregate_count; ++aggregate_index) {
+            SqlAggregateState *state = &states[(size_t)group_index * query->aggregate_count + aggregate_index];
+            if (sql_store_aggregate_state_value(db, &query->aggregates[aggregate_index], &groups[group_index], state, &groups[group_index].aggregates[aggregate_index]) != 0) {
+                rt_free(states);
+                return -1;
+            }
+        }
+    }
+    rt_free(states);
+    return 1;
+}
+
 static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups) {
     unsigned int row_index;
     int aggregate = sql_query_uses_aggregate(query);
@@ -742,6 +1007,9 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
         groups->count = 1U;
         return 0;
     }
+    if (query->group_count == 1U) {
+        return sql_group_select_rows_single_key(query, rows, row_count, groups);
+    }
     for (row_index = 0U; row_index < row_count; ++row_index) {
         unsigned int group_index;
         for (group_index = 0U; group_index < groups->count; ++group_index) {
@@ -764,6 +1032,11 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
 
 static int sql_compute_group_aggregates(SqlDatabase *db, const SqlSelectQuery *query, const SqlResultRow *all_rows, unsigned int all_row_count, SqlResultRow *groups, unsigned int group_count) {
     unsigned int group_index;
+    int fast_status = sql_compute_group_aggregates_single_key(db, query, all_rows, all_row_count, groups, group_count);
+
+    if (fast_status != 0) {
+        return fast_status < 0 ? -1 : 0;
+    }
 
     for (group_index = 0U; group_index < group_count; ++group_index) {
         unsigned int aggregate_index;

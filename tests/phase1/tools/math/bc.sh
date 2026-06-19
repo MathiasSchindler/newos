@@ -57,6 +57,16 @@ assert_text_equals "$bc_decimal_mod" '1.5' "bc decimal remainder failed"
 bc_loop_control=$("${TEST_BIN_DIR}/bc" 'sum=0; for(i=0;i<10;i=i+1){ if(i==3) continue; if(i==6) break; sum=sum+i }; sum' | tr -d '\r\n')
 assert_text_equals "$bc_loop_control" '12' "bc break/continue flow control failed"
 
+bc_special_vars=$("${TEST_BIN_DIR}/bc" 'scale=9; scale; 1/8; obase=16; obase; ibase=16; A' | tr -d '\r')
+cat > "$WORK_DIR/bc_special_vars.expected" <<'EOF'
+9
+0.125000000
+10
+A
+EOF
+printf '%s\n' "$bc_special_vars" > "$WORK_DIR/bc_special_vars.out"
+assert_files_equal "$WORK_DIR/bc_special_vars.expected" "$WORK_DIR/bc_special_vars.out" "bc special variable cache behavior failed"
+
 bc_math_mode=$("${TEST_BIN_DIR}/bc" -l 'pi > 3 && e > 2; scale' | tr -d '\r')
 cat > "$WORK_DIR/bc_math_mode.expected" <<'EOF'
 1

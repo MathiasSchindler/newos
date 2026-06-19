@@ -256,6 +256,19 @@ assert_text_equals "$max_lines_count" '8192' "sort dropped lines at its maximum 
 assert_text_equals "$max_lines_first" '0001' "sort did not order the first line at its maximum buffered line count"
 assert_text_equals "$max_lines_last" '8192' "sort did not order the final line at its maximum buffered line count"
 
+cat > "$WORK_DIR/default_prefix.txt" <<'EOF'
+aa
+b
+a
+EOF
+"${TEST_BIN_DIR}/sort" "$WORK_DIR/default_prefix.txt" > "$WORK_DIR/default_prefix.out"
+cat > "$WORK_DIR/default_prefix.expected" <<'EOF'
+a
+aa
+b
+EOF
+assert_files_equal "$WORK_DIR/default_prefix.expected" "$WORK_DIR/default_prefix.out" "sort default comparator did not preserve prefix ordering"
+
 awk 'BEGIN { for (value = 20000; value >= 1; --value) printf "%05d\n", value }' > "$WORK_DIR/external_lines.txt"
 "${TEST_BIN_DIR}/sort" "$WORK_DIR/external_lines.txt" > "$WORK_DIR/external_lines.out"
 external_lines_count=$(wc -l < "$WORK_DIR/external_lines.out" | tr -d ' \r\n')

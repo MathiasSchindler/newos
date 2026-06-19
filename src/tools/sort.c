@@ -4,7 +4,7 @@
 
 #include <limits.h>
 
-#define SORT_MAX_LINES 16384U
+#define SORT_MAX_LINES 65536U
 #define SORT_MAX_INPUTS 8U
 #define SORT_MAX_RUNS 128U
 #define SORT_IO_BUFFER_SIZE 8192U
@@ -577,6 +577,16 @@ static int compare_text_spans(const char *left,
     return 1;
 }
 
+static int compare_plain_spans(const char *left, size_t left_len, const char *right, size_t right_len) {
+    size_t limit = left_len < right_len ? left_len : right_len;
+    int result = limit != 0U ? memcmp(left, right, limit) : 0;
+
+    if (result < 0) return -1;
+    if (result > 0) return 1;
+    if (left_len == right_len) return 0;
+    return left_len < right_len ? -1 : 1;
+}
+
 static void extract_key_span(const SortLine *line,
                              const SortOptions *options,
                              const char **start_out,
@@ -1020,6 +1030,12 @@ static int compare_lines(const SortLine *left, const SortLine *right, const Sort
     size_t left_len = left->length;
     size_t right_len = right->length;
     int result = 0;
+
+    if (!options->have_key && !options->ignore_leading_blanks && !options->ignore_case &&
+        !options->dictionary_order && !options->ignore_nonprinting && options->sort_mode == SORT_MODE_TEXT) {
+        result = compare_plain_spans(left_text, left_len, right_text, right_len);
+        return options->reverse ? -result : result;
+    }
 
     extract_key_span(left, options, &left_text, &left_len);
     extract_key_span(right, options, &right_text, &right_len);

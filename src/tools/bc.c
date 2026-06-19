@@ -25,6 +25,9 @@ typedef struct {
 typedef struct {
     BcVar vars[BC_MAX_VARS];
     size_t var_count;
+    int scale_setting;
+    int ibase_setting;
+    int obase_setting;
 } BcEnv;
 
 typedef enum {
@@ -195,105 +198,15 @@ static BcValue bc_rescale(BcParser *parser, BcValue value, int target_scale) {
 }
 
 static int bc_get_scale_setting(BcEnv *env) {
-    size_t i;
-
-    for (i = 0; i < env->var_count; ++i) {
-        if (rt_strcmp(env->vars[i].name, "scale") == 0) {
-            BcValue value = env->vars[i].value;
-            Bignum integer_part;
-            long long ivalue;
-
-            if (value.scale > 0) {
-                if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
-                    return 6;
-                }
-            } else {
-                integer_part = value.mantissa;
-            }
-
-            if (bn_to_ll(&integer_part, &ivalue) != 0) {
-                return 6;
-            }
-
-            if (ivalue < 0) {
-                return 0;
-            }
-            if (ivalue > BC_MAX_SCALE) {
-                return BC_MAX_SCALE;
-            }
-            return (int)ivalue;
-        }
-    }
-
-    return 6;
+    return env->scale_setting;
 }
 
 static int bc_get_ibase_setting(BcEnv *env) {
-    size_t i;
-
-    for (i = 0; i < env->var_count; ++i) {
-        if (rt_strcmp(env->vars[i].name, "ibase") == 0) {
-            BcValue value = env->vars[i].value;
-            Bignum integer_part;
-            long long ivalue;
-
-            if (value.scale > 0) {
-                if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
-                    return 10;
-                }
-            } else {
-                integer_part = value.mantissa;
-            }
-
-            if (bn_to_ll(&integer_part, &ivalue) != 0) {
-                return 10;
-            }
-
-            if (ivalue < 2) {
-                return 10;
-            }
-            if (ivalue > 16) {
-                return 16;
-            }
-            return (int)ivalue;
-        }
-    }
-
-    return 10;
+    return env->ibase_setting;
 }
 
 static int bc_get_obase_setting(BcEnv *env) {
-    size_t i;
-
-    for (i = 0; i < env->var_count; ++i) {
-        if (rt_strcmp(env->vars[i].name, "obase") == 0) {
-            BcValue value = env->vars[i].value;
-            Bignum integer_part;
-            long long ivalue;
-
-            if (value.scale > 0) {
-                if (bn_scale(&value.mantissa, -value.scale, &integer_part) != 0) {
-                    return 10;
-                }
-            } else {
-                integer_part = value.mantissa;
-            }
-
-            if (bn_to_ll(&integer_part, &ivalue) != 0) {
-                return 10;
-            }
-
-            if (ivalue < 2) {
-                return 10;
-            }
-            if (ivalue > 16) {
-                return 16;
-            }
-            return (int)ivalue;
-        }
-    }
-
-    return 10;
+    return env->obase_setting;
 }
 
 static BcValue bc_add_values(BcParser *parser, BcValue left, BcValue right) {
@@ -1052,6 +965,7 @@ static void bc_store_var(BcParser *parser, const char *name, BcValue value) {
             return;
         }
         value = bc_make_int(ivalue);
+        parser->env->scale_setting = (int)ivalue;
     } else if (rt_strcmp(name, "ibase") == 0 || rt_strcmp(name, "obase") == 0) {
         long long ivalue = 0;
 
@@ -1063,6 +977,11 @@ static void bc_store_var(BcParser *parser, const char *name, BcValue value) {
             return;
         }
         value = bc_make_int(ivalue);
+        if (rt_strcmp(name, "ibase") == 0) {
+            parser->env->ibase_setting = (int)ivalue;
+        } else {
+            parser->env->obase_setting = (int)ivalue;
+        }
     }
 
     index = bc_find_var_index(parser->env, name);
@@ -1080,9 +999,12 @@ static void bc_store_var(BcParser *parser, const char *name, BcValue value) {
 
 static void bc_env_init(BcEnv *env, int math_mode) {
     env->var_count = 0;
+    env->scale_setting = math_mode ? 32 : 6;
+    env->ibase_setting = 10;
+    env->obase_setting = 10;
 
     rt_copy_string(env->vars[0].name, sizeof(env->vars[0].name), "scale");
-    env->vars[0].value = bc_make_int(math_mode ? 32 : 6);
+    env->vars[0].value = bc_make_int(env->scale_setting);
     rt_copy_string(env->vars[1].name, sizeof(env->vars[1].name), "ibase");
     env->vars[1].value = bc_make_int(10);
     rt_copy_string(env->vars[2].name, sizeof(env->vars[2].name), "obase");
@@ -1160,7 +1082,6 @@ static void bc_read_token(BcParser *parser) {
     ch = parser->text[parser->pos];
     base = bc_get_ibase_setting(parser->env);
     parser->token.text[0] = '\0';
-    parser->token.number = bc_make_int(0);
 
     if (ch == '\0') {
         parser->token.type = BC_TOKEN_EOF;
@@ -1249,6 +1170,8 @@ static void bc_read_token(BcParser *parser) {
         int scale = 0;
         int saw_digit = 0;
         int saw_dot = 0;
+
+        parser->token.number = bc_make_int(0);
 
         if (ch == '.' && base != 10) {
             bc_set_error(parser, "fractional input requires ibase=10");

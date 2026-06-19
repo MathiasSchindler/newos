@@ -316,6 +316,8 @@ static int pdf_find_key_from(const unsigned char *data, size_t size, size_t star
     size_t offset;
 
     for (offset = start; offset + key_length <= size; ++offset) {
+        while (offset + key_length <= size && data[offset] != (unsigned char)'/') offset += 1U;
+        if (offset + key_length > size) break;
         if (data[offset] == (unsigned char)'/' && pdf_text_at_len(data, size, offset, key, key_length) && (offset + key_length >= size || pdf_is_delim(data[offset + key_length]))) {
             *offset_out = offset;
             return 1;
@@ -358,7 +360,9 @@ int pdf_find_top_key(const unsigned char *data, size_t size, const char *key, si
             *offset_out = offset;
             return 1;
         } else {
-            offset += 1U;
+            size_t start_offset = offset;
+            while (offset < size && data[offset] != (unsigned char)'%' && data[offset] != (unsigned char)'(' && data[offset] != (unsigned char)'<' && data[offset] != (unsigned char)'>' && data[offset] != (unsigned char)'[' && data[offset] != (unsigned char)']' && data[offset] != (unsigned char)'/') offset += 1U;
+            if (offset == start_offset) offset += 1U;
         }
     }
     return 0;

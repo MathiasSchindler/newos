@@ -81,6 +81,34 @@ fi
 assert_file_contains "$WORK_DIR/scale.json" '"ok":true' "pdfcheck --json did not handle a larger valid reference set"
 assert_file_contains "$WORK_DIR/scale.json" '"objects":163' "pdfcheck --json did not count larger fixture objects"
 
+cat > "$WORK_DIR/filter-heavy.pdf" <<'EOF'
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Type /XObject /Subtype /Form /Filter /FlateDecode /Length 5 >>
+stream
+abcde
+endstream
+endobj
+trailer
+<< /Root 1 0 R /Size 5 >>
+startxref
+0
+%%EOF
+EOF
+"${TEST_BIN_DIR}/pdfcheck" "$WORK_DIR/filter-heavy.pdf" > "$WORK_DIR/filter-heavy.txt"
+assert_file_contains "$WORK_DIR/filter-heavy.txt" 'objects: 4' "pdfcheck did not count filtered fixture objects"
+assert_file_contains "$WORK_DIR/filter-heavy.txt" 'streams: 1' "pdfcheck did not count filtered fixture streams"
+assert_file_contains "$WORK_DIR/filter-heavy.txt" 'ok: structure checks passed' "pdfcheck did not accept filtered fixture"
+
 cat > "$WORK_DIR/broken.pdf" <<'EOF'
 %PDF-1.7
 1 0 obj
