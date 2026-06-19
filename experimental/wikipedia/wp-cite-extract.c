@@ -6,7 +6,10 @@
 #define WP_CITE_BUFFER_SIZE 32768U
 #define WP_CITE_PATH_SIZE 1024U
 #define WP_CITE_NAME_SIZE 256U
-#define WP_CITE_SNIPPET_SIZE 256U
+#define WP_CITE_SNIPPET_SIZE 512U
+#define WP_CITE_SNIPPET_BEFORE 192U
+#define WP_CITE_SNIPPET_AFTER 320U
+#define WP_CITE_SNIPPET_CONTEXT_SEARCH 512U
 #define WP_CITE_MAX_INPUTS 128U
 #define WP_CITE_LINE_INITIAL 4096U
 
@@ -51,7 +54,7 @@ typedef struct {
     const char *source_name;
     const char *wiki;
     const char *date;
-    int output_fd;
+    ToolOutputBuffer *output;
     unsigned long long pages_seen;
     unsigned long long article_pages;
     unsigned long long records_written;
@@ -436,45 +439,146 @@ static int xml_decode(const char *input, size_t input_size, char **out_data, siz
     return 0;
 }
 
-static int write_tsv_text(int fd, const char *text, size_t size) {
+static int write_tsv_text(ToolOutputBuffer *output, const char *text, size_t size) {
     size_t index;
+    size_t start = 0U;
 
     for (index = 0U; index < size; ++index) {
         char ch = text[index];
-        if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
-        if (rt_write_char(fd, ch) != 0) return -1;
+        if (ch == '\t' || ch == '\n' || ch == '\r') {
+            if (index > start && tool_output_buffer_write(output, text + start, index - start) != 0) return -1;
+            if (tool_output_buffer_write_char(output, ' ') != 0) return -1;
+            start = index + 1U;
+        }
     }
+    if (index > start && tool_output_buffer_write(output, text + start, index - start) != 0) return -1;
     return 0;
 }
 
-static int write_tsv_cstr(int fd, const char *text) {
-    return write_tsv_text(fd, text, rt_strlen(text));
+static int write_tsv_cstr(ToolOutputBuffer *output, const char *text) {
+    return write_tsv_text(output, text, rt_strlen(text));
 }
 
 static int write_record(WpExtractContext *ctx, const char *page_id, const char *title, const char *kind, const char *value, const char *raw, size_t raw_size) {
-    if (write_tsv_cstr(ctx->output_fd, ctx->wiki) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_cstr(ctx->output_fd, ctx->date) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_cstr(ctx->output_fd, ctx->source_name) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_cstr(ctx->output_fd, page_id) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_cstr(ctx->output_fd, title) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_cstr(ctx->output_fd, kind) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_cstr(ctx->output_fd, value) != 0 || rt_write_char(ctx->output_fd, '\t') != 0 ||
-        write_tsv_text(ctx->output_fd, raw, raw_size) != 0 || rt_write_char(ctx->output_fd, '\n') != 0) {
+    if (write_tsv_cstr(ctx->output, ctx->wiki) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_cstr(ctx->output, ctx->date) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_cstr(ctx->output, ctx->source_name) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_cstr(ctx->output, page_id) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_cstr(ctx->output, title) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_cstr(ctx->output, kind) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_cstr(ctx->output, value) != 0 || tool_output_buffer_write_char(ctx->output, '\t') != 0 ||
+        write_tsv_text(ctx->output, raw, raw_size) != 0 || tool_output_buffer_write_char(ctx->output, '\n') != 0) {
         return -1;
     }
     ctx->records_written += 1ULL;
     return 0;
 }
 
-static size_t snippet_bounds(const char *text, size_t size, size_t position, size_t *start_out) {
-    size_t start = position > 96U ? position - 96U : 0U;
-    size_t end = position + 160U;
+static int snippet_match_case_at(const char *text, size_t size, size_t position, const char *needle) {
+    size_t needle_size = rt_strlen(needle);
+    size_t index;
+
+    if (position + needle_size > size) return 0;
+    for (index = 0U; index < needle_size; ++index) {
+        if (tool_ascii_tolower(text[position + index]) != tool_ascii_tolower(needle[index])) return 0;
+    }
+    return 1;
+}
+
+static int snippet_find_last_case_before(const char *text, size_t size, size_t begin, size_t end, const char *needle, size_t *position_out) {
+    size_t index;
+
+    if (begin > end) begin = end;
+    if (end > size) end = size;
+    for (index = end; index > begin; --index) {
+        size_t position = index - 1U;
+        if (snippet_match_case_at(text, size, position, needle)) {
+            *position_out = position;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int snippet_find_last_boundary_before(const char *text, size_t begin, size_t end, size_t *position_out) {
+    size_t index;
+
+    if (begin > end) begin = end;
+    for (index = end; index > begin; --index) {
+        size_t position = index - 1U;
+        if (text[position] == '\n' || text[position] == '*' || text[position] == '#') {
+            *position_out = position + 1U;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int snippet_find_first_case_after(const char *text, size_t size, size_t begin, size_t end, const char *needle, size_t *position_out) {
+    size_t index;
 
     if (end > size) end = size;
-    while (start < position && text[start] != '\n' && text[start] != '{' && text[start] != '<') start += 1U;
-    if (start >= position) start = position > 96U ? position - 96U : 0U;
-    while (end > position && text[end - 1U] != '\n' && text[end - 1U] != '}' && text[end - 1U] != '>') end -= 1U;
-    if (end <= position) end = position + 160U < size ? position + 160U : size;
+    for (index = begin; index < end; ++index) {
+        if (snippet_match_case_at(text, size, index, needle)) {
+            *position_out = index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int snippet_boundary_char(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '<' || ch == '{' || ch == '[';
+}
+
+static size_t snippet_snap_start(const char *text, size_t start) {
+    size_t limit = start > 64U ? start - 64U : 0U;
+
+    while (start > limit && start > 0U && !snippet_boundary_char(text[start - 1U])) start -= 1U;
+    if (start > 0U && (text[start - 1U] == '<' || text[start - 1U] == '{' || text[start - 1U] == '[')) start -= 1U;
+    return start;
+}
+
+static size_t snippet_snap_end(const char *text, size_t size, size_t end) {
+    size_t limit = end + 64U;
+
+    if (limit > size) limit = size;
+    while (end < limit && end < size && !snippet_boundary_char(text[end])) end += 1U;
+    return end;
+}
+
+static size_t snippet_bounds(const char *text, size_t size, size_t position, size_t *start_out) {
+    size_t search_start = position > WP_CITE_SNIPPET_CONTEXT_SEARCH ? position - WP_CITE_SNIPPET_CONTEXT_SEARCH : 0U;
+    size_t start = position > WP_CITE_SNIPPET_BEFORE ? position - WP_CITE_SNIPPET_BEFORE : 0U;
+    size_t end = position + WP_CITE_SNIPPET_AFTER;
+    size_t marker;
+    size_t closing;
+
+    if (snippet_find_last_case_before(text, size, search_start, position, "<ref", &marker)) {
+        size_t close_marker;
+        if (snippet_find_last_case_before(text, size, marker, position, "</ref>", &close_marker) || position - marker > WP_CITE_SNIPPET_BEFORE) marker = size;
+    } else {
+        marker = size;
+    }
+    if (marker != size) {
+        start = marker;
+    } else if (snippet_find_last_case_before(text, size, search_start, position, "{{", &marker) && position - marker <= WP_CITE_SNIPPET_BEFORE) {
+        start = marker;
+    } else if (snippet_find_last_boundary_before(text, search_start, position, &marker)) {
+        start = marker;
+    } else {
+        start = snippet_snap_start(text, start);
+    }
+    if (end > size) end = size;
+    if (start < position && snippet_match_case_at(text, size, start, "<ref") && snippet_find_first_case_after(text, size, position, size, "</ref>", &closing) && closing + 6U - start <= WP_CITE_SNIPPET_SIZE) {
+        end = closing + 6U;
+    } else if (start < position && snippet_match_case_at(text, size, start, "{{") && snippet_find_first_case_after(text, size, position, size, "}}", &closing) && closing + 2U - start <= WP_CITE_SNIPPET_SIZE) {
+        end = closing + 2U;
+    } else {
+        end = snippet_snap_end(text, size, end);
+        if (end > start + WP_CITE_SNIPPET_SIZE) end = start + WP_CITE_SNIPPET_SIZE;
+    }
+    if (end <= position) end = position + 1U < size ? position + 1U : size;
     *start_out = start;
     return end - start;
 }
@@ -557,6 +661,8 @@ static int emit_isbn_at(WpExtractContext *ctx, const char *page_id, const char *
     size_t out = 0U;
     size_t digits = 0U;
 
+    while (index < text_size && (text[index] == ' ' || text[index] == '\t' || text[index] == ':' || text[index] == '=')) index += 1U;
+
     while (index < text_size && is_isbn_char(text[index]) && out + 1U < sizeof(value)) {
         if (tool_ascii_is_digit(text[index]) || text[index] == 'X' || text[index] == 'x') digits += 1U;
         value[out++] = text[index++];
@@ -566,15 +672,25 @@ static int emit_isbn_at(WpExtractContext *ctx, const char *page_id, const char *
     return emit_identifier(ctx, page_id, title, text, text_size, "isbn", value, start);
 }
 
+static int isbn_signal_has_near_label(const char *text, size_t index) {
+    size_t start = index > 16U ? index - 16U : 0U;
+    size_t pos;
+
+    for (pos = start; pos + 4U <= index; ++pos) {
+        if (tool_ascii_tolower(text[pos]) == 'i' && tool_ascii_tolower(text[pos + 1U]) == 's' && tool_ascii_tolower(text[pos + 2U]) == 'b' && tool_ascii_tolower(text[pos + 3U]) == 'n') return 1;
+    }
+    return 0;
+}
+
 static int scan_isbns(WpExtractContext *ctx, const char *page_id, const char *title, const char *text, size_t text_size) {
     size_t index;
 
     for (index = 0U; index + 4U < text_size; ++index) {
         if (tool_ascii_tolower(text[index]) == 'i' && tool_ascii_tolower(text[index + 1U]) == 's' && tool_ascii_tolower(text[index + 2U]) == 'b' && tool_ascii_tolower(text[index + 3U]) == 'n') {
             if (emit_isbn_at(ctx, page_id, title, text, text_size, index, index + 4U) != 0) return -1;
-        } else if (index + 5U < text_size && rt_strncmp(text + index, "978-3", 5U) == 0) {
+        } else if (index + 5U < text_size && rt_strncmp(text + index, "978-3", 5U) == 0 && !isbn_signal_has_near_label(text, index)) {
             if (emit_isbn_at(ctx, page_id, title, text, text_size, index, index) != 0) return -1;
-        } else if (index + 4U < text_size && rt_strncmp(text + index, "9783", 4U) == 0) {
+        } else if (index + 4U < text_size && rt_strncmp(text + index, "9783", 4U) == 0 && !isbn_signal_has_near_label(text, index)) {
             if (emit_isbn_at(ctx, page_id, title, text, text_size, index, index) != 0) return -1;
         }
     }
@@ -640,6 +756,29 @@ static int page_is_article(const char *page) {
     return find_substr(page, "<ns>0</ns>") != 0;
 }
 
+static int raw_text_has_doi_signal(const char *text, size_t text_size) {
+    size_t index;
+
+    for (index = 0U; index + 3U < text_size; ++index) {
+        if (text[index] == '1' && text[index + 1U] == '0' && text[index + 2U] == '.' && tool_ascii_is_digit(text[index + 3U])) return 1;
+    }
+    return 0;
+}
+
+static int raw_text_has_citation_signal(const char *text, size_t text_size) {
+    return raw_text_has_doi_signal(text, text_size) ||
+        contains_case_n(text, text_size, "doi") ||
+        contains_case_n(text, text_size, "pmid") ||
+        contains_case_n(text, text_size, "pubmed") ||
+        contains_case_n(text, text_size, "isbn") ||
+        contains_case_n(text, text_size, "issn") ||
+        contains_case_n(text, text_size, "978-3") ||
+        contains_case_n(text, text_size, "9783") ||
+        contains_case_n(text, text_size, "{{Literatur") ||
+        contains_case_n(text, text_size, "{{Internetquelle") ||
+        contains_case_n(text, text_size, "{{Cite");
+}
+
 static int process_page(WpExtractContext *ctx, const char *page) {
     char title[512];
     char page_id[64];
@@ -652,9 +791,10 @@ static int process_page(WpExtractContext *ctx, const char *page) {
     ctx->pages_seen += 1ULL;
     if (!page_is_article(page)) return 0;
     ctx->article_pages += 1ULL;
+    if (extract_text_xml(page, &xml_text, &xml_text_size) != 0) return 0;
+    if (!raw_text_has_citation_signal(xml_text, xml_text_size)) return 0;
     if (extract_xml_field(page, "<title>", "</title>", title, sizeof(title)) != 0) rt_copy_string(title, sizeof(title), "");
     if (extract_page_id(page, page_id, sizeof(page_id)) != 0) rt_copy_string(page_id, sizeof(page_id), "");
-    if (extract_text_xml(page, &xml_text, &xml_text_size) != 0) return 0;
     if (xml_decode(xml_text, xml_text_size, &text, &text_size) != 0) return -1;
     if (scan_dois(ctx, page_id, title, text, text_size) != 0 ||
         scan_pmids(ctx, page_id, title, text, text_size) != 0 ||
@@ -692,16 +832,20 @@ static int parser_process_line(WpParser *parser, const char *line, size_t line_s
 }
 
 static int parser_feed(WpParser *parser, const unsigned char *data, size_t size) {
-    size_t index;
+    size_t offset = 0U;
 
-    for (index = 0U; index < size; ++index) {
-        char ch = (char)data[index];
-        if (buffer_append(&parser->line, &parser->line_size, &parser->line_capacity, &ch, 1U) != 0) return -1;
-        if (ch == '\n') {
+    while (offset < size) {
+        size_t next = offset;
+
+        while (next < size && data[next] != '\n') next += 1U;
+        if (next < size) next += 1U;
+        if (buffer_append(&parser->line, &parser->line_size, &parser->line_capacity, (const char *)(data + offset), next - offset) != 0) return -1;
+        if (next > offset && data[next - 1U] == '\n') {
             if (parser_process_line(parser, parser->line, parser->line_size) != 0) return -1;
             parser->line_size = 0U;
             if (parser->line != 0) parser->line[0] = '\0';
         }
+        offset = next;
     }
     return 0;
 }
@@ -727,7 +871,7 @@ static int wp_bzip2_write_callback(void *context, const unsigned char *data, siz
     return parser_feed((WpParser *)context, data, size);
 }
 
-static int extract_from_input(const WpDumpInput *input, const WpCiteOptions *options, int output_fd, unsigned long long *records_out) {
+static int extract_from_input(const WpDumpInput *input, const WpCiteOptions *options, ToolOutputBuffer *output, unsigned long long *records_out) {
     WpInput source;
     WpLineReader reader;
     WpExtractContext ctx;
@@ -747,7 +891,7 @@ static int extract_from_input(const WpDumpInput *input, const WpCiteOptions *opt
     ctx.source_name = input->name;
     ctx.wiki = input->wiki;
     ctx.date = input->date;
-    ctx.output_fd = output_fd;
+    ctx.output = output;
     if (text_ends_with(input->path, ".bz2")) {
         WpParser parser;
 
@@ -802,14 +946,15 @@ static int extract_from_input(const WpDumpInput *input, const WpCiteOptions *opt
     return result;
 }
 
-static int write_header(int fd) {
-    return rt_write_cstr(fd, "wiki\tsnapshot\tsource\tpage_id\tpage_title\tkind\tvalue\traw\n");
+static int write_header(ToolOutputBuffer *output) {
+    return tool_output_buffer_write_cstr(output, "wiki\tsnapshot\tsource\tpage_id\tpage_title\tkind\tvalue\traw\n");
 }
 
 int main(int argc, char **argv) {
     ToolOptState state;
     WpCiteOptions options;
     WpDumpSet set;
+    ToolOutputBuffer output;
     char output_path[WP_CITE_PATH_SIZE];
     int output_fd;
     int parse_result;
@@ -868,7 +1013,8 @@ int main(int argc, char **argv) {
         tool_write_error("wp-cite-extract", "cannot open output: ", output_path);
         return 1;
     }
-    if (write_header(output_fd) != 0) {
+    tool_output_buffer_init(&output, output_fd);
+    if (write_header(&output) != 0) {
         platform_close(output_fd);
         return 1;
     }
@@ -876,13 +1022,13 @@ int main(int argc, char **argv) {
         write_info("writing ", output_path);
     }
     for (index = 0U; index < set.count; ++index) {
-        if (extract_from_input(&set.inputs[index], &options, output_fd, &total_records) != 0) {
+        if (extract_from_input(&set.inputs[index], &options, &output, &total_records) != 0) {
             platform_close(output_fd);
             tool_write_error("wp-cite-extract", "extract failed for ", set.inputs[index].name);
             return 1;
         }
     }
-    if (platform_close(output_fd) != 0) return 1;
+    if (tool_output_buffer_flush(&output) != 0 || platform_close(output_fd) != 0) return 1;
     if (!options.quiet) {
         char count_text[32];
         write_status_prefix();
