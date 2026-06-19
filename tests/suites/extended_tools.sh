@@ -124,7 +124,9 @@ if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ "$(uname -m 2>/dev
         fail "expack should not evaluate LZ4-block in the normal Linux ELF portfolio"
     fi
     "${TEST_BIN_DIR}/expack" --analyze --all "${TEST_BIN_DIR}/echo" > "$WORK_DIR/expack_freestanding_linux_all.out"
-    assert_file_contains "$WORK_DIR/expack_freestanding_linux_all.out" '^  lz4-block: payload ' "expack --all did not evaluate the LZ4-block codec for Linux ELF"
+    if grep -q '^  lz4-block: payload ' "$WORK_DIR/expack_freestanding_linux_all.out"; then
+        fail "expack --all should not evaluate dominated LZ4-block for Linux ELF"
+    fi
     assert_file_contains "$WORK_DIR/expack_freestanding_linux_all.out" '^  xlz-short: payload ' "expack --all did not evaluate the experimental XLZ codec for Linux ELF"
     assert_file_contains "$WORK_DIR/expack_freestanding_linux_all.out" '^  lzss-bcj-rip/long-match: payload ' "expack --all did not evaluate BCJ-RIP with all LZSS profiles for Linux ELF"
     "${TEST_BIN_DIR}/expack" --all -q "${TEST_BIN_DIR}/true" "$WORK_DIR/true.freestanding-linux-all.packed"

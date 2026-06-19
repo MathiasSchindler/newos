@@ -8,7 +8,9 @@ static const unsigned char expack_deflate_bcj_stub_x86_64[] = {
 #define EXPACK_DEFLATE_MAX_DISTANCE 32768U
 #define EXPACK_DEFLATE_HASH_BITS 16U
 #define EXPACK_DEFLATE_HASH_SIZE (1U << EXPACK_DEFLATE_HASH_BITS)
-#define EXPACK_DEFLATE_CHAIN_LIMIT 96U
+#define EXPACK_DEFLATE_CHAIN_LIMIT 384U
+#define EXPACK_DEFLATE_LARGE_CHAIN_LIMIT 1536U
+#define EXPACK_DEFLATE_LARGE_INPUT_THRESHOLD 81920U
 
 typedef struct {
     unsigned short length;
@@ -78,7 +80,7 @@ static void expack_deflate_insert(const unsigned char *data, size_t size, size_t
     head[hash] = (int)position;
 }
 
-static void expack_deflate_find_match(const unsigned char *data, size_t size, size_t position, const int *head, const int *prev, unsigned int *length_out, unsigned int *distance_out) {
+static void expack_deflate_find_match(const unsigned char *data, size_t size, size_t position, const int *head, const int *prev, unsigned int chain_limit, unsigned int *length_out, unsigned int *distance_out) {
     unsigned int best_length = 0U;
     unsigned int best_distance = 0U;
     unsigned int hash;
@@ -97,7 +99,7 @@ static void expack_deflate_find_match(const unsigned char *data, size_t size, si
     }
     hash = expack_deflate_hash3(data + position);
     candidate = head[hash];
-    while (candidate >= 0 && chain_count < EXPACK_DEFLATE_CHAIN_LIMIT) {
+    while (candidate >= 0 && chain_count < chain_limit) {
         unsigned int distance = (unsigned int)(position - (size_t)candidate);
         unsigned int length = 0U;
 
@@ -127,6 +129,7 @@ static int expack_deflate_make_tokens(const unsigned char *data, size_t size, Ex
     ExpackDeflateToken *tokens;
     int *head;
     int *prev;
+    unsigned int chain_limit = size > EXPACK_DEFLATE_LARGE_INPUT_THRESHOLD ? EXPACK_DEFLATE_LARGE_CHAIN_LIMIT : EXPACK_DEFLATE_CHAIN_LIMIT;
     size_t position = 0U;
     size_t token_count = 0U;
     unsigned int index;
@@ -150,15 +153,15 @@ static int expack_deflate_make_tokens(const unsigned char *data, size_t size, Ex
         unsigned int length;
         unsigned int distance;
 
-        expack_deflate_find_match(data, size, position, head, prev, &length, &distance);
+        expack_deflate_find_match(data, size, position, head, prev, chain_limit, &length, &distance);
         expack_deflate_insert(data, size, position, head, prev);
         if (length >= EXPACK_DEFLATE_MIN_MATCH && position + 1U < size) {
             unsigned int next_length;
             unsigned int next_distance;
 
-            expack_deflate_find_match(data, size, position + 1U, head, prev, &next_length, &next_distance);
+            expack_deflate_find_match(data, size, position + 1U, head, prev, chain_limit, &next_length, &next_distance);
             (void)next_distance;
-            if (next_length > length + 1U) {
+            if (next_length > length) {
                 length = 0U;
             }
         }
@@ -783,10 +786,25 @@ static int expack_deflate_verify_dynamic(const unsigned char *payload, size_t pa
     }
 }
 
-static int expack_compress_deflate_bcj(const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out) {
-    unsigned char *transformed;
+static int expack_compress_deflate_transformed(const unsigned char *data, size_t size, unsigned char **payload_out, size_t *payload_size_out) {
     unsigned char *payload = 0;
     size_t payload_size = 0U;
+    int result = expack_deflate_encode_dynamic(data, size, &payload, &payload_size);
+
+    if (result == 0 && expack_deflate_verify_dynamic(payload, payload_size, data, size) != 0) {
+        rt_free(payload);
+        result = -1;
+    }
+    if (result != 0) {
+        return -1;
+    }
+    *payload_out = payload;
+    *payload_size_out = payload_size;
+    return 0;
+}
+
+static int expack_compress_deflate_bcj(const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out) {
+    unsigned char *transformed;
     int result;
 
     transformed = (unsigned char *)rt_malloc(input_size == 0U ? 1U : input_size);
@@ -795,16 +813,7 @@ static int expack_compress_deflate_bcj(const unsigned char *input_data, size_t i
     }
     memcpy(transformed, input_data, input_size);
     expack_x86_bcj_transform(transformed, input_size, 0);
-    result = expack_deflate_encode_dynamic(transformed, input_size, &payload, &payload_size);
-    if (result == 0 && expack_deflate_verify_dynamic(payload, payload_size, transformed, input_size) != 0) {
-        rt_free(payload);
-        result = -1;
-    }
+    result = expack_compress_deflate_transformed(transformed, input_size, payload_out, payload_size_out);
     rt_free(transformed);
-    if (result != 0) {
-        return -1;
-    }
-    *payload_out = payload;
-    *payload_size_out = payload_size;
-    return 0;
+    return result;
 }

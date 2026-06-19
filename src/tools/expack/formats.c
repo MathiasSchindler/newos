@@ -744,6 +744,7 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
         if (file_size64 != 0ULL && expack_find_canonical_load_offset(loads, load_count, file_offset64, file_size64, &new_offset64) == 0) {
             archive_store_u64_le(image_phdr + 8U, new_offset64);
         }
+        archive_store_u64_le(image_phdr + 24U, 0ULL);
         compact_phnum += 1U;
     }
     if (!has_interp) {

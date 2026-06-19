@@ -1495,6 +1495,17 @@ static void expack_x86_bcj_transform(unsigned char *data, size_t size, int inclu
     }
 }
 
+static unsigned char *expack_make_bcj_transformed_input(const unsigned char *input_data, size_t input_size, int include_rip_relative) {
+    unsigned char *transformed = (unsigned char *)rt_malloc(input_size == 0U ? 1U : input_size);
+
+    if (transformed == 0) {
+        return 0;
+    }
+    memcpy(transformed, input_data, input_size);
+    expack_x86_bcj_transform(transformed, input_size, include_rip_relative);
+    return transformed;
+}
+
 #include "deflate.c"
 
 static int expack_compress_xlz_bcj(const unsigned char *input_data, size_t input_size, unsigned char **payload_out, size_t *payload_size_out) {
@@ -1663,17 +1674,19 @@ typedef struct {
     unsigned int lzrep_parse;
     const unsigned char *input_data;
     size_t input_size;
+    int input_pretransformed;
     ExpackCandidate candidate;
     int succeeded;
     int done;
 } ExpackCandidateJob;
 
-static void expack_candidate_job_init(ExpackCandidateJob *job, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size) {
+static void expack_candidate_job_init(ExpackCandidateJob *job, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size, int input_pretransformed) {
     job->codec = codec;
     job->lzss_profile = profile;
     job->lzrep_parse = lzrep_parse;
     job->input_data = input_data;
     job->input_size = input_size;
+    job->input_pretransformed = input_pretransformed;
     job->candidate.codec = codec;
     job->candidate.lzss_profile = profile;
     job->candidate.lzrep_parse = lzrep_parse;
@@ -1712,13 +1725,17 @@ static void expack_candidate_job_init(ExpackCandidateJob *job, unsigned int code
     }
 }
 
-static int expack_add_candidate_job(ExpackCandidateJob *jobs, unsigned int *job_count, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size) {
+static int expack_add_prepared_candidate_job(ExpackCandidateJob *jobs, unsigned int *job_count, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size, int input_pretransformed) {
     if (*job_count >= EXPACK_MAX_CANDIDATE_JOBS) {
         return -1;
     }
-    expack_candidate_job_init(jobs + *job_count, codec, profile, lzrep_parse, input_data, input_size);
+    expack_candidate_job_init(jobs + *job_count, codec, profile, lzrep_parse, input_data, input_size, input_pretransformed);
     *job_count += 1U;
     return 0;
+}
+
+static int expack_add_candidate_job(ExpackCandidateJob *jobs, unsigned int *job_count, unsigned int codec, const ExpackLzssProfile *profile, unsigned int lzrep_parse, const unsigned char *input_data, size_t input_size) {
+    return expack_add_prepared_candidate_job(jobs, job_count, codec, profile, lzrep_parse, input_data, input_size, 0);
 }
 
 static void expack_run_candidate_job(ExpackCandidateJob *job) {
@@ -1733,17 +1750,33 @@ static void expack_run_candidate_job(ExpackCandidateJob *job) {
             result = expack_compress_lzrep(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
         }
     } else if (job->codec == EXPACK_CODEC_LZSS_BCJ) {
-        result = expack_compress_lzss_bcj_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        if (job->input_pretransformed) {
+            result = expack_compress_lzss_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        } else {
+            result = expack_compress_lzss_bcj_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        }
     } else if (job->codec == EXPACK_CODEC_LZSS_BCJ_RIP) {
-        result = expack_compress_lzss_bcj_rip_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        if (job->input_pretransformed) {
+            result = expack_compress_lzss_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        } else {
+            result = expack_compress_lzss_bcj_rip_profile(job->lzss_profile, job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        }
     } else if (job->codec == EXPACK_CODEC_LZ4) {
         result = expack_compress_lz4_block(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
     } else if (job->codec == EXPACK_CODEC_XLZ) {
         result = expack_compress_xlz(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
     } else if (job->codec == EXPACK_CODEC_XLZ_BCJ) {
-        result = expack_compress_xlz_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        if (job->input_pretransformed) {
+            result = expack_compress_xlz(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        } else {
+            result = expack_compress_xlz_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        }
     } else if (job->codec == EXPACK_CODEC_DEFLATE_BCJ) {
-        result = expack_compress_deflate_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        if (job->input_pretransformed) {
+            result = expack_compress_deflate_transformed(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        } else {
+            result = expack_compress_deflate_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
+        }
     }
     job->succeeded = result == 0;
     job->done = 1;
@@ -1827,6 +1860,8 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
     unsigned int job_count = 0U;
     unsigned int job_index;
     int have_selected = 0;
+    unsigned char *bcj_transformed = 0;
+    unsigned char *bcj_rip_transformed = 0;
 
     expack_candidate_release(selected_out);
     for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
@@ -1838,7 +1873,7 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         }
     }
 
-    if (try_all_candidates) {
+    if (try_all_candidates && format->kind == EXPACK_FORMAT_MACHO) {
         if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZ4, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
             return -1;
         }
@@ -1850,43 +1885,61 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         }
     }
 
+    if (allow_x86_bcj) {
+        bcj_transformed = expack_make_bcj_transformed_input(input_data, input_size, 0);
+    }
+
     if (try_all_candidates && allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
-        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_XLZ_BCJ, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+        const unsigned char *bcj_input_data = bcj_transformed != 0 ? bcj_transformed : input_data;
+        if (expack_add_prepared_candidate_job(jobs, &job_count, EXPACK_CODEC_XLZ_BCJ, 0, EXPACK_LZREP_PARSE_FAST, bcj_input_data, input_size, bcj_transformed != 0) != 0) {
+            if (bcj_transformed != 0) rt_free(bcj_transformed);
             return -1;
         }
     }
 
     if (allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64 && (try_all_candidates || input_size >= 16384U)) {
-        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_DEFLATE_BCJ, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+        const unsigned char *bcj_input_data = bcj_transformed != 0 ? bcj_transformed : input_data;
+        if (expack_add_prepared_candidate_job(jobs, &job_count, EXPACK_CODEC_DEFLATE_BCJ, 0, EXPACK_LZREP_PARSE_FAST, bcj_input_data, input_size, bcj_transformed != 0) != 0) {
+            if (bcj_transformed != 0) rt_free(bcj_transformed);
             return -1;
         }
     }
 
     if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+        if (bcj_transformed != 0) rt_free(bcj_transformed);
         return -1;
     }
 
     if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_OPT, input_data, input_size) != 0) {
+        if (bcj_transformed != 0) rt_free(bcj_transformed);
         return -1;
     }
 
     if (allow_x86_bcj) {
+        const unsigned char *bcj_input_data = bcj_transformed != 0 ? bcj_transformed : input_data;
+
         for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
             if (!try_all_candidates && !expack_bcj_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
                 continue;
             }
-            if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            if (expack_add_prepared_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, bcj_input_data, input_size, bcj_transformed != 0) != 0) {
+                if (bcj_transformed != 0) rt_free(bcj_transformed);
                 return -1;
             }
         }
     }
 
     if (allow_x86_bcj && format->kind == EXPACK_FORMAT_ELF64_X86_64) {
+        bcj_rip_transformed = expack_make_bcj_transformed_input(input_data, input_size, 1);
         for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
+            const unsigned char *bcj_rip_input_data = bcj_rip_transformed != 0 ? bcj_rip_transformed : input_data;
+
             if (!try_all_candidates && !expack_bcj_rip_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
                 continue;
             }
-            if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ_RIP, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
+            if (expack_add_prepared_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ_RIP, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, bcj_rip_input_data, input_size, bcj_rip_transformed != 0) != 0) {
+                if (bcj_rip_transformed != 0) rt_free(bcj_rip_transformed);
+                if (bcj_transformed != 0) rt_free(bcj_transformed);
                 return -1;
             }
         }
@@ -1906,6 +1959,8 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         else expack_candidate_release(&job->candidate);
     }
 
+    if (bcj_rip_transformed != 0) rt_free(bcj_rip_transformed);
+    if (bcj_transformed != 0) rt_free(bcj_transformed);
     return have_selected ? 0 : -1;
 }
 
