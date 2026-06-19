@@ -81,6 +81,7 @@
 #define SQL_INDEX_SLOTS 16U
 #endif
 #define SQL_NULL_OFFSET ((unsigned int)0xffffffffU)
+#define SQL_ROW_INDEX_NONE ((unsigned int)0xffffffffU)
 #ifndef SQL_PATH_SIZE
 #define SQL_PATH_SIZE 1024U
 #endif
@@ -226,7 +227,9 @@ typedef struct {
 } SqlOrderKey;
 
 typedef struct {
+    const SqlTable *tables[SQL_MAX_QUERY_TABLES];
     const SqlRow *rows[SQL_MAX_QUERY_TABLES];
+    unsigned int row_indices[SQL_MAX_QUERY_TABLES];
     unsigned int *values;
     unsigned int *aggregates;
     unsigned int count;
@@ -328,6 +331,7 @@ static int sql_store_decimal_scaled(long long scaled, char *buffer, size_t buffe
 static int sql_compare_values(const char *left, const char *right);
 static void sql_store_uint_text(unsigned long long value, char *buffer, size_t buffer_size);
 static int sql_row_numeric_value(const SqlRow *row, unsigned int column, long long *value_out);
+static int sql_result_row_numeric_value(const SqlResultRow *row, unsigned int table_index, unsigned int column, long long *value_out);
 static int sql_table_row_numeric_value(const SqlTable *table, unsigned int row_index, unsigned int column, long long *value_out);
 static int sql_multiply_size(size_t left, size_t right, size_t *out);
 static int sql_next_capacity(unsigned int current, unsigned int needed, unsigned int max, unsigned int initial, unsigned int *capacity_out);
@@ -395,7 +399,7 @@ static int sql_parse_row_condition_primary(SqlParser *parser, const SqlTable *ta
 static int sql_parse_row_condition_leaf(SqlParser *parser, const SqlTable *table, SqlConditionList *list, int *node_out);
 static int sql_read_condition_literal(SqlParser *parser, SqlConditionValue *value);
 static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditionList *where_out);
-static int sql_row_condition_list_matches(const SqlRow *row, const SqlConditionList *where);
+static int sql_row_condition_list_matches(const SqlTable *table, unsigned int row_index, const SqlConditionList *where);
 static int sql_parse_condition_operator_current(SqlParser *parser, int *operator_out);
 static int sql_parse_condition_operator(SqlParser *parser, int *operator_out);
 static int sql_add_condition_leaf(SqlConditionList *list, const SqlCondition *condition);

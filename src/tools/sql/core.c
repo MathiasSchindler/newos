@@ -280,7 +280,9 @@ static void sql_copy_result_row(const SqlSelectQuery *query, SqlResultRow *dst, 
         return;
     }
     for (source_index = 0U; source_index < SQL_MAX_QUERY_TABLES; ++source_index) {
+        dst->tables[source_index] = src->tables[source_index];
         dst->rows[source_index] = src->rows[source_index];
+        dst->row_indices[source_index] = src->row_indices[source_index];
     }
     dst->count = src->count;
     if (dst->values != 0 && src->values != 0 && query->item_count != 0U) {
@@ -861,7 +863,7 @@ static int sql_compute_aggregate_value(const SqlSelectQuery *query, const SqlRes
             }
         } else if (aggregate->kind == SQL_SELECT_SUM || aggregate->kind == SQL_SELECT_AVG || aggregate->kind == SQL_SELECT_TOTAL) {
             long long number;
-            if (sql_row_numeric_value(candidate->rows[aggregate->column.table_index], (unsigned int)aggregate->column.column_index, &number) != 0 &&
+            if (sql_result_row_numeric_value(candidate, (unsigned int)aggregate->column.table_index, (unsigned int)aggregate->column.column_index, &number) != 0 &&
                 sql_parse_decimal_scaled(value, &number, 0) != 0) {
                 return -1;
             }

@@ -546,8 +546,9 @@ static int sql_select_index_lookup(const SqlSelectQuery *query, unsigned int dep
         if (join_index < query->join_count && sql_condition_index_lookup(&query->joins[join_index], depth, current, column_out, value_out)) {
             return 1;
         }
+        return sql_condition_list_index_lookup(&query->where, depth, current, column_out, value_out);
     }
-    return sql_condition_list_index_lookup(&query->where, depth, current, column_out, value_out);
+    return 0;
 }
 
 static int sql_select_collection_limit_reached(const SqlSelectQuery *query, const SqlResultBuffer *result) {
@@ -591,7 +592,9 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
         unsigned int scan_count = use_index ? index_end - index_start : table->row_count;
         for (row_index = 0U; row_index < scan_count; ++row_index) {
             unsigned int source_row = use_index ? index->row_ids[index_start + row_index] : row_index;
+            current->tables[depth] = table;
             current->rows[depth] = &table->rows[source_row];
+            current->row_indices[depth] = source_row;
             if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
             }
@@ -607,16 +610,22 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
                 int matched = 0;
                 unsigned int left_index;
 
+                current->tables[1] = right_table;
                 current->rows[1] = &right_table->rows[right_index];
+                current->row_indices[1] = right_index;
                 for (left_index = 0U; left_index < table->row_count; ++left_index) {
+                    current->tables[0] = table;
                     current->rows[0] = &table->rows[left_index];
+                    current->row_indices[0] = left_index;
                     if (sql_condition_matches(&query->joins[0], current)) {
                         matched = 1;
                         break;
                     }
                 }
                 if (!matched) {
+                    current->tables[0] = table;
                     current->rows[0] = 0;
+                    current->row_indices[0] = SQL_ROW_INDEX_NONE;
                     if (!sql_condition_list_matches(&query->where, current)) {
                         continue;
                     }
@@ -640,7 +649,9 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
         unsigned int scan_count = use_index ? index_end - index_start : table->row_count;
         for (row_index = 0U; row_index < scan_count; ++row_index) {
             unsigned int source_row = use_index ? index->row_ids[index_start + row_index] : row_index;
+            current->tables[depth] = table;
             current->rows[depth] = &table->rows[source_row];
+            current->row_indices[depth] = source_row;
             if (!sql_condition_matches(&query->joins[join_index], current)) {
                 continue;
             }
@@ -653,7 +664,9 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
             }
         }
         if (!matched && (query->join_types[join_index] == SQL_JOIN_LEFT || query->join_types[join_index] == SQL_JOIN_FULL)) {
+            current->tables[depth] = table;
             current->rows[depth] = 0;
+            current->row_indices[depth] = SQL_ROW_INDEX_NONE;
             if (sql_collect_select_rows(query, depth + 1U, current, result) != 0) {
                 return -1;
             }
@@ -845,10 +858,8 @@ static int sql_compare_order_rows(const SqlSelectQuery *query, const SqlResultRo
         if (key->label[0] == '\0') {
             long long left_number;
             long long right_number;
-            const SqlRow *left_row = left->rows[key->column.table_index];
-            const SqlRow *right_row = right->rows[key->column.table_index];
-            if (sql_row_numeric_value(left_row, (unsigned int)key->column.column_index, &left_number) == 0 &&
-                sql_row_numeric_value(right_row, (unsigned int)key->column.column_index, &right_number) == 0) {
+            if (sql_result_row_numeric_value(left, (unsigned int)key->column.table_index, (unsigned int)key->column.column_index, &left_number) == 0 &&
+                sql_result_row_numeric_value(right, (unsigned int)key->column.table_index, (unsigned int)key->column.column_index, &right_number) == 0) {
                 cmp = left_number < right_number ? -1 : (left_number > right_number ? 1 : 0);
             } else {
                 cmp = sql_compare_values(sql_order_value(query, key, left), sql_order_value(query, key, right));

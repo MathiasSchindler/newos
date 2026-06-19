@@ -106,7 +106,7 @@ static int sql_execute_update(SqlDatabase *db, SqlParser *parser) {
     }
     for (row_index = 0U; row_index < table->row_count; ++row_index) {
         unsigned int assignment_index;
-        if (!sql_row_condition_list_matches(&table->rows[row_index], &where)) {
+        if (!sql_row_condition_list_matches(table, row_index, &where)) {
             continue;
         }
         for (assignment_index = 0U; assignment_index < assignment_count; ++assignment_index) {
@@ -142,7 +142,7 @@ static int sql_execute_delete(SqlDatabase *db, SqlParser *parser) {
         return -1;
     }
     for (read_index = 0U; read_index < table->row_count; ++read_index) {
-        if (sql_row_condition_list_matches(&table->rows[read_index], &where)) {
+        if (sql_row_condition_list_matches(table, read_index, &where)) {
             continue;
         }
         if (write_index != read_index) {

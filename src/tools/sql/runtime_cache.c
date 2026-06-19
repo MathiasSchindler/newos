@@ -95,13 +95,27 @@ static int sql_row_numeric_value(const SqlRow *row, unsigned int column, long lo
     return sql_table_row_numeric_value(table, row_index, column, value_out);
 }
 
+static int sql_result_row_numeric_value(const SqlResultRow *row, unsigned int table_index, unsigned int column, long long *value_out) {
+    if (row == 0 || table_index >= SQL_MAX_QUERY_TABLES || row->tables[table_index] == 0 || row->rows[table_index] == 0 ||
+        row->row_indices[table_index] == SQL_ROW_INDEX_NONE) {
+        return -1;
+    }
+    return sql_table_row_numeric_value(row->tables[table_index], row->row_indices[table_index], column, value_out);
+}
+
 static int sql_condition_value_numeric(const SqlConditionValue *value, const SqlResultRow *row, long long *number_out) {
     if (value->is_null || value->is_aggregate || value->is_count) {
         return -1;
     }
     if (value->is_column) {
-        const SqlRow *source_row = row->rows[value->column.table_index];
-        return sql_row_numeric_value(source_row, (unsigned int)value->column.column_index, number_out);
+        unsigned int table_index = (unsigned int)value->column.table_index;
+        if (sql_result_row_numeric_value(row, table_index, (unsigned int)value->column.column_index, number_out) == 0) {
+            return 0;
+        }
+        if (row != 0 && table_index < SQL_MAX_QUERY_TABLES) {
+            return sql_row_numeric_value(row->rows[table_index], (unsigned int)value->column.column_index, number_out);
+        }
+        return -1;
     }
     return sql_parse_decimal_scaled(value->value, number_out, 0);
 }

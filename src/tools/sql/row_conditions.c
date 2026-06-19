@@ -198,11 +198,17 @@ static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditio
     return 0;
 }
 
-static int sql_row_condition_list_matches(const SqlRow *row, const SqlConditionList *where) {
+static int sql_row_condition_list_matches(const SqlTable *table, unsigned int row_index, const SqlConditionList *where) {
     SqlResultRow result;
 
     rt_memset(&result, 0, sizeof(result));
-    result.rows[0] = row;
+    if (table != 0 && row_index < table->row_count) {
+        result.tables[0] = table;
+        result.rows[0] = &table->rows[row_index];
+        result.row_indices[0] = row_index;
+    } else {
+        result.row_indices[0] = SQL_ROW_INDEX_NONE;
+    }
     return sql_condition_list_matches(where, &result);
 }
 
