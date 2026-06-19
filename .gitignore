@@ -20,6 +20,9 @@ experimental/md5files/*
 experimental/md5files/examples/*
 !experimental/md5files/examples/true
 !experimental/md5files/examples/false
+!experimental/wikipedia/
+experimental/wikipedia/build/
+experimental/wikipedia/data/
 services/httpd/log/
 sequel/
 gui/
