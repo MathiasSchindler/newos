@@ -26,36 +26,51 @@ static const char *sql_row_display_value(const SqlRow *row, unsigned int column)
     return sql_row_value_is_null(row, column) ? "NULL" : sql_row_value(row, column);
 }
 
-static int sql_store_value(SqlDatabase *db, const char *value, unsigned int *offset_out) {
-    size_t length;
+static int sql_store_value_len(SqlDatabase *db, const char *value, size_t length, unsigned int *offset_out) {
     unsigned int offset;
+    unsigned int needed;
 
     if (db == 0 || value == 0 || offset_out == 0) {
         return -1;
     }
-    if (value[0] == '\0') {
+    if (length == 0U) {
         *offset_out = 0U;
         return 0;
     }
-    length = rt_strlen(value);
     if (length >= SQL_VALUE_SIZE || (size_t)db->value_used + length + 1U > (size_t)SQL_MAX_VALUE_BYTES) {
         return -1;
     }
-    if (sql_ensure_value_capacity(db, (unsigned int)((size_t)db->value_used + length + 1U)) != 0) {
+    needed = (unsigned int)((size_t)db->value_used + length + 1U);
+    if (needed > db->value_capacity && sql_ensure_value_capacity(db, needed) != 0) {
         return -1;
     }
     offset = db->value_used;
-    memcpy(db->values + offset, value, length + 1U);
+    memcpy(db->values + offset, value, length);
+    db->values[offset + length] = '\0';
     db->value_used += (unsigned int)(length + 1U);
     *offset_out = offset;
     return 0;
+}
+
+static int sql_store_value(SqlDatabase *db, const char *value, unsigned int *offset_out) {
+    if (value == 0) {
+        return -1;
+    }
+    return sql_store_value_len(db, value, rt_strlen(value), offset_out);
+}
+
+static int sql_store_row_value_len(SqlDatabase *db, SqlRow *row, unsigned int column, const char *value, size_t length) {
+    if (row == 0 || row->values == 0) {
+        return -1;
+    }
+    return sql_store_value_len(db, value, length, &row->values[column]);
 }
 
 static int sql_store_row_value(SqlDatabase *db, SqlRow *row, unsigned int column, const char *value) {
     if (row == 0 || row->values == 0) {
         return -1;
     }
-    return sql_store_value(db, value, &row->values[column]);
+    return sql_store_value_len(db, value, rt_strlen(value), &row->values[column]);
 }
 
 static int sql_store_row_null(SqlRow *row, unsigned int column) {

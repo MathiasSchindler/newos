@@ -86,8 +86,7 @@ static int sql_parse_database_row(SqlDatabase *db, char *line, SqlTable *table) 
         unsigned long long length = 0ULL;
         char digits[16];
         size_t digit_count = 0U;
-        char value[SQL_VALUE_SIZE];
-        size_t copy_index;
+        size_t value_length;
 
         if (*cursor == 'N') {
             cursor += 1;
@@ -111,20 +110,19 @@ static int sql_parse_database_row(SqlDatabase *db, char *line, SqlTable *table) 
             return -1;
         }
         cursor += 1;
-        if (length >= sizeof(value)) {
-            return -1;
-        }
-        for (copy_index = 0U; copy_index < (size_t)length; ++copy_index) {
-            if (cursor[copy_index] == '\0') {
-                return -1;
+        value_length = (size_t)length;
+        if (value_length != 0U) {
+            size_t check_index;
+            for (check_index = 0U; check_index < value_length; ++check_index) {
+                if (cursor[check_index] == '\0') {
+                    return -1;
+                }
             }
-            value[copy_index] = cursor[copy_index];
         }
-        value[length] = '\0';
-        if (sql_store_row_value(db, &table->rows[table->row_count], value_index, value) != 0) {
+        if (sql_store_row_value_len(db, &table->rows[table->row_count], value_index, cursor, value_length) != 0) {
             return -1;
         }
-        cursor += length;
+        cursor += value_length;
     }
     if (*cursor != '\0') {
         return -1;

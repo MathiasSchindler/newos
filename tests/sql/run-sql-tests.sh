@@ -7,6 +7,7 @@ ROOT_DIR=$ROOT
 newos_configure_test_tools
 
 SQL_BIN="$TEST_BIN_DIR/sql"
+STRACE_BIN="$TEST_BIN_DIR/strace"
 CASE_DIR="$ROOT/tests/sql/cases"
 TMP_DIR="$ROOT/tests/tmp"
 
@@ -116,9 +117,15 @@ run_scale_case() {
         echo "$rows\t$((rows + cols - 1))\t1"
         echo "c1\tc48"
         echo "$rows\t$((rows + cols - 1))"
+        echo "c1\tc2"
+        echo "$((rows - 4))\t$((rows - 3))"
+        echo "$((rows - 3))\t$((rows - 2))"
+        echo "$((rows - 2))\t$((rows - 1))"
+        echo "$((rows - 1))\t$rows"
+        echo "$rows\t$((rows + 1))"
     } >"$expected"
 
-    if ! "$SQL_BIN" "$db" "$create IMPORT big FROM '$tsv'; SELECT COUNT(*), MAX(c48), MIN(c1) FROM big; SELECT c1, c48 FROM big WHERE c1 = $rows;" >>"$actual" 2>>"$err"; then
+    if ! "$SQL_BIN" "$db" "$create IMPORT big FROM '$tsv'; SELECT COUNT(*), MAX(c48), MIN(c1) FROM big; SELECT c1, c48 FROM big WHERE c1 = $rows; SELECT c1, c2 FROM big ORDER BY c48 ASC, c1 ASC LIMIT 5 OFFSET $((rows - 5));" >>"$actual" 2>>"$err"; then
         echo "not ok - $name" >&2
         cat "$err" >&2
         failures=$((failures + 1))
@@ -135,6 +142,74 @@ run_scale_case() {
     if [ -s "$err" ]; then
         echo "not ok - $name (unexpected stderr)" >&2
         cat "$err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    echo "ok - $name"
+}
+
+run_import_write_shape_case() {
+    name="10-import-write-shape"
+    rows=200
+    cols=16
+    db="$TMP_DIR/$name.db"
+    tsv="$TMP_DIR/$name.tsv"
+    actual="$TMP_DIR/$name.actual"
+    err="$TMP_DIR/$name.err"
+    trace="$TMP_DIR/$name.strace"
+    create="CREATE TABLE big("
+    col=1
+    write_calls=0
+
+    if [ ! -x "$STRACE_BIN" ] || [ "$(uname -s)" != "Linux" ]; then
+        echo "ok - $name (skipped)"
+        return
+    fi
+
+    rm -f "$db" "$tsv" "$actual" "$err" "$trace"
+    : >"$actual"
+    : >"$err"
+
+    while [ "$col" -le "$cols" ]; do
+        if [ "$col" -gt 1 ]; then
+            create="$create, "
+        fi
+        create="$create""c$col"
+        col=$((col + 1))
+    done
+    create="$create);"
+
+    awk -v rows="$rows" -v cols="$cols" 'BEGIN {
+        for (c = 1; c <= cols; c++) {
+            if (c > 1) printf "\t"
+            printf "c%d", c
+        }
+        printf "\n"
+        for (r = 1; r <= rows; r++) {
+            for (c = 1; c <= cols; c++) {
+                if (c > 1) printf "\t"
+                printf "%013d", r * 1000 + c
+            }
+            printf "\n"
+        }
+    }' >"$tsv"
+
+    if ! "$STRACE_BIN" -c "$SQL_BIN" "$db" "$create IMPORT big FROM '$tsv';" >"$actual" 2>"$trace"; then
+        echo "not ok - $name" >&2
+        cat "$trace" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    write_calls=$(awk '$1 == "write" { print $2; found = 1 } END { if (!found) print 0 }' "$trace")
+    if [ "$write_calls" -gt 500 ]; then
+        echo "not ok - $name (too many write syscalls: $write_calls)" >&2
+        cat "$trace" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q "^$rows rows$" "$actual"; then
+        echo "not ok - $name (unexpected import output)" >&2
+        cat "$actual" >&2
         failures=$((failures + 1))
         return
     fi
@@ -186,6 +261,9 @@ done
 
 count=$((count + 1))
 run_scale_case
+
+count=$((count + 1))
+run_import_write_shape_case
 
 count=$((count + 1))
 run_negative_cases
