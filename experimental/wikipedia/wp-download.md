@@ -21,9 +21,9 @@ By default it finds the latest available snapshot date, reads the snapshot's
 `xml/bzip2/SHA256SUMS` manifest, downloads every matching `*.xml.bz2` dump file,
 and verifies each file's SHA-256 digest while streaming it to disk. Progress is
 reported to standard error unless quiet mode is enabled. Progress lines include
-the current file position, transferred bytes, average speed, ETA when the server
-provides `Content-Length`, and remaining file counts when a snapshot has
-multiple dump files.
+timestamps, `file N/TOTAL` for multi-file snapshots, transferred bytes, average
+speed, file ETA when the response provides `Content-Length`, and total package
+progress/ETA when the directory listing provides file sizes.
 
 ## OPTIONS
 

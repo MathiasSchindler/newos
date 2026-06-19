@@ -49,12 +49,31 @@ typedef struct {
     int has_content_length;
 } WpHttpHeaders;
 
+typedef struct {
+    unsigned long long package_total;
+    unsigned long long package_completed;
+    unsigned long long package_start_ns;
+    int has_package_total;
+    size_t file_index;
+    size_t file_count;
+} WpProgressContext;
+
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-q] [-o DIR] [--date YYYY-MM-DD] LANG");
 }
 
+static void write_status_prefix(void) {
+    char timestamp[32];
+
+    if (platform_format_time(platform_get_epoch_time(), 1, "%Y-%m-%d %H:%M:%S", timestamp, sizeof(timestamp)) != 0) {
+        rt_copy_string(timestamp, sizeof(timestamp), "0000-00-00 00:00:00");
+    }
+    rt_write_cstr(2, timestamp);
+    rt_write_char(2, ' ');
+}
+
 static void write_info(const char *message, const char *detail) {
-    rt_write_cstr(2, "wp-download: ");
+    write_status_prefix();
     rt_write_cstr(2, message);
     if (detail != 0) {
         rt_write_cstr(2, detail);
@@ -361,7 +380,7 @@ static int http_request_start(ToolHttpConnection *connection, const WpUrl *url) 
         length = tool_buffer_append_char(request, sizeof(request), length, ':');
         length = tool_buffer_append_cstr(request, sizeof(request), length, port_text);
     }
-    length = tool_buffer_append_cstr(request, sizeof(request), length, "\r\nUser-Agent: newos-wp-download/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    length = tool_buffer_append_cstr(request, sizeof(request), length, "\r\nUser-Agent: newos-wp-download/0.1 (+https://github.com/MathiasSchindler/newos/tree/main/experimental/wikipedia)\r\nFrom: mathias.schindler@gmaiil.com\r\nAccept: */*\r\nConnection: close\r\n\r\n");
     if (rt_strlen(request) != length) {
         return -1;
     }
@@ -602,6 +621,48 @@ static int add_list_file(WpDumpList *list, const char *name) {
     return 0;
 }
 
+static int parse_listing_size_value(const char *line, size_t length, unsigned long long *size_out) {
+    size_t index = length;
+    size_t end;
+    size_t start;
+    unsigned long long value = 0ULL;
+
+    while (index > 0U && (line[index - 1U] == ' ' || line[index - 1U] == '\t' || line[index - 1U] == '\r')) {
+        index -= 1U;
+    }
+    end = index;
+    while (index > 0U && line[index - 1U] >= '0' && line[index - 1U] <= '9') {
+        index -= 1U;
+    }
+    start = index;
+    if (start == end) {
+        return -1;
+    }
+    while (index < end) {
+        unsigned long long digit = (unsigned long long)(line[index] - '0');
+        unsigned long long next = value * 10ULL + digit;
+        if (next < value) {
+            return -1;
+        }
+        value = next;
+        index += 1U;
+    }
+    *size_out = value;
+    return 0;
+}
+
+static void set_list_file_size(WpDumpList *list, const char *name, unsigned long long size) {
+    size_t index;
+
+    for (index = 0U; index < list->count; ++index) {
+        if (rt_strcmp(list->files[index].name, name) == 0) {
+            list->files[index].content_length = size;
+            list->files[index].has_content_length = 1;
+            return;
+        }
+    }
+}
+
 static int parse_bzip2_listing(const char *page, const char *wiki_name, WpDumpList *list) {
     size_t index = 0U;
 
@@ -616,8 +677,20 @@ static int parse_bzip2_listing(const char *page, const char *wiki_name, WpDumpLi
                 name_end += 1U;
             }
             if (page[name_end] == '"' && copy_html_link_name(page, name_start, name_end, name, sizeof(name)) == 0 && is_dump_filename_for_language(name, wiki_name)) {
+                size_t line_end = name_end;
+                unsigned long long listing_size = 0ULL;
+
+                while (line_end > 0U && page[line_end - 1U] != '\n') {
+                    line_end -= 1U;
+                }
+                while (page[line_end] != '\0' && page[line_end] != '\n') {
+                    line_end += 1U;
+                }
                 if (add_list_file(list, name) != 0) {
                     return -1;
+                }
+                if (parse_listing_size_value(page + name_end + 1U, line_end > name_end + 1U ? line_end - name_end - 1U : 0U, &listing_size) == 0) {
+                    set_list_file_size(list, name, listing_size);
                 }
             }
             index = name_end;
@@ -743,14 +816,13 @@ static void write_file_count_suffix(size_t file_index, size_t file_count) {
         rt_write_uint(2, (unsigned long long)file_index);
         rt_write_char(2, '/');
         rt_write_uint(2, (unsigned long long)file_count);
-        rt_write_cstr(2, ", ");
-        rt_write_uint(2, file_index < file_count ? (unsigned long long)(file_count - file_index) : 0ULL);
-        rt_write_cstr(2, " remaining)");
+        rt_write_char(2, ')');
     }
 }
 
 static void write_download_start_line(const char *name, size_t file_index, size_t file_count) {
-    rt_write_cstr(2, "wp-download: downloading ");
+    write_status_prefix();
+    rt_write_cstr(2, "downloading ");
     rt_write_cstr(2, name);
     write_file_count_suffix(file_index, file_count);
     rt_write_char(2, '\n');
@@ -762,8 +834,7 @@ static void write_progress_line(
     int has_total,
     unsigned long long total,
     unsigned long long start_ns,
-    size_t file_index,
-    size_t file_count
+    const WpProgressContext *progress
 ) {
     char written_text[32];
     char total_text[32];
@@ -771,8 +842,18 @@ static void write_progress_line(
     unsigned long long now_ns = platform_get_monotonic_time_ns();
     unsigned long long elapsed_ms = now_ns > start_ns ? (now_ns - start_ns) / 1000000ULL : 0ULL;
     unsigned long long bytes_per_second = elapsed_ms > 0ULL ? (written * 1000ULL) / elapsed_ms : 0ULL;
+    unsigned long long package_written = progress->package_completed + written;
+    unsigned long long package_elapsed_ms = now_ns > progress->package_start_ns ? (now_ns - progress->package_start_ns) / 1000000ULL : 0ULL;
+    unsigned long long package_bytes_per_second = package_elapsed_ms > 0ULL ? (package_written * 1000ULL) / package_elapsed_ms : 0ULL;
 
-    rt_write_cstr(2, "wp-download: ");
+    write_status_prefix();
+    if (progress->file_count > 1U) {
+        rt_write_cstr(2, "file ");
+        rt_write_uint(2, (unsigned long long)progress->file_index);
+        rt_write_char(2, '/');
+        rt_write_uint(2, (unsigned long long)progress->file_count);
+        rt_write_cstr(2, " ");
+    }
     rt_write_cstr(2, name);
     rt_write_cstr(2, ": ");
     tool_format_size(written, 1, written_text, sizeof(written_text));
@@ -797,13 +878,33 @@ static void write_progress_line(
         rt_write_cstr(2, "/s");
         if (has_total && total > written) {
             unsigned long long remaining_seconds = (total - written + bytes_per_second - 1ULL) / bytes_per_second;
-            rt_write_cstr(2, ", eta ");
+            rt_write_cstr(2, ", file eta ");
             write_duration_value(2, remaining_seconds);
         }
     }
-    if (file_count > 1U) {
-        rt_write_cstr(2, ", files remaining ");
-        rt_write_uint(2, file_index < file_count ? (unsigned long long)(file_count - file_index) : 0ULL);
+    if (progress->has_package_total) {
+        char package_written_text[32];
+        char package_total_text[32];
+
+        tool_format_size(package_written, 1, package_written_text, sizeof(package_written_text));
+        tool_format_size(progress->package_total, 1, package_total_text, sizeof(package_total_text));
+        rt_write_cstr(2, ", total ");
+        rt_write_cstr(2, package_written_text);
+        rt_write_cstr(2, "/");
+        rt_write_cstr(2, package_total_text);
+        if (progress->package_total > 0ULL) {
+            unsigned long long package_percent_tenths = (package_written * 1000ULL) / progress->package_total;
+            rt_write_cstr(2, " (");
+            rt_write_uint(2, package_percent_tenths / 10ULL);
+            rt_write_char(2, '.');
+            rt_write_char(2, (char)('0' + (package_percent_tenths % 10ULL)));
+            rt_write_cstr(2, "%)");
+        }
+        if (package_bytes_per_second > 0ULL && progress->package_total > package_written) {
+            unsigned long long package_remaining_seconds = (progress->package_total - package_written + package_bytes_per_second - 1ULL) / package_bytes_per_second;
+            rt_write_cstr(2, ", total eta ");
+            write_duration_value(2, package_remaining_seconds);
+        }
     }
     rt_write_char(2, '\n');
 }
@@ -821,7 +922,7 @@ static int hex_digest_matches(const unsigned char digest[CRYPTO_SHA256_DIGEST_SI
     return 1;
 }
 
-static int download_file(const char *url_text, const char *output_path, const char *name, const WpOptions *options, const char *expected_hex, size_t file_index, size_t file_count) {
+static int download_file(const char *url_text, const char *output_path, const char *name, const WpOptions *options, const char *expected_hex, WpProgressContext *progress) {
     ToolHttpConnection connection;
     WpUrl url;
     WpHttpHeaders headers;
@@ -849,7 +950,7 @@ static int download_file(const char *url_text, const char *output_path, const ch
     }
 
     if (!options->quiet) {
-        write_download_start_line(name, file_index, file_count);
+        write_download_start_line(name, progress->file_index, progress->file_count);
     }
     start_ns = platform_get_monotonic_time_ns();
     next_progress_ns = start_ns;
@@ -924,7 +1025,7 @@ static int download_file(const char *url_text, const char *output_path, const ch
         if (!options->quiet) {
             unsigned long long now_ns = platform_get_monotonic_time_ns();
             if (now_ns >= next_progress_ns) {
-                write_progress_line(name, written, headers.has_content_length, headers.content_length, start_ns, file_index, file_count);
+                write_progress_line(name, written, headers.has_content_length, headers.content_length, start_ns, progress);
                 next_progress_ns = now_ns + WP_PROGRESS_INTERVAL_NS;
             }
         }
@@ -945,9 +1046,10 @@ static int download_file(const char *url_text, const char *output_path, const ch
         return -2;
     }
     if (!options->quiet) {
-        write_progress_line(name, written, headers.has_content_length, headers.content_length, start_ns, file_index, file_count);
+        write_progress_line(name, written, headers.has_content_length, headers.content_length, start_ns, progress);
         write_info("verified ", name);
     }
+    progress->package_completed += written;
     return 0;
 }
 
@@ -960,6 +1062,7 @@ static int run_download(const char *lang, const WpOptions *options) {
     unsigned char *page = 0;
     size_t page_size = 0U;
     WpDumpList list;
+    WpProgressContext progress;
     size_t index;
 
     if (!is_valid_lang_code(lang) || make_wiki_name(lang, wiki_name, sizeof(wiki_name)) != 0) {
@@ -1013,10 +1116,30 @@ static int run_download(const char *lang, const WpOptions *options) {
     }
     rt_free(page);
 
+    rt_memset(&progress, 0, sizeof(progress));
+    progress.file_count = list.count;
+    progress.has_package_total = 1;
+    for (index = 0U; index < list.count; ++index) {
+        if (!list.files[index].has_content_length) {
+            progress.has_package_total = 0;
+        }
+        progress.package_total += list.files[index].content_length;
+    }
+    progress.package_start_ns = platform_get_monotonic_time_ns();
+
     if (!options->quiet) {
-        rt_write_cstr(2, "wp-download: found ");
+        char package_total_text[32];
+
+        write_status_prefix();
+        rt_write_cstr(2, "found ");
         rt_write_uint(2, (unsigned long long)list.count);
-        rt_write_cstr(2, list.count == 1U ? " dump file\n" : " dump files\n");
+        rt_write_cstr(2, list.count == 1U ? " dump file" : " dump files");
+        if (progress.has_package_total) {
+            tool_format_size(progress.package_total, 1, package_total_text, sizeof(package_total_text));
+            rt_write_cstr(2, ", total ");
+            rt_write_cstr(2, package_total_text);
+        }
+        rt_write_char(2, '\n');
     }
 
     for (index = 0U; index < list.count; ++index) {
@@ -1029,7 +1152,8 @@ static int run_download(const char *lang, const WpOptions *options) {
             tool_write_error("wp-download", "path too long for ", list.files[index].name);
             return 1;
         }
-        result = download_file(file_url, output_path, list.files[index].name, options, list.files[index].expected_hex, index + 1U, list.count);
+        progress.file_index = index + 1U;
+        result = download_file(file_url, output_path, list.files[index].name, options, list.files[index].expected_hex, &progress);
         if (result == -2) {
             tool_write_error("wp-download", "sha256 mismatch for ", list.files[index].name);
             return 1;

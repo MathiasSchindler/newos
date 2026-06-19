@@ -20,8 +20,10 @@ wp-download --date 2026-06-01 -o experimental/wikipedia/data fur
 The tool discovers the latest snapshot date unless `--date YYYY-MM-DD` is
 provided, reads the `xml/bzip2/SHA256SUMS` manifest, downloads every matching
 `<lang>wiki-*.xml.bz2` file, reports progress with speed and ETA where the
-server provides a content length, and verifies the SHA-256 digest while
-streaming the file to disk.
+directory listing provides file sizes, and verifies the SHA-256 digest while
+streaming the file to disk. Progress lines are timestamped and include `file
+N/TOTAL` for multi-file snapshots plus both file-level and package-level ETA
+when size information is available.
 
 Downloads are sequential for now. Wikimedia's own downloads front page says
 their servers cap clients to 3 per-IP connections and that clients trying to
