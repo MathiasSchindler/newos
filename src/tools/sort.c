@@ -4,7 +4,7 @@
 
 #include <limits.h>
 
-#define SORT_MAX_LINES 65536U
+#define SORT_MAX_LINES 131072U
 #define SORT_MAX_INPUTS 8U
 #define SORT_MAX_RUNS 128U
 #define SORT_IO_BUFFER_SIZE 8192U
@@ -394,17 +394,30 @@ static int collect_external_from_fd(int fd,
             while (index < (size_t)bytes_read && buffer[index] != '\n') {
                 index += 1U;
             }
-            if (line_builder_append_span(&builder, buffer + start, index - start) != 0) {
-                line_builder_free(&builder);
-                return SORT_COLLECT_MEMORY_ERROR;
-            }
             if (index < (size_t)bytes_read && buffer[index] == '\n') {
-                if (collect_external_line(collection, options, runs, builder.data != 0 ? builder.data : "", builder.length) != 0) {
+                const char *line_text;
+                size_t line_length;
+
+                if (builder.length == 0U) {
+                    line_text = buffer + start;
+                    line_length = index - start;
+                } else {
+                    if (line_builder_append_span(&builder, buffer + start, index - start) != 0) {
+                        line_builder_free(&builder);
+                        return SORT_COLLECT_MEMORY_ERROR;
+                    }
+                    line_text = builder.data != 0 ? builder.data : "";
+                    line_length = builder.length;
+                }
+                if (collect_external_line(collection, options, runs, line_text, line_length) != 0) {
                     line_builder_free(&builder);
                     return SORT_COLLECT_MEMORY_ERROR;
                 }
                 line_builder_reset(&builder);
                 index += 1U;
+            } else if (line_builder_append_span(&builder, buffer + start, index - start) != 0) {
+                line_builder_free(&builder);
+                return SORT_COLLECT_MEMORY_ERROR;
             }
         }
     }
