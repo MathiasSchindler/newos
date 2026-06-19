@@ -176,7 +176,9 @@ typedef struct {
     int is_null;
     int is_count;
     int is_aggregate;
+    int has_numeric;
     int aggregate_index;
+    long long numeric_value;
     SqlColumnRef column;
     char value[SQL_VALUE_SIZE];
 } SqlConditionValue;
@@ -300,6 +302,12 @@ typedef struct {
     int eof;
 } SqlLineReader;
 
+typedef struct {
+    int fd;
+    char buffer[SQL_IO_BUFFER_SIZE];
+    size_t used;
+} SqlDatabaseWriter;
+
 static int sql_copy_checked(char *dst, size_t dst_size, const char *src);
 static int sql_valid_identifier(const char *text);
 static int sql_identifier_char(char ch);
@@ -371,7 +379,7 @@ static int sql_load_database(const char *path, SqlDatabase *db);
 static int sql_save_database(const char *path, const SqlDatabase *db);
 static int sql_write_database_file(const char *path, const SqlDatabase *db);
 static int sql_temp_save_path(const char *path, char *buffer, size_t buffer_size);
-static int sql_write_name(int fd, const char *name);
+static int sql_write_name(SqlDatabaseWriter *writer, const char *name);
 static char *sql_next_import_field(char **cursor_io, int csv, int *ok_out);
 static char *sql_next_csv_field(char **cursor_io, int *ok_out);
 static char *sql_next_delimited_field(char **cursor_io, char delimiter);
@@ -402,6 +410,7 @@ static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditio
 static int sql_row_condition_list_matches(const SqlTable *table, unsigned int row_index, const SqlConditionList *where);
 static int sql_parse_condition_operator_current(SqlParser *parser, int *operator_out);
 static int sql_parse_condition_operator(SqlParser *parser, int *operator_out);
+static int sql_set_condition_literal(SqlConditionValue *value, const char *text, int is_null);
 static int sql_add_condition_leaf(SqlConditionList *list, const SqlCondition *condition);
 static int sql_add_condition_node(SqlConditionList *list, int kind, int left, int right);
 static const char *sql_condition_value_text(const SqlConditionValue *value, const SqlResultRow *row);
@@ -467,6 +476,7 @@ static const char *sql_order_value(const SqlSelectQuery *query, const SqlOrderKe
 static int sql_compare_order_rows(const SqlSelectQuery *query, const SqlResultRow *left, const SqlResultRow *right);
 static void sql_swap_result_rows(SqlResultRow *left, SqlResultRow *right);
 static void sql_sift_order_heap(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int start, unsigned int end);
+static void sql_trim_order_limit_rows(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int *row_count_io);
 static void sql_sort_select_rows(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int row_count);
 static void sql_write_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count);
 static int sql_parse_assignment(SqlParser *parser, const SqlTable *table, SqlAssignment *assignment);

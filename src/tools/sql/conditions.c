@@ -13,6 +13,30 @@ static int sql_like_match(const char *text, const char *pattern) {
     return *text == *pattern && *text != '\0' && sql_like_match(text + 1, pattern + 1);
 }
 
+static int sql_set_condition_literal(SqlConditionValue *value, const char *text, int is_null) {
+    long long numeric_value;
+
+    value->is_column = 0;
+    value->is_null = is_null;
+    value->is_count = 0;
+    value->is_aggregate = 0;
+    value->has_numeric = 0;
+    value->aggregate_index = -1;
+    value->numeric_value = 0LL;
+    if (is_null) {
+        value->value[0] = '\0';
+        return 0;
+    }
+    if (sql_copy_checked(value->value, sizeof(value->value), text) != 0) {
+        return -1;
+    }
+    if (sql_parse_decimal_scaled(value->value, &numeric_value, 0) == 0) {
+        value->has_numeric = 1;
+        value->numeric_value = numeric_value;
+    }
+    return 0;
+}
+
 static int sql_parse_condition_value(SqlParser *parser, SqlSelectQuery *query, SqlConditionValue *value_out) {
     size_t saved;
     int aggregate_kind;
@@ -23,7 +47,9 @@ static int sql_parse_condition_value(SqlParser *parser, SqlSelectQuery *query, S
     value_out->is_count = 0;
     value_out->is_aggregate = 0;
     value_out->is_null = 0;
+    value_out->has_numeric = 0;
     value_out->aggregate_index = -1;
+    value_out->numeric_value = 0LL;
     if (parser->token_type == SQL_TOKEN_WORD && sql_resolve_column(query, parser->token, &value_out->column) == 0) {
         value_out->is_column = 1;
         value_out->value[0] = '\0';
@@ -49,11 +75,9 @@ static int sql_parse_condition_value(SqlParser *parser, SqlSelectQuery *query, S
     parser->pos = saved;
     value_out->is_column = 0;
     if (parser->token_type == SQL_TOKEN_WORD && tool_str_equal_ignore_case_ascii(parser->token, "null")) {
-        value_out->is_null = 1;
-        value_out->value[0] = '\0';
-        return 0;
+        return sql_set_condition_literal(value_out, "", 1);
     }
-    return sql_copy_checked(value_out->value, sizeof(value_out->value), parser->token);
+    return sql_set_condition_literal(value_out, parser->token, 0);
 }
 
 static int sql_parse_condition_operator_current(SqlParser *parser, int *operator_out) {

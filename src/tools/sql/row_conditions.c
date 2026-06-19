@@ -1,12 +1,14 @@
 #include "internal.h"
 
 static int sql_read_condition_literal(SqlParser *parser, SqlConditionValue *value) {
+    char literal[SQL_VALUE_SIZE];
+    int is_null;
+
     rt_memset(value, 0, sizeof(*value));
-    value->aggregate_index = -1;
-    if (sql_read_value_or_null(parser, value->value, sizeof(value->value), &value->is_null) != 0) {
+    if (sql_read_value_or_null(parser, literal, sizeof(literal), &is_null) != 0) {
         return -1;
     }
-    return 0;
+    return sql_set_condition_literal(value, literal, is_null);
 }
 
 static int sql_parse_row_condition_expr(SqlParser *parser, const SqlTable *table, SqlConditionList *list, int *node_out);

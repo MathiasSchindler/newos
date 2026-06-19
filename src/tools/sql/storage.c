@@ -54,6 +54,27 @@ static char *sql_next_delimited_field(char **cursor_io, char delimiter) {
     return field;
 }
 
+static unsigned int sql_count_database_table_rows(const char *cursor) {
+    unsigned int count = 0U;
+
+    while (cursor != 0 && *cursor != '\0') {
+        const char *line = cursor;
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor += 1;
+        }
+        if (line[0] == 'E' && (line[1] == '\0' || line[1] == '\n')) {
+            break;
+        }
+        if (line[0] == 'R' && line[1] == ' ' && count < SQL_MAX_ROWS) {
+            count += 1U;
+        }
+        if (*cursor == '\n') {
+            cursor += 1;
+        }
+    }
+    return count;
+}
+
 static int sql_parse_database_row(SqlDatabase *db, char *line, SqlTable *table) {
     char *cursor = line + 2;
     unsigned int value_index;
@@ -118,6 +139,9 @@ static int sql_parse_database_text(SqlDatabase *db, char *buffer) {
     SqlTable *current = 0;
 
     sql_clear_database(db);
+    if (buffer != 0 && sql_ensure_value_capacity(db, (unsigned int)(rt_strlen(buffer) + 1U)) != 0) {
+        return -1;
+    }
     if (!sql_line_next(&cursor, &line)) {
         return 0;
     }
@@ -160,6 +184,9 @@ static int sql_parse_database_text(SqlDatabase *db, char *buffer) {
                 }
             }
             if (*field_cursor != '\0') {
+                return -1;
+            }
+            if (sql_ensure_row_capacity(current, sql_count_database_table_rows(cursor)) != 0) {
                 return -1;
             }
         } else if (line[0] == 'C' && line[1] == ' ') {
@@ -224,7 +251,6 @@ static int sql_line_reader_next(SqlLineReader *reader, SqlTextBuffer *line, int 
     }
     *read_out = 0;
     for (;;) {
-        char ch;
         if (reader->pos >= reader->used) {
             long bytes;
             if (reader->eof) {
@@ -253,8 +279,24 @@ static int sql_line_reader_next(SqlLineReader *reader, SqlTextBuffer *line, int 
             reader->pos = 0U;
             reader->used = (size_t)bytes;
         }
-        ch = reader->buffer[reader->pos++];
-        if (ch == '\n') {
+        {
+            size_t start = reader->pos;
+            size_t length;
+            while (reader->pos < reader->used && reader->buffer[reader->pos] != '\n') {
+                reader->pos += 1U;
+            }
+            length = reader->pos - start;
+            if (length != 0U) {
+                if (out + length + 1U > (size_t)SQL_MAX_IMPORT_LINE_BYTES ||
+                    sql_ensure_text_capacity(line, (unsigned int)(out + length + 1U), SQL_MAX_IMPORT_LINE_BYTES) != 0) {
+                    return -1;
+                }
+                memcpy(line->data + out, reader->buffer + start, length);
+                out += length;
+            }
+        }
+        if (reader->pos < reader->used && reader->buffer[reader->pos] == '\n') {
+            reader->pos += 1U;
             if (out > 0U && line->data[out - 1U] == '\r') {
                 out -= 1U;
             }
@@ -265,10 +307,6 @@ static int sql_line_reader_next(SqlLineReader *reader, SqlTextBuffer *line, int 
             *read_out = 1;
             return 0;
         }
-        if (out + 2U > (size_t)SQL_MAX_IMPORT_LINE_BYTES || sql_ensure_text_capacity(line, (unsigned int)(out + 2U), SQL_MAX_IMPORT_LINE_BYTES) != 0) {
-            return -1;
-        }
-        line->data[out++] = ch;
     }
 }
 
@@ -334,7 +372,69 @@ static char *sql_read_text_file(const char *path) {
     return buffer;
 }
 
-static int sql_write_name(int fd, const char *name) {
+static void sql_database_writer_init(SqlDatabaseWriter *writer, int fd) {
+    writer->fd = fd;
+    writer->used = 0U;
+}
+
+static int sql_database_writer_flush(SqlDatabaseWriter *writer) {
+    if (writer->used == 0U) {
+        return 0;
+    }
+    if (rt_write_all(writer->fd, writer->buffer, writer->used) != 0) {
+        return -1;
+    }
+    writer->used = 0U;
+    return 0;
+}
+
+static int sql_database_writer_bytes(SqlDatabaseWriter *writer, const char *data, size_t length) {
+    if (length == 0U) {
+        return 0;
+    }
+    if (length > sizeof(writer->buffer)) {
+        if (sql_database_writer_flush(writer) != 0) {
+            return -1;
+        }
+        return rt_write_all(writer->fd, data, length);
+    }
+    if (writer->used + length > sizeof(writer->buffer) && sql_database_writer_flush(writer) != 0) {
+        return -1;
+    }
+    memcpy(writer->buffer + writer->used, data, length);
+    writer->used += length;
+    return 0;
+}
+
+static int sql_database_writer_cstr(SqlDatabaseWriter *writer, const char *text) {
+    return sql_database_writer_bytes(writer, text, rt_strlen(text));
+}
+
+static int sql_database_writer_char(SqlDatabaseWriter *writer, char ch) {
+    return sql_database_writer_bytes(writer, &ch, 1U);
+}
+
+static int sql_database_writer_uint(SqlDatabaseWriter *writer, unsigned long long value) {
+    char digits[32];
+    unsigned int count = 0U;
+
+    if (value == 0ULL) {
+        return sql_database_writer_char(writer, '0');
+    }
+    while (value != 0ULL && count < sizeof(digits)) {
+        digits[count++] = (char)('0' + (value % 10ULL));
+        value /= 10ULL;
+    }
+    while (count > 0U) {
+        count -= 1U;
+        if (sql_database_writer_char(writer, digits[count]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int sql_write_name(SqlDatabaseWriter *writer, const char *name) {
     size_t i;
 
     if (name == 0 || name[0] == '\0') {
@@ -345,7 +445,7 @@ static int sql_write_name(int fd, const char *name) {
             return -1;
         }
     }
-    return rt_write_cstr(fd, name);
+    return sql_database_writer_cstr(writer, name);
 }
 
 static int sql_temp_save_path(const char *path, char *buffer, size_t buffer_size) {
@@ -363,12 +463,14 @@ static int sql_temp_save_path(const char *path, char *buffer, size_t buffer_size
 
 static int sql_write_database_file(const char *path, const SqlDatabase *db) {
     int fd = platform_open_write(path, 0644U);
+    SqlDatabaseWriter writer;
     unsigned int table_index;
 
     if (fd < 0) {
         return -1;
     }
-    if (rt_write_cstr(fd, "SQS1\n") != 0) {
+    sql_database_writer_init(&writer, fd);
+    if (sql_database_writer_cstr(&writer, "SQS1\n") != 0) {
         (void)platform_close(fd);
         return -1;
     }
@@ -377,20 +479,20 @@ static int sql_write_database_file(const char *path, const SqlDatabase *db) {
         unsigned int column_index;
         unsigned int row_index;
 
-        if (rt_write_cstr(fd, "T ") != 0 ||
-            sql_write_name(fd, table->name) != 0 ||
-            rt_write_char(fd, ' ') != 0 ||
-            rt_write_uint(fd, table->column_count) != 0) {
+        if (sql_database_writer_cstr(&writer, "T ") != 0 ||
+            sql_write_name(&writer, table->name) != 0 ||
+            sql_database_writer_char(&writer, ' ') != 0 ||
+            sql_database_writer_uint(&writer, table->column_count) != 0) {
             (void)platform_close(fd);
             return -1;
         }
         for (column_index = 0U; column_index < table->column_count; ++column_index) {
-            if (rt_write_char(fd, ' ') != 0 || sql_write_name(fd, table->columns[column_index]) != 0) {
+            if (sql_database_writer_char(&writer, ' ') != 0 || sql_write_name(&writer, table->columns[column_index]) != 0) {
                 (void)platform_close(fd);
                 return -1;
             }
         }
-        if (rt_write_char(fd, '\n') != 0) {
+        if (sql_database_writer_char(&writer, '\n') != 0) {
             (void)platform_close(fd);
             return -1;
         }
@@ -420,48 +522,52 @@ static int sql_write_database_file(const char *path, const SqlDatabase *db) {
                         default_value = sql_value_at(table->defaults[column_index]);
                     }
                 }
-                if (rt_write_cstr(fd, "C ") != 0 ||
-                    rt_write_uint(fd, column_index) != 0 ||
-                    rt_write_char(fd, ' ') != 0 ||
-                    rt_write_uint(fd, flags) != 0 ||
-                    rt_write_char(fd, ' ') != 0 ||
-                    rt_write_uint(fd, rt_strlen(default_value)) != 0 ||
-                    rt_write_char(fd, ':') != 0 ||
-                    rt_write_cstr(fd, default_value) != 0 ||
-                    rt_write_char(fd, '\n') != 0) {
+                if (sql_database_writer_cstr(&writer, "C ") != 0 ||
+                    sql_database_writer_uint(&writer, column_index) != 0 ||
+                    sql_database_writer_char(&writer, ' ') != 0 ||
+                    sql_database_writer_uint(&writer, flags) != 0 ||
+                    sql_database_writer_char(&writer, ' ') != 0 ||
+                    sql_database_writer_uint(&writer, rt_strlen(default_value)) != 0 ||
+                    sql_database_writer_char(&writer, ':') != 0 ||
+                    sql_database_writer_cstr(&writer, default_value) != 0 ||
+                    sql_database_writer_char(&writer, '\n') != 0) {
                     (void)platform_close(fd);
                     return -1;
                 }
             }
         }
         for (row_index = 0U; row_index < table->row_count; ++row_index) {
-            if (rt_write_cstr(fd, "R ") != 0) {
+            if (sql_database_writer_cstr(&writer, "R ") != 0) {
                 (void)platform_close(fd);
                 return -1;
             }
             for (column_index = 0U; column_index < table->column_count; ++column_index) {
                 const char *value = sql_row_value(&table->rows[row_index], column_index);
                 if (sql_row_value_is_null(&table->rows[row_index], column_index)) {
-                    if (rt_write_cstr(fd, "N:") != 0) {
+                    if (sql_database_writer_cstr(&writer, "N:") != 0) {
                         (void)platform_close(fd);
                         return -1;
                     }
                     continue;
                 }
-                if (rt_write_uint(fd, rt_strlen(value)) != 0 || rt_write_char(fd, ':') != 0 || rt_write_cstr(fd, value) != 0) {
+                if (sql_database_writer_uint(&writer, rt_strlen(value)) != 0 || sql_database_writer_char(&writer, ':') != 0 || sql_database_writer_cstr(&writer, value) != 0) {
                     (void)platform_close(fd);
                     return -1;
                 }
             }
-            if (rt_write_char(fd, '\n') != 0) {
+            if (sql_database_writer_char(&writer, '\n') != 0) {
                 (void)platform_close(fd);
                 return -1;
             }
         }
-        if (rt_write_cstr(fd, "E\n") != 0) {
+        if (sql_database_writer_cstr(&writer, "E\n") != 0) {
             (void)platform_close(fd);
             return -1;
         }
+    }
+    if (sql_database_writer_flush(&writer) != 0) {
+        (void)platform_close(fd);
+        return -1;
     }
     return platform_close(fd);
 }

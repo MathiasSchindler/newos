@@ -907,6 +907,42 @@ static void sql_sift_order_heap(const SqlSelectQuery *query, SqlResultRow *rows,
     }
 }
 
+static void sql_trim_order_limit_rows(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int *row_count_io) {
+    unsigned long long wanted;
+    unsigned int keep;
+    unsigned int start;
+    unsigned int read_index;
+
+    if (query->order_count == 0U || !query->has_limit || row_count_io == 0 || *row_count_io < 2U) {
+        return;
+    }
+    wanted = (unsigned long long)(query->has_offset ? query->offset : 0U) + (unsigned long long)query->limit;
+    if (wanted == 0ULL) {
+        *row_count_io = 0U;
+        return;
+    }
+    if (wanted >= (unsigned long long)*row_count_io) {
+        return;
+    }
+    keep = (unsigned int)wanted;
+    if (keep > 1U) {
+        start = (keep - 2U) / 2U + 1U;
+        while (start > 0U) {
+            start -= 1U;
+            sql_sift_order_heap(query, rows, start, keep - 1U);
+        }
+    }
+    for (read_index = keep; read_index < *row_count_io; ++read_index) {
+        if (sql_compare_order_rows(query, &rows[read_index], &rows[0]) < 0) {
+            sql_swap_result_rows(&rows[read_index], &rows[0]);
+            if (keep > 1U) {
+                sql_sift_order_heap(query, rows, 0U, keep - 1U);
+            }
+        }
+    }
+    *row_count_io = keep;
+}
+
 static void sql_sort_select_rows(const SqlSelectQuery *query, SqlResultRow *rows, unsigned int row_count) {
     unsigned int start;
     unsigned int end;
@@ -980,6 +1016,7 @@ static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
         goto out;
     }
     sql_distinct_select_rows(&query, group_rows.rows, &group_rows.count);
+    sql_trim_order_limit_rows(&query, group_rows.rows, &group_rows.count);
     sql_sort_select_rows(&query, group_rows.rows, group_rows.count);
     sql_write_select_rows(&query, group_rows.rows, group_rows.count);
     result = 0;
