@@ -1,10 +1,10 @@
 # Wikipedia Tools
 
 This directory tracks the experimental Wikipedia/MediaWiki tool work. The tools
-themselves should still use the normal project layout when they are ordinary
-commands: public entry points in `src/tools/`, shared reusable components in
-`src/shared/`, and tool-private modules under `src/tools/<tool>/` if a command
-outgrows one file.
+themselves live in this directory and build into `experimental/wikipedia/build`
+so niche MediaWiki experiments stay out of the official tool list. Reusable
+components should still move into `src/shared/` when they become generally
+useful across multiple tools.
 
 ## wp-download
 
@@ -33,3 +33,31 @@ concurrency limit explicit.
 
 Resume support is not implemented yet. A failed or interrupted file is
 downloaded again from the beginning on the next run.
+
+## wp-cite-extract
+
+`wp-cite-extract` scans MediaWiki XML dumps and writes a TSV citation cache for
+later matching against sources such as Retraction Watch. By default it looks in
+`experimental/wikipedia/data` when run from the repository root, falls back to
+`data` when run from this directory, chooses the newest `*wiki-YYYY-MM-DD-*.xml`
+or `*.xml.bz2` snapshot set, and writes `<wiki>-<date>-citations.tsv` into the
+same data directory.
+
+```sh
+experimental/wikipedia/build/wp-cite-extract
+experimental/wikipedia/build/wp-cite-extract -i experimental/wikipedia/data/dewiki-2026-06-01-p1p3456636.xml.bz2
+experimental/wikipedia/build/wp-cite-extract -o experimental/wikipedia/data/dewiki-citations.tsv
+```
+
+The first pass is heuristic and citation-cache oriented. It scans namespace 0
+pages for raw DOI, PMID, ISBN, ISSN, German ISBN signals such as `978-3` and
+`9783`, `<ref>` blocks, and common citation templates such as `{{Literatur}}`,
+`{{Internetquelle}}`, and `{{Cite...}}`. The output columns are:
+
+```text
+wiki	snapshot	source	page_id	page_title	kind	value	raw
+```
+
+The binary remains statically linked and libc-free. `.xml.bz2` input is decoded
+through the in-tree shared bzip2 decoder; no external `bzip2` or Python helper
+is needed for extraction.

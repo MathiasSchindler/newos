@@ -2,7 +2,7 @@
 
 ## NAME
 
-bzip2 - compress a file with the repository's bzip2 support
+bzip2 - compress a file with the repository's compact bzip-compatible wrapper
 
 ## SYNOPSIS
 
@@ -12,8 +12,9 @@ bzip2 file
 
 ## DESCRIPTION
 
-`bzip2` compresses a single input file into bzip2 format using the current
-project implementation.
+`bzip2` compresses a single input file into the repository's compact `BZh0`
+format. `bunzip2` can still decode this legacy format, but the encoder does not
+yet emit standard `BZh1` through `BZh9` bzip2 streams.
 
 ## CURRENT CAPABILITIES
 
@@ -28,6 +29,8 @@ The current interface is intentionally minimal and takes a single file operand.
 ## LIMITATIONS
 
 - no broad GNU-style flag surface is implemented yet
+- output is the repository's `BZh0` compatibility format, not a standard host
+  bzip2 stream
 - multi-file and streaming workflows are narrower than host tools
 - compression-level selection, keep/delete policy flags, test mode, and stdout
   output are not implemented yet

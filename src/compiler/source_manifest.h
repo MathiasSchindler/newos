@@ -89,6 +89,7 @@
     X("src/shared/archive_util.c") \
     X("src/shared/object_util.c") \
     X("src/shared/archive_zip.c") \
+    X("src/shared/compression/bzip2.c") \
     X("src/shared/compression/crc32.c") \
     X("src/shared/compression/lzss.c") \
     X("src/shared/compression/zlib.c") \

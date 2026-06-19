@@ -31,12 +31,14 @@ TARGET_PLATFORM_C_SOURCES := $(filter %.c,$(TARGET_PLATFORM_SOURCES))
 TARGET_PLATFORM_ASM_SOURCES := $(filter %.S,$(TARGET_PLATFORM_SOURCES))
 TARGET_TLS_PLATFORM_SOURCE := $(ROOT)/src/platform/linux/tls.c
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
-FREESTANDING_C_SOURCES := wp-download.c $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_C_SOURCES)
+TOOLS := wp-download wp-cite-extract
+FREESTANDING_C_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_C_SOURCES)
 FREESTANDING_ASM_SOURCES := $(TARGET_PLATFORM_ASM_SOURCES) $(TARGET_CRT)
 source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(ROOT)/%,%,$(1))))
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 
 .PHONY: all freestanding clean
+.SECONDARY: $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(TOOLS)))
 
 ifeq ($(AUTO_PARALLEL),1)
 all: freestanding
@@ -47,15 +49,15 @@ all:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding
 endif
 
-freestanding: $(BUILD_DIR)/wp-download
+freestanding: $(addprefix $(BUILD_DIR)/,$(TOOLS))
 
 $(BUILD_DIR) $(OBJ_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/wp-download: $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
-	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
+$(BUILD_DIR)/%: $(OBJ_DIR)/%.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
+	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 
-$(OBJ_DIR)/wp-download.o: wp-download.c | $(OBJ_DIR)
+$(OBJ_DIR)/%.o: %.c | $(OBJ_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: $(ROOT)/%.c | $(OBJ_DIR)

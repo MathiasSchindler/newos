@@ -12,11 +12,14 @@ bunzip2 file.bz2
 
 ## DESCRIPTION
 
-`bunzip2` expands a `.bz2` file using the repository's current bzip2 decoder.
+`bunzip2` expands a `.bz2` file using the repository's shared bzip2 decoder.
 
 ## CURRENT CAPABILITIES
 
 - decompress a single `.bz2` file
+- decode standard non-randomized `BZh1` through `BZh9` bzip2 streams, including
+  Wikimedia dump files
+- decode the repository's older compact `BZh0` test format for compatibility
 - validate stream structure and CRC
 - write the restored output file beside the archive
 
