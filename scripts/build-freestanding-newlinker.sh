@@ -136,6 +136,7 @@ mapfile -t PLATFORM_SOURCES < <(grep -oE '"src/platform/linux/[^"]+\.c"' src/com
 mapfile -t COMPILER_SOURCES < <(grep -oE '"src/compiler/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t IMAGE_SOURCES < <(grep -oE '"src/shared/(image/[^"]+|crypto/(sha256|p256))\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t PDF_SOURCES < <(grep -oE '"src/shared/pdf(_writer)?\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+mapfile -t PGP_SOURCES < <(grep -oE '"src/shared/(pgp|crypto/(aes128|aes128_gcm|sha1|sha256|sha512|hmac_sha256|hkdf_sha256|crypto_util|curve25519|ed25519|rsa)|compression/zlib)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t CRYPTO_SOURCES < <(grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t TLS_SOURCES < <(grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t USB_SOURCES < <(grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
@@ -417,6 +418,19 @@ append_unique_source() {
   for existing in "${arr[@]}"; do [[ "$existing" == "$src" ]] && return 0; done
   arr+=("$src")
 }
+source_in_list() {
+  local src="$1"
+  shift
+  local existing
+  for existing in "$@"; do [[ "$existing" == "$src" ]] && return 0; done
+  return 1
+}
+append_nonreusable_source() {
+  local arr_name="$1"
+  local src="$2"
+  source_in_list "$src" "${REUSE_SOURCES[@]}" && return 0
+  append_unique_source "$arr_name" "$src"
+}
 append_dir_sources() {
   local -n arr=$1
   local dir="$2"
@@ -591,6 +605,20 @@ for tool in $TOOLS; do
       ;;
     pdfinfo|pdfjoin|pdfsplit|pdfinfoedit|pdfextract|pdfgrep|pdfcheck)
       for src in "${PDF_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      ;;
+    git)
+      for src in "${TLS_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      for src in "${CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      append_unique_source tool_sources "$TLS_PLATFORM_SOURCE"
+      ;;
+    pgpkey|pgpmsg)
+      for src in "${PGP_SOURCES[@]}"; do append_nonreusable_source tool_sources "$src"; done
+      ;;
+    pgpquery)
+      for src in "${PGP_SOURCES[@]}"; do append_nonreusable_source tool_sources "$src"; done
+      for src in "${TLS_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      for src in "${CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      append_unique_source tool_sources "$TLS_PLATFORM_SOURCE"
       ;;
     wget|wtf|portscan)
       for src in "${TLS_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
