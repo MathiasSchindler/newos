@@ -17,6 +17,11 @@ typedef struct {
     unsigned int number;
     unsigned int generation;
     size_t offset;
+    int has_file_span;
+    size_t body_start;
+    size_t body_end;
+    size_t stream_offset;
+    size_t endstream_offset;
     int has_stream;
     char type[PDF_NAME_CAPACITY];
     char subtype[PDF_NAME_CAPACITY];
@@ -153,9 +158,12 @@ typedef struct {
 #define PDF_DOCUMENT_PARSE_ENCRYPTED (-2)
 #define PDF_DOCUMENT_PARSE_OBJECT_STREAM_UNSUPPORTED (-3)
 
+#define PDF_ANALYZE_CONTENT_OPS 1U
+
 void pdf_info_init(PdfInfo *info);
 void pdf_info_free(PdfInfo *info);
 int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info);
+int pdf_analyze_with_options(const unsigned char *data, size_t size, PdfInfo *info, unsigned int flags);
 int pdf_is_space(unsigned char ch);
 int pdf_is_digit(unsigned char ch);
 int pdf_is_delim(unsigned char ch);
@@ -177,6 +185,7 @@ void pdf_buffer_free(PdfBuffer *buffer);
 void pdf_document_init(PdfDocument *document);
 void pdf_document_free(PdfDocument *document);
 int pdf_document_scan(const unsigned char *data, size_t size, PdfDocument *document);
+int pdf_document_scan_with_options(const unsigned char *data, size_t size, PdfDocument *document, unsigned int flags);
 int pdf_document_parse(const unsigned char *data, size_t size, PdfDocument *document);
 int pdf_object_stream_data(const PdfDocument *document, const PdfObjectSpan *object, int decode, PdfBuffer *output);
 int pdf_document_info_has_fields(const PdfDocumentInfo *info);

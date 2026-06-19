@@ -428,82 +428,38 @@ static int pdfw_materialize_object_streams(PdfDocument *document) {
     return 0;
 }
 
-static int pdfw_scan_objects(PdfDocument *document) {
-    const unsigned char *data = document->data;
-    size_t size = document->size;
-    size_t offset = 0U;
+static int pdfw_add_span_from_info(PdfDocument *document, const PdfObjectInfo *object) {
+    PdfObjectSpan *span;
 
-    while (offset < size) {
-        size_t object_offset = offset;
-        size_t parse_offset;
-        unsigned long long number;
-        unsigned long long generation;
-        size_t body_start;
-        size_t first_endobj;
-        size_t object_end;
-        size_t stream_offset;
-        size_t endstream_offset = size;
-        size_t dict_end;
-        PdfObjectSpan *span;
+    if (!object->has_file_span) return 0;
+    if (pdfw_grow_spans(document) != 0) return -1;
+    span = &document->objects[document->objects_len++];
+    rt_memset(span, 0, sizeof(*span));
+    span->number = object->number;
+    span->generation = object->generation;
+    span->object_offset = object->offset;
+    span->body_start = object->body_start;
+    span->body_end = object->body_end;
+    span->stream_offset = object->stream_offset;
+    span->endstream_offset = object->endstream_offset;
+    rt_copy_string(span->type, sizeof(span->type), object->type);
+    rt_copy_string(span->subtype, sizeof(span->subtype), object->subtype);
+    if (span->type[0] != '\0' && rt_strcmp(span->type, "Catalog") == 0) {
+        document->catalog_object_number = span->number;
+        document->catalog_generation = span->generation;
+    }
+    if (span->type[0] != '\0' && rt_strcmp(span->type, "Page") == 0) {
+        if (pdfw_add_page_ref(document, span->number, span->generation) != 0) return -1;
+    }
+    if (span->number > document->max_object_number) document->max_object_number = span->number;
+    return 0;
+}
 
-        if ((offset != 0U && !pdfw_is_delim(data[offset - 1U])) || !pdfw_is_digit(data[offset])) {
-            offset += 1U;
-            continue;
-        }
-        parse_offset = offset;
-        if (pdfw_parse_u64(data, size, &parse_offset, &number) != 0 || parse_offset >= size || !pdfw_is_space(data[parse_offset])) {
-            offset += 1U;
-            continue;
-        }
-        parse_offset = pdfw_skip_ws(data, size, parse_offset);
-        if (pdfw_parse_u64(data, size, &parse_offset, &generation) != 0 || parse_offset >= size || !pdfw_is_space(data[parse_offset])) {
-            offset += 1U;
-            continue;
-        }
-        parse_offset = pdfw_skip_ws(data, size, parse_offset);
-        if (!pdfw_keyword_at(data, size, parse_offset, "obj")) {
-            offset += 1U;
-            continue;
-        }
-        body_start = parse_offset + 3U;
-        first_endobj = pdfw_find_keyword(data, size, body_start, size, "endobj");
-        if (first_endobj == size) break;
-        stream_offset = pdfw_find_keyword(data, size, body_start, first_endobj, "stream");
-        object_end = first_endobj;
-        dict_end = stream_offset < size ? stream_offset : first_endobj;
-        if (stream_offset < size) {
-            endstream_offset = pdfw_find_keyword(data, size, stream_offset + 6U, size, "endstream");
-            if (endstream_offset < size) {
-                object_end = pdfw_find_keyword(data, size, endstream_offset + 9U, size, "endobj");
-                if (object_end == size) object_end = endstream_offset + 9U;
-            } else {
-                stream_offset = size;
-                object_end = first_endobj;
-            }
-        }
-        if (number > 4294967295ULL || generation > 4294967295ULL) return -1;
-        if (pdfw_grow_spans(document) != 0) return -1;
-        span = &document->objects[document->objects_len++];
-        rt_memset(span, 0, sizeof(*span));
-        span->number = (unsigned int)number;
-        span->generation = (unsigned int)generation;
-        span->object_offset = object_offset;
-        span->body_start = body_start;
-        span->body_end = object_end;
-        span->stream_offset = stream_offset;
-        span->endstream_offset = endstream_offset;
-        (void)pdfw_find_top_name_value(data + body_start, dict_end > body_start ? dict_end - body_start : 0U, "/Type", span->type, sizeof(span->type));
-        (void)pdfw_find_top_name_value(data + body_start, dict_end > body_start ? dict_end - body_start : 0U, "/Subtype", span->subtype, sizeof(span->subtype));
-        if (span->type[0] != '\0' && rt_strcmp(span->type, "Catalog") == 0) {
-            document->catalog_object_number = span->number;
-            document->catalog_generation = span->generation;
-        }
-        if (span->type[0] != '\0' && rt_strcmp(span->type, "Page") == 0) {
-            if (pdfw_add_page_ref(document, span->number, span->generation) != 0) return -1;
-        }
-        if (span->number > document->max_object_number) document->max_object_number = span->number;
-        if (object_end >= size) break;
-        offset = object_end + 6U;
+static int pdfw_build_spans_from_info(PdfDocument *document) {
+    size_t index;
+
+    for (index = 0U; index < document->info.objects_len; ++index) {
+        if (pdfw_add_span_from_info(document, &document->info.objects[index]) != 0) return -1;
     }
     return 0;
 }
@@ -512,26 +468,35 @@ static void pdfw_scan_startxref(PdfDocument *document) {
     size_t offset;
 
     document->startxref_offset = 0U;
-    for (offset = 0U; offset + 9U <= document->size; ++offset) {
+    if (document->size < 9U) return;
+    offset = document->size - 9U;
+    for (;;) {
         if (pdfw_strlen_bytes(document->data, document->size, offset, "startxref") != 0U) {
             size_t parse_offset = pdfw_skip_ws(document->data, document->size, offset + 9U);
             unsigned long long value;
 
             if (pdfw_parse_u64(document->data, document->size, &parse_offset, &value) == 0) document->startxref_offset = (size_t)value;
+            return;
         }
+        if (offset == 0U) break;
+        offset -= 1U;
     }
 }
 
 int pdf_document_scan(const unsigned char *data, size_t size, PdfDocument *document) {
+    return pdf_document_scan_with_options(data, size, document, 0U);
+}
+
+int pdf_document_scan_with_options(const unsigned char *data, size_t size, PdfDocument *document, unsigned int flags) {
     if (data == 0 || document == 0) return -1;
     pdf_document_init(document);
     document->data = data;
     document->size = size;
-    if (pdf_analyze(data, size, &document->info) != 0) {
+    if (pdf_analyze_with_options(data, size, &document->info, flags) != 0) {
         pdf_document_free(document);
         return -1;
     }
-    if (pdfw_scan_objects(document) != 0) {
+    if (pdfw_build_spans_from_info(document) != 0) {
         pdf_document_free(document);
         return -1;
     }

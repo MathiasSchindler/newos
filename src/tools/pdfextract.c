@@ -250,7 +250,7 @@ static int process_path(const char *path, const PdfExtractOptions *options) {
     int status;
 
     if (tool_read_all_input(path, &data, &size) != 0) return 1;
-    if (pdf_document_scan(data, size, &document) != 0) {
+    if (pdf_document_scan_with_options(data, size, &document, 0U) != 0) {
         tool_write_error("pdfextract", "not a readable PDF: ", path ? path : "stdin");
         rt_free(data);
         return 1;

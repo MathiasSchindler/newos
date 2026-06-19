@@ -13,12 +13,123 @@ static int key_at(const unsigned char *data, size_t size, size_t offset, const c
     return offset + length >= size || pdf_is_delim(data[offset + length]);
 }
 
-static int object_exists(const PdfInfo *info, unsigned long long number, unsigned long long generation) {
+typedef struct {
+    unsigned int number;
+    unsigned int generation;
+} PdfCheckObjectKey;
+
+typedef struct {
+    size_t start;
+    size_t end;
+} PdfCheckStreamRange;
+
+typedef struct {
+    PdfCheckObjectKey *objects;
+    size_t objects_len;
+    PdfCheckStreamRange *streams;
+    size_t streams_len;
+} PdfCheckContext;
+
+typedef struct {
+    const PdfCheckStreamRange *ranges;
+    size_t len;
+    size_t index;
+} PdfCheckStreamCursor;
+
+static int compare_object_keys(const void *left_ptr, const void *right_ptr) {
+    const PdfCheckObjectKey *left = (const PdfCheckObjectKey *)left_ptr;
+    const PdfCheckObjectKey *right = (const PdfCheckObjectKey *)right_ptr;
+
+    if (left->number < right->number) return -1;
+    if (left->number > right->number) return 1;
+    if (left->generation < right->generation) return -1;
+    if (left->generation > right->generation) return 1;
+    return 0;
+}
+
+static int compare_stream_ranges(const void *left_ptr, const void *right_ptr) {
+    const PdfCheckStreamRange *left = (const PdfCheckStreamRange *)left_ptr;
+    const PdfCheckStreamRange *right = (const PdfCheckStreamRange *)right_ptr;
+
+    if (left->start < right->start) return -1;
+    if (left->start > right->start) return 1;
+    if (left->end < right->end) return -1;
+    if (left->end > right->end) return 1;
+    return 0;
+}
+
+static void pdfcheck_context_init(PdfCheckContext *context) {
+    rt_memset(context, 0, sizeof(*context));
+}
+
+static void pdfcheck_context_free(PdfCheckContext *context) {
+    rt_free(context->objects);
+    rt_free(context->streams);
+    pdfcheck_context_init(context);
+}
+
+static int pdfcheck_context_build(PdfCheckContext *context, const PdfDocument *document) {
     size_t index;
 
+    pdfcheck_context_init(context);
+    if (document->info.objects_len != 0U) {
+        context->objects = (PdfCheckObjectKey *)rt_malloc_array(document->info.objects_len, sizeof(context->objects[0]));
+        if (context->objects == 0) return -1;
+        context->objects_len = document->info.objects_len;
+        for (index = 0U; index < document->info.objects_len; ++index) {
+            context->objects[index].number = document->info.objects[index].number;
+            context->objects[index].generation = document->info.objects[index].generation;
+        }
+        rt_sort(context->objects, context->objects_len, sizeof(context->objects[0]), compare_object_keys);
+    }
+    if (document->objects_len != 0U) {
+        context->streams = (PdfCheckStreamRange *)rt_malloc_array(document->objects_len, sizeof(context->streams[0]));
+        if (context->streams == 0) {
+            pdfcheck_context_free(context);
+            return -1;
+        }
+        for (index = 0U; index < document->objects_len; ++index) {
+            const PdfObjectSpan *object = &document->objects[index];
+            size_t content_start;
+
+            if (object->stream_offset >= document->size || object->endstream_offset > document->size) continue;
+            content_start = pdf_stream_body_start(document->data, document->size, object->stream_offset);
+            if (content_start > object->endstream_offset) continue;
+            context->streams[context->streams_len].start = content_start;
+            context->streams[context->streams_len].end = object->endstream_offset;
+            context->streams_len += 1U;
+        }
+        if (context->streams_len != 0U) rt_sort(context->streams, context->streams_len, sizeof(context->streams[0]), compare_stream_ranges);
+    }
+    return 0;
+}
+
+static int object_exists(const PdfCheckContext *context, unsigned long long number, unsigned long long generation) {
+    size_t low = 0U;
+    size_t high = context->objects_len;
+
     if (number == 0ULL || number > 4294967295ULL || generation > 4294967295ULL) return 0;
-    for (index = 0U; index < info->objects_len; ++index) {
-        if (info->objects[index].number == (unsigned int)number && info->objects[index].generation == (unsigned int)generation) return 1;
+    while (low < high) {
+        size_t mid = low + (high - low) / 2U;
+        const PdfCheckObjectKey *key = &context->objects[mid];
+
+        if (key->number < (unsigned int)number || (key->number == (unsigned int)number && key->generation < (unsigned int)generation)) low = mid + 1U;
+        else high = mid;
+    }
+    return low < context->objects_len && context->objects[low].number == (unsigned int)number && context->objects[low].generation == (unsigned int)generation;
+}
+
+static void stream_cursor_init(PdfCheckStreamCursor *cursor, const PdfCheckContext *context) {
+    cursor->ranges = context->streams;
+    cursor->len = context->streams_len;
+    cursor->index = 0U;
+}
+
+static int stream_cursor_contains(PdfCheckStreamCursor *cursor, size_t offset, size_t *end_out) {
+    while (cursor->index < cursor->len && cursor->ranges[cursor->index].end <= offset) cursor->index += 1U;
+    if (cursor->index < cursor->len && cursor->ranges[cursor->index].start <= offset && offset < cursor->ranges[cursor->index].end) {
+        if (end_out != 0) *end_out = cursor->ranges[cursor->index].end;
+        return 1;
     }
     return 0;
 }
@@ -278,14 +389,14 @@ static void json_write_report(const CheckReport *report) {
     rt_write_cstr(1, "}");
 }
 
-static int report_ref(const char *label, const PdfInfo *info, unsigned long long number, unsigned long long generation, int required) {
+static int report_ref(const char *label, const PdfCheckContext *context, unsigned long long number, unsigned long long generation, int required) {
     rt_write_cstr(1, label);
     rt_write_cstr(1, ": ");
     rt_write_uint(1, number);
     rt_write_char(1, ' ');
     rt_write_uint(1, generation);
     rt_write_cstr(1, " R");
-    if (!object_exists(info, number, generation)) {
+    if (!object_exists(context, number, generation)) {
         rt_write_cstr(1, " (dangling)\n");
         return 1;
     }
@@ -294,34 +405,19 @@ static int report_ref(const char *label, const PdfInfo *info, unsigned long long
     return 0;
 }
 
-static int offset_is_stream_data(const PdfDocument *document, size_t offset, size_t *end_out) {
-    size_t index;
-
-    for (index = 0U; index < document->objects_len; ++index) {
-        const PdfObjectSpan *object = &document->objects[index];
-        size_t content_start;
-
-        if (object->stream_offset >= document->size || object->endstream_offset > document->size) continue;
-        content_start = pdf_stream_body_start(document->data, document->size, object->stream_offset);
-        if (content_start <= object->endstream_offset && offset >= content_start && offset < object->endstream_offset) {
-            if (end_out != 0) *end_out = object->endstream_offset;
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int scan_dangling_refs(const unsigned char *data, size_t size, const PdfDocument *document) {
+static int scan_dangling_refs(const unsigned char *data, size_t size, const PdfCheckContext *context) {
     size_t offset = 0U;
+    PdfCheckStreamCursor stream_cursor;
     int errors = 0;
 
+    stream_cursor_init(&stream_cursor, context);
     while (offset < size) {
         size_t parse_offset;
         unsigned long long number;
         unsigned long long generation;
         size_t stream_end;
 
-        if (offset_is_stream_data(document, offset, &stream_end)) {
+        if (stream_cursor_contains(&stream_cursor, offset, &stream_end)) {
             offset = stream_end > offset ? stream_end : offset + 1U;
             continue;
         }
@@ -341,7 +437,7 @@ static int scan_dangling_refs(const unsigned char *data, size_t size, const PdfD
         }
         parse_offset = pdf_skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
-            if (!is_null_reference(number, generation) && !object_exists(&document->info, number, generation)) {
+            if (!is_null_reference(number, generation) && !object_exists(context, number, generation)) {
                 rt_write_cstr(1, "error: dangling ref ");
                 rt_write_uint(1, number);
                 rt_write_char(1, ' ');
@@ -357,17 +453,19 @@ static int scan_dangling_refs(const unsigned char *data, size_t size, const PdfD
     return errors;
 }
 
-static int scan_dangling_refs_report(const unsigned char *data, size_t size, const PdfDocument *document, CheckReport *report) {
+static int scan_dangling_refs_report(const unsigned char *data, size_t size, const PdfCheckContext *context, CheckReport *report) {
     size_t offset = 0U;
+    PdfCheckStreamCursor stream_cursor;
     int errors = 0;
 
+    stream_cursor_init(&stream_cursor, context);
     while (offset < size) {
         size_t parse_offset;
         unsigned long long number;
         unsigned long long generation;
         size_t stream_end;
 
-        if (offset_is_stream_data(document, offset, &stream_end)) {
+        if (stream_cursor_contains(&stream_cursor, offset, &stream_end)) {
             offset = stream_end > offset ? stream_end : offset + 1U;
             continue;
         }
@@ -387,7 +485,7 @@ static int scan_dangling_refs_report(const unsigned char *data, size_t size, con
         }
         parse_offset = pdf_skip_ws(data, size, parse_offset);
         if (parse_offset < size && data[parse_offset] == (unsigned char)'R') {
-            if (!is_null_reference(number, generation) && !object_exists(&document->info, number, generation)) {
+            if (!is_null_reference(number, generation) && !object_exists(context, number, generation)) {
                 report->ok = 0;
                 (void)message_list_add_ref(&report->errors, "dangling ref ", number, generation, " R");
                 errors = 1;
@@ -408,6 +506,7 @@ static int check_path(const char *path) {
     unsigned long long root_generation = 0ULL;
     unsigned long long info_number = 0ULL;
     unsigned long long info_generation = 0ULL;
+    PdfCheckContext context;
     int have_root;
     int have_info;
     int status = 0;
@@ -415,8 +514,14 @@ static int check_path(const char *path) {
     if (tool_read_all_input(path, &data, &size) != 0) return 1;
     rt_write_cstr(1, "file: ");
     rt_write_line(1, path ? path : "stdin");
-    if (pdf_document_scan(data, size, &document) != 0) {
+    if (pdf_document_scan_with_options(data, size, &document, 0U) != 0) {
         write_error_line("not a readable PDF");
+        rt_free(data);
+        return 1;
+    }
+    if (pdfcheck_context_build(&context, &document) != 0) {
+        write_error_line("out of memory");
+        pdf_document_free(&document);
         rt_free(data);
         return 1;
     }
@@ -441,7 +546,7 @@ static int check_path(const char *path) {
     have_root = find_key_ref(data, size, "/Root", &root_number, &root_generation);
     have_info = find_key_ref(data, size, "/Info", &info_number, &info_generation);
     if (have_root) {
-        if (report_ref("root", &document.info, root_number, root_generation, 1)) status = 1;
+        if (report_ref("root", &context, root_number, root_generation, 1)) status = 1;
     } else if (document.info.catalog_count != 0ULL) {
         write_notice("no trailer /Root reference found; catalog object is visible");
     } else {
@@ -449,7 +554,7 @@ static int check_path(const char *path) {
         status = 1;
     }
     if (have_info) {
-        if (report_ref("info", &document.info, info_number, info_generation, 0)) status = 1;
+        if (report_ref("info", &context, info_number, info_generation, 0)) status = 1;
     } else {
         write_notice("no document-info reference");
     }
@@ -459,12 +564,13 @@ static int check_path(const char *path) {
         write_error_line("encrypted PDFs are unsupported");
         status = 1;
     }
-    if (scan_dangling_refs(data, size, &document)) status = 1;
+    if (scan_dangling_refs(data, size, &context)) status = 1;
     if (document.info.object_count == 0ULL) {
         write_error_line("no indirect objects found");
         status = 1;
     }
     if (status == 0) write_ok("structure checks passed");
+    pdfcheck_context_free(&context);
     pdf_document_free(&document);
     rt_free(data);
     return status;
@@ -474,6 +580,7 @@ static int check_path_json(const char *path, int first) {
     unsigned char *data;
     size_t size;
     PdfDocument document;
+    PdfCheckContext context;
     CheckReport report;
     int status;
 
@@ -485,10 +592,18 @@ static int check_path_json(const char *path, int first) {
         check_report_free(&report);
         return 1;
     }
-    if (pdf_document_scan(data, size, &document) != 0) {
+    if (pdf_document_scan_with_options(data, size, &document, 0U) != 0) {
         check_report_error(&report, "not a readable PDF");
         json_write_report(&report);
         check_report_free(&report);
+        rt_free(data);
+        return 1;
+    }
+    if (pdfcheck_context_build(&context, &document) != 0) {
+        check_report_error(&report, "out of memory");
+        json_write_report(&report);
+        check_report_free(&report);
+        pdf_document_free(&document);
         rt_free(data);
         return 1;
     }
@@ -507,7 +622,7 @@ static int check_path_json(const char *path, int first) {
     report.have_root = find_key_ref(data, size, "/Root", &report.root_number, &report.root_generation);
     report.have_info = find_key_ref(data, size, "/Info", &report.info_number, &report.info_generation);
     if (report.have_root) {
-        report.root_exists = object_exists(&document.info, report.root_number, report.root_generation);
+        report.root_exists = object_exists(&context, report.root_number, report.root_generation);
         if (!report.root_exists) check_report_error(&report, "root reference is dangling");
     } else if (document.info.catalog_count != 0ULL) {
         check_report_notice(&report, "no trailer /Root reference found; catalog object is visible");
@@ -515,7 +630,7 @@ static int check_path_json(const char *path, int first) {
         check_report_error(&report, "missing root catalog reference");
     }
     if (report.have_info) {
-        report.info_exists = object_exists(&document.info, report.info_number, report.info_generation);
+        report.info_exists = object_exists(&context, report.info_number, report.info_generation);
         if (!report.info_exists) check_report_error(&report, "info reference is dangling");
     } else {
         check_report_notice(&report, "no document-info reference");
@@ -523,10 +638,11 @@ static int check_path_json(const char *path, int first) {
     if (document.info.xref_stream_count != 0ULL) check_report_notice(&report, "xref streams present");
     if (document.info.object_stream_count != 0ULL) check_report_notice(&report, "object streams present");
     if (document.info.encrypted != 0ULL) check_report_error(&report, "encrypted PDFs are unsupported");
-    (void)scan_dangling_refs_report(data, size, &document, &report);
+    (void)scan_dangling_refs_report(data, size, &context, &report);
     if (document.info.object_count == 0ULL) check_report_error(&report, "no indirect objects found");
     json_write_report(&report);
     status = report.ok ? 0 : 1;
+    pdfcheck_context_free(&context);
     check_report_free(&report);
     pdf_document_free(&document);
     rt_free(data);

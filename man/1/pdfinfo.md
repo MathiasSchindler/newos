@@ -16,8 +16,8 @@ pdfinfo [-p|--plain] [-d|--details] [--pages] [--objects] [--fonts] [--json] [fi
 without executing PDF content. It recognizes the PDF header, indirect objects,
 streams, xref markers and xref streams, trailers, pages, page boxes, fonts,
 image and form XObjects, filters, encodings, annotations, metadata objects,
-classic document-info fields, compressed object streams, and a small set of
-visible content-stream operators.
+classic document-info fields, and compressed object streams. With `--details`,
+it also counts a small set of visible content-stream operators.
 
 When no file is provided, `pdfinfo` reads from standard input.
 
@@ -27,7 +27,7 @@ the same object, page, font, filter, and content-operator analysis.
 ## OPTIONS
 
 - `-p`, `--plain` - print one compact key/value line per input
-- `-d`, `--details` - include extra counters and list pages and fonts
+- `-d`, `--details` - include extra counters, content-operator counts, and list pages and fonts
 - `--pages` - list discovered page objects and page sizes
 - `--objects` - list discovered indirect objects
 - `--fonts` - list discovered font objects

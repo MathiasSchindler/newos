@@ -402,9 +402,10 @@ static int process_path(const char *path, const PdfInfoOptions *options, int mul
     unsigned char *data;
     size_t size;
     PdfInfo info;
+    unsigned int analyze_flags = options->details ? PDF_ANALYZE_CONTENT_OPS : 0U;
 
     if (read_all_input(path, &data, &size) != 0) return 1;
-    if (pdf_analyze(data, size, &info) != 0) {
+    if (pdf_analyze_with_options(data, size, &info, analyze_flags) != 0) {
         tool_write_error("pdfinfo", "not a readable PDF: ", path ? path : "stdin");
         rt_free(data);
         return 1;

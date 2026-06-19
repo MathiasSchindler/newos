@@ -960,7 +960,7 @@ int pdf_object_stream_data(const PdfDocument *document, const PdfObjectSpan *obj
     return pdf_buffer_append_local(output, document->data + content_start, content_end - content_start);
 }
 
-static int pdf_add_object(PdfInfo *info, unsigned long long number, unsigned long long generation, size_t offset, int has_stream, const char *type, const char *subtype) {
+static int pdf_add_object(PdfInfo *info, unsigned long long number, unsigned long long generation, size_t offset, int has_file_span, size_t body_start, size_t body_end, size_t stream_offset, size_t endstream_offset, int has_stream, const char *type, const char *subtype) {
     PdfObjectInfo *object;
 
     if (pdf_grow_objects(info) != 0) return -1;
@@ -969,6 +969,11 @@ static int pdf_add_object(PdfInfo *info, unsigned long long number, unsigned lon
     object->number = (unsigned int)number;
     object->generation = (unsigned int)generation;
     object->offset = offset;
+    object->has_file_span = has_file_span;
+    object->body_start = body_start;
+    object->body_end = body_end;
+    object->stream_offset = stream_offset;
+    object->endstream_offset = endstream_offset;
     object->has_stream = has_stream;
     rt_copy_string(object->type, sizeof(object->type), type != 0 ? type : "");
     rt_copy_string(object->subtype, sizeof(object->subtype), subtype != 0 ? subtype : "");
@@ -991,12 +996,12 @@ static int pdf_find_object_index(const PdfInfo *info, unsigned long long number,
 static int pdf_add_xref_visible_object(PdfInfo *info, unsigned long long number, unsigned long long generation, size_t offset) {
     if (number == 0ULL || number > 4294967295ULL || generation > 4294967295ULL) return 0;
     if (pdf_find_object_index(info, number, generation, 0)) return 0;
-    if (pdf_add_object(info, number, generation, offset, 0, "", "") != 0) return -1;
+    if (pdf_add_object(info, number, generation, offset, 0, 0U, 0U, 0U, 0U, 0, "", "") != 0) return -1;
     info->object_count += 1ULL;
     return 0;
 }
 
-static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t size, unsigned long long number, unsigned long long generation, size_t object_offset, size_t body_start, size_t dict_end, size_t stream_offset, size_t endstream_offset);
+static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t size, unsigned long long number, unsigned long long generation, size_t object_offset, int has_file_span, size_t body_start, size_t body_end, size_t dict_end, size_t stream_offset, size_t endstream_offset, unsigned int flags);
 
 static int pdf_parse_object_stream(PdfInfo *info, const unsigned char *file_data, size_t file_size, unsigned long long stream_number, size_t object_offset, const unsigned char *dict, size_t dict_size, size_t content_start, size_t endstream_offset) {
     PdfDecodedStream decoded;
@@ -1057,7 +1062,7 @@ static int pdf_parse_object_stream(PdfInfo *info, const unsigned char *file_data
 
         if (entries[index].number == 0ULL || entries[index].number > 4294967295ULL || body_start >= decoded.size || body_end > decoded.size || body_end <= body_start) continue;
         if (pdf_find_object_index(info, entries[index].number, 0ULL, 0)) continue;
-        if (pdf_analyze_object(info, decoded.data, decoded.size, entries[index].number, 0ULL, object_offset, body_start, body_end, decoded.size, decoded.size) != 0) {
+        if (pdf_analyze_object(info, decoded.data, decoded.size, entries[index].number, 0ULL, object_offset, 0, body_start, body_end, body_end, decoded.size, decoded.size, 0U) != 0) {
             result = -1;
             goto done;
         }
@@ -1211,7 +1216,7 @@ static int pdf_is_font_type(const char *type, const char *subtype) {
     return rt_strcmp(subtype, "Type0") == 0 || rt_strcmp(subtype, "Type1") == 0 || rt_strcmp(subtype, "TrueType") == 0 || rt_strcmp(subtype, "Type3") == 0 || rt_strcmp(subtype, "CIDFontType0") == 0 || rt_strcmp(subtype, "CIDFontType2") == 0 || rt_strcmp(subtype, "MMType1") == 0;
 }
 
-static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t size, unsigned long long number, unsigned long long generation, size_t object_offset, size_t body_start, size_t dict_end, size_t stream_offset, size_t endstream_offset) {
+static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t size, unsigned long long number, unsigned long long generation, size_t object_offset, int has_file_span, size_t body_start, size_t body_end, size_t dict_end, size_t stream_offset, size_t endstream_offset, unsigned int flags) {
     const unsigned char *dict = data + body_start;
     size_t dict_size = dict_end > body_start ? dict_end - body_start : 0U;
     char type[PDF_NAME_CAPACITY];
@@ -1223,23 +1228,27 @@ static int pdf_analyze_object(PdfInfo *info, const unsigned char *data, size_t s
     subtype[0] = '\0';
     (void)pdf_find_top_name_value(dict, dict_size, "/Type", type, sizeof(type));
     (void)pdf_find_top_name_value(dict, dict_size, "/Subtype", subtype, sizeof(subtype));
-    if (pdf_add_object(info, number, generation, object_offset, has_stream, type, subtype) != 0) return -1;
+    if (pdf_add_object(info, number, generation, object_offset, has_file_span, body_start, body_end, stream_offset, endstream_offset, has_stream, type, subtype) != 0) return -1;
     info->object_count += 1ULL;
     if (has_stream) {
         size_t content_start = pdf_stream_body_start(data, size, stream_offset);
         size_t content_end = endstream_offset;
 
         info->stream_count += 1ULL;
-        pdf_trim_stream_end(data, content_start, &content_end);
         if (pdf_find_top_key(dict, dict_size, "/Filter", &key_offset)) {
-            PdfDecodedStream decoded;
-
             info->filtered_stream_count += 1ULL;
-            if ((type[0] == '\0' || rt_strcmp(type, "XObject") == 0) && (subtype[0] == '\0' || rt_strcmp(subtype, "Form") == 0) && pdf_decode_stream(data, size, dict, dict_size, content_start, endstream_offset, &decoded) == 0) {
-                pdf_scan_content_stream(decoded.data, 0U, decoded.size, info);
-                pdf_decoded_stream_free(&decoded);
+            if ((flags & PDF_ANALYZE_CONTENT_OPS) != 0U && (type[0] == '\0' || rt_strcmp(type, "XObject") == 0) && (subtype[0] == '\0' || rt_strcmp(subtype, "Form") == 0)) {
+                PdfDecodedStream decoded;
+
+                if (pdf_decode_stream(data, size, dict, dict_size, content_start, endstream_offset, &decoded) == 0) {
+                    pdf_scan_content_stream(decoded.data, 0U, decoded.size, info);
+                    pdf_decoded_stream_free(&decoded);
+                }
             }
-        } else if (content_start <= content_end && content_end <= size) pdf_scan_content_stream(data, content_start, content_end, info);
+        } else if ((flags & PDF_ANALYZE_CONTENT_OPS) != 0U) {
+            pdf_trim_stream_end(data, content_start, &content_end);
+            if (content_start <= content_end && content_end <= size) pdf_scan_content_stream(data, content_start, content_end, info);
+        }
     }
     if (pdf_collect_filters(dict, dict_size, info) != 0) return -1;
     if (pdf_collect_encodings(dict, dict_size, info) != 0) return -1;
@@ -1416,7 +1425,7 @@ void pdf_info_free(PdfInfo *info) {
     pdf_info_init(info);
 }
 
-int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
+int pdf_analyze_with_options(const unsigned char *data, size_t size, PdfInfo *info, unsigned int flags) {
     size_t offset = 0U;
 
     if (data == 0 || info == 0) return -1;
@@ -1478,7 +1487,7 @@ int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
                 object_end = first_endobj;
             }
         }
-        if (pdf_analyze_object(info, data, size, number, generation, object_offset, body_start, dict_end, stream_offset, endstream_offset) != 0) {
+        if (pdf_analyze_object(info, data, size, number, generation, object_offset, 1, body_start, object_end, dict_end, stream_offset, endstream_offset, flags) != 0) {
             pdf_info_free(info);
             return -1;
         }
@@ -1494,6 +1503,10 @@ int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
         return -1;
     }
     return 0;
+}
+
+int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
+    return pdf_analyze_with_options(data, size, info, PDF_ANALYZE_CONTENT_OPS);
 }
 
 long long pdf_abs_fixed(long long value) {

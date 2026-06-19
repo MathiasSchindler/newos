@@ -235,7 +235,7 @@ static int process_path(const char *path, PdfGrepContext *context) {
     size_t index;
 
     if (tool_read_all_input(path, &data, &size) != 0) return 2;
-    if (pdf_document_scan(data, size, &document) != 0) {
+    if (pdf_document_scan_with_options(data, size, &document, 0U) != 0) {
         tool_write_error("pdfgrep", "not a readable PDF: ", path ? path : "stdin");
         rt_free(data);
         return 2;
