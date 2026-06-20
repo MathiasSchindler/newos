@@ -7,5 +7,6 @@ typedef int (*CompressionBzip2ReadFn)(void *context, unsigned char *buffer, size
 typedef int (*CompressionBzip2WriteFn)(void *context, const unsigned char *data, size_t size);
 
 int compression_bzip2_decompress_stream(CompressionBzip2ReadFn read_fn, void *read_context, CompressionBzip2WriteFn write_fn, void *write_context);
+int compression_bzip2_decompress_buffer_parallel(const void *src, size_t src_size, CompressionBzip2WriteFn write_fn, void *write_context, unsigned int worker_count);
 
 #endif

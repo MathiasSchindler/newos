@@ -29,6 +29,16 @@ pathlib.Path(sys.argv[2]).write_bytes(bz2.compress(pathlib.Path(sys.argv[1]).rea
 PY
 	assert_command_succeeds "${TEST_BIN_DIR}/bunzip2" "$WORK_DIR/real-bzip.txt.bz2"
 	assert_files_equal "$WORK_DIR/sample.txt" "$WORK_DIR/real-bzip.txt" "bunzip2 did not decode a standard bzip2 stream"
+	python3 - "$WORK_DIR/real-bzip-large.txt" "$WORK_DIR/real-bzip-large-w4.txt.bz2" <<'PY'
+import bz2, pathlib, sys
+payload = bytearray()
+for index in range(70000):
+    payload.extend(("parallel bzip2 smoke line %06d abcdefghijklmnopqrstuvwxyz\n" % index).encode())
+pathlib.Path(sys.argv[1]).write_bytes(payload)
+pathlib.Path(sys.argv[2]).write_bytes(bz2.compress(bytes(payload), compresslevel=9))
+PY
+	assert_command_succeeds env NEWOS_BUNZIP2_WORKERS=4 "${TEST_BIN_DIR}/bunzip2" "$WORK_DIR/real-bzip-large-w4.txt.bz2"
+	assert_files_equal "$WORK_DIR/real-bzip-large.txt" "$WORK_DIR/real-bzip-large-w4.txt" "threaded bunzip2 did not decode a multi-block standard bzip2 stream"
 fi
 
 cp "$WORK_DIR/sample.txt" "$WORK_DIR/xz-input.txt"

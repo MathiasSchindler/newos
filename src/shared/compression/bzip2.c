@@ -1,5 +1,6 @@
 #include "compression/bzip2.h"
 
+#include "concurrency.h"
 #include "runtime.h"
 
 #define BZIP2_IO_BUFFER_SIZE 32768U
@@ -51,6 +52,29 @@ typedef struct {
     unsigned int *tt;
 } Bzip2Decoder;
 
+typedef struct {
+    const unsigned char *data;
+    size_t size;
+    size_t offset;
+} Bzip2MemoryRead;
+
+typedef struct {
+    unsigned char *data;
+    size_t size;
+    size_t capacity;
+} Bzip2MemoryOutput;
+
+typedef struct {
+    size_t bit_offset;
+    unsigned int block_crc;
+    unsigned int block_size;
+    const unsigned char *src;
+    size_t src_size;
+    unsigned char *output;
+    size_t output_size;
+    int result;
+} Bzip2ParallelBlockJob;
+
 static void bzip2_reader_init(Bzip2BitReader *reader, CompressionBzip2ReadFn read_fn, void *read_context) {
     rt_memset(reader, 0, sizeof(*reader));
     reader->read_fn = read_fn;
@@ -64,6 +88,49 @@ static int bzip2_reader_fill(Bzip2BitReader *reader) {
     reader->offset = 0U;
     reader->available = amount;
     return amount == 0U ? -1 : 0;
+}
+
+static int bzip2_memory_read(void *context, unsigned char *buffer, size_t capacity, size_t *size_out) {
+    Bzip2MemoryRead *input = (Bzip2MemoryRead *)context;
+    size_t remaining;
+    size_t amount;
+
+    if (input->offset > input->size) return -1;
+    remaining = input->size - input->offset;
+    amount = remaining < capacity ? remaining : capacity;
+    if (amount != 0U) memcpy(buffer, input->data + input->offset, amount);
+    input->offset += amount;
+    *size_out = amount;
+    return 0;
+}
+
+static int bzip2_memory_output_write(void *context, const unsigned char *data, size_t size) {
+    Bzip2MemoryOutput *output = (Bzip2MemoryOutput *)context;
+    size_t needed;
+
+    if (size == 0U) return 0;
+    needed = output->size + size;
+    if (needed < output->size) return -1;
+    if (needed > output->capacity) {
+        size_t next_capacity = output->capacity == 0U ? 65536U : output->capacity;
+        unsigned char *next_data;
+
+        while (next_capacity < needed) {
+            size_t doubled = next_capacity * 2U;
+            if (doubled <= next_capacity) {
+                next_capacity = needed;
+                break;
+            }
+            next_capacity = doubled;
+        }
+        next_data = (unsigned char *)rt_realloc(output->data, next_capacity);
+        if (next_data == 0) return -1;
+        output->data = next_data;
+        output->capacity = next_capacity;
+    }
+    memcpy(output->data + output->size, data, size);
+    output->size += size;
+    return 0;
 }
 
 static int bzip2_read_byte(Bzip2BitReader *reader, unsigned int *value_out) {
@@ -103,6 +170,19 @@ static int bzip2_read_bits(Bzip2BitReader *reader, unsigned int count, unsigned 
     value = bzip2_peek_bits(reader, count);
     bzip2_drop_bits(reader, count);
     *value_out = value;
+    return 0;
+}
+
+static int bzip2_reader_init_memory_bits(Bzip2BitReader *reader, Bzip2MemoryRead *input, const unsigned char *src, size_t src_size, size_t bit_offset) {
+    unsigned int skip_bits = (unsigned int)(bit_offset & 7U);
+    unsigned int ignored;
+
+    input->data = src;
+    input->size = src_size;
+    input->offset = bit_offset >> 3;
+    if (input->offset > src_size) return -1;
+    bzip2_reader_init(reader, bzip2_memory_read, input);
+    if (skip_bits != 0U && bzip2_read_bits(reader, skip_bits, &ignored) != 0) return -1;
     return 0;
 }
 
@@ -456,6 +536,200 @@ static int bzip2_decode_block(Bzip2BitReader *reader, Bzip2Decoder *decoder, Com
     if (output.crc != stored_crc) return -1;
     *block_crc_out = stored_crc;
     return 0;
+}
+
+static int bzip2_read_bits_at(const unsigned char *src, size_t src_size, size_t bit_offset, unsigned int bit_count, unsigned long long *value_out) {
+    unsigned long long value = 0ULL;
+    size_t bit_index;
+    size_t bit_size;
+
+    if (bit_count > 64U || src_size > ((size_t)-1) / 8U) return -1;
+    bit_size = src_size * 8U;
+    if (bit_offset > bit_size || (size_t)bit_count > bit_size - bit_offset) return -1;
+    for (bit_index = 0U; bit_index < (size_t)bit_count; ++bit_index) {
+        size_t absolute_bit = bit_offset + bit_index;
+        unsigned char byte = src[absolute_bit >> 3];
+        unsigned int shift = 7U - (unsigned int)(absolute_bit & 7U);
+
+        value = (value << 1U) | (unsigned long long)((byte >> shift) & 1U);
+    }
+    *value_out = value;
+    return 0;
+}
+
+static unsigned int bzip2_read_bit_at_unchecked(const unsigned char *src, size_t bit_offset) {
+    unsigned char byte = src[bit_offset >> 3];
+    unsigned int shift = 7U - (unsigned int)(bit_offset & 7U);
+
+    return (unsigned int)((byte >> shift) & 1U);
+}
+
+static int bzip2_parallel_append_block(size_t **blocks_io, size_t *count_io, size_t *capacity_io, size_t bit_offset) {
+    size_t *next_blocks;
+    size_t next_capacity;
+
+    if (*count_io < *capacity_io) {
+        (*blocks_io)[(*count_io)++] = bit_offset;
+        return 0;
+    }
+    next_capacity = *capacity_io == 0U ? 8U : *capacity_io * 2U;
+    if (next_capacity <= *capacity_io) return -1;
+    next_blocks = (size_t *)rt_realloc_array(*blocks_io, next_capacity, sizeof((*blocks_io)[0]));
+    if (next_blocks == 0) return -1;
+    *blocks_io = next_blocks;
+    *capacity_io = next_capacity;
+    (*blocks_io)[(*count_io)++] = bit_offset;
+    return 0;
+}
+
+static int bzip2_parallel_scan_blocks(const unsigned char *src, size_t src_size, size_t **blocks_out, size_t *block_count_out, unsigned int *combined_crc_out) {
+    size_t *blocks = 0;
+    size_t block_count = 0U;
+    size_t block_capacity = 0U;
+    size_t bit_size;
+    size_t bit_offset;
+    size_t last_magic_bit;
+    unsigned long long window;
+    const unsigned long long magic_mask = 0xffffffffffffULL;
+    int found_end = 0;
+
+    *blocks_out = 0;
+    *block_count_out = 0U;
+    *combined_crc_out = 0U;
+    if (src_size < 10U || src_size > ((size_t)-1) / 8U) return 1;
+    if (src[0] != 'B' || src[1] != 'Z' || src[2] != 'h' || src[3] < '1' || src[3] > '9') return 1;
+    bit_size = src_size * 8U;
+    if (bit_size < 32U + 48U + 32U) return 1;
+    last_magic_bit = bit_size - 48U - 32U;
+    if (bzip2_read_bits_at(src, src_size, 32U, 48U, &window) != 0) return 1;
+    for (bit_offset = 32U; bit_offset <= last_magic_bit; ++bit_offset) {
+        if (window == BZIP2_STREAM_MAGIC) {
+            if (bzip2_parallel_append_block(&blocks, &block_count, &block_capacity, bit_offset + 48U) != 0) {
+                rt_free(blocks);
+                return -1;
+            }
+        } else if (window == BZIP2_END_MAGIC) {
+            unsigned long long combined_crc;
+
+            if (bzip2_read_bits_at(src, src_size, bit_offset + 48U, 32U, &combined_crc) != 0) {
+                rt_free(blocks);
+                return 1;
+            }
+            *combined_crc_out = (unsigned int)combined_crc;
+            found_end = 1;
+            break;
+        }
+        if (bit_offset == last_magic_bit) break;
+        window = ((window << 1U) & magic_mask) | (unsigned long long)bzip2_read_bit_at_unchecked(src, bit_offset + 48U);
+    }
+    if (!found_end || block_count < 2U) {
+        rt_free(blocks);
+        return 1;
+    }
+    *blocks_out = blocks;
+    *block_count_out = block_count;
+    return 0;
+}
+
+static int bzip2_parallel_block_task(unsigned int worker_index, void *arg) {
+    Bzip2ParallelBlockJob *job = (Bzip2ParallelBlockJob *)arg;
+    Bzip2MemoryRead input;
+    Bzip2MemoryOutput output;
+    Bzip2BitReader reader;
+    Bzip2Decoder decoder;
+    unsigned int block_crc = 0U;
+    int result = -1;
+
+    (void)worker_index;
+    rt_memset(&input, 0, sizeof(input));
+    rt_memset(&output, 0, sizeof(output));
+    rt_memset(&reader, 0, sizeof(reader));
+    rt_memset(&decoder, 0, sizeof(decoder));
+    decoder.block_size = job->block_size;
+    decoder.ll8 = (unsigned char *)rt_malloc(decoder.block_size);
+    decoder.tt = (unsigned int *)rt_malloc_array(decoder.block_size, sizeof(decoder.tt[0]));
+    if (decoder.ll8 == 0 || decoder.tt == 0) goto done;
+    if (bzip2_reader_init_memory_bits(&reader, &input, job->src, job->src_size, job->bit_offset) != 0) goto done;
+    if (bzip2_decode_block(&reader, &decoder, bzip2_memory_output_write, &output, &block_crc) != 0) goto done;
+    job->block_crc = block_crc;
+    job->output = output.data;
+    job->output_size = output.size;
+    output.data = 0;
+    output.size = 0U;
+    output.capacity = 0U;
+    result = 0;
+
+done:
+    rt_free(output.data);
+    rt_free(decoder.ll8);
+    rt_free(decoder.tt);
+    job->result = result;
+    return result;
+}
+
+int compression_bzip2_decompress_buffer_parallel(const void *src, size_t src_size, CompressionBzip2WriteFn write_fn, void *write_context, unsigned int worker_count) {
+    const unsigned char *bytes = (const unsigned char *)src;
+    Bzip2ParallelBlockJob *jobs = 0;
+    size_t *block_offsets = 0;
+    size_t block_count = 0U;
+    unsigned int stored_combined_crc = 0U;
+    unsigned int combined_crc = 0U;
+    unsigned int block_size;
+    RtTaskPool pool;
+    RtTaskGroup group;
+    size_t index;
+    int result;
+
+    if (src == 0 || write_fn == 0 || worker_count < 2U) return 1;
+    result = bzip2_parallel_scan_blocks(bytes, src_size, &block_offsets, &block_count, &stored_combined_crc);
+    if (result != 0) return result;
+    block_size = (unsigned int)(bytes[3] - '0') * 100000U;
+    jobs = (Bzip2ParallelBlockJob *)rt_malloc_array(block_count, sizeof(jobs[0]));
+    if (jobs == 0) {
+        rt_free(block_offsets);
+        return -1;
+    }
+    for (index = 0U; index < block_count; ++index) {
+        rt_memset(jobs + index, 0, sizeof(jobs[index]));
+        jobs[index].src = bytes;
+        jobs[index].src_size = src_size;
+        jobs[index].bit_offset = block_offsets[index];
+        jobs[index].block_size = block_size;
+        jobs[index].result = -1;
+    }
+    rt_memset(&pool, 0, sizeof(pool));
+    if (rt_task_pool_init(&pool, worker_count) != 0 || rt_task_pool_width(&pool) < 2U) {
+        rt_task_pool_destroy(&pool);
+        rt_free(block_offsets);
+        rt_free(jobs);
+        return 1;
+    }
+    rt_memset(&group, 0, sizeof(group));
+    result = 0;
+    if (rt_task_group_begin(&pool, &group) != 0 || rt_task_group_reserve(&group, block_count) != 0) {
+        result = -1;
+    }
+    for (index = 0U; result == 0 && index < block_count; ++index) {
+        if (rt_task_group_submit(&group, bzip2_parallel_block_task, jobs + index) != 0) result = -1;
+    }
+    if (group.count != 0U || group.tasks != 0) {
+        if (rt_task_group_wait(&group) != 0) result = -1;
+    }
+    rt_task_pool_destroy(&pool);
+    for (index = 0U; result == 0 && index < block_count; ++index) {
+        if (jobs[index].result != 0) result = -1;
+    }
+    for (index = 0U; result == 0 && index < block_count; ++index) {
+        combined_crc = ((combined_crc << 1U) | (combined_crc >> 31U)) ^ jobs[index].block_crc;
+    }
+    if (result == 0 && combined_crc != stored_combined_crc) result = -1;
+    for (index = 0U; result == 0 && index < block_count; ++index) {
+        if (jobs[index].output_size != 0U && write_fn(write_context, jobs[index].output, jobs[index].output_size) != 0) result = -1;
+    }
+    for (index = 0U; index < block_count; ++index) rt_free(jobs[index].output);
+    rt_free(block_offsets);
+    rt_free(jobs);
+    return result;
 }
 
 int compression_bzip2_decompress_stream(CompressionBzip2ReadFn read_fn, void *read_context, CompressionBzip2WriteFn write_fn, void *write_context) {

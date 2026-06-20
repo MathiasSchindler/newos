@@ -1,11 +1,13 @@
 #include "archive_util.h"
 #include "compression/bzip2.h"
+#include "concurrency.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
 
 #define BUNZIP2_PATH_CAPACITY 1024
 #define BUNZIP2_IO_BUFFER 65536U
+#define BUNZIP2_DEFAULT_MAX_WORKERS 8U
 
 typedef struct {
     int fd;
@@ -62,19 +64,51 @@ static int bunzip2_write_callback(void *context, const unsigned char *data, size
     return tool_output_buffer_write(output, (const char *)data, size);
 }
 
+static unsigned int bunzip2_worker_count_from_env(void) {
+    const char *value_text = platform_getenv("NEWOS_BUNZIP2_WORKERS");
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > BUNZIP2_DEFAULT_MAX_WORKERS ? BUNZIP2_DEFAULT_MAX_WORKERS : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) return BUNZIP2_DEFAULT_MAX_WORKERS;
+    if (value > RT_TASK_POOL_MAX_WORKERS) return RT_TASK_POOL_MAX_WORKERS;
+    return (unsigned int)value;
+}
+
+static int bunzip2_decompress_real_parallel(const char *input_path, ToolOutputBuffer *output, unsigned int worker_count) {
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int result;
+
+    if (worker_count < 2U) return 1;
+    if (tool_read_all_input(input_path, &data, &size) != 0) return 1;
+    result = compression_bzip2_decompress_buffer_parallel(data, size, bunzip2_write_callback, output, worker_count);
+    rt_free(data);
+    return result;
+}
+
 static int bunzip2_decompress_real(const char *input_path, int output_fd) {
     Bunzip2Input input;
     ToolOutputBuffer output;
     int result;
+    unsigned int worker_count;
 
-    input.fd = platform_open_read(input_path);
-    input.offset = 0U;
-    input.available = 0U;
-    if (input.fd < 0) return -1;
     tool_output_buffer_init(&output, output_fd);
-    result = compression_bzip2_decompress_stream(bunzip2_read_callback, &input, bunzip2_write_callback, &output);
+    worker_count = bunzip2_worker_count_from_env();
+    result = bunzip2_decompress_real_parallel(input_path, &output, worker_count);
+    if (result == 1) {
+        input.fd = platform_open_read(input_path);
+        input.offset = 0U;
+        input.available = 0U;
+        if (input.fd < 0) return -1;
+        result = compression_bzip2_decompress_stream(bunzip2_read_callback, &input, bunzip2_write_callback, &output);
+        if (platform_close(input.fd) != 0) result = -1;
+    }
     if (tool_output_buffer_flush(&output) != 0) result = -1;
-    if (platform_close(input.fd) != 0) result = -1;
     return result;
 }
 
