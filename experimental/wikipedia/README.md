@@ -72,13 +72,34 @@ Watch CSV export:
 experimental/wikipedia/build/wp-retraction-match
 experimental/wikipedia/build/wp-retraction-match -c experimental/wikipedia/data/dewiki-2026-06-01-citations.tsv
 experimental/wikipedia/build/wp-retraction-match -o experimental/wikipedia/data/dewiki-retraction-matches.tsv
+experimental/wikipedia/build/wp-retraction-match -w experimental/wikipedia/data/dewiki-weak-retraction-matches.tsv
 experimental/wikipedia/build/wp-retraction-match --article-dedup experimental/wikipedia/data/dewiki-retraction-matches.article.tsv
 ```
 
 By default it uses `experimental/wikipedia/data/retraction_watch.csv`, chooses the
 newest `*wiki-YYYY-MM-DD-citations.tsv` in the same data directory, and writes
-`<wiki>-<date>-retraction-matches.tsv`. The matcher indexes Retraction Watch in
-memory, then streams the multi-GB citation TSV without loading it all at once.
-The hard DOI/PMID output stays row-level so raw evidence is preserved; non-quiet
-runs also report article-level duplicate counters split by hard DOI vs PMID, and
-`--article-dedup` can write a separate article-level hard-match summary.
+`<wiki>-<date>-retraction-matches.tsv`. It also writes conservative weak title
+matches to `<wiki>-<date>-weak-retraction-matches.tsv` unless `--no-weak` is
+used. The matcher indexes Retraction Watch DOI/PMID keys in a hash table, indexes
+weak title anchors separately, then streams the multi-GB citation TSV without
+loading it all at once. Rows that are not DOI/PMID identifier rows or weak
+`template`/`ref` candidates are skipped after inspecting the row prefix, avoiding
+full TSV parsing for irrelevant citation kinds. The hard DOI/PMID output stays
+row-level so raw evidence is preserved; weak title/journal/year/author-token
+evidence is kept in the separate weak output for review. Non-quiet runs report
+processed-row, identifier-row, lookup, hard-match, weak-match, and article-level
+duplicate counters split by hard DOI vs PMID, and
+`--article-dedup` can write a separate article-level hard-match summary. Weak
+matching is future-work review evidence: it misses paraphrased, translated,
+non-ASCII-only, or context-poor citations and can still produce false positives.
+
+`wp-retraction-report.py` turns the exact and weak TSV outputs into a static
+review page under `experimental/wikipedia/data/retraction/`:
+
+```sh
+python3 experimental/wikipedia/wp-retraction-report.py
+```
+
+The generated `index.html` links to external `retraction.css` and
+`retraction.js`, provides sortable/filterable exact and weak tables, links each
+row to the Wikipedia article, and links DOI/PMID rows to the published article.

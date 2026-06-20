@@ -18,20 +18,24 @@ and reports Wikipedia article citation rows whose DOI or PubMed identifier
 matches a retracted original paper in the Retraction Watch CSV export.
 
 The hard matcher indexes Retraction Watch `OriginalPaperDOI` and
-`OriginalPaperPubMedID` values in memory, then streams the citation TSV. It does
-not match `RetractionDOI` or `RetractionPubMedID` in the hard output because
-those identify the retraction notice rather than the original paper being cited.
-Weak title/context matches, when enabled, are written to a separate weak output
-so DOI/PMID evidence stays separate from weaker signals.
+`OriginalPaperPubMedID` values in an in-memory hash table, then streams the
+citation TSV. It does not match `RetractionDOI` or `RetractionPubMedID` in the
+hard output because those identify the retraction notice rather than the original
+paper being cited. Weak title/context matches use a separate title-anchor index
+and, when enabled, are written to a separate weak output so DOI/PMID evidence
+stays separate from weaker signals. Citation rows that are neither DOI/PMID
+identifier rows nor weak `template`/`ref` candidates are skipped after prefix
+inspection instead of full TSV parsing.
 
 When no citation TSV is specified, the tool searches the data directory for the
 newest `*wiki-YYYY-MM-DD-citations.tsv`. The default data directory is
 `experimental/wikipedia/data` when run from the repository root and `data` when
 run from `experimental/wikipedia`. The default Retraction Watch input is
 `retraction_watch.csv` in that data directory, and the default output is
-`<wiki>-<snapshot>-retraction-matches.tsv`.
+`<wiki>-<snapshot>-retraction-matches.tsv`. Unless disabled, a separate weak
+output is written to `<wiki>-<snapshot>-weak-retraction-matches.tsv`.
 
-The output columns are:
+The hard output columns are:
 
 ```text
 match_kind	match_value	match_field	wiki	snapshot	source	page_id	page_title	citation_kind	citation_value	rw_record_id	rw_original_doi	rw_original_pmid	rw_retraction_doi	rw_retraction_pmid	rw_retraction_date	rw_original_date	rw_retraction_nature	rw_title	rw_journal	rw_publisher	rw_reason	raw
@@ -44,7 +48,9 @@ or because the same article cites the same retracted work more than once.
 Non-quiet runs report article-level duplicate counters on standard error,
 separately for hard DOI and hard PMID matches. The article-level hard duplicate
 key is the wiki, snapshot, page id, Retraction Watch record, hard match kind, and
-normalized match value.
+normalized match value. Non-quiet status also includes processed citation rows,
+identifier rows, identifier lookups, hard matched citation rows, hard output
+rows, and weak matched citation rows when weak output is enabled.
 
 `--article-dedup FILE` writes an auxiliary hard-match TSV with one row per
 article-level hard duplicate key. It prefixes the hard output columns with:
@@ -55,6 +61,17 @@ evidence_row_count
 
 The auxiliary file uses the first raw evidence row as the representative and
 keeps the full raw hard-match output unchanged.
+
+Weak matching only considers citation rows of kind `template` or `ref`. It
+normalizes ASCII letters/digits from the raw citation snippet and requires an
+exact normalized Retraction Watch title phrase plus at least one extra signal:
+normalized journal phrase, original-paper year, or a normalized author token of
+at least four characters. Weak rows are written to a separate output with
+columns:
+
+```text
+match_kind	match_value	match_signals	wiki	snapshot	source	page_id	page_title	citation_kind	citation_value	rw_record_id	rw_original_doi	rw_original_pmid	rw_retraction_doi	rw_retraction_pmid	rw_retraction_date	rw_original_date	rw_retraction_nature	rw_title	rw_journal	rw_author	rw_publisher	rw_reason	raw
+```
 
 ## OPTIONS
 
@@ -80,6 +97,7 @@ wp-retraction-match
 wp-retraction-match -d experimental/wikipedia/data
 wp-retraction-match -c experimental/wikipedia/data/dewiki-2026-06-01-citations.tsv
 wp-retraction-match -q -o experimental/wikipedia/data/dewiki-retraction-matches.tsv
+wp-retraction-match -w experimental/wikipedia/data/dewiki-weak-retraction-matches.tsv
 wp-retraction-match --article-dedup experimental/wikipedia/data/dewiki-retraction-matches.article.tsv
 ```
 
@@ -87,8 +105,11 @@ wp-retraction-match --article-dedup experimental/wikipedia/data/dewiki-retractio
 
 - Hard matching is identifier-based and currently uses only DOI and PubMed ID
   rows emitted by `wp-cite-extract`.
-- Retraction Watch rows without `OriginalPaperDOI` or `OriginalPaperPubMedID`
-  cannot match in this first pass.
+- Weak matching is deliberately conservative and future work: it misses
+  paraphrased or heavily abbreviated titles, non-ASCII-only differences,
+  reordered or translated titles, and citation snippets that do not include
+  journal/year/author context. Weak rows can still be false positives and need
+  human review.
 - Weak-signal output is separate from the hard DOI/PMID output and should be
   reviewed as lower-confidence evidence.
 - The hard output is per matched citation row; use `--article-dedup` or the

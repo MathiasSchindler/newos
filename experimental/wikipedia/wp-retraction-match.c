@@ -381,19 +381,34 @@ static int weak_field_is_usable(const char *field_norm) {
 }
 
 static int weak_word_is_stopword(const char *word, size_t length) {
-    static const char *stopwords[] = {
-        "about", "after", "analysis", "article", "based", "between", "case", "clinical",
-        "data", "during", "effect", "effects", "from", "into", "journal", "method",
-        "methods", "model", "paper", "patients", "research", "results", "study",
-        "system", "using", "with", "without"
-    };
-    size_t i;
-
     if (length <= 5U) return 1;
-    for (i = 0U; i < sizeof(stopwords) / sizeof(stopwords[0]); ++i) {
-        if (rt_strlen(stopwords[i]) == length && rt_strncmp(word, stopwords[i], length) == 0) return 1;
-    }
-    return 0;
+    return span_equals_cstr(word, length, "about") ||
+        span_equals_cstr(word, length, "after") ||
+        span_equals_cstr(word, length, "analysis") ||
+        span_equals_cstr(word, length, "article") ||
+        span_equals_cstr(word, length, "based") ||
+        span_equals_cstr(word, length, "between") ||
+        span_equals_cstr(word, length, "case") ||
+        span_equals_cstr(word, length, "clinical") ||
+        span_equals_cstr(word, length, "data") ||
+        span_equals_cstr(word, length, "during") ||
+        span_equals_cstr(word, length, "effect") ||
+        span_equals_cstr(word, length, "effects") ||
+        span_equals_cstr(word, length, "from") ||
+        span_equals_cstr(word, length, "into") ||
+        span_equals_cstr(word, length, "journal") ||
+        span_equals_cstr(word, length, "method") ||
+        span_equals_cstr(word, length, "methods") ||
+        span_equals_cstr(word, length, "model") ||
+        span_equals_cstr(word, length, "paper") ||
+        span_equals_cstr(word, length, "patients") ||
+        span_equals_cstr(word, length, "research") ||
+        span_equals_cstr(word, length, "results") ||
+        span_equals_cstr(word, length, "study") ||
+        span_equals_cstr(word, length, "system") ||
+        span_equals_cstr(word, length, "using") ||
+        span_equals_cstr(word, length, "with") ||
+        span_equals_cstr(word, length, "without");
 }
 
 static int choose_title_anchor(const char *title_norm, char *out, size_t out_size) {
@@ -447,7 +462,7 @@ static int normalized_contains_significant_author(const char *text, const char *
         start = index;
         while (author_norm[index] != '\0' && author_norm[index] != ' ') index += 1U;
         length = index - start;
-        if (length >= 4U && length < sizeof(word) && !weak_word_is_stopword(author_norm + start, length)) {
+        if (length >= 4U && length < sizeof(word)) {
             memcpy(word, author_norm + start, length);
             word[length] = '\0';
             if (normalized_contains_phrase(text, word)) return 1;
@@ -1607,7 +1622,7 @@ int main(int argc, char **argv) {
         write_info_u64("identifier citation rows: ", stats.identifier_rows, 0);
         write_info_u64("identifier lookups: ", stats.lookup_rows, 0);
         write_info_u64("hard matched citation rows: ", stats.matched_citation_rows, 0);
-        write_info_u64("matched citation rows: ", matches, 0);
+        write_info_u64("hard match output rows: ", matches, 0);
         write_duplicate_summary(&analysis);
         if (options.article_dedup_path != 0) write_info_u64("article-level deduplicated output rows: ", (unsigned long long)analysis.group_count, 0);
     }
