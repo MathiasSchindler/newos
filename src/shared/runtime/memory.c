@@ -6,6 +6,7 @@
 #define NEWOS_RUNTIME_ALLOC_LOCK_NONE 0
 #define NEWOS_RUNTIME_ALLOC_LOCK_ATOMIC 1
 #define NEWOS_RUNTIME_ALLOC_LOCK_PTHREAD 2
+#define NEWOS_RUNTIME_ALLOC_LOCK_PLATFORM 3
 
 #ifndef NEWOS_RUNTIME_ALLOC_LOCK
 #if defined(NEWOS_RUNTIME_THREAD_SAFE_ALLOC) && NEWOS_RUNTIME_THREAD_SAFE_ALLOC && defined(NEWOS_HAVE_PTHREAD) && NEWOS_HAVE_PTHREAD
@@ -97,6 +98,16 @@ static void rt_alloc_lock(void) {
 
 static void rt_alloc_unlock(void) {
     __atomic_store_n(&rt_alloc_atomic_lock, 0, __ATOMIC_RELEASE);
+}
+#elif NEWOS_RUNTIME_ALLOC_LOCK == NEWOS_RUNTIME_ALLOC_LOCK_PLATFORM
+static PlatformMutex rt_alloc_mutex;
+
+static void rt_alloc_lock(void) {
+    platform_mutex_lock(&rt_alloc_mutex);
+}
+
+static void rt_alloc_unlock(void) {
+    platform_mutex_unlock(&rt_alloc_mutex);
 }
 #else
 static void rt_alloc_lock(void) {
