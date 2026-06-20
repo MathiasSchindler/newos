@@ -61,3 +61,24 @@ wiki	snapshot	source	page_id	page_title	kind	value	raw
 The binary remains statically linked and libc-free. `.xml.bz2` input is decoded
 through the in-tree shared bzip2 decoder; no external `bzip2` or Python helper
 is needed for extraction.
+
+## wp-retraction-match
+
+`wp-retraction-match` streams a citation TSV and matches DOI/PMID identifier rows
+against `OriginalPaperDOI` and `OriginalPaperPubMedID` in the current Retraction
+Watch CSV export:
+
+```sh
+experimental/wikipedia/build/wp-retraction-match
+experimental/wikipedia/build/wp-retraction-match -c experimental/wikipedia/data/dewiki-2026-06-01-citations.tsv
+experimental/wikipedia/build/wp-retraction-match -o experimental/wikipedia/data/dewiki-retraction-matches.tsv
+experimental/wikipedia/build/wp-retraction-match --article-dedup experimental/wikipedia/data/dewiki-retraction-matches.article.tsv
+```
+
+By default it uses `experimental/wikipedia/data/retraction_watch.csv`, chooses the
+newest `*wiki-YYYY-MM-DD-citations.tsv` in the same data directory, and writes
+`<wiki>-<date>-retraction-matches.tsv`. The matcher indexes Retraction Watch in
+memory, then streams the multi-GB citation TSV without loading it all at once.
+The hard DOI/PMID output stays row-level so raw evidence is preserved; non-quiet
+runs also report article-level duplicate counters split by hard DOI vs PMID, and
+`--article-dedup` can write a separate article-level hard-match summary.
