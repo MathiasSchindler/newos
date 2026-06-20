@@ -14,7 +14,7 @@ The central decision of this design is that tools do not program against raw thr
 - nothing here introduces an external dependency, a standard C library call, or `libSystem`/dylib imports on macOS
 - the same tool source runs correctly on every platform, including platforms whose native thread backend does not exist yet, because serial execution is a real backend rather than an error path
 
-This page describes that two-layer model, the public APIs tools actually call, the private substrate beneath them, and the current platform status for Linux, project-linked macOS, and hosted verification builds.
+This page describes that two-layer model, the public APIs tools actually call, the private substrate beneath them, and the current platform status for Linux, project-linked macOS, and hosted verification builds. It is also a migration guide: a developer or LLM implementing a threaded tool should be able to choose the right model, keep the serial path correct, preserve deterministic output, and know what to measure before calling the work complete.
 
 ## THE TWO AXES OF CONCURRENCY
 
@@ -216,6 +216,16 @@ The I/O loop on macOS currently uses the portable poll backend. A `kqueue` backe
 
 Hosted POSIX builds may implement the substrate with pthreads as a bring-up and verification convenience. This is never the contract: hosted code obeys the same Layer 1 semantics so tools cannot accidentally depend on pthread behavior that the freestanding substrate does not provide. The hosted path exists to cross-check the project substrate, not to define it.
 
+## PLATFORM EXPECTATIONS FOR TOOL CODE
+
+Tool code should not special-case Linux and macOS threading behavior. A tool initializes `RtTaskPool`, receives either a native width or the serial backend, and runs the same worker body in both cases. If one platform does not yet have native workers for an architecture, the serial backend is the compatibility layer.
+
+Do not include OS thread headers, call pthreads, call C11 thread APIs, or reach into `src/platform/*` from a tool. Linux `clone`/`futex`, macOS `bsdthread`/`__ulock`, and hosted pthreads are backend details. The tool-facing contract is `src/shared/concurrency.h`.
+
+Do not use platform conditionals to change output order, error handling, chunk boundaries, or file-format behavior. A Linux native-width run, a macOS native-width run, and a width-1 serial run should differ only in timing and resource use. If platform-specific behavior is needed to access files, sockets, clocks, or memory, route it through the existing `platform.h` layer outside the parallel model.
+
+When validating a tool, prefer the freestanding/project-linked build that matches the platform substrate: `make freestanding` for the normal project path, focused `make build/macos-aarch64/<tool>` checks on local macOS AArch64, and the relevant freestanding Linux build on Linux. Hosted POSIX can catch ordinary C mistakes quickly, but it cannot prove that no-libc thread startup, raw wait/wake, compact executable layout, or project allocator policy is healthy.
+
 ## TLS AND THREAD-LOCAL STATE
 
 The design uses no thread-local storage. The pool gives each worker an explicit `worker_index`, and every per-worker resource — arena, scratch buffer, output slot, RNG state — is reached through that index. This deliberately avoids compiler-emitted TLS, `_Thread_local`, pthread keys, and any errno-like hidden per-thread global, all of which would complicate the freestanding startup and the no-`libSystem` macOS path. If a future subsystem ever truly needs implicit thread-local state, it gets its own explicit project design; it is never acquired as a silent side effect of starting a thread.
@@ -256,9 +266,24 @@ Error handling stays structured. A worker can return nonzero, but it cannot assu
 
 Measure correctness, speed, and size together. Use `threadbench --stats`, `threadstress`, and workload-specific fixtures to check active workers, effective chunk size, imbalance, and error propagation. Use the project `timeout` tool around new high-width tests so a hang becomes useful evidence rather than a stuck test run. For tools that read or allocate in workers, `experimental/threading/threadread` is the current focused reproducer for macOS-style concurrent read/allocation pressure.
 
+Implementation checklist for a new threaded tool:
+
+1. Save a baseline benchmark before editing the tool. Put ad-hoc measurement output under `tests/tmp`, include the build directory, fixture description, worker widths, and enough command lines that the result can be repeated later.
+2. Choose the split unit before choosing the API. Use `rt_parallel_for` for dense, uniform ranges such as files, rows, blocks, archive members, or sections. Use `RtTaskGroup` for irregular jobs such as candidate encoders, recipient packets, format blocks discovered by a scanner, or other work whose count is known only after setup.
+3. Add a bring-up worker knob named `NEWOS_<TOOL>_WORKERS` unless the tool already has a broader project convention. Width 1 must force the serial backend. Widths greater than 1 should be capped to a conservative default until benchmarks show a better cap.
+4. Build an immutable job array on the main thread. Normalize options, collect input paths or block metadata, reserve output slots, and compute deterministic output order before starting the pool.
+5. Keep worker functions small and boring. A worker should read its job, write only its assigned output slot or per-worker scratch, mark success or failure, and return. It should not print final user output, mutate global format state, create threads, depend on TLS, or assume another task will be cancelled after its own error.
+6. Treat serial discovery and serial merge as part of the workload. A naive block scanner, expensive pre-pass, or single-threaded final merge can erase a good parallel body. Measure setup, worker time, and write/merge time separately when speedups are disappointing.
+7. If `rt_task_pool_init` fails at a requested native width, retry or fall back to width 1 rather than failing a tool that can still run correctly on the serial backend.
+8. Add focused phase coverage that compares width 1 against at least one native width. The test should check byte-identical output for deterministic tools, correct diagnostics for malformed input, and timeout-bounded completion for high-width bring-up cases.
+9. Rebuild and test the project-linked target on macOS and the relevant freestanding Linux target when available. Hosted POSIX is useful for bring-up, but it is not proof that the no-libc substrate and allocator policy are healthy.
+10. Re-run the baseline benchmark after the change, then inspect binary size, small-input latency, best width, and user time. A lower wall time with much higher user time is only acceptable when the workload is explicitly throughput-oriented and small inputs still stay on the inline path.
+
+For LLM-assisted migrations, the first search should be for existing examples of the model rather than for raw thread code. Good current examples are checksum multi-file fan-out with `rt_parallel_for`, `zip` payload preparation, `sort` chunk sorting, `expack` candidate groups, `pgpmsg` recipient and AEAD chunk groups, and standard `bunzip2` block groups. New tool code should look like those patterns unless a measured workload proves it needs a different shape.
+
 ## CURRENT STATUS AND ROADMAP
 
-The migration plan is still useful, but it is no longer a from-zero plan. It is now a status checklist and roadmap: the model exists, native worker backends exist on the main development platforms, and the first real tool has moved onto the task pool. Keeping the plan in this document helps avoid drifting back into per-tool thread designs as more tools migrate.
+The migration plan is now past the first-tool stage. The model exists, native worker backends exist on the main development platforms, and several real tools exercise both `rt_parallel_for` and `RtTaskGroup`. Keeping the plan in this document helps avoid drifting back into per-tool thread designs as more tools migrate.
 
 Current status:
 
@@ -267,17 +292,28 @@ Current status:
 3. Native worker support exists for freestanding Linux x86-64 and project-linked macOS AArch64. Linux AArch64 still falls back to serial execution until its clone trampoline exists.
 4. The portable I/O loop exists in `src/shared/runtime/io_loop.c` and currently runs over `platform_poll_fds`. Native `epoll` and `kqueue` backends have not landed yet.
 5. Experimental measurement lives under `experimental/threading`: `threadbench`, `threadstress`, `threadcompress`, `threadread`, `benchcmp.sh`, `benchguide.sh`, and `report.sh`.
-6. `zip` is the first in-tree CPU-bound tool using `rt_parallel_for`. On both Linux and macOS it prepares file payloads in parallel and writes the archive in deterministic order on the main thread.
-7. The macOS project-linked build uses the platform-mutex allocator lock mode for thread-safe global heap access in the current threaded bring-up path. This fixed hangs seen with the atomic spin allocator lock under `zip` and `threadread`-style concurrent read/allocation pressure.
+6. The macOS project-linked build uses the platform-mutex allocator lock mode for thread-safe global heap access in the current threaded bring-up path. This fixed hangs seen with the atomic spin allocator lock under `zip` and `threadread`-style concurrent read/allocation pressure.
+
+Real tool migrations now cover several workload shapes:
+
+| Workload | Current shape | Worker knob | Main lesson |
+| --- | --- | --- | --- |
+| `zip` payload preparation | `rt_parallel_for` over input entries, serial archive write | `NEWOS_ZIP_WORKERS` | Prepare payloads in parallel, keep format output ordered on the main thread. |
+| `md5sum`, `sha1sum`, `sha256sum`, `sha512sum` | `rt_parallel_for` over input files | `NEWOS_HASH_WORKERS` | Per-file slots give large wins with little shared state. |
+| `sort` | `RtTaskGroup` chunk sorts followed by deterministic merge | `NEWOS_SORT_WORKERS` | Parallel sort is useful, but serial merge and comparison cost cap speedup. |
+| `expack` | `RtTaskGroup` over codec candidates | `NEWOS_EXPACK_WORKERS` | Irregular candidate work fits task groups; bad candidate portfolios can dominate more than threading. |
+| `pgpmsg` | `RtTaskGroup` over recipients and v2 AEAD chunks | `NEWOS_PGPMSG_WORKERS` | Chunk parallelism is strong, and it exposes crypto primitive cost quickly. |
+| standard `bunzip2` | `RtTaskGroup` over discovered bzip2 blocks | `NEWOS_BUNZIP2_WORKERS` | Block parallelism works only after serial scanning overhead is under control. |
 
 Remaining roadmap:
 
-1. Keep broadening real-tool coverage beyond `zip`, especially compression, hashing, image, compiler, linker, and archive workloads that can use per-index or per-worker output slots.
+1. Keep broadening real-tool coverage into image, compiler, linker, SQL, and archive workloads that can use per-index or per-worker output slots.
 2. Finish native Linux AArch64 worker thread support so both Linux project architectures share the same native pool behavior.
 3. Add native `epoll` and `kqueue` I/O-loop backends behind `rt_io_loop_*`, then migrate one I/O-bound tool such as a downloader or server loop and compare it against the existing polling shape.
 4. Move hot worker allocation paths toward preallocated output arrays and per-worker arenas so the global allocator lock becomes rare rather than structural.
-5. Tighten build granularity so tools that never use concurrency do not inherit thread-safe allocator policy merely because one threaded tool in the same build tree needs it.
-6. Keep tracking binary size, small-input latency, active-worker counts, chunk imbalance, and timeout-bounded stress behavior for every migrated tool.
+5. Standardize worker-count parsing and benchmark reporting so each tool does not reinvent the same `NEWOS_<TOOL>_WORKERS` plumbing differently.
+6. Tighten build granularity so tools that never use concurrency do not inherit thread-safe allocator policy or concurrency object code merely because one threaded tool in the same build tree needs it.
+7. Keep tracking binary size, small-input latency, active-worker counts, chunk imbalance, memory footprint, and timeout-bounded stress behavior for every migrated tool.
 
 The long-term rule remains that tools which do not opt into a concurrency model should be untouched and unmeasurably affected. Any temporary build-wide hardening, such as the macOS project-linked allocator lock, should be treated as an implementation gap to narrow once the threaded tool set and allocator usage patterns are better understood.
 
@@ -287,17 +323,33 @@ The native macOS worker substrate is real enough for useful work. Recent macOS A
 
 Automatic batching matters. Treating `min_chunk` as a lower bound fixed the pathological tiny-chunk case: a caller can request `min_chunk=1`, but the pool raises the effective chunk size so dispatch claims stay proportional to worker count. The stats output makes this visible and should remain part of benchmark review.
 
-The first real threaded tool exposed allocator reality. `zip` and the focused `threadread` reproducer showed that a shared global allocator under concurrent read/allocation pressure can hang or crash if protected only by the simple atomic spin lock on macOS. The platform mutex lock, backed by the same wait/wake substrate as the task pool, fixed the reproducer and stabilized high-width `zip` runs. That is a useful fix, but it is also a warning: the preferred design is still to avoid the shared allocator in hot worker bodies.
+The original `zip` migration exposed allocator reality. `zip` and the focused `threadread` reproducer showed that a shared global allocator under concurrent read/allocation pressure can hang or crash if protected only by the simple atomic spin lock on macOS. The platform mutex lock, backed by the same wait/wake substrate as the task pool, fixed the reproducer and stabilized high-width `zip` runs. That is a useful fix, but it is also a warning: the preferred design is still to avoid the shared allocator in hot worker bodies.
 
 Hangs are diagnostics, not just failures. New threaded tests should be wrapped with the project `timeout` tool during bring-up. A timed-out run that leaves no archive bytes, no completed chunks, or a partial worker-counter snapshot often points directly at the layer that is blocked.
 
-The largest current shortcomings are coverage and granularity. Only one production tool uses the task pool today, the I/O-loop model has not yet been proven by a migrated server or downloader, Linux AArch64 native workers are still missing, and the macOS allocator policy is coarser than the long-term zero-cost goal. These are engineering gaps in the migration, not reasons to abandon the model.
+Real tool migrations confirmed the core pattern. The most reliable structure is immutable input metadata, per-index or per-worker output slots, and a serial ordered merge or write after the join. That pattern has held across file hashing, archive payload preparation, sort chunks, executable-pack candidates, PGP recipient packets, PGP AEAD chunks, and bzip2 blocks. When a proposed migration cannot be expressed this way, treat that as a design smell and look for a higher-level split before introducing shared mutable state.
+
+Serial setup can be the real bottleneck. The standard bzip2 migration first showed almost no wall-time improvement because the block scanner was too expensive; replacing it with a rolling 48-bit scanner unlocked the parallel decode. The general lesson is that a threaded worker body is only one phase of the tool. Discovery, validation, merge, formatting, and final writes need their own measurements.
+
+Threading exposes primitive costs. `pgpmsg` chunk parallelism made AES-GCM the obvious hot path, and the later GHASH table optimization produced a larger CPU reduction than key-schedule reuse alone. When a threaded tool stops scaling, inspect the shared primitive before adding more workers.
+
+Not every CPU-looking workload wants internal threading. Single-frame zstd decompression has output dependencies that make intra-frame splitting unattractive; hot-loop improvements and higher-level parallelism across independent frames or archive members are better targets. Project mini-bzip streams are simple enough that the standard bzip2 block strategy does not apply. A negative threading result is useful evidence, not a failure of the model.
+
+Memory growth is now the main practical concern. Per-block and per-task outputs are deterministic and easy to reason about, but tools such as threaded `bunzip2` may buffer compressed input plus decoded blocks before writing in order. Large-file thresholds, bounded staging, and serial fallback policies need more attention before every block format adopts this shape.
+
+The largest current shortcomings are I/O-loop proof, platform parity, allocator granularity, and build granularity. The I/O-loop model has not yet been proven by a migrated server or downloader, Linux AArch64 native workers are still missing, the macOS allocator policy is coarser than the long-term zero-cost goal, and shared compression objects may need splitting if threaded entry points pull concurrency into otherwise serial tools. These are engineering gaps in the migration, not reasons to abandon the model.
 
 ## BENCHMARKING
 
 Concurrency changes are judged against real workloads and binary size together, never speed alone.
 
 Useful measurements include the binary-size delta for a tool using `rt_parallel_for` versus its single-threaded and process-pool variants; `rt_parallel_for` speedup versus core count, including the small-N inline path; per-worker-arena (lock-free) versus shared-global-lock allocation throughput in worker-heavy tools; wait/wake uncontended and contended cost across the Linux and macOS backends; I/O-loop connection throughput and per-connection memory versus a worker-per-client server; and pool memory footprint including stack commitment and release.
+
+For real tool migrations, save a before/after benchmark under `tests/tmp`. The baseline should be captured before code changes, and the post-change run should include width 1 plus the expected native widths. Record real time, user time, system time, input size, output size when relevant, build directory, environment knobs, and the command line. Width 1 after the migration is the new serial reference and should be compared against both the old implementation and the native-width run.
+
+Interpret speedups by phase. A wall-time win with a large user-time increase may be acceptable for large throughput workloads, but it can also reveal wasted work, a serial scanner bottleneck, too many tiny tasks, allocator contention, or poor chunk size. If native width is not faster than width 1, measure discovery, worker body, and merge/write separately before changing the pool.
+
+Recent migrations provide useful benchmark expectations. Multi-file hash sweeps and PGP v2 AEAD chunks can scale strongly because their work units are independent. `sort` improves but is capped by comparison and merge costs. `expack` depends heavily on the candidate portfolio. Standard bzip2 block decode only scaled after scanner overhead was reduced. Single-frame zstd decompression is currently better served by hot-loop optimization or higher-level parallelism than by internal frame threading.
 
 While the runtime is still experimental, measurement lives under `experimental/threading`. `threadbench` is the synthetic benchmark: it reports min/median/p90/max timings, separates pool width from actual active workers, shows requested versus effective chunk sizes, and can print task-pool counters plus per-worker imbalance summaries with `--stats`. `threadstress` repeatedly creates pools, runs randomized parallel ranges and batched task groups, checks forced-error propagation, and reports aggregate counters. `benchcmp.sh` compares two saved report files by row key and prints median-time ratios and speedup deltas. `benchguide.sh` parses width-sweep sections and reports the fastest width plus the smallest width within 5 percent of best median time, which is the current experimental form of adaptive width guidance. These tools are intentionally outside `src/tools` until the measurement surface settles.
 
