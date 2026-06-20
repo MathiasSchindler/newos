@@ -1,17 +1,11 @@
 #include "archive_util.h"
+#include "concurrency.h"
 #include "compression/lzss.h"
 #include "compression/zlib.h"
 #include "crypto/sha256.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
-
-#if !defined(EXPACK_DISABLE_PTHREAD) && defined(NEWOS_HAVE_PTHREAD) && NEWOS_HAVE_PTHREAD
-#include <pthread.h>
-#define EXPACK_HAVE_PTHREAD 1
-#else
-#define EXPACK_HAVE_PTHREAD 0
-#endif
 
 #include "expack/internal.h"
 

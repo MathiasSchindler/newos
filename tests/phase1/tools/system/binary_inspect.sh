@@ -22,6 +22,13 @@ assert_file_contains "$WORK_DIR/file_text.out" 'ASCII text' "file did not recogn
 assert_command_succeeds "${TEST_BIN_DIR}/expack" --analyze "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho.out"
 assert_file_contains "$WORK_DIR/expack_macho.out" 'format Mach-O 64-bit arm64' "expack did not analyze a Mach-O executable image"
 assert_file_contains "$WORK_DIR/expack_macho.out" '^selected: ' "expack did not select a Mach-O compression candidate"
+if grep -q '^  lzrep-opt:' "$WORK_DIR/expack_macho.out"; then
+    fail "expack normal mode should leave lzrep-opt for --all"
+fi
+assert_command_succeeds env NEWOS_EXPACK_WORKERS=1 NEWOS_EXPACK_TIMINGS=0 "${TEST_BIN_DIR}/expack" --analyze --all "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho_all_serial.out"
+assert_command_succeeds env NEWOS_EXPACK_WORKERS=4 NEWOS_EXPACK_TIMINGS=0 "${TEST_BIN_DIR}/expack" --analyze --all "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho_all_parallel.out"
+assert_files_equal "$WORK_DIR/expack_macho_all_serial.out" "$WORK_DIR/expack_macho_all_parallel.out" "expack multi-worker candidate output differed from width 1"
+assert_file_contains "$WORK_DIR/expack_macho_all_parallel.out" '^  lzrep-opt:' "expack --all did not evaluate lzrep-opt"
 assert_command_succeeds "${TEST_BIN_DIR}/expack" "$WORK_DIR/minimal_macho" > "$WORK_DIR/expack_macho_container.out"
 assert_file_contains "$WORK_DIR/expack_macho_container.out" '^expack: input .*format Mach-O' "expack did not report Mach-O input statistics while packing"
 assert_file_contains "$WORK_DIR/expack_macho_container.out" '^  lzss/long-match: payload .* packed ' "expack did not report runnable Mach-O LZSS compression candidates while packing"

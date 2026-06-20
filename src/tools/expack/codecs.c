@@ -1650,11 +1650,22 @@ static void expack_report_candidate(const ExpackCandidate *candidate) {
     rt_write_cstr(1, "\n");
 }
 
-static int expack_lzss_profile_in_normal_portfolio(const ExpackLzssProfile *profile) {
+static int expack_lzss_profile_in_normal_portfolio(const ExpackInputFormat *format, const ExpackLzssProfile *profile) {
+    if (format->kind == EXPACK_FORMAT_MACHO) {
+        return profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_WINDOW ||
+               profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_MATCH ||
+               profile->profile_id == COMPRESSION_LZSS_PROFILE_LONG_MATCH;
+    }
+    if (format->kind == EXPACK_FORMAT_PE_COFF) {
+        return profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_WINDOW;
+    }
     return profile->profile_id == COMPRESSION_LZSS_PROFILE_LONG_MATCH;
 }
 
-static int expack_bcj_profile_in_normal_portfolio(const ExpackLzssProfile *profile) {
+static int expack_bcj_profile_in_normal_portfolio(const ExpackInputFormat *format, const ExpackLzssProfile *profile) {
+    if (format->kind == EXPACK_FORMAT_PE_COFF) {
+        return profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_WINDOW;
+    }
     return profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_WINDOW ||
            profile->profile_id == COMPRESSION_LZSS_PROFILE_WIDE_MATCH ||
            profile->profile_id == COMPRESSION_LZSS_PROFILE_MEDIUM_MATCH;
@@ -1666,7 +1677,7 @@ static int expack_bcj_rip_profile_in_normal_portfolio(const ExpackLzssProfile *p
 }
 
 #define EXPACK_MAX_CANDIDATE_JOBS 20U
-#define EXPACK_CANDIDATE_WORKERS 4U
+#define EXPACK_DEFAULT_MAX_WORKERS 8U
 
 typedef struct {
     unsigned int codec;
@@ -1676,6 +1687,7 @@ typedef struct {
     size_t input_size;
     int input_pretransformed;
     ExpackCandidate candidate;
+    unsigned long long elapsed_ns;
     int succeeded;
     int done;
 } ExpackCandidateJob;
@@ -1693,6 +1705,7 @@ static void expack_candidate_job_init(ExpackCandidateJob *job, unsigned int code
     job->candidate.payload = 0;
     job->candidate.payload_size = 0U;
     job->candidate.packed_size = 0ULL;
+    job->elapsed_ns = 0ULL;
     job->succeeded = 0;
     job->done = 0;
     if (codec == EXPACK_CODEC_LZSS) {
@@ -1739,6 +1752,8 @@ static int expack_add_candidate_job(ExpackCandidateJob *jobs, unsigned int *job_
 }
 
 static void expack_run_candidate_job(ExpackCandidateJob *job) {
+    unsigned long long start_ns = platform_get_monotonic_time_ns();
+    unsigned long long end_ns;
     int result = -1;
 
     if (job->codec == EXPACK_CODEC_LZSS) {
@@ -1778,6 +1793,8 @@ static void expack_run_candidate_job(ExpackCandidateJob *job) {
             result = expack_compress_deflate_bcj(job->input_data, job->input_size, &job->candidate.payload, &job->candidate.payload_size);
         }
     }
+    end_ns = platform_get_monotonic_time_ns();
+    job->elapsed_ns = end_ns >= start_ns ? end_ns - start_ns : 0ULL;
     job->succeeded = result == 0;
     job->done = 1;
 }
@@ -1790,69 +1807,84 @@ static void expack_run_candidate_jobs_serial(ExpackCandidateJob *jobs, unsigned 
     }
 }
 
-#if EXPACK_HAVE_PTHREAD
-typedef struct {
-    ExpackCandidateJob *jobs;
-    unsigned int job_count;
-    unsigned int next_job;
-    pthread_mutex_t mutex;
-} ExpackCandidateQueue;
+static unsigned int expack_worker_count_from_env(void) {
+    const char *value_text = platform_getenv("NEWOS_EXPACK_WORKERS");
+    unsigned long long value;
+    unsigned int platform_width;
 
-static void *expack_candidate_worker(void *arg) {
-    ExpackCandidateQueue *queue = (ExpackCandidateQueue *)arg;
-
-    for (;;) {
-        unsigned int job_index;
-
-        (void)pthread_mutex_lock(&queue->mutex);
-        if (queue->next_job >= queue->job_count) {
-            (void)pthread_mutex_unlock(&queue->mutex);
-            break;
-        }
-        job_index = queue->next_job++;
-        (void)pthread_mutex_unlock(&queue->mutex);
-        expack_run_candidate_job(queue->jobs + job_index);
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > EXPACK_DEFAULT_MAX_WORKERS ? EXPACK_DEFAULT_MAX_WORKERS : platform_width;
     }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return EXPACK_DEFAULT_MAX_WORKERS;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
+}
+
+static int expack_candidate_task(unsigned int worker_index, void *arg) {
+    (void)worker_index;
+    expack_run_candidate_job((ExpackCandidateJob *)arg);
     return 0;
 }
 
 static void expack_run_candidate_jobs(ExpackCandidateJob *jobs, unsigned int job_count) {
-    ExpackCandidateQueue queue;
-    pthread_t threads[EXPACK_CANDIDATE_WORKERS];
-    unsigned int worker_count = job_count < EXPACK_CANDIDATE_WORKERS ? job_count : EXPACK_CANDIDATE_WORKERS;
-    unsigned int created = 0U;
-    unsigned int worker_index;
+    RtTaskPool pool;
+    RtTaskGroup group;
+    unsigned int job_index;
+    int result;
 
-    if (worker_count < 2U || pthread_mutex_init(&queue.mutex, 0) != 0) {
+    if (job_count < 2U) {
         expack_run_candidate_jobs_serial(jobs, job_count);
         return;
     }
-    queue.jobs = jobs;
-    queue.job_count = job_count;
-    queue.next_job = 0U;
-    for (worker_index = 0U; worker_index < worker_count; ++worker_index) {
-        if (pthread_create(&threads[worker_index], 0, expack_candidate_worker, &queue) != 0) {
+    rt_memset(&pool, 0, sizeof(pool));
+    if (rt_task_pool_init(&pool, expack_worker_count_from_env()) != 0) {
+        expack_run_candidate_jobs_serial(jobs, job_count);
+        return;
+    }
+    if (rt_task_group_begin(&pool, &group) != 0 || rt_task_group_reserve(&group, job_count) != 0) {
+        rt_task_pool_destroy(&pool);
+        expack_run_candidate_jobs_serial(jobs, job_count);
+        return;
+    }
+    result = 0;
+    for (job_index = 0U; job_index < job_count; ++job_index) {
+        if (rt_task_group_submit(&group, expack_candidate_task, jobs + job_index) != 0) {
+            result = -1;
             break;
         }
-        created += 1U;
     }
-    for (worker_index = 0U; worker_index < created; ++worker_index) {
-        (void)pthread_join(threads[worker_index], 0);
+    if (rt_task_group_wait(&group) != 0) {
+        result = -1;
     }
-    (void)pthread_mutex_destroy(&queue.mutex);
-    if (created != worker_count) {
-        for (worker_index = 0U; worker_index < job_count; ++worker_index) {
-            if (!jobs[worker_index].done) {
-                expack_run_candidate_job(jobs + worker_index);
+    rt_task_pool_destroy(&pool);
+    if (result != 0) {
+        for (job_index = 0U; job_index < job_count; ++job_index) {
+            if (!jobs[job_index].done) {
+                expack_run_candidate_job(jobs + job_index);
             }
         }
     }
 }
-#else
-static void expack_run_candidate_jobs(ExpackCandidateJob *jobs, unsigned int job_count) {
-    expack_run_candidate_jobs_serial(jobs, job_count);
+
+static int expack_report_candidate_timings(void) {
+    const char *value_text = platform_getenv("NEWOS_EXPACK_TIMINGS");
+
+    return value_text != 0 && value_text[0] != '\0' && !(value_text[0] == '0' && value_text[1] == '\0');
 }
-#endif
+
+static void expack_report_candidate_timing(const ExpackCandidateJob *job) {
+    rt_write_cstr(1, "  time ");
+    expack_write_candidate_name(&job->candidate);
+    rt_write_cstr(1, ": ");
+    rt_write_uint(1, job->elapsed_ns);
+    rt_write_cstr(1, " ns\n");
+}
 
 static int expack_select_best_payload(const ExpackInputFormat *format, const ExpackOutputBackend *backend, const unsigned char *input_data, size_t input_size, ExpackCandidate *selected_out, int report_candidates, int allow_x86_bcj, int try_all_candidates) {
     unsigned int profile_index;
@@ -1860,12 +1892,13 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
     unsigned int job_count = 0U;
     unsigned int job_index;
     int have_selected = 0;
+    int report_timings = expack_report_candidate_timings();
     unsigned char *bcj_transformed = 0;
     unsigned char *bcj_rip_transformed = 0;
 
     expack_candidate_release(selected_out);
     for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
-        if (!try_all_candidates && !expack_lzss_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
+        if (!try_all_candidates && !expack_lzss_profile_in_normal_portfolio(format, &expack_lzss_profiles[profile_index])) {
             continue;
         }
         if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, input_data, input_size) != 0) {
@@ -1910,16 +1943,18 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         return -1;
     }
 
-    if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_OPT, input_data, input_size) != 0) {
-        if (bcj_transformed != 0) rt_free(bcj_transformed);
-        return -1;
+    if (try_all_candidates) {
+        if (expack_add_candidate_job(jobs, &job_count, EXPACK_CODEC_LZREP, 0, EXPACK_LZREP_PARSE_OPT, input_data, input_size) != 0) {
+            if (bcj_transformed != 0) rt_free(bcj_transformed);
+            return -1;
+        }
     }
 
     if (allow_x86_bcj) {
         const unsigned char *bcj_input_data = bcj_transformed != 0 ? bcj_transformed : input_data;
 
         for (profile_index = 0U; profile_index < sizeof(expack_lzss_profiles) / sizeof(expack_lzss_profiles[0]); ++profile_index) {
-            if (!try_all_candidates && !expack_bcj_profile_in_normal_portfolio(&expack_lzss_profiles[profile_index])) {
+            if (!try_all_candidates && !expack_bcj_profile_in_normal_portfolio(format, &expack_lzss_profiles[profile_index])) {
                 continue;
             }
             if (expack_add_prepared_candidate_job(jobs, &job_count, EXPACK_CODEC_LZSS_BCJ, &expack_lzss_profiles[profile_index], EXPACK_LZREP_PARSE_FAST, bcj_input_data, input_size, bcj_transformed != 0) != 0) {
@@ -1955,6 +1990,7 @@ static int expack_select_best_payload(const ExpackInputFormat *format, const Exp
         }
         job->candidate.packed_size = expack_score_candidate(format, backend, &job->candidate);
         if (report_candidates) expack_report_candidate(&job->candidate);
+        if (report_timings) expack_report_candidate_timing(job);
         if (job->candidate.packed_size != EXPACK_CANDIDATE_UNSUPPORTED_SIZE) expack_consider_candidate(selected_out, &have_selected, &job->candidate);
         else expack_candidate_release(&job->candidate);
     }
