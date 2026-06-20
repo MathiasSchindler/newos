@@ -6,6 +6,10 @@ so niche MediaWiki experiments stay out of the official tool list. Reusable
 components should still move into `src/shared/` when they become generally
 useful across multiple tools.
 
+Run `make` in this directory to build the three experimental tools into
+`experimental/wikipedia/build/`. On local macOS/aarch64 this uses the project's
+Mach-O linker path; on other hosts it keeps the Linux freestanding build path.
+
 ## wp-download
 
 `wp-download` downloads MediaWiki XML bzip2 snapshots from
