@@ -56,7 +56,7 @@ source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(RO
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
-.PHONY: all freestanding run report test clean
+.PHONY: all freestanding run report guide stress test clean
 .SECONDARY:
 
 ifeq ($(AUTO_PARALLEL),1)
@@ -68,7 +68,7 @@ all:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding
 endif
 
-freestanding: $(BUILD_DIR)/threadbench
+freestanding: $(BUILD_DIR)/threadbench $(BUILD_DIR)/threadstress
 
 run: freestanding
 	$(BUILD_DIR)/threadbench
@@ -76,8 +76,24 @@ run: freestanding
 report: freestanding
 	sh ./report.sh --no-build
 
+guide: freestanding
+	@tmp="$${TMPDIR:-/tmp}/threading-guide-$$$$.txt"; \
+	{ printf '# section=width-sweep-cpu\n'; $(BUILD_DIR)/threadbench --case mix --items 65536 --rounds 8 --repeat 2 --max-width 4 --min-chunk 1; } > "$$tmp"; \
+	sh ./benchguide.sh "$$tmp"; \
+	rm -f "$$tmp"
+
+stress: freestanding
+	$(BUILD_DIR)/threadstress
+
 test: freestanding
 	$(BUILD_DIR)/threadbench --case overhead --items 4096 --repeat 1 --max-width 2 >/dev/null
+	$(BUILD_DIR)/threadbench --case mix --items 8192 --rounds 2 --repeat 1 --max-width 2 --min-chunk 1 --stats >/dev/null
+	$(BUILD_DIR)/threadstress --iterations 8 --max-width 2 --items 4096 --rounds 2 --quiet >/dev/null
+	@tmp="$${TMPDIR:-/tmp}/threading-guide-$$$$.txt"; \
+	{ printf '# section=width-sweep-cpu\n'; $(BUILD_DIR)/threadbench --case mix --items 8192 --rounds 2 --repeat 1 --max-width 2 --min-chunk 1; } > "$$tmp"; \
+	sh ./benchguide.sh "$$tmp" >/dev/null; \
+	sh ./benchcmp.sh "$$tmp" "$$tmp" >/dev/null; \
+	rm -f "$$tmp"
 
 $(BUILD_DIR) $(OBJ_DIR):
 	mkdir -p $@
@@ -86,10 +102,16 @@ ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 $(BUILD_DIR)/threadbench: $(OBJ_DIR)/threadbench.o $(FREESTANDING_OBJECTS) $(ROOT_LINKER) | $(BUILD_DIR)
 	$(ROOT_LINKER) --target=mach-o-arm64 $(LDFLAGS) --lto-cc="$(TARGET_CC)" -o $@ $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS))
 
+$(BUILD_DIR)/threadstress: $(OBJ_DIR)/threadstress.o $(FREESTANDING_OBJECTS) $(ROOT_LINKER) | $(BUILD_DIR)
+	$(ROOT_LINKER) --target=mach-o-arm64 $(LDFLAGS) --lto-cc="$(TARGET_CC)" -o $@ $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS))
+
 $(ROOT_LINKER):
 	$(MAKE) -C $(ROOT) host
 else
 $(BUILD_DIR)/threadbench: $(OBJ_DIR)/threadbench.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
+	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
+
+$(BUILD_DIR)/threadstress: $(OBJ_DIR)/threadstress.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 endif
 

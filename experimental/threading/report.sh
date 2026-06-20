@@ -15,6 +15,9 @@ if [ "$build" -ne 0 ]; then
 fi
 
 bench=./build/threadbench
+stress=./build/threadstress
+guide_input=${TMPDIR:-/tmp}/threading-guide-$$.txt
+trap 'rm -f "$guide_input"' EXIT HUP INT TERM
 max_width=${THREADBENCH_MAX_WIDTH:-16}
 repeat=${THREADBENCH_REPEAT:-5}
 cpu_items=${THREADBENCH_CPU_ITEMS:-1048576}
@@ -24,6 +27,18 @@ memory_rounds=${THREADBENCH_MEMORY_ROUNDS:-8}
 task_count=${THREADBENCH_TASKS:-65536}
 task_rounds=${THREADBENCH_TASK_ROUNDS:-16}
 overhead_items=${THREADBENCH_OVERHEAD_ITEMS:-262144}
+stress_iterations=${THREADSTRESS_ITERATIONS:-32}
+if [ "$stress_iterations" -lt 8 ] 2>/dev/null; then
+    stress_iterations=8
+fi
+
+run_width_section() {
+    section=$1
+    shift
+
+    printf '\n# section=%s\n' "$section" | tee -a "$guide_input"
+    "$@" | tee -a "$guide_input"
+}
 
 printf '# host=%s arch=%s\n' "$(uname -s 2>/dev/null || printf unknown)" "$(uname -m 2>/dev/null || printf unknown)"
 if command -v sysctl >/dev/null 2>&1; then
@@ -32,17 +47,13 @@ if command -v sysctl >/dev/null 2>&1; then
     printf '# host_logical_cpus=%s host_physical_cpus=%s\n' "$logical" "$physical"
 fi
 
-printf '\n# section=width-sweep-cpu\n'
-"$bench" --case mix --items "$cpu_items" --rounds "$cpu_rounds" --repeat "$repeat" --max-width "$max_width" --min-chunk 4096
+run_width_section width-sweep-cpu "$bench" --case mix --items "$cpu_items" --rounds "$cpu_rounds" --repeat "$repeat" --max-width "$max_width" --min-chunk 4096
 
-printf '\n# section=width-sweep-memory\n'
-"$bench" --case memory --items "$memory_items" --rounds "$memory_rounds" --repeat "$repeat" --max-width "$max_width" --min-chunk 4096
+run_width_section width-sweep-memory "$bench" --case memory --items "$memory_items" --rounds "$memory_rounds" --repeat "$repeat" --max-width "$max_width" --min-chunk 4096
 
-printf '\n# section=width-sweep-tasks\n'
-"$bench" --case tasks --tasks "$task_count" --rounds "$task_rounds" --repeat "$repeat" --max-width "$max_width"
+run_width_section width-sweep-tasks "$bench" --case tasks --tasks "$task_count" --rounds "$task_rounds" --repeat "$repeat" --max-width "$max_width"
 
-printf '\n# section=width-sweep-overhead\n'
-"$bench" --case overhead --items "$overhead_items" --repeat "$repeat" --max-width "$max_width"
+run_width_section width-sweep-overhead "$bench" --case overhead --items "$overhead_items" --repeat "$repeat" --max-width "$max_width"
 
 printf '\n# section=chunk-sweep-cpu\n'
 for chunk in 1 8 64 512 4096 32768; do
@@ -55,3 +66,12 @@ for items in 4096 65536 1048576; do
     printf '# items=%s\n' "$items"
     "$bench" --case mix --items "$items" --rounds 64 --repeat 3 --max-width "$max_width" --min-chunk 4096
 done
+
+printf '\n# section=counter-sample\n'
+"$bench" --case mix --items 262144 --rounds 16 --repeat 3 --max-width "$max_width" --min-chunk 1 --stats
+
+printf '\n# section=stress-smoke\n'
+"$stress" --iterations "$stress_iterations" --max-width "$max_width" --items 65536 --rounds 4 --quiet
+
+printf '\n# section=width-guidance\n'
+sh ./benchguide.sh "$guide_input"

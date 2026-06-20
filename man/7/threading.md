@@ -112,6 +112,8 @@ int rt_task_group_wait(RtTaskGroup *group);
 
 Two properties make this the right shape for this repository. First, every body and task receives an explicit `worker_index` in `[0, width)`. That index is how a worker reaches its own arena, scratch buffer, or output slot without any thread-local storage — the per-thread state problem is solved by passing the one integer that matters. Second, `rt_parallel_for` and `rt_task_group_wait` are structured: they return only when the work is done, so there is no detached lifetime, no cancellation unwinding, and no orphaned thread to leak. A tool's parallel region begins and ends on one stack frame.
 
+The `min_chunk` argument is a lower bound, not an exact claim size. The pool may raise very small requested chunks to keep the total number of atomic chunk claims bounded relative to the worker count. That keeps accidental `min_chunk=1` calls from turning the shared queue index into the workload, while still leaving enough chunks per worker for ordinary load balance.
+
 The return values deliberately stop short of cancellation semantics. If a worker reports an error, the pool records the first nonzero result, lets already-started work reach the structured join boundary, and returns that result to the caller. That is enough for malformed input, allocation failure, and tool diagnostics without making every parallel region a cancellation-unwind problem.
 
 A typical use merges without any shared-state locking at all:
@@ -249,6 +251,8 @@ At every step, tools that do not opt into a model are untouched and unmeasurably
 Concurrency changes are judged against real workloads and binary size together, never speed alone.
 
 Useful measurements include the binary-size delta for a tool using `rt_parallel_for` versus its single-threaded and process-pool variants; `rt_parallel_for` speedup versus core count, including the small-N inline path; per-worker-arena (lock-free) versus shared-global-lock allocation throughput in worker-heavy tools; wait/wake uncontended and contended cost across the Linux and macOS backends; I/O-loop connection throughput and per-connection memory versus a worker-per-client server; and pool memory footprint including stack commitment and release.
+
+While the runtime is still experimental, measurement lives under `experimental/threading`. `threadbench` is the synthetic benchmark: it reports min/median/p90/max timings, separates pool width from actual active workers, shows requested versus effective chunk sizes, and can print task-pool counters plus per-worker imbalance summaries with `--stats`. `threadstress` repeatedly creates pools, runs randomized parallel ranges and batched task groups, checks forced-error propagation, and reports aggregate counters. `benchcmp.sh` compares two saved report files by row key and prints median-time ratios and speedup deltas. `benchguide.sh` parses width-sweep sections and reports the fastest width plus the smallest width within 5 percent of best median time, which is the current experimental form of adaptive width guidance. These tools are intentionally outside `src/tools` until the measurement surface settles.
 
 A design that speeds up one large workload but grows tiny tools, forces global allocator locking, or makes the single-threaded common case pay anything is not a win.
 

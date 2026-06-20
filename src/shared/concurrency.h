@@ -14,6 +14,31 @@ typedef int (*RtTaskFn)(unsigned int worker_index, void *arg);
 typedef struct RtTaskGroup RtTaskGroup;
 
 typedef struct {
+    unsigned long long dispatches;
+    unsigned long long parallel_dispatches;
+    unsigned long long group_dispatches;
+    unsigned long long serial_parallel_calls;
+    unsigned long long serial_group_calls;
+    unsigned long long chunk_claim_attempts;
+    unsigned long long chunks_claimed;
+    unsigned long long group_batches_claimed;
+    unsigned long long group_tasks_claimed;
+    unsigned long long worker_waits;
+    unsigned long long worker_wakes;
+    unsigned long long join_waits;
+    unsigned long long worker_completions;
+    unsigned int last_requested_width;
+    unsigned int last_effective_width;
+    unsigned int last_active_workers;
+    size_t last_count;
+    size_t last_requested_min_chunk;
+    size_t last_effective_min_chunk;
+    size_t last_group_batch_size;
+    unsigned long long worker_chunks[RT_TASK_POOL_MAX_WORKERS];
+    unsigned long long worker_group_tasks[RT_TASK_POOL_MAX_WORKERS];
+} RtTaskPoolStats;
+
+typedef struct {
     unsigned int index;
     struct RtTaskPool *pool;
     PlatformWorkerThread thread;
@@ -36,6 +61,7 @@ typedef struct RtTaskPool {
     RtTaskFn task_body;
     void *work_arg;
     RtTaskGroup *group;
+    RtTaskPoolStats stats;
     RtTaskWorker workers[RT_TASK_POOL_MAX_WORKERS];
 } RtTaskPool;
 
@@ -52,6 +78,8 @@ int rt_task_pool_init(RtTaskPool *pool, unsigned int worker_count);
 void rt_task_pool_destroy(RtTaskPool *pool);
 unsigned int rt_task_pool_width(const RtTaskPool *pool);
 RtArena *rt_task_pool_worker_arena(RtTaskPool *pool, unsigned int worker_index);
+void rt_task_pool_reset_stats(RtTaskPool *pool);
+void rt_task_pool_get_stats(const RtTaskPool *pool, RtTaskPoolStats *stats_out);
 int rt_parallel_for(RtTaskPool *pool, size_t count, size_t min_chunk, RtParallelBody body, void *arg);
 int rt_task_group_begin(RtTaskPool *pool, RtTaskGroup *group);
 int rt_task_group_submit(RtTaskGroup *group, RtTaskFn fn, void *arg);

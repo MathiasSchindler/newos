@@ -8,6 +8,7 @@
 #define THREADBENCH_DEFAULT_REPEAT 3U
 #define THREADBENCH_DEFAULT_MAX_WIDTH 8U
 #define THREADBENCH_DEFAULT_MIN_CHUNK 1024U
+#define THREADBENCH_SLOT_STRIDE 8U
 #define THREADBENCH_U64_MAX_DIV_1E9 18446744073ULL
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -23,6 +24,7 @@ typedef struct {
     unsigned int rounds;
     unsigned int repeat;
     unsigned int max_width;
+    int show_stats;
     const char *case_name;
 } BenchOptions;
 
@@ -39,8 +41,12 @@ typedef struct {
 } TaskArg;
 
 typedef struct {
-    unsigned long long best_ns;
+    unsigned long long min_ns;
+    unsigned long long median_ns;
+    unsigned long long p90_ns;
+    unsigned long long max_ns;
     unsigned long long checksum;
+    RtTaskPoolStats stats;
     unsigned int effective_width;
     int error;
 } BenchResult;
@@ -111,10 +117,28 @@ static unsigned long long ns_per_unit_x100(size_t units, unsigned long long ns) 
     return (ns * 100ULL) / (unsigned long long)units;
 }
 
+static void sort_u64(unsigned long long *values, unsigned int count) {
+    unsigned int index;
+
+    for (index = 1U; index < count; ++index) {
+        unsigned long long value = values[index];
+        unsigned int cursor = index;
+
+        while (cursor > 0U && values[cursor - 1U] > value) {
+            values[cursor] = values[cursor - 1U];
+            cursor -= 1U;
+        }
+        values[cursor] = value;
+    }
+}
+
+static unsigned long long *slot_for_worker(unsigned long long *slots, unsigned int worker_index);
+static const unsigned long long *const_slot_for_worker(const unsigned long long *slots, unsigned int worker_index);
+
 static void write_usage(const char *program) {
     rt_write_cstr(2, "Usage: ");
     rt_write_cstr(2, program);
-    rt_write_cstr(2, " [--case all|mix|memory|tasks|overhead] [--items N] [--tasks N] [--rounds N] [--repeat N] [--max-width N] [--min-chunk N]\n");
+    rt_write_cstr(2, " [--case all|mix|memory|tasks|overhead] [--items N] [--tasks N] [--rounds N] [--repeat N] [--max-width N] [--min-chunk N] [--stats]\n");
 }
 
 static int parse_options(int argc, char **argv, BenchOptions *options) {
@@ -126,6 +150,7 @@ static int parse_options(int argc, char **argv, BenchOptions *options) {
     options->rounds = THREADBENCH_DEFAULT_ROUNDS;
     options->repeat = THREADBENCH_DEFAULT_REPEAT;
     options->max_width = THREADBENCH_DEFAULT_MAX_WIDTH;
+    options->show_stats = 0;
     options->case_name = "all";
     for (index = 1; index < argc; ++index) {
         const char *arg = argv[index];
@@ -134,6 +159,10 @@ static int parse_options(int argc, char **argv, BenchOptions *options) {
         if (text_equals(arg, "--help") || text_equals(arg, "-h")) {
             write_usage(argc > 0 ? argv[0] : "threadbench");
             return 1;
+        }
+        if (text_equals(arg, "--stats")) {
+            options->show_stats = 1;
+            continue;
         }
         if (index + 1 >= argc) {
             return -1;
@@ -165,7 +194,8 @@ static int parse_options(int argc, char **argv, BenchOptions *options) {
 
 static THREADBENCH_NOINLINE int mix_body(size_t begin, size_t end, unsigned int worker_index, void *arg) {
     RangeState *state = (RangeState *)arg;
-    unsigned long long acc = state->slots[worker_index];
+    unsigned long long *slot = slot_for_worker(state->slots, worker_index);
+    unsigned long long acc = *slot;
     size_t index;
 
     for (index = begin; index < end; ++index) {
@@ -177,13 +207,14 @@ static THREADBENCH_NOINLINE int mix_body(size_t begin, size_t end, unsigned int 
         }
         acc ^= value;
     }
-    state->slots[worker_index] = acc;
+    *slot = acc;
     return 0;
 }
 
 static THREADBENCH_NOINLINE int memory_body(size_t begin, size_t end, unsigned int worker_index, void *arg) {
     RangeState *state = (RangeState *)arg;
-    unsigned long long acc = state->slots[worker_index];
+    unsigned long long *slot = slot_for_worker(state->slots, worker_index);
+    unsigned long long acc = *slot;
     size_t index;
 
     for (index = begin; index < end; ++index) {
@@ -196,14 +227,14 @@ static THREADBENCH_NOINLINE int memory_body(size_t begin, size_t end, unsigned i
         state->buffer[index] = value;
         acc += value;
     }
-    state->slots[worker_index] = acc;
+    *slot = acc;
     return 0;
 }
 
 static THREADBENCH_NOINLINE int overhead_body(size_t begin, size_t end, unsigned int worker_index, void *arg) {
     RangeState *state = (RangeState *)arg;
 
-    state->slots[worker_index] += (unsigned long long)(end - begin);
+    *slot_for_worker(state->slots, worker_index) += (unsigned long long)(end - begin);
     return 0;
 }
 
@@ -215,7 +246,7 @@ static THREADBENCH_NOINLINE int task_body(unsigned int worker_index, void *arg) 
     for (round = 0U; round < task->rounds; ++round) {
         value = mix64(value + (unsigned long long)round);
     }
-    task->slots[worker_index] ^= value;
+    *slot_for_worker(task->slots, worker_index) ^= value;
     return 0;
 }
 
@@ -249,9 +280,17 @@ static size_t units_for_kind(const BenchOptions *options, unsigned int kind) {
 static void clear_slots(unsigned long long *slots) {
     unsigned int index;
 
-    for (index = 0U; index < RT_TASK_POOL_MAX_WORKERS; ++index) {
+    for (index = 0U; index < RT_TASK_POOL_MAX_WORKERS * THREADBENCH_SLOT_STRIDE; ++index) {
         slots[index] = 0ULL;
     }
+}
+
+static unsigned long long *slot_for_worker(unsigned long long *slots, unsigned int worker_index) {
+    return &slots[(worker_index % RT_TASK_POOL_MAX_WORKERS) * THREADBENCH_SLOT_STRIDE];
+}
+
+static const unsigned long long *const_slot_for_worker(const unsigned long long *slots, unsigned int worker_index) {
+    return &slots[(worker_index % RT_TASK_POOL_MAX_WORKERS) * THREADBENCH_SLOT_STRIDE];
 }
 
 static unsigned long long combine_slots(const unsigned long long *slots, unsigned int width) {
@@ -262,14 +301,14 @@ static unsigned long long combine_slots(const unsigned long long *slots, unsigne
         width = RT_TASK_POOL_MAX_WORKERS;
     }
     for (index = 0U; index < width; ++index) {
-        value ^= mix64(slots[index] + (unsigned long long)index);
+        value ^= mix64(*const_slot_for_worker(slots, index) + (unsigned long long)index);
     }
     return value;
 }
 
 static int run_range_case(RtTaskPool *pool, const BenchOptions *options, unsigned int kind, unsigned long long *checksum_out) {
     RangeState state;
-    unsigned long long slots[RT_TASK_POOL_MAX_WORKERS];
+    unsigned long long slots[RT_TASK_POOL_MAX_WORKERS * THREADBENCH_SLOT_STRIDE];
     int result;
 
     clear_slots(slots);
@@ -295,7 +334,7 @@ static int run_range_case(RtTaskPool *pool, const BenchOptions *options, unsigne
 static int run_task_case(RtTaskPool *pool, const BenchOptions *options, unsigned long long *checksum_out) {
     RtTaskGroup group;
     TaskArg *tasks;
-    unsigned long long slots[RT_TASK_POOL_MAX_WORKERS];
+    unsigned long long slots[RT_TASK_POOL_MAX_WORKERS * THREADBENCH_SLOT_STRIDE];
     size_t index;
     int result;
 
@@ -334,37 +373,151 @@ static int run_case_once(RtTaskPool *pool, const BenchOptions *options, unsigned
 static BenchResult run_case_width(const BenchOptions *options, unsigned int kind, unsigned int requested_width) {
     BenchResult result;
     RtTaskPool pool;
+    unsigned long long *samples;
     unsigned int repeat;
+    unsigned int sample_count = 0U;
 
-    result.best_ns = 0ULL;
+    result.min_ns = 0ULL;
+    result.median_ns = 0ULL;
+    result.p90_ns = 0ULL;
+    result.max_ns = 0ULL;
     result.checksum = 0ULL;
+    rt_memset(&result.stats, 0, sizeof(result.stats));
     result.effective_width = 1U;
     result.error = 0;
+    samples = (unsigned long long *)rt_malloc_array(options->repeat, sizeof(samples[0]));
+    if (samples == 0) {
+        result.error = -1;
+        return result;
+    }
     if (rt_task_pool_init(&pool, requested_width) != 0) {
         rt_task_pool_destroy(&pool);
         if (rt_task_pool_init(&pool, 1U) != 0) {
             result.error = -1;
+            rt_free(samples);
             return result;
         }
     }
     result.effective_width = rt_task_pool_width(&pool);
     for (repeat = 0U; repeat < options->repeat; ++repeat) {
         unsigned long long checksum = 0ULL;
+        RtTaskPoolStats stats;
         unsigned long long start = platform_get_monotonic_time_ns();
         unsigned long long elapsed;
 
+        rt_task_pool_reset_stats(&pool);
         if (run_case_once(&pool, options, kind, &checksum) != 0) {
             result.error = -1;
             break;
         }
         elapsed = platform_get_monotonic_time_ns() - start;
-        if (result.best_ns == 0ULL || elapsed < result.best_ns) {
-            result.best_ns = elapsed;
+        rt_task_pool_get_stats(&pool, &stats);
+        samples[sample_count++] = elapsed;
+        if (result.min_ns == 0ULL || elapsed < result.min_ns) {
+            result.min_ns = elapsed;
+            result.stats = stats;
         }
         result.checksum ^= checksum + (unsigned long long)repeat;
     }
     rt_task_pool_destroy(&pool);
+    if (result.error == 0 && sample_count != 0U) {
+        unsigned int p90_index;
+
+        sort_u64(samples, sample_count);
+        result.min_ns = samples[0];
+        result.median_ns = samples[sample_count / 2U];
+        p90_index = ((sample_count * 9U) + 9U) / 10U;
+        if (p90_index == 0U) {
+            p90_index = 1U;
+        }
+        p90_index -= 1U;
+        if (p90_index >= sample_count) {
+            p90_index = sample_count - 1U;
+        }
+        result.p90_ns = samples[p90_index];
+        result.max_ns = samples[sample_count - 1U];
+    }
+    rt_free(samples);
     return result;
+}
+
+static void write_stats_field(const char *name, unsigned long long value) {
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, name);
+    rt_write_char(1, '=');
+    rt_write_uint(1, value);
+}
+
+static unsigned int stats_active_workers(const RtTaskPoolStats *stats, unsigned int fallback_width) {
+    if (stats->last_active_workers != 0U) {
+        return stats->last_active_workers;
+    }
+    return fallback_width == 0U ? 1U : fallback_width;
+}
+
+static void write_worker_min_max(const char *prefix, const unsigned long long *values, unsigned int active_workers) {
+    unsigned long long min_value = 0ULL;
+    unsigned long long max_value = 0ULL;
+    unsigned long long total = 0ULL;
+    unsigned int index;
+
+    if (active_workers == 0U || active_workers > RT_TASK_POOL_MAX_WORKERS) {
+        active_workers = RT_TASK_POOL_MAX_WORKERS;
+    }
+    for (index = 0U; index < active_workers; ++index) {
+        unsigned long long value = values[index];
+
+        if (index == 0U || value < min_value) {
+            min_value = value;
+        }
+        if (index == 0U || value > max_value) {
+            max_value = value;
+        }
+        total += value;
+    }
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, prefix);
+    rt_write_cstr(1, "_total=");
+    rt_write_uint(1, total);
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, prefix);
+    rt_write_cstr(1, "_min=");
+    rt_write_uint(1, min_value);
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, prefix);
+    rt_write_cstr(1, "_max=");
+    rt_write_uint(1, max_value);
+}
+
+static void write_result_stats(const char *name, unsigned int requested_width, const BenchResult *result) {
+    const RtTaskPoolStats *stats = &result->stats;
+    unsigned int active_workers = stats_active_workers(stats, result->effective_width);
+
+    rt_write_cstr(1, "# stats case=");
+    rt_write_cstr(1, name);
+    write_stats_field("requested_width", requested_width);
+    write_stats_field("effective_width", result->effective_width);
+    write_stats_field("active_workers", active_workers);
+    write_stats_field("dispatches", stats->dispatches);
+    write_stats_field("parallel_dispatches", stats->parallel_dispatches);
+    write_stats_field("group_dispatches", stats->group_dispatches);
+    write_stats_field("serial_parallel", stats->serial_parallel_calls);
+    write_stats_field("serial_group", stats->serial_group_calls);
+    write_stats_field("chunk_attempts", stats->chunk_claim_attempts);
+    write_stats_field("chunks", stats->chunks_claimed);
+    write_stats_field("group_batches", stats->group_batches_claimed);
+    write_stats_field("group_tasks", stats->group_tasks_claimed);
+    write_stats_field("worker_waits", stats->worker_waits);
+    write_stats_field("worker_wakes", stats->worker_wakes);
+    write_stats_field("join_waits", stats->join_waits);
+    write_stats_field("worker_completions", stats->worker_completions);
+    write_stats_field("count", (unsigned long long)stats->last_count);
+    write_stats_field("requested_min_chunk", (unsigned long long)stats->last_requested_min_chunk);
+    write_stats_field("effective_min_chunk", (unsigned long long)stats->last_effective_min_chunk);
+    write_stats_field("group_batch_size", (unsigned long long)stats->last_group_batch_size);
+    write_worker_min_max("worker_chunks", stats->worker_chunks, active_workers);
+    write_worker_min_max("worker_group_tasks", stats->worker_group_tasks, active_workers);
+    rt_write_char(1, '\n');
 }
 
 static void write_header(const BenchOptions *options) {
@@ -385,14 +538,32 @@ static void write_header(const BenchOptions *options) {
     rt_write_cstr(1, " min_chunk=");
     rt_write_uint(1, options->min_chunk);
     rt_write_char(1, '\n');
-    rt_write_line(1, "case,requested_width,effective_width,units,min_chunk,best_ns,ns_per_unit,units_per_sec,speedup,checksum");
+    rt_write_line(1, "case,requested_width,effective_width,active_workers,units,requested_min_chunk,effective_min_chunk,min_ns,median_ns,p90_ns,max_ns,ns_per_unit,units_per_sec,speedup,checksum");
+}
+
+static unsigned int result_active_workers(const BenchResult *result) {
+    if (result->stats.last_active_workers != 0U) {
+        return result->stats.last_active_workers;
+    }
+    return result->effective_width == 0U ? 1U : result->effective_width;
+}
+
+static size_t result_effective_min_chunk(const BenchResult *result, size_t requested_min_chunk) {
+    if (result->stats.last_group_batch_size != 0U) {
+        return result->stats.last_group_batch_size;
+    }
+    if (result->stats.last_effective_min_chunk != 0U) {
+        return result->stats.last_effective_min_chunk;
+    }
+    return requested_min_chunk;
 }
 
 static void write_result_row(const char *name, unsigned int requested_width, size_t units, size_t min_chunk, const BenchResult *result, unsigned long long baseline_ns) {
     unsigned long long speedup_x100 = 0ULL;
+    unsigned long long timing_ns = result->median_ns != 0ULL ? result->median_ns : result->min_ns;
 
-    if (result->best_ns != 0ULL) {
-        speedup_x100 = (baseline_ns * 100ULL) / result->best_ns;
+    if (timing_ns != 0ULL) {
+        speedup_x100 = (baseline_ns * 100ULL) / timing_ns;
     }
     rt_write_cstr(1, name);
     rt_write_char(1, ',');
@@ -400,15 +571,25 @@ static void write_result_row(const char *name, unsigned int requested_width, siz
     rt_write_char(1, ',');
     rt_write_uint(1, result->effective_width);
     rt_write_char(1, ',');
+    rt_write_uint(1, result_active_workers(result));
+    rt_write_char(1, ',');
     rt_write_uint(1, (unsigned long long)units);
     rt_write_char(1, ',');
     rt_write_uint(1, (unsigned long long)min_chunk);
     rt_write_char(1, ',');
-    rt_write_uint(1, result->best_ns);
+    rt_write_uint(1, (unsigned long long)result_effective_min_chunk(result, min_chunk));
     rt_write_char(1, ',');
-    write_decimal_x100(ns_per_unit_x100(units, result->best_ns));
+    rt_write_uint(1, result->min_ns);
     rt_write_char(1, ',');
-    rt_write_uint(1, units_per_second(units, result->best_ns));
+    rt_write_uint(1, result->median_ns);
+    rt_write_char(1, ',');
+    rt_write_uint(1, result->p90_ns);
+    rt_write_char(1, ',');
+    rt_write_uint(1, result->max_ns);
+    rt_write_char(1, ',');
+    write_decimal_x100(ns_per_unit_x100(units, timing_ns));
+    rt_write_char(1, ',');
+    rt_write_uint(1, units_per_second(units, timing_ns));
     rt_write_char(1, ',');
     write_decimal_x100(speedup_x100);
     rt_write_char(1, ',');
@@ -424,22 +605,28 @@ static int run_selected_case(const BenchOptions *options, unsigned int kind) {
     size_t min_chunk = kind == BENCH_KIND_OVERHEAD ? 1U : options->min_chunk;
 
     baseline = run_case_width(options, kind, 1U);
-    if (baseline.error != 0 || baseline.best_ns == 0ULL) {
+    if (baseline.error != 0 || baseline.median_ns == 0ULL) {
         rt_write_cstr(2, "threadbench: benchmark failed: ");
         rt_write_line(2, name);
         return -1;
     }
-    write_result_row(name, 1U, units, min_chunk, &baseline, baseline.best_ns);
+    write_result_row(name, 1U, units, min_chunk, &baseline, baseline.median_ns);
+    if (options->show_stats) {
+        write_result_stats(name, 1U, &baseline);
+    }
     requested_width = 2U;
     while (requested_width <= options->max_width) {
         BenchResult result = run_case_width(options, kind, requested_width);
 
-        if (result.error != 0 || result.best_ns == 0ULL) {
+        if (result.error != 0 || result.median_ns == 0ULL) {
             rt_write_cstr(2, "threadbench: benchmark failed: ");
             rt_write_line(2, name);
             return -1;
         }
-        write_result_row(name, requested_width, units, min_chunk, &result, baseline.best_ns);
+        write_result_row(name, requested_width, units, min_chunk, &result, baseline.median_ns);
+        if (options->show_stats) {
+            write_result_stats(name, requested_width, &result);
+        }
         requested_width *= 2U;
     }
     return 0;
