@@ -4,6 +4,24 @@
 #define RT_TASK_WORK_PARALLEL 1U
 #define RT_TASK_WORK_GROUP 2U
 #define RT_TASK_POOL_CHUNKS_PER_WORKER 8U
+#ifndef RT_TASK_WORKER_SPIN_LIMIT
+#define RT_TASK_WORKER_SPIN_LIMIT 0U
+#endif
+#ifndef RT_TASK_JOIN_SPIN_LIMIT
+#define RT_TASK_JOIN_SPIN_LIMIT 0U
+#endif
+
+#if RT_TASK_WORKER_SPIN_LIMIT > 0U || RT_TASK_JOIN_SPIN_LIMIT > 0U
+static void rt_task_pool_cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("pause" ::: "memory");
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield" ::: "memory");
+#else
+    __asm__ __volatile__("" ::: "memory");
+#endif
+}
+#endif
 
 static void rt_task_pool_clear(RtTaskPool *pool) {
     rt_memset(pool, 0, sizeof(*pool));
@@ -141,7 +159,7 @@ static void rt_task_pool_run_group_worker(RtTaskPool *pool, unsigned int worker_
         rt_task_pool_stat_add(&pool->stats.group_tasks_claimed, (unsigned long long)(end - begin));
         rt_task_pool_stat_add_worker(pool->stats.worker_group_tasks, worker_index, (unsigned long long)(end - begin));
         for (index = begin; index < end; ++index) {
-            rt_task_pool_record_error(pool, group->functions[index](worker_index, group->args[index]));
+            rt_task_pool_record_error(pool, group->tasks[index].function(worker_index, group->tasks[index].arg));
         }
     }
     if (claimed_any != 0U) {
@@ -162,9 +180,9 @@ static void rt_task_pool_run_work(RtTaskPool *pool, unsigned int worker_index) {
 static int rt_task_worker_main(void *arg) {
     RtTaskWorker *worker = (RtTaskWorker *)arg;
     RtTaskPool *pool = worker != 0 ? worker->pool : 0;
-    unsigned int worker_index = worker != 0 ? worker->index : 0U;
     unsigned int observed_generation = 0U;
 
+    (void)worker;
     if (pool == 0) {
         return -1;
     }
@@ -174,6 +192,21 @@ static int rt_task_worker_main(void *arg) {
 
         generation = __atomic_load_n(&pool->generation, __ATOMIC_ACQUIRE);
         while (generation == observed_generation && __atomic_load_n(&pool->stop, __ATOMIC_ACQUIRE) == 0U) {
+#if RT_TASK_WORKER_SPIN_LIMIT > 0U
+            unsigned int spins;
+
+            for (spins = 0U; spins < RT_TASK_WORKER_SPIN_LIMIT; ++spins) {
+                rt_task_pool_cpu_relax();
+                generation = __atomic_load_n(&pool->generation, __ATOMIC_ACQUIRE);
+                if (generation != observed_generation || __atomic_load_n(&pool->stop, __ATOMIC_ACQUIRE) != 0U) {
+                    break;
+                }
+            }
+            rt_task_pool_stat_add(&pool->stats.worker_spin_loops, (unsigned long long)spins);
+            if (generation != observed_generation || __atomic_load_n(&pool->stop, __ATOMIC_ACQUIRE) != 0U) {
+                break;
+            }
+#endif
             rt_task_pool_stat_add(&pool->stats.worker_waits, 1ULL);
             platform_wait_word(&pool->generation, observed_generation);
             generation = __atomic_load_n(&pool->generation, __ATOMIC_ACQUIRE);
@@ -182,14 +215,23 @@ static int rt_task_worker_main(void *arg) {
             break;
         }
         observed_generation = generation;
-        if (worker_index >= __atomic_load_n(&pool->active_workers, __ATOMIC_ACQUIRE)) {
-            continue;
-        }
-        rt_task_pool_run_work(pool, worker_index);
-        rt_task_pool_stat_add(&pool->stats.worker_completions, 1ULL);
-        if (__atomic_fetch_add(&pool->finished_workers, 1U, __ATOMIC_ACQ_REL) + 1U >= pool->active_workers) {
-            rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
-            platform_wake_word_all(&pool->finished_workers);
+        for (;;) {
+            unsigned int participant_index;
+            unsigned int active_workers = __atomic_load_n(&pool->active_workers, __ATOMIC_ACQUIRE);
+
+            participant_index = __atomic_load_n(&pool->claimed_workers, __ATOMIC_ACQUIRE);
+            if (participant_index >= active_workers) {
+                break;
+            }
+            if (__atomic_compare_exchange_n(&pool->claimed_workers, &participant_index, participant_index + 1U, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+                rt_task_pool_run_work(pool, participant_index);
+                rt_task_pool_stat_add(&pool->stats.worker_completions, 1ULL);
+                if (__atomic_fetch_add(&pool->finished_workers, 1U, __ATOMIC_ACQ_REL) + 1U >= active_workers) {
+                    rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
+                    platform_wake_word_all(&pool->finished_workers);
+                }
+                break;
+            }
         }
     }
     return 0;
@@ -306,6 +348,8 @@ void rt_task_pool_reset_stats(RtTaskPool *pool) {
     __atomic_store_n(&pool->stats.dispatch_ns, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.join_ns, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.body_ns, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.worker_spin_loops, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.join_spin_loops, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.task_submit_ns, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.task_execute_ns, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.allocation_count, 0ULL, __ATOMIC_RELAXED);
@@ -387,11 +431,14 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
     if (pool->active_workers == 0U) {
         pool->active_workers = 1U;
     }
+    pool->claimed_workers = 1U;
     pool->finished_workers = 0U;
-    rt_task_pool_stat_add(&pool->stats.workers_woken, (unsigned long long)pool->active_workers);
+    rt_task_pool_stat_add(&pool->stats.workers_woken, pool->active_workers > 1U ? (unsigned long long)(pool->active_workers - 1U) : 0ULL);
     __atomic_fetch_add(&pool->generation, 1U, __ATOMIC_ACQ_REL);
-    rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
-    platform_wake_word_all(&pool->generation);
+    if (pool->active_workers > 1U) {
+        rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
+        platform_wake_word_count(&pool->generation, pool->active_workers - 1U);
+    }
     body_start_ns = rt_task_pool_now_ns();
     rt_task_pool_run_work(pool, 0U);
     body_end_ns = rt_task_pool_now_ns();
@@ -408,6 +455,23 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
         if (expected >= pool->active_workers) {
             break;
         }
+#if RT_TASK_JOIN_SPIN_LIMIT > 0U
+        {
+            unsigned int spins;
+
+        for (spins = 0U; spins < RT_TASK_JOIN_SPIN_LIMIT; ++spins) {
+            rt_task_pool_cpu_relax();
+            expected = __atomic_load_n(&pool->finished_workers, __ATOMIC_ACQUIRE);
+            if (expected >= pool->active_workers) {
+                break;
+            }
+        }
+        rt_task_pool_stat_add(&pool->stats.join_spin_loops, (unsigned long long)spins);
+        if (expected >= pool->active_workers) {
+            break;
+        }
+        }
+    #endif
         rt_task_pool_stat_add(&pool->stats.join_waits, 1ULL);
         platform_wait_word(&pool->finished_workers, expected);
     }
@@ -467,9 +531,33 @@ int rt_task_group_begin(RtTaskPool *pool, RtTaskGroup *group) {
     return 0;
 }
 
+int rt_task_group_reserve(RtTaskGroup *group, size_t capacity) {
+    RtTaskRecord *next_tasks;
+
+    if (group == 0) {
+        return -1;
+    }
+    if (group->submit_error != 0) {
+        return group->submit_error;
+    }
+    if (capacity <= group->capacity) {
+        return 0;
+    }
+    next_tasks = (RtTaskRecord *)rt_realloc_array(group->tasks, capacity, sizeof(group->tasks[0]));
+    if (next_tasks == 0) {
+        group->submit_error = -1;
+        return -1;
+    }
+    group->tasks = next_tasks;
+    group->capacity = capacity;
+    if (group->pool != 0) {
+        rt_task_pool_stat_add(&group->pool->stats.allocation_count, 1ULL);
+        rt_task_pool_stat_add(&group->pool->stats.allocation_bytes, (unsigned long long)(capacity * sizeof(group->tasks[0])));
+    }
+    return 0;
+}
+
 int rt_task_group_submit(RtTaskGroup *group, RtTaskFn fn, void *arg) {
-    RtTaskFn *next_functions;
-    void **next_args;
     size_t next_capacity;
 
     if (group == 0 || fn == 0) {
@@ -480,28 +568,12 @@ int rt_task_group_submit(RtTaskGroup *group, RtTaskFn fn, void *arg) {
     }
     if (group->count >= group->capacity) {
         next_capacity = group->capacity == 0U ? 8U : group->capacity * 2U;
-        next_functions = (RtTaskFn *)rt_realloc_array(group->functions, next_capacity, sizeof(group->functions[0]));
-        next_args = (void **)rt_realloc_array(group->args, next_capacity, sizeof(group->args[0]));
-        if (next_functions == 0 || next_args == 0) {
-            if (next_functions != 0) {
-                group->functions = next_functions;
-            }
-            if (next_args != 0) {
-                group->args = next_args;
-            }
-            group->submit_error = -1;
+        if (rt_task_group_reserve(group, next_capacity) != 0) {
             return -1;
         }
-        group->functions = next_functions;
-        group->args = next_args;
-        group->capacity = next_capacity;
-        if (group->pool != 0) {
-            rt_task_pool_stat_add(&group->pool->stats.allocation_count, 2ULL);
-            rt_task_pool_stat_add(&group->pool->stats.allocation_bytes, (unsigned long long)(next_capacity * (sizeof(group->functions[0]) + sizeof(group->args[0]))));
-        }
     }
-    group->functions[group->count] = fn;
-    group->args[group->count] = arg;
+    group->tasks[group->count].function = fn;
+    group->tasks[group->count].arg = arg;
     group->count += 1U;
     return 0;
 }
@@ -511,7 +583,7 @@ static int rt_task_group_run_serial(RtTaskGroup *group) {
     int first_error = group->submit_error;
 
     for (index = 0U; index < group->count; ++index) {
-        int result = group->functions[index](0U, group->args[index]);
+        int result = group->tasks[index].function(0U, group->tasks[index].arg);
         if (first_error == 0 && result != 0) {
             first_error = result;
         }
@@ -557,8 +629,7 @@ int rt_task_group_wait(RtTaskGroup *group) {
             result = group->submit_error;
         }
     }
-    rt_free(group->functions);
-    rt_free(group->args);
+    rt_free(group->tasks);
     rt_memset(group, 0, sizeof(*group));
     return result;
 }

@@ -14,6 +14,11 @@ typedef int (*RtTaskFn)(unsigned int worker_index, void *arg);
 typedef struct RtTaskGroup RtTaskGroup;
 
 typedef struct {
+    RtTaskFn function;
+    void *arg;
+} RtTaskRecord;
+
+typedef struct {
     unsigned long long dispatches;
     unsigned long long parallel_dispatches;
     unsigned long long group_dispatches;
@@ -33,6 +38,8 @@ typedef struct {
     unsigned long long dispatch_ns;
     unsigned long long join_ns;
     unsigned long long body_ns;
+    unsigned long long worker_spin_loops;
+    unsigned long long join_spin_loops;
     unsigned long long task_submit_ns;
     unsigned long long task_execute_ns;
     unsigned long long allocation_count;
@@ -61,6 +68,7 @@ typedef struct RtTaskPool {
     unsigned int stop;
     unsigned int generation;
     unsigned int active_workers;
+    unsigned int claimed_workers;
     unsigned int finished_workers;
     unsigned int work_kind;
     int first_error;
@@ -77,8 +85,7 @@ typedef struct RtTaskPool {
 
 struct RtTaskGroup {
     RtTaskPool *pool;
-    RtTaskFn *functions;
-    void **args;
+    RtTaskRecord *tasks;
     size_t count;
     size_t capacity;
     int submit_error;
@@ -92,6 +99,7 @@ void rt_task_pool_reset_stats(RtTaskPool *pool);
 void rt_task_pool_get_stats(const RtTaskPool *pool, RtTaskPoolStats *stats_out);
 int rt_parallel_for(RtTaskPool *pool, size_t count, size_t min_chunk, RtParallelBody body, void *arg);
 int rt_task_group_begin(RtTaskPool *pool, RtTaskGroup *group);
+int rt_task_group_reserve(RtTaskGroup *group, size_t capacity);
 int rt_task_group_submit(RtTaskGroup *group, RtTaskFn fn, void *arg);
 int rt_task_group_wait(RtTaskGroup *group);
 

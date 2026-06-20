@@ -62,6 +62,8 @@ typedef struct {
     unsigned long long dispatch_ns;
     unsigned long long join_ns;
     unsigned long long body_ns;
+    unsigned long long worker_spin_loops;
+    unsigned long long join_spin_loops;
     unsigned long long futex_wait_calls;
     unsigned long long futex_wake_calls;
     unsigned long long futex_wait_eagain;
@@ -286,6 +288,8 @@ static void accumulate_stats(StressSummary *summary, const RtTaskPoolStats *stat
     summary->dispatch_ns += stats->dispatch_ns;
     summary->join_ns += stats->join_ns;
     summary->body_ns += stats->body_ns;
+    summary->worker_spin_loops += stats->worker_spin_loops;
+    summary->join_spin_loops += stats->join_spin_loops;
     summary->task_submit_ns += stats->task_submit_ns;
     summary->task_execute_ns += stats->task_execute_ns;
     summary->allocation_count += stats->allocation_count;
@@ -353,6 +357,11 @@ static int run_group_check(RtTaskPool *pool, size_t tasks, unsigned int rounds, 
     clear_slots(counts);
     clear_slots(hashes);
     if (rt_task_group_begin(pool, &group) != 0) {
+        rt_free(task_args);
+        return -1;
+    }
+    if (rt_task_group_reserve(&group, tasks) != 0) {
+        (void)rt_task_group_wait(&group);
         rt_free(task_args);
         return -1;
     }
@@ -447,6 +456,10 @@ static void write_summary(const StressOptions *options, const StressSummary *sum
     rt_write_uint(1, summary->join_ns);
     rt_write_cstr(1, " body_ns=");
     rt_write_uint(1, summary->body_ns);
+    rt_write_cstr(1, " worker_spin_loops=");
+    rt_write_uint(1, summary->worker_spin_loops);
+    rt_write_cstr(1, " join_spin_loops=");
+    rt_write_uint(1, summary->join_spin_loops);
     rt_write_char(1, '\n');
     rt_write_cstr(1, "allocation_count=");
     rt_write_uint(1, summary->allocation_count);

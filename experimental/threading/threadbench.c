@@ -380,6 +380,11 @@ static int run_task_case(RtTaskPool *pool, const BenchOptions *options, unsigned
         rt_free(tasks);
         return -1;
     }
+    if (rt_task_group_reserve(&group, options->tasks) != 0) {
+        (void)rt_task_group_wait(&group);
+        rt_free(tasks);
+        return -1;
+    }
     {
         unsigned long long submit_start_ns = platform_get_monotonic_time_ns();
 
@@ -619,6 +624,8 @@ static void write_result_stats(const char *name, unsigned int requested_width, c
     write_stats_field("dispatch_ns", stats->dispatch_ns);
     write_stats_field("join_ns", stats->join_ns);
     write_stats_field("body_ns", stats->body_ns);
+    write_stats_field("worker_spin_loops", stats->worker_spin_loops);
+    write_stats_field("join_spin_loops", stats->join_spin_loops);
     write_stats_field("pool_init_ns", result->pool_init_ns);
     write_stats_field("pool_destroy_ns", result->pool_destroy_ns);
     write_stats_field("task_submit_ns", stats->task_submit_ns);
@@ -754,6 +761,20 @@ static int run_selected_case(const BenchOptions *options, unsigned int kind) {
             write_result_stats(name, requested_width, &result);
         }
         requested_width *= 2U;
+    }
+    requested_width /= 2U;
+    if (requested_width != options->max_width && options->max_width > 1U) {
+        BenchResult result = run_case_width(options, kind, options->max_width);
+
+        if (result.error != 0 || result.median_ns == 0ULL) {
+            rt_write_cstr(2, "threadbench: benchmark failed: ");
+            rt_write_line(2, name);
+            return -1;
+        }
+        write_result_row(name, options->max_width, units, min_chunk, &result, baseline.median_ns);
+        if (options->show_stats) {
+            write_result_stats(name, options->max_width, &result);
+        }
     }
     return 0;
 }

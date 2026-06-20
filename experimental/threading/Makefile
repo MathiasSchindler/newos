@@ -10,6 +10,9 @@ BUILD_DIR := build
 OBJ_DIR := $(BUILD_DIR)/.obj/$(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),macos-$(TARGET_ARCH),linux-$(TARGET_ARCH))
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
+PROFILE ?= 0
+PROFILE_CFLAGS := $(if $(filter 1 yes true,$(PROFILE)),-finstrument-functions -fno-omit-frame-pointer -fno-inline -g)
+STRIP_LDFLAGS := $(if $(filter 1 yes true,$(PROFILE)),,-Wl,-s)
 
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 MACOS_FREESTANDING_CC ?= $(shell xcrun --find clang 2>/dev/null || echo $(CC))
@@ -23,6 +26,7 @@ LDFLAGS ?= --macho-compact --gc-sections
 TARGET_CC_TARGET_FLAG ?=
 TARGET_BUILTINS_LIB ?=
 TARGET_PLATFORM_C_SOURCES := $(ROOT)/src/platform/macos/freestanding.c $(ROOT)/src/platform/macos/newlinker_runtime.c
+PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/macos/profiler_runtime.c)
 TARGET_PLATFORM_ASM_SOURCES :=
 TARGET_CRT := $(ROOT)/src/platform/macos/newlinker_start.S
 else
@@ -37,11 +41,14 @@ endif
 TARGET_CC_TARGET_FLAG ?= $(shell mkdir -p "$(OBJ_DIR)" && printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o "$(OBJ_DIR)/newos-threading-target-check.o" >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f "$(OBJ_DIR)/newos-threading-target-check.o")
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
 COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -I$(ROOT)/src/shared -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
-LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections -Wl,-s
+LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections $(STRIP_LDFLAGS)
 TARGET_PLATFORM_C_SOURCES := $(ROOT)/src/platform/linux/io.c $(ROOT)/src/platform/linux/time.c $(ROOT)/src/platform/linux/thread.c
+PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/linux/profiler_runtime.c)
 TARGET_PLATFORM_ASM_SOURCES := $(wildcard $(TARGET_ARCH_DIR)/syscall_stubs.S)
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
 endif
+
+COMMON_CFLAGS += $(PROFILE_CFLAGS)
 
 RUNTIME_SOURCES := \
     $(ROOT)/src/shared/runtime/memory.c \
@@ -50,13 +57,13 @@ RUNTIME_SOURCES := \
     $(ROOT)/src/shared/runtime/io.c \
     $(ROOT)/src/shared/runtime/concurrency.c
 
-FREESTANDING_C_SOURCES := $(RUNTIME_SOURCES) $(TARGET_PLATFORM_C_SOURCES)
+FREESTANDING_C_SOURCES := $(RUNTIME_SOURCES) $(TARGET_PLATFORM_C_SOURCES) $(PROFILE_RUNTIME_SOURCE)
 FREESTANDING_ASM_SOURCES := $(TARGET_PLATFORM_ASM_SOURCES) $(TARGET_CRT)
 source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(ROOT)/%,%,$(1))))
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
-.PHONY: all freestanding run report guide stress test clean
+.PHONY: all freestanding run report guide stress profile profile-report test clean
 .SECONDARY:
 
 ifeq ($(AUTO_PARALLEL),1)
@@ -84,6 +91,16 @@ guide: freestanding
 
 stress: freestanding
 	$(BUILD_DIR)/threadstress
+
+profile: clean
+	+$(MAKE) --no-print-directory PROFILE=1 freestanding
+
+profile-report: profile
+	@mkdir -p $(ROOT)/tests/tmp
+	@nm -n $(BUILD_DIR)/threadbench > $(ROOT)/tests/tmp/threadbench-profile.symbols
+	@NEWOS_PROFILE=$(ROOT)/tests/tmp/threadbench-profile.nprof $(BUILD_DIR)/threadbench --case tasks --tasks 65536 --rounds 16 --repeat 1 --max-width 1 --stats > $(ROOT)/tests/tmp/threadbench-profile-run.txt
+	@$(ROOT)/build/freestanding-linux-x86_64/profiler -m $(ROOT)/tests/tmp/threadbench-profile.symbols --sort self -n 25 $(ROOT)/tests/tmp/threadbench-profile.nprof > $(ROOT)/tests/tmp/threadbench-profile-summary.txt
+	@printf '%s\n' 'wrote tests/tmp/threadbench-profile-run.txt and tests/tmp/threadbench-profile-summary.txt'
 
 test: freestanding
 	$(BUILD_DIR)/threadbench --case overhead --items 4096 --repeat 1 --max-width 2 >/dev/null

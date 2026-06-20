@@ -393,6 +393,7 @@ int platform_worker_thread_start(PlatformWorkerThread *thread, PlatformWorkerMai
 int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out);
 void platform_wait_word(volatile unsigned int *word, unsigned int expected);
 void platform_wake_word_one(volatile unsigned int *word);
+void platform_wake_word_count(volatile unsigned int *word, unsigned int count);
 void platform_wake_word_all(volatile unsigned int *word);
 void platform_wait_wake_stats_reset(void);
 void platform_wait_wake_stats_get(PlatformWaitWakeStats *stats_out);

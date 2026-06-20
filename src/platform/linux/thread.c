@@ -127,6 +127,12 @@ void platform_wake_word_one(volatile unsigned int *word) {
     (void)linux_futex_wake((volatile int *)word, 1);
 }
 
+void platform_wake_word_count(volatile unsigned int *word, unsigned int count) {
+    if (count != 0U) {
+        (void)linux_futex_wake((volatile int *)word, (int)count);
+    }
+}
+
 void platform_wake_word_all(volatile unsigned int *word) {
     (void)linux_futex_wake((volatile int *)word, 2147483647);
 }

@@ -470,6 +470,13 @@ void platform_wake_word_one(volatile unsigned int *word) {
     (void)macos_ulock_wake(word, 0);
 }
 
+void platform_wake_word_count(volatile unsigned int *word, unsigned int count) {
+    if (count == 0U) {
+        return;
+    }
+    (void)macos_ulock_wake(word, count == 1U ? 0 : 1);
+}
+
 void platform_wake_word_all(volatile unsigned int *word) {
     (void)macos_ulock_wake(word, 1);
 }

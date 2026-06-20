@@ -389,6 +389,11 @@ void platform_wake_word_one(volatile unsigned int *word) {
     (void)word;
 }
 
+void platform_wake_word_count(volatile unsigned int *word, unsigned int count) {
+    (void)word;
+    (void)count;
+}
+
 void platform_wake_word_all(volatile unsigned int *word) {
     (void)word;
 }
