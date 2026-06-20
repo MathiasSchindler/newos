@@ -237,7 +237,9 @@ static void remember_section(LinkObject *object, uint16_t index) {
 }
 
 static int parse_loaded_object(LinkObject *object, const char *path, unsigned char *file, size_t size, char *error_out, size_t error_size) {
-    uint16_t i;
+    uint16_t section_index;
+    size_t link_section_index;
+    size_t rela_section_index;
 
     rt_memset(object, 0, sizeof(*object));
     rt_copy_string(object->path, sizeof(object->path), path);
@@ -260,12 +262,12 @@ static int parse_loaded_object(LinkObject *object, const char *path, unsigned ch
         return -1;
     }
 
-    for (i = 1; i < object->shnum; ++i) {
-        remember_section(object, i);
+    for (section_index = 1U; section_index < object->shnum; ++section_index) {
+        remember_section(object, section_index);
     }
     if (object->section_count == 0 || object->symtab_index == 0 || object->strtab_index == 0 || object->symtab_entsize < ELF64_SYM_SIZE) {
-        for (i = 1; i < object->shnum; ++i) {
-            if (rt_strncmp(section_name(object, i), ".gnu.lto_", 9) == 0) {
+        for (section_index = 1U; section_index < object->shnum; ++section_index) {
+            if (rt_strncmp(section_name(object, section_index), ".gnu.lto_", 9) == 0) {
                 object->is_lto_ir = 1;
                 set_link_error(error_out, error_size, "GCC LTO IR object; add --lto-cc=gcc to enable transparent prelink", path);
                 return -1;
@@ -274,8 +276,8 @@ static int parse_loaded_object(LinkObject *object, const char *path, unsigned ch
         set_link_error(error_out, error_size, "object is missing required linker sections", path);
         return -1;
     }
-    for (i = 0; i < object->section_count; ++i) {
-        if (object->sections[i].type != SHT_NOBITS && !range_valid(object->sections[i].offset, object->sections[i].size, object->size)) {
+    for (link_section_index = 0U; link_section_index < object->section_count; ++link_section_index) {
+        if (object->sections[link_section_index].type != SHT_NOBITS && !range_valid(object->sections[link_section_index].offset, object->sections[link_section_index].size, object->size)) {
             set_link_error(error_out, error_size, "object section extends past end of file", path);
             return -1;
         }
@@ -285,12 +287,12 @@ static int parse_loaded_object(LinkObject *object, const char *path, unsigned ch
         set_link_error(error_out, error_size, "object section extends past end of file", path);
         return -1;
     }
-    for (i = 0; i < object->rela_section_count; ++i) {
-        if (!range_valid(object->rela_sections[i].offset, object->rela_sections[i].size, object->size)) {
+    for (rela_section_index = 0U; rela_section_index < object->rela_section_count; ++rela_section_index) {
+        if (!range_valid(object->rela_sections[rela_section_index].offset, object->rela_sections[rela_section_index].size, object->size)) {
             set_link_error(error_out, error_size, "object section extends past end of file", path);
             return -1;
         }
-        if (object->rela_sections[i].entsize < ELF64_RELA_SIZE) {
+        if (object->rela_sections[rela_section_index].entsize < ELF64_RELA_SIZE) {
             set_link_error(error_out, error_size, "unsupported relocation entry size", path);
             return -1;
         }

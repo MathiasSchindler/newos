@@ -1921,11 +1921,12 @@ static int posix_dns_encode_name(const char *name, unsigned char *buffer, size_t
 }
 
 static int posix_dns_skip_name(const unsigned char *message, size_t message_length, size_t *offset_io) {
-    size_t offset = *offset_io;
+    size_t offset;
 
     if (message == NULL || offset_io == NULL) {
         return -1;
     }
+    offset = *offset_io;
     while (offset < message_length) {
         unsigned char length = message[offset];
         if (length == 0U) {

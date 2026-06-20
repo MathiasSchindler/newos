@@ -320,7 +320,8 @@ static int nm_file(const char *path) {
     unsigned short shentsize;
     unsigned short shnum;
     unsigned short shstrndx;
-    unsigned short i;
+    unsigned short section_index;
+    size_t symbol_index;
     int want_dynsym = 1;
     int saw_symbols = 0;
 
@@ -373,30 +374,30 @@ static int nm_file(const char *path) {
         tool_write_error("nm", "invalid section table: ", path);
         return 1;
     }
-    for (i = 0U; i < shnum; ++i) {
+    for (section_index = 0U; section_index < shnum; ++section_index) {
         unsigned char raw[64];
-        if (read_region(fd, shoff + ((unsigned long long)i * shentsize), raw, sizeof(raw)) != 0) {
+        if (read_region(fd, shoff + ((unsigned long long)section_index * shentsize), raw, sizeof(raw)) != 0) {
             platform_close(fd);
             return 1;
         }
-        nm_sections[i].name = tool_read_u32_le(raw + 0);
-        nm_sections[i].type = tool_read_u32_le(raw + 4);
-        nm_sections[i].flags = tool_read_u64_le(raw + 8);
-        nm_sections[i].addr = tool_read_u64_le(raw + 16);
-        nm_sections[i].offset = tool_read_u64_le(raw + 24);
-        nm_sections[i].size = tool_read_u64_le(raw + 32);
-        nm_sections[i].link = tool_read_u32_le(raw + 40);
-        nm_sections[i].entsize = tool_read_u64_le(raw + 56);
+        nm_sections[section_index].name = tool_read_u32_le(raw + 0);
+        nm_sections[section_index].type = tool_read_u32_le(raw + 4);
+        nm_sections[section_index].flags = tool_read_u64_le(raw + 8);
+        nm_sections[section_index].addr = tool_read_u64_le(raw + 16);
+        nm_sections[section_index].offset = tool_read_u64_le(raw + 24);
+        nm_sections[section_index].size = tool_read_u64_le(raw + 32);
+        nm_sections[section_index].link = tool_read_u32_le(raw + 40);
+        nm_sections[section_index].entsize = tool_read_u64_le(raw + 56);
     }
-    for (i = 0U; i < shnum; ++i) {
-        if (nm_sections[i].type == ELF_SHT_SYMTAB) {
+    for (section_index = 0U; section_index < shnum; ++section_index) {
+        if (nm_sections[section_index].type == ELF_SHT_SYMTAB) {
             want_dynsym = 0;
             break;
         }
     }
-    for (i = 0U; i < shnum; ++i) {
-        if ((nm_sections[i].type == ELF_SHT_SYMTAB || (want_dynsym && nm_sections[i].type == ELF_SHT_DYNSYM)) && nm_sections[i].link < shnum) {
-            const NmSection *strtab = &nm_sections[nm_sections[i].link];
+    for (section_index = 0U; section_index < shnum; ++section_index) {
+        if ((nm_sections[section_index].type == ELF_SHT_SYMTAB || (want_dynsym && nm_sections[section_index].type == ELF_SHT_DYNSYM)) && nm_sections[section_index].link < shnum) {
+            const NmSection *strtab = &nm_sections[nm_sections[section_index].link];
             size_t read_size = (size_t)(strtab->size < (unsigned long long)sizeof(nm_string_table) ? strtab->size : (unsigned long long)sizeof(nm_string_table));
             if (strtab->type != ELF_SHT_STRTAB || read_region(fd, strtab->offset, (unsigned char *)nm_string_table, read_size) != 0) {
                 continue;
@@ -404,7 +405,7 @@ static int nm_file(const char *path) {
             if (read_size > 0U) {
                 nm_string_table[read_size - 1U] = '\0';
             }
-            if (load_symbols_from_table(fd, &nm_sections[i], nm_string_table, read_size) == 0) {
+            if (load_symbols_from_table(fd, &nm_sections[section_index], nm_string_table, read_size) == 0) {
                 saw_symbols = 1;
             }
         }
@@ -418,22 +419,22 @@ nm_have_symbols:
     if (nm_sort_enabled) {
         rt_sort(nm_symbols, nm_symbol_count, sizeof(nm_symbols[0]), compare_symbols);
     }
-    for (i = 0U; i < nm_symbol_count; ++i) {
+    for (symbol_index = 0U; symbol_index < nm_symbol_count; ++symbol_index) {
         if (nm_json) {
-            if (write_json_symbol(path, &nm_symbols[i]) != 0) {
+            if (write_json_symbol(path, &nm_symbols[symbol_index]) != 0) {
                 return 1;
             }
             continue;
         }
-        if (nm_symbols[i].shndx == ELF_SHN_UNDEF) {
+        if (nm_symbols[symbol_index].shndx == ELF_SHN_UNDEF) {
             rt_write_cstr(1, "                 ");
         } else {
-            write_hex16(nm_symbols[i].value);
+            write_hex16(nm_symbols[symbol_index].value);
             rt_write_char(1, ' ');
         }
-        rt_write_char(1, nm_symbols[i].type);
+        rt_write_char(1, nm_symbols[symbol_index].type);
         rt_write_char(1, ' ');
-        rt_write_line(1, nm_symbols[i].name);
+        rt_write_line(1, nm_symbols[symbol_index].name);
     }
     return 0;
 }

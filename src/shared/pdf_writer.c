@@ -38,15 +38,6 @@ static size_t pdfw_strlen_bytes(const unsigned char *data, size_t size, size_t o
     return length;
 }
 
-static int pdfw_keyword_at(const unsigned char *data, size_t size, size_t offset, const char *text) {
-    size_t length = pdfw_strlen_bytes(data, size, offset, text);
-
-    if (length == 0U) return 0;
-    if (offset != 0U && !pdfw_is_delim(data[offset - 1U])) return 0;
-    if (offset + length < size && !pdfw_is_delim(data[offset + length])) return 0;
-    return 1;
-}
-
 static size_t pdfw_skip_ws(const unsigned char *data, size_t size, size_t offset) {
     while (offset < size) {
         if (pdfw_is_space(data[offset])) {
@@ -95,18 +86,6 @@ static void pdfw_skip_literal(const unsigned char *data, size_t size, size_t *of
         }
     }
     *offset_io = offset;
-}
-
-static size_t pdfw_find_keyword(const unsigned char *data, size_t size, size_t start, size_t end, const char *text) {
-    size_t length = rt_strlen(text);
-    size_t offset;
-
-    if (end > size) end = size;
-    if (length == 0U || start >= end || length > end - start) return size;
-    for (offset = start; offset + length <= end; ++offset) {
-        if (pdfw_keyword_at(data, size, offset, text)) return offset;
-    }
-    return size;
 }
 
 static int pdfw_find_top_key(const unsigned char *data, size_t size, const char *key, size_t *offset_out) {
