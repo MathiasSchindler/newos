@@ -35,7 +35,9 @@ their servers cap clients to 3 per-IP connections and that clients trying to
 evade those limits may be blocked; mirrors may have different limits. Failed or
 interrupted files are resumed with HTTP `Range` requests by default and verified
 against `SHA256SUMS` before being accepted. `--retries N` controls retry count,
-and `--no-resume` forces a fresh download from byte 0.
+and `--no-resume` forces a fresh download from byte 0. Successful verification
+lines and the final completion summary use the shared ANSI color helpers when
+color output is enabled.
 
 ## wp-cite-extract
 

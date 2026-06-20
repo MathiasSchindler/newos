@@ -7,7 +7,7 @@ wp-download - download Wikipedia MediaWiki XML bzip2 snapshots
 ## SYNOPSIS
 
 ```
-wp-download [-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] LANG
+wp-download [-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG
 ```
 
 ## DESCRIPTION
@@ -24,6 +24,11 @@ reported to standard error unless quiet mode is enabled. Progress lines include
 timestamps, `file N/TOTAL` for multi-file snapshots, transferred bytes, average
 speed, file ETA when the response provides `Content-Length`, and total package
 progress/ETA when the directory listing provides file sizes.
+
+On success, the final verification messages and completion summary are colored
+when color output is enabled. The completion summary reports verified files,
+bytes, elapsed time, average download speed, and any resumed, skipped, or retried
+work seen by the main downloader process.
 
 ## OPTIONS
 
@@ -42,6 +47,9 @@ progress/ETA when the directory listing provides file sizes.
   per-IP connection limit.
 - `--no-resume` - ignore any partial output file and restart each selected file
   from byte 0.
+- `--color[=WHEN]` - colorize success messages and the completion summary.
+  `WHEN` is `always`, `auto`, or `never`. Plain `--color` means `always`.
+- `--no-color` - disable colored output.
 
 ## EXAMPLES
 

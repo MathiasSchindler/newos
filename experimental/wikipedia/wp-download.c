@@ -11,6 +11,7 @@
 #define WP_URL_SIZE 2048U
 #define WP_PATH_SIZE 1024U
 #define WP_NAME_SIZE 256U
+#define WP_DATE_SIZE 16U
 #define WP_HASH_HEX_SIZE 65U
 #define WP_MAX_FILES 64U
 #define WP_DEFAULT_TIMEOUT_MS 30000ULL
@@ -30,10 +31,11 @@ typedef struct {
 typedef struct {
     const char *program_name;
     const char *out_dir;
-    const char *date;
+    char date[WP_DATE_SIZE];
     unsigned long long timeout_ms;
     unsigned int retries;
     unsigned int jobs;
+    int color_mode;
     int quiet;
     int resume;
 } WpOptions;
@@ -41,6 +43,8 @@ typedef struct {
 typedef struct {
     char name[WP_NAME_SIZE];
     char expected_hex[WP_HASH_HEX_SIZE];
+    char url[WP_URL_SIZE];
+    char output_path[WP_PATH_SIZE];
     unsigned long long content_length;
     int has_content_length;
 } WpDumpFile;
@@ -61,10 +65,23 @@ typedef struct {
     unsigned long long package_total;
     unsigned long long package_completed;
     unsigned long long package_start_ns;
+    long long package_start_epoch;
     int has_package_total;
     size_t file_index;
     size_t file_count;
 } WpProgressContext;
+
+typedef struct {
+    unsigned long long start_ns;
+    long long start_epoch;
+    long long last_epoch;
+    unsigned long long downloaded_bytes;
+    unsigned long long verified_bytes;
+    unsigned long long resumed_bytes;
+    unsigned int files_verified;
+    unsigned int files_already_verified;
+    unsigned int retries;
+} WpDownloadStats;
 
 typedef struct {
     int pid;
@@ -72,26 +89,113 @@ typedef struct {
 } WpDownloadChild;
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] LANG");
+    tool_write_usage(program_name, "[-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG");
 }
 
-static void write_status_prefix(void) {
-    char timestamp[32];
+static int is_leap_year(long long year) {
+    return (year % 4LL == 0LL && year % 100LL != 0LL) || (year % 400LL == 0LL);
+}
 
-    if (platform_format_time(platform_get_epoch_time(), 1, "%Y-%m-%d %H:%M:%S", timestamp, sizeof(timestamp)) != 0) {
-        rt_copy_string(timestamp, sizeof(timestamp), "0000-00-00 00:00:00");
+static void write_two_digits(int fd, unsigned int value) {
+    rt_write_char(fd, (char)('0' + ((value / 10U) % 10U)));
+    rt_write_char(fd, (char)('0' + (value % 10U)));
+}
+
+static void write_four_digits(int fd, unsigned int value) {
+    rt_write_char(fd, (char)('0' + ((value / 1000U) % 10U)));
+    rt_write_char(fd, (char)('0' + ((value / 100U) % 10U)));
+    rt_write_char(fd, (char)('0' + ((value / 10U) % 10U)));
+    rt_write_char(fd, (char)('0' + (value % 10U)));
+}
+
+static void write_status_prefix_for_epoch(long long epoch) {
+    static const unsigned int month_days[] = { 31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U };
+    unsigned long long seconds;
+    unsigned long long days;
+    unsigned int second;
+    unsigned int minute;
+    unsigned int hour;
+    unsigned int month = 1U;
+    unsigned int day;
+    long long year = 1970LL;
+
+    if (epoch < 0LL) {
+        epoch = 0LL;
     }
-    rt_write_cstr(2, timestamp);
+    seconds = (unsigned long long)epoch;
+    second = (unsigned int)(seconds % 60ULL);
+    seconds /= 60ULL;
+    minute = (unsigned int)(seconds % 60ULL);
+    seconds /= 60ULL;
+    hour = (unsigned int)(seconds % 24ULL);
+    days = seconds / 24ULL;
+
+    while (1) {
+        unsigned int days_in_year = is_leap_year(year) ? 366U : 365U;
+        if (days < (unsigned long long)days_in_year) {
+            break;
+        }
+        days -= (unsigned long long)days_in_year;
+        year += 1LL;
+    }
+    while (month <= 12U) {
+        unsigned int days_in_month = month_days[month - 1U];
+        if (month == 2U && is_leap_year(year)) {
+            days_in_month += 1U;
+        }
+        if (days < (unsigned long long)days_in_month) {
+            break;
+        }
+        days -= (unsigned long long)days_in_month;
+        month += 1U;
+    }
+    day = (unsigned int)days + 1U;
+
+    write_four_digits(2, year >= 0LL && year <= 9999LL ? (unsigned int)year : 9999U);
+    rt_write_char(2, '-');
+    write_two_digits(2, month);
+    rt_write_char(2, '-');
+    write_two_digits(2, day);
+    rt_write_char(2, ' ');
+    write_two_digits(2, hour);
+    rt_write_char(2, ':');
+    write_two_digits(2, minute);
+    rt_write_char(2, ':');
+    write_two_digits(2, second);
     rt_write_char(2, ' ');
 }
 
-static void write_info(const char *message, const char *detail) {
-    write_status_prefix();
-    rt_write_cstr(2, message);
+static void write_status_prefix(void) {
+    write_status_prefix_for_epoch(platform_get_epoch_time());
+}
+
+static void write_info_styled(const char *message, int style, const char *detail) {
+    char detail_copy[WP_PATH_SIZE];
+
     if (detail != 0) {
-        rt_write_cstr(2, detail);
+        rt_copy_string(detail_copy, sizeof(detail_copy), detail);
+    } else {
+        detail_copy[0] = '\0';
+    }
+
+    write_status_prefix();
+    if (style == TOOL_STYLE_PLAIN) {
+        rt_write_cstr(2, message);
+    } else {
+        tool_write_styled(2, tool_get_global_color_mode(), style, message);
+    }
+    if (detail_copy[0] != '\0') {
+        rt_write_cstr(2, detail_copy);
     }
     rt_write_char(2, '\n');
+}
+
+static void write_info(const char *message, const char *detail) {
+    write_info_styled(message, TOOL_STYLE_PLAIN, detail);
+}
+
+static void write_success_info(const char *message, const char *detail) {
+    write_info_styled(message, TOOL_STYLE_BOLD_GREEN, detail);
 }
 
 static int append_cstr_checked(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
@@ -557,6 +661,30 @@ static int is_date_link(const char *name) {
     return 1;
 }
 
+static int copy_snapshot_date(char *date_out, size_t date_size, const char *text) {
+    size_t index;
+
+    if (date_size < 11U || text == 0 || text[0] == '\0') {
+        return -1;
+    }
+    for (index = 0U; index < 10U; ++index) {
+        char ch = text[index];
+        if (index == 4U || index == 7U) {
+            if (ch != '-') {
+                return -1;
+            }
+        } else if (!tool_ascii_is_digit(ch)) {
+            return -1;
+        }
+        date_out[index] = ch;
+    }
+    if (text[10] != '\0') {
+        return -1;
+    }
+    date_out[10] = '\0';
+    return 0;
+}
+
 static int html_name_is_safe(const char *name, size_t length) {
     size_t index;
 
@@ -615,8 +743,7 @@ static int find_latest_date(const char *page, char *date_out, size_t date_size) 
     if (best[0] == '\0') {
         return -1;
     }
-    rt_copy_string(date_out, date_size, best);
-    return 0;
+    return copy_snapshot_date(date_out, date_size, best);
 }
 
 static int list_has_file(const WpDumpList *list, const char *name) {
@@ -849,12 +976,58 @@ static void write_download_start_line(const char *name, size_t file_index, size_
     rt_write_char(2, '\n');
 }
 
+static void write_complete_summary(const WpDownloadStats *stats, const WpProgressContext *progress) {
+    char bytes_text[32];
+    char speed_text[32];
+    unsigned long long now_ns = platform_get_monotonic_time_ns();
+    unsigned long long elapsed_seconds = now_ns > stats->start_ns ? (now_ns - stats->start_ns + 999999999ULL) / 1000000000ULL : 0ULL;
+    unsigned long long elapsed_ms = now_ns > stats->start_ns ? (now_ns - stats->start_ns) / 1000000ULL : 0ULL;
+    unsigned long long average_speed = elapsed_ms > 0ULL ? (stats->downloaded_bytes * 1000ULL) / elapsed_ms : 0ULL;
+    unsigned long long verified_bytes = progress->has_package_total ? progress->package_completed : stats->verified_bytes;
+    long long summary_epoch = stats->last_epoch > 0LL ? stats->last_epoch : stats->start_epoch + (long long)(elapsed_ms / 1000ULL);
+
+    tool_format_size(verified_bytes, 1, bytes_text, sizeof(bytes_text));
+    write_status_prefix_for_epoch(summary_epoch);
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_GREEN, "complete");
+    rt_write_cstr(2, ": verified ");
+    rt_write_uint(2, (unsigned long long)stats->files_verified);
+    rt_write_cstr(2, stats->files_verified == 1U ? " file" : " files");
+    rt_write_cstr(2, ", ");
+    rt_write_cstr(2, bytes_text);
+    rt_write_cstr(2, " in ");
+    write_duration_value(2, elapsed_seconds);
+    if (average_speed > 0ULL) {
+        tool_format_size(average_speed, 1, speed_text, sizeof(speed_text));
+        rt_write_cstr(2, " (");
+        rt_write_cstr(2, speed_text);
+        rt_write_cstr(2, "/s avg)");
+    }
+    if (stats->resumed_bytes > 0ULL) {
+        char resumed_text[32];
+        tool_format_size(stats->resumed_bytes, 1, resumed_text, sizeof(resumed_text));
+        rt_write_cstr(2, ", resumed ");
+        rt_write_cstr(2, resumed_text);
+    }
+    if (stats->files_already_verified > 0U) {
+        rt_write_cstr(2, ", skipped ");
+        rt_write_uint(2, (unsigned long long)stats->files_already_verified);
+        rt_write_cstr(2, " already verified");
+    }
+    if (stats->retries > 0U) {
+        rt_write_cstr(2, ", ");
+        rt_write_uint(2, (unsigned long long)stats->retries);
+        rt_write_cstr(2, stats->retries == 1U ? " retry" : " retries");
+    }
+    rt_write_char(2, '\n');
+}
+
 static void write_progress_line(
     const char *name,
     unsigned long long written,
     int has_total,
     unsigned long long total,
     unsigned long long start_ns,
+    long long start_epoch,
     const WpProgressContext *progress
 ) {
     char written_text[32];
@@ -867,7 +1040,7 @@ static void write_progress_line(
     unsigned long long package_elapsed_ms = now_ns > progress->package_start_ns ? (now_ns - progress->package_start_ns) / 1000000ULL : 0ULL;
     unsigned long long package_bytes_per_second = package_elapsed_ms > 0ULL ? (package_written * 1000ULL) / package_elapsed_ms : 0ULL;
 
-    write_status_prefix();
+    write_status_prefix_for_epoch(start_epoch + (long long)(elapsed_ms / 1000ULL));
     if (progress->file_count > 1U) {
         rt_write_cstr(2, "file ");
         rt_write_uint(2, (unsigned long long)progress->file_index);
@@ -1050,7 +1223,8 @@ static int download_file_attempt(
     const char *expected_hex,
     int has_expected_size,
     unsigned long long expected_size,
-    WpProgressContext *progress
+    WpProgressContext *progress,
+    WpDownloadStats *stats
 ) {
     ToolHttpConnection connection;
     WpUrl url;
@@ -1071,15 +1245,20 @@ static int download_file_attempt(
     int append_output = 0;
     unsigned long long next_progress_ns = 0ULL;
     unsigned long long start_ns = 0ULL;
+    long long start_epoch = 0LL;
     int failed = 0;
     int resume_result;
 
     resume_result = prepare_resume_state(output_path, options->resume, has_expected_size, expected_size, expected_hex, &sha, &resume_offset);
     if (resume_result == 1) {
         if (!options->quiet) {
-            write_info("already verified ", name);
+            write_success_info("already verified ", name);
         }
         progress->package_completed += expected_size;
+        stats->verified_bytes += expected_size;
+        stats->files_verified += 1U;
+        stats->files_already_verified += 1U;
+        stats->last_epoch = platform_get_epoch_time();
         return 0;
     }
     if (resume_result != 0) {
@@ -1103,6 +1282,7 @@ static int download_file_attempt(
         }
     }
     start_ns = platform_get_monotonic_time_ns();
+    start_epoch = platform_get_epoch_time();
     next_progress_ns = start_ns;
 
     for (;;) {
@@ -1191,7 +1371,7 @@ static int download_file_attempt(
         if (!options->quiet) {
             unsigned long long now_ns = platform_get_monotonic_time_ns();
             if (now_ns >= next_progress_ns) {
-                write_progress_line(name, written, has_progress_total, progress_total, start_ns, progress);
+                write_progress_line(name, written, has_progress_total, progress_total, start_ns, start_epoch, progress);
                 next_progress_ns = now_ns + WP_PROGRESS_INTERVAL_NS;
             }
         }
@@ -1216,10 +1396,17 @@ static int download_file_attempt(
         return -2;
     }
     if (!options->quiet) {
-        write_progress_line(name, written, has_progress_total, progress_total, start_ns, progress);
-        write_info("verified ", name);
+        write_progress_line(name, written, has_progress_total, progress_total, start_ns, start_epoch, progress);
+        write_success_info("verified ", name);
     }
     progress->package_completed += written;
+    stats->downloaded_bytes += written - resume_offset;
+    stats->verified_bytes += written;
+    if (resume_offset > 0ULL) {
+        stats->resumed_bytes += resume_offset;
+    }
+    stats->files_verified += 1U;
+    stats->last_epoch = platform_get_epoch_time();
     return 0;
 }
 
@@ -1231,13 +1418,14 @@ static int download_file(
     const char *expected_hex,
     int has_expected_size,
     unsigned long long expected_size,
-    WpProgressContext *progress
+    WpProgressContext *progress,
+    WpDownloadStats *stats
 ) {
     unsigned int max_attempts = options->retries + 1U;
     unsigned int attempt;
 
     for (attempt = 1U; attempt <= max_attempts; ++attempt) {
-        int result = download_file_attempt(url_text, output_path, name, options, expected_hex, has_expected_size, expected_size, progress);
+        int result = download_file_attempt(url_text, output_path, name, options, expected_hex, has_expected_size, expected_size, progress, stats);
         if (result == 0 || result == -2) {
             return result;
         }
@@ -1246,6 +1434,7 @@ static int download_file(
             if (!options->quiet) {
                 write_retry_line(name, attempt + 1U, max_attempts);
             }
+            stats->retries += 1U;
             if (delay_ms > 5000ULL) delay_ms = 5000ULL;
             (void)platform_sleep_milliseconds(delay_ms);
         }
@@ -1256,6 +1445,7 @@ static int download_file(
 static int run_download_child(int argc, char **argv) {
     WpOptions options;
     WpProgressContext progress;
+    WpDownloadStats stats;
     unsigned long long timeout_ms;
     unsigned long long package_completed;
     unsigned long long package_total;
@@ -1265,11 +1455,12 @@ static int run_download_child(int argc, char **argv) {
     unsigned int file_count;
     unsigned int quiet;
     unsigned int resume;
+    unsigned int color_mode;
     unsigned int has_package_total;
     unsigned int has_expected_size;
     int result;
 
-    if (argc != 17 ||
+    if (argc != 18 ||
         parse_u64_text(argv[6], &timeout_ms) != 0 ||
         parse_uint_text(argv[7], &quiet) != 0 ||
         parse_uint_text(argv[8], &resume) != 0 ||
@@ -1278,9 +1469,10 @@ static int run_download_child(int argc, char **argv) {
         parse_uint_text(argv[11], &file_count) != 0 ||
         parse_u64_text(argv[12], &package_completed) != 0 ||
         parse_u64_text(argv[13], &package_total) != 0 ||
-        parse_uint_text(argv[14], &has_package_total) != 0 ||
-        parse_uint_text(argv[15], &has_expected_size) != 0 ||
-        parse_u64_text(argv[16], &expected_size) != 0) {
+        parse_uint_text(argv[14], &color_mode) != 0 ||
+        parse_uint_text(argv[15], &has_package_total) != 0 ||
+        parse_uint_text(argv[16], &has_expected_size) != 0 ||
+        parse_u64_text(argv[17], &expected_size) != 0) {
         return 1;
     }
 
@@ -1291,6 +1483,8 @@ static int run_download_child(int argc, char **argv) {
     options.resume = resume != 0U;
     options.retries = retries;
     options.jobs = 1U;
+    options.color_mode = (int)color_mode;
+    tool_set_global_color_mode(options.color_mode);
 
     rt_memset(&progress, 0, sizeof(progress));
     progress.file_index = file_index;
@@ -1299,8 +1493,13 @@ static int run_download_child(int argc, char **argv) {
     progress.package_total = package_total;
     progress.has_package_total = has_package_total != 0U;
     progress.package_start_ns = platform_get_monotonic_time_ns();
+    progress.package_start_epoch = platform_get_epoch_time();
 
-    result = download_file(argv[2], argv[3], argv[4], &options, argv[5], has_expected_size != 0U, expected_size, &progress);
+    rt_memset(&stats, 0, sizeof(stats));
+    stats.start_ns = progress.package_start_ns;
+    stats.start_epoch = progress.package_start_epoch;
+
+    result = download_file(argv[2], argv[3], argv[4], &options, argv[5], has_expected_size != 0U, expected_size, &progress, &stats);
     return result == 0 ? 0 : (result == -2 ? 2 : 1);
 }
 
@@ -1321,10 +1520,11 @@ static int spawn_download_child(
     char file_count_text[32];
     char package_completed_text[4] = "0";
     char package_total_text[4] = "0";
+    char color_mode_text[16];
     char has_package_total_text[4] = "0";
     char has_expected_size_text[4];
     char expected_size_text[32];
-    char *child_argv[18];
+    char *child_argv[19];
 
     rt_unsigned_to_string(options->timeout_ms, timeout_text, sizeof(timeout_text));
     rt_unsigned_to_string((unsigned long long)(options->quiet != 0), quiet_text, sizeof(quiet_text));
@@ -1332,6 +1532,7 @@ static int spawn_download_child(
     rt_unsigned_to_string((unsigned long long)options->retries, retries_text, sizeof(retries_text));
     rt_unsigned_to_string((unsigned long long)file_index, file_index_text, sizeof(file_index_text));
     rt_unsigned_to_string((unsigned long long)file_count, file_count_text, sizeof(file_count_text));
+    rt_unsigned_to_string((unsigned long long)options->color_mode, color_mode_text, sizeof(color_mode_text));
     rt_unsigned_to_string((unsigned long long)(file->has_content_length != 0), has_expected_size_text, sizeof(has_expected_size_text));
     rt_unsigned_to_string(file->content_length, expected_size_text, sizeof(expected_size_text));
 
@@ -1349,10 +1550,11 @@ static int spawn_download_child(
     child_argv[11] = file_count_text;
     child_argv[12] = package_completed_text;
     child_argv[13] = package_total_text;
-    child_argv[14] = has_package_total_text;
-    child_argv[15] = has_expected_size_text;
-    child_argv[16] = expected_size_text;
-    child_argv[17] = 0;
+    child_argv[14] = color_mode_text;
+    child_argv[15] = has_package_total_text;
+    child_argv[16] = has_expected_size_text;
+    child_argv[17] = expected_size_text;
+    child_argv[18] = 0;
 
     return platform_spawn_process(child_argv, -1, -1, 0, 0, 0, pid_out);
 }
@@ -1378,26 +1580,30 @@ static int wait_for_download_child(WpDownloadChild *children, size_t *active_cou
     return status == 0 ? 0 : -1;
 }
 
-static int download_files_parallel(const WpDumpList *list, const char *wiki_name, const char *date, const WpOptions *options) {
+static int prepare_file_targets(WpDumpList *list, const char *wiki_name, const char *date, const WpOptions *options) {
+    size_t index;
+
+    for (index = 0U; index < list->count; ++index) {
+        if (build_url(wiki_name, date, list->files[index].name, list->files[index].url, sizeof(list->files[index].url)) != 0 ||
+            join_output_path(options->out_dir, list->files[index].name, list->files[index].output_path, sizeof(list->files[index].output_path)) != 0) {
+            tool_write_error("wp-download", "path too long for ", list->files[index].name);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int download_files_parallel(const WpDumpList *list, const WpOptions *options) {
     WpDownloadChild children[WP_MAX_PARALLEL_DOWNLOADS];
-    char urls[WP_MAX_PARALLEL_DOWNLOADS][WP_URL_SIZE];
-    char output_paths[WP_MAX_PARALLEL_DOWNLOADS][WP_PATH_SIZE];
     size_t active_count = 0U;
     size_t next_index = 0U;
     int failed = 0;
 
     while (next_index < list->count || active_count > 0U) {
         while (!failed && next_index < list->count && active_count < options->jobs) {
-            size_t slot = active_count;
             int pid;
 
-            if (build_url(wiki_name, date, list->files[next_index].name, urls[slot], sizeof(urls[slot])) != 0 ||
-                join_output_path(options->out_dir, list->files[next_index].name, output_paths[slot], sizeof(output_paths[slot])) != 0) {
-                tool_write_error("wp-download", "path too long for ", list->files[next_index].name);
-                failed = 1;
-                break;
-            }
-            if (spawn_download_child(options, urls[slot], output_paths[slot], &list->files[next_index], next_index + 1U, list->count, &pid) != 0) {
+            if (spawn_download_child(options, list->files[next_index].url, list->files[next_index].output_path, &list->files[next_index], next_index + 1U, list->count, &pid) != 0) {
                 tool_write_error("wp-download", "cannot start download worker for ", list->files[next_index].name);
                 failed = 1;
                 break;
@@ -1417,16 +1623,31 @@ static int download_files_parallel(const WpDumpList *list, const char *wiki_name
     return failed ? -1 : 0;
 }
 
+static void fill_parallel_success_stats(const WpDumpList *list, WpDownloadStats *stats, WpProgressContext *progress) {
+    size_t index;
+
+    stats->files_verified = (unsigned int)list->count;
+    for (index = 0U; index < list->count; ++index) {
+        stats->verified_bytes += list->files[index].content_length;
+        if (list->files[index].has_content_length) {
+            stats->downloaded_bytes += list->files[index].content_length;
+        }
+    }
+    progress->package_completed = stats->verified_bytes;
+    stats->last_epoch = platform_get_epoch_time();
+}
+
 static int run_download(const char *lang, const WpOptions *options) {
     char wiki_name[64];
     char root_url[WP_URL_SIZE];
     char listing_url[WP_URL_SIZE];
     char manifest_url[WP_URL_SIZE];
-    char date[16];
+    char date[WP_DATE_SIZE];
     unsigned char *page = 0;
     size_t page_size = 0U;
     WpDumpList list;
     WpProgressContext progress;
+    WpDownloadStats stats;
     size_t index;
 
     if (!is_valid_lang_code(lang) || make_wiki_name(lang, wiki_name, sizeof(wiki_name)) != 0) {
@@ -1434,8 +1655,11 @@ static int run_download(const char *lang, const WpOptions *options) {
         return 1;
     }
 
-    if (options->date != 0) {
-        rt_copy_string(date, sizeof(date), options->date);
+    if (options->date[0] != '\0') {
+        if (copy_snapshot_date(date, sizeof(date), options->date) != 0) {
+            tool_write_error("wp-download", "invalid snapshot date: ", options->date);
+            return 1;
+        }
     } else {
         if (build_url(wiki_name, 0, 0, root_url, sizeof(root_url)) != 0 || read_http_to_memory(root_url, &page, &page_size, options->timeout_ms) != 0) {
             tool_write_error("wp-download", "cannot read dump index for ", wiki_name);
@@ -1451,11 +1675,12 @@ static int run_download(const char *lang, const WpOptions *options) {
         page = 0;
     }
 
-    if (!options->quiet) {
-        write_info("snapshot ", date);
+    if (build_url(wiki_name, date, 0, listing_url, sizeof(listing_url)) != 0) {
+        tool_write_error("wp-download", "cannot build bzip2 listing URL for ", wiki_name);
+        return 1;
     }
 
-    if (build_url(wiki_name, date, 0, listing_url, sizeof(listing_url)) != 0 || read_http_to_memory(listing_url, &page, &page_size, options->timeout_ms) != 0) {
+    if (read_http_to_memory(listing_url, &page, &page_size, options->timeout_ms) != 0) {
         tool_write_error("wp-download", "cannot read bzip2 listing for ", wiki_name);
         return 1;
     }
@@ -1468,7 +1693,12 @@ static int run_download(const char *lang, const WpOptions *options) {
     rt_free(page);
     page = 0;
 
-    if (build_url(wiki_name, date, "SHA256SUMS", manifest_url, sizeof(manifest_url)) != 0 || read_http_to_memory(manifest_url, &page, &page_size, options->timeout_ms) != 0) {
+    if (build_url(wiki_name, date, "SHA256SUMS", manifest_url, sizeof(manifest_url)) != 0) {
+        tool_write_error("wp-download", "cannot build SHA256SUMS URL for ", wiki_name);
+        return 1;
+    }
+
+    if (read_http_to_memory(manifest_url, &page, &page_size, options->timeout_ms) != 0) {
         tool_write_error("wp-download", "cannot read SHA256SUMS for ", wiki_name);
         return 1;
     }
@@ -1480,6 +1710,14 @@ static int run_download(const char *lang, const WpOptions *options) {
     }
     rt_free(page);
 
+    if (prepare_file_targets(&list, wiki_name, date, options) != 0) {
+        return 1;
+    }
+
+    if (!options->quiet) {
+        write_info("snapshot ", date);
+    }
+
     rt_memset(&progress, 0, sizeof(progress));
     progress.file_count = list.count;
     progress.has_package_total = 1;
@@ -1490,6 +1728,11 @@ static int run_download(const char *lang, const WpOptions *options) {
         progress.package_total += list.files[index].content_length;
     }
     progress.package_start_ns = platform_get_monotonic_time_ns();
+    progress.package_start_epoch = platform_get_epoch_time();
+
+    rt_memset(&stats, 0, sizeof(stats));
+    stats.start_ns = progress.package_start_ns;
+    stats.start_epoch = progress.package_start_epoch;
 
     if (!options->quiet) {
         char package_total_text[32];
@@ -1513,29 +1756,30 @@ static int run_download(const char *lang, const WpOptions *options) {
             rt_write_uint(2, (unsigned long long)options->jobs);
             rt_write_cstr(2, " concurrent downloads\n");
         }
-        return download_files_parallel(&list, wiki_name, date, options) == 0 ? 0 : 1;
+        if (download_files_parallel(&list, options) != 0) {
+            return 1;
+        }
+        fill_parallel_success_stats(&list, &stats, &progress);
+        if (!options->quiet) {
+            write_complete_summary(&stats, &progress);
+        }
+        return 0;
     }
 
     for (index = 0U; index < list.count; ++index) {
-        char file_url[WP_URL_SIZE];
-        char output_path[WP_PATH_SIZE];
         int result;
 
-        if (build_url(wiki_name, date, list.files[index].name, file_url, sizeof(file_url)) != 0 ||
-            join_output_path(options->out_dir, list.files[index].name, output_path, sizeof(output_path)) != 0) {
-            tool_write_error("wp-download", "path too long for ", list.files[index].name);
-            return 1;
-        }
         progress.file_index = index + 1U;
         result = download_file(
-            file_url,
-            output_path,
+            list.files[index].url,
+            list.files[index].output_path,
             list.files[index].name,
             options,
             list.files[index].expected_hex,
             list.files[index].has_content_length,
             list.files[index].content_length,
-            &progress
+            &progress,
+            &stats
         );
         if (result == -2) {
             tool_write_error("wp-download", "sha256 mismatch for ", list.files[index].name);
@@ -1545,6 +1789,9 @@ static int run_download(const char *lang, const WpOptions *options) {
             tool_write_error("wp-download", "download failed for ", list.files[index].name);
             return 1;
         }
+    }
+    if (!options->quiet) {
+        write_complete_summary(&stats, &progress);
     }
     return 0;
 }
@@ -1565,11 +1812,25 @@ int main(int argc, char **argv) {
     options.retries = WP_DEFAULT_RETRIES;
     options.jobs = 1U;
     options.resume = 1;
+    options.color_mode = TOOL_COLOR_AUTO;
+    tool_set_global_color_mode(options.color_mode);
 
-    tool_opt_init(&state, argc, argv, argv[0], "[-q] [-o DIR] [--date YYYY-MM-DD] LANG");
+    tool_opt_init(&state, argc, argv, argv[0], "[-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG");
     while ((parse_result = tool_opt_next(&state)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(state.flag, "-q") == 0 || rt_strcmp(state.flag, "--quiet") == 0) {
             options.quiet = 1;
+        } else if (rt_strcmp(state.flag, "--color") == 0) {
+            options.color_mode = TOOL_COLOR_ALWAYS;
+            tool_set_global_color_mode(options.color_mode);
+        } else if (tool_starts_with(state.flag, "--color=")) {
+            if (tool_parse_color_mode(state.flag + 8, &options.color_mode) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            tool_set_global_color_mode(options.color_mode);
+        } else if (rt_strcmp(state.flag, "--no-color") == 0) {
+            options.color_mode = TOOL_COLOR_NEVER;
+            tool_set_global_color_mode(options.color_mode);
         } else if (rt_strcmp(state.flag, "-o") == 0 || rt_strcmp(state.flag, "--output-dir") == 0) {
             if (tool_opt_require_value(&state) != 0) {
                 return 1;
@@ -1578,12 +1839,15 @@ int main(int argc, char **argv) {
         } else if (tool_starts_with(state.flag, "--output-dir=")) {
             options.out_dir = state.flag + 13;
         } else if (rt_strcmp(state.flag, "--date") == 0) {
-            if (tool_opt_require_value(&state) != 0) {
+            if (tool_opt_require_value(&state) != 0 || copy_snapshot_date(options.date, sizeof(options.date), state.value) != 0) {
+                print_usage(argv[0]);
                 return 1;
             }
-            options.date = state.value;
         } else if (tool_starts_with(state.flag, "--date=")) {
-            options.date = state.flag + 7;
+            if (copy_snapshot_date(options.date, sizeof(options.date), state.flag + 7) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
         } else if (rt_strcmp(state.flag, "-T") == 0 || rt_strcmp(state.flag, "--timeout") == 0) {
             if (tool_opt_require_value(&state) != 0 || tool_parse_duration_ms(state.value, &options.timeout_ms) != 0) {
                 print_usage(argv[0]);
