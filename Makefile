@@ -39,7 +39,7 @@ LINKER_REPORTS ?= 0
 PROFILE_CFLAGS ?= $(if $(filter 1 yes true,$(PROFILE)),-finstrument-functions -fno-omit-frame-pointer -fno-inline)
 PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/platform/linux/profiler_runtime.c)
 MACOS_PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),src/platform/macos/profiler_runtime.c)
-FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS) $(FREESTANDING_OPT_CFLAGS) $(FREESTANDING_SIZE_CFLAGS) $(FREESTANDING_LTO_FLAGS)
+FREESTANDING_CFLAGS ?= -ffreestanding -fno-builtin -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 $(FREESTANDING_STACK_CFLAGS) -fno-unwind-tables -fno-asynchronous-unwind-tables $(FREESTANDING_SECTION_CFLAGS) $(FREESTANDING_PIE_CFLAGS) $(FREESTANDING_OPT_CFLAGS) $(FREESTANDING_SIZE_CFLAGS) $(FREESTANDING_LTO_FLAGS)
 FREESTANDING_CFLAGS += $(PROFILE_CFLAGS)
 FREESTANDING_DEBUG ?= 0
 TARGET_CC_TARGET_FLAG ?= $(shell printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o /tmp/newos-target-check.o >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f /tmp/newos-target-check.o)
@@ -207,7 +207,7 @@ MACOS_FREESTANDING_MAIL_SOURCES = $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(MACOS_FR
 MACOS_FREESTANDING_MAKE_SOURCES = $(MAKE_TOOL_SOURCES)
 MACOS_FREESTANDING_SERVICE_SOURCES = $(SERVICE_TOOL_SOURCES) src/shared/simple_config.c
 MACOS_FREESTANDING_USB_SOURCES := $(USB_SOURCES) $(MACOS_USB_PLATFORM_SOURCES)
-MACOS_FREESTANDING_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections $(MACOS_FREESTANDING_LTO_FLAGS) -Isrc/shared -Isrc/platform/macos -Isrc/arch/aarch64/macos
+MACOS_FREESTANDING_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections $(MACOS_FREESTANDING_LTO_FLAGS) -Isrc/shared -Isrc/platform/macos -Isrc/arch/aarch64/macos
 MACOS_FREESTANDING_LDFLAGS ?= -nodefaultlibs -lSystem -Wl$(COMMA)-dead_strip -Wl$(COMMA)-x -Wl$(COMMA)-no_function_starts -Wl$(COMMA)-adhoc_codesign $(MACOS_FREESTANDING_LTO_FLAGS)
 MACOS_FREESTANDING_NO_LTO_CFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_CFLAGS))
 MACOS_FREESTANDING_NO_LTO_LDFLAGS := $(filter-out $(MACOS_FREESTANDING_LTO_FLAGS),$(MACOS_FREESTANDING_LDFLAGS))

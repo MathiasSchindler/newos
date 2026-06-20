@@ -28,6 +28,9 @@ task_count=${THREADBENCH_TASKS:-65536}
 task_rounds=${THREADBENCH_TASK_ROUNDS:-16}
 overhead_items=${THREADBENCH_OVERHEAD_ITEMS:-262144}
 stress_iterations=${THREADSTRESS_ITERATIONS:-32}
+compress_bytes=${THREADCOMPRESS_BYTES:-33554432}
+compress_chunk=${THREADCOMPRESS_CHUNK:-1048576}
+compress_repeat=${THREADCOMPRESS_REPEAT:-3}
 if [ "$stress_iterations" -lt 8 ] 2>/dev/null; then
     stress_iterations=8
 fi
@@ -69,6 +72,9 @@ done
 
 printf '\n# section=counter-sample\n'
 "$bench" --case mix --items 262144 --rounds 16 --repeat 3 --max-width "$max_width" --min-chunk 1 --stats
+
+printf '\n# section=compression-bzip2-rle\n'
+./build/threadcompress --case mixed --bytes "$compress_bytes" --chunk "$compress_chunk" --repeat "$compress_repeat" --max-width "$max_width" --stats
 
 printf '\n# section=stress-smoke\n'
 "$stress" --iterations "$stress_iterations" --max-width "$max_width" --items 65536 --rounds 4 --quiet

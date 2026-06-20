@@ -1,4 +1,5 @@
 #include "archive_util.h"
+#include "concurrency.h"
 #include "compression/zlib.h"
 #include "platform.h"
 #include "runtime.h"
@@ -15,6 +16,9 @@
 #define ZIP_MODE_TYPE_MASK 0170000U
 #define ZIP_MAX_INPUT_SIZE 268435456ULL
 #define ZIP_DEFLATE_MIN_SIZE 1024ULL
+#define ZIP_PREPARE_BATCH_MAX 64U
+#define ZIP_PREPARE_BATCH_BYTES (64ULL * 1024ULL * 1024ULL)
+#define ZIP_DEFAULT_MAX_WORKERS 8U
 
 typedef struct {
     char name[ZIP_PATH_CAPACITY];
@@ -30,19 +34,57 @@ typedef struct {
 } ZipWrittenEntry;
 
 typedef struct {
+    ZipWrittenEntry entry;
+    char path[ZIP_PATH_CAPACITY];
+    unsigned char *payload;
+    size_t payload_size;
+    int prepared;
+    int status;
+} ZipPendingEntry;
+
+typedef struct {
     ZipWrittenEntry *entries;
     size_t count;
     size_t capacity;
+    ZipPendingEntry *pending;
+    size_t pending_count;
+    size_t pending_capacity;
     int out_fd;
     int recursive;
     int store_only;
     int level;
     int verbose;
     int status;
+    RtTaskPool pool;
+    int pool_initialized;
 } ZipContext;
+
+typedef struct {
+    ZipContext *context;
+    ZipPendingEntry *entries;
+} ZipPrepareBatch;
 
 static void print_usage(void) {
     tool_write_usage("zip", "[-0] [-r] [-v] ARCHIVE FILE ...");
+}
+
+static unsigned int zip_worker_count_from_env(void) {
+    const char *value_text = platform_getenv("NEWOS_ZIP_WORKERS");
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > ZIP_DEFAULT_MAX_WORKERS ? ZIP_DEFAULT_MAX_WORKERS : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return ZIP_DEFAULT_MAX_WORKERS;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
 }
 
 static int write_u16_le(int fd, unsigned int value) {
@@ -143,119 +185,167 @@ static int add_entry_record(ZipContext *context, const ZipWrittenEntry *entry) {
     return 0;
 }
 
-static int stream_stored_file(ZipContext *context, const char *path, ZipWrittenEntry *entry) {
-    unsigned char buffer[ZIP_IO_BUFFER_SIZE];
-    unsigned int crc = 0xffffffffU;
-    unsigned long long size = 0ULL;
-    int input_fd = platform_open_read(path);
+static int add_pending_entry_record(ZipContext *context, const ZipPendingEntry *entry) {
+    ZipPendingEntry *grown;
 
-    if (input_fd < 0) return -1;
-    for (;;) {
-        long bytes = platform_read(input_fd, buffer, sizeof(buffer));
-        if (bytes < 0) {
-            platform_close(input_fd);
-            return -1;
-        }
-        if (bytes == 0) break;
-        crc = archive_crc32_update(crc, buffer, (size_t)bytes);
-        if (rt_write_all(context->out_fd, buffer, (size_t)bytes) != 0) {
-            platform_close(input_fd);
-            return -1;
-        }
-        size += (unsigned long long)bytes;
+    if (context->pending_count >= ZIP_MAX_ENTRIES) {
+        tool_write_error("zip", "too many entries", 0);
+        return -1;
     }
-    platform_close(input_fd);
-    entry->crc32 = archive_crc32_finish(crc);
-    entry->size = size;
-    entry->compressed_size = size;
-    entry->method = ZIP_METHOD_STORE;
+    if (context->pending_count == context->pending_capacity) {
+        size_t next_capacity = context->pending_capacity == 0U ? 32U : context->pending_capacity * 2U;
+        if (next_capacity > ZIP_MAX_ENTRIES) next_capacity = ZIP_MAX_ENTRIES;
+        grown = (ZipPendingEntry *)rt_realloc_array(context->pending, next_capacity, sizeof(*context->pending));
+        if (grown == 0) return -1;
+        context->pending = grown;
+        context->pending_capacity = next_capacity;
+    }
+    context->pending[context->pending_count++] = *entry;
     return 0;
 }
 
-static int write_file_payload(ZipContext *context, const char *path, ZipWrittenEntry *entry) {
+static void release_pending_payload(ZipPendingEntry *pending) {
+    rt_free(pending->payload);
+    pending->payload = 0;
+    pending->payload_size = 0U;
+    pending->prepared = 0;
+}
+
+static int prepare_file_payload(ZipContext *context, ZipPendingEntry *pending) {
     unsigned char *input = 0;
     unsigned char *zlib_data = 0;
     size_t input_size = 0U;
     size_t zlib_size = 0U;
     size_t bound;
-    int result = -1;
 
-    if (context->store_only || entry->size < ZIP_DEFLATE_MIN_SIZE) {
-        return stream_stored_file(context, path, entry);
+    if (pending->entry.is_dir) {
+        pending->prepared = 1;
+        pending->status = 0;
+        return 0;
     }
 
-    if (tool_read_all_input(path, &input, &input_size) != 0) return -1;
-    entry->crc32 = archive_crc32_finish(archive_crc32_update(0xffffffffU, input, input_size));
-    entry->size = (unsigned long long)input_size;
-    entry->compressed_size = entry->size;
-    entry->method = ZIP_METHOD_STORE;
+    release_pending_payload(pending);
+    if (tool_read_all_input(pending->path, &input, &input_size) != 0 || (unsigned long long)input_size > ZIP_MAX_INPUT_SIZE) {
+        rt_free(input);
+        pending->status = -1;
+        return -1;
+    }
+    pending->entry.crc32 = archive_crc32_finish(archive_crc32_update(0xffffffffU, input, input_size));
+    pending->entry.size = (unsigned long long)input_size;
+    pending->entry.compressed_size = pending->entry.size;
+    pending->entry.method = ZIP_METHOD_STORE;
+    pending->payload = input;
+    pending->payload_size = input_size;
+    pending->prepared = 1;
 
-    if (!context->store_only && input_size != 0U) {
+    if (!context->store_only && input_size >= ZIP_DEFLATE_MIN_SIZE) {
         bound = compression_zlib_deflate_bound(input_size);
         if (bound != 0U) {
             zlib_data = (unsigned char *)rt_malloc(bound);
-            if (zlib_data != 0 && compression_zlib_deflate_level(input, input_size, zlib_data, bound, &zlib_size, context->level) == 0 && zlib_size > 6U && zlib_size - 6U < input_size) {
-                entry->method = ZIP_METHOD_DEFLATE;
-                entry->compressed_size = (unsigned long long)(zlib_size - 6U);
-                if (rt_write_all(context->out_fd, zlib_data + 2U, zlib_size - 6U) != 0) goto done;
-                result = 0;
-                goto done;
+            if (zlib_data != 0 &&
+                compression_zlib_deflate_level(input, input_size, zlib_data, bound, &zlib_size, context->level) == 0 &&
+                zlib_size > 6U && zlib_size - 6U < input_size) {
+                size_t raw_deflate_size = zlib_size - 6U;
+                memmove(zlib_data, zlib_data + 2U, raw_deflate_size);
+                pending->entry.method = ZIP_METHOD_DEFLATE;
+                pending->entry.compressed_size = (unsigned long long)raw_deflate_size;
+                pending->payload = zlib_data;
+                pending->payload_size = raw_deflate_size;
+                rt_free(input);
+                pending->status = 0;
+                return 0;
             }
         }
     }
 
-    if (input_size == 0U || rt_write_all(context->out_fd, input, input_size) == 0) result = 0;
-
-done:
     rt_free(zlib_data);
-    rt_free(input);
-    return result;
+    pending->status = 0;
+    return 0;
 }
 
-static int write_stored_entry(ZipContext *context, const char *path, const PlatformDirEntry *info, const char *name) {
-    ZipWrittenEntry entry;
-    long long start_offset;
-    long long data_offset;
-    unsigned char zeros[1] = {0};
+static int prepare_payload_range(size_t begin, size_t end, unsigned int worker_index, void *arg) {
+    ZipPrepareBatch *batch = (ZipPrepareBatch *)arg;
+    size_t index;
 
-    rt_memset(&entry, 0, sizeof(entry));
-    rt_copy_string(entry.name, sizeof(entry.name), name);
-    entry.mode = info->mode;
-    entry.is_dir = info->is_dir;
-    entry.method = ZIP_METHOD_STORE;
-    entry.mod_time = dos_time_from_entry(info);
-    entry.mod_date = dos_date_from_entry(info);
+    (void)worker_index;
+    for (index = begin; index < end; ++index) {
+        if (prepare_file_payload(batch->context, &batch->entries[index]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int prepare_pending_batch(ZipContext *context, size_t begin, size_t end) {
+    ZipPrepareBatch batch;
+
+    if (begin >= end) return 0;
+    batch.context = context;
+    batch.entries = context->pending + begin;
+    if (context->pool_initialized && end - begin > 1U) {
+        return rt_parallel_for(&context->pool, end - begin, 1U, prepare_payload_range, &batch);
+    }
+    return prepare_payload_range(0U, end - begin, 0U, &batch);
+}
+
+static int write_prepared_entry(ZipContext *context, ZipPendingEntry *pending) {
+    ZipWrittenEntry *entry = &pending->entry;
+    long long start_offset;
+
     start_offset = platform_seek(context->out_fd, 0, PLATFORM_SEEK_CUR);
     if (start_offset < 0) return -1;
-    entry.offset = (unsigned long long)start_offset;
+    entry->offset = (unsigned long long)start_offset;
 
-    if (info->is_dir) {
-        entry.crc32 = 0U;
-        entry.size = 0ULL;
-        entry.compressed_size = 0ULL;
-        if (write_local_header(context->out_fd, &entry) != 0) return -1;
+    if (entry->is_dir) {
+        entry->crc32 = 0U;
+        entry->size = 0ULL;
+        entry->compressed_size = 0ULL;
+        if (write_local_header(context->out_fd, entry) != 0) return -1;
     } else {
-        if (entry.offset > 0xffffffffULL || info->size > 0xffffffffULL || info->size > ZIP_MAX_INPUT_SIZE) return -1;
-        entry.size = info->size;
-        entry.compressed_size = info->size;
-        entry.crc32 = 0U;
-        if (write_local_header(context->out_fd, &entry) != 0) return -1;
-        data_offset = platform_seek(context->out_fd, 0, PLATFORM_SEEK_CUR);
-        if (data_offset < 0) return -1;
-        if (write_file_payload(context, path, &entry) != 0) return -1;
-        if (platform_seek(context->out_fd, start_offset, PLATFORM_SEEK_SET) < 0 || write_local_header(context->out_fd, &entry) != 0) return -1;
-        if (platform_seek(context->out_fd, data_offset + (long long)entry.compressed_size, PLATFORM_SEEK_SET) < 0) return -1;
-        (void)zeros;
+        if (!pending->prepared || pending->status != 0 || entry->offset > 0xffffffffULL || entry->size > 0xffffffffULL || entry->compressed_size > 0xffffffffULL) return -1;
+        if (write_local_header(context->out_fd, entry) != 0) return -1;
+        if (pending->payload_size != 0U && rt_write_all(context->out_fd, pending->payload, pending->payload_size) != 0) return -1;
     }
     if (context->verbose) {
-        rt_write_cstr(1, entry.is_dir ? "adding directory: " : "adding: ");
-        rt_write_line(1, entry.name);
+        rt_write_cstr(1, entry->is_dir ? "adding directory: " : "adding: ");
+        rt_write_line(1, entry->name);
     }
-    return add_entry_record(context, &entry);
+    return add_entry_record(context, entry);
 }
 
-static int add_path(ZipContext *context, const char *path, const char *name_override) {
+static unsigned long long pending_memory_estimate(const ZipPendingEntry *pending) {
+    if (pending->entry.is_dir) return 0ULL;
+    return pending->entry.size > ZIP_MAX_INPUT_SIZE ? ZIP_MAX_INPUT_SIZE : pending->entry.size;
+}
+
+static int write_pending_entries(ZipContext *context) {
+    size_t index = 0U;
+
+    while (index < context->pending_count) {
+        size_t begin = index;
+        size_t end = begin;
+        unsigned long long bytes = 0ULL;
+
+        while (end < context->pending_count && end - begin < ZIP_PREPARE_BATCH_MAX) {
+            unsigned long long entry_bytes = pending_memory_estimate(&context->pending[end]);
+            if (end > begin && bytes + entry_bytes > ZIP_PREPARE_BATCH_BYTES) {
+                break;
+            }
+            bytes += entry_bytes;
+            end += 1U;
+        }
+        if (prepare_pending_batch(context, begin, end) != 0) return -1;
+        for (index = begin; index < end; ++index) {
+            if (write_prepared_entry(context, &context->pending[index]) != 0) return -1;
+            release_pending_payload(&context->pending[index]);
+        }
+    }
+    return 0;
+}
+
+static int collect_path(ZipContext *context, const char *path, const char *name_override) {
     PlatformDirEntry info;
+    ZipPendingEntry pending;
     char name[ZIP_PATH_CAPACITY];
 
     if (platform_get_path_info(path, &info) != 0) {
@@ -266,7 +356,25 @@ static int add_path(ZipContext *context, const char *path, const char *name_over
         tool_write_error("zip", "unsafe or too long path: ", path);
         return -1;
     }
-    if (write_stored_entry(context, path, &info, name) != 0) {
+    if (!info.is_dir && (info.size > 0xffffffffULL || info.size > ZIP_MAX_INPUT_SIZE)) {
+        tool_write_error("zip", "file too large: ", path);
+        return -1;
+    }
+    if (rt_strlen(path) + 1U > sizeof(pending.path)) {
+        tool_write_error("zip", "path too long: ", path);
+        return -1;
+    }
+    rt_memset(&pending, 0, sizeof(pending));
+    rt_copy_string(pending.path, sizeof(pending.path), path);
+    rt_copy_string(pending.entry.name, sizeof(pending.entry.name), name);
+    pending.entry.mode = info.mode;
+    pending.entry.is_dir = info.is_dir;
+    pending.entry.method = ZIP_METHOD_STORE;
+    pending.entry.mod_time = dos_time_from_entry(&info);
+    pending.entry.mod_date = dos_date_from_entry(&info);
+    pending.entry.size = info.is_dir ? 0ULL : info.size;
+    pending.entry.compressed_size = pending.entry.size;
+    if (add_pending_entry_record(context, &pending) != 0) {
         tool_write_error("zip", "cannot add: ", path);
         return -1;
     }
@@ -284,7 +392,7 @@ static int add_path(ZipContext *context, const char *path, const char *name_over
             if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) continue;
             if (tool_join_path(path, entries[i].name, child_path, sizeof(child_path)) != 0 ||
                 tool_join_path(name, entries[i].name, child_name, sizeof(child_name)) != 0 ||
-                add_path(context, child_path, child_name) != 0) {
+                collect_path(context, child_path, child_name) != 0) {
                 platform_free_entries(entries, count);
                 return -1;
             }
@@ -386,7 +494,18 @@ int main(int argc, char **argv) {
         return 1;
     }
     for (i = argi; i < argc; ++i) {
-        if (add_path(&context, argv[i], 0) != 0) context.status = 1;
+        if (collect_path(&context, argv[i], 0) != 0) context.status = 1;
+    }
+    if (context.status == 0 && context.pending_count > 1U) {
+        if (rt_task_pool_init(&context.pool, zip_worker_count_from_env()) == 0) {
+            context.pool_initialized = 1;
+        } else {
+            rt_task_pool_destroy(&context.pool);
+        }
+    }
+    if (context.status == 0 && write_pending_entries(&context) != 0) {
+        context.status = 1;
+        tool_write_error("zip", "cannot write archive: ", archive_path);
     }
     if (finish_archive(&context) != 0) {
         context.status = 1;
@@ -394,6 +513,9 @@ int main(int argc, char **argv) {
     }
     if (platform_close(context.out_fd) != 0) context.status = 1;
     if (context.status != 0) (void)platform_remove_file(archive_path);
+    if (context.pool_initialized) rt_task_pool_destroy(&context.pool);
+    for (i = 0; i < (int)context.pending_count; ++i) release_pending_payload(&context.pending[i]);
+    rt_free(context.pending);
     rt_free(context.entries);
     return context.status;
 }

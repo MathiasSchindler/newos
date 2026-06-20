@@ -21,7 +21,7 @@ MACOS_FREESTANDING_TRIPLE ?= arm64-apple-macos11
 ROOT_LINKER ?= $(ROOT)/build/linker
 TARGET_CC := $(MACOS_FREESTANDING_CC)
 TARGET_ARCH_DIR := $(ROOT)/src/arch/$(TARGET_ARCH)/macos
-COMMON_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-common -fno-jump-tables -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -DNEWOS_MACOS_NEWLINKER -DNEWOS_TOOL_DEFAULT_COLOR_NEVER=1 -flto -I$(ROOT)/src/shared -I$(ROOT)/src/platform/macos -I$(TARGET_ARCH_DIR)
+COMMON_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-common -fno-jump-tables -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -DNEWOS_MACOS_NEWLINKER -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_TOOL_DEFAULT_COLOR_NEVER=1 -flto -I$(ROOT)/src/shared -I$(ROOT)/src/platform/macos -I$(TARGET_ARCH_DIR)
 LDFLAGS ?= --macho-compact --gc-sections
 TARGET_CC_TARGET_FLAG ?=
 TARGET_BUILTINS_LIB ?=
@@ -40,7 +40,7 @@ $(error Unsupported TARGET_ARCH '$(TARGET_ARCH)'; expected x86_64 or aarch64)
 endif
 TARGET_CC_TARGET_FLAG ?= $(shell mkdir -p "$(OBJ_DIR)" && printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o "$(OBJ_DIR)/newos-threading-target-check.o" >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f "$(OBJ_DIR)/newos-threading-target-check.o")
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
-COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -I$(ROOT)/src/shared -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
+COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -I$(ROOT)/src/shared -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
 LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections $(STRIP_LDFLAGS)
 TARGET_PLATFORM_C_SOURCES := $(ROOT)/src/platform/linux/io.c $(ROOT)/src/platform/linux/time.c $(ROOT)/src/platform/linux/thread.c
 PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/linux/profiler_runtime.c)
@@ -75,7 +75,7 @@ all:
 	+@$(MAKE) --no-print-directory AUTO_PARALLEL=1 -j$(PARALLEL_JOBS) freestanding
 endif
 
-freestanding: $(BUILD_DIR)/threadbench $(BUILD_DIR)/threadstress
+freestanding: $(BUILD_DIR)/threadbench $(BUILD_DIR)/threadstress $(BUILD_DIR)/threadcompress
 
 run: freestanding
 	$(BUILD_DIR)/threadbench
@@ -92,6 +92,9 @@ guide: freestanding
 stress: freestanding
 	$(BUILD_DIR)/threadstress
 
+compress-bench: freestanding
+	$(BUILD_DIR)/threadcompress --case mixed --bytes $${THREADCOMPRESS_BYTES:-33554432} --chunk $${THREADCOMPRESS_CHUNK:-1048576} --repeat $${THREADCOMPRESS_REPEAT:-3} --max-width $${THREADBENCH_MAX_WIDTH:-24} --stats
+
 profile: clean
 	+$(MAKE) --no-print-directory PROFILE=1 freestanding
 
@@ -105,6 +108,7 @@ profile-report: profile
 test: freestanding
 	$(BUILD_DIR)/threadbench --case overhead --items 4096 --repeat 1 --max-width 2 >/dev/null
 	$(BUILD_DIR)/threadbench --case mix --items 8192 --rounds 2 --repeat 1 --max-width 2 --min-chunk 1 --stats >/dev/null
+	$(BUILD_DIR)/threadcompress --case mixed --bytes 1048576 --chunk 262144 --repeat 1 --max-width 2 --stats >/dev/null
 	$(BUILD_DIR)/threadstress --iterations 8 --max-width 2 --items 4096 --rounds 2 --quiet >/dev/null
 	@tmp="$${TMPDIR:-/tmp}/threading-guide-$$$$.txt"; \
 	{ printf '# section=width-sweep-cpu\n'; $(BUILD_DIR)/threadbench --case mix --items 8192 --rounds 2 --repeat 1 --max-width 2 --min-chunk 1; } > "$$tmp"; \
@@ -122,6 +126,9 @@ $(BUILD_DIR)/threadbench: $(OBJ_DIR)/threadbench.o $(FREESTANDING_OBJECTS) $(ROO
 $(BUILD_DIR)/threadstress: $(OBJ_DIR)/threadstress.o $(FREESTANDING_OBJECTS) $(ROOT_LINKER) | $(BUILD_DIR)
 	$(ROOT_LINKER) --target=mach-o-arm64 $(LDFLAGS) --lto-cc="$(TARGET_CC)" -o $@ $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS))
 
+$(BUILD_DIR)/threadcompress: $(OBJ_DIR)/threadcompress.o $(FREESTANDING_OBJECTS) $(ROOT_LINKER) | $(BUILD_DIR)
+	$(ROOT_LINKER) --target=mach-o-arm64 $(LDFLAGS) --lto-cc="$(TARGET_CC)" -o $@ $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS))
+
 $(ROOT_LINKER):
 	$(MAKE) -C $(ROOT) host
 else
@@ -129,6 +136,9 @@ $(BUILD_DIR)/threadbench: $(OBJ_DIR)/threadbench.o $(FREESTANDING_OBJECTS) | $(B
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 
 $(BUILD_DIR)/threadstress: $(OBJ_DIR)/threadstress.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
+	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
+
+$(BUILD_DIR)/threadcompress: $(OBJ_DIR)/threadcompress.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 endif
 
