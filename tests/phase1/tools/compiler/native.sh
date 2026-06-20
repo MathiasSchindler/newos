@@ -274,6 +274,7 @@ EOF
 compile_and_check_native "$WORK_DIR/signed_indexed_array_compare.c" "$WORK_DIR/signed_indexed_array_compare_bin" "0" "compiler treated an indexed signed int array expression as unsigned"
 
 cat > "$WORK_DIR/shared_crypto_api.c" <<'EOF'
+#include "crypto/aes128_gcm.h"
 #include "crypto/hmac_sha256.h"
 #include "crypto/hkdf_sha256.h"
 #include "crypto/rsa.h"
@@ -281,11 +282,12 @@ cat > "$WORK_DIR/shared_crypto_api.c" <<'EOF'
 int main(void) {
     unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE];
     unsigned char okm[CRYPTO_SHA256_DIGEST_SIZE];
+    CryptoAes256GcmContext gcm;
     CryptoRsaPrivateKey rsa_key;
 
     (void)digest;
     (void)okm;
-    return sizeof(rsa_key) > 0U ? 0 : 1;
+    return sizeof(gcm) > 0U && sizeof(rsa_key) > 0U ? 0 : 1;
 }
 EOF
 

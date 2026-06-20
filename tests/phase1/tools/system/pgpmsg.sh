@@ -215,7 +215,7 @@ assert_file_contains "$WORK_DIR/revoked-blocked.err" 'no matching supported encr
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/revoked-override.dec" || fail "pgpmsg --DANGER-anyway override did not produce decryptable output"
 
 "$PGPKEY_BIN" -k "$WORK_DIR/pubring.pgp" import "$WORK_DIR/public.asc" "$WORK_DIR/recipient-public.asc" > "$WORK_DIR/pubring-import.out"
-"${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/pubring.pgp" -r "$SIGNER_FPR" -r "$RECIPIENT_FPR" --armor -o "$WORK_DIR/plain-multi.pgp.asc" "$WORK_DIR/plain.txt"
+env NEWOS_PGPMSG_WORKERS=4 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/pubring.pgp" -r "$SIGNER_FPR" -r "$RECIPIENT_FPR" --armor -o "$WORK_DIR/plain-multi.pgp.asc" "$WORK_DIR/plain.txt"
 "${TEST_BIN_DIR}/pgpmsg" inspect "$WORK_DIR/plain-multi.pgp.asc" > "$WORK_DIR/encrypted-multi.inspect"
 PKESK_COUNT=$(grep -c 'tag 1 (public-key encrypted session key)' "$WORK_DIR/encrypted-multi.inspect")
 if [ "$PKESK_COUNT" -ne 2 ]; then
@@ -225,3 +225,8 @@ fi
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-multi-signer.dec" || fail "pgpmsg decrypt did not recover a multi-recipient message with the first secret key"
 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/recipient-secret.asc" -o "$WORK_DIR/plain-multi-recipient.dec" "$WORK_DIR/plain-multi.pgp.asc"
 cmp "$WORK_DIR/plain.txt" "$WORK_DIR/plain-multi-recipient.dec" || fail "pgpmsg decrypt did not recover a multi-recipient message with the second secret key"
+
+awk 'BEGIN { for (i = 0; i < 90000; ++i) printf "parallel pgpmsg line %05d abcdefghijklmnopqrstuvwxyz 0123456789\n", i }' > "$WORK_DIR/plain-parallel-v2.txt"
+env NEWOS_PGPMSG_WORKERS=4 "${TEST_BIN_DIR}/pgpmsg" encrypt -k "$WORK_DIR/public.asc" -r "$SIGNER_FPR" -o "$WORK_DIR/plain-parallel-v2.pgp" "$WORK_DIR/plain-parallel-v2.txt"
+env NEWOS_PGPMSG_WORKERS=4 "${TEST_BIN_DIR}/pgpmsg" decrypt -s "$WORK_DIR/secret.asc" -o "$WORK_DIR/plain-parallel-v2.dec" "$WORK_DIR/plain-parallel-v2.pgp"
+cmp "$WORK_DIR/plain-parallel-v2.txt" "$WORK_DIR/plain-parallel-v2.dec" || fail "pgpmsg parallel v2 AEAD round trip did not recover the original plaintext"

@@ -9,6 +9,7 @@
 #include "crypto/sha256.h"
 #include "crypto/sha512.h"
 #include "compression/zlib.h"
+#include "concurrency.h"
 #include "pgp.h"
 #include "platform.h"
 #include "runtime.h"
@@ -36,6 +37,7 @@
 #define PGPMSG_COMPRESSION_BZIP2 3U
 #define PGPMSG_MAX_INFLATED_SIZE (64U * 1024U * 1024U)
 #define PGPMSG_STREAM_CHUNK_SIZE 65536U
+#define PGPMSG_DEFAULT_MAX_WORKERS 8U
 
 typedef struct {
     int json;
@@ -157,6 +159,38 @@ typedef struct {
     int found;
 } PgpMsgPkesk;
 
+typedef struct {
+    const PgpPublicKeyInfo *recipient;
+    const unsigned char *session_key;
+    PgpMsgBuffer packet;
+    int done;
+} PgpMsgPkeskJob;
+
+typedef struct {
+    const CryptoAes256GcmContext *gcm;
+    const unsigned char *iv_prefix;
+    const unsigned char *aad;
+    size_t aad_size;
+    const unsigned char *input;
+    size_t input_offset;
+    size_t input_size;
+    unsigned char *output;
+    unsigned char *tag;
+    unsigned long long chunk_index;
+} PgpMsgGcmEncryptJob;
+
+typedef struct {
+    const CryptoAes256GcmContext *gcm;
+    const unsigned char *iv_prefix;
+    const unsigned char *aad;
+    size_t aad_size;
+    const unsigned char *ciphertext;
+    size_t ciphertext_size;
+    const unsigned char *tag;
+    unsigned char *plain;
+    unsigned long long chunk_index;
+} PgpMsgGcmDecryptJob;
+
 static void print_usage(void) {
     tool_write_usage("pgpmsg", PGPMSG_USAGE);
 }
@@ -172,6 +206,25 @@ static int add_recipient_option(PgpMsgOptions *options, const char *recipient) {
     }
     options->recipients[options->recipient_count++] = recipient;
     return 0;
+}
+
+static unsigned int pgpmsg_worker_count_from_env(void) {
+    const char *value_text = platform_getenv("NEWOS_PGPMSG_WORKERS");
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > PGPMSG_DEFAULT_MAX_WORKERS ? PGPMSG_DEFAULT_MAX_WORKERS : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return PGPMSG_DEFAULT_MAX_WORKERS;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
 }
 
 static int write_output_data(const char *path, const unsigned char *data, size_t size, int armor_signature) {
@@ -1814,6 +1867,126 @@ cleanup:
     return result;
 }
 
+static int pgpmsg_pkesk_task(unsigned int worker_index, void *arg) {
+    PgpMsgPkeskJob *job = (PgpMsgPkeskJob *)arg;
+
+    (void)worker_index;
+    if (build_encrypted_session_key(job->recipient, job->session_key, &job->packet) != 0) {
+        return -1;
+    }
+    job->done = 1;
+    return 0;
+}
+
+static void pgpmsg_free_packet_array(PgpMsgBuffer *packets, size_t count) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        pgp_buffer_free(&packets[index]);
+    }
+}
+
+static int build_encrypted_session_key_packets_serial(const PgpPublicKeyInfo *recipients, size_t recipient_count, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], PgpMsgBuffer *packets) {
+    size_t recipient_index;
+
+    for (recipient_index = 0U; recipient_index < recipient_count; ++recipient_index) {
+        if (build_encrypted_session_key(&recipients[recipient_index], session_key, &packets[recipient_index]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int build_encrypted_session_key_packets(const PgpPublicKeyInfo *recipients, size_t recipient_count, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], PgpMsgBuffer *packets) {
+    RtTaskPool pool;
+    RtTaskGroup group;
+    PgpMsgPkeskJob jobs[PGPMSG_MAX_RECIPIENTS];
+    size_t recipient_index;
+    size_t free_index;
+    int result;
+
+    if (recipient_count < 2U) {
+        return build_encrypted_session_key_packets_serial(recipients, recipient_count, session_key, packets);
+    }
+    rt_memset(&pool, 0, sizeof(pool));
+    rt_memset(jobs, 0, sizeof(jobs));
+    if (rt_task_pool_init(&pool, pgpmsg_worker_count_from_env()) != 0) {
+        rt_task_pool_destroy(&pool);
+        return build_encrypted_session_key_packets_serial(recipients, recipient_count, session_key, packets);
+    }
+    if (rt_task_pool_width(&pool) < 2U) {
+        rt_task_pool_destroy(&pool);
+        return build_encrypted_session_key_packets_serial(recipients, recipient_count, session_key, packets);
+    }
+    result = 0;
+    rt_memset(&group, 0, sizeof(group));
+    if (rt_task_group_begin(&pool, &group) != 0 || rt_task_group_reserve(&group, recipient_count) != 0) {
+        result = -1;
+    }
+    for (recipient_index = 0U; result == 0 && recipient_index < recipient_count; ++recipient_index) {
+        jobs[recipient_index].recipient = &recipients[recipient_index];
+        jobs[recipient_index].session_key = session_key;
+        if (rt_task_group_submit(&group, pgpmsg_pkesk_task, jobs + recipient_index) != 0) {
+            result = -1;
+        }
+    }
+    if (rt_task_group_wait(&group) != 0) {
+        result = -1;
+    }
+    rt_task_pool_destroy(&pool);
+    if (result != 0) {
+        for (recipient_index = 0U; recipient_index < recipient_count; ++recipient_index) {
+            pgp_buffer_free(&jobs[recipient_index].packet);
+        }
+        return build_encrypted_session_key_packets_serial(recipients, recipient_count, session_key, packets);
+    }
+    for (recipient_index = 0U; recipient_index < recipient_count; ++recipient_index) {
+        if (!jobs[recipient_index].done) {
+            for (free_index = 0U; free_index < recipient_count; ++free_index) {
+                pgp_buffer_free(&jobs[free_index].packet);
+            }
+            return build_encrypted_session_key_packets_serial(recipients, recipient_count, session_key, packets);
+        }
+        packets[recipient_index] = jobs[recipient_index].packet;
+        rt_memset(&jobs[recipient_index].packet, 0, sizeof(jobs[recipient_index].packet));
+    }
+    return 0;
+}
+
+static int append_encrypted_session_key_packets(PgpMsgBuffer *message, const PgpPublicKeyInfo *recipients, size_t recipient_count, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE]) {
+    PgpMsgBuffer packets[PGPMSG_MAX_RECIPIENTS];
+    size_t recipient_index;
+    int result = -1;
+
+    rt_memset(packets, 0, sizeof(packets));
+    if (build_encrypted_session_key_packets(recipients, recipient_count, session_key, packets) != 0) goto cleanup;
+    for (recipient_index = 0U; recipient_index < recipient_count; ++recipient_index) {
+        if (pgp_buffer_append_data(message, packets[recipient_index].data, packets[recipient_index].size) != 0) goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    pgpmsg_free_packet_array(packets, recipient_count);
+    return result;
+}
+
+static int write_encrypted_session_key_packets(int fd, const PgpPublicKeyInfo *recipients, size_t recipient_count, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE]) {
+    PgpMsgBuffer packets[PGPMSG_MAX_RECIPIENTS];
+    size_t recipient_index;
+    int result = -1;
+
+    rt_memset(packets, 0, sizeof(packets));
+    if (build_encrypted_session_key_packets(recipients, recipient_count, session_key, packets) != 0) goto cleanup;
+    for (recipient_index = 0U; recipient_index < recipient_count; ++recipient_index) {
+        if (rt_write_all(fd, packets[recipient_index].data, packets[recipient_index].size) != 0) goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    pgpmsg_free_packet_array(packets, recipient_count);
+    return result;
+}
+
 static int build_literal_packet(const unsigned char *input, size_t input_size, PgpMsgBuffer *literal_packet) {
     PgpMsgBuffer body;
     int result;
@@ -2005,54 +2178,171 @@ static void pgpmsg_store_u64_be(unsigned char out[8], unsigned long long value) 
     out[7] = (unsigned char)(value & 0xffU);
 }
 
+static int pgpmsg_gcm_encrypt_task(unsigned int worker_index, void *arg) {
+    PgpMsgGcmEncryptJob *job = (PgpMsgGcmEncryptJob *)arg;
+    unsigned char nonce[CRYPTO_AES256_GCM_IV_SIZE];
+    int result;
+
+    (void)worker_index;
+    pgpmsg_make_v2_seipd_nonce(job->iv_prefix, job->chunk_index, nonce);
+    result = crypto_aes256_gcm_context_encrypt(job->gcm,
+                                               nonce,
+                                               job->aad,
+                                               job->aad_size,
+                                               job->input + job->input_offset,
+                                               job->input_size,
+                                               job->output,
+                                               job->tag);
+    crypto_secure_bzero(nonce, sizeof(nonce));
+    return result;
+}
+
+static int pgpmsg_gcm_decrypt_task(unsigned int worker_index, void *arg) {
+    PgpMsgGcmDecryptJob *job = (PgpMsgGcmDecryptJob *)arg;
+    unsigned char nonce[CRYPTO_AES256_GCM_IV_SIZE];
+    int result;
+
+    (void)worker_index;
+    pgpmsg_make_v2_seipd_nonce(job->iv_prefix, job->chunk_index, nonce);
+    result = crypto_aes256_gcm_context_decrypt(job->gcm,
+                                               nonce,
+                                               job->aad,
+                                               job->aad_size,
+                                               job->ciphertext,
+                                               job->ciphertext_size,
+                                               job->tag,
+                                               job->plain);
+    crypto_secure_bzero(nonce, sizeof(nonce));
+    return result;
+}
+
+static int pgpmsg_run_gcm_tasks(RtTaskFn task_fn, void *jobs, size_t job_count, size_t job_size) {
+    RtTaskPool pool;
+    RtTaskGroup group;
+    size_t job_index;
+    int result;
+
+    if (job_count == 0U) return 0;
+    if (job_count < 2U) return task_fn(0U, jobs);
+    rt_memset(&pool, 0, sizeof(pool));
+    if (rt_task_pool_init(&pool, pgpmsg_worker_count_from_env()) != 0) {
+        rt_task_pool_destroy(&pool);
+        result = 0;
+        for (job_index = 0U; result == 0 && job_index < job_count; ++job_index) {
+            result = task_fn(0U, (unsigned char *)jobs + job_index * job_size);
+        }
+        return result;
+    }
+    if (rt_task_pool_width(&pool) < 2U) {
+        rt_task_pool_destroy(&pool);
+        result = 0;
+        for (job_index = 0U; result == 0 && job_index < job_count; ++job_index) {
+            result = task_fn(0U, (unsigned char *)jobs + job_index * job_size);
+        }
+        return result;
+    }
+    result = 0;
+    rt_memset(&group, 0, sizeof(group));
+    if (rt_task_group_begin(&pool, &group) != 0 || rt_task_group_reserve(&group, job_count) != 0) {
+        result = -1;
+    }
+    for (job_index = 0U; result == 0 && job_index < job_count; ++job_index) {
+        if (rt_task_group_submit(&group, task_fn, (unsigned char *)jobs + job_index * job_size) != 0) {
+            result = -1;
+        }
+    }
+    if (rt_task_group_wait(&group) != 0) {
+        result = -1;
+    }
+    rt_task_pool_destroy(&pool);
+    return result;
+}
+
+static int pgpmsg_encrypt_v2_chunks(PgpMsgBuffer *body,
+                                    const PgpMsgBuffer *payload_packet,
+                                    const CryptoAes256GcmContext *gcm,
+                                    const unsigned char iv_prefix[4],
+                                    const unsigned char aad[5],
+                                    unsigned long long *final_chunk_index_out) {
+    PgpMsgGcmEncryptJob *jobs = 0;
+    size_t chunk_count = payload_packet->size == 0U ? 0U : (payload_packet->size + PGPMSG_V2_SEIPD_CHUNK_SIZE - 1U) / PGPMSG_V2_SEIPD_CHUNK_SIZE;
+    size_t output_offset = body->size;
+    size_t input_offset = 0U;
+    size_t job_index;
+    int result = -1;
+
+    if (chunk_count != 0U) {
+        size_t encrypted_size = payload_packet->size + chunk_count * PGPMSG_AES_GCM_TAG_SIZE;
+
+        jobs = (PgpMsgGcmEncryptJob *)rt_realloc_array(0, chunk_count, sizeof(jobs[0]));
+        if (jobs == 0) return -1;
+        if (pgp_buffer_reserve(body, encrypted_size) != 0) goto cleanup;
+        for (job_index = 0U; job_index < chunk_count; ++job_index) {
+            size_t chunk_size = payload_packet->size - input_offset;
+
+            if (chunk_size > PGPMSG_V2_SEIPD_CHUNK_SIZE) chunk_size = PGPMSG_V2_SEIPD_CHUNK_SIZE;
+            jobs[job_index].gcm = gcm;
+            jobs[job_index].iv_prefix = iv_prefix;
+            jobs[job_index].aad = aad;
+            jobs[job_index].aad_size = 5U;
+            jobs[job_index].input = payload_packet->data;
+            jobs[job_index].input_offset = input_offset;
+            jobs[job_index].input_size = chunk_size;
+            jobs[job_index].output = body->data + output_offset;
+            jobs[job_index].tag = body->data + output_offset + chunk_size;
+            jobs[job_index].chunk_index = (unsigned long long)job_index;
+            input_offset += chunk_size;
+            output_offset += chunk_size + PGPMSG_AES_GCM_TAG_SIZE;
+        }
+        if (pgpmsg_run_gcm_tasks(pgpmsg_gcm_encrypt_task, jobs, chunk_count, sizeof(jobs[0])) != 0) goto cleanup;
+        body->size += encrypted_size;
+    }
+    *final_chunk_index_out = (unsigned long long)chunk_count;
+    result = 0;
+
+cleanup:
+    if (jobs != 0) rt_free(jobs);
+    return result;
+}
+
 static int build_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *input, size_t input_size, unsigned int compression, const PgpMsgSecretKey *signing_secret, PgpMsgBuffer *encrypted_packet) {
     PgpMsgBuffer payload_packet;
     PgpMsgBuffer body;
     unsigned char salt[PGPMSG_V2_SEIPD_SALT_SIZE];
     unsigned char message_key[PGPMSG_AES256_KEY_SIZE];
+    CryptoAes256GcmContext gcm;
     unsigned char iv_prefix[4];
     unsigned char aad[5] = { 0xd2U, 2U, 9U, 3U, PGPMSG_V2_SEIPD_CHUNK_OCTET };
     unsigned char final_aad[13];
     unsigned char nonce[CRYPTO_AES256_GCM_IV_SIZE];
     unsigned char tag[PGPMSG_AES_GCM_TAG_SIZE];
-    size_t offset = 0U;
-    unsigned long long chunk_index = 0ULL;
+    unsigned long long final_chunk_index = 0ULL;
     int result = -1;
 
     rt_memset(&payload_packet, 0, sizeof(payload_packet));
     rt_memset(&body, 0, sizeof(body));
+    rt_memset(&gcm, 0, sizeof(gcm));
     if (platform_random_bytes(salt, sizeof(salt)) != 0) goto cleanup;
     if (build_message_payload(input, input_size, compression, signing_secret, &payload_packet) != 0) goto cleanup;
     if (pgpmsg_derive_v2_seipd_key(session_key, salt, PGPMSG_V2_SEIPD_CHUNK_OCTET, message_key, iv_prefix) != 0) goto cleanup;
+    crypto_aes256_gcm_context_init(&gcm, message_key);
     if (pgp_buffer_append_byte(&body, 2U) != 0 ||
         pgp_buffer_append_byte(&body, 9U) != 0 ||
         pgp_buffer_append_byte(&body, 3U) != 0 ||
         pgp_buffer_append_byte(&body, PGPMSG_V2_SEIPD_CHUNK_OCTET) != 0 ||
         pgp_buffer_append_data(&body, salt, sizeof(salt)) != 0) goto cleanup;
-    while (offset < payload_packet.size) {
-        size_t chunk_size = payload_packet.size - offset;
-        size_t ciphertext_offset;
-
-        if (chunk_size > PGPMSG_V2_SEIPD_CHUNK_SIZE) chunk_size = PGPMSG_V2_SEIPD_CHUNK_SIZE;
-        ciphertext_offset = body.size;
-        if (pgp_buffer_reserve(&body, chunk_size + sizeof(tag)) != 0) goto cleanup;
-        pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
-        if (crypto_aes256_gcm_encrypt(message_key, nonce, aad, sizeof(aad), payload_packet.data + offset, chunk_size, body.data + ciphertext_offset, tag) != 0) goto cleanup;
-        body.size += chunk_size;
-        if (pgp_buffer_append_data(&body, tag, sizeof(tag)) != 0) goto cleanup;
-        offset += chunk_size;
-        chunk_index += 1ULL;
-    }
+    if (pgpmsg_encrypt_v2_chunks(&body, &payload_packet, &gcm, iv_prefix, aad, &final_chunk_index) != 0) goto cleanup;
     memcpy(final_aad, aad, sizeof(aad));
     pgpmsg_store_u64_be(final_aad + sizeof(aad), (unsigned long long)payload_packet.size);
-    pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
-    if (crypto_aes256_gcm_encrypt(message_key, nonce, final_aad, sizeof(final_aad), (const unsigned char *)"", 0U, tag, tag) != 0) goto cleanup;
+    pgpmsg_make_v2_seipd_nonce(iv_prefix, final_chunk_index, nonce);
+    if (crypto_aes256_gcm_context_encrypt(&gcm, nonce, final_aad, sizeof(final_aad), (const unsigned char *)"", 0U, tag, tag) != 0) goto cleanup;
     if (pgp_buffer_append_data(&body, tag, sizeof(tag)) != 0 || pgp_buffer_append_packet(encrypted_packet, 18U, &body) != 0) goto cleanup;
     result = 0;
 
 cleanup:
     pgp_buffer_free(&payload_packet);
     pgp_buffer_free(&body);
+    crypto_aes256_gcm_context_clear(&gcm);
     crypto_secure_bzero(salt, sizeof(salt));
     crypto_secure_bzero(message_key, sizeof(message_key));
     crypto_secure_bzero(iv_prefix, sizeof(iv_prefix));
@@ -2166,20 +2456,10 @@ cleanup:
 static int command_encrypt_stream(const PgpMsgOptions *local_options, const PgpPublicKeyInfo *recipients, const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const char *input_path) {
     int input_fd = input_path != 0 ? platform_open_read(input_path) : 0;
     int output_fd = local_options->output_path != 0 ? platform_open_write(local_options->output_path, 0644U) : 1;
-    size_t recipient_index;
     int result = -1;
 
     if (input_fd < 0 || output_fd < 0) goto cleanup;
-    for (recipient_index = 0U; recipient_index < local_options->recipient_count; ++recipient_index) {
-        PgpMsgBuffer pkesk_packet;
-
-        rt_memset(&pkesk_packet, 0, sizeof(pkesk_packet));
-        if (build_encrypted_session_key(&recipients[recipient_index], session_key, &pkesk_packet) != 0 || rt_write_all(output_fd, pkesk_packet.data, pkesk_packet.size) != 0) {
-            pgp_buffer_free(&pkesk_packet);
-            goto cleanup;
-        }
-        pgp_buffer_free(&pkesk_packet);
-    }
+    if (write_encrypted_session_key_packets(output_fd, recipients, local_options->recipient_count, session_key) != 0) goto cleanup;
     if (write_stream_encrypted_data_packet(output_fd, input_fd, session_key) != 0) goto cleanup;
     result = 0;
 
@@ -2434,8 +2714,70 @@ cleanup:
     return result;
 }
 
+static int pgpmsg_decrypt_v2_chunks(const unsigned char *body,
+                                    size_t offset,
+                                    size_t chunked_size,
+                                    size_t chunk_size,
+                                    const CryptoAes256GcmContext *gcm,
+                                    const unsigned char iv_prefix[4],
+                                    const unsigned char aad[5],
+                                    unsigned char *plain,
+                                    size_t *plain_size_out,
+                                    size_t *final_tag_offset_out,
+                                    unsigned long long *final_chunk_index_out) {
+    PgpMsgGcmDecryptJob *jobs = 0;
+    size_t remaining = chunked_size;
+    size_t job_count = 0U;
+    size_t job_index;
+    size_t plain_offset = 0U;
+    int result = -1;
+
+    while (remaining != 0U) {
+        size_t one_chunk;
+
+        if (remaining <= PGPMSG_AES_GCM_TAG_SIZE) return -1;
+        one_chunk = remaining > chunk_size + PGPMSG_AES_GCM_TAG_SIZE ? chunk_size : remaining - PGPMSG_AES_GCM_TAG_SIZE;
+        remaining -= one_chunk + PGPMSG_AES_GCM_TAG_SIZE;
+        job_count += 1U;
+    }
+    if (job_count == 0U) {
+        *plain_size_out = 0U;
+        *final_tag_offset_out = offset;
+        *final_chunk_index_out = 0ULL;
+        return 0;
+    }
+    jobs = (PgpMsgGcmDecryptJob *)rt_realloc_array(0, job_count, sizeof(jobs[0]));
+    if (jobs == 0) return -1;
+    for (job_index = 0U; job_index < job_count; ++job_index) {
+        size_t one_chunk = chunked_size > chunk_size + PGPMSG_AES_GCM_TAG_SIZE ? chunk_size : chunked_size - PGPMSG_AES_GCM_TAG_SIZE;
+
+        jobs[job_index].gcm = gcm;
+        jobs[job_index].iv_prefix = iv_prefix;
+        jobs[job_index].aad = aad;
+        jobs[job_index].aad_size = 5U;
+        jobs[job_index].ciphertext = body + offset;
+        jobs[job_index].ciphertext_size = one_chunk;
+        jobs[job_index].tag = body + offset + one_chunk;
+        jobs[job_index].plain = plain + plain_offset;
+        jobs[job_index].chunk_index = (unsigned long long)job_index;
+        offset += one_chunk + PGPMSG_AES_GCM_TAG_SIZE;
+        chunked_size -= one_chunk + PGPMSG_AES_GCM_TAG_SIZE;
+        plain_offset += one_chunk;
+    }
+    if (pgpmsg_run_gcm_tasks(pgpmsg_gcm_decrypt_task, jobs, job_count, sizeof(jobs[0])) != 0) goto cleanup;
+    *plain_size_out = plain_offset;
+    *final_tag_offset_out = offset;
+    *final_chunk_index_out = (unsigned long long)job_count;
+    result = 0;
+
+cleanup:
+    rt_free(jobs);
+    return result;
+}
+
 static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPMSG_AES256_KEY_SIZE], const unsigned char *body, size_t body_size, const char *output_path, const char *pubring) {
     unsigned char message_key[PGPMSG_AES256_KEY_SIZE];
+    CryptoAes256GcmContext gcm;
     unsigned char iv_prefix[4];
     unsigned char aad[5];
     unsigned char final_aad[13];
@@ -2449,8 +2791,10 @@ static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPM
     size_t plain_size = 0U;
     size_t chunk_size;
     unsigned int chunk_octet;
-    unsigned long long chunk_index = 0ULL;
+    unsigned long long final_chunk_index = 0ULL;
     int result = -1;
+
+    rt_memset(&gcm, 0, sizeof(gcm));
 
     if (body_size < 4U + PGPMSG_V2_SEIPD_SALT_SIZE + PGPMSG_AES_GCM_TAG_SIZE) return -1;
     if (body[0] != 2U || body[1] != 9U || body[2] != 3U) return -1;
@@ -2463,6 +2807,7 @@ static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPM
     aad[3] = 3U;
     aad[4] = (unsigned char)chunk_octet;
     if (pgpmsg_derive_v2_seipd_key(session_key, body + 4U, chunk_octet, message_key, iv_prefix) != 0) return -1;
+    crypto_aes256_gcm_context_init(&gcm, message_key);
     offset = 4U + PGPMSG_V2_SEIPD_SALT_SIZE;
     encrypted_size = body_size - offset;
     if (encrypted_size < PGPMSG_AES_GCM_TAG_SIZE) goto cleanup;
@@ -2470,26 +2815,11 @@ static int decrypt_encrypted_data_packet_v2(const unsigned char session_key[PGPM
     plain_capacity = chunked_size >= PGPMSG_AES_GCM_TAG_SIZE ? chunked_size - PGPMSG_AES_GCM_TAG_SIZE : 0U;
     plain = (unsigned char *)rt_malloc(plain_capacity == 0U ? 1U : plain_capacity);
     if (plain == 0) goto cleanup;
-    while (chunked_size != 0U) {
-        size_t one_chunk;
-        const unsigned char *ciphertext;
-        const unsigned char *tag;
-
-        if (chunked_size <= PGPMSG_AES_GCM_TAG_SIZE) goto cleanup;
-        one_chunk = chunked_size > chunk_size + PGPMSG_AES_GCM_TAG_SIZE ? chunk_size : chunked_size - PGPMSG_AES_GCM_TAG_SIZE;
-        ciphertext = body + offset;
-        tag = ciphertext + one_chunk;
-        pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
-        if (crypto_aes256_gcm_decrypt(message_key, nonce, aad, sizeof(aad), ciphertext, one_chunk, tag, plain + plain_size) != 0) goto cleanup;
-        plain_size += one_chunk;
-        offset += one_chunk + PGPMSG_AES_GCM_TAG_SIZE;
-        chunked_size -= one_chunk + PGPMSG_AES_GCM_TAG_SIZE;
-        chunk_index += 1ULL;
-    }
+    if (pgpmsg_decrypt_v2_chunks(body, offset, chunked_size, chunk_size, &gcm, iv_prefix, aad, plain, &plain_size, &offset, &final_chunk_index) != 0) goto cleanup;
     memcpy(final_aad, aad, sizeof(aad));
     pgpmsg_store_u64_be(final_aad + sizeof(aad), (unsigned long long)plain_size);
-    pgpmsg_make_v2_seipd_nonce(iv_prefix, chunk_index, nonce);
-    if (crypto_aes256_gcm_decrypt(message_key, nonce, final_aad, sizeof(final_aad), body + offset, 0U, body + offset, empty_out) != 0) goto cleanup;
+    pgpmsg_make_v2_seipd_nonce(iv_prefix, final_chunk_index, nonce);
+    if (crypto_aes256_gcm_context_decrypt(&gcm, nonce, final_aad, sizeof(final_aad), body + offset, 0U, body + offset, empty_out) != 0) goto cleanup;
     if (write_decrypted_payload(output_path, pubring, plain, plain_size) != 0) goto cleanup;
     result = 0;
 
@@ -2498,6 +2828,7 @@ cleanup:
         crypto_secure_bzero(plain, plain_capacity == 0U ? 1U : plain_capacity);
         rt_free(plain);
     }
+    crypto_aes256_gcm_context_clear(&gcm);
     crypto_secure_bzero(message_key, sizeof(message_key));
     crypto_secure_bzero(iv_prefix, sizeof(iv_prefix));
     crypto_secure_bzero(nonce, sizeof(nonce));
@@ -3012,17 +3343,7 @@ static int command_encrypt(int argc, char **argv, int argi, const PgpMsgOptions 
     rt_memset(&message, 0, sizeof(message));
     rt_memset(&encrypted_packet, 0, sizeof(encrypted_packet));
     if (platform_random_bytes(session_key, sizeof(session_key)) != 0) goto cleanup;
-    for (recipient_index = 0U; recipient_index < local_options.recipient_count; ++recipient_index) {
-        PgpMsgBuffer pkesk_packet;
-
-        rt_memset(&pkesk_packet, 0, sizeof(pkesk_packet));
-        if (build_encrypted_session_key(&recipients[recipient_index], session_key, &pkesk_packet) != 0 ||
-            pgp_buffer_append_data(&message, pkesk_packet.data, pkesk_packet.size) != 0) {
-            pgp_buffer_free(&pkesk_packet);
-            goto cleanup;
-        }
-        pgp_buffer_free(&pkesk_packet);
-    }
+    if (append_encrypted_session_key_packets(&message, recipients, local_options.recipient_count, session_key) != 0) goto cleanup;
     if ((recipients[0].version == 6U ? build_encrypted_data_packet_v2(session_key, input, input_size, local_options.compression, have_signing_secret ? &signing_secret : 0, &encrypted_packet) : build_encrypted_data_packet(session_key, input, input_size, local_options.compression, have_signing_secret ? &signing_secret : 0, &encrypted_packet)) != 0 ||
         pgp_buffer_append_data(&message, encrypted_packet.data, encrypted_packet.size) != 0 ||
         write_message_output_data(local_options.output_path, message.data, message.size, local_options.armor) != 0) goto cleanup;
