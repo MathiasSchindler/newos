@@ -262,6 +262,26 @@ static void compression_zstd_fill(unsigned char *dst, unsigned char value, size_
 #endif
 }
 
+static void compression_zstd_copy_match(unsigned char *dst, const unsigned char *match, size_t offset, size_t len) {
+    size_t produced;
+
+    if (len == 0u) {
+        return;
+    }
+    if (len <= offset) {
+        compression_zstd_copy(dst, match, len);
+        return;
+    }
+    compression_zstd_copy(dst, match, offset);
+    produced = offset;
+    while (produced < len) {
+        size_t chunk = produced;
+        if (chunk > len - produced) chunk = len - produced;
+        compression_zstd_copy(dst + produced, dst, chunk);
+        produced += chunk;
+    }
+}
+
 static int compression_zstd_highest_set_bit(unsigned char value) {
     int bit;
 
@@ -1561,7 +1581,6 @@ static CompressionZstdResult compression_zstd_execute_sequence(CompressionZstdFr
                                                size_t match_length) {
     size_t literal_pos;
     uint32_t offset;
-    size_t i;
     CompressionZstdResult result;
 
     literal_pos = *literal_pos_io;
@@ -1606,15 +1625,10 @@ static CompressionZstdResult compression_zstd_execute_sequence(CompressionZstdFr
                                     "match exceeds output buffer");
     }
 
-    if (match_length <= (size_t)offset) {
-        compression_zstd_copy(state->dst + state->dst_pos,
-                      state->dst + state->dst_pos - (size_t)offset,
-                      match_length);
-    } else {
-        for (i = 0u; i < match_length; ++i) {
-            state->dst[state->dst_pos + i] = state->dst[state->dst_pos - (size_t)offset + i];
-        }
-    }
+    compression_zstd_copy_match(state->dst + state->dst_pos,
+                                state->dst + state->dst_pos - (size_t)offset,
+                                (size_t)offset,
+                                match_length);
     state->dst_pos += match_length;
     compression_zstd_update_repeat_offsets(state, offset_value, lit_length, offset);
 
