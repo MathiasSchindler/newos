@@ -15,6 +15,10 @@
 #define WP_MAX_FILES 64U
 #define WP_DEFAULT_TIMEOUT_MS 30000ULL
 #define WP_PROGRESS_INTERVAL_NS 1000000000ULL
+#define WP_DEFAULT_RETRIES 3U
+#define WP_MAX_RETRIES 100U
+#define WP_MAX_PARALLEL_DOWNLOADS 3U
+#define WP_CHILD_MODE "--wp-download-child"
 
 typedef struct {
     int scheme;
@@ -24,10 +28,14 @@ typedef struct {
 } WpUrl;
 
 typedef struct {
+    const char *program_name;
     const char *out_dir;
     const char *date;
     unsigned long long timeout_ms;
+    unsigned int retries;
+    unsigned int jobs;
     int quiet;
+    int resume;
 } WpOptions;
 
 typedef struct {
@@ -58,8 +66,13 @@ typedef struct {
     size_t file_count;
 } WpProgressContext;
 
+typedef struct {
+    int pid;
+    size_t file_index;
+} WpDownloadChild;
+
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-q] [-o DIR] [--date YYYY-MM-DD] LANG");
+    tool_write_usage(program_name, "[-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] LANG");
 }
 
 static void write_status_prefix(void) {
@@ -366,9 +379,10 @@ static int maybe_wait_for_socket(int socket_fd, unsigned long long timeout_ms) {
     return platform_poll_fds(fds, 1U, &ready_index, (int)timeout_ms) > 0 ? 0 : -1;
 }
 
-static int http_request_start(ToolHttpConnection *connection, const WpUrl *url) {
+static int http_request_start(ToolHttpConnection *connection, const WpUrl *url, unsigned long long range_start) {
     char request[2048];
     char port_text[16];
+    char range_text[32];
     size_t length = 0U;
 
     length = tool_buffer_append_cstr(request, sizeof(request), length, "GET ");
@@ -380,21 +394,28 @@ static int http_request_start(ToolHttpConnection *connection, const WpUrl *url) 
         length = tool_buffer_append_char(request, sizeof(request), length, ':');
         length = tool_buffer_append_cstr(request, sizeof(request), length, port_text);
     }
-    length = tool_buffer_append_cstr(request, sizeof(request), length, "\r\nUser-Agent: newos-wp-download/0.1 (+https://github.com/MathiasSchindler/newos/tree/main/experimental/wikipedia)\r\nFrom: mathias.schindler@gmaiil.com\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    length = tool_buffer_append_cstr(request, sizeof(request), length, "\r\nUser-Agent: newos-wp-download/0.1 (+https://github.com/MathiasSchindler/newos/tree/main/experimental/wikipedia)\r\nFrom: mathias.schindler@gmaiil.com\r\nAccept: */*\r\n");
+    if (range_start > 0ULL) {
+        rt_unsigned_to_string(range_start, range_text, sizeof(range_text));
+        length = tool_buffer_append_cstr(request, sizeof(request), length, "Range: bytes=");
+        length = tool_buffer_append_cstr(request, sizeof(request), length, range_text);
+        length = tool_buffer_append_cstr(request, sizeof(request), length, "-\r\n");
+    }
+    length = tool_buffer_append_cstr(request, sizeof(request), length, "Connection: close\r\n\r\n");
     if (rt_strlen(request) != length) {
         return -1;
     }
     return tool_http_connection_write_all(connection, request, length);
 }
 
-static int http_connect_and_request(const char *url_text, ToolHttpConnection *connection, WpUrl *url_out) {
+static int http_connect_and_request(const char *url_text, unsigned long long range_start, ToolHttpConnection *connection, WpUrl *url_out) {
     if (parse_url(url_text, url_out) != 0) {
         return -1;
     }
     if (tool_http_connection_connect(connection, url_out->host, url_out->port, url_out->scheme == WP_SCHEME_HTTPS) != 0) {
         return -1;
     }
-    if (http_request_start(connection, url_out) != 0) {
+    if (http_request_start(connection, url_out, range_start) != 0) {
         tool_http_connection_close(connection);
         return -1;
     }
@@ -416,7 +437,7 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
 
     *data_out = 0;
     *size_out = 0U;
-    if (http_connect_and_request(url_text, &connection, &url) != 0) {
+    if (http_connect_and_request(url_text, 0ULL, &connection, &url) != 0) {
         return -1;
     }
 
@@ -922,7 +943,115 @@ static int hex_digest_matches(const unsigned char digest[CRYPTO_SHA256_DIGEST_SI
     return 1;
 }
 
-static int download_file(const char *url_text, const char *output_path, const char *name, const WpOptions *options, const char *expected_hex, WpProgressContext *progress) {
+static int parse_u64_text(const char *text, unsigned long long *value_out) {
+    return text != 0 && rt_parse_uint(text, value_out) == 0 ? 0 : -1;
+}
+
+static int parse_uint_text(const char *text, unsigned int *value_out) {
+    unsigned long long value;
+
+    if (parse_u64_text(text, &value) != 0 || value > 4294967295ULL) {
+        return -1;
+    }
+    *value_out = (unsigned int)value;
+    return 0;
+}
+
+static int hash_existing_file(const char *path, CryptoSha256Context *sha, unsigned long long *size_out) {
+    unsigned char buffer[WP_BUFFER_SIZE];
+    PlatformDirEntry entry;
+    unsigned long long remaining;
+    int fd;
+
+    *size_out = 0ULL;
+    crypto_sha256_init(sha);
+    if (platform_get_path_info(path, &entry) != 0 || entry.is_dir) {
+        return 0;
+    }
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        return -1;
+    }
+    remaining = entry.size;
+    while (remaining > 0ULL) {
+        size_t want = remaining > (unsigned long long)sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+        long amount = platform_read(fd, buffer, want);
+        if (amount <= 0) {
+            (void)platform_close(fd);
+            return -1;
+        }
+        crypto_sha256_update(sha, buffer, (size_t)amount);
+        remaining -= (unsigned long long)amount;
+    }
+    if (platform_close(fd) != 0) {
+        return -1;
+    }
+    *size_out = entry.size;
+    return 0;
+}
+
+static int prepare_resume_state(
+    const char *output_path,
+    int resume_enabled,
+    int has_expected_size,
+    unsigned long long expected_size,
+    const char *expected_hex,
+    CryptoSha256Context *sha,
+    unsigned long long *resume_offset_out
+) {
+    unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE];
+    unsigned long long existing_size = 0ULL;
+    CryptoSha256Context existing_sha;
+
+    crypto_sha256_init(sha);
+    *resume_offset_out = 0ULL;
+    if (!resume_enabled) {
+        return 0;
+    }
+    if (hash_existing_file(output_path, &existing_sha, &existing_size) != 0) {
+        return -1;
+    }
+    if (existing_size == 0ULL) {
+        return 0;
+    }
+    if (has_expected_size && existing_size > expected_size) {
+        (void)platform_truncate_path(output_path, 0ULL);
+        return 0;
+    }
+    if (has_expected_size && existing_size == expected_size) {
+        crypto_sha256_final(&existing_sha, digest);
+        if (hex_digest_matches(digest, expected_hex)) {
+            return 1;
+        }
+        (void)platform_truncate_path(output_path, 0ULL);
+        return 0;
+    }
+    *sha = existing_sha;
+    *resume_offset_out = existing_size;
+    return 0;
+}
+
+static void write_retry_line(const char *name, unsigned int attempt, unsigned int max_attempts) {
+    write_status_prefix();
+    rt_write_cstr(2, "retrying ");
+    rt_write_cstr(2, name);
+    rt_write_cstr(2, " (attempt ");
+    rt_write_uint(2, (unsigned long long)attempt);
+    rt_write_char(2, '/');
+    rt_write_uint(2, (unsigned long long)max_attempts);
+    rt_write_cstr(2, ")\n");
+}
+
+static int download_file_attempt(
+    const char *url_text,
+    const char *output_path,
+    const char *name,
+    const WpOptions *options,
+    const char *expected_hex,
+    int has_expected_size,
+    unsigned long long expected_size,
+    WpProgressContext *progress
+) {
     ToolHttpConnection connection;
     WpUrl url;
     WpHttpHeaders headers;
@@ -935,22 +1064,43 @@ static int download_file(const char *url_text, const char *output_path, const ch
     int output_fd = -1;
     long bytes_read;
     unsigned long long written = 0ULL;
+    unsigned long long resume_offset = 0ULL;
+    unsigned long long response_body_length = 0ULL;
+    unsigned long long progress_total = 0ULL;
+    int has_progress_total = 0;
+    int append_output = 0;
     unsigned long long next_progress_ns = 0ULL;
     unsigned long long start_ns = 0ULL;
     int failed = 0;
+    int resume_result;
 
-    if (http_connect_and_request(url_text, &connection, &url) != 0) {
+    resume_result = prepare_resume_state(output_path, options->resume, has_expected_size, expected_size, expected_hex, &sha, &resume_offset);
+    if (resume_result == 1) {
+        if (!options->quiet) {
+            write_info("already verified ", name);
+        }
+        progress->package_completed += expected_size;
+        return 0;
+    }
+    if (resume_result != 0) {
         return -1;
     }
-    crypto_sha256_init(&sha);
-    output_fd = platform_open_write(output_path, 0644U);
-    if (output_fd < 0) {
-        tool_http_connection_close(&connection);
+    written = resume_offset;
+
+    if (http_connect_and_request(url_text, resume_offset, &connection, &url) != 0) {
         return -1;
     }
 
     if (!options->quiet) {
         write_download_start_line(name, progress->file_index, progress->file_count);
+        if (resume_offset > 0ULL) {
+            write_status_prefix();
+            rt_write_cstr(2, "resuming ");
+            rt_write_cstr(2, name);
+            rt_write_cstr(2, " from byte ");
+            rt_write_uint(2, resume_offset);
+            rt_write_char(2, '\n');
+        }
     }
     start_ns = platform_get_monotonic_time_ns();
     next_progress_ns = start_ns;
@@ -985,16 +1135,31 @@ static int download_file(const char *url_text, const char *output_path, const ch
             {
                 char saved = header_buffer[body_offset];
                 header_buffer[body_offset] = '\0';
-                if (parse_http_headers(header_buffer, &headers) != 0 || headers.status_code < 200 || headers.status_code >= 300) {
+                if (parse_http_headers(header_buffer, &headers) != 0 || headers.status_code < 200 || headers.status_code >= 300 || (resume_offset > 0ULL && headers.status_code != 200 && headers.status_code != 206)) {
                     bytes_read = -1;
                     break;
                 }
                 header_buffer[body_offset] = saved;
             }
+            if (resume_offset > 0ULL && headers.status_code == 200) {
+                crypto_sha256_init(&sha);
+                written = 0ULL;
+                resume_offset = 0ULL;
+            }
+            append_output = resume_offset > 0ULL && headers.status_code == 206;
+            output_fd = append_output ? platform_open_append_existing(output_path) : platform_open_write(output_path, 0644U);
+            if (output_fd < 0) {
+                bytes_read = -1;
+                break;
+            }
+            response_body_length = headers.has_content_length ? headers.content_length : 0ULL;
+            has_progress_total = has_expected_size || headers.has_content_length;
+            progress_total = has_expected_size ? expected_size : (headers.has_content_length ? resume_offset + headers.content_length : 0ULL);
             if (header_length > body_offset) {
                 size_t body_size = header_length - body_offset;
-                if (headers.has_content_length && (unsigned long long)body_size > headers.content_length - written) {
-                    body_size = (size_t)(headers.content_length - written);
+                unsigned long long body_written = written - resume_offset;
+                if (headers.has_content_length && (unsigned long long)body_size > response_body_length - body_written) {
+                    body_size = (size_t)(response_body_length - body_written);
                 }
                 if (body_size > 0U && rt_write_all(output_fd, header_buffer + body_offset, body_size) != 0) {
                     bytes_read = -1;
@@ -1003,13 +1168,14 @@ static int download_file(const char *url_text, const char *output_path, const ch
                 crypto_sha256_update(&sha, (const unsigned char *)header_buffer + body_offset, body_size);
                 written += (unsigned long long)body_size;
             }
-            if (headers.has_content_length && written >= headers.content_length) {
+            if (headers.has_content_length && written - resume_offset >= response_body_length) {
                 break;
             }
         } else {
             size_t body_size = (size_t)bytes_read;
-            if (headers.has_content_length && (unsigned long long)body_size > headers.content_length - written) {
-                body_size = (size_t)(headers.content_length - written);
+            unsigned long long body_written = written - resume_offset;
+            if (headers.has_content_length && (unsigned long long)body_size > response_body_length - body_written) {
+                body_size = (size_t)(response_body_length - body_written);
             }
             if (body_size > 0U && rt_write_all(output_fd, buffer, body_size) != 0) {
                 bytes_read = -1;
@@ -1017,7 +1183,7 @@ static int download_file(const char *url_text, const char *output_path, const ch
             }
             crypto_sha256_update(&sha, (const unsigned char *)buffer, body_size);
             written += (unsigned long long)body_size;
-            if (headers.has_content_length && written >= headers.content_length) {
+            if (headers.has_content_length && written - resume_offset >= response_body_length) {
                 break;
             }
         }
@@ -1025,17 +1191,17 @@ static int download_file(const char *url_text, const char *output_path, const ch
         if (!options->quiet) {
             unsigned long long now_ns = platform_get_monotonic_time_ns();
             if (now_ns >= next_progress_ns) {
-                write_progress_line(name, written, headers.has_content_length, headers.content_length, start_ns, progress);
+                write_progress_line(name, written, has_progress_total, progress_total, start_ns, progress);
                 next_progress_ns = now_ns + WP_PROGRESS_INTERVAL_NS;
             }
         }
     }
 
     tool_http_connection_close(&connection);
-    if (platform_close(output_fd) != 0) {
+    if (output_fd >= 0 && platform_close(output_fd) != 0) {
         failed = 1;
     }
-    if (!header_complete || bytes_read < 0 || (headers.has_content_length && written < headers.content_length)) {
+    if (!header_complete || output_fd < 0 || bytes_read < 0 || (headers.has_content_length && written - resume_offset < response_body_length)) {
         return -1;
     }
     if (failed) {
@@ -1043,14 +1209,212 @@ static int download_file(const char *url_text, const char *output_path, const ch
     }
     crypto_sha256_final(&sha, digest);
     if (!hex_digest_matches(digest, expected_hex)) {
+        if (resume_offset > 0ULL) {
+            (void)platform_truncate_path(output_path, 0ULL);
+            return -1;
+        }
         return -2;
     }
     if (!options->quiet) {
-        write_progress_line(name, written, headers.has_content_length, headers.content_length, start_ns, progress);
+        write_progress_line(name, written, has_progress_total, progress_total, start_ns, progress);
         write_info("verified ", name);
     }
     progress->package_completed += written;
     return 0;
+}
+
+static int download_file(
+    const char *url_text,
+    const char *output_path,
+    const char *name,
+    const WpOptions *options,
+    const char *expected_hex,
+    int has_expected_size,
+    unsigned long long expected_size,
+    WpProgressContext *progress
+) {
+    unsigned int max_attempts = options->retries + 1U;
+    unsigned int attempt;
+
+    for (attempt = 1U; attempt <= max_attempts; ++attempt) {
+        int result = download_file_attempt(url_text, output_path, name, options, expected_hex, has_expected_size, expected_size, progress);
+        if (result == 0 || result == -2) {
+            return result;
+        }
+        if (attempt < max_attempts) {
+            unsigned long long delay_ms = 1000ULL * (unsigned long long)attempt;
+            if (!options->quiet) {
+                write_retry_line(name, attempt + 1U, max_attempts);
+            }
+            if (delay_ms > 5000ULL) delay_ms = 5000ULL;
+            (void)platform_sleep_milliseconds(delay_ms);
+        }
+    }
+    return -1;
+}
+
+static int run_download_child(int argc, char **argv) {
+    WpOptions options;
+    WpProgressContext progress;
+    unsigned long long timeout_ms;
+    unsigned long long package_completed;
+    unsigned long long package_total;
+    unsigned long long expected_size;
+    unsigned int retries;
+    unsigned int file_index;
+    unsigned int file_count;
+    unsigned int quiet;
+    unsigned int resume;
+    unsigned int has_package_total;
+    unsigned int has_expected_size;
+    int result;
+
+    if (argc != 17 ||
+        parse_u64_text(argv[6], &timeout_ms) != 0 ||
+        parse_uint_text(argv[7], &quiet) != 0 ||
+        parse_uint_text(argv[8], &resume) != 0 ||
+        parse_uint_text(argv[9], &retries) != 0 ||
+        parse_uint_text(argv[10], &file_index) != 0 ||
+        parse_uint_text(argv[11], &file_count) != 0 ||
+        parse_u64_text(argv[12], &package_completed) != 0 ||
+        parse_u64_text(argv[13], &package_total) != 0 ||
+        parse_uint_text(argv[14], &has_package_total) != 0 ||
+        parse_uint_text(argv[15], &has_expected_size) != 0 ||
+        parse_u64_text(argv[16], &expected_size) != 0) {
+        return 1;
+    }
+
+    rt_memset(&options, 0, sizeof(options));
+    options.program_name = argv[0];
+    options.timeout_ms = timeout_ms;
+    options.quiet = quiet != 0U;
+    options.resume = resume != 0U;
+    options.retries = retries;
+    options.jobs = 1U;
+
+    rt_memset(&progress, 0, sizeof(progress));
+    progress.file_index = file_index;
+    progress.file_count = file_count;
+    progress.package_completed = package_completed;
+    progress.package_total = package_total;
+    progress.has_package_total = has_package_total != 0U;
+    progress.package_start_ns = platform_get_monotonic_time_ns();
+
+    result = download_file(argv[2], argv[3], argv[4], &options, argv[5], has_expected_size != 0U, expected_size, &progress);
+    return result == 0 ? 0 : (result == -2 ? 2 : 1);
+}
+
+static int spawn_download_child(
+    const WpOptions *options,
+    const char *url,
+    const char *output_path,
+    const WpDumpFile *file,
+    size_t file_index,
+    size_t file_count,
+    int *pid_out
+) {
+    char timeout_text[32];
+    char quiet_text[4];
+    char resume_text[4];
+    char retries_text[16];
+    char file_index_text[32];
+    char file_count_text[32];
+    char package_completed_text[4] = "0";
+    char package_total_text[4] = "0";
+    char has_package_total_text[4] = "0";
+    char has_expected_size_text[4];
+    char expected_size_text[32];
+    char *child_argv[18];
+
+    rt_unsigned_to_string(options->timeout_ms, timeout_text, sizeof(timeout_text));
+    rt_unsigned_to_string((unsigned long long)(options->quiet != 0), quiet_text, sizeof(quiet_text));
+    rt_unsigned_to_string((unsigned long long)(options->resume != 0), resume_text, sizeof(resume_text));
+    rt_unsigned_to_string((unsigned long long)options->retries, retries_text, sizeof(retries_text));
+    rt_unsigned_to_string((unsigned long long)file_index, file_index_text, sizeof(file_index_text));
+    rt_unsigned_to_string((unsigned long long)file_count, file_count_text, sizeof(file_count_text));
+    rt_unsigned_to_string((unsigned long long)(file->has_content_length != 0), has_expected_size_text, sizeof(has_expected_size_text));
+    rt_unsigned_to_string(file->content_length, expected_size_text, sizeof(expected_size_text));
+
+    child_argv[0] = (char *)options->program_name;
+    child_argv[1] = (char *)WP_CHILD_MODE;
+    child_argv[2] = (char *)url;
+    child_argv[3] = (char *)output_path;
+    child_argv[4] = (char *)file->name;
+    child_argv[5] = (char *)file->expected_hex;
+    child_argv[6] = timeout_text;
+    child_argv[7] = quiet_text;
+    child_argv[8] = resume_text;
+    child_argv[9] = retries_text;
+    child_argv[10] = file_index_text;
+    child_argv[11] = file_count_text;
+    child_argv[12] = package_completed_text;
+    child_argv[13] = package_total_text;
+    child_argv[14] = has_package_total_text;
+    child_argv[15] = has_expected_size_text;
+    child_argv[16] = expected_size_text;
+    child_argv[17] = 0;
+
+    return platform_spawn_process(child_argv, -1, -1, 0, 0, 0, pid_out);
+}
+
+static int wait_for_download_child(WpDownloadChild *children, size_t *active_count_io, const WpDumpList *list) {
+    int status = 1;
+    size_t index;
+
+    if (*active_count_io == 0U) {
+        return 0;
+    }
+    if (platform_wait_process(children[0].pid, &status) != 0) {
+        status = 1;
+    }
+    if (status != 0) {
+        const char *name = list->files[children[0].file_index].name;
+        tool_write_error("wp-download", status == 2 ? "sha256 mismatch for " : "download failed for ", name);
+    }
+    for (index = 1U; index < *active_count_io; ++index) {
+        children[index - 1U] = children[index];
+    }
+    *active_count_io -= 1U;
+    return status == 0 ? 0 : -1;
+}
+
+static int download_files_parallel(const WpDumpList *list, const char *wiki_name, const char *date, const WpOptions *options) {
+    WpDownloadChild children[WP_MAX_PARALLEL_DOWNLOADS];
+    char urls[WP_MAX_PARALLEL_DOWNLOADS][WP_URL_SIZE];
+    char output_paths[WP_MAX_PARALLEL_DOWNLOADS][WP_PATH_SIZE];
+    size_t active_count = 0U;
+    size_t next_index = 0U;
+    int failed = 0;
+
+    while (next_index < list->count || active_count > 0U) {
+        while (!failed && next_index < list->count && active_count < options->jobs) {
+            size_t slot = active_count;
+            int pid;
+
+            if (build_url(wiki_name, date, list->files[next_index].name, urls[slot], sizeof(urls[slot])) != 0 ||
+                join_output_path(options->out_dir, list->files[next_index].name, output_paths[slot], sizeof(output_paths[slot])) != 0) {
+                tool_write_error("wp-download", "path too long for ", list->files[next_index].name);
+                failed = 1;
+                break;
+            }
+            if (spawn_download_child(options, urls[slot], output_paths[slot], &list->files[next_index], next_index + 1U, list->count, &pid) != 0) {
+                tool_write_error("wp-download", "cannot start download worker for ", list->files[next_index].name);
+                failed = 1;
+                break;
+            }
+            children[active_count].pid = pid;
+            children[active_count].file_index = next_index;
+            active_count += 1U;
+            next_index += 1U;
+        }
+        if (active_count > 0U && wait_for_download_child(children, &active_count, list) != 0) {
+            failed = 1;
+        }
+        if (failed && active_count == 0U) {
+            break;
+        }
+    }
+    return failed ? -1 : 0;
 }
 
 static int run_download(const char *lang, const WpOptions *options) {
@@ -1142,6 +1506,16 @@ static int run_download(const char *lang, const WpOptions *options) {
         rt_write_char(2, '\n');
     }
 
+    if (options->jobs > 1U && list.count > 1U) {
+        if (!options->quiet) {
+            write_status_prefix();
+            rt_write_cstr(2, "starting up to ");
+            rt_write_uint(2, (unsigned long long)options->jobs);
+            rt_write_cstr(2, " concurrent downloads\n");
+        }
+        return download_files_parallel(&list, wiki_name, date, options) == 0 ? 0 : 1;
+    }
+
     for (index = 0U; index < list.count; ++index) {
         char file_url[WP_URL_SIZE];
         char output_path[WP_PATH_SIZE];
@@ -1153,7 +1527,16 @@ static int run_download(const char *lang, const WpOptions *options) {
             return 1;
         }
         progress.file_index = index + 1U;
-        result = download_file(file_url, output_path, list.files[index].name, options, list.files[index].expected_hex, &progress);
+        result = download_file(
+            file_url,
+            output_path,
+            list.files[index].name,
+            options,
+            list.files[index].expected_hex,
+            list.files[index].has_content_length,
+            list.files[index].content_length,
+            &progress
+        );
         if (result == -2) {
             tool_write_error("wp-download", "sha256 mismatch for ", list.files[index].name);
             return 1;
@@ -1171,9 +1554,17 @@ int main(int argc, char **argv) {
     WpOptions options;
     int parse_result;
 
+    if (argc > 1 && rt_strcmp(argv[1], WP_CHILD_MODE) == 0) {
+        return run_download_child(argc, argv);
+    }
+
     rt_memset(&options, 0, sizeof(options));
+    options.program_name = argv[0];
     options.out_dir = ".";
     options.timeout_ms = WP_DEFAULT_TIMEOUT_MS;
+    options.retries = WP_DEFAULT_RETRIES;
+    options.jobs = 1U;
+    options.resume = 1;
 
     tool_opt_init(&state, argc, argv, argv[0], "[-q] [-o DIR] [--date YYYY-MM-DD] LANG");
     while ((parse_result = tool_opt_next(&state)) == TOOL_OPT_FLAG) {
@@ -1203,6 +1594,28 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
+        } else if (rt_strcmp(state.flag, "--retries") == 0) {
+            if (tool_opt_require_value(&state) != 0 || parse_uint_text(state.value, &options.retries) != 0 || options.retries > WP_MAX_RETRIES) {
+                print_usage(argv[0]);
+                return 1;
+            }
+        } else if (tool_starts_with(state.flag, "--retries=")) {
+            if (parse_uint_text(state.flag + 10, &options.retries) != 0 || options.retries > WP_MAX_RETRIES) {
+                print_usage(argv[0]);
+                return 1;
+            }
+        } else if (rt_strcmp(state.flag, "--jobs") == 0 || rt_strcmp(state.flag, "-j") == 0) {
+            if (tool_opt_require_value(&state) != 0 || parse_uint_text(state.value, &options.jobs) != 0 || options.jobs == 0U || options.jobs > WP_MAX_PARALLEL_DOWNLOADS) {
+                print_usage(argv[0]);
+                return 1;
+            }
+        } else if (tool_starts_with(state.flag, "--jobs=")) {
+            if (parse_uint_text(state.flag + 7, &options.jobs) != 0 || options.jobs == 0U || options.jobs > WP_MAX_PARALLEL_DOWNLOADS) {
+                print_usage(argv[0]);
+                return 1;
+            }
+        } else if (rt_strcmp(state.flag, "--no-resume") == 0) {
+            options.resume = 0;
         } else {
             tool_write_error("wp-download", "unknown option: ", state.flag);
             print_usage(argv[0]);

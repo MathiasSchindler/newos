@@ -29,14 +29,13 @@ streaming the file to disk. Progress lines are timestamped and include `file
 N/TOTAL` for multi-file snapshots plus both file-level and package-level ETA
 when size information is available.
 
-Downloads are sequential for now. Wikimedia's own downloads front page says
+Downloads are sequential by default. `--jobs N` enables parallel file downloads,
+but values above 3 are rejected because Wikimedia's own dumps front page says
 their servers cap clients to 3 per-IP connections and that clients trying to
-evade those limits may be blocked; mirrors may have different limits. If
-parallel downloads are added later, keep the default conservative and make any
-concurrency limit explicit.
-
-Resume support is not implemented yet. A failed or interrupted file is
-downloaded again from the beginning on the next run.
+evade those limits may be blocked; mirrors may have different limits. Failed or
+interrupted files are resumed with HTTP `Range` requests by default and verified
+against `SHA256SUMS` before being accepted. `--retries N` controls retry count,
+and `--no-resume` forces a fresh download from byte 0.
 
 ## wp-cite-extract
 
