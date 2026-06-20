@@ -73,6 +73,8 @@
     X("src/shared/runtime/string.c") \
     X("src/shared/runtime/parse.c") \
     X("src/shared/runtime/io.c") \
+    X("src/shared/runtime/concurrency.c") \
+    X("src/shared/runtime/io_loop.c") \
     X("src/shared/runtime/unicode_utf8.c") \
     X("src/shared/runtime/unicode.c") \
     X("src/shared/tool_json.c") \
@@ -206,6 +208,7 @@
     X("src/platform/posix/process.c") \
     X("src/platform/posix/identity.c") \
     X("src/platform/posix/net.c") \
+    X("src/platform/posix/thread.c") \
     X("src/platform/posix/time.c")
 
 /* ── Linux freestanding target platform ─────────────────────────────────── */

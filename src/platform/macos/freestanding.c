@@ -35,6 +35,26 @@
 #define DARWIN_MAP_PRIVATE 2
 #define DARWIN_MAP_ANONYMOUS 0x1000
 #define DARWIN_SYS_MUNMAP 73
+#define DARWIN_UL_COMPARE_AND_WAIT 1
+#define DARWIN_ULF_WAKE_ALL 0x00000100
+#define MACOS_THREAD_DEFAULT_STACK_SIZE (512U * 1024U)
+#define MACOS_THREAD_PTHREAD_STRUCT_SIZE 0x18e0U
+#define MACOS_THREAD_START_MAGIC 0x4d54485244535452ULL
+#define MACOS_THREAD_CREATE_DEFAULT_FLAGS 0x01000000U
+#define MACOS_THREAD_REGISTER_OWNED 1
+#define MACOS_THREAD_REGISTER_PREEXISTING 2
+#define MACOS_PTHREAD_SIG 0x54485244UL
+#define MACOS_PTHREAD_FUN_OFFSET 144U
+#define MACOS_PTHREAD_ARG_OFFSET 152U
+#define MACOS_PTHREAD_ERRNO_OFFSET 172U
+#define MACOS_PTHREAD_STACKADDR_OFFSET 176U
+#define MACOS_PTHREAD_STACKBOTTOM_OFFSET 184U
+#define MACOS_PTHREAD_FREEADDR_OFFSET 192U
+#define MACOS_PTHREAD_FREESIZE_OFFSET 200U
+#define MACOS_PTHREAD_GUARDSIZE_OFFSET 208U
+#define MACOS_PTHREAD_TSD_OFFSET 0xe0U
+#define MACOS_PTHREAD_TSD_SELF_SLOT 0U
+#define MACOS_PTHREAD_TSD_ERRNO_SLOT 1U
 #define DARWIN_O_WRONLY 0x0001
 #define DARWIN_O_APPEND 0x0008
 #define DARWIN_O_CREAT 0x0200
@@ -79,7 +99,23 @@ typedef struct {
     unsigned short sequence;
 } MacosIcmpv6Packet;
 
+typedef struct {
+    unsigned long long magic;
+    PlatformWorkerThread *thread;
+    PlatformWorkerMain entry;
+    void *arg;
+    int result;
+} MacosThreadStart;
+
+__attribute__((used, noinline)) void macos_thread_entry(void *arg0, void *arg1, void *arg2, void *arg3, void *arg4, void *arg5);
+__attribute__((used, noinline)) void macos_wqthread_entry(void *arg0, void *arg1, void *arg2, void *arg3, void *arg4, void *arg5);
+__attribute__((noreturn, used, noinline)) void *macos_pthread_worker_entry(void *arg);
+static void macos_thread_start_trampoline(void);
+static void macos_wqthread_start_trampoline(void);
+
 static unsigned long long temp_path_counter;
+static volatile int macos_bsdthread_registered;
+static unsigned int macos_pthread_init_data[14] __attribute__((aligned(16)));
 #if defined(NEWOS_MACOS_NEWLINKER)
 static MacosStraceRecord macos_trace_record;
 static unsigned int macos_trace_filter_mask;
@@ -87,6 +123,426 @@ static int macos_trace_filter_ready;
 static int macos_trace_no_metadata;
 static int macos_trace_no_metadata_ready;
 #endif
+
+static size_t macos_page_align(size_t value) {
+    size_t page_size = platform_page_size();
+
+    if (page_size == 0U) {
+        page_size = 16384U;
+    }
+    return (value + page_size - 1U) & ~(page_size - 1U);
+}
+
+static MacosThreadStart *macos_thread_start_from_arg(void *arg) {
+    MacosThreadStart *start = (MacosThreadStart *)arg;
+
+    if (start != 0 && start->magic == MACOS_THREAD_START_MAGIC) {
+        return start;
+    }
+    return 0;
+}
+
+__attribute__((noreturn)) static void macos_bsdthread_terminate(void) {
+    (void)darwin_syscall4(DARWIN_SYS_BSDTHREAD_TERMINATE, 0, 0, 0, 0);
+    for (;;) {
+        (void)darwin_syscall1(DARWIN_SYS_EXIT, 0);
+    }
+}
+
+static size_t macos_pthread_struct_size(void) {
+    return macos_page_align(MACOS_THREAD_PTHREAD_STRUCT_SIZE);
+}
+
+static void *macos_pthread_tsd_base(void) {
+#if defined(__aarch64__)
+    unsigned long value;
+
+    __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(value));
+    return (void *)value;
+#else
+    return 0;
+#endif
+}
+
+static unsigned long macos_pthread_signature_token(void) {
+    unsigned char *tsd_base = (unsigned char *)macos_pthread_tsd_base();
+    unsigned char *self;
+
+    if (tsd_base == 0) {
+        return 0UL;
+    }
+    self = *(unsigned char **)(void *)tsd_base;
+    if (self == 0) {
+        return 0UL;
+    }
+    return *(unsigned long *)(void *)self ^ (unsigned long)self;
+}
+
+static void macos_store_ptr(unsigned char *base, size_t offset, void *value) {
+    *(void **)(void *)(base + offset) = value;
+}
+
+static void macos_store_size(unsigned char *base, size_t offset, size_t value) {
+    *(size_t *)(void *)(base + offset) = value;
+}
+
+static void macos_prepare_pthread_area(unsigned char *pthread_area, unsigned char *stack, size_t stack_size, MacosThreadStart *start) {
+    unsigned char *tsd_base = pthread_area + MACOS_PTHREAD_TSD_OFFSET;
+    unsigned long signature_token = macos_pthread_signature_token();
+
+    rt_memset(pthread_area, 0, macos_pthread_struct_size());
+    *(unsigned long *)(void *)pthread_area = (unsigned long)pthread_area ^ signature_token;
+    if (*(unsigned long *)(void *)pthread_area == 0UL) {
+        *(unsigned long *)(void *)pthread_area = MACOS_PTHREAD_SIG;
+    }
+    macos_store_ptr(pthread_area, MACOS_PTHREAD_FUN_OFFSET, (void *)macos_pthread_worker_entry);
+    macos_store_ptr(pthread_area, MACOS_PTHREAD_ARG_OFFSET, start);
+    macos_store_ptr(pthread_area, MACOS_PTHREAD_ERRNO_OFFSET, pthread_area + MACOS_PTHREAD_ERRNO_OFFSET);
+    macos_store_ptr(pthread_area, MACOS_PTHREAD_STACKADDR_OFFSET, stack + stack_size);
+    macos_store_ptr(pthread_area, MACOS_PTHREAD_STACKBOTTOM_OFFSET, stack + platform_page_size());
+    macos_store_ptr(pthread_area, MACOS_PTHREAD_FREEADDR_OFFSET, stack);
+    macos_store_size(pthread_area, MACOS_PTHREAD_FREESIZE_OFFSET, stack_size);
+    macos_store_size(pthread_area, MACOS_PTHREAD_GUARDSIZE_OFFSET, 0U);
+    macos_store_ptr(tsd_base, MACOS_PTHREAD_TSD_SELF_SLOT * sizeof(void *), pthread_area);
+    macos_store_ptr(tsd_base, MACOS_PTHREAD_TSD_ERRNO_SLOT * sizeof(void *), pthread_area + MACOS_PTHREAD_ERRNO_OFFSET);
+}
+
+static void *macos_sign_thread_pointer(void *pointer) {
+#if defined(__aarch64__)
+    register unsigned long value __asm__("x16") = (unsigned long)pointer;
+
+    __asm__ volatile("paciza x16" : "+r"(value) : : "memory");
+    return (void *)value;
+#else
+    return pointer;
+#endif
+}
+
+__attribute__((naked, used)) static void macos_thread_start_trampoline(void) {
+    __asm__ volatile(
+        "stp xzr, xzr, [sp, #-16]!\n"
+        "b _macos_thread_entry\n"
+    );
+}
+
+__attribute__((naked, used)) static void macos_wqthread_start_trampoline(void) {
+    __asm__ volatile(
+        "stp xzr, xzr, [sp, #-16]!\n"
+        "b _macos_wqthread_entry\n"
+    );
+}
+
+static void macos_prepare_pthread_init_data(void) {
+    rt_memset(macos_pthread_init_data, 0, sizeof(macos_pthread_init_data));
+    macos_pthread_init_data[0] = 0x38U;
+    macos_pthread_init_data[2] = 0xa0U;
+    macos_pthread_init_data[6] = 0xe0U;
+    macos_pthread_init_data[7] = 0x28U;
+    macos_pthread_init_data[8] = 0x18U;
+    macos_pthread_init_data[12] = 0x188U;
+    macos_pthread_init_data[13] = 0x3c0U;
+}
+
+static int macos_bsdthread_register_once(void) {
+    int registered = __atomic_load_n(&macos_bsdthread_registered, __ATOMIC_ACQUIRE);
+    long result;
+
+    if (registered > 0) {
+        return 0;
+    }
+    if (registered < 0) {
+        return -1;
+    }
+    macos_prepare_pthread_init_data();
+    result = darwin_syscall6(
+        DARWIN_SYS_BSDTHREAD_REGISTER,
+        (long)macos_sign_thread_pointer((void *)macos_thread_start_trampoline),
+        (long)macos_sign_thread_pointer((void *)macos_wqthread_start_trampoline),
+        (long)macos_pthread_struct_size(),
+        (long)macos_pthread_init_data,
+        0x38,
+        0xa0
+    );
+    if (result < 0) {
+        if (result == -22) {
+            __atomic_store_n(&macos_bsdthread_registered, MACOS_THREAD_REGISTER_PREEXISTING, __ATOMIC_RELEASE);
+            return 0;
+        }
+        __atomic_store_n(&macos_bsdthread_registered, -1, __ATOMIC_RELEASE);
+        return -1;
+    }
+    __atomic_store_n(&macos_bsdthread_registered, MACOS_THREAD_REGISTER_OWNED, __ATOMIC_RELEASE);
+    return 0;
+}
+
+static void macos_thread_publish_exit(PlatformWorkerThread *thread) {
+    if (thread != 0) {
+        __atomic_store_n(&thread->clear_tid, 0, __ATOMIC_RELEASE);
+        platform_wake_word_all((volatile unsigned int *)&thread->clear_tid);
+    }
+}
+
+__attribute__((used, noinline)) void macos_thread_entry(void *arg0, void *arg1, void *arg2, void *arg3, void *arg4, void *arg5) {
+    MacosThreadStart *start = macos_thread_start_from_arg(arg0);
+    PlatformWorkerThread *thread;
+
+    (void)arg2;
+    (void)arg3;
+    (void)arg4;
+    (void)arg5;
+
+    if (start == 0) {
+        start = macos_thread_start_from_arg(arg1);
+    }
+    if (start == 0 || start->entry == 0 || start->thread == 0) {
+        macos_thread_publish_exit(start != 0 ? start->thread : 0);
+        macos_bsdthread_terminate();
+    }
+    thread = start->thread;
+    start->result = start->entry(start->arg);
+    macos_thread_publish_exit(thread);
+    macos_bsdthread_terminate();
+}
+
+__attribute__((used, noinline)) void macos_wqthread_entry(void *arg0, void *arg1, void *arg2, void *arg3, void *arg4, void *arg5) {
+    (void)arg0;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+    (void)arg4;
+    (void)arg5;
+    macos_bsdthread_terminate();
+}
+
+__attribute__((noreturn, used, noinline)) void *macos_pthread_worker_entry(void *arg) {
+    MacosThreadStart *start = macos_thread_start_from_arg(arg);
+    PlatformWorkerThread *thread;
+
+    if (start == 0 || start->entry == 0 || start->thread == 0) {
+        macos_thread_publish_exit(start != 0 ? start->thread : 0);
+        macos_bsdthread_terminate();
+    }
+    thread = start->thread;
+    start->result = start->entry(start->arg);
+    macos_thread_publish_exit(thread);
+    macos_bsdthread_terminate();
+}
+
+static int macos_ulock_wait(volatile unsigned int *address, unsigned int expected) {
+    long result = darwin_syscall4(DARWIN_SYS_ULOCK_WAIT, DARWIN_UL_COMPARE_AND_WAIT, (long)address, (long)expected, 0);
+
+    return result < 0 ? -1 : 0;
+}
+
+static int macos_ulock_wake(volatile unsigned int *address, int wake_all) {
+    long operation = DARWIN_UL_COMPARE_AND_WAIT | (wake_all ? DARWIN_ULF_WAKE_ALL : 0);
+    long result = darwin_syscall3(DARWIN_SYS_ULOCK_WAKE, operation, (long)address, 0);
+
+    return result < 0 ? -1 : 0;
+}
+
+int platform_worker_threads_supported(void) {
+#if defined(__aarch64__)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+unsigned int platform_worker_thread_count(void) {
+    unsigned int count = 0U;
+    size_t count_size = sizeof(count);
+
+    if (!platform_worker_threads_supported()) {
+        return 1U;
+    }
+    if (sysctlbyname("hw.logicalcpu", &count, &count_size, 0, 0) != 0 || count == 0U) {
+        count = 2U;
+    }
+    return count;
+}
+
+int platform_worker_thread_start(PlatformWorkerThread *thread, PlatformWorkerMain entry, void *arg, size_t stack_size) {
+    unsigned char *stack;
+    unsigned char *stack_top;
+    size_t pthread_size;
+    unsigned char *pthread_area;
+    MacosThreadStart *start;
+    long tid;
+    int registration_state;
+
+    if (thread == 0 || entry == 0 || !platform_worker_threads_supported()) {
+        return -1;
+    }
+    if (macos_bsdthread_register_once() != 0) {
+        return -1;
+    }
+    if (stack_size == 0U) {
+        stack_size = MACOS_THREAD_DEFAULT_STACK_SIZE;
+    }
+    pthread_size = macos_pthread_struct_size();
+    stack_size = macos_page_align(stack_size);
+    if (stack_size < sizeof(MacosThreadStart) + pthread_size + platform_page_size()) {
+        stack_size = macos_page_align(sizeof(MacosThreadStart) + pthread_size + platform_page_size());
+    }
+    stack = (unsigned char *)platform_allocate_pages(stack_size);
+    if (stack == 0) {
+        return -1;
+    }
+    start = (MacosThreadStart *)stack;
+    pthread_area = stack + platform_page_size();
+    pthread_area = (unsigned char *)(((unsigned long)pthread_area + 15UL) & ~(unsigned long)15U);
+    start->magic = MACOS_THREAD_START_MAGIC;
+    start->thread = thread;
+    start->entry = entry;
+    start->arg = arg;
+    start->result = 0;
+    stack_top = stack + stack_size;
+    stack_top = (unsigned char *)((unsigned long)stack_top & ~(unsigned long)15U);
+
+    thread->tid = -1;
+    thread->clear_tid = 1;
+    thread->stack = stack;
+    thread->stack_size = stack_size;
+
+    registration_state = __atomic_load_n(&macos_bsdthread_registered, __ATOMIC_ACQUIRE);
+    if (registration_state == MACOS_THREAD_REGISTER_PREEXISTING) {
+        macos_prepare_pthread_area(pthread_area, stack, stack_size, start);
+    } else {
+        rt_memset(pthread_area, 0, pthread_size);
+    }
+
+    tid = darwin_syscall5(
+        DARWIN_SYS_BSDTHREAD_CREATE,
+        registration_state == MACOS_THREAD_REGISTER_PREEXISTING ? (long)(void *)macos_pthread_worker_entry : (long)macos_sign_thread_pointer((void *)macos_thread_entry),
+        (long)start,
+        (long)stack_top,
+        (long)pthread_area,
+        MACOS_THREAD_CREATE_DEFAULT_FLAGS
+    );
+    if (tid < 0) {
+        (void)platform_free_pages(stack, stack_size);
+        thread->tid = 0;
+        thread->clear_tid = 0;
+        thread->stack = 0;
+        thread->stack_size = 0U;
+        return -1;
+    }
+    thread->tid = (int)tid;
+    return 0;
+}
+
+int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out) {
+    volatile unsigned int *clear_tid;
+
+    if (thread == 0) {
+        return -1;
+    }
+    clear_tid = (volatile unsigned int *)&thread->clear_tid;
+    for (;;) {
+        unsigned int value = __atomic_load_n(clear_tid, __ATOMIC_ACQUIRE);
+        if (value == 0U) {
+            break;
+        }
+        (void)macos_ulock_wait(clear_tid, value);
+    }
+    if (result_out != 0 && thread->stack != 0) {
+        MacosThreadStart *start = (MacosThreadStart *)thread->stack;
+        *result_out = start->result;
+    }
+    if (thread->stack != 0) {
+        (void)platform_free_pages(thread->stack, thread->stack_size);
+    }
+    thread->tid = 0;
+    thread->clear_tid = 0;
+    thread->stack = 0;
+    thread->stack_size = 0U;
+    return 0;
+}
+
+void platform_wait_word(volatile unsigned int *word, unsigned int expected) {
+    if (__atomic_load_n(word, __ATOMIC_ACQUIRE) == expected) {
+        (void)macos_ulock_wait(word, expected);
+    }
+}
+
+void platform_wake_word_one(volatile unsigned int *word) {
+    (void)macos_ulock_wake(word, 0);
+}
+
+void platform_wake_word_all(volatile unsigned int *word) {
+    (void)macos_ulock_wake(word, 1);
+}
+
+int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size) {
+    return platform_worker_thread_start((PlatformWorkerThread *)thread, (PlatformWorkerMain)entry, arg, stack_size);
+}
+
+int platform_thread_join(PlatformThread *thread, int *result_out) {
+    return platform_worker_thread_join((PlatformWorkerThread *)thread, result_out);
+}
+
+void platform_mutex_init(PlatformMutex *mutex) {
+    if (mutex != 0) {
+        __atomic_store_n(&mutex->state, 0, __ATOMIC_RELEASE);
+    }
+}
+
+void platform_mutex_lock(PlatformMutex *mutex) {
+    int expected = 0;
+
+    if (mutex == 0) {
+        return;
+    }
+    if (__atomic_compare_exchange_n(&mutex->state, &expected, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return;
+    }
+    for (;;) {
+        int previous = __atomic_exchange_n(&mutex->state, 2, __ATOMIC_ACQUIRE);
+        if (previous == 0) {
+            return;
+        }
+        platform_wait_word((volatile unsigned int *)&mutex->state, 2U);
+        expected = 0;
+    }
+}
+
+void platform_mutex_unlock(PlatformMutex *mutex) {
+    if (mutex != 0 && __atomic_fetch_sub(&mutex->state, 1, __ATOMIC_RELEASE) != 1) {
+        __atomic_store_n(&mutex->state, 0, __ATOMIC_RELEASE);
+        platform_wake_word_one((volatile unsigned int *)&mutex->state);
+    }
+}
+
+void platform_semaphore_init(PlatformSemaphore *semaphore, int value) {
+    if (semaphore != 0) {
+        __atomic_store_n(&semaphore->count, value, __ATOMIC_RELEASE);
+    }
+}
+
+void platform_semaphore_wait(PlatformSemaphore *semaphore) {
+    if (semaphore == 0) {
+        return;
+    }
+    for (;;) {
+        int value = __atomic_load_n(&semaphore->count, __ATOMIC_ACQUIRE);
+
+        while (value > 0) {
+            int desired = value - 1;
+            if (__atomic_compare_exchange_n(&semaphore->count, &value, desired, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                return;
+            }
+        }
+        platform_wait_word((volatile unsigned int *)&semaphore->count, 0U);
+    }
+}
+
+void platform_semaphore_post(PlatformSemaphore *semaphore) {
+    if (semaphore != 0) {
+        (void)__atomic_fetch_add(&semaphore->count, 1, __ATOMIC_RELEASE);
+        platform_wake_word_one((volatile unsigned int *)&semaphore->count);
+    }
+}
 
 extern char **environ;
 int rename(const char *old_path, const char *new_path);
@@ -1236,6 +1692,20 @@ long long platform_get_epoch_time(void) {
 }
 
 unsigned long long platform_get_monotonic_time_ns(void) {
+#if defined(__aarch64__)
+    unsigned long long ticks;
+    unsigned long long frequency;
+    unsigned long long seconds;
+    unsigned long long remainder;
+
+    __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(ticks));
+    __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(frequency));
+    if (frequency != 0ULL) {
+        seconds = ticks / frequency;
+        remainder = ticks % frequency;
+        return seconds * 1000000000ULL + (remainder * 1000000000ULL) / frequency;
+    }
+#endif
     struct timeval now;
 
     if (gettimeofday(&now, 0) != 0) {

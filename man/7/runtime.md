@@ -57,7 +57,7 @@ hosted and freestanding builds.
 ## LIMITATIONS
 
 - This is a focused internal support layer, not a general-purpose standard library
-- There is no `FILE *`/stdio abstraction, locale database, or broad userland threading API; runtime threading support is limited to specific shared subsystems, and allocator locking should remain opt-in rather than a default cost
+- There is no `FILE *`/stdio abstraction or locale database. Project concurrency is deliberately narrow and opt-in; see [threading](threading.md) for the intended task-pool, I/O-loop, and synchronization-substrate model.
 - Formatting and parsing support cover the project's needs, not every libc edge case
 - Terminal display width is compact rather than locale-complete: ANSI escapes,
   combining marks, wide CJK/emoji ranges, variation selectors, and emoji skin-tone
@@ -66,4 +66,4 @@ hosted and freestanding builds.
 
 ## SEE ALSO
 
-man, project-layout, platform, memory, shell, compiler
+man, project-layout, platform, memory, threading, shell, compiler

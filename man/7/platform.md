@@ -72,6 +72,7 @@ directly and does not depend on libc.
 
 - `fs.c`, `process.c`, `identity.c`, `net.c`, `time.c`, and `tls.c` mirror the
   hosted interface using syscalls and freestanding shared code
+- `thread.c` — project-owned Linux worker-thread and wait/wake substrate backed by `clone` and `futex`; see [threading](threading.md)
 - `stack_guard.c` — stack-canary guard initialization and failure handling for
   freestanding binaries when compiler instrumentation is enabled
 - `profiler_runtime.c` — GCC/Clang `-finstrument-functions` hooks for Linux
@@ -143,9 +144,9 @@ against the Windows trust store.
 - On macOS/aarch64, `make freestanding` routes to the project-linked Mach-O path with no intended dylib imports; `make freestanding-macos` remains available as the older Apple-ld/`libSystem` comparison path, and `make host` remains the hosted POSIX path
 - Compact ELF and Mach-O outputs are judged by whether they execute correctly on the target platform with reasonable resource use. Some system inspection tools may handle these deliberately small files poorly; prefer the project `file`, `readelf`, `objdump`, `nm`, `size`, and `imgcheck` tools for diagnostics.
 - Native Windows freestanding support is early and intentionally narrower than the POSIX and Linux backends; MSYS2 remains the current Windows hosted bootstrap environment
-- The abstraction is intentionally small; the shared runtime now has targeted threading support where needed, but there is still no broad userland threading or async event layer
+- The abstraction is intentionally small; the shared runtime now has a targeted task-pool and I/O-loop proposal where needed, but there is still no broad pthread-style userland threading layer
 - Networking and TLS support are practical but still narrower than a full libc, OpenSSL, or shell environment
 
 ## SEE ALSO
 
-man, project-layout, runtime, build, macos, userland
+man, project-layout, runtime, threading, build, macos, userland

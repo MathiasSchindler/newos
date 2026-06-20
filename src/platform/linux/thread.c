@@ -4,7 +4,7 @@
 #define LINUX_THREAD_DEFAULT_STACK_SIZE (512U * 1024U)
 
 typedef struct {
-    PlatformThreadMain entry;
+    PlatformWorkerMain entry;
     void *arg;
     int result;
 } LinuxThreadStart;
@@ -50,9 +50,56 @@ static int linux_futex_wake(volatile int *address, int count) {
     return result < 0 ? -1 : 0;
 }
 
-int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size) {
-    unsigned char *stack;
-    LinuxThreadStart *start;
+int platform_worker_threads_supported(void) {
+#if defined(__x86_64__)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+unsigned int platform_worker_thread_count(void) {
+    unsigned long masks[16];
+    unsigned int count = 0U;
+    size_t index;
+
+    if (!platform_worker_threads_supported()) {
+        return 1U;
+    }
+    for (index = 0U; index < sizeof(masks) / sizeof(masks[0]); ++index) {
+        masks[index] = 0UL;
+    }
+    if (linux_syscall3(LINUX_SYS_SCHED_GETAFFINITY, 0, sizeof(masks), (long)masks) < 0) {
+        return 2U;
+    }
+    for (index = 0U; index < sizeof(masks) / sizeof(masks[0]); ++index) {
+        unsigned long value = masks[index];
+        while (value != 0UL) {
+            count += (unsigned int)(value & 1UL);
+            value >>= 1U;
+        }
+    }
+    if (count == 0U) {
+        count = 2U;
+    }
+    return count;
+}
+
+void platform_wait_word(volatile unsigned int *word, unsigned int expected) {
+    (void)linux_futex_wait((volatile int *)word, (int)expected);
+}
+
+void platform_wake_word_one(volatile unsigned int *word) {
+    (void)linux_futex_wake((volatile int *)word, 1);
+}
+
+void platform_wake_word_all(volatile unsigned int *word) {
+    (void)linux_futex_wake((volatile int *)word, 2147483647);
+}
+
+int platform_worker_thread_start(PlatformWorkerThread *thread, PlatformWorkerMain entry, void *arg, size_t stack_size) {
+    unsigned char *stack = 0;
+    LinuxThreadStart *start = 0;
 #if defined(__x86_64__)
     unsigned long flags;
     long tid;
@@ -110,7 +157,7 @@ int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void
 #endif
 }
 
-int platform_thread_join(PlatformThread *thread, int *result_out) {
+int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out) {
     volatile int *clear_tid;
 
     if (thread == 0) {
@@ -139,6 +186,14 @@ int platform_thread_join(PlatformThread *thread, int *result_out) {
     return 0;
 }
 
+int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size) {
+    return platform_worker_thread_start((PlatformWorkerThread *)thread, (PlatformWorkerMain)entry, arg, stack_size);
+}
+
+int platform_thread_join(PlatformThread *thread, int *result_out) {
+    return platform_worker_thread_join((PlatformWorkerThread *)thread, result_out);
+}
+
 void platform_mutex_init(PlatformMutex *mutex) {
     if (mutex != 0) {
         __atomic_store_n(&mutex->state, 0, __ATOMIC_RELEASE);
@@ -156,14 +211,14 @@ void platform_mutex_lock(PlatformMutex *mutex) {
         if (previous == 0) {
             return;
         }
-        (void)linux_futex_wait(&mutex->state, 2);
+        platform_wait_word((volatile unsigned int *)&mutex->state, 2U);
     }
 }
 
 void platform_mutex_unlock(PlatformMutex *mutex) {
     if (__atomic_fetch_sub(&mutex->state, 1, __ATOMIC_RELEASE) != 1) {
         __atomic_store_n(&mutex->state, 0, __ATOMIC_RELEASE);
-        (void)linux_futex_wake(&mutex->state, 1);
+        platform_wake_word_one((volatile unsigned int *)&mutex->state);
     }
 }
 
@@ -183,11 +238,11 @@ void platform_semaphore_wait(PlatformSemaphore *semaphore) {
                 return;
             }
         }
-        (void)linux_futex_wait(&semaphore->count, 0);
+        platform_wait_word((volatile unsigned int *)&semaphore->count, 0U);
     }
 }
 
 void platform_semaphore_post(PlatformSemaphore *semaphore) {
     (void)__atomic_fetch_add(&semaphore->count, 1, __ATOMIC_RELEASE);
-    (void)linux_futex_wake(&semaphore->count, 1);
+    platform_wake_word_one((volatile unsigned int *)&semaphore->count);
 }

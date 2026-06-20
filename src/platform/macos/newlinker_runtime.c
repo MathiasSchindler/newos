@@ -1275,7 +1275,7 @@ MACOS_NEWLINKER_EXPORT int sysctl(int *name, unsigned int name_count, void *old_
 }
 
 MACOS_NEWLINKER_EXPORT int sysctlbyname(const char *name, void *old_value, size_t *old_size, void *new_value, size_t new_size) {
-	return darwin_syscall6(DARWIN_SYS_SYSCTLBYNAME, (long)name, (long)old_value, (long)old_size, (long)new_value, (long)new_size, 0) < 0 ? -1 : 0;
+	return darwin_syscall6(DARWIN_SYS_SYSCTLBYNAME, (long)name, (long)macos_newlinker_strlen(name), (long)old_value, (long)old_size, (long)new_value, (long)new_size) < 0 ? -1 : 0;
 }
 
 MACOS_NEWLINKER_EXPORT int gethostname(char *name, size_t name_size) {

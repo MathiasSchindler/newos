@@ -267,6 +267,7 @@ typedef struct {
 } PlatformUsbHandle;
 
 typedef int (*PlatformThreadMain)(void *arg);
+typedef int (*PlatformWorkerMain)(void *arg);
 
 typedef struct {
     int tid;
@@ -274,6 +275,8 @@ typedef struct {
     void *stack;
     size_t stack_size;
 } PlatformThread;
+
+typedef PlatformThread PlatformWorkerThread;
 
 typedef struct {
     volatile int state;
@@ -372,6 +375,13 @@ void *platform_allocate_pages(size_t size);
 int platform_free_pages(void *ptr, size_t size);
 int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size);
 int platform_thread_join(PlatformThread *thread, int *result_out);
+int platform_worker_threads_supported(void);
+unsigned int platform_worker_thread_count(void);
+int platform_worker_thread_start(PlatformWorkerThread *thread, PlatformWorkerMain entry, void *arg, size_t stack_size);
+int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out);
+void platform_wait_word(volatile unsigned int *word, unsigned int expected);
+void platform_wake_word_one(volatile unsigned int *word);
+void platform_wake_word_all(volatile unsigned int *word);
 void platform_mutex_init(PlatformMutex *mutex);
 void platform_mutex_lock(PlatformMutex *mutex);
 void platform_mutex_unlock(PlatformMutex *mutex);

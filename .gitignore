@@ -23,6 +23,8 @@ experimental/md5files/examples/*
 !experimental/wikipedia/
 experimental/wikipedia/build/
 experimental/wikipedia/data/
+!experimental/threading/
+experimental/threading/build/
 services/httpd/log/
 sequel/
 gui/
