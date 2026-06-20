@@ -30,6 +30,16 @@ assert_file_contains "$WORK_DIR/sha512.out" '^[0-9a-f]\{128\}  .*/sample.txt$' "
 assert_command_succeeds "${TEST_BIN_DIR}/sha512sum" -c "$WORK_DIR/sha512.out" > "$WORK_DIR/sha512_check.out"
 assert_file_contains "$WORK_DIR/sha512_check.out" 'OK$' "sha512sum -c did not verify the checksum file"
 
+mkdir -p "$WORK_DIR/multi"
+printf 'multi-alpha\n' > "$WORK_DIR/multi/a.txt"
+printf 'multi-beta\n' > "$WORK_DIR/multi/b.txt"
+printf 'multi-gamma\n' > "$WORK_DIR/multi/c.txt"
+for tool in md5sum sha1sum sha256sum sha512sum; do
+    assert_command_succeeds env NEWOS_HASH_WORKERS=1 "${TEST_BIN_DIR}/$tool" "$WORK_DIR/multi/a.txt" "$WORK_DIR/multi/b.txt" "$WORK_DIR/multi/c.txt" > "$WORK_DIR/$tool.multi.serial.out"
+    assert_command_succeeds env NEWOS_HASH_WORKERS=4 "${TEST_BIN_DIR}/$tool" "$WORK_DIR/multi/a.txt" "$WORK_DIR/multi/b.txt" "$WORK_DIR/multi/c.txt" > "$WORK_DIR/$tool.multi.parallel.out"
+    assert_files_equal "$WORK_DIR/$tool.multi.serial.out" "$WORK_DIR/$tool.multi.parallel.out" "$tool multi-worker output differed from width 1"
+done
+
 printf 'broken-manifest\n' > "$WORK_DIR/invalid_manifest.txt"
 if "${TEST_BIN_DIR}/md5sum" -c "$WORK_DIR/invalid_manifest.txt" > "$WORK_DIR/invalid_check.out" 2> "$WORK_DIR/invalid_check.err"; then
     fail "md5sum accepted a malformed checksum list"

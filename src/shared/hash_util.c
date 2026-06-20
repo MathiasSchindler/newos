@@ -1,10 +1,27 @@
 #include "hash_util.h"
+#include "concurrency.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
 
 #define HASH_STREAM_BUFFER_SIZE 65536
 #define HASH_CHECKSUM_RECORD_CAPACITY 4096
+#define HASH_DEFAULT_MAX_WORKERS 8U
+
+#define HASH_SUM_STATUS_OK 0
+#define HASH_SUM_STATUS_OPEN_ERROR 1
+#define HASH_SUM_STATUS_HASH_ERROR 2
+
+typedef struct {
+    unsigned char digest[HASH_SHA512_SIZE];
+    int status;
+} HashSumResult;
+
+typedef struct {
+    char **paths;
+    HashSumResult *results;
+    HashStreamFunction hash_stream;
+} HashSumBatch;
 
 void hash_to_hex(const unsigned char *digest, size_t digest_size, char *hex_out) {
     static const char digits[] = "0123456789abcdef";
@@ -30,6 +47,29 @@ int hash_print_digest_line(const unsigned char *digest, size_t digest_size, cons
         return -1;
     }
     return 0;
+}
+
+static unsigned int hash_worker_count_from_env(void) {
+    const char *value_text = platform_getenv("NEWOS_HASH_WORKERS");
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > HASH_DEFAULT_MAX_WORKERS ? HASH_DEFAULT_MAX_WORKERS : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return HASH_DEFAULT_MAX_WORKERS;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
+}
+
+static int hash_path_is_stdin(const char *path) {
+    return path != 0 && path[0] == '-' && path[1] == '\0';
 }
 
 static int hash_hex_value(char ch) {
@@ -196,6 +236,84 @@ int hash_verify_manifest(const char *tool_name, int fd, size_t digest_size, Hash
     return exit_code;
 }
 
+static int hash_sum_file(const char *path, HashStreamFunction hash_stream, unsigned char digest[HASH_SHA512_SIZE]) {
+    int fd;
+    int should_close;
+    int result;
+
+    if (tool_open_input(path, &fd, &should_close) != 0) {
+        return HASH_SUM_STATUS_OPEN_ERROR;
+    }
+    result = hash_stream(fd, digest) == 0 ? HASH_SUM_STATUS_OK : HASH_SUM_STATUS_HASH_ERROR;
+    tool_close_input(fd, should_close);
+    return result;
+}
+
+static int hash_sum_file_range(size_t begin, size_t end, unsigned int worker_index, void *arg) {
+    HashSumBatch *batch = (HashSumBatch *)arg;
+    size_t index;
+
+    (void)worker_index;
+    for (index = begin; index < end; ++index) {
+        batch->results[index].status = hash_sum_file(batch->paths[index], batch->hash_stream, batch->results[index].digest);
+    }
+    return 0;
+}
+
+static int hash_sum_print_results(const char *tool_name, size_t digest_size, char **paths, HashSumResult *results, size_t count, int binary_mode, int zero_terminated) {
+    int exit_code = 0;
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (results[index].status == HASH_SUM_STATUS_OPEN_ERROR) {
+            rt_write_cstr(2, tool_name);
+            rt_write_cstr(2, ": cannot open ");
+            rt_write_line(2, paths[index]);
+            exit_code = 1;
+            continue;
+        }
+        if (results[index].status != HASH_SUM_STATUS_OK ||
+            hash_print_digest_line(results[index].digest, digest_size, paths[index], binary_mode, zero_terminated) != 0) {
+            rt_write_cstr(2, tool_name);
+            rt_write_cstr(2, ": failed on ");
+            rt_write_line(2, paths[index]);
+            exit_code = 1;
+        }
+    }
+    return exit_code;
+}
+
+static int hash_sum_files_parallel(const char *tool_name, size_t digest_size, HashStreamFunction hash_stream, int binary_mode, int zero_terminated, int file_count, char **paths) {
+    RtTaskPool pool;
+    HashSumBatch batch;
+    HashSumResult *results;
+    int result;
+
+    results = (HashSumResult *)rt_malloc_array((size_t)file_count, sizeof(*results));
+    if (results == 0) {
+        return -1;
+    }
+    rt_memset(results, 0, (size_t)file_count * sizeof(*results));
+    rt_memset(&pool, 0, sizeof(pool));
+    batch.paths = paths;
+    batch.results = results;
+    batch.hash_stream = hash_stream;
+
+    if (rt_task_pool_init(&pool, hash_worker_count_from_env()) != 0) {
+        result = hash_sum_file_range(0U, (size_t)file_count, 0U, &batch);
+    } else {
+        result = rt_parallel_for(&pool, (size_t)file_count, 1U, hash_sum_file_range, &batch);
+        rt_task_pool_destroy(&pool);
+    }
+    if (result == 0) {
+        result = hash_sum_print_results(tool_name, digest_size, paths, results, (size_t)file_count, binary_mode, zero_terminated);
+    } else {
+        result = 1;
+    }
+    rt_free(results);
+    return result;
+}
+
 int hash_sum_main(int argc, char **argv, const char *tool_name, size_t digest_size, HashStreamFunction hash_stream, int allow_binary_mode) {
     const char *usage = allow_binary_mode ? "[-bct] [-q] [-s] [-z] [FILE ...]" : "[-c] [-q] [-s] [-z] [FILE ...]";
     int binary_mode = 0;
@@ -305,6 +423,18 @@ int hash_sum_main(int argc, char **argv, const char *tool_name, size_t digest_si
             return 1;
         }
         return 0;
+    }
+
+    for (i = argi; i < argc; ++i) {
+        if (hash_path_is_stdin(argv[i])) {
+            break;
+        }
+    }
+    if (i >= argc && argc - argi > 1) {
+        int parallel_result = hash_sum_files_parallel(tool_name, digest_size, hash_stream, binary_mode, zero_terminated, argc - argi, argv + argi);
+        if (parallel_result >= 0) {
+            return parallel_result;
+        }
     }
 
     for (i = argi; i < argc; ++i) {

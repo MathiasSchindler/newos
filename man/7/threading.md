@@ -83,7 +83,7 @@ Mutexes, semaphores, and condition variables still exist, but as private Layer 1
 
 The task pool is the primary concurrency interface and the answer to CPU parallelism. A pool owns a fixed set of worker threads, created once, sized by default to the machine's usable core count. Work is pushed to the pool and the caller waits for completion; threads are never created or destroyed per unit of work.
 
-The proposed public API is small and intentionally fork/join shaped. Objects are project-owned runtime types rather than external ABI objects; their definitions live in `src/shared/concurrency.h`, and their layout is not a stable ABI.
+The public API is small and intentionally fork/join shaped. Objects are project-owned runtime types rather than external ABI objects; their definitions live in `src/shared/concurrency.h`, and their layout is not a stable ABI.
 
 ```
 typedef struct RtTaskPool RtTaskPool;
@@ -95,6 +95,8 @@ int      rt_task_pool_init(RtTaskPool *pool, unsigned worker_count);
 void     rt_task_pool_destroy(RtTaskPool *pool);
 unsigned rt_task_pool_width(const RtTaskPool *pool);
 RtArena *rt_task_pool_worker_arena(RtTaskPool *pool, unsigned worker_index);
+void     rt_task_pool_reset_stats(RtTaskPool *pool);
+void     rt_task_pool_get_stats(const RtTaskPool *pool, RtTaskPoolStats *stats_out);
 
 /* Data parallelism: run body(begin, end, worker_index, arg) over [0, count)
    split into chunks, and return only when every chunk has completed.
@@ -106,6 +108,7 @@ int rt_parallel_for(RtTaskPool *pool, size_t count, size_t min_chunk,
 /* Irregular fan-out: submit independent tasks, then wait for the batch. */
 typedef int (*RtTaskFn)(unsigned worker_index, void *arg);
 int rt_task_group_begin(RtTaskPool *pool, RtTaskGroup *group);
+int rt_task_group_reserve(RtTaskGroup *group, size_t capacity);
 int rt_task_group_submit(RtTaskGroup *group, RtTaskFn fn, void *arg);
 int rt_task_group_wait(RtTaskGroup *group);
 ```
@@ -139,6 +142,8 @@ The allocator coupling is the part most threading designs get wrong, so this des
 A pool optionally owns one arena per worker, indexed by `worker_index`. Inside a parallel region, a worker allocates from its own arena, which no other worker can touch, so the common parallel allocation path takes no lock and suffers no contention. Results are merged after the join by the caller, on the main thread, using the normal heap. This makes the fast path lock-free by construction instead of by discipline.
 
 For the rarer case where workers genuinely share one allocation domain, the runtime still offers the opt-in global allocator lock mode. The ordering of preference is deliberate: pass preallocated per-worker state first, use per-worker arenas second, and only enable the shared global lock when a benchmark shows the merge-after-join structure cannot express the workload. A design that forces global allocator locking to get any parallelism is considered a regression even if it is faster on one tool.
+
+The current macOS project-linked threading bring-up uses the platform-mutex allocator lock for the build path that exercises native workers. That is a safety bridge discovered from `zip` and `threadread`, not the final preferred shape for migrated tools. New conversions should still try to keep worker bodies allocation-light or per-worker allocated so the global lock is not the scalability limit.
 
 ## LAYER 1: THE I/O LOOP
 
@@ -233,18 +238,60 @@ Required pool tests include running `rt_parallel_for` over a large count and ver
 
 Every test runs under the serial backend first (deterministic, all platforms), then under the native backend on Linux x86-64 and project-linked macOS AArch64, then hosted POSIX. Linux AArch64 joins that native matrix once its clone trampoline lands. Stress tests cover high-contention wait/wake churn, repeated pool create/destroy cycles, and arena-heavy parallel workloads.
 
-## MIGRATION PLAN
+## TOOL MIGRATION PRACTICES
 
-The task pool and portable I/O loop now exist; the remaining work is to harden the backend matrix and convert real tools to the models rather than to raw threads.
+Migrating a tool to concurrency starts by choosing the right model. CPU-bound, splittable work belongs in `rt_parallel_for` or `RtTaskGroup`; I/O-bound waiting belongs in `RtIoLoop`; raw platform threads are not a migration target. If the tool needs both, keep the I/O state machine single-threaded and hand only the expensive CPU phase to a task pool.
 
-1. Keep the serial backend as the correctness baseline and the deterministic test mode.
-2. Finish the Linux AArch64 clone trampoline so both Linux project architectures share the native worker pool.
-3. Add native `epoll` and `kqueue` I/O-loop backends behind the existing portable `rt_io_loop_*` model.
-4. Convert one CPU-bound tool (a compression, hashing, or image sweep) to `rt_parallel_for` and benchmark it against its single-threaded baseline for both speed and binary size.
-5. Convert one I/O-bound tool (a downloader or `httpd`) to the I/O loop and compare it against a worker-per-client shape.
-6. Add hosted POSIX substrate implementations only as verification aids.
+Keep the existing serial behavior as the correctness reference. A migrated tool should be able to force width 1, either by passing worker count 1 to the pool or by a tool-specific environment knob during bring-up, and width 1 should produce byte-identical output to the old implementation. Phase tests should exercise width 1 and at least one native width, because width 1 catches behavior regressions while native width catches lifetime, ordering, and allocator mistakes.
 
-At every step, tools that do not opt into a model are untouched and unmeasurably affected.
+Build the parallel region around immutable inputs and per-worker outputs. Collect file lists, metadata, option state, and output ordering on the main thread first. In the worker body, avoid mutating shared structures; write into a slot owned by the input index or into storage addressed by `worker_index`, then merge in a deterministic order after `rt_parallel_for` returns. Archive writers and formatters should prepare payloads in parallel but write headers, payloads, indexes, and diagnostics on the main thread unless the file format explicitly permits unordered output.
+
+Treat `min_chunk` as a cost hint, not a promise. Pick a chunk size large enough that useful work dominates dispatch overhead. The runtime will raise tiny chunks to cap atomic claim traffic, but callers should still avoid exposing millions of trivial chunks when the work can naturally be batched by file, block, row group, section, or task batch.
+
+Prefer preallocation and per-worker storage over global heap traffic. The best parallel body does not allocate at all. The next best one allocates from per-worker arenas or from pre-sized per-index result slots. Shared global allocator locking is a fallback for workloads that are hard to express that way, and it must be benchmarked under contention before becoming the default shape for a tool.
+
+Reserve irregular batches before submitting them. If a task group knows or can cheaply estimate its task count, call `rt_task_group_reserve` once before `rt_task_group_submit` loops. That keeps the submission path from benchmarking reallocations instead of task execution.
+
+Error handling stays structured. A worker can return nonzero, but it cannot assume cancellation of other already-started chunks. Worker bodies must leave their own output slot either complete or clearly marked failed, and the main thread performs cleanup after the join boundary. Do not emit user-facing partial output from workers unless the output is explicitly diagnostic and ordering does not matter.
+
+Measure correctness, speed, and size together. Use `threadbench --stats`, `threadstress`, and workload-specific fixtures to check active workers, effective chunk size, imbalance, and error propagation. Use the project `timeout` tool around new high-width tests so a hang becomes useful evidence rather than a stuck test run. For tools that read or allocate in workers, `experimental/threading/threadread` is the current focused reproducer for macOS-style concurrent read/allocation pressure.
+
+## CURRENT STATUS AND ROADMAP
+
+The migration plan is still useful, but it is no longer a from-zero plan. It is now a status checklist and roadmap: the model exists, native worker backends exist on the main development platforms, and the first real tool has moved onto the task pool. Keeping the plan in this document helps avoid drifting back into per-tool thread designs as more tools migrate.
+
+Current status:
+
+1. The serial backend is implemented and remains the correctness baseline. Width 1 runs inline and is used as the deterministic path for tests and debugging.
+2. `RtTaskPool`, `rt_parallel_for`, `RtTaskGroup`, task-group reservation, and pool statistics are implemented in `src/shared/runtime/concurrency.c`.
+3. Native worker support exists for freestanding Linux x86-64 and project-linked macOS AArch64. Linux AArch64 still falls back to serial execution until its clone trampoline exists.
+4. The portable I/O loop exists in `src/shared/runtime/io_loop.c` and currently runs over `platform_poll_fds`. Native `epoll` and `kqueue` backends have not landed yet.
+5. Experimental measurement lives under `experimental/threading`: `threadbench`, `threadstress`, `threadcompress`, `threadread`, `benchcmp.sh`, `benchguide.sh`, and `report.sh`.
+6. `zip` is the first in-tree CPU-bound tool using `rt_parallel_for`. On both Linux and macOS it prepares file payloads in parallel and writes the archive in deterministic order on the main thread.
+7. The macOS project-linked build uses the platform-mutex allocator lock mode for thread-safe global heap access in the current threaded bring-up path. This fixed hangs seen with the atomic spin allocator lock under `zip` and `threadread`-style concurrent read/allocation pressure.
+
+Remaining roadmap:
+
+1. Keep broadening real-tool coverage beyond `zip`, especially compression, hashing, image, compiler, linker, and archive workloads that can use per-index or per-worker output slots.
+2. Finish native Linux AArch64 worker thread support so both Linux project architectures share the same native pool behavior.
+3. Add native `epoll` and `kqueue` I/O-loop backends behind `rt_io_loop_*`, then migrate one I/O-bound tool such as a downloader or server loop and compare it against the existing polling shape.
+4. Move hot worker allocation paths toward preallocated output arrays and per-worker arenas so the global allocator lock becomes rare rather than structural.
+5. Tighten build granularity so tools that never use concurrency do not inherit thread-safe allocator policy merely because one threaded tool in the same build tree needs it.
+6. Keep tracking binary size, small-input latency, active-worker counts, chunk imbalance, and timeout-bounded stress behavior for every migrated tool.
+
+The long-term rule remains that tools which do not opt into a concurrency model should be untouched and unmeasurably affected. Any temporary build-wide hardening, such as the macOS project-linked allocator lock, should be treated as an implementation gap to narrow once the threaded tool set and allocator usage patterns are better understood.
+
+## DISCOVERIES AND OPEN PROBLEMS
+
+The native macOS worker substrate is real enough for useful work. Recent macOS AArch64 reports show CPU `mix` scaling to roughly 11x at width 16, compression-shaped work around 10x, and `zip -6` around 6x to 7x on a large synthetic input. Memory-shaped work improves but plateaus earlier, with width 8 often near width 16; this is the expected bandwidth ceiling rather than a pool failure.
+
+Automatic batching matters. Treating `min_chunk` as a lower bound fixed the pathological tiny-chunk case: a caller can request `min_chunk=1`, but the pool raises the effective chunk size so dispatch claims stay proportional to worker count. The stats output makes this visible and should remain part of benchmark review.
+
+The first real threaded tool exposed allocator reality. `zip` and the focused `threadread` reproducer showed that a shared global allocator under concurrent read/allocation pressure can hang or crash if protected only by the simple atomic spin lock on macOS. The platform mutex lock, backed by the same wait/wake substrate as the task pool, fixed the reproducer and stabilized high-width `zip` runs. That is a useful fix, but it is also a warning: the preferred design is still to avoid the shared allocator in hot worker bodies.
+
+Hangs are diagnostics, not just failures. New threaded tests should be wrapped with the project `timeout` tool during bring-up. A timed-out run that leaves no archive bytes, no completed chunks, or a partial worker-counter snapshot often points directly at the layer that is blocked.
+
+The largest current shortcomings are coverage and granularity. Only one production tool uses the task pool today, the I/O-loop model has not yet been proven by a migrated server or downloader, Linux AArch64 native workers are still missing, and the macOS allocator policy is coarser than the long-term zero-cost goal. These are engineering gaps in the migration, not reasons to abandon the model.
 
 ## BENCHMARKING
 
@@ -261,7 +308,7 @@ A design that speeds up one large workload but grows tiny tools, forces global a
 - Do not expose raw threads, mutexes, or semaphores as the tool-facing API; tools call the pool and the I/O loop.
 - Do not create or destroy threads per unit of work; the pool is created once and reused.
 - Do not implement a pthread clone or add C11 threads compatibility unless an in-tree caller truly needs it.
-- Do not make the default runtime allocator thread-safe; parallelism uses per-worker arenas, and the global lock stays opt-in.
+- Do not make the source-level default runtime allocator thread-safe for every target; parallelism should use per-worker arenas, and any global lock mode stays an explicit build or tool choice.
 - Do not use thread-local storage; per-worker state is reached through an explicit `worker_index`.
 - Do not add detach, cancellation, priorities, scheduling policies, or broad signal routing as baseline features; structured fork/join makes them unnecessary.
 - Do not introduce any external dependency, standard-library call, or — on macOS — any `libSystem`/dylib import to obtain threads or synchronization.
