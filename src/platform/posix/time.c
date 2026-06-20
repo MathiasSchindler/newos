@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -266,6 +267,27 @@ unsigned long long platform_get_monotonic_time_ns(void) {
         return ((unsigned long long)now.tv_sec * 1000000000ULL) + (unsigned long long)now.tv_nsec;
     }
     return (unsigned long long)platform_get_epoch_time() * 1000000000ULL;
+}
+
+int platform_get_current_process_usage(PlatformProcessUsage *usage_out) {
+    struct rusage usage;
+
+    if (usage_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    rt_memset(usage_out, 0, sizeof(*usage_out));
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return -1;
+    }
+    usage_out->user_time_ns = ((unsigned long long)usage.ru_utime.tv_sec * 1000000000ULL) + ((unsigned long long)usage.ru_utime.tv_usec * 1000ULL);
+    usage_out->system_time_ns = ((unsigned long long)usage.ru_stime.tv_sec * 1000000000ULL) + ((unsigned long long)usage.ru_stime.tv_usec * 1000ULL);
+    usage_out->minor_faults = usage.ru_minflt < 0 ? 0ULL : (unsigned long long)usage.ru_minflt;
+    usage_out->major_faults = usage.ru_majflt < 0 ? 0ULL : (unsigned long long)usage.ru_majflt;
+    usage_out->voluntary_context_switches = usage.ru_nvcsw < 0 ? 0ULL : (unsigned long long)usage.ru_nvcsw;
+    usage_out->involuntary_context_switches = usage.ru_nivcsw < 0 ? 0ULL : (unsigned long long)usage.ru_nivcsw;
+    usage_out->migrations = 0ULL;
+    return 0;
 }
 
 int platform_get_memory_info(PlatformMemoryInfo *info_out) {

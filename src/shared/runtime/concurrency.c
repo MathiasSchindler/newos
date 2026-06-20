@@ -32,6 +32,10 @@ static void rt_task_pool_stat_store_size(size_t *field, size_t value) {
     __atomic_store_n(field, value, __ATOMIC_RELAXED);
 }
 
+static unsigned long long rt_task_pool_now_ns(void) {
+    return platform_get_monotonic_time_ns();
+}
+
 static void rt_task_pool_stat_add_worker(unsigned long long *fields, unsigned int worker_index, unsigned long long value) {
     if (worker_index < RT_TASK_POOL_MAX_WORKERS) {
         rt_task_pool_stat_add(&fields[worker_index], value);
@@ -78,7 +82,26 @@ static size_t rt_task_pool_effective_min_chunk(const RtTaskPool *pool, size_t co
     return auto_chunk > min_chunk ? auto_chunk : min_chunk;
 }
 
+static unsigned int rt_task_pool_active_for_units(const RtTaskPool *pool, size_t count, size_t unit_size) {
+    unsigned int native_width = pool != 0 && pool->native_width != 0U ? pool->native_width : 1U;
+    size_t units;
+
+    if (native_width <= 1U || count <= 1U) {
+        return 1U;
+    }
+    if (unit_size == 0U) {
+        unit_size = 1U;
+    }
+    units = (count + unit_size - 1U) / unit_size;
+    if (units == 0U) {
+        return 1U;
+    }
+    return units < (size_t)native_width ? (unsigned int)units : native_width;
+}
+
 static void rt_task_pool_run_parallel_worker(RtTaskPool *pool, unsigned int worker_index) {
+    unsigned int claimed_any = 0U;
+
     for (;;) {
         size_t end = 0U;
         size_t begin = rt_task_pool_next_chunk(pool, &end);
@@ -86,14 +109,19 @@ static void rt_task_pool_run_parallel_worker(RtTaskPool *pool, unsigned int work
         if (begin >= end) {
             break;
         }
+        claimed_any = 1U;
         rt_task_pool_stat_add_worker(pool->stats.worker_chunks, worker_index, 1ULL);
         rt_task_pool_record_error(pool, pool->parallel_body(begin, end, worker_index, pool->work_arg));
+    }
+    if (claimed_any != 0U) {
+        rt_task_pool_stat_add(&pool->stats.workers_ran, 1ULL);
     }
 }
 
 static void rt_task_pool_run_group_worker(RtTaskPool *pool, unsigned int worker_index) {
     RtTaskGroup *group = pool->group;
     size_t batch_size = pool->min_chunk == 0U ? 1U : pool->min_chunk;
+    unsigned int claimed_any = 0U;
 
     for (;;) {
         size_t begin;
@@ -104,6 +132,7 @@ static void rt_task_pool_run_group_worker(RtTaskPool *pool, unsigned int worker_
         if (group == 0 || begin >= group->count) {
             break;
         }
+        claimed_any = 1U;
         end = begin + batch_size;
         if (end < begin || end > group->count) {
             end = group->count;
@@ -114,6 +143,9 @@ static void rt_task_pool_run_group_worker(RtTaskPool *pool, unsigned int worker_
         for (index = begin; index < end; ++index) {
             rt_task_pool_record_error(pool, group->functions[index](worker_index, group->args[index]));
         }
+    }
+    if (claimed_any != 0U) {
+        rt_task_pool_stat_add(&pool->stats.workers_ran, 1ULL);
     }
 }
 
@@ -150,6 +182,9 @@ static int rt_task_worker_main(void *arg) {
             break;
         }
         observed_generation = generation;
+        if (worker_index >= __atomic_load_n(&pool->active_workers, __ATOMIC_ACQUIRE)) {
+            continue;
+        }
         rt_task_pool_run_work(pool, worker_index);
         rt_task_pool_stat_add(&pool->stats.worker_completions, 1ULL);
         if (__atomic_fetch_add(&pool->finished_workers, 1U, __ATOMIC_ACQ_REL) + 1U >= pool->active_workers) {
@@ -265,6 +300,16 @@ void rt_task_pool_reset_stats(RtTaskPool *pool) {
     __atomic_store_n(&pool->stats.worker_wakes, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.join_waits, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.worker_completions, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.workers_woken, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.workers_ran, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.idle_worker_completions, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.dispatch_ns, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.join_ns, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.body_ns, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.task_submit_ns, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.task_execute_ns, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.allocation_count, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->stats.allocation_bytes, 0ULL, __ATOMIC_RELAXED);
     rt_task_pool_stat_store_uint(&pool->stats.last_requested_width, 0U);
     rt_task_pool_stat_store_uint(&pool->stats.last_effective_width, 0U);
     rt_task_pool_stat_store_uint(&pool->stats.last_active_workers, 0U);
@@ -314,7 +359,15 @@ static int rt_task_pool_run_serial_parallel(size_t count, size_t min_chunk, RtPa
 
 static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
     unsigned int expected;
+    unsigned long long dispatch_start_ns;
+    unsigned long long body_start_ns;
+    unsigned long long body_end_ns;
+    unsigned long long join_start_ns;
+    unsigned long long workers_ran_before;
+    unsigned long long workers_ran;
 
+    dispatch_start_ns = rt_task_pool_now_ns();
+    workers_ran_before = __atomic_load_n(&pool->stats.workers_ran, __ATOMIC_RELAXED);
     rt_task_pool_stat_add(&pool->stats.dispatches, 1ULL);
     if (work_kind == RT_TASK_WORK_PARALLEL) {
         rt_task_pool_stat_add(&pool->stats.parallel_dispatches, 1ULL);
@@ -324,17 +377,32 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
     pool->work_kind = work_kind;
     pool->first_error = 0;
     pool->next_index = 0U;
-    pool->active_workers = pool->native_width;
+    if (work_kind == RT_TASK_WORK_PARALLEL) {
+        pool->active_workers = rt_task_pool_active_for_units(pool, pool->count, pool->min_chunk);
+    } else if (work_kind == RT_TASK_WORK_GROUP && pool->group != 0) {
+        pool->active_workers = rt_task_pool_active_for_units(pool, pool->group->count, pool->min_chunk);
+    } else {
+        pool->active_workers = pool->native_width;
+    }
+    if (pool->active_workers == 0U) {
+        pool->active_workers = 1U;
+    }
     pool->finished_workers = 0U;
+    rt_task_pool_stat_add(&pool->stats.workers_woken, (unsigned long long)pool->active_workers);
     __atomic_fetch_add(&pool->generation, 1U, __ATOMIC_ACQ_REL);
     rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
     platform_wake_word_all(&pool->generation);
+    body_start_ns = rt_task_pool_now_ns();
     rt_task_pool_run_work(pool, 0U);
+    body_end_ns = rt_task_pool_now_ns();
+    rt_task_pool_stat_add(&pool->stats.body_ns, body_end_ns - body_start_ns);
     rt_task_pool_stat_add(&pool->stats.worker_completions, 1ULL);
     if (__atomic_fetch_add(&pool->finished_workers, 1U, __ATOMIC_ACQ_REL) + 1U >= pool->active_workers) {
         rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
         platform_wake_word_all(&pool->finished_workers);
     }
+    rt_task_pool_stat_add(&pool->stats.dispatch_ns, body_start_ns - dispatch_start_ns);
+    join_start_ns = rt_task_pool_now_ns();
     for (;;) {
         expected = __atomic_load_n(&pool->finished_workers, __ATOMIC_ACQUIRE);
         if (expected >= pool->active_workers) {
@@ -342,6 +410,11 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
         }
         rt_task_pool_stat_add(&pool->stats.join_waits, 1ULL);
         platform_wait_word(&pool->finished_workers, expected);
+    }
+    rt_task_pool_stat_add(&pool->stats.join_ns, rt_task_pool_now_ns() - join_start_ns);
+    workers_ran = __atomic_load_n(&pool->stats.workers_ran, __ATOMIC_RELAXED) - workers_ran_before;
+    if ((unsigned long long)pool->active_workers > workers_ran) {
+        rt_task_pool_stat_add(&pool->stats.idle_worker_completions, (unsigned long long)pool->active_workers - workers_ran);
     }
     __atomic_store_n(&pool->work_kind, RT_TASK_WORK_NONE, __ATOMIC_RELEASE);
     return pool->first_error;
@@ -365,13 +438,13 @@ int rt_parallel_for(RtTaskPool *pool, size_t count, size_t min_chunk, RtParallel
         rt_task_pool_stat_store_size(&pool->stats.last_requested_min_chunk, min_chunk);
         rt_task_pool_stat_store_size(&pool->stats.last_effective_min_chunk, effective_min_chunk);
         rt_task_pool_stat_store_size(&pool->stats.last_group_batch_size, 0U);
-        if (pool->native_width > 1U && count > min_chunk && count != 1U) {
-            rt_task_pool_stat_store_uint(&pool->stats.last_active_workers, pool->native_width);
+        if (pool->native_width > 1U && count > effective_min_chunk && count != 1U) {
+            rt_task_pool_stat_store_uint(&pool->stats.last_active_workers, rt_task_pool_active_for_units(pool, count, effective_min_chunk));
         } else {
             rt_task_pool_stat_store_uint(&pool->stats.last_active_workers, 1U);
         }
     }
-    if (pool == 0 || pool->native_width <= 1U || count <= min_chunk || count == 1U) {
+    if (pool == 0 || pool->native_width <= 1U || count <= effective_min_chunk || count == 1U) {
         if (pool != 0) {
             rt_task_pool_stat_add(&pool->stats.serial_parallel_calls, 1ULL);
         }
@@ -422,6 +495,10 @@ int rt_task_group_submit(RtTaskGroup *group, RtTaskFn fn, void *arg) {
         group->functions = next_functions;
         group->args = next_args;
         group->capacity = next_capacity;
+        if (group->pool != 0) {
+            rt_task_pool_stat_add(&group->pool->stats.allocation_count, 2ULL);
+            rt_task_pool_stat_add(&group->pool->stats.allocation_bytes, (unsigned long long)(next_capacity * (sizeof(group->functions[0]) + sizeof(group->args[0]))));
+        }
     }
     group->functions[group->count] = fn;
     group->args[group->count] = arg;
@@ -467,7 +544,7 @@ int rt_task_group_wait(RtTaskGroup *group) {
 
         rt_task_pool_stat_store_uint(&pool->stats.last_requested_width, pool->width);
         rt_task_pool_stat_store_uint(&pool->stats.last_effective_width, pool->native_width);
-        rt_task_pool_stat_store_uint(&pool->stats.last_active_workers, pool->native_width);
+        rt_task_pool_stat_store_uint(&pool->stats.last_active_workers, rt_task_pool_active_for_units(pool, group->count, group_batch_size));
         rt_task_pool_stat_store_size(&pool->stats.last_count, group->count);
         rt_task_pool_stat_store_size(&pool->stats.last_requested_min_chunk, 0U);
         rt_task_pool_stat_store_size(&pool->stats.last_effective_min_chunk, 0U);

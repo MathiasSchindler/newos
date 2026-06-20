@@ -36,6 +36,18 @@ void platform_wake_word_all(volatile unsigned int *word) {
     (void)word;
 }
 
+void platform_wait_wake_stats_reset(void) {
+}
+
+void platform_wait_wake_stats_get(PlatformWaitWakeStats *stats_out) {
+    if (stats_out != 0) {
+        stats_out->wait_calls = 0ULL;
+        stats_out->wake_calls = 0ULL;
+        stats_out->wait_eagain = 0ULL;
+        stats_out->wait_eintr = 0ULL;
+    }
+}
+
 int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size) {
     return platform_worker_thread_start((PlatformWorkerThread *)thread, (PlatformWorkerMain)entry, arg, stack_size);
 }

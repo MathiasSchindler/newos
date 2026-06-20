@@ -47,6 +47,16 @@ typedef struct {
     unsigned long long max_ns;
     unsigned long long checksum;
     RtTaskPoolStats stats;
+    PlatformWaitWakeStats wait_wake_stats;
+    unsigned long long pool_init_ns;
+    unsigned long long pool_destroy_ns;
+    unsigned long long cpu_user_ns;
+    unsigned long long cpu_system_ns;
+    unsigned long long minor_faults;
+    unsigned long long major_faults;
+    unsigned long long voluntary_context_switches;
+    unsigned long long involuntary_context_switches;
+    unsigned long long migrations;
     unsigned int effective_width;
     int error;
 } BenchResult;
@@ -115,6 +125,27 @@ static unsigned long long ns_per_unit_x100(size_t units, unsigned long long ns) 
         return 0ULL;
     }
     return (ns * 100ULL) / (unsigned long long)units;
+}
+
+static unsigned long long usage_field_delta(unsigned long long after, unsigned long long before) {
+    return after >= before ? after - before : 0ULL;
+}
+
+static void usage_delta(const PlatformProcessUsage *before, const PlatformProcessUsage *after, PlatformProcessUsage *delta_out) {
+    delta_out->user_time_ns = usage_field_delta(after->user_time_ns, before->user_time_ns);
+    delta_out->system_time_ns = usage_field_delta(after->system_time_ns, before->system_time_ns);
+    delta_out->minor_faults = usage_field_delta(after->minor_faults, before->minor_faults);
+    delta_out->major_faults = usage_field_delta(after->major_faults, before->major_faults);
+    delta_out->voluntary_context_switches = usage_field_delta(after->voluntary_context_switches, before->voluntary_context_switches);
+    delta_out->involuntary_context_switches = usage_field_delta(after->involuntary_context_switches, before->involuntary_context_switches);
+    delta_out->migrations = usage_field_delta(after->migrations, before->migrations);
+}
+
+static void bench_record_allocation(RtTaskPool *pool, size_t bytes) {
+    if (pool != 0) {
+        (void)__atomic_fetch_add(&pool->stats.allocation_count, 1ULL, __ATOMIC_RELAXED);
+        (void)__atomic_fetch_add(&pool->stats.allocation_bytes, (unsigned long long)bytes, __ATOMIC_RELAXED);
+    }
 }
 
 static void sort_u64(unsigned long long *values, unsigned int count) {
@@ -320,6 +351,7 @@ static int run_range_case(RtTaskPool *pool, const BenchOptions *options, unsigne
         if (state.buffer == 0) {
             return -1;
         }
+        bench_record_allocation(pool, options->items * sizeof(state.buffer[0]));
         result = rt_parallel_for(pool, options->items, options->min_chunk, memory_body, &state);
         rt_free(state.buffer);
     } else if (kind == BENCH_KIND_OVERHEAD) {
@@ -342,22 +374,33 @@ static int run_task_case(RtTaskPool *pool, const BenchOptions *options, unsigned
     if (tasks == 0) {
         return -1;
     }
+    bench_record_allocation(pool, options->tasks * sizeof(tasks[0]));
     clear_slots(slots);
     if (rt_task_group_begin(pool, &group) != 0) {
         rt_free(tasks);
         return -1;
     }
-    for (index = 0U; index < options->tasks; ++index) {
-        tasks[index].seed = (unsigned long long)index + 0xa0761d6478bd642fULL;
-        tasks[index].rounds = options->rounds;
-        tasks[index].slots = slots;
-        if (rt_task_group_submit(&group, task_body, &tasks[index]) != 0) {
-            (void)rt_task_group_wait(&group);
-            rt_free(tasks);
-            return -1;
+    {
+        unsigned long long submit_start_ns = platform_get_monotonic_time_ns();
+
+        for (index = 0U; index < options->tasks; ++index) {
+            tasks[index].seed = (unsigned long long)index + 0xa0761d6478bd642fULL;
+            tasks[index].rounds = options->rounds;
+            tasks[index].slots = slots;
+            if (rt_task_group_submit(&group, task_body, &tasks[index]) != 0) {
+                (void)rt_task_group_wait(&group);
+                rt_free(tasks);
+                return -1;
+            }
         }
+        (void)__atomic_fetch_add(&pool->stats.task_submit_ns, platform_get_monotonic_time_ns() - submit_start_ns, __ATOMIC_RELAXED);
     }
-    result = rt_task_group_wait(&group);
+    {
+        unsigned long long execute_start_ns = platform_get_monotonic_time_ns();
+
+        result = rt_task_group_wait(&group);
+        (void)__atomic_fetch_add(&pool->stats.task_execute_ns, platform_get_monotonic_time_ns() - execute_start_ns, __ATOMIC_RELAXED);
+    }
     *checksum_out = combine_slots(slots, rt_task_pool_width(pool));
     rt_free(tasks);
     return result;
@@ -383,6 +426,16 @@ static BenchResult run_case_width(const BenchOptions *options, unsigned int kind
     result.max_ns = 0ULL;
     result.checksum = 0ULL;
     rt_memset(&result.stats, 0, sizeof(result.stats));
+    rt_memset(&result.wait_wake_stats, 0, sizeof(result.wait_wake_stats));
+    result.pool_init_ns = 0ULL;
+    result.pool_destroy_ns = 0ULL;
+    result.cpu_user_ns = 0ULL;
+    result.cpu_system_ns = 0ULL;
+    result.minor_faults = 0ULL;
+    result.major_faults = 0ULL;
+    result.voluntary_context_switches = 0ULL;
+    result.involuntary_context_switches = 0ULL;
+    result.migrations = 0ULL;
     result.effective_width = 1U;
     result.error = 0;
     samples = (unsigned long long *)rt_malloc_array(options->repeat, sizeof(samples[0]));
@@ -390,36 +443,67 @@ static BenchResult run_case_width(const BenchOptions *options, unsigned int kind
         result.error = -1;
         return result;
     }
-    if (rt_task_pool_init(&pool, requested_width) != 0) {
-        rt_task_pool_destroy(&pool);
-        if (rt_task_pool_init(&pool, 1U) != 0) {
-            result.error = -1;
-            rt_free(samples);
-            return result;
+    {
+        unsigned long long pool_start_ns = platform_get_monotonic_time_ns();
+
+        if (rt_task_pool_init(&pool, requested_width) != 0) {
+            rt_task_pool_destroy(&pool);
+            if (rt_task_pool_init(&pool, 1U) != 0) {
+                result.error = -1;
+                rt_free(samples);
+                return result;
+            }
         }
+        result.pool_init_ns = platform_get_monotonic_time_ns() - pool_start_ns;
     }
     result.effective_width = rt_task_pool_width(&pool);
     for (repeat = 0U; repeat < options->repeat; ++repeat) {
         unsigned long long checksum = 0ULL;
         RtTaskPoolStats stats;
-        unsigned long long start = platform_get_monotonic_time_ns();
+        PlatformWaitWakeStats wait_wake_stats;
+        PlatformProcessUsage usage_before;
+        PlatformProcessUsage usage_after;
+        PlatformProcessUsage usage_delta_sample;
+        unsigned long long start;
         unsigned long long elapsed;
 
         rt_task_pool_reset_stats(&pool);
+        platform_wait_wake_stats_reset();
+        rt_memset(&usage_before, 0, sizeof(usage_before));
+        rt_memset(&usage_after, 0, sizeof(usage_after));
+        rt_memset(&usage_delta_sample, 0, sizeof(usage_delta_sample));
+        (void)platform_get_current_process_usage(&usage_before);
+        start = platform_get_monotonic_time_ns();
         if (run_case_once(&pool, options, kind, &checksum) != 0) {
             result.error = -1;
             break;
         }
         elapsed = platform_get_monotonic_time_ns() - start;
+        (void)platform_get_current_process_usage(&usage_after);
+        usage_delta(&usage_before, &usage_after, &usage_delta_sample);
         rt_task_pool_get_stats(&pool, &stats);
+        platform_wait_wake_stats_get(&wait_wake_stats);
         samples[sample_count++] = elapsed;
         if (result.min_ns == 0ULL || elapsed < result.min_ns) {
             result.min_ns = elapsed;
             result.stats = stats;
+            result.wait_wake_stats = wait_wake_stats;
+            result.cpu_user_ns = usage_delta_sample.user_time_ns;
+            result.cpu_system_ns = usage_delta_sample.system_time_ns;
+            result.minor_faults = usage_delta_sample.minor_faults;
+            result.major_faults = usage_delta_sample.major_faults;
+            result.voluntary_context_switches = usage_delta_sample.voluntary_context_switches;
+            result.involuntary_context_switches = usage_delta_sample.involuntary_context_switches;
+            result.migrations = usage_delta_sample.migrations;
         }
         result.checksum ^= checksum + (unsigned long long)repeat;
     }
-    rt_task_pool_destroy(&pool);
+    {
+        unsigned long long destroy_start_ns = platform_get_monotonic_time_ns();
+
+        rt_task_pool_destroy(&pool);
+        result.pool_destroy_ns = platform_get_monotonic_time_ns() - destroy_start_ns;
+    }
     if (result.error == 0 && sample_count != 0U) {
         unsigned int p90_index;
 
@@ -459,6 +543,8 @@ static void write_worker_min_max(const char *prefix, const unsigned long long *v
     unsigned long long min_value = 0ULL;
     unsigned long long max_value = 0ULL;
     unsigned long long total = 0ULL;
+    unsigned int zero_count = 0U;
+    unsigned long long imbalance_x100 = 0ULL;
     unsigned int index;
 
     if (active_workers == 0U || active_workers > RT_TASK_POOL_MAX_WORKERS) {
@@ -473,7 +559,15 @@ static void write_worker_min_max(const char *prefix, const unsigned long long *v
         if (index == 0U || value > max_value) {
             max_value = value;
         }
+        if (value == 0ULL) {
+            zero_count += 1U;
+        }
         total += value;
+    }
+    if (min_value != 0ULL) {
+        imbalance_x100 = (max_value * 100ULL) / min_value;
+    } else if (max_value != 0ULL) {
+        imbalance_x100 = max_value * 100ULL;
     }
     rt_write_char(1, ' ');
     rt_write_cstr(1, prefix);
@@ -487,6 +581,14 @@ static void write_worker_min_max(const char *prefix, const unsigned long long *v
     rt_write_cstr(1, prefix);
     rt_write_cstr(1, "_max=");
     rt_write_uint(1, max_value);
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, prefix);
+    rt_write_cstr(1, "_zero=");
+    rt_write_uint(1, zero_count);
+    rt_write_char(1, ' ');
+    rt_write_cstr(1, prefix);
+    rt_write_cstr(1, "_imbalance=");
+    write_decimal_x100(imbalance_x100);
 }
 
 static void write_result_stats(const char *name, unsigned int requested_width, const BenchResult *result) {
@@ -511,6 +613,30 @@ static void write_result_stats(const char *name, unsigned int requested_width, c
     write_stats_field("worker_wakes", stats->worker_wakes);
     write_stats_field("join_waits", stats->join_waits);
     write_stats_field("worker_completions", stats->worker_completions);
+    write_stats_field("workers_woken", stats->workers_woken);
+    write_stats_field("workers_ran", stats->workers_ran);
+    write_stats_field("idle_worker_completions", stats->idle_worker_completions);
+    write_stats_field("dispatch_ns", stats->dispatch_ns);
+    write_stats_field("join_ns", stats->join_ns);
+    write_stats_field("body_ns", stats->body_ns);
+    write_stats_field("pool_init_ns", result->pool_init_ns);
+    write_stats_field("pool_destroy_ns", result->pool_destroy_ns);
+    write_stats_field("task_submit_ns", stats->task_submit_ns);
+    write_stats_field("task_execute_ns", stats->task_execute_ns);
+    write_stats_field("allocation_count", stats->allocation_count);
+    write_stats_field("allocation_bytes", stats->allocation_bytes);
+    write_stats_field("futex_wait_calls", result->wait_wake_stats.wait_calls);
+    write_stats_field("futex_wake_calls", result->wait_wake_stats.wake_calls);
+    write_stats_field("futex_wait_eagain", result->wait_wake_stats.wait_eagain);
+    write_stats_field("futex_wait_eintr", result->wait_wake_stats.wait_eintr);
+    write_stats_field("cpu_user_ns", result->cpu_user_ns);
+    write_stats_field("cpu_system_ns", result->cpu_system_ns);
+    write_stats_field("cpu_total_ns", result->cpu_user_ns + result->cpu_system_ns);
+    write_stats_field("minor_faults", result->minor_faults);
+    write_stats_field("major_faults", result->major_faults);
+    write_stats_field("voluntary_context_switches", result->voluntary_context_switches);
+    write_stats_field("involuntary_context_switches", result->involuntary_context_switches);
+    write_stats_field("migrations", result->migrations);
     write_stats_field("count", (unsigned long long)stats->last_count);
     write_stats_field("requested_min_chunk", (unsigned long long)stats->last_requested_min_chunk);
     write_stats_field("effective_min_chunk", (unsigned long long)stats->last_effective_min_chunk);

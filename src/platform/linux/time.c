@@ -2,6 +2,36 @@
 #include "common.h"
 #include "proc_util.h"
 
+#define LINUX_RUSAGE_SELF 0
+
+typedef struct {
+    long tv_sec;
+    long tv_usec;
+} LinuxTimeRusageTimeval;
+
+typedef struct {
+    LinuxTimeRusageTimeval ru_utime;
+    LinuxTimeRusageTimeval ru_stime;
+    long ru_maxrss;
+    long ru_ixrss;
+    long ru_idrss;
+    long ru_isrss;
+    long ru_minflt;
+    long ru_majflt;
+    long ru_nswap;
+    long ru_inblock;
+    long ru_oublock;
+    long ru_msgsnd;
+    long ru_msgrcv;
+    long ru_nsignals;
+    long ru_nvcsw;
+    long ru_nivcsw;
+} LinuxTimeRusage;
+
+static unsigned long long linux_time_timeval_to_ns(const LinuxTimeRusageTimeval *value) {
+    return ((unsigned long long)value->tv_sec * 1000000000ULL) + ((unsigned long long)value->tv_usec * 1000ULL);
+}
+
 static int linux_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
     size_t length = *length_io;
 
@@ -120,6 +150,26 @@ unsigned long long platform_get_monotonic_time_ns(void) {
     }
 
     return ((unsigned long long)now.tv_sec * 1000000000ULL) + (unsigned long long)now.tv_nsec;
+}
+
+int platform_get_current_process_usage(PlatformProcessUsage *usage_out) {
+    LinuxTimeRusage usage;
+
+    if (usage_out == 0) {
+        return -1;
+    }
+    rt_memset(usage_out, 0, sizeof(*usage_out));
+    if (linux_syscall2(LINUX_SYS_GETRUSAGE, LINUX_RUSAGE_SELF, (long)&usage) < 0) {
+        return -1;
+    }
+    usage_out->user_time_ns = linux_time_timeval_to_ns(&usage.ru_utime);
+    usage_out->system_time_ns = linux_time_timeval_to_ns(&usage.ru_stime);
+    usage_out->minor_faults = usage.ru_minflt < 0 ? 0ULL : (unsigned long long)usage.ru_minflt;
+    usage_out->major_faults = usage.ru_majflt < 0 ? 0ULL : (unsigned long long)usage.ru_majflt;
+    usage_out->voluntary_context_switches = usage.ru_nvcsw < 0 ? 0ULL : (unsigned long long)usage.ru_nvcsw;
+    usage_out->involuntary_context_switches = usage.ru_nivcsw < 0 ? 0ULL : (unsigned long long)usage.ru_nivcsw;
+    usage_out->migrations = 0ULL;
+    return 0;
 }
 
 int platform_get_memory_info(PlatformMemoryInfo *info_out) {

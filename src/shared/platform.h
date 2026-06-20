@@ -131,7 +131,19 @@ typedef struct {
 typedef struct {
     unsigned long long user_time_ns;
     unsigned long long system_time_ns;
+    unsigned long long minor_faults;
+    unsigned long long major_faults;
+    unsigned long long voluntary_context_switches;
+    unsigned long long involuntary_context_switches;
+    unsigned long long migrations;
 } PlatformProcessUsage;
+
+typedef struct {
+    unsigned long long wait_calls;
+    unsigned long long wake_calls;
+    unsigned long long wait_eagain;
+    unsigned long long wait_eintr;
+} PlatformWaitWakeStats;
 
 typedef struct {
     unsigned long long total_bytes;
@@ -382,6 +394,8 @@ int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out);
 void platform_wait_word(volatile unsigned int *word, unsigned int expected);
 void platform_wake_word_one(volatile unsigned int *word);
 void platform_wake_word_all(volatile unsigned int *word);
+void platform_wait_wake_stats_reset(void);
+void platform_wait_wake_stats_get(PlatformWaitWakeStats *stats_out);
 void platform_mutex_init(PlatformMutex *mutex);
 void platform_mutex_lock(PlatformMutex *mutex);
 void platform_mutex_unlock(PlatformMutex *mutex);
@@ -574,6 +588,7 @@ int platform_spawn_process_ex(
 int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out);
 int platform_wait_process(int pid, int *exit_status_out);
 int platform_wait_process_usage(int pid, int *exit_status_out, PlatformProcessUsage *usage_out);
+int platform_get_current_process_usage(PlatformProcessUsage *usage_out);
 int platform_poll_process_exit(int pid, int *finished_out, int *exit_status_out);
 int platform_wait_process_timeout(
     int pid,

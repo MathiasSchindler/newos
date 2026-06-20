@@ -27,6 +27,16 @@ typedef struct {
     unsigned long long worker_wakes;
     unsigned long long join_waits;
     unsigned long long worker_completions;
+    unsigned long long workers_woken;
+    unsigned long long workers_ran;
+    unsigned long long idle_worker_completions;
+    unsigned long long dispatch_ns;
+    unsigned long long join_ns;
+    unsigned long long body_ns;
+    unsigned long long task_submit_ns;
+    unsigned long long task_execute_ns;
+    unsigned long long allocation_count;
+    unsigned long long allocation_bytes;
     unsigned int last_requested_width;
     unsigned int last_effective_width;
     unsigned int last_active_workers;

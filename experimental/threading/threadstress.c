@@ -45,12 +45,34 @@ typedef struct {
     unsigned long long total_parallel_ns;
     unsigned long long total_group_ns;
     unsigned long long total_pool_ns;
+    unsigned long long total_pool_destroy_ns;
+    unsigned long long task_submit_ns;
+    unsigned long long task_execute_ns;
+    unsigned long long allocation_count;
+    unsigned long long allocation_bytes;
     unsigned long long chunks_claimed;
     unsigned long long chunk_attempts;
     unsigned long long group_tasks_claimed;
     unsigned long long worker_waits;
     unsigned long long worker_wakes;
     unsigned long long join_waits;
+    unsigned long long workers_woken;
+    unsigned long long workers_ran;
+    unsigned long long idle_worker_completions;
+    unsigned long long dispatch_ns;
+    unsigned long long join_ns;
+    unsigned long long body_ns;
+    unsigned long long futex_wait_calls;
+    unsigned long long futex_wake_calls;
+    unsigned long long futex_wait_eagain;
+    unsigned long long futex_wait_eintr;
+    unsigned long long cpu_user_ns;
+    unsigned long long cpu_system_ns;
+    unsigned long long minor_faults;
+    unsigned long long major_faults;
+    unsigned long long voluntary_context_switches;
+    unsigned long long involuntary_context_switches;
+    unsigned long long migrations;
 } StressSummary;
 
 static unsigned long long stress_mix64(unsigned long long value) {
@@ -258,6 +280,16 @@ static void accumulate_stats(StressSummary *summary, const RtTaskPoolStats *stat
     summary->worker_waits += stats->worker_waits;
     summary->worker_wakes += stats->worker_wakes;
     summary->join_waits += stats->join_waits;
+    summary->workers_woken += stats->workers_woken;
+    summary->workers_ran += stats->workers_ran;
+    summary->idle_worker_completions += stats->idle_worker_completions;
+    summary->dispatch_ns += stats->dispatch_ns;
+    summary->join_ns += stats->join_ns;
+    summary->body_ns += stats->body_ns;
+    summary->task_submit_ns += stats->task_submit_ns;
+    summary->task_execute_ns += stats->task_execute_ns;
+    summary->allocation_count += stats->allocation_count;
+    summary->allocation_bytes += stats->allocation_bytes;
 }
 
 static int run_range_check(RtTaskPool *pool, size_t items, size_t min_chunk, unsigned int rounds, int forced_error, StressSummary *summary) {
@@ -307,19 +339,24 @@ static int run_group_check(RtTaskPool *pool, size_t tasks, unsigned int rounds, 
     unsigned long long hashes[RT_TASK_POOL_MAX_WORKERS * STRESS_SLOT_STRIDE];
     RtTaskPoolStats stats;
     unsigned long long start;
+    unsigned long long submit_start;
     size_t index;
     int result;
 
+    rt_task_pool_reset_stats(pool);
     task_args = (TaskStress *)rt_malloc_array(tasks, sizeof(task_args[0]));
     if (task_args == 0) {
         return -1;
     }
+    (void)__atomic_fetch_add(&pool->stats.allocation_count, 1ULL, __ATOMIC_RELAXED);
+    (void)__atomic_fetch_add(&pool->stats.allocation_bytes, (unsigned long long)(tasks * sizeof(task_args[0])), __ATOMIC_RELAXED);
     clear_slots(counts);
     clear_slots(hashes);
     if (rt_task_group_begin(pool, &group) != 0) {
         rt_free(task_args);
         return -1;
     }
+    submit_start = platform_get_monotonic_time_ns();
     for (index = 0U; index < tasks; ++index) {
         task_args[index].counts = counts;
         task_args[index].hashes = hashes;
@@ -331,10 +368,15 @@ static int run_group_check(RtTaskPool *pool, size_t tasks, unsigned int rounds, 
             return -1;
         }
     }
-    rt_task_pool_reset_stats(pool);
+    (void)__atomic_fetch_add(&pool->stats.task_submit_ns, platform_get_monotonic_time_ns() - submit_start, __ATOMIC_RELAXED);
     start = platform_get_monotonic_time_ns();
     result = rt_task_group_wait(&group);
-    summary->total_group_ns += platform_get_monotonic_time_ns() - start;
+    {
+        unsigned long long execute_ns = platform_get_monotonic_time_ns() - start;
+
+        summary->total_group_ns += execute_ns;
+        (void)__atomic_fetch_add(&pool->stats.task_execute_ns, execute_ns, __ATOMIC_RELAXED);
+    }
     rt_task_pool_get_stats(pool, &stats);
     accumulate_stats(summary, &stats);
     rt_free(task_args);
@@ -369,10 +411,16 @@ static void write_summary(const StressOptions *options, const StressSummary *sum
     rt_write_uint(1, elapsed_ns);
     rt_write_cstr(1, " total_pool_ns=");
     rt_write_uint(1, summary->total_pool_ns);
+    rt_write_cstr(1, " total_pool_destroy_ns=");
+    rt_write_uint(1, summary->total_pool_destroy_ns);
     rt_write_cstr(1, " total_parallel_ns=");
     rt_write_uint(1, summary->total_parallel_ns);
     rt_write_cstr(1, " total_group_ns=");
     rt_write_uint(1, summary->total_group_ns);
+    rt_write_cstr(1, " task_submit_ns=");
+    rt_write_uint(1, summary->task_submit_ns);
+    rt_write_cstr(1, " task_execute_ns=");
+    rt_write_uint(1, summary->task_execute_ns);
     rt_write_char(1, '\n');
     rt_write_cstr(1, "chunks=");
     rt_write_uint(1, summary->chunks_claimed);
@@ -387,12 +435,58 @@ static void write_summary(const StressOptions *options, const StressSummary *sum
     rt_write_cstr(1, " join_waits=");
     rt_write_uint(1, summary->join_waits);
     rt_write_char(1, '\n');
+    rt_write_cstr(1, "workers_woken=");
+    rt_write_uint(1, summary->workers_woken);
+    rt_write_cstr(1, " workers_ran=");
+    rt_write_uint(1, summary->workers_ran);
+    rt_write_cstr(1, " idle_worker_completions=");
+    rt_write_uint(1, summary->idle_worker_completions);
+    rt_write_cstr(1, " dispatch_ns=");
+    rt_write_uint(1, summary->dispatch_ns);
+    rt_write_cstr(1, " join_ns=");
+    rt_write_uint(1, summary->join_ns);
+    rt_write_cstr(1, " body_ns=");
+    rt_write_uint(1, summary->body_ns);
+    rt_write_char(1, '\n');
+    rt_write_cstr(1, "allocation_count=");
+    rt_write_uint(1, summary->allocation_count);
+    rt_write_cstr(1, " allocation_bytes=");
+    rt_write_uint(1, summary->allocation_bytes);
+    rt_write_cstr(1, " futex_wait_calls=");
+    rt_write_uint(1, summary->futex_wait_calls);
+    rt_write_cstr(1, " futex_wake_calls=");
+    rt_write_uint(1, summary->futex_wake_calls);
+    rt_write_cstr(1, " futex_wait_eagain=");
+    rt_write_uint(1, summary->futex_wait_eagain);
+    rt_write_cstr(1, " futex_wait_eintr=");
+    rt_write_uint(1, summary->futex_wait_eintr);
+    rt_write_char(1, '\n');
+    rt_write_cstr(1, "cpu_user_ns=");
+    rt_write_uint(1, summary->cpu_user_ns);
+    rt_write_cstr(1, " cpu_system_ns=");
+    rt_write_uint(1, summary->cpu_system_ns);
+    rt_write_cstr(1, " cpu_total_ns=");
+    rt_write_uint(1, summary->cpu_user_ns + summary->cpu_system_ns);
+    rt_write_cstr(1, " minor_faults=");
+    rt_write_uint(1, summary->minor_faults);
+    rt_write_cstr(1, " major_faults=");
+    rt_write_uint(1, summary->major_faults);
+    rt_write_cstr(1, " voluntary_context_switches=");
+    rt_write_uint(1, summary->voluntary_context_switches);
+    rt_write_cstr(1, " involuntary_context_switches=");
+    rt_write_uint(1, summary->involuntary_context_switches);
+    rt_write_cstr(1, " migrations=");
+    rt_write_uint(1, summary->migrations);
+    rt_write_char(1, '\n');
 }
 
 static int run_stress(const StressOptions *options) {
     StressSummary summary;
+    PlatformProcessUsage usage_before;
+    PlatformProcessUsage usage_after;
+    PlatformWaitWakeStats wait_wake_stats;
     unsigned long long rng = options->seed;
-    unsigned long long start_ns = platform_get_monotonic_time_ns();
+    unsigned long long start_ns;
     unsigned int iteration_limit = options->iterations;
     unsigned int max_width = options->max_width;
     size_t max_items = options->items;
@@ -401,6 +495,12 @@ static int run_stress(const StressOptions *options) {
     unsigned int iteration;
 
     rt_memset(&summary, 0, sizeof(summary));
+    rt_memset(&usage_before, 0, sizeof(usage_before));
+    rt_memset(&usage_after, 0, sizeof(usage_after));
+    rt_memset(&wait_wake_stats, 0, sizeof(wait_wake_stats));
+    platform_wait_wake_stats_reset();
+    (void)platform_get_current_process_usage(&usage_before);
+    start_ns = platform_get_monotonic_time_ns();
     for (iteration = 0U; iteration < iteration_limit; ++iteration) {
         RtTaskPool pool;
         unsigned int width = 1U + (unsigned int)(stress_next(&rng) % max_width);
@@ -433,7 +533,9 @@ static int run_stress(const StressOptions *options) {
         if (!failed && (iteration % 11U) == 0U && run_range_check(&pool, items, min_chunk, rounds, 1, &summary) != 0) {
             failed = 1;
         }
+        pool_start = platform_get_monotonic_time_ns();
         rt_task_pool_destroy(&pool);
+        summary.total_pool_destroy_ns += platform_get_monotonic_time_ns() - pool_start;
         summary.iterations += 1U;
         if (failed) {
             summary.failures += 1U;
@@ -444,6 +546,19 @@ static int run_stress(const StressOptions *options) {
             }
         }
     }
+    (void)platform_get_current_process_usage(&usage_after);
+    platform_wait_wake_stats_get(&wait_wake_stats);
+    summary.futex_wait_calls = wait_wake_stats.wait_calls;
+    summary.futex_wake_calls = wait_wake_stats.wake_calls;
+    summary.futex_wait_eagain = wait_wake_stats.wait_eagain;
+    summary.futex_wait_eintr = wait_wake_stats.wait_eintr;
+    summary.cpu_user_ns = usage_after.user_time_ns >= usage_before.user_time_ns ? usage_after.user_time_ns - usage_before.user_time_ns : 0ULL;
+    summary.cpu_system_ns = usage_after.system_time_ns >= usage_before.system_time_ns ? usage_after.system_time_ns - usage_before.system_time_ns : 0ULL;
+    summary.minor_faults = usage_after.minor_faults >= usage_before.minor_faults ? usage_after.minor_faults - usage_before.minor_faults : 0ULL;
+    summary.major_faults = usage_after.major_faults >= usage_before.major_faults ? usage_after.major_faults - usage_before.major_faults : 0ULL;
+    summary.voluntary_context_switches = usage_after.voluntary_context_switches >= usage_before.voluntary_context_switches ? usage_after.voluntary_context_switches - usage_before.voluntary_context_switches : 0ULL;
+    summary.involuntary_context_switches = usage_after.involuntary_context_switches >= usage_before.involuntary_context_switches ? usage_after.involuntary_context_switches - usage_before.involuntary_context_switches : 0ULL;
+    summary.migrations = usage_after.migrations >= usage_before.migrations ? usage_after.migrations - usage_before.migrations : 0ULL;
     write_summary(options, &summary, platform_get_monotonic_time_ns() - start_ns);
     return summary.failures == 0U ? 0 : 1;
 }

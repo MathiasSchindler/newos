@@ -23,7 +23,20 @@ typedef struct {
 typedef struct {
     LinuxProcessTimeval ru_utime;
     LinuxProcessTimeval ru_stime;
-    long rest[14];
+    long ru_maxrss;
+    long ru_ixrss;
+    long ru_idrss;
+    long ru_isrss;
+    long ru_minflt;
+    long ru_majflt;
+    long ru_nswap;
+    long ru_inblock;
+    long ru_oublock;
+    long ru_msgsnd;
+    long ru_msgrcv;
+    long ru_nsignals;
+    long ru_nvcsw;
+    long ru_nivcsw;
 } LinuxProcessRusage;
 
 static unsigned long long linux_process_timeval_to_ns(const LinuxProcessTimeval *value) {
@@ -1414,8 +1427,14 @@ int platform_wait_process_usage(int pid, int *exit_status_out, PlatformProcessUs
 
     *exit_status_out = linux_decode_wait_status(status);
     if (usage_out != 0) {
+        rt_memset(usage_out, 0, sizeof(*usage_out));
         usage_out->user_time_ns = linux_process_timeval_to_ns(&usage.ru_utime);
         usage_out->system_time_ns = linux_process_timeval_to_ns(&usage.ru_stime);
+        usage_out->minor_faults = usage.ru_minflt < 0 ? 0ULL : (unsigned long long)usage.ru_minflt;
+        usage_out->major_faults = usage.ru_majflt < 0 ? 0ULL : (unsigned long long)usage.ru_majflt;
+        usage_out->voluntary_context_switches = usage.ru_nvcsw < 0 ? 0ULL : (unsigned long long)usage.ru_nvcsw;
+        usage_out->involuntary_context_switches = usage.ru_nivcsw < 0 ? 0ULL : (unsigned long long)usage.ru_nivcsw;
+        usage_out->migrations = 0ULL;
     }
     return 0;
 }

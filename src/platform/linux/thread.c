@@ -9,6 +9,8 @@ typedef struct {
     int result;
 } LinuxThreadStart;
 
+static PlatformWaitWakeStats linux_wait_wake_stats;
+
 #if defined(__x86_64__)
 static int linux_thread_entry(void *arg) {
     LinuxThreadStart *start = (LinuxThreadStart *)arg;
@@ -24,30 +26,62 @@ static size_t linux_page_align(size_t value) {
     return (value + page_size - 1U) & ~(page_size - 1U);
 }
 
-static int linux_futex_wait(volatile int *address, int expected) {
+static int linux_futex_wait_op(volatile int *address, int expected, int operation) {
     long result = linux_syscall6(
         LINUX_SYS_FUTEX,
         (long)address,
-        LINUX_FUTEX_WAIT,
+        operation,
         expected,
         0,
         0,
         0
     );
+    (void)__atomic_fetch_add(&linux_wait_wake_stats.wait_calls, 1ULL, __ATOMIC_RELAXED);
+    if (result == -LINUX_EAGAIN) {
+        (void)__atomic_fetch_add(&linux_wait_wake_stats.wait_eagain, 1ULL, __ATOMIC_RELAXED);
+    } else if (result == -LINUX_EINTR) {
+        (void)__atomic_fetch_add(&linux_wait_wake_stats.wait_eintr, 1ULL, __ATOMIC_RELAXED);
+    }
     return result < 0 && result != -LINUX_EAGAIN && result != -LINUX_EINTR ? -1 : 0;
+}
+
+static int linux_futex_wait(volatile int *address, int expected) {
+    return linux_futex_wait_op(address, expected, LINUX_FUTEX_WAIT | LINUX_FUTEX_PRIVATE_FLAG);
+}
+
+static int linux_futex_wait_shared(volatile int *address, int expected) {
+    return linux_futex_wait_op(address, expected, LINUX_FUTEX_WAIT);
 }
 
 static int linux_futex_wake(volatile int *address, int count) {
     long result = linux_syscall6(
         LINUX_SYS_FUTEX,
         (long)address,
-        LINUX_FUTEX_WAKE,
+        LINUX_FUTEX_WAKE | LINUX_FUTEX_PRIVATE_FLAG,
         count,
         0,
         0,
         0
     );
+    (void)__atomic_fetch_add(&linux_wait_wake_stats.wake_calls, 1ULL, __ATOMIC_RELAXED);
     return result < 0 ? -1 : 0;
+}
+
+void platform_wait_wake_stats_reset(void) {
+    __atomic_store_n(&linux_wait_wake_stats.wait_calls, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&linux_wait_wake_stats.wake_calls, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&linux_wait_wake_stats.wait_eagain, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&linux_wait_wake_stats.wait_eintr, 0ULL, __ATOMIC_RELAXED);
+}
+
+void platform_wait_wake_stats_get(PlatformWaitWakeStats *stats_out) {
+    if (stats_out == 0) {
+        return;
+    }
+    stats_out->wait_calls = __atomic_load_n(&linux_wait_wake_stats.wait_calls, __ATOMIC_RELAXED);
+    stats_out->wake_calls = __atomic_load_n(&linux_wait_wake_stats.wake_calls, __ATOMIC_RELAXED);
+    stats_out->wait_eagain = __atomic_load_n(&linux_wait_wake_stats.wait_eagain, __ATOMIC_RELAXED);
+    stats_out->wait_eintr = __atomic_load_n(&linux_wait_wake_stats.wait_eintr, __ATOMIC_RELAXED);
 }
 
 int platform_worker_threads_supported(void) {
@@ -169,7 +203,7 @@ int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out) {
         if (value == 0) {
             break;
         }
-        if (value > 0 && linux_futex_wait(clear_tid, value) != 0) {
+        if (value > 0 && linux_futex_wait_shared(clear_tid, value) != 0) {
             return -1;
         }
     }
