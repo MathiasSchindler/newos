@@ -35,6 +35,35 @@ MD5 or SHA-1 for identity, integrity, signing, allowlisting, cache trust, or oth
 security decisions should be migrated to collision-resistant hashes and
 authenticated signatures.
 
+## Concurrency and Threading
+
+The project's threading and concurrency code is also research code. The task-pool
+model is intended to keep tool code away from raw OS threads, but it is not a
+sandbox, privilege boundary, isolation mechanism, or mitigation for unsafe
+parsers. Worker tasks run in the same address space, with the same file
+descriptors, heap, runtime state, and privileges as the main thread.
+
+Threaded parsers and format handlers may expose ordinary memory-safety bugs in
+less predictable ways: data races, use-after-free bugs, double frees, lifetime
+mistakes, shared-output corruption, deadlocks, and platform wait/wake bugs can
+become input-triggerable denial-of-service or memory-corruption issues. The raw
+Linux and macOS worker substrates, allocator locking, wait/wake primitives, and
+freestanding thread startup paths have not received production security review.
+
+Some threaded tools intentionally trade memory and CPU for throughput. Worker
+stacks, per-task output buffers, full-input buffering, and environment-controlled
+worker counts such as `NEWOS_*_WORKERS` can increase resource consumption. The
+worker count is capped, but users should still treat threaded execution on
+untrusted or very large inputs as potentially vulnerable to CPU, memory, or hang
+denial-of-service.
+
+Do not use the threading model to process untrusted data in production, to isolate
+untrusted work, or to make cryptographic, archive, parser, network, compiler, or
+loader behavior safe. Developers adding threaded paths should keep width-1
+behavior as the correctness reference, avoid shared mutable state in worker
+bodies, bound memory growth, and test malformed inputs under both serial and
+native worker widths.
+
 ## Security Research and Dual-Use Content
 
 Some code in this repository demonstrates broken legacy mechanisms, unusual

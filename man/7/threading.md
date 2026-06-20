@@ -240,6 +240,18 @@ Pool initialization can fail only at the substrate boundary (thread or page allo
 
 Substrate wait/wake operations are fatal-or-impossible in normal use and stay `void` to keep the hot path compact. If a real backend surfaces a recoverable synchronization failure, it gets a narrow diagnostic hook rather than a return code threaded through every lock and unlock.
 
+## SECURITY CONSIDERATIONS
+
+The task pool is a throughput mechanism, not a security boundary. Workers share the process address space, file descriptors, heap, runtime state, and privileges of the main thread. Running a parser, decompressor, crypto operation, archive writer, or executable handler inside a worker does not isolate malformed input or make the operation safe for production use.
+
+Threading can make ordinary C bugs harder to reproduce and easier to trigger under load. Data races, stale pointers, double frees, lifetime mistakes, unsynchronized diagnostics, shared-output corruption, allocator bugs, wait/wake bugs, and worker-stack exhaustion can become memory-corruption, hang, or denial-of-service issues. Treat every worker body that touches untrusted input as security-sensitive even if the serial version already passed its tests.
+
+Resource amplification is the most likely user-visible security consequence. Each native worker has a stack, task groups allocate task arrays, and many practical migrations use per-index output buffers so the main thread can write in deterministic order. A malicious or simply large input can therefore consume more CPU and memory at native width than at width 1. Tools that buffer full compressed input, decoded blocks, encrypted chunks, archive payloads, or parser results should define size thresholds and serial fallback behavior before being considered robust.
+
+Environment worker knobs such as `NEWOS_ZIP_WORKERS`, `NEWOS_HASH_WORKERS`, `NEWOS_SORT_WORKERS`, `NEWOS_EXPACK_WORKERS`, `NEWOS_PGPMSG_WORKERS`, and `NEWOS_BUNZIP2_WORKERS` are debugging and tuning controls, not trust controls. They are capped by `RT_TASK_POOL_MAX_WORKERS`, but they should not be exposed as a way for untrusted users to force resource consumption in privileged or service-style contexts.
+
+Developer rule: a threaded migration is not complete until malformed input, allocation failure, width 1, and at least one native worker width have all been exercised. Security-sensitive tools should prefer fail-closed behavior after the join boundary: no partial final output, no unchecked worker result slots, no worker-owned user-facing writes unless the output is explicitly diagnostic, and no assumption that an error in one task cancelled the rest.
+
 ## TESTING PLAN
 
 Concurrency is not ready for general tool use until it is tested in the primary freestanding target, and the serial backend makes that testing tractable.
