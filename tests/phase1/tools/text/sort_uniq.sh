@@ -62,6 +62,11 @@ assert_text_equals "$huge_first" '1' "sort lost numeric ordering on >2048 lines"
 assert_text_equals "$huge_last" '3005' "sort lost the high end of a >2048 line input"
 assert_text_equals "$huge_count" '3005' "sort dropped lines on a >2048 line input"
 
+awk 'BEGIN { for (value = 20000; value >= 1; --value) printf "%05d key-%05d\n", (value * 1103515245 + 12345) % 100000, value }' > "$WORK_DIR/parallel_numbers.txt"
+env NEWOS_SORT_WORKERS=1 "${TEST_BIN_DIR}/sort" -n "$WORK_DIR/parallel_numbers.txt" > "$WORK_DIR/parallel_numbers_w1.out"
+env NEWOS_SORT_WORKERS=4 "${TEST_BIN_DIR}/sort" -n "$WORK_DIR/parallel_numbers.txt" > "$WORK_DIR/parallel_numbers_w4.out"
+assert_files_equal "$WORK_DIR/parallel_numbers_w1.out" "$WORK_DIR/parallel_numbers_w4.out" "sort produced different output at different worker counts"
+
 awk 'BEGIN { printf "b"; for (i = 0; i < 700; ++i) printf "x"; printf "\n"; printf "a"; for (i = 0; i < 700; ++i) printf "y"; printf "\n"; }' > "$WORK_DIR/sort_long_lines.txt"
 "${TEST_BIN_DIR}/sort" "$WORK_DIR/sort_long_lines.txt" > "$WORK_DIR/sort_long_lines.out"
 long_first=$(head -n 1 "$WORK_DIR/sort_long_lines.out" | cut -c 1 | tr -d '\r\n')

@@ -1,3 +1,4 @@
+#include "concurrency.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -12,6 +13,8 @@
 #define SORT_STORAGE_CAPACITY (4U * 1024U * 1024U)
 #define SORT_LINE_CAPACITY (64U * 1024U)
 #define SORT_TEMP_PATH_CAPACITY 256U
+#define SORT_DEFAULT_MAX_WORKERS 8U
+#define SORT_PARALLEL_MIN_LINES 8192U
 
 #define SORT_COLLECT_READ_ERROR (-1)
 #define SORT_COLLECT_MEMORY_ERROR (-2)
@@ -80,6 +83,14 @@ typedef struct {
 } SortRunSet;
 
 typedef ToolOutputBuffer SortOutput;
+
+typedef struct {
+    SortLine **order;
+    SortLine **scratch;
+    size_t begin;
+    size_t end;
+    const SortOptions *options;
+} SortChunkJob;
 
 typedef struct {
     int valid;
@@ -1091,6 +1102,25 @@ static int compare_lines(const SortLine *left, const SortLine *right, const Sort
     return options->reverse ? -result : result;
 }
 
+static unsigned int sort_worker_count_from_env(void) {
+    const char *value_text = platform_getenv("NEWOS_SORT_WORKERS");
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > SORT_DEFAULT_MAX_WORKERS ? SORT_DEFAULT_MAX_WORKERS : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return SORT_DEFAULT_MAX_WORKERS;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
+}
+
 static void merge_line_order(SortLine **order,
                              SortLine **scratch,
                              size_t left,
@@ -1138,12 +1168,124 @@ static void merge_sort_lines(SortLine **order,
     merge_line_order(order, scratch, left, middle, right, options);
 }
 
+static int sort_chunk_task(unsigned int worker_index, void *arg) {
+    SortChunkJob *job = (SortChunkJob *)arg;
+
+    (void)worker_index;
+    merge_sort_lines(job->order, job->scratch, job->begin, job->end, job->options);
+    return 0;
+}
+
+static size_t sort_parallel_chunk_count(size_t line_count, unsigned int worker_count) {
+    size_t chunk_count;
+    size_t max_chunks;
+
+    if (worker_count < 2U || line_count < SORT_PARALLEL_MIN_LINES * 2U) {
+        return 1U;
+    }
+    chunk_count = (size_t)worker_count;
+    max_chunks = line_count / SORT_PARALLEL_MIN_LINES;
+    if (max_chunks < 2U) {
+        return 1U;
+    }
+    if (chunk_count > max_chunks) {
+        chunk_count = max_chunks;
+    }
+    if (chunk_count > RT_TASK_POOL_MAX_WORKERS) {
+        chunk_count = RT_TASK_POOL_MAX_WORKERS;
+    }
+    return chunk_count;
+}
+
+static void sort_lines_parallel(SortCollection *collection, const SortOptions *options) {
+    RtTaskPool pool;
+    RtTaskGroup group;
+    SortChunkJob jobs[RT_TASK_POOL_MAX_WORKERS];
+    size_t begins[RT_TASK_POOL_MAX_WORKERS];
+    size_t ends[RT_TASK_POOL_MAX_WORKERS];
+    size_t chunk_count;
+    size_t chunk_index;
+    size_t chunk_size;
+    size_t active_count;
+    int result;
+
+    rt_memset(&pool, 0, sizeof(pool));
+    if (rt_task_pool_init(&pool, sort_worker_count_from_env()) != 0) {
+        rt_task_pool_destroy(&pool);
+        merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+        return;
+    }
+
+    chunk_count = sort_parallel_chunk_count(collection->count, rt_task_pool_width(&pool));
+    if (chunk_count < 2U) {
+        rt_task_pool_destroy(&pool);
+        merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+        return;
+    }
+
+    chunk_size = (collection->count + chunk_count - 1U) / chunk_count;
+    for (chunk_index = 0U; chunk_index < chunk_count; ++chunk_index) {
+        begins[chunk_index] = chunk_index * chunk_size;
+        ends[chunk_index] = begins[chunk_index] + chunk_size;
+        if (ends[chunk_index] > collection->count) {
+            ends[chunk_index] = collection->count;
+        }
+        jobs[chunk_index].order = collection->order;
+        jobs[chunk_index].scratch = collection->scratch;
+        jobs[chunk_index].begin = begins[chunk_index];
+        jobs[chunk_index].end = ends[chunk_index];
+        jobs[chunk_index].options = options;
+    }
+
+    result = 0;
+    if (rt_task_group_begin(&pool, &group) != 0 || rt_task_group_reserve(&group, chunk_count) != 0) {
+        result = -1;
+    }
+    for (chunk_index = 0U; result == 0 && chunk_index < chunk_count; ++chunk_index) {
+        if (rt_task_group_submit(&group, sort_chunk_task, jobs + chunk_index) != 0) {
+            result = -1;
+        }
+    }
+    if (result == 0 && rt_task_group_wait(&group) != 0) {
+        result = -1;
+    }
+    rt_task_pool_destroy(&pool);
+
+    if (result != 0) {
+        merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+        return;
+    }
+
+    active_count = chunk_count;
+    while (active_count > 1U) {
+        size_t output_count = 0U;
+
+        for (chunk_index = 0U; chunk_index < active_count; chunk_index += 2U) {
+            if (chunk_index + 1U < active_count) {
+                merge_line_order(collection->order,
+                                 collection->scratch,
+                                 begins[chunk_index],
+                                 begins[chunk_index + 1U],
+                                 ends[chunk_index + 1U],
+                                 options);
+                begins[output_count] = begins[chunk_index];
+                ends[output_count] = ends[chunk_index + 1U];
+            } else {
+                begins[output_count] = begins[chunk_index];
+                ends[output_count] = ends[chunk_index];
+            }
+            output_count += 1U;
+        }
+        active_count = output_count;
+    }
+}
+
 static void sort_lines(SortCollection *collection, const SortOptions *options) {
     if (collection->count < 2U) {
         return;
     }
 
-    merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+    sort_lines_parallel(collection, options);
 }
 
 static int sort_output_write_line(SortOutput *output, const SortLine *line) {
