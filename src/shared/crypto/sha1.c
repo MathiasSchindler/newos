@@ -28,6 +28,16 @@ static void crypto_sha1_transform(CryptoSha1Context *ctx, const unsigned char bl
     unsigned int e;
     unsigned int round;
 
+#define SHA1_STEP(func, constant) \
+    do { \
+        unsigned int next = crypto_sha1_rotl32(a, 5U) + (func) + e + (constant) + words[round]; \
+        e = d; \
+        d = c; \
+        c = crypto_sha1_rotl32(b, 30U); \
+        b = a; \
+        a = next; \
+    } while (0)
+
     for (round = 0U; round < 16U; ++round) {
         words[round] = crypto_sha1_load_be32(block + (size_t)round * 4U);
     }
@@ -41,38 +51,18 @@ static void crypto_sha1_transform(CryptoSha1Context *ctx, const unsigned char bl
     d = ctx->state[3];
     e = ctx->state[4];
 
-    for (round = 0U; round < 80U; ++round) {
-        unsigned int f;
-        unsigned int k;
-        unsigned int next;
-
-        if (round < 20U) {
-            f = (b & c) | ((~b) & d);
-            k = 0x5a827999U;
-        } else if (round < 40U) {
-            f = b ^ c ^ d;
-            k = 0x6ed9eba1U;
-        } else if (round < 60U) {
-            f = (b & c) | (b & d) | (c & d);
-            k = 0x8f1bbcdcU;
-        } else {
-            f = b ^ c ^ d;
-            k = 0xca62c1d6U;
-        }
-
-        next = crypto_sha1_rotl32(a, 5U) + f + e + k + words[round];
-        e = d;
-        d = c;
-        c = crypto_sha1_rotl32(b, 30U);
-        b = a;
-        a = next;
-    }
+    for (round = 0U; round < 20U; ++round) SHA1_STEP((d ^ (b & (c ^ d))), 0x5a827999U);
+    for (; round < 40U; ++round) SHA1_STEP((b ^ c ^ d), 0x6ed9eba1U);
+    for (; round < 60U; ++round) SHA1_STEP(((b & c) | (d & (b | c))), 0x8f1bbcdcU);
+    for (; round < 80U; ++round) SHA1_STEP((b ^ c ^ d), 0xca62c1d6U);
 
     ctx->state[0] += a;
     ctx->state[1] += b;
     ctx->state[2] += c;
     ctx->state[3] += d;
     ctx->state[4] += e;
+
+#undef SHA1_STEP
 }
 
 void crypto_sha1_init(CryptoSha1Context *ctx) {

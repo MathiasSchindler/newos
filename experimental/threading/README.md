@@ -39,6 +39,28 @@ For a broader local report with width, chunk, and workload-size sweeps:
 make -C experimental/threading report
 ```
 
+To compare selected host system tools against the project's equivalent tools:
+
+```sh
+python3 experimental/threading/host-tool-bench.py --build
+```
+
+The host-tool benchmark writes a CSV report under `tests/tmp` and prints a short
+summary. It currently covers `sort`, `md5sum`, `sha1sum`, `sha256sum`,
+`sha512sum`, standard `.bz2` decompression through `bunzip2`, and the project
+`bzip2` encoder. The project `bzip2` encoder writes the project's minimal `BZh0`
+format rather than standard bzip2, so that compression row is a throughput
+comparison only; standard `.bz2` decompression is the apples-to-apples bzip2
+case.
+
+Useful options:
+
+```sh
+python3 experimental/threading/host-tool-bench.py --repeat 5 --size-mib 128 --sort-lines 1000000
+python3 experimental/threading/host-tool-bench.py --cases sort,hash --project-build-dir build/macos-aarch64
+make -C experimental/threading host-tools-bench
+```
+
 ## Output
 
 `threadbench` prints CSV-style rows:

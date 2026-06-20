@@ -63,7 +63,7 @@ source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(RO
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
-.PHONY: all freestanding run report guide stress profile profile-report test clean
+.PHONY: all freestanding run report guide stress host-tools-bench profile profile-report test clean
 .SECONDARY:
 
 ifeq ($(AUTO_PARALLEL),1)
@@ -94,6 +94,9 @@ stress: freestanding
 
 compress-bench: freestanding
 	$(BUILD_DIR)/threadcompress --case mixed --bytes $${THREADCOMPRESS_BYTES:-33554432} --chunk $${THREADCOMPRESS_CHUNK:-1048576} --repeat $${THREADCOMPRESS_REPEAT:-3} --max-width $${THREADBENCH_MAX_WIDTH:-24} --stats
+
+host-tools-bench:
+	python3 ./host-tool-bench.py --build
 
 profile: clean
 	+$(MAKE) --no-print-directory PROFILE=1 freestanding

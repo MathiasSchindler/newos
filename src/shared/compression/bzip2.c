@@ -10,7 +10,7 @@
 #define BZIP2_SELECTOR_GROUP_SIZE 50U
 #define BZIP2_STREAM_MAGIC 0x314159265359ULL
 #define BZIP2_END_MAGIC 0x177245385090ULL
-#define BZIP2_HUFFMAN_FAST_BITS 10U
+#define BZIP2_HUFFMAN_FAST_BITS 12U
 #define BZIP2_HUFFMAN_FAST_SIZE (1U << BZIP2_HUFFMAN_FAST_BITS)
 
 typedef struct {
@@ -460,11 +460,9 @@ static int bzip2_decode_huffman_data(Bzip2BitReader *reader, Bzip2Decoder *decod
                 if (bzip2_next_symbol(reader, tables, selectors, selector_count, &selector_index, &selector_remaining, &symbol) != 0) return -1;
             } while (symbol == 0U || symbol == 1U);
             value = seq_to_unseq[mtf[0]];
-            while (run_length > 0U) {
-                if (block_used >= decoder->block_size) return -1;
-                decoder->ll8[block_used++] = value;
-                run_length -= 1U;
-            }
+            if (run_length > decoder->block_size || block_used > decoder->block_size - run_length) return -1;
+            rt_memset(decoder->ll8 + block_used, value, run_length);
+            block_used += run_length;
             if (symbol == eob) break;
         }
         if (symbol > 1U && symbol < eob) {
@@ -472,9 +470,20 @@ static int bzip2_decode_huffman_data(Bzip2BitReader *reader, Bzip2Decoder *decod
             unsigned char mtf_value;
             if (mtf_index >= used_count) return -1;
             mtf_value = mtf[mtf_index];
-            while (mtf_index > 0U) {
-                mtf[mtf_index] = mtf[mtf_index - 1U];
-                mtf_index -= 1U;
+            if (mtf_index == 1U) {
+                mtf[1] = mtf[0];
+            } else if (mtf_index == 2U) {
+                mtf[2] = mtf[1];
+                mtf[1] = mtf[0];
+            } else if (mtf_index == 3U) {
+                mtf[3] = mtf[2];
+                mtf[2] = mtf[1];
+                mtf[1] = mtf[0];
+            } else {
+                while (mtf_index > 0U) {
+                    mtf[mtf_index] = mtf[mtf_index - 1U];
+                    mtf_index -= 1U;
+                }
             }
             mtf[0] = mtf_value;
             if (block_used >= decoder->block_size) return -1;
@@ -648,7 +657,9 @@ static int bzip2_parallel_block_task(unsigned int worker_index, void *arg) {
     decoder.block_size = job->block_size;
     decoder.ll8 = (unsigned char *)rt_malloc(decoder.block_size);
     decoder.tt = (unsigned int *)rt_malloc_array(decoder.block_size, sizeof(decoder.tt[0]));
-    if (decoder.ll8 == 0 || decoder.tt == 0) goto done;
+    output.data = (unsigned char *)rt_malloc(decoder.block_size == 0U ? 1U : decoder.block_size);
+    output.capacity = decoder.block_size;
+    if (decoder.ll8 == 0 || decoder.tt == 0 || output.data == 0) goto done;
     if (bzip2_reader_init_memory_bits(&reader, &input, job->src, job->src_size, job->bit_offset) != 0) goto done;
     if (bzip2_decode_block(&reader, &decoder, bzip2_memory_output_write, &output, &block_crc) != 0) goto done;
     job->block_crc = block_crc;

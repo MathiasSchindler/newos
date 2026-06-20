@@ -1,6 +1,11 @@
 #include "crypto/sha256.h"
 #include "runtime.h"
 
+#if defined(__aarch64__) && defined(NEWOS_CRYPTO_SHA256_ENABLE_ARM_SHA) && !defined(NEWOS_CRYPTO_SHA256_DISABLE_ARM_SHA)
+#include <arm_neon.h>
+#define NEWOS_CRYPTO_SHA256_ARM_SHA 1
+#endif
+
 #define CRYPTO_ROTR32(value, count) (((value) >> (count)) | ((value) << (32U - (count))))
 
 #if defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES
@@ -38,7 +43,7 @@ static const unsigned char *crypto_sha256_k_bytes_ptr(void) {
 }
 #endif
 
-#if !(defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES)
+#if defined(NEWOS_CRYPTO_SHA256_ARM_SHA) || !(defined(NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES) && NEWOS_CRYPTO_SHA256_AVOID_STATIC_TABLES)
 static const unsigned int g_sha256_k[64] = {
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
     0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
@@ -59,7 +64,65 @@ static const unsigned int g_sha256_k[64] = {
 };
 #endif
 
+#if defined(NEWOS_CRYPTO_SHA256_ARM_SHA)
+static uint32x4_t crypto_sha256_load_block_words(const unsigned char *block) {
+    return vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block)));
+}
+
+static void crypto_sha256_transform_arm(CryptoSha256Context *ctx, const unsigned char block[64]) {
+    uint32x4_t state0 = vld1q_u32(ctx->state);
+    uint32x4_t state1 = vld1q_u32(ctx->state + 4U);
+    uint32x4_t saved0 = state0;
+    uint32x4_t saved1 = state1;
+    uint32x4_t msg0 = crypto_sha256_load_block_words(block);
+    uint32x4_t msg1 = crypto_sha256_load_block_words(block + 16U);
+    uint32x4_t msg2 = crypto_sha256_load_block_words(block + 32U);
+    uint32x4_t msg3 = crypto_sha256_load_block_words(block + 48U);
+    uint32x4_t tmp;
+
+#define SHA256_ARM_ROUND(message, index) \
+    do { \
+        tmp = vaddq_u32((message), vld1q_u32(g_sha256_k + (index))); \
+        state0 = vsha256hq_u32(state0, state1, tmp); \
+        state1 = vsha256h2q_u32(state1, state0, tmp); \
+    } while (0)
+#define SHA256_ARM_SCHED(message, next1, next2, next3) \
+    do { \
+        (message) = vsha256su0q_u32((message), (next1)); \
+        (message) = vsha256su1q_u32((message), (next2), (next3)); \
+    } while (0)
+
+    SHA256_ARM_ROUND(msg0, 0U);  SHA256_ARM_SCHED(msg0, msg1, msg2, msg3);
+    SHA256_ARM_ROUND(msg1, 4U);  SHA256_ARM_SCHED(msg1, msg2, msg3, msg0);
+    SHA256_ARM_ROUND(msg2, 8U);  SHA256_ARM_SCHED(msg2, msg3, msg0, msg1);
+    SHA256_ARM_ROUND(msg3, 12U); SHA256_ARM_SCHED(msg3, msg0, msg1, msg2);
+    SHA256_ARM_ROUND(msg0, 16U); SHA256_ARM_SCHED(msg0, msg1, msg2, msg3);
+    SHA256_ARM_ROUND(msg1, 20U); SHA256_ARM_SCHED(msg1, msg2, msg3, msg0);
+    SHA256_ARM_ROUND(msg2, 24U); SHA256_ARM_SCHED(msg2, msg3, msg0, msg1);
+    SHA256_ARM_ROUND(msg3, 28U); SHA256_ARM_SCHED(msg3, msg0, msg1, msg2);
+    SHA256_ARM_ROUND(msg0, 32U); SHA256_ARM_SCHED(msg0, msg1, msg2, msg3);
+    SHA256_ARM_ROUND(msg1, 36U); SHA256_ARM_SCHED(msg1, msg2, msg3, msg0);
+    SHA256_ARM_ROUND(msg2, 40U); SHA256_ARM_SCHED(msg2, msg3, msg0, msg1);
+    SHA256_ARM_ROUND(msg3, 44U); SHA256_ARM_SCHED(msg3, msg0, msg1, msg2);
+    SHA256_ARM_ROUND(msg0, 48U);
+    SHA256_ARM_ROUND(msg1, 52U);
+    SHA256_ARM_ROUND(msg2, 56U);
+    SHA256_ARM_ROUND(msg3, 60U);
+
+    state0 = vaddq_u32(state0, saved0);
+    state1 = vaddq_u32(state1, saved1);
+    vst1q_u32(ctx->state, state0);
+    vst1q_u32(ctx->state + 4U, state1);
+
+#undef SHA256_ARM_SCHED
+#undef SHA256_ARM_ROUND
+}
+#endif
+
 static void crypto_sha256_transform(CryptoSha256Context *ctx, const unsigned char block[64]) {
+#if defined(NEWOS_CRYPTO_SHA256_ARM_SHA)
+    crypto_sha256_transform_arm(ctx, block);
+#else
     unsigned int w[64];
     unsigned int a;
     unsigned int b;
@@ -129,6 +192,7 @@ static void crypto_sha256_transform(CryptoSha256Context *ctx, const unsigned cha
     ctx->state[5] += f;
     ctx->state[6] += g;
     ctx->state[7] += h;
+#endif
 }
 
 void crypto_sha256_init(CryptoSha256Context *ctx) {
@@ -152,7 +216,7 @@ void crypto_sha256_init(CryptoSha256Context *ctx) {
 }
 
 void crypto_sha256_update(CryptoSha256Context *ctx, const unsigned char *data, size_t len) {
-    size_t i = 0;
+    size_t offset = 0U;
 
     if (ctx == 0 || (data == 0 && len != 0U)) {
         return;
@@ -160,13 +224,20 @@ void crypto_sha256_update(CryptoSha256Context *ctx, const unsigned char *data, s
 
     ctx->bit_count += (unsigned long long)len * 8ULL;
 
-    while (i < len) {
-        size_t space = CRYPTO_SHA256_BLOCK_SIZE - ctx->buffer_len;
-        size_t chunk = (len - i < space) ? (len - i) : space;
+    if (ctx->buffer_len == 0U) {
+        while (len - offset >= CRYPTO_SHA256_BLOCK_SIZE) {
+            crypto_sha256_transform(ctx, data + offset);
+            offset += CRYPTO_SHA256_BLOCK_SIZE;
+        }
+    }
 
-        memcpy(ctx->buffer + ctx->buffer_len, data + i, chunk);
+    while (offset < len) {
+        size_t space = CRYPTO_SHA256_BLOCK_SIZE - ctx->buffer_len;
+        size_t chunk = (len - offset < space) ? (len - offset) : space;
+
+        memcpy(ctx->buffer + ctx->buffer_len, data + offset, chunk);
         ctx->buffer_len += chunk;
-        i += chunk;
+        offset += chunk;
 
         if (ctx->buffer_len == CRYPTO_SHA256_BLOCK_SIZE) {
             crypto_sha256_transform(ctx, ctx->buffer);
