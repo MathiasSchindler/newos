@@ -926,6 +926,11 @@ int emit_address_of_name(BackendState *state, const char *name) {
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rip), %rax");
             return emit_instruction(state, line);
         }
+        if (state->locals[local_index].indirect_object) {
+            const char *addr_reg = backend_is_aarch64(state) ? "x9" : "%rax";
+            return emit_local_address(state, state->locals[local_index].offset, addr_reg) == 0 &&
+                   emit_load_from_address_register(state, addr_reg, 0) == 0 ? 0 : -1;
+        }
         return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x0" : "%rax");
     }
 
@@ -1078,6 +1083,10 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
         }
         const char *address_reg = backend_is_aarch64(state) ? "x9" : "%rax";
         if (state->locals[local_index].is_array) {
+            if (state->locals[local_index].indirect_object) {
+                return emit_address_of_name(state, name) == 0 &&
+                       emit_move_value_register(state, dst_reg) == 0 ? 0 : -1;
+            }
             return emit_local_address(state, state->locals[local_index].offset, dst_reg);
         }
         {
@@ -1167,6 +1176,9 @@ int emit_load_name(BackendState *state, const char *name) {
         }
         if (state->locals[local_index].static_storage) {
             if (state->locals[local_index].is_array) {
+                if (state->locals[local_index].indirect_object) {
+                    return emit_address_of_name(state, name);
+                }
                 const char *type_text = skip_spaces(state->locals[local_index].type_text);
                 if (!((starts_with(type_text, "struct:") || starts_with(type_text, "union:")) &&
                       !text_contains(type_text, "*") &&
@@ -1186,8 +1198,8 @@ int emit_load_name(BackendState *state, const char *name) {
             if ((starts_with(type_text, "struct:") || starts_with(type_text, "union:")) &&
                 !text_contains(type_text, "*") &&
                 !text_contains(type_text, "[")) {
-                return emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rax") == 0 &&
-                       emit_load_from_address_register(state, backend_is_aarch64(state) ? "x9" : "%rax", 0) == 0 ? 0 : -1;
+                return emit_address_of_name(state, name) == 0 &&
+                       emit_load_from_address_register(state, backend_is_aarch64(state) ? "x0" : "%rax", 0) == 0 ? 0 : -1;
             }
             return emit_address_of_name(state, name);
         }
@@ -1442,13 +1454,13 @@ static int emit_copy_memory_call(BackendState *state, int bytes, const char *dst
             return -1;
         }
     }
-    if (emit_load_immediate_register(state, "%rdx", bytes) != 0) {
+    if (emit_instruction(state, "movq %rdi, %rax") != 0 ||
+        emit_load_immediate_register(state, "%rcx", bytes) != 0 ||
+        emit_instruction(state, "rep movsb") != 0) {
         return -1;
     }
     backend_invalidate_block_cache(state);
-    rt_copy_string(line, sizeof(line), "call ");
-    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
-    return emit_instruction(state, line);
+    return 0;
 }
 
 int emit_copy_object_to_name(BackendState *state, const char *name) {
@@ -1496,8 +1508,9 @@ int emit_copy_object_to_name(BackendState *state, const char *name) {
     }
 
     if (emit_instruction(state, "movq %rax, %rdx") != 0 ||
-        ((local_index >= 0 && !state->locals[local_index].static_storage) ? emit_local_address(state, offset, "%rcx")
-                                                                          : emit_address_of_name(state, name)) != 0) {
+        ((local_index >= 0 && !state->locals[local_index].static_storage && !state->locals[local_index].indirect_object)
+             ? emit_local_address(state, offset, "%rcx")
+             : emit_address_of_name(state, name)) != 0) {
         return -1;
     }
     if ((local_index < 0 || state->locals[local_index].static_storage) && emit_instruction(state, "movq %rax, %rcx") != 0) {
@@ -1558,8 +1571,9 @@ int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, co
     }
 
     if (emit_load_name_into_register(state, dst_pointer_name, "%rcx") != 0 ||
-        (state->locals[local_index].static_storage ? emit_address_of_name(state, src_name)
-                                                   : emit_local_address(state, offset, "%rdx")) != 0) {
+        ((state->locals[local_index].static_storage || state->locals[local_index].indirect_object)
+             ? emit_address_of_name(state, src_name)
+             : emit_local_address(state, offset, "%rdx")) != 0) {
         return -1;
     }
     if (state->locals[local_index].static_storage && emit_instruction(state, "movq %rax, %rdx") != 0) {

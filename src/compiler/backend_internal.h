@@ -66,6 +66,7 @@ typedef struct {
     int prefers_word_index;
     int static_storage;
     int cached_register;
+    int indirect_object;
 } BackendLocal;
 
 typedef struct {
@@ -215,6 +216,7 @@ int find_local(const BackendState *state, const char *name);
 void reset_local_index(BackendState *state);
 void rebuild_local_index(BackendState *state);
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
+int allocate_indirect_object_local(BackendState *state, const char *name, const char *type_text, int object_bytes, int char_based, int prefers_word_index);
 int allocate_cached_local(BackendState *state, const char *name, const char *type_text, int pointer_depth, int char_based, int prefers_word_index, int cached_register);
 int allocate_static_local(BackendState *state, const char *name, const char *symbol_name, const char *type_text, int storage_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 void build_static_local_symbol_name(const BackendState *state, const char *function_name, const char *name, char *buffer, size_t buffer_size);
@@ -276,6 +278,7 @@ int emit_store_name(BackendState *state, const char *name);
 int emit_copy_object_to_name(BackendState *state, const char *name);
 int emit_copy_name_to_pointer_name(BackendState *state, const char *src_name, const char *dst_pointer_name);
 int emit_copy_object_to_pushed_address(BackendState *state, int bytes);
+int emit_object_copy_to_pointer_name(BackendState *state, const char *dst_pointer_name, const char *expr, int bytes);
 int lookup_array_storage(const BackendState *state, const char *name, int *word_index_out);
 int emit_load_immediate_register(BackendState *state, const char *reg, long long value);
 int emit_load_immediate(BackendState *state, long long value);

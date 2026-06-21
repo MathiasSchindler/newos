@@ -1325,90 +1325,6 @@ static void exit_local_scope(BackendState *state) {
     backend_invalidate_block_cache(state);
 }
 
-static int emit_preserve_x86_64_argument_registers(BackendState *state, int first_register_index, int save) {
-    const char x86_arg_regs[][5] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-    int limit = backend_register_arg_limit(state);
-    int index;
-
-    if (backend_is_aarch64(state)) {
-        return 0;
-    }
-    if (first_register_index < 0) {
-        first_register_index = 0;
-    }
-    if (first_register_index >= limit) {
-        return 0;
-    }
-    if (save) {
-        for (index = first_register_index; index < limit; ++index) {
-            char line[32];
-            rt_copy_string(line, sizeof(line), "pushq ");
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), x86_arg_regs[index]);
-            if (emit_instruction(state, line) != 0) {
-                return -1;
-            }
-        }
-    } else {
-        for (index = limit - 1; index >= first_register_index; --index) {
-            char line[32];
-            rt_copy_string(line, sizeof(line), "popq ");
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), x86_arg_regs[index]);
-            if (emit_instruction(state, line) != 0) {
-                return -1;
-            }
-        }
-    }
-    return 0;
-}
-
-static int emit_preserve_aarch64_argument_registers(BackendState *state, int first_register_index, int save) {
-    const char aarch64_arg_regs[][3] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
-    int limit = backend_register_arg_limit(state);
-    int index;
-
-    if (!backend_is_aarch64(state)) {
-        return 0;
-    }
-    if (first_register_index < 0) {
-        first_register_index = 0;
-    }
-    if (first_register_index >= limit) {
-        return 0;
-    }
-    if (save) {
-        for (index = first_register_index; index < limit; ++index) {
-            char line[48];
-            if (emit_instruction(state, "sub sp, sp, #16") != 0) {
-                return -1;
-            }
-            rt_copy_string(line, sizeof(line), "str ");
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), aarch64_arg_regs[index]);
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp]");
-            if (emit_instruction(state, line) != 0) {
-                return -1;
-            }
-        }
-    } else {
-        for (index = limit - 1; index >= first_register_index; --index) {
-            char line[48];
-            rt_copy_string(line, sizeof(line), "ldr ");
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), aarch64_arg_regs[index]);
-            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", [sp]");
-            if (emit_instruction(state, line) != 0 ||
-                emit_instruction(state, "add sp, sp, #16") != 0) {
-                return -1;
-            }
-        }
-    }
-    return 0;
-}
-
-static int emit_preserve_argument_registers(BackendState *state, int first_register_index, int save) {
-    return backend_is_aarch64(state)
-               ? emit_preserve_aarch64_argument_registers(state, first_register_index, save)
-               : emit_preserve_x86_64_argument_registers(state, first_register_index, save);
-}
-
 static int emit_function_return(BackendState *state) {
     if (backend_is_aarch64(state)) {
         return emit_instruction(state, "mov sp, x29") == 0 &&
@@ -1638,19 +1554,18 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             return 0;
         }
 
-        if (allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
-            return -1;
-        }
-        {
-            int local_index = find_local(state, name);
+        if (object_by_value_param) {
             int max_register_params = backend_register_arg_limit(state);
+            int local_index;
             char offset_text[32];
+
+            if (allocate_indirect_object_local(state, name, type_text, slot_size, char_based, prefers_word_index) != 0) {
+                return -1;
+            }
+            local_index = find_local(state, name);
             rt_unsigned_to_string((unsigned long long)state->locals[local_index].offset, offset_text, sizeof(offset_text));
-            if (object_by_value_param) {
+            {
                 if (index < max_register_params) {
-                    if (emit_preserve_argument_registers(state, index + 1, 1) != 0) {
-                        return -1;
-                    }
                     if (backend_is_aarch64(state)) {
                         if (!names_equal(aarch64_arg_regs[index], "x0")) {
                             rt_copy_string(asm_line, sizeof(asm_line), "mov x0, ");
@@ -1688,16 +1603,38 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
                         return -1;
                     }
                 }
-                if (emit_copy_object_to_name(state, name) != 0) {
-                    return -1;
+                if (backend_is_aarch64(state)) {
+                    if (state->locals[local_index].offset <= 255) {
+                        rt_copy_string(asm_line, sizeof(asm_line), "stur x0, [x29, #-");
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+                        rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "]");
+                    } else {
+                        if (emit_local_address(state, state->locals[local_index].offset, "x10") != 0) {
+                            return -1;
+                        }
+                        rt_copy_string(asm_line, sizeof(asm_line), "str x0, [x10]");
+                    }
+                } else {
+                    rt_copy_string(asm_line, sizeof(asm_line), "movq %rax, -");
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+                    rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "(%rbp)");
                 }
-                if (index < max_register_params &&
-                    emit_preserve_argument_registers(state, index + 1, 0) != 0) {
+                if (emit_instruction(state, asm_line) != 0) {
                     return -1;
                 }
                 state->param_count += 1;
                 return 0;
             }
+        }
+
+        if (allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
+            return -1;
+        }
+        {
+            int local_index = find_local(state, name);
+            int max_register_params = backend_register_arg_limit(state);
+            char offset_text[32];
+            rt_unsigned_to_string((unsigned long long)state->locals[local_index].offset, offset_text, sizeof(offset_text));
             if (index < max_register_params) {
                 if (backend_is_aarch64(state)) {
                     if (state->locals[local_index].offset <= 255) {
@@ -1995,12 +1932,18 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             const char *expr = skip_spaces(line + 3);
             if (function_returns_object(&state, state.current_function)) {
                 if (expr[0] != '\0') {
-                    if (emit_object_copy_store(&state, "__retobj", expr) != 0) {
-                        backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
-                        return -1;
+                    const char *return_type = function_return_type(&state, state.current_function);
+                    int return_bytes = decl_slot_size(&state, return_type);
+                    if (emit_object_copy_to_pointer_name(&state, "__retbuf", expr, return_bytes) != 0) {
+                        if (emit_object_copy_store(&state, "__retobj", expr) != 0) {
+                            backend_set_error_with_line(backend, compiler_backend_error_message(backend), line);
+                            return -1;
+                        }
+                        if (emit_copy_name_to_pointer_name(&state, "__retobj", "__retbuf") != 0) {
+                            return -1;
+                        }
                     }
-                }
-                if (emit_copy_name_to_pointer_name(&state, "__retobj", "__retbuf") != 0) {
+                } else if (emit_copy_name_to_pointer_name(&state, "__retobj", "__retbuf") != 0) {
                     return -1;
                 }
             } else if (expr[0] == '\0') {

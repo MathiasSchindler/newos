@@ -651,7 +651,13 @@ int type_is_unsigned_like(const char *type_text) {
            names_equal(type, "size_t") ||
            names_equal(type, "uintptr_t") ||
            names_equal(type, "usize") ||
+           names_equal(type, "uint8_t") ||
+           names_equal(type, "uint16_t") ||
+           names_equal(type, "uint32_t") ||
            names_equal(type, "u64") ||
+           names_equal(type, "u32") ||
+           names_equal(type, "u16") ||
+           names_equal(type, "u8") ||
            names_equal(type, "uint64_t");
 }
 

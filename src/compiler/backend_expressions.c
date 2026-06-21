@@ -1169,6 +1169,30 @@ static int emit_named_call(ExprParser *parser, const char *name, const char *obj
     if (emit_move_call_arguments(parser->state, arg_count) != 0) {
         return -1;
     }
+    if (!returns_object && !backend_is_aarch64(parser->state) &&
+        ((names_equal(name, "memcpy") && arg_count == 3) ||
+         (names_equal(name, "memset") && arg_count == 3))) {
+        if (names_equal(name, "memcpy")) {
+            if (emit_instruction(parser->state, "movq %rdi, %rax") != 0 ||
+                emit_instruction(parser->state, "movq %rdx, %rcx") != 0 ||
+                emit_instruction(parser->state, "rep movsb") != 0) {
+                return -1;
+            }
+        } else {
+            if (emit_instruction(parser->state, "movq %rdi, %r8") != 0 ||
+                emit_instruction(parser->state, "movl %esi, %eax") != 0 ||
+                emit_instruction(parser->state, "movq %rdx, %rcx") != 0 ||
+                emit_instruction(parser->state, "rep stosb") != 0 ||
+                emit_instruction(parser->state, "movq %r8, %rax") != 0) {
+                return -1;
+            }
+        }
+        backend_invalidate_block_cache(parser->state);
+        if (emit_cleanup_call_arguments(parser->state, arg_count) != 0) {
+            return -1;
+        }
+        return expr_parse_postfix_suffixes(parser, 0, 0, 0, 0);
+    }
     if (!backend_is_aarch64(parser->state)) {
         int stack_index;
         int register_arg_count = backend_register_arg_limit(parser->state);
@@ -1692,6 +1716,168 @@ static int emit_shift_immediate(BackendState *state, const char *op, long long a
     return emit_instruction(state, line);
 }
 
+static int emit_multiply_immediate(BackendState *state, long long amount, int unsigned_32bit_result) {
+    char line[96];
+    char digits[32];
+    unsigned long long magnitude;
+    int shift = 0;
+
+    if (amount == 0) {
+        return emit_instruction(state, backend_is_aarch64(state) ? "mov x0, #0" : "xor %eax, %eax");
+    }
+    if (amount == 1) {
+        return unsigned_32bit_result
+                   ? emit_instruction(state, backend_is_aarch64(state) ? "uxtw x0, w0" : "movl %eax, %eax")
+                   : 0;
+    }
+    if (amount > 0) {
+        magnitude = (unsigned long long)amount;
+        while (((1ULL << (unsigned int)shift) < magnitude) && shift < 62) {
+            shift += 1;
+        }
+        if ((1ULL << (unsigned int)shift) == magnitude) {
+            rt_unsigned_to_string((unsigned long long)shift, digits, sizeof(digits));
+            if (backend_is_aarch64(state)) {
+                rt_copy_string(line, sizeof(line), "lsl x0, x0, #");
+            } else {
+                rt_copy_string(line, sizeof(line), "salq $");
+            }
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            if (!backend_is_aarch64(state)) {
+                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rax");
+            }
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+            if (unsigned_32bit_result) {
+                return emit_instruction(state, backend_is_aarch64(state) ? "uxtw x0, w0" : "movl %eax, %eax");
+            }
+            return 0;
+        }
+    }
+
+    if (amount < 0) {
+        char magnitude_text[32];
+        rt_unsigned_to_string((unsigned long long)(-(amount + 1LL)) + 1ULL, magnitude_text, sizeof(magnitude_text));
+        rt_copy_string(digits, sizeof(digits), "-");
+        rt_copy_string(digits + rt_strlen(digits), sizeof(digits) - rt_strlen(digits), magnitude_text);
+    } else {
+        rt_unsigned_to_string((unsigned long long)amount, digits, sizeof(digits));
+    }
+    if (backend_is_aarch64(state)) {
+        if (emit_load_immediate_register(state, "x2", amount) != 0) {
+            return -1;
+        }
+        if (emit_instruction(state, "mul x0, x0, x2") != 0) {
+            return -1;
+        }
+        return unsigned_32bit_result ? emit_instruction(state, "uxtw x0, w0") : 0;
+    }
+    if (amount < -2147483648LL || amount > 2147483647LL) {
+        if (emit_load_immediate_register(state, "%rcx", amount) != 0) {
+            return -1;
+        }
+        if (emit_instruction(state, "imulq %rcx, %rax") != 0) {
+            return -1;
+        }
+    } else {
+        rt_copy_string(line, sizeof(line), "imulq $");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rax, %rax");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    }
+    return unsigned_32bit_result ? emit_instruction(state, "movl %eax, %eax") : 0;
+}
+
+static int expr_try_match_punct(ExprParser *parser, const char *text) {
+    if (parser->current.kind != EXPR_TOKEN_PUNCT || !names_equal(parser->current.text, text)) {
+        return -1;
+    }
+    expr_next(parser);
+    return 0;
+}
+
+static int expr_try_parse_rotr32_identifier(ExprParser *parser) {
+    ExprParser snapshot = *parser;
+    char name[COMPILER_IR_NAME_CAPACITY];
+    long long amount;
+    char line[64];
+    char digits[32];
+
+    if (expr_try_match_punct(&snapshot, "(") != 0 ||
+        expr_try_match_punct(&snapshot, "(") != 0 ||
+        snapshot.current.kind != EXPR_TOKEN_IDENTIFIER) {
+        return 0;
+    }
+    rt_copy_string(name, sizeof(name), snapshot.current.text);
+    expr_next(&snapshot);
+    if (expr_try_match_punct(&snapshot, ")") != 0 ||
+        expr_try_match_punct(&snapshot, ">>") != 0 ||
+        expr_try_match_punct(&snapshot, "(") != 0 ||
+        snapshot.current.kind != EXPR_TOKEN_NUMBER) {
+        return 0;
+    }
+    amount = snapshot.current.number_value;
+    if (amount <= 0 || amount >= 32) {
+        return 0;
+    }
+    expr_next(&snapshot);
+    if (expr_try_match_punct(&snapshot, ")") != 0 ||
+        expr_try_match_punct(&snapshot, ")") != 0 ||
+        expr_try_match_punct(&snapshot, "|") != 0 ||
+        expr_try_match_punct(&snapshot, "(") != 0 ||
+        expr_try_match_punct(&snapshot, "(") != 0 ||
+        snapshot.current.kind != EXPR_TOKEN_IDENTIFIER ||
+        !names_equal(snapshot.current.text, name)) {
+        return 0;
+    }
+    expr_next(&snapshot);
+    if (expr_try_match_punct(&snapshot, ")") != 0 ||
+        expr_try_match_punct(&snapshot, "<<") != 0 ||
+        expr_try_match_punct(&snapshot, "(") != 0 ||
+        snapshot.current.kind != EXPR_TOKEN_NUMBER ||
+        snapshot.current.number_value != 32) {
+        return 0;
+    }
+    expr_next(&snapshot);
+    if (expr_try_match_punct(&snapshot, "-") != 0 ||
+        expr_try_match_punct(&snapshot, "(") != 0 ||
+        snapshot.current.kind != EXPR_TOKEN_NUMBER ||
+        snapshot.current.number_value != amount) {
+        return 0;
+    }
+    expr_next(&snapshot);
+    if (expr_try_match_punct(&snapshot, ")") != 0 ||
+        expr_try_match_punct(&snapshot, ")") != 0 ||
+        expr_try_match_punct(&snapshot, ")") != 0) {
+        return 0;
+    }
+
+    if (emit_load_name(parser->state, name) != 0) {
+        return -1;
+    }
+    rt_unsigned_to_string((unsigned long long)amount, digits, sizeof(digits));
+    if (backend_is_aarch64(parser->state)) {
+        rt_copy_string(line, sizeof(line), "ror w0, w0, #");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        if (emit_instruction(parser->state, line) != 0 ||
+            emit_instruction(parser->state, "uxtw x0, w0") != 0) {
+            return -1;
+        }
+    } else {
+        rt_copy_string(line, sizeof(line), "rorl $");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %eax");
+        if (emit_instruction(parser->state, line) != 0) {
+            return -1;
+        }
+    }
+    *parser = snapshot;
+    return 1;
+}
+
 static int expr_parse_constant_additive(ExprParser *parser, long long *value_out);
 
 static int expr_parse_constant_primary(ExprParser *parser, long long *value_out) {
@@ -1925,11 +2111,42 @@ static int expr_parse_multiplicative(ExprParser *parser) {
         char op[4];
         char rhs_type[128];
         ExprParser rhs_snapshot;
+        ExprParser const_parser;
         int use_unsigned;
         int unsigned_32bit_result;
+        long long immediate;
 
         rt_copy_string(op, sizeof(op), parser->current.text);
         expr_next(parser);
+        if (names_equal(op, "*")) {
+            const_parser = *parser;
+            if (expr_parse_constant_unary(&const_parser, &immediate) == 0) {
+                rhs_snapshot = *parser;
+                expr_infer_result_type(&rhs_snapshot, rhs_type, sizeof(rhs_type));
+                use_unsigned = lhs_unsigned ||
+                               expr_snapshot_looks_unsigned(&rhs_snapshot) ||
+                               type_is_unsigned_like(lhs_type) ||
+                               type_is_unsigned_like(rhs_type);
+                unsigned_32bit_result = use_unsigned &&
+                                        lhs_type[0] != '\0' &&
+                                        rhs_type[0] != '\0' &&
+                                        !text_contains(lhs_type, "long") &&
+                                        !text_contains(rhs_type, "long") &&
+                                        !text_contains(lhs_type, "64") &&
+                                        !text_contains(rhs_type, "64") &&
+                                        !text_contains(lhs_type, "*") &&
+                                        !text_contains(rhs_type, "*") &&
+                                        !text_contains(lhs_type, "[") &&
+                                        !text_contains(rhs_type, "[");
+                *parser = const_parser;
+                if (emit_multiply_immediate(parser->state, immediate, unsigned_32bit_result) != 0) {
+                    return -1;
+                }
+                rt_copy_string(lhs_type, sizeof(lhs_type), unsigned_32bit_result ? "unsigned int" : (use_unsigned ? "unsigned long" : "int"));
+                lhs_unsigned = use_unsigned;
+                continue;
+            }
+        }
         if (emit_push_value(parser->state) != 0) {
             return -1;
         }
@@ -2141,6 +2358,10 @@ static int expr_parse_bitxor(ExprParser *parser) {
 
 static int expr_parse_bitor(ExprParser *parser) {
     const char ops[][4] = {"|"};
+    int rotated = expr_try_parse_rotr32_identifier(parser);
+    if (rotated != 0) {
+        return rotated < 0 ? -1 : 0;
+    }
     return expr_parse_chain(parser, 7, ops, sizeof(ops) / sizeof(ops[0]));
 }
 
@@ -3736,4 +3957,45 @@ int emit_object_copy_store(BackendState *state, const char *name, const char *ex
     }
 
     return emit_copy_object_to_name(state, name);
+}
+
+int emit_object_copy_to_pointer_name(BackendState *state, const char *dst_pointer_name, const char *expr, int bytes) {
+    ExprParser parser;
+    int byte_sized = 0;
+
+    parser.cursor = expr;
+    parser.state = state;
+    expr_next(&parser);
+
+    if (parser.current.kind == EXPR_TOKEN_IDENTIFIER) {
+        char function_name[COMPILER_IR_NAME_CAPACITY];
+        ExprParser call_parser = parser;
+
+        rt_copy_string(function_name, sizeof(function_name), parser.current.text);
+        expr_next(&call_parser);
+        if (call_parser.current.kind == EXPR_TOKEN_PUNCT &&
+            names_equal(call_parser.current.text, "(") &&
+            function_returns_object(state, function_name)) {
+            if (emit_load_name(state, dst_pointer_name) != 0 ||
+                emit_push_value(state) != 0 ||
+                emit_named_object_call_to_pushed_address(&call_parser, function_name) != 0) {
+                return -1;
+            }
+            return call_parser.current.kind == EXPR_TOKEN_EOF ? 0 : -1;
+        }
+    }
+
+    parser.cursor = expr;
+    parser.state = state;
+    expr_next(&parser);
+    if (expr_may_be_object_lvalue_source(&parser)) {
+        if (emit_load_name(state, dst_pointer_name) != 0 ||
+            emit_push_value(state) != 0 ||
+            expr_parse_lvalue_address(&parser, &byte_sized) != 0) {
+            return -1;
+        }
+        return emit_copy_object_to_pushed_address(state, bytes);
+    }
+
+    return -1;
 }

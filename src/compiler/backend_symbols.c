@@ -706,6 +706,44 @@ int allocate_local(BackendState *state, const char *name, const char *type_text,
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 0;
     state->locals[state->local_count].cached_register = -1;
+    state->locals[state->local_count].indirect_object = 0;
+    state->stack_size += slot_size;
+    remember_local_index(state, name, (unsigned int)state->local_count);
+    state->local_count += 1U;
+
+    if (state->reserved_stack_size > 0 && state->stack_size > state->reserved_stack_size) {
+        backend_set_error(state->backend, "local stack reservation mismatch");
+        return -1;
+    }
+
+    return 0;
+}
+
+int allocate_indirect_object_local(BackendState *state,
+                                   const char *name,
+                                   const char *type_text,
+                                   int object_bytes,
+                                   int char_based,
+                                   int prefers_word_index) {
+    int slot_size = backend_stack_slot_size(state);
+
+    if (state->local_count >= COMPILER_BACKEND_MAX_LOCALS) {
+        backend_set_error(state->backend, "too many local variables for backend");
+        return -1;
+    }
+
+    rt_copy_string(state->locals[state->local_count].name, sizeof(state->locals[state->local_count].name), name);
+    rt_copy_string(state->locals[state->local_count].type_text, sizeof(state->locals[state->local_count].type_text), type_text != 0 ? type_text : "");
+    state->locals[state->local_count].symbol_name[0] = '\0';
+    state->locals[state->local_count].stack_bytes = object_bytes > 0 ? object_bytes : BACKEND_STRUCT_STACK_BYTES;
+    state->locals[state->local_count].offset = state->stack_size + slot_size;
+    state->locals[state->local_count].is_array = 1;
+    state->locals[state->local_count].pointer_depth = 0;
+    state->locals[state->local_count].char_based = char_based;
+    state->locals[state->local_count].prefers_word_index = prefers_word_index;
+    state->locals[state->local_count].static_storage = 0;
+    state->locals[state->local_count].cached_register = -1;
+    state->locals[state->local_count].indirect_object = 1;
     state->stack_size += slot_size;
     remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
@@ -735,6 +773,7 @@ int allocate_cached_local(BackendState *state, const char *name, const char *typ
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 0;
     state->locals[state->local_count].cached_register = cached_register;
+    state->locals[state->local_count].indirect_object = 0;
     remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
     return 0;
@@ -759,6 +798,7 @@ int allocate_static_local(BackendState *state, const char *name, const char *sym
     state->locals[state->local_count].prefers_word_index = prefers_word_index;
     state->locals[state->local_count].static_storage = 1;
     state->locals[state->local_count].cached_register = -1;
+    state->locals[state->local_count].indirect_object = 0;
     remember_local_index(state, name, (unsigned int)state->local_count);
     state->local_count += 1U;
     return 0;
