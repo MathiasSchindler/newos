@@ -1387,7 +1387,8 @@ int compiler_ir_optimize(CompilerIr *ir) {
 
         if (ir_starts_with(line, "func ") || ir_starts_with(line, "endfunc ") ||
             ir_starts_with(line, "switch ") || ir_starts_with(line, "case ") ||
-            ir_text_equals(line, "default") || ir_starts_with(line, "endswitch")) {
+            ir_text_equals(line, "default") || ir_starts_with(line, "endswitch") ||
+            ir_starts_with(line, "scope-enter") || ir_starts_with(line, "scope-exit")) {
             ir_clear_local_values(&state);
             i += 1U;
             continue;

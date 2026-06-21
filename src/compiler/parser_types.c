@@ -413,6 +413,7 @@ static int parse_aggregate_definition(CompilerParser *parser, CompilerType *type
             }
             member_type.is_function = declarator.is_function;
             member_type.is_array = declarator.is_array;
+            member_type.pointer_to_array = declarator.pointer_to_array;
             member_type.array_length = declarator.array_length;
             member_type.array_stride = declarator.array_stride;
 

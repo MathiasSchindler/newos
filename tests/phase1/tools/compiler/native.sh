@@ -146,6 +146,79 @@ EOF
 
 compile_and_check_native "$WORK_DIR/u64_unsigned_division_guard.c" "$WORK_DIR/u64_unsigned_division_guard_bin" "0" "compiler emitted signed division for an unsigned overflow guard"
 
+cat > "$WORK_DIR/sizeof_scalar_specifiers.c" <<'EOF'
+int main(void) {
+    return sizeof(unsigned short) == 2U &&
+           sizeof(unsigned char) == 1U &&
+           sizeof(unsigned int) == 4U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/sizeof_scalar_specifiers.c" "$WORK_DIR/sizeof_scalar_specifiers_bin" "0" "compiler mis-sized multi-token scalar sizeof type names"
+
+cat > "$WORK_DIR/struct_pointer_to_array_field.c" <<'EOF'
+struct List {
+    unsigned char (*oids)[20];
+    unsigned long count;
+};
+
+int main(void) {
+    unsigned char data[2][20];
+    struct List list;
+
+    data[1][0] = 42U;
+    list.oids = data;
+    list.count = 2U;
+    return sizeof(struct List) == 16U && list.count == 2U && list.oids[1][0] == 42U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/struct_pointer_to_array_field.c" "$WORK_DIR/struct_pointer_to_array_field_bin" "0" "compiler mishandled a struct field declared as pointer to array"
+
+cat > "$WORK_DIR/struct_member_function_pointer_call.c" <<'EOF'
+struct Reader {
+    int (*read_fn)(void *context, unsigned char *buffer, unsigned long capacity, unsigned long *size_out);
+    void *context;
+};
+
+static int fill(void *context, unsigned char *buffer, unsigned long capacity, unsigned long *size_out) {
+    (void)context;
+    if (capacity < 1U) return -1;
+    buffer[0] = 66U;
+    *size_out = 1U;
+    return 0;
+}
+
+int main(void) {
+    struct Reader reader;
+    unsigned char buffer[4];
+    unsigned long size = 0U;
+
+    reader.read_fn = fill;
+    reader.context = 0;
+    return reader.read_fn(reader.context, buffer, sizeof(buffer), &size) == 0 &&
+           size == 1U && buffer[0] == 66U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/struct_member_function_pointer_call.c" "$WORK_DIR/struct_member_function_pointer_call_bin" "0" "compiler failed to emit an indirect call through a struct member function pointer"
+
+cat > "$WORK_DIR/shifted_array_bound.c" <<'EOF'
+#define FAST_BITS 12U
+#define FAST_SIZE (1U << FAST_BITS)
+
+struct Table {
+    unsigned short fast_symbol[FAST_SIZE];
+    unsigned char fast_bits[FAST_SIZE];
+};
+
+int main(void) {
+    return sizeof(struct Table) == (4096U * 2U + 4096U) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/shifted_array_bound.c" "$WORK_DIR/shifted_array_bound_bin" "0" "compiler mis-sized array bounds containing shifts"
+
 cat > "$WORK_DIR/compound_shift_assignment.c" <<'EOF'
 typedef struct {
     unsigned int bit_buffer;
@@ -217,6 +290,30 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/global_struct_copy_from_pointer.c" "$WORK_DIR/global_struct_copy_from_pointer_bin" "0" "compiler failed to copy into a global aggregate assignment target"
+
+cat > "$WORK_DIR/block_shadowing.c" <<'EOF'
+static int marker;
+
+static int shadowed_pointer(void) {
+    int outer_value = 3;
+    int *value = &outer_value;
+
+    if (outer_value == 3) {
+        int inner_value = 7;
+        int *value = &inner_value;
+        marker = *value;
+    }
+
+    *value = *value + marker;
+    return outer_value;
+}
+
+int main(void) {
+    return shadowed_pointer() == 10 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/block_shadowing.c" "$WORK_DIR/block_shadowing_bin" "0" "compiler did not restore shadowed local bindings after a block scope"
 
 cat > "$WORK_DIR/array_parameter_reassignment.c" <<'EOF'
 typedef unsigned char u8;
@@ -918,6 +1015,28 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/int128_cast.c" "$WORK_DIR/int128_cast_bin" "0" "compiler failed on __int128 cast expressions"
+
+cat > "$WORK_DIR/atomic_builtins.c" <<'EOF'
+int main(void) {
+    int value = 1;
+    int expected;
+
+    if (__atomic_exchange_n(&value, 3, __ATOMIC_ACQ_REL) != 1) return 1;
+    __atomic_store_n(&value, 4, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&value, __ATOMIC_ACQUIRE) != 4) return 2;
+    if (__atomic_fetch_add(&value, 2, __ATOMIC_ACQ_REL) != 4) return 3;
+    if (__atomic_fetch_sub(&value, 1, __ATOMIC_ACQ_REL) != 6) return 4;
+    expected = 5;
+    if (!__atomic_compare_exchange_n(&value, &expected, 9, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return 5;
+    expected = 5;
+    if (__atomic_compare_exchange_n(&value, &expected, 10, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return 6;
+    if (expected != 9) return 7;
+    __sync_synchronize();
+    return value == 9 ? 0 : 8;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/atomic_builtins.c" "$WORK_DIR/atomic_builtins_bin" "0" "compiler atomic builtin lowering failed"
 
 if [ "$RUN_TARGET" = "linux-x86_64" ] && command -v cc >/dev/null 2>&1; then
     native_ar="${TEST_BIN_DIR}/ar"

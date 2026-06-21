@@ -129,7 +129,8 @@ static void rt_task_pool_run_parallel_worker(RtTaskPool *pool, unsigned int work
         }
         claimed_any = 1U;
         rt_task_pool_stat_add_worker(pool->stats.worker_chunks, worker_index, 1ULL);
-        rt_task_pool_record_error(pool, pool->parallel_body(begin, end, worker_index, pool->work_arg));
+        int worker_error = pool->parallel_body(begin, end, worker_index, pool->work_arg);
+        rt_task_pool_record_error(pool, worker_error);
     }
     if (claimed_any != 0U) {
         rt_task_pool_stat_add(&pool->stats.workers_ran, 1ULL);
@@ -159,7 +160,8 @@ static void rt_task_pool_run_group_worker(RtTaskPool *pool, unsigned int worker_
         rt_task_pool_stat_add(&pool->stats.group_tasks_claimed, (unsigned long long)(end - begin));
         rt_task_pool_stat_add_worker(pool->stats.worker_group_tasks, worker_index, (unsigned long long)(end - begin));
         for (index = begin; index < end; ++index) {
-            rt_task_pool_record_error(pool, group->tasks[index].function(worker_index, group->tasks[index].arg));
+            int task_error = group->tasks[index].function(worker_index, group->tasks[index].arg);
+            rt_task_pool_record_error(pool, task_error);
         }
     }
     if (claimed_any != 0U) {

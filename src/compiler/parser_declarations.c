@@ -233,6 +233,20 @@ static int apply_array_length_value(CompilerParser *parser,
         if (value != 0) {
             *term_io /= value;
         }
+    } else if (pending_op == '<') {
+        if (value < 0 || value >= 63) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+        if (*term_io > (LLONG_MAX >> value)) {
+            set_error(parser, "array bound is too large");
+            return -1;
+        }
+        *term_io <<= value;
+    } else if (pending_op == '>') {
+        if (value >= 0 && value < 63) {
+            *term_io >>= value;
+        }
     } else if (pending_op == '-') {
         if (checked_add_long_long(*sum_io, *term_io, &next_sum) != 0) {
             set_error(parser, "array bound is too large");
@@ -378,9 +392,16 @@ static int maybe_capture_array_length(CompilerParser *parser, unsigned long long
                 }
             }
         } else if (parser->current.kind == COMPILER_TOKEN_PUNCTUATOR &&
-                   parser->current.length == 1U) {
+                   (parser->current.length == 1U || parser->current.length == 2U)) {
             char op = parser->current.start[0];
-            if (op == '+' || op == '-' || op == '*' || op == '/') {
+            if (parser->current.length == 2U &&
+                parser->current.start[0] == '<' && parser->current.start[1] == '<') {
+                pending_op = '<';
+            } else if (parser->current.length == 2U &&
+                       parser->current.start[0] == '>' && parser->current.start[1] == '>') {
+                pending_op = '>';
+            } else if (parser->current.length == 1U &&
+                       (op == '+' || op == '-' || op == '*' || op == '/')) {
                 pending_op = op;
             }
         }

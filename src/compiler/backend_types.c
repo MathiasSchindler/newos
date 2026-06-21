@@ -187,6 +187,11 @@ int backend_member_prefers_word_index(const char *name, const char *type_text) {
 }
 
 int backend_member_result_decays_to_address(const char *type_text) {
+    char element_type[128];
+
+    if (copy_pointer_to_array_element_type(type_text, element_type, sizeof(element_type))) {
+        return 0;
+    }
     return analyze_backend_type(type_text).has_array;
 }
 

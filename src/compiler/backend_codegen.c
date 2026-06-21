@@ -322,6 +322,12 @@ static int line_takes_identifier_address(const char *line, const char *name) {
         }
         if (!in_string && !in_char && line[i] == '&' && (i == 0U || line[i - 1U] != '&')) {
             const char *cursor = skip_spaces(line + i + 1U);
+            while (*cursor == '(') {
+                cursor = skip_spaces(cursor + 1);
+            }
+            if (*cursor == '&') {
+                cursor = skip_spaces(cursor + 1);
+            }
             if (text_has_identifier_at(cursor, name)) {
                 return 1;
             }
@@ -333,6 +339,9 @@ static int line_takes_identifier_address(const char *line, const char *name) {
 
 static int is_assignment_operator_after_identifier(const char *cursor) {
     cursor = skip_spaces(cursor);
+    while (*cursor == ')') {
+        cursor = skip_spaces(cursor + 1);
+    }
     if (cursor[0] == '=' && cursor[1] != '=') {
         return 1;
     }
@@ -918,6 +927,7 @@ static int begin_function(BackendState *state, const char *name) {
     state->in_function = 1;
     state->local_count = 0;
     reset_local_index(state);
+    state->local_scope_count = 0;
     state->param_count = returns_object ? 1 : 0;
     state->saw_return_in_function = 0;
     state->frameless_function = 0;
@@ -1066,6 +1076,7 @@ static int begin_function(BackendState *state, const char *name) {
 static int end_function(BackendState *state) {
     state->in_function = 0;
     state->local_count = 0;
+    state->local_scope_count = 0;
     state->param_count = 0;
     state->saw_return_in_function = 0;
     state->frameless_function = 0;
@@ -1079,6 +1090,26 @@ static int end_function(BackendState *state) {
     state->current_ir_index = -1;
     state->current_function[0] = '\0';
     return 0;
+}
+
+static int enter_local_scope(BackendState *state) {
+    if (state->local_scope_count >= COMPILER_BACKEND_MAX_LOCAL_SCOPES) {
+        backend_set_error(state->backend, "local scope nesting exceeded backend limits");
+        return -1;
+    }
+    state->local_scope_markers[state->local_scope_count] = state->local_count;
+    state->local_scope_count += 1U;
+    return 0;
+}
+
+static void exit_local_scope(BackendState *state) {
+    if (state->local_scope_count == 0U) {
+        return;
+    }
+    state->local_scope_count -= 1U;
+    state->local_count = state->local_scope_markers[state->local_scope_count];
+    rebuild_local_index(state);
+    backend_invalidate_block_cache(state);
 }
 
 static int emit_function_return(BackendState *state) {
@@ -1101,12 +1132,12 @@ static int emit_x86_64_syscall_inline_asm(BackendState *state) {
         backend_set_error(state->backend, "syscall inline asm is only supported on x86_64");
         return -1;
     }
-    if (emit_load_name_into_register(state, "rdi", "%rdi") != 0 ||
-        emit_load_name_into_register(state, "rsi", "%rsi") != 0 ||
-        emit_load_name_into_register(state, "rdx", "%rdx") != 0 ||
-        emit_load_name_into_register(state, "r10", "%r10") != 0 ||
-        emit_load_name_into_register(state, "r8", "%r8") != 0 ||
-        emit_load_name_into_register(state, "r9", "%r9") != 0 ||
+    if ((find_local(state, "rdi") >= 0 && emit_load_name_into_register(state, "rdi", "%rdi") != 0) ||
+        (find_local(state, "rsi") >= 0 && emit_load_name_into_register(state, "rsi", "%rsi") != 0) ||
+        (find_local(state, "rdx") >= 0 && emit_load_name_into_register(state, "rdx", "%rdx") != 0) ||
+        (find_local(state, "r10") >= 0 && emit_load_name_into_register(state, "r10", "%r10") != 0) ||
+        (find_local(state, "r8") >= 0 && emit_load_name_into_register(state, "r8", "%r8") != 0) ||
+        (find_local(state, "r9") >= 0 && emit_load_name_into_register(state, "r9", "%r9") != 0) ||
         emit_load_name_into_register(state, "rax", "%rax") != 0 ||
         emit_instruction(state, "syscall") != 0 ||
         emit_store_name(state, "rax") != 0) {
@@ -1447,6 +1478,18 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
         }
 
         if (!state.in_function) {
+            continue;
+        }
+
+        if (starts_with(line, "scope-enter")) {
+            if (enter_local_scope(&state) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (starts_with(line, "scope-exit")) {
+            exit_local_scope(&state);
             continue;
         }
 

@@ -670,6 +670,15 @@ void reset_local_index(BackendState *state) {
     rt_memset(state->local_index, 0, sizeof(state->local_index));
 }
 
+void rebuild_local_index(BackendState *state) {
+    size_t i;
+
+    reset_local_index(state);
+    for (i = 0; i < state->local_count; ++i) {
+        remember_local_index(state, state->locals[i].name, (unsigned int)i);
+    }
+}
+
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index) {
     int slot_size = stack_bytes > 0 ? stack_bytes : (is_array ? BACKEND_ARRAY_STACK_BYTES : backend_stack_slot_size(state));
 

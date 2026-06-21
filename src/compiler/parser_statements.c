@@ -483,6 +483,11 @@ int parse_compound_statement(CompilerParser *parser) {
         parser->pending_parameter_count = 0;
     }
 
+    if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "scope-enter", "")) != 0) {
+        status = -1;
+        goto compound_exit;
+    }
+
     while (!current_is_punct(parser, "}") && parser->current.kind != COMPILER_TOKEN_EOF) {
         if (looks_like_declaration(parser)) {
             if (parse_declaration_or_function(parser, 0, 0) != 0) {
@@ -496,6 +501,11 @@ int parse_compound_statement(CompilerParser *parser) {
     }
 
     if (expect_punct(parser, "}") != 0) {
+        status = -1;
+        goto compound_exit;
+    }
+
+    if (emit_ir_status(parser, compiler_ir_emit_note(&parser->ir, "scope-exit", "")) != 0) {
         status = -1;
         goto compound_exit;
     }

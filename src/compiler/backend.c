@@ -860,8 +860,45 @@ int emit_address_of_name(BackendState *state, const char *name) {
 
     if (local_index >= 0) {
         if (state->locals[local_index].cached_register >= 0) {
-            backend_set_error(state->backend, "backend cannot take address of cached local");
-            return -1;
+            char offset_text[32];
+            const char *opcode = "movq";
+            const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            int access_size = scalar_type_access_size(state->locals[local_index].type_text,
+                                                      state->locals[local_index].prefers_word_index);
+
+            if (src_reg == 0 || backend_is_aarch64(state) || state->locals[local_index].offset <= 0) {
+                backend_set_error(state->backend, "backend cannot take address of cached local");
+                return -1;
+            }
+            if (state->locals[local_index].pointer_depth > 0) {
+                access_size = 0;
+            }
+            if (access_size < 0) {
+                access_size = -access_size;
+            }
+            if (access_size == 1) {
+                opcode = "movb";
+                src_reg = x86_reg8_name(src_reg);
+            } else if (access_size == 2) {
+                opcode = "movw";
+                src_reg = x86_reg16_name(src_reg);
+            } else if (access_size == 4) {
+                opcode = "movl";
+                src_reg = x86_reg32_name(src_reg);
+            }
+            rt_unsigned_to_string((unsigned long long)state->locals[local_index].offset,
+                                  offset_text,
+                                  sizeof(offset_text));
+            rt_copy_string(line, sizeof(line), opcode);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), " ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src_reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", -");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), offset_text);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rbp)");
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+            state->locals[local_index].cached_register = -1;
         }
         if (state->locals[local_index].static_storage) {
             char formatted_symbol[COMPILER_IR_NAME_CAPACITY];
@@ -1214,6 +1251,7 @@ int emit_load_name(BackendState *state, const char *name) {
 int emit_store_name(BackendState *state, const char *name) {
     int local_index = find_local(state, name);
     int global_index = find_global(state, name);
+    int access_size = 0;
 
     backend_invalidate_block_cache_name(state, name);
 
@@ -1226,35 +1264,61 @@ int emit_store_name(BackendState *state, const char *name) {
             backend_set_error(state->backend, "unsupported local array assignment in backend");
             return -1;
         }
+        access_size = scalar_type_access_size(state->locals[local_index].type_text,
+                                              state->locals[local_index].prefers_word_index);
+        if (state->locals[local_index].pointer_depth > 0) {
+            access_size = 0;
+        }
         if (state->locals[local_index].static_storage) {
             char line[128];
             char symbol[COMPILER_IR_NAME_CAPACITY];
+            const char *opcode = "movq";
+            const char *src_reg = "%rax";
             const char *static_symbol = state->locals[local_index].symbol_name[0] != '\0'
                                             ? state->locals[local_index].symbol_name
                                             : state->locals[local_index].name;
             format_symbol_name(state, static_symbol, symbol, sizeof(symbol));
+            if (access_size < 0) {
+                access_size = -access_size;
+            }
             if (backend_is_aarch64(state)) {
                 if (backend_is_darwin(state)) {
                     return emit_darwin_global_address(state, symbol, "x9") == 0 &&
-                           emit_instruction(state, "str x0, [x9]") == 0 ? 0 : -1;
+                           emit_store_to_address_register(state, "x9", access_size) == 0 ? 0 : -1;
                 }
                 rt_copy_string(line, sizeof(line), "adrp x9, ");
                 rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
                 if (emit_instruction(state, line) != 0) {
                     return -1;
                 }
-                rt_copy_string(line, sizeof(line), "str x0, [x9, :lo12:");
+                rt_copy_string(line, sizeof(line), access_size == 1 ? "strb w0, [x9, :lo12:" :
+                                               access_size == 2 ? "strh w0, [x9, :lo12:" :
+                                               access_size == 4 ? "str w0, [x9, :lo12:" :
+                                                                  "str x0, [x9, :lo12:");
                 rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
                 rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
                 return emit_instruction(state, line);
             }
-            rt_copy_string(line, sizeof(line), "movq %rax, ");
+            if (access_size == 1) {
+                opcode = "movb";
+                src_reg = "%al";
+            } else if (access_size == 2) {
+                opcode = "movw";
+                src_reg = "%ax";
+            } else if (access_size == 4) {
+                opcode = "movl";
+                src_reg = "%eax";
+            }
+            rt_copy_string(line, sizeof(line), opcode);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), " ");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src_reg);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rip)");
             return emit_instruction(state, line);
         }
         if (emit_local_address(state, state->locals[local_index].offset, backend_is_aarch64(state) ? "x9" : "%rcx") != 0 ||
-            emit_store_to_address_register(state, backend_is_aarch64(state) ? "x9" : "%rcx", 0) != 0) {
+            emit_store_to_address_register(state, backend_is_aarch64(state) ? "x9" : "%rcx", access_size) != 0) {
             return -1;
         }
         return backend_seed_block_cache_from_register(state, local_index, "%rax") < 0 ? -1 : 0;
@@ -1263,11 +1327,21 @@ int emit_store_name(BackendState *state, const char *name) {
     if (global_index >= 0) {
         char line[128];
         char symbol[COMPILER_IR_NAME_CAPACITY];
+        const char *opcode = "movq";
+        const char *src_reg = "%rax";
         format_symbol_name(state, name, symbol, sizeof(symbol));
+        access_size = scalar_type_access_size(state->globals[global_index].type_text,
+                                              state->globals[global_index].prefers_word_index);
+        if (state->globals[global_index].pointer_depth > 0) {
+            access_size = 0;
+        }
+        if (access_size < 0) {
+            access_size = -access_size;
+        }
         if (backend_is_aarch64(state)) {
             if (backend_is_darwin(state)) {
                 return emit_darwin_global_address(state, symbol, "x9") == 0 &&
-                       emit_instruction(state, "str x0, [x9]") == 0 ? 0 : -1;
+                       emit_store_to_address_register(state, "x9", access_size) == 0 ? 0 : -1;
             }
             rt_copy_string(line, sizeof(line), "adrp x9, ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
@@ -1276,7 +1350,10 @@ int emit_store_name(BackendState *state, const char *name) {
             if (emit_instruction(state, line) != 0) {
                 return -1;
             }
-            rt_copy_string(line, sizeof(line), "str x0, [x9, ");
+            rt_copy_string(line, sizeof(line), access_size == 1 ? "strb w0, [x9, " :
+                                           access_size == 2 ? "strh w0, [x9, " :
+                                           access_size == 4 ? "str w0, [x9, " :
+                                                              "str x0, [x9, ");
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line),
                            backend_is_darwin(state) ? symbol : ":lo12:");
             if (!backend_is_darwin(state)) {
@@ -1287,7 +1364,20 @@ int emit_store_name(BackendState *state, const char *name) {
             rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "]");
             return emit_instruction(state, line);
         }
-        rt_copy_string(line, sizeof(line), "movq %rax, ");
+        if (access_size == 1) {
+            opcode = "movb";
+            src_reg = "%al";
+        } else if (access_size == 2) {
+            opcode = "movw";
+            src_reg = "%ax";
+        } else if (access_size == 4) {
+            opcode = "movl";
+            src_reg = "%eax";
+        }
+        rt_copy_string(line, sizeof(line), opcode);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), " ");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), src_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", ");
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), symbol);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rip)");
         return emit_instruction(state, line);

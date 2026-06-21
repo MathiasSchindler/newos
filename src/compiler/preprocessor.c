@@ -318,6 +318,19 @@ static int substitute_macro_parameter(const CompilerMacro *macro,
     size_t out = 0;
 
     while (macro->value[in] != '\0' && out + 1U < buffer_size) {
+        if (macro->value[in] == '#' && macro->value[in + 1U] == '#') {
+            while (out > 0U &&
+                   (buffer[out - 1U] == ' ' || buffer[out - 1U] == '\t' ||
+                    buffer[out - 1U] == '\r' || buffer[out - 1U] == '\n')) {
+                out -= 1U;
+            }
+            in += 2U;
+            while (macro->value[in] == ' ' || macro->value[in] == '\t' ||
+                   macro->value[in] == '\r' || macro->value[in] == '\n') {
+                in += 1U;
+            }
+            continue;
+        }
         if (is_identifier_start(macro->value[in])) {
             char identifier[COMPILER_MACRO_NAME_CAPACITY];
             size_t length = 0;
