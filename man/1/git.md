@@ -28,7 +28,7 @@ git merge-base [--is-ancestor] A B
 git rev-list --count A..B
 git merge [--ff-only] REV
 git pull [URL] [REF]
-git push [REMOTE|URL] [SRC[:DST]]
+git push [-f|--force] [REMOTE|URL] [SRC[:DST]]
 git tag [-d NAME ...|NAME [REV]]
 git describe [REV]
 git apply [--check] [PATCH]
@@ -284,6 +284,7 @@ git merge --ff-only origin/main
 git pull https://example.invalid/repo.git main
 GIT_HTTPS_TOKEN=token git fetch https://example.invalid/private.git main
 git push ../backup/.git main
+git push origin HEAD:refs/heads/main
 git tag v0.1 HEAD
 git apply --check fix.patch
 git apply fix.patch
