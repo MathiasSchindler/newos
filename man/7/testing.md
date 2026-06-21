@@ -26,6 +26,8 @@ changes.
 - `tests/suites/userland.sh` — isolated shell-session checks run through
   `scripts/test.sh` and `scripts/run-userland.sh`
 - `tests/benchmarks/` — performance comparisons against host-system tools
+- `tests/compiler/` — focused compiler checks and synthetic ncc-vs-gcc
+  benchmark cases for code quality, size, and runtime tracking
 - `tests/tmp/` — scratch output and per-suite logs; safe to delete
 
 ## SUITES
@@ -66,7 +68,8 @@ and basic local network/build contracts.
   and `write`; set `NEWOS_STRACE_STOCKTAKE_FILTER=all` for a focused
   full-capture pass. See `man/7/strace.md` for recommended interpretation and
   optimization workflows.
-- Benchmarks are informational; smoke tests are the main regression gate.
+- Benchmarks are informational; smoke tests are the main regression gate. Use
+  `make compiler-benchmark` for synthetic compiler code-quality comparisons.
 - `make test` validates both the hosted path and a representative freestanding
   path on Linux. Running `make freestanding` alone is still useful when you
   only need to check the target build.

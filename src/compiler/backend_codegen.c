@@ -491,7 +491,7 @@ static int parameter_can_use_cached_register(const BackendState *state,
 
     if (backend_is_aarch64(state) || source_param_index < 0 || abi_param_index >= backend_register_arg_limit(state) ||
         text_contains(type_text, "__int128") ||
-        decl_requires_object_storage(type_text) ||
+        (decl_requires_object_storage(type_text) && !text_contains(type_text, "[")) ||
         local_name_declared_count_in_function(ir, decl_index, name) > 0) {
         return 0;
     }
@@ -504,6 +504,40 @@ static int parameter_can_use_cached_register(const BackendState *state,
             continue;
         }
         if (line_takes_identifier_address(line, name) || line_modifies_identifier(line, name)) {
+            return 0;
+        }
+        reference_count += 1;
+    }
+    return text_contains(type_text, "[") ? reference_count >= 2 : reference_count >= 3;
+}
+
+static int indirect_parameter_can_use_cached_register(const BackendState *state,
+                                                      const CompilerIr *ir,
+                                                      size_t decl_index,
+                                                      const char *function_name,
+                                                      const char *name,
+                                                      const char *type_text,
+                                                      int source_param_index) {
+    size_t i;
+    int abi_param_index = source_param_index + (function_returns_object(state, function_name) ? 1 : 0);
+    int reference_count = 0;
+
+    if (backend_is_aarch64(state) || source_param_index < 0 || abi_param_index >= backend_register_arg_limit(state) ||
+        text_contains(type_text, "__int128") ||
+        !decl_requires_object_storage(type_text) ||
+        text_contains(type_text, "[") ||
+        local_name_declared_count_in_function(ir, decl_index, name) > 0) {
+        return 0;
+    }
+    for (i = decl_index + 1U; i < ir->count; ++i) {
+        const char *line = ir->lines[i];
+        if (starts_with(line, "endfunc ")) {
+            break;
+        }
+        if (!line_references_identifier(line, name)) {
+            continue;
+        }
+        if (line_modifies_identifier(line, name)) {
             return 0;
         }
         reference_count += 1;
@@ -907,7 +941,8 @@ static int prescan_ir(BackendState *state, const CompilerIr *ir) {
                         function_info->unused_param_mask |= 1ULL << (unsigned int)current_param_index;
                     }
                     if (used_param && function_info != 0 && current_param_index < 64 && function_info->cached_param_count < 5 &&
-                        parameter_can_use_cached_register(state, ir, i, current_function, name, type_text, current_param_index)) {
+                        (parameter_can_use_cached_register(state, ir, i, current_function, name, type_text, current_param_index) ||
+                         indirect_parameter_can_use_cached_register(state, ir, i, current_function, name, type_text, current_param_index))) {
                         function_info->cached_param_mask |= 1ULL << (unsigned int)current_param_index;
                         function_info->cached_param_count += 1;
                         current_param_index += 1;
@@ -1533,7 +1568,8 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             return 0;
         }
 
-        if (!backend_is_aarch64(state) && function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
+        if (!object_by_value_param &&
+            !backend_is_aarch64(state) && function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
             index < backend_register_arg_limit(state) &&
             (function_info->cached_param_mask & (1ULL << (unsigned int)source_param_index)) != 0ULL) {
             const char *cached_reg = backend_x86_cached_register_name(state->cached_param_count);
@@ -1558,6 +1594,33 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             int max_register_params = backend_register_arg_limit(state);
             int local_index;
             char offset_text[32];
+
+            if (!backend_is_aarch64(state) && function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
+                index < max_register_params &&
+                (function_info->cached_param_mask & (1ULL << (unsigned int)source_param_index)) != 0ULL) {
+                const char *cached_reg = backend_x86_cached_register_name(state->cached_param_count);
+
+                if (cached_reg == 0 ||
+                    allocate_cached_indirect_object_local(state,
+                                                          name,
+                                                          type_text,
+                                                          slot_size,
+                                                          char_based,
+                                                          prefers_word_index,
+                                                          state->cached_param_count) != 0) {
+                    return -1;
+                }
+                rt_copy_string(asm_line, sizeof(asm_line), "movq ");
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), x86_arg_regs[index]);
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), ", ");
+                rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), cached_reg);
+                if (emit_instruction(state, asm_line) != 0) {
+                    return -1;
+                }
+                state->cached_param_count += 1;
+                state->param_count += 1;
+                return 0;
+            }
 
             if (allocate_indirect_object_local(state, name, type_text, slot_size, char_based, prefers_word_index) != 0) {
                 return -1;

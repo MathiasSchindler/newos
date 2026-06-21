@@ -1696,6 +1696,36 @@ static int emit_binary_op(BackendState *state, const char *op) {
     return emit_binary_op_mode(state, op, 0, 0);
 }
 
+static int emit_compare_immediate(BackendState *state, const char *op, long long value, int use_unsigned) {
+    char line[96];
+    char digits[32];
+
+    if (backend_is_aarch64(state) || value < -2147483648LL || value > 2147483647LL) {
+        return 0;
+    }
+    if (value < 0) {
+        rt_copy_string(digits, sizeof(digits), "-");
+        rt_unsigned_to_string((unsigned long long)(-(value + 1LL)) + 1ULL, digits + 1, sizeof(digits) - 1U);
+    } else {
+        rt_unsigned_to_string((unsigned long long)value, digits, sizeof(digits));
+    }
+    rt_copy_string(line, sizeof(line), "cmpq $");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rax");
+    if (emit_instruction(state, line) != 0) {
+        return -1;
+    }
+    if (use_unsigned && names_equal(op, "<")) return emit_set_condition(state, "b") == 0 ? 1 : -1;
+    if (use_unsigned && names_equal(op, "<=")) return emit_set_condition(state, "be") == 0 ? 1 : -1;
+    if (use_unsigned && names_equal(op, ">")) return emit_set_condition(state, "a") == 0 ? 1 : -1;
+    if (use_unsigned && names_equal(op, ">=")) return emit_set_condition(state, "ae") == 0 ? 1 : -1;
+    if (names_equal(op, "<")) return emit_set_condition(state, "l") == 0 ? 1 : -1;
+    if (names_equal(op, "<=")) return emit_set_condition(state, "le") == 0 ? 1 : -1;
+    if (names_equal(op, ">")) return emit_set_condition(state, "g") == 0 ? 1 : -1;
+    if (names_equal(op, ">=")) return emit_set_condition(state, "ge") == 0 ? 1 : -1;
+    return 0;
+}
+
 static int emit_shift_immediate(BackendState *state, const char *op, long long amount) {
     char line[64];
     char digits[32];
@@ -1791,6 +1821,78 @@ static int emit_multiply_immediate(BackendState *state, long long amount, int un
     return unsigned_32bit_result ? emit_instruction(state, "movl %eax, %eax") : 0;
 }
 
+static int emit_bitand_immediate(BackendState *state, long long amount) {
+    char line[96];
+    char digits[32];
+
+    if (backend_is_aarch64(state)) {
+        if (emit_load_immediate_register(state, "x2", amount) != 0) {
+            return -1;
+        }
+        return emit_instruction(state, "and x0, x0, x2");
+    }
+
+    if (amount >= -2147483648LL && amount <= 2147483647LL) {
+        if (amount < 0) {
+            char magnitude_text[32];
+            rt_unsigned_to_string((unsigned long long)(-(amount + 1LL)) + 1ULL, magnitude_text, sizeof(magnitude_text));
+            rt_copy_string(digits, sizeof(digits), "-");
+            rt_copy_string(digits + rt_strlen(digits), sizeof(digits) - rt_strlen(digits), magnitude_text);
+        } else {
+            rt_unsigned_to_string((unsigned long long)amount, digits, sizeof(digits));
+        }
+        rt_copy_string(line, sizeof(line), "andq $");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rax");
+        return emit_instruction(state, line);
+    }
+
+    if (emit_load_immediate_register(state, "%rcx", amount) != 0) {
+        return -1;
+    }
+    return emit_instruction(state, "andq %rcx, %rax");
+}
+
+static int emit_add_immediate(BackendState *state, long long amount, int unsigned_32bit_result) {
+    char line[96];
+    char digits[32];
+    long long magnitude = amount;
+    const char *op;
+
+    if (amount == 0) {
+        return unsigned_32bit_result
+                   ? emit_instruction(state, backend_is_aarch64(state) ? "uxtw x0, w0" : "movl %eax, %eax")
+                   : 0;
+    }
+    if (backend_is_aarch64(state)) {
+        if (emit_load_immediate_register(state, "x2", amount) != 0 ||
+            emit_instruction(state, "add x0, x0, x2") != 0) {
+            return -1;
+        }
+        return unsigned_32bit_result ? emit_instruction(state, "uxtw x0, w0") : 0;
+    }
+
+    op = amount < 0 ? "subq $" : "addq $";
+    if (magnitude < 0) {
+        magnitude = -(magnitude + 1LL) + 1LL;
+    }
+    if (magnitude <= 2147483647LL) {
+        rt_unsigned_to_string((unsigned long long)magnitude, digits, sizeof(digits));
+        rt_copy_string(line, sizeof(line), op);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %rax");
+        if (emit_instruction(state, line) != 0) {
+            return -1;
+        }
+    } else {
+        if (emit_load_immediate_register(state, "%rcx", amount) != 0 ||
+            emit_instruction(state, "addq %rcx, %rax") != 0) {
+            return -1;
+        }
+    }
+    return unsigned_32bit_result ? emit_instruction(state, "movl %eax, %eax") : 0;
+}
+
 static int expr_try_match_punct(ExprParser *parser, const char *text) {
     if (parser->current.kind != EXPR_TOKEN_PUNCT || !names_equal(parser->current.text, text)) {
         return -1;
@@ -1799,59 +1901,98 @@ static int expr_try_match_punct(ExprParser *parser, const char *text) {
     return 0;
 }
 
+static int expr_try_parse_grouped_identifier(ExprParser *parser, char *name, size_t name_size) {
+    int grouped = 0;
+
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
+        ExprParser snapshot = *parser;
+        expr_next(&snapshot);
+        if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
+            expr_next(&snapshot);
+            if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, ")")) {
+                grouped = 1;
+                expr_next(parser);
+            }
+        }
+    }
+    if (parser->current.kind != EXPR_TOKEN_IDENTIFIER) {
+        return -1;
+    }
+    rt_copy_string(name, name_size, parser->current.text);
+    expr_next(parser);
+    if (grouped && expr_try_match_punct(parser, ")") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int expr_try_parse_grouped_number(ExprParser *parser, long long *value_out) {
+    int grouped = 0;
+
+    if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
+        grouped = 1;
+        expr_next(parser);
+    }
+    if (parser->current.kind != EXPR_TOKEN_NUMBER) {
+        return -1;
+    }
+    *value_out = parser->current.number_value;
+    expr_next(parser);
+    if (grouped && expr_try_match_punct(parser, ")") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int expr_try_parse_rotr32_identifier(ExprParser *parser) {
     ExprParser snapshot = *parser;
     char name[COMPILER_IR_NAME_CAPACITY];
+    char right_name[COMPILER_IR_NAME_CAPACITY];
     long long amount;
+    long long width;
+    long long right_amount;
     char line[64];
     char digits[32];
 
     if (expr_try_match_punct(&snapshot, "(") != 0 ||
         expr_try_match_punct(&snapshot, "(") != 0 ||
-        snapshot.current.kind != EXPR_TOKEN_IDENTIFIER) {
+        expr_try_parse_grouped_identifier(&snapshot, name, sizeof(name)) != 0) {
         return 0;
     }
-    rt_copy_string(name, sizeof(name), snapshot.current.text);
-    expr_next(&snapshot);
     if (expr_try_match_punct(&snapshot, ")") != 0 ||
         expr_try_match_punct(&snapshot, ">>") != 0 ||
-        expr_try_match_punct(&snapshot, "(") != 0 ||
-        snapshot.current.kind != EXPR_TOKEN_NUMBER) {
+        expr_try_parse_grouped_number(&snapshot, &amount) != 0) {
         return 0;
     }
-    amount = snapshot.current.number_value;
     if (amount <= 0 || amount >= 32) {
         return 0;
     }
-    expr_next(&snapshot);
     if (expr_try_match_punct(&snapshot, ")") != 0 ||
-        expr_try_match_punct(&snapshot, ")") != 0 ||
         expr_try_match_punct(&snapshot, "|") != 0 ||
         expr_try_match_punct(&snapshot, "(") != 0 ||
         expr_try_match_punct(&snapshot, "(") != 0 ||
-        snapshot.current.kind != EXPR_TOKEN_IDENTIFIER ||
-        !names_equal(snapshot.current.text, name)) {
+        expr_try_parse_grouped_identifier(&snapshot, right_name, sizeof(right_name)) != 0 ||
+        !names_equal(right_name, name)) {
         return 0;
     }
-    expr_next(&snapshot);
     if (expr_try_match_punct(&snapshot, ")") != 0 ||
         expr_try_match_punct(&snapshot, "<<") != 0 ||
         expr_try_match_punct(&snapshot, "(") != 0 ||
-        snapshot.current.kind != EXPR_TOKEN_NUMBER ||
-        snapshot.current.number_value != 32) {
+        expr_try_parse_grouped_number(&snapshot, &width) != 0 ||
+        width != 32) {
         return 0;
     }
-    expr_next(&snapshot);
     if (expr_try_match_punct(&snapshot, "-") != 0 ||
-        expr_try_match_punct(&snapshot, "(") != 0 ||
-        snapshot.current.kind != EXPR_TOKEN_NUMBER ||
-        snapshot.current.number_value != amount) {
+        expr_try_parse_grouped_number(&snapshot, &right_amount) != 0 ||
+        right_amount != amount) {
         return 0;
     }
-    expr_next(&snapshot);
     if (expr_try_match_punct(&snapshot, ")") != 0 ||
         expr_try_match_punct(&snapshot, ")") != 0 ||
         expr_try_match_punct(&snapshot, ")") != 0) {
+        return 0;
+    }
+    if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "^")) {
         return 0;
     }
 
@@ -2192,13 +2333,46 @@ static int expr_parse_additive(ExprParser *parser) {
         char op[4];
         char rhs_type[128];
         ExprParser rhs_snapshot;
+        ExprParser const_parser;
         int lhs_pointer_like;
         int rhs_pointer_like;
         int use_unsigned;
         int unsigned_32bit_result;
+        long long immediate;
 
         rt_copy_string(op, sizeof(op), parser->current.text);
         expr_next(parser);
+        lhs_pointer_like = lhs_type[0] != '\0' && (text_contains(lhs_type, "*") || text_contains(lhs_type, "["));
+        const_parser = *parser;
+        if (!lhs_pointer_like && expr_parse_constant_multiplicative(&const_parser, &immediate) == 0) {
+            rhs_snapshot = *parser;
+            expr_infer_result_type(&rhs_snapshot, rhs_type, sizeof(rhs_type));
+            use_unsigned = lhs_unsigned ||
+                           expr_snapshot_looks_unsigned(&rhs_snapshot) ||
+                           type_is_unsigned_like(lhs_type) ||
+                           type_is_unsigned_like(rhs_type);
+            unsigned_32bit_result = use_unsigned &&
+                                    lhs_type[0] != '\0' &&
+                                    rhs_type[0] != '\0' &&
+                                    !text_contains(lhs_type, "long") &&
+                                    !text_contains(rhs_type, "long") &&
+                                    !text_contains(lhs_type, "64") &&
+                                    !text_contains(rhs_type, "64") &&
+                                    !text_contains(lhs_type, "*") &&
+                                    !text_contains(rhs_type, "*") &&
+                                    !text_contains(lhs_type, "[") &&
+                                    !text_contains(rhs_type, "[");
+            *parser = const_parser;
+            if (names_equal(op, "-")) {
+                immediate = -immediate;
+            }
+            if (emit_add_immediate(parser->state, immediate, unsigned_32bit_result) != 0) {
+                return -1;
+            }
+            rt_copy_string(lhs_type, sizeof(lhs_type), unsigned_32bit_result ? "unsigned int" : (use_unsigned ? "unsigned long" : "int"));
+            lhs_unsigned = use_unsigned;
+            continue;
+        }
         if (emit_push_value(parser->state) != 0) {
             return -1;
         }
@@ -2222,7 +2396,6 @@ static int expr_parse_additive(ExprParser *parser) {
                                 !text_contains(lhs_type, "[") &&
                                 !text_contains(rhs_type, "[");
 
-        lhs_pointer_like = lhs_type[0] != '\0' && (text_contains(lhs_type, "*") || text_contains(lhs_type, "["));
         rhs_pointer_like = rhs_type[0] != '\0' && (text_contains(rhs_type, "*") || text_contains(rhs_type, "["));
 
         if (lhs_pointer_like && !rhs_pointer_like) {
@@ -2318,10 +2491,27 @@ static int expr_parse_relational(ExprParser *parser) {
         char op[4];
         char rhs_type[128];
         ExprParser rhs_snapshot;
+        ExprParser const_parser;
+        long long immediate;
         int use_unsigned;
 
         rt_copy_string(op, sizeof(op), parser->current.text);
         expr_next(parser);
+        const_parser = *parser;
+        use_unsigned = lhs_unsigned || type_is_unsigned_like(lhs_type);
+        if (expr_parse_constant_additive(&const_parser, &immediate) == 0) {
+            int compared;
+            *parser = const_parser;
+            compared = emit_compare_immediate(parser->state, op, immediate, use_unsigned);
+            if (compared < 0) {
+                return -1;
+            }
+            if (compared > 0) {
+                rt_copy_string(lhs_type, sizeof(lhs_type), "int");
+                lhs_unsigned = 0;
+                continue;
+            }
+        }
         if (emit_push_value(parser->state) != 0) {
             return -1;
         }
@@ -2347,8 +2537,29 @@ static int expr_parse_equality(ExprParser *parser) {
 }
 
 static int expr_parse_bitand(ExprParser *parser) {
-    const char ops[][4] = {"&"};
-    return expr_parse_chain(parser, 5, ops, sizeof(ops) / sizeof(ops[0]));
+    if (expr_parse_equality(parser) != 0) {
+        return -1;
+    }
+    while (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "&")) {
+        ExprParser const_parser;
+        long long immediate;
+
+        expr_next(parser);
+        const_parser = *parser;
+        if (expr_parse_constant_unary(&const_parser, &immediate) == 0) {
+            *parser = const_parser;
+            if (emit_bitand_immediate(parser->state, immediate) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (emit_push_value(parser->state) != 0 ||
+            expr_parse_equality(parser) != 0 ||
+            emit_binary_op(parser->state, "&") != 0) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int expr_parse_bitxor(ExprParser *parser) {
@@ -2644,6 +2855,27 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         rt_copy_string(name, sizeof(name), parser->current.text);
         expr_next(parser);
         word_index = name_prefers_word_index(parser->state, name);
+
+        if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "[")) {
+            char element_type[128];
+            int handled = expr_try_cached_identifier_index(parser,
+                                                           name,
+                                                           lookup_name_type_text(parser->state, name),
+                                                           word_index,
+                                                           element_type,
+                                                           sizeof(element_type));
+            if (handled < 0) {
+                return -1;
+            }
+            if (handled > 0) {
+                *byte_sized = type_access_size(element_type, 0);
+                return expr_parse_lvalue_suffixes(parser,
+                                                  byte_sized,
+                                                  0,
+                                                  1,
+                                                  element_type);
+            }
+        }
 
         {
             int current_is_address = 1;

@@ -543,10 +543,17 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
 }
 
 static int scale_shift_amount(int scale) {
-    if (scale == 2) return 1;
-    if (scale == 4) return 2;
-    if (scale == 8) return 3;
-    return 0;
+    int shift = 0;
+    int value = 1;
+
+    if (scale <= 1) {
+        return 0;
+    }
+    while (shift < 30 && value < scale) {
+        value <<= 1;
+        shift += 1;
+    }
+    return value == scale ? shift : 0;
 }
 
 static int emit_shift_register_left(BackendState *state, const char *reg, int shift) {
@@ -741,12 +748,9 @@ int emit_index_address(BackendState *state, int element_scale) {
             return -1;
         }
         if (element_scale > 1) {
-            if (element_scale == 2) {
-                if (emit_instruction(state, "lsl x2, x2, #1") != 0) return -1;
-            } else if (element_scale == 4) {
-                if (emit_instruction(state, "lsl x2, x2, #2") != 0) return -1;
-            } else if (element_scale == 8) {
-                if (emit_instruction(state, "lsl x2, x2, #3") != 0) return -1;
+            int shift = scale_shift_amount(element_scale);
+            if (shift > 0) {
+                if (emit_shift_register_left(state, "x2", shift) != 0) return -1;
             } else {
                 if (emit_load_immediate_register(state, "x3", element_scale) != 0 ||
                     emit_instruction(state, "mul x2, x2, x3") != 0) {
@@ -772,6 +776,15 @@ int emit_index_address(BackendState *state, int element_scale) {
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), scale_text);
         rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), %rax");
         return emit_instruction(state, line);
+    }
+    {
+        int shift = scale_shift_amount(element_scale);
+        if (shift > 0) {
+            if (emit_shift_register_left(state, "%rcx", shift) != 0) {
+                return -1;
+            }
+            return emit_instruction(state, "addq %rcx, %rax");
+        }
     }
     if (emit_load_immediate_register(state, "%r11", element_scale) != 0 ||
         emit_instruction(state, "imulq %r11, %rcx") != 0) {
@@ -830,6 +843,114 @@ static int emit_x86_cached_index_address(BackendState *state, const char *base_n
     return emit_instruction(state, "addq %r11, %rax") == 0 ? 1 : -1;
 }
 
+int emit_index_address_cached_affine(BackendState *state,
+                                     const char *base_name,
+                                     const char *index_name,
+                                     int element_scale,
+                                     long long multiplier,
+                                     long long offset) {
+    int index_local = find_local(state, index_name);
+    const char *index_reg;
+    const char *address_index_reg;
+    int index_access_size;
+    long long total_scale = multiplier * (long long)element_scale;
+    long long byte_offset = offset * (long long)element_scale;
+    char line[128];
+    char digits[32];
+    int shift = 0;
+
+    if (backend_is_aarch64(state) || index_local < 0 || state->locals[index_local].cached_register < 0 ||
+        multiplier <= 0 || element_scale <= 0 || total_scale <= 0) {
+        return 0;
+    }
+
+    index_reg = backend_x86_cached_register_name(state->locals[index_local].cached_register);
+    if (index_reg == 0) {
+        return -1;
+    }
+
+    if (base_name != 0 && base_name[0] != '\0') {
+        if (emit_load_name_into_register(state, base_name, "%rax") != 0) {
+            return -1;
+        }
+    }
+
+    index_access_size = type_access_size(state->locals[index_local].type_text,
+                                         state->locals[index_local].prefers_word_index);
+    address_index_reg = index_reg;
+    if (index_access_size != 0) {
+        if (emit_load_name_into_register(state, index_name, "%r11") != 0) {
+            return -1;
+        }
+        address_index_reg = "%r11";
+    }
+
+    if ((total_scale == 1 || total_scale == 2 || total_scale == 4 || total_scale == 8) &&
+        byte_offset >= -2147483648LL && byte_offset <= 2147483647LL) {
+        char scale_text[8];
+
+        rt_unsigned_to_string((unsigned long long)total_scale, scale_text, sizeof(scale_text));
+        rt_copy_string(line, sizeof(line), "leaq ");
+        if (byte_offset != 0) {
+            if (byte_offset < 0) {
+                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "-");
+                rt_unsigned_to_string((unsigned long long)(-(byte_offset + 1LL)) + 1ULL, digits, sizeof(digits));
+            } else {
+                rt_unsigned_to_string((unsigned long long)byte_offset, digits, sizeof(digits));
+            }
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+        }
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "(%rax,");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_index_reg);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ",");
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), scale_text);
+        rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), "), %rax");
+        return emit_instruction(state, line) == 0 ? 1 : -1;
+    }
+
+    rt_copy_string(line, sizeof(line), "movq ");
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), address_index_reg);
+    rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %r11");
+    if (emit_instruction(state, line) != 0) {
+        return -1;
+    }
+    if (total_scale != 1) {
+        while (((1LL << shift) < total_scale) && shift < 62) {
+            shift += 1;
+        }
+        if ((1LL << shift) == total_scale) {
+            rt_unsigned_to_string((unsigned long long)shift, digits, sizeof(digits));
+            rt_copy_string(line, sizeof(line), "salq $");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %r11");
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+        } else if (total_scale >= -2147483648LL && total_scale <= 2147483647LL) {
+            rt_unsigned_to_string((unsigned long long)total_scale, digits, sizeof(digits));
+            rt_copy_string(line, sizeof(line), "imulq $");
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), digits);
+            rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), ", %r11, %r11");
+            if (emit_instruction(state, line) != 0) {
+                return -1;
+            }
+        } else if (emit_load_immediate_register(state, "%rcx", total_scale) != 0 ||
+                   emit_instruction(state, "imulq %rcx, %r11") != 0) {
+            return -1;
+        }
+    }
+    if (emit_instruction(state, "addq %r11, %rax") != 0) {
+        return -1;
+    }
+    if (byte_offset != 0) {
+        if (emit_load_immediate_register(state, "%rcx", byte_offset) != 0 ||
+            emit_instruction(state, "addq %rcx, %rax") != 0) {
+            return -1;
+        }
+    }
+    return 1;
+}
+
 int expr_try_cached_identifier_index(ExprParser *parser,
                                             const char *base_name,
                                             const char *base_type,
@@ -840,6 +961,8 @@ int expr_try_cached_identifier_index(ExprParser *parser,
     char index_name[COMPILER_IR_NAME_CAPACITY];
     int element_scale;
     int result;
+    long long multiplier = 1;
+    long long offset = 0;
 
     if (backend_is_aarch64(parser->state) || snapshot.current.kind != EXPR_TOKEN_PUNCT ||
         !names_equal(snapshot.current.text, "[")) {
@@ -851,19 +974,49 @@ int expr_try_cached_identifier_index(ExprParser *parser,
     }
     rt_copy_string(index_name, sizeof(index_name), snapshot.current.text);
     expr_next(&snapshot);
+    if (snapshot.current.kind == EXPR_TOKEN_PUNCT && names_equal(snapshot.current.text, "*")) {
+        expr_next(&snapshot);
+        if (snapshot.current.kind != EXPR_TOKEN_NUMBER) {
+            return 0;
+        }
+        multiplier = snapshot.current.number_value;
+        expr_next(&snapshot);
+    }
+    if (snapshot.current.kind == EXPR_TOKEN_PUNCT &&
+        (names_equal(snapshot.current.text, "+") || names_equal(snapshot.current.text, "-"))) {
+        int negative = names_equal(snapshot.current.text, "-");
+
+        expr_next(&snapshot);
+        if (snapshot.current.kind != EXPR_TOKEN_NUMBER) {
+            return 0;
+        }
+        offset = snapshot.current.number_value;
+        if (negative) {
+            offset = -offset;
+        }
+        expr_next(&snapshot);
+    }
     if (snapshot.current.kind != EXPR_TOKEN_PUNCT || !names_equal(snapshot.current.text, "]")) {
         return 0;
     }
 
     copy_indexed_result_type(base_type, element_type, element_type_size);
     element_scale = array_index_scale(parser->state, base_type, word_index);
-    result = emit_x86_cached_index_address(parser->state, base_name, index_name, element_scale);
+    if (multiplier != 1 || offset != 0) {
+        result = emit_index_address_cached_affine(parser->state,
+                                                  base_name,
+                                                  index_name,
+                                                  element_scale,
+                                                  multiplier,
+                                                  offset);
+    } else {
+        result = emit_x86_cached_index_address(parser->state, base_name, index_name, element_scale);
+    }
     if (result <= 0) {
         return result;
     }
 
-    expr_next(parser);
-    expr_next(parser);
+    *parser = snapshot;
     expr_next(parser);
     return 1;
 }

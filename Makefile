@@ -238,14 +238,17 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding test benchmark clean
+.PHONY: all host freestanding test benchmark compiler-benchmark clean
 
 test: $(DEFAULT_ALL_TARGETS)
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh
 
-benchmark: host
+benchmark: host compiler-benchmark
 	sh ./tests/benchmarks/run_benchmarks.sh
+
+compiler-benchmark: $(BUILD_DIR)/ncc
+	COMPILER_BENCH_NCC="$(abspath $(BUILD_DIR))/ncc" sh ./tests/compiler/run_compiler_benchmarks.sh
 
 # Core build rules for freestanding binaries (both Linux and macOS)
 ifeq ($(AUTO_PARALLEL),1)

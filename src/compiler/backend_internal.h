@@ -217,6 +217,7 @@ void reset_local_index(BackendState *state);
 void rebuild_local_index(BackendState *state);
 int allocate_local(BackendState *state, const char *name, const char *type_text, int stack_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 int allocate_indirect_object_local(BackendState *state, const char *name, const char *type_text, int object_bytes, int char_based, int prefers_word_index);
+int allocate_cached_indirect_object_local(BackendState *state, const char *name, const char *type_text, int object_bytes, int char_based, int prefers_word_index, int cached_register);
 int allocate_cached_local(BackendState *state, const char *name, const char *type_text, int pointer_depth, int char_based, int prefers_word_index, int cached_register);
 int allocate_static_local(BackendState *state, const char *name, const char *symbol_name, const char *type_text, int storage_bytes, int is_array, int pointer_depth, int char_based, int prefers_word_index);
 void build_static_local_symbol_name(const BackendState *state, const char *function_name, const char *name, char *buffer, size_t buffer_size);
@@ -322,6 +323,7 @@ int expr_snapshot_looks_unsigned(ExprParser *parser);
 long long type_storage_bytes_text(const BackendState *state, const char *type_text);
 long long guess_identifier_size(const BackendState *state, const char *name);
 int emit_index_address(BackendState *state, int element_scale);
+int emit_index_address_cached_affine(BackendState *state, const char *base_name, const char *index_name, int element_scale, long long multiplier, long long offset);
 int expr_try_cached_identifier_index(ExprParser *parser,
                                      const char *base_name,
                                      const char *base_type,

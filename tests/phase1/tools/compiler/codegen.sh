@@ -259,7 +259,10 @@ EOF
 
 "${TEST_BIN_DIR}/ncc" -S --target linux-x86_64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_linux.s"
 assert_file_contains "$WORK_DIR/flow_linux.s" '^\.L[a-zA-Z0-9_]*_else[0-9][0-9]*:$' "compiler backend missing conditional branch label"
-assert_file_contains "$WORK_DIR/flow_linux.s" 'addq %rcx, %rax' "compiler backend missing arithmetic lowering"
+if ! grep -q 'addq \$[0-9][0-9]*, %rax' "$WORK_DIR/flow_linux.s" &&
+   ! grep -q 'addq %rcx, %rax' "$WORK_DIR/flow_linux.s"; then
+    fail "compiler backend missing arithmetic lowering"
+fi
 assert_file_contains "$WORK_DIR/flow_linux.s" 'jge \.L' "compiler x86_64 backend should branch directly on relational conditions"
 
 cat > "$WORK_DIR/bool_value.c" <<'EOF'
@@ -297,7 +300,10 @@ fi
 
 "${TEST_BIN_DIR}/ncc" -S --target macos-aarch64 "$WORK_DIR/flow.c" -o "$WORK_DIR/flow_macos.s"
 assert_file_contains "$WORK_DIR/flow_macos.s" 'b\.ge \.L[a-zA-Z0-9_]*_else[0-9][0-9]*' "compiler macOS AArch64 backend should branch directly on relational conditions"
-assert_file_contains "$WORK_DIR/flow_macos.s" 'add x0, x1, x2' "compiler macOS AArch64 backend missing arithmetic lowering"
+if ! grep -q 'add x0, x0, x2' "$WORK_DIR/flow_macos.s" &&
+   ! grep -q 'add x0, x1, x2' "$WORK_DIR/flow_macos.s"; then
+    fail "compiler macOS AArch64 backend missing arithmetic lowering"
+fi
 
 cat > "$WORK_DIR/pointer_scale.c" <<'EOF'
 long left_index(long *p) {

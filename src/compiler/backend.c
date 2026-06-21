@@ -859,6 +859,15 @@ int emit_address_of_name(BackendState *state, const char *name) {
     int global_index = find_global(state, name);
 
     if (local_index >= 0) {
+        if (state->locals[local_index].indirect_object &&
+            state->locals[local_index].cached_register >= 0) {
+            const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            if (src_reg == 0 || backend_is_aarch64(state)) {
+                backend_set_error(state->backend, "invalid cached indirect object register");
+                return -1;
+            }
+            return emit_load_cached_register(state, src_reg, "%rax", 0);
+        }
         if (state->locals[local_index].cached_register >= 0) {
             char offset_text[32];
             const char *opcode = "movq";
@@ -1046,6 +1055,15 @@ int emit_load_name_into_register(BackendState *state, const char *name, const ch
     }
 
     if (local_index >= 0) {
+        if (state->locals[local_index].indirect_object &&
+            state->locals[local_index].cached_register >= 0) {
+            const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            if (src_reg == 0 || backend_is_aarch64(state)) {
+                backend_set_error(state->backend, "invalid cached indirect object register");
+                return -1;
+            }
+            return emit_load_cached_register(state, src_reg, dst_reg, 0);
+        }
         if (state->locals[local_index].cached_register >= 0) {
             const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
             int access_size = scalar_type_access_size(state->locals[local_index].type_text, state->locals[local_index].prefers_word_index);
@@ -1162,6 +1180,15 @@ int emit_load_name(BackendState *state, const char *name) {
     long long builtin_value = 0;
 
     if (local_index >= 0) {
+        if (state->locals[local_index].indirect_object &&
+            state->locals[local_index].cached_register >= 0) {
+            const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
+            if (src_reg == 0 || backend_is_aarch64(state)) {
+                backend_set_error(state->backend, "invalid cached indirect object register");
+                return -1;
+            }
+            return emit_load_cached_register(state, src_reg, "%rax", 0);
+        }
         if (state->locals[local_index].cached_register >= 0) {
             const char *src_reg = backend_x86_cached_register_name(state->locals[local_index].cached_register);
             int access_size = scalar_type_access_size(state->locals[local_index].type_text, state->locals[local_index].prefers_word_index);

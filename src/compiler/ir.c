@@ -49,6 +49,33 @@ static int ir_extract_const_parts(const char *line, char *name, size_t name_size
 static int ir_reserve_lines(CompilerIr *ir, size_t needed);
 static char *ir_build_line(CompilerIr *ir, const char *lhs, const char *mid, const char *rhs, const char *tail);
 static int ir_replace_line(CompilerIr *ir, size_t index, const char *line);
+static int ir_inline_calls(CompilerIr *ir);
+
+#define IR_INLINE_FUNCTION_CAPACITY 64
+#define IR_INLINE_PARAM_CAPACITY 8
+#define IR_INLINE_BODY_CAPACITY 128
+#define IR_INLINE_MAPPING_CAPACITY 64
+#define IR_INLINE_EXPANSION_CAPACITY 256
+
+typedef struct {
+    char name[COMPILER_IR_NAME_CAPACITY];
+    char type_text[128];
+} IrInlineParam;
+
+typedef struct {
+    char old_name[COMPILER_IR_NAME_CAPACITY];
+    char new_name[COMPILER_IR_NAME_CAPACITY];
+} IrInlineMapping;
+
+typedef struct {
+    char name[COMPILER_IR_NAME_CAPACITY];
+    IrInlineParam params[IR_INLINE_PARAM_CAPACITY];
+    size_t param_count;
+    size_t body_start;
+    size_t body_end;
+    int expression_only;
+    char return_expr[COMPILER_IR_LINE_CAPACITY];
+} IrInlineFunction;
 
 static void set_error(CompilerIr *ir, const char *message) {
     rt_copy_string(ir->error_message, sizeof(ir->error_message), message != 0 ? message : "IR error");
@@ -258,6 +285,968 @@ static int ir_replace_line(CompilerIr *ir, size_t index, const char *line) {
     }
     rt_free(ir->lines[index]);
     ir->lines[index] = copy;
+    return 0;
+}
+
+static int ir_replace_line_with_lines(CompilerIr *ir, size_t index, char (*lines)[COMPILER_IR_LINE_CAPACITY], size_t line_count) {
+    size_t old_count;
+    size_t tail_count;
+    size_t i;
+    char **copies;
+
+    if (index >= ir->count || lines == 0 || line_count == 0U) {
+        set_error(ir, "IR inline replacement index out of range");
+        return -1;
+    }
+
+    copies = (char **)rt_malloc(line_count * sizeof(copies[0]));
+    if (copies == 0) {
+        set_error(ir, "out of memory while expanding inline call");
+        return -1;
+    }
+    for (i = 0; i < line_count; ++i) {
+        copies[i] = ir_build_line(ir, lines[i], 0, 0, 0);
+        if (copies[i] == 0) {
+            while (i > 0U) {
+                i -= 1U;
+                rt_free(copies[i]);
+            }
+            rt_free(copies);
+            return -1;
+        }
+    }
+
+    old_count = ir->count;
+    tail_count = old_count - index - 1U;
+    if (ir_reserve_lines(ir, old_count + line_count - 1U) != 0) {
+        for (i = 0; i < line_count; ++i) {
+            rt_free(copies[i]);
+        }
+        rt_free(copies);
+        return -1;
+    }
+    if (line_count > 1U && tail_count > 0U) {
+        for (i = tail_count; i > 0U; --i) {
+            ir->lines[index + line_count - 1U + i] = ir->lines[index + i];
+        }
+    }
+    rt_free(ir->lines[index]);
+    for (i = 0; i < line_count; ++i) {
+        ir->lines[index + i] = copies[i];
+    }
+    ir->count = old_count + line_count - 1U;
+    rt_free(copies);
+    return 0;
+}
+
+static int ir_copy_last_identifier(const char *line, char *name, size_t name_size, const char **name_start_out) {
+    const char *end;
+    const char *start;
+
+    if (line == 0) {
+        return -1;
+    }
+    end = line + rt_strlen(line);
+    while (end > line && (end[-1] == ' ' || end[-1] == '\t')) {
+        end -= 1;
+    }
+    start = end;
+    while (start > line && ir_is_identifier_char(start[-1])) {
+        start -= 1;
+    }
+    if (start == end) {
+        return -1;
+    }
+    if (name_start_out != 0) {
+        *name_start_out = start;
+    }
+    return ir_copy_identifier(name, name_size, start, end);
+}
+
+static int ir_copy_text_range(char *buffer, size_t buffer_size, const char *start, const char *end) {
+    size_t length = 0;
+
+    if (buffer_size == 0 || start == 0 || end == 0 || end < start) {
+        return -1;
+    }
+    while (start < end && length + 1U < buffer_size) {
+        buffer[length++] = *start++;
+    }
+    buffer[length] = '\0';
+    return start == end ? 0 : -1;
+}
+
+static int ir_parse_decl_type_and_name(const char *line, const char *prefix, char *type_text, size_t type_size, char *name, size_t name_size) {
+    const char *cursor;
+    const char *name_start = 0;
+    const char *type_end;
+
+    if (!ir_starts_with(line, prefix) ||
+        ir_copy_last_identifier(line, name, name_size, &name_start) != 0) {
+        return -1;
+    }
+    cursor = line + rt_strlen(prefix);
+    type_end = name_start;
+    while (type_end > cursor && (type_end[-1] == ' ' || type_end[-1] == '\t')) {
+        type_end -= 1;
+    }
+    return ir_copy_text_range(type_text, type_size, cursor, type_end);
+}
+
+static int ir_mapping_index(const IrInlineMapping *mappings, size_t mapping_count, const char *name) {
+    size_t i;
+
+    for (i = 0; i < mapping_count; ++i) {
+        if (ir_text_equals(mappings[i].old_name, name)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int ir_add_inline_mapping(IrInlineMapping *mappings,
+                                 size_t *mapping_count,
+                                 const char *old_name,
+                                 const char *prefix,
+                                 const char *suffix) {
+    size_t offset = 0;
+
+    if (old_name == 0 || old_name[0] == '\0' || ir_mapping_index(mappings, *mapping_count, old_name) >= 0) {
+        return 0;
+    }
+    if (*mapping_count >= IR_INLINE_MAPPING_CAPACITY) {
+        return -1;
+    }
+    rt_copy_string(mappings[*mapping_count].old_name, sizeof(mappings[*mapping_count].old_name), old_name);
+    mappings[*mapping_count].new_name[0] = '\0';
+    if (append_text(mappings[*mapping_count].new_name, sizeof(mappings[*mapping_count].new_name), &offset, prefix) != 0 ||
+        append_text(mappings[*mapping_count].new_name, sizeof(mappings[*mapping_count].new_name), &offset, suffix) != 0) {
+        return -1;
+    }
+    *mapping_count += 1U;
+    return 0;
+}
+
+static int ir_rewrite_identifiers(const char *text,
+                                  const IrInlineMapping *mappings,
+                                  size_t mapping_count,
+                                  char *buffer,
+                                  size_t buffer_size) {
+    size_t out = 0;
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (buffer_size == 0) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    while (text[i] != '\0') {
+        char ch = text[i];
+
+        if ((in_string || in_char) && ch == '\\' && text[i + 1U] != '\0') {
+            if (out + 2U >= buffer_size) {
+                return -1;
+            }
+            buffer[out++] = text[i++];
+            buffer[out++] = text[i++];
+            buffer[out] = '\0';
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+        } else if (!in_string && ch == '\'') {
+            in_char = !in_char;
+        }
+        if (!in_string && !in_char && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_')) {
+            char name[COMPILER_IR_NAME_CAPACITY];
+            size_t start = i;
+            size_t length = 0;
+            int mapping;
+
+            while (ir_is_identifier_char(text[i])) {
+                if (length + 1U < sizeof(name)) {
+                    name[length++] = text[i];
+                }
+                i += 1U;
+            }
+            name[length] = '\0';
+            mapping = ir_mapping_index(mappings, mapping_count, name);
+            if (mapping >= 0) {
+                if (append_text(buffer, buffer_size, &out, mappings[mapping].new_name) != 0) {
+                    return -1;
+                }
+            } else {
+                while (start < i) {
+                    if (out + 1U >= buffer_size) {
+                        return -1;
+                    }
+                    buffer[out++] = text[start++];
+                }
+                buffer[out] = '\0';
+            }
+            continue;
+        }
+        if (out + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[out++] = ch;
+        buffer[out] = '\0';
+        i += 1U;
+    }
+    return 0;
+}
+
+static int ir_parse_function_name(const char *line, char *name, size_t name_size) {
+    const char *start = line + 5;
+    const char *end = start;
+
+    if (!ir_starts_with(line, "func ")) {
+        return -1;
+    }
+    while (ir_is_identifier_char(*end)) {
+        end += 1;
+    }
+    return ir_copy_identifier(name, name_size, start, end);
+}
+
+static int ir_line_declares_static_function(const char *line, const char *name) {
+    char decl_name[COMPILER_IR_NAME_CAPACITY];
+
+    return ir_starts_with(line, "decl static func ") &&
+           ir_copy_last_identifier(line, decl_name, sizeof(decl_name), 0) == 0 &&
+           ir_text_equals(decl_name, name);
+}
+
+static int ir_expr_is_scalar_inline_safe(const char *expr) {
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        char ch = expr[i];
+        if ((in_string || in_char) && ch == '\\' && expr[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+        } else if (!in_string && ch == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char) {
+            if (ch == '[' || ch == ']' || ch == '.' || ch == '?' || ch == ':' || ch == '*') {
+                return 0;
+            }
+            if (ch == '-' && expr[i + 1U] == '>') {
+                return 0;
+            }
+            if (ch == '&' && expr[i + 1U] != '&') {
+                return 0;
+            }
+            if (ch == '(') {
+                size_t k = i;
+                while (k > 0U && (expr[k - 1U] == ' ' || expr[k - 1U] == '\t')) {
+                    k -= 1U;
+                }
+                if (k > 0U && ir_is_identifier_char(expr[k - 1U])) {
+                    return 0;
+                }
+            }
+        }
+        i += 1U;
+    }
+    return !in_string && !in_char;
+}
+
+static int ir_collect_inline_functions(const CompilerIr *ir, IrInlineFunction *functions, size_t *function_count) {
+    size_t i;
+
+    *function_count = 0;
+    for (i = 0; i < ir->count; ++i) {
+        char name[COMPILER_IR_NAME_CAPACITY];
+        size_t cursor;
+        size_t body_start = 0;
+        size_t end = 0;
+        IrInlineFunction candidate;
+        int saw_scope = 0;
+        size_t body_lines;
+
+        if (!ir_starts_with(ir->lines[i], "func ") ||
+            ir_parse_function_name(ir->lines[i], name, sizeof(name)) != 0 ||
+            i == 0U ||
+            !ir_line_declares_static_function(ir->lines[i - 1U], name)) {
+            continue;
+        }
+        for (end = i + 1U; end < ir->count; ++end) {
+            if (ir_starts_with(ir->lines[end], "endfunc ")) {
+                break;
+            }
+        }
+        if (end >= ir->count) {
+            return -1;
+        }
+
+        rt_memset(&candidate, 0, sizeof(candidate));
+        rt_copy_string(candidate.name, sizeof(candidate.name), name);
+        cursor = i + 1U;
+        while (cursor < end && ir_starts_with(ir->lines[cursor], "decl param obj ")) {
+            IrInlineParam *param;
+            if (candidate.param_count >= IR_INLINE_PARAM_CAPACITY) {
+                break;
+            }
+            param = &candidate.params[candidate.param_count];
+            if (ir_parse_decl_type_and_name(ir->lines[cursor],
+                                            "decl param obj ",
+                                            param->type_text,
+                                            sizeof(param->type_text),
+                                            param->name,
+                                            sizeof(param->name)) != 0) {
+                break;
+            }
+            candidate.param_count += 1U;
+            cursor += 1U;
+        }
+        if (cursor < end && ir_starts_with(ir->lines[cursor], "scope-enter")) {
+            saw_scope = 1;
+            body_start = cursor + 1U;
+        } else {
+            body_start = cursor;
+        }
+        (void)saw_scope;
+        body_lines = end - body_start;
+        if (body_lines == 0U || body_lines > IR_INLINE_BODY_CAPACITY) {
+            continue;
+        }
+        candidate.body_start = body_start;
+        candidate.body_end = end;
+        if (candidate.body_end > candidate.body_start &&
+            ir_starts_with(ir->lines[candidate.body_end - 1U], "scope-exit")) {
+            candidate.body_end -= 1U;
+        }
+        body_lines = candidate.body_end - candidate.body_start;
+        if (body_lines == 1U && ir_starts_with(ir->lines[body_start], "ret ") &&
+            ir_expr_is_scalar_inline_safe(ir->lines[body_start] + 4)) {
+            candidate.expression_only = 1;
+            rt_copy_string(candidate.return_expr, sizeof(candidate.return_expr), ir->lines[body_start] + 4);
+        }
+        if (*function_count >= IR_INLINE_FUNCTION_CAPACITY) {
+            return -1;
+        }
+        functions[*function_count] = candidate;
+        *function_count += 1U;
+        i = end;
+    }
+    return 0;
+}
+
+static const IrInlineFunction *ir_find_inline_function(const IrInlineFunction *functions, size_t function_count, const char *name) {
+    size_t i;
+
+    for (i = 0; i < function_count; ++i) {
+        if (ir_text_equals(functions[i].name, name)) {
+            return &functions[i];
+        }
+    }
+    return 0;
+}
+
+static int ir_copy_trimmed_arg(char *buffer, size_t buffer_size, const char *start, const char *end) {
+    while (start < end && (*start == ' ' || *start == '\t')) {
+        start += 1;
+    }
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+        end -= 1;
+    }
+    return ir_copy_text_range(buffer, buffer_size, start, end);
+}
+
+static int ir_split_arguments(const char *start,
+                              const char *end,
+                              char args[IR_INLINE_PARAM_CAPACITY][COMPILER_IR_LINE_CAPACITY],
+                              size_t *arg_count_out) {
+    const char *segment = start;
+    const char *cursor = start;
+    int depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+    size_t count = 0;
+
+    while (cursor < end) {
+        char ch = *cursor;
+        if ((in_string || in_char) && ch == '\\' && cursor + 1 < end) {
+            cursor += 2;
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+        } else if (!in_string && ch == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char) {
+            if (ch == '(' || ch == '[') {
+                depth += 1;
+            } else if ((ch == ')' || ch == ']') && depth > 0) {
+                depth -= 1;
+            } else if (ch == ',' && depth == 0) {
+                if (count >= IR_INLINE_PARAM_CAPACITY ||
+                    ir_copy_trimmed_arg(args[count], COMPILER_IR_LINE_CAPACITY, segment, cursor) != 0) {
+                    return -1;
+                }
+                count += 1U;
+                segment = cursor + 1;
+            }
+        }
+        cursor += 1;
+    }
+    if (segment < end || count > 0U) {
+        if (count >= IR_INLINE_PARAM_CAPACITY ||
+            ir_copy_trimmed_arg(args[count], COMPILER_IR_LINE_CAPACITY, segment, end) != 0) {
+            return -1;
+        }
+        count += 1U;
+    }
+    *arg_count_out = count;
+    return 0;
+}
+
+static int ir_find_matching_paren(const char *open, const char **close_out) {
+    const char *cursor = open;
+    int depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (*cursor != '\0') {
+        char ch = *cursor;
+        if ((in_string || in_char) && ch == '\\' && cursor[1] != '\0') {
+            cursor += 2;
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+        } else if (!in_string && ch == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char) {
+            if (ch == '(') {
+                depth += 1;
+            } else if (ch == ')') {
+                depth -= 1;
+                if (depth == 0) {
+                    *close_out = cursor;
+                    return 0;
+                }
+            }
+        }
+        cursor += 1;
+    }
+    return -1;
+}
+
+static int ir_build_inline_expression(const IrInlineFunction *function,
+                                      char args[IR_INLINE_PARAM_CAPACITY][COMPILER_IR_LINE_CAPACITY],
+                                      char *buffer,
+                                      size_t buffer_size) {
+    IrInlineMapping mappings[IR_INLINE_MAPPING_CAPACITY];
+    size_t mapping_count = 0;
+    size_t i;
+    size_t out = 0;
+    char rewritten[COMPILER_IR_LINE_CAPACITY];
+
+    if (!function->expression_only || function->param_count >= IR_INLINE_MAPPING_CAPACITY) {
+        return -1;
+    }
+    for (i = 0; i < function->param_count; ++i) {
+        rt_copy_string(mappings[mapping_count].old_name, sizeof(mappings[mapping_count].old_name), function->params[i].name);
+        rt_copy_string(mappings[mapping_count].new_name, sizeof(mappings[mapping_count].new_name), args[i]);
+        mapping_count += 1U;
+    }
+    if (ir_rewrite_identifiers(function->return_expr, mappings, mapping_count, rewritten, sizeof(rewritten)) != 0) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    return append_text(buffer, buffer_size, &out, "((") == 0 &&
+                   append_text(buffer, buffer_size, &out, rewritten) == 0 &&
+                   append_text(buffer, buffer_size, &out, "))") == 0
+               ? 0
+               : -1;
+}
+
+static int ir_expr_contains_identifier_reference(const char *expr) {
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        char ch = expr[i];
+        if ((in_string || in_char) && ch == '\\' && expr[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && ch == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (in_string || in_char) {
+            i += 1U;
+            continue;
+        }
+        if (ch >= '0' && ch <= '9') {
+            i += 1U;
+            while ((expr[i] >= '0' && expr[i] <= '9') ||
+                   (expr[i] >= 'a' && expr[i] <= 'f') ||
+                   (expr[i] >= 'A' && expr[i] <= 'F') ||
+                   expr[i] == 'x' || expr[i] == 'X' ||
+                   expr[i] == 'u' || expr[i] == 'U' ||
+                   expr[i] == 'l' || expr[i] == 'L') {
+                i += 1U;
+            }
+            continue;
+        }
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_') {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static int ir_rewrite_inline_expr_calls(const char *expr,
+                                        const IrInlineFunction *functions,
+                                        size_t function_count,
+                                        char *buffer,
+                                        size_t buffer_size,
+                                        int *changed_out) {
+    size_t out = 0;
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    buffer[0] = '\0';
+    *changed_out = 0;
+    while (expr[i] != '\0') {
+        char ch = expr[i];
+
+        if ((in_string || in_char) && ch == '\\' && expr[i + 1U] != '\0') {
+            if (out + 2U >= buffer_size) return -1;
+            buffer[out++] = expr[i++];
+            buffer[out++] = expr[i++];
+            buffer[out] = '\0';
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+        } else if (!in_string && ch == '\'') {
+            in_char = !in_char;
+        }
+        if (!in_string && !in_char && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_')) {
+            char name[COMPILER_IR_NAME_CAPACITY];
+            size_t start = i;
+            size_t length = 0;
+            const char *after_name;
+            const char *open;
+            const char *close = 0;
+            const IrInlineFunction *function;
+
+            while (ir_is_identifier_char(expr[i])) {
+                if (length + 1U < sizeof(name)) {
+                    name[length++] = expr[i];
+                }
+                i += 1U;
+            }
+            name[length] = '\0';
+            after_name = ir_skip_spaces(expr + i);
+            open = after_name;
+            function = ir_find_inline_function(functions, function_count, name);
+            if (function != 0 && function->expression_only && *open == '(' && ir_find_matching_paren(open, &close) == 0) {
+                char args[IR_INLINE_PARAM_CAPACITY][COMPILER_IR_LINE_CAPACITY];
+                size_t arg_count = 0;
+                char replacement[COMPILER_IR_LINE_CAPACITY];
+                int has_identifier_arg = 0;
+                size_t arg_index;
+
+                if (ir_split_arguments(open + 1, close, args, &arg_count) == 0 &&
+                    arg_count == function->param_count) {
+                    for (arg_index = 0; arg_index < arg_count; ++arg_index) {
+                        has_identifier_arg = has_identifier_arg || ir_expr_contains_identifier_reference(args[arg_index]);
+                    }
+                }
+                if (arg_count == function->param_count &&
+                    has_identifier_arg &&
+                    ir_build_inline_expression(function, args, replacement, sizeof(replacement)) == 0 &&
+                    append_text(buffer, buffer_size, &out, replacement) == 0) {
+                    i = (size_t)(close + 1 - expr);
+                    *changed_out = 1;
+                    continue;
+                }
+            }
+            while (start < i) {
+                if (out + 1U >= buffer_size) return -1;
+                buffer[out++] = expr[start++];
+            }
+            buffer[out] = '\0';
+            continue;
+        }
+        if (out + 1U >= buffer_size) {
+            return -1;
+        }
+        buffer[out++] = ch;
+        buffer[out] = '\0';
+        i += 1U;
+    }
+    return 0;
+}
+
+static int ir_parse_exact_call(const char *expr,
+                               char *name,
+                               size_t name_size,
+                               char args[IR_INLINE_PARAM_CAPACITY][COMPILER_IR_LINE_CAPACITY],
+                               size_t *arg_count_out) {
+    const char *cursor = ir_skip_spaces(expr);
+    const char *name_start = cursor;
+    const char *open;
+    const char *close = 0;
+
+    if (!((*cursor >= 'a' && *cursor <= 'z') || (*cursor >= 'A' && *cursor <= 'Z') || *cursor == '_')) {
+        return -1;
+    }
+    while (ir_is_identifier_char(*cursor)) {
+        cursor += 1;
+    }
+    if (ir_copy_identifier(name, name_size, name_start, cursor) != 0) {
+        return -1;
+    }
+    cursor = ir_skip_spaces(cursor);
+    if (*cursor != '(') {
+        return -1;
+    }
+    open = cursor;
+    if (ir_find_matching_paren(open, &close) != 0) {
+        return -1;
+    }
+    cursor = ir_skip_spaces(close + 1);
+    if (*cursor != '\0') {
+        return -1;
+    }
+    return ir_split_arguments(open + 1, close, args, arg_count_out);
+}
+
+static int ir_collect_inline_body_mappings(const CompilerIr *ir,
+                                           const IrInlineFunction *function,
+                                           IrInlineMapping *mappings,
+                                           size_t *mapping_count,
+                                           const char *prefix) {
+    size_t i;
+
+    for (i = function->body_start; i < function->body_end; ++i) {
+        char name[COMPILER_IR_NAME_CAPACITY];
+        char type_text[128];
+
+        if (ir_starts_with(ir->lines[i], "decl local obj ") &&
+            ir_parse_decl_type_and_name(ir->lines[i], "decl local obj ", type_text, sizeof(type_text), name, sizeof(name)) == 0) {
+            if (ir_add_inline_mapping(mappings, mapping_count, name, prefix, name) != 0) {
+                return -1;
+            }
+        } else if (ir_starts_with(ir->lines[i], "label ") &&
+                   ir_copy_last_identifier(ir->lines[i], name, sizeof(name), 0) == 0) {
+            if (ir_add_inline_mapping(mappings, mapping_count, name, prefix, name) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int ir_inline_param_is_written(const CompilerIr *ir, const IrInlineFunction *function, const char *param_name) {
+    size_t i;
+
+    for (i = function->body_start; i < function->body_end; ++i) {
+        if (ir_starts_with(ir->lines[i], "store ")) {
+            char name[COMPILER_IR_NAME_CAPACITY];
+            const char *expr = 0;
+            if (ir_extract_store_parts(ir->lines[i], name, sizeof(name), &expr) == 0 &&
+                ir_text_equals(name, param_name)) {
+                return 1;
+            }
+        } else if (ir_starts_with(ir->lines[i], "eval ")) {
+            char name[COMPILER_IR_NAME_CAPACITY];
+            char op[4];
+            const char *rhs = 0;
+            const char *expr = ir->lines[i] + 5;
+            if (ir_extract_assignment_parts(expr, name, sizeof(name), op, sizeof(op), &rhs) == 0 &&
+                ir_text_equals(name, param_name)) {
+                return 1;
+            }
+            if ((ir_starts_with(expr, "++") || ir_starts_with(expr, "--")) &&
+                ir_text_equals(ir_skip_spaces(expr + 2), param_name)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int ir_append_inline_line(char (*lines)[COMPILER_IR_LINE_CAPACITY], size_t *line_count, const char *line) {
+    if (*line_count >= IR_INLINE_EXPANSION_CAPACITY) {
+        return -1;
+    }
+    rt_copy_string(lines[*line_count], COMPILER_IR_LINE_CAPACITY, line);
+    *line_count += 1U;
+    return 0;
+}
+
+static int ir_append_joined_line(char (*lines)[COMPILER_IR_LINE_CAPACITY],
+                                 size_t *line_count,
+                                 const char *a,
+                                 const char *b,
+                                 const char *c,
+                                 const char *d) {
+    size_t offset = 0;
+
+    if (*line_count >= IR_INLINE_EXPANSION_CAPACITY) {
+        return -1;
+    }
+    lines[*line_count][0] = '\0';
+    if ((a != 0 && append_text(lines[*line_count], COMPILER_IR_LINE_CAPACITY, &offset, a) != 0) ||
+        (b != 0 && append_text(lines[*line_count], COMPILER_IR_LINE_CAPACITY, &offset, b) != 0) ||
+        (c != 0 && append_text(lines[*line_count], COMPILER_IR_LINE_CAPACITY, &offset, c) != 0) ||
+        (d != 0 && append_text(lines[*line_count], COMPILER_IR_LINE_CAPACITY, &offset, d) != 0)) {
+        return -1;
+    }
+    *line_count += 1U;
+    return 0;
+}
+
+static int ir_expand_exact_store_call(CompilerIr *ir,
+                                      size_t index,
+                                      const char *target,
+                                      const IrInlineFunction *function,
+                                      char args[IR_INLINE_PARAM_CAPACITY][COMPILER_IR_LINE_CAPACITY],
+                                      size_t arg_count) {
+    IrInlineMapping mappings[IR_INLINE_MAPPING_CAPACITY];
+    size_t mapping_count = 0;
+    char prefix[64];
+    char suffix[32];
+    char end_label[COMPILER_IR_NAME_CAPACITY];
+    char (*lines)[COMPILER_IR_LINE_CAPACITY];
+    size_t line_count = 0;
+    size_t i;
+    int param_direct[IR_INLINE_PARAM_CAPACITY];
+
+    if (function == 0 || function->expression_only || arg_count != function->param_count) {
+        return 0;
+    }
+    rt_copy_string(prefix, sizeof(prefix), "__inl");
+    rt_unsigned_to_string((unsigned long long)ir->temp_counter++, suffix, sizeof(suffix));
+    rt_copy_string(prefix + rt_strlen(prefix), sizeof(prefix) - rt_strlen(prefix), suffix);
+    rt_copy_string(prefix + rt_strlen(prefix), sizeof(prefix) - rt_strlen(prefix), "_");
+    rt_copy_string(end_label, sizeof(end_label), prefix);
+    rt_copy_string(end_label + rt_strlen(end_label), sizeof(end_label) - rt_strlen(end_label), "end");
+
+    mapping_count = 0;
+    for (i = 0; i < function->param_count; ++i) {
+        param_direct[i] = ir_expr_is_trivial_value(args[i]) && !ir_inline_param_is_written(ir, function, function->params[i].name);
+        if (param_direct[i]) {
+            if (mapping_count >= IR_INLINE_MAPPING_CAPACITY) {
+                set_error(ir, "IR inline mapping capacity exceeded");
+                return -1;
+            }
+            rt_copy_string(mappings[mapping_count].old_name, sizeof(mappings[mapping_count].old_name), function->params[i].name);
+            rt_copy_string(mappings[mapping_count].new_name, sizeof(mappings[mapping_count].new_name), args[i]);
+            mapping_count += 1U;
+        } else if (ir_add_inline_mapping(mappings, &mapping_count, function->params[i].name, prefix, function->params[i].name) != 0) {
+            set_error(ir, "IR inline mapping capacity exceeded");
+            return -1;
+        }
+    }
+    if (ir_collect_inline_body_mappings(ir, function, mappings, &mapping_count, prefix) != 0) {
+        set_error(ir, "IR inline mapping capacity exceeded");
+        return -1;
+    }
+    lines = (char (*)[COMPILER_IR_LINE_CAPACITY])rt_malloc(IR_INLINE_EXPANSION_CAPACITY * sizeof(lines[0]));
+    if (lines == 0) {
+        set_error(ir, "out of memory while expanding inline call");
+        return -1;
+    }
+
+    if (ir_append_inline_line(lines, &line_count, "scope-enter") != 0) {
+        goto fail;
+    }
+    for (i = 0; i < function->param_count; ++i) {
+        int mapping = ir_mapping_index(mappings, mapping_count, function->params[i].name);
+        if (param_direct[i]) {
+            continue;
+        }
+        if (mapping < 0 ||
+            ir_append_joined_line(lines, &line_count, "decl local obj ", function->params[i].type_text, " ", mappings[mapping].new_name) != 0 ||
+            ir_append_joined_line(lines, &line_count, "store ", mappings[mapping].new_name, " <- ", args[i]) != 0) {
+            goto fail;
+        }
+    }
+
+    for (i = function->body_start; i < function->body_end; ++i) {
+        char rewritten[COMPILER_IR_LINE_CAPACITY];
+
+        if (ir_starts_with(ir->lines[i], "ret ")) {
+            if (ir_rewrite_identifiers(ir->lines[i] + 4, mappings, mapping_count, rewritten, sizeof(rewritten)) != 0 ||
+                ir_append_joined_line(lines, &line_count, "store ", target, " <- ", rewritten) != 0 ||
+                ir_append_joined_line(lines, &line_count, "jump ", end_label, 0, 0) != 0) {
+                goto fail;
+            }
+            continue;
+        }
+        if (ir_rewrite_identifiers(ir->lines[i], mappings, mapping_count, rewritten, sizeof(rewritten)) != 0 ||
+            ir_append_inline_line(lines, &line_count, rewritten) != 0) {
+            goto fail;
+        }
+    }
+    if (ir_append_joined_line(lines, &line_count, "label ", end_label, 0, 0) != 0 ||
+        ir_append_inline_line(lines, &line_count, "scope-exit") != 0) {
+        goto fail;
+    }
+    if (ir_replace_line_with_lines(ir, index, lines, line_count) != 0) {
+        rt_free(lines);
+        return -1;
+    }
+    rt_free(lines);
+    return 1;
+
+fail:
+    rt_free(lines);
+    set_error(ir, "IR inline expansion exceeded line capacity");
+    return -1;
+}
+
+static int ir_rewrite_store_expr_line(CompilerIr *ir, size_t index, const char *name, const char *expr) {
+    char rewritten[COMPILER_IR_LINE_CAPACITY];
+    size_t offset = 0;
+
+    rewritten[0] = '\0';
+    if (append_text(rewritten, sizeof(rewritten), &offset, "store ") != 0 ||
+        append_text(rewritten, sizeof(rewritten), &offset, name) != 0 ||
+        append_text(rewritten, sizeof(rewritten), &offset, " <- ") != 0 ||
+        append_text(rewritten, sizeof(rewritten), &offset, expr) != 0) {
+        set_error(ir, "IR instruction text exceeded line capacity");
+        return -1;
+    }
+    return ir_replace_line(ir, index, rewritten);
+}
+
+static int ir_inline_rewrite_branch(CompilerIr *ir,
+                                    size_t index,
+                                    const IrInlineFunction *functions,
+                                    size_t function_count) {
+    const char *expr_start = ir->lines[index] + 8;
+    const char *arrow = ir_find_separator_outside_quotes(expr_start, " -> ");
+    char expr[COMPILER_IR_LINE_CAPACITY];
+    char label[COMPILER_IR_NAME_CAPACITY];
+    char rewritten[COMPILER_IR_LINE_CAPACITY];
+    int changed = 0;
+
+    if (arrow == 0 ||
+        ir_copy_text_range(expr, sizeof(expr), expr_start, arrow) != 0 ||
+        ir_copy_identifier(label, sizeof(label), arrow + 4, arrow + 4 + rt_strlen(arrow + 4)) != 0) {
+        return 0;
+    }
+    if (ir_rewrite_inline_expr_calls(expr, functions, function_count, rewritten, sizeof(rewritten), &changed) != 0) {
+        return -1;
+    }
+    return changed ? ir_rewrite_branch_line(ir, index, rewritten, label) : 0;
+}
+
+static int ir_inline_calls(CompilerIr *ir) {
+    IrInlineFunction functions[IR_INLINE_FUNCTION_CAPACITY];
+    size_t function_count = 0;
+    size_t i = 0;
+
+    if (ir_collect_inline_functions(ir, functions, &function_count) != 0) {
+        set_error(ir, "failed while collecting inline candidates");
+        return -1;
+    }
+    if (function_count == 0U) {
+        return 0;
+    }
+
+    while (i < ir->count) {
+        char *line = ir->lines[i];
+
+        if (ir_starts_with(line, "store ")) {
+            char target[COMPILER_IR_NAME_CAPACITY];
+            const char *expr = 0;
+
+            if (ir_extract_store_parts(line, target, sizeof(target), &expr) == 0) {
+                char call_name[COMPILER_IR_NAME_CAPACITY];
+                char args[IR_INLINE_PARAM_CAPACITY][COMPILER_IR_LINE_CAPACITY];
+                size_t arg_count = 0;
+                const IrInlineFunction *function;
+
+                if (ir_parse_exact_call(expr, call_name, sizeof(call_name), args, &arg_count) == 0) {
+                    function = ir_find_inline_function(functions, function_count, call_name);
+                    if (function != 0 && !function->expression_only) {
+                        int expanded = ir_expand_exact_store_call(ir, i, target, function, args, arg_count);
+                        if (expanded < 0) {
+                            return -1;
+                        }
+                        if (expanded > 0) {
+                            i += 1U;
+                            continue;
+                        }
+                    }
+                }
+                {
+                    char rewritten[COMPILER_IR_LINE_CAPACITY];
+                    int changed = 0;
+                    if (ir_rewrite_inline_expr_calls(expr, functions, function_count, rewritten, sizeof(rewritten), &changed) != 0) {
+                        return -1;
+                    }
+                    if (changed && ir_rewrite_store_expr_line(ir, i, target, rewritten) != 0) {
+                        return -1;
+                    }
+                }
+            }
+            i += 1U;
+            continue;
+        }
+
+        if (ir_starts_with(line, "eval ")) {
+            char rewritten[COMPILER_IR_LINE_CAPACITY];
+            int changed = 0;
+            if (ir_rewrite_inline_expr_calls(line + 5, functions, function_count, rewritten, sizeof(rewritten), &changed) != 0) {
+                return -1;
+            }
+            if (changed && ir_rewrite_expr_line(ir, i, "eval ", rewritten) != 0) {
+                return -1;
+            }
+            i += 1U;
+            continue;
+        }
+
+        if (ir_starts_with(line, "brfalse ")) {
+            if (ir_inline_rewrite_branch(ir, i, functions, function_count) != 0) {
+                return -1;
+            }
+            i += 1U;
+            continue;
+        }
+
+        if (ir_starts_with(line, "ret ")) {
+            char rewritten[COMPILER_IR_LINE_CAPACITY];
+            int changed = 0;
+            if (ir_rewrite_inline_expr_calls(line + 4, functions, function_count, rewritten, sizeof(rewritten), &changed) != 0) {
+                return -1;
+            }
+            if (changed && ir_rewrite_expr_line(ir, i, "ret ", rewritten) != 0) {
+                return -1;
+            }
+            i += 1U;
+            continue;
+        }
+
+        i += 1U;
+    }
     return 0;
 }
 
@@ -1361,6 +2350,10 @@ static int ir_assignment_op_is_noop(const char *op, const char *rhs, const IrOpt
 int compiler_ir_optimize(CompilerIr *ir) {
     IrOptimizerState state;
     size_t i = 0;
+
+    if (ir_inline_calls(ir) != 0) {
+        return -1;
+    }
 
     rt_memset(&state, 0, sizeof(state));
 
