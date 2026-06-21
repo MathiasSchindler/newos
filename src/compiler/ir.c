@@ -325,7 +325,17 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
         }
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
-        if (type->array_stride > 0ULL) {
+        if (type->array_inner_length > 0ULL && type->array_stride > type->array_inner_length &&
+            type->array_stride % type->array_inner_length == 0ULL) {
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_inner_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_stride / type->array_inner_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        } else if (type->array_stride > 0ULL) {
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
             rt_unsigned_to_string(type->array_stride, digits, sizeof(digits));
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
@@ -345,7 +355,17 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
         }
         rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
-        if (type->array_stride > 0ULL) {
+        if (type->array_inner_length > 0ULL && type->array_stride > type->array_inner_length &&
+            type->array_stride % type->array_inner_length == 0ULL) {
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_inner_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
+            rt_unsigned_to_string(type->array_stride / type->array_inner_length, digits, sizeof(digits));
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);
+            rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "]");
+        } else if (type->array_stride > 0ULL) {
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), "[");
             rt_unsigned_to_string(type->array_stride, digits, sizeof(digits));
             rt_copy_string(buffer + rt_strlen(buffer), buffer_size - rt_strlen(buffer), digits);

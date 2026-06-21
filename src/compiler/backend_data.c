@@ -533,6 +533,8 @@ int decl_slot_size(const BackendState *state, const char *type_text) {
 
     if (has_pointer) {
         element_size = 8ULL;
+    } else if (text_contains(type, "__int128")) {
+        element_size = 16ULL;
     } else if (text_contains(type, "char")) {
         element_size = 1ULL;
     } else if ((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*")) {
@@ -570,6 +572,9 @@ int decl_slot_size(const BackendState *state, const char *type_text) {
 
     if (((starts_with(type, "struct") || starts_with(type, "union")) && !text_contains(type, "*"))) {
         return aggregate_size > 0 ? aggregate_size : BACKEND_STRUCT_STACK_BYTES;
+    }
+    if (text_contains(type, "__int128") && !text_contains(type, "*")) {
+        return 16;
     }
     return backend_stack_slot_size(state);
 }
@@ -803,7 +808,10 @@ void maybe_apply_array_initializer_length(char *type_text, size_t type_text_size
         return;
     }
 
-    if (value[0] == '"' && starts_with(type, "char[")) {
+    if (value[0] == '"' &&
+        (starts_with(type, "char[") ||
+         starts_with(type, "signed char[") ||
+         starts_with(type, "unsigned char["))) {
         length = count_string_initializer_bytes(value);
     } else if (value[0] == '{') {
         length = count_top_level_initializer_items(value);

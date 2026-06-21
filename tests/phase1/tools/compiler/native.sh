@@ -87,6 +87,64 @@ EOF
 
 compile_and_check_native "$WORK_DIR/static_local_string_array.c" "$WORK_DIR/static_local_string_array_bin" "0" "compiler failed on a function-local static string array initializer"
 
+cat > "$WORK_DIR/local_string_row_array.c" <<'EOF'
+static int same(const char *left, const char *right) {
+    unsigned int i = 0;
+    while (left[i] != '\0' || right[i] != '\0') {
+        if (left[i] != right[i]) return 0;
+        i += 1U;
+    }
+    return 1;
+}
+
+static int match(const char *text, const char rows[][4], unsigned long count) {
+    unsigned long i;
+
+    for (i = 0; i < count; ++i) {
+        if (same(text, rows[i])) return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    const char rows[][4] = {"==", "!="};
+
+    if (!match("==", rows, sizeof(rows) / sizeof(rows[0]))) return 1;
+    if (!match("!=", rows, sizeof(rows) / sizeof(rows[0]))) return 2;
+    return match("+", rows, sizeof(rows) / sizeof(rows[0])) ? 3 : 0;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/local_string_row_array.c" "$WORK_DIR/local_string_row_array_bin" "0" "compiler stored string pointers instead of inline rows for a local char[][N] initializer"
+
+cat > "$WORK_DIR/nested_array_row_decay.c" <<'EOF'
+static unsigned char pick(const unsigned char table[2][4][4], int outer, int row, int column) {
+    const unsigned char *entry = table[outer][row];
+    return entry[column];
+}
+
+int main(void) {
+    static const unsigned char table[2][4][4] = {
+        {
+            { 1U, 2U, 3U, 4U },
+            { 5U, 6U, 7U, 8U },
+            { 9U, 10U, 11U, 12U },
+            { 13U, 14U, 15U, 16U }
+        },
+        {
+            { 17U, 18U, 19U, 20U },
+            { 21U, 22U, 23U, 24U },
+            { 25U, 26U, 27U, 28U },
+            { 29U, 30U, 31U, 32U }
+        }
+    };
+
+    return pick(table, 1, 2, 3) == 28U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/nested_array_row_decay.c" "$WORK_DIR/nested_array_row_decay_bin" "0" "compiler loaded nested array rows instead of preserving row address decay"
+
 cat > "$WORK_DIR/sizeof_string_array_bound.c" <<'EOF'
 int main(void) {
     static const char context[] = "TLS 1.3, server CertificateVerify";
@@ -134,6 +192,54 @@ EOF
 
 compile_and_check_native "$WORK_DIR/u64_unsigned_shift.c" "$WORK_DIR/u64_unsigned_shift_bin" "0" "compiler miscompiled an unsigned 64-bit right shift on x86_64"
 
+cat > "$WORK_DIR/constant_shift_immediate.c" <<'EOF'
+unsigned long rotate_like(unsigned long value) {
+    return (value << 7U) | (value >> (64U - 7U));
+}
+
+int main(void) {
+    return rotate_like(1UL) == 128UL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/constant_shift_immediate.c" "$WORK_DIR/constant_shift_immediate_bin" "0" "compiler miscompiled constant shift counts"
+if [ "$RUN_TARGET" = "linux-x86_64" ]; then
+    "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -S -std=c11 -O2 -ffreestanding -ffunction-sections -fdata-sections "$WORK_DIR/constant_shift_immediate.c" -o "$WORK_DIR/constant_shift_immediate.s"
+    assert_file_contains "$WORK_DIR/constant_shift_immediate.s" 'salq \$7' "compiler did not lower a constant left shift to an immediate shift"
+    assert_file_contains "$WORK_DIR/constant_shift_immediate.s" 'shrq \$57' "compiler did not fold a constant expression right-shift count"
+    if grep -q '%cl' "$WORK_DIR/constant_shift_immediate.s"; then
+        fail "compiler used a variable shift count for constant shifts"
+    fi
+fi
+
+cat > "$WORK_DIR/cached_parenthesized_assignment.c" <<'EOF'
+static unsigned long mix(unsigned long seed, unsigned long *out) {
+    unsigned long a = seed;
+    unsigned long b = 3UL;
+    unsigned long c = 5UL;
+    unsigned long d = 7UL;
+    unsigned long i;
+
+    for (i = 0; i < 12UL; ++i) {
+        (a) += ((b) & (c)) | ((~(b)) & (d));
+        (a) = b + ((a << 7U) | (a >> (64U - 7U)));
+        (b) += a ^ c ^ d;
+        (c) += b | d;
+        (d) += c & a;
+    }
+    *out = a + b + c + d;
+    return *out;
+}
+
+int main(void) {
+    unsigned long value = 0UL;
+
+    return mix(11UL, &value) == value && value != 0UL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/cached_parenthesized_assignment.c" "$WORK_DIR/cached_parenthesized_assignment_bin" "0" "compiler mishandled parenthesized assignments to cached locals"
+
 cat > "$WORK_DIR/u64_unsigned_division_guard.c" <<'EOF'
 static unsigned long long parse_guard_limit(unsigned long long digit) {
     return (18446744073709551615ULL - digit) / 10ULL;
@@ -156,6 +262,39 @@ EOF
 
 compile_and_check_native "$WORK_DIR/sizeof_scalar_specifiers.c" "$WORK_DIR/sizeof_scalar_specifiers_bin" "0" "compiler mis-sized multi-token scalar sizeof type names"
 
+cat > "$WORK_DIR/unsigned_char_cast_load.c" <<'EOF'
+int main(void) {
+    const char png_sig[] = "\211PNG";
+
+    return (unsigned char)png_sig[0] == 0x89U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/unsigned_char_cast_load.c" "$WORK_DIR/unsigned_char_cast_load_bin" "0" "compiler failed to zero-extend an explicit unsigned char cast from memory"
+
+cat > "$WORK_DIR/static_unsigned_char_string_array.c" <<'EOF'
+int main(void) {
+    static const unsigned char text[] = "urn:c2pa:newos-dev";
+
+    return sizeof(text) == 19U && text[18] == 0U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/static_unsigned_char_string_array.c" "$WORK_DIR/static_unsigned_char_string_array_bin" "0" "compiler mis-sized a local static unsigned char string array initializer"
+
+cat > "$WORK_DIR/sizeof_unsized_braced_array.c" <<'EOF'
+static const unsigned char data[] = {1U, 2U, 3U, 4U, 5U};
+
+int main(void) {
+    unsigned char copy[sizeof(data)];
+
+    copy[4] = data[4];
+    return sizeof(data) == 5U && sizeof(copy) == 5U && copy[4] == 5U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/sizeof_unsized_braced_array.c" "$WORK_DIR/sizeof_unsized_braced_array_bin" "0" "compiler mis-sized sizeof of an unsized braced global array in a later local array bound"
+
 cat > "$WORK_DIR/struct_pointer_to_array_field.c" <<'EOF'
 struct List {
     unsigned char (*oids)[20];
@@ -174,6 +313,117 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/struct_pointer_to_array_field.c" "$WORK_DIR/struct_pointer_to_array_field_bin" "0" "compiler mishandled a struct field declared as pointer to array"
+
+cat > "$WORK_DIR/compound_literal_struct_argument.c" <<'EOF'
+typedef struct {
+    const unsigned char *text;
+    unsigned long size;
+} Ref;
+
+typedef struct {
+    unsigned int seen;
+} State;
+
+static void visit(Ref parent, State *state) {
+    if (parent.text == 0 && parent.size == 0U) {
+        state->seen += 1U;
+    }
+}
+
+static void wrapper(State *state) {
+    visit((Ref){0, 0U}, state);
+}
+
+int main(void) {
+    State state;
+
+    state.seen = 0U;
+    wrapper(&state);
+    return state.seen == 1U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/compound_literal_struct_argument.c" "$WORK_DIR/compound_literal_struct_argument_bin" "0" "compiler failed to allocate and initialize a struct compound literal argument"
+
+cat > "$WORK_DIR/shadowed_cached_local.c" <<'EOF'
+static unsigned int count_kept(int use_inner) {
+    unsigned int kept_count = 0U;
+    unsigned int index;
+
+    if (use_inner) {
+        unsigned int kept_count = 0U;
+
+        for (index = 0U; index < 3U; ++index) {
+            kept_count += 10U;
+        }
+        return kept_count;
+    }
+    for (index = 0U; index < 5U; ++index) {
+        if (index != 2U) {
+            kept_count += 1U;
+        }
+    }
+    return kept_count;
+}
+
+int main(void) {
+    return count_kept(0) == 4U && count_kept(1) == 30U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/shadowed_cached_local.c" "$WORK_DIR/shadowed_cached_local_bin" "0" "compiler cached a shadowed local across scopes"
+
+cat > "$WORK_DIR/shadowed_cached_parameter.c" <<'EOF'
+static unsigned int pick_token(unsigned int match_index, unsigned int use_inner) {
+    unsigned int score = match_index + 1U;
+    unsigned int token = score + match_index;
+
+    if (use_inner) {
+        unsigned int match_index = 7U;
+
+        token += match_index;
+    }
+    return token + score + match_index;
+}
+
+int main(void) {
+    return pick_token(3U, 0U) == 14U && pick_token(3U, 1U) == 21U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/shadowed_cached_parameter.c" "$WORK_DIR/shadowed_cached_parameter_bin" "0" "compiler cached a parameter shadowed by a local"
+
+cat > "$WORK_DIR/u32_mul_shift_wrap.c" <<'EOF'
+static unsigned int hash32(unsigned int value) {
+    return (value * 2246822519U) >> 16U;
+}
+
+int main(void) {
+    return hash32(0x123456U) == 0x1eb4U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u32_mul_shift_wrap.c" "$WORK_DIR/u32_mul_shift_wrap_bin" "0" "compiler failed to wrap unsigned int multiplication before a shift"
+
+cat > "$WORK_DIR/signed_int_return_compare.c" <<'EOF'
+static int cmp_path(const char *left, const char *right) {
+    while (*left != '\0' && *left == *right) {
+        left += 1;
+        right += 1;
+    }
+    return (unsigned char)*left - (unsigned char)*right;
+}
+
+static int is_less(int (*compare)(const char *, const char *), const char *left, const char *right) {
+    return compare(left, right) < 0;
+}
+
+int main(void) {
+    return is_less(cmp_path, "delete.txt", "keep.txt") ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/signed_int_return_compare.c" "$WORK_DIR/signed_int_return_compare_bin" "0" "compiler failed to sign-extend a negative int function return"
 
 cat > "$WORK_DIR/struct_member_function_pointer_call.c" <<'EOF'
 struct Reader {
@@ -290,6 +540,160 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/global_struct_copy_from_pointer.c" "$WORK_DIR/global_struct_copy_from_pointer_bin" "0" "compiler failed to copy into a global aggregate assignment target"
+
+cat > "$WORK_DIR/large_struct_argument.c" <<'EOF'
+typedef struct {
+    unsigned int digits[8];
+    unsigned int length;
+    int sign;
+} Big;
+
+typedef struct {
+    Big mantissa;
+    int scale;
+} Value;
+
+static int check_value(Value value) {
+    if (value.mantissa.digits[0] != 1U) return 1;
+    if (value.mantissa.digits[1] != 2U) return 2;
+    if (value.mantissa.length != 2U) return 3;
+    if (value.scale != 3) return 4;
+    return 0;
+}
+
+int main(void) {
+    Value value;
+
+    value.mantissa.digits[0] = 1U;
+    value.mantissa.digits[1] = 2U;
+    value.mantissa.length = 2U;
+    value.mantissa.sign = 0;
+    value.scale = 3;
+    return check_value(value);
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/large_struct_argument.c" "$WORK_DIR/large_struct_argument_bin" "0" "compiler failed to pass a large aggregate argument by value"
+
+cat > "$WORK_DIR/large_object_return_argument.c" <<'EOF'
+typedef struct {
+    unsigned int digits[2048];
+    unsigned int length;
+    int sign;
+} Large;
+
+static Large make_large(unsigned int first) {
+    Large value;
+
+    value.digits[0] = first;
+    value.digits[2047] = 99U;
+    value.length = 2048U;
+    value.sign = 0;
+    return value;
+}
+
+static int check_large(Large value) {
+    if (value.digits[0] != 7U) return 1;
+    if (value.digits[2047] != 99U) return 2;
+    if (value.length != 2048U) return 3;
+    return value.sign == 0 ? 0 : 4;
+}
+
+int main(void) {
+    return check_large(make_large(7U));
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/large_object_return_argument.c" "$WORK_DIR/large_object_return_argument_bin" "0" "compiler used an undersized object-return temporary for a large aggregate argument"
+
+cat > "$WORK_DIR/object_return_to_nested_member.c" <<'EOF'
+typedef struct {
+    unsigned int digits[2048];
+    unsigned int length;
+    int sign;
+} Big;
+
+typedef struct {
+    Big mantissa;
+    int scale;
+} Value;
+
+typedef struct {
+    Value number;
+    int type;
+} Token;
+
+typedef struct {
+    Token token;
+    int base;
+} Parser;
+
+static Value make_int(unsigned int digit) {
+    Value result;
+
+    result.mantissa.length = 0U;
+    result.mantissa.sign = 0;
+    result.scale = 0;
+    if (digit != 0U) {
+        result.mantissa.digits[0] = digit;
+        result.mantissa.length = 1U;
+    }
+    return result;
+}
+
+static int parse_like(Parser *parser) {
+    parser->token.number = make_int(0U);
+    if (parser->token.number.mantissa.length != 0U) return 1;
+    parser->token.number = make_int(10U);
+    if (parser->token.number.mantissa.length != 1U) return 2;
+    return parser->token.number.mantissa.digits[0] == 10U ? 0 : 3;
+}
+
+int main(void) {
+    Parser parser;
+    return parse_like(&parser);
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/object_return_to_nested_member.c" "$WORK_DIR/object_return_to_nested_member_bin" "0" "compiler copied an object-return function symbol instead of assigning into a nested aggregate member"
+
+cat > "$WORK_DIR/object_conditional_return.c" <<'EOF'
+typedef struct {
+    unsigned int digits[2048];
+    unsigned int length;
+    int sign;
+} Big;
+
+typedef struct {
+    Big mantissa;
+    int scale;
+} Value;
+
+static Value choose(int pick_left, Value left, Value right) {
+    return pick_left ? left : right;
+}
+
+int main(void) {
+    Value left;
+    Value right;
+    Value result;
+
+    left.mantissa.digits[0] = 3U;
+    left.mantissa.length = 1U;
+    left.mantissa.sign = 0;
+    left.scale = 0;
+    right.mantissa.digits[0] = 8U;
+    right.mantissa.length = 1U;
+    right.mantissa.sign = 0;
+    right.scale = 0;
+    result = choose(0, left, right);
+    if (result.mantissa.digits[0] != 8U) return 1;
+    result = choose(1, left, right);
+    return result.mantissa.digits[0] == 3U ? 0 : 2;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/object_conditional_return.c" "$WORK_DIR/object_conditional_return_bin" "0" "compiler loaded the first aggregate word instead of selecting an object-valued conditional branch"
 
 cat > "$WORK_DIR/block_shadowing.c" <<'EOF'
 static int marker;
@@ -1016,6 +1420,61 @@ EOF
 
 compile_and_check_native "$WORK_DIR/int128_cast.c" "$WORK_DIR/int128_cast_bin" "0" "compiler failed on __int128 cast expressions"
 
+cat > "$WORK_DIR/int128_predefine.c" <<'EOF'
+#ifndef __SIZEOF_INT128__
+int main(void) { return 1; }
+#else
+int main(void) {
+    return __SIZEOF_INT128__ == 16 ? 0 : 2;
+}
+#endif
+EOF
+
+compile_and_check_native "$WORK_DIR/int128_predefine.c" "$WORK_DIR/int128_predefine_bin" "0" "compiler did not advertise x86_64 __int128 support to the preprocessor"
+
+cat > "$WORK_DIR/int128_runtime_arithmetic.c" <<'EOF'
+static unsigned long long high_product(unsigned long long value) {
+    unsigned __int128 wide = value;
+    unsigned __int128 product = wide * wide;
+    unsigned long long high = (unsigned long long)(product >> 51);
+    product &= ((unsigned long long)((1ULL << 51) - 1ULL));
+    if ((unsigned long long)product != 1ULL) return 0ULL;
+    return high;
+}
+
+int main(void) {
+    return high_product(2251799813685247ULL) == 2251799813685246ULL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/int128_runtime_arithmetic.c" "$WORK_DIR/int128_runtime_arithmetic_bin" "0" "compiler failed on runtime unsigned __int128 arithmetic"
+
+cat > "$WORK_DIR/u64_typedef_mask_width.c" <<'EOF'
+typedef unsigned long long u64;
+#define MASK51 ((u64)((1ULL << 51) - 1ULL))
+
+int main(void) {
+    u64 value = 0x6666666666666658ULL;
+    u64 masked = value & MASK51;
+    return masked == 1801439850948184ULL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u64_typedef_mask_width.c" "$WORK_DIR/u64_typedef_mask_width_bin" "0" "compiler truncated ULL/u64 mask expressions to 32 bits"
+
+cat > "$WORK_DIR/u32_shift_widens_after_wrap.c" <<'EOF'
+static unsigned long long widen_shift(unsigned int word) {
+    unsigned long long widened = (word << 26) | 7u;
+    return widened;
+}
+
+int main(void) {
+    return widen_shift(0x04000000u) == 7ULL ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/u32_shift_widens_after_wrap.c" "$WORK_DIR/u32_shift_widens_after_wrap_bin" "0" "compiler widened unsigned 32-bit shift results before wrapping"
+
 cat > "$WORK_DIR/atomic_builtins.c" <<'EOF'
 int main(void) {
     int value = 1;
@@ -1037,6 +1496,39 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/atomic_builtins.c" "$WORK_DIR/atomic_builtins_bin" "0" "compiler atomic builtin lowering failed"
+
+cat > "$WORK_DIR/atomic_member_width.c" <<'EOF'
+struct State {
+    unsigned int claimed;
+    unsigned int finished;
+};
+
+int main(void) {
+    struct State state;
+    unsigned int expected = 1U;
+
+    state.claimed = 1U;
+    state.finished = 123U;
+    if (!__atomic_compare_exchange_n(&state.claimed, &expected, 2U, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return 1;
+    if (state.claimed != 2U) return 2;
+    if (state.finished != 123U) return 3;
+    return 0;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/atomic_member_width.c" "$WORK_DIR/atomic_member_width_bin" "0" "compiler widened a 32-bit member compare-exchange"
+
+cat > "$WORK_DIR/char_escape_folding.c" <<'EOF'
+int main(void) {
+    if ('\b' != 8) return 1;
+    if ('\a' != 7) return 2;
+    if ('\x41' != 'A') return 3;
+    if ('\101' != 'A') return 4;
+    return 0;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/char_escape_folding.c" "$WORK_DIR/char_escape_folding_bin" "0" "compiler constant-folded escaped character literals incorrectly"
 
 if [ "$RUN_TARGET" = "linux-x86_64" ] && command -v cc >/dev/null 2>&1; then
     native_ar="${TEST_BIN_DIR}/ar"

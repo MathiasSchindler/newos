@@ -137,6 +137,10 @@ void expr_next(ExprParser *parser) {
             if (*cursor == 'u' || *cursor == 'U') {
                 parser->current.number_is_unsigned = 1;
             }
+            if (length + 1 < sizeof(parser->current.text)) {
+                parser->current.text[length++] = *cursor;
+                parser->current.text[length] = '\0';
+            }
             cursor += 1;
         }
         (void)parse_signed_value(parser->current.text, &parser->current.number_value);

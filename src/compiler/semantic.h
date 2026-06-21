@@ -27,6 +27,7 @@ typedef struct {
     int pointer_to_array;
     int is_unsigned;
     unsigned long long array_length;
+    unsigned long long array_inner_length;
     unsigned long long array_stride;
     unsigned int scalar_bytes;
     unsigned short aggregate_layout_id;

@@ -31,6 +31,7 @@ typedef struct {
     int stack_bytes;
     int returns_object;
     int needs_callret;
+    int callret_bytes;
     int has_call;
     unsigned long long unused_param_mask;
     unsigned long long cached_param_mask;
@@ -326,6 +327,8 @@ int expr_try_cached_identifier_index(ExprParser *parser,
                                      size_t element_type_size);
 int expr_text_looks_unsigned(BackendState *state, const char *expr);
 int emit_expression(BackendState *state, const char *expr);
+int emit_u128_store_expression(BackendState *state, const char *name, const char *expr);
+int emit_u128_eval_expression(BackendState *state, const char *expr);
 int emit_branch_false(BackendState *state, const char *expr, const char *label);
 int emit_array_initializer_store(BackendState *state, const char *name, const char *expr);
 int emit_object_initializer_store(BackendState *state, const char *name, const char *expr);

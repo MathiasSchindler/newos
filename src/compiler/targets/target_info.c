@@ -181,8 +181,11 @@ int compiler_target_apply_preprocessor_defaults(CompilerPreprocessor *preprocess
         if (compiler_preprocessor_define(preprocessor, "__aarch64__", "1") != 0) {
             return -1;
         }
-    } else if (compiler_preprocessor_define(preprocessor, "__x86_64__", "1") != 0) {
-        return -1;
+    } else {
+        if (compiler_preprocessor_define(preprocessor, "__x86_64__", "1") != 0 ||
+            compiler_preprocessor_define(preprocessor, "__SIZEOF_INT128__", "16") != 0) {
+            return -1;
+        }
     }
 
     return 0;

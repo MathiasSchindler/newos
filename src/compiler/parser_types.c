@@ -116,11 +116,20 @@ static unsigned long long type_alignment_bytes(const CompilerParser *parser, con
         CompilerType element_type = *type;
         if (type->array_stride > 0ULL) {
             element_type.is_array = 1;
-            element_type.array_length = type->array_stride;
-            element_type.array_stride = 0ULL;
+            if (type->array_inner_length > 0ULL && type->array_stride > type->array_inner_length &&
+                type->array_stride % type->array_inner_length == 0ULL) {
+                element_type.array_length = type->array_inner_length;
+                element_type.array_inner_length = 0ULL;
+                element_type.array_stride = type->array_stride / type->array_inner_length;
+            } else {
+                element_type.array_length = type->array_stride;
+                element_type.array_inner_length = 0ULL;
+                element_type.array_stride = 0ULL;
+            }
         } else {
             element_type.is_array = 0;
             element_type.array_length = 0ULL;
+            element_type.array_inner_length = 0ULL;
             element_type.array_stride = 0ULL;
         }
         return type_alignment_bytes(parser, &element_type);
@@ -172,11 +181,20 @@ static unsigned long long type_storage_bytes(const CompilerParser *parser, const
         CompilerType element_type = *type;
         if (type->array_stride > 0ULL) {
             element_type.is_array = 1;
-            element_type.array_length = type->array_stride;
-            element_type.array_stride = 0ULL;
+            if (type->array_inner_length > 0ULL && type->array_stride > type->array_inner_length &&
+                type->array_stride % type->array_inner_length == 0ULL) {
+                element_type.array_length = type->array_inner_length;
+                element_type.array_inner_length = 0ULL;
+                element_type.array_stride = type->array_stride / type->array_inner_length;
+            } else {
+                element_type.array_length = type->array_stride;
+                element_type.array_inner_length = 0ULL;
+                element_type.array_stride = 0ULL;
+            }
         } else {
             element_type.is_array = 0;
             element_type.array_length = 0ULL;
+            element_type.array_inner_length = 0ULL;
             element_type.array_stride = 0ULL;
         }
         element_size = type_storage_bytes(parser, &element_type);
@@ -415,6 +433,7 @@ static int parse_aggregate_definition(CompilerParser *parser, CompilerType *type
             member_type.is_array = declarator.is_array;
             member_type.pointer_to_array = declarator.pointer_to_array;
             member_type.array_length = declarator.array_length;
+            member_type.array_inner_length = declarator.array_inner_length;
             member_type.array_stride = declarator.array_stride;
 
             field_align = type_alignment_bytes(parser, &member_type);

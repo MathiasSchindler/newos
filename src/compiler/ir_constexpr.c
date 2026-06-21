@@ -98,6 +98,49 @@ static int ir_parse_number_value(const char *text, long long *value_out) {
     return 0;
 }
 
+static int ir_hex_digit_value(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+    if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+    return -1;
+}
+
+static char ir_decode_escaped_char(const char **cursor_inout) {
+    const char *cursor = *cursor_inout;
+    unsigned int value = 0U;
+    int digits = 0;
+    int hex = 0;
+
+    if (*cursor == 'n') { *cursor_inout = cursor + 1; return '\n'; }
+    if (*cursor == 't') { *cursor_inout = cursor + 1; return '\t'; }
+    if (*cursor == 'r') { *cursor_inout = cursor + 1; return '\r'; }
+    if (*cursor == 'v') { *cursor_inout = cursor + 1; return '\v'; }
+    if (*cursor == 'f') { *cursor_inout = cursor + 1; return '\f'; }
+    if (*cursor == 'a') { *cursor_inout = cursor + 1; return '\a'; }
+    if (*cursor == 'b') { *cursor_inout = cursor + 1; return '\b'; }
+    if (*cursor == 'x' || *cursor == 'X') {
+        cursor += 1;
+        while ((hex = ir_hex_digit_value(*cursor)) >= 0) {
+            value = value * 16U + (unsigned int)hex;
+            cursor += 1;
+            digits += 1;
+        }
+        *cursor_inout = cursor;
+        return digits > 0 ? (char)(unsigned char)value : 'x';
+    }
+    if (*cursor >= '0' && *cursor <= '7') {
+        while (digits < 3 && *cursor >= '0' && *cursor <= '7') {
+            value = value * 8U + (unsigned int)(*cursor - '0');
+            cursor += 1;
+            digits += 1;
+        }
+        *cursor_inout = cursor;
+        return (char)(unsigned char)value;
+    }
+    *cursor_inout = *cursor != '\0' ? cursor + 1 : cursor;
+    return *cursor;
+}
+
 void ir_const_next(IrConstParser *parser) {
     const char *cursor = ir_skip_spaces(parser->cursor);
     size_t length = 0;
@@ -162,14 +205,7 @@ void ir_const_next(IrConstParser *parser) {
         cursor += 1;
         if (*cursor == '\\' && cursor[1] != '\0') {
             cursor += 1;
-            if (*cursor == 'n') ch = '\n';
-            else if (*cursor == 't') ch = '\t';
-            else if (*cursor == 'r') ch = '\r';
-            else if (*cursor == 'v') ch = '\v';
-            else if (*cursor == 'f') ch = '\f';
-            else if (*cursor == '0') ch = '\0';
-            else ch = *cursor;
-            cursor += 1;
+            ch = ir_decode_escaped_char(&cursor);
         } else {
             ch = *cursor;
             if (*cursor != '\0') {
@@ -568,4 +604,3 @@ int ir_evaluate_constant_expression(const char *expr, const IrOptimizerState *st
 
     return parser.current.kind == IR_CONST_TOKEN_EOF ? 0 : -1;
 }
-

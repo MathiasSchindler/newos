@@ -154,6 +154,9 @@ int backend_type_access_size(const char *type_text, int word_index) {
     if (info.has_short && !info.has_pointer) {
         return info.is_unsigned ? 2 : -2;
     }
+    if (info.has_int128 && !info.has_pointer) {
+        return 0;
+    }
     if ((info.has_int || info.is_enum) && !info.has_pointer) {
         return info.is_unsigned ? 4 : -4;
     }

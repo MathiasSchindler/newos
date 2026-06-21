@@ -371,6 +371,14 @@ int add_function_name(BackendState *state, const char *name, int global, const c
     state->functions[state->function_count].global = global ? 1 : 0;
     state->functions[state->function_count].stack_bytes = 0;
     state->functions[state->function_count].returns_object = function_type_returns_object(return_type);
+    state->functions[state->function_count].needs_callret = 0;
+    state->functions[state->function_count].callret_bytes = 0;
+    state->functions[state->function_count].has_call = 0;
+    state->functions[state->function_count].unused_param_mask = 0;
+    state->functions[state->function_count].cached_param_mask = 0;
+    state->functions[state->function_count].cached_local_mask = 0;
+    state->functions[state->function_count].cached_param_count = 0;
+    state->functions[state->function_count].cached_local_count = 0;
     remember_function_index(state, name, (unsigned int)state->function_count);
     state->function_count += 1U;
     return 0;

@@ -867,7 +867,9 @@ int emit_address_of_name(BackendState *state, const char *name) {
                                                       state->locals[local_index].prefers_word_index);
 
             if (src_reg == 0 || backend_is_aarch64(state) || state->locals[local_index].offset <= 0) {
-                backend_set_error(state->backend, "backend cannot take address of cached local");
+                rt_copy_string(line, sizeof(line), "backend cannot take address of cached local ");
+                rt_copy_string(line + rt_strlen(line), sizeof(line) - rt_strlen(line), name);
+                backend_set_error(state->backend, line);
                 return -1;
             }
             if (state->locals[local_index].pointer_depth > 0) {

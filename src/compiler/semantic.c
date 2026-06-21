@@ -21,6 +21,7 @@ static int types_are_compatible(const CompilerType *lhs, const CompilerType *rhs
            ((lhs->aggregate_name[0] == '\0' || rhs->aggregate_name[0] == '\0') ||
             names_equal(lhs->aggregate_name, rhs->aggregate_name)) &&
            (lhs->array_length == 0ULL || rhs->array_length == 0ULL || lhs->array_length == rhs->array_length) &&
+           (lhs->array_inner_length == 0ULL || rhs->array_inner_length == 0ULL || lhs->array_inner_length == rhs->array_inner_length) &&
            (lhs->array_stride == 0ULL || rhs->array_stride == 0ULL || lhs->array_stride == rhs->array_stride);
 }
 

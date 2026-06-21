@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
 	return 0;
 }
 EOF
-	cc -std=c11 -O2 -I"$ROOT_DIR/src/shared" "$WORK_DIR/zstd_decode_smoke.c" "$ROOT_DIR/src/shared/compression/zstd.c" -o "$WORK_DIR/zstd_decode_smoke"
+	cc -std=c11 -O2 -idirafter "$ROOT_DIR/src/shared" "$WORK_DIR/zstd_decode_smoke.c" "$ROOT_DIR/src/shared/compression/zstd.c" -o "$WORK_DIR/zstd_decode_smoke"
 	awk 'BEGIN { for (i = 0; i < 4096; ++i) print "zstd smoke line", i, "abcabcabcabcabc" }' > "$WORK_DIR/zstd-input.txt"
 	zstd -q -f -3 "$WORK_DIR/zstd-input.txt" -o "$WORK_DIR/zstd-input.txt.zst"
 	assert_command_succeeds "$WORK_DIR/zstd_decode_smoke" "$WORK_DIR/zstd-input.txt.zst" "$WORK_DIR/zstd.out"

@@ -428,7 +428,14 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
         expr_next(parser);
     } else if (parser->current.kind == EXPR_TOKEN_NUMBER || parser->current.kind == EXPR_TOKEN_CHAR) {
         if (parser->current.number_is_unsigned) {
-            rt_copy_string(buffer, buffer_size, "unsigned long");
+            if (!text_contains(parser->current.text, "l") &&
+                !text_contains(parser->current.text, "L") &&
+                parser->current.number_value >= 0 &&
+                (unsigned long long)parser->current.number_value <= 0xffffffffULL) {
+                rt_copy_string(buffer, buffer_size, "unsigned int");
+            } else {
+                rt_copy_string(buffer, buffer_size, "unsigned long");
+            }
         } else {
             rt_copy_string(buffer, buffer_size, "int");
         }
@@ -446,7 +453,7 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
             rt_copy_string(buffer, buffer_size, deref_type);
         }
     } else if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
-        if (expr_looks_like_cast(parser)) {
+        if (expr_looks_like_compound_literal(parser) || expr_looks_like_cast(parser)) {
             ExprParser cast_parser = *parser;
             char cast_type[128];
             int cast_depth = 1;
@@ -643,7 +650,9 @@ int type_is_unsigned_like(const char *type_text) {
            text_contains(type, "*") ||
            names_equal(type, "size_t") ||
            names_equal(type, "uintptr_t") ||
-           names_equal(type, "usize");
+           names_equal(type, "usize") ||
+           names_equal(type, "u64") ||
+           names_equal(type, "uint64_t");
 }
 
 int expr_snapshot_looks_unsigned(ExprParser *parser) {
@@ -852,4 +861,3 @@ int expr_try_cached_identifier_index(ExprParser *parser,
     expr_next(parser);
     return 1;
 }
-

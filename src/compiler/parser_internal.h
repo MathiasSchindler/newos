@@ -11,6 +11,7 @@ typedef struct {
     int pointer_to_array;
     int pointer_depth;
     unsigned long long array_length;
+    unsigned long long array_inner_length;
     unsigned long long array_stride;
     char parameter_names[64][COMPILER_TYPEDEF_NAME_CAPACITY];
     CompilerType parameter_types[64];

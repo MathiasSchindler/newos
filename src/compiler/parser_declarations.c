@@ -82,6 +82,7 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     parameter_type.is_function = 0;
     parameter_type.is_array = declarator.is_array;
     parameter_type.array_length = declarator.array_length;
+    parameter_type.array_inner_length = declarator.array_inner_length;
     parameter_type.array_stride = declarator.array_stride;
     if (declarator.is_function) {
         if (parser_add_pointer_depth(parser, &parameter_type.pointer_depth, 1) != 0) {
@@ -206,6 +207,119 @@ static int update_inferred_string_array_length(CompilerParser *parser,
     inferred_type = *base_type;
     inferred_type.is_array = 1;
     inferred_type.array_length = length;
+    inferred_type.array_inner_length = declarator->array_inner_length;
+    inferred_type.array_stride = declarator->array_stride;
+    return compiler_semantic_update_symbol_type(&parser->semantic, declarator->name, &inferred_type) == 0 ? 0 : semantic_error(parser);
+}
+
+static unsigned long long count_braced_initializer_elements(const char *expr) {
+    const char *cursor = expr;
+    int depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+    int saw_element = 0;
+    unsigned long long count = 0ULL;
+
+    if (cursor == 0) {
+        return 0ULL;
+    }
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+        cursor += 1;
+    }
+    if (*cursor != '{') {
+        return 0ULL;
+    }
+
+    while (*cursor != '\0') {
+        if ((in_string || in_char) && *cursor == '\\' && cursor[1] != '\0') {
+            cursor = skip_string_escape(cursor);
+            if (depth == 1) {
+                saw_element = 1;
+            }
+            continue;
+        }
+        if (!in_char && *cursor == '"') {
+            in_string = !in_string;
+            if (depth == 1) {
+                saw_element = 1;
+            }
+            cursor += 1;
+            continue;
+        }
+        if (!in_string && *cursor == '\'') {
+            in_char = !in_char;
+            if (depth == 1) {
+                saw_element = 1;
+            }
+            cursor += 1;
+            continue;
+        }
+        if (!in_string && !in_char) {
+            if (*cursor == '{') {
+                if (depth == 1) {
+                    saw_element = 1;
+                }
+                depth += 1;
+                cursor += 1;
+                continue;
+            }
+            if (*cursor == '}') {
+                if (depth == 1) {
+                    if (saw_element) {
+                        count += 1ULL;
+                    }
+                    cursor += 1;
+                    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+                        cursor += 1;
+                    }
+                    return *cursor == '\0' ? count : 0ULL;
+                }
+                if (depth <= 0) {
+                    return 0ULL;
+                }
+                depth -= 1;
+                cursor += 1;
+                continue;
+            }
+            if (depth == 1 && *cursor == ',') {
+                if (saw_element) {
+                    count += 1ULL;
+                    saw_element = 0;
+                }
+                cursor += 1;
+                continue;
+            }
+            if (depth == 1 && *cursor != ' ' && *cursor != '\t' && *cursor != '\n' && *cursor != '\r') {
+                saw_element = 1;
+            }
+        }
+        cursor += 1;
+    }
+
+    return 0ULL;
+}
+
+static int update_inferred_braced_array_length(CompilerParser *parser,
+                                               const CompilerDeclarator *declarator,
+                                               const CompilerType *base_type,
+                                               const char *init_text) {
+    CompilerType inferred_type;
+    unsigned long long length;
+
+    if (declarator == 0 || base_type == 0 || init_text == 0 || declarator->name[0] == '\0' ||
+        !declarator->is_array || declarator->array_length != 0ULL || base_type->pointer_depth != 0) {
+        return 0;
+    }
+
+    length = count_braced_initializer_elements(init_text);
+    if (length == 0ULL) {
+        return 0;
+    }
+
+    inferred_type = *base_type;
+    inferred_type.is_array = 1;
+    inferred_type.array_length = length;
+    inferred_type.array_inner_length = declarator->array_inner_length;
     inferred_type.array_stride = declarator->array_stride;
     return compiler_semantic_update_symbol_type(&parser->semantic, declarator->name, &inferred_type) == 0 ? 0 : semantic_error(parser);
 }
@@ -323,6 +437,7 @@ static int parse_array_sizeof_value(CompilerParser *parser, long long *value_out
             type.is_function = declarator.is_function;
             type.is_array = declarator.is_array;
             type.array_length = declarator.array_length;
+            type.array_inner_length = declarator.array_inner_length;
             type.array_stride = declarator.array_stride;
         }
         if (expect_punct(parser, ")") != 0) {
@@ -502,8 +617,14 @@ static int parse_direct_declarator(CompilerParser *parser, CompilerDeclarator *d
                 if (!declarator->is_array && declarator->array_length == 0ULL) {
                     declarator->array_length = array_value;
                 } else if (declarator->array_length == 0ULL) {
+                    if (declarator->array_inner_length == 0ULL) {
+                        declarator->array_inner_length = array_value;
+                    }
                     declarator->array_stride = array_value;
                 } else if (declarator->array_stride == 0ULL) {
+                    if (declarator->array_inner_length == 0ULL) {
+                        declarator->array_inner_length = array_value;
+                    }
                     declarator->array_stride = array_value;
                 } else {
                     if (declarator->array_stride > ULLONG_MAX / array_value) {
@@ -576,6 +697,7 @@ static int declare_symbol(
     symbol_type.is_array = declarator->is_array;
     symbol_type.pointer_to_array = declarator->pointer_to_array;
     symbol_type.array_length = declarator->array_length;
+    symbol_type.array_inner_length = declarator->array_inner_length;
     symbol_type.array_stride = declarator->array_stride;
 
     if (is_typedef) {
@@ -698,6 +820,7 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
             function_type.is_function = 1;
             function_type.is_array = declarator.is_array;
             function_type.array_length = declarator.array_length;
+            function_type.array_inner_length = declarator.array_inner_length;
             function_type.array_stride = declarator.array_stride;
             parser->pending_function_type = function_type;
             rt_copy_string(parser->pending_function_name, sizeof(parser->pending_function_name), declarator.name);
@@ -735,6 +858,9 @@ int parse_declaration_or_function(CompilerParser *parser, int allow_function_bod
             }
             copy_normalized_span(init_start, parser->current.start, init_text, sizeof(init_text), "0");
             if (update_inferred_string_array_length(parser, &declarator, &declared_type, init_text) != 0) {
+                return -1;
+            }
+            if (update_inferred_braced_array_length(parser, &declarator, &declared_type, init_text) != 0) {
                 return -1;
             }
             if (declarator.name[0] != '\0' &&
