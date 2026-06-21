@@ -571,9 +571,8 @@ static int git_http_request(const GitUrl *url, const char *method, const char *a
     return git_http_request_stream(url, method, accept, content_type, body, body_size, response, 0, 0);
 }
 
-static int git_append_pkt_line(GitBuffer *buffer, const char *payload) {
+static int git_append_pkt_data(GitBuffer *buffer, const void *payload, size_t payload_length) {
     static const char digits[] = "0123456789abcdef";
-    size_t payload_length = rt_strlen(payload);
     size_t packet_length = payload_length + 4U;
     char header[4];
 
@@ -585,6 +584,10 @@ static int git_append_pkt_line(GitBuffer *buffer, const char *payload) {
     header[2] = digits[(packet_length >> 4) & 15U];
     header[3] = digits[packet_length & 15U];
     return git_buffer_append(buffer, header, 4U) != 0 || git_buffer_append(buffer, payload, payload_length) != 0 ? -1 : 0;
+}
+
+static int git_append_pkt_line(GitBuffer *buffer, const char *payload) {
+    return git_append_pkt_data(buffer, payload, rt_strlen(payload));
 }
 
 static int git_pkt_length(const unsigned char *data, size_t size, size_t *length_out) {

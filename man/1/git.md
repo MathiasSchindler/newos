@@ -99,6 +99,9 @@ be combined with `--no-pager`.
 - push to local repositories or `file://` repository paths by copying objects
     and advancing the selected remote ref, rejecting non-fast-forward pushes
     unless `--force` is supplied
+- push to ordinary HTTP(S) smart receive-pack repositories by sending a simple
+    non-delta pack and honoring receive-pack report-status responses, rejecting
+    non-fast-forward pushes locally unless `--force` is supplied
 - list, create, and delete lightweight loose or packed tags with `tag`; short
     tag names resolve as revisions, and `describe [REV]` reports exact or
     nearest reachable lightweight tags
@@ -168,7 +171,7 @@ be combined with `--no-pager`.
 - fetch from `origin` or an explicit HTTP(S) URL with Git upload-pack and update
     `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack
 - send an HTTPS `Authorization` header from `GIT_HTTP_AUTHORIZATION`, or a
-    `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch and pull requests;
+    `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch, pull, and push requests;
     when those are absent, `GIT_CREDENTIAL_HELPER=/path/to/helper` can execute a
     bounded `credential get` helper and use returned `username`/`password` as a
     Basic authorization header
@@ -180,9 +183,12 @@ be combined with `--no-pager`.
 
 ## LIMITATIONS
 
-- no smart-HTTP receive-pack push, protocol v2 negotiation, SSH transport,
-    git:// transport, credential helper execution, shallow clone, partial clone,
-    pack bitmap writing, or pack reuse during network negotiation
+- no protocol v2 negotiation, SSH transport, git:// transport, shallow clone,
+    partial clone, pack bitmap writing, or pack reuse during network negotiation
+- HTTP(S) push currently writes a simple non-delta pack for the needed local
+    object closure; it does not implement pack reuse, thin packs, delete
+    refspecs, push certificates, signed pushes, or native Git's full push option
+    surface
 - local push copies the object store and updates loose refs; it does not write a
     negotiated minimal pack, update a checked-out remote worktree, or implement
     native Git's full receive-pack policy surface

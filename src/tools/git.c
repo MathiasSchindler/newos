@@ -180,6 +180,7 @@ typedef struct {
     size_t count;
     size_t capacity;
     char head_ref[GIT_REF_CAPACITY];
+    char capabilities[512];
     unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
     int has_head;
 } GitRemoteRefs;
@@ -212,6 +213,12 @@ typedef struct {
 } GitCheckoutIndex;
 
 typedef struct {
+    unsigned char (*oids)[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t count;
+    size_t capacity;
+} GitOidList;
+
+typedef struct {
     unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
     unsigned char parent_oid[CRYPTO_SHA1_DIGEST_SIZE];
     unsigned char (*parents)[CRYPTO_SHA1_DIGEST_SIZE];
@@ -222,6 +229,9 @@ typedef struct {
     char *committer;
     char *message;
 } GitCommitInfo;
+
+static int git_oid_equal(const unsigned char left[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char right[CRYPTO_SHA1_DIGEST_SIZE]);
+static int git_collect_reachable_commits(GitRepo *repo, const unsigned char start[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack, GitOidList *reachable);
 
 static void git_index_destroy(GitIndex *index) {
     size_t i;
@@ -289,6 +299,47 @@ static void git_commit_info_destroy(GitCommitInfo *info) {
     rt_free(info->committer);
     rt_free(info->message);
     rt_memset(info, 0, sizeof(*info));
+}
+
+static void git_oid_list_destroy(GitOidList *list) {
+    if (list == 0) {
+        return;
+    }
+    rt_free(list->oids);
+    rt_memset(list, 0, sizeof(*list));
+}
+
+static int git_oid_list_contains(const GitOidList *list, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    size_t i;
+
+    for (i = 0U; i < list->count; ++i) {
+        if (git_oid_equal(list->oids[i], oid)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int git_oid_list_push(GitOidList *list, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    unsigned char (*new_oids)[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t new_capacity;
+
+    if (list->count == list->capacity) {
+        new_capacity = list->capacity == 0U ? 64U : list->capacity * 2U;
+        new_oids = (unsigned char (*)[CRYPTO_SHA1_DIGEST_SIZE])rt_realloc_array(list->oids, new_capacity, sizeof(list->oids[0]));
+        if (new_oids == 0) {
+            return -1;
+        }
+        list->oids = new_oids;
+        list->capacity = new_capacity;
+    }
+    memcpy(list->oids[list->count], oid, CRYPTO_SHA1_DIGEST_SIZE);
+    list->count += 1U;
+    return 0;
+}
+
+static int git_oid_list_push_unique(GitOidList *list, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    return git_oid_list_contains(list, oid) ? 0 : git_oid_list_push(list, oid);
 }
 
 static char *git_strdup_n(const char *text, size_t length) {

@@ -103,7 +103,19 @@ static int git_parse_advertised_refs(const GitBuffer *body, GitRemoteRefs *refs)
             }
             if (!saw_first_ref && cap_start < payload_length) {
                 size_t i = cap_start;
+                size_t cap_end = cap_start;
                 const char symref[] = "symref=HEAD:";
+                while (cap_end < payload_length && payload[cap_end] != '\n' && payload[cap_end] != '\r') {
+                    cap_end += 1U;
+                }
+                if (cap_end > cap_start) {
+                    size_t cap_length = cap_end - cap_start;
+                    if (cap_length >= sizeof(refs->capabilities)) {
+                        cap_length = sizeof(refs->capabilities) - 1U;
+                    }
+                    memcpy(refs->capabilities, payload + cap_start, cap_length);
+                    refs->capabilities[cap_length] = '\0';
+                }
                 while (i + sizeof(symref) - 1U < payload_length) {
                     if (memcmp(payload + i, symref, sizeof(symref) - 1U) == 0) {
                         size_t start = i + sizeof(symref) - 1U;
@@ -189,6 +201,23 @@ static int git_discover_remote_refs(const char *remote_url, GitUrl *base_url, Gi
         return -1;
     }
     if (git_http_request(&info_url, "GET", "application/x-git-upload-pack-advertisement", 0, 0, 0U, &body) != 0) {
+        return -1;
+    }
+    result = git_parse_advertised_refs(&body, refs);
+    git_buffer_destroy(&body);
+    return result;
+}
+
+static int git_discover_receive_refs(const char *remote_url, GitUrl *base_url, GitRemoteRefs *refs) {
+    GitUrl info_url;
+    GitBuffer body;
+    char path[1024];
+    int result;
+
+    if (git_parse_url(remote_url, base_url) != 0 || git_url_service_path(base_url, "/info/refs?service=git-receive-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(base_url, path, &info_url) != 0) {
+        return -1;
+    }
+    if (git_http_request(&info_url, "GET", "application/x-git-receive-pack-advertisement", 0, 0, 0U, &body) != 0) {
         return -1;
     }
     result = git_parse_advertised_refs(&body, refs);
@@ -386,6 +415,328 @@ done:
     git_buffer_destroy(&request);
     git_upload_pack_stream_destroy(&stream);
     git_pack_destroy(&pack);
+    return result;
+}
+
+static int git_push_collect_tree_objects(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitOidList *objects) {
+    unsigned char *tree = 0;
+    size_t tree_size = 0U;
+    size_t pos = 0U;
+    int type = 0;
+    int result = -1;
+
+    if (git_oid_list_push_unique(objects, tree_oid) != 0 || git_read_object(repo, tree_oid, pack_cache, &type, &tree, &tree_size) != 0 || type != GIT_OBJECT_TREE) {
+        goto done;
+    }
+    while (pos < tree_size) {
+        unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+        unsigned int mode = 0U;
+        size_t name_start;
+
+        while (pos < tree_size && tree[pos] >= '0' && tree[pos] <= '7') {
+            mode = (mode << 3U) + (unsigned int)(tree[pos] - '0');
+            pos += 1U;
+        }
+        if (pos >= tree_size || tree[pos] != ' ') {
+            goto done;
+        }
+        pos += 1U;
+        name_start = pos;
+        while (pos < tree_size && tree[pos] != '\0') {
+            pos += 1U;
+        }
+        if (pos >= tree_size || pos == name_start || pos + 1U + CRYPTO_SHA1_DIGEST_SIZE > tree_size) {
+            goto done;
+        }
+        pos += 1U;
+        memcpy(oid, tree + pos, CRYPTO_SHA1_DIGEST_SIZE);
+        pos += CRYPTO_SHA1_DIGEST_SIZE;
+        if ((mode & GIT_MODE_TYPE_MASK) == GIT_MODE_TREE) {
+            if (git_push_collect_tree_objects(repo, oid, pack_cache, objects) != 0) {
+                goto done;
+            }
+        } else if ((mode & GIT_MODE_TYPE_MASK) == GIT_MODE_REGULAR_TYPE || (mode & GIT_MODE_TYPE_MASK) == GIT_MODE_SYMLINK) {
+            if (git_oid_list_push_unique(objects, oid) != 0) {
+                goto done;
+            }
+        } else if ((mode & GIT_MODE_TYPE_MASK) != GIT_MODE_GITLINK) {
+            goto done;
+        }
+    }
+    result = 0;
+done:
+    rt_free(tree);
+    return result;
+}
+
+static int git_push_collect_commit_objects(GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, GitOidList *objects, GitOidList *visited) {
+    GitCommitInfo info;
+    size_t i;
+    int result = -1;
+
+    if (git_oid_list_contains(visited, commit_oid) || (excluded != 0 && git_oid_list_contains(excluded, commit_oid))) {
+        return 0;
+    }
+    if (git_oid_list_push_unique(visited, commit_oid) != 0 || git_oid_list_push_unique(objects, commit_oid) != 0) {
+        return -1;
+    }
+    if (git_read_commit_info(repo, commit_oid, pack_cache, &info) != 0) {
+        return -1;
+    }
+    if (git_push_collect_tree_objects(repo, info.tree_oid, pack_cache, objects) != 0) {
+        goto done;
+    }
+    for (i = 0U; i < info.parent_count; ++i) {
+        if (git_push_collect_commit_objects(repo, info.parents[i], pack_cache, excluded, objects, visited) != 0) {
+            goto done;
+        }
+    }
+    result = 0;
+done:
+    git_commit_info_destroy(&info);
+    return result;
+}
+
+static int git_pack_append_object_header(GitBuffer *pack, int type, size_t size) {
+    unsigned char byte = (unsigned char)(((unsigned int)type << 4U) | (unsigned int)(size & 0x0fU));
+
+    size >>= 4U;
+    while (size != 0U) {
+        if (tool_byte_buffer_append_byte(pack, byte | 0x80U) != 0) {
+            return -1;
+        }
+        byte = (unsigned char)(size & 0x7fU);
+        size >>= 7U;
+    }
+    return tool_byte_buffer_append_byte(pack, byte);
+}
+
+static int git_push_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOidList *objects, GitBuffer *pack_out) {
+    GitBuffer pack;
+    CryptoSha1Context sha1;
+    unsigned char digest[CRYPTO_SHA1_DIGEST_SIZE];
+    size_t i;
+    int result = -1;
+
+    rt_memset(&pack, 0, sizeof(pack));
+    if (tool_byte_buffer_append_cstr(&pack, "PACK") != 0 || tool_byte_buffer_append_u32_be(&pack, 2U) != 0 || tool_byte_buffer_append_u32_be(&pack, (unsigned long long)objects->count) != 0) {
+        goto done;
+    }
+    for (i = 0U; i < objects->count; ++i) {
+        int type = 0;
+        unsigned char *data = 0;
+        size_t size = 0U;
+        unsigned char *compressed = 0;
+        size_t compressed_capacity;
+        size_t compressed_size = 0U;
+        char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
+
+        git_format_oid_hex(objects->oids[i], oid_hex);
+        if (git_read_object(repo, objects->oids[i], pack_cache, &type, &data, &size) != 0) {
+            tool_write_error("git", "cannot read object for push pack: ", oid_hex);
+            goto done;
+        }
+        if (type < GIT_OBJECT_COMMIT || type > GIT_OBJECT_TAG) {
+            tool_write_error("git", "unsupported object type for push pack: ", oid_hex);
+            rt_free(data);
+            goto done;
+        }
+        if (git_pack_append_object_header(&pack, type, size) != 0) {
+            tool_write_error("git", "cannot encode object header for push pack: ", oid_hex);
+            rt_free(data);
+            goto done;
+        }
+        compressed_capacity = compression_zlib_deflate_bound(size);
+        compressed = (unsigned char *)rt_malloc(compressed_capacity == 0U ? 1U : compressed_capacity);
+        if (compressed == 0) {
+            tool_write_error("git", "out of memory while compressing push object: ", oid_hex);
+            rt_free(data);
+            goto done;
+        }
+        if (compression_zlib_deflate_level(data, size, compressed, compressed_capacity, &compressed_size, 6) != 0) {
+            rt_free(compressed);
+            compressed_capacity = compression_zlib_store_bound(size);
+            compressed = (unsigned char *)rt_malloc(compressed_capacity == 0U ? 1U : compressed_capacity);
+            if (compressed == 0) {
+                tool_write_error("git", "out of memory while storing push object: ", oid_hex);
+                rt_free(data);
+                goto done;
+            }
+            if (compression_zlib_store(data, size, compressed, compressed_capacity, &compressed_size) != 0) {
+                tool_write_error("git", "cannot store object for push pack: ", oid_hex);
+                rt_free(compressed);
+                rt_free(data);
+                goto done;
+            }
+        }
+        if (git_buffer_append(&pack, compressed, compressed_size) != 0) {
+            tool_write_error("git", "cannot append compressed object to push pack: ", oid_hex);
+            rt_free(compressed);
+            rt_free(data);
+            goto done;
+        }
+        rt_free(compressed);
+        rt_free(data);
+    }
+    crypto_sha1_init(&sha1);
+    crypto_sha1_update(&sha1, pack.data, pack.size);
+    crypto_sha1_final(&sha1, digest);
+    if (git_buffer_append(&pack, digest, sizeof(digest)) != 0) {
+        goto done;
+    }
+    *pack_out = pack;
+    rt_memset(&pack, 0, sizeof(pack));
+    result = 0;
+done:
+    git_buffer_destroy(&pack);
+    return result;
+}
+
+static int git_receive_pack_append_command(GitBuffer *request, const unsigned char old_oid[CRYPTO_SHA1_DIGEST_SIZE], const unsigned char new_oid[CRYPTO_SHA1_DIGEST_SIZE], const char *dst_ref) {
+    char old_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    char new_hex[GIT_OBJECT_HEX_SIZE + 1U];
+    GitBuffer line;
+    int result;
+
+    rt_memset(&line, 0, sizeof(line));
+    git_format_oid_hex(old_oid, old_hex);
+    git_format_oid_hex(new_oid, new_hex);
+    if (tool_byte_buffer_append_cstr(&line, old_hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 || tool_byte_buffer_append_cstr(&line, new_hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 || tool_byte_buffer_append_cstr(&line, dst_ref) != 0 || tool_byte_buffer_append_char(&line, '\0') != 0 || tool_byte_buffer_append_cstr(&line, "report-status side-band-64k agent=newos-git") != 0 || tool_byte_buffer_append_char(&line, '\n') != 0) {
+        git_buffer_destroy(&line);
+        return -1;
+    }
+    result = git_append_pkt_data(request, line.data, line.size);
+    git_buffer_destroy(&line);
+    return result;
+}
+
+static int git_receive_pack_parse_status_payload(const unsigned char *payload, size_t payload_length, const char *dst_ref, int *unpack_ok, int *ref_ok) {
+    size_t pos = 0U;
+
+    while (pos < payload_length) {
+        size_t start = pos;
+        size_t end;
+
+        while (pos < payload_length && payload[pos] != '\n') {
+            pos += 1U;
+        }
+        end = pos;
+        if (pos < payload_length) {
+            pos += 1U;
+        }
+        if (end > start && payload[end - 1U] == '\r') {
+            end -= 1U;
+        }
+        if (end >= start + 9U && memcmp(payload + start, "unpack ok", 9U) == 0) {
+            *unpack_ok = 1;
+        } else if (end >= start + 3U && memcmp(payload + start, "ok ", 3U) == 0) {
+            size_t ref_start = start + 3U;
+            if (end - ref_start == rt_strlen(dst_ref) && memcmp(payload + ref_start, dst_ref, end - ref_start) == 0) {
+                *ref_ok = 1;
+            }
+        } else if (end >= start + 3U && memcmp(payload + start, "ng ", 3U) == 0) {
+            rt_write_cstr(2, "remote: ");
+            (void)rt_write_all(2, payload + start, end - start);
+            rt_write_char(2, '\n');
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int git_receive_pack_check_status(const GitUploadPackStream *stream, const char *dst_ref) {
+    size_t pos = 0U;
+    int unpack_ok = 0;
+    int ref_ok = 0;
+
+    while (pos < stream->pack_data.size) {
+        size_t packet_length;
+        const unsigned char *payload;
+        size_t payload_length;
+
+        if (stream->pack_data.size - pos < 4U || git_pkt_length(stream->pack_data.data + pos, stream->pack_data.size - pos, &packet_length) != 0) {
+            return -1;
+        }
+        pos += 4U;
+        if (packet_length == GIT_PACKET_FLUSH) {
+            continue;
+        }
+        if (packet_length < 4U || pos + packet_length - 4U > stream->pack_data.size) {
+            return -1;
+        }
+        payload = stream->pack_data.data + pos;
+        payload_length = packet_length - 4U;
+        pos += payload_length;
+        if (git_receive_pack_parse_status_payload(payload, payload_length, dst_ref, &unpack_ok, &ref_ok) != 0) {
+            return -1;
+        }
+    }
+    return unpack_ok && ref_ok ? 0 : -1;
+}
+
+static int git_receive_pack_push(GitRepo *repo, const char *remote_url, const char *dst_ref, const unsigned char old_oid[CRYPTO_SHA1_DIGEST_SIZE], int have_old, const unsigned char new_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    GitUrl base_url;
+    GitUrl receive_url;
+    GitRemoteRefs refs;
+    GitPack pack_cache;
+    GitOidList excluded;
+    GitOidList objects;
+    GitOidList visited;
+    GitBuffer pack_data;
+    GitBuffer request;
+    GitUploadPackStream response;
+    unsigned char zero_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    char path[1024];
+    int have_pack = 0;
+    int result = -1;
+
+    rt_memset(&refs, 0, sizeof(refs));
+    rt_memset(&pack_cache, 0, sizeof(pack_cache));
+    rt_memset(&excluded, 0, sizeof(excluded));
+    rt_memset(&objects, 0, sizeof(objects));
+    rt_memset(&visited, 0, sizeof(visited));
+    rt_memset(&pack_data, 0, sizeof(pack_data));
+    rt_memset(&request, 0, sizeof(request));
+    rt_memset(&response, 0, sizeof(response));
+    rt_memset(zero_oid, 0, sizeof(zero_oid));
+
+    git_progress_line("Resolving remote refs...");
+    if (git_discover_receive_refs(remote_url, &base_url, &refs) != 0) {
+        return -1;
+    }
+    have_pack = git_load_pack_cache(repo, &pack_cache) == 0;
+    if (have_old && git_collect_reachable_commits(repo, old_oid, have_pack ? &pack_cache : 0, &excluded) != 0) {
+        git_oid_list_destroy(&excluded);
+        rt_memset(&excluded, 0, sizeof(excluded));
+    }
+    git_progress_line("Counting objects...");
+    if (git_push_collect_commit_objects(repo, new_oid, have_pack ? &pack_cache : 0, &excluded, &objects, &visited) != 0) {
+        goto done;
+    }
+    git_progress_count_line("Writing objects: ", objects.count);
+    if (git_push_build_pack(repo, have_pack ? &pack_cache : 0, &objects, &pack_data) != 0) {
+        goto done;
+    }
+    if (git_receive_pack_append_command(&request, have_old ? old_oid : zero_oid, new_oid, dst_ref) != 0 || tool_byte_buffer_append_cstr(&request, "0000") != 0 || git_buffer_append(&request, pack_data.data, pack_data.size) != 0) {
+        goto done;
+    }
+    if (git_url_service_path(&base_url, "/git-receive-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(&base_url, path, &receive_url) != 0) {
+        goto done;
+    }
+    git_progress_pack_bytes("Sending pack: ", pack_data.size);
+    if (git_http_request_stream(&receive_url, "POST", "application/x-git-receive-pack-result", "application/x-git-receive-pack-request", request.data, request.size, 0, git_upload_pack_stream_feed, &response) != 0 || response.pending.size != 0U || git_receive_pack_check_status(&response, dst_ref) != 0) {
+        goto done;
+    }
+    result = 0;
+done:
+    git_remote_refs_destroy(&refs);
+    if (have_pack) git_pack_destroy(&pack_cache);
+    git_oid_list_destroy(&excluded);
+    git_oid_list_destroy(&objects);
+    git_oid_list_destroy(&visited);
+    git_buffer_destroy(&pack_data);
+    git_buffer_destroy(&request);
+    git_upload_pack_stream_destroy(&response);
     return result;
 }
 

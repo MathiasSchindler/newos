@@ -1057,12 +1057,53 @@ static int git_cmd_push(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "push needs a local remote or configured origin", 0);
         return 1;
     }
-    if (git_url_is_http(remote_url) || rt_strncmp(remote_url, "ssh://", 6U) == 0 || rt_strncmp(remote_url, "git://", 6U) == 0) {
-        tool_write_error("git", "network push transport is not implemented: ", remote_url);
-        return 1;
-    }
     if (git_resolve_revision(repo, src_name, new_oid, 0, 0) != 0 || git_push_ref_name(dst_name, dst_ref, sizeof(dst_ref)) != 0) {
         tool_write_error("git", "cannot resolve push refspec", 0);
+        return 1;
+    }
+    if (git_url_is_http(remote_url)) {
+        GitUrl base_url;
+        GitRemoteRefs refs;
+        GitRemoteRef *remote_ref;
+
+        rt_memset(&refs, 0, sizeof(refs));
+        if (git_discover_receive_refs(remote_url, &base_url, &refs) != 0) {
+            tool_write_error("git", "cannot discover remote receive-pack refs: ", remote_url);
+            return 1;
+        }
+        remote_ref = git_remote_find_ref(&refs, dst_ref);
+        if (remote_ref != 0) {
+            memcpy(old_oid, remote_ref->oid, CRYPTO_SHA1_DIGEST_SIZE);
+            have_old = 1;
+        }
+        git_remote_refs_destroy(&refs);
+        if (have_old && !force) {
+            GitPack local_pack;
+            int have_local_pack = git_load_pack_cache(repo, &local_pack) == 0;
+
+            if (!git_commit_is_ancestor_of(repo, old_oid, new_oid, have_local_pack ? &local_pack : 0)) {
+                if (have_local_pack) {
+                    git_pack_destroy(&local_pack);
+                }
+                tool_write_error("git", "push rejected: non-fast-forward", 0);
+                return 1;
+            }
+            if (have_local_pack) {
+                git_pack_destroy(&local_pack);
+            }
+        }
+        if (git_receive_pack_push(repo, remote_url, dst_ref, old_oid, have_old, new_oid) != 0) {
+            tool_write_error("git", "network push failed: ", remote_url);
+            return 1;
+        }
+        rt_write_cstr(1, "Pushed ");
+        rt_write_cstr(1, src_name);
+        rt_write_cstr(1, " to ");
+        rt_write_line(1, dst_ref);
+        return 0;
+    }
+    if (rt_strncmp(remote_url, "ssh://", 6U) == 0 || rt_strncmp(remote_url, "git://", 6U) == 0) {
+        tool_write_error("git", "network push transport is not implemented: ", remote_url);
         return 1;
     }
     if (git_local_repo_from_arg(remote_url, &remote_repo) != 0) {

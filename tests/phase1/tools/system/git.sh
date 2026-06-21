@@ -752,6 +752,150 @@ cd "$ff_repo" && "${TEST_BIN_DIR}/git" push "$push_remote/.git" main > "$WORK_DI
 push_ref=$(tr -d '\r\n' < "$push_remote/.git/refs/heads/main")
 assert_text_equals "$push_ref" "$next_ff" "git push did not update a local remote ref"
 
+python3 - "$ff_repo/large.bin" <<'PY'
+import random
+import sys
+
+random_source = random.Random(12345)
+with open(sys.argv[1], 'wb') as handle:
+    handle.write(bytes(random_source.randrange(256) for _ in range(202752)))
+PY
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" add large.bin
+cd "$ff_repo" && GIT_AUTHOR_NAME=F GIT_AUTHOR_EMAIL=f@example.invalid GIT_COMMITTER_NAME=F GIT_COMMITTER_EMAIL=f@example.invalid "${TEST_BIN_DIR}/git" commit -m large > "$WORK_DIR/ff-large.out"
+http_push_oid=$(cd "$ff_repo" && "${TEST_BIN_DIR}/git" rev-parse HEAD | tr -d '\r\n')
+
+cat > "$WORK_DIR/git_receive_pack_server.py" <<'PY'
+import hashlib
+import socket
+import struct
+import sys
+import zlib
+
+port_file, capture_file, expected_oid = sys.argv[1:4]
+
+def pkt(payload):
+    return ("%04x" % (len(payload) + 4)).encode() + payload
+
+advertisement = (
+    pkt(b"# service=git-receive-pack\n") +
+    b"0000" +
+    pkt(b"0" * 40 + b" capabilities^{}\0report-status side-band-64k\n") +
+    b"0000"
+)
+
+def read_http(conn):
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(4096)
+        if not chunk:
+            raise RuntimeError("connection closed before headers")
+        data += chunk
+    headers, body = data.split(b"\r\n\r\n", 1)
+    length = 0
+    for line in headers.split(b"\r\n"):
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1].strip())
+    while len(body) < length:
+        chunk = conn.recv(4096)
+        if not chunk:
+            raise RuntimeError("connection closed before body")
+        body += chunk
+    return headers, body
+
+def parse_pack(pack):
+    if pack[:4] != b"PACK":
+        raise RuntimeError("missing pack header")
+    version, count = struct.unpack("!II", pack[4:12])
+    if version != 2:
+        raise RuntimeError("unexpected pack version")
+    pos = 12
+    seen = []
+    for _ in range(count):
+        first = pack[pos]
+        pos += 1
+        object_type = (first >> 4) & 7
+        object_size = first & 0x0f
+        shift = 4
+        while first & 0x80:
+            first = pack[pos]
+            pos += 1
+            object_size |= (first & 0x7f) << shift
+            shift += 7
+        decompressor = zlib.decompressobj()
+        payload = decompressor.decompress(pack[pos:-20])
+        consumed = len(pack[pos:-20]) - len(decompressor.unused_data)
+        pos += consumed
+        type_name = {1: b"commit", 2: b"tree", 3: b"blob", 4: b"tag"}.get(object_type)
+        if type_name is None or len(payload) != object_size:
+            raise RuntimeError("invalid packed object")
+        full = type_name + b" " + str(len(payload)).encode() + b"\0" + payload
+        seen.append(hashlib.sha1(full).hexdigest())
+    if hashlib.sha1(pack[:-20]).digest() != pack[-20:] or pos != len(pack) - 20:
+        raise RuntimeError("invalid pack checksum or length")
+    return seen
+
+with socket.socket() as server:
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(5)
+    server.settimeout(15)
+    with open(port_file, "w", encoding="ascii") as handle:
+        handle.write(str(server.getsockname()[1]))
+    while True:
+        conn, _ = server.accept()
+        with conn:
+            headers, body = read_http(conn)
+            request_line = headers.split(b"\r\n", 1)[0]
+            if request_line.startswith(b"GET "):
+                response = (
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/x-git-receive-pack-advertisement\r\nContent-Length: " +
+                    str(len(advertisement)).encode() + b"\r\n\r\n" + advertisement
+                )
+                conn.sendall(response)
+                continue
+            command_length = int(body[:4], 16)
+            command = body[4:command_length]
+            if body[command_length:command_length + 4] != b"0000":
+                raise RuntimeError("missing command flush")
+            seen = parse_pack(body[command_length + 4:])
+            with open(capture_file, "w", encoding="ascii") as handle:
+                handle.write("command_has_oid=%d\n" % (1 if expected_oid.encode() in command else 0))
+                handle.write("command_has_ref=%d\n" % (1 if b"refs/heads/main" in command else 0))
+                handle.write("found_head=%d\n" % (1 if expected_oid in seen else 0))
+                handle.write("object_count=%d\n" % len(seen))
+            status = pkt(bytes([1]) + pkt(b"unpack ok\n") + pkt(b"ok refs/heads/main\n") + b"0000") + b"0000"
+            response = (
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/x-git-receive-pack-result\r\nContent-Length: " +
+                str(len(status)).encode() + b"\r\n\r\n" + status
+            )
+            conn.sendall(response)
+            break
+PY
+
+http_push_port_file="$WORK_DIR/http-push.port"
+http_push_capture="$WORK_DIR/http-push.capture"
+python3 "$WORK_DIR/git_receive_pack_server.py" "$http_push_port_file" "$http_push_capture" "$http_push_oid" > "$WORK_DIR/http-push-server.out" 2>&1 &
+http_push_server_pid=$!
+for _ in 1 2 3 4 5; do
+    if [ -s "$http_push_port_file" ]; then
+        break
+    fi
+    "${TEST_BIN_DIR}/sleep" 1
+done
+if [ ! -s "$http_push_port_file" ]; then
+    fail "git receive-pack test server did not publish a port"
+fi
+http_push_port=$(cat "$http_push_port_file")
+http_push_status=0
+cd "$ff_repo" && "${TEST_BIN_DIR}/git" push "http://127.0.0.1:$http_push_port/repo.git" main > "$WORK_DIR/push-http.out" 2> "$WORK_DIR/push-http.err" || http_push_status=$?
+wait "$http_push_server_pid"
+assert_exit_code "$http_push_status" 0 "git push over smart HTTP receive-pack should succeed"
+assert_file_contains "$WORK_DIR/push-http.out" '^Pushed main to refs/heads/main$' "git push over HTTP did not report success"
+assert_file_contains "$http_push_capture" '^command_has_oid=1$' "git HTTP push command did not include the new object id"
+assert_file_contains "$http_push_capture" '^command_has_ref=1$' "git HTTP push command did not target the branch ref"
+assert_file_contains "$http_push_capture" '^found_head=1$' "git HTTP push pack did not include the pushed commit"
+assert_file_contains "$http_push_capture" '^object_count=[1-9][0-9]*$' "git HTTP push pack did not include objects"
+
 cp_repo="$WORK_DIR/cp-repo"
 "${TEST_BIN_DIR}/git" init "$cp_repo" > "$WORK_DIR/cp-init.out"
 printf 'one\n' > "$cp_repo/x.txt"
