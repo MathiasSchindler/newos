@@ -106,6 +106,12 @@ v2_status=$(curl -sS -o "$TMP_DIR/v2.body" -w '%{http_code}' \
 test "$v2_status" = 200
 grep -aq 'version 2' "$TMP_DIR/v2.body"
 grep -aq 'fetch=shallow filter wait-for-done' "$TMP_DIR/v2.body"
+grep -aq 'object-info' "$TMP_DIR/v2.body"
+grep -aq 'bundle-uri' "$TMP_DIR/v2.body"
+
+head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
+base_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD^)
+head_size=$(git --git-dir="$REPOS/example.git" cat-file -s "$head_oid")
 
 append_pkt() {
     payload=$1
@@ -138,6 +144,45 @@ v2_lsrefs_status=$(curl -sS -o "$TMP_DIR/v2-lsrefs.body" -w '%{http_code}' \
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
 test "$v2_lsrefs_status" = 200
 grep -aq 'refs/heads/main' "$TMP_DIR/v2-lsrefs.body"
+
+{
+    append_pkt 'command=object-info
+'
+    append_pkt 'agent=gitd-smoke
+'
+    append_pkt 'object-format=sha1
+'
+    printf '0001'
+    append_pkt 'size
+'
+    append_pkt "oid $head_oid
+"
+    printf '0000'
+} > "$TMP_DIR/v2-object-info.request"
+v2_object_info_status=$(curl -sS -o "$TMP_DIR/v2-object-info.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/v2-object-info.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$v2_object_info_status" = 200
+grep -aq "$head_oid $head_size" "$TMP_DIR/v2-object-info.body"
+
+{
+    append_pkt 'command=bundle-uri
+'
+    append_pkt 'agent=gitd-smoke
+'
+    append_pkt 'object-format=sha1
+'
+    printf '0000'
+} > "$TMP_DIR/v2-bundle-uri.request"
+v2_bundle_uri_status=$(curl -sS -o "$TMP_DIR/v2-bundle-uri.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/v2-bundle-uri.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$v2_bundle_uri_status" = 200
+test "$(cat "$TMP_DIR/v2-bundle-uri.body")" = '0000'
 
 curl -fsS -D "$TMP_DIR/receive-refs.headers" -o "$TMP_DIR/receive-refs.body" \
     -H 'Origin: http://127.0.0.1:8080' \
@@ -176,7 +221,6 @@ kill "$POLICY_PID" >/dev/null 2>&1 || true
 wait "$POLICY_PID" 2>/dev/null || true
 POLICY_PID=
 
-head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
 {
     append_pkt "want $head_oid side-band-64k\n"
     printf '0000'
@@ -187,6 +231,17 @@ multiround_status=$(curl -sS -o "$TMP_DIR/multiround-upload.body" -w '%{http_cod
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
 test "$multiround_status" = 200
 grep -aq 'NAK' "$TMP_DIR/multiround-upload.body"
+
+{
+    append_pkt "have $base_oid\n"
+    printf '0000'
+} > "$TMP_DIR/multiround-have-only.request"
+multiround_have_status=$(curl -sS -o "$TMP_DIR/multiround-have-only.body" -w '%{http_code}' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/multiround-have-only.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$multiround_have_status" = 200
+grep -aq "ACK $base_oid common" "$TMP_DIR/multiround-have-only.body"
 
 git -c transfer.unpackLimit=1 clone "http://127.0.0.1:$PORT/example.git" "$CLONE_NATIVE" >/dev/null 2>&1
 test "$(cat "$CLONE_NATIVE/README.md")" = 'hello from gitd'

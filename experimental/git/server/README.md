@@ -40,18 +40,19 @@ git clone http://HOST:8090/example.git clone-out
 
 - Smart HTTP discovery: `GET /repo.git/info/refs?service=git-upload-pack` and
   `GET /repo.git/info/refs?service=git-receive-pack`.
-- Smart HTTP fetch: protocol v1 upload-pack plus native protocol v2 `ls-refs`
-  and `fetch` over `POST /repo.git/git-upload-pack`.
+- Smart HTTP fetch: protocol v1 upload-pack plus native protocol v2 `ls-refs`,
+  `fetch`, `object-info`, and `bundle-uri` over `POST /repo.git/git-upload-pack`.
 - Smart HTTP push: `POST /repo.git/git-receive-pack`.
 - Local bare repositories only.
 - Pack generation using the existing newos Git object helpers, including blob
-  `REF_DELTA` entries that copy common prefix/suffix spans from a bounded set of
-  similar base blobs and insert changed middle bytes when doing so is useful.
+  `REF_DELTA` entries that copy bounded matching spans from a bounded set of
+  similar base blobs and insert changed bytes when doing so is useful.
 - Upload-pack `have` lines exclude commits the client already reports as
-  reachable.
+  reachable; protocol v1 no-`done` rounds report known haves with `ACK ... common`.
 - Protocol v2 fetch supports shallow depth requests, `filter blob:none`, and
   multi-want follow-up fetches for lazy blob checkout, including gzip-compressed
-  POST bodies sent by canonical Git for larger requests.
+  POST bodies sent by canonical Git for larger requests; v2 `object-info` answers
+  size queries and `bundle-uri` returns an empty bundle list.
 - Receive-pack accepts branch creation, deletion, strict fast-forward-only
   `refs/heads/*` updates, and safe tags, notes, and custom `refs/*`
   namespaces. Branch refs remain commit-only and fast-forward-only.
@@ -70,11 +71,11 @@ git clone http://HOST:8090/example.git clone-out
 - No authentication. Treat the selected repository root as publicly readable to
   any client that can reach the bound address, and writable by any client that
   can form an accepted receive-pack request unless policy flags disable writes.
-- Protocol v2 support is focused on `ls-refs` and `fetch`; unrelated v2 commands
-  are rejected as unsupported requests.
-- Multi-round negotiation is stateless and minimal: v1 upload-pack requests that
-  stop before `done` receive `NAK`, and later rounds must resend their necessary
-  wants and haves.
+- Protocol v2 support covers the commands advertised by `gitd`; unknown future
+  commands are rejected as unsupported requests.
+- Multi-round negotiation is stateless across HTTP requests, but v1 upload-pack
+  requests that stop before `done` now report common haves and can be have-only
+  continuation probes.
 - Pack generation and receive-pack application still run synchronously after a
   complete request body has arrived.
 - Bare repositories are expected. Serving working-tree checkouts is not a goal

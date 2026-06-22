@@ -35,10 +35,10 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - optionally run read-only, branches-only, or without delete-ref advertisement using receive-pack policy flags
 - reject stale, forced branch updates, unsafe ref names, and object IDs that are not present in the received pack or repository
 - update loose refs through `.lock` files and atomic rename; packed-ref deletions rewrite `packed-refs` through a lockfile
-- generate upload packs from reachable objects using the in-tree Git object helpers, including `REF_DELTA` entries for later blobs that copy matching prefix/suffix spans from a bounded set of similar base blobs and insert changed middle bytes
+- generate upload packs from reachable objects using the in-tree Git object helpers, including `REF_DELTA` entries for later blobs that copy bounded matching spans from similar base blobs and insert changed bytes
 - honor upload-pack `have` lines by excluding commits the client already reports as reachable
 - advertise protocol v1 `multi_ack`, `multi_ack_detailed`, `side-band-64k`, `agent=newos-gitd`, and `symref=HEAD:...` when the repository exposes a symbolic HEAD
-- advertise protocol v2 `ls-refs`, `fetch=shallow filter wait-for-done`, `server-option`, and `object-format=sha1`
+- advertise protocol v2 `ls-refs`, `fetch=shallow filter wait-for-done`, `object-info`, `bundle-uri`, `server-option`, and `object-format=sha1`
 - advertise receive-pack `report-status`, `side-band-64k`, `delete-refs`, and `agent=newos-gitd`
 - return upload-pack results with `application/x-git-upload-pack-result`
 - return receive-pack results with `application/x-git-receive-pack-result`
@@ -102,16 +102,16 @@ The supported protocol surface is the smart-HTTP upload-pack and receive-pack pa
 - `OPTIONS /...` returns an empty CORS preflight response
 - `GET /health` and `GET /_status` return `ok`
 
-For fetches, the server records all `want` lines, builds the requested reachable object closure, excludes commits reachable from client `have` lines, and streams a single response pack. Protocol v2 fetch supports depth-limited shallow responses with `shallow-info` and `filter blob:none`; follow-up lazy blob fetches can request multiple blob wants in one round, including gzip-compressed POST bodies from canonical Git. Protocol v1 requests that stop before `done` receive a `NAK` response so clients can continue negotiation with another stateless request. Receive-pack updates are transaction-like at the ref-validation level: every command must pass before any ref is written.
+For fetches, the server records all `want` lines, builds the requested reachable object closure, excludes commits reachable from client `have` lines, and streams a single response pack. Protocol v2 fetch supports depth-limited shallow responses with `shallow-info` and `filter blob:none`; follow-up lazy blob fetches can request multiple blob wants in one round, including gzip-compressed POST bodies from canonical Git. Protocol v2 `object-info` answers size requests for available objects, and `bundle-uri` returns an empty bundle list. Protocol v1 requests that stop before `done` report known `have` objects with `ACK ... common` and return `NAK` when no common object is known, so clients can continue negotiation with another stateless request. Receive-pack updates are transaction-like at the ref-validation level: every command must pass before any ref is written.
 
 ## LIMITATIONS
 
 - no authentication or authorization; any reachable client can read repositories under `REPO_ROOT`, and write if receive-pack is enabled by policy
 - plain HTTP only; TLS termination must happen outside `gitd` if needed
 - local bare repositories only
-- protocol v2 support is focused on `ls-refs` and `fetch`; unrelated v2 commands are rejected with an unsupported-command response
-- multi-round negotiation is stateless and minimal: v1 no-`done` rounds return `NAK`, and later requests must resend the necessary wants/haves
-- blob delta generation is intentionally small: later blobs choose from a bounded set of previous blob bases and use a prefix/suffix copy plus insert strategy, while commits, trees, tags, and unhelpful blob deltas are emitted whole
+- protocol v2 support covers the commands advertised by `gitd`; unknown future commands are rejected with an unsupported-command response
+- multi-round negotiation remains stateless across HTTP requests, but v1 no-`done` rounds now report common `have` objects and can be have-only continuation probes
+- blob delta generation is still smaller than full Git pack-objects: later blobs choose from a bounded set of previous blob bases and use sampled block matching, while commits, trees, tags, and unhelpful blob deltas are emitted whole
 - request parsing is I/O-loop driven, but pack generation and receive-pack application still run synchronously once a complete request body has arrived
 - request and pack limits are configurable but still enforced per complete request, not by streaming pack application
 
