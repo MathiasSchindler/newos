@@ -45,8 +45,8 @@ git clone http://HOST:8090/example.git clone-out
 - Smart HTTP push: `POST /repo.git/git-receive-pack`.
 - Local bare repositories only.
 - Pack generation using the existing newos Git object helpers, including blob
-  `REF_DELTA` entries that copy common prefix/suffix spans from a base blob and
-  insert changed middle bytes.
+  `REF_DELTA` entries that copy common prefix/suffix spans from a bounded set of
+  similar base blobs and insert changed middle bytes when doing so is useful.
 - Upload-pack `have` lines exclude commits the client already reports as
   reachable.
 - Protocol v2 fetch supports shallow depth requests, `filter blob:none`, and
@@ -55,6 +55,10 @@ git clone http://HOST:8090/example.git clone-out
 - Receive-pack accepts branch creation, deletion, strict fast-forward-only
   `refs/heads/*` updates, and safe tags, notes, and custom `refs/*`
   namespaces. Branch refs remain commit-only and fast-forward-only.
+- Receive-pack policy flags can disable writes, deletes, or non-branch
+  namespaces; loose ref writes use `.lock` files and atomic rename.
+- Request, negotiation, object-count, and pack-byte limits are configurable with
+  `--max-*` flags.
 - Listener and per-client request reads use the project runtime I/O loop.
 - CORS headers on all responses:
   `Access-Control-Allow-Origin: *`, `GET, POST, OPTIONS`, and
@@ -65,9 +69,9 @@ git clone http://HOST:8090/example.git clone-out
 
 - No authentication. Treat the selected repository root as publicly readable to
   any client that can reach the bound address, and writable by any client that
-  can form an accepted fast-forward receive-pack request.
+  can form an accepted receive-pack request unless policy flags disable writes.
 - Protocol v2 support is focused on `ls-refs` and `fetch`; unrelated v2 commands
-  are rejected as malformed requests.
+  are rejected as unsupported requests.
 - Multi-round negotiation is stateless and minimal: v1 upload-pack requests that
   stop before `done` receive `NAK`, and later rounds must resend their necessary
   wants and haves.

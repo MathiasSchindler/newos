@@ -5,7 +5,16 @@
 #include "io_loop.h"
 
 #define GITD_REQUEST_HEADER_CAPACITY 16384U
-#define GITD_MAX_BODY_SIZE (64U * 1024U * 1024U)
+#define GITD_DEFAULT_MAX_BODY_SIZE (64U * 1024U * 1024U)
+#define GITD_DEFAULT_MAX_WANTS 256U
+#define GITD_DEFAULT_MAX_HAVES 4096U
+#define GITD_DEFAULT_MAX_SHALLOWS 256U
+#define GITD_DEFAULT_MAX_REF_PREFIXES 64U
+#define GITD_DEFAULT_MAX_COMMANDS 64U
+#define GITD_DEFAULT_MAX_OBJECTS 200000U
+#define GITD_DEFAULT_MAX_PACK_BYTES (256U * 1024U * 1024U)
+#define GITD_MAX_DELTA_BASES 64U
+#define GITD_MAX_DELTA_BASE_BYTES (8U * 1024U * 1024U)
 #define GITD_IO_CHUNK 8192U
 #define GITD_SIDEBAND_CHUNK 60000U
 #define GITD_PACKET_DELIM 1U
@@ -14,15 +23,29 @@
 typedef enum {
     GITD_UPLOAD_COMMAND_NONE = 0,
     GITD_UPLOAD_COMMAND_LS_REFS,
-    GITD_UPLOAD_COMMAND_FETCH
+    GITD_UPLOAD_COMMAND_FETCH,
+    GITD_UPLOAD_COMMAND_UNSUPPORTED
 } GitdUploadCommand;
 
 typedef struct {
     char bind_host[PLATFORM_NETWORK_TEXT_CAPACITY];
     char repo_root[GIT_PATH_CAPACITY];
     unsigned int port;
+    size_t max_body_size;
+    size_t max_wants;
+    size_t max_haves;
+    size_t max_shallows;
+    size_t max_ref_prefixes;
+    size_t max_commands;
+    size_t max_objects;
+    size_t max_pack_bytes;
     int quiet;
     int once;
+    int read_only;
+    int allow_delete_refs;
+    int allow_tags;
+    int allow_notes;
+    int allow_custom_refs;
 } GitdOptions;
 
 typedef struct {
@@ -65,17 +88,39 @@ typedef struct {
 } GitdReceiveRequest;
 
 typedef struct {
+    char **items;
+    size_t count;
+    size_t capacity;
+} GitdStringList;
+
+typedef struct {
     GitdUploadCommand command;
     unsigned char want_oid[CRYPTO_SHA1_DIGEST_SIZE];
     GitOidList wants;
     GitOidList haves;
     GitOidList shallow_oids;
+    GitdStringList ref_prefixes;
     size_t deepen;
     int have_want;
     int done;
     int sideband;
     int filter_blob_none;
+    int ls_refs_symrefs;
+    int ls_refs_peel;
+    char unsupported_command[64];
 } GitdUploadRequest;
+
+typedef struct {
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char *data;
+    size_t size;
+} GitdBlobBase;
+
+typedef struct {
+    GitdBlobBase items[GITD_MAX_DELTA_BASES];
+    size_t count;
+    size_t total_bytes;
+} GitdBlobBaseList;
 
 typedef struct {
     RtIoLoop loop;
@@ -97,7 +142,15 @@ typedef struct {
 static int gitd_path_has_parent_reference(const char *path);
 
 static void gitd_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-b HOST] [-p PORT] [-r REPO_ROOT] [--once] [-q]");
+    tool_write_usage(program_name, "[-b HOST] [-p PORT] [-r REPO_ROOT] [--once] [-q] [--read-only] [--branches-only] [--no-delete-refs] [--max-body BYTES]");
+}
+
+static int gitd_parse_size_option(const char *text, size_t *value_out) {
+    unsigned long long number;
+
+    if (rt_parse_uint(text, &number) != 0 || number == 0ULL || number > (unsigned long long)((size_t)-1)) return -1;
+    *value_out = (size_t)number;
+    return 0;
 }
 
 static const char *gitd_status_text(int code) {
@@ -170,11 +223,42 @@ static void gitd_receive_request_destroy(GitdReceiveRequest *request) {
     rt_memset(request, 0, sizeof(*request));
 }
 
+static void gitd_string_list_destroy(GitdStringList *list) {
+    size_t index;
+
+    if (list == 0) return;
+    for (index = 0U; index < list->count; ++index) {
+        rt_free(list->items[index]);
+    }
+    rt_free(list->items);
+    rt_memset(list, 0, sizeof(*list));
+}
+
+static int gitd_string_list_push(GitdStringList *list, const char *text, size_t length, size_t limit) {
+    char **new_items;
+    size_t new_capacity;
+
+    if (list->count >= limit) return -1;
+    if (list->count == list->capacity) {
+        new_capacity = list->capacity == 0U ? 8U : list->capacity * 2U;
+        if (new_capacity > limit) new_capacity = limit;
+        new_items = (char **)rt_realloc_array(list->items, new_capacity, sizeof(list->items[0]));
+        if (new_items == 0) return -1;
+        list->items = new_items;
+        list->capacity = new_capacity;
+    }
+    list->items[list->count] = git_strdup_n(text, length);
+    if (list->items[list->count] == 0) return -1;
+    list->count += 1U;
+    return 0;
+}
+
 static void gitd_upload_request_destroy(GitdUploadRequest *request) {
     if (request == 0) return;
     git_oid_list_destroy(&request->wants);
     git_oid_list_destroy(&request->haves);
     git_oid_list_destroy(&request->shallow_oids);
+    gitd_string_list_destroy(&request->ref_prefixes);
     rt_memset(request, 0, sizeof(*request));
 }
 
@@ -454,14 +538,14 @@ static int gitd_read_request_step(GitdConnection *connection, int *complete_out)
     if (!connection->saw_header) {
         size_t already;
         if (git_buffer_append(&connection->raw, buffer, (size_t)bytes) != 0) return -1;
-        if (connection->raw.size > GITD_REQUEST_HEADER_CAPACITY + GITD_MAX_BODY_SIZE) return -1;
+        if (connection->raw.size > GITD_REQUEST_HEADER_CAPACITY + connection->server->options.max_body_size) return -1;
         if (gitd_find_header_end(connection->raw.data, connection->raw.size, &connection->header_end) != 0) {
             if (connection->raw.size > GITD_REQUEST_HEADER_CAPACITY) return -1;
             return 0;
         }
         connection->saw_header = 1;
         if (gitd_parse_request_line(connection->raw.data, connection->header_end, &connection->request) != 0 || gitd_parse_headers(connection->raw.data, connection->header_end, &connection->request) != 0) return -1;
-        if (rt_strcmp(connection->request.method, "POST") == 0 && (!connection->request.has_content_length || connection->request.content_length > GITD_MAX_BODY_SIZE)) return -1;
+        if (rt_strcmp(connection->request.method, "POST") == 0 && (!connection->request.has_content_length || connection->request.content_length > connection->server->options.max_body_size)) return -1;
         already = connection->raw.size - connection->header_end;
         if (rt_strcmp(connection->request.method, "POST") == 0) {
             if (already > connection->request.content_length) already = connection->request.content_length;
@@ -491,7 +575,7 @@ static unsigned int gitd_read_le32(const unsigned char *data) {
     return (unsigned int)data[0] | ((unsigned int)data[1] << 8U) | ((unsigned int)data[2] << 16U) | ((unsigned int)data[3] << 24U);
 }
 
-static int gitd_decode_gzip_body(const GitBuffer *body, GitBuffer *decoded) {
+static int gitd_decode_gzip_body(const GitBuffer *body, size_t max_body_size, GitBuffer *decoded) {
     size_t pos = 10U;
     unsigned int flags;
     unsigned int isize;
@@ -524,7 +608,7 @@ static int gitd_decode_gzip_body(const GitBuffer *body, GitBuffer *decoded) {
     if (pos + 8U > body->size) return -1;
     deflate_size = body->size - pos - 8U;
     isize = gitd_read_le32(body->data + body->size - 4U);
-    if ((size_t)isize > GITD_MAX_BODY_SIZE) return -1;
+    if ((size_t)isize > max_body_size) return -1;
     out = (unsigned char *)rt_malloc((size_t)isize == 0U ? 1U : (size_t)isize);
     if (out == 0) return -1;
     if (compression_deflate_inflate_raw(body->data + pos, deflate_size, out, (size_t)isize, &out_size) != 0 || out_size != (size_t)isize) {
@@ -537,12 +621,12 @@ static int gitd_decode_gzip_body(const GitBuffer *body, GitBuffer *decoded) {
     return 0;
 }
 
-static int gitd_request_body_payload(const GitdRequest *request, const GitBuffer *body, GitBuffer *decoded, const GitBuffer **payload_out) {
+static int gitd_request_body_payload(const GitdOptions *options, const GitdRequest *request, const GitBuffer *body, GitBuffer *decoded, const GitBuffer **payload_out) {
     rt_memset(decoded, 0, sizeof(*decoded));
     *payload_out = body;
     if (request->content_encoding[0] == '\0' || git_header_value_contains((const unsigned char *)request->content_encoding, rt_strlen(request->content_encoding), "identity")) return 0;
     if (git_header_value_contains((const unsigned char *)request->content_encoding, rt_strlen(request->content_encoding), "gzip")) {
-        if (gitd_decode_gzip_body(body, decoded) != 0) return -1;
+        if (gitd_decode_gzip_body(body, options->max_body_size, decoded) != 0) return -1;
         *payload_out = decoded;
         return 0;
     }
@@ -753,6 +837,7 @@ static int gitd_handle_info_refs(int fd, const GitdOptions *options, const GitdR
         service = "git-upload-pack";
         content_type = "application/x-git-upload-pack-advertisement";
     } else if (rt_strcmp(request->query, "service=git-receive-pack") == 0) {
+        if (options->read_only) return gitd_send_text(fd, 403, "receive-pack disabled\n");
         service = "git-receive-pack";
         content_type = "application/x-git-receive-pack-advertisement";
         receive_pack = 1;
@@ -774,7 +859,11 @@ static int gitd_handle_info_refs(int fd, const GitdOptions *options, const GitdR
         memcpy(head_oid, refs.refs[0].oid, sizeof(head_oid));
         have_head = 1;
     }
-    rt_copy_string(caps, sizeof(caps), receive_pack ? "report-status side-band-64k delete-refs agent=newos-gitd" : "multi_ack multi_ack_detailed side-band-64k agent=newos-gitd");
+    if (receive_pack) {
+        rt_copy_string(caps, sizeof(caps), options->allow_delete_refs ? "report-status side-band-64k delete-refs agent=newos-gitd" : "report-status side-band-64k agent=newos-gitd");
+    } else {
+        rt_copy_string(caps, sizeof(caps), "multi_ack multi_ack_detailed side-band-64k agent=newos-gitd");
+    }
     if (!receive_pack && repo.head_ref[0] != '\0') {
         size_t used = rt_strlen(caps);
         if (used + 13U + rt_strlen(repo.head_ref) < sizeof(caps)) {
@@ -829,18 +918,18 @@ static int gitd_parse_size_token(const unsigned char *data, size_t length, size_
     return 0;
 }
 
-static int gitd_upload_request_parse_fetch_line(GitdUploadRequest *upload, const unsigned char *payload, size_t payload_length, int v2) {
+static int gitd_upload_request_parse_fetch_line(const GitdOptions *options, GitdUploadRequest *upload, const unsigned char *payload, size_t payload_length, int v2) {
     size_t line_length = gitd_trim_pkt_line_length(payload, payload_length);
 
     if (line_length >= 45U && memcmp(payload, "want ", 5U) == 0) {
         unsigned char want_oid[CRYPTO_SHA1_DIGEST_SIZE];
 
-        if (git_parse_oid_hex_n((const char *)payload + 5U, GIT_OBJECT_HEX_SIZE, want_oid) != 0 || git_oid_list_push_unique(&upload->wants, want_oid) != 0) return -1;
+        if (git_parse_oid_hex_n((const char *)payload + 5U, GIT_OBJECT_HEX_SIZE, want_oid) != 0 || git_oid_list_push_unique(&upload->wants, want_oid) != 0 || upload->wants.count > options->max_wants) return -1;
         if (!upload->have_want) memcpy(upload->want_oid, want_oid, sizeof(upload->want_oid));
         upload->have_want = 1;
     } else if (line_length >= 45U && memcmp(payload, "have ", 5U) == 0) {
         unsigned char have_oid[CRYPTO_SHA1_DIGEST_SIZE];
-        if (git_parse_oid_hex_n((const char *)payload + 5U, GIT_OBJECT_HEX_SIZE, have_oid) != 0 || git_oid_list_push_unique(&upload->haves, have_oid) != 0) return -1;
+        if (git_parse_oid_hex_n((const char *)payload + 5U, GIT_OBJECT_HEX_SIZE, have_oid) != 0 || git_oid_list_push_unique(&upload->haves, have_oid) != 0 || upload->haves.count > options->max_haves) return -1;
     } else if (gitd_pkt_line_equals(payload, payload_length, "done")) {
         upload->done = 1;
     } else if (gitd_pkt_line_starts_with(payload, payload_length, "deepen ")) {
@@ -861,7 +950,7 @@ static int gitd_upload_request_parse_fetch_line(GitdUploadRequest *upload, const
     return 0;
 }
 
-static int gitd_parse_upload_pack_v1_request(const GitBuffer *body, GitdUploadRequest *upload) {
+static int gitd_parse_upload_pack_v1_request(const GitdOptions *options, const GitBuffer *body, GitdUploadRequest *upload) {
     size_t pos = 0U;
 
     rt_memset(upload, 0, sizeof(*upload));
@@ -878,12 +967,12 @@ static int gitd_parse_upload_pack_v1_request(const GitBuffer *body, GitdUploadRe
         payload = body->data + pos;
         payload_length = packet_length - 4U;
         pos += payload_length;
-        if (gitd_upload_request_parse_fetch_line(upload, payload, payload_length, 0) != 0) return -1;
+        if (gitd_upload_request_parse_fetch_line(options, upload, payload, payload_length, 0) != 0) return -1;
     }
     return upload->have_want ? 0 : -1;
 }
 
-static int gitd_parse_upload_pack_v2_request(const GitBuffer *body, GitdUploadRequest *upload) {
+static int gitd_parse_upload_pack_v2_request(const GitdOptions *options, const GitBuffer *body, GitdUploadRequest *upload) {
     size_t pos = 0U;
     int in_arguments = 0;
 
@@ -908,10 +997,35 @@ static int gitd_parse_upload_pack_v2_request(const GitBuffer *body, GitdUploadRe
         if (!in_arguments) {
             if (gitd_pkt_line_equals(payload, payload_length, "command=ls-refs")) upload->command = GITD_UPLOAD_COMMAND_LS_REFS;
             else if (gitd_pkt_line_equals(payload, payload_length, "command=fetch")) upload->command = GITD_UPLOAD_COMMAND_FETCH;
+            else if (gitd_pkt_line_starts_with(payload, payload_length, "command=")) {
+                size_t command_length = gitd_trim_pkt_line_length(payload, payload_length) - 8U;
+                upload->command = GITD_UPLOAD_COMMAND_UNSUPPORTED;
+                if (command_length >= sizeof(upload->unsupported_command)) command_length = sizeof(upload->unsupported_command) - 1U;
+                memcpy(upload->unsupported_command, payload + 8U, command_length);
+                upload->unsupported_command[command_length] = '\0';
+            } else if (gitd_pkt_line_starts_with(payload, payload_length, "server-option=")) {
+                continue;
+            } else if (gitd_pkt_line_equals(payload, payload_length, "agent=git/newos") || gitd_pkt_line_starts_with(payload, payload_length, "agent=") || gitd_pkt_line_equals(payload, payload_length, "object-format=sha1")) {
+                continue;
+            } else {
+                return -1;
+            }
         } else if (upload->command == GITD_UPLOAD_COMMAND_FETCH) {
-            if (gitd_upload_request_parse_fetch_line(upload, payload, payload_length, 1) != 0) return -1;
+            if (gitd_upload_request_parse_fetch_line(options, upload, payload, payload_length, 1) != 0) return -1;
+        } else if (upload->command == GITD_UPLOAD_COMMAND_LS_REFS) {
+            size_t line_length = gitd_trim_pkt_line_length(payload, payload_length);
+
+            if (gitd_pkt_line_equals(payload, payload_length, "symrefs")) upload->ls_refs_symrefs = 1;
+            else if (gitd_pkt_line_equals(payload, payload_length, "peel")) upload->ls_refs_peel = 1;
+            else if (gitd_pkt_line_equals(payload, payload_length, "unborn")) continue;
+            else if (gitd_pkt_line_starts_with(payload, payload_length, "ref-prefix ")) {
+                if (gitd_string_list_push(&upload->ref_prefixes, (const char *)payload + 11U, line_length - 11U, options->max_ref_prefixes) != 0) return -1;
+            } else {
+                return -1;
+            }
         }
     }
+    if (upload->command == GITD_UPLOAD_COMMAND_UNSUPPORTED) return 0;
     if (upload->command == GITD_UPLOAD_COMMAND_LS_REFS) return 0;
     return upload->command == GITD_UPLOAD_COMMAND_FETCH && upload->have_want ? 0 : -1;
 }
@@ -1118,6 +1232,53 @@ fail:
     return -1;
 }
 
+static void gitd_blob_base_list_destroy(GitdBlobBaseList *list) {
+    size_t index;
+
+    if (list == 0) return;
+    for (index = 0U; index < list->count; ++index) {
+        rt_free(list->items[index].data);
+    }
+    rt_memset(list, 0, sizeof(*list));
+}
+
+static size_t gitd_blob_similarity_score(const unsigned char *left, size_t left_size, const unsigned char *right, size_t right_size) {
+    size_t prefix = 0U;
+    size_t suffix = 0U;
+
+    while (prefix < left_size && prefix < right_size && left[prefix] == right[prefix]) prefix += 1U;
+    while (suffix < left_size - prefix && suffix < right_size - prefix && left[left_size - 1U - suffix] == right[right_size - 1U - suffix]) suffix += 1U;
+    return prefix + suffix;
+}
+
+static GitdBlobBase *gitd_choose_blob_delta_base(GitdBlobBaseList *bases, const unsigned char *data, size_t size) {
+    GitdBlobBase *best = 0;
+    size_t best_score = 0U;
+    size_t index;
+
+    for (index = 0U; index < bases->count; ++index) {
+        size_t score = gitd_blob_similarity_score(bases->items[index].data, bases->items[index].size, data, size);
+        if (score > best_score) {
+            best_score = score;
+            best = &bases->items[index];
+        }
+    }
+    return best_score >= 8U ? best : 0;
+}
+
+static int gitd_blob_base_list_take(GitdBlobBaseList *bases, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], unsigned char **data_io, size_t size) {
+    GitdBlobBase *slot;
+
+    if (*data_io == 0 || bases->count >= GITD_MAX_DELTA_BASES || size > GITD_MAX_DELTA_BASE_BYTES || bases->total_bytes > GITD_MAX_DELTA_BASE_BYTES - size) return 0;
+    slot = &bases->items[bases->count++];
+    memcpy(slot->oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+    slot->data = *data_io;
+    slot->size = size;
+    bases->total_bytes += size;
+    *data_io = 0;
+    return 0;
+}
+
 static int gitd_append_compressed_pack_payload(GitBuffer *pack, const unsigned char *payload, size_t payload_size, const char *oid_hex) {
     unsigned char *compressed = 0;
     size_t compressed_capacity = compression_zlib_deflate_bound(payload_size);
@@ -1156,15 +1317,12 @@ static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOi
     GitBuffer pack;
     CryptoSha1Context sha1;
     unsigned char digest[CRYPTO_SHA1_DIGEST_SIZE];
-    unsigned char base_blob_oid[CRYPTO_SHA1_DIGEST_SIZE];
-    unsigned char *base_blob_data = 0;
-    size_t base_blob_size = 0U;
+    GitdBlobBaseList blob_bases;
     size_t i;
-    int have_base_blob = 0;
     int result = -1;
 
     rt_memset(&pack, 0, sizeof(pack));
-    rt_memset(base_blob_oid, 0, sizeof(base_blob_oid));
+    rt_memset(&blob_bases, 0, sizeof(blob_bases));
     if (tool_byte_buffer_append_cstr(&pack, "PACK") != 0 || tool_byte_buffer_append_u32_be(&pack, 2U) != 0 || tool_byte_buffer_append_u32_be(&pack, (unsigned long long)objects->count) != 0) goto done;
     for (i = 0U; i < objects->count; ++i) {
         int type = 0;
@@ -1182,30 +1340,33 @@ static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOi
             rt_free(data);
             goto done;
         }
-        if (type == GIT_OBJECT_BLOB && have_base_blob) {
+        if (type == GIT_OBJECT_BLOB) {
             GitBuffer delta;
+            GitdBlobBase *base = gitd_choose_blob_delta_base(&blob_bases, data, size);
 
-            if (gitd_build_blob_delta(base_blob_data, base_blob_size, data, size, &delta) != 0) {
-                rt_free(data);
-                goto done;
-            }
-            if (git_pack_append_object_header(&pack, GIT_OBJECT_REF_DELTA, delta.size) != 0 || git_buffer_append(&pack, base_blob_oid, sizeof(base_blob_oid)) != 0 || gitd_append_compressed_pack_payload(&pack, delta.data, delta.size, oid_hex) != 0) {
+            rt_memset(&delta, 0, sizeof(delta));
+            if (base != 0 && gitd_build_blob_delta(base->data, base->size, data, size, &delta) == 0 && delta.size + CRYPTO_SHA1_DIGEST_SIZE + 8U < size) {
+                if (git_pack_append_object_header(&pack, GIT_OBJECT_REF_DELTA, delta.size) != 0 || git_buffer_append(&pack, base->oid, sizeof(base->oid)) != 0 || gitd_append_compressed_pack_payload(&pack, delta.data, delta.size, oid_hex) != 0) {
+                    git_buffer_destroy(&delta);
+                    rt_free(data);
+                    goto done;
+                }
                 git_buffer_destroy(&delta);
+            } else {
+                git_buffer_destroy(&delta);
+                if (git_pack_append_object_header(&pack, type, size) != 0 || gitd_append_compressed_pack_payload(&pack, data, size, oid_hex) != 0) {
+                    rt_free(data);
+                    goto done;
+                }
+            }
+            if (gitd_blob_base_list_take(&blob_bases, objects->oids[i], &data, size) != 0) {
                 rt_free(data);
                 goto done;
             }
-            git_buffer_destroy(&delta);
         } else {
             if (git_pack_append_object_header(&pack, type, size) != 0 || gitd_append_compressed_pack_payload(&pack, data, size, oid_hex) != 0) {
                 rt_free(data);
                 goto done;
-            }
-            if (type == GIT_OBJECT_BLOB && !have_base_blob) {
-                memcpy(base_blob_oid, objects->oids[i], sizeof(base_blob_oid));
-                base_blob_size = size;
-                base_blob_data = data;
-                data = 0;
-                have_base_blob = 1;
             }
         }
         rt_free(data);
@@ -1218,7 +1379,7 @@ static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOi
     rt_memset(&pack, 0, sizeof(pack));
     result = 0;
 done:
-    rt_free(base_blob_data);
+    gitd_blob_base_list_destroy(&blob_bases);
     git_buffer_destroy(&pack);
     return result;
 }
@@ -1249,7 +1410,48 @@ static int gitd_append_sideband_pack(GitBuffer *out, const GitBuffer *pack, int 
     return tool_byte_buffer_append_cstr(out, "0000");
 }
 
-static int gitd_append_v2_ls_refs_response(GitRepo *repo, GitBuffer *out) {
+static int gitd_ls_refs_prefix_matches(const GitdUploadRequest *upload, const char *ref_name) {
+    size_t index;
+
+    if (upload->ref_prefixes.count == 0U) return 1;
+    for (index = 0U; index < upload->ref_prefixes.count; ++index) {
+        const char *prefix = upload->ref_prefixes.items[index];
+        size_t prefix_length = rt_strlen(prefix);
+
+        if (prefix_length == 0U) return 1;
+        if (rt_strcmp(prefix, ref_name) == 0) return 1;
+        if (rt_strncmp(ref_name, prefix, prefix_length) == 0) return 1;
+    }
+    return 0;
+}
+
+static int gitd_append_v2_ref_line(GitBuffer *out, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *name, const char *symref_target, int include_symrefs) {
+    char hex[GIT_OBJECT_HEX_SIZE + 1U];
+    GitBuffer line;
+    int result;
+
+    git_format_oid_hex(oid, hex);
+    rt_memset(&line, 0, sizeof(line));
+    if (tool_byte_buffer_append_cstr(&line, hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 || tool_byte_buffer_append_cstr(&line, name) != 0) {
+        git_buffer_destroy(&line);
+        return -1;
+    }
+    if (include_symrefs && symref_target != 0 && symref_target[0] != '\0') {
+        if (tool_byte_buffer_append_cstr(&line, " symref-target:") != 0 || tool_byte_buffer_append_cstr(&line, symref_target) != 0) {
+            git_buffer_destroy(&line);
+            return -1;
+        }
+    }
+    if (tool_byte_buffer_append_char(&line, '\n') != 0) {
+        git_buffer_destroy(&line);
+        return -1;
+    }
+    result = git_append_pkt_data(out, line.data, line.size);
+    git_buffer_destroy(&line);
+    return result;
+}
+
+static int gitd_append_v2_ls_refs_response(GitRepo *repo, const GitdUploadRequest *upload, GitBuffer *out) {
     GitdRefList refs;
     unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
     size_t i;
@@ -1265,28 +1467,9 @@ static int gitd_append_v2_ls_refs_response(GitRepo *repo, GitBuffer *out) {
         have_head = 1;
     }
     if (have_head) {
-        char hex[GIT_OBJECT_HEX_SIZE + 1U];
-        GitBuffer line;
-
-        git_format_oid_hex(head_oid, hex);
-        rt_memset(&line, 0, sizeof(line));
-        if (tool_byte_buffer_append_cstr(&line, hex) != 0 || tool_byte_buffer_append_cstr(&line, " HEAD") != 0) {
-            git_buffer_destroy(&line);
-            goto done;
-        }
-        if (repo->head_ref[0] != '\0') {
-            if (tool_byte_buffer_append_cstr(&line, " symref-target:") != 0 || tool_byte_buffer_append_cstr(&line, repo->head_ref) != 0) {
-                git_buffer_destroy(&line);
-                goto done;
-            }
-        }
-        if (tool_byte_buffer_append_char(&line, '\n') != 0 || git_append_pkt_data(out, line.data, line.size) != 0) {
-            git_buffer_destroy(&line);
-            goto done;
-        }
-        git_buffer_destroy(&line);
+        if (gitd_ls_refs_prefix_matches(upload, "HEAD") && gitd_append_v2_ref_line(out, head_oid, "HEAD", repo->head_ref, upload->ls_refs_symrefs) != 0) goto done;
         for (i = 0U; i < refs.count; ++i) {
-            if (gitd_append_ref_advertisement(out, refs.refs[i].oid, refs.refs[i].name, 0) != 0) goto done;
+            if (gitd_ls_refs_prefix_matches(upload, refs.refs[i].name) && gitd_append_v2_ref_line(out, refs.refs[i].oid, refs.refs[i].name, 0, upload->ls_refs_symrefs) != 0) goto done;
         }
     }
     if (tool_byte_buffer_append_cstr(out, "0000") != 0) goto done;
@@ -1336,7 +1519,7 @@ static int gitd_append_v2_fetch_response(GitBuffer *out, const GitdUploadRequest
     return tool_byte_buffer_append_cstr(out, "0000");
 }
 
-static int gitd_handle_upload_pack_command(int fd, GitRepo *repo, GitdUploadRequest *upload, int v2) {
+static int gitd_handle_upload_pack_command(int fd, const GitdOptions *options, GitRepo *repo, GitdUploadRequest *upload, int v2) {
     GitPack pack_cache;
     GitOidList objects;
     GitOidList visited;
@@ -1348,13 +1531,16 @@ static int gitd_handle_upload_pack_command(int fd, GitRepo *repo, GitdUploadRequ
 
     if (upload->command == GITD_UPLOAD_COMMAND_LS_REFS) {
         rt_memset(&response, 0, sizeof(response));
-        if (gitd_append_v2_ls_refs_response(repo, &response) != 0) {
+        if (gitd_append_v2_ls_refs_response(repo, upload, &response) != 0) {
             git_buffer_destroy(&response);
             return gitd_send_text(fd, 500, "cannot list refs\n");
         }
         result = gitd_send_body(fd, 200, "application/x-git-upload-pack-result", response.data, response.size);
         git_buffer_destroy(&response);
         return result;
+    }
+    if (upload->command == GITD_UPLOAD_COMMAND_UNSUPPORTED) {
+        return gitd_send_text(fd, 501, "unsupported protocol v2 command\n");
     }
     if (!upload->done && !v2) {
         rt_memset(&response, 0, sizeof(response));
@@ -1370,8 +1556,8 @@ static int gitd_handle_upload_pack_command(int fd, GitRepo *repo, GitdUploadRequ
     rt_memset(&response, 0, sizeof(response));
     have_pack = git_load_pack_cache(repo, &pack_cache) == 0;
     if (gitd_collect_excluded_haves(repo, have_pack ? &pack_cache : 0, &upload->haves, &excluded) != 0) goto done;
-    if (gitd_collect_wanted_objects(repo, have_pack ? &pack_cache : 0, upload, excluded.count > 0U ? &excluded : 0, &objects, &visited) != 0) goto done;
-    if (gitd_build_pack(repo, have_pack ? &pack_cache : 0, &objects, &pack) != 0) goto done;
+    if (gitd_collect_wanted_objects(repo, have_pack ? &pack_cache : 0, upload, excluded.count > 0U ? &excluded : 0, &objects, &visited) != 0 || objects.count > options->max_objects || upload->shallow_oids.count > options->max_shallows) goto done;
+    if (gitd_build_pack(repo, have_pack ? &pack_cache : 0, &objects, &pack) != 0 || pack.size > options->max_pack_bytes) goto done;
     if (v2) {
         if (gitd_append_v2_fetch_response(&response, upload, &pack) != 0) goto done;
     } else if (gitd_append_sideband_pack(&response, &pack, upload->sideband) != 0) {
@@ -1401,19 +1587,19 @@ static int gitd_handle_upload_pack(int fd, const GitdOptions *options, const Git
     if (rt_strcmp(request->method, "POST") != 0) return gitd_send_text(fd, 405, "method not allowed\n");
     if (!git_header_value_contains((const unsigned char *)request->content_type, rt_strlen(request->content_type), "application/x-git-upload-pack-request")) return gitd_send_text(fd, 415, "expected git-upload-pack request\n");
     if (gitd_strip_suffix(request->path, "/git-upload-pack", repo_path, sizeof(repo_path)) != 0 || gitd_repo_from_path(options, repo_path, &repo) != 0) return gitd_send_text(fd, 404, "repository not found\n");
-    if (gitd_request_body_payload(request, body, &decoded_body, &payload) != 0) return gitd_send_text(fd, 415, "unsupported request content encoding\n");
+    if (gitd_request_body_payload(options, request, body, &decoded_body, &payload) != 0) return gitd_send_text(fd, 415, "unsupported request content encoding\n");
     v2 = git_header_value_contains((const unsigned char *)request->git_protocol, rt_strlen(request->git_protocol), "version=2");
-    if ((v2 ? gitd_parse_upload_pack_v2_request(payload, &upload) : gitd_parse_upload_pack_v1_request(payload, &upload)) != 0) {
+    if ((v2 ? gitd_parse_upload_pack_v2_request(options, payload, &upload) : gitd_parse_upload_pack_v1_request(options, payload, &upload)) != 0) {
         git_buffer_destroy(&decoded_body);
         return gitd_send_text(fd, 400, "malformed upload-pack request\n");
     }
-    result = gitd_handle_upload_pack_command(fd, &repo, &upload, v2);
+    result = gitd_handle_upload_pack_command(fd, options, &repo, &upload, v2);
     gitd_upload_request_destroy(&upload);
     git_buffer_destroy(&decoded_body);
     return result;
 }
 
-static int gitd_parse_receive_pack_request(const GitBuffer *body, GitdReceiveRequest *receive) {
+static int gitd_parse_receive_pack_request(const GitdOptions *options, const GitBuffer *body, GitdReceiveRequest *receive) {
     size_t pos = 0U;
     int first = 1;
 
@@ -1477,7 +1663,7 @@ static int gitd_parse_receive_pack_request(const GitBuffer *body, GitdReceiveReq
             git_parse_oid_hex_n((const char *)payload + new_start, GIT_OBJECT_HEX_SIZE, command.new_oid) != 0) return -1;
         memcpy(command.ref_name, payload + ref_start, ref_end - ref_start);
         command.ref_name[ref_end - ref_start] = '\0';
-        if (gitd_receive_request_push(receive, &command) != 0) return -1;
+        if (gitd_receive_request_push(receive, &command) != 0 || receive->count > options->max_commands) return -1;
     }
     return -1;
 }
@@ -1528,27 +1714,150 @@ static int gitd_current_ref_oid(GitRepo *repo, const char *ref_name, unsigned ch
     return 0;
 }
 
-static int gitd_delete_ref(GitRepo *repo, const char *ref_name) {
-    char path[GIT_PATH_CAPACITY];
-    PlatformDirEntry entry;
-    int deleted = 0;
+static int gitd_lock_path_for(const char *path, char *lock_path, size_t lock_path_size) {
+    size_t length = rt_strlen(path);
 
-    if (git_join(path, sizeof(path), repo->git_dir, ref_name) != 0) return -1;
-    if (platform_remove_file(path) == 0) deleted = 1;
-    if (platform_get_path_info(path, &entry) == 0 && !entry.is_dir) return -1;
-    if (git_delete_packed_ref(repo, ref_name, &deleted) != 0) return -1;
-    if (platform_get_path_info(path, &entry) == 0 && !entry.is_dir) return -1;
+    if (length + 6U >= lock_path_size) return -1;
+    rt_copy_string(lock_path, lock_path_size, path);
+    rt_copy_string(lock_path + length, lock_path_size - length, ".lock");
     return 0;
 }
 
-static const char *gitd_validate_receive_command(GitRepo *repo, const GitPack *pack_cache, const GitdReceiveCommand *command) {
+static int gitd_write_file_locked(const char *path, const void *data, size_t size, unsigned int mode) {
+    char lock_path[GIT_PATH_CAPACITY];
+    char parent[GIT_PATH_CAPACITY];
+    int fd = -1;
+    int result = -1;
+
+    if (gitd_lock_path_for(path, lock_path, sizeof(lock_path)) != 0 || git_copy(parent, sizeof(parent), path) != 0 || git_path_parent(parent) != 0 || git_make_directory_chain(parent) != 0) return -1;
+    fd = platform_open_create_exclusive(lock_path, mode);
+    if (fd < 0) return -1;
+    if (rt_write_all(fd, data, size) != 0) goto done;
+    if (platform_close(fd) != 0) {
+        fd = -1;
+        goto done;
+    }
+    fd = -1;
+    if (platform_rename_path(lock_path, path) != 0) goto done;
+    result = 0;
+done:
+    if (fd >= 0) (void)platform_close(fd);
+    if (result != 0) (void)platform_remove_file(lock_path);
+    return result;
+}
+
+static int gitd_write_ref_oid_locked(GitRepo *repo, const GitdReceiveCommand *command) {
+    char path[GIT_PATH_CAPACITY];
+    char text[GIT_OBJECT_HEX_SIZE + 2U];
+    unsigned char current_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int exists = 0;
+
+    if (gitd_current_ref_oid(repo, command->ref_name, current_oid, &exists) != 0) return -1;
+    if (exists != !gitd_oid_is_zero(command->old_oid)) return -1;
+    if (exists && !git_oid_equal(current_oid, command->old_oid)) return -1;
+    if (git_join(path, sizeof(path), repo->git_dir, command->ref_name) != 0) return -1;
+    git_format_oid_hex(command->new_oid, text);
+    text[GIT_OBJECT_HEX_SIZE] = '\n';
+    text[GIT_OBJECT_HEX_SIZE + 1U] = '\0';
+    return gitd_write_file_locked(path, text, GIT_OBJECT_HEX_SIZE + 1U, 0644U);
+}
+
+static int gitd_delete_packed_ref_locked(GitRepo *repo, const char *ref_name, int *deleted_out) {
+    char path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 0U;
+    GitBuffer out;
+    int deleted = 0;
+    int result = -1;
+
+    *deleted_out = 0;
+    rt_memset(&out, 0, sizeof(out));
+    if (git_join(path, sizeof(path), repo->git_dir, "packed-refs") != 0 || git_read_file(path, &data, &size) != 0) return 0;
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        size_t line_end;
+        int matches = 0;
+
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) pos += 1U;
+        line_end = pos;
+        while (end > start && data[end - 1U] == '\r') end -= 1U;
+        if (end > start + GIT_OBJECT_HEX_SIZE + 1U && data[start] != '#' && data[start] != '^' && data[start + GIT_OBJECT_HEX_SIZE] == ' ') {
+            size_t ref_length = end - start - GIT_OBJECT_HEX_SIZE - 1U;
+
+            if (ref_length == rt_strlen(ref_name) && memcmp(data + start + GIT_OBJECT_HEX_SIZE + 1U, ref_name, ref_length) == 0) matches = 1;
+        }
+        if (matches) {
+            deleted = 1;
+            if (pos < size && data[pos] == '^') {
+                while (pos < size && data[pos] != '\n') pos += 1U;
+                if (pos < size) pos += 1U;
+            }
+            continue;
+        }
+        if (git_buffer_append(&out, data + start, line_end - start) != 0) goto done;
+    }
+    if (deleted && gitd_write_file_locked(path, out.data, out.size, 0644U) != 0) goto done;
+    *deleted_out = deleted;
+    result = 0;
+done:
+    git_buffer_destroy(&out);
+    rt_free(data);
+    return result;
+}
+
+static int gitd_delete_ref_locked(GitRepo *repo, const GitdReceiveCommand *command) {
+    char path[GIT_PATH_CAPACITY];
+    char lock_path[GIT_PATH_CAPACITY];
+    unsigned char current_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    PlatformDirEntry entry;
+    int exists = 0;
+    int deleted = 0;
+    int fd = -1;
+    int result = -1;
+
+    if (gitd_current_ref_oid(repo, command->ref_name, current_oid, &exists) != 0 || !exists || !git_oid_equal(current_oid, command->old_oid)) return -1;
+    if (git_join(path, sizeof(path), repo->git_dir, command->ref_name) != 0 || gitd_lock_path_for(path, lock_path, sizeof(lock_path)) != 0 || git_ensure_parent_directory(lock_path) != 0) return -1;
+    fd = platform_open_create_exclusive(lock_path, 0644U);
+    if (fd < 0) return -1;
+    if (platform_close(fd) != 0) {
+        fd = -1;
+        goto done;
+    }
+    fd = -1;
+    if (platform_remove_file(path) == 0) deleted = 1;
+    if (platform_get_path_info(path, &entry) == 0 && !entry.is_dir) goto done;
+    if (gitd_delete_packed_ref_locked(repo, command->ref_name, &deleted) != 0) goto done;
+    if (platform_get_path_info(path, &entry) == 0 && !entry.is_dir) goto done;
+    result = 0;
+done:
+    if (fd >= 0) (void)platform_close(fd);
+    (void)platform_remove_file(lock_path);
+    return result;
+}
+
+static const char *gitd_validate_receive_command(const GitdOptions *options, GitRepo *repo, const GitPack *pack_cache, const GitdReceiveCommand *command) {
     unsigned char current_oid[CRYPTO_SHA1_DIGEST_SIZE];
     int exists = 0;
     int type = 0;
     unsigned char *data = 0;
     size_t size = 0U;
 
+    if (options->read_only) return "push disabled";
     if (!gitd_ref_is_safe(command->ref_name)) return "unsafe ref name";
+    if (gitd_oid_is_zero(command->new_oid) && !options->allow_delete_refs) return "delete denied";
+    if (!gitd_ref_is_branch(command->ref_name)) {
+        if (rt_strncmp(command->ref_name, "refs/tags/", 10U) == 0) {
+            if (!options->allow_tags) return "tag update denied";
+        } else if (rt_strncmp(command->ref_name, "refs/notes/", 11U) == 0) {
+            if (!options->allow_notes) return "notes update denied";
+        } else if (!options->allow_custom_refs) {
+            return "ref namespace denied";
+        }
+    }
     if (gitd_current_ref_oid(repo, command->ref_name, current_oid, &exists) != 0) return "cannot read current ref";
     if (exists) {
         if (gitd_oid_is_zero(command->old_oid) || !git_oid_equal(current_oid, command->old_oid)) return "stale ref";
@@ -1569,11 +1878,11 @@ static const char *gitd_validate_receive_command(GitRepo *repo, const GitPack *p
     return 0;
 }
 
-static int gitd_apply_receive_commands(GitRepo *repo, const GitPack *pack_cache, const GitdReceiveRequest *receive, const char **error_out, const char **error_ref_out) {
+static int gitd_apply_receive_commands(const GitdOptions *options, GitRepo *repo, const GitPack *pack_cache, const GitdReceiveRequest *receive, const char **error_out, const char **error_ref_out) {
     size_t i;
 
     for (i = 0U; i < receive->count; ++i) {
-        const char *error = gitd_validate_receive_command(repo, pack_cache, &receive->commands[i]);
+        const char *error = gitd_validate_receive_command(options, repo, pack_cache, &receive->commands[i]);
         if (error != 0) {
             *error_out = error;
             *error_ref_out = receive->commands[i].ref_name;
@@ -1582,14 +1891,14 @@ static int gitd_apply_receive_commands(GitRepo *repo, const GitPack *pack_cache,
     }
     for (i = 0U; i < receive->count; ++i) {
         if (gitd_oid_is_zero(receive->commands[i].new_oid)) {
-            if (gitd_delete_ref(repo, receive->commands[i].ref_name) != 0) {
+            if (gitd_delete_ref_locked(repo, &receive->commands[i]) != 0) {
                 *error_out = "cannot delete ref";
                 *error_ref_out = receive->commands[i].ref_name;
                 return -1;
             }
             continue;
         }
-        if (git_write_ref_oid(repo, receive->commands[i].ref_name, receive->commands[i].new_oid) != 0) {
+        if (gitd_write_ref_oid_locked(repo, &receive->commands[i]) != 0) {
             *error_out = "cannot update ref";
             *error_ref_out = receive->commands[i].ref_name;
             return -1;
@@ -1677,22 +1986,29 @@ static int gitd_handle_receive_pack(int fd, const GitdOptions *options, const Gi
     if (rt_strcmp(request->method, "POST") != 0) return gitd_send_text(fd, 405, "method not allowed\n");
     if (!git_header_value_contains((const unsigned char *)request->content_type, rt_strlen(request->content_type), "application/x-git-receive-pack-request")) return gitd_send_text(fd, 415, "expected git-receive-pack request\n");
     if (gitd_strip_suffix(request->path, "/git-receive-pack", repo_path, sizeof(repo_path)) != 0 || gitd_repo_from_path(options, repo_path, &repo) != 0) return gitd_send_text(fd, 404, "repository not found\n");
-    if (gitd_request_body_payload(request, body, &decoded_body, &payload) != 0) return gitd_send_text(fd, 415, "unsupported request content encoding\n");
+    if (gitd_request_body_payload(options, request, body, &decoded_body, &payload) != 0) return gitd_send_text(fd, 415, "unsupported request content encoding\n");
     rt_memset(&receive, 0, sizeof(receive));
     rt_memset(&received_pack, 0, sizeof(received_pack));
-    if (gitd_parse_receive_pack_request(payload, &receive) != 0) {
+    if (gitd_parse_receive_pack_request(options, payload, &receive) != 0) {
         gitd_receive_request_destroy(&receive);
         git_buffer_destroy(&decoded_body);
         return gitd_send_text(fd, 400, "malformed receive-pack request\n");
     }
+    if (receive.pack_size > options->max_pack_bytes) {
+        error = "pack too large";
+        error_ref = receive.count > 0U ? receive.commands[0].ref_name : "refs/heads/unknown";
+    } else
     if (gitd_receive_request_is_delete_only(&receive)) {
-        if (gitd_apply_receive_commands(&repo, 0, &receive, &error, &error_ref) != 0) {
+        if (gitd_apply_receive_commands(options, &repo, 0, &receive, &error, &error_ref) != 0) {
             /* error fields are set by validation. */
         }
     } else if (gitd_store_received_pack(&repo, &receive, &received_pack) != 0) {
         error = "unpack failed";
         error_ref = receive.count > 0U ? receive.commands[0].ref_name : "refs/heads/unknown";
-    } else if (gitd_apply_receive_commands(&repo, &received_pack, &receive, &error, &error_ref) != 0) {
+    } else if (received_pack.count > options->max_objects) {
+        error = "too many objects";
+        error_ref = receive.count > 0U ? receive.commands[0].ref_name : "refs/heads/unknown";
+    } else if (gitd_apply_receive_commands(options, &repo, &received_pack, &receive, &error, &error_ref) != 0) {
         /* error fields are set by validation. */
     }
     result = gitd_send_receive_status(fd, &receive, error, error_ref);
@@ -1780,7 +2096,19 @@ static int gitd_parse_options(int argc, char **argv, GitdOptions *options) {
     rt_copy_string(options->bind_host, sizeof(options->bind_host), "0.0.0.0");
     rt_copy_string(options->repo_root, sizeof(options->repo_root), ".");
     options->port = 8090U;
-    tool_opt_init(&opt, argc, argv, tool_base_name(argv[0]), "[-b HOST] [-p PORT] [-r REPO_ROOT] [--once] [-q]");
+    options->max_body_size = GITD_DEFAULT_MAX_BODY_SIZE;
+    options->max_wants = GITD_DEFAULT_MAX_WANTS;
+    options->max_haves = GITD_DEFAULT_MAX_HAVES;
+    options->max_shallows = GITD_DEFAULT_MAX_SHALLOWS;
+    options->max_ref_prefixes = GITD_DEFAULT_MAX_REF_PREFIXES;
+    options->max_commands = GITD_DEFAULT_MAX_COMMANDS;
+    options->max_objects = GITD_DEFAULT_MAX_OBJECTS;
+    options->max_pack_bytes = GITD_DEFAULT_MAX_PACK_BYTES;
+    options->allow_delete_refs = 1;
+    options->allow_tags = 1;
+    options->allow_notes = 1;
+    options->allow_custom_refs = 1;
+    tool_opt_init(&opt, argc, argv, tool_base_name(argv[0]), "[-b HOST] [-p PORT] [-r REPO_ROOT] [--once] [-q] [--read-only] [--branches-only] [--no-delete-refs] [--max-body BYTES]");
     while ((parse_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
         unsigned long long number;
         if (rt_strcmp(opt.flag, "-b") == 0 || rt_strcmp(opt.flag, "--bind") == 0) {
@@ -1794,6 +2122,28 @@ static int gitd_parse_options(int argc, char **argv, GitdOptions *options) {
             rt_copy_string(options->repo_root, sizeof(options->repo_root), opt.value);
         } else if (rt_strcmp(opt.flag, "--once") == 0) {
             options->once = 1;
+        } else if (rt_strcmp(opt.flag, "--read-only") == 0) {
+            options->read_only = 1;
+        } else if (rt_strcmp(opt.flag, "--branches-only") == 0) {
+            options->allow_tags = 0;
+            options->allow_notes = 0;
+            options->allow_custom_refs = 0;
+        } else if (rt_strcmp(opt.flag, "--no-delete-refs") == 0) {
+            options->allow_delete_refs = 0;
+        } else if (rt_strcmp(opt.flag, "--max-body") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_body_size) != 0) return -1;
+        } else if (rt_strcmp(opt.flag, "--max-wants") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_wants) != 0) return -1;
+        } else if (rt_strcmp(opt.flag, "--max-haves") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_haves) != 0) return -1;
+        } else if (rt_strcmp(opt.flag, "--max-ref-prefixes") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_ref_prefixes) != 0) return -1;
+        } else if (rt_strcmp(opt.flag, "--max-commands") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_commands) != 0) return -1;
+        } else if (rt_strcmp(opt.flag, "--max-objects") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_objects) != 0) return -1;
+        } else if (rt_strcmp(opt.flag, "--max-pack-bytes") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || gitd_parse_size_option(opt.value, &options->max_pack_bytes) != 0) return -1;
         } else if (rt_strcmp(opt.flag, "-q") == 0 || rt_strcmp(opt.flag, "--quiet") == 0) {
             options->quiet = 1;
         } else {

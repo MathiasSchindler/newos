@@ -452,7 +452,7 @@ done:
     return result;
 }
 
-static int git_http_request_stream(const GitUrl *url, const char *method, const char *accept, const char *content_type, const unsigned char *body, size_t body_size, GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data) {
+static int git_http_request_stream_ex(const GitUrl *url, const char *method, const char *accept, const char *content_type, const char *git_protocol, const unsigned char *body, size_t body_size, GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data) {
     GitHttpConnection connection;
     GitBuffer header;
     GitBuffer chunk_pending;
@@ -494,6 +494,11 @@ static int git_http_request_stream(const GitUrl *url, const char *method, const 
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-git/0.1\r\nAccept: ");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, accept != 0 ? accept : "*/*");
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nConnection: close\r\n");
+    if (git_http_header_value_safe(git_protocol)) {
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "Git-Protocol: ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, git_protocol);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+    }
     helper_authorization[0] = '\0';
     if (!git_http_header_value_safe(authorization) && !git_http_header_value_safe(bearer_token)) {
         (void)git_http_credential_helper_auth(url, helper_authorization, sizeof(helper_authorization));
@@ -567,8 +572,16 @@ done:
     return result;
 }
 
+static int git_http_request_stream(const GitUrl *url, const char *method, const char *accept, const char *content_type, const unsigned char *body, size_t body_size, GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data) {
+    return git_http_request_stream_ex(url, method, accept, content_type, 0, body, body_size, response, callback, callback_user_data);
+}
+
 static int git_http_request(const GitUrl *url, const char *method, const char *accept, const char *content_type, const unsigned char *body, size_t body_size, GitBuffer *response) {
     return git_http_request_stream(url, method, accept, content_type, body, body_size, response, 0, 0);
+}
+
+static int git_http_request_ex(const GitUrl *url, const char *method, const char *accept, const char *content_type, const char *git_protocol, const unsigned char *body, size_t body_size, GitBuffer *response) {
+    return git_http_request_stream_ex(url, method, accept, content_type, git_protocol, body, body_size, response, 0, 0);
 }
 
 static int git_append_pkt_data(GitBuffer *buffer, const void *payload, size_t payload_length) {

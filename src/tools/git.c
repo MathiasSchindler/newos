@@ -20,6 +20,8 @@
 #define GIT_SCHEME_HTTP 1
 #define GIT_SCHEME_HTTPS 2
 #define GIT_PACKET_FLUSH 0
+#define GIT_PACKET_DELIM 1
+#define GIT_PACKET_RESPONSE_END 2
 #define GIT_OBJECT_COMMIT 1
 #define GIT_OBJECT_TREE 2
 #define GIT_OBJECT_BLOB 3
@@ -131,6 +133,7 @@ typedef int (*GitHttpBodyCallback)(const unsigned char *data, size_t size, void 
 typedef struct {
     GitBuffer pending;
     GitBuffer pack_data;
+    GitBuffer shallow_text;
     size_t next_progress_bytes;
     int printed_progress;
     int remote_progress_open;
@@ -183,7 +186,13 @@ typedef struct {
     char capabilities[512];
     unsigned char head_oid[CRYPTO_SHA1_DIGEST_SIZE];
     int has_head;
+    int protocol_version;
 } GitRemoteRefs;
+
+typedef struct {
+    size_t depth;
+    int filter_blob_none;
+} GitFetchOptions;
 
 typedef struct {
     unsigned long long offset;
@@ -485,6 +494,8 @@ static int git_read_text_file(const char *path, char *buffer, size_t buffer_size
 
 static void git_usage(void) {
     rt_write_line(2, "Usage: git [--no-pager] [-C PATH] <command> [args ...]");
+    rt_write_line(2, "       git clone [--depth N] [--filter=blob:none] SOURCE [DEST]");
+    rt_write_line(2, "       git fetch [--depth N] [--filter=blob:none] [URL] [REF]");
     rt_write_line(2, "       git init [PATH]");
     rt_write_line(2, "       git config KEY [VALUE]");
     rt_write_line(2, "       git remote [-v|add NAME URL|set-url NAME URL]");
@@ -504,7 +515,7 @@ static void git_usage(void) {
     rt_write_line(2, "       git merge-base [--is-ancestor] A B");
     rt_write_line(2, "       git rev-list --count A..B");
     rt_write_line(2, "       git merge [--ff-only] REV");
-    rt_write_line(2, "       git pull [URL] [REF]");
+    rt_write_line(2, "       git pull [--depth N] [URL] [REF]");
     rt_write_line(2, "       git push [REMOTE|URL] [SRC[:DST]]");
     rt_write_line(2, "       git tag [-d NAME ...|NAME [REV]]");
     rt_write_line(2, "       git describe [REV]");

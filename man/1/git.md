@@ -27,7 +27,7 @@ git reflog [REF]
 git merge-base [--is-ancestor] A B
 git rev-list --count A..B
 git merge [--ff-only] REV
-git pull [URL] [REF]
+git pull [--depth N] [URL] [REF]
 git push [-f|--force] [REMOTE|URL] [SRC[:DST]]
 git tag [-d NAME ...|NAME [REV]]
 git describe [REV]
@@ -48,8 +48,8 @@ git mv [--] SOURCE DEST
 git stash [list|pop|apply|drop] [stash@{N}]
 git clean [-n|--dry-run|-f|--force] [-x] [--] [path ...]
 git hash-object FILE ...
-git clone SOURCE [DEST]
-git fetch [URL] [REF]
+git clone [--depth N] [--filter=blob:none] SOURCE [DEST]
+git fetch [--depth N] [--filter=blob:none] [URL] [REF]
 ```
 
 ## DESCRIPTION
@@ -165,11 +165,13 @@ be combined with `--no-pager`.
 - clone a clean local worktree or `file://` worktree by copying `.git` metadata
     and tracked files, preserving regular-file executable bits
 - clone an ordinary `http://` or `https://` smart-HTTP repository by fetching a
-    pack, storing it under `.git/objects/pack`, creating `origin`, and checking
-    out the selected branch; remote sideband and local pack byte progress are
-    streamed to stderr
+    pack with protocol v2 when available or protocol v1 otherwise, storing it
+    under `.git/objects/pack`, creating `origin`, and checking out the selected
+    branch; `clone --depth N` records shallow boundaries when the server returns
+    them; remote sideband and local pack byte progress are streamed to stderr
 - fetch from `origin` or an explicit HTTP(S) URL with Git upload-pack and update
-    `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack
+    `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack;
+    `fetch --depth N` and `fetch --filter=blob:none` use protocol v2 servers
 - send an HTTPS `Authorization` header from `GIT_HTTP_AUTHORIZATION`, or a
     `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch, pull, and push requests;
     when those are absent, `GIT_CREDENTIAL_HELPER=/path/to/helper` can execute a
@@ -183,8 +185,10 @@ be combined with `--no-pager`.
 
 ## LIMITATIONS
 
-- no protocol v2 negotiation, SSH transport, git:// transport, shallow clone,
-    partial clone, pack bitmap writing, or pack reuse during network negotiation
+- no SSH transport, git:// transport, promisor-object lazy checkout, pack bitmap
+    writing, or pack reuse during network negotiation; protocol v2 clone/fetch,
+    shallow fetches, and `filter blob:none` fetches are first-pass HTTP(S)
+    features
 - HTTP(S) push currently writes a simple non-delta pack for the needed local
     object closure; it does not implement pack reuse, thin packs, delete
     refspecs, push certificates, signed pushes, or native Git's full push option

@@ -250,7 +250,7 @@ static const char *git_branch_from_ref(const char *ref_name) {
     return 0;
 }
 
-static int git_cmd_clone_remote(const char *remote_url, const char *destination_arg, const char *destination) {
+static int git_cmd_clone_remote(const char *remote_url, const char *destination_arg, const char *destination, const GitFetchOptions *fetch_options) {
     GitRepo repo;
     GitPack pack;
     char selected_ref[GIT_REF_CAPACITY];
@@ -265,10 +265,23 @@ static int git_cmd_clone_remote(const char *remote_url, const char *destination_
         tool_write_error("git", "cannot create destination: ", destination_arg);
         return 1;
     }
-    if (git_fetch_remote_to_repo(&repo, remote_url, 0, selected_ref, sizeof(selected_ref), selected_oid, &pack) != 0) {
+    if (git_fetch_remote_to_repo(&repo, remote_url, 0, fetch_options, selected_ref, sizeof(selected_ref), selected_oid, &pack) != 0) {
         tool_write_error("git", "remote clone failed: ", remote_url);
         (void)tool_remove_path(destination, 1);
         goto done;
+    }
+    if (fetch_options != 0 && fetch_options->filter_blob_none) {
+        GitFetchOptions hydrate_options = *fetch_options;
+
+        hydrate_options.filter_blob_none = 0;
+        git_pack_destroy(&pack);
+        rt_memset(&pack, 0, sizeof(pack));
+        git_progress_line("Hydrating checkout objects...");
+        if (git_fetch_remote_to_repo(&repo, remote_url, selected_ref, &hydrate_options, selected_ref, sizeof(selected_ref), selected_oid, &pack) != 0) {
+            tool_write_error("git", "remote checkout hydration failed: ", remote_url);
+            (void)tool_remove_path(destination, 1);
+            goto done;
+        }
     }
     branch_name = git_branch_from_ref(selected_ref);
     if (branch_name == 0 || branch_name[0] == '\0') {
@@ -296,6 +309,7 @@ done:
 static int git_cmd_clone(int argc, char **argv, int argi) {
     GitRepo source_repo;
     GitIndex index;
+    GitFetchOptions fetch_options;
     char source_path[GIT_PATH_CAPACITY];
     char destination_arg[GIT_PATH_CAPACITY];
     char destination[GIT_PATH_CAPACITY];
@@ -303,6 +317,38 @@ static int git_cmd_clone(int argc, char **argv, int argi) {
     PlatformDirEntry existing;
     int result = 1;
 
+    rt_memset(&fetch_options, 0, sizeof(fetch_options));
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strncmp(argv[argi], "--depth=", 8U) == 0) {
+            unsigned long long depth;
+            if (rt_parse_uint(argv[argi] + 8U, &depth) != 0 || depth == 0ULL || depth > (unsigned long long)((size_t)-1)) {
+                tool_write_error("git", "unsupported clone depth: ", argv[argi] + 8U);
+                return 1;
+            }
+            fetch_options.depth = (size_t)depth;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--depth") == 0) {
+            unsigned long long depth;
+            if (argi + 1 >= argc || rt_parse_uint(argv[argi + 1], &depth) != 0 || depth == 0ULL || depth > (unsigned long long)((size_t)-1)) {
+                tool_write_error("git", "clone --depth needs a positive number", 0);
+                return 1;
+            }
+            fetch_options.depth = (size_t)depth;
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "--filter=blob:none") == 0) {
+            fetch_options.filter_blob_none = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--filter") == 0) {
+            if (argi + 1 >= argc || rt_strcmp(argv[argi + 1], "blob:none") != 0) {
+                tool_write_error("git", "unsupported clone filter", 0);
+                return 1;
+            }
+            fetch_options.filter_blob_none = 1;
+            argi += 2;
+        } else {
+            break;
+        }
+    }
     if (argi >= argc) {
         tool_write_error("git", "clone needs a source", 0);
         return 1;
@@ -335,7 +381,7 @@ static int git_cmd_clone(int argc, char **argv, int argi) {
         return 1;
     }
     if (git_url_is_http(argv[argi])) {
-        return git_cmd_clone_remote(argv[argi], destination_arg, destination);
+        return git_cmd_clone_remote(argv[argi], destination_arg, destination, &fetch_options);
     }
     if (git_source_arg_to_path(argv[argi], source_path, sizeof(source_path)) != 0) {
         return 1;
@@ -815,12 +861,46 @@ static int git_cmd_remote(GitRepo *repo, int argc, char **argv, int argi) {
 }
 
 static int git_cmd_fetch(GitRepo *repo, int argc, char **argv, int argi) {
+    GitFetchOptions fetch_options;
     char remote_url[GIT_PATH_CAPACITY];
     const char *wanted_ref = 0;
     char selected_ref[GIT_REF_CAPACITY];
     unsigned char selected_oid[CRYPTO_SHA1_DIGEST_SIZE];
     char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
 
+    rt_memset(&fetch_options, 0, sizeof(fetch_options));
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strncmp(argv[argi], "--depth=", 8U) == 0) {
+            unsigned long long depth;
+            if (rt_parse_uint(argv[argi] + 8U, &depth) != 0 || depth == 0ULL || depth > (unsigned long long)((size_t)-1)) {
+                tool_write_error("git", "unsupported fetch depth: ", argv[argi] + 8U);
+                return 1;
+            }
+            fetch_options.depth = (size_t)depth;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--depth") == 0) {
+            unsigned long long depth;
+            if (argi + 1 >= argc || rt_parse_uint(argv[argi + 1], &depth) != 0 || depth == 0ULL || depth > (unsigned long long)((size_t)-1)) {
+                tool_write_error("git", "fetch --depth needs a positive number", 0);
+                return 1;
+            }
+            fetch_options.depth = (size_t)depth;
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "--filter=blob:none") == 0) {
+            fetch_options.filter_blob_none = 1;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--filter") == 0) {
+            if (argi + 1 >= argc || rt_strcmp(argv[argi + 1], "blob:none") != 0) {
+                tool_write_error("git", "unsupported fetch filter", 0);
+                return 1;
+            }
+            fetch_options.filter_blob_none = 1;
+            argi += 2;
+        } else {
+            tool_write_error("git", "unsupported fetch option: ", argv[argi]);
+            return 1;
+        }
+    }
     if (argi < argc && git_url_is_http(argv[argi])) {
         if (git_copy(remote_url, sizeof(remote_url), argv[argi]) != 0) {
             return 1;
@@ -837,7 +917,7 @@ static int git_cmd_fetch(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "too many fetch arguments", 0);
         return 1;
     }
-    if (git_fetch_remote_to_repo(repo, remote_url, wanted_ref, selected_ref, sizeof(selected_ref), selected_oid, 0) != 0) {
+    if (git_fetch_remote_to_repo(repo, remote_url, wanted_ref, &fetch_options, selected_ref, sizeof(selected_ref), selected_oid, 0) != 0) {
         tool_write_error("git", "fetch failed: ", remote_url);
         return 1;
     }
@@ -912,6 +992,7 @@ static int git_cmd_merge(GitRepo *repo, int argc, char **argv, int argi) {
 }
 
 static int git_cmd_pull(GitRepo *repo, int argc, char **argv, int argi) {
+    GitFetchOptions fetch_options;
     char remote_url[GIT_PATH_CAPACITY];
     const char *wanted_ref = 0;
     char selected_ref[GIT_REF_CAPACITY];
@@ -920,7 +1001,33 @@ static int git_cmd_pull(GitRepo *repo, int argc, char **argv, int argi) {
     int have_pack = 0;
     int result;
 
+    rt_memset(&fetch_options, 0, sizeof(fetch_options));
     rt_memset(&pack, 0, sizeof(pack));
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (rt_strncmp(argv[argi], "--depth=", 8U) == 0) {
+            unsigned long long depth;
+            if (rt_parse_uint(argv[argi] + 8U, &depth) != 0 || depth == 0ULL || depth > (unsigned long long)((size_t)-1)) {
+                tool_write_error("git", "unsupported pull depth: ", argv[argi] + 8U);
+                return 1;
+            }
+            fetch_options.depth = (size_t)depth;
+            argi += 1;
+        } else if (rt_strcmp(argv[argi], "--depth") == 0) {
+            unsigned long long depth;
+            if (argi + 1 >= argc || rt_parse_uint(argv[argi + 1], &depth) != 0 || depth == 0ULL || depth > (unsigned long long)((size_t)-1)) {
+                tool_write_error("git", "pull --depth needs a positive number", 0);
+                return 1;
+            }
+            fetch_options.depth = (size_t)depth;
+            argi += 2;
+        } else if (rt_strcmp(argv[argi], "--filter=blob:none") == 0 || rt_strcmp(argv[argi], "--filter") == 0) {
+            tool_write_error("git", "pull filter is not supported for checkout", 0);
+            return 1;
+        } else {
+            tool_write_error("git", "unsupported pull option: ", argv[argi]);
+            return 1;
+        }
+    }
     if (argi < argc && git_url_is_http(argv[argi])) {
         if (git_copy(remote_url, sizeof(remote_url), argv[argi]) != 0) return 1;
         argi += 1;
@@ -935,7 +1042,7 @@ static int git_cmd_pull(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "too many pull arguments", 0);
         return 1;
     }
-    if (git_fetch_remote_to_repo(repo, remote_url, wanted_ref, selected_ref, sizeof(selected_ref), selected_oid, &pack) != 0) {
+    if (git_fetch_remote_to_repo(repo, remote_url, wanted_ref, &fetch_options, selected_ref, sizeof(selected_ref), selected_oid, &pack) != 0) {
         tool_write_error("git", "pull fetch failed: ", remote_url);
         return 1;
     }

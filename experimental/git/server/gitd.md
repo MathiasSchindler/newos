@@ -8,6 +8,10 @@ gitd - CORS-friendly smart-HTTP Git server for browser experiments
 
 ```
 gitd [-b HOST] [-p PORT] [-r REPO_ROOT] [--once] [-q]
+  [--read-only] [--branches-only] [--no-delete-refs]
+  [--max-body BYTES] [--max-wants N] [--max-haves N]
+  [--max-ref-prefixes N] [--max-commands N]
+  [--max-objects N] [--max-pack-bytes BYTES]
 ```
 
 ## DESCRIPTION
@@ -28,8 +32,10 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - respond to receive-pack requests with `POST /repo.git/git-receive-pack`
 - accept branch creation, deletion, and strict fast-forward-only updates under `refs/heads/*`
 - accept safe `refs/*` names for tags, notes, and custom namespaces; branch updates remain commit-only and fast-forward-only
+- optionally run read-only, branches-only, or without delete-ref advertisement using receive-pack policy flags
 - reject stale, forced branch updates, unsafe ref names, and object IDs that are not present in the received pack or repository
-- generate upload packs from reachable objects using the in-tree Git object helpers, including `REF_DELTA` entries for later blobs that copy matching prefix/suffix spans from the base blob and insert changed middle bytes
+- update loose refs through `.lock` files and atomic rename; packed-ref deletions rewrite `packed-refs` through a lockfile
+- generate upload packs from reachable objects using the in-tree Git object helpers, including `REF_DELTA` entries for later blobs that copy matching prefix/suffix spans from a bounded set of similar base blobs and insert changed middle bytes
 - honor upload-pack `have` lines by excluding commits the client already reports as reachable
 - advertise protocol v1 `multi_ack`, `multi_ack_detailed`, `side-band-64k`, `agent=newos-gitd`, and `symref=HEAD:...` when the repository exposes a symbolic HEAD
 - advertise protocol v2 `ls-refs`, `fetch=shallow filter wait-for-done`, `server-option`, and `object-format=sha1`
@@ -38,6 +44,7 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - return receive-pack results with `application/x-git-receive-pack-result`
 - support side-band pack responses when requested by the client
 - decode gzip-compressed smart HTTP POST bodies, which canonical Git uses for larger protocol v2 fetch requests
+- enforce configurable limits for request bodies, wants, haves, ref prefixes, receive commands, object counts, and generated/received pack bytes
 - use the project runtime I/O loop for listener and per-client request-read readiness
 - include permissive CORS headers on all HTTP responses: `Access-Control-Allow-Origin: *`, methods `GET, POST, OPTIONS`, and headers `content-type, authorization`
 - answer browser preflight requests with `OPTIONS`
@@ -51,6 +58,16 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - `-r REPO_ROOT`, `--repo-root REPO_ROOT` serve bare repositories below `REPO_ROOT`; defaults to the current directory
 - `--once` handle one accepted connection and then exit
 - `-q`, `--quiet` suppress the startup listening message
+- `--read-only` disable receive-pack advertisement and writes
+- `--branches-only` reject tags, notes, and custom ref namespaces during receive-pack
+- `--no-delete-refs` do not advertise or accept delete-ref commands
+- `--max-body BYTES` cap compressed or plain HTTP request bodies; defaults to 67108864
+- `--max-wants N` cap upload-pack wants; defaults to 256
+- `--max-haves N` cap upload-pack haves; defaults to 4096
+- `--max-ref-prefixes N` cap protocol v2 `ls-refs` prefixes; defaults to 64
+- `--max-commands N` cap receive-pack ref commands; defaults to 64
+- `--max-objects N` cap objects collected or accepted for one pack; defaults to 200000
+- `--max-pack-bytes BYTES` cap generated or received pack bytes; defaults to 268435456
 - `-h`, `--help` print the usage summary
 
 ## REPOSITORY LAYOUT
@@ -89,14 +106,14 @@ For fetches, the server records all `want` lines, builds the requested reachable
 
 ## LIMITATIONS
 
-- no authentication or authorization; any reachable client can read repositories under `REPO_ROOT`
+- no authentication or authorization; any reachable client can read repositories under `REPO_ROOT`, and write if receive-pack is enabled by policy
 - plain HTTP only; TLS termination must happen outside `gitd` if needed
 - local bare repositories only
-- protocol v2 support is focused on `ls-refs` and `fetch`; unrelated v2 commands are rejected as malformed requests
+- protocol v2 support is focused on `ls-refs` and `fetch`; unrelated v2 commands are rejected with an unsupported-command response
 - multi-round negotiation is stateless and minimal: v1 no-`done` rounds return `NAK`, and later requests must resend the necessary wants/haves
-- blob delta generation is intentionally small: later blobs use one base blob and a prefix/suffix copy plus insert strategy, while commits, trees, tags, and the first blob are emitted whole
+- blob delta generation is intentionally small: later blobs choose from a bounded set of previous blob bases and use a prefix/suffix copy plus insert strategy, while commits, trees, tags, and unhelpful blob deltas are emitted whole
 - request parsing is I/O-loop driven, but pack generation and receive-pack application still run synchronously once a complete request body has arrived
-- request bodies are capped by the fixed server body limit
+- request and pack limits are configurable but still enforced per complete request, not by streaming pack application
 
 ## EXAMPLES
 

@@ -9,9 +9,13 @@ REPOS="$TMP_DIR/repos"
 WORK="$TMP_DIR/work"
 CLONE_NATIVE="$TMP_DIR/clone-native"
 CLONE_NEWOS="$TMP_DIR/clone-newos"
+CLONE_NEWOS_SHALLOW="$TMP_DIR/clone-newos-shallow"
+CLONE_NEWOS_FILTER="$TMP_DIR/clone-newos-filter"
+FETCH_NEWOS_FILTER="$TMP_DIR/fetch-newos-filter"
 PUSH_NATIVE="$TMP_DIR/push-native"
 GITD="$SERVER_DIR/build/gitd"
 NEWOS_GIT=${NEWOS_GIT:-$ROOT_DIR/build/macos-aarch64/git}
+POLICY_PID=
 
 rm -rf "$TMP_DIR"
 mkdir -p "$WORK" "$REPOS"
@@ -23,10 +27,20 @@ git config user.email gitd@example.invalid
 printf 'hello from gitd\n' > README.md
 mkdir -p src
 printf 'int main(void) { return 0; }\n' > src/main.c
-git add README.md src/main.c
+for i in $(seq 1 120); do
+    printf 'shared pack delta fixture line %03d\n' "$i"
+done > delta.txt
+git add README.md src/main.c delta.txt
 git commit -q -m initial
 printf 'int main(void) { return 1; }\n' > src/main.c
-git add src/main.c
+for i in $(seq 1 120); do
+    if [ "$i" -eq 60 ]; then
+        printf 'shared pack delta fixture changed line %03d\n' "$i"
+    else
+        printf 'shared pack delta fixture line %03d\n' "$i"
+    fi
+done > delta.txt
+git add src/main.c delta.txt
 git commit -q -m update-main
 git branch -M main
 git clone --bare . "$REPOS/example.git" >/dev/null 2>&1
@@ -47,7 +61,7 @@ git clone --bare . "$REPOS/filter.git" >/dev/null 2>&1
 cd "$ROOT_DIR"
 "$GITD" -q -r "$REPOS" -p "$PORT" 2>"$TMP_DIR/gitd.log" &
 SERVER_PID=$!
-trap 'kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+trap 'if [ -n "${POLICY_PID:-}" ]; then kill "$POLICY_PID" >/dev/null 2>&1 || true; wait "$POLICY_PID" 2>/dev/null || true; fi; kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 ready=0
 attempt=0
@@ -133,6 +147,34 @@ grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/receive-refs.headers"
 grep -aq '# service=git-receive-pack' "$TMP_DIR/receive-refs.body"
 grep -aq 'report-status' "$TMP_DIR/receive-refs.body"
 grep -aq 'delete-refs' "$TMP_DIR/receive-refs.body"
+
+POLICY_PORT=$((PORT + 1))
+"$GITD" -q --read-only -r "$REPOS" -p "$POLICY_PORT" 2>"$TMP_DIR/gitd-read-only.log" &
+POLICY_PID=$!
+policy_ready=0
+attempt=0
+while [ "$attempt" -lt 500 ]; do
+    if curl -fsS --connect-timeout 1 -o /dev/null "http://127.0.0.1:$POLICY_PORT/health" 2>/dev/null; then
+        policy_ready=1
+        break
+    fi
+    if ! kill -0 "$POLICY_PID" 2>/dev/null; then
+        cat "$TMP_DIR/gitd-read-only.log" >&2 || true
+        echo 'read-only gitd exited before becoming ready' >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+done
+test "$policy_ready" = 1
+policy_upload_status=$(curl -sS -o "$TMP_DIR/policy-upload.body" -w '%{http_code}' \
+    "http://127.0.0.1:$POLICY_PORT/example.git/info/refs?service=git-upload-pack")
+test "$policy_upload_status" = 200
+policy_receive_status=$(curl -sS -o "$TMP_DIR/policy-receive.body" -w '%{http_code}' \
+    "http://127.0.0.1:$POLICY_PORT/example.git/info/refs?service=git-receive-pack")
+test "$policy_receive_status" = 403
+kill "$POLICY_PID" >/dev/null 2>&1 || true
+wait "$POLICY_PID" 2>/dev/null || true
+POLICY_PID=
 
 head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
 {
@@ -234,6 +276,14 @@ if [ -x "$NEWOS_GIT" ]; then
     "$NEWOS_GIT" clone "http://127.0.0.1:$PORT/example.git" "$CLONE_NEWOS" >/dev/null 2>&1
     grep -q 'hello from gitd' "$CLONE_NEWOS/README.md"
     grep -q 'fast-forward push' "$CLONE_NEWOS/README.md"
+    "$NEWOS_GIT" clone --depth=1 "http://127.0.0.1:$PORT/example.git" "$CLONE_NEWOS_SHALLOW" >/dev/null 2>&1
+    test -s "$CLONE_NEWOS_SHALLOW/.git/shallow"
+    grep -q 'hello from gitd' "$CLONE_NEWOS_SHALLOW/README.md"
+    "$NEWOS_GIT" clone --filter=blob:none "http://127.0.0.1:$PORT/example.git" "$CLONE_NEWOS_FILTER" >/dev/null 2>&1
+    grep -q 'hello from gitd' "$CLONE_NEWOS_FILTER/README.md"
+    "$NEWOS_GIT" init "$FETCH_NEWOS_FILTER" >/dev/null 2>&1
+    "$NEWOS_GIT" -C "$FETCH_NEWOS_FILTER" fetch --filter=blob:none "http://127.0.0.1:$PORT/example.git" main >/dev/null 2>&1
+    test "$("$NEWOS_GIT" -C "$FETCH_NEWOS_FILTER" cat-file -t refs/remotes/origin/main)" = 'commit'
 fi
 
 echo 'gitd smoke: ok'
