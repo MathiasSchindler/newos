@@ -16,6 +16,7 @@ PUSH_NATIVE="$TMP_DIR/push-native"
 GITD="$SERVER_DIR/build/gitd"
 NEWOS_GIT=${NEWOS_GIT:-$ROOT_DIR/build/macos-aarch64/git}
 POLICY_PID=
+TLS_PID=
 
 rm -rf "$TMP_DIR"
 mkdir -p "$WORK" "$REPOS"
@@ -61,7 +62,7 @@ git clone --bare . "$REPOS/filter.git" >/dev/null 2>&1
 cd "$ROOT_DIR"
 "$GITD" -q -r "$REPOS" -p "$PORT" 2>"$TMP_DIR/gitd.log" &
 SERVER_PID=$!
-trap 'if [ -n "${POLICY_PID:-}" ]; then kill "$POLICY_PID" >/dev/null 2>&1 || true; wait "$POLICY_PID" 2>/dev/null || true; fi; kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+trap 'if [ -n "${TLS_PID:-}" ]; then kill "$TLS_PID" >/dev/null 2>&1 || true; wait "$TLS_PID" 2>/dev/null || true; fi; if [ -n "${POLICY_PID:-}" ]; then kill "$POLICY_PID" >/dev/null 2>&1 || true; wait "$POLICY_PID" 2>/dev/null || true; fi; kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 ready=0
 attempt=0
@@ -108,6 +109,48 @@ grep -aq 'version 2' "$TMP_DIR/v2.body"
 grep -aq 'fetch=shallow filter wait-for-done' "$TMP_DIR/v2.body"
 grep -aq 'object-info' "$TMP_DIR/v2.body"
 grep -aq 'bundle-uri' "$TMP_DIR/v2.body"
+
+if command -v openssl >/dev/null 2>&1; then
+    TLS_PORT=$((PORT + 2))
+    TLS_CLONE="$TMP_DIR/clone-https"
+    if ! openssl genrsa -traditional -out "$TMP_DIR/gitd-tls.key" 2048 >/dev/null 2>&1; then
+        openssl genrsa -out "$TMP_DIR/gitd-tls.key.tmp" 2048 >/dev/null 2>&1
+        if grep -q 'BEGIN RSA PRIVATE KEY' "$TMP_DIR/gitd-tls.key.tmp"; then
+            mv "$TMP_DIR/gitd-tls.key.tmp" "$TMP_DIR/gitd-tls.key"
+        else
+            openssl rsa -in "$TMP_DIR/gitd-tls.key.tmp" -traditional -out "$TMP_DIR/gitd-tls.key" >/dev/null 2>&1
+        fi
+    fi
+    openssl req -new -x509 -key "$TMP_DIR/gitd-tls.key" -out "$TMP_DIR/gitd-tls.crt" -days 1 -subj '/CN=127.0.0.1' >/dev/null 2>&1
+    "$GITD" -q -r "$REPOS" -p "$TLS_PORT" --tls-cert "$TMP_DIR/gitd-tls.crt" --tls-key "$TMP_DIR/gitd-tls.key" 2>"$TMP_DIR/gitd-tls.log" &
+    TLS_PID=$!
+    tls_ready=0
+    attempt=0
+    while [ "$attempt" -lt 500 ]; do
+        if curl -kfsS --http1.1 --connect-timeout 1 -o /dev/null "https://127.0.0.1:$TLS_PORT/health" 2>/dev/null; then
+            tls_ready=1
+            break
+        fi
+        if ! kill -0 "$TLS_PID" 2>/dev/null; then
+            cat "$TMP_DIR/gitd-tls.log" >&2 || true
+            echo 'TLS gitd exited before becoming ready' >&2
+            exit 1
+        fi
+        attempt=$((attempt + 1))
+    done
+    if [ "$tls_ready" -ne 1 ]; then
+        cat "$TMP_DIR/gitd-tls.log" >&2 || true
+        echo 'TLS gitd did not become ready' >&2
+        exit 1
+    fi
+    curl -kfsS --http1.1 -o "$TMP_DIR/tls-refs.body" "https://127.0.0.1:$TLS_PORT/example.git/info/refs?service=git-upload-pack"
+    grep -aq '# service=git-upload-pack' "$TMP_DIR/tls-refs.body"
+    git -c http.sslVerify=false -c http.version=HTTP/1.1 clone "https://127.0.0.1:$TLS_PORT/example.git" "$TLS_CLONE" >/dev/null 2>&1
+    test "$(cat "$TLS_CLONE/README.md")" = 'hello from gitd'
+    kill "$TLS_PID" >/dev/null 2>&1 || true
+    wait "$TLS_PID" 2>/dev/null || true
+    TLS_PID=
+fi
 
 head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
 base_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD^)

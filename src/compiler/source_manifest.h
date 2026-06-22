@@ -148,6 +148,7 @@
     X("src/shared/tls/tls12_client.c") \
     X("src/shared/tls/tls13.c") \
     X("src/shared/tls/tls13_client.c") \
+    X("src/shared/tls/tls13_server.c") \
     X("src/shared/tls/tls13_handshake.c") \
     X("src/shared/tls/tls13_record.c") \
     X("src/shared/tls/tls13_transcript.c")

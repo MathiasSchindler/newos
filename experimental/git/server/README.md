@@ -26,6 +26,14 @@ Run it against a directory of bare repositories:
 experimental/git/server/build/gitd -r /path/to/repos -p 8090
 ```
 
+To serve HTTPS directly, pass a certificate and RSA PKCS#1 private key. Git smart
+HTTP is still HTTP/1.x inside TLS; `gitd` does not implement HTTP/2.
+
+```sh
+experimental/git/server/build/gitd -r /path/to/repos -p 8443 \
+  --tls-cert /path/to/cert.pem --tls-key /path/to/rsa-key.pem
+```
+
 By default `gitd` binds to `0.0.0.0`, so it is reachable on network interfaces
 allowed by the host firewall. Use `-b 127.0.0.1` for loopback-only testing, or
 `-b ADDRESS` to choose a specific interface.
@@ -34,6 +42,8 @@ Then clone a bare repo below that root with a URL such as:
 
 ```sh
 git clone http://HOST:8090/example.git clone-out
+git -c http.sslVerify=false -c http.version=HTTP/1.1 \
+  clone https://HOST:8443/example.git clone-out
 ```
 
 ## Current Scope
@@ -60,6 +70,8 @@ git clone http://HOST:8090/example.git clone-out
   namespaces; loose ref writes use `.lock` files and atomic rename.
 - Request, negotiation, object-count, and pack-byte limits are configurable with
   `--max-*` flags.
+- Optional HTTPS listener mode uses the project TLS 1.3 and crypto code with
+  X25519, AES-128-GCM-SHA256, and RSA-PSS-SHA256 certificate authentication.
 - Listener and per-client request reads use the project runtime I/O loop.
 - CORS headers on all responses:
   `Access-Control-Allow-Origin: *`, `GET, POST, OPTIONS`, and
@@ -71,6 +83,9 @@ git clone http://HOST:8090/example.git clone-out
 - No authentication. Treat the selected repository root as publicly readable to
   any client that can reach the bound address, and writable by any client that
   can form an accepted receive-pack request unless policy flags disable writes.
+- HTTPS is TLS 1.3 only, with no TLS 1.2, ALPN, HTTP/2, or client certificate
+  authentication. The first pass accepts one PEM/DER certificate and an RSA
+  PKCS#1 private key.
 - Protocol v2 support covers the commands advertised by `gitd`; unknown future
   commands are rejected as unsupported requests.
 - Multi-round negotiation is stateless across HTTP requests, but v1 upload-pack
