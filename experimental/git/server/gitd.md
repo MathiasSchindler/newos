@@ -26,12 +26,13 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - advertise refs for smart HTTP with `GET /repo.git/info/refs?service=git-upload-pack` and `GET /repo.git/info/refs?service=git-receive-pack`
 - respond to upload-pack requests with `POST /repo.git/git-upload-pack`
 - respond to receive-pack requests with `POST /repo.git/git-receive-pack`
-- accept branch creation and strict fast-forward-only updates under `refs/heads/*`
-- reject stale, forced, deletion, and non-branch ref updates
-- generate undeltified packs from reachable objects using the in-tree Git object and pack helpers
+- accept branch creation, deletion, and strict fast-forward-only updates under `refs/heads/*`
+- accept safe `refs/*` names for tags, notes, and custom namespaces; branch updates remain commit-only and fast-forward-only
+- reject stale, forced branch updates, unsafe ref names, and object IDs that are not present in the received pack or repository
+- generate upload packs from reachable objects using the in-tree Git object helpers, including simple `REF_DELTA` entries for later blobs in the pack
 - honor upload-pack `have` lines by excluding commits the client already reports as reachable
 - advertise `multi_ack`, `multi_ack_detailed`, `side-band-64k`, `agent=newos-gitd`, and `symref=HEAD:...` when the repository exposes a symbolic HEAD
-- advertise receive-pack `report-status`, `side-band-64k`, and `agent=newos-gitd`
+- advertise receive-pack `report-status`, `side-band-64k`, `delete-refs`, and `agent=newos-gitd`
 - return upload-pack results with `application/x-git-upload-pack-result`
 - return receive-pack results with `application/x-git-receive-pack-result`
 - support side-band pack responses when requested by the client
@@ -82,17 +83,15 @@ The supported protocol surface is the version-one smart-HTTP upload-pack and rec
 - `OPTIONS /...` returns an empty CORS preflight response
 - `GET /health` and `GET /_status` return `ok`
 
-The server accepts the first `want` object in the upload-pack request, builds the reachable object closure, excludes commits reachable from client `have` lines, and streams a single response pack. Receive-pack updates are transaction-like at the ref-validation level: every command must pass before any ref is written. It does not implement multi-round ACK negotiation, shallow boundaries, protocol v2, filters, or partial clone.
+The server accepts the first `want` object in a version-one upload-pack request that completes with `done`, builds the reachable object closure, excludes commits reachable from client `have` lines, and streams a single response pack. Discovery requests that include `Git-Protocol: version=2` are answered with a version-one service advertisement so native Git can fall back cleanly. Version-two upload-pack POST bodies, shallow requests, filter requests, and multi-round negotiation attempts are rejected with `501` instead of being treated as ordinary full-history fetches. Receive-pack updates are transaction-like at the ref-validation level: every command must pass before any ref is written.
 
 ## LIMITATIONS
 
-- receive-pack push is limited to branch creation and strict fast-forward-only `refs/heads/*` updates
-- ref deletion, tags, notes, and non-branch namespaces are rejected
 - no authentication or authorization; any reachable client can read repositories under `REPO_ROOT`
 - plain HTTP only; TLS termination must happen outside `gitd` if needed
 - local bare repositories only
-- no protocol v2, shallow clone, filters, or multi-round ACK negotiation
-- no delta pack generation; packs are intentionally simple and undeltified
+- no native protocol v2 command handling, shallow clone, filters, or multi-round ACK negotiation; unsupported upload-pack POST features and multi-round requests are explicitly rejected
+- delta pack generation is intentionally simple: later blobs can be emitted as insert-only `REF_DELTA` entries, while commits, trees, tags, and the first blob are emitted whole
 - request parsing is I/O-loop driven, but pack generation and receive-pack application still run synchronously once a complete request body has arrived
 - request bodies are capped by the fixed server body limit
 
@@ -123,10 +122,12 @@ build/macos-aarch64/git clone http://127.0.0.1:8090/example.git clone-out
 git clone http://127.0.0.1:8090/example.git clone-out
 ```
 
-Push a fast-forward branch update:
+Push a fast-forward branch update, create tags or notes, or delete refs:
 
 ```
 git -C clone-out push origin main
+git -C clone-out push origin v1
+git -C clone-out push origin :v1
 ```
 
 Prepare and serve the larger `mona-isa` fixture used by the WASM workbench:

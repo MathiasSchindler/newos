@@ -70,6 +70,20 @@ grep -qi '^Content-Type: application/x-git-upload-pack-advertisement' "$TMP_DIR/
 grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/refs.headers"
 grep -aq '# service=git-upload-pack' "$TMP_DIR/refs.body"
 
+v2_status=$(curl -sS -o "$TMP_DIR/v2.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    "http://127.0.0.1:$PORT/example.git/info/refs?service=git-upload-pack")
+test "$v2_status" = 200
+grep -aq '# service=git-upload-pack' "$TMP_DIR/v2.body"
+
+v2_post_status=$(curl -sS -o "$TMP_DIR/v2-post.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary '' \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$v2_post_status" = 501
+grep -q 'protocol v2 is not supported' "$TMP_DIR/v2-post.body"
+
 curl -fsS -D "$TMP_DIR/receive-refs.headers" -o "$TMP_DIR/receive-refs.body" \
     -H 'Origin: http://127.0.0.1:8080' \
     "http://127.0.0.1:$PORT/example.git/info/refs?service=git-receive-pack"
@@ -77,9 +91,56 @@ grep -qi '^Content-Type: application/x-git-receive-pack-advertisement' "$TMP_DIR
 grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/receive-refs.headers"
 grep -aq '# service=git-receive-pack' "$TMP_DIR/receive-refs.body"
 grep -aq 'report-status' "$TMP_DIR/receive-refs.body"
+grep -aq 'delete-refs' "$TMP_DIR/receive-refs.body"
 
-git clone "http://127.0.0.1:$PORT/example.git" "$CLONE_NATIVE" >/dev/null 2>&1
+append_pkt() {
+    payload=$1
+    length=$((4 + ${#payload}))
+    printf '%04x%s' "$length" "$payload"
+}
+
+head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
+{
+    append_pkt "want $head_oid side-band-64k\n"
+    append_pkt 'deepen 1\n'
+    printf '0000'
+} > "$TMP_DIR/shallow-upload.request"
+shallow_status=$(curl -sS -o "$TMP_DIR/shallow-upload.body" -w '%{http_code}' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/shallow-upload.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$shallow_status" = 501
+grep -q 'shallow and filter upload-pack requests are not supported' "$TMP_DIR/shallow-upload.body"
+
+{
+    append_pkt "want $head_oid side-band-64k\n"
+    append_pkt 'filter blob:none\n'
+    printf '0000'
+} > "$TMP_DIR/filter-upload.request"
+filter_status=$(curl -sS -o "$TMP_DIR/filter-upload.body" -w '%{http_code}' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/filter-upload.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$filter_status" = 501
+grep -q 'shallow and filter upload-pack requests are not supported' "$TMP_DIR/filter-upload.body"
+
+{
+    append_pkt "want $head_oid side-band-64k\n"
+    printf '0000'
+} > "$TMP_DIR/multiround-upload.request"
+multiround_status=$(curl -sS -o "$TMP_DIR/multiround-upload.body" -w '%{http_code}' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/multiround-upload.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$multiround_status" = 501
+grep -q 'multi-round upload-pack negotiation is not supported' "$TMP_DIR/multiround-upload.body"
+
+git -c transfer.unpackLimit=1 clone "http://127.0.0.1:$PORT/example.git" "$CLONE_NATIVE" >/dev/null 2>&1
 test "$(cat "$CLONE_NATIVE/README.md")" = 'hello from gitd'
+native_pack_idx=$(find "$CLONE_NATIVE/.git/objects/pack" -name '*.idx' -print -quit)
+test -n "$native_pack_idx"
+git verify-pack -v "$native_pack_idx" > "$TMP_DIR/native-verify-pack.out"
+grep -q '^chain length = 1:' "$TMP_DIR/native-verify-pack.out"
 
 git clone "http://127.0.0.1:$PORT/example.git" "$PUSH_NATIVE" >/dev/null 2>&1
 cd "$PUSH_NATIVE"
@@ -89,8 +150,23 @@ printf 'fast-forward push\n' >> README.md
 git add README.md
 git commit -q -m 'fast-forward push'
 git push origin main >/dev/null 2>&1
+git switch -c feature >/dev/null 2>&1
+printf 'feature branch\n' > feature.txt
+git add feature.txt
+git commit -q -m 'feature branch'
+git push origin feature >/dev/null 2>&1
+git tag v1
+git push origin v1 >/dev/null 2>&1
+git update-ref refs/notes/review HEAD
+git push origin refs/notes/review >/dev/null 2>&1
+git update-ref refs/meta/check HEAD
+git push origin refs/meta/check >/dev/null 2>&1
 git --git-dir="$REPOS/example.git" show main:README.md > "$TMP_DIR/remote-readme-after-push"
 grep -q 'fast-forward push' "$TMP_DIR/remote-readme-after-push"
+git --git-dir="$REPOS/example.git" show-ref --verify refs/heads/feature >/dev/null
+git --git-dir="$REPOS/example.git" show-ref --verify refs/tags/v1 >/dev/null
+git --git-dir="$REPOS/example.git" show-ref --verify refs/notes/review >/dev/null
+git --git-dir="$REPOS/example.git" show-ref --verify refs/meta/check >/dev/null
 
 cd "$CLONE_NATIVE"
 git config user.name 'newos gitd smoke'
@@ -106,6 +182,28 @@ git --git-dir="$REPOS/example.git" show main:README.md > "$TMP_DIR/remote-readme
 grep -q 'fast-forward push' "$TMP_DIR/remote-readme-after-reject"
 if grep -q 'forced stale push' "$TMP_DIR/remote-readme-after-reject"; then
     echo 'non-fast-forward push changed the remote ref' >&2
+    exit 1
+fi
+
+cd "$PUSH_NATIVE"
+git push origin :feature >/dev/null 2>&1
+git push origin :v1 >/dev/null 2>&1
+git push origin :refs/notes/review >/dev/null 2>&1
+git push origin :refs/meta/check >/dev/null 2>&1
+if git --git-dir="$REPOS/example.git" show-ref --verify refs/heads/feature >/dev/null 2>&1; then
+    echo 'branch deletion did not remove remote ref' >&2
+    exit 1
+fi
+if git --git-dir="$REPOS/example.git" show-ref --verify refs/tags/v1 >/dev/null 2>&1; then
+    echo 'tag deletion did not remove remote ref' >&2
+    exit 1
+fi
+if git --git-dir="$REPOS/example.git" show-ref --verify refs/notes/review >/dev/null 2>&1; then
+    echo 'notes deletion did not remove remote ref' >&2
+    exit 1
+fi
+if git --git-dir="$REPOS/example.git" show-ref --verify refs/meta/check >/dev/null 2>&1; then
+    echo 'custom ref deletion did not remove remote ref' >&2
     exit 1
 fi
 

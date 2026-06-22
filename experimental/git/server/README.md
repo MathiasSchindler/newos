@@ -43,13 +43,13 @@ git clone http://HOST:8090/example.git clone-out
 - Smart HTTP fetch: `POST /repo.git/git-upload-pack`.
 - Smart HTTP push: `POST /repo.git/git-receive-pack`.
 - Local bare repositories only.
-- Full-history, undeltified pack generation using the existing newos Git object
-  and pack helpers.
+- Full-history pack generation using the existing newos Git object helpers,
+  including simple `REF_DELTA` entries for later blobs in the upload pack.
 - Upload-pack `have` lines exclude commits the client already reports as
   reachable.
-- Receive-pack accepts branch creation and strict fast-forward-only
-  `refs/heads/*` updates, and rejects stale, forced, deletion, and non-branch
-  ref updates.
+- Receive-pack accepts branch creation, deletion, strict fast-forward-only
+  `refs/heads/*` updates, and safe tags, notes, and custom `refs/*`
+  namespaces. Branch refs remain commit-only and fast-forward-only.
 - Listener and per-client request reads use the project runtime I/O loop.
 - CORS headers on all responses:
   `Access-Control-Allow-Origin: *`, `GET, POST, OPTIONS`, and
@@ -61,10 +61,11 @@ git clone http://HOST:8090/example.git clone-out
 - No authentication. Treat the selected repository root as publicly readable to
   any client that can reach the bound address, and writable by any client that
   can form an accepted fast-forward receive-pack request.
-- No protocol v2, shallow clone, filters, or multi-round negotiation.
-- The server accepts the first `want` and returns the reachable object closure.
-- Receive-pack does not support ref deletion, tag updates, notes, or non-branch
-  namespaces.
+- Protocol v2 discovery falls back to the v1 smart-HTTP advertisement. Protocol
+  v2 upload-pack POST bodies, shallow requests, and filter requests are rejected
+  with `501`; multi-round negotiation requests are rejected with `501` as well.
+- The server accepts the first `want` and returns the reachable object closure,
+  minus commits reachable from client `have` lines.
 - Pack generation and receive-pack application still run synchronously after a
   complete request body has arrived.
 - Bare repositories are expected. Serving working-tree checkouts is not a goal
