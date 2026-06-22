@@ -25,8 +25,24 @@ mkdir -p src
 printf 'int main(void) { return 0; }\n' > src/main.c
 git add README.md src/main.c
 git commit -q -m initial
+printf 'int main(void) { return 1; }\n' > src/main.c
+git add src/main.c
+git commit -q -m update-main
 git branch -M main
 git clone --bare . "$REPOS/example.git" >/dev/null 2>&1
+
+mkdir -p "$TMP_DIR/filter-work"
+cd "$TMP_DIR/filter-work"
+git init -q
+git config user.name 'newos gitd smoke'
+git config user.email gitd@example.invalid
+for i in $(seq 1 80); do
+    printf 'filter payload %03d\n' "$i" > "blob-$i.txt"
+done
+git add .
+git commit -q -m 'many blobs'
+git branch -M main
+git clone --bare . "$REPOS/filter.git" >/dev/null 2>&1
 
 cd "$ROOT_DIR"
 "$GITD" -q -r "$REPOS" -p "$PORT" 2>"$TMP_DIR/gitd.log" &
@@ -74,15 +90,40 @@ v2_status=$(curl -sS -o "$TMP_DIR/v2.body" -w '%{http_code}' \
     -H 'Git-Protocol: version=2' \
     "http://127.0.0.1:$PORT/example.git/info/refs?service=git-upload-pack")
 test "$v2_status" = 200
-grep -aq '# service=git-upload-pack' "$TMP_DIR/v2.body"
+grep -aq 'version 2' "$TMP_DIR/v2.body"
+grep -aq 'fetch=shallow filter wait-for-done' "$TMP_DIR/v2.body"
 
-v2_post_status=$(curl -sS -o "$TMP_DIR/v2-post.body" -w '%{http_code}' \
+append_pkt() {
+    payload=$1
+    length=$((4 + ${#payload}))
+    printf '%04x%s' "$length" "$payload"
+}
+
+{
+    append_pkt 'command=ls-refs
+'
+    append_pkt 'agent=gitd-smoke
+'
+    append_pkt 'object-format=sha1
+'
+    printf '0001'
+    append_pkt 'peel
+'
+    append_pkt 'symrefs
+'
+    append_pkt 'ref-prefix refs/heads/
+'
+    append_pkt 'ref-prefix HEAD
+'
+    printf '0000'
+} > "$TMP_DIR/v2-lsrefs.request"
+v2_lsrefs_status=$(curl -sS -o "$TMP_DIR/v2-lsrefs.body" -w '%{http_code}' \
     -H 'Git-Protocol: version=2' \
     -H 'Content-Type: application/x-git-upload-pack-request' \
-    --data-binary '' \
+    --data-binary "@$TMP_DIR/v2-lsrefs.request" \
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
-test "$v2_post_status" = 501
-grep -q 'protocol v2 is not supported' "$TMP_DIR/v2-post.body"
+test "$v2_lsrefs_status" = 200
+grep -aq 'refs/heads/main' "$TMP_DIR/v2-lsrefs.body"
 
 curl -fsS -D "$TMP_DIR/receive-refs.headers" -o "$TMP_DIR/receive-refs.body" \
     -H 'Origin: http://127.0.0.1:8080' \
@@ -93,37 +134,7 @@ grep -aq '# service=git-receive-pack' "$TMP_DIR/receive-refs.body"
 grep -aq 'report-status' "$TMP_DIR/receive-refs.body"
 grep -aq 'delete-refs' "$TMP_DIR/receive-refs.body"
 
-append_pkt() {
-    payload=$1
-    length=$((4 + ${#payload}))
-    printf '%04x%s' "$length" "$payload"
-}
-
 head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
-{
-    append_pkt "want $head_oid side-band-64k\n"
-    append_pkt 'deepen 1\n'
-    printf '0000'
-} > "$TMP_DIR/shallow-upload.request"
-shallow_status=$(curl -sS -o "$TMP_DIR/shallow-upload.body" -w '%{http_code}' \
-    -H 'Content-Type: application/x-git-upload-pack-request' \
-    --data-binary "@$TMP_DIR/shallow-upload.request" \
-    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
-test "$shallow_status" = 501
-grep -q 'shallow and filter upload-pack requests are not supported' "$TMP_DIR/shallow-upload.body"
-
-{
-    append_pkt "want $head_oid side-band-64k\n"
-    append_pkt 'filter blob:none\n'
-    printf '0000'
-} > "$TMP_DIR/filter-upload.request"
-filter_status=$(curl -sS -o "$TMP_DIR/filter-upload.body" -w '%{http_code}' \
-    -H 'Content-Type: application/x-git-upload-pack-request' \
-    --data-binary "@$TMP_DIR/filter-upload.request" \
-    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
-test "$filter_status" = 501
-grep -q 'shallow and filter upload-pack requests are not supported' "$TMP_DIR/filter-upload.body"
-
 {
     append_pkt "want $head_oid side-band-64k\n"
     printf '0000'
@@ -132,8 +143,8 @@ multiround_status=$(curl -sS -o "$TMP_DIR/multiround-upload.body" -w '%{http_cod
     -H 'Content-Type: application/x-git-upload-pack-request' \
     --data-binary "@$TMP_DIR/multiround-upload.request" \
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
-test "$multiround_status" = 501
-grep -q 'multi-round upload-pack negotiation is not supported' "$TMP_DIR/multiround-upload.body"
+test "$multiround_status" = 200
+grep -aq 'NAK' "$TMP_DIR/multiround-upload.body"
 
 git -c transfer.unpackLimit=1 clone "http://127.0.0.1:$PORT/example.git" "$CLONE_NATIVE" >/dev/null 2>&1
 test "$(cat "$CLONE_NATIVE/README.md")" = 'hello from gitd'
@@ -141,6 +152,16 @@ native_pack_idx=$(find "$CLONE_NATIVE/.git/objects/pack" -name '*.idx' -print -q
 test -n "$native_pack_idx"
 git verify-pack -v "$native_pack_idx" > "$TMP_DIR/native-verify-pack.out"
 grep -q '^chain length = 1:' "$TMP_DIR/native-verify-pack.out"
+
+git -c protocol.version=2 clone --depth=1 "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/clone-shallow-v2" >/dev/null 2>&1
+test -s "$TMP_DIR/clone-shallow-v2/.git/shallow"
+test "$(cat "$TMP_DIR/clone-shallow-v2/README.md")" = 'hello from gitd'
+
+git -c protocol.version=2 clone --filter=blob:none "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/clone-filter-v2" >/dev/null 2>&1
+test "$(cat "$TMP_DIR/clone-filter-v2/README.md")" = 'hello from gitd'
+
+git -c protocol.version=2 clone --filter=blob:none "http://127.0.0.1:$PORT/filter.git" "$TMP_DIR/clone-filter-gzip-v2" >/dev/null 2>&1
+test "$(cat "$TMP_DIR/clone-filter-gzip-v2/blob-80.txt")" = 'filter payload 080'
 
 git clone "http://127.0.0.1:$PORT/example.git" "$PUSH_NATIVE" >/dev/null 2>&1
 cd "$PUSH_NATIVE"
