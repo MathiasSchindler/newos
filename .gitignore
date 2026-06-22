@@ -4,6 +4,11 @@ plans/
 tests/tmp/
 temporary-please-ignore-for-now/
 experimental/*
+!experimental/git/
+experimental/git/*
+!experimental/git/server/
+experimental/git/server/build/
+experimental/git/server/.DS_Store
 !experimental/multicall/
 experimental/multicall/*
 !experimental/multicall/build.py
