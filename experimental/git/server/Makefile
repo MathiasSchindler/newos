@@ -56,6 +56,8 @@ endif
 
 FREESTANDING_C_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_C_SOURCES)
 FREESTANDING_ASM_SOURCES := $(TARGET_PLATFORM_ASM_SOURCES) $(TARGET_CRT)
+GITD_PRIVATE_SOURCES := $(wildcard gitd/*.c)
+GITD_PRIVATE_HEADERS := $(wildcard gitd/*.h)
 source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(ROOT)/%,%,$(1))))
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 MACOS_CRT_OBJECT := $(call source_object,$(TARGET_CRT))
@@ -91,7 +93,7 @@ $(BUILD_DIR)/gitd: $(OBJ_DIR)/gitd.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $< $(FREESTANDING_OBJECTS) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 endif
 
-$(OBJ_DIR)/%.o: %.c Makefile $(ROOT)/src/tools/git.c $(ROOT)/src/tools/git/*.c | $(OBJ_DIR)
+$(OBJ_DIR)/%.o: %.c Makefile $(ROOT)/src/tools/git.c $(ROOT)/src/tools/git/*.c $(GITD_PRIVATE_SOURCES) $(GITD_PRIVATE_HEADERS) | $(OBJ_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: $(ROOT)/%.c | $(OBJ_DIR)

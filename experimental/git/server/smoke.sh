@@ -335,6 +335,71 @@ kill "$POLICY_PID" >/dev/null 2>&1 || true
 wait "$POLICY_PID" 2>/dev/null || true
 POLICY_PID=
 
+"$GITD" -q --branches-only -r "$REPOS" -p "$POLICY_PORT" 2>"$TMP_DIR/gitd-branches-only.log" &
+POLICY_PID=$!
+policy_ready=0
+attempt=0
+while [ "$attempt" -lt 500 ]; do
+    if curl -fsS --connect-timeout 1 -o /dev/null "http://127.0.0.1:$POLICY_PORT/health" 2>/dev/null; then
+        policy_ready=1
+        break
+    fi
+    if ! kill -0 "$POLICY_PID" 2>/dev/null; then
+        cat "$TMP_DIR/gitd-branches-only.log" >&2 || true
+        echo 'branches-only gitd exited before becoming ready' >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+done
+test "$policy_ready" = 1
+git clone "http://127.0.0.1:$POLICY_PORT/example.git" "$TMP_DIR/branches-only-client" >/dev/null 2>&1
+git -C "$TMP_DIR/branches-only-client" tag branches-only-tag
+if git -C "$TMP_DIR/branches-only-client" push origin branches-only-tag >"$TMP_DIR/branches-only-tag.out" 2>"$TMP_DIR/branches-only-tag.err"; then
+    echo 'branches-only tag push unexpectedly succeeded' >&2
+    exit 1
+fi
+if git --git-dir="$REPOS/example.git" show-ref --verify refs/tags/branches-only-tag >/dev/null 2>&1; then
+    echo 'branches-only tag push changed the remote ref' >&2
+    exit 1
+fi
+kill "$POLICY_PID" >/dev/null 2>&1 || true
+wait "$POLICY_PID" 2>/dev/null || true
+POLICY_PID=
+
+"$GITD" -q --no-delete-refs -r "$REPOS" -p "$POLICY_PORT" 2>"$TMP_DIR/gitd-no-delete.log" &
+POLICY_PID=$!
+policy_ready=0
+attempt=0
+while [ "$attempt" -lt 500 ]; do
+    if curl -fsS --connect-timeout 1 -o /dev/null "http://127.0.0.1:$POLICY_PORT/health" 2>/dev/null; then
+        policy_ready=1
+        break
+    fi
+    if ! kill -0 "$POLICY_PID" 2>/dev/null; then
+        cat "$TMP_DIR/gitd-no-delete.log" >&2 || true
+        echo 'no-delete gitd exited before becoming ready' >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+done
+test "$policy_ready" = 1
+curl -fsS -o "$TMP_DIR/no-delete-refs.body" \
+    "http://127.0.0.1:$POLICY_PORT/example.git/info/refs?service=git-receive-pack"
+grep -aq 'report-status' "$TMP_DIR/no-delete-refs.body"
+if grep -aq 'delete-refs' "$TMP_DIR/no-delete-refs.body"; then
+    echo 'no-delete gitd advertised delete-refs' >&2
+    exit 1
+fi
+git clone "http://127.0.0.1:$POLICY_PORT/example.git" "$TMP_DIR/no-delete-client" >/dev/null 2>&1
+if git -C "$TMP_DIR/no-delete-client" push origin :refs/tags/annotated-only >"$TMP_DIR/no-delete-push.out" 2>"$TMP_DIR/no-delete-push.err"; then
+    echo 'no-delete tag deletion unexpectedly succeeded' >&2
+    exit 1
+fi
+git --git-dir="$REPOS/example.git" show-ref --verify refs/tags/annotated-only >/dev/null
+kill "$POLICY_PID" >/dev/null 2>&1 || true
+wait "$POLICY_PID" 2>/dev/null || true
+POLICY_PID=
+
 {
     append_pkt "want $head_oid side-band-64k\n"
     printf '0000'
