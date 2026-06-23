@@ -1922,6 +1922,7 @@ static int gitd_append_v2_acknowledgments(GitRepo *repo, const GitPack *pack_cac
         }
     }
     if (!acknowledged && git_append_pkt_line(out, "NAK\n") != 0) return -1;
+    if (git_append_pkt_line(out, "ready\n") != 0) return -1;
     return tool_byte_buffer_append_cstr(out, "0001");
 }
 

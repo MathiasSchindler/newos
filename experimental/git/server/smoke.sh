@@ -375,7 +375,16 @@ v2_lazy_fetch_status=$(curl -sS -o "$TMP_DIR/v2-lazy-fetch-with-have.body" -w '%
 test "$v2_lazy_fetch_status" = 200
 grep -aq 'acknowledgments' "$TMP_DIR/v2-lazy-fetch-with-have.body"
 grep -aq "ACK $filter_head_oid" "$TMP_DIR/v2-lazy-fetch-with-have.body"
+grep -aq 'ready' "$TMP_DIR/v2-lazy-fetch-with-have.body"
 grep -aq 'packfile' "$TMP_DIR/v2-lazy-fetch-with-have.body"
+
+git -c protocol.version=2 clone --filter=blob:none --no-checkout "http://127.0.0.1:$PORT/filter.git" "$TMP_DIR/clone-filter-lazy-v2" >/dev/null 2>&1
+if GIT_NO_LAZY_FETCH=1 git -C "$TMP_DIR/clone-filter-lazy-v2" cat-file -e "$filter_blob_oid" >/dev/null 2>&1; then
+    echo 'lazy blob exists before explicit fetch' >&2
+    exit 1
+fi
+git -C "$TMP_DIR/clone-filter-lazy-v2" -c protocol.version=2 fetch origin "$filter_blob_oid" >/dev/null 2>&1
+test "$(GIT_NO_LAZY_FETCH=1 git -C "$TMP_DIR/clone-filter-lazy-v2" cat-file -t "$filter_blob_oid")" = 'blob'
 
 git clone "http://127.0.0.1:$PORT/example.git" "$PUSH_NATIVE" >/dev/null 2>&1
 cd "$PUSH_NATIVE"
@@ -402,6 +411,34 @@ git --git-dir="$REPOS/example.git" show-ref --verify refs/heads/feature >/dev/nu
 git --git-dir="$REPOS/example.git" show-ref --verify refs/tags/v1 >/dev/null
 git --git-dir="$REPOS/example.git" show-ref --verify refs/notes/review >/dev/null
 git --git-dir="$REPOS/example.git" show-ref --verify refs/meta/check >/dev/null
+
+git -C "$CLONE_NATIVE" -c protocol.version=2 fetch origin >/dev/null 2>&1
+test "$(git -C "$CLONE_NATIVE" show origin/main:README.md | tail -n 1)" = 'fast-forward push'
+
+git clone "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/v2-sync-a" >/dev/null 2>&1
+git clone "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/v2-sync-b" >/dev/null 2>&1
+git clone "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/v2-sync-c" >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-a" config user.name 'newos gitd smoke'
+git -C "$TMP_DIR/v2-sync-a" config user.email gitd@example.invalid
+git -C "$TMP_DIR/v2-sync-a" switch -c v2-sync >/dev/null 2>&1
+printf 'v2 sync first\n' > "$TMP_DIR/v2-sync-a/v2-sync.txt"
+git -C "$TMP_DIR/v2-sync-a" add v2-sync.txt
+git -C "$TMP_DIR/v2-sync-a" commit -q -m 'v2 sync first'
+git -C "$TMP_DIR/v2-sync-a" push --set-upstream origin v2-sync >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-b" fetch origin v2-sync >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-b" switch --track -c v2-sync origin/v2-sync >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-c" fetch origin v2-sync >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-c" switch --track -c v2-sync origin/v2-sync >/dev/null 2>&1
+printf 'v2 sync second\n' >> "$TMP_DIR/v2-sync-a/v2-sync.txt"
+git -C "$TMP_DIR/v2-sync-a" add v2-sync.txt
+git -C "$TMP_DIR/v2-sync-a" commit -q -m 'v2 sync second'
+git -C "$TMP_DIR/v2-sync-a" push origin v2-sync >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-b" -c protocol.version=2 fetch origin >/dev/null 2>&1
+git -C "$TMP_DIR/v2-sync-b" merge --ff-only origin/v2-sync >/dev/null 2>&1
+grep -q 'v2 sync second' "$TMP_DIR/v2-sync-b/v2-sync.txt"
+git -C "$TMP_DIR/v2-sync-c" -c protocol.version=2 pull --ff-only >/dev/null 2>&1
+grep -q 'v2 sync second' "$TMP_DIR/v2-sync-c/v2-sync.txt"
+git -C "$TMP_DIR/v2-sync-a" push origin :refs/heads/v2-sync >/dev/null 2>&1
 
 cd "$CLONE_NATIVE"
 git config user.name 'newos gitd smoke'
