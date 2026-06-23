@@ -129,6 +129,9 @@ curl -fsS -D "$TMP_DIR/refs.headers" -o "$TMP_DIR/refs.body" \
     "http://127.0.0.1:$PORT/example.git/info/refs?service=git-upload-pack"
 grep -qi '^Content-Type: application/x-git-upload-pack-advertisement' "$TMP_DIR/refs.headers"
 grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/refs.headers"
+grep -qi '^Cache-Control: no-cache' "$TMP_DIR/refs.headers"
+grep -qi '^Pragma: no-cache' "$TMP_DIR/refs.headers"
+grep -qi '^Expires: Fri, 01 Jan 1980 00:00:00 GMT' "$TMP_DIR/refs.headers"
 grep -aq '# service=git-upload-pack' "$TMP_DIR/refs.body"
 grep -aqF 'refs/tags/annotated-only^{}' "$TMP_DIR/refs.body"
 
@@ -301,6 +304,7 @@ v2_object_info_status=$(curl -sS -o "$TMP_DIR/v2-object-info.body" -w '%{http_co
     --data-binary "@$TMP_DIR/v2-object-info.request" \
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
 test "$v2_object_info_status" = 200
+grep -aq 'size' "$TMP_DIR/v2-object-info.body"
 grep -aq "$head_oid $head_size" "$TMP_DIR/v2-object-info.body"
 
 {
@@ -327,6 +331,7 @@ grep -qi '^Content-Type: application/x-git-receive-pack-advertisement' "$TMP_DIR
 grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/receive-refs.headers"
 grep -aq '# service=git-receive-pack' "$TMP_DIR/receive-refs.body"
 grep -aq 'report-status' "$TMP_DIR/receive-refs.body"
+grep -aq 'atomic' "$TMP_DIR/receive-refs.body"
 grep -aq 'delete-refs' "$TMP_DIR/receive-refs.body"
 grep -aq 'no-thin' "$TMP_DIR/receive-refs.body"
 
@@ -574,6 +579,46 @@ grep -q 'v2 sync second' "$TMP_DIR/v2-sync-b/v2-sync.txt"
 git -C "$TMP_DIR/v2-sync-c" -c protocol.version=2 pull --ff-only >/dev/null 2>&1
 grep -q 'v2 sync second' "$TMP_DIR/v2-sync-c/v2-sync.txt"
 git -C "$TMP_DIR/v2-sync-a" push origin :refs/heads/v2-sync >/dev/null 2>&1
+
+git clone "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/atomic-a" >/dev/null 2>&1
+git -C "$TMP_DIR/atomic-a" config user.name 'newos gitd smoke'
+git -C "$TMP_DIR/atomic-a" config user.email gitd@example.invalid
+git -C "$TMP_DIR/atomic-a" switch -c atomic-good >/dev/null 2>&1
+printf 'atomic good\n' > "$TMP_DIR/atomic-a/atomic-good.txt"
+git -C "$TMP_DIR/atomic-a" add atomic-good.txt
+git -C "$TMP_DIR/atomic-a" commit -q -m 'atomic good'
+git -C "$TMP_DIR/atomic-a" switch -c atomic-bad main >/dev/null 2>&1
+printf 'atomic bad\n' > "$TMP_DIR/atomic-a/atomic-bad.txt"
+git -C "$TMP_DIR/atomic-a" add atomic-bad.txt
+git -C "$TMP_DIR/atomic-a" commit -q -m 'atomic bad'
+git -C "$TMP_DIR/atomic-a" push --atomic origin atomic-good atomic-bad >/dev/null 2>&1
+git --git-dir="$REPOS/example.git" show-ref --verify refs/heads/atomic-good >/dev/null
+git --git-dir="$REPOS/example.git" show-ref --verify refs/heads/atomic-bad >/dev/null
+git clone "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/atomic-b" >/dev/null 2>&1
+git -C "$TMP_DIR/atomic-b" config user.name 'newos gitd smoke'
+git -C "$TMP_DIR/atomic-b" config user.email gitd@example.invalid
+git -C "$TMP_DIR/atomic-b" switch atomic-good >/dev/null 2>&1
+printf 'atomic second\n' >> "$TMP_DIR/atomic-b/atomic-good.txt"
+git -C "$TMP_DIR/atomic-b" add atomic-good.txt
+git -C "$TMP_DIR/atomic-b" commit -q -m 'atomic second'
+git -C "$TMP_DIR/atomic-a" switch atomic-good >/dev/null 2>&1
+printf 'atomic stale\n' >> "$TMP_DIR/atomic-a/atomic-good.txt"
+git -C "$TMP_DIR/atomic-a" add atomic-good.txt
+git -C "$TMP_DIR/atomic-a" commit -q -m 'atomic stale'
+git -C "$TMP_DIR/atomic-b" push origin atomic-good >/dev/null 2>&1
+git -C "$TMP_DIR/atomic-a" switch -c atomic-new main >/dev/null 2>&1
+printf 'atomic new\n' > "$TMP_DIR/atomic-a/atomic-new.txt"
+git -C "$TMP_DIR/atomic-a" add atomic-new.txt
+git -C "$TMP_DIR/atomic-a" commit -q -m 'atomic new'
+if git -C "$TMP_DIR/atomic-a" push --atomic --force origin atomic-good atomic-new >"$TMP_DIR/atomic-reject.out" 2>"$TMP_DIR/atomic-reject.err"; then
+    echo 'atomic push with stale ref unexpectedly succeeded' >&2
+    exit 1
+fi
+if git --git-dir="$REPOS/example.git" show-ref --verify refs/heads/atomic-new >/dev/null 2>&1; then
+    echo 'atomic rejected push created another ref' >&2
+    exit 1
+fi
+git -C "$TMP_DIR/atomic-b" push origin :refs/heads/atomic-good :refs/heads/atomic-bad >/dev/null 2>&1
 
 cd "$CLONE_NATIVE"
 git config user.name 'newos gitd smoke'

@@ -43,7 +43,7 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - honor upload-pack `have` lines by excluding commits the client already reports as reachable
 - advertise protocol v1 `multi_ack`, `multi_ack_detailed`, `side-band-64k`, `agent=newos-gitd`, and `symref=HEAD:...` when the repository exposes a symbolic HEAD
 - advertise protocol v2 `ls-refs`, `fetch=shallow filter wait-for-done`, `object-info`, `bundle-uri`, `server-option`, and `object-format=sha1`
-- advertise receive-pack `report-status`, `side-band-64k`, `delete-refs`, `no-thin`, and `agent=newos-gitd`
+- advertise receive-pack `report-status`, `side-band-64k`, `atomic`, `delete-refs`, `no-thin`, and `agent=newos-gitd`
 - return upload-pack results with `application/x-git-upload-pack-result`
 - return receive-pack results with `application/x-git-receive-pack-result`
 - support side-band pack responses when requested by the client
@@ -52,6 +52,7 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - enforce configurable limits for request bodies, wants, haves, ref prefixes, receive commands, object counts, and generated/received pack bytes
 - use the project runtime I/O loop for listener and per-client request-read readiness
 - include permissive CORS headers on all HTTP responses: `Access-Control-Allow-Origin: *`, methods `GET, HEAD, POST, OPTIONS`, and headers `content-type, authorization`
+- mark HTTP responses non-cacheable with `Cache-Control`, `Pragma`, and `Expires` headers so smart-HTTP results are not reused by intermediaries
 - log startup, requests, parse failures, receive-pack validation failures, TLS handshake failures, and other warnings/errors to the console unless `-q` is used
 - answer browser preflight requests with `OPTIONS`
 - expose `/health` and `/_status` endpoints that return `ok`
@@ -115,7 +116,7 @@ The server intentionally does not implement Git's legacy dumb HTTP static-object
 
 The HTTP layer is HTTP/1.x because Git smart HTTP is an HTTP/1.x protocol in this scope. HTTPS mode wraps the same HTTP/1.1 responses in TLS 1.3. Older TLS versions, ALPN negotiation, and HTTP/2 are intentionally outside this experiment rather than compatibility goals.
 
-For fetches, the server records all `want` lines, builds the requested reachable object closure, excludes commits reachable from client `have` lines, and streams a single response pack. Annotated tags are peeled in ref advertisements: protocol v1 emits `refs/tags/name^{}` entries and protocol v2 `ls-refs` emits `peeled:<oid>` when the client requests `peel`. Their target object closures are included when the tag is fetched, so a commit reachable only through an annotated tag is still cloneable. Protocol v2 fetch supports depth-limited shallow responses with `shallow-info` and `filter blob:none`; follow-up lazy blob fetches can request multiple blob wants in one round, including gzip-compressed POST bodies from canonical Git. Explicit blob wants are sent even when the client repeats `filter blob:none` on a lazy fetch, while blobs reached transitively through commits and trees remain filtered. When a protocol v2 fetch includes `have` lines, `gitd` sends an `acknowledgments` section with matching `ACK` lines, `NAK` when no common object is known, and `ready` before the delimiter and `packfile` section. Protocol v2 `object-info` answers size requests for available objects, and `bundle-uri` returns an empty bundle list. Protocol v1 negotiation remains stateless across HTTP requests, as expected for smart HTTP; no-`done` rounds report known `have` objects with `ACK ... common` and return `NAK` when no common object is known, so clients can continue with another stateless request. Receive-pack advertises `no-thin`, stores received objects, and applies updates transaction-like at the ref-validation level: every command must pass before any ref is written.
+For fetches, the server records all `want` lines, builds the requested reachable object closure, excludes commits reachable from client `have` lines, and streams a single response pack. Annotated tags are peeled in ref advertisements: protocol v1 emits `refs/tags/name^{}` entries and protocol v2 `ls-refs` emits `peeled:<oid>` when the client requests `peel`. Their target object closures are included when the tag is fetched, so a commit reachable only through an annotated tag is still cloneable. Protocol v2 fetch supports depth-limited shallow responses with `shallow-info` and `filter blob:none`; follow-up lazy blob fetches can request multiple blob wants in one round, including gzip-compressed POST bodies from canonical Git. Explicit blob wants are sent even when the client repeats `filter blob:none` on a lazy fetch, while blobs reached transitively through commits and trees remain filtered. When a protocol v2 fetch includes `have` lines, `gitd` sends an `acknowledgments` section with matching `ACK` lines, `NAK` when no common object is known, and `ready` before the delimiter and `packfile` section. Protocol v2 `object-info` answers size requests for available objects with the requested `size` attribute header followed by per-object size lines, and `bundle-uri` returns an empty bundle list. Protocol v1 negotiation remains stateless across HTTP requests, as expected for smart HTTP; no-`done` rounds report known `have` objects with `ACK ... common` and return `NAK` when no common object is known, so clients can continue with another stateless request. Receive-pack advertises `atomic` and `no-thin`, stores received objects, and applies updates transaction-like at the ref-validation level: every command must pass before any ref is written.
 
 ## LIMITATIONS
 
@@ -126,6 +127,13 @@ For fetches, the server records all `want` lines, builds the requested reachable
 - pack-size optimization remains smaller than full Git pack-objects: later blobs try several candidates from a rolling bounded set of previous blob bases and keep compressed-size-winning deltas, while commits, trees, tags, and unhelpful blob deltas are emitted whole
 - request parsing is I/O-loop driven, but pack generation and receive-pack application still run synchronously once a complete request body has arrived
 - request and pack limits are configurable but still enforced per complete request, not by streaming pack application
+
+## TODO
+
+- Document or refine the ref-update policy distinction: branch refs are always fast-forward-only, while tags, notes, and custom refs may be moved when their namespace is enabled.
+- Define and implement protocol v2 shallow deepen/unshallow behavior for existing shallow clones, including `deepen`, `deepen-relative`, and the right `shallow-info` updates.
+- Continue pack-quality work with `make -C experimental/git/server benchmark-pack-quality`; next candidates are better object ordering, size/fingerprint-bucketed base selection, existing-delta reuse, and selective tree/commit deltas.
+- Treat synchronous pack generation and receive-pack application as the main scalability boundary; future work should decide whether CPU-heavy pack phases belong behind an `RtTaskPool` while the I/O loop keeps socket ownership.
 
 ## EXAMPLES
 

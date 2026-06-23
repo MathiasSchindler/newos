@@ -109,7 +109,7 @@ static int gitd_handle_info_refs(GitdTransport *transport, const GitdOptions *op
         have_head = 1;
     }
     if (receive_pack) {
-        rt_copy_string(caps, sizeof(caps), options->allow_delete_refs ? "report-status side-band-64k no-thin delete-refs agent=newos-gitd" : "report-status side-band-64k no-thin agent=newos-gitd");
+        rt_copy_string(caps, sizeof(caps), options->allow_delete_refs ? "report-status side-band-64k no-thin atomic delete-refs agent=newos-gitd" : "report-status side-band-64k no-thin atomic agent=newos-gitd");
     } else {
         rt_copy_string(caps, sizeof(caps), "multi_ack multi_ack_detailed side-band-64k agent=newos-gitd");
     }
@@ -754,6 +754,7 @@ static int gitd_append_v2_object_info_response(GitRepo *repo, const GitPack *pac
     size_t index;
 
     if (!upload->object_info_size) return tool_byte_buffer_append_cstr(out, "0000");
+    if (git_append_pkt_line(out, "size\n") != 0) return -1;
     for (index = 0U; index < upload->object_info_oids.count; ++index) {
         int type = 0;
         unsigned char *data = 0;

@@ -92,6 +92,9 @@ static int gitd_header_append_common(GitBuffer *header, int status, const char *
         tool_byte_buffer_append_cstr(header, "\r\nAccess-Control-Allow-Methods: GET, HEAD, POST, OPTIONS") != 0 ||
         tool_byte_buffer_append_cstr(header, "\r\nAccess-Control-Allow-Headers: content-type, authorization") != 0 ||
         tool_byte_buffer_append_cstr(header, "\r\nAccess-Control-Max-Age: 600") != 0 ||
+        tool_byte_buffer_append_cstr(header, "\r\nCache-Control: no-cache, max-age=0, must-revalidate") != 0 ||
+        tool_byte_buffer_append_cstr(header, "\r\nPragma: no-cache") != 0 ||
+        tool_byte_buffer_append_cstr(header, "\r\nExpires: Fri, 01 Jan 1980 00:00:00 GMT") != 0 ||
         tool_byte_buffer_append_cstr(header, "\r\nAllow: GET, HEAD, POST, OPTIONS") != 0 ||
         tool_byte_buffer_append_cstr(header, "\r\nX-Content-Type-Options: nosniff") != 0 ||
         tool_byte_buffer_append_cstr(header, "\r\nConnection: close\r\n\r\n") != 0) {
