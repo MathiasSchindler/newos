@@ -42,6 +42,7 @@ Then clone a bare repo below that root with a URL such as:
 
 ```sh
 git clone http://HOST:8090/example.git clone-out
+git clone http://HOST:8090/example clone-out
 git -c http.sslVerify=false -c http.version=HTTP/1.1 \
   clone https://HOST:8443/example.git clone-out
 ```
@@ -49,7 +50,8 @@ git -c http.sslVerify=false -c http.version=HTTP/1.1 \
 ## Current Scope
 
 - Smart HTTP discovery: `GET /repo.git/info/refs?service=git-upload-pack` and
-  `GET /repo.git/info/refs?service=git-receive-pack`.
+  `GET /repo.git/info/refs?service=git-receive-pack`, plus `HEAD` for discovery
+  headers without a body.
 - Smart HTTP fetch: protocol v1 upload-pack plus native protocol v2 `ls-refs`,
   `fetch`, `object-info`, and `bundle-uri` over `POST /repo.git/git-upload-pack`.
 - Smart HTTP push: `POST /repo.git/git-receive-pack`.
@@ -65,16 +67,19 @@ git -c http.sslVerify=false -c http.version=HTTP/1.1 \
   size queries and `bundle-uri` returns an empty bundle list.
 - Receive-pack accepts branch creation, deletion, strict fast-forward-only
   `refs/heads/*` updates, and safe tags, notes, and custom `refs/*`
-  namespaces. Branch refs remain commit-only and fast-forward-only.
+  namespaces. It advertises `no-thin` so canonical Git sends self-contained
+  packs. Branch refs remain commit-only and fast-forward-only.
 - Receive-pack policy flags can disable writes, deletes, or non-branch
   namespaces; loose ref writes use `.lock` files and atomic rename.
 - Request, negotiation, object-count, and pack-byte limits are configurable with
   `--max-*` flags.
+- Startup, request summaries, warnings, parse failures, receive-pack validation
+  failures, and TLS handshake failures are logged to stderr unless `-q` is used.
 - Optional HTTPS listener mode uses the project TLS 1.3 and crypto code with
   X25519, AES-128-GCM-SHA256, and RSA-PSS-SHA256 certificate authentication.
 - Listener and per-client request reads use the project runtime I/O loop.
 - CORS headers on all responses:
-  `Access-Control-Allow-Origin: *`, `GET, POST, OPTIONS`, and
+  `Access-Control-Allow-Origin: *`, `GET, HEAD, POST, OPTIONS`, and
   `content-type, authorization`.
 - `OPTIONS` preflight support for browser callers.
 
@@ -95,6 +100,8 @@ git -c http.sslVerify=false -c http.version=HTTP/1.1 \
   complete request body has arrived.
 - Bare repositories are expected. Serving working-tree checkouts is not a goal
   for this experiment.
+- Git's legacy dumb HTTP static-object interface is intentionally unsupported;
+  `gitd` is a smart-HTTP server.
 
 This is the CORS-friendly Git transport counterpart to the browser WASM
 workbench in `experimental/git/wasm`.

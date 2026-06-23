@@ -17,6 +17,7 @@ GITD="$SERVER_DIR/build/gitd"
 NEWOS_GIT=${NEWOS_GIT:-$ROOT_DIR/build/macos-aarch64/git}
 POLICY_PID=
 TLS_PID=
+LOG_PID=
 
 rm -rf "$TMP_DIR"
 mkdir -p "$WORK" "$REPOS"
@@ -51,7 +52,7 @@ cd "$TMP_DIR/filter-work"
 git init -q
 git config user.name 'newos gitd smoke'
 git config user.email gitd@example.invalid
-for i in $(seq 1 80); do
+for i in $(seq 1 300); do
     printf 'filter payload %03d\n' "$i" > "blob-$i.txt"
 done
 git add .
@@ -62,7 +63,7 @@ git clone --bare . "$REPOS/filter.git" >/dev/null 2>&1
 cd "$ROOT_DIR"
 "$GITD" -q -r "$REPOS" -p "$PORT" 2>"$TMP_DIR/gitd.log" &
 SERVER_PID=$!
-trap 'if [ -n "${TLS_PID:-}" ]; then kill "$TLS_PID" >/dev/null 2>&1 || true; wait "$TLS_PID" 2>/dev/null || true; fi; if [ -n "${POLICY_PID:-}" ]; then kill "$POLICY_PID" >/dev/null 2>&1 || true; wait "$POLICY_PID" 2>/dev/null || true; fi; kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+trap 'if [ -n "${LOG_PID:-}" ]; then kill "$LOG_PID" >/dev/null 2>&1 || true; wait "$LOG_PID" 2>/dev/null || true; fi; if [ -n "${TLS_PID:-}" ]; then kill "$TLS_PID" >/dev/null 2>&1 || true; wait "$TLS_PID" 2>/dev/null || true; fi; if [ -n "${POLICY_PID:-}" ]; then kill "$POLICY_PID" >/dev/null 2>&1 || true; wait "$POLICY_PID" 2>/dev/null || true; fi; kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 ready=0
 attempt=0
@@ -100,6 +101,16 @@ curl -fsS -D "$TMP_DIR/refs.headers" -o "$TMP_DIR/refs.body" \
 grep -qi '^Content-Type: application/x-git-upload-pack-advertisement' "$TMP_DIR/refs.headers"
 grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/refs.headers"
 grep -aq '# service=git-upload-pack' "$TMP_DIR/refs.body"
+
+curl -fsS -I -o "$TMP_DIR/head-refs.headers" \
+    "http://127.0.0.1:$PORT/example.git/info/refs?service=git-upload-pack"
+grep -qi '^HTTP/1.1 200 OK' "$TMP_DIR/head-refs.headers"
+grep -qi '^Allow: .*HEAD' "$TMP_DIR/head-refs.headers"
+
+dumb_info_refs_status=$(curl -sS -o "$TMP_DIR/dumb-info-refs.body" -w '%{http_code}' \
+    "http://127.0.0.1:$PORT/example.git/info/refs")
+test "$dumb_info_refs_status" = 400
+grep -q 'missing git service query' "$TMP_DIR/dumb-info-refs.body"
 
 v2_status=$(curl -sS -o "$TMP_DIR/v2.body" -w '%{http_code}' \
     -H 'Git-Protocol: version=2' \
@@ -155,6 +166,11 @@ fi
 head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
 base_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD^)
 head_size=$(git --git-dir="$REPOS/example.git" cat-file -s "$head_oid")
+filter_head_oid=$(git --git-dir="$REPOS/filter.git" rev-parse HEAD)
+filter_blob_oid=$(git --git-dir="$REPOS/filter.git" rev-parse HEAD:blob-80.txt)
+
+git ls-remote "http://127.0.0.1:$PORT/example" > "$TMP_DIR/suffixless-ls-remote.out"
+grep -q "$head_oid" "$TMP_DIR/suffixless-ls-remote.out"
 
 append_pkt() {
     payload=$1
@@ -187,6 +203,28 @@ v2_lsrefs_status=$(curl -sS -o "$TMP_DIR/v2-lsrefs.body" -w '%{http_code}' \
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
 test "$v2_lsrefs_status" = 200
 grep -aq 'refs/heads/main' "$TMP_DIR/v2-lsrefs.body"
+
+{
+    append_pkt 'command=ls-refs
+'
+    append_pkt 'agent=gitd-smoke
+'
+    append_pkt 'object-format=sha1
+'
+    printf '0001'
+    for i in $(seq 1 65); do
+        append_pkt "ref-prefix refs/heads/missing-$i
+"
+    done
+    printf '0000'
+} > "$TMP_DIR/v2-lsrefs-too-many-prefixes.request"
+v2_too_many_prefixes_status=$(curl -sS -o "$TMP_DIR/v2-lsrefs-too-many-prefixes.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/v2-lsrefs-too-many-prefixes.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$v2_too_many_prefixes_status" = 400
+grep -q 'too many ref-prefixes' "$TMP_DIR/v2-lsrefs-too-many-prefixes.body"
 
 {
     append_pkt 'command=object-info
@@ -235,6 +273,7 @@ grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/receive-refs.headers"
 grep -aq '# service=git-receive-pack' "$TMP_DIR/receive-refs.body"
 grep -aq 'report-status' "$TMP_DIR/receive-refs.body"
 grep -aq 'delete-refs' "$TMP_DIR/receive-refs.body"
+grep -aq 'no-thin' "$TMP_DIR/receive-refs.body"
 
 POLICY_PORT=$((PORT + 1))
 "$GITD" -q --read-only -r "$REPOS" -p "$POLICY_PORT" 2>"$TMP_DIR/gitd-read-only.log" &
@@ -302,6 +341,41 @@ test "$(cat "$TMP_DIR/clone-filter-v2/README.md")" = 'hello from gitd'
 
 git -c protocol.version=2 clone --filter=blob:none "http://127.0.0.1:$PORT/filter.git" "$TMP_DIR/clone-filter-gzip-v2" >/dev/null 2>&1
 test "$(cat "$TMP_DIR/clone-filter-gzip-v2/blob-80.txt")" = 'filter payload 080'
+git -C "$TMP_DIR/clone-filter-gzip-v2" fsck --connectivity-only >/dev/null 2>&1
+
+{
+    append_pkt 'command=fetch
+'
+    append_pkt 'agent=gitd-smoke
+'
+    append_pkt 'object-format=sha1
+'
+    printf '0001'
+    append_pkt 'thin-pack
+'
+    append_pkt 'no-progress
+'
+    append_pkt 'ofs-delta
+'
+    append_pkt 'filter blob:none
+'
+    append_pkt "want $filter_blob_oid
+"
+    append_pkt "have $filter_head_oid
+"
+    append_pkt 'done
+'
+    printf '0000'
+} > "$TMP_DIR/v2-lazy-fetch-with-have.request"
+v2_lazy_fetch_status=$(curl -sS -o "$TMP_DIR/v2-lazy-fetch-with-have.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/v2-lazy-fetch-with-have.request" \
+    "http://127.0.0.1:$PORT/filter.git/git-upload-pack")
+test "$v2_lazy_fetch_status" = 200
+grep -aq 'acknowledgments' "$TMP_DIR/v2-lazy-fetch-with-have.body"
+grep -aq "ACK $filter_head_oid" "$TMP_DIR/v2-lazy-fetch-with-have.body"
+grep -aq 'packfile' "$TMP_DIR/v2-lazy-fetch-with-have.body"
 
 git clone "http://127.0.0.1:$PORT/example.git" "$PUSH_NATIVE" >/dev/null 2>&1
 cd "$PUSH_NATIVE"
@@ -383,5 +457,28 @@ if [ -x "$NEWOS_GIT" ]; then
     "$NEWOS_GIT" -C "$FETCH_NEWOS_FILTER" fetch --filter=blob:none "http://127.0.0.1:$PORT/example.git" main >/dev/null 2>&1
     test "$("$NEWOS_GIT" -C "$FETCH_NEWOS_FILTER" cat-file -t refs/remotes/origin/main)" = 'commit'
 fi
+
+LOG_PORT=$((PORT + 3))
+"$GITD" -r "$REPOS" -p "$LOG_PORT" >"$TMP_DIR/gitd-log.out" 2>"$TMP_DIR/gitd-log.err" &
+LOG_PID=$!
+log_ready=0
+attempt=0
+while [ "$attempt" -lt 500 ]; do
+    if curl -fsS --connect-timeout 1 -o /dev/null "http://127.0.0.1:$LOG_PORT/health" 2>/dev/null; then
+        log_ready=1
+        break
+    fi
+    if ! kill -0 "$LOG_PID" 2>/dev/null; then
+        cat "$TMP_DIR/gitd-log.err" >&2 || true
+        echo 'logging gitd exited before becoming ready' >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+done
+test "$log_ready" = 1
+kill "$LOG_PID" >/dev/null 2>&1 || true
+wait "$LOG_PID" 2>/dev/null || true
+LOG_PID=
+grep -q 'gitd request: GET /health -> 200' "$TMP_DIR/gitd-log.err"
 
 echo 'gitd smoke: ok'
