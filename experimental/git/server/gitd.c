@@ -466,11 +466,27 @@ static int gitd_collect_excluded_haves(GitRepo *repo, const GitPack *pack_cache,
 
 #include "gitd/blob_delta.c"
 
+static int gitd_compress_pack_payload(const unsigned char *payload, size_t payload_size, const char *oid_hex, GitBuffer *compressed_out);
+
 static int gitd_append_compressed_pack_payload(GitBuffer *pack, const unsigned char *payload, size_t payload_size, const char *oid_hex) {
+    GitBuffer compressed;
+    int result;
+
+    rt_memset(&compressed, 0, sizeof(compressed));
+    if (gitd_compress_pack_payload(payload, payload_size, oid_hex, &compressed) != 0) return -1;
+    result = git_buffer_append(pack, compressed.data, compressed.size);
+    if (result != 0) tool_write_error("gitd", "cannot append compressed pack object: ", oid_hex);
+    git_buffer_destroy(&compressed);
+    return result;
+}
+
+static int gitd_compress_pack_payload(const unsigned char *payload, size_t payload_size, const char *oid_hex, GitBuffer *compressed_out) {
     unsigned char *compressed = 0;
     size_t compressed_capacity = compression_zlib_deflate_bound(payload_size);
     size_t compressed_size = 0U;
     int result = -1;
+
+    rt_memset(compressed_out, 0, sizeof(*compressed_out));
 
     compressed = (unsigned char *)rt_malloc(compressed_capacity == 0U ? 1U : compressed_capacity);
     if (compressed == 0) {
@@ -490,14 +506,25 @@ static int gitd_append_compressed_pack_payload(GitBuffer *pack, const unsigned c
             goto done;
         }
     }
-    if (git_buffer_append(pack, compressed, compressed_size) != 0) {
-        tool_write_error("gitd", "cannot append compressed pack object: ", oid_hex);
-        goto done;
-    }
+    compressed_out->data = compressed;
+    compressed_out->size = compressed_size;
+    compressed_out->capacity = compressed_capacity;
+    compressed = 0;
     result = 0;
 done:
     rt_free(compressed);
     return result;
+}
+
+static size_t gitd_pack_object_header_size(size_t size) {
+    size_t count = 1U;
+
+    size >>= 4U;
+    while (size != 0U) {
+        count += 1U;
+        size >>= 7U;
+    }
+    return count;
 }
 
 static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOidList *objects, GitBuffer *pack_out) {
@@ -529,23 +556,43 @@ static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOi
         }
         if (type == GIT_OBJECT_BLOB) {
             GitBuffer delta;
+            GitBuffer compressed_full;
+            GitBuffer compressed_delta;
             GitdBlobBase *base = gitd_choose_blob_delta_base(&blob_bases, data, size);
+            int wrote_blob = 0;
 
             rt_memset(&delta, 0, sizeof(delta));
-            if (base != 0 && gitd_build_blob_delta(base->data, base->size, data, size, &delta) == 0 && delta.size + CRYPTO_SHA1_DIGEST_SIZE + 8U < size) {
-                if (git_pack_append_object_header(&pack, GIT_OBJECT_REF_DELTA, delta.size) != 0 || git_buffer_append(&pack, base->oid, sizeof(base->oid)) != 0 || gitd_append_compressed_pack_payload(&pack, delta.data, delta.size, oid_hex) != 0) {
-                    git_buffer_destroy(&delta);
-                    rt_free(data);
-                    goto done;
-                }
-                git_buffer_destroy(&delta);
-            } else {
-                git_buffer_destroy(&delta);
-                if (git_pack_append_object_header(&pack, type, size) != 0 || gitd_append_compressed_pack_payload(&pack, data, size, oid_hex) != 0) {
-                    rt_free(data);
-                    goto done;
+            rt_memset(&compressed_full, 0, sizeof(compressed_full));
+            rt_memset(&compressed_delta, 0, sizeof(compressed_delta));
+            if (gitd_compress_pack_payload(data, size, oid_hex, &compressed_full) != 0) {
+                rt_free(data);
+                goto done;
+            }
+            if (base != 0 && gitd_build_blob_delta(base->data, base->size, data, size, &delta) == 0 && delta.size + CRYPTO_SHA1_DIGEST_SIZE + 8U < size && gitd_compress_pack_payload(delta.data, delta.size, oid_hex, &compressed_delta) == 0) {
+                size_t delta_pack_size = gitd_pack_object_header_size(delta.size) + CRYPTO_SHA1_DIGEST_SIZE + compressed_delta.size;
+                size_t full_pack_size = gitd_pack_object_header_size(size) + compressed_full.size;
+
+                if (delta_pack_size < full_pack_size) {
+                    if (git_pack_append_object_header(&pack, GIT_OBJECT_REF_DELTA, delta.size) != 0 || git_buffer_append(&pack, base->oid, sizeof(base->oid)) != 0 || git_buffer_append(&pack, compressed_delta.data, compressed_delta.size) != 0) {
+                        git_buffer_destroy(&compressed_delta);
+                        git_buffer_destroy(&compressed_full);
+                        git_buffer_destroy(&delta);
+                        rt_free(data);
+                        goto done;
+                    }
+                    wrote_blob = 1;
                 }
             }
+            if (!wrote_blob && (git_pack_append_object_header(&pack, type, size) != 0 || git_buffer_append(&pack, compressed_full.data, compressed_full.size) != 0)) {
+                git_buffer_destroy(&compressed_delta);
+                git_buffer_destroy(&compressed_full);
+                git_buffer_destroy(&delta);
+                rt_free(data);
+                goto done;
+            }
+            git_buffer_destroy(&compressed_delta);
+            git_buffer_destroy(&compressed_full);
+            git_buffer_destroy(&delta);
             if (gitd_blob_base_list_take(&blob_bases, objects->oids[i], &data, size) != 0) {
                 rt_free(data);
                 goto done;

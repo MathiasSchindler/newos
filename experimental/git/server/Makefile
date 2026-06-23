@@ -73,7 +73,7 @@ source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(RO
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 MACOS_CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
-.PHONY: all freestanding profile test clean
+.PHONY: all freestanding profile benchmark-pack-quality test clean
 .SECONDARY: $(OBJ_DIR)/gitd.o
 
 ifeq ($(AUTO_PARALLEL),1)
@@ -92,6 +92,9 @@ test: freestanding
 
 profile: clean
 	+$(MAKE) --no-print-directory PROFILE=1 LINKER_REPORTS=1 freestanding
+
+benchmark-pack-quality: freestanding
+	sh ./bench-pack-quality.sh
 
 $(BUILD_DIR) $(OBJ_DIR) $(MAP_DIR):
 	mkdir -p $@

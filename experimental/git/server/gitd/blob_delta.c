@@ -215,6 +215,20 @@ static void gitd_blob_base_list_destroy(GitdBlobBaseList *list) {
     rt_memset(list, 0, sizeof(*list));
 }
 
+static void gitd_blob_base_list_evict_oldest(GitdBlobBaseList *list) {
+    size_t index;
+
+    if (list == 0 || list->count == 0U) return;
+    if (list->total_bytes >= list->items[0].size) list->total_bytes -= list->items[0].size;
+    else list->total_bytes = 0U;
+    rt_free(list->items[0].data);
+    for (index = 1U; index < list->count; ++index) {
+        list->items[index - 1U] = list->items[index];
+    }
+    list->count -= 1U;
+    rt_memset(&list->items[list->count], 0, sizeof(list->items[list->count]));
+}
+
 static size_t gitd_blob_similarity_score(const unsigned char *left, size_t left_size, const unsigned char *right, size_t right_size) {
     size_t prefix = 0U;
     size_t suffix = 0U;
@@ -251,7 +265,11 @@ static GitdBlobBase *gitd_choose_blob_delta_base(GitdBlobBaseList *bases, const 
 static int gitd_blob_base_list_take(GitdBlobBaseList *bases, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], unsigned char **data_io, size_t size) {
     GitdBlobBase *slot;
 
-    if (*data_io == 0 || bases->count >= GITD_MAX_DELTA_BASES || size > GITD_MAX_DELTA_BASE_BYTES || bases->total_bytes > GITD_MAX_DELTA_BASE_BYTES - size) return 0;
+    if (*data_io == 0 || size > GITD_MAX_DELTA_BASE_BYTES) return 0;
+    while (bases->count > 0U && (bases->count >= GITD_MAX_DELTA_BASES || bases->total_bytes > GITD_MAX_DELTA_BASE_BYTES - size)) {
+        gitd_blob_base_list_evict_oldest(bases);
+    }
+    if (bases->count >= GITD_MAX_DELTA_BASES || bases->total_bytes > GITD_MAX_DELTA_BASE_BYTES - size) return 0;
     slot = &bases->items[bases->count++];
     memcpy(slot->oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
     slot->data = *data_io;

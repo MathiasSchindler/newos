@@ -67,6 +67,28 @@ git commit -q -m 'many blobs'
 git branch -M main
 git clone --bare . "$REPOS/filter.git" >/dev/null 2>&1
 
+mkdir -p "$TMP_DIR/delta-work"
+cd "$TMP_DIR/delta-work"
+git init -q
+git config user.name 'newos gitd smoke'
+git config user.email gitd@example.invalid
+for pair in $(seq 1 80); do
+    for variant in a b; do
+        file=$(printf 'pair%03d-%s.txt' "$pair" "$variant")
+        for line in $(seq 1 160); do
+            if [ "$variant" = b ] && [ "$line" = 80 ]; then
+                printf 'pair %03d changed line %03d\n' "$pair" "$line"
+            else
+                printf 'pair %03d stable line %03d common payload common payload\n' "$pair" "$line"
+            fi
+        done > "$file"
+    done
+done
+git add .
+git commit -q -m 'paired delta blobs'
+git branch -M main
+git clone --bare . "$REPOS/delta.git" >/dev/null 2>&1
+
 cd "$ROOT_DIR"
 "$GITD" -q -r "$REPOS" -p "$PORT" 2>"$TMP_DIR/gitd.log" &
 SERVER_PID=$!
@@ -486,6 +508,18 @@ if GIT_NO_LAZY_FETCH=1 git -C "$TMP_DIR/clone-filter-lazy-v2" cat-file -e "$filt
 fi
 git -C "$TMP_DIR/clone-filter-lazy-v2" -c protocol.version=2 fetch origin "$filter_blob_oid" >/dev/null 2>&1
 test "$(GIT_NO_LAZY_FETCH=1 git -C "$TMP_DIR/clone-filter-lazy-v2" cat-file -t "$filter_blob_oid")" = 'blob'
+
+git -c transfer.unpackLimit=1 clone "http://127.0.0.1:$PORT/delta.git" "$TMP_DIR/clone-delta-quality" >/dev/null 2>&1
+delta_pack_idx=$(find "$TMP_DIR/clone-delta-quality/.git/objects/pack" -name '*.idx' -print -quit)
+test -n "$delta_pack_idx"
+delta_pack_file=${delta_pack_idx%.idx}.pack
+delta_pack_bytes=$(wc -c < "$delta_pack_file")
+if [ "$delta_pack_bytes" -ge 65000 ]; then
+    echo "delta pack too large: $delta_pack_bytes" >&2
+    exit 1
+fi
+git verify-pack -v "$delta_pack_idx" > "$TMP_DIR/delta-verify-pack.out"
+grep -q '^chain length = ' "$TMP_DIR/delta-verify-pack.out"
 
 git clone "http://127.0.0.1:$PORT/example.git" "$PUSH_NATIVE" >/dev/null 2>&1
 cd "$PUSH_NATIVE"
