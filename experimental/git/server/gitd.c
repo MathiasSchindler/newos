@@ -555,44 +555,60 @@ static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOi
             goto done;
         }
         if (type == GIT_OBJECT_BLOB) {
-            GitBuffer delta;
             GitBuffer compressed_full;
-            GitBuffer compressed_delta;
-            GitdBlobBase *base = gitd_choose_blob_delta_base(&blob_bases, data, size);
-            int wrote_blob = 0;
+            GitBuffer best_delta;
+            GitdBlobBase *candidates[GITD_DELTA_CANDIDATES];
+            GitdBlobBase *best_base = 0;
+            size_t candidate_count;
+            size_t candidate_index;
+            size_t best_delta_size = 0U;
+            size_t best_pack_size;
 
-            rt_memset(&delta, 0, sizeof(delta));
             rt_memset(&compressed_full, 0, sizeof(compressed_full));
-            rt_memset(&compressed_delta, 0, sizeof(compressed_delta));
+            rt_memset(&best_delta, 0, sizeof(best_delta));
             if (gitd_compress_pack_payload(data, size, oid_hex, &compressed_full) != 0) {
                 rt_free(data);
                 goto done;
             }
-            if (base != 0 && gitd_build_blob_delta(base->data, base->size, data, size, &delta) == 0 && delta.size + CRYPTO_SHA1_DIGEST_SIZE + 8U < size && gitd_compress_pack_payload(delta.data, delta.size, oid_hex, &compressed_delta) == 0) {
-                size_t delta_pack_size = gitd_pack_object_header_size(delta.size) + CRYPTO_SHA1_DIGEST_SIZE + compressed_delta.size;
-                size_t full_pack_size = gitd_pack_object_header_size(size) + compressed_full.size;
+            best_pack_size = gitd_pack_object_header_size(size) + compressed_full.size;
+            candidate_count = gitd_collect_blob_delta_candidates(&blob_bases, data, size, candidates, GITD_DELTA_CANDIDATES);
+            for (candidate_index = 0U; candidate_index < candidate_count; ++candidate_index) {
+                GitBuffer delta;
+                GitBuffer compressed_delta;
+                GitdBlobBase *candidate = candidates[candidate_index];
 
-                if (delta_pack_size < full_pack_size) {
-                    if (git_pack_append_object_header(&pack, GIT_OBJECT_REF_DELTA, delta.size) != 0 || git_buffer_append(&pack, base->oid, sizeof(base->oid)) != 0 || git_buffer_append(&pack, compressed_delta.data, compressed_delta.size) != 0) {
-                        git_buffer_destroy(&compressed_delta);
-                        git_buffer_destroy(&compressed_full);
-                        git_buffer_destroy(&delta);
-                        rt_free(data);
-                        goto done;
+                rt_memset(&delta, 0, sizeof(delta));
+                rt_memset(&compressed_delta, 0, sizeof(compressed_delta));
+                if (candidate != 0 && gitd_build_blob_delta(candidate->data, candidate->size, data, size, &delta) == 0 && delta.size + CRYPTO_SHA1_DIGEST_SIZE + 8U < size && gitd_compress_pack_payload(delta.data, delta.size, oid_hex, &compressed_delta) == 0) {
+                    size_t delta_pack_size = gitd_pack_object_header_size(delta.size) + CRYPTO_SHA1_DIGEST_SIZE + compressed_delta.size;
+
+                    if (delta_pack_size < best_pack_size) {
+                        git_buffer_destroy(&best_delta);
+                        best_delta = compressed_delta;
+                        rt_memset(&compressed_delta, 0, sizeof(compressed_delta));
+                        best_delta_size = delta.size;
+                        best_pack_size = delta_pack_size;
+                        best_base = candidate;
                     }
-                    wrote_blob = 1;
                 }
-            }
-            if (!wrote_blob && (git_pack_append_object_header(&pack, type, size) != 0 || git_buffer_append(&pack, compressed_full.data, compressed_full.size) != 0)) {
                 git_buffer_destroy(&compressed_delta);
-                git_buffer_destroy(&compressed_full);
                 git_buffer_destroy(&delta);
+            }
+            if (best_base != 0) {
+                if (git_pack_append_object_header(&pack, GIT_OBJECT_REF_DELTA, best_delta_size) != 0 || git_buffer_append(&pack, best_base->oid, sizeof(best_base->oid)) != 0 || git_buffer_append(&pack, best_delta.data, best_delta.size) != 0) {
+                    git_buffer_destroy(&best_delta);
+                    git_buffer_destroy(&compressed_full);
+                    rt_free(data);
+                    goto done;
+                }
+            } else if (git_pack_append_object_header(&pack, type, size) != 0 || git_buffer_append(&pack, compressed_full.data, compressed_full.size) != 0) {
+                git_buffer_destroy(&best_delta);
+                git_buffer_destroy(&compressed_full);
                 rt_free(data);
                 goto done;
             }
-            git_buffer_destroy(&compressed_delta);
+            git_buffer_destroy(&best_delta);
             git_buffer_destroy(&compressed_full);
-            git_buffer_destroy(&delta);
             if (gitd_blob_base_list_take(&blob_bases, objects->oids[i], &data, size) != 0) {
                 rt_free(data);
                 goto done;

@@ -247,19 +247,39 @@ static size_t gitd_blob_similarity_score(const unsigned char *left, size_t left_
     return prefix + suffix + sampled;
 }
 
-static GitdBlobBase *gitd_choose_blob_delta_base(GitdBlobBaseList *bases, const unsigned char *data, size_t size) {
-    GitdBlobBase *best = 0;
-    size_t best_score = 0U;
+static size_t gitd_collect_blob_delta_candidates(GitdBlobBaseList *bases, const unsigned char *data, size_t size, GitdBlobBase **candidates, size_t candidate_capacity) {
+    size_t scores[GITD_DELTA_CANDIDATES];
     size_t index;
+    size_t count = 0U;
+
+    if (candidate_capacity > GITD_DELTA_CANDIDATES) candidate_capacity = GITD_DELTA_CANDIDATES;
+    for (index = 0U; index < candidate_capacity; ++index) {
+        candidates[index] = 0;
+        scores[index] = 0U;
+    }
 
     for (index = 0U; index < bases->count; ++index) {
         size_t score = gitd_blob_similarity_score(bases->items[index].data, bases->items[index].size, data, size);
-        if (score > best_score) {
-            best_score = score;
-            best = &bases->items[index];
+        size_t slot;
+
+        if (score < 8U || candidate_capacity == 0U) continue;
+        for (slot = 0U; slot < count; ++slot) {
+            if (score > scores[slot]) break;
         }
+        if (slot >= candidate_capacity) continue;
+        if (count < candidate_capacity) count += 1U;
+        {
+            size_t move;
+
+            for (move = count - 1U; move > slot; --move) {
+                candidates[move] = candidates[move - 1U];
+                scores[move] = scores[move - 1U];
+            }
+        }
+        candidates[slot] = &bases->items[index];
+        scores[slot] = score;
     }
-    return best_score >= 8U ? best : 0;
+    return count;
 }
 
 static int gitd_blob_base_list_take(GitdBlobBaseList *bases, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], unsigned char **data_io, size_t size) {

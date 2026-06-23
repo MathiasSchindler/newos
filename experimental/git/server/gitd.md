@@ -38,7 +38,7 @@ By default `gitd` binds to `0.0.0.0` and listens on port `8090`. This makes repo
 - optionally run read-only, branches-only, or without delete-ref advertisement using receive-pack policy flags
 - reject stale, forced branch updates, unsafe ref names, and object IDs that are not present in the received pack or repository
 - update loose refs through `.lock` files and atomic rename; packed-ref deletions rewrite `packed-refs` through a lockfile
-- generate upload packs from reachable objects using the in-tree Git object helpers, including `REF_DELTA` entries for later blobs that copy bounded matching spans from similar rolling blob bases and insert changed bytes
+- generate upload packs from reachable objects using the in-tree Git object helpers, including `REF_DELTA` entries chosen from similar rolling blob bases when the compressed delta representation is smaller than the compressed full blob
 - peel annotated tags in upload-pack ref advertisements and include annotated-tag target closures in generated packs
 - honor upload-pack `have` lines by excluding commits the client already reports as reachable
 - advertise protocol v1 `multi_ack`, `multi_ack_detailed`, `side-band-64k`, `agent=newos-gitd`, and `symref=HEAD:...` when the repository exposes a symbolic HEAD
@@ -123,7 +123,7 @@ For fetches, the server records all `want` lines, builds the requested reachable
 - no client-certificate authentication, one certificate chain entry, and RSA PKCS#1 private keys only in the first pass of HTTPS support
 - local bare repositories only
 - protocol v2 support covers the commands advertised by `gitd`; unknown future commands are rejected with an unsupported-command response
-- pack-size optimization remains smaller than full Git pack-objects: later blobs choose from a rolling bounded set of previous blob bases and use sampled block matching, while commits, trees, tags, and unhelpful blob deltas are emitted whole
+- pack-size optimization remains smaller than full Git pack-objects: later blobs try several candidates from a rolling bounded set of previous blob bases and keep compressed-size-winning deltas, while commits, trees, tags, and unhelpful blob deltas are emitted whole
 - request parsing is I/O-loop driven, but pack generation and receive-pack application still run synchronously once a complete request body has arrived
 - request and pack limits are configurable but still enforced per complete request, not by streaming pack application
 
