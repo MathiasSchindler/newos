@@ -983,6 +983,71 @@ static int gitd_append_ref_advertisement(GitBuffer *out, const unsigned char oid
     return result;
 }
 
+static int gitd_append_peeled_ref_advertisement(GitBuffer *out, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *name) {
+    char peeled_name[GIT_REF_CAPACITY + 4U];
+    size_t name_length = rt_strlen(name);
+
+    if (name_length + 3U >= sizeof(peeled_name)) return -1;
+    memcpy(peeled_name, name, name_length);
+    memcpy(peeled_name + name_length, "^{}", 4U);
+    return gitd_append_ref_advertisement(out, oid, peeled_name, 0);
+}
+
+static int gitd_parse_tag_target(const unsigned char *data, size_t size, unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], int *type_out) {
+    size_t pos = 0U;
+    int have_oid = 0;
+    int have_type = 0;
+
+    while (pos < size) {
+        size_t start = pos;
+        size_t end;
+        while (pos < size && data[pos] != '\n') pos += 1U;
+        end = pos;
+        if (pos < size) pos += 1U;
+        while (end > start && data[end - 1U] == '\r') end -= 1U;
+        if (end == start) break;
+        if (end == start + 7U + GIT_OBJECT_HEX_SIZE && memcmp(data + start, "object ", 7U) == 0) {
+            if (git_parse_oid_hex_n((const char *)data + start + 7U, GIT_OBJECT_HEX_SIZE, oid) != 0) return -1;
+            have_oid = 1;
+        } else if (end > start + 5U && memcmp(data + start, "type ", 5U) == 0) {
+            *type_out = git_object_type_from_name((const char *)data + start + 5U, end - start - 5U);
+            if (*type_out == 0) return -1;
+            have_type = 1;
+        }
+    }
+    return have_oid && have_type ? 0 : -1;
+}
+
+static int gitd_peel_tag(GitRepo *repo, const GitPack *pack_cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    unsigned char current[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned int depth;
+
+    memcpy(current, oid, sizeof(current));
+    for (depth = 0U; depth < 16U; ++depth) {
+        unsigned char target[CRYPTO_SHA1_DIGEST_SIZE];
+        unsigned char *data = 0;
+        size_t size = 0U;
+        int type = 0;
+        int target_type = 0;
+
+        if (git_read_object(repo, current, pack_cache, &type, &data, &size) != 0) return -1;
+        if (type != GIT_OBJECT_TAG) {
+            rt_free(data);
+            if (depth == 0U) return 0;
+            memcpy(peeled_oid, current, CRYPTO_SHA1_DIGEST_SIZE);
+            return 1;
+        }
+        if (gitd_parse_tag_target(data, size, target, &target_type) != 0) {
+            rt_free(data);
+            return -1;
+        }
+        rt_free(data);
+        (void)target_type;
+        memcpy(current, target, sizeof(current));
+    }
+    return -1;
+}
+
 static int gitd_append_v2_upload_pack_advertisement(GitBuffer *out) {
     return git_append_pkt_line(out, "version 2\n") != 0 ||
            git_append_pkt_line(out, "agent=newos-gitd\n") != 0 ||
@@ -1099,7 +1164,12 @@ static int gitd_handle_info_refs(GitdTransport *transport, const GitdOptions *op
     if (have_head) {
         if (gitd_append_ref_advertisement(&body, head_oid, "HEAD", caps) != 0) goto done;
         for (i = 0U; i < refs.count; ++i) {
+            unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE];
+            int peel_result;
+
             if (gitd_append_ref_advertisement(&body, refs.refs[i].oid, refs.refs[i].name, 0) != 0) goto done;
+            peel_result = !receive_pack ? gitd_peel_tag(&repo, 0, refs.refs[i].oid, peeled_oid) : 0;
+            if (peel_result < 0 || (peel_result > 0 && gitd_append_peeled_ref_advertisement(&body, peeled_oid, refs.refs[i].name) != 0)) goto done;
         }
     } else if (receive_pack) {
         if (gitd_append_zero_ref_advertisement(&body, caps) != 0) goto done;
@@ -1327,6 +1397,8 @@ done:
     return result;
 }
 
+static int gitd_collect_object_closure_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids);
+
 static int gitd_collect_commit_objects_filtered(GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
     GitCommitInfo info;
     size_t i;
@@ -1350,26 +1422,56 @@ done:
     return result;
 }
 
+static int gitd_collect_tag_objects_filtered(GitRepo *repo, const unsigned char tag_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+    unsigned char target_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int type = 0;
+    int target_type = 0;
+    int result = -1;
+
+    if (git_oid_list_contains(visited, tag_oid)) return 0;
+    if (git_oid_list_push_unique(visited, tag_oid) != 0 || git_oid_list_push_unique(objects, tag_oid) != 0) return -1;
+    if (git_read_object(repo, tag_oid, pack_cache, &type, &data, &size) != 0 || type != GIT_OBJECT_TAG) goto done;
+    if (gitd_parse_tag_target(data, size, target_oid, &target_type) != 0) goto done;
+    (void)target_type;
+    result = gitd_collect_object_closure_filtered(repo, target_oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+done:
+    rt_free(data);
+    return result;
+}
+
+static int gitd_collect_object_closure_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int type = 0;
+
+    if (git_read_object(repo, oid, pack_cache, &type, &data, &size) != 0) return -1;
+    rt_free(data);
+    if (type == GIT_OBJECT_COMMIT) return gitd_collect_commit_objects_filtered(repo, oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+    if (type == GIT_OBJECT_TREE) return gitd_collect_tree_objects_filtered(repo, oid, pack_cache, objects, include_blobs);
+    if (type == GIT_OBJECT_BLOB) return include_blobs ? git_oid_list_push_unique(objects, oid) : 0;
+    if (type == GIT_OBJECT_TAG) return gitd_collect_tag_objects_filtered(repo, oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+    return -1;
+}
+
+static int gitd_collect_explicit_want_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int type = 0;
+
+    if (git_read_object(repo, oid, pack_cache, &type, &data, &size) != 0) return -1;
+    rt_free(data);
+    if (type == GIT_OBJECT_BLOB) return git_oid_list_push_unique(objects, oid);
+    return gitd_collect_object_closure_filtered(repo, oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+}
+
 static int gitd_collect_wanted_objects(GitRepo *repo, const GitPack *pack_cache, GitdUploadRequest *upload, const GitOidList *excluded, GitOidList *objects, GitOidList *visited) {
     size_t i;
     int include_blobs = !upload->filter_blob_none;
 
     for (i = 0U; i < upload->wants.count; ++i) {
-        int type = 0;
-        unsigned char *data = 0;
-        size_t size = 0U;
-
-        if (git_read_object(repo, upload->wants.oids[i], pack_cache, &type, &data, &size) != 0) return -1;
-        rt_free(data);
-        if (type == GIT_OBJECT_COMMIT) {
-            if (gitd_collect_commit_objects_filtered(repo, upload->wants.oids[i], pack_cache, excluded, upload->deepen, include_blobs, objects, visited, &upload->shallow_oids) != 0) return -1;
-        } else if (type == GIT_OBJECT_TREE) {
-            if (gitd_collect_tree_objects_filtered(repo, upload->wants.oids[i], pack_cache, objects, include_blobs) != 0) return -1;
-        } else if (type == GIT_OBJECT_BLOB || type == GIT_OBJECT_TAG) {
-            if (git_oid_list_push_unique(objects, upload->wants.oids[i]) != 0) return -1;
-        } else {
-            return -1;
-        }
+        if (gitd_collect_explicit_want_filtered(repo, upload->wants.oids[i], pack_cache, excluded, upload->deepen, include_blobs, objects, visited, &upload->shallow_oids) != 0) return -1;
     }
     return 0;
 }
@@ -1807,7 +1909,7 @@ static int gitd_ls_refs_prefix_matches(const GitdUploadRequest *upload, const ch
     return 0;
 }
 
-static int gitd_append_v2_ref_line(GitBuffer *out, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *name, const char *symref_target, int include_symrefs) {
+static int gitd_append_v2_ref_line(GitBuffer *out, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const char *name, const char *symref_target, int include_symrefs, const unsigned char *peeled_oid) {
     char hex[GIT_OBJECT_HEX_SIZE + 1U];
     GitBuffer line;
     int result;
@@ -1820,6 +1922,14 @@ static int gitd_append_v2_ref_line(GitBuffer *out, const unsigned char oid[CRYPT
     }
     if (include_symrefs && symref_target != 0 && symref_target[0] != '\0') {
         if (tool_byte_buffer_append_cstr(&line, " symref-target:") != 0 || tool_byte_buffer_append_cstr(&line, symref_target) != 0) {
+            git_buffer_destroy(&line);
+            return -1;
+        }
+    }
+    if (peeled_oid != 0) {
+        char peeled_hex[GIT_OBJECT_HEX_SIZE + 1U];
+        git_format_oid_hex(peeled_oid, peeled_hex);
+        if (tool_byte_buffer_append_cstr(&line, " peeled:") != 0 || tool_byte_buffer_append_cstr(&line, peeled_hex) != 0) {
             git_buffer_destroy(&line);
             return -1;
         }
@@ -1849,9 +1959,17 @@ static int gitd_append_v2_ls_refs_response(GitRepo *repo, const GitdUploadReques
         have_head = 1;
     }
     if (have_head) {
-        if (gitd_ls_refs_prefix_matches(upload, "HEAD") && gitd_append_v2_ref_line(out, head_oid, "HEAD", repo->head_ref, upload->ls_refs_symrefs) != 0) goto done;
+        if (gitd_ls_refs_prefix_matches(upload, "HEAD") && gitd_append_v2_ref_line(out, head_oid, "HEAD", repo->head_ref, upload->ls_refs_symrefs, 0) != 0) goto done;
         for (i = 0U; i < refs.count; ++i) {
-            if (gitd_ls_refs_prefix_matches(upload, refs.refs[i].name) && gitd_append_v2_ref_line(out, refs.refs[i].oid, refs.refs[i].name, 0, upload->ls_refs_symrefs) != 0) goto done;
+            unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE];
+            const unsigned char *peeled = 0;
+            int peel_result;
+
+            if (!gitd_ls_refs_prefix_matches(upload, refs.refs[i].name)) continue;
+            peel_result = upload->ls_refs_peel ? gitd_peel_tag(repo, 0, refs.refs[i].oid, peeled_oid) : 0;
+            if (peel_result < 0) goto done;
+            if (peel_result > 0) peeled = peeled_oid;
+            if (gitd_append_v2_ref_line(out, refs.refs[i].oid, refs.refs[i].name, 0, upload->ls_refs_symrefs, peeled) != 0) goto done;
         }
     }
     if (tool_byte_buffer_append_cstr(out, "0000") != 0) goto done;

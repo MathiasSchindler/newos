@@ -45,6 +45,13 @@ done > delta.txt
 git add src/main.c delta.txt
 git commit -q -m update-main
 git branch -M main
+git switch --detach >/dev/null 2>&1
+printf 'annotated tag only\n' > tag-only.txt
+git add tag-only.txt
+git commit -q -m 'annotated tag only'
+git tag -a annotated-only -m 'annotated-only tag'
+tag_only_commit=$(git rev-parse HEAD)
+git switch main >/dev/null 2>&1
 git clone --bare . "$REPOS/example.git" >/dev/null 2>&1
 
 mkdir -p "$TMP_DIR/filter-work"
@@ -166,11 +173,14 @@ fi
 head_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD)
 base_oid=$(git --git-dir="$REPOS/example.git" rev-parse HEAD^)
 head_size=$(git --git-dir="$REPOS/example.git" cat-file -s "$head_oid")
+annotated_tag_oid=$(git --git-dir="$REPOS/example.git" rev-parse refs/tags/annotated-only)
 filter_head_oid=$(git --git-dir="$REPOS/filter.git" rev-parse HEAD)
 filter_blob_oid=$(git --git-dir="$REPOS/filter.git" rev-parse HEAD:blob-80.txt)
 
 git ls-remote "http://127.0.0.1:$PORT/example" > "$TMP_DIR/suffixless-ls-remote.out"
 grep -q "$head_oid" "$TMP_DIR/suffixless-ls-remote.out"
+grep -q "$annotated_tag_oid" "$TMP_DIR/suffixless-ls-remote.out"
+grep -q "$tag_only_commit" "$TMP_DIR/suffixless-ls-remote.out"
 
 append_pkt() {
     payload=$1
@@ -203,6 +213,28 @@ v2_lsrefs_status=$(curl -sS -o "$TMP_DIR/v2-lsrefs.body" -w '%{http_code}' \
     "http://127.0.0.1:$PORT/example.git/git-upload-pack")
 test "$v2_lsrefs_status" = 200
 grep -aq 'refs/heads/main' "$TMP_DIR/v2-lsrefs.body"
+
+{
+    append_pkt 'command=ls-refs
+'
+    append_pkt 'agent=gitd-smoke
+'
+    append_pkt 'object-format=sha1
+'
+    printf '0001'
+    append_pkt 'peel
+'
+    append_pkt 'ref-prefix refs/tags/annotated-only
+'
+    printf '0000'
+} > "$TMP_DIR/v2-lsrefs-peel.request"
+v2_lsrefs_peel_status=$(curl -sS -o "$TMP_DIR/v2-lsrefs-peel.body" -w '%{http_code}' \
+    -H 'Git-Protocol: version=2' \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary "@$TMP_DIR/v2-lsrefs-peel.request" \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$v2_lsrefs_peel_status" = 200
+grep -aq "refs/tags/annotated-only peeled:$tag_only_commit" "$TMP_DIR/v2-lsrefs-peel.body"
 
 {
     append_pkt 'command=ls-refs
@@ -327,6 +359,9 @@ grep -aq "ACK $base_oid common" "$TMP_DIR/multiround-have-only.body"
 
 git -c transfer.unpackLimit=1 clone "http://127.0.0.1:$PORT/example.git" "$CLONE_NATIVE" >/dev/null 2>&1
 test "$(cat "$CLONE_NATIVE/README.md")" = 'hello from gitd'
+test "$(git -C "$CLONE_NATIVE" cat-file -t "$tag_only_commit")" = 'commit'
+test "$(git -C "$CLONE_NATIVE" show refs/tags/annotated-only:tag-only.txt)" = 'annotated tag only'
+git -C "$CLONE_NATIVE" fsck --strict >/dev/null 2>&1
 native_pack_idx=$(find "$CLONE_NATIVE/.git/objects/pack" -name '*.idx' -print -quit)
 test -n "$native_pack_idx"
 git verify-pack -v "$native_pack_idx" > "$TMP_DIR/native-verify-pack.out"

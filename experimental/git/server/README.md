@@ -59,12 +59,17 @@ git -c http.sslVerify=false -c http.version=HTTP/1.1 \
 - Pack generation using the existing newos Git object helpers, including blob
   `REF_DELTA` entries that copy bounded matching spans from a bounded set of
   similar base blobs and insert changed bytes when doing so is useful.
+- Annotated tags are peeled in ref advertisements, and fetching an annotated tag
+  includes the target object closure so commits reachable only through tags clone
+  correctly.
 - Upload-pack `have` lines exclude commits the client already reports as
   reachable; protocol v1 no-`done` rounds report known haves with `ACK ... common`.
 - Protocol v2 fetch supports shallow depth requests, `filter blob:none`, and
   multi-want follow-up fetches for lazy blob checkout, including gzip-compressed
-  POST bodies sent by canonical Git for larger requests; v2 `object-info` answers
-  size queries and `bundle-uri` returns an empty bundle list.
+  POST bodies sent by canonical Git for larger requests. Explicit lazy blob wants
+  are sent even when canonical Git repeats `filter blob:none` on the follow-up
+  request. v2 `object-info` answers size queries and `bundle-uri` returns an empty
+  bundle list.
 - Receive-pack accepts branch creation, deletion, strict fast-forward-only
   `refs/heads/*` updates, and safe tags, notes, and custom `refs/*`
   namespaces. It advertises `no-thin` so canonical Git sends self-contained
