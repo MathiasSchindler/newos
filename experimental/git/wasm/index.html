@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>newos Git WASM Workbench</title>
+  <link rel="stylesheet" href="workbench.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">newos Git WASM</div>
+      <input id="remoteUrl" class="remote" value="http://127.0.0.1:8090/example.git" aria-label="Remote URL">
+      <button id="clone">Clone</button>
+      <button id="pull">Pull</button>
+      <button id="resetDemo">Demo Repo</button>
+      <button id="monaRepo">Mona Repo</button>
+      <div id="status" class="status">loading build/git.wasm</div>
+    </header>
+
+    <section class="workspace">
+      <aside class="sidebar">
+        <section class="panel">
+          <div class="panel-title">
+            <span>Files</span>
+            <div class="panel-actions">
+              <label class="checkline"><input id="includeGit" type="checkbox"> .git</label>
+              <button id="newFile" title="New file">+</button>
+              <button id="refresh" title="Refresh">Refresh</button>
+            </div>
+          </div>
+          <div id="explorer" class="tree"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <span>Changes</span>
+            <button id="statusButton">Status</button>
+          </div>
+          <div id="changes" class="changes"></div>
+        </section>
+      </aside>
+
+      <section class="editor-shell">
+        <div id="tabs" class="tabs"></div>
+        <div class="editor-toolbar">
+          <div id="editorTitle" class="editor-title">No file open</div>
+          <button id="save">Save</button>
+          <button id="saveAll">Save All</button>
+          <button id="deleteFile">Delete</button>
+        </div>
+        <div class="editor-stack">
+          <pre id="highlight" class="highlight" aria-hidden="true"></pre>
+          <textarea id="editor" class="editor" spellcheck="false" disabled></textarea>
+        </div>
+      </section>
+    </section>
+
+    <section class="bottom">
+      <div class="gitbar">
+        <input id="commitMessage" class="commit-message" value="browser edit" aria-label="Commit message">
+        <button id="stageAll">Add</button>
+        <button id="commit" class="primary">Commit</button>
+        <button id="stash">Stash</button>
+        <button id="log">Log</button>
+        <button id="diff">Diff</button>
+        <input id="command" class="command" value="status --short" aria-label="Git command">
+        <button id="run">Run</button>
+      </div>
+      <div class="bottom-body">
+        <section class="history-panel">
+          <div class="history-title">History</div>
+          <div id="history" class="history"></div>
+        </section>
+        <pre id="output" class="output"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

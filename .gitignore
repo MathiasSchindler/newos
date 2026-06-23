@@ -9,6 +9,8 @@ experimental/git/*
 !experimental/git/server/
 experimental/git/server/build/
 experimental/git/server/.DS_Store
+!experimental/git/wasm/
+experimental/git/wasm/build/
 !experimental/multicall/
 experimental/multicall/*
 !experimental/multicall/build.py
