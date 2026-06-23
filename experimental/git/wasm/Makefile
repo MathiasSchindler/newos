@@ -1,6 +1,9 @@
 ROOT := ../../..
 BUILD_DIR := build
-CC ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; elif command -v clang >/dev/null 2>&1; then command -v clang; else echo clang; fi)
+WASM_CC := $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; elif command -v clang >/dev/null 2>&1; then command -v clang; else echo clang; fi)
+ifeq ($(origin CC),default)
+CC := $(WASM_CC)
+endif
 
 WASM_CFLAGS := \
 	--target=wasm32-unknown-unknown \

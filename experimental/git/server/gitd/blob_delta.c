@@ -195,12 +195,23 @@ static size_t gitd_blob_sample_step(size_t size) {
     return step;
 }
 
-static int gitd_blob_has_matching_sample(const unsigned char *data, size_t size, unsigned int hash) {
+static size_t gitd_collect_blob_sample_hashes(const unsigned char *data, size_t size, unsigned int *hashes, size_t capacity) {
     size_t step = gitd_blob_sample_step(size);
     size_t offset;
+    size_t count = 0U;
 
-    for (offset = 0U; offset + GITD_DELTA_MIN_COPY <= size; offset += step) {
-        if (gitd_delta_hash_block(data + offset) == hash) return 1;
+    if (data == 0 || size < GITD_DELTA_MIN_COPY || hashes == 0 || capacity == 0U) return 0U;
+    for (offset = 0U; offset + GITD_DELTA_MIN_COPY <= size && count < capacity; offset += step) {
+        hashes[count++] = gitd_delta_hash_block(data + offset);
+    }
+    return count;
+}
+
+static int gitd_blob_hash_list_contains(const unsigned int *hashes, size_t count, unsigned int hash) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (hashes[index] == hash) return 1;
     }
     return 0;
 }
@@ -229,29 +240,32 @@ static void gitd_blob_base_list_evict_oldest(GitdBlobBaseList *list) {
     rt_memset(&list->items[list->count], 0, sizeof(list->items[list->count]));
 }
 
-static size_t gitd_blob_similarity_score(const unsigned char *left, size_t left_size, const unsigned char *right, size_t right_size) {
+static size_t gitd_blob_similarity_score(const GitdBlobBase *left_base, const unsigned char *right, size_t right_size, const unsigned int *right_hashes, size_t right_hash_count) {
+    const unsigned char *left = left_base->data;
+    size_t left_size = left_base->size;
     size_t prefix = 0U;
     size_t suffix = 0U;
     size_t sampled = 0U;
+    size_t sample_index;
 
     while (prefix < left_size && prefix < right_size && left[prefix] == right[prefix]) prefix += 1U;
     while (suffix < left_size - prefix && suffix < right_size - prefix && left[left_size - 1U - suffix] == right[right_size - 1U - suffix]) suffix += 1U;
-    if (left_size >= GITD_DELTA_MIN_COPY && right_size >= GITD_DELTA_MIN_COPY) {
-        size_t step = gitd_blob_sample_step(left_size);
-        size_t offset;
-
-        for (offset = 0U; offset + GITD_DELTA_MIN_COPY <= left_size; offset += step) {
-            if (gitd_blob_has_matching_sample(right, right_size, gitd_delta_hash_block(left + offset))) sampled += GITD_DELTA_MIN_COPY;
+    if (left_base->sample_hash_count > 0U && right_hash_count > 0U) {
+        for (sample_index = 0U; sample_index < left_base->sample_hash_count; ++sample_index) {
+            if (gitd_blob_hash_list_contains(right_hashes, right_hash_count, left_base->sample_hashes[sample_index])) sampled += GITD_DELTA_MIN_COPY;
         }
     }
     return prefix + suffix + sampled;
 }
 
 static size_t gitd_collect_blob_delta_candidates(GitdBlobBaseList *bases, const unsigned char *data, size_t size, GitdBlobBase **candidates, size_t candidate_capacity) {
+    unsigned int target_hashes[GITD_BLOB_SAMPLE_HASH_CAPACITY];
+    size_t target_hash_count;
     size_t scores[GITD_DELTA_CANDIDATES];
     size_t index;
     size_t count = 0U;
 
+    target_hash_count = gitd_collect_blob_sample_hashes(data, size, target_hashes, GITD_BLOB_SAMPLE_HASH_CAPACITY);
     if (candidate_capacity > GITD_DELTA_CANDIDATES) candidate_capacity = GITD_DELTA_CANDIDATES;
     for (index = 0U; index < candidate_capacity; ++index) {
         candidates[index] = 0;
@@ -259,7 +273,7 @@ static size_t gitd_collect_blob_delta_candidates(GitdBlobBaseList *bases, const 
     }
 
     for (index = 0U; index < bases->count; ++index) {
-        size_t score = gitd_blob_similarity_score(bases->items[index].data, bases->items[index].size, data, size);
+        size_t score = gitd_blob_similarity_score(&bases->items[index], data, size, target_hashes, target_hash_count);
         size_t slot;
 
         if (score < 8U || candidate_capacity == 0U) continue;
@@ -291,9 +305,11 @@ static int gitd_blob_base_list_take(GitdBlobBaseList *bases, const unsigned char
     }
     if (bases->count >= GITD_MAX_DELTA_BASES || bases->total_bytes > GITD_MAX_DELTA_BASE_BYTES - size) return 0;
     slot = &bases->items[bases->count++];
+    rt_memset(slot, 0, sizeof(*slot));
     memcpy(slot->oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
     slot->data = *data_io;
     slot->size = size;
+    slot->sample_hash_count = gitd_collect_blob_sample_hashes(slot->data, slot->size, slot->sample_hashes, GITD_BLOB_SAMPLE_HASH_CAPACITY);
     bases->total_bytes += size;
     *data_io = 0;
     return 0;

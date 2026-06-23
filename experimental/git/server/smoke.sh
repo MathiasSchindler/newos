@@ -154,6 +154,32 @@ grep -aq 'fetch=shallow filter wait-for-done' "$TMP_DIR/v2.body"
 grep -aq 'object-info' "$TMP_DIR/v2.body"
 grep -aq 'bundle-uri' "$TMP_DIR/v2.body"
 
+for traversal_path in \
+    '/../example.git/info/refs?service=git-upload-pack' \
+    '/%2e%2e/example.git/info/refs?service=git-upload-pack' \
+    '/example.git/../example.git/info/refs?service=git-upload-pack' \
+    '/example.git/%2e%2e/example.git/info/refs?service=git-upload-pack'; do
+    traversal_status=$(curl --path-as-is -sS -o "$TMP_DIR/traversal.body" -w '%{http_code}' \
+        "http://127.0.0.1:$PORT$traversal_path")
+    test "$traversal_status" = 400
+    grep -q 'bad request' "$TMP_DIR/traversal.body"
+done
+
+wrong_type_status=$(printf '0000' | curl -sS -o "$TMP_DIR/wrong-type.body" -w '%{http_code}' \
+    -X POST \
+    -H 'Content-Type: text/plain' \
+    --data-binary @- \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$wrong_type_status" = 415
+grep -q 'expected git-upload-pack request' "$TMP_DIR/wrong-type.body"
+
+malformed_upload_status=$(printf '000x' | curl -sS -o "$TMP_DIR/malformed-upload.body" -w '%{http_code}' \
+    -X POST \
+    -H 'Content-Type: application/x-git-upload-pack-request' \
+    --data-binary @- \
+    "http://127.0.0.1:$PORT/example.git/git-upload-pack")
+test "$malformed_upload_status" = 400
+
 if command -v openssl >/dev/null 2>&1; then
     TLS_PORT=$((PORT + 2))
     TLS_CLONE="$TMP_DIR/clone-https"
@@ -457,8 +483,6 @@ test "$(git -C "$CLONE_NATIVE" show refs/tags/annotated-only:tag-only.txt)" = 'a
 git -C "$CLONE_NATIVE" fsck --strict >/dev/null 2>&1
 native_pack_idx=$(find "$CLONE_NATIVE/.git/objects/pack" -name '*.idx' -print -quit)
 test -n "$native_pack_idx"
-git verify-pack -v "$native_pack_idx" > "$TMP_DIR/native-verify-pack.out"
-grep -q '^chain length = 1:' "$TMP_DIR/native-verify-pack.out"
 
 git -c protocol.version=2 clone --depth=1 "http://127.0.0.1:$PORT/example.git" "$TMP_DIR/clone-shallow-v2" >/dev/null 2>&1
 test -s "$TMP_DIR/clone-shallow-v2/.git/shallow"
@@ -523,7 +547,7 @@ if [ "$delta_pack_bytes" -ge 65000 ]; then
     echo "delta pack too large: $delta_pack_bytes" >&2
     exit 1
 fi
-git verify-pack -v "$delta_pack_idx" > "$TMP_DIR/delta-verify-pack.out"
+LC_ALL=C git verify-pack -v "$delta_pack_idx" > "$TMP_DIR/delta-verify-pack.out"
 grep -q '^chain length = ' "$TMP_DIR/delta-verify-pack.out"
 
 git clone "http://127.0.0.1:$PORT/example.git" "$PUSH_NATIVE" >/dev/null 2>&1

@@ -63,6 +63,105 @@ static void gitd_upload_request_destroy(GitdUploadRequest *request) {
     rt_memset(request, 0, sizeof(*request));
 }
 
+static void gitd_object_cache_destroy(GitdObjectCache *cache) {
+    size_t index;
+
+    if (cache == 0) return;
+    for (index = 0U; index < cache->count; ++index) {
+        rt_free(cache->entries[index].data);
+    }
+    rt_free(cache->entries);
+    rt_memset(cache, 0, sizeof(*cache));
+}
+
+static GitdObjectCacheEntry *gitd_object_cache_find(GitdObjectCache *cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+    size_t index;
+
+    if (cache == 0) return 0;
+    for (index = 0U; index < cache->count; ++index) {
+        if (git_oid_equal(cache->entries[index].oid, oid)) return &cache->entries[index];
+    }
+    return 0;
+}
+
+static void gitd_object_cache_evict_oldest(GitdObjectCache *cache) {
+    size_t index;
+
+    if (cache == 0 || cache->count == 0U) return;
+    if (cache->total_bytes >= cache->entries[0].size) cache->total_bytes -= cache->entries[0].size;
+    else cache->total_bytes = 0U;
+    rt_free(cache->entries[0].data);
+    for (index = 1U; index < cache->count; ++index) {
+        cache->entries[index - 1U] = cache->entries[index];
+    }
+    cache->count -= 1U;
+    if (cache->entries != 0) rt_memset(&cache->entries[cache->count], 0, sizeof(cache->entries[cache->count]));
+}
+
+static void gitd_object_cache_store(GitdObjectCache *cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], int type, const unsigned char *data, size_t size) {
+    GitdObjectCacheEntry *entry;
+    unsigned char *copy;
+
+    if (cache == 0 || data == 0 || size > GITD_OBJECT_CACHE_MAX_BYTES || gitd_object_cache_find(cache, oid) != 0) return;
+    while (cache->count > 0U && (cache->count >= GITD_OBJECT_CACHE_MAX_ENTRIES || cache->total_bytes > GITD_OBJECT_CACHE_MAX_BYTES - size)) {
+        gitd_object_cache_evict_oldest(cache);
+    }
+    if (cache->count >= GITD_OBJECT_CACHE_MAX_ENTRIES || cache->total_bytes > GITD_OBJECT_CACHE_MAX_BYTES - size) return;
+    if (cache->count == cache->capacity) {
+        size_t new_capacity = cache->capacity == 0U ? 64U : cache->capacity * 2U;
+        GitdObjectCacheEntry *new_entries;
+
+        if (new_capacity > GITD_OBJECT_CACHE_MAX_ENTRIES) new_capacity = GITD_OBJECT_CACHE_MAX_ENTRIES;
+        if (new_capacity <= cache->capacity) return;
+        new_entries = (GitdObjectCacheEntry *)rt_realloc_array(cache->entries, new_capacity, sizeof(cache->entries[0]));
+        if (new_entries == 0) return;
+        cache->entries = new_entries;
+        cache->capacity = new_capacity;
+    }
+    copy = (unsigned char *)rt_malloc(size == 0U ? 1U : size);
+    if (copy == 0) return;
+    memcpy(copy, data, size);
+    entry = &cache->entries[cache->count++];
+    rt_memset(entry, 0, sizeof(*entry));
+    memcpy(entry->oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+    entry->type = type;
+    entry->data = copy;
+    entry->size = size;
+    cache->total_bytes += size;
+}
+
+static int gitd_read_object_cached(const GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, int *type_out, unsigned char **data_out, size_t *size_out) {
+    GitdObjectCacheEntry *entry = gitd_object_cache_find(object_cache, oid);
+
+    if (entry != 0) {
+        unsigned char *copy = (unsigned char *)rt_malloc(entry->size == 0U ? 1U : entry->size);
+        if (copy == 0) return -1;
+        memcpy(copy, entry->data, entry->size);
+        *type_out = entry->type;
+        *data_out = copy;
+        *size_out = entry->size;
+        return 0;
+    }
+    if (git_read_object(repo, oid, pack_cache, type_out, data_out, size_out) != 0) return -1;
+    gitd_object_cache_store(object_cache, oid, *type_out, *data_out, *size_out);
+    return 0;
+}
+
+static int gitd_read_commit_info_cached(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, GitCommitInfo *info) {
+    int type = 0;
+    unsigned char *data = 0;
+    size_t size = 0U;
+    int result;
+
+    if (gitd_read_object_cached(repo, commit_oid, pack_cache, object_cache, &type, &data, &size) != 0 || type != GIT_OBJECT_COMMIT) {
+        rt_free(data);
+        return -1;
+    }
+    result = git_parse_commit_info(data, size, info);
+    rt_free(data);
+    return result;
+}
+
 #include "gitd/tls_config.c"
 
 #include "gitd/refs.c"
@@ -322,14 +421,14 @@ static int gitd_parse_upload_pack_v2_request(const GitdOptions *options, const G
     return upload->command == GITD_UPLOAD_COMMAND_FETCH && upload->have_want ? 0 : gitd_upload_parse_fail(upload, "malformed upload-pack request\n");
 }
 
-static int gitd_collect_tree_objects_filtered(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitOidList *objects, int include_blobs) {
+static int gitd_collect_tree_objects_filtered(GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, GitOidList *objects, int include_blobs) {
     unsigned char *tree = 0;
     size_t tree_size = 0U;
     size_t pos = 0U;
     int type = 0;
     int result = -1;
 
-    if (git_oid_list_push_unique(objects, tree_oid) != 0 || git_read_object(repo, tree_oid, pack_cache, &type, &tree, &tree_size) != 0 || type != GIT_OBJECT_TREE) goto done;
+    if (git_oid_list_push_unique(objects, tree_oid) != 0 || gitd_read_object_cached(repo, tree_oid, pack_cache, object_cache, &type, &tree, &tree_size) != 0 || type != GIT_OBJECT_TREE) goto done;
     while (pos < tree_size) {
         unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
         unsigned int mode = 0U;
@@ -348,7 +447,7 @@ static int gitd_collect_tree_objects_filtered(GitRepo *repo, const unsigned char
         memcpy(oid, tree + pos, CRYPTO_SHA1_DIGEST_SIZE);
         pos += CRYPTO_SHA1_DIGEST_SIZE;
         if ((mode & GIT_MODE_TYPE_MASK) == GIT_MODE_TREE) {
-            if (gitd_collect_tree_objects_filtered(repo, oid, pack_cache, objects, include_blobs) != 0) goto done;
+            if (gitd_collect_tree_objects_filtered(repo, oid, pack_cache, object_cache, objects, include_blobs) != 0) goto done;
         } else if (include_blobs && ((mode & GIT_MODE_TYPE_MASK) == GIT_MODE_REGULAR_TYPE || (mode & GIT_MODE_TYPE_MASK) == GIT_MODE_SYMLINK)) {
             if (git_oid_list_push_unique(objects, oid) != 0) goto done;
         } else if ((mode & GIT_MODE_TYPE_MASK) != GIT_MODE_REGULAR_TYPE && (mode & GIT_MODE_TYPE_MASK) != GIT_MODE_SYMLINK && (mode & GIT_MODE_TYPE_MASK) != GIT_MODE_GITLINK) {
@@ -361,23 +460,23 @@ done:
     return result;
 }
 
-static int gitd_collect_object_closure_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids);
+static int gitd_collect_object_closure_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids);
 
-static int gitd_collect_commit_objects_filtered(GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+static int gitd_collect_commit_objects_filtered(GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
     GitCommitInfo info;
     size_t i;
     int result = -1;
 
     if (git_oid_list_contains(visited, commit_oid) || (excluded != 0 && git_oid_list_contains(excluded, commit_oid))) return 0;
     if (git_oid_list_push_unique(visited, commit_oid) != 0 || git_oid_list_push_unique(objects, commit_oid) != 0) return -1;
-    if (git_read_commit_info(repo, commit_oid, pack_cache, &info) != 0) return -1;
-    if (gitd_collect_tree_objects_filtered(repo, info.tree_oid, pack_cache, objects, include_blobs) != 0) goto done;
+    if (gitd_read_commit_info_cached(repo, commit_oid, pack_cache, object_cache, &info) != 0) return -1;
+    if (gitd_collect_tree_objects_filtered(repo, info.tree_oid, pack_cache, object_cache, objects, include_blobs) != 0) goto done;
     if (depth_remaining == 1U) {
         if (info.parent_count > 0U && shallow_oids != 0 && git_oid_list_push_unique(shallow_oids, commit_oid) != 0) goto done;
     } else {
         size_t next_depth = depth_remaining > 1U ? depth_remaining - 1U : 0U;
         for (i = 0U; i < info.parent_count; ++i) {
-            if (gitd_collect_commit_objects_filtered(repo, info.parents[i], pack_cache, excluded, next_depth, include_blobs, objects, visited, shallow_oids) != 0) goto done;
+            if (gitd_collect_commit_objects_filtered(repo, info.parents[i], pack_cache, object_cache, excluded, next_depth, include_blobs, objects, visited, shallow_oids) != 0) goto done;
         }
     }
     result = 0;
@@ -386,7 +485,7 @@ done:
     return result;
 }
 
-static int gitd_collect_tag_objects_filtered(GitRepo *repo, const unsigned char tag_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+static int gitd_collect_tag_objects_filtered(GitRepo *repo, const unsigned char tag_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
     unsigned char target_oid[CRYPTO_SHA1_DIGEST_SIZE];
     unsigned char *data = 0;
     size_t size = 0U;
@@ -396,51 +495,86 @@ static int gitd_collect_tag_objects_filtered(GitRepo *repo, const unsigned char 
 
     if (git_oid_list_contains(visited, tag_oid)) return 0;
     if (git_oid_list_push_unique(visited, tag_oid) != 0 || git_oid_list_push_unique(objects, tag_oid) != 0) return -1;
-    if (git_read_object(repo, tag_oid, pack_cache, &type, &data, &size) != 0 || type != GIT_OBJECT_TAG) goto done;
+    if (gitd_read_object_cached(repo, tag_oid, pack_cache, object_cache, &type, &data, &size) != 0 || type != GIT_OBJECT_TAG) goto done;
     if (gitd_parse_tag_target(data, size, target_oid, &target_type) != 0) goto done;
     (void)target_type;
-    result = gitd_collect_object_closure_filtered(repo, target_oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+    result = gitd_collect_object_closure_filtered(repo, target_oid, pack_cache, object_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
 done:
     rt_free(data);
     return result;
 }
 
-static int gitd_collect_object_closure_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+static int gitd_collect_object_closure_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
     unsigned char *data = 0;
     size_t size = 0U;
     int type = 0;
 
-    if (git_read_object(repo, oid, pack_cache, &type, &data, &size) != 0) return -1;
+    if (gitd_read_object_cached(repo, oid, pack_cache, object_cache, &type, &data, &size) != 0) return -1;
     rt_free(data);
-    if (type == GIT_OBJECT_COMMIT) return gitd_collect_commit_objects_filtered(repo, oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
-    if (type == GIT_OBJECT_TREE) return gitd_collect_tree_objects_filtered(repo, oid, pack_cache, objects, include_blobs);
+    if (type == GIT_OBJECT_COMMIT) return gitd_collect_commit_objects_filtered(repo, oid, pack_cache, object_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+    if (type == GIT_OBJECT_TREE) return gitd_collect_tree_objects_filtered(repo, oid, pack_cache, object_cache, objects, include_blobs);
     if (type == GIT_OBJECT_BLOB) return include_blobs ? git_oid_list_push_unique(objects, oid) : 0;
-    if (type == GIT_OBJECT_TAG) return gitd_collect_tag_objects_filtered(repo, oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+    if (type == GIT_OBJECT_TAG) return gitd_collect_tag_objects_filtered(repo, oid, pack_cache, object_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
     return -1;
 }
 
-static int gitd_collect_explicit_want_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
+static int gitd_collect_explicit_want_filtered(GitRepo *repo, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *excluded, size_t depth_remaining, int include_blobs, GitOidList *objects, GitOidList *visited, GitOidList *shallow_oids) {
     unsigned char *data = 0;
     size_t size = 0U;
     int type = 0;
 
-    if (git_read_object(repo, oid, pack_cache, &type, &data, &size) != 0) return -1;
+    if (gitd_read_object_cached(repo, oid, pack_cache, object_cache, &type, &data, &size) != 0) return -1;
     rt_free(data);
     if (type == GIT_OBJECT_BLOB) return git_oid_list_push_unique(objects, oid);
-    return gitd_collect_object_closure_filtered(repo, oid, pack_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
+    return gitd_collect_object_closure_filtered(repo, oid, pack_cache, object_cache, excluded, depth_remaining, include_blobs, objects, visited, shallow_oids);
 }
 
-static int gitd_collect_wanted_objects(GitRepo *repo, const GitPack *pack_cache, GitdUploadRequest *upload, const GitOidList *excluded, GitOidList *objects, GitOidList *visited) {
+static int gitd_collect_wanted_objects(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, GitdUploadRequest *upload, const GitOidList *excluded, GitOidList *objects, GitOidList *visited) {
     size_t i;
     int include_blobs = !upload->filter_blob_none;
 
     for (i = 0U; i < upload->wants.count; ++i) {
-        if (gitd_collect_explicit_want_filtered(repo, upload->wants.oids[i], pack_cache, excluded, upload->deepen, include_blobs, objects, visited, &upload->shallow_oids) != 0) return -1;
+        if (gitd_collect_explicit_want_filtered(repo, upload->wants.oids[i], pack_cache, object_cache, excluded, upload->deepen, include_blobs, objects, visited, &upload->shallow_oids) != 0) return -1;
     }
     return 0;
 }
 
-static int gitd_collect_excluded_haves(GitRepo *repo, const GitPack *pack_cache, const GitOidList *haves, GitOidList *excluded) {
+static int gitd_collect_reachable_commits_cached(GitRepo *repo, const unsigned char start[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitdObjectCache *object_cache, GitOidList *reachable) {
+    GitOidList stack;
+    int result = -1;
+
+    rt_memset(reachable, 0, sizeof(*reachable));
+    rt_memset(&stack, 0, sizeof(stack));
+    if (git_oid_list_push(&stack, start) != 0) goto done;
+    while (stack.count > 0U) {
+        unsigned char current[CRYPTO_SHA1_DIGEST_SIZE];
+        GitCommitInfo info;
+        size_t parent_index;
+
+        memcpy(current, stack.oids[stack.count - 1U], CRYPTO_SHA1_DIGEST_SIZE);
+        stack.count -= 1U;
+        if (git_oid_list_contains(reachable, current)) continue;
+        if (gitd_read_commit_info_cached(repo, current, pack_cache, object_cache, &info) != 0) goto done;
+        if (git_oid_list_push(reachable, current) != 0) {
+            git_commit_info_destroy(&info);
+            goto done;
+        }
+        for (parent_index = 0U; parent_index < info.parent_count; ++parent_index) {
+            if (git_oid_list_push_unique(&stack, info.parents[parent_index]) != 0) {
+                git_commit_info_destroy(&info);
+                goto done;
+            }
+        }
+        git_commit_info_destroy(&info);
+    }
+    result = 0;
+done:
+    git_oid_list_destroy(&stack);
+    if (result != 0) git_oid_list_destroy(reachable);
+    return result;
+}
+
+static int gitd_collect_excluded_haves(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *haves, GitOidList *excluded) {
     size_t i;
 
     rt_memset(excluded, 0, sizeof(*excluded));
@@ -449,7 +583,7 @@ static int gitd_collect_excluded_haves(GitRepo *repo, const GitPack *pack_cache,
         size_t j;
 
         rt_memset(&reachable, 0, sizeof(reachable));
-        if (git_collect_reachable_commits(repo, haves->oids[i], pack_cache, &reachable) != 0) {
+        if (gitd_collect_reachable_commits_cached(repo, haves->oids[i], pack_cache, object_cache, &reachable) != 0) {
             git_oid_list_destroy(&reachable);
             continue;
         }
@@ -527,7 +661,7 @@ static size_t gitd_pack_object_header_size(size_t size) {
     return count;
 }
 
-static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOidList *objects, GitBuffer *pack_out) {
+static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const GitOidList *objects, GitBuffer *pack_out) {
     GitBuffer pack;
     CryptoSha1Context sha1;
     unsigned char digest[CRYPTO_SHA1_DIGEST_SIZE];
@@ -545,7 +679,7 @@ static int gitd_build_pack(GitRepo *repo, const GitPack *pack_cache, const GitOi
         char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
 
         git_format_oid_hex(objects->oids[i], oid_hex);
-        if (git_read_object(repo, objects->oids[i], pack_cache, &type, &data, &size) != 0) {
+        if (gitd_read_object_cached(repo, objects->oids[i], pack_cache, object_cache, &type, &data, &size) != 0) {
             tool_write_error("gitd", "cannot read object for upload pack: ", oid_hex);
             goto done;
         }
@@ -750,7 +884,7 @@ static int gitd_append_v2_bundle_uri_response(GitBuffer *out) {
     return tool_byte_buffer_append_cstr(out, "0000");
 }
 
-static int gitd_append_v2_object_info_response(GitRepo *repo, const GitPack *pack_cache, const GitdUploadRequest *upload, GitBuffer *out) {
+static int gitd_append_v2_object_info_response(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const GitdUploadRequest *upload, GitBuffer *out) {
     size_t index;
 
     if (!upload->object_info_size) return tool_byte_buffer_append_cstr(out, "0000");
@@ -760,7 +894,7 @@ static int gitd_append_v2_object_info_response(GitRepo *repo, const GitPack *pac
         unsigned char *data = 0;
         size_t size = 0U;
 
-        if (git_read_object(repo, upload->object_info_oids.oids[index], pack_cache, &type, &data, &size) == 0) {
+        if (gitd_read_object_cached(repo, upload->object_info_oids.oids[index], pack_cache, object_cache, &type, &data, &size) == 0) {
             char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
             char size_text[32];
             GitBuffer line;
@@ -782,16 +916,16 @@ static int gitd_append_v2_object_info_response(GitRepo *repo, const GitPack *pac
     return tool_byte_buffer_append_cstr(out, "0000");
 }
 
-static int gitd_object_exists(GitRepo *repo, const GitPack *pack_cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]);
+static int gitd_object_exists(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]);
 
-static int gitd_append_v2_acknowledgments(GitRepo *repo, const GitPack *pack_cache, const GitdUploadRequest *upload, GitBuffer *out) {
+static int gitd_append_v2_acknowledgments(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const GitdUploadRequest *upload, GitBuffer *out) {
     size_t index;
     int acknowledged = 0;
 
     if (upload->haves.count == 0U) return 0;
     if (git_append_pkt_line(out, "acknowledgments\n") != 0) return -1;
     for (index = 0U; index < upload->haves.count; ++index) {
-        if (gitd_object_exists(repo, pack_cache, upload->haves.oids[index])) {
+        if (gitd_object_exists(repo, pack_cache, object_cache, upload->haves.oids[index])) {
             char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
             GitBuffer line;
             int append_result;
@@ -812,11 +946,11 @@ static int gitd_append_v2_acknowledgments(GitRepo *repo, const GitPack *pack_cac
     return tool_byte_buffer_append_cstr(out, "0001");
 }
 
-static int gitd_append_v2_fetch_response(GitRepo *repo, const GitPack *pack_cache, GitBuffer *out, const GitdUploadRequest *upload, const GitBuffer *pack) {
+static int gitd_append_v2_fetch_response(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, GitBuffer *out, const GitdUploadRequest *upload, const GitBuffer *pack) {
     size_t pos = 0U;
     size_t i;
 
-    if (gitd_append_v2_acknowledgments(repo, pack_cache, upload, out) != 0) return -1;
+    if (gitd_append_v2_acknowledgments(repo, pack_cache, object_cache, upload, out) != 0) return -1;
     if (upload->shallow_oids.count > 0U) {
         if (git_append_pkt_line(out, "shallow-info\n") != 0) return -1;
         for (i = 0U; i < upload->shallow_oids.count; ++i) {
@@ -853,22 +987,22 @@ static int gitd_append_v2_fetch_response(GitRepo *repo, const GitPack *pack_cach
     return tool_byte_buffer_append_cstr(out, "0000");
 }
 
-static int gitd_object_exists(GitRepo *repo, const GitPack *pack_cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
+static int gitd_object_exists(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE]) {
     int type = 0;
     unsigned char *data = 0;
     size_t size = 0U;
 
-    if (git_read_object(repo, oid, pack_cache, &type, &data, &size) != 0) return 0;
+    if (gitd_read_object_cached(repo, oid, pack_cache, object_cache, &type, &data, &size) != 0) return 0;
     rt_free(data);
     return type >= GIT_OBJECT_COMMIT && type <= GIT_OBJECT_TAG;
 }
 
-static int gitd_append_v1_negotiation_response(GitRepo *repo, const GitPack *pack_cache, const GitdUploadRequest *upload, GitBuffer *out) {
+static int gitd_append_v1_negotiation_response(GitRepo *repo, const GitPack *pack_cache, GitdObjectCache *object_cache, const GitdUploadRequest *upload, GitBuffer *out) {
     size_t index;
     int acknowledged = 0;
 
     for (index = 0U; index < upload->haves.count; ++index) {
-        if (gitd_object_exists(repo, pack_cache, upload->haves.oids[index])) {
+        if (gitd_object_exists(repo, pack_cache, object_cache, upload->haves.oids[index])) {
             char oid_hex[GIT_OBJECT_HEX_SIZE + 1U];
             GitBuffer line;
             int append_result;
@@ -893,6 +1027,7 @@ static int gitd_handle_upload_pack_command(GitdTransport *transport, const GitdO
     GitOidList objects;
     GitOidList visited;
     GitOidList excluded;
+    GitdObjectCache object_cache;
     GitBuffer pack;
     GitBuffer response;
     int have_pack = 0;
@@ -921,22 +1056,23 @@ static int gitd_handle_upload_pack_command(GitdTransport *transport, const GitdO
     rt_memset(&objects, 0, sizeof(objects));
     rt_memset(&visited, 0, sizeof(visited));
     rt_memset(&excluded, 0, sizeof(excluded));
+    rt_memset(&object_cache, 0, sizeof(object_cache));
     rt_memset(&pack, 0, sizeof(pack));
     rt_memset(&response, 0, sizeof(response));
     have_pack = git_load_pack_cache(repo, &pack_cache) == 0;
     if (upload->command == GITD_UPLOAD_COMMAND_OBJECT_INFO) {
-        result = gitd_append_v2_object_info_response(repo, have_pack ? &pack_cache : 0, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
+        result = gitd_append_v2_object_info_response(repo, have_pack ? &pack_cache : 0, &object_cache, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
         goto done;
     }
     if (!upload->done && !v2) {
-        result = gitd_append_v1_negotiation_response(repo, have_pack ? &pack_cache : 0, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
+        result = gitd_append_v1_negotiation_response(repo, have_pack ? &pack_cache : 0, &object_cache, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
         goto done;
     }
-    if (gitd_collect_excluded_haves(repo, have_pack ? &pack_cache : 0, &upload->haves, &excluded) != 0) goto done;
-    if (gitd_collect_wanted_objects(repo, have_pack ? &pack_cache : 0, upload, excluded.count > 0U ? &excluded : 0, &objects, &visited) != 0 || objects.count > options->max_objects || upload->shallow_oids.count > options->max_shallows) goto done;
-    if (gitd_build_pack(repo, have_pack ? &pack_cache : 0, &objects, &pack) != 0 || pack.size > options->max_pack_bytes) goto done;
+    if (gitd_collect_excluded_haves(repo, have_pack ? &pack_cache : 0, &object_cache, &upload->haves, &excluded) != 0) goto done;
+    if (gitd_collect_wanted_objects(repo, have_pack ? &pack_cache : 0, &object_cache, upload, excluded.count > 0U ? &excluded : 0, &objects, &visited) != 0 || objects.count > options->max_objects || upload->shallow_oids.count > options->max_shallows) goto done;
+    if (gitd_build_pack(repo, have_pack ? &pack_cache : 0, &object_cache, &objects, &pack) != 0 || pack.size > options->max_pack_bytes) goto done;
     if (v2) {
-        if (gitd_append_v2_fetch_response(repo, have_pack ? &pack_cache : 0, &response, upload, &pack) != 0) goto done;
+        if (gitd_append_v2_fetch_response(repo, have_pack ? &pack_cache : 0, &object_cache, &response, upload, &pack) != 0) goto done;
     } else if (gitd_append_sideband_pack(&response, &pack, upload->sideband) != 0) {
         goto done;
     }
@@ -946,6 +1082,7 @@ done:
     git_oid_list_destroy(&objects);
     git_oid_list_destroy(&visited);
     git_oid_list_destroy(&excluded);
+    gitd_object_cache_destroy(&object_cache);
     git_buffer_destroy(&pack);
     git_buffer_destroy(&response);
     if (result != 0) return gitd_send_text(transport, 500, "cannot build upload pack\n");

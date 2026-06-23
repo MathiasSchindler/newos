@@ -7,6 +7,8 @@
 #define GITD_DEFAULT_MAX_COMMANDS 64U
 #define GITD_DEFAULT_MAX_OBJECTS 200000U
 #define GITD_DEFAULT_MAX_PACK_BYTES (256U * 1024U * 1024U)
+#define GITD_OBJECT_CACHE_MAX_ENTRIES 2048U
+#define GITD_OBJECT_CACHE_MAX_BYTES (16U * 1024U * 1024U)
 #define GITD_MAX_DELTA_BASES 64U
 #define GITD_MAX_DELTA_BASE_BYTES (8U * 1024U * 1024U)
 #define GITD_DELTA_MIN_COPY 16U
@@ -14,6 +16,7 @@
 #define GITD_DELTA_HASH_LIMIT 32768U
 #define GITD_DELTA_PROBE_LIMIT 8U
 #define GITD_DELTA_SIMILARITY_SAMPLES 64U
+#define GITD_BLOB_SAMPLE_HASH_CAPACITY (GITD_DELTA_SIMILARITY_SAMPLES * 2U)
 #define GITD_DELTA_CANDIDATES 16U
 #define GITD_IO_CHUNK 8192U
 #define GITD_SIDEBAND_CHUNK 60000U
@@ -111,6 +114,20 @@ typedef struct {
 } GitdReceiveRequest;
 
 typedef struct {
+    unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char *data;
+    size_t size;
+    int type;
+} GitdObjectCacheEntry;
+
+typedef struct {
+    GitdObjectCacheEntry *entries;
+    size_t count;
+    size_t capacity;
+    size_t total_bytes;
+} GitdObjectCache;
+
+typedef struct {
     char **items;
     size_t count;
     size_t capacity;
@@ -140,6 +157,8 @@ typedef struct {
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
     unsigned char *data;
     size_t size;
+    unsigned int sample_hashes[GITD_BLOB_SAMPLE_HASH_CAPACITY];
+    size_t sample_hash_count;
 } GitdBlobBase;
 
 typedef struct {
