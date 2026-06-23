@@ -82,6 +82,8 @@ typedef struct {
 typedef struct {
     char name[GIT_REF_CAPACITY];
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int has_peeled;
 } GitdRef;
 
 typedef struct {

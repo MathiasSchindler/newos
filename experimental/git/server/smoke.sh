@@ -108,6 +108,7 @@ curl -fsS -D "$TMP_DIR/refs.headers" -o "$TMP_DIR/refs.body" \
 grep -qi '^Content-Type: application/x-git-upload-pack-advertisement' "$TMP_DIR/refs.headers"
 grep -qi '^Access-Control-Allow-Origin: \*' "$TMP_DIR/refs.headers"
 grep -aq '# service=git-upload-pack' "$TMP_DIR/refs.body"
+grep -aqF 'refs/tags/annotated-only^{}' "$TMP_DIR/refs.body"
 
 curl -fsS -I -o "$TMP_DIR/head-refs.headers" \
     "http://127.0.0.1:$PORT/example.git/info/refs?service=git-upload-pack"

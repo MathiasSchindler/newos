@@ -7,9 +7,16 @@ HOST_ARCH := $(if $(filter arm64,$(HOST_ARCH_RAW)),aarch64,$(HOST_ARCH_RAW))
 LOCAL_MACOS_FREESTANDING := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter aarch64,$(HOST_ARCH)),1,0),0)
 TARGET_ARCH ?= $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),aarch64,x86_64)
 BUILD_DIR := build
-OBJ_DIR := $(BUILD_DIR)/.obj/$(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),macos-$(TARGET_ARCH),linux-$(TARGET_ARCH))
+PROFILE ?= 0
+LINKER_REPORTS ?= 0
+PROFILE_CFLAGS := $(if $(filter 1 yes true,$(PROFILE)),-finstrument-functions -fno-omit-frame-pointer -fno-inline)
+STRIP_LDFLAGS := $(if $(filter 1 yes true,$(PROFILE)),,-Wl,-s)
+PROFILE_OBJ_SUFFIX := $(if $(filter 1 yes true,$(PROFILE)),-profile)
+OBJ_DIR := $(BUILD_DIR)/.obj/$(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),macos-$(TARGET_ARCH),linux-$(TARGET_ARCH))$(PROFILE_OBJ_SUFFIX)
+MAP_DIR := $(BUILD_DIR)/.maps
 PARALLEL_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 PARALLEL_MAKEFLAGS := $(filter -j,$(MAKEFLAGS)) $(filter -j%,$(MAKEFLAGS)) $(filter --jobserver%,$(MAKEFLAGS))
+LINKER_REPORT_FLAGS := $(if $(filter 1 yes true,$(LINKER_REPORTS)),--stats --map $(MAP_DIR)/gitd.map)
 
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 MACOS_FREESTANDING_CC ?= $(shell xcrun --find clang 2>/dev/null || echo $(CC))
@@ -22,6 +29,7 @@ COMMON_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_
 LDFLAGS ?= --macho-compact --gc-sections
 TARGET_CC_TARGET_FLAG ?=
 TARGET_BUILTINS_LIB ?=
+PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/macos/profiler_runtime.c)
 else
 TARGET_ARCH_DIR := $(ROOT)/src/arch/$(TARGET_ARCH)/linux
 ifeq ($(TARGET_ARCH),x86_64)
@@ -34,8 +42,11 @@ endif
 TARGET_CC_TARGET_FLAG ?= $(shell mkdir -p "$(OBJ_DIR)" && printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o "$(OBJ_DIR)/newos-gitd-target-check.o" >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f "$(OBJ_DIR)/newos-gitd-target-check.o")
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
 COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -I$(ROOT)/src/shared -I$(ROOT)/src/compiler -I$(ROOT)/src/platform/posix -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
-LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections -Wl,-s
+LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections $(STRIP_LDFLAGS)
+PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/linux/profiler_runtime.c)
 endif
+
+COMMON_CFLAGS += $(PROFILE_CFLAGS)
 
 SHARED_SOURCES := $(addprefix $(ROOT)/,$(shell cd $(ROOT) && grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u))
 TLS_SOURCES := $(addprefix $(ROOT)/,$(shell cd $(ROOT) && grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u))
@@ -54,7 +65,7 @@ TARGET_TLS_PLATFORM_SOURCE := $(ROOT)/src/platform/linux/tls.c
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
 endif
 
-FREESTANDING_C_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_C_SOURCES)
+FREESTANDING_C_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(TARGET_PLATFORM_C_SOURCES) $(PROFILE_RUNTIME_SOURCE)
 FREESTANDING_ASM_SOURCES := $(TARGET_PLATFORM_ASM_SOURCES) $(TARGET_CRT)
 GITD_PRIVATE_SOURCES := $(wildcard gitd/*.c)
 GITD_PRIVATE_HEADERS := $(wildcard gitd/*.h)
@@ -62,7 +73,7 @@ source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(RO
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 MACOS_CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
-.PHONY: all freestanding test clean
+.PHONY: all freestanding profile test clean
 .SECONDARY: $(OBJ_DIR)/gitd.o
 
 ifeq ($(AUTO_PARALLEL),1)
@@ -79,12 +90,15 @@ freestanding: $(BUILD_DIR)/gitd
 test: freestanding
 	sh ./smoke.sh
 
-$(BUILD_DIR) $(OBJ_DIR):
+profile: clean
+	+$(MAKE) --no-print-directory PROFILE=1 LINKER_REPORTS=1 freestanding
+
+$(BUILD_DIR) $(OBJ_DIR) $(MAP_DIR):
 	mkdir -p $@
 
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
-$(BUILD_DIR)/gitd: $(OBJ_DIR)/gitd.o $(FREESTANDING_OBJECTS) $(ROOT_LINKER) | $(BUILD_DIR)
-	$(ROOT_LINKER) --target=mach-o-arm64 $(LDFLAGS) --lto-cc="$(TARGET_CC)" -o $@ $(MACOS_CRT_OBJECT) $< $(filter-out $(MACOS_CRT_OBJECT),$(FREESTANDING_OBJECTS))
+$(BUILD_DIR)/gitd: $(OBJ_DIR)/gitd.o $(FREESTANDING_OBJECTS) $(ROOT_LINKER) | $(BUILD_DIR) $(if $(filter 1 yes true,$(LINKER_REPORTS)),$(MAP_DIR))
+	$(ROOT_LINKER) --target=mach-o-arm64 $(LDFLAGS) $(LINKER_REPORT_FLAGS) --lto-cc="$(TARGET_CC)" -o $@ $(MACOS_CRT_OBJECT) $< $(filter-out $(MACOS_CRT_OBJECT),$(FREESTANDING_OBJECTS))
 
 $(ROOT_LINKER):
 	$(MAKE) -C $(ROOT) host

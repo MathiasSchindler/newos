@@ -124,10 +124,15 @@ static int gitd_handle_info_refs(GitdTransport *transport, const GitdOptions *op
         if (gitd_append_ref_advertisement(&body, head_oid, "HEAD", caps) != 0) goto done;
         for (i = 0U; i < refs.count; ++i) {
             unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE];
+            const unsigned char *known_peeled_oid = gitd_ref_known_peeled_oid(&refs.refs[i]);
             int peel_result;
 
             if (gitd_append_ref_advertisement(&body, refs.refs[i].oid, refs.refs[i].name, 0) != 0) goto done;
-            peel_result = !receive_pack ? gitd_peel_tag(&repo, 0, refs.refs[i].oid, peeled_oid) : 0;
+            if (!receive_pack && gitd_ref_is_tag(refs.refs[i].name) && known_peeled_oid != 0) {
+                if (gitd_append_peeled_ref_advertisement(&body, known_peeled_oid, refs.refs[i].name) != 0) goto done;
+                continue;
+            }
+            peel_result = !receive_pack && gitd_ref_is_tag(refs.refs[i].name) ? gitd_peel_tag(&repo, 0, refs.refs[i].oid, peeled_oid) : 0;
             if (peel_result < 0 || (peel_result > 0 && gitd_append_peeled_ref_advertisement(&body, peeled_oid, refs.refs[i].name) != 0)) goto done;
         }
     } else if (receive_pack) {
@@ -660,11 +665,12 @@ static int gitd_append_v2_ls_refs_response(GitRepo *repo, const GitdUploadReques
         if (gitd_ls_refs_prefix_matches(upload, "HEAD") && gitd_append_v2_ref_line(out, head_oid, "HEAD", repo->head_ref, upload->ls_refs_symrefs, 0) != 0) goto done;
         for (i = 0U; i < refs.count; ++i) {
             unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE];
-            const unsigned char *peeled = 0;
+            const unsigned char *peeled = gitd_ref_known_peeled_oid(&refs.refs[i]);
             int peel_result;
 
             if (!gitd_ls_refs_prefix_matches(upload, refs.refs[i].name)) continue;
-            peel_result = upload->ls_refs_peel ? gitd_peel_tag(repo, 0, refs.refs[i].oid, peeled_oid) : 0;
+            if (!upload->ls_refs_peel || !gitd_ref_is_tag(refs.refs[i].name)) peeled = 0;
+            peel_result = upload->ls_refs_peel && gitd_ref_is_tag(refs.refs[i].name) && peeled == 0 ? gitd_peel_tag(repo, 0, refs.refs[i].oid, peeled_oid) : 0;
             if (peel_result < 0) goto done;
             if (peel_result > 0) peeled = peeled_oid;
             if (gitd_append_v2_ref_line(out, refs.refs[i].oid, refs.refs[i].name, 0, upload->ls_refs_symrefs, peeled) != 0) goto done;

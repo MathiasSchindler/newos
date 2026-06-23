@@ -11,6 +11,10 @@ static int gitd_ref_is_branch(const char *ref_name) {
     return rt_strncmp(ref_name, "refs/heads/", 11U) == 0 && ref_name[11] != '\0' && !gitd_path_has_parent_reference(ref_name);
 }
 
+static int gitd_ref_is_tag(const char *ref_name) {
+    return rt_strncmp(ref_name, "refs/tags/", 10U) == 0 && ref_name[10] != '\0' && !gitd_path_has_parent_reference(ref_name);
+}
+
 static int gitd_ref_is_safe(const char *ref_name) {
     size_t i;
     size_t component_start = 0U;
@@ -60,8 +64,14 @@ static int gitd_ref_list_push(GitdRefList *list, const char *name, const unsigne
     }
     if (git_copy(list->refs[list->count].name, sizeof(list->refs[list->count].name), name) != 0) return -1;
     memcpy(list->refs[list->count].oid, oid, CRYPTO_SHA1_DIGEST_SIZE);
+    rt_memset(list->refs[list->count].peeled_oid, 0, sizeof(list->refs[list->count].peeled_oid));
+    list->refs[list->count].has_peeled = 0;
     list->count += 1U;
     return 0;
+}
+
+static const unsigned char *gitd_ref_known_peeled_oid(const GitdRef *ref) {
+    return ref->has_peeled ? ref->peeled_oid : 0;
 }
 
 static int gitd_collect_loose_refs_dir(GitRepo *repo, const char *prefix, GitdRefList *list) {
@@ -91,10 +101,11 @@ static int gitd_collect_loose_refs_dir(GitRepo *repo, const char *prefix, GitdRe
     return 0;
 }
 
-static int gitd_ref_exists(const GitdRefList *list, const char *name) {
+static int gitd_ref_exists_in_first(const GitdRefList *list, size_t count, const char *name) {
     size_t i;
 
-    for (i = 0U; i < list->count; ++i) {
+    if (count > list->count) count = list->count;
+    for (i = 0U; i < count; ++i) {
         if (rt_strcmp(list->refs[i].name, name) == 0) return 1;
     }
     return 0;
@@ -105,6 +116,8 @@ static int gitd_collect_packed_refs(GitRepo *repo, GitdRefList *list) {
     unsigned char *data = 0;
     size_t size = 0U;
     size_t pos = 0U;
+    size_t loose_ref_count = list->count;
+    size_t last_packed_ref_index = (size_t)-1;
 
     if (git_join(path, sizeof(path), repo->git_dir, "packed-refs") != 0 || git_read_file(path, &data, &size) != 0) return 0;
     while (pos < size) {
@@ -114,6 +127,16 @@ static int gitd_collect_packed_refs(GitRepo *repo, GitdRefList *list) {
         end = pos;
         if (pos < size) pos += 1U;
         while (end > start && data[end - 1U] == '\r') end -= 1U;
+        if (end == start + 1U + GIT_OBJECT_HEX_SIZE && data[start] == '^') {
+            unsigned char peeled_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+            if (last_packed_ref_index != (size_t)-1 && git_parse_oid_hex_n((const char *)data + start + 1U, GIT_OBJECT_HEX_SIZE, peeled_oid) == 0) {
+                memcpy(list->refs[last_packed_ref_index].peeled_oid, peeled_oid, CRYPTO_SHA1_DIGEST_SIZE);
+                list->refs[last_packed_ref_index].has_peeled = 1;
+            }
+            continue;
+        }
+        last_packed_ref_index = (size_t)-1;
         if (end > start + GIT_OBJECT_HEX_SIZE + 1U && data[start] != '#' && data[start] != '^' && data[start + GIT_OBJECT_HEX_SIZE] == ' ') {
             char ref_name[GIT_REF_CAPACITY];
             unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
@@ -121,11 +144,12 @@ static int gitd_collect_packed_refs(GitRepo *repo, GitdRefList *list) {
             if (ref_length < sizeof(ref_name) && git_parse_oid_hex_n((const char *)data + start, GIT_OBJECT_HEX_SIZE, oid) == 0) {
                 memcpy(ref_name, data + start + GIT_OBJECT_HEX_SIZE + 1U, ref_length);
                 ref_name[ref_length] = '\0';
-                if (!gitd_ref_exists(list, ref_name) && gitd_ref_is_safe(ref_name)) {
+                if (!gitd_ref_exists_in_first(list, loose_ref_count, ref_name) && gitd_ref_is_safe(ref_name)) {
                     if (gitd_ref_list_push(list, ref_name, oid) != 0) {
                         rt_free(data);
                         return -1;
                     }
+                    last_packed_ref_index = list->count - 1U;
                 }
             }
         }
