@@ -10,6 +10,10 @@ solve - solve one-variable equations and intersections
 solve [OPTIONS] 'EXPRESSION = EXPRESSION'
 solve [OPTIONS] 'EXPRESSION'
 solve [OPTIONS] --report-y 'Y1 = Y2'
+solve [OPTIONS] --area A:B 'F' 'G'
+solve [OPTIONS] --area 'F' 'G'
+solve [OPTIONS] --volume A:B 'F'
+solve [OPTIONS] --mean A:B 'F'
 ```
 
 ## DESCRIPTION
@@ -18,7 +22,7 @@ solve [OPTIONS] --report-y 'Y1 = Y2'
 
 For an input such as `x^2 - 2 = 0`, `solve` evaluates the left side minus the right side and looks for roots of that zero function. Intersections are the same problem: `x^2 = 2*x + 3` is solved as `x^2 - (2*x + 3) = 0`. With `--report-y`, `solve` also reports the corresponding y-value for the left side of the equation.
 
-The tool is aimed at practical student workflows: checking algebra homework, exploring where graphs cross the x-axis, finding intersections between two curves, and seeing an approximate path toward the answer.
+The tool is aimed at practical student workflows: checking algebra homework, exploring where graphs cross the x-axis, finding intersections between two curves, doing Abitur-style curve discussion, and seeing an approximate path toward the answer.
 
 If no interval is supplied, `solve` scans a default visible school-math range rather than failing the most natural invocation. The default is `--scan -100:100:400`, followed by bisection on each bracketed sign change and special handling for likely touching roots.
 
@@ -44,6 +48,9 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - rational-root factoring for higher-degree polynomials in the supported subset
 - exact polynomial identity detection for rational-literal polynomial expressions, including finite decimal literals such as `0.1`
 - exact polynomial derivatives and definite integrals for supported rational-literal polynomial expressions
+- exact polynomial antiderivatives, monotonicity, curvature, tangent and normal lines, end behavior, and curve-discussion summaries
+- exact polynomial area between two curves, rotation volume around the x-axis, and mean value over an interval
+- simple numeric limit checks and rational-polynomial asymptote detection
 - Simpson-rule numerical definite integration for non-polynomial expressions, with approximate labeling and an error estimate
 - approximate identity reporting only when the exact rational front end cannot handle the expression and the floating-point fallback reduces the polynomial to 0 within tolerance
 - multiple-root reporting when scanning finds more than one candidate interval
@@ -67,6 +74,18 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--quiet` prints only the final answer
 - `--diff[=N]` prints the Nth exact polynomial derivative; with an equation input, it solves the Nth derivative set equal to 0
 - `--integrate A:B` computes the definite integral over `[A, B]`, exactly for supported rational polynomials and numerically otherwise
+- `--antiderivative` prints an exact polynomial antiderivative plus `C`
+- `--monotonicity` reports increasing and decreasing intervals
+- `--curvature` reports left-curved and right-curved intervals
+- `--tangent A` prints the tangent line at `x = A`
+- `--normal A` prints the normal line at `x = A`
+- `--end-behavior` prints polynomial limits as `x` approaches positive and negative infinity
+- `--discuss` prints a compact curve discussion: domain, symmetry, zeros, extrema, inflection points, monotonicity, curvature, and end behavior when available
+- `--area A:B F G` computes area between two curves on `[A, B]`; if `A:B` is omitted, `--area F G` uses the leftmost and rightmost exact polynomial intersections when they can be proven
+- `--volume A:B F` computes the volume of rotation around the x-axis as `pi*(integral f(x)^2 dx)`, exactly for supported rational polynomials and numerically otherwise
+- `--mean A:B F` computes the mean value over `[A, B]`, exactly for supported rational polynomials and numerically otherwise
+- `--limit x->A` samples a two-sided limit, with exact rational simplification for supported rational-polynomial quotients
+- `--asymptotes` reports vertical, horizontal, or oblique asymptotes for supported rational-polynomial quotients
 - `--json` writes machine-readable result and diagnostic events
 - `--help` shows usage
 
@@ -87,6 +106,14 @@ Inequalities form the same zero function and report solution intervals. Supporte
 `--diff` uses exact rational polynomial coefficients and the power rule. Without an equation, it prints the derivative polynomial. With an equation, it solves the derivative equal to 0, which is useful for extrema and inflection-point discussions. Non-polynomial differentiation is intentionally rejected.
 
 `--integrate A:B` first tries exact rational polynomial integration by building an exact antiderivative and evaluating it at the bounds. If the integrand is outside the polynomial subset, it uses composite Simpson integration with one Richardson refinement and marks the result approximate. If evaluation fails inside the interval, for example across a pole, the integral is reported as improper and exits with numeric failure status.
+
+The analysis modes are additive front ends over the same evaluator, exact rational polynomial layer, root finder, and interval sign analysis. `--antiderivative`, `--monotonicity`, `--curvature`, `--tangent`, `--normal`, `--end-behavior`, `--area`, `--volume`, and `--mean` prefer exact rational polynomial arithmetic. Non-polynomial monotonicity, curvature, tangent, normal, discussion, area, volume, mean, and limit work use numerical sampling and label such output approximate. Exact claims are made only from the exact rational-polynomial path.
+
+`--discuss` combines the primitive analysis results. For supported polynomials it reports exact zeros, extrema classified by derivative sign change, saddle points where the first derivative does not change sign, inflection points from the second derivative, monotonicity and curvature intervals, and end behavior. For non-polynomial expressions it reports the sampled window, numeric zeros, critical points, inflection points, monotonicity and curvature intervals, and simple end-behavior or horizontal-asymptote hints where sampling supports them. Those results are approximate and bounded by the scan window.
+
+`--limit x->A` evaluates a two-sided limit near `A`. For supported rational-polynomial quotients it can remove a factor that causes a `0/0` hole before evaluating the limit. Opposite-sided blow-up is reported as no two-sided limit with a pole rather than as a finite number. Finite jumps, such as `abs(x)/x` at `0`, are reported as no two-sided limit with the sampled left and right values.
+
+`--asymptotes` recognizes rational-polynomial quotients such as `(x^2 + 1)/(x - 1)`. Real denominator zeros that are not canceled are vertical asymptotes, and polynomial division of the numerator by the denominator gives a horizontal or oblique asymptote when the quotient degree is 0 or 1.
 
 Repeated roots such as `x^2 - 6*x + 9 = 0` do not change sign. A scan therefore also looks for sampled points that are exact or near-zero, and for local minima or maxima where `abs(f(x))` becomes small. These are reported as touching-root candidates, with their residual, instead of silently saying no root was found.
 
@@ -132,7 +159,7 @@ iterations = 34
 
 Roots proven by exact rational polynomial solving are printed as exact integers or fractions, such as `x = 5` or `x = 5/3`. Numeric roots that are close to integers are printed compactly. When a numeric non-integer root is close to a simple fraction with a small denominator, normal text output includes a didactic hint in parentheses, such as `x = 1.6666666667 (1 2/3)`.
 
-Inequality output uses interval notation, for example `solution = (-inf, -2) U (2, inf)` or `solution = all real x`. Definite integral output uses `integral = VALUE`, followed by either `method = exact-polynomial` or `method = simpson` with `status = approximate`.
+Inequality output uses interval notation, for example `solution = (-inf, -2) U (2, inf)` or `solution = all real x`. Definite integral output uses `integral = VALUE`, followed by either `method = exact-polynomial` or `method = simpson` with `status = approximate`. Analysis output uses labels such as `maximum`, `minimum`, `saddle`, `inflection`, `increasing`, `right-curved`, `tangent`, `area`, and `volume`, followed by `method = exact-polynomial` when the result is exact or `status = approximate` when it depends on numeric sampling. Numeric curve discussion prints `sample window: [LO, HI]` instead of claiming a complete symbolic domain.
 
 For intersections, output includes the corresponding y-value:
 
@@ -168,7 +195,9 @@ A `solve_result` data object includes the variable name, root value, residual, m
 
 - no general symbolic algebra; `auto` can directly handle supported exact rational polynomial expressions through degree 8 and supported floating-point polynomial expressions through degree 16, including linear isolation, real quadratic roots, simple quadratic factoring explanations, rational-root factoring for higher degrees in those subsets, and polynomial identities, but it does not factor degree-17 or higher polynomials, isolate variables in arbitrary expressions, or prove non-polynomial identities
 - exact polynomial coefficient arithmetic is bounded; if rational numerators, denominators, common denominators, expansion products, divisor enumeration, or degree exceed the exact front-end limits, `solve` falls back to the floating-point polynomial or numeric path
-- exact inequalities, derivatives, and polynomial integration are limited to the supported rational polynomial subset; non-polynomial inequalities and integrals use bounded numerical methods, while non-polynomial differentiation is not implemented
+- exact inequalities, derivatives, polynomial integration, and most exact analysis results are limited to the supported rational polynomial subset; non-polynomial inequalities, integrals, volume, mean, and discussion use bounded numerical methods
+- `--area F G` without explicit bounds requires at least two exact polynomial intersections; numeric omitted-bound discovery is not implemented
+- `--asymptotes` is limited to rational-polynomial quotients written as one numerator divided by one denominator
 - numerical integration is composite Simpson integration, not a symbolic antiderivative engine, and improper integrals over detected discontinuities are rejected rather than assigned a finite number
 - finite decimal literals in the exact polynomial front end are parsed as exact rationals from their source spelling, so `0.1` means exactly `1/10` in that path
 - solves one variable at a time
@@ -265,6 +294,35 @@ Compute exact and numerical definite integrals:
 ```
 solve --integrate 0:1 'x^2'
 solve --integrate 0:pi 'sin(x)'
+```
+
+Print an exact antiderivative and an exact tangent line:
+
+```
+solve --antiderivative 'x^2'
+solve --tangent 2 'x^2'
+```
+
+Discuss a polynomial curve:
+
+```
+solve --discuss 'x^3 - 3*x'
+```
+
+Compute area, rotation volume, and mean value:
+
+```
+solve --area -1:1 'x^3 - x' '0'
+solve --area '2*x' 'x^2'
+solve --volume 0:1 'x'
+solve --mean 0:2 '2*x'
+```
+
+Check a removable limit and rational asymptotes:
+
+```
+solve --limit 'x->2' '(x^2 - 4)/(x - 2)'
+solve --asymptotes '(x^2 + 1)/(x - 1)'
 ```
 
 ## SEE ALSO

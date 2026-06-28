@@ -262,6 +262,85 @@ diff_integrate_status=0
 assert_text_equals "$diff_integrate_status" '2' "solve should reject combining --diff and --integrate"
 assert_file_contains "$WORK_DIR/diff-integrate.err" 'diff and --integrate cannot be combined' "solve diff/integrate conflict diagnostic mismatch"
 
+"${TEST_BIN_DIR}/solve" --antiderivative 'x^2' > "$WORK_DIR/antiderivative-square.out"
+assert_file_contains "$WORK_DIR/antiderivative-square.out" '^F(x) = x\^3/3 + C$' "solve did not print the exact antiderivative of x^2"
+"${TEST_BIN_DIR}/solve" --antiderivative '3*x^2+2*x' > "$WORK_DIR/antiderivative-poly.out"
+assert_file_contains "$WORK_DIR/antiderivative-poly.out" '^F(x) = x\^3 + x\^2 + C$' "solve did not simplify an exact polynomial antiderivative"
+
+"${TEST_BIN_DIR}/solve" --monotonicity 'x^2' > "$WORK_DIR/monotonicity-square.out"
+assert_file_contains "$WORK_DIR/monotonicity-square.out" '^decreasing = (-inf, 0)$' "solve did not report the decreasing interval of x^2"
+assert_file_contains "$WORK_DIR/monotonicity-square.out" '^increasing = (0, inf)$' "solve did not report the increasing interval of x^2"
+"${TEST_BIN_DIR}/solve" --curvature 'x^3' > "$WORK_DIR/curvature-cubic.out"
+assert_file_contains "$WORK_DIR/curvature-cubic.out" '^right-curved = (-inf, 0)$' "solve did not report negative curvature interval of x^3"
+assert_file_contains "$WORK_DIR/curvature-cubic.out" '^left-curved = (0, inf)$' "solve did not report positive curvature interval of x^3"
+
+"${TEST_BIN_DIR}/solve" --tangent 2 'x^2' > "$WORK_DIR/tangent-square.out"
+assert_file_contains "$WORK_DIR/tangent-square.out" '^tangent: y = 4\*x - 4$' "solve did not print the exact tangent line at x=2 for x^2"
+"${TEST_BIN_DIR}/solve" --normal 0 'x^2' > "$WORK_DIR/normal-vertical.out"
+assert_file_contains "$WORK_DIR/normal-vertical.out" '^normal: x = 0$' "solve did not report a vertical normal at a horizontal tangent"
+
+"${TEST_BIN_DIR}/solve" --end-behavior 'x^3' > "$WORK_DIR/end-behavior-cubic.out"
+assert_file_contains "$WORK_DIR/end-behavior-cubic.out" '^limit x->-inf: -inf$' "solve cubic left end behavior mismatch"
+assert_file_contains "$WORK_DIR/end-behavior-cubic.out" '^limit x->inf: +inf$' "solve cubic right end behavior mismatch"
+
+"${TEST_BIN_DIR}/solve" --discuss 'x^3' > "$WORK_DIR/discuss-cubic.out"
+assert_file_contains "$WORK_DIR/discuss-cubic.out" '^saddle: (0, 0)$' "solve must classify x^3 at x=0 as a saddle"
+if grep -q '^maximum: (0, 0)$\|^minimum: (0, 0)$' "$WORK_DIR/discuss-cubic.out"; then
+	fail "solve classified the x^3 terrace point as an extremum"
+fi
+"${TEST_BIN_DIR}/solve" --discuss 'x^3 - 3*x' > "$WORK_DIR/discuss-cubic-shift.out"
+assert_file_contains "$WORK_DIR/discuss-cubic-shift.out" '^maximum: (-1, 2)$' "solve did not classify the exact local maximum of x^3 - 3*x"
+assert_file_contains "$WORK_DIR/discuss-cubic-shift.out" '^minimum: (1, -2)$' "solve did not classify the exact local minimum of x^3 - 3*x"
+assert_file_contains "$WORK_DIR/discuss-cubic-shift.out" '^inflection: (0, 0)$' "solve did not report the exact inflection point of x^3 - 3*x"
+"${TEST_BIN_DIR}/solve" --discuss 'x*exp(x)' > "$WORK_DIR/discuss-xexp.out"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^sample window: \[-10, 10\]$' "solve numeric discussion should label the sampled window instead of claiming a domain"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^zeros approximate: 0$' "solve did not report the numeric zero of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^minimum approximate: (-1, -0\.3678794412)$' "solve did not numerically classify the x*exp(x) minimum by sign change"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^inflection approximate: (-1\.99999[0-9]*, -0\.270670[0-9]*)$' "solve did not numerically report the x*exp(x) inflection point"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^decreasing (within scan range) = (-10, -1)$' "solve did not report the numeric decreasing interval of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^increasing (within scan range) = (-1, 10)$' "solve did not report the numeric increasing interval of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^right-curved (within scan range) = (-10, -1\.99999[0-9]*)$' "solve did not report the numeric right-curved interval of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^left-curved (within scan range) = (-1\.99999[0-9]*, 10)$' "solve did not report the numeric left-curved interval of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^limit x->-inf approximate: 0 from below$' "solve did not report the left end behavior of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^horizontal asymptote approximate: y = 0$' "solve did not report the numeric horizontal asymptote of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^limit x->inf approximate: +inf$' "solve did not report the right end behavior of x*exp(x)"
+assert_file_contains "$WORK_DIR/discuss-xexp.out" '^status = approximate$' "solve did not label numeric discussion output as approximate"
+
+"${TEST_BIN_DIR}/solve" --area -1:1 'x^3 - x' '0' > "$WORK_DIR/area-odd.out"
+assert_file_contains "$WORK_DIR/area-odd.out" '^area = 1/2$' "solve area must sum absolute lobes instead of returning signed zero"
+"${TEST_BIN_DIR}/solve" --area 0:2 '2*x' 'x^2' > "$WORK_DIR/area-parabola-line.out"
+assert_file_contains "$WORK_DIR/area-parabola-line.out" '^area = 4/3$' "solve exact area between 2*x and x^2 mismatch"
+"${TEST_BIN_DIR}/solve" --area '2*x' 'x^2' > "$WORK_DIR/area-auto-bounds.out"
+assert_file_contains "$WORK_DIR/area-auto-bounds.out" '^area = 4/3$' "solve did not infer area bounds from exact intersections"
+
+"${TEST_BIN_DIR}/solve" --volume 0:1 'x' > "$WORK_DIR/volume-line.out"
+assert_file_contains "$WORK_DIR/volume-line.out" '^volume = pi\*(1/3)$' "solve exact rotation volume mismatch"
+"${TEST_BIN_DIR}/solve" --mean 0:2 '2*x' > "$WORK_DIR/mean-line.out"
+assert_file_contains "$WORK_DIR/mean-line.out" '^mean = 2$' "solve exact mean value mismatch"
+"${TEST_BIN_DIR}/solve" --volume 0:pi 'sin(x)' > "$WORK_DIR/volume-sine.out"
+assert_file_contains "$WORK_DIR/volume-sine.out" '^volume approximate = pi\*(1\.5707963268)$' "solve numeric rotation volume mismatch"
+assert_file_contains "$WORK_DIR/volume-sine.out" '^status = approximate$' "solve did not label numeric volume as approximate"
+"${TEST_BIN_DIR}/solve" --mean 0:pi 'sin(x)' > "$WORK_DIR/mean-sine.out"
+assert_file_contains "$WORK_DIR/mean-sine.out" '^mean approximate = 0\.6366197724$' "solve numeric mean value mismatch"
+assert_file_contains "$WORK_DIR/mean-sine.out" '^status = approximate$' "solve did not label numeric mean as approximate"
+
+"${TEST_BIN_DIR}/solve" --limit 'x->2' '(x^2 - 4)/(x - 2)' > "$WORK_DIR/limit-removable.out"
+assert_file_contains "$WORK_DIR/limit-removable.out" '^limit = 4$' "solve did not report the removable 0/0 limit"
+limit_pole_status=0
+"${TEST_BIN_DIR}/solve" --limit 'x->0' '1/x' > "$WORK_DIR/limit-pole.out" 2> "$WORK_DIR/limit-pole.err" || limit_pole_status=$?
+assert_text_equals "$limit_pole_status" '1' "solve should return 1 for a missing two-sided pole limit"
+assert_file_contains "$WORK_DIR/limit-pole.out" '^limit: no two-sided limit (pole)$' "solve printed a finite or non-pole limit for 1/x at 0"
+limit_jump_status=0
+"${TEST_BIN_DIR}/solve" --limit 'x->0' 'abs(x)/x' > "$WORK_DIR/limit-jump.out" 2> "$WORK_DIR/limit-jump.err" || limit_jump_status=$?
+assert_text_equals "$limit_jump_status" '1' "solve should return 1 for a finite jump with no two-sided limit"
+assert_file_contains "$WORK_DIR/limit-jump.out" '^limit: no two-sided limit$' "solve did not reject the finite jump limit of abs(x)/x"
+assert_file_contains "$WORK_DIR/limit-jump.out" '^left = -1$' "solve finite jump left-hand limit mismatch"
+assert_file_contains "$WORK_DIR/limit-jump.out" '^right = 1$' "solve finite jump right-hand limit mismatch"
+
+"${TEST_BIN_DIR}/solve" --asymptotes '(x^2 + 1)/(x - 1)' > "$WORK_DIR/asymptotes-rational.out"
+assert_file_contains "$WORK_DIR/asymptotes-rational.out" '^vertical: x = 1$' "solve did not report the vertical asymptote"
+assert_file_contains "$WORK_DIR/asymptotes-rational.out" '^oblique: y = x + 1$' "solve did not report the oblique asymptote"
+
 "${TEST_BIN_DIR}/solve" --quiet '(10000000000*x + 1)^8 = (10000000000*x + 1)^8' > "$WORK_DIR/rational-overflow-fallback.out"
 assert_file_contains "$WORK_DIR/rational-overflow-fallback.out" '^all real values' "solve did not fall back after exact rational coefficient overflow"
 
