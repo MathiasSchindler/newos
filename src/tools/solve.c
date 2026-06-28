@@ -168,6 +168,9 @@ static int solve_eval_y(const SolveEquation *equation, const SolveOptions *optio
 static int solve_root_in_scan_range(const SolveOptions *options, double root);
 static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, double tolerance);
 static int solve_collect_rat_poly_roots(const SolveRatPoly *input, SolveBreakpoint *points, int *count_out);
+static void solve_print_rat_roots_line(const char *label, SolveBreakpoint *points, int count);
+static int solve_rat_poly_format_antiderivative(const SolveRatPoly *poly, const char *var_name, char *buffer, size_t buffer_size);
+static void solve_numeric_analysis_bounds(const SolveOptions *options, double *lo_out, double *hi_out);
 static double solve_numeric_derivative_value(const SolveEquation *equation, const SolveOptions *options, double x, int order, int *ok_out);
 static int solve_numeric_derivative_roots(const SolveEquation *equation, const SolveOptions *options, int order, double *roots, int *count_out);
 
@@ -2047,12 +2050,31 @@ static int solve_eval_y(const SolveEquation *equation, const SolveOptions *optio
     return solve_eval_expr(equation->left, options->var_name, x, value_out, &message);
 }
 
+static int solve_should_explain(const SolveOptions *options) {
+    return options->explain && !tool_json_is_enabled() && !options->quiet;
+}
+
+static void solve_explain_working_function(const char *mode, const SolveEquation *equation, const SolveOptions *options) {
+    rt_write_cstr(1, "explain: ");
+    rt_write_line(1, mode);
+    rt_write_cstr(1, "working function: f(");
+    rt_write_cstr(1, options->var_name);
+    rt_write_cstr(1, ") = ");
+    rt_write_cstr(1, equation->left);
+    if (equation->has_equation) {
+        rt_write_cstr(1, " - (");
+        rt_write_cstr(1, equation->right);
+        rt_write_cstr(1, ")");
+    }
+    rt_write_char(1, '\n');
+}
+
 static void solve_explain_linear(const SolveEquation *equation, const SolveOptions *options, double slope, double intercept, double root) {
     char value[96];
     int unit_slope = solve_abs(slope - 1.0) <= options->tolerance * 2.0;
     int negative_unit_slope = solve_abs(slope + 1.0) <= options->tolerance * 2.0;
 
-    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+    if (!solve_should_explain(options)) {
         return;
     }
     rt_write_line(1, "linear equation detected");
@@ -2350,6 +2372,51 @@ static void solve_write_double_value(double value, int scale) {
     rt_write_cstr(1, text);
 }
 
+static void solve_explain_rat_poly_line(const char *label, const SolveRatPoly *poly, const SolveOptions *options) {
+    char text[SOLVE_EXPR_CAPACITY];
+    if (!solve_should_explain(options)) return;
+    if (solve_rat_poly_format(poly, options->var_name, text, sizeof(text)) != 0) return;
+    rt_write_cstr(1, label);
+    rt_write_line(1, text);
+}
+
+static void solve_explain_rat_value_line(const char *label, SolveRat value, const SolveOptions *options) {
+    if (!solve_should_explain(options)) return;
+    rt_write_cstr(1, label);
+    solve_write_rat_value(value);
+    rt_write_char(1, '\n');
+}
+
+static void solve_explain_double_value_line(const char *label, double value, const SolveOptions *options) {
+    if (!solve_should_explain(options)) return;
+    rt_write_cstr(1, label);
+    solve_write_double_value(value, options->scale);
+    rt_write_char(1, '\n');
+}
+
+static const char *solve_relation_text(SolveRelation relation) {
+    switch (relation) {
+        case SOLVE_RELATION_LT: return "< 0";
+        case SOLVE_RELATION_LE: return "<= 0";
+        case SOLVE_RELATION_GT: return "> 0";
+        case SOLVE_RELATION_GE: return ">= 0";
+        case SOLVE_RELATION_EQ: return "= 0";
+        default: return "";
+    }
+}
+
+static void solve_explain_scan_window_line(const SolveOptions *options) {
+    double lo;
+    double hi;
+    if (!solve_should_explain(options)) return;
+    solve_numeric_analysis_bounds(options, &lo, &hi);
+    rt_write_cstr(1, "numeric scan window: [");
+    solve_write_double_value(lo, options->scale);
+    rt_write_cstr(1, ", ");
+    solve_write_double_value(hi, options->scale);
+    rt_write_line(1, "]");
+}
+
 static int solve_get_rat_poly_for_mode(const SolveEquation *equation, const SolveOptions *options, SolveRatPoly *poly_out) {
     if (equation->has_equation && equation->relation != SOLVE_RELATION_EQ) return -1;
     return equation->has_equation ? solve_equation_rat_poly(equation, options, poly_out) : solve_parse_rat_text(equation->left, options->var_name, poly_out);
@@ -2477,7 +2544,7 @@ static void solve_write_linear_term(const SolveOptions *options, double root) {
 }
 
 static void solve_explain_identity(const SolveOptions *options, int exact) {
-    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+    if (!solve_should_explain(options)) {
         return;
     }
     rt_write_line(1, exact ? "polynomial identity detected" : "approximate polynomial identity detected");
@@ -2487,7 +2554,7 @@ static void solve_explain_identity(const SolveOptions *options, int exact) {
 static void solve_explain_quadratic(const SolveOptions *options, double a, double b, double c, double discriminant, double root1, double root2, const char *method) {
     char value[96];
 
-    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+    if (!solve_should_explain(options)) {
         return;
     }
     rt_write_line(1, "quadratic polynomial detected");
@@ -2529,7 +2596,7 @@ static void solve_explain_quadratic(const SolveOptions *options, double a, doubl
 static void solve_explain_higher_polynomial(const SolveOptions *options, int degree, const double *roots, int root_count, int remaining_degree) {
     int i;
 
-    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+    if (!solve_should_explain(options)) {
         return;
     }
     rt_write_line(1, "polynomial factoring detected");
@@ -2968,7 +3035,7 @@ static void solve_keep_preferred_scan_result(SolveResultSet *set) {
 }
 
 static void solve_explain_start(const SolveEquation *equation, const SolveOptions *options) {
-    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+    if (!solve_should_explain(options)) {
         return;
     }
     rt_write_cstr(1, "function: f(");
@@ -2983,7 +3050,7 @@ static void solve_explain_start(const SolveEquation *equation, const SolveOption
 static void solve_explain_step(const SolveOptions *options, int iteration, double lo, double hi, double mid, double fmid) {
     char buffer[64];
 
-    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+    if (!solve_should_explain(options)) {
         return;
     }
     rt_write_cstr(1, "step ");
@@ -3378,6 +3445,17 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
         tool_write_error("solve", "derivative overflow", 0);
         return 3;
     }
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("derivative", equation, options);
+        solve_explain_rat_poly_line("polynomial: ", &poly, options);
+        rt_write_cstr(1, "order: ");
+        rt_write_uint(1, (unsigned long long)options->diff_order);
+        rt_write_char(1, '\n');
+        rt_write_line(1, "rule: d/dx a*x^n = a*n*x^(n-1)");
+        rt_write_cstr(1, "derivative: ");
+        rt_write_line(1, text);
+        if (equation->has_equation) rt_write_line(1, "next: solve derivative = 0");
+    }
     if (!equation->has_equation) {
         rt_write_line(1, text);
         return 0;
@@ -3481,6 +3559,24 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
             tool_write_error("solve", "exact integration overflow", 0);
             return 3;
         }
+        if (solve_should_explain(options)) {
+            SolveRatPoly anti;
+            char anti_text[SOLVE_EXPR_CAPACITY];
+            solve_explain_working_function("definite integral", equation, options);
+            solve_explain_rat_poly_line("integrand polynomial: ", &poly, options);
+            rt_write_cstr(1, "bounds: ");
+            solve_write_rat_value(lo_rat);
+            rt_write_cstr(1, " to ");
+            solve_write_rat_value(hi_rat);
+            rt_write_char(1, '\n');
+            if (solve_rat_poly_antiderivative(&poly, &anti) == 0 && solve_rat_poly_format_antiderivative(&anti, options->var_name, anti_text, sizeof(anti_text)) == 0) {
+                rt_write_cstr(1, "antiderivative: ");
+                rt_write_line(1, anti_text);
+            }
+            solve_explain_rat_value_line("F(upper) = ", hi_value, options);
+            solve_explain_rat_value_line("F(lower) = ", lo_value, options);
+            rt_write_line(1, "rule: integral from a to b = F(b) - F(a)");
+        }
         if (options->quiet) {
             rt_write_line(1, text);
         } else {
@@ -3501,6 +3597,15 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
             return 3;
         }
         error = solve_abs(fine - coarse) / 15.0;
+        if (solve_should_explain(options)) {
+            solve_explain_working_function("numeric definite integral", equation, options);
+            solve_explain_double_value_line("lower bound = ", lo, options);
+            solve_explain_double_value_line("upper bound = ", hi, options);
+            rt_write_line(1, "method detail: composite Simpson rule with 1000 and 2000 subintervals");
+            solve_explain_double_value_line("coarse estimate = ", coarse, options);
+            solve_explain_double_value_line("fine estimate = ", fine, options);
+            rt_write_line(1, "status reason: numeric integration uses sampled double values");
+        }
         if (options->quiet) {
             solve_format_double(fine, options->scale, value, sizeof(value));
             rt_write_line(1, value);
@@ -3693,6 +3798,14 @@ static int solve_run_exact_poly_inequality(const SolveEquation *equation, const 
     int inclusive = solve_relation_is_inclusive(equation->relation);
     int segment;
 
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("inequality", equation, options);
+        solve_explain_rat_poly_line("zero-function polynomial: ", poly, options);
+        rt_write_cstr(1, "target sign: f(x) ");
+        rt_write_line(1, solve_relation_text(equation->relation));
+        rt_write_line(1, "method detail: exact roots split the real line; one exact test value decides each interval");
+    }
+
     if (degree < 0) {
         if (solve_relation_satisfied(0.0, equation->relation, 0.0)) {
             rt_write_line(1, "solution = all real x");
@@ -3703,6 +3816,7 @@ static int solve_run_exact_poly_inequality(const SolveEquation *equation, const 
     }
     if (solve_collect_rat_poly_roots(poly, points, &point_count) != 0) return -1;
     solve_sort_breakpoints(points, &point_count, options->tolerance);
+    if (solve_should_explain(options)) solve_print_rat_roots_line("boundary roots:", points, point_count);
     if (point_count == 0) {
         SolveRat zero;
         SolveRat value;
@@ -3773,6 +3887,14 @@ static int solve_run_numeric_inequality(const SolveEquation *equation, const Sol
     double step = (hi - lo) / (double)options->scan_steps;
     int i;
     const char *message = 0;
+
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("numeric inequality", equation, options);
+        rt_write_cstr(1, "target sign: f(x) ");
+        rt_write_line(1, solve_relation_text(equation->relation));
+        solve_explain_scan_window_line(options);
+        rt_write_line(1, "method detail: scan for zero crossings and invalid sample points, then test each interval midpoint");
+    }
 
     zero_equation.relation = SOLVE_RELATION_EQ;
     scan_options.all = 1;
@@ -3895,6 +4017,17 @@ static int solve_run_antiderivative_mode(const SolveEquation *equation, const So
         tool_write_error("solve", "exact integration overflow", 0);
         return 3;
     }
+    if (solve_should_explain(options)) {
+        char poly_text[SOLVE_EXPR_CAPACITY];
+        solve_explain_working_function("antiderivative", equation, options);
+        if (solve_rat_poly_format(&poly, options->var_name, poly_text, sizeof(poly_text)) == 0) {
+            rt_write_cstr(1, "polynomial: ");
+            rt_write_line(1, poly_text);
+        }
+        rt_write_line(1, "rule: integral a*x^n dx = a*x^(n+1)/(n+1)");
+        rt_write_cstr(1, "exact antiderivative: ");
+        rt_write_line(1, text);
+    }
     rt_write_cstr(1, "F(");
     rt_write_cstr(1, options->var_name);
     rt_write_cstr(1, ") = ");
@@ -3912,6 +4045,12 @@ static int solve_run_monotonicity_mode(const SolveEquation *equation, const Solv
         double lo = options->default_scan ? -10.0 : options->scan_lo;
         double hi = options->default_scan ? 10.0 : options->scan_hi;
         int i;
+        if (solve_should_explain(options)) {
+            solve_explain_working_function(curvature ? "numeric curvature" : "numeric monotonicity", equation, options);
+            solve_explain_scan_window_line(options);
+            rt_write_line(1, curvature ? "method detail: finite-difference f'' sign changes split curvature intervals" : "method detail: finite-difference f' sign changes split monotonicity intervals");
+            rt_write_line(1, "status reason: derivative signs are sampled numerically");
+        }
         solve_numeric_derivative_roots(equation, options, curvature ? 2 : 1, roots, &count);
         for (i = 0; i <= count; ++i) {
             double left = i == 0 ? lo : roots[i - 1];
@@ -3931,6 +4070,13 @@ static int solve_run_monotonicity_mode(const SolveEquation *equation, const Solv
         return 0;
     }
     if (solve_rat_poly_derivative(&poly, curvature ? 2 : 1, &derivative) != 0) return 3;
+    if (solve_should_explain(options)) {
+        solve_explain_working_function(curvature ? "curvature" : "monotonicity", equation, options);
+        solve_explain_rat_poly_line("polynomial: ", &poly, options);
+        solve_explain_rat_poly_line(curvature ? "second derivative: " : "first derivative: ", &derivative, options);
+        rt_write_line(1, curvature ? "rule: f'' > 0 means left-curved; f'' < 0 means right-curved" : "rule: f' > 0 means increasing; f' < 0 means decreasing");
+        rt_write_line(1, "method detail: exact derivative roots split the real line; exact signs decide intervals");
+    }
     solve_print_labeled_intervals(curvature ? "left-curved" : "increasing", curvature ? "right-curved" : "decreasing", options, &derivative);
     rt_write_line(1, "method = exact-polynomial");
     return 0;
@@ -3989,6 +4135,13 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
         if (!ok) return 3;
         if (normal) {
             if (solve_abs(slope_value) <= options->tolerance) {
+                if (solve_should_explain(options)) {
+                    solve_explain_working_function("numeric normal", equation, options);
+                    solve_explain_double_value_line("point a = ", point, options);
+                    solve_explain_double_value_line("f(a) = ", y_value, options);
+                    solve_explain_double_value_line("numeric f'(a) = ", slope_value, options);
+                    rt_write_line(1, "rule: tangent slope is 0, so the normal line is vertical");
+                }
                 rt_write_cstr(1, "normal approximate: x = ");
                 solve_write_double_value(point, options->scale);
                 rt_write_char(1, '\n');
@@ -3998,6 +4151,14 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
             slope_value = -1.0 / slope_value;
         }
         intercept_value = y_value - slope_value * point;
+        if (solve_should_explain(options)) {
+            solve_explain_working_function(normal ? "numeric normal" : "numeric tangent", equation, options);
+            solve_explain_double_value_line("point a = ", point, options);
+            solve_explain_double_value_line("f(a) = ", y_value, options);
+            solve_explain_double_value_line(normal ? "normal slope = " : "tangent slope = ", slope_value, options);
+            rt_write_line(1, normal ? "rule: normal slope is -1/f'(a)" : "rule: tangent line is y - f(a) = f'(a)*(x - a)");
+            rt_write_line(1, "status reason: slope is computed by finite differences");
+        }
         rt_write_cstr(1, normal ? "normal approximate: y = " : "tangent approximate: y = ");
         solve_write_double_value(slope_value, options->scale);
         rt_write_cstr(1, "*");
@@ -4015,8 +4176,17 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
     }
     degree = solve_rat_poly_degree(&poly);
     if (solve_rat_poly_eval(&poly, degree, x, &y) != 0 || solve_rat_poly_derivative(&poly, 1, &derivative) != 0 || solve_rat_poly_eval(&derivative, solve_rat_poly_degree(&derivative), x, &slope) != 0) return 3;
+    if (solve_should_explain(options)) {
+        solve_explain_working_function(normal ? "normal" : "tangent", equation, options);
+        solve_explain_rat_poly_line("polynomial: ", &poly, options);
+        solve_explain_rat_poly_line("first derivative: ", &derivative, options);
+        solve_explain_rat_value_line("point a = ", x, options);
+        solve_explain_rat_value_line("f(a) = ", y, options);
+        solve_explain_rat_value_line("f'(a) = ", slope, options);
+    }
     if (normal) {
         if (solve_rat_is_zero(slope)) {
+            if (solve_should_explain(options)) rt_write_line(1, "rule: tangent slope is 0, so the normal line is vertical");
             rt_write_cstr(1, "normal: x = ");
             solve_write_rat_value(x);
             rt_write_char(1, '\n');
@@ -4024,8 +4194,13 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
             return 0;
         }
         if (solve_rat_make(-slope.den, slope.num, &slope) != 0) return 3;
+        solve_explain_rat_value_line("normal slope = -1/f'(a) = ", slope, options);
     }
     if (solve_rat_mul(slope, x, &product) != 0 || solve_rat_sub(y, product, &intercept) != 0) return 3;
+    if (solve_should_explain(options)) {
+        rt_write_line(1, normal ? "rule: normal line is y - f(a) = m_normal*(x - a)" : "rule: tangent line is y - f(a) = f'(a)*(x - a)");
+        solve_explain_rat_value_line("intercept f(a) - m*a = ", intercept, options);
+    }
     if (solve_write_exact_line(normal ? "normal: " : "tangent: ", slope, intercept, options) != 0) return 3;
     rt_write_line(1, "method = exact-polynomial");
     return 0;
@@ -4036,6 +4211,11 @@ static int solve_run_end_behavior_mode(const SolveEquation *equation, const Solv
     if (solve_get_rat_poly_for_mode(equation, options, &poly) != 0) {
         tool_write_error("solve", "end behavior supported only for polynomials", 0);
         return 2;
+    }
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("end behavior", equation, options);
+        solve_explain_rat_poly_line("polynomial: ", &poly, options);
+        rt_write_line(1, "rule: the leading nonzero term controls behavior as x approaches +/-inf");
     }
     solve_write_poly_end_behavior(&poly);
     return 0;
@@ -4284,6 +4464,12 @@ static int solve_run_discuss_mode(const SolveEquation *equation, const SolveOpti
         int critical_count = 0;
         int inflection_count = 0;
         int i;
+        if (solve_should_explain(options)) {
+            solve_explain_working_function("curve discussion", equation, options);
+            solve_explain_rat_poly_line("polynomial: ", &poly, options);
+            rt_write_line(1, "domain rule: every polynomial is defined for all real x");
+            rt_write_line(1, "symmetry rule: only even powers -> y-axis; only odd powers -> origin");
+        }
         rt_write_line(1, "domain: all real x");
         rt_write_cstr(1, "symmetry: ");
         rt_write_line(1, solve_symmetry_label(&poly));
@@ -4291,6 +4477,12 @@ static int solve_run_discuss_mode(const SolveEquation *equation, const SolveOpti
         solve_sort_breakpoints(zeros, &zero_count, options->tolerance);
         solve_print_rat_roots_line("zeros:", zeros, zero_count);
         if (solve_rat_poly_derivative(&poly, 1, &first) != 0 || solve_rat_poly_derivative(&poly, 2, &second) != 0) return 3;
+        if (solve_should_explain(options)) {
+            solve_explain_rat_poly_line("first derivative: ", &first, options);
+            solve_explain_rat_poly_line("second derivative: ", &second, options);
+            rt_write_line(1, "extremum rule: f' sign change + to - gives maximum; - to + gives minimum; no sign change gives saddle");
+            rt_write_line(1, "inflection rule: roots of f'' where curvature changes sign are inflection points");
+        }
         (void)solve_collect_rat_poly_roots(&first, critical, &critical_count);
         solve_sort_breakpoints(critical, &critical_count, options->tolerance);
         for (i = 0; i < critical_count; ++i) {
@@ -4330,6 +4522,14 @@ static int solve_run_discuss_mode(const SolveEquation *equation, const SolveOpti
         solve_collect_numeric_function_roots(equation, options, zeros, &zero_count);
         solve_numeric_derivative_roots(equation, options, 1, roots, &count);
         solve_numeric_derivative_roots(equation, options, 2, inflections, &inflection_count);
+        if (solve_should_explain(options)) {
+            solve_explain_working_function("numeric curve discussion", equation, options);
+            solve_explain_scan_window_line(options);
+            rt_write_line(1, "zero rule: zeros are found by scan plus bisection inside the sampled window");
+            rt_write_line(1, "critical-point rule: finite-difference f' sign changes are classified by signs on either side");
+            rt_write_line(1, "inflection rule: finite-difference f'' sign changes are reported as approximate inflections");
+            rt_write_line(1, "end-behavior rule: far samples provide only approximate asymptote and infinity hints");
+        }
         solve_write_sample_window(options);
         solve_print_numeric_roots_line("zeros approximate:", zeros, zero_count, options);
         for (i = 0; i < count; ++i) {
@@ -4383,6 +4583,7 @@ static int solve_run_limit_mode(const SolveOptions *options, const char *expr) {
     int left_ok = 0;
     int right_ok = 0;
     int i;
+    double final_h = 0.0;
     if (!solve_match_name_at(options->limit_spec, &pos, options->var_name) || options->limit_spec[pos++] != '-' || options->limit_spec[pos++] != '>' || solve_parse_double_arg(options->limit_spec + pos, &at) != 0) {
         tool_write_error("solve", "invalid --limit spec", options->limit_spec);
         return 2;
@@ -4396,8 +4597,18 @@ static int solve_run_limit_mode(const SolveOptions *options, const char *expr) {
         int j;
         const char *message = 0;
         for (j = 0; j < i; ++j) h *= 0.1;
+        final_h = h;
         left_ok = solve_eval_function(&equation, options, at - h, &left, &message) == 0;
         right_ok = solve_eval_function(&equation, options, at + h, &right, &message) == 0;
+    }
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("two-sided limit", &equation, options);
+        solve_explain_double_value_line("target point = ", at, options);
+        solve_explain_double_value_line("final sample distance = ", final_h, options);
+        if (left_ok) solve_explain_double_value_line("left sample value = ", left, options);
+        if (right_ok) solve_explain_double_value_line("right sample value = ", right, options);
+        rt_write_line(1, "rule: matching left and right samples indicate a two-sided limit; divergent magnitude indicates a pole; finite mismatch indicates a jump");
+        rt_write_line(1, "status reason: this limit path is numeric sampling unless another exact mode handles the expression");
     }
     if (!left_ok || !right_ok || solve_abs(left) > 1.0e12 || solve_abs(right) > 1.0e12 || (left * right < 0.0 && solve_abs(left) > 1000000.0 && solve_abs(right) > 1000000.0)) {
         rt_write_line(1, "limit: no two-sided limit (pole)");
@@ -4523,6 +4734,23 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
         lo_text[0] = '\0';
         hi_text[0] = '\0';
     }
+    if (solve_should_explain(options)) {
+        rt_write_line(1, "explain: area between curves");
+        rt_write_cstr(1, "upper/lower difference h(x) = (");
+        rt_write_cstr(1, first_expr);
+        rt_write_cstr(1, ") - (");
+        rt_write_cstr(1, second_expr);
+        rt_write_line(1, ")");
+        if (lo_text[0] != '\0') {
+            rt_write_cstr(1, "bounds: ");
+            rt_write_cstr(1, lo_text);
+            rt_write_cstr(1, " to ");
+            rt_write_line(1, hi_text);
+        } else {
+            rt_write_line(1, "bounds: omitted; using leftmost and rightmost exact intersections when available");
+        }
+        rt_write_line(1, "rule: area is integral |h(x)| dx, so sign changes split the interval into absolute pieces");
+    }
     if (solve_parse_rat_text(first_expr, options->var_name, &first) == 0 && solve_parse_rat_text(second_expr, options->var_name, &second) == 0 && solve_rat_poly_add(&first, &second, 1, &diff) == 0 &&
         ((lo_text[0] != '\0' && solve_rat_poly_parse_bound(lo_text, options->var_name, &lo) == 0 && solve_rat_poly_parse_bound(hi_text, options->var_name, &hi) == 0) || lo_text[0] == '\0')) {
         if (lo_text[0] == '\0') {
@@ -4533,8 +4761,21 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
                 return 2;
             }
             solve_sort_breakpoints(roots, &root_count, options->tolerance);
+            if (solve_should_explain(options)) solve_print_rat_roots_line("intersections:", roots, root_count);
             lo = roots[0].rat_value;
             hi = roots[root_count - 1].rat_value;
+        }
+        if (solve_should_explain(options)) {
+            SolveBreakpoint area_roots[SOLVE_MAX_RESULTS];
+            int area_root_count = 0;
+            solve_explain_rat_poly_line("exact difference polynomial: ", &diff, options);
+            solve_explain_rat_value_line("effective lower bound = ", lo, options);
+            solve_explain_rat_value_line("effective upper bound = ", hi, options);
+            if (solve_rat_poly_roots_in_range(&diff, lo, hi, area_roots, &area_root_count) == 0) {
+                solve_sort_breakpoints(area_roots, &area_root_count, options->tolerance);
+                solve_print_rat_roots_line("area cut roots:", area_roots, area_root_count);
+            }
+            rt_write_line(1, "method detail: exact polynomial roots inside the bounds split positive and negative lobes");
         }
         if (solve_exact_area_poly(&diff, lo, hi, &area) != 0) return 3;
         rt_write_cstr(1, "area = ");
@@ -4569,6 +4810,12 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
             if (i == 0 || i == n) sum += y;
             else sum += (i % 2 == 0 ? 2.0 : 4.0) * y;
         }
+        if (solve_should_explain(options)) {
+            solve_explain_double_value_line("numeric lower bound = ", lo_d, options);
+            solve_explain_double_value_line("numeric upper bound = ", hi_d, options);
+            rt_write_line(1, "method detail: composite Simpson rule samples |f(x)-g(x)| directly with 2000 subintervals");
+            rt_write_line(1, "status reason: non-polynomial area is numeric and approximate");
+        }
         solve_format_double(sum * h / 3.0, options->scale, value, sizeof(value));
         rt_write_cstr(1, "area = "); rt_write_line(1, value);
         rt_write_line(1, "method = simpson");
@@ -4588,13 +4835,29 @@ static int solve_run_volume_mean_mode(const SolveOptions *options, const char *e
     double lo_d;
     double hi_d;
     if (solve_split_integral_bounds(options->range_spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) return 2;
+    if (solve_should_explain(options)) {
+        rt_write_line(1, volume ? "explain: volume of rotation" : "explain: mean value");
+        rt_write_cstr(1, "working function: f(x) = ");
+        rt_write_line(1, expr);
+        rt_write_cstr(1, "bounds: ");
+        rt_write_cstr(1, lo_text);
+        rt_write_cstr(1, " to ");
+        rt_write_line(1, hi_text);
+        rt_write_line(1, volume ? "formula: volume = pi * integral f(x)^2 dx" : "formula: mean = (1/(b-a)) * integral f(x) dx");
+    }
     if (solve_parse_rat_text(expr, options->var_name, &poly) == 0 && solve_rat_poly_parse_bound(lo_text, options->var_name, &lo) == 0 && solve_rat_poly_parse_bound(hi_text, options->var_name, &hi) == 0) {
         integrand = poly;
         if (volume && solve_rat_poly_square(&poly, &integrand) != 0) return 3;
         if (solve_rat_poly_definite_integral(&integrand, lo, hi, &value) != 0) return 3;
+        if (solve_should_explain(options)) {
+            solve_explain_rat_poly_line("exact integrand polynomial: ", &integrand, options);
+            solve_explain_rat_value_line("exact integral = ", value, options);
+            if (!volume) rt_write_line(1, "next: divide by interval width b-a");
+        }
         if (!volume) {
             SolveRat width;
             if (solve_rat_sub(hi, lo, &width) != 0 || solve_rat_div(value, width, &value) != 0) return 3;
+            solve_explain_rat_value_line("interval width = ", width, options);
             rt_write_cstr(1, "mean = "); solve_write_rat_value(value); rt_write_char(1, '\n');
         } else {
             rt_write_cstr(1, "volume = pi*("); solve_write_rat_value(value); rt_write_line(1, ")");
@@ -4615,6 +4878,12 @@ static int solve_run_volume_mean_mode(const SolveOptions *options, const char *e
         equation.relation = SOLVE_RELATION_NONE;
         if (volume) {
             if (solve_simpson_square_eval(&equation, options, lo_d, hi_d, 1000, &coarse) != 0 || solve_simpson_square_eval(&equation, options, lo_d, hi_d, 2000, &fine) != 0) return 3;
+            if (solve_should_explain(options)) {
+                rt_write_line(1, "method detail: composite Simpson rule integrates f(x)^2 with 1000 and 2000 subintervals");
+                solve_explain_double_value_line("coarse integral = ", coarse, options);
+                solve_explain_double_value_line("fine integral = ", fine, options);
+                rt_write_line(1, "status reason: non-polynomial rotation volume is numeric and approximate");
+            }
             solve_format_double(fine, options->scale, text, sizeof(text));
             rt_write_cstr(1, "volume approximate = pi*(");
             rt_write_cstr(1, text);
@@ -4622,6 +4891,12 @@ static int solve_run_volume_mean_mode(const SolveOptions *options, const char *e
         } else {
             if (solve_simpson_eval(&equation, options, lo_d, hi_d, 1000, &coarse) != 0 || solve_simpson_eval(&equation, options, lo_d, hi_d, 2000, &fine) != 0 || hi_d == lo_d) return 3;
             result = fine / (hi_d - lo_d);
+            if (solve_should_explain(options)) {
+                rt_write_line(1, "method detail: composite Simpson rule integrates f(x), then divides by b-a");
+                solve_explain_double_value_line("fine integral = ", fine, options);
+                solve_explain_double_value_line("interval width = ", hi_d - lo_d, options);
+                rt_write_line(1, "status reason: non-polynomial mean value is numeric and approximate");
+            }
             solve_format_double(result, options->scale, text, sizeof(text));
             rt_write_cstr(1, "mean approximate = ");
             rt_write_line(1, text);
@@ -4647,16 +4922,36 @@ static int solve_run_asymptotes_mode(const SolveOptions *options, const char *ex
         tool_write_error("solve", "asymptotes supported only for rational polynomial functions", 0);
         return 2;
     }
+    if (solve_should_explain(options)) {
+        rt_write_line(1, "explain: rational asymptotes");
+        solve_explain_rat_poly_line("numerator: ", &num, options);
+        solve_explain_rat_poly_line("denominator: ", &den, options);
+        rt_write_line(1, "vertical rule: denominator root with nonzero numerator gives a vertical asymptote");
+        rt_write_line(1, "end-behavior rule: polynomial division gives horizontal or oblique asymptote when the remainder tends to 0");
+    }
     if (solve_collect_rat_poly_roots(&den, roots, &root_count) != 0) return 3;
     solve_sort_breakpoints(roots, &root_count, options->tolerance);
+    if (solve_should_explain(options)) solve_print_rat_roots_line("denominator roots:", roots, root_count);
     for (i = 0; i < root_count; ++i) {
         SolveRat value;
         if (!roots[i].exact) continue;
+        if (solve_should_explain(options) && solve_rat_poly_eval(&num, solve_rat_poly_degree(&num), roots[i].rat_value, &value) == 0) {
+            rt_write_cstr(1, "numerator at ");
+            rt_write_cstr(1, roots[i].label);
+            rt_write_cstr(1, " = ");
+            solve_write_rat_value(value);
+            rt_write_char(1, '\n');
+        }
         if (solve_rat_poly_eval(&num, solve_rat_poly_degree(&num), roots[i].rat_value, &value) == 0 && !solve_rat_is_zero(value)) {
             rt_write_cstr(1, "vertical: x = "); rt_write_line(1, roots[i].label);
         }
     }
     if (solve_rat_poly_divide(&num, &den, &quotient, &remainder) != 0) return 3;
+    if (solve_should_explain(options)) {
+        solve_explain_rat_poly_line("polynomial quotient: ", &quotient, options);
+        solve_explain_rat_poly_line("remainder: ", &remainder, options);
+        rt_write_line(1, "division form: numerator/denominator = quotient + remainder/denominator");
+    }
     if (solve_rat_poly_degree(&quotient) <= 1) {
         if (solve_rat_poly_format(&quotient, options->var_name, text, sizeof(text)) != 0) return 3;
         rt_write_cstr(1, solve_rat_poly_degree(&quotient) == 1 ? "oblique: y = " : "horizontal: y = ");

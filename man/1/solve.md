@@ -70,7 +70,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--tolerance VALUE` stops once the interval width or residual is small enough; the default is `1e-10`
 - `--max-iterations N` limits solver iterations; the default is 128
 - `--report-y` reports the y-value of the left side of an equation, useful for curve intersections
-- `--explain` prints a didactic trace of the solving process
+- `--explain` prints a didactic trace or certificate for the selected solving, inequality, calculus, or analysis mode
 - `--quiet` prints only the final answer
 - `--diff[=N]` prints the Nth exact polynomial derivative; with an equation input, it solves the Nth derivative set equal to 0
 - `--integrate A:B` computes the definite integral over `[A, B]`, exactly for supported rational polynomials and numerically otherwise
@@ -111,7 +111,7 @@ The analysis modes are additive front ends over the same evaluator, exact ration
 
 `--discuss` combines the primitive analysis results. For supported polynomials it reports exact zeros, extrema classified by derivative sign change, saddle points where the first derivative does not change sign, inflection points from the second derivative, monotonicity and curvature intervals, and end behavior. For non-polynomial expressions it reports the sampled window, numeric zeros, critical points, inflection points, monotonicity and curvature intervals, and simple end-behavior or horizontal-asymptote hints where sampling supports them. Those results are approximate and bounded by the scan window.
 
-`--limit x->A` evaluates a two-sided limit near `A`. For supported rational-polynomial quotients it can remove a factor that causes a `0/0` hole before evaluating the limit. Opposite-sided blow-up is reported as no two-sided limit with a pole rather than as a finite number. Finite jumps, such as `abs(x)/x` at `0`, are reported as no two-sided limit with the sampled left and right values.
+`--limit x->A` evaluates a two-sided limit near `A` by sampling from the left and right. Removable holes in simple rational expressions are detected numerically by the agreement of nearby left and right values. Opposite-sided blow-up is reported as no two-sided limit with a pole rather than as a finite number. Finite jumps, such as `abs(x)/x` at `0`, are reported as no two-sided limit with the sampled left and right values.
 
 `--asymptotes` recognizes rational-polynomial quotients such as `(x^2 + 1)/(x - 1)`. Real denominator zeros that are not canceled are vertical asymptotes, and polynomial division of the numerator by the denominator gives a horizontal or oblique asymptote when the quotient degree is 0 or 1.
 
@@ -122,6 +122,8 @@ Every reported root must pass a residual check. A sign change caused by a discon
 ## DIDACTIC OUTPUT
 
 With `--explain`, `solve` shows the path toward the answer rather than only the result. The trace is meant to be useful for learning, not just debugging implementation internals.
+
+For every supported mode, explanation output starts from the transformed working function, names the exact or numeric method being used, prints the decisive intermediate values, states the mathematical rule behind the classification, and marks the honesty boundary between exact proof and numeric sampling.
 
 A bisection explanation should include:
 
@@ -145,6 +147,16 @@ A polynomial identity explanation says whether the transformed polynomial reduce
 For intersections, `--explain` also shows that the two input expressions were converted into a single zero function, then reports both `x` and `y` for the intersection.
 
 For touching-root candidates, `--explain` says that no sign change was found, shows the near-zero local extremum or exact sampled zero that triggered the candidate, and reports the residual clearly.
+
+For exact polynomial analysis modes, `--explain` prints the relevant derivative, antiderivative, sign rule, point evaluation, leading-term rule, or polynomial division step. For example, monotonicity explains that roots of `f'` split the real line and that the sign of `f'` decides increasing or decreasing intervals; curvature does the same with `f''`; tangent and normal output show `f(a)`, `f'(a)`, the slope rule, and the intercept construction.
+
+For `--discuss`, explanation output is a compact curve-discussion certificate. Polynomial input shows the domain and symmetry tests, zeros, first and second derivatives, extremum and inflection rules, interval sign analysis, and leading-term end behavior. Non-polynomial input states the scan window, explains that zeros come from scan plus bisection, critical and inflection points from finite-difference sign changes, and end-behavior hints from far samples.
+
+For `--area`, explanation output constructs `h(x) = f(x) - g(x)`, states that area is `integral |h(x)| dx`, and prints the cut roots used to split positive and negative lobes when the exact polynomial path is available. Numeric area explains that Simpson integration samples `|f(x)-g(x)|` directly.
+
+For `--integrate`, `--volume`, and `--mean`, explanation output prints the formula being evaluated. Exact polynomial paths show the exact integrand and antiderivative or integral value; numeric paths show the Simpson subdivision counts and estimates. Volume explains the `pi * integral f(x)^2 dx` disc formula, and mean value explains division by interval width.
+
+For `--limit`, explanation output prints the target point, final left and right samples, and the classification rule: matching one-sided values indicate a two-sided limit, divergent magnitude indicates a pole, and finite mismatch indicates a jump. For `--asymptotes`, explanation output shows numerator, denominator, denominator roots, numerator values at those roots, polynomial quotient, remainder, and the division form that justifies horizontal or oblique asymptotes.
 
 ## OUTPUT
 
@@ -323,6 +335,12 @@ Check a removable limit and rational asymptotes:
 ```
 solve --limit 'x->2' '(x^2 - 4)/(x - 2)'
 solve --asymptotes '(x^2 + 1)/(x - 1)'
+```
+
+Show a curve-discussion certificate:
+
+```
+solve --explain --discuss 'x^3 - 3*x'
 ```
 
 ## SEE ALSO
