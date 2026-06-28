@@ -91,4 +91,4 @@ Assignments that do not normally print still do not emit result events. Diagnost
 
 ## SEE ALSO
 
-expr, awk, seq
+expr, solve, awk, seq
